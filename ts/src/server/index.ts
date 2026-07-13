@@ -9,7 +9,7 @@ import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextW
 import { publicProviderSummary, scrubProviderIdentifiers, toPublicProviderView } from '../model/publicModelNames'
 import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
-import { SessionRewindService, type RewindTargetSelector } from './services/sessionRewindService'
+import { SessionRewindService } from './services/sessionRewindService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
@@ -103,6 +103,7 @@ import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './r
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
 import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
 import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
+import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
@@ -2201,6 +2202,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
   const handleSessionActivityRoute = createSessionActivityRouteHandler({ sessions, turns })
   const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
@@ -3443,6 +3445,9 @@ export function startServer(opts: StartServerOptions = {}) {
       const sessionActivityResponse = await handleSessionActivityRoute(url, req)
       if (sessionActivityResponse) return sessionActivityResponse
 
+      const sessionRewindResponse = await handleSessionRewindRoute(url, req)
+      if (sessionRewindResponse) return sessionRewindResponse
+
       if (url.pathname === '/tasks') {
         if (req.method === 'GET') {
           return Response.json({
@@ -3514,43 +3519,6 @@ export function startServer(opts: StartServerOptions = {}) {
           const status = err instanceof TurnSetupError ? err.status : 500
           return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
         }
-      }
-
-      // rewind/checkpoint 上层服务:同时接受裸 /sessions 与 /api/sessions 前缀(验收文档写的是 /api 形状)。
-      const rewindMatch = url.pathname.match(/^(?:\/api)?\/sessions\/([A-Za-z0-9_-]{1,128})\/(turn-checkpoints|rewind)$/)
-      if (rewindMatch) {
-        const id = rewindMatch[1]!
-        const action = rewindMatch[2]
-        const session = await sessions.get(id)
-        if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-        if (action === 'turn-checkpoints') {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          try {
-            return Response.json({ checkpoints: await sessionRewind.listTurnCheckpoints(id) })
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
-          }
-        }
-        if (action === 'rewind' && req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const selector: RewindTargetSelector = {
-            targetUserMessageId: typeof body.targetUserMessageId === 'string' ? body.targetUserMessageId : undefined,
-            userMessageIndex: typeof body.userMessageIndex === 'number' ? body.userMessageIndex : undefined,
-            expectedContent: typeof body.expectedContent === 'string' ? body.expectedContent : undefined,
-          }
-          if (!selector.targetUserMessageId && !Number.isInteger(selector.userMessageIndex)) {
-            return Response.json({ ok: false, error: 'targetUserMessageId or userMessageIndex is required' }, { status: 400 })
-          }
-          try {
-            const result = body.dryRun === true
-              ? await sessionRewind.previewRewind(id, selector)
-              : await sessionRewind.executeRewind(id, selector)
-            return Response.json(result)
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 400 })
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
       }
 
       if (url.pathname === '/agent/hello') {

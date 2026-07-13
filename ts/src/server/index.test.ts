@@ -8,13 +8,10 @@ import { PNG } from 'pngjs'
 import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
-import { textBlock, userText, type Message } from '../types/message'
+import { textBlock, userText } from '../types/message'
 import { getAutoMemDir } from '../harness/memoryNames'
 import { signApproval } from '../permissions/approval'
 import { sendToUdsSocket } from '../tasks/udsClient'
-import { recordFileSnapshot } from '../tools/fileHistory'
-import { Workspace } from '../workspace/workspace'
-import type { ToolContext } from '../tools/Tool'
 
 let server: ReturnType<typeof startServer>
 let serverRoot: string
@@ -6281,69 +6278,19 @@ test('POST /sessions/:id/archive summarizes old transcript and archives original
   }
 })
 
-test('GET /sessions/:id/turn-checkpoints + POST /sessions/:id/rewind(dryRun/execute),兼容 /api 前缀', async () => {
+test('session rewind routes are wired through startServer for both compatible prefixes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-rewind-route-'))
   const svc = new SessionService(root)
   await svc.create({ id: 'rw-route', title: '回退路由测试', workspaceRoot: root })
-  const transcript = svc.transcript('rw-route', root)
-
-  const u1: Message = { role: 'user', content: [textBlock('u1')] }
-  const a1: Message = { role: 'assistant', content: [textBlock('a1')], uuid: 'route-msg-a1' }
-  const u2: Message = { role: 'user', content: [textBlock('u2')] }
-  const a2: Message = { role: 'assistant', content: [textBlock('a2')], uuid: 'route-msg-a2' }
-  await transcript.append([u1, a1, u2, a2])
-
-  const ctx1: ToolContext = { workspace: new Workspace(root), conversationId: 'rw-route', stateRoot: root, messageId: 'route-msg-a1' }
-  await recordFileSnapshot(ctx1, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:false
-  writeFileSync(join(root, 'note.txt'), 'v1\n')
-  const ctx2: ToolContext = { ...ctx1, messageId: 'route-msg-a2' }
-  await recordFileSnapshot(ctx2, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:true, backup v1
-  writeFileSync(join(root, 'note.txt'), 'v2\n')
-
-  const history = await transcript.loadFullHistoryStamped()
-  const u2Uuid = history.find(r => (r.message.content[0] as { text?: string })?.text === 'u2')!.uuid
-
   const rewindRouteServer = startServer({ port: 0, transcriptRoot: root })
   try {
     const base = `http://127.0.0.1:${rewindRouteServer.port}`
-
-    // 会话不存在 → 404(裸前缀 + /api 前缀都要生效)
-    expect((await fetch(`${base}/sessions/nope/turn-checkpoints`)).status).toBe(404)
-    expect((await fetch(`${base}/api/sessions/nope/turn-checkpoints`)).status).toBe(404)
-    const notFoundRewind = await fetch(`${base}/api/sessions/nope/rewind`, { method: 'POST', body: JSON.stringify({ userMessageIndex: 0 }) })
-    expect(notFoundRewind.status).toBe(404)
-
-    // GET turn-checkpoints:按轮次聚合,裸前缀
     const checkpoints = await (await fetch(`${base}/sessions/rw-route/turn-checkpoints`)).json() as any
-    expect(checkpoints.checkpoints.length).toBe(2)
-    expect(checkpoints.checkpoints[0].code.filesChanged).toEqual([join(root, 'note.txt')])
-
-    // GET turn-checkpoints:/api 前缀同样生效
+    expect(checkpoints.checkpoints).toEqual([])
     const checkpointsApi = await (await fetch(`${base}/api/sessions/rw-route/turn-checkpoints`)).json() as any
-    expect(checkpointsApi.checkpoints.length).toBe(2)
-
-    // 缺 selector → 400
+    expect(checkpointsApi.checkpoints).toEqual([])
     const missingSelector = await fetch(`${base}/sessions/rw-route/rewind`, { method: 'POST', body: JSON.stringify({ dryRun: true }) })
     expect(missingSelector.status).toBe(400)
-
-    // dryRun 预览:不动文件
-    const preview = await (await fetch(`${base}/api/sessions/rw-route/rewind`, {
-      method: 'POST',
-      body: JSON.stringify({ targetUserMessageId: u2Uuid, dryRun: true }),
-    })).json() as any
-    expect(preview.code.available).toBe(true)
-    expect(preview.code.filesChanged).toEqual([join(root, 'note.txt')])
-    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v2\n')
-
-    // 真执行:文件真被恢复,transcript 活跃链掰短
-    const executed = await (await fetch(`${base}/sessions/rw-route/rewind`, {
-      method: 'POST',
-      body: JSON.stringify({ targetUserMessageId: u2Uuid }),
-    })).json() as any
-    expect(executed.conversation.removedMessageIds.length).toBe(2)
-    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v1\n')
-    const remaining = await svc.transcript('rw-route', root).load()
-    expect(remaining.length).toBe(2)
   } finally {
     rewindRouteServer.stop(true)
     rmSync(root, { recursive: true, force: true })
