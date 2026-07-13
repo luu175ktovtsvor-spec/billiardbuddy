@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, FabricImage, Path, Rect, Textbox, type FabricObject } from 'fabric'
-import { PageHeader } from '../../components/shared/PageKit'
 import { Tooltip } from '../../components/shared/Tooltip'
 import { IconAlertCircle, IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
 import { toast } from '../../stores/toastStore'
@@ -103,7 +102,6 @@ export function CreationPage() {
   const [images, setImages] = useState<StudioImage[]>([])
   const [creativeBrief, setCreativeBrief] = useState<ImageCreativeBrief | null>(null)
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
-  const [recommendedImageId, setRecommendedImageId] = useState<string | null>(null)
   const [compareIds, setCompareIds] = useState<string[]>([])
   const [project, setProject] = useState<ImageWorkbenchProject | null>(null)
   const [projects, setProjects] = useState<ImageWorkbenchProject[]>([])
@@ -135,6 +133,7 @@ export function CreationPage() {
   const autosaveSnapshotRef = useRef('')
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const briefHydratingRef = useRef(false)
+  const canvasViewportRef = useRef<HTMLDivElement | null>(null)
 
   const currentVersion = useMemo(() => {
     if (!project) return null
@@ -251,6 +250,11 @@ export function CreationPage() {
     canvas.upperCanvasEl.draggable = false
     canvas.upperCanvasEl.addEventListener('dragstart', event => event.preventDefault())
     fabricRef.current = canvas
+    const resizeObserver = new ResizeObserver(() => {
+      const current = projectRef.current
+      if (current) fitCanvasPreview(canvas, current, canvasViewportRef.current)
+    })
+    if (canvasViewportRef.current) resizeObserver.observe(canvasViewportRef.current)
 
     const updateActiveText = () => {
       const active = canvas.getActiveObject()
@@ -397,6 +401,7 @@ export function CreationPage() {
       upperCanvas.removeEventListener('pointermove', onPointerMove)
       upperCanvas.removeEventListener('pointerup', onPointerUp)
       upperCanvas.removeEventListener('pointercancel', onPointerUp)
+      resizeObserver.disconnect()
       void canvas.dispose()
       fabricRef.current = null
     }
@@ -409,12 +414,13 @@ export function CreationPage() {
     void (async () => {
       await hydrateCanvas(canvas, project, currentVersion)
       if (cancelled) return
+      fitCanvasPreview(canvas, project, canvasViewportRef.current)
       resetTextHistory(canvas)
       setTextValue('')
       setActiveTextId(null)
       setMaskItems([])
       setLastExport(null)
-    })().catch((err) => toast(err instanceof Error ? err.message : '画布加载失败'))
+    })().catch((err) => toast(friendlyImageError(err, '图片加载失败')))
     return () => { cancelled = true }
   }, [canvasElement, currentVersion?.id, project?.project_id])
 
@@ -508,7 +514,7 @@ export function CreationPage() {
     const explicit = [prompt.trim(), ...fields].filter(Boolean).join('，')
     if (explicit) return explicit
     if (intent === 'portrait' && referenceAssets.length > 0) {
-      return '把上传的随手拍优化得自然好看、没有明显 AI 感，同时保留本人可辨识特征和自然比例。'
+      return '把上传的随手拍优化得自然好看，保持正常拍摄的感觉，同时保留本人可辨识特征和自然比例。'
     }
     return ''
   }
@@ -526,9 +532,9 @@ export function CreationPage() {
       setBrandPack(updated)
       if (kind === 'logo') setLogoAsset(asset)
       else setQrAsset(asset)
-      toast(kind === 'logo' ? 'Logo 已加入品牌包' : '二维码已加入品牌包')
+      toast(kind === 'logo' ? 'Logo 已添加' : '二维码已添加')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '品牌素材上传失败')
+      toast(friendlyImageError(err, `${kind === 'logo' ? 'Logo' : '二维码'}上传失败`))
     }
   }
 
@@ -574,67 +580,54 @@ export function CreationPage() {
     })
   }
 
-  const prepareBrief = async () => {
-    const request = requestText()
-    if (!request || busy) return
-    setBusy(true)
-    setStage('正在理解需求…')
-    try {
-      const result = await studioApi.compileBrief({
-        prompt: request,
-        scene: intent === 'portrait' ? 'portrait' : 'poster',
-        intent,
-        ratio,
-        quality,
-        scene_template_id: sceneId,
-        poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, address: posterAddress, phone: posterPhone, cta: posterCta },
-        reference_assets: referenceDescriptors,
-        portrait_authorization_confirmed: portraitAuthorized,
-      })
-      const poster = result.brief.poster
-      const extracted = poster ? {
-        title: poster.title,
-        offer: poster.offer,
-        price: poster.price,
-        date: [poster.date, poster.time].filter(Boolean).join(' '),
-        address: poster.address,
-        phone: poster.phone,
-        cta: poster.cta,
-      } : null
-      const willHydrate = Boolean(extracted && (
-        (!posterTitle && extracted.title) || (!posterOffer && extracted.offer) || (!posterPrice && extracted.price)
-        || (!posterDate && extracted.date) || (!posterAddress && extracted.address) || (!posterPhone && extracted.phone) || (!posterCta && extracted.cta)
-      ))
-      if (willHydrate && extracted) {
-        briefHydratingRef.current = true
-        if (!posterTitle) setPosterTitle(extracted.title)
-        if (!posterOffer) setPosterOffer(extracted.offer)
-        if (!posterPrice) setPosterPrice(extracted.price)
-        if (!posterDate) setPosterDate(extracted.date)
-        if (!posterAddress) setPosterAddress(extracted.address)
-        if (!posterPhone) setPosterPhone(extracted.phone)
-        if (!posterCta) setPosterCta(extracted.cta)
-        setQuickForm(true)
-      }
-      setCreativeBrief(result.brief)
-    } catch (err) {
-      toast(err instanceof Error ? err.message : '需求理解失败')
-    } finally {
-      setBusy(false)
-      setStage('')
-    }
-  }
-
   const run = async () => {
     const request = requestText()
     if (!request || busy) return
-    if (!creativeBrief) {
-      await prepareBrief()
-      return
-    }
-    const ctrl = beginAction('正在提交…')
+    const ctrl = beginAction(creativeBrief ? '正在开始生成…' : '正在理解你的需求…')
     setImages([])
     try {
+      let brief = creativeBrief
+      if (!brief) {
+        const result = await studioApi.compileBrief({
+          prompt: request,
+          scene: intent === 'portrait' ? 'portrait' : 'poster',
+          intent,
+          ratio,
+          quality,
+          scene_template_id: sceneId,
+          poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, address: posterAddress, phone: posterPhone, cta: posterCta },
+          reference_assets: referenceDescriptors,
+          portrait_authorization_confirmed: portraitAuthorized,
+        })
+        brief = result.brief
+        const poster = brief.poster
+        const extracted = poster ? {
+          title: poster.title,
+          offer: poster.offer,
+          price: poster.price,
+          date: [poster.date, poster.time].filter(Boolean).join(' '),
+          address: poster.address,
+          phone: poster.phone,
+          cta: poster.cta,
+        } : null
+        const willHydrate = Boolean(extracted && (
+          (!posterTitle && extracted.title) || (!posterOffer && extracted.offer) || (!posterPrice && extracted.price)
+          || (!posterDate && extracted.date) || (!posterAddress && extracted.address) || (!posterPhone && extracted.phone) || (!posterCta && extracted.cta)
+        ))
+        if (willHydrate && extracted) {
+          briefHydratingRef.current = true
+          if (!posterTitle) setPosterTitle(extracted.title)
+          if (!posterOffer) setPosterOffer(extracted.offer)
+          if (!posterPrice) setPosterPrice(extracted.price)
+          if (!posterDate) setPosterDate(extracted.date)
+          if (!posterAddress) setPosterAddress(extracted.address)
+          if (!posterPhone) setPosterPhone(extracted.phone)
+          if (!posterCta) setPosterCta(extracted.cta)
+          setQuickForm(true)
+        }
+        setCreativeBrief(brief)
+        setStage('正在生成图片…')
+      }
       const generateInput: GenerateInput = {
         prompt: request,
         user_request: request,
@@ -657,28 +650,28 @@ export function CreationPage() {
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
         input_fidelity: referenceAssets.length > 0 ? 'high' : undefined,
-        creative_brief: creativeBrief,
+        creative_brief: brief,
       }
       const { job_id } = await studioApi.generate(generateInput)
       setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) }, intervalMs: 600 })
+      const job = await pollJob(job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成图片…')) }, intervalMs: 600 })
       const result = job.result ?? {}
       if (job.status !== 'done') throw new Error(result.message || job.error || '生成失败')
       if (result.blocked) throw new Error(result.message || '所需组件正在后台准备,稍后再试。')
       let imgs = (result.images ?? []).filter((img) => img.local_preview !== true)
       if ((result.images ?? []).some((img) => img.local_preview === true) && imgs.length === 0) {
-        throw new Error('当前只有本地预览占位图，未配置真实生图服务，不能作为正式候选或交付。')
+        throw new Error('当前没有可用的图片生成服务，暂时无法生成图片。')
       }
       if (!imgs.length) throw new Error('没有生成图片,换个描述再试试')
       const hardGatePassed = imgs.filter(img => imagePassesCandidateGate(img, intent)).length
       const needsPosterSupplement = intent === 'poster_text' && imgs.length === 3 && hardGatePassed < 2
       const needsPortraitSupplement = intent === 'portrait' && imgs.length === 3 && imgs.every(img => portraitCandidateHasHardRisk(img))
       if (needsPosterSupplement || needsPortraitSupplement) {
-        setStage('候选风险较多，正在补生成一批…')
+        setStage('部分结果需要确认，正在再试一次…')
         try {
           const retry = await studioApi.generate(generateInput)
           setActiveJobId(retry.job_id)
-          const retryJob = await pollJob(retry.job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) }, intervalMs: 600 })
+          const retryJob = await pollJob(retry.job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成图片…')) }, intervalMs: 600 })
           const retryImages = retryJob.status === 'done' && !retryJob.result?.blocked
             ? (retryJob.result?.images ?? []).filter(img => img.local_preview !== true)
             : []
@@ -689,16 +682,15 @@ export function CreationPage() {
         }
       }
       setImages(imgs)
-      setCreativeBrief(result.creative_brief ?? null)
+      setCreativeBrief(result.creative_brief ?? brief)
       const recommended = imgs.find(img => imagePassesCandidateGate(img, intent))?.generation_id ??
         (typeof result.recommended_generation_id === 'string' ? result.recommended_generation_id : null)
-      setRecommendedImageId(recommended)
       setSelectedImageId(recommended ?? imgs[0]?.generation_id ?? null)
       setCompareIds(imgs.slice(0, 2).map((img) => img.generation_id))
       setCompactPane('canvas')
     } catch (e) {
       if (!ctrl.signal.aborted) {
-        const message = e instanceof Error ? e.message : '生成失败'
+        const message = friendlyImageError(e, '生成失败')
         setLastError(message)
         setLastFailedAction('generate')
         toast(message)
@@ -710,12 +702,12 @@ export function CreationPage() {
 
   const createProjectFromImage = async (img: StudioImage): Promise<ImageWorkbenchProject> => {
     if (img.local_preview === true) {
-      throw new Error('本地预览占位图不能进入正式项目')
+      throw new Error('这张预览图片暂时无法编辑')
     }
     const width = img.width ?? dimensionFromRatio(img.ratio ?? ratio).width
     const height = img.height ?? dimensionFromRatio(img.ratio ?? ratio).height
     return await workbenchApi.createProject({
-      title: creativeBrief?.poster?.title || prompt.trim().slice(0, 80) || '生图工作台项目',
+      title: creativeBrief?.poster?.title || prompt.trim().slice(0, 80) || '未命名图片',
       source_generation_id: img.generation_id,
       image_url: img.poster_url,
       width,
@@ -750,27 +742,25 @@ export function CreationPage() {
       if (project?.source_generation_id === img.generation_id) {
         await refreshProject(project)
         setCompactPane('canvas')
-        toast('当前候选已经在工作台中')
         return
       }
       const next = await createProjectFromImage(img)
       await refreshProject(next)
       setCompactPane('canvas')
       setProjects((items) => [next, ...items.filter((item) => item.project_id !== next.project_id)])
-      toast('已送入工作台')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '创建项目失败')
+      toast(friendlyImageError(err, '无法打开图片'))
     }
   }
 
   const quickDownloadCandidate = async (img: StudioImage) => {
     setBusy(true)
-    setStage('正在合成确定性文字并导出…')
+    setStage('正在添加固定文字并准备下载…')
     try {
       await waitForFonts()
       const next = await createProjectFromImage(img)
       const version = next.versions.find(item => item.id === next.current_version_id)
-      if (!version) throw new Error('候选项目没有可导出的版本')
+      if (!version) throw new Error('这张图片暂时无法下载')
 
       // Use the mounted canvas, the same rendering surface used by normal export.
       // Fabric's detached-canvas image loading is not reliable in Electron.
@@ -789,9 +779,9 @@ export function CreationPage() {
       await refreshProject(result.project)
       setCompactPane('canvas')
       await downloadAsset(result.asset.url, `${next.title}-${new Date().toISOString().slice(0, 10)}`)
-      toast('已生成并下载 PNG 成品')
+      toast('PNG 已下载')
     } catch (err) {
-      const message = err instanceof Error ? err.message : '成品导出失败'
+      const message = friendlyImageError(err, '下载失败')
       setLastError(message)
       toast(message)
     } finally {
@@ -847,6 +837,7 @@ export function CreationPage() {
     if (projectRef.current?.project_id === next.project_id) return
     await persistCurrentCanvas().catch(() => undefined)
     await refreshProject(next)
+    setCompactPane('canvas')
   }
 
   const waitForFabricCanvas = async (): Promise<Canvas> => {
@@ -855,7 +846,7 @@ export function CreationPage() {
       if (fabricRef.current) return fabricRef.current
       await new Promise<void>(resolve => window.setTimeout(resolve, 16))
     }
-    throw new Error('编辑画布尚未准备好')
+    throw new Error('编辑区尚未准备好')
   }
 
   const reloadProjects = async () => {
@@ -907,7 +898,7 @@ export function CreationPage() {
     const base = projectRef.current
     if (!canvas || !base) return
     const layerId = `text_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
-    const box = new Textbox('双击编辑中文文字', {
+    const box = new Textbox('双击编辑文字', {
       left: base.canvas.width * 0.14,
       top: base.canvas.height * 0.12,
       width: base.canvas.width * 0.72,
@@ -974,7 +965,7 @@ export function CreationPage() {
 
   const wholeEdit = async () => {
     if (!project || !currentVersion || !editText.trim()) return
-    const ctrl = beginAction('正在改图…')
+    const ctrl = beginAction('正在修改图片…')
     try {
       const { job_id } = await studioApi.edit({
         ...sourceForEdit(currentVersion, editText.trim(), 'edit_content', quality),
@@ -986,14 +977,13 @@ export function CreationPage() {
         input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
       setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在修改图片…')) } })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'edit', editText.trim())
       await refreshProject(next)
       setEditText('')
-      toast('已生成整图修改版本')
     } catch (err) {
       if (!ctrl.signal.aborted) {
-        const message = err instanceof Error ? err.message : '改图失败'
+        const message = friendlyImageError(err, '修改失败')
         setLastError(message)
         setLastFailedAction('edit')
         toast(message)
@@ -1005,8 +995,8 @@ export function CreationPage() {
 
   const inpaint = async () => {
     if (!project || !currentVersion || !maskText.trim()) return
-    if (maskItems.length === 0) { toast('先用矩形或笔刷标出要重绘的区域'); return }
-    const ctrl = beginAction('正在生成蒙版…')
+    if (maskItems.length === 0) { toast('先框选或涂抹要修改的区域'); return }
+    const ctrl = beginAction('正在准备选中区域…')
     try {
       const dataUrl = maskDataUrl(project.canvas.width, project.canvas.height, maskItems)
       const asset = await workbenchApi.uploadAsset({ kind: 'mask', data_url: dataUrl, width: project.canvas.width, height: project.canvas.height })
@@ -1021,15 +1011,14 @@ export function CreationPage() {
         input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
       setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在修改图片…')) } })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'inpaint', maskText.trim(), asset)
       await refreshProject(next)
       clearMask()
       setMaskText('')
-      toast('局部重绘版本已生成')
     } catch (err) {
       if (!ctrl.signal.aborted) {
-        const message = err instanceof Error ? err.message : '局部重绘失败'
+        const message = friendlyImageError(err, '修改失败')
         setLastError(message)
         setLastFailedAction('inpaint')
         toast(message)
@@ -1041,17 +1030,16 @@ export function CreationPage() {
 
   const upscale = async () => {
     if (!project || !currentVersion) return
-    const ctrl = beginAction('正在高清放大…')
+    const ctrl = beginAction('正在生成高清图片…')
     try {
       const { job_id } = await studioApi.upscale(sourceForUpscale(currentVersion))
       setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); if (s) setStage(s) } })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成高清图片…')) } })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'upscale', '高清放大')
       await refreshProject(next)
-      toast('已生成高清版本')
     } catch (err) {
       if (!ctrl.signal.aborted) {
-        const message = err instanceof Error ? err.message : '放大失败'
+        const message = friendlyImageError(err, '生成高清图片失败')
         setLastError(message)
         setLastFailedAction('upscale')
         toast(message)
@@ -1064,7 +1052,7 @@ export function CreationPage() {
   const exportPng = async () => {
     const canvas = fabricRef.current
     if (!project || !currentVersion || !canvas) return
-    setBusy(true); setStage('正在导出 PNG…')
+    setBusy(true); setStage('正在准备 PNG…')
     try {
       await waitForFonts()
       const layers = extractTextLayers(canvas)
@@ -1081,9 +1069,9 @@ export function CreationPage() {
       setLastExport(result.asset)
       await refreshProject(result.project)
       await downloadAsset(result.asset.url, `${project.title}-${new Date().toISOString().slice(0, 10)}`)
-      toast(`已按 ${result.asset.width}x${result.asset.height} 导出 PNG`)
+      toast(`PNG 已下载（${result.asset.width}x${result.asset.height}）`)
     } catch (err) {
-      toast(err instanceof Error ? err.message : '导出失败')
+      toast(friendlyImageError(err, '下载失败'))
     } finally {
       setBusy(false); setStage('')
     }
@@ -1093,9 +1081,9 @@ export function CreationPage() {
     if (!project) return
     try {
       const item = await workbenchApi.saveToLibrary(project.project_id, { export_asset_id: lastExport?.asset_id, title: project.title })
-      toast(`已保存到素材库:${item.title}`)
+      toast(`已保存到图片库：${item.title}`)
     } catch (err) {
-      toast(err instanceof Error ? err.message : '保存素材库失败')
+      toast(friendlyImageError(err, '保存到图片库失败'))
     }
   }
 
@@ -1104,9 +1092,9 @@ export function CreationPage() {
     try {
       const next = await workbenchApi.confirmPortrait(project.project_id, currentVersion.id)
       await refreshProject(next)
-      toast('已确认像本人，可以继续导出；这不是法律授权或自动商用保证。')
+      toast('已确认像本人。下载前仍需确认照片授权和用途。')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '确认失败')
+      toast(friendlyImageError(err, '确认失败'))
     }
   }
 
@@ -1121,9 +1109,9 @@ export function CreationPage() {
       setSceneId('custom_poster')
       setPrompt('使用已确认的人物照片作为海报主视觉，具体主题、文字和用途按本次输入决定')
       setCreativeBrief(null)
-      toast('已带入人物照片，继续填写海报目标')
+      toast('已带入人物照片，继续填写你想做的图片')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '带入人物照片失败')
+      toast(friendlyImageError(err, '带入人物照片失败'))
     }
   }
 
@@ -1155,41 +1143,36 @@ export function CreationPage() {
   const hasWorkbenchStage = hasCandidates || hasProject
   const hasTaskFeedback = busy || Boolean(lastError)
   const hasMainPanel = hasWorkbenchStage || hasTaskFeedback
-  const workspaceLayoutClass = hasProject
-    ? 'grid min-h-0 grid-cols-1 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,260px)_minmax(0,1fr)] min-[1500px]:grid-cols-[250px_minmax(0,1fr)_280px]'
-    : hasMainPanel
-      ? 'grid min-h-0 grid-cols-1 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,260px)_minmax(0,1fr)]'
-      : 'block'
-  const contentClass = hasWorkbenchStage
-    ? 'max-w-[1560px] px-4 pb-7 pt-4 min-[840px]:px-6'
-    : 'max-w-[760px] px-4 py-7 min-[840px]:px-0'
+  const workspaceLayoutClass = compactPane === 'adjust' && hasProject
+    ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(0,1fr)_300px]'
+    : compactPane === 'canvas'
+      ? 'mx-auto max-w-[1100px]'
+      : 'mx-auto max-w-[760px]'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
-      <div className={`mx-auto min-h-full w-full ${contentClass}`}>
-        <PageHeader
-          title={hasWorkbenchStage ? '创作与编辑' : '开始创作'}
-          action={saveState !== 'saved' ? <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
-            {saveState === 'saving' ? '保存中' : '保存失败'}
-          </span> : undefined}
-        />
-
-        <div className="mb-5 inline-grid grid-cols-2 gap-0.5 rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
-          <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
-            className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
-            海报创作
-          </button>
-          <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
-            className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'portrait')} data-testid="image-workflow-photo">
-            照片优化
-          </button>
+      <div className="mx-auto min-h-full w-full max-w-[1560px] px-4 pb-7 pt-2 min-[840px]:px-6">
+        <div className={`${hasMainPanel && compactPane !== 'create' ? 'hidden' : 'mb-4 flex'} items-center justify-between gap-3`}>
+          <div className="inline-grid grid-cols-2 gap-1 rounded-lg p-1" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="图片类型">
+            <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
+              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
+              制作海报
+            </button>
+            <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
+              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'portrait')} data-testid="image-workflow-photo">
+              照片优化
+            </button>
+          </div>
+          {saveState !== 'saved' && <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+            {saveState === 'saving' ? '正在保存' : '保存失败'}
+          </span>}
         </div>
 
-        {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[1180px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
+        {hasMainPanel && <div className="mx-auto mb-5 grid max-w-[520px] grid-cols-3 gap-1 rounded-lg p-1" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="图片编辑视图">
           {([
-            ['create', '创作'],
-            ['canvas', '挑选'],
-            ['adjust', '调整'],
+            ['create', '描述'],
+            ['canvas', '结果'],
+            ['adjust', '修改'],
           ] as const).map(([pane, label]) => (
             (() => {
               const available = pane === 'create' || (pane === 'canvas' ? hasMainPanel : hasProject)
@@ -1212,16 +1195,18 @@ export function CreationPage() {
         </div>}
 
         <div className={workspaceLayoutClass}>
-        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 ${hasWorkbenchStage ? 'min-[1180px]:border-r min-[1180px]:pr-5' : ''}`} style={{ borderColor: 'var(--color-border)' }}>
+        <aside className={`${compactPane === 'create' ? 'block' : 'hidden'} min-w-0 space-y-5`}>
           <section className="space-y-3">
-            <div
-              className={`flex flex-col ${hasWorkbenchStage ? 'rounded-lg' : 'rounded-[18px]'}`}
-              style={{
-                background: hasWorkbenchStage ? 'var(--color-app-main)' : 'var(--color-surface)',
-                border: `1px solid ${hasWorkbenchStage ? 'var(--color-border)' : 'var(--color-border-strong)'}`,
-                boxShadow: hasWorkbenchStage ? undefined : 'var(--shadow-input)',
-              }}
-            >
+            {intent === 'poster_text' && (
+              <label className="block">
+                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>你想做什么</span>
+                <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="w-full rounded-md px-2.5 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
+                  {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+                </select>
+              </label>
+            )}
+
+            <div className="rounded-lg p-3" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -1232,30 +1217,18 @@ export function CreationPage() {
                 data-testid="image-prompt-input"
               />
               <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5 pt-1.5">
-                {intent === 'poster_text' && (
-                  <select
-                    aria-label="海报快捷类型"
-                    value={sceneId}
-                    onChange={event => selectPosterType(event.target.value)}
-                    className="max-w-[132px] rounded-md bg-transparent px-2 py-1.5 text-[12px] outline-none transition-colors hover:bg-[var(--color-surface-hover)]"
-                    style={{ color: 'var(--color-text-secondary)' }}
-                    data-testid="poster-type-select"
-                  >
-                    {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-                  </select>
-                )}
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
                   <IconPlus size={14} /> {intent === 'portrait' ? '上传照片' : '添加参考图'}
-                  <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" data-testid="image-reference-input" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
+                  <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" data-testid="image-reference-input" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(friendlyImageError(err, '上传失败')))} />
                 </label>
                 {intent === 'poster_text' && <button type="button" onClick={() => setQuickForm(value => !value)} className="rounded-md px-2 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }} data-testid="toggle-quick-form">
-                  {quickForm ? '收起文字' : '精确文字'}
+                  {quickForm ? '收起固定文字' : '填写固定文字'}
                 </button>}
                 <span className="min-w-0 flex-1" />
                 <button type="button" onClick={() => void run()} disabled={!canRun}
                   className="inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }} data-testid="image-generate-button">
-                  <IconSparkles size={14} /> {busy ? '处理中' : creativeBrief ? `生成 ${count} 张` : '理解需求'}
+                  <IconSparkles size={14} /> {busy ? '正在处理' : images.length > 0 ? `再生成 ${count} 张` : `开始生成 ${count} 张`}
                 </button>
               </div>
             </div>
@@ -1284,10 +1257,10 @@ export function CreationPage() {
                       </button>
                     </div>
                     <select
-                      aria-label={`参考图 ${index + 1} 角色`}
+                      aria-label={`参考图 ${index + 1} 用途`}
                       value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
                       onChange={event => setReferenceRole(asset.asset_id, event.target.value as ImageReferenceRole)}
-                      className="mt-1 w-full rounded-md px-1 py-1 text-[10px] outline-none"
+                      className="mt-1 w-full rounded-md px-1 py-1 text-[12px] outline-none"
                       style={inputStyle}
                     >
                       {referenceRoleOptions(intent).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -1306,7 +1279,7 @@ export function CreationPage() {
               <details className="group border-t" style={{ borderColor: 'var(--color-border)' }}>
                 <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] [&::-webkit-details-marker]:hidden" style={{ color: 'var(--color-text-secondary)' }}>
                   <IconChevronRight size={13} className="transition-transform group-open:rotate-90" />
-                  <span>品牌素材</span>
+                  <span>Logo 和二维码</span>
                   {(logoAsset || qrAsset) && <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{[logoAsset && 'Logo', qrAsset && '二维码'].filter(Boolean).join(' · ')}</span>}
                 </summary>
                 <div className="mt-2 grid grid-cols-2 gap-3">
@@ -1338,45 +1311,39 @@ export function CreationPage() {
             <details className="group border-t" style={{ borderColor: 'var(--color-border)' }} data-testid="image-output-settings">
               <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] [&::-webkit-details-marker]:hidden" style={{ color: 'var(--color-text-secondary)' }}>
                 <IconChevronRight size={13} className="transition-transform group-open:rotate-90" />
-                <span>输出设置</span>
+                <span>图片设置</span>
                 <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{ratio} · {count} 张 · {quality === 'draft' ? '草稿' : quality === 'final' ? '成稿' : '标准'}</span>
               </summary>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 <label className="block">
-                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>画幅</span>
+                  <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>图片比例</span>
                   <select value={ratio} onChange={event => setRatio(event.target.value)} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-ratio-select">
                     {RATIOS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                   </select>
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>候选</span>
+                  <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>张数</span>
                   <select value={count} onChange={event => setCount(Number(event.target.value))} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-count-select">
                     {COUNTS.map((item) => <option key={item} value={item}>{item} 张</option>)}
                   </select>
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>精度</span>
+                  <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>清晰度</span>
                   <select value={quality} onChange={event => setQuality(event.target.value as ImageQuality)} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-quality-select">
-                    <option value="draft">草稿</option>
+                    <option value="draft">预览</option>
                     <option value="standard">标准</option>
-                    <option value="final">成稿</option>
+                    <option value="final">高清</option>
                   </select>
                 </label>
               </div>
             </details>
 
-            {creativeBrief && (
-              <div className="flex items-start gap-2 border-t px-0.5 pt-3 text-[12px]" style={{ color: 'var(--color-text-secondary)', borderColor: 'var(--color-border)' }} data-testid="brief-understanding">
-                <IconCheckCircle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--color-success)' }} />
-                <span>{creativeBrief.understanding ?? creativeBrief.user_request}</span>
-              </div>
-            )}
           </section>
 
-          {projects.length > 0 && <section className="pb-1">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>项目</span>
-              <button type="button" onClick={() => void reloadProjects().catch((err) => toast(err instanceof Error ? err.message : '刷新失败'))}
+          {projects.length > 0 && <details className="border-t pt-3" style={{ borderColor: 'var(--color-border)' }}>
+            <summary className="cursor-pointer text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>最近图片</summary>
+            <div className="mb-2 mt-2 flex items-center justify-end">
+              <button type="button" onClick={() => void reloadProjects().catch((err) => toast(friendlyImageError(err, '刷新失败')))}
                 className="rounded px-1.5 py-0.5 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }} data-testid="refresh-workbench-projects">
                 {projects.length} · 刷新
               </button>
@@ -1391,10 +1358,15 @@ export function CreationPage() {
                 </button>
               ))}
             </div>
-          </section>}
+          </details>}
         </aside>
 
-        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 min-[1180px]:px-5`}>
+        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : compactPane === 'adjust' ? 'hidden min-[1180px]:block' : 'hidden'} min-w-0 space-y-5`}>
+          {creativeBrief && (
+            <div className="border-b pb-3 text-[13px] leading-relaxed" style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }} data-testid="brief-understanding">
+              {creativeBrief.understanding ?? creativeBrief.user_request}
+            </div>
+          )}
           {busy && (
             <div className="rounded-lg p-3" style={panelStyle} data-testid="workbench-progress">
               <div className="mb-1 flex items-center justify-between text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -1416,7 +1388,7 @@ export function CreationPage() {
           {images.length > 0 && (
             <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>候选</h2>
+                <h2 className="text-[12px] font-semibold" style={{ color: 'var(--color-text-secondary)' }}>选择喜欢的结果</h2>
                 <button type="button" onClick={() => void run()} disabled={busy}
                   className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium disabled:opacity-50"
                   style={buttonSubtleStyle}>
@@ -1439,10 +1411,10 @@ export function CreationPage() {
                       <CandidatePreview image={img} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />
                     </button>
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <button type="button" className="text-[11px]" style={{ color: img.generation_id === recommendedImageId ? 'var(--color-brand)' : 'var(--color-text-secondary)' }} onClick={() => void openProjectFromImage(img)}>{img.generation_id === recommendedImageId ? '建议候选 · 精修' : '精修'}</button>
-                      <button type="button" className="text-[11px]" style={{ color: compareIds.includes(img.generation_id) ? 'var(--color-brand)' : 'var(--color-text-tertiary)' }} onClick={() => toggleCompare(img.generation_id)}>A/B</button>
+                      <button type="button" className="text-[11px]" style={{ color: 'var(--color-brand)' }} onClick={() => void openProjectFromImage(img)}>继续编辑</button>
+                      <button type="button" className="text-[11px]" style={{ color: compareIds.includes(img.generation_id) ? 'var(--color-brand)' : 'var(--color-text-tertiary)' }} onClick={() => toggleCompare(img.generation_id)}>{compareIds.includes(img.generation_id) ? '已加入对比' : '加入对比'}</button>
                     </div>
-                    {!imagePassesCandidateGate(img, intent) && <div className="px-2 pb-1.5 text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>存在检查风险，请人工比较</div>}
+                    {!imagePassesCandidateGate(img, intent) && <div className="px-2 pb-1.5 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>有需要确认的细节，建议放大查看</div>}
                   </div>
                   ))}
                 </div>
@@ -1451,11 +1423,11 @@ export function CreationPage() {
                   <CandidatePreview image={selectedImage} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} compact={false} />
                   <div className="flex flex-col justify-between gap-2 border-l pl-3" style={{ borderColor: 'var(--color-border)' }}>
                     <div>
-                      <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>放大预览</div>
+                      <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>当前选择</div>
                       <div className="mt-1 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{selectedImage.width ?? '未知'}x{selectedImage.height ?? '未知'}</div>
                     </div>
-                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">打开精修</button>
-                    {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-2 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">下载成品</button>}
+                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">继续编辑</button>
+                    {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-2 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">下载图片</button>}
                   </div>
                 </div>
               )}
@@ -1466,8 +1438,8 @@ export function CreationPage() {
                     <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="主照片" className="max-h-[320px] w-full object-contain" />
                   </figure>
                   <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
-                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选结果</figcaption>
-                    <img src={assetUrl(selectedImage.poster_url)} alt="候选结果" className="max-h-[320px] w-full object-contain" />
+                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>生成结果</figcaption>
+                    <img src={assetUrl(selectedImage.poster_url)} alt="生成结果" className="max-h-[320px] w-full object-contain" />
                   </figure>
                 </div>
               )}
@@ -1484,25 +1456,25 @@ export function CreationPage() {
             </section>
           )}
 
-          {project && <section className="border-t pt-4" style={{ borderColor: 'var(--color-border)' }}>
+          {project && <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-[14px] font-semibold" style={{ color: 'var(--color-text-primary)' }} data-testid="workbench-title">
-                  {project ? project.title : '选择一张候选图开始编辑'}
+                  {project ? project.title : '选择一张图片开始编辑'}
                 </h2>
                 {project && <p className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{project.canvas.width}x{project.canvas.height} · {project.versions.length} 个版本 · {saveState === 'saving' ? '保存中' : saveState === 'failed' ? '保存失败' : '已保存'}</p>}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button type="button" onClick={() => void saveCanvas()} disabled={!project} className="rounded-md px-2 py-1 text-[12px] disabled:opacity-50" style={buttonSubtleStyle}>保存</button>
-                <button type="button" onClick={() => void exportPng()} disabled={!project || busy} className="rounded-md px-2 py-1 text-[12px] disabled:opacity-50" style={buttonSubtleStyle} data-testid="export-png-button">导出 PNG</button>
+                <button type="button" onClick={() => void exportPng()} disabled={!project || busy} className="rounded-md px-2 py-1 text-[12px] disabled:opacity-50" style={buttonSubtleStyle} data-testid="export-png-button">下载 PNG</button>
               </div>
             </div>
-            <div className="max-h-[70vh] overflow-auto rounded-md p-3" style={{ background: 'var(--color-surface-container-low)', border: '1px solid var(--color-border)' }}>
+            <div ref={canvasViewportRef} className="flex max-h-[70vh] justify-center overflow-auto rounded-md p-3" style={{ background: 'var(--color-surface-container)' }} data-testid="workbench-canvas-viewport">
               <canvas ref={setCanvasElement} data-testid="workbench-canvas" />
             </div>
           </section>}
           {project && <section className="border-t pt-4" style={{ borderColor: 'var(--color-border)' }} data-testid="image-quality-status">
-            <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>投放检查</div>
+            <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>使用前检查</div>
             {reviewLines.length > 0 ? (
               <div>
                 {reviewLines.map((line) => (
@@ -1513,51 +1485,51 @@ export function CreationPage() {
                 ))}
               </div>
             ) : (
-              <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}><IconAlertCircle size={14} />未自动质检</div>
+              <div className="rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-tertiary)' }}>尚未自动检查</div>
             )}
             {intent === 'portrait' && project && currentVersion?.review?.portrait_quality_state !== 'user_confirmed' && (
-              <button type="button" onClick={() => void confirmPortrait()} disabled={!currentVersion || currentVersion.review?.portrait_quality_state === 'blocked'} className="mt-3 rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="confirm-portrait-button">
-                像本人，可以使用
+              <button type="button" onClick={() => void confirmPortrait()} disabled={!currentVersion || currentVersion.review?.portrait_quality_state === 'blocked'} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="confirm-portrait-button">
+                确认像本人
               </button>
             )}
             {intent === 'portrait' && currentVersion?.review?.portrait_quality_state === 'user_confirmed' && (
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{ borderColor: 'var(--color-border)' }}>
-                <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed"><IconCheckCircle size={14} style={{ color: 'var(--color-success)' }} />已由用户确认像本人</div>
-                <button type="button" onClick={() => void usePortraitAsPoster()} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张照片做海报</button>
-              </div>
+              <>
+                <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed">已确认像本人</div>
+                <button type="button" onClick={() => void usePortraitAsPoster()} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张照片做海报</button>
+              </>
             )}
           </section>}
         </main>}
 
-        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 border-t pt-5 min-[1180px]:col-span-2 min-[1180px]:mx-auto min-[1180px]:w-full min-[1180px]:max-w-[640px] min-[1180px]:px-5 min-[1500px]:col-span-1 min-[1500px]:mx-0 min-[1500px]:max-w-none min-[1500px]:border-l min-[1500px]:border-t-0 min-[1500px]:pl-5 min-[1500px]:pr-0 min-[1500px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
+        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden'} min-w-0 space-y-5 border-t pt-5 min-[1180px]:border-l min-[1180px]:border-t-0 min-[1180px]:pl-6 min-[1180px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconEdit size={14} />整图指令修改</div>
+            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconEdit size={14} />描述想改的地方</div>
             <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} className="w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="说出只想改动的内容" data-testid="whole-edit-input" />
-            <div className="mt-2 flex justify-end"><button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">生成修改版本</button></div>
+            <button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">按描述修改</button>
           </section>
 
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconTarget size={14} />局部重绘</div>
+            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconTarget size={14} />只改选中区域</div>
             <div className="grid grid-cols-3 gap-1.5">
               {(['select', 'rect', 'brush'] as MaskMode[]).map((mode) => (
                 <Tooltip key={mode} label={mode === 'select' ? '选择/编辑文字' : mode === 'rect' ? '矩形选区' : '涂抹笔刷'}>
                   <button type="button" onClick={() => selectMaskMode(mode)} className="rounded-md px-2 py-1 text-[12px]" style={segStyle(maskMode === mode)}>
-                    {mode === 'select' ? '选择' : mode === 'rect' ? '矩形' : '笔刷'}
+                    {mode === 'select' ? '移动' : mode === 'rect' ? '框选' : '涂抹'}
                   </button>
                 </Tooltip>
               ))}
             </div>
-            <label className="mt-2 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>笔刷 {brushSize}px</label>
+            <label className="mt-2 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>涂抹大小 {brushSize}px</label>
             <input type="range" min={16} max={180} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="w-full" />
             <textarea value={maskText} onChange={(e) => setMaskText(e.target.value)} rows={3} className="mt-2 w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="例如:把选区里的桌布换成墨绿色" data-testid="inpaint-input" />
-            <div className="mt-2 flex justify-end gap-2">
-              <button type="button" onClick={() => void inpaint()} disabled={!project || !maskText.trim() || maskItems.length === 0 || busy} className="rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="inpaint-button">局部重绘</button>
+            <div className="mt-2 flex gap-2">
+              <button type="button" onClick={() => void inpaint()} disabled={!project || !maskText.trim() || maskItems.length === 0 || busy} className="flex-1 rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="inpaint-button">修改选中区域</button>
               <button type="button" onClick={clearMask} disabled={maskItems.length === 0} className="rounded-md px-2 py-2 text-[12px] disabled:opacity-50" style={buttonSubtleStyle}>清除</button>
             </div>
           </section>
 
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconPlus size={14} />中文文字层</div>
+            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconPlus size={14} />添加与调整文字</div>
             <div className="mb-2 grid grid-cols-4 gap-1.5">
               <button type="button" onClick={addText} disabled={!project} className="rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle} data-testid="add-text-button">添加</button>
               <button type="button" onClick={undoText} disabled={!canUndoText} className="rounded-md px-2 py-2 text-[12px] disabled:opacity-50" style={buttonSubtleStyle} data-testid="text-undo-button">撤销</button>
@@ -1566,37 +1538,37 @@ export function CreationPage() {
             </div>
             <input value={textValue} onChange={(e) => { setTextValue(e.target.value); applyTextPatch({ text: e.target.value }) }} disabled={!activeTextId} className="w-full rounded-md px-3 py-2 text-[12.5px] outline-none disabled:opacity-50" style={inputStyle} placeholder="选中文字层后编辑" />
             <div className="mt-2 grid grid-cols-[1fr_76px] gap-2">
-              <input type="color" value={normalizeColorInput(textColor)} onChange={(e) => { setTextColor(e.target.value); applyTextPatch({ fill: e.target.value }) }} disabled={!activeTextId} className="h-9 w-full rounded-md" />
-              <input type="number" value={textSize} min={12} max={512} onChange={(e) => { const next = Number(e.target.value); setTextSize(next); applyTextPatch({ fontSize: next }) }} disabled={!activeTextId} className="rounded-md px-2 text-[12px] outline-none disabled:opacity-50" style={inputStyle} />
+              <label className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>文字颜色<input aria-label="文字颜色" type="color" value={normalizeColorInput(textColor)} onChange={(e) => { setTextColor(e.target.value); applyTextPatch({ fill: e.target.value }) }} disabled={!activeTextId} className="mt-1 block h-9 w-12 rounded-md p-0.5" /></label>
+              <label className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>字号<input aria-label="字号" type="number" value={textSize} min={12} max={512} onChange={(e) => { const next = Number(e.target.value); setTextSize(next); applyTextPatch({ fontSize: next }) }} disabled={!activeTextId} className="mt-1 h-9 w-full rounded-md px-2 text-[12px] outline-none disabled:opacity-50" style={inputStyle} /></label>
             </div>
             <div className="mt-2 grid grid-cols-4 gap-1.5">
               {(['left', 'center', 'right', 'justify'] as ImageWorkbenchTextLayer['text_align'][]).map((align) => (
                 <button key={align} type="button" onClick={() => { setTextAlign(align); applyTextPatch({ textAlign: align }) }} disabled={!activeTextId}
                   className="rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50" style={segStyle(textAlign === align)} data-testid={`text-align-${align}`}>
-                  {align === 'left' ? '左' : align === 'right' ? '右' : align === 'justify' ? '撑' : '中'}
+                  {align === 'left' ? '左' : align === 'right' ? '右' : align === 'justify' ? '两端' : '中'}
                 </button>
               ))}
             </div>
             <div className="mt-2 grid grid-cols-[1fr_76px] gap-2">
-              <input type="color" value={normalizeColorInput(strokeColor)} onChange={(e) => { setStrokeColor(e.target.value); applyTextPatch({ stroke: e.target.value }) }} disabled={!activeTextId} className="h-9 w-full rounded-md" />
-              <input type="number" value={strokeWidth} min={0} max={64} onChange={(e) => { const next = Number(e.target.value); setStrokeWidth(next); applyTextPatch({ strokeWidth: next }) }} disabled={!activeTextId} className="rounded-md px-2 text-[12px] outline-none disabled:opacity-50" style={inputStyle} />
+              <label className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>文字边框<input aria-label="文字边框颜色" type="color" value={normalizeColorInput(strokeColor)} onChange={(e) => { setStrokeColor(e.target.value); applyTextPatch({ stroke: e.target.value }) }} disabled={!activeTextId} className="mt-1 block h-9 w-12 rounded-md p-0.5" /></label>
+              <label className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>边框粗细<input aria-label="文字边框粗细" type="number" value={strokeWidth} min={0} max={64} onChange={(e) => { const next = Number(e.target.value); setStrokeWidth(next); applyTextPatch({ strokeWidth: next }) }} disabled={!activeTextId} className="mt-1 h-9 w-full rounded-md px-2 text-[12px] outline-none disabled:opacity-50" style={inputStyle} /></label>
             </div>
           </section>
 
           <section className="pb-1">
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconZap size={14} />版本与素材</div>
+            <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconZap size={14} />版本与下载</div>
             <div className="max-h-[180px] space-y-1 overflow-auto">
               {project?.versions.slice().reverse().map((version) => (
-                <button key={version.id} type="button" onClick={() => void workbenchApi.rollback(project.project_id, version.id).then(refreshProject).catch((err) => toast(err instanceof Error ? err.message : '回滚失败'))}
+                <button key={version.id} type="button" onClick={() => void workbenchApi.rollback(project.project_id, version.id).then(refreshProject).catch((err) => toast(friendlyImageError(err, '切换版本失败')))}
                   className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[12px]" style={segStyle(version.id === project.current_version_id)} data-testid="version-item">
-                  <span className="truncate">{version.kind}</span>
+                  <span className="truncate">{versionKindLabel(version.kind)}</span>
                   {version.id === project.current_version_id && <IconCheckCircle size={13} />}
                 </button>
               ))}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <button type="button" onClick={() => void upscale()} disabled={!project || busy} className="rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle}>放大 4x</button>
-              <button type="button" onClick={() => void saveToLibrary()} disabled={!project} className="inline-flex items-center justify-center gap-1 rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle} data-testid="save-library-button"><IconShareUp size={13} />素材库</button>
+              <button type="button" onClick={() => void upscale()} disabled={!project || busy} className="rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle}>生成高清图片</button>
+              <button type="button" onClick={() => void saveToLibrary()} disabled={!project} className="inline-flex items-center justify-center gap-1 rounded-md px-2 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonSubtleStyle} data-testid="save-library-button"><IconShareUp size={13} />保存到图片库</button>
             </div>
           </section>
         </aside>}
@@ -1645,7 +1617,7 @@ function referenceRoleOptions(intent: ImageIntent): Array<{ value: ImageReferenc
     { value: 'style_reference', label: '风格参考' },
     { value: 'identity_primary', label: '人物参考' },
     { value: 'brand_reference', label: '品牌参考' },
-    { value: 'source', label: '主体素材' },
+    { value: 'source', label: '主体图片' },
   ]
 }
 
@@ -1844,12 +1816,15 @@ function segStyle(active: boolean) {
   } as const
 }
 
-function modeTabStyle(active: boolean) {
+function versionKindLabel(kind: ImageWorkbenchVersion['kind']): string {
   return {
-    background: active ? 'var(--color-surface)' : 'transparent',
-    color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-    boxShadow: active ? 'var(--shadow-input)' : undefined,
-  } as const
+    generated: '初次生成',
+    imported: '导入图片',
+    edit: '整图修改',
+    inpaint: '局部修改',
+    text_export: '添加文字',
+    upscale: '高清大图',
+  }[kind]
 }
 
 function dimensionFromRatio(value: string): { width: number; height: number } {
@@ -1891,6 +1866,17 @@ function posterTextLayers(width: number, height: number, fields: { title: string
 }
 
 const canvasHydrations = new WeakMap<Canvas, { token: symbol; promise: Promise<void> }>()
+
+function fitCanvasPreview(canvas: Canvas, project: ImageWorkbenchProject, viewport: HTMLDivElement | null): void {
+  if (!viewport) return
+  const availableWidth = Math.max(240, viewport.clientWidth - 24)
+  const availableHeight = Math.max(320, Math.floor(window.innerHeight * 0.68) - 24)
+  const scale = Math.min(1, availableWidth / project.canvas.width, availableHeight / project.canvas.height)
+  canvas.setDimensions({
+    width: Math.max(1, Math.round(project.canvas.width * scale)),
+    height: Math.max(1, Math.round(project.canvas.height * scale)),
+  }, { cssOnly: true })
+}
 
 async function hydrateCanvas(canvas: Canvas, project: ImageWorkbenchProject, version: ImageWorkbenchVersion): Promise<void> {
   const token = Symbol('canvas-hydration')
@@ -2045,7 +2031,7 @@ function maskDataUrl(width: number, height: number, items: MaskItem[]): string {
   canvas.width = width
   canvas.height = height
   const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('无法创建蒙版画布')
+  if (!ctx) throw new Error('无法准备选中区域')
   ctx.fillStyle = 'rgba(0,0,0,1)'
   ctx.fillRect(0, 0, width, height)
   ctx.globalCompositeOperation = 'destination-out'
@@ -2233,32 +2219,99 @@ function imageReviewLines(review: ImageWorkbenchReview | undefined): string[] {
   if (!review || Object.keys(review).length === 0) return []
   const lines: string[] = []
   if (review.text_quality_status) {
-    const suffix = review.text_quality_warning_message ? `: ${review.text_quality_warning_message}` : ''
-    lines.push(`OCR/文字: ${review.text_quality_status}${suffix}`)
+    const suffix = review.text_quality_warning_message ? `。${friendlyReviewMessage(review.text_quality_warning_message)}` : ''
+    lines.push(`文字检查：${friendlyCheckStatus(review.text_quality_status)}${suffix}`)
   }
-  if (review.poster_quality_state) lines.push(`海报硬闸: ${review.poster_quality_state === 'recommended' ? '客观检查未发现明显阻断' : review.poster_quality_state === 'risk' ? '有风险，需人工复核' : '未检查'}`)
-  for (const warning of review.poster_hard_gate_warnings ?? []) lines.push(`海报风险: ${warning}`)
+  if (review.poster_quality_state) {
+    const labels = { blocked: '有明显问题，暂不建议使用', risk: '有需要确认的细节', recommended: '未发现明显问题', user_confirmed: '已由用户确认', unchecked: '尚未检查' } as const
+    lines.push(`画面检查：${labels[review.poster_quality_state]}`)
+  }
+  for (const warning of review.poster_hard_gate_warnings ?? []) lines.push(`需要确认：${friendlyReviewMessage(warning)}`)
   if (review.portrait_qc_status) {
-    const suffix = review.portrait_qc_message ? `: ${review.portrait_qc_message}` : ''
-    lines.push(`人物照片检查: ${review.portrait_qc_status}${suffix}`)
+    const detail = review.portrait_qc_message ? friendlyReviewMessage(review.portrait_qc_message) : ''
+    const summary = detail.startsWith('尚未自动检查') ? detail : `${friendlyCheckStatus(review.portrait_qc_status)}${detail ? `。${detail}` : ''}`
+    lines.push(`人物照片检查：${summary}`)
   }
   if (review.portrait_quality_state) {
-    const labels = { blocked: '已拦截', risk: '有风险', recommended: '建议候选，等待本人确认', user_confirmed: '用户已确认像本人', unchecked: '未检查' } as const
-    lines.push(`人物照片状态: ${labels[review.portrait_quality_state]}`)
+    const labels = { blocked: '有明显问题，暂不建议使用', risk: '有需要确认的细节', recommended: '未发现明显问题，等待本人确认', user_confirmed: '已确认像本人', unchecked: '尚未检查' } as const
+    lines.push(`人物照片结果：${labels[review.portrait_quality_state]}`)
   }
   if (review.portrait_consistency_status && review.portrait_consistency_status !== 'not_checked') {
-    lines.push(`参考一致性: ${review.portrait_consistency_status === 'preserved' ? '未发现明显漂移' : review.portrait_consistency_status === 'drifted' ? '疑似人物漂移' : '需要并排确认'}`)
+    lines.push(`与原照片对比：${review.portrait_consistency_status === 'preserved' ? '未发现明显变化' : review.portrait_consistency_status === 'drifted' ? '人物特征可能有变化' : '需要并排确认'}`)
   }
-  if (review.input_qc_status) lines.push(`参考图检查: ${review.input_qc_status}`)
-  if (review.input_fidelity?.input_fidelity_status === 'unsupported') lines.push('高保真图片参数: 当前端点已降级，请人工确认参考图一致性')
-  else if (review.input_fidelity?.input_fidelity_status === 'unknown') lines.push('高保真图片参数: 当前端点未能确认，请人工确认参考图一致性')
-  if (review.input_fidelity_risk) lines.push(`高保真风险: ${review.input_fidelity_risk}`)
-  if (review.commercial_ready !== undefined) lines.push(`投放状态: ${review.commercial_ready ? '需人工终审' : '不会自动宣称可商用'}`)
-  for (const warning of review.text_quality_missing ?? []) lines.push(`缺失文字: ${warning}`)
-  for (const warning of review.portrait_qc_warnings ?? []) lines.push(`人物照片风险: ${warning}`)
-  for (const warning of review.input_qc_warnings ?? []) lines.push(`参考图风险: ${warning}`)
-  for (const warning of review.risk_messages ?? []) lines.push(`风险提示: ${warning}`)
+  if (review.input_qc_status) lines.push(`参考图检查：${friendlyCheckStatus(review.input_qc_status)}`)
+  if (review.input_fidelity?.input_fidelity_status === 'unsupported') lines.push('与参考图对比：当前无法自动保持细节，请对照原图确认')
+  else if (review.input_fidelity?.input_fidelity_status === 'unknown') lines.push('与参考图对比：无法自动确认，请对照原图检查')
+  else if (review.input_fidelity_risk) lines.push(`参考图提醒：${friendlyReviewMessage(review.input_fidelity_risk)}`)
+  if (review.commercial_ready !== undefined) lines.push(review.commercial_ready ? '发布前仍需确认文字、价格和素材授权' : '尚未确认可直接对外使用')
+  for (const warning of review.text_quality_missing ?? []) lines.push(`缺失文字：${warning}`)
+  for (const warning of review.portrait_qc_warnings ?? []) lines.push(`人物照片提醒：${friendlyReviewMessage(warning)}`)
+  for (const warning of review.input_qc_warnings ?? []) lines.push(`参考图提醒：${friendlyReviewMessage(warning)}`)
+  for (const warning of review.risk_messages ?? []) lines.push(`提醒：${friendlyReviewMessage(warning)}`)
   return lines
+}
+
+function friendlyCheckStatus(status: string): string {
+  const value = status.trim().toLowerCase()
+  if (['passed', 'pass', 'ok', 'clean', 'recommended', 'success'].includes(value)) return '未发现明显问题'
+  if (['blocked', 'failed', 'fail', 'error'].includes(value)) return '有明显问题'
+  if (['risk', 'warning', 'uncertain', 'drifted'].includes(value)) return '有需要确认的细节'
+  if (['unchecked', 'not_checked', 'unknown', 'not_requested'].includes(value)) return '尚未检查'
+  return '需要确认'
+}
+
+function friendlyImageStage(stage: string | undefined, fallback: string): string {
+  const value = stage?.trim() ?? ''
+  if (!value) return fallback
+  if (/取消/.test(value)) return '正在取消…'
+  if (/组件|下载.*资源|准备.*资源/.test(value)) return '正在准备所需组件…'
+  if (/排队|等待/.test(value)) return '正在等待处理…'
+  if (/超分|放大|高清/.test(value)) return '正在生成高清图片…'
+  if (/编辑|修改|重绘|蒙版/.test(value)) return '正在修改图片…'
+  if (/保存|落盘|作品库/.test(value)) return '正在保存图片…'
+  if (/完成|已生成/.test(value)) return '图片已生成'
+  if (/提交|节点|网关|媒体|模型|生成|出图/.test(value)) return '正在生成图片…'
+  return fallback
+}
+
+function friendlyImageError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message.trim() : ''
+  if (!message) return fallback
+  if (/取消/.test(message)) return '已取消'
+  if (/超时|timeout/i.test(message)) return '处理超时，请重试'
+  if (/组件.*准备|准备.*组件|blocked/i.test(message)) return '所需组件正在准备，请稍后再试'
+  if (/参考图|底图|source_image|source_generation/i.test(message)) return '无法读取参考图片，请重新添加后再试'
+  if (/网关|端点|provider|model|token|quota|fetch|network|failed|http|\/images\//i.test(message)) return `${fallback}，请稍后重试`
+  return message
+}
+
+function friendlyReviewMessage(message: string): string {
+  if (/质检模型|质检结果|无可读成图|人工把关/.test(message)) {
+    return '尚未自动检查。请确认人物的手、脸和身体是否自然，照片是否过度美化、是否像本人，并确认照片授权和用途。'
+  }
+  if (/高保真|端点|input.?fidelity/i.test(message)) {
+    return '当前无法自动确认参考图细节是否完整保留，请对照原图确认。'
+  }
+  return message
+    .replace(/OCR/gi, '文字检查')
+    .replace(/海报硬闸/g, '画面检查')
+    .replace(/未自动质检/g, '尚未自动检查')
+    .replace(/本地预览占位图/g, '本地预览图片')
+    .replace(/正式候选/g, '最终图片')
+    .replace(/生图服务/g, '图片生成服务')
+    .replace(/高保真(?:图片|输入)?参数?/g, '参考图细节保持')
+    .replace(/当前部署端点|当前正式端点|部署端点|正式端点|端点/g, '当前服务')
+    .replace(/人工确认/g, '确认')
+    .replace(/自动降级为标准图片输入/g, '改用标准参考图处理')
+    .replace(/未能从当前服务证明参考图细节保持已接受/g, '无法确认参考图细节是否完整保留')
+    .replace(/当前服务不接受手动参考图细节保持/g, '当前无法自动保持参考图细节')
+    .replace(/已按当前服务默认图片输入能力处理/g, '已按当前可用方式处理参考图')
+    .replace(/请确认参考图一致性/g, '请对照原图确认')
+    .replace(/肢体/g, '身体')
+    .replace(/可辨识度可能下降\(像换了个人\)/g, '人物特征可能有变化')
+    .replace(/投放/g, '发布')
+    .replace(/,/g, '，')
+    .replace(/:/g, '：')
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

@@ -284,6 +284,27 @@ test('平台过滤:只认当前平台 + all,别的平台的资产不进状态', 
   expect(net.calls).not.toContain('fetch:http://assets.example/f/win')
 })
 
+test('同一资产 id 可在清单中按平台重复，客户端只下载当前平台版本', async () => {
+  const root = makeRoot()
+  const net = mockNet(
+    () => manifestWith([
+      { ...plainAsset('ffmpeg', 'http://assets.example/f/mac', 'MAC'), platform: 'darwin-arm64', dest: 'ffmpeg' },
+      { ...plainAsset('ffmpeg', 'http://assets.example/f/win', 'WINDOWS'), platform: 'win32-x64', dest: 'ffmpeg.exe' },
+    ]),
+    {
+      'http://assets.example/f/mac': { bytes: bytesOf('MAC'), served: 0 },
+      'http://assets.example/f/win': { bytes: bytesOf('WINDOWS'), served: 0 },
+    },
+  )
+  const manager = makeManager(root, net, { platform: 'win32-x64' })
+  manager.start()
+  await manager.whenIdle()
+
+  expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('WINDOWS')
+  expect(net.calls).toContain('fetch:http://assets.example/f/win')
+  expect(net.calls).not.toContain('fetch:http://assets.example/f/mac')
+})
+
 test('功能门:Tier2 ensureAsset 触发按需下载并插队;就绪后返回 ready+path', async () => {
   const root = makeRoot()
   const net = mockNet(

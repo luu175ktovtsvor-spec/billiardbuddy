@@ -56,9 +56,9 @@ export function TopBar() {
 
   // 标题随主视图:已安排/插件 显示区名,对话显示会话标题。
   const title = nav === 'creation'
-    ? '生图工作台'
+    ? '生成图片'
     : nav === 'video'
-      ? '剪视频工作台'
+      ? '剪视频'
       : nav === 'scheduled'
         ? t('scheduled.title')
         : nav === 'plugins'

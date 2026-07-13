@@ -12,13 +12,14 @@ import { useUiStore } from '../../stores/uiStore'
 import { api } from '../../api/client'
 import type { PermissionMode } from '../../types/chat'
 import {
-  IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
+  IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconArrowUp, IconSpinner, IconSlash, IconAt,
   IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX, IconFileText,
 } from '../shared/icons'
 import { MenuList } from '../shared/Menu'
 import { toast } from '../../stores/toastStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { t } from '../../i18n'
+import { VoiceInputControl } from './VoiceInputControl'
 
 /** 把选中的文件/文件夹绝对路径追加进输入框(不覆盖用户已输入的文字);含空格的路径加引号,本机 agent 据此去读。 */
 function appendPathsToInput(current: string, paths: string[]): string {
@@ -590,7 +591,7 @@ export function Composer() {
   function submit() {
     const text = value.trim()
     if (!text && pasted.length === 0) return
-    if (text === '/生图工作台' && pasted.length === 0) {
+    if ((text === '/生成图片' || text === '/生图工作台') && pasted.length === 0) {
       useUiStore.getState().setNav('creation')
       setValue('')
       setPasted([])
@@ -697,16 +698,7 @@ export function Composer() {
             <div className="flex-1" />
             {/* 右:忙时转圈 · 麦克 · 发送(不显示模型名) */}
             {running && <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />}
-            <button
-              type="button"
-              title={t('chat.mic')}
-              aria-label={t('chat.mic')}
-              onClick={() => toast('语音输入即将上线')}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              <IconMic size={18} />
-            </button>
+            <VoiceInputControl onTranscript={(text) => { setValue((current) => current.trim() ? `${current.trimEnd()} ${text}` : text); taRef.current?.focus() }} />
             {running ? (
               <button
                 type="button"
