@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TaskService } from '../../tasks/taskService'
@@ -38,10 +37,23 @@ test('v2 route parses shared contracts and persists atomic operations', async ()
   expect(invalid?.status).toBe(400)
 })
 
-test('v2 route leaves legacy project endpoints untouched until a project.json exists', async () => {
+test('v2 project list migrates legacy projects before the renderer opens them', async () => {
   const root = mkdtempSync(join(tmpdir(), 'video-routes-legacy-'))
+  const source = join(root, 'source.mp4')
+  writeFileSync(source, 'legacy-video')
+  const dir = join(root, 'uploads', 'edits', 'legacy')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'timeline.json'), JSON.stringify({
+    version: 1, width: 1080, height: 1920, fps: 30,
+    media: { m1: { src: source, duration: 2, kind: 'video', has_audio: true } },
+    tracks: { v1: { kind: 'video', order: 0 } },
+    clips: { c1: { track: 'v1', order: 0, media: 'm1', src_in: 0, src_out: 2 } },
+  }))
   const service = new VideoEditingService({ stateRoot: root, tasks: new TaskService(root) })
   const handler = createVideoEditRouteHandler(service)
-  expect(await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects/legacy'), request('/api/v1/video-edit/projects/legacy'))).toBeNull()
-  expect(await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects/legacy/ops'), request('/api/v1/video-edit/projects/legacy/ops', 'POST', { operations: [] }))).toBeNull()
+  const listed = await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects'), request('/api/v1/video-edit/projects'))
+  expect(await listed!.json()).toMatchObject({ projects: [expect.objectContaining({ project_id: 'legacy', schema_version: 2, migrated_from_v1: true })] })
+  const opened = await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects/legacy'), request('/api/v1/video-edit/projects/legacy'))
+  expect(await opened!.json()).toMatchObject({ project: { project_id: 'legacy', schema_version: 2 } })
+  expect(await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects/missing'), request('/api/v1/video-edit/projects/missing'))).toBeNull()
 })

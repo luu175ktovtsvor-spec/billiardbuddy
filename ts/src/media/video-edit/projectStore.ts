@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { appendFile, copyFile, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { existsSync, type Dirent } from 'node:fs'
+import { appendFile, copyFile, lstat, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path'
 import {
   legacyTimelineV1Schema,
@@ -468,6 +468,7 @@ function refreshDerivedFacts(project: VideoProject) {
 export class VideoProjectStore {
   private readonly root: string
   private readonly writeTails = new Map<string, Promise<void>>()
+  private readonly migrationRuns = new Map<string, Promise<VideoProject>>()
   private readonly usageHistory: VideoUsageHistory
 
   constructor(stateRoot: string) {
@@ -497,6 +498,7 @@ export class VideoProjectStore {
 
   private projectPath(id: string): string { return join(this.dir(id), 'project.json') }
   private historyPath(id: string): string { return join(this.dir(id), 'operations.jsonl') }
+  private legacyPath(id: string): string { return join(this.dir(id), 'timeline.json') }
 
   projectDirectory(id: string): string { return this.dir(id) }
 
@@ -505,12 +507,16 @@ export class VideoProjectStore {
   }
 
   async list(): Promise<VideoProject[]> {
-    let entries: string[] = []
-    try { entries = await readdir(this.root) } catch { return [] }
+    let entries: Dirent[] = []
+    try { entries = await readdir(this.root, { withFileTypes: true }) } catch { return [] }
     const projects: VideoProject[] = []
-    for (const id of entries) {
-      if (!this.hasV2Project(id)) continue
-      try { projects.push(await this.load(id)) } catch { /* one broken project must not hide the rest */ }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+      const id = entry.name
+      let discoverable = false
+      try { discoverable = this.hasV2Project(id) || existsSync(this.legacyPath(id)) } catch { /* ignore invalid directory names */ }
+      if (!discoverable) continue
+      try { projects.push(await this.load(id)) } catch { /* one broken or unmigratable project must not hide the rest */ }
     }
     return projects.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   }
@@ -547,14 +553,31 @@ export class VideoProjectStore {
   }
 
   async load(id: string): Promise<VideoProject> {
-    try {
-      const project = videoProjectSchema.parse(repairProjectCompatibility(JSON.parse(await readFile(this.projectPath(id), 'utf8'))))
-      return refreshSourceAvailability(project)
-    } catch (error) {
-      if (existsSync(join(this.dir(id), 'timeline.json'))) return await this.migrateV1(id)
-      if (error instanceof VideoProjectError) throw error
+    const projectPath = this.projectPath(id)
+    if (!existsSync(projectPath)) {
+      if (existsSync(this.legacyPath(id))) return await this.migrateV1Once(id)
       throw new VideoProjectError('找不到视频项目', 'project_not_found', 404, { project_id: id })
     }
+    try {
+      const project = videoProjectSchema.parse(repairProjectCompatibility(JSON.parse(await readFile(projectPath, 'utf8'))))
+      return refreshSourceAvailability(project)
+    } catch (error) {
+      if (error instanceof VideoProjectError) throw error
+      throw new VideoProjectError('视频项目文件损坏，已停止读取且不会用旧时间线覆盖', 'project_corrupt', 500, { project_id: id })
+    }
+  }
+
+  private async migrateV1Once(id: string): Promise<VideoProject> {
+    const active = this.migrationRuns.get(id)
+    if (active) return await active
+    const run = this.migrateV1(id).catch(error => {
+      if (error instanceof VideoProjectError) throw error
+      throw new VideoProjectError('旧视频项目迁移失败，原项目保持不变', 'legacy_migration_failed', 500, { project_id: id })
+    }).finally(() => {
+      if (this.migrationRuns.get(id) === run) this.migrationRuns.delete(id)
+    })
+    this.migrationRuns.set(id, run)
+    return await run
   }
 
   async saveBrief(id: string, brief: VideoProject['creative_brief'], baseRevision?: number): Promise<VideoProject> {
@@ -826,7 +849,12 @@ export class VideoProjectStore {
   }
 
   private async migrateV1(id: string): Promise<VideoProject> {
-    const legacyPath = join(this.dir(id), 'timeline.json')
+    const projectDir = this.dir(id)
+    const directory = await lstat(projectDir).catch(() => null)
+    if (!directory?.isDirectory() || directory.isSymbolicLink()) {
+      throw new VideoProjectError('旧视频项目目录不安全，已拒绝迁移', 'unsafe_project_path', 400, { project_id: id })
+    }
+    const legacyPath = this.legacyPath(id)
     const legacy = legacyTimelineV1Schema.parse(JSON.parse(await readFile(legacyPath, 'utf8')))
     const sources: VideoSource[] = []
     const mediaToSource = new Map<string, string>()
