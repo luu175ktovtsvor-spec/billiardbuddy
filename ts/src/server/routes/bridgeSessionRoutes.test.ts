@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { FetchLike } from '../../proxy/ProxyModel'
 import { BridgePeerRegistry } from '../../tasks/bridgePeerRegistry'
 import { BridgeRemoteState } from '../../tasks/bridgeRemoteState'
 import { createBridgeSessionRouteController } from './bridgeSessionRoutes'
@@ -12,7 +13,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function harness() {
+function harness(fetchImpl?: FetchLike) {
   const root = mkdtempSync(join(tmpdir(), 'bridge-session-routes-'))
   roots.push(root)
   const dispatched: Array<{ body: Record<string, unknown>; text: unknown }> = []
@@ -22,6 +23,7 @@ function harness() {
     peers: new BridgePeerRegistry(root),
     stateRoot: root,
     env: {},
+    fetchImpl,
     async dispatchInbound(body, resolved) {
       dispatched.push({ body, text: resolved.content })
       return { mode: 'task', task_id: 'task-1' }
@@ -58,6 +60,40 @@ describe('bridge session routes', () => {
     expect(created.status).toBe(201)
     const listed = await (await route(controller, '/api/v1/agent/bridge/sessions/demo/events?after=0&limit=10')).json() as any
     expect(listed.events).toEqual([expect.objectContaining({ sessionId: 'demo', seq: 1, type: 'assistant' })])
+  })
+
+  test('registers peers and manages code-session credentials through the bridge client', async () => {
+    const calls: string[] = []
+    const { controller } = harness(async input => {
+      calls.push(String(input))
+      if (String(input).endsWith('/v1/code/sessions')) return Response.json({ session: { id: 'cse_route' } }, { status: 201 })
+      return Response.json({
+        worker_jwt: 'worker.jwt',
+        api_base_url: 'https://session-ingress.example/sdk/cse_route',
+        expires_in: 3600,
+        worker_epoch: 7,
+      })
+    })
+    const config = { bridgeRemoteBaseUrl: 'https://remote.example', bridgeRemoteToken: 'token' }
+
+    const created = await route(controller, '/api/v1/agent/bridge/code-sessions', {
+      method: 'POST',
+      body: JSON.stringify({ ...config, title: 'Route session', tags: ['desktop'] }),
+    })
+    expect(await created.json()).toMatchObject({ ok: true, sessionId: 'cse_route', status: 201 })
+
+    const fetched = await route(controller, '/api/v1/agent/bridge/code-sessions/cse_route/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ ...config, trustedDeviceToken: 'trusted' }),
+    })
+    expect(await fetched.json()).toMatchObject({ ok: true, sessionId: 'cse_route', credentials: { workerEpoch: 7 } })
+    expect((await (await route(controller, '/api/v1/agent/bridge/peers')).json() as any).peers).toEqual([
+      expect.objectContaining({ sessionId: 'cse_route', status: 'outbound_only' }),
+    ])
+    expect(calls).toEqual([
+      'https://remote.example/v1/code/sessions',
+      'https://remote.example/v1/code/sessions/cse_route/bridge',
+    ])
   })
 
   test('resolves, stores and dispatches inbound user messages with bridge context', async () => {
