@@ -50,8 +50,8 @@ export function CommandPalette() {
     () => [
       { id: 'new', label: '新建任务', icon: <IconEdit size={16} />, run: () => { setNav('chat'); openNewConversation() } },
       { id: 'scheduled', label: '已安排', icon: <IconClock size={16} />, run: () => setNav('scheduled') },
-      { id: 'creation', label: '生图工作台', icon: <IconSparkles size={16} />, run: () => setNav('creation') },
-      { id: 'video', label: '剪视频工作台', icon: <IconZap size={16} />, run: () => setNav('video') },
+      { id: 'creation', label: '生成图片', icon: <IconSparkles size={16} />, run: () => setNav('creation') },
+      { id: 'video', label: '剪视频', icon: <IconZap size={16} />, run: () => setNav('video') },
       { id: 'plugins', label: '插件', icon: <IconPuzzle size={16} />, run: () => setNav('plugins') },
       { id: 'settings', label: '设置', icon: <IconSettings size={16} />, run: () => setNav('settings') },
       // —— 全局命令(对齐 Codex codex.command 子集;只放有真实动作的) ——

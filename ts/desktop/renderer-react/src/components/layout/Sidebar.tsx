@@ -252,8 +252,8 @@ export function Sidebar() {
       {/* 主导航:新建任务 / 已安排 / 插件(照 Codex,点选切主区视图) */}
       <nav className="px-2 pb-1">
         <NavItem icon={<IconEdit size={17} />} label={t('sidebar.newTask')} onClick={() => { setNav('chat'); openNewConversation() }} />
-        <NavItem icon={<IconSparkles size={17} />} label="生图工作台" active={nav === 'creation'} onClick={() => setNav('creation')} />
-        <NavItem icon={<IconZap size={17} />} label="剪视频工作台" active={nav === 'video'} onClick={() => setNav('video')} />
+        <NavItem icon={<IconSparkles size={17} />} label="生成图片" active={nav === 'creation'} onClick={() => setNav('creation')} />
+        <NavItem icon={<IconZap size={17} />} label="剪视频" active={nav === 'video'} onClick={() => setNav('video')} />
         <NavItem icon={<IconClock size={17} />} label={t('sidebar.scheduled')} active={nav === 'scheduled'} onClick={() => setNav('scheduled')} />
         <NavItem icon={<IconPuzzle size={17} />} label={t('sidebar.plugins')} active={nav === 'plugins'} onClick={() => setNav('plugins')} />
       </nav>

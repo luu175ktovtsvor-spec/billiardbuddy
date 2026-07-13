@@ -12,13 +12,14 @@ import { useUiStore } from '../../stores/uiStore'
 import { api } from '../../api/client'
 import type { PermissionMode } from '../../types/chat'
 import {
-  IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconMic, IconArrowUp, IconSpinner, IconSlash, IconAt,
+  IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconArrowUp, IconSpinner, IconSlash, IconAt,
   IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX, IconFileText,
 } from '../shared/icons'
 import { MenuList } from '../shared/Menu'
 import { toast } from '../../stores/toastStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { t } from '../../i18n'
+import { VoiceInputControl } from './VoiceInputControl'
 
 /** 把选中的文件/文件夹绝对路径追加进输入框(不覆盖用户已输入的文字);含空格的路径加引号,本机 agent 据此去读。 */
 function appendPathsToInput(current: string, paths: string[]): string {
@@ -590,9 +591,20 @@ export function Composer() {
   function submit() {
     const text = value.trim()
     if (!text && pasted.length === 0) return
+    if ((text === '/生成图片' || text === '/生图工作台') && pasted.length === 0) {
+      useUiStore.getState().setNav('creation')
+      setValue('')
+      setPasted([])
+      if (taRef.current) taRef.current.style.height = 'auto'
+      return
+    }
     // 附件文本拼在正文后(围栏标记,模型读得懂、正文不被冲散);全空正文时给一句默认引导。
     const attachTail = pasted.map((p, i) => `\n\n[粘贴的文本${pasted.length > 1 ? ` ${i + 1}` : ''}]\n"""\n${p.text}\n"""`).join('')
-    const finalText = (text || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
+    const imageSlash = text.match(/^\/生图\s+(.+)$/s)
+    const baseText = imageSlash
+      ? `请理解下面的用户原始生图需求并调用 generate_image，完成后把产物送入生图工作台。调用工具时忠实保留原始画面意图，不要引入用户未提供的领域知识、运营方案或营销内容；后端会统一编译 CreativeBrief、路由模型并优化 Prompt。用户原始生图需求:${imageSlash[1]?.trim() ?? ''}`
+      : text
+    const finalText = (baseText || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
     if (!finalText.trim()) return
     // 运行中也放行:sendMessage 内部会把消息排队(对标 Codex queuedMessage),不再吞掉回车。
     sendMessage(finalText)
@@ -686,16 +698,7 @@ export function Composer() {
             <div className="flex-1" />
             {/* 右:忙时转圈 · 麦克 · 发送(不显示模型名) */}
             {running && <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />}
-            <button
-              type="button"
-              title={t('chat.mic')}
-              aria-label={t('chat.mic')}
-              onClick={() => toast('语音输入即将上线')}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              <IconMic size={18} />
-            </button>
+            <VoiceInputControl onTranscript={(text) => { setValue((current) => current.trim() ? `${current.trimEnd()} ${text}` : text); taRef.current?.focus() }} />
             {running ? (
               <button
                 type="button"
