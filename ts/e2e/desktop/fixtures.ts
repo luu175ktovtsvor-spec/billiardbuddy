@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,10 @@ export interface DesktopSession {
   window: Page
   sidecarBase: string
   stateRoot: string
+  videoFiles: string[]
   api<T = unknown>(pathname: string, init?: RequestInit): Promise<T>
+  setVideoFiles(paths?: string[]): Promise<void>
+  setVideoRenderDelay(enabled: boolean): void
   restart(): Promise<DesktopSession>
 }
 
@@ -34,8 +37,40 @@ export const test = base.extend<DesktopFixtures>({
     const stateRoot = path.join(isolatedRoot, 'state')
     const logPath = path.join(isolatedRoot, 'electron.log')
     const emptyBundledEnv = path.join(isolatedRoot, 'empty-bundled.env')
+    const sampleVideo = path.join(isolatedRoot, 'venue.mp4')
+    const sampleBroll = path.join(isolatedRoot, 'detail.mp4')
+    const ffmpegPath = path.join(isolatedRoot, 'fake-ffmpeg.sh')
+    const ffprobePath = path.join(isolatedRoot, 'fake-ffprobe.sh')
+    const voiceRunner = path.join(isolatedRoot, 'fake-voice.js')
+    const ffmpegDelayMarker = path.join(isolatedRoot, 'delay-video-render')
     writeFileSync(logPath, '')
     writeFileSync(emptyBundledEnv, '')
+    const sampleBytes = Buffer.from(readFileSync(path.join(here, 'video-source.mp4.b64'), 'utf8').trim(), 'base64')
+    writeFileSync(sampleVideo, sampleBytes)
+    writeFileSync(sampleBroll, Buffer.concat([sampleBytes, Buffer.from([0])]))
+    writeFileSync(ffmpegPath, [
+      '#!/bin/sh',
+      'first=""',
+      'last=""',
+      'want_input=0',
+      'for arg in "$@"; do',
+      '  if [ "$want_input" = 1 ] && [ -z "$first" ]; then first="$arg"; want_input=0; fi',
+      '  if [ "$arg" = "-i" ]; then want_input=1; fi',
+      '  last="$arg"',
+      'done',
+      `if [ -f "${ffmpegDelayMarker}" ]; then sleep 2; fi`,
+      '[ "$last" = "-" ] && exit 0',
+      'mkdir -p "$(dirname "$last")"',
+      'if [ -n "$first" ] && [ -f "$first" ]; then cp "$first" "$last"; else : > "$last"; fi',
+      'exit 0',
+    ].join('\n'))
+    writeFileSync(ffprobePath, [
+      '#!/bin/sh',
+      'printf %s \'{"format":{"duration":"2.4"},"streams":[{"codec_type":"video","width":320,"height":180,"avg_frame_rate":"24/1","r_frame_rate":"24/1","color_space":"bt709"},{"codec_type":"audio"}]}\'',
+    ].join('\n'))
+    writeFileSync(voiceRunner, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], '语音回填内容');\n")
+    chmodSync(ffmpegPath, 0o755)
+    chmodSync(ffprobePath, 0o755)
     let app: ElectronApplication | null = null
     let appProcess: ReturnType<ElectronApplication['process']> | null = null
     let window: Page | null = null
@@ -151,6 +186,9 @@ export const test = base.extend<DesktopFixtures>({
             ARK_API_KEY: '',
             SEEDREAM_BASE_URL: '',
             IMAGE_MODEL_NAME: '',
+            FFMPEG_BIN: ffmpegPath,
+            FFPROBE_BIN: ffprobePath,
+            WHISPER_TRANSCRIBE_COMMAND: `${process.execPath} ${voiceRunner} {output}`,
           },
         })
         appProcess = app.process()
@@ -183,10 +221,21 @@ export const test = base.extend<DesktopFixtures>({
         window: sessionWindow,
         sidecarBase,
         stateRoot,
+        videoFiles: [sampleVideo, sampleBroll],
         async api<T>(pathname: string, init?: RequestInit): Promise<T> {
           const response = await fetch(`${sidecarBase}${pathname}`, init)
           if (!response.ok) throw new Error(`${pathname} -> HTTP ${response.status}`)
           return await response.json() as T
+        },
+        async setVideoFiles(paths = [sampleVideo, sampleBroll]): Promise<void> {
+          await sessionApp.evaluate(({ ipcMain }, selectedPaths) => {
+            ipcMain.removeHandler('desktop:pickVideoFiles')
+            ipcMain.handle('desktop:pickVideoFiles', () => selectedPaths)
+          }, paths)
+        },
+        setVideoRenderDelay(enabled: boolean): void {
+          if (enabled) writeFileSync(ffmpegDelayMarker, '1')
+          else rmSync(ffmpegDelayMarker, { force: true })
         },
         async restart(): Promise<DesktopSession> {
           await closeCurrent()
