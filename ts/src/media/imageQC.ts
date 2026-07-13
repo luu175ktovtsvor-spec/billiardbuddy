@@ -192,6 +192,13 @@ export interface ResultInspection {
   warnings: string[]
   message: string
   consistencyStatus: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'
+  candidates: CandidateResultInspection[]
+}
+
+export interface CandidateResultInspection {
+  status: 'passed' | 'risk' | 'unchecked'
+  warnings: string[]
+  consistencyStatus: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'
 }
 
 export async function inspectPortraitResult(images: QcImage[], opts: { model?: Model | null; signal?: AbortSignal; reference?: QcImage } = {}): Promise<ResultInspection> {
@@ -204,6 +211,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       warnings: [],
       message: '未自动质检(质检模型未接入或无可读成图):请人工把关手/脸/肢体是否正常、有没有过度美化、是不是还是本人,再决定是否商用。',
       consistencyStatus: 'not_checked',
+      candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
     }
   }
   try {
@@ -216,33 +224,46 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
         warnings: [],
         message: '未自动质检(质检结果无法解析):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
         consistencyStatus: 'not_checked',
+        candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
       }
     }
-    const warnings: string[] = []
-    arr.forEach((raw, i) => {
+    const candidateWarnings = images.map(() => [] as string[])
+    images.forEach((_image, i) => {
+      const raw = arr[i]
       if (!raw || typeof raw !== 'object') return
       const r = raw as Record<string, unknown>
-      const tag = arr.length > 1 ? `第 ${i + 1} 张:` : ''
-      if (boolOrNull(r.hands_ok) === false) warnings.push(`${tag}手部疑似异常(多指/少指/畸形)。`)
-      if (boolOrNull(r.face_ok) === false) warnings.push(`${tag}脸部疑似异常(五官错乱/糊脸)。`)
-      if (boolOrNull(r.limbs_ok) === false) warnings.push(`${tag}肢体疑似异常(多肢/断肢/关节反向)。`)
+      const warnings = candidateWarnings[i]!
+      if (boolOrNull(r.hands_ok) === false) warnings.push('手部疑似异常(多指/少指/畸形)。')
+      if (boolOrNull(r.face_ok) === false) warnings.push('脸部疑似异常(五官错乱/糊脸)。')
+      if (boolOrNull(r.limbs_ok) === false) warnings.push('肢体疑似异常(多肢/断肢/关节反向)。')
       const faceCount = numOrNull(r.face_count)
-      if (faceCount != null && faceCount > 1) warnings.push(`${tag}画面出现多张人脸(${faceCount}),可能不符合单人照片编辑目标。`)
-      if (boolOrNull(r.over_beautified) === true) warnings.push(`${tag}疑似过度美化,可辨识度可能下降(像换了个人)。`)
-      if (boolOrNull(r.realistic) === false) warnings.push(`${tag}真实感不足(偏塑料感/AI 味)。`)
-      if (boolOrNull(r.unwanted_text) === true) warnings.push(`${tag}出现未要求的文字/水印。`)
+      if (faceCount != null && faceCount > 1) warnings.push(`画面出现多张人脸(${faceCount}),可能不符合单人照片编辑目标。`)
+      if (boolOrNull(r.over_beautified) === true) warnings.push('疑似过度美化,可辨识度可能下降(像换了个人)。')
+      if (boolOrNull(r.realistic) === false) warnings.push('真实感不足(偏塑料感/AI 味)。')
+      if (boolOrNull(r.unwanted_text) === true) warnings.push('出现未要求的文字/水印。')
     })
     let consistencyStatus: ResultInspection['consistencyStatus'] = 'not_checked'
+    let consistencyCandidates: PortraitConsistencyInspection['candidates'] = images.map(() => ({ status: 'not_checked', warnings: [] }))
     if (opts.reference?.base64) {
       try {
         const consistency = await inspectPortraitConsistency(opts.reference, images, { model, signal: opts.signal })
         consistencyStatus = consistency.status
-        warnings.push(...consistency.warnings)
+        consistencyCandidates = consistency.candidates
       } catch {
         consistencyStatus = 'uncertain'
-        warnings.push('参考图与成图的一致性未能自动判断,请并排确认是否像本人。')
+        consistencyCandidates = images.map(() => ({ status: 'uncertain' as const, warnings: ['参考图与成图的一致性未能自动判断,请并排确认是否像本人。'] }))
       }
     }
+    const candidates: CandidateResultInspection[] = images.map((_image, index) => {
+      const consistency = consistencyCandidates[index] ?? { status: 'uncertain' as const, warnings: ['参考图与成图的一致性未能自动判断,请并排确认是否像本人。'] }
+      const warnings = [...candidateWarnings[index]!, ...consistency.warnings].map(w => scrubProviderIdentifiers(w))
+      return {
+        status: warnings.length ? 'risk' : 'passed',
+        warnings,
+        consistencyStatus: consistency.status,
+      }
+    })
+    const warnings = candidates.flatMap((candidate, index) => candidate.warnings.map(warning => candidates.length > 1 ? `第 ${index + 1} 张:${warning}` : warning))
     if (warnings.length === 0) {
       return {
         status: 'passed',
@@ -250,6 +271,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
         warnings: [],
         message: '已自动质检:手/脸/肢体未见明显问题。真人成图建议再人工确认可辨识度后投放。',
         consistencyStatus,
+        candidates,
       }
     }
     const scrubbed = warnings.map(w => scrubProviderIdentifiers(w))
@@ -259,6 +281,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       warnings: scrubbed,
       message: scrubProviderIdentifiers(`自动质检发现风险:${scrubbed.join(' ')} 建议重新生成或人工确认后再用,先不要直接商用。`),
       consistencyStatus,
+      candidates,
     }
   } catch {
     return {
@@ -267,6 +290,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       warnings: [],
       message: '未自动质检(质检模型调用失败):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
       consistencyStatus: 'not_checked',
+      candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
     }
   }
 }
@@ -274,6 +298,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
 export interface PortraitConsistencyInspection {
   status: 'preserved' | 'uncertain' | 'drifted'
   warnings: string[]
+  candidates: Array<{ status: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'; warnings: string[] }>
 }
 
 const CONSISTENCY_PROMPT = [
@@ -288,15 +313,25 @@ export async function inspectPortraitConsistency(
   opts: { model?: Model | null; signal?: AbortSignal } = {},
 ): Promise<PortraitConsistencyInspection> {
   if (!opts.model || !reference.base64 || !candidates.some(item => item.base64)) {
-    return { status: 'uncertain', warnings: ['参考图与成图的一致性未完成自动检查,请并排确认是否像本人。'] }
+    const warning = '参考图与成图的一致性未完成自动检查,请并排确认是否像本人。'
+    return { status: 'uncertain', warnings: [warning], candidates: candidates.map(() => ({ status: 'uncertain', warnings: [warning] })) }
   }
   const parsed = await askVlmJson(opts.model, '你是参考图一致性风险筛查助手。', CONSISTENCY_PROMPT, [reference, ...candidates], 5, opts.signal)
   const statuses = parsed && Array.isArray(parsed.images)
     ? parsed.images.map(item => item && typeof item === 'object' ? String((item as Record<string, unknown>).status ?? '') : '')
     : []
-  if (statuses.includes('drifted')) return { status: 'drifted', warnings: ['参考图与候选的人物特征疑似发生明显漂移,不标推荐。'] }
-  if (!statuses.length || statuses.includes('uncertain')) return { status: 'uncertain', warnings: ['参考图与候选的一致性无法完全确认,请并排确认是否像本人。'] }
-  return { status: 'preserved', warnings: [] }
+  const decisions = candidates.map((_candidate, index) => {
+    const status = statuses[index]
+    if (status === 'preserved') return { status: 'preserved' as const, warnings: [] as string[] }
+    if (status === 'drifted') return { status: 'drifted' as const, warnings: ['参考图与候选的人物特征疑似发生明显漂移,不标推荐。'] }
+    return { status: 'uncertain' as const, warnings: ['参考图与候选的一致性无法完全确认,请并排确认是否像本人。'] }
+  })
+  const status = decisions.some(item => item.status === 'drifted')
+    ? 'drifted'
+    : decisions.some(item => item.status === 'uncertain')
+      ? 'uncertain'
+      : 'preserved'
+  return { status, warnings: decisions.flatMap(item => item.warnings), candidates: decisions }
 }
 
 // --- 海报硬文字 OCR 校对(生成后) ----------------------------------------

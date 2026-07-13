@@ -6,6 +6,9 @@ import {
   type PosterBrief,
   type PortraitBrief,
 } from '../../shared/contracts/image-workbench'
+import { z } from 'zod'
+import type { Model } from '../types/model'
+import { userText } from '../types/message'
 
 export interface ImageBriefCompileInput {
   userRequest?: string
@@ -35,8 +38,32 @@ const TEMPLATE_LABELS: Record<string, string> = {
   holiday_moments: '日常/社媒',
 }
 
+const imageBriefEnrichmentSchema = z.object({
+  visual_direction: z.object({
+    subject: z.string().max(400).optional(),
+    action: z.string().max(400).optional(),
+    environment: z.string().max(400).optional(),
+    style: z.string().max(400).optional(),
+    color: z.string().max(240).optional(),
+    lighting: z.string().max(240).optional(),
+    composition: z.string().max(400).optional(),
+  }).default({}),
+  portrait_change: z.array(z.string().max(240)).max(12).default([]),
+  portrait_preserve: z.array(z.string().max(240)).max(12).default([]),
+  understanding: z.string().max(1000).optional(),
+})
+
+const FORBIDDEN_INVENTED_DOMAIN_TERMS = [
+  '台球', '球房', '助教', '教练', '会员', '充值', '团购', '开业', '赛事', '比赛', '门店', '优惠', '陪打',
+]
+
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+}
+
+function limitText(value: string, limit: number): string {
+  const chars = Array.from(value)
+  return chars.length <= limit ? value : `${chars.slice(0, Math.max(0, limit - 1)).join('')}…`
 }
 
 function firstString(record: Record<string, unknown> | undefined, ...keys: string[]): string {
@@ -49,6 +76,34 @@ function firstString(record: Record<string, unknown> | undefined, ...keys: strin
 
 function unique(values: string[]): string[] {
   return [...new Set(values.map(clean).filter(Boolean))]
+}
+
+function extractJson(text: string): unknown {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/u)
+  const body = fenced?.[1] ?? text
+  const start = body.indexOf('{')
+  const end = body.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    return JSON.parse(body.slice(start, end + 1))
+  } catch {
+    return null
+  }
+}
+
+function shouldUseModel(input: ImageBriefCompileInput): boolean {
+  const structuredValues = Object.values(input.posterText ?? {}).some(value => clean(value).length > 0)
+  const explicitTemplate = clean(input.sceneTemplateId)
+  return !structuredValues && (!explicitTemplate || explicitTemplate === 'custom_poster' || explicitTemplate === 'photo_edit')
+}
+
+function containsInventedBusinessFacts(value: unknown, userRequest: string): boolean {
+  const text = JSON.stringify(value)
+  for (const term of FORBIDDEN_INVENTED_DOMAIN_TERMS) {
+    if (text.includes(term) && !userRequest.includes(term)) return true
+  }
+  const requestNumbers = new Set(userRequest.match(/\d+(?:\.\d+)?/gu) ?? [])
+  return (text.match(/\d+(?:\.\d+)?/gu) ?? []).some(number => !requestNumbers.has(number))
 }
 
 function inferScene(text: string, input: ImageBriefCompileInput): 'poster' | 'portrait' {
@@ -148,6 +203,21 @@ function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
 
 type PosterRegion = PosterBrief['reserved_regions'][number]
 
+function compactBrandContext(value?: string): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  const context = clean(raw)
+  if (!context) return ''
+  const name = raw.match(/门店名称[:：]\s*([^\n；;]+)/u)?.[1]?.trim()
+  const style = raw.match(/品牌风格[:：]\s*([^\n；;]+)/u)?.[1]?.trim()
+  const color = raw.match(/#[0-9a-fA-F]{3,8}\b/u)?.[0]
+  const facts = [
+    name ? `门店名称:${name}` : '',
+    style ? `品牌风格:${style}` : '',
+    color ? `品牌主色调呼应 ${color}` : '',
+  ].filter(Boolean)
+  return facts.length ? facts.join('；') : limitText(context, 96)
+}
+
 function posterControls(poster: PosterBrief, refs: ImageAssetReference[], brandContext?: string) {
   const regions: PosterRegion[] = []
   const regionLabels: string[] = []
@@ -174,7 +244,7 @@ function posterControls(poster: PosterBrief, refs: ImageAssetReference[], brandC
     regions,
     composition: [
       regionLabels.length ? `为用户明确提供的${regionLabels.join('、')}预留清晰区域` : '按用户描述安排构图，不额外假设未提供的信息',
-      brandContext ? `品牌约束：${brandContext}` : '',
+      brandContext ? compactBrandContext(brandContext) : '',
     ].filter(Boolean).join('；'),
     mustPreserve,
     mustAvoid: [
@@ -186,7 +256,7 @@ function posterControls(poster: PosterBrief, refs: ImageAssetReference[], brandC
 
 function makePosterDirection(text: string, composition: string) {
   return {
-    subject: text,
+    subject: limitText(text, 400),
     action: '只呈现用户明确提出的动作、关系和数量',
     environment: '仅使用用户描述或参考图明确提供的环境，不补充未要求的业务场景',
     style: '遵循用户描述的视觉风格；未指定时保持重点清晰、自然协调',
@@ -198,6 +268,7 @@ function makePosterDirection(text: string, composition: string) {
 
 export class ImageBriefCompiler {
   private readonly cache = new Map<string, ImageCreativeBrief>()
+  private readonly modelCache = new Map<string, ImageCreativeBrief>()
 
   compile(input: ImageBriefCompileInput): ImageCreativeBrief {
     const userRequest = clean(input.userRequest ?? input.prompt ?? input.description)
@@ -208,7 +279,7 @@ export class ImageBriefCompiler {
     const scene = inferScene(userRequest, input)
     const refs = referencesFrom(input, scene)
     const posterDraft = scene === 'poster' ? posterBrief(userRequest, input) : undefined
-    const posterControl = posterDraft ? posterControls(posterDraft, refs, clean(input.brandContext)) : undefined
+    const posterControl = posterDraft ? posterControls(posterDraft, refs, input.brandContext) : undefined
     const poster = posterDraft && posterControl
       ? { ...posterDraft, reserved_regions: posterControl.regions }
       : undefined
@@ -232,7 +303,7 @@ export class ImageBriefCompiler {
       visual_direction: scene === 'poster' && poster && posterControl ? makePosterDirection(userRequest, posterControl.composition) : {
         subject: '已上传实拍照片中的同一位参考人物',
         action: '自然、好看且符合用户描述的真实照片状态',
-        environment: userRequest,
+        environment: limitText(userRequest, 400),
         style: '真实自然的人物摄影，无明显 AI 感',
         lighting: '自然、柔和且与现场一致的光线',
         composition: '人物清楚、保留真实皮肤质感和自然比例，避免过度精修、贴图感或商业样片感',
@@ -248,10 +319,63 @@ export class ImageBriefCompiler {
     this.cache.set(key, brief)
     return brief
   }
+
+  async compileWithModel(input: ImageBriefCompileInput, model?: Model | null, signal?: AbortSignal): Promise<ImageCreativeBrief> {
+    const base = this.compile(input)
+    if (!model || !shouldUseModel(input)) return base
+    const key = JSON.stringify({ base, compiler: 'model-v1' })
+    const cached = this.modelCache.get(key)
+    if (cached) return cached
+    try {
+      const step = await model.step({
+        system: [
+          '你是图片创作需求编译器。只把用户原话整理成 provider-neutral JSON，不写生图 Prompt。',
+          '不得补充用户没有说的行业、场景、人物、人设、价格、日期、电话、CTA、营销打法或品牌事实。',
+          'PPT、知识库、领域包和历史运营信息都不是本次输入，不得引用。',
+          '只输出 JSON：{"visual_direction":{"subject":"","action":"","environment":"","style":"","color":"","lighting":"","composition":""},"portrait_change":[],"portrait_preserve":[],"understanding":""}。',
+          '字段没有依据就省略或留空；understanding 只复述本次用户目标。',
+        ].join('\n'),
+        messages: [userText(JSON.stringify({
+          scene: base.scene,
+          user_request: base.user_request,
+          ratio: base.ratio,
+          reference_roles: base.reference_assets.map(asset => asset.role),
+        }))],
+        tools: [],
+        signal,
+      })
+      const parsed = imageBriefEnrichmentSchema.safeParse(extractJson(step.text ?? ''))
+      if (!parsed.success || containsInventedBusinessFacts(parsed.data, base.user_request)) return base
+      const hasEnrichment = Object.values(parsed.data.visual_direction).some(value => clean(value).length > 0)
+        || parsed.data.portrait_change.length > 0
+        || parsed.data.portrait_preserve.length > 0
+        || clean(parsed.data.understanding).length > 0
+      if (!hasEnrichment) return base
+      const enriched = imageCreativeBriefSchema.parse({
+        ...base,
+        visual_direction: { ...base.visual_direction, ...parsed.data.visual_direction },
+        portrait: base.portrait ? {
+          ...base.portrait,
+          change: parsed.data.portrait_change.length ? parsed.data.portrait_change : base.portrait.change,
+          preserve: unique([...base.portrait.preserve, ...parsed.data.portrait_preserve]),
+        } : undefined,
+        understanding: clean(parsed.data.understanding) || base.understanding,
+        compiler_version: 'image-brief-v1-model',
+      })
+      this.modelCache.set(key, enriched)
+      return enriched
+    } catch {
+      return base
+    }
+  }
 }
 
 export const imageBriefCompiler = new ImageBriefCompiler()
 
 export function compileImageBrief(input: ImageBriefCompileInput): ImageCreativeBrief {
   return imageBriefCompiler.compile(input)
+}
+
+export function compileImageBriefWithModel(input: ImageBriefCompileInput, model?: Model | null, signal?: AbortSignal): Promise<ImageCreativeBrief> {
+  return imageBriefCompiler.compileWithModel(input, model, signal)
 }

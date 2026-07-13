@@ -1,6 +1,45 @@
 import { expect, test } from 'bun:test'
-import { compileImageBrief } from './imageBriefCompiler'
+import type { Model } from '../types/model'
+import { compileImageBrief, ImageBriefCompiler } from './imageBriefCompiler'
 import { compileProviderPrompt, compileSeedreamPrompt, routeImageBrief } from './imagePromptAdapters'
+
+test('freeform requests can be model-enriched without changing deterministic business facts', async () => {
+  const model: Model = {
+    async step() {
+      return {
+        kind: 'final',
+        text: JSON.stringify({
+          visual_direction: { subject: '夏日音乐节抽象视觉', style: '现代拼贴', composition: '中心焦点，留出呼吸感' },
+          understanding: '夏日音乐节抽象艺术海报，不添加文字',
+        }),
+      }
+    },
+  }
+  const brief = await new ImageBriefCompiler().compileWithModel({ prompt: '夏日音乐节的抽象艺术海报，不要任何文字' }, model)
+
+  expect(brief.compiler_version).toBe('image-brief-v1-model')
+  expect(brief.visual_direction.style).toBe('现代拼贴')
+  expect(brief.poster?.exact_copy).toEqual([])
+})
+
+test('model enrichment is discarded when it invents billiards context or business numbers', async () => {
+  const model: Model = {
+    async step() {
+      return {
+        kind: 'final',
+        text: JSON.stringify({
+          visual_direction: { subject: '台球房助教优惠海报' },
+          understanding: '充值 39.9 元活动',
+        }),
+      }
+    },
+  }
+  const brief = await new ImageBriefCompiler().compileWithModel({ prompt: '夏日音乐节抽象海报' }, model)
+
+  expect(brief.compiler_version).toBe('image-brief-v1')
+  expect(JSON.stringify(brief)).not.toContain('台球房助教')
+  expect(JSON.stringify(brief)).not.toContain('39.9')
+})
 
 test('compiler keeps Chinese business facts in a provider-neutral brief', () => {
   const brief = compileImageBrief({
