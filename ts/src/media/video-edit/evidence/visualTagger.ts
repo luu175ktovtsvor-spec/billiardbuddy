@@ -6,12 +6,12 @@
 // 隐私护栏:关键帧含可识别人脸(尤其未成年)时不外传,直接走离线启发式(见根 CLAUDE.md 脱敏红线)。
 
 import { existsSync } from 'node:fs'
-import type { Model } from '../types/model'
-import type { ContentBlock, Message } from '../types/message'
-import { providerConfigFromEnv } from '../model/providerConfig'
-import { createModelFromProviderConfig } from '../model/modelFactory'
-import { ffmpegBinFrom, runFfmpegBinary } from './brollFfmpeg'
-import type { Shot } from './brollScenes'
+import type { Model } from '../../../types/model'
+import type { ContentBlock, Message } from '../../../types/message'
+import { providerConfigFromEnv } from '../../../model/providerConfig'
+import { createModelFromProviderConfig } from '../../../model/modelFactory'
+import { ffmpegBinFrom, runFfmpegBinary } from './ffmpeg'
+import type { Shot } from './shotDetection'
 
 export interface ShotForTag {
   index: number

@@ -8,7 +8,7 @@
 // 起始阈值 T=0.35(对应 PySceneDetect 27.0/255≈0.3~0.4),min_scene_len 0.5s。
 
 import { existsSync } from 'node:fs'
-import { ffmpegBinFrom, runFfmpegText } from './brollFfmpeg'
+import { ffmpegBinFrom, runFfmpegText } from './ffmpeg'
 
 export const SCENE_THRESHOLD = 0.35
 export const MIN_SCENE_LEN = 0.5
