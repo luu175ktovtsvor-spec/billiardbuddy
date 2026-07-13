@@ -9,6 +9,7 @@ import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextW
 import { publicProviderSummary, scrubProviderIdentifiers, toPublicProviderView } from '../model/publicModelNames'
 import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
+import { SessionArchiveError, SessionArchiveService } from './services/sessionArchiveService'
 import { SessionRewindService } from './services/sessionRewindService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
@@ -102,6 +103,7 @@ import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
 import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
+import { createSessionArchiveRouteHandler } from './routes/sessionArchiveRoutes'
 import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
@@ -1622,51 +1624,6 @@ export function startServer(opts: StartServerOptions = {}) {
     return { mode: 'task', conversationId, task_id: task.id, status: 'running' }
   }
 
-  async function archiveSession(id: string, rawBody: Record<string, unknown>) {
-    const session = await sessions.get(id)
-    if (!session) throw new TurnSetupError('session not found', 404)
-    if (session.status === 'running') throw new TurnSetupError('session is running', 409)
-    const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
-    if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
-    const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
-    const providerRuntime = providerRuntimes[0]!
-
-    const transcript = sessions.transcript(id, session.workspaceRoot)
-    const messages = await transcript.load()
-    restoreInvokedSkillsFromMessages(messages, id)
-    const invokedSkills = createInvokedSkillsMessage(id)
-    const keepRecentMessages = Math.max(1, Math.min(100, numberFrom(rawBody.keepRecentMessages ?? rawBody.keep_recent_messages, 12)))
-    const minOldMessages = Math.max(1, Math.min(20, numberFrom(rawBody.minOldMessages ?? rawBody.min_old_messages, 1)))
-    const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
-    const compacted = await compactPipeline({
-      messages,
-      model,
-      force: true,
-      postSummaryMessages: invokedSkills ? [invokedSkills] : [],
-      keepRecentMessages,
-      minOldMessages,
-      readOnlyToolNames: new Set(),
-    })
-    if (!compacted.didCompact) {
-      return { ok: false, archived: false, reason: 'not enough transcript messages to archive', messages: messages.length }
-    }
-
-    const archiveDir = join(stateRoot, 'transcript-archives')
-    await mkdir(archiveDir, { recursive: true })
-    const archivePath = join(archiveDir, `${id}-${Date.now()}.jsonl`)
-    await copyFile(transcript.path, archivePath)
-    await transcript.save(compacted.messages)
-    await sessions.touch(id, { status: 'idle' })
-    return {
-      ok: true,
-      archived: true,
-      archivePath,
-      beforeMessages: messages.length,
-      afterMessages: compacted.messages.length,
-      note: compacted.note,
-    }
-  }
-
   async function prewarm(rawBody: Record<string, unknown>) {
     const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
     if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
@@ -2200,7 +2157,18 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const sessionArchive = new SessionArchiveService({
+    sessions,
+    archiveRoot: join(stateRoot, 'transcript-archives'),
+    resolveModel: async () => {
+      const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+      if (resolvedProviderRuntimes.length === 0) throw new SessionArchiveError('model provider not configured', 503)
+      const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
+      return createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
+    },
+  })
   const handleSessionActivityRoute = createSessionActivityRouteHandler({ sessions, turns })
+  const handleSessionArchiveRoute = createSessionArchiveRouteHandler({ archive: sessionArchive })
   const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
@@ -3448,6 +3416,9 @@ export function startServer(opts: StartServerOptions = {}) {
       const sessionRewindResponse = await handleSessionRewindRoute(url, req)
       if (sessionRewindResponse) return sessionRewindResponse
 
+      const sessionArchiveResponse = await handleSessionArchiveRoute(url, req)
+      if (sessionArchiveResponse) return sessionArchiveResponse
+
       if (url.pathname === '/tasks') {
         if (req.method === 'GET') {
           return Response.json({
@@ -3507,18 +3478,6 @@ export function startServer(opts: StartServerOptions = {}) {
           }
         }
         return new Response('Method not allowed', { status: 405 })
-      }
-
-      const sessionArchiveMatch = url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/archive$/)
-      if (sessionArchiveMatch && req.method === 'POST') {
-        const id = sessionArchiveMatch[1]!
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        try {
-          return Response.json(await archiveSession(id, body))
-        } catch (err) {
-          const status = err instanceof TurnSetupError ? err.status : 500
-          return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
-        }
       }
 
       if (url.pathname === '/agent/hello') {

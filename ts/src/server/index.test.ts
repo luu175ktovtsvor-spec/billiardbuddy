@@ -6229,49 +6229,24 @@ test('session API creates/lists/reads sessions and interrupt is idempotent', asy
   }
 })
 
-test('POST /sessions/:id/archive summarizes old transcript and archives original JSONL', async () => {
+test('session archive route is wired through startServer and preserves provider setup errors', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-archive-'))
   const svc = new SessionService(root)
   await svc.create({ id: 'arch1', title: '归档会话', workspaceRoot: root })
-  await svc.transcript('arch1', root).save([
-    userText('旧消息 1'),
-    userText('旧消息 2'),
-    userText('旧消息 3'),
-    userText('旧消息 4'),
-    userText('最近消息'),
-  ])
   const archiveServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: {
-      OPENAI_BASE_URL: 'https://model.example/v1',
-      OPENAI_API_KEY: 'secret',
-      TEXT_MODEL_NAME: 'mimo-v2.5',
-    },
-    fetchImpl: async () => {
-      const enc = new TextEncoder()
-      return new Response(new ReadableStream<Uint8Array>({
-        start(c) {
-          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '旧对话摘要' }, finish_reason: 'stop' }] })}\n\n`))
-          c.enqueue(enc.encode('data: [DONE]\n\n'))
-          c.close()
-        },
-      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
-    },
+    providerRoot: root,
+    env: {},
   })
   try {
     const res = await fetch(`http://127.0.0.1:${archiveServer.port}/sessions/arch1/archive`, {
       method: 'POST',
-      body: JSON.stringify({ keepRecentMessages: 1 }),
+      body: '{}',
     })
-    expect(res.status).toBe(200)
-    const body = await res.json() as any
-    expect(body).toMatchObject({ ok: true, archived: true, beforeMessages: 5, afterMessages: 2 })
-    expect(existsSync(body.archivePath)).toBe(true)
-    const messages = await svc.loadTranscript('arch1')
-    expect(messages).toHaveLength(2)
-    expect(JSON.stringify(messages[0])).toContain('旧对话摘要')
-    expect(JSON.stringify(messages[1])).toContain('最近消息')
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ ok: false, error: 'model provider not configured' })
+    expect((await fetch(`http://127.0.0.1:${archiveServer.port}/sessions/arch1/archive`)).status).toBe(404)
   } finally {
     archiveServer.stop(true)
     rmSync(root, { recursive: true, force: true })
