@@ -20,7 +20,7 @@ function createHarness() {
     setEnabled: (name, enabled) => setPluginEnabled(name, enabled, [root]),
     installFromGithub: async repo => {
       installCalls.push(repo)
-      return { ok: typeof repo === 'string', ...(repo === undefined ? {} : { repo }) }
+      return { ok: typeof repo === 'string', message: typeof repo === 'string' ? `installed:${repo}` : 'invalid' }
     },
   })
   return { root, installCalls, handler }
@@ -50,7 +50,7 @@ describe('plugin routes', () => {
     const { root, handler } = createHarness()
     const pluginDir = join(root, 'demo')
     mkdirSync(join(pluginDir, 'skills'), { recursive: true })
-    writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin' }))
+    writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
     writeFileSync(join(pluginDir, 'skills', 'demo.md'), '# Demo')
 
     const listed = await (await route(handler, '/api/v1/agent/plugins')).json() as any
@@ -74,25 +74,25 @@ describe('plugin routes', () => {
     expect(relisted.plugins[0]).toMatchObject({ name: 'demo', enabled: false })
   })
 
-  test('keeps malformed JSON fallback and forwards install requests unchanged', async () => {
+  test('rejects malformed payloads and forwards valid install requests', async () => {
     const { installCalls, handler } = createHarness()
-    const malformedToggle = await (await route(handler, '/api/v1/agent/plugins/toggle', {
+    const malformedToggle = await route(handler, '/api/v1/agent/plugins/toggle', {
       method: 'POST',
       body: '{bad',
-    })).json() as any
-    expect(malformedToggle).toMatchObject({ ok: false })
+    })
+    expect(malformedToggle.status).toBe(400)
 
     const installed = await (await route(handler, '/api/v1/agent/plugins/install', {
       method: 'POST',
       body: JSON.stringify({ repo: 'owner/repo' }),
     })).json()
-    expect(installed).toEqual({ ok: true, repo: 'owner/repo' })
+    expect(installed).toEqual({ ok: true, message: 'installed:owner/repo' })
 
-    const malformedInstall = await (await route(handler, '/api/v1/agent/plugins/install', {
+    const malformedInstall = await route(handler, '/api/v1/agent/plugins/install', {
       method: 'POST',
       body: '{bad',
-    })).json()
-    expect(malformedInstall).toEqual({ ok: false })
-    expect(installCalls).toEqual(['owner/repo', undefined])
+    })
+    expect(malformedInstall.status).toBe(400)
+    expect(installCalls).toEqual(['owner/repo'])
   })
 })

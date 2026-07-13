@@ -24,11 +24,11 @@ import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLoc
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
-import { bridgeUnsafeCommandMessage, type CommandLibrary, isBridgeSafeCommand, loadCommandsDir, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, isBridgeSafeCommand, normalizeCommandName, parseCommandInvocation } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
 import { applyElicitationHooks, applyElicitationResultHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
@@ -37,7 +37,7 @@ import { createGoalHookRegistry } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import { buildForkRunContext } from '../agents/forkSubagent'
-import { closeMcpConnections, defaultElicitationHandler, loadMcpToolsFromFile, type McpElicitationHandler, type McpElicitationHandlerInput } from '../mcp/client'
+import { closeMcpConnections, defaultElicitationHandler, loadMcpToolsFromFile, loadMcpToolsFromFiles, type McpElicitationHandler, type McpElicitationHandlerInput } from '../mcp/client'
 import { loadMcpConfigFile } from '../mcp/config'
 import { addMcpServer, defaultWritableMcpConfigPath, MCP_PRESETS, removeMcpServer, setMcpServerDisabled } from '../mcp/configStore'
 import { TaskService, type TaskMeta } from '../tasks/taskService'
@@ -68,7 +68,7 @@ import { VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
 import { VideoEditingService } from '../media/video-edit/service'
 import { createVideoEditRouteHandler } from '../media/video-edit/routes'
 import { loadOutputStyles, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
-import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
+import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
 import { getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
@@ -94,7 +94,7 @@ import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr 
 import { isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
 import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
 import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
-import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadCommandsForWorkspace } from './extensionRoots'
+import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadRuntimeExtensionLibraries } from './extensionRoots'
 import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
@@ -220,6 +220,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
+  const pluginRoots = defaultPluginRoots(opts.env ?? process.env)
   // MCP OAuth 令牌落盘目录(锚 stateRoot,跨会话/重启复用):所有 MCP 加载点共享;
   // 仅主对话(用户在场的 SSE 流)允许 interactive 授权,探测/列表/legacy 执行 interactive:false——
   // 复用已落盘令牌即可,绝不让"点开设置页/查列表"触发浏览器授权弹窗。
@@ -871,7 +872,6 @@ export function startServer(opts: StartServerOptions = {}) {
     // 三层落点(白标目录):bundled(app 内置,managed) + user(~/.billiardbuddy/skills) + workspace(.billiardbuddy/skills,local 信任)。
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const createSkillsRoot = userSkillsRoot()
-    const skills = await loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root })
     // 领域包启用来源三合一(owner 设计:斜杠命令 /台球 → 主循环注入 pack → 自动找内容 + 跨回合保持):
     //   ① 请求体 enabled_packs(前端专家选择器);② 本回合斜杠入口命令(/台球、/球房、/billiards…→ packIdForCommandName);
     //   ③ 会话已持久化的 enabledPacks(上一回合敲过入口命令,即便这回合前端没回传也保持在模式里)。
@@ -900,7 +900,15 @@ export function startServer(opts: StartServerOptions = {}) {
     if (shouldPersist) {
       await sessions.touch(conversationId, { enabledPacks: enabledPackIds }).catch(() => undefined)
     }
-    const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
+    const runtimeExtensions = await loadRuntimeExtensionLibraries({
+      workspaceRoot: workspace.root,
+      skillsRoot,
+      commandsRoot: opts.commandsRoot ?? defaultCommandsRoot(),
+      packs: enabledPacks,
+      env: opts.env ?? process.env,
+      pluginRoots,
+    })
+    const { skills, commands } = runtimeExtensions
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
     // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。
     const outputStyleLibrary = await loadOutputStyles()
@@ -995,8 +1003,9 @@ export function startServer(opts: StartServerOptions = {}) {
     const configuredHooks = await loadWorkspaceHookRegistry(workspace.root, opts.hooksPath)
     // 已启用插件贡献的 hooks(对齐 cc loadPluginHooks:标准位置 <plugin>/hooks/hooks.json + manifest.hooks 声明的附加文件),
     // 归一为 source:'plugin' 并入本次会话 hooks(app 级可信、不走工作区信任闸)。坏插件/读失败静默跳过、不拖垮会话。
-    const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
-    const pluginHooks = pluginHookPaths.length > 0 ? await loadPluginHookRegistry(pluginHookPaths).catch(() => undefined) : undefined
+    const pluginHooks = runtimeExtensions.pluginHookConfigPaths.length > 0
+      ? await loadPluginHookRegistry(runtimeExtensions.pluginHookConfigPaths).catch(() => undefined)
+      : undefined
     // 领域包上下文已改走 systemPrompt(extraContext)每回合注入,不再进 SessionStart hook 注册表——
     // 否则 SessionStart 每回合重触发(丁审计)。此处 hooks 只含用户配置/插件/目标 hook,SessionStart 由 loop 门控成首回合一次。
     // priorMessages 复用上方那次 load(同回合 transcript 不变),不再重复 I/O。
@@ -1023,7 +1032,7 @@ export function startServer(opts: StartServerOptions = {}) {
     }
     const gatedMcp = resolveMcpConfig(rawBody, workspace.root)
     const mcpConfigPath = gatedMcp.path
-    const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
+    const mcpTools = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], {
       cwd: workspace.root,
       signal: controller.signal,
       timeoutMs: 10000,
@@ -1624,19 +1633,22 @@ export function startServer(opts: StartServerOptions = {}) {
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const agentsRoot = opts.agentsRoot ?? defaultAgentsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
-    const [skills, commands, hooks, agents] = await Promise.all([
-      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
+    const [runtimeExtensions, configuredHooks, agents] = await Promise.all([
+      loadRuntimeExtensionLibraries({ workspaceRoot: workspace.root, skillsRoot, commandsRoot, packs: enabledPacks, env: opts.env ?? process.env, pluginRoots }),
       // hooks 三级加载(见上方 §1621 同款注释);opts.hooksPath 仍作显式覆盖路径叠加。
       loadWorkspaceHookRegistry(workspace.root, opts.hooksPath),
       loadAgentsDir(agentsRoot),
     ])
+    const pluginHooks = runtimeExtensions.pluginHookConfigPaths.length > 0
+      ? await loadPluginHookRegistry(runtimeExtensions.pluginHookConfigPaths).catch(() => undefined)
+      : undefined
+    const hooks = mergeHookRegistries(configuredHooks, pluginHooks)
 
     const includeMcp = rawBody.includeMcp === true || rawBody.includeMcp === 'true'
     let mcp: { tools: number; warnings: string[] } | undefined
     if (includeMcp) {
       const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
-      const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
+      const loaded = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], {
         cwd: workspace.root,
         timeoutMs: 5000,
         fetchImpl: opts.fetchImpl,
@@ -1666,8 +1678,8 @@ export function startServer(opts: StartServerOptions = {}) {
       fallbackCount: Math.max(0, resolvedProviderRuntimes.length - 1),
       ...(orderedProviderRuntimes.notices.length ? { notices: orderedProviderRuntimes.notices } : {}),
       workspaceRoot: workspace.root,
-      skills: { root: skillsRoot, count: skills.skills.length },
-      commands: { root: commandsRoot, count: commands.commands.length },
+      skills: { root: skillsRoot, count: runtimeExtensions.skills.skills.length },
+      commands: { root: commandsRoot, count: runtimeExtensions.commands.commands.length },
       domainTools: { count: createDomainPackTools(enabledPacks).length },
       hooks: { path: opts.hooksPath, count: hooks?.rules.length ?? 0 },
       agents: { root: agentsRoot, count: agents.length },
@@ -1694,43 +1706,26 @@ export function startServer(opts: StartServerOptions = {}) {
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
     const domainPackTools = createDomainPackTools(enabledPacks)
-    // plugin 运行时接入:已启用插件的 skills/.mcp.json 并入本次会话(插件是 app 级可信来源,mcp 直接加载不走工作区信任闸)。
-    const pluginContribs = await resolveEnabledPluginContributions(defaultPluginRoots(opts.env ?? process.env)).catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [] }))
-    const [skills, commands, pluginSkillsLibs, pluginCommandLibs] = await Promise.all([
-      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
-      Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir).catch(() => null))),
-      Promise.all(pluginContribs.commandsDirs.map(dir => loadCommandsDir(dir).catch(() => null))),
-    ])
-    // 合并主 skills + 插件 skills(按名去重,主 skills 优先)
-    const mergedSkillByName = new Map(skills.byName)
-    for (const lib of pluginSkillsLibs) {
-      if (!lib) continue
-      for (const s of lib.skills) if (!mergedSkillByName.has(s.name)) mergedSkillByName.set(s.name, s)
-    }
-    const allSkills = { skills: [...mergedSkillByName.values()], byName: mergedSkillByName }
-    // 合并主 commands + 插件 commands(对齐 cc getPluginCommands 并入命令来源):主 commands 放最后 → 同名主/工作区/领域包优先,插件只补充新命令。
-    const mergedCommands = mergeCommandLibraries(
-      ...pluginCommandLibs.filter((lib): lib is CommandLibrary => lib !== null),
-      commands,
-    )
+    const runtimeExtensions = await loadRuntimeExtensionLibraries({
+      workspaceRoot: workspace.root,
+      skillsRoot,
+      commandsRoot,
+      packs: enabledPacks,
+      env: opts.env ?? process.env,
+      pluginRoots,
+    })
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
     // toolTimeoutMs 不硬编码:走 mcp/client.ts 的近乎无限默认值 + QF_MCP_TOOL_TIMEOUT 覆盖。
     const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, fetchImpl: opts.fetchImpl, oauth: { storageDir: mcpOAuthDir, interactive: false } }
-    const [mcpTools, ...pluginMcpResults] = await Promise.all([
-      loadMcpToolsFromFile(mcpConfigPath, mcpLoadOpts),
-      ...pluginContribs.mcpConfigPaths.map(path => loadMcpToolsFromFile(path, mcpLoadOpts).catch(() => ({ tools: [], connections: [], warnings: [] }))),
-    ])
-    const allMcpTools = [...mcpTools.tools, ...pluginMcpResults.flatMap(r => r.tools)]
-    const allConnections = [...mcpTools.connections, ...pluginMcpResults.flatMap(r => r.connections)]
+    const mcpTools = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], mcpLoadOpts)
     const registry = buildGeneralRegistry({
-      skills: allSkills,
+      skills: runtimeExtensions.skills,
       skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
-      commands: mergedCommands,
-      extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
+      commands: runtimeExtensions.commands,
+      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
     })
-    return { workspace, registry, connections: allConnections }
+    return { workspace, registry, connections: mcpTools.connections }
   }
 
   /** 审批放行执行的核心:POST /agent/execute 与 WS {type:'approve'} 共用。返回结果 payload 或 null(参数缺失)。 */
@@ -2152,8 +2147,8 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handlePluginRoute = createPluginRouteHandler({
-    list: () => listPlugins(defaultPluginRoots(opts.env ?? process.env)),
-    setEnabled: (name, enabled) => setPluginEnabled(name, enabled, defaultPluginRoots(opts.env ?? process.env)),
+    list: () => listPlugins(pluginRoots),
+    setEnabled: (name, enabled) => setPluginEnabled(name, enabled, pluginRoots),
     installFromGithub: repo => installPluginFromGithub(repo, defaultPluginInstallDir(opts.env ?? process.env)),
   })
   const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
@@ -2181,6 +2176,7 @@ export function startServer(opts: StartServerOptions = {}) {
     commandsRoot: opts.commandsRoot ?? defaultCommandsRoot(),
     defaultWorkspaceRoot: getDefaultWorkspaceDir,
     env: opts.env ?? process.env,
+    pluginRoots,
   })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,

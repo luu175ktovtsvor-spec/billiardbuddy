@@ -22,7 +22,7 @@ function createHarness() {
     toggle: [] as Array<[unknown, unknown]>,
   }
   const handler = createMcpRouteHandler({
-    presets: [{ id: 'demo' }],
+    presets: [{ id: 'demo', name: 'Demo', desc: 'Demo preset', transport: 'stdio', command: 'node' }],
     trust,
     listStatus: async workspaceRoot => {
       calls.status.push(workspaceRoot)
@@ -30,15 +30,15 @@ function createHarness() {
     },
     add: async body => {
       calls.add.push(body)
-      return { ok: Object.keys(body).length > 0 }
+      return { ok: Object.keys(body).length > 0, message: 'added' }
     },
     remove: async name => {
       calls.remove.push(name)
-      return { ok: typeof name === 'string' }
+      return { ok: typeof name === 'string', message: 'removed' }
     },
     setDisabled: async (name, disabled) => {
       calls.toggle.push([name, disabled])
-      return { ok: typeof name === 'string', disabled: disabled === true }
+      return { ok: typeof name === 'string', message: disabled === true ? 'disabled' : 'enabled' }
     },
   })
   return { root, trust, calls, handler }
@@ -72,7 +72,9 @@ describe('MCP routes', () => {
     expect(status).toEqual({ servers: [], workspaceRoot: '/workspace' })
     expect(calls.status).toEqual(['/workspace'])
 
-    expect(await (await route(handler, '/api/v1/agent/mcp/presets')).json()).toEqual({ presets: [{ id: 'demo' }] })
+    expect(await (await route(handler, '/api/v1/agent/mcp/presets')).json()).toEqual({
+      presets: [{ id: 'demo', name: 'Demo', desc: 'Demo preset', transport: 'stdio', command: 'node' }],
+    })
   })
 
   test('persists trust and revoke operations with both accepted root field names', async () => {
@@ -105,23 +107,23 @@ describe('MCP routes', () => {
     })).status).toBe(405)
   })
 
-  test('forwards config mutations and preserves malformed JSON fallbacks', async () => {
+  test('parses config mutations and rejects malformed payloads', async () => {
     const { calls, handler } = createHarness()
     expect(await (await route(handler, '/api/v1/agent/mcp/add', {
       method: 'POST',
       body: JSON.stringify({ name: 'demo', command: 'node' }),
-    })).json()).toEqual({ ok: true })
-    expect(await (await route(handler, '/api/v1/agent/mcp/add', { method: 'POST', body: '{bad' })).json()).toEqual({ ok: false })
+    })).json()).toEqual({ ok: true, message: 'added' })
+    expect((await route(handler, '/api/v1/agent/mcp/add', { method: 'POST', body: '{bad' })).status).toBe(400)
     expect(await (await route(handler, '/api/v1/agent/mcp/remove', {
       method: 'POST',
       body: JSON.stringify({ name: 'demo' }),
-    })).json()).toEqual({ ok: true })
+    })).json()).toEqual({ ok: true, message: 'removed' })
     expect(await (await route(handler, '/api/v1/agent/mcp/toggle', {
       method: 'POST',
       body: JSON.stringify({ name: 'demo', disabled: true }),
-    })).json()).toEqual({ ok: true, disabled: true })
+    })).json()).toEqual({ ok: true, message: 'disabled' })
 
-    expect(calls.add).toEqual([{ name: 'demo', command: 'node' }, {}])
+    expect(calls.add).toEqual([{ name: 'demo', command: 'node' }])
     expect(calls.remove).toEqual(['demo'])
     expect(calls.toggle).toEqual([['demo', true]])
   })

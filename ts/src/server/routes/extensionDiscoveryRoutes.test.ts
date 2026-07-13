@@ -17,10 +17,12 @@ function createHarness(env: Record<string, string | undefined> = {}) {
   const skillsRoot = join(root, 'skills')
   const outputStylesRoot = join(root, 'output-styles')
   const workspaceRoot = join(root, 'workspace')
+  const pluginsRoot = join(root, 'plugins')
   mkdirSync(commandsRoot, { recursive: true })
   mkdirSync(skillsRoot, { recursive: true })
   mkdirSync(outputStylesRoot, { recursive: true })
   mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(pluginsRoot, { recursive: true })
   const handler = createExtensionDiscoveryRouteHandler({
     commandsRoot,
     skillsRoot,
@@ -28,8 +30,9 @@ function createHarness(env: Record<string, string | undefined> = {}) {
     env,
     userSkillsRoot: null,
     outputStyleDirs: [{ source: 'test', dir: outputStylesRoot }],
+    pluginRoots: [pluginsRoot],
   })
-  return { root, commandsRoot, skillsRoot, outputStylesRoot, workspaceRoot, handler }
+  return { root, commandsRoot, skillsRoot, outputStylesRoot, workspaceRoot, pluginsRoot, handler }
 }
 
 function request(path: string, init?: RequestInit): Request {
@@ -107,6 +110,33 @@ Keep the answer concise.
       expect.objectContaining({ name: 'fixture-skill', source: 'skill' }),
       expect.objectContaining({ name: 'review', source: 'builtin' }),
     ]))
+  })
+
+  test('keeps pack activation discoverable and includes enabled plugin skills and commands with plugin source', async () => {
+    const { pluginsRoot, workspaceRoot, handler } = createHarness()
+    const pluginDir = join(pluginsRoot, 'demo')
+    mkdirSync(join(pluginDir, 'skills', 'plugin-skill'), { recursive: true })
+    mkdirSync(join(pluginDir, 'commands'), { recursive: true })
+    writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', enabled: true }))
+    writeFileSync(join(pluginDir, 'skills', 'plugin-skill', 'SKILL.md'), `---
+name: plugin-skill
+description: Plugin skill
+---
+Plugin skill body.
+`)
+    writeFileSync(join(pluginDir, 'commands', 'plugin-command.md'), `---
+description: Plugin command
+---
+Plugin command body.
+`)
+
+    const body = await (await route(handler, `/api/v1/agent/commands?working_dir=${encodeURIComponent(workspaceRoot)}`)).json() as any
+    expect(body.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '台球', source: 'pack' }),
+      expect.objectContaining({ name: 'plugin-skill', source: 'plugin', layer: 'plugin' }),
+      expect.objectContaining({ name: 'plugin-command', source: 'plugin' }),
+    ]))
+    expect(body.commands.some((command: any) => command.name === 'billiards:daily-ops')).toBe(false)
   })
 
   test('lists and expands markdown prompt commands', async () => {

@@ -165,6 +165,16 @@ export function createDomainPackCommandLibrary(packs: DomainPack[]): CommandLibr
   return library
 }
 
+/** 用户面始终可发现的领域包激活入口；领域子命令仍只在对应 pack 已启用时进入运行时。 */
+export function createDomainPackActivationCommandLibrary(): CommandLibrary | undefined {
+  const registry = getDefaultPackRegistry()
+  const activationPacks = registry.list().map(pack => ({
+    ...pack,
+    commands: (pack.commands ?? []).filter(command => !normalizeCommandName(command.name).includes(':') && registry.resolve(command.name)?.id === pack.id).slice(0, 1),
+  }))
+  return createDomainPackCommandLibrary(activationPacks)
+}
+
 /**
  * 把领域包命令的 aliases 注册进 library.byName(不进 commands 数组,清单不重复出条)。
  * 用于合并后重新挂别名:mergeCommandLibraries 只从 commands 数组重建 byName,会丢掉这些别名键,

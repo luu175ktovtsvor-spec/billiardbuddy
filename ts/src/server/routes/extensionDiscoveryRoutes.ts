@@ -1,13 +1,13 @@
 // 扩展发现 REST 边界：技能、输出风格、领域包，以及斜杠命令列表和展开。
 
-import { filterBridgeSafeCommands, normalizeCommandName, publicCommand } from '../../commands/commandLoader'
+import { filterBridgeSafeCommands, mergeCommandLibraries, normalizeCommandName, publicCommand } from '../../commands/commandLoader'
 import { collectDiscoveryEntries, toPublicCommandEntries } from '../../harness/skillListing'
-import { listPublicDomainPacks, resolveEnabledPacks } from '../../packs/domainPacks'
+import { createDomainPackActivationCommandLibrary, listPublicDomainPacks, resolveEnabledPacks } from '../../packs/domainPacks'
 import { loadOutputStyles, publicOutputStyle } from '../../outputStyles/outputStyleLoader'
-import { loadLayeredSkills } from '../../skills/skillLoader'
 import { Workspace } from '../../workspace/workspace'
-import { loadCommandsForWorkspace } from '../extensionRoots'
+import { loadRuntimeExtensionLibraries } from '../extensionRoots'
 import { workspaceFromBody } from '../turnInput'
+import { extensionCommandsResponseSchema, extensionSkillsResponseSchema } from '../../../shared/contracts/extensions'
 
 type OutputStyleDirs = Parameters<typeof loadOutputStyles>[0]
 
@@ -18,18 +18,11 @@ interface ExtensionDiscoveryRouteDependencies {
   env?: Record<string, string | undefined>
   userSkillsRoot?: string | null
   outputStyleDirs?: OutputStyleDirs
+  pluginRoots?: string[]
 }
 
 function methodNotAllowed(): Response {
   return new Response('Method not allowed', { status: 405 })
-}
-
-function skillLoadOptions(deps: ExtensionDiscoveryRouteDependencies, workspaceRoot?: string) {
-  return {
-    bundledRoot: deps.skillsRoot,
-    ...(deps.userSkillsRoot !== undefined ? { userRoot: deps.userSkillsRoot } : {}),
-    ...(workspaceRoot ? { workspaceRoot } : {}),
-  }
 }
 
 function enabledPacksFromAgentQuery(url: URL) {
@@ -51,8 +44,15 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
   return async function handleExtensionDiscoveryRoute(url: URL, req: Request): Promise<Response | null> {
     if (url.pathname === '/api/v1/agent/skills') {
       if (req.method !== 'GET') return methodNotAllowed()
-      const skills = await loadLayeredSkills(skillLoadOptions(deps))
-      return Response.json({
+      const skills = (await loadRuntimeExtensionLibraries({
+        workspaceRoot: deps.defaultWorkspaceRoot(),
+        skillsRoot: deps.skillsRoot,
+        commandsRoot: deps.commandsRoot,
+        env,
+        userSkillsRoot: deps.userSkillsRoot,
+        pluginRoots: deps.pluginRoots,
+      })).skills
+      return Response.json(extensionSkillsResponseSchema.parse({
         skills: skills.skills.map(skill => ({
           name: skill.name,
           description: skill.description,
@@ -60,7 +60,7 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
           argument_hint: skill.whenToUse,
           user_invocable: true,
         })),
-      })
+      }))
     }
 
     if (url.pathname === '/api/v1/agent/output-styles') {
@@ -80,11 +80,19 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
       if (req.method !== 'GET') return methodNotAllowed()
       const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || deps.defaultWorkspaceRoot()
       const workspace = new Workspace(workspaceRoot)
-      const [skills, commands] = await Promise.all([
-        loadLayeredSkills(skillLoadOptions(deps, workspace.root)),
-        loadCommandsForWorkspace(workspace.root, deps.commandsRoot, enabledPacksFromAgentQuery(url), env),
-      ])
-      return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
+      const loaded = await loadRuntimeExtensionLibraries({
+        workspaceRoot: workspace.root,
+        skillsRoot: deps.skillsRoot,
+        commandsRoot: deps.commandsRoot,
+        packs: enabledPacksFromAgentQuery(url),
+        env,
+        userSkillsRoot: deps.userSkillsRoot,
+        pluginRoots: deps.pluginRoots,
+      })
+      const commands = mergeCommandLibraries(createDomainPackActivationCommandLibrary(), loaded.commands)
+      return Response.json(extensionCommandsResponseSchema.parse({
+        commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills: loaded.skills })),
+      }))
     }
 
     const commandRoute = url.pathname.match(/^\/(?:api\/)?commands(?:\/(expand))?$/)
@@ -110,7 +118,16 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
         }
       : await req.clone().json().catch(() => ({})) as Record<string, unknown>
     const workspace = workspaceFromBody(body)
-    const commands = await loadCommandsForWorkspace(workspace.root, deps.commandsRoot, resolveEnabledPacks(body), env)
+    const loaded = await loadRuntimeExtensionLibraries({
+      workspaceRoot: workspace.root,
+      skillsRoot: deps.skillsRoot,
+      commandsRoot: deps.commandsRoot,
+      packs: resolveEnabledPacks(body),
+      env,
+      userSkillsRoot: deps.userSkillsRoot,
+      pluginRoots: deps.pluginRoots,
+    })
+    const commands = loaded.commands
     const visibleCommands = body.bridgeOrigin === true || body.bridge_origin === true || body.remoteControl === true || body.remote_control === true
       ? filterBridgeSafeCommands(commands.commands)
       : commands.commands

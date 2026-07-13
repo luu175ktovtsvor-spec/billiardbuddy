@@ -161,15 +161,15 @@ test('legacy frontend capability endpoints are served by TS server', async () =>
 })
 
 test('GET /api/v1/agent/commands 汇总 builtin+skill+启用领域包命令,billiards 按 /台球 别名启用时进清单', async () => {
-  // 不启用领域包:清单里没有 billiards 入口/子命令
+  // 不启用领域包:激活入口始终可发现,领域子命令仍不装配
   const genericRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`)
   expect(genericRes.status).toBe(200)
   const generic = await genericRes.json() as { commands: Array<{ name: string; description: string; source: string; argHint?: string; whenToUse?: string }> }
   expect(Array.isArray(generic.commands)).toBe(true)
-  expect(generic.commands.some(command => command.name === '台球')).toBe(false)
-  expect(generic.commands.some(command => command.source === 'pack')).toBe(false)
+  expect(generic.commands.some(command => command.name === '台球')).toBe(true)
+  expect(generic.commands.some(command => command.name.startsWith('billiards:'))).toBe(false)
   // source 只在约定枚举内
-  expect(generic.commands.every(command => ['builtin', 'skill', 'pack'].includes(command.source))).toBe(true)
+  expect(generic.commands.every(command => ['builtin', 'skill', 'pack', 'plugin'].includes(command.source))).toBe(true)
 
   // 用别名 台球 启用领域包:入口 /台球 + billiards:* 子命令进清单,且标 source=pack
   const packRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands?conversationId=c1&enabledPacks=${encodeURIComponent('台球')}`)
@@ -872,7 +872,7 @@ test('server mounts MCP routes with the configured desktop library', async () =>
 test('server mounts plugin routes with the configured library root', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-plugins-'))
   mkdirSync(join(root, 'plugins', 'demo'), { recursive: true })
-  writeFileSync(join(root, 'plugins', 'demo', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin' }))
+  writeFileSync(join(root, 'plugins', 'demo', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
   const pluginServer = startServer({
     port: 0,
     transcriptRoot: root,
@@ -902,10 +902,11 @@ test('server mounts plugin routes with the configured library root', async () =>
 
 // 死链回归:已启用插件贡献的 hooks 与 commands 必须真接进会话(不再"函数写好了但从不调用")。
 // hooks 走 /agent/run 主回合(SessionStart context 注入进系统提示);commands 走 /agent/execute 审批执行注册表(read_command 能读到)。
-test('enabled plugin hooks + commands are wired into the live session (dead-link regression)', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'agent-plugin-wired-'))
+test('enabled plugin hooks, skills, commands and MCP are wired into the main Agent turn and discovery', async () => {
+  const root = mkdtempSync(join(process.cwd(), '.agent-plugin-wired-'))
   const pluginDir = join(root, 'plugins', 'demo')
   mkdirSync(join(pluginDir, 'hooks'), { recursive: true })
+  mkdirSync(join(pluginDir, 'skills', 'plugin-skill'), { recursive: true })
   mkdirSync(join(pluginDir, 'commands'), { recursive: true })
   writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
   // cc 包裹结构:{ description, hooks: { <event>: [{hooks:[...]}] } };SessionStart 注入独特标记
@@ -918,7 +919,31 @@ description: Demo plugin command
 ---
 PLUGIN_COMMAND_BODY_MARKER
 `)
+  writeFileSync(join(pluginDir, 'skills', 'plugin-skill', 'SKILL.md'), `---
+name: plugin-skill
+description: Demo plugin skill
+---
+PLUGIN_SKILL_BODY_MARKER
+`)
+  const fixturePath = join(root, 'plugin-mcp-server.ts')
+  writeFileSync(fixturePath, `
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+
+const server = new McpServer({ name: 'pluginfixture', version: '1.0.0' })
+server.registerTool('echo', {
+  description: 'Echo text through plugin MCP',
+  inputSchema: { text: z.string() },
+  annotations: { readOnlyHint: true },
+}, async ({ text }) => ({ content: [{ type: 'text', text: 'plugin-mcp:' + text }] }))
+await server.connect(new StdioServerTransport())
+`)
+  writeFileSync(join(pluginDir, '.mcp.json'), JSON.stringify({
+    mcpServers: { pluginfixture: { command: process.execPath, args: [fixturePath] } },
+  }))
   const sentBodies: any[] = []
+  let calls = 0
   const wiredServer = startServer({
     port: 0,
     transcriptRoot: root,
@@ -930,8 +955,11 @@ PLUGIN_COMMAND_BODY_MARKER
       TEXT_MODEL_NAME: 'mimo-v2.5',
     },
     fetchImpl: async (_url, init) => {
+      calls++
       sentBodies.push(JSON.parse(String(init?.body || '{}')))
-      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })
+      return sseResponse(calls === 1
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'plugin-mcp-call', function: { name: 'mcp__pluginfixture__echo', arguments: JSON.stringify({ text: 'hello' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'plugin done' }, finish_reason: 'stop' }] })
     },
   })
   try {
@@ -941,9 +969,19 @@ PLUGIN_COMMAND_BODY_MARKER
       body: JSON.stringify({ message: '你好', workspaceRoot: root, permissionMode: 'full' }),
     })
     expect(run.status).toBe(200)
-    await run.text()
+    const runText = await run.text()
     const systemPrompt = String(sentBodies[0]?.messages?.[0]?.content ?? '')
     expect(systemPrompt).toContain('PLUGIN_HOOK_SESSION_MARKER')
+    expect(systemPrompt).toContain('\n- /plugintest')
+    expect(systemPrompt).toContain('\n- /plugin-skill')
+    expect(sentBodies[0].tools.some((tool: any) => tool.function.name === 'mcp__pluginfixture__echo')).toBe(true)
+    expect(runText).toContain('plugin-mcp:hello')
+
+    const discovered = await (await fetch(`http://127.0.0.1:${wiredServer.port}/api/v1/agent/commands?working_dir=${encodeURIComponent(root)}`)).json() as any
+    expect(discovered.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'plugintest', source: 'plugin' }),
+      expect.objectContaining({ name: 'plugin-skill', source: 'plugin', layer: 'plugin' }),
+    ]))
 
     // B) 插件 commands 接进会话命令来源:审批执行注册表的 read_command 能读到插件命令正文。
     const readArgs = { name: 'plugintest' }
