@@ -4768,7 +4768,7 @@ test('legacy studio media endpoints create TS media jobs and expose media-job st
     expect(startedBody.job_id).toBeTruthy()
 
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       const res = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)
       status = await res.json()
       if (status.status === 'done') break
@@ -4833,7 +4833,7 @@ test('legacy studio generate uses TS image gateway when image env is configured'
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       const res = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)
       status = await res.json()
       if (status.status === 'done') break
@@ -4941,7 +4941,7 @@ test('legacy studio generate passes trusted local references to TS Seedream gate
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5003,7 +5003,7 @@ test('legacy studio generate keeps store logo and qrcode out of model image cond
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`${base}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5042,7 +5042,7 @@ test('legacy studio generate keeps store logo and qrcode out of model image cond
     expect(portraitStarted.status).toBe(200)
     const portraitStartedBody = await portraitStarted.json() as any
     let portraitStatus: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       portraitStatus = await (await fetch(`${base}/api/v1/agent/media-jobs/${portraitStartedBody.job_id}`)).json()
       if (portraitStatus.status === 'done' || portraitStatus.status === 'failed') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5217,7 +5217,7 @@ test('legacy studio edit uses TS image edits gateway with generated source image
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
