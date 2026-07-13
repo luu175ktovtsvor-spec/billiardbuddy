@@ -20,7 +20,7 @@
 | 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
 | 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
 | 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
-| 工作区 | `workspace`、`sandbox`、renderer workspace | cwd、文件树、Git、终端 |
+| 工作区 | `workspace`、`sandbox`、`server/routes/workspaceRoutes.ts`、renderer workspace | 工作区 REST、cwd、文件树、Git、终端 |
 | 权限安全 | `permissions`、`sandbox` | 权限档、审批、路径与命令护栏 |
 | 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins` | 可发现能力与领域包 |
 | MCP | `mcp` | MCP 配置、信任、OAuth、工具加载 |

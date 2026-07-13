@@ -71,7 +71,6 @@ import { createVideoEditRouteHandler } from '../media/video-edit/routes'
 import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
 import { getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
-import { WorkspaceNameError, createNamedWorkspace } from '../workspace/workspaceProvision'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
@@ -89,7 +88,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 
 import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
@@ -109,6 +108,7 @@ import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoute
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
+import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
@@ -2158,6 +2158,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const handleTaskRoute = createTaskRouteHandler({ tasks })
+  const handleWorkspaceRoute = createWorkspaceRouteHandler({ settings: userSettings, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -2929,65 +2930,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
-      // 工作区路径(§P1 持久化 + 新建/现有两条路 + 可配置默认存储路径)。四个动作共用 buildState():
-      //   { default(全局默认工作区), base(默认工作空间存储路径,新建落这里), persisted(上次选中), current(启动应恢复到的), exists }。
-      // - GET  /api/v1/workspace            → 读状态(前端启动据此回填上次工作目录 →「关窗即忘」修好)。
-      // - POST /api/v1/workspace { path }    → 「使用现有文件夹」:把选中的绝对路径存盘(lastWorkspaceRoot),非目录报 400。
-      // - POST /api/v1/workspace/create { name } → 「新建工作空间」:在 base 下建同名文件夹 + 初始化项目记忆(BILLIARDBUDDY.md/.billiardbuddy)+ 设为当前,返回绝对路径。
-      // - POST /api/v1/workspace/base { path } → 改「默认工作空间存储路径」(workspaceBaseDir)。
-      if (url.pathname === '/api/v1/workspace' || url.pathname === '/api/v1/workspace/create' || url.pathname === '/api/v1/workspace/base') {
-        const isDir = async (p: string): Promise<boolean> => { try { return (await stat(p)).isDirectory() } catch { return false } }
-        const effectiveBase = async (): Promise<string> => (await userSettings.get()).workspaceBaseDir || getDefaultWorkspaceDir()
-        const buildState = async (): Promise<Record<string, unknown>> => {
-          const settings = await userSettings.get()
-          const defaultDir = getDefaultWorkspaceDir()
-          const base = settings.workspaceBaseDir || defaultDir
-          const persisted = settings.lastWorkspaceRoot ?? null
-          const current = persisted && await isDir(persisted) ? persisted : defaultDir
-          return { default: defaultDir, base, persisted, current, exists: await isDir(current) }
-        }
-
-        // 「新建工作空间」:名字 → base 下建同名文件夹 + 初始化 + 设为当前。
-        if (url.pathname === '/api/v1/workspace/create') {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          try {
-            const created = await createNamedWorkspace(await effectiveBase(), typeof body.name === 'string' ? body.name : '')
-            await userSettings.update({ lastWorkspaceRoot: created.path })
-            return Response.json({ ...created, ...(await buildState()) })
-          } catch (err) {
-            if (err instanceof WorkspaceNameError) return jsonError(err.message, 400)
-            return jsonError(err instanceof Error ? err.message : String(err), 500)
-          }
-        }
-
-        // 改「默认工作空间存储路径」:mkdir -p 兜底,非目录报 400。
-        if (url.pathname === '/api/v1/workspace/base') {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const raw = typeof body.path === 'string' ? body.path.trim() : ''
-          if (!raw) return jsonError('path required', 400)
-          const abs = resolve(raw)
-          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
-          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
-          await userSettings.update({ workspaceBaseDir: abs })
-          return Response.json(await buildState())
-        }
-
-        // /api/v1/workspace 本体:GET 读状态 / POST 设「使用现有文件夹」的选中路径。
-        if (req.method === 'GET') return Response.json(await buildState())
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const raw = typeof body.path === 'string' ? body.path.trim() : ''
-          if (!raw) return jsonError('path required', 400)
-          const abs = resolve(raw)
-          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
-          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
-          await userSettings.update({ lastWorkspaceRoot: abs })
-          return Response.json(await buildState())
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const workspaceResponse = await handleWorkspaceRoute(url, req)
+      if (workspaceResponse) return workspaceResponse
 
       // 规则持久化:把一条权限规则写进工作区 .claude/settings.local.json(跨重启生效),供"始终允许"选择用。
       if (url.pathname === '/api/v1/agent/permissions/persist' && req.method === 'POST') {
