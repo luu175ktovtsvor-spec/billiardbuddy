@@ -56,7 +56,7 @@ ssh root@<us-server> 'bash /tmp/relay-deploy.sh'        # Bun + systemd(qfrelay)
 ```nginx
 location /relay/imgtasks/ {
     proxy_pass http://127.0.0.1:8790/;
-    proxy_read_timeout 120s;   # 只需扛"提交/轮询"的短请求,不再有分钟级长连接
+    proxy_read_timeout 120s;   # submit/poll 短请求
 }
 ```
 
@@ -72,4 +72,4 @@ location /relay/imgtasks/ {
 cd relay && bun test        # 提交→后台调 OpenAI→轮询成功、multipart 改图、失败捕获、鉴权、TTL 过期(mock OpenAI)
 ```
 
-真机端到端(真 OpenAI key + 真跨境)仍需部署后在真机验一次,确认 high 质量 gpt-image-2 不再丢图。
+部署后执行带真实密钥和跨境链路的显式 live smoke，确认高质量图片稳定返回。

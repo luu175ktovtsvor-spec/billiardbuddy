@@ -42,8 +42,7 @@ ssh root@<server> 'bash /tmp/deploy.sh'   # Bun+systemd(qfgw)+起服务+healthz
 | `GW_Q_CHAT` / `GW_Q_IMG` / `GW_Q_ARK_CHAT` / `GW_Q_ARK_IMG` | 每用户每日配额 |
 | `GW_RELAY_TASKS_BASE` | 美国 relay 上 GPT 生图**异步任务服务**地址(`relay/app.ts`,如 `https://zzyppz.cn/relay/imgtasks`)。配了才开 `POST /v1/images/tasks` + `GET /v1/images/tasks/:id`(提交/轮询转发到美国 relay,根治大陆↔美国跨境长连接 60s 被掐);缺则返回 503、客户端退同步路径。当前链路见 `docs/生图-当前能力与设计.md` |
 
-详细部署步骤(服务器变量清单/nginx/发令牌/验证 curl/遗留风险)见
-`docs/plans/密钥收网关-部署清单-2026-07-02.md`。
+服务器变量、nginx、令牌发放和验证步骤见 `docs/服务器与部署-当前拓扑.md`。
 
 ## 现状(2026-07-09)
 - ✅ 网关已从 FastAPI 迁到 Bun/TS,保留原路径契约、三层阀门、SQLite 用量记录和 app 令牌模式;契约测试覆盖鉴权、配额、对话流式、GPT 生图/改图、ARK、AMAP。

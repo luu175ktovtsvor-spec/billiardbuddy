@@ -1,33 +1,38 @@
-# billiards-ts-harness · 工程规则（ts/ 目录 · TS/Bun 内核）
+# TypeScript/Bun 内核工程规则
 
-> **权威入口**:上级 `docs/当前目标与文档口径-2026-07-07.md` + `docs/plans/TS-cc-haha-v0.4.5-内核迁移矩阵-2026-07-07.md` + `docs/plans/内核A线对齐-差异总清单-波次-2026-07-10.md`。非平凡改动使用短生命周期分支和小提交，合入前执行根目录统一质量门；旧 `ts-harness-rewrite` 等分支名只代表历史阶段。本目录目标是把 coding-agent 内核能力做强;CC-Haha 已有许可,可直接复制/抄/移植/改写其可靠机制,并用本仓库测试兜住边界。
+> 📌 状态:✅现行 · 最后核对 2026-07-13
 
-## 铁律(违反即破坏产品)
-1. **迁移口径:CC-Haha 可直接复制/抄/移植/改写,效果对齐是唯一硬标准(owner 2026-07-07 更新)**:cc-haha 的**内核行为、架构边界、边界测试全量覆盖**；`~/Desktop/cc-haha-ref/LICENSE` 已允许 use/copy/modify/distribute/publish copies,所以可直接复制/抄/移植/改写实现。别为「看起来原创」而牺牲边界质量；复杂逻辑必须先写行为对齐测试，再实现到同输入→同决策。⚠️**行为对齐(唯一验收硬闸 · 全 harness 窗通用)**:路径校验/沙箱/危险命令/proxy 转换等确定性逻辑，验收拿刁钻边界(`../escape`、`\\server\share`、`~root/.ssh`、`rm -rf *` 等)断言判得跟 cc-haha 一模一样,别只测自己想到的用例。
-2. **每个 harness 窗先确认行为再写计划**:可从 `~/Desktop/cc-haha-ref` 找对应能力(query/proxy/tools/permissions/skills/hooks/context/desktop plumbing 等),源码/测试/结构都可直接参考和移植。开发文档管路线和产品边界,参考实现用于吃透内核细节并减少重复造轮子。
-3. **Bun ≥ 1.3.13**(1.3.12 有 macOS `--compile` 坏签名回归;最新 1.3.14)。
-4. **测试**:后端一律 **`bun test`**(用 `Bun.serve`/`bun:sqlite`/`Bun.build` 等 Bun 全局,只能在 Bun 运行时跑;vitest 跑 Node 上跑不了)。前端(W11/W12)才用 vitest。
-5. **存储 = 文件式(对齐 cc-haha,无 SQL 数据库)**:会话/transcript 存 `.jsonl`(`<stateRoot>/transcripts/<id>.jsonl`)、索引/任务/元信息存 `.json`(`sessions.json`/`tasks.json`/`*.meta.json`/`task-events`)。cc-haha 本地 coding agent 就是 JSONL transcript + JSON 元信息、不用数据库,我们对齐。~~原"drizzle+bun:sqlite/W5 建表"是老 Python 台球域数据的计划,server/ 已删、内核不用 SQLite,该口径作废。~~
-6. **SSE**:必 `server.timeout(req, 0)` 关掉 Bun 10s 空闲掐断 + 用 **async-generator** 流体(每 yield 即 flush,别用 ReadableStream)。
-7. **产品红线不因换语言丢**:审批闸只卡对外/不可逆动作 · 全本地 · 免登录单用户 · 内置 key 走网关藏 key · 改文件前自动备份可回滚 · **白标绝不暴露底层模型** · 台球是可 @挂载领域包不是产品边界。
-8. **原生插件**:`.node`(sharp/onnx/whisper)大概率**塞不进 `bun build --compile` 单二进制**,当 sidecar 文件随包发;嵌入走 `transformers.js`——⚠️**服务端就是原生 `onnxruntime-node`(不是 WASM,HF 官方证实)**,且在 **Bun+Windows 会段错误**(bun#28008),**放 Node 子进程 sidecar 跑、别在 Bun 进程内**(见主文档 §0.6-2)。
-9. **注释从简、责任边界对齐 cc-haha**(主文档 §9)。
-10. **共享契约**:renderer、sidecar、IPC 的跨层 Schema 统一在 `ts/shared/contracts`;Zod 推导类型并在边界解析,禁止新增手写镜像。
-11. **机械质量门**:完成、提交、发布前从根目录运行 `bash scripts/quality_gate.sh`;不得调高架构基线掩盖巨型文件增长。
+## 当前目标
 
-## 对上面 Bun 默认建议的**本工程校正**(别被通用建议带偏)
-- ✅ **可以用 `node:` API**(`node:child_process`/`node:net`/`node:fs`):sidecar/electron plumbing 要在 **Node(electron 主进程)+ Bun(后端)双运行时**都能跑,故用 `node:` 前缀而非 Bun 专有 API——这是**有意为之**,别改成 `Bun.file`/`Bun.$`。
-- ~~Postgres/drizzle 两端~~ 作废:内核纯文件式存储(JSONL/JSON),不接 SQL 数据库(对齐 cc-haha)。
-- ✅ **`ws` 按需可用**(cc-haha 也用);内置 `WebSocket` 客户端够用时优先内置。
+`ts/` 提供桌面产品的共享契约、Agent 内核、本地服务、React renderer、Electron 主进程和端到端验证。内核行为参考 `~/Desktop/cc-haha-ref`，产品边界以根 `CLAUDE.md` 和当前架构总览为准。
 
-## 常用命令(cwd = `ts/`)
+## 硬规则
+
+1. **行为对齐**：路径、沙箱、命令、权限、消息配对、压缩和 provider 转换等确定性逻辑，用边界测试证明与参考实现一致。
+2. **运行时**：使用 Bun 1.3.13 或更高版本；后端测试执行 `bun test`。
+3. **存储**：transcript 使用 JSONL，会话索引、任务和元信息使用 JSON。桌面内核不使用 SQL 数据库。
+4. **消息**：内核统一使用 content-block；tool use/result 保持严格配对。
+5. **SSE**：设置 `server.timeout(req, 0)`，使用 async generator 持续输出。
+6. **共享契约**：跨 renderer、sidecar、IPC 的 Schema 放在 `shared/contracts`，由 Zod 推导类型并在边界解析。
+7. **运行时兼容**：Electron main 与 Bun sidecar 共用的代码优先使用 `node:` API。
+8. **原生模块**：`.node` 依赖和本地模型运行时使用 Node sidecar，不塞进 Bun 单文件可执行程序。
+9. **模块边界**：renderer 依赖 feature API/store，route 依赖应用服务，应用服务依赖领域接口；禁止反向依赖和跨模块内部导入。
+10. **产品边界**：保持本地单用户、网关藏密钥、运行时白标、文件可恢复、领域包可挂载和通用安全红线。
+11. **质量门**：不得通过提高体积基线掩盖 `server/index.ts`、`chatStore.ts` 或其他巨型文件增长。
+
+## 常用命令
+
 ```bash
 bun install
-bun run typecheck      # tsc --noEmit
-bun test               # 全量(发现 ts/**/*.test.ts)
-bun run build:sidecar  # bun build --compile 出本机 sidecar 二进制
-bun run desktop:dev    # 最小 Electron 壳拉起 sidecar(需先 build:sidecar)
-bun run e2e:backend    # bun:test 启动真实 sidecar,外部模型用确定性脚本替代
-bun run e2e:desktop    # @playwright/test 启动当前 worktree Electron,隔离状态并留 trace/截图/日志
-cd .. && bash scripts/quality_gate.sh # Skill/工作流/密钥/架构/typecheck/测试/构建总门
+bun run typecheck
+bun test
+bun run build:sidecar
+bun run desktop:dev
+bun run e2e:backend
+bun run e2e:desktop
+cd .. && bash scripts/quality_gate.sh
 ```
+
+## 文档
+
+目录规则只描述当前工程事实。架构变化更新 `docs/当前架构与状态-总览.md` 和工程 Skill；普通模块实现只更新对应功能文档或测试，不增加重复入口。
