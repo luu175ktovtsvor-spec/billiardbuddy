@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,6 +24,21 @@ function draftScene(sourceId: string) {
     audio_layers: [{ id: 'audio-1', role: 'speech', owner: true }],
     attention_owner: 'person', rationale: '保留完整表达',
   })
+}
+
+function writeLegacyProject(root: string, source: string, id = 'legacy-project') {
+  const dir = join(root, 'uploads', 'edits', id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'timeline.json'), JSON.stringify({
+    version: 1, width: 1080, height: 1920, fps: 30,
+    media: { m1: { src: source, duration: 5, kind: 'video', has_audio: true } },
+    tracks: { v1: { kind: 'video', order: 0 }, sub: { kind: 'caption', order: 1 } },
+    clips: {
+      c1: { track: 'v1', order: 0, media: 'm1', src_in: 0, src_out: 5 },
+      cap1: { track: 'sub', order: 0, text: '旧字幕', start: 0, end: 5 },
+    },
+  }))
+  return dir
 }
 
 test('project store atomically creates v2 project, persists brief and supports revisioned undo/redo', async () => {
@@ -76,17 +91,7 @@ test('two concurrent writes from the same revision serialize and only one commit
 test('legacy timeline migrates once to project.json and keeps a read-only backup without dual writes', async () => {
   const { root, source, store } = setup()
   const id = 'legacy-project'
-  const dir = join(root, 'uploads', 'edits', id)
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'timeline.json'), JSON.stringify({
-    version: 1, width: 1080, height: 1920, fps: 30,
-    media: { m1: { src: source, duration: 5, kind: 'video', has_audio: true } },
-    tracks: { v1: { kind: 'video', order: 0 }, sub: { kind: 'caption', order: 1 } },
-    clips: {
-      c1: { track: 'v1', order: 0, media: 'm1', src_in: 0, src_out: 5 },
-      cap1: { track: 'sub', order: 0, text: '旧字幕', start: 0, end: 5 },
-    },
-  }))
+  const dir = writeLegacyProject(root, source, id)
   const migrated = await store.load(id)
   expect(migrated.schema_version).toBe(2)
   expect(migrated.migrated_from_v1).toBe(true)
@@ -95,6 +100,73 @@ test('legacy timeline migrates once to project.json and keeps a read-only backup
   const legacyBefore = readFileSync(join(dir, 'timeline.json'), 'utf8')
   await store.apply(id, migrated.revision, [{ type: 'project.set_view', goal: 'talking' }])
   expect(readFileSync(join(dir, 'timeline.json'), 'utf8')).toBe(legacyBefore)
+})
+
+test('project list discovers legacy timelines and migrates them into the v2 list response', async () => {
+  const { root, source, store } = setup()
+  const dir = writeLegacyProject(root, source, 'legacy-visible')
+  const projects = await store.list()
+  expect(projects).toEqual([expect.objectContaining({ project_id: 'legacy-visible', schema_version: 2, migrated_from_v1: true })])
+  expect(existsSync(join(dir, 'project.json'))).toBe(true)
+  expect(existsSync(join(dir, 'timeline.v1.readonly.json'))).toBe(true)
+})
+
+test('a corrupt v2 project never falls back to and overwrites its older v1 timeline', async () => {
+  const { root, source, store } = setup()
+  const dir = writeLegacyProject(root, source, 'corrupt-v2')
+  const corrupt = '{"schema_version":2,"broken":true}\n'
+  const legacyBefore = readFileSync(join(dir, 'timeline.json'), 'utf8')
+  writeFileSync(join(dir, 'project.json'), corrupt)
+
+  await expect(store.load('corrupt-v2')).rejects.toMatchObject({ code: 'project_corrupt' })
+  expect(readFileSync(join(dir, 'project.json'), 'utf8')).toBe(corrupt)
+  expect(readFileSync(join(dir, 'timeline.json'), 'utf8')).toBe(legacyBefore)
+  expect(existsSync(join(dir, 'timeline.v1.readonly.json'))).toBe(false)
+})
+
+test('a malformed v1 migration leaves the original file untouched and creates no v2 project', async () => {
+  const { root, store } = setup()
+  const dir = join(root, 'uploads', 'edits', 'malformed-v1')
+  mkdirSync(dir, { recursive: true })
+  const malformed = '{"version":1,"media":'
+  writeFileSync(join(dir, 'timeline.json'), malformed)
+
+  await expect(store.load('malformed-v1')).rejects.toMatchObject({ code: 'legacy_migration_failed' })
+  expect(readFileSync(join(dir, 'timeline.json'), 'utf8')).toBe(malformed)
+  expect(existsSync(join(dir, 'project.json'))).toBe(false)
+  expect(existsSync(join(dir, 'timeline.v1.readonly.json'))).toBe(false)
+  expect(await store.list()).toEqual([])
+})
+
+test('legacy discovery and direct migration refuse symlinked project directories', async () => {
+  if (process.platform === 'win32') return
+  const { root, source, store } = setup()
+  const external = join(root, 'external-project')
+  mkdirSync(external, { recursive: true })
+  writeFileSync(join(external, 'timeline.json'), JSON.stringify({
+    version: 1,
+    media: { m1: { src: source, duration: 1, kind: 'video' } },
+    tracks: { v1: { kind: 'video', order: 0 } },
+    clips: { c1: { track: 'v1', order: 0, media: 'm1', src_in: 0, src_out: 1 } },
+  }))
+  const editsRoot = join(root, 'uploads', 'edits')
+  mkdirSync(editsRoot, { recursive: true })
+  symlinkSync(external, join(editsRoot, 'linked-project'))
+
+  expect(await store.list()).toEqual([])
+  await expect(store.load('linked-project')).rejects.toMatchObject({ code: 'unsafe_project_path' })
+  expect(existsSync(join(external, 'project.json'))).toBe(false)
+  expect(existsSync(join(external, 'timeline.v1.readonly.json'))).toBe(false)
+})
+
+test('concurrent legacy opens share one migration and one history record', async () => {
+  const { root, source, store } = setup()
+  const dir = writeLegacyProject(root, source, 'legacy-concurrent')
+  const [first, second] = await Promise.all([store.load('legacy-concurrent'), store.load('legacy-concurrent')])
+  expect(first).toEqual(second)
+  const history = readFileSync(join(dir, 'operations.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
+  expect(history).toHaveLength(1)
+  expect(JSON.parse(history[0]!).kind).toBe('migration')
 })
 
 test('source relocation rejects a same-name file with a different fingerprint', async () => {
