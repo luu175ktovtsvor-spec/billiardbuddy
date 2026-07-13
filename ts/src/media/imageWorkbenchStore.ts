@@ -296,14 +296,29 @@ export class ImageWorkbenchStore {
     }
     await this.validateExportLayers(canvasReq)
     this.validatePosterControlledCopy(project, canvasReq)
+    this.validateRenderedExport(req, canvasReq)
     const asset = await this.uploadAsset(req)
     const saved = await this.saveCanvas(projectId, canvasReq)
+    const exportReview = project.intent === 'poster_text' ? {
+      ...(version.review ?? {}),
+      poster_quality_state: 'recommended' as const,
+      poster_hard_gate_passed: true,
+      poster_hard_gate_warnings: [],
+      quality_decision: {
+        state: 'recommended' as const,
+        hard_gate_passed: true,
+        auto_checked: true,
+        warnings: [],
+        message: '最终 PNG 已通过尺寸、受控文字、Logo 比例和二维码可解码检查；画面审美仍由用户判断。',
+      },
+    } : version.review
     const next = await this.addVersion(saved.project_id, {
       kind: 'text_export',
       parent_version_id: saved.current_version_id,
       image_url: asset.url,
       width: asset.width,
       height: asset.height,
+      review: exportReview,
       set_current: true,
     } satisfies ImageWorkbenchAddVersionRequest)
     return { asset, project: next }
@@ -352,6 +367,19 @@ export class ImageWorkbenchStore {
     const missing = expected.filter(copy => !text.includes(copy))
     if (missing.length) {
       throw new ImageWorkbenchError(`受控文字层缺少业务信息:${missing.join('、')}`, 400)
+    }
+  }
+
+  private validateRenderedExport(req: ImageWorkbenchUploadAssetRequest, canvas: ImageWorkbenchUpdateCanvasRequest): void {
+    const parsed = parseImageDataUrl(req.data_url)
+    if (!parsed) throw new ImageWorkbenchError('invalid export image data', 400)
+    const dimensions = decodeImage(parsed.bytes, parsed.contentType)
+    if (dimensions.width !== canvas.width || dimensions.height !== canvas.height) {
+      throw new ImageWorkbenchError('export image dimensions do not match canvas', 400)
+    }
+    const hasQrCode = (canvas.image_layers ?? []).some(layer => layer.type === 'qrcode' && layer.visible)
+    if (hasQrCode && !decodeQr(parsed.bytes, parsed.contentType, dimensions)) {
+      throw new ImageWorkbenchError('导出 PNG 中的二维码无法解码，请调整尺寸、遮挡或静区后重试', 400)
     }
   }
 
