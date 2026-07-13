@@ -1137,7 +1137,14 @@ export function CreationPage() {
         <div className={workspaceLayoutClass}>
         <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
           <section className="space-y-3">
-            <div className="flex flex-col rounded-[22px]" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}>
+            <div
+              className={`flex flex-col ${hasWorkbenchStage ? 'rounded-xl' : 'rounded-[22px]'}`}
+              style={{
+                background: hasWorkbenchStage ? 'var(--color-app-main)' : 'var(--color-surface)',
+                border: `1px solid ${hasWorkbenchStage ? 'var(--color-border)' : 'var(--color-border-strong)'}`,
+                boxShadow: hasWorkbenchStage ? undefined : 'var(--shadow-input)',
+              }}
+            >
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -1330,7 +1337,7 @@ export function CreationPage() {
           {images.length > 0 && (
             <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-[12px] font-semibold uppercase" style={{ color: 'var(--color-text-tertiary)' }}>候选图</h2>
+                <h2 className="text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>候选</h2>
                 <button type="button" onClick={() => void run()} disabled={busy}
                   className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium disabled:opacity-50"
                   style={buttonSubtleStyle}>
@@ -1339,12 +1346,15 @@ export function CreationPage() {
               </div>
               <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-3">
                 {images.map((img) => (
-                  <div key={img.generation_id} className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }} data-testid="candidate-card">
+                  <div
+                    key={img.generation_id}
+                    className="overflow-hidden rounded-md transition-colors"
+                    style={{ border: `1px solid ${selectedImageId === img.generation_id ? 'var(--color-brand)' : 'var(--color-border)'}` }}
+                    data-selected={selectedImageId === img.generation_id ? 'true' : 'false'}
+                    data-testid="candidate-card"
+                  >
                     <button type="button" className="block w-full" onClick={() => setSelectedImageId(img.generation_id)} data-testid="candidate-select">
-                      <div className="relative flex aspect-[3/4] items-center justify-center" style={{ background: 'var(--color-surface-container-low)' }}>
-                        <img src={assetUrl(img.poster_url)} alt="" className="max-h-full max-w-full object-contain" />
-                        {intent === 'poster_text' && <CandidatePosterOverlay brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />}
-                      </div>
+                      <CandidatePreview image={img} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />
                     </button>
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5">
                       <button type="button" className="text-[11px]" style={{ color: 'var(--color-brand)' }} onClick={() => void openProjectFromImage(img)}>{img.generation_id === recommendedImageId ? '建议候选 · 编辑' : '编辑'}</button>
@@ -1356,7 +1366,7 @@ export function CreationPage() {
                 </div>
               {selectedImage && (
                 <div className="mt-3 grid grid-cols-[minmax(0,1fr)_120px] gap-3 rounded-md p-2" style={{ border: '1px solid var(--color-border)' }} data-testid="selected-candidate-preview">
-                  <img src={assetUrl(selectedImage.poster_url)} alt="" className="max-h-[420px] w-full object-contain" />
+                  <CandidatePreview image={selectedImage} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} compact={false} />
                   <div className="flex flex-col justify-between gap-2">
                     <div>
                       <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>放大预览</div>
@@ -1384,7 +1394,7 @@ export function CreationPage() {
                   {compareImages.map((img, index) => (
                     <figure key={img.generation_id} className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
                       <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{index === 0 ? 'A' : 'B'}</figcaption>
-                      <img src={assetUrl(img.poster_url)} alt="" className="max-h-[320px] w-full object-contain" />
+                      <CandidatePreview image={img} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} compact={false} />
                     </figure>
                   ))}
                 </div>
@@ -1392,7 +1402,7 @@ export function CreationPage() {
             </section>
           )}
 
-          {project && <section className="rounded-lg p-4" style={panelStyle}>
+          {project && <section className="border-t pt-4" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-[14px] font-semibold" style={{ color: 'var(--color-text-primary)' }} data-testid="workbench-title">
@@ -1405,7 +1415,7 @@ export function CreationPage() {
                 <button type="button" onClick={() => void exportPng()} disabled={!project || busy} className="rounded-md px-2 py-1 text-[12px] disabled:opacity-50" style={buttonSubtleStyle} data-testid="export-png-button">导出 PNG</button>
               </div>
             </div>
-            <div className="max-h-[70vh] overflow-auto rounded-md p-3" style={{ background: 'var(--color-surface-container)' }}>
+            <div className="max-h-[70vh] overflow-auto rounded-md p-3" style={{ background: 'var(--color-surface-container-low)', border: '1px solid var(--color-border)' }}>
               <canvas ref={setCanvasElement} data-testid="workbench-canvas" />
             </div>
           </section>}
@@ -1581,6 +1591,30 @@ function chooseThreeCandidates(images: StudioImage[], intent: ImageIntent): Stud
     .slice()
     .sort((left, right) => Number(imagePassesCandidateGate(right, intent)) - Number(imagePassesCandidateGate(left, intent)))
     .slice(0, 3)
+}
+
+function CandidatePreview(props: {
+  image: StudioImage
+  intent: ImageIntent
+  brief: ImageCreativeBrief | null
+  logoUrl?: string
+  qrUrl?: string
+  compact?: boolean
+}) {
+  const compact = props.compact !== false
+  return (
+    <div
+      className={`relative flex items-center justify-center overflow-hidden ${compact ? 'aspect-[3/4]' : 'min-h-[180px]'}`}
+      style={{ background: 'var(--color-surface-container-low)' }}
+    >
+      <img
+        src={assetUrl(props.image.poster_url)}
+        alt=""
+        className={compact ? 'max-h-full max-w-full object-contain' : 'max-h-[420px] w-full object-contain'}
+      />
+      {props.intent === 'poster_text' && <CandidatePosterOverlay brief={props.brief} logoUrl={props.logoUrl} qrUrl={props.qrUrl} />}
+    </div>
+  )
 }
 
 function CandidatePosterOverlay(props: { brief: ImageCreativeBrief | null; logoUrl?: string; qrUrl?: string }) {
