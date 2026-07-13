@@ -24,40 +24,14 @@ export interface ImageBriefCompileInput {
   brandContext?: string
 }
 
-const TEMPLATE_BY_KEYWORD: Array<[string, PosterBrief['template_id']]> = [
-  ['开业', 'opening_anniversary'],
-  ['新店', 'opening_anniversary'],
-  ['充值', 'membership_recharge'],
-  ['一卡通', 'membership_recharge'],
-  ['器材券', 'membership_recharge'],
-  ['抢一', 'tournament_signup'],
-  ['组局', 'tournament_signup'],
-  ['会员赛', 'tournament_signup'],
-  ['赛事', 'tournament_signup'],
-  ['比赛', 'tournament_signup'],
-  ['报名', 'tournament_signup'],
-  ['助教', 'coach_booking'],
-  ['教练', 'coach_booking'],
-  ['人物', 'coach_booking'],
-  ['服务', 'coach_booking'],
-  ['陪练', 'coach_booking'],
-  ['节日', 'holiday_moments'],
-  ['春节', 'holiday_moments'],
-  ['端午', 'holiday_moments'],
-  ['朋友圈', 'holiday_moments'],
-  ['团购', 'weekend_bundle'],
-  ['引流', 'weekend_bundle'],
-  ['新客', 'weekend_bundle'],
-  ['周末', 'weekend_bundle'],
-]
-
 const TEMPLATE_LABELS: Record<string, string> = {
   custom_poster: '自由创作',
   opening_anniversary: '开业/焕新',
   membership_recharge: '会员/充值',
   weekend_bundle: '优惠/团购',
   tournament_signup: '比赛/活动',
-  coach_booking: '人物/服务',
+  recruitment_role: '招聘/岗位',
+  coach_booking: '招聘/岗位',
   holiday_moments: '日常/社媒',
 }
 
@@ -88,9 +62,9 @@ function inferScene(text: string, input: ImageBriefCompileInput): 'poster' | 'po
   return explicitlyAboutPerson || photoEditWithReference ? 'portrait' : 'poster'
 }
 
-function inferTemplate(text: string, explicit?: string): PosterBrief['template_id'] {
+function inferTemplate(explicit?: string): PosterBrief['template_id'] {
   if (explicit && explicit in TEMPLATE_LABELS) return explicit as PosterBrief['template_id']
-  return TEMPLATE_BY_KEYWORD.find(([keyword]) => text.includes(keyword))?.[1] ?? 'custom_poster'
+  return 'custom_poster'
 }
 
 function extractQuoted(text: string): string {
@@ -136,7 +110,7 @@ function referencesFrom(input: ImageBriefCompileInput, scene: 'poster' | 'portra
 
 function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
   const fields = input.posterText
-  const templateId = inferTemplate(text, input.sceneTemplateId)
+  const templateId = inferTemplate(input.sceneTemplateId)
   const title = firstString(fields, 'title', '主标题', 'headline') || extractQuoted(text)
   const offer = firstString(fields, 'offer', 'subtitle', '副标题', '优惠')
   const price = firstString(fields, 'price', '价格', '售价') || extractPrice(text)
