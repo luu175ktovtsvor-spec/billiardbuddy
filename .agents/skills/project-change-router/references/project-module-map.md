@@ -17,7 +17,7 @@
 | Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
 | 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、`server/routes/sessionArchiveRoutes.ts`、renderer chat/session | 会话元数据、活动、回退与归档 REST，transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
-| 模型与代理 | `model`、`proxy`、`server/services/provider*` | provider、协议转换、降级 |
+| 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
 | 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
 | 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
 | 工作区 | `workspace`、`sandbox`、renderer workspace | cwd、文件树、Git、终端 |

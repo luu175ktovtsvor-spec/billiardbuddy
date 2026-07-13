@@ -94,13 +94,14 @@ import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/pro
 import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
 import { RAW_MIME_BY_EXT, isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
-import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerPath, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
+import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
 import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
 import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadCommandsForWorkspace } from './extensionRoots'
 import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createProviderRouteHandler } from './routes/providerRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
 import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
 import { createSessionArchiveRouteHandler } from './routes/sessionArchiveRoutes'
@@ -2139,6 +2140,7 @@ export function startServer(opts: StartServerOptions = {}) {
 
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
   const sessionArchive = new SessionArchiveService({
     sessions,
@@ -2321,39 +2323,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json(await desktopData.notificationsAfter(numberFrom(url.searchParams.get('after'), 0)))
       }
 
-      if (url.pathname === '/model/health/clear' || url.pathname === '/api/model/health/clear') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        try {
-          return Response.json(await clearModelHealth(body))
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      if (url.pathname === '/model' || url.pathname === '/api/model') {
-        if (req.method === 'GET') {
-          const status = await currentModelStatus()
-          return Response.json(status, { status: status.ok ? 200 : 503 })
-        }
-        if (req.method === 'POST' || req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const providerId = typeof body.providerId === 'string'
-            ? body.providerId.trim()
-            : typeof body.id === 'string'
-              ? body.id.trim()
-              : ''
-          try {
-            if (!providerId || providerId === 'env' || providerId === 'default') await providers.clearActive()
-            else await providers.activate(providerId)
-            const status = await currentModelStatus()
-            return Response.json(status, { status: status.ok ? 200 : 503 })
-          } catch (err) {
-            return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const providerResponse = await handleProviderRoute(url, req)
+      if (providerResponse) return providerResponse
 
       if (url.pathname === '/api/v1/agent/skills') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
@@ -3273,81 +3244,6 @@ export function startServer(opts: StartServerOptions = {}) {
         const status = await media.status(legacyMediaJobMatch[1]!)
         if (!status) return Response.json({ ok: false, detail: '任务不存在或已过期' }, { status: 404 })
         return Response.json(status)
-      }
-
-      const providerRoute = providerPath(url)
-      if (providerRoute.matched) {
-        try {
-          const [id, action] = providerRoute.segments
-
-          if (!id) {
-            // 白标:前端拉的 providers 列表脱敏——去 baseUrl + 真实 model,只留身份 + 能力档代称。
-            if (req.method === 'GET') {
-              const listed = await providers.list()
-              return Response.json({ activeId: listed.activeId, providers: listed.providers.map(toPublicProviderView) })
-            }
-            if (req.method === 'POST') {
-              const body = await req.json().catch(() => ({})) as Record<string, unknown>
-              return Response.json({ provider: await providers.create(body) }, { status: 201 })
-            }
-            return new Response('Method not allowed', { status: 405 })
-          }
-
-          if (id === 'reorder' && !action && req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const ids = stringArray(body.ids ?? body.providerIds ?? body.order)
-            return Response.json(await providers.reorder(ids))
-          }
-
-          if (id === 'active' && action === 'clear' && req.method === 'POST') {
-            await providers.clearActive()
-            return Response.json({ ok: true })
-          }
-
-          if (action === 'clear-health' && req.method === 'POST') {
-            return Response.json(await clearModelHealth({ providerId: id }))
-          }
-
-          if (id === 'test' && req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ result: await providers.testProviderConfig(body, { fetchImpl: opts.fetchImpl }) })
-          }
-
-          if (action === 'activate' && req.method === 'POST') {
-            return Response.json({ provider: await providers.activate(id) })
-          }
-
-          if ((action === 'enable' || action === 'disable') && req.method === 'POST') {
-            return Response.json({ provider: await providers.setEnabled(id, action === 'enable') })
-          }
-
-          if (action === 'enabled' && (req.method === 'POST' || req.method === 'PATCH')) {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ provider: await providers.setEnabled(id, body.enabled !== false) })
-          }
-
-          if (action === 'test' && req.method === 'POST') {
-            return Response.json({ result: await providers.testProvider(id, { fetchImpl: opts.fetchImpl }) })
-          }
-
-          if (!action && req.method === 'GET') {
-            const provider = await providers.get(id)
-            if (!provider) return jsonError('provider not found', 404)
-            return Response.json({ provider })
-          }
-          if (!action && (req.method === 'PUT' || req.method === 'PATCH')) {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ provider: await providers.update(id, body) })
-          }
-          if (!action && req.method === 'DELETE') {
-            await providers.delete(id)
-            return Response.json({ ok: true })
-          }
-
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
       }
 
       const commandRoute = url.pathname.match(/^\/(?:api\/)?commands(?:\/(expand))?$/)

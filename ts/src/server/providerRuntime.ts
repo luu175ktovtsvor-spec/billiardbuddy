@@ -69,10 +69,3 @@ export function providerStatusFor(error: unknown): number {
   if (message.includes('required') || message.includes('unsupported') || message.includes('非法')) return 400
   return 500
 }
-
-export function providerPath(url: URL): { matched: boolean; segments: string[] } {
-  const segments = url.pathname.split('/').filter(Boolean)
-  if (segments[0] === 'providers') return { matched: true, segments: segments.slice(1) }
-  if (segments[0] === 'api' && segments[1] === 'providers') return { matched: true, segments: segments.slice(2) }
-  return { matched: false, segments: [] }
-}
