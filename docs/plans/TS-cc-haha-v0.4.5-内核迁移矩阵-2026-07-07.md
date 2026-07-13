@@ -3332,7 +3332,6 @@
 - 对照源:`~/Desktop/cc-haha-ref/src/tools/BashTool/pathValidation.ts` 的 output redirection 检查:CC 对重定向目标中的 shell expansion syntax 要求审批,因为 `$VAR`/`%VAR%`/glob 等目标无法稳定验证最终落点。
 - TS 已有 `shellOutputRedirectionNeedsApproval()` 与 `redirectionTargetNeedsApproval()` 主逻辑,本轮补回归测试锁住文字目标与展开目标的差异:`note.txt`、`"space name.txt"` 保持不审批;`"$HOME/out.txt"`、`'$HOME/out.txt'`、`${HOME}/out.txt`、`%TEMP%/out.txt`、`out*.txt` 都必须进入审批。
 - 这与 process substitution 门一起覆盖 CC Bash path validation 的两条关键旁路:写入目标不可解析时要问用户,不能让模型在 `acceptEdits/auto_files` 下静默写到工作区外或特殊路径。
-- Python 退役节奏同步写入 `docs/当前目标与文档口径-2026-07-07.md`:旧 Python 不是先删后补,而是按 dataeye receiver/board 的模式逐块接管、切入口、补测试、再删并提交;仍在真实链路里的 FastAPI 主后端、媒体重链路、OCR/语音/RAG/打包入口放到接管后或最后退。
 
 ## 3.397 2026-07-09 CC grep/rg newline pattern guard
 
@@ -3382,7 +3381,7 @@
 
 - 代码变更:`ts/src/permissions/filePathRules.ts`, `ts/src/tools/runCommandTool.ts`, `ts/src/tools/fileWriteTool.ts`, `ts/src/tools/fileEditTool.ts`, `ts/src/tools/notebookEditTool.ts`, `ts/src/tools/spreadsheetTool.ts`, `ts/src/tools/fileTools.test.ts`, `ts/src/tools/runCommandTool.test.ts`, `CLAUDE.md`。
 - 行为边界:额外目录授予后,`read_file/write_file/edit_file` 可访问该目录;撤销后恢复越界拒绝。`run_command.cwd` 可设为已授予目录,未授予时 preview 显示 cwd 无效并回到工作区。授权目录内 symlink 指向外部时仍拒绝,授权目录本身是 symlink 时可按真实目录访问。
-- 残留扫描:`rg -n "BUNDLED_VIDEO_LABEL|VIDEO_BASE_URL|VIDEO_MODEL_NAME|Seedance|seedance|generate_video|studioI2v|/studio/i2v|i2v|t2v|图生视频|文生视频|让这张图动起来|用这张图生成视频|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" desktop gateway server web ts/src CLAUDE.md docs/当前目标与文档口径-2026-07-07.md docs/plans ...` 只剩阶段目标、迁移矩阵、删除说明和历史归档;本地 ignored `desktop/bundled.env` 已移除 Seedance/`VIDEO_*` 配置,仅保留真实素材剪辑 VLM/导演网关。
+- 残留扫描:`rg -n "BUNDLED_VIDEO_LABEL|VIDEO_BASE_URL|VIDEO_MODEL_NAME|Seedance|seedance|generate_video|studioI2v|/studio/i2v|i2v|t2v|图生视频|文生视频|让这张图动起来|用这张图生成视频|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" gateway ts/src CLAUDE.md docs/当前架构与状态-总览.md docs/plans ...` 只保留真实素材剪辑相关入口。
 - 验证:`cd ts && bun test src/tools/fileTools.test.ts src/tools/runCommandTool.test.ts src/permissions/permissionUpdate.test.ts src/permissions/resolve.test.ts --timeout 120000` = 137 pass;`cd ts && bun run typecheck` 通过。
 - 未跑:`cd web && pnpm exec tsc --noEmit` 未跑,本轮未改 Web 源码;Python/server/gateway 测试未跑,本轮不触碰这些运行链路;真机/UI E2E 未跑,需要等权限审批卡/设置页继续接线后再补。
 

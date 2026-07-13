@@ -1,13 +1,13 @@
 # Codex(ChatGPT.app 内置)前端逆向档案
 
 > 📌 状态:✅现行 · 最后核对 2026-07-12
-> 🎯 **我们桌面前端完全照抄 Codex**(颜色/字体/文案/流式/布局/组件;强调色浅蓝 `#0a84ff`)。WorkBuddy 逆向档案已整体删除,不再是任何设计依据。
+> 🎯 **桌面前端以 Codex 为设计真值**(颜色、字体、文案、流式、布局和组件;强调色浅蓝 `#0a84ff`)。
 
 ## 这份档案是什么
 
 对 **ChatGPT.app 里内置的 Codex 前端**做的一手逆向。取证方式 = **解包本地安装的 app,直接读它 bundle 里的真实 CSS/JS/图标/字体**——不是看截图猜、不是脑补。所有数值都能在 `真实CSS摘录/` 里回查到原文件。
 
-## 取证方法(可复现,和当年扒 WorkBuddy 同一套路)
+## 取证方法(可复现)
 
 | 项 | 值 |
 |---|---|
@@ -40,7 +40,7 @@ npx @electron/asar extract "$ASAR" /tmp/chatgpt-asar   # 全量解包(~30s,211MB
 
 挖矿三步法(照 `06` 篇):① zh-CN 语言包里 grep 中文文案 → 拿到 i18n key;② 在非 locale 的 JS bundle 里 grep 该 key → 锁定组件函数;③ 读上下游函数(压缩名不碍事,看 className/jsx 结构/逻辑流)→ 写成规格文档落进本档案。
 
-**⚠️ 真值排序:源码 > 截图 > 记忆/猜测(2026-07-12 定死)。** 截图只是某一瞬间、某个状态、某种配置下的样子——看图猜出的规格(「进行中平铺」「组头是勾」)多次被源码推翻(实际:进行中也有聚合文案、组头是活动类型图标、工具行文案是 `<action>/<detail>` 两段富标记三态体系)。对齐任何组件,先挖到它的源码/文案定义再动手;截图只用来发现"哪里可能有差距",不用来定规格。
+**真值排序:源码 > 截图 > 记忆或猜测。** 对齐组件时先定位源码和文案定义；截图用于发现差距和检查视觉结果，不单独作为规格。
 
 ## 一句话结论:Codex 前端长什么样
 
@@ -60,7 +60,7 @@ npx @electron/asar extract "$ASAR" /tmp/chatgpt-asar   # 全量解包(~30s,211MB
 | `02-布局与外壳.md` | 三栏骨架、侧栏、顶栏、右侧面板开合与拖拽分割线 |
 | `03-对话流与组件.md` | 助手消息/用户气泡/工具行/思考块/步骤胶囊/处理时长/消息动作条/输入区(含强度滑杆、权限胶囊) |
 | `04-右侧审阅面板.md` | 多标签 tab 条、面包屑、分支/改动统计、diff 视图、文件树徽标、环境信息卡、更多菜单 |
-| `05-我们前端怎么做.md` | **落地指南**:每块 Codex 元素映射到我们真实的 React 组件(`ts/desktop/renderer-react/`),标出 main 上还差什么、择优融合 WorkBuddy 的哪几点 |
+| `05-我们前端怎么做.md` | **落地指南**:每块 Codex 元素映射到真实 React 组件(`ts/desktop/renderer-react/`),标出当前差距和实现入口 |
 | `06-斜杠命令浮层.md` | **斜杠命令 autocomplete 完整规格**(反混淆 JS 组件读出,非仅 CSS):命令注册数据模型、分组/打分/排序管道、行 DOM 与选中态(非选中 75% 透明)、匹配字符高亮、scope 标签(个人/系统)、fade mask;附我们 TokenPanel 落地差异 |
 | `Codex后端代码视图.md` | **后端逆向**:Codex 引擎 = 内嵌开源 `openai/codex`(Rust `codex-rs` 99 crate);SQ/EQ 协议、core 循环、tools、exec/execpolicy/sandboxing 三平台沙箱、MCP/连接器/技能、rollout 存储、cloud-tasks 定时、桌面 Electron 经 UDS 托管 app-server。来源 = 本地 asar + GitHub `openai/codex` |
 | `Codex浏览器批注-基于此调整.md` | **右侧实时浏览器 + 可视化批注/设计修改**:悬停结构化框选 DOM、点框截图 + 输入指令、回传载荷 `AppScreenshot{url,fileId,userPrompt}`;附右侧预览板全能力(diff/审阅/Guardian/交互终端/计划/实时监听/线程分叉回滚/语音)。来源 = `comment-preload.js` + app-server-protocol schema |
