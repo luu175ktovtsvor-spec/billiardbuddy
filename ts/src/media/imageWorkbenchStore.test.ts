@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PNG } from 'pngjs'
+import * as QRCode from 'qrcode'
 import { ImageWorkbenchStore } from './imageWorkbenchStore'
 
 test('ImageWorkbenchStore persists versions, rollback, mask assets, export and library entries', async () => {
@@ -187,6 +188,13 @@ test('ImageWorkbenchStore keeps controlled copy and export layout guards at the 
       quality: 'standard',
     })
     const logo = await store.uploadAsset({ kind: 'reference', data_url: pngDataUrl(64, 64), width: 64, height: 64 })
+    const qrBytes = await QRCode.toBuffer('https://example.com/signup', { type: 'png', width: 128, margin: 4 })
+    const qr = await store.uploadAsset({
+      kind: 'reference',
+      data_url: `data:image/png;base64,${qrBytes.toString('base64')}`,
+      width: 128,
+      height: 128,
+    })
     await expect(store.exportProject(creative.project_id, {
       version_id: creative.current_version_id,
       data_url: pngDataUrl(320, 240),
@@ -202,6 +210,14 @@ test('ImageWorkbenchStore keeps controlled copy and export layout guards at the 
       text_layers: [],
       image_layers: [{ id: 'stretched_logo', type: 'logo', asset_id: logo.asset_id, url: logo.url, x: 0, y: 0, width: 128, height: 64 }],
     })).rejects.toThrow(/aspect ratio changed/)
+    await expect(store.exportProject(creative.project_id, {
+      version_id: creative.current_version_id,
+      data_url: pngDataUrl(320, 240),
+      width: 320,
+      height: 240,
+      text_layers: [],
+      image_layers: [{ id: 'missing_final_qr', type: 'qrcode', asset_id: qr.asset_id, url: qr.url, x: 176, y: 96, width: 128, height: 128 }],
+    })).rejects.toThrow(/导出 PNG 中的二维码无法解码/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
