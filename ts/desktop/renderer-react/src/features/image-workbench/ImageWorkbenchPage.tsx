@@ -1,7 +1,7 @@
 // 生图页组件：状态接线与布局。纯业务规则在 imageWorkbenchModel，
 // 画布操作在 imageWorkbenchCanvas，上传/版本落库在 imageWorkbenchAssets。
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Canvas, Path, Rect, Textbox } from 'fabric'
 import { Tooltip } from '../../components/shared/Tooltip'
 import { IconAlertCircle, IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
@@ -22,7 +22,6 @@ import {
   type ImageWorkbenchTextLayer,
   type StudioImage,
   type ImageCreativeBrief,
-  type GenerateInput,
   downloadAsset,
   fetchAssetFile,
 } from '../../api/studio'
@@ -33,12 +32,10 @@ import {
   type DrawingState,
   type MaskItem,
   type MaskMode,
-  type WorkbenchAction,
   type WorkbenchObject,
 } from './imageWorkbenchTypes'
 import { buttonPrimaryStyle, buttonSubtleStyle, inputStyle, panelStyle, segStyle } from './imageWorkbenchStyles'
 import {
-  chooseThreeCandidates,
   defaultReferenceRole,
   dimensionFromRatio,
   friendlyImageError,
@@ -46,7 +43,6 @@ import {
   imagePassesCandidateGate,
   imageReviewLines,
   normalizeColorInput,
-  portraitCandidateHasHardRisk,
   posterBrandImageLayers,
   posterTextLayers,
   referenceRoleOptions,
@@ -74,6 +70,8 @@ import {
 } from './imageWorkbenchCanvas'
 import { addImageVersionFromJob, brandAssetFromPack, uploadWorkbenchImage } from './imageWorkbenchAssets'
 import { CandidatePreview } from './CandidatePreview'
+import { executeImageGeneration, type PosterFields } from './imageWorkbenchGeneration'
+import { imageWorkbenchTaskReducer, initialImageWorkbenchTaskState } from './imageWorkbenchTaskState'
 
 export function CreationPage() {
   const [prompt, setPrompt] = useState('')
@@ -97,13 +95,8 @@ export function CreationPage() {
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'failed'>('saved')
   const [referenceAssets, setReferenceAssets] = useState<ImageWorkbenchAsset[]>([])
   const [referenceRoles, setReferenceRoles] = useState<Record<string, ImageReferenceRole>>({})
-  const [busy, setBusy] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [stage, setStage] = useState('')
-  const [activeJobId, setActiveJobId] = useState<string | null>(null)
-  const [lastError, setLastError] = useState('')
-  const [lastFailedAction, setLastFailedAction] = useState<WorkbenchAction | null>(null)
-  const [compactPane, setCompactPane] = useState<'create' | 'canvas' | 'adjust'>('create')
+  const [taskState, dispatchTask] = useReducer(imageWorkbenchTaskReducer, initialImageWorkbenchTaskState)
+  const { busy, progress, stage, activeJobId, lastError, lastFailedAction, pane: compactPane } = taskState
   const [images, setImages] = useState<StudioImage[]>([])
   const [creativeBrief, setCreativeBrief] = useState<ImageCreativeBrief | null>(null)
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
@@ -451,29 +444,19 @@ export function CreationPage() {
   const beginAction = (stageText: string) => {
     const ctrl = new AbortController()
     abortRef.current = ctrl
-    setBusy(true)
-    setActiveJobId(null)
-    setProgress(0)
-    setStage(stageText)
-    setLastError('')
-    setLastFailedAction(null)
-    setCompactPane('canvas')
+    dispatchTask({ type: 'begin', stage: stageText })
     return ctrl
   }
 
   const finishAction = (ctrl: AbortController) => {
     if (abortRef.current === ctrl) abortRef.current = null
-    setBusy(false)
-    setActiveJobId(null)
-    setStage('')
+    dispatchTask({ type: 'finish' })
   }
 
   const cancelActiveJob = async () => {
     const jobId = activeJobId
     abortRef.current?.abort()
-    setBusy(false)
-    setStage('已请求取消')
-    setLastError('已取消')
+    dispatchTask({ type: 'cancel-requested' })
     if (jobId) {
       await studioApi.cancelJob(jobId).catch(() => undefined)
     }
@@ -591,59 +574,14 @@ export function CreationPage() {
     const ctrl = beginAction(creativeBrief ? '正在开始生成…' : '正在理解你的需求…')
     setImages([])
     try {
-      let brief = creativeBrief
-      if (!brief) {
-        const result = await studioApi.compileBrief({
-          prompt: request,
-          scene: intent === 'portrait' ? 'portrait' : 'poster',
-          intent,
-          ratio,
-          quality,
-          scene_template_id: sceneId,
-          poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, address: posterAddress, phone: posterPhone, cta: posterCta },
-          reference_assets: referenceDescriptors,
-          portrait_authorization_confirmed: portraitAuthorized,
-        })
-        brief = result.brief
-        const poster = brief.poster
-        const extracted = poster ? {
-          title: poster.title,
-          offer: poster.offer,
-          price: poster.price,
-          date: [poster.date, poster.time].filter(Boolean).join(' '),
-          address: poster.address,
-          phone: poster.phone,
-          cta: poster.cta,
-        } : null
-        const willHydrate = Boolean(extracted && (
-          (!posterTitle && extracted.title) || (!posterOffer && extracted.offer) || (!posterPrice && extracted.price)
-          || (!posterDate && extracted.date) || (!posterAddress && extracted.address) || (!posterPhone && extracted.phone) || (!posterCta && extracted.cta)
-        ))
-        if (willHydrate && extracted) {
-          briefHydratingRef.current = true
-          if (!posterTitle) setPosterTitle(extracted.title)
-          if (!posterOffer) setPosterOffer(extracted.offer)
-          if (!posterPrice) setPosterPrice(extracted.price)
-          if (!posterDate) setPosterDate(extracted.date)
-          if (!posterAddress) setPosterAddress(extracted.address)
-          if (!posterPhone) setPosterPhone(extracted.phone)
-          if (!posterCta) setPosterCta(extracted.cta)
-          setQuickForm(true)
-        }
-        setCreativeBrief(brief)
-        setStage('正在生成图片…')
-      }
-      const generateInput: GenerateInput = {
-        prompt: request,
-        user_request: request,
-        scene_template_id: sceneId,
-        ratio,
-        count,
+      const generated = await executeImageGeneration({
+        request,
+        sceneId,
         intent,
         quality,
-        reference_image_paths: referenceUrls,
-        reference_assets: referenceDescriptors,
-        poster_text: {
+        ratio,
+        count,
+        posterText: {
           title: posterTitle,
           offer: posterOffer,
           price: posterPrice,
@@ -652,52 +590,41 @@ export function CreationPage() {
           phone: posterPhone,
           cta: posterCta,
         },
-        portrait_consent: portraitAuthorized,
-        portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: referenceAssets.length > 0 ? 'high' : undefined,
-        creative_brief: brief,
+        referenceUrls,
+        referenceAssets: referenceDescriptors,
+        portraitAuthorized,
+        creativeBrief,
+      }, {
+        signal: ctrl.signal,
+        onJobStarted: jobId => dispatchTask({ type: 'job-started', jobId }),
+        onProgress: (nextProgress, nextStage) => dispatchTask({ type: 'progress', progress: nextProgress, stage: nextStage }),
+        onStage: nextStage => dispatchTask({ type: 'stage', stage: nextStage }),
+      })
+      const extracted: PosterFields | null = generated.compiledPoster
+      const willHydrate = Boolean(extracted && (
+        (!posterTitle && extracted.title) || (!posterOffer && extracted.offer) || (!posterPrice && extracted.price)
+        || (!posterDate && extracted.date) || (!posterAddress && extracted.address) || (!posterPhone && extracted.phone) || (!posterCta && extracted.cta)
+      ))
+      if (willHydrate && extracted) {
+        briefHydratingRef.current = true
+        if (!posterTitle) setPosterTitle(extracted.title)
+        if (!posterOffer) setPosterOffer(extracted.offer)
+        if (!posterPrice) setPosterPrice(extracted.price)
+        if (!posterDate) setPosterDate(extracted.date)
+        if (!posterAddress) setPosterAddress(extracted.address)
+        if (!posterPhone) setPosterPhone(extracted.phone)
+        if (!posterCta) setPosterCta(extracted.cta)
+        setQuickForm(true)
       }
-      const { job_id } = await studioApi.generate(generateInput)
-      setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成图片…')) }, intervalMs: 600 })
-      const result = job.result ?? {}
-      if (job.status !== 'done') throw new Error(result.message || job.error || '生成失败')
-      if (result.blocked) throw new Error(result.message || '所需组件正在后台准备,稍后再试。')
-      let imgs = (result.images ?? []).filter((img) => img.local_preview !== true)
-      if ((result.images ?? []).some((img) => img.local_preview === true) && imgs.length === 0) {
-        throw new Error('当前没有可用的图片生成服务，暂时无法生成图片。')
-      }
-      if (!imgs.length) throw new Error('没有生成图片,换个描述再试试')
-      const hardGatePassed = imgs.filter(img => imagePassesCandidateGate(img, intent)).length
-      const needsPosterSupplement = intent === 'poster_text' && imgs.length === 3 && hardGatePassed < 2
-      const needsPortraitSupplement = intent === 'portrait' && imgs.length === 3 && imgs.every(img => portraitCandidateHasHardRisk(img))
-      if (needsPosterSupplement || needsPortraitSupplement) {
-        setStage('部分结果需要确认，正在再试一次…')
-        try {
-          const retry = await studioApi.generate(generateInput)
-          setActiveJobId(retry.job_id)
-          const retryJob = await pollJob(retry.job_id, { signal: ctrl.signal, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成图片…')) }, intervalMs: 600 })
-          const retryImages = retryJob.status === 'done' && !retryJob.result?.blocked
-            ? (retryJob.result?.images ?? []).filter(img => img.local_preview !== true)
-            : []
-          imgs = chooseThreeCandidates([...imgs, ...retryImages], intent)
-        } catch {
-          // Keep the first batch visible with its recorded risks. One retry is
-          // the cost ceiling; failures must not erase usable candidate history.
-        }
-      }
-      setImages(imgs)
-      setCreativeBrief(result.creative_brief ?? brief)
-      const recommended = imgs.find(img => imagePassesCandidateGate(img, intent))?.generation_id ??
-        (typeof result.recommended_generation_id === 'string' ? result.recommended_generation_id : null)
-      setSelectedImageId(recommended ?? imgs[0]?.generation_id ?? null)
-      setCompareIds(imgs.slice(0, 2).map((img) => img.generation_id))
-      setCompactPane('canvas')
+      setImages(generated.images)
+      setCreativeBrief(generated.creativeBrief)
+      setSelectedImageId(generated.recommendedId)
+      setCompareIds(generated.compareIds)
+      dispatchTask({ type: 'select-pane', pane: 'canvas' })
     } catch (e) {
       if (!ctrl.signal.aborted) {
         const message = friendlyImageError(e, '生成失败')
-        setLastError(message)
-        setLastFailedAction('generate')
+        dispatchTask({ type: 'failed', message, action: 'generate' })
         toast(message)
       }
     } finally {
@@ -746,12 +673,12 @@ export function CreationPage() {
     try {
       if (project?.source_generation_id === img.generation_id) {
         await refreshProject(project)
-        setCompactPane('canvas')
+        dispatchTask({ type: 'select-pane', pane: 'canvas' })
         return
       }
       const next = await createProjectFromImage(img)
       await refreshProject(next)
-      setCompactPane('canvas')
+      dispatchTask({ type: 'select-pane', pane: 'canvas' })
       setProjects((items) => [next, ...items.filter((item) => item.project_id !== next.project_id)])
     } catch (err) {
       toast(friendlyImageError(err, '无法打开图片'))
@@ -759,8 +686,7 @@ export function CreationPage() {
   }
 
   const quickDownloadCandidate = async (img: StudioImage) => {
-    setBusy(true)
-    setStage('正在添加固定文字并准备下载…')
+    dispatchTask({ type: 'begin-local', stage: '正在添加固定文字并准备下载…' })
     try {
       await waitForFonts()
       const next = await createProjectFromImage(img)
@@ -782,16 +708,15 @@ export function CreationPage() {
       })
       setLastExport(result.asset)
       await refreshProject(result.project)
-      setCompactPane('canvas')
+      dispatchTask({ type: 'select-pane', pane: 'canvas' })
       await downloadAsset(result.asset.url, `${next.title}-${new Date().toISOString().slice(0, 10)}`)
       toast('PNG 已下载')
     } catch (err) {
       const message = friendlyImageError(err, '下载失败')
-      setLastError(message)
+      dispatchTask({ type: 'failed', message })
       toast(message)
     } finally {
-      setBusy(false)
-      setStage('')
+      dispatchTask({ type: 'finish' })
     }
   }
 
@@ -842,7 +767,7 @@ export function CreationPage() {
     if (projectRef.current?.project_id === next.project_id) return
     await persistCurrentCanvas().catch(() => undefined)
     await refreshProject(next)
-    setCompactPane('canvas')
+    dispatchTask({ type: 'select-pane', pane: 'canvas' })
   }
 
   const waitForFabricCanvas = async (): Promise<Canvas> => {
@@ -981,16 +906,15 @@ export function CreationPage() {
         portrait_authorization_confirmed: portraitAuthorized,
         input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
-      setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在修改图片…')) } })
+      dispatchTask({ type: 'job-started', jobId: job_id })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在修改图片…') }) })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'edit', editText.trim())
       await refreshProject(next)
       setEditText('')
     } catch (err) {
       if (!ctrl.signal.aborted) {
         const message = friendlyImageError(err, '修改失败')
-        setLastError(message)
-        setLastFailedAction('edit')
+        dispatchTask({ type: 'failed', message, action: 'edit' })
         toast(message)
       }
     } finally {
@@ -1015,8 +939,8 @@ export function CreationPage() {
         portrait_authorization_confirmed: portraitAuthorized,
         input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
       })
-      setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在修改图片…')) } })
+      dispatchTask({ type: 'job-started', jobId: job_id })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在修改图片…') }) })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'inpaint', maskText.trim(), asset)
       await refreshProject(next)
       clearMask()
@@ -1024,8 +948,7 @@ export function CreationPage() {
     } catch (err) {
       if (!ctrl.signal.aborted) {
         const message = friendlyImageError(err, '修改失败')
-        setLastError(message)
-        setLastFailedAction('inpaint')
+        dispatchTask({ type: 'failed', message, action: 'inpaint' })
         toast(message)
       }
     } finally {
@@ -1038,15 +961,14 @@ export function CreationPage() {
     const ctrl = beginAction('正在生成高清图片…')
     try {
       const { job_id } = await studioApi.upscale(sourceForUpscale(currentVersion))
-      setActiveJobId(job_id)
-      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => { setProgress(p); setStage(friendlyImageStage(s, '正在生成高清图片…')) } })
+      dispatchTask({ type: 'job-started', jobId: job_id })
+      const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在生成高清图片…') }) })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'upscale', '高清放大')
       await refreshProject(next)
     } catch (err) {
       if (!ctrl.signal.aborted) {
         const message = friendlyImageError(err, '生成高清图片失败')
-        setLastError(message)
-        setLastFailedAction('upscale')
+        dispatchTask({ type: 'failed', message, action: 'upscale' })
         toast(message)
       }
     } finally {
@@ -1057,7 +979,7 @@ export function CreationPage() {
   const exportPng = async () => {
     const canvas = fabricRef.current
     if (!project || !currentVersion || !canvas) return
-    setBusy(true); setStage('正在准备 PNG…')
+    dispatchTask({ type: 'begin-local', stage: '正在准备 PNG…' })
     try {
       await waitForFonts()
       const layers = extractTextLayers(canvas)
@@ -1078,7 +1000,7 @@ export function CreationPage() {
     } catch (err) {
       toast(friendlyImageError(err, '下载失败'))
     } finally {
-      setBusy(false); setStage('')
+      dispatchTask({ type: 'finish' })
     }
   }
 
@@ -1188,7 +1110,7 @@ export function CreationPage() {
               role="tab"
               aria-selected={compactPane === pane}
               disabled={!available}
-              onClick={() => setCompactPane(pane)}
+              onClick={() => dispatchTask({ type: 'select-pane', pane })}
               className="rounded-md px-2 py-1.5 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-45"
               style={segStyle(compactPane === pane && available)}
             >
