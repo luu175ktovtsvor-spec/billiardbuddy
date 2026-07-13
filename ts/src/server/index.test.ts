@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PNG } from 'pngjs'
 import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
@@ -4862,14 +4863,14 @@ test('image workbench routes enforce revision conflicts and explicit portrait co
     const createdResponse = await fetch(`${base}/api/v1/studio/workbench/projects`, {
       method: 'POST',
       body: JSON.stringify({
-        title: '助教形象照',
+        title: '授权随拍优化',
         image_url: '/uploads/posters/portrait.png',
         width: 768,
         height: 768,
         intent: 'portrait',
         quality: 'standard',
         creative_brief: {
-          user_request: '保留本人特征，换成球房背景',
+          user_request: '保留本人特征，只按本次要求更换背景',
           scene: 'portrait',
           portrait: { authorization_confirmed: true },
         },
@@ -4954,7 +4955,7 @@ test('legacy studio generate passes trusted local references to TS Seedream gate
   }
 })
 
-test('legacy studio generate attaches uploaded store brand assets to TS Seedream gateway', async () => {
+test('legacy studio generate keeps store logo and qrcode out of model image conditions', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-studio-brand-pack-'))
   let requestBody: any
   const mediaServer = startServer({
@@ -5012,15 +5013,45 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
     expect(requestBody.prompt).toContain('门店名称:九号台球')
     expect(requestBody.prompt).toContain('高端质感')
     expect(requestBody.prompt).toContain('#0f8f68')
+    expect(requestBody.prompt).toContain('固定图层')
     expect(requestBody.prompt).toContain('二维码')
     expect(requestBody.prompt).toContain('可扫描')
     expect(requestBody.prompt).not.toContain('PPT')
     expect(requestBody.prompt).not.toContain('未要求的营销玩法')
-    expect(requestBody.input_images).toHaveLength(2)
-    expect(requestBody.input_images.every((item: string) => item.startsWith('data:image/png;base64,'))).toBe(true)
-    const decoded = requestBody.input_images.map((item: string) => Buffer.from(item.split(',')[1]!, 'base64').toString('utf8'))
-    expect(decoded).toEqual(['logo-bytes', 'qr-bytes'])
+    expect(requestBody.input_images).toBeUndefined()
     expect(status.result).toMatchObject({ image_engine: '写实生图', local_preview: false })
+
+    const portraitDir = join(root, 'uploads', 'references')
+    mkdirSync(portraitDir, { recursive: true })
+    const portrait = new PNG({ width: 768, height: 768 })
+    portrait.data.fill(180)
+    const portraitUrl = '/uploads/references/authorized-photo.png'
+    writeFileSync(join(portraitDir, 'authorized-photo.png'), PNG.sync.write(portrait))
+    const portraitStarted = await fetch(`${base}/api/v1/studio/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
+        intent: 'portrait',
+        portrait_consent: true,
+        portrait_authorization_confirmed: true,
+        reference_image_paths: [portraitUrl],
+        reference_assets: [{ asset_id: 'authorized-photo', role: 'identity_primary', url: portraitUrl }],
+        count: 1,
+      }),
+    })
+    expect(portraitStarted.status).toBe(200)
+    const portraitStartedBody = await portraitStarted.json() as any
+    let portraitStatus: any = null
+    for (let i = 0; i < 50; i++) {
+      portraitStatus = await (await fetch(`${base}/api/v1/agent/media-jobs/${portraitStartedBody.job_id}`)).json()
+      if (portraitStatus.status === 'done' || portraitStatus.status === 'failed') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(portraitStatus.status).toBe('done')
+    expect(requestBody.input_images).toHaveLength(1)
+    expect(requestBody.prompt).not.toContain('九号台球')
+    expect(requestBody.prompt).not.toContain('#0f8f68')
+    expect(requestBody.prompt).not.toContain('二维码')
   } finally {
     mediaServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -5193,9 +5224,9 @@ test('legacy studio edit uses TS image edits gateway with generated source image
     }
     expect(String(form.get('prompt'))).toContain('Change only:')
     expect(String(form.get('prompt'))).toContain('把背景改成深绿色')
-    expect(form.get('input_fidelity')).toBeNull()
+    expect(form.get('input_fidelity')).toBe('high')
     expect(form.getAll('image')).toHaveLength(1)
-    expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false })
+    expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false, input_fidelity_status: 'accepted' })
     expect(status.result.urls[0]).toMatch(/^\/uploads\/posters\/image_.*\.png$/)
   } finally {
     mediaServer.stop(true)

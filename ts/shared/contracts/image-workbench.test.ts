@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test'
 import {
+  imageBrandPackPatchSchema,
+  imageBrandPackSchema,
   imageCreativeBriefSchema,
   imageWorkbenchProjectSchema,
   imageWorkbenchPortraitConfirmRequestSchema,
@@ -98,9 +100,32 @@ test('legacy project format receives safe defaults for brief, image layers and r
 })
 
 test('brief and portrait confirmation contracts keep provider details out of the user boundary', () => {
-  const brief = imageCreativeBriefSchema.parse({ user_request: '做一张助教形象照', scene: 'portrait', portrait: { authorization_confirmed: true } })
+  const brief = imageCreativeBriefSchema.parse({ user_request: '把这张已授权随拍优化得自然好看', scene: 'portrait', portrait: { authorization_confirmed: true } })
   expect(brief.portrait?.authorization_confirmed).toBe(true)
   expect(imageWorkbenchPortraitConfirmRequestSchema.parse({ confirmed: true }).confirmed).toBe(true)
+})
+
+test('brand pack contract reads legacy stores and patches without erasing unrelated fields', () => {
+  const legacy = imageBrandPackSchema.parse({
+    id: 'local-store',
+    name: '我的门店',
+    city: '上海',
+    logo_url: null,
+    qrcode_url: null,
+  })
+  const patch = imageBrandPackPatchSchema.parse({
+    city: '杭州',
+    logo_url: '/uploads/workbench/assets/reference/reference_logo.png',
+    logo_asset_id: 'reference_logo',
+    logo_width: 320,
+    logo_height: 120,
+  })
+
+  expect(legacy.brand_reference_images).toEqual([])
+  expect(legacy.city).toBe('上海')
+  expect(patch).not.toHaveProperty('brand_reference_images')
+  expect(patch.city).toBe('杭州')
+  expect(patch.logo_asset_id).toBe('reference_logo')
 })
 
 test('custom poster type is compatible with legacy briefs', () => {

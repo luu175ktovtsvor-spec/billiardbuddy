@@ -97,7 +97,7 @@ export function portraitConsentRequiredResult(intent: PortraitIntent): Record<st
     local_preview: false,
     portrait_signals: intent.signals,
     message: '检测到这是一张真人照片。优化照片前需要你先确认一次:你拥有这张照片的使用授权、' +
-      '并且被拍的人同意用于门店宣传。确认后我再继续(在请求里带上 portrait_consent=true,或直接回复"已获肖像授权")。',
+      '并且被拍的人同意用于本次生成。确认后我再继续(在请求里带上 portrait_consent=true,或直接回复"已获肖像授权")。',
   }
 }
 
