@@ -1,6 +1,7 @@
 // Remote Bridge 会话数据面：事件、入站消息、权限、outbox 与 subscriber 生命周期。
 
 import type { FetchLike } from '../../proxy/ProxyModel'
+import { createBridgeCodeSessionClient } from '../../tasks/bridgeCodeSessionClient'
 import type { BridgePeerRegistry } from '../../tasks/bridgePeerRegistry'
 import { resolveInboundUserMessage, type BridgeResolvedInboundMessage } from '../../tasks/bridgeInboundMessages'
 import type { BridgeRemoteState } from '../../tasks/bridgeRemoteState'
@@ -8,13 +9,14 @@ import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '.
 import { createBridgeRemoteTransport } from '../../tasks/bridgeRemoteTransport'
 import {
   bridgeOutboxStatusFrom,
+  bridgeCodeSessionConfigFromBody,
   bridgePermissionResponseFrom,
   bridgePermissionStatusFrom,
   bridgeRemoteConfigFromBody,
 } from '../bridgeParams'
 import { jsonError } from '../middleware/http'
 import { providerStatusFor } from '../providerRuntime'
-import { isRecord, numberFrom } from '../requestParams'
+import { isRecord, numberFrom, stringArray, stringOr } from '../requestParams'
 
 interface BridgeSessionRouteDependencies {
   state: BridgeRemoteState
@@ -45,6 +47,98 @@ export function createBridgeSessionRouteController(deps: BridgeSessionRouteDepen
   const env = deps.env ?? process.env
 
   async function handle(url: URL, req: Request): Promise<Response | null> {
+    if (url.pathname === '/api/v1/agent/bridge/peers') {
+      try {
+        if (req.method === 'GET') return Response.json({ peers: await deps.peers.list() })
+        if (req.method === 'POST') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          return Response.json({
+            peer: await deps.peers.register({
+              sessionId: stringOr(body.sessionId ?? body.session_id, ''),
+              label: typeof body.label === 'string' ? body.label : undefined,
+              workspaceRoot: typeof body.workspaceRoot === 'string' ? body.workspaceRoot : typeof body.workspace_root === 'string' ? body.workspace_root : undefined,
+              machineName: typeof body.machineName === 'string' ? body.machineName : typeof body.machine_name === 'string' ? body.machine_name : undefined,
+              status: body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error' ? body.status : undefined,
+              inboundEnabled: typeof body.inboundEnabled === 'boolean' ? body.inboundEnabled : typeof body.inbound_enabled === 'boolean' ? body.inbound_enabled : undefined,
+              lastError: typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined,
+            }),
+          }, { status: 201 })
+        }
+        return methodNotAllowed()
+      } catch (err) {
+        return routeError(err)
+      }
+    }
+
+    const peerMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/peers\/([^/]+)$/)
+    if (peerMatch) {
+      const sessionId = decodeURIComponent(peerMatch[1]!)
+      try {
+        if (req.method === 'PATCH') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const status = body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error'
+            ? body.status
+            : undefined
+          if (!status) return jsonError('status required', 400)
+          const peer = await deps.peers.updateStatus(sessionId, status, typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined)
+          if (!peer) return jsonError('bridge peer not found', 404)
+          return Response.json({ peer })
+        }
+        if (req.method === 'DELETE') {
+          await deps.peers.unregister(sessionId)
+          return Response.json({ ok: true })
+        }
+        return methodNotAllowed()
+      } catch (err) {
+        return routeError(err)
+      }
+    }
+
+    if (url.pathname === '/api/v1/agent/bridge/code-sessions') {
+      try {
+        if (req.method !== 'POST') return methodNotAllowed()
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        const config = bridgeCodeSessionConfigFromBody(body, env)
+        if (!config) return jsonError('bridge code session client is not configured', 400)
+        const title = stringOr(body.title, 'Desktop Coding Agent Session')
+        const client = createBridgeCodeSessionClient({ ...config, fetchImpl: deps.fetchImpl })
+        const created = await client.createCodeSession({ title, tags: stringArray(body.tags) })
+        if (!created.ok) return jsonError(created.error, created.status ?? 502)
+        await deps.peers.register({ sessionId: created.value, label: title, status: 'outbound_only', inboundEnabled: false })
+        return Response.json({ ok: true, sessionId: created.value, status: created.status })
+      } catch (err) {
+        return routeError(err)
+      }
+    }
+
+    const credentialsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/credentials$/)
+    if (credentialsMatch) {
+      const sessionId = decodeURIComponent(credentialsMatch[1]!)
+      const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
+      try {
+        if (req.method === 'GET') {
+          const credentials = await deps.state.getCredentials(sessionId)
+          if (!credentials) return jsonError('bridge credentials not found', 404)
+          return Response.json({ credentials })
+        }
+        if (req.method === 'POST') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const config = bridgeCodeSessionConfigFromBody(body, env)
+          if (!config) return jsonError('bridge code session client is not configured', 400)
+          const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
+          const client = createBridgeCodeSessionClient({ ...config, fetchImpl: deps.fetchImpl })
+          const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
+          if (!fetched.ok) return jsonError(fetched.error, fetched.status ?? 502)
+          const credentials = await deps.state.storeCredentials(codeSessionId, fetched.value)
+          await deps.peers.register({ sessionId: codeSessionId, status: 'outbound_only', inboundEnabled: false })
+          return Response.json({ ok: true, sessionId: codeSessionId, credentials, status: fetched.status })
+        }
+        return methodNotAllowed()
+      } catch (err) {
+        return routeError(err)
+      }
+    }
+
     const eventsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/events$/)
     if (eventsMatch) {
       const sessionId = decodeURIComponent(eventsMatch[1]!)
