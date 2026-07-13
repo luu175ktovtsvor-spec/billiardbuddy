@@ -29,7 +29,7 @@
 | 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |
 | 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 视频 Brief、Scene/Timeline、素材证据、规划、预览与渲染 |
-| 门店知识 | `packs/billiards`、`StoreDocsService`、assets | 门店资料、RAG、领域能力 |
+| 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
 | 设置与凭据 | settings/provider/credential services、SettingsPage | 偏好、provider、凭据 |
 | 系统运维 | telemetry、backup、migrations、assets | 遥测、备份、迁移、组件资产 |
 

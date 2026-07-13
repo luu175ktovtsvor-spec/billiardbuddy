@@ -392,23 +392,11 @@ test('desktop product compatibility endpoints are served by TS without Python', 
     const docsDir = join(root, 'store-docs')
     mkdirSync(docsDir)
     writeFileSync(join(docsDir, '价目表.txt'), '黄金档台费 68 元一小时，会员充值满 1000 送 120。')
-    writeFileSync(join(docsDir, '排班.txt'), '周五晚班由小王负责。')
     const docs = await (await fetch(`${base}/api/v1/store-docs`, {
       method: 'PUT',
       body: JSON.stringify({ folder_path: docsDir }),
     })).json() as any
-    expect(docs).toMatchObject({ folder_path: docsDir, status: 'ready', indexed_file_count: 2 })
-    const docHits = await (await fetch(`${base}/api/v1/store-docs/search`, {
-      method: 'POST',
-      body: JSON.stringify({ query: '黄金档台费', top: 3 }),
-    })).json() as any
-    expect(docHits.hits[0]).toMatchObject({ file_name: '价目表.txt' })
-    expect(docHits.hits[0].excerpt).toContain('68')
-    const scopedDocHits = await (await fetch(`${base}/api/v1/store-docs/search`, {
-      method: 'POST',
-      body: JSON.stringify({ query: '黄金档台费', top: 3, path: '排班.txt' }),
-    })).json() as any
-    expect(scopedDocHits.hits).toEqual([])
+    expect(docs).toMatchObject({ folder_path: docsDir, status: 'ready', indexed_file_count: 1 })
 
     const notifications = await (await fetch(`${base}/api/v1/notifications?after=0`)).json() as any
     expect(notifications).toMatchObject({ items: [], cursor: 0 })

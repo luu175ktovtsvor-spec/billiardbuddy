@@ -101,6 +101,7 @@ import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnsw
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
+import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
@@ -2196,6 +2197,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -2353,33 +2355,8 @@ export function startServer(opts: StartServerOptions = {}) {
       const scheduledTaskResponse = await handleScheduledTaskRoute(url, req)
       if (scheduledTaskResponse) return scheduledTaskResponse
 
-      if (url.pathname === '/api/v1/store-docs') {
-        if (req.method === 'GET') return Response.json(await desktopData.getStoreDocs())
-        if (req.method === 'PUT') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await storeDocs.setFolder(typeof body.folder_path === 'string' ? body.folder_path : null))
-        }
-        if (req.method === 'DELETE') return Response.json(await storeDocs.clear())
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      if (url.pathname === '/api/v1/store-docs/reindex') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await storeDocs.reindex())
-      }
-
-      if (url.pathname === '/api/v1/store-docs/search') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const query = typeof body.query === 'string' ? body.query : ''
-        const top = typeof body.top === 'number' ? body.top : 5
-        const paths = Array.isArray(body.paths)
-          ? body.paths.filter((item): item is string => typeof item === 'string')
-          : typeof body.path === 'string'
-            ? body.path
-            : undefined
-        return Response.json({ hits: await storeDocs.search(query, top, { paths }) })
-      }
+      const storeDocsResponse = await handleStoreDocsRoute(url, req)
+      if (storeDocsResponse) return storeDocsResponse
 
       if (url.pathname === '/api/v1/notifications') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
