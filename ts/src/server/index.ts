@@ -51,13 +51,13 @@ import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
 import { BridgeRemoteState, type BridgeRemoteCredentialRecord } from '../tasks/bridgeRemoteState'
 import { createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
-import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
+import type { BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
 import { BridgeWorkerClient } from '../tasks/bridgeWorkerClient'
 import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
 import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../tasks/bridgeWorkerRefreshScheduler'
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
-import { resolveInboundUserMessage, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
+import type { BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl } from '../media/mediaJobs'
 import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
 import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
@@ -93,11 +93,12 @@ import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
 import { isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
 import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
-import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
+import { bridgeCodeSessionConfigFromBody, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
 import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadRuntimeExtensionLibraries } from './extensionRoots'
 import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
+import { createBridgeSessionRouteController } from './routes/bridgeSessionRoutes'
 import { createExtensionDiscoveryRouteHandler } from './routes/extensionDiscoveryRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createMcpRouteHandler } from './routes/mcpRoutes'
@@ -366,7 +367,6 @@ export function startServer(opts: StartServerOptions = {}) {
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
-  const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
   const bridgeWorkers = new Map<string, BridgeWorkerClient>()
   const bridgeWorkerStreams = new Map<string, BridgeWorkerStream>()
   const bridgeWorkerRefreshSchedulers = new Map<string, BridgeWorkerRefreshScheduler<BridgeWorkerRefreshValue>>()
@@ -2178,6 +2178,16 @@ export function startServer(opts: StartServerOptions = {}) {
     env: opts.env ?? process.env,
     pluginRoots,
   })
+  const bridgeSessionRoutes = createBridgeSessionRouteController({
+    state: bridgeRemote,
+    peers: bridgePeers,
+    stateRoot,
+    env: opts.env,
+    fetchImpl: opts.fetchImpl,
+    WebSocketCtor: opts.bridgeWebSocketCtor,
+    dispatchInbound: dispatchBridgeInboundToAgent,
+    projectEvent: projectBridgeEventToConversation,
+  })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -2584,187 +2594,8 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       }
 
-      const bridgeEventsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/events$/)
-      if (bridgeEventsMatch) {
-        const sessionId = decodeURIComponent(bridgeEventsMatch[1]!)
-        try {
-          if (req.method === 'GET') {
-            return Response.json({
-              events: await bridgeRemote.listEvents(sessionId, {
-                after: numberFrom(url.searchParams.get('after'), 0),
-                limit: numberFrom(url.searchParams.get('limit'), 100),
-              }),
-            })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const event = isRecord(body.event) ? body.event : body
-            return Response.json(await bridgeRemote.ingestEvent(sessionId, event), { status: 201 })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeInboundMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/inbound(?:\/resolve)?$/)
-      if (bridgeInboundMatch) {
-        const sessionId = decodeURIComponent(bridgeInboundMatch[1]!)
-        try {
-          if (req.method === 'GET') {
-            return Response.json({
-              messages: await bridgeRemote.listInboundMessages(sessionId, {
-                after: numberFrom(url.searchParams.get('after'), 0),
-                limit: numberFrom(url.searchParams.get('limit'), 100),
-              }),
-            })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const event = isRecord(body.event) ? body.event : isRecord(body.message) ? body.message : body
-            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-            const resolved = await resolveInboundUserMessage(event, {
-              sessionId,
-              stateRoot,
-              baseUrl: config?.baseUrl,
-              token: config?.token,
-              fetchImpl: opts.fetchImpl,
-            })
-            if (!resolved) return jsonError('inbound user message content not found', 400)
-            const store = body.store !== false
-            const record = store ? await bridgeRemote.storeInboundMessage(sessionId, resolved) : undefined
-            const dispatch = body.autoRun === true || body.auto_run === true || body.conversationId || body.conversation_id
-              ? await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved)
-              : undefined
-            return Response.json({ resolved, ...(record ? { message: record } : {}), ...(dispatch ? { dispatch } : {}) }, { status: 201 })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgePermissionsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions$/)
-      if (bridgePermissionsMatch) {
-        const sessionId = decodeURIComponent(bridgePermissionsMatch[1]!)
-        try {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          return Response.json({ permissions: await bridgeRemote.listPermissions(sessionId, bridgePermissionStatusFrom(url.searchParams.get('status'))) })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgePermissionRespondMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions\/([^/]+)\/respond$/)
-      if (bridgePermissionRespondMatch) {
-        const sessionId = decodeURIComponent(bridgePermissionRespondMatch[1]!)
-        const requestId = decodeURIComponent(bridgePermissionRespondMatch[2]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const result = await bridgeRemote.respondToPermission(sessionId, requestId, bridgePermissionResponseFrom(body))
-          if (!result) return jsonError('bridge permission request not found', 404)
-          return Response.json(result)
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox$/)
-      if (bridgeOutboxMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxMatch[1]!)
-        try {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          return Response.json({ outbox: await bridgeRemote.listOutbox(sessionId, bridgeOutboxStatusFrom(url.searchParams.get('status'))) })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxSentMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/([^/]+)\/sent$/)
-      if (bridgeOutboxSentMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxSentMatch[1]!)
-        const outboxId = decodeURIComponent(bridgeOutboxSentMatch[2]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const item = await bridgeRemote.markOutboxSent(sessionId, outboxId)
-          if (!item) return jsonError('bridge outbox item not found', 404)
-          return Response.json({ outbox: item })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxFlushMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/flush$/)
-      if (bridgeOutboxFlushMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxFlushMatch[1]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-          if (!config) return jsonError('bridge remote transport is not configured', 400)
-          const transport = createBridgeRemoteTransport({ ...config, fetchImpl: opts.fetchImpl })
-          const queued = await bridgeRemote.listOutbox(sessionId, 'queued')
-          const results: Array<Record<string, unknown>> = []
-          for (const item of queued) {
-            const sent = await transport.sendOutboxItem(item)
-            if (sent.ok) {
-              const marked = await bridgeRemote.markOutboxSent(sessionId, item.id)
-              results.push({ id: item.id, requestId: item.requestId, ok: true, status: sent.status, outbox: marked })
-            } else {
-              results.push({ id: item.id, requestId: item.requestId, ok: false, status: sent.status, error: sent.error })
-            }
-          }
-          return Response.json({ ok: results.every(item => item.ok === true), flushed: results.filter(item => item.ok === true).length, total: results.length, results })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      if (url.pathname === '/api/v1/agent/bridge/subscribers') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({
-          subscribers: [...bridgeSubscribers.entries()].map(([sessionId, subscriber]) => ({
-            sessionId,
-            connected: subscriber.isConnected(),
-          })),
-        })
-      }
-
-      const bridgeSubscribeMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/subscribe$/)
-      if (bridgeSubscribeMatch) {
-        const sessionId = decodeURIComponent(bridgeSubscribeMatch[1]!)
-        try {
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-            if (!config) return jsonError('bridge remote subscriber is not configured', 400)
-            bridgeSubscribers.get(sessionId)?.close()
-            const subscriber = new BridgeRemoteSubscriber(sessionId, {
-              baseUrl: config.baseUrl,
-              token: config.token,
-              orgUuid: config.orgUuid,
-              WebSocketCtor: opts.bridgeWebSocketCtor,
-            }, { state: bridgeRemote, peers: bridgePeers, inbound: {
-              stateRoot,
-              fetchImpl: opts.fetchImpl,
-              onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved) },
-            }, onEvent: async payload => { await projectBridgeEventToConversation(body, payload) } })
-            bridgeSubscribers.set(sessionId, subscriber)
-            subscriber.connect()
-            return Response.json({ ok: true, sessionId, connected: subscriber.isConnected() })
-          }
-          if (req.method === 'DELETE') {
-            const subscriber = bridgeSubscribers.get(sessionId)
-            subscriber?.close()
-            bridgeSubscribers.delete(sessionId)
-            return Response.json({ ok: true, sessionId })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
+      const bridgeSessionResponse = await bridgeSessionRoutes.handle(url, req)
+      if (bridgeSessionResponse) return bridgeSessionResponse
 
       const pluginResponse = await handlePluginRoute(url, req)
       if (pluginResponse) return pluginResponse
@@ -3141,8 +2972,7 @@ export function startServer(opts: StartServerOptions = {}) {
     scheduledTasks.stop()
     assets.stop()
     if (getActiveAssetManager() === assets) setActiveAssetManager(null)
-    for (const subscriber of bridgeSubscribers.values()) subscriber.close()
-    bridgeSubscribers.clear()
+    bridgeSessionRoutes.close()
     for (const scheduler of bridgeWorkerRefreshSchedulers.values()) scheduler.cancel()
     bridgeWorkerRefreshSchedulers.clear()
     for (const stream of bridgeWorkerStreams.values()) stream.close()
