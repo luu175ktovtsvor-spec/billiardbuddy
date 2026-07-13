@@ -591,12 +591,11 @@ export function Composer() {
   function submit() {
     const text = value.trim()
     if (!text && pasted.length === 0) return
-    if (text === '/生图工作台' && pasted.length === 0) {
+    if ((text === '/生成图片' || text === '/生图工作台') && pasted.length === 0) {
       useUiStore.getState().setNav('creation')
       setValue('')
       setPasted([])
       if (taRef.current) taRef.current.style.height = 'auto'
-      toast('已打开生图工作台')
       return
     }
     // 附件文本拼在正文后(围栏标记,模型读得懂、正文不被冲散);全空正文时给一句默认引导。

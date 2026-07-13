@@ -76,9 +76,9 @@ test('最小窗口尺寸下输入区仍可用且页面不横向溢出', async ({
   expect((inputBox?.x ?? 0) + (inputBox?.width ?? 0)).toBeLessThanOrEqual(layout.viewport + 1)
 })
 
-test('生图工作台在初始创作态保持任务层级与无横向溢出', async ({ desktop }, testInfo) => {
+test('生成图片页面在初始状态保持任务层级与无横向溢出', async ({ desktop }, testInfo) => {
   const input = desktop.window.getByTestId('chat-input')
-  await input.fill('/生图工作台')
+  await input.fill('/生成图片')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
 
@@ -94,7 +94,7 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1180)
   await expect(desktop.window.getByTestId('image-prompt-input')).toBeVisible()
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
-  await expect(desktop.window.getByRole('tab', { name: '创作', exact: true })).toBeHidden()
+  await expect(desktop.window.getByRole('tab', { name: '描述', exact: true })).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-wide-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
 
@@ -107,50 +107,47 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
 
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 650))
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(720)
-  await expect(desktop.window.getByRole('tab', { name: '创作', exact: true })).toBeHidden()
+  await expect(desktop.window.getByRole('tab', { name: '描述', exact: true })).toBeHidden()
   await expect(desktop.window.getByTestId('image-workflow-poster')).toHaveAttribute('aria-selected', 'true')
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-compact-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
 })
 
-test('生图工作台可以取消正在生成的任务，并重试一次性失败', async ({ desktop }) => {
+test('生成图片页面可以取消正在生成的任务，并重试一次性失败', async ({ desktop }) => {
   test.setTimeout(30_000)
   const input = desktop.window.getByTestId('chat-input')
-  await input.fill('/生图工作台')
+  await input.fill('/生成图片')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
 
   const prompt = desktop.window.getByTestId('image-prompt-input')
   const generate = desktop.window.getByTestId('image-generate-button')
-  await desktop.window.getByTestId('image-output-settings').getByText('输出设置').click()
+  await desktop.window.getByTestId('image-output-settings').getByText('图片设置').click()
   await desktop.window.getByTestId('image-ratio-select').selectOption('2:5')
   await prompt.fill('做一张周末畅打活动海报')
-  await generate.click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
   await generate.click()
   await expect(desktop.window.getByTestId('cancel-image-job')).toBeVisible()
   await desktop.window.getByTestId('cancel-image-job').click()
   await expect(desktop.window.getByTestId('workbench-retry')).toContainText('已取消')
 
+  await desktop.window.getByRole('tab', { name: '描述', exact: true }).click()
   await desktop.window.getByTestId('image-ratio-select').selectOption('1:1')
   await prompt.fill('做一张会员日充值活动海报')
-  await generate.click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
   await generate.click()
   await expect(desktop.window.getByTestId('workbench-retry').getByRole('button', { name: '重试' })).toBeVisible({ timeout: 15_000 })
   await desktop.window.getByTestId('workbench-retry').getByRole('button', { name: '重试' }).click()
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 15_000 }).toBe(3)
 })
 
-test('生图工作台完成生成挑图局部改字导出并在重启后恢复', async ({ desktop }, testInfo) => {
+test('生成图片页面完成生成挑图局部改字导出并在重启后恢复', async ({ desktop }, testInfo) => {
   test.setTimeout(60_000)
   const input = desktop.window.getByTestId('chat-input')
-  await input.fill('/生图工作台')
+  await input.fill('/生成图片')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
   await expect(desktop.window.getByTestId('sidebar')).toBeVisible()
-  await expect(desktop.window.getByTestId('topbar')).toContainText('生图工作台')
+  await expect(desktop.window.getByTestId('topbar')).toContainText('生成图片')
 
   const reference = new PNG({ width: 768, height: 768 })
   for (let i = 0; i < reference.data.length; i += 4) {
@@ -166,8 +163,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   })
   await desktop.window.getByTestId('poster-type-select').selectOption('opening_anniversary')
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible()
-  await desktop.window.getByTestId('image-generate-button').click()
+  await expect(desktop.window.getByTestId('brief-understanding')).toBeVisible({ timeout: 15_000 })
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 15_000 }).toBe(3)
   await desktop.window.getByTestId('candidate-select').first().click()
   await expect(desktop.window.getByTestId('selected-candidate-preview')).toBeVisible()
@@ -179,6 +175,11 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   }, { timeout: 15_000 }).toBe(true)
   await desktop.window.getByTestId('open-selected-candidate').click()
   await expect(desktop.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
+  await expect(desktop.window.getByTestId('workbench-canvas-viewport')).toBeVisible()
+  await expect.poll(() => desktop.window.getByTestId('workbench-canvas-viewport').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+  await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
+  await desktop.window.getByRole('tab', { name: '修改', exact: true }).click()
+  await expect(desktop.window.getByTestId('whole-edit-input')).toBeVisible()
 
   const versionCount = async () => desktop.window.getByTestId('version-item').count()
   const versionsBeforeWholeEdit = await versionCount()
@@ -186,7 +187,8 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await desktop.window.getByTestId('whole-edit-button').click()
   await expect.poll(versionCount, { timeout: 15_000 }).toBeGreaterThan(versionsBeforeWholeEdit)
 
-  await desktop.window.getByRole('button', { name: '矩形' }).click()
+  await desktop.window.getByRole('tab', { name: '修改', exact: true }).click()
+  await desktop.window.getByRole('button', { name: '框选' }).click()
   const canvas = desktop.window.locator('canvas.upper-canvas').last()
   await canvas.scrollIntoViewIfNeeded()
   await expect(canvas).toBeVisible()
@@ -205,12 +207,13 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await desktop.window.getByTestId('inpaint-button').click()
   await expect.poll(versionCount, { timeout: 15_000 }).toBeGreaterThan(versionsBeforeInpaint)
 
+  await desktop.window.getByRole('tab', { name: '修改', exact: true }).click()
   await desktop.window.getByTestId('add-text-button').click()
   await desktop.window.getByPlaceholder('选中文字层后编辑').fill('会员日特惠')
   await desktop.window.getByTestId('text-align-center').click()
   await desktop.window.getByTestId('text-undo-button').click()
   await desktop.window.getByTestId('text-redo-button').click()
-  await desktop.window.getByRole('button', { name: '保存' }).click()
+  await desktop.window.getByRole('button', { name: '保存', exact: true }).click()
 
   await desktop.window.getByTestId('version-item').last().click()
   await desktop.window.getByTestId('export-png-button').click()
@@ -219,6 +222,9 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
     return body.projects[0]?.versions.some((version) => version.kind === 'text_export') ?? false
   }, { timeout: 15_000 }).toBe(true)
   await desktop.window.getByTestId('save-library-button').click()
+  await expect(desktop.window.getByText('使用前检查')).toBeVisible()
+  await expect(desktop.window.getByTestId('creation-page').getByText(/工作台|候选|质检|蒙版|重绘|硬闸|高保真|OCR|素材库/)).toHaveCount(0)
+  await testInfo.attach('workbench-friendly-editing', { body: await desktop.window.screenshot(), contentType: 'image/png' })
 
   const body = await desktop.api<{
     projects: Array<{
@@ -243,16 +249,16 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   })
 
   const restarted = await desktop.restart()
-  await restarted.window.getByText('生图工作台').click()
+  await restarted.window.getByText('生成图片').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
   await expect(restarted.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
-  await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/未自动质检|OCR|人像|投放/)
+  await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/尚未自动检查|文字检查|人物照片|发布前/)
 })
 
 test('授权随拍照片图生图要求授权、保留参考角色并由用户确认本人', async ({ desktop }, testInfo) => {
   test.setTimeout(60_000)
   const input = desktop.window.getByTestId('chat-input')
-  await input.fill('/生图工作台')
+  await input.fill('/生成图片')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
   await desktop.window.getByTestId('image-workflow-photo').click()
@@ -290,13 +296,13 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1180, 760))
 
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人照片优化')
-  await desktop.window.getByTestId('image-generate-button').click()
+  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人照片优化', { timeout: 15_000 })
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 20_000 }).toBe(3)
   await desktop.window.getByTestId('open-selected-candidate').click()
   await expect(desktop.window.getByTestId('confirm-portrait-button')).toBeVisible()
   await desktop.window.getByTestId('confirm-portrait-button').click()
   await expect(desktop.window.getByTestId('portrait-user-confirmed')).toBeVisible()
+  await expect(desktop.window.getByTestId('image-quality-status').getByText(/质检|模型|成图|人工把关|高保真|端点/)).toHaveCount(0)
 
   const body = await desktop.api<{ projects: Array<{ reference_assets: Array<{ role: string }>; versions: Array<{ review?: { portrait_quality_state?: string; portrait_user_confirmed?: boolean } }> }> }>('/api/v1/studio/workbench/projects')
   expect(body.projects[0]?.reference_assets[0]?.role).toBe('identity_primary')
@@ -306,7 +312,7 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
 test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、重启恢复和语音回填', async ({ desktop }, testInfo) => {
   test.setTimeout(90_000)
   await desktop.setVideoFiles()
-  await desktop.window.getByTestId('sidebar').getByText('剪视频工作台').click()
+  await desktop.window.getByTestId('sidebar').getByText('剪视频', { exact: true }).click()
   await expect(desktop.window.getByTestId('video-studio-page')).toBeVisible()
   await desktop.window.getByTestId('video-view-ambient').click()
   await desktop.window.getByTestId('video-goal-input').fill('把真实素材剪成自然的空间与日常短片，不添加不存在的营销信息')
@@ -316,10 +322,12 @@ test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、�
   await desktop.window.getByTestId('video-create-project').click()
   await expect(desktop.window.getByTestId('video-brief-understanding')).toBeVisible({ timeout: 30_000 })
   await expect(desktop.window.getByTestId('video-generate-drafts')).toBeVisible()
+  await expect(desktop.window.getByText('已自动保存')).toBeVisible()
   await desktop.window.getByTestId('video-generate-drafts').click()
   await expect.poll(() => desktop.window.getByTestId('video-scene-card').count(), { timeout: 30_000 }).toBeGreaterThan(0)
   await expect(desktop.window.getByTestId('video-ambient-workspace')).toBeVisible()
-  await expect(desktop.window.getByTestId('video-alternatives')).toContainText('表达更完整')
+  await expect(desktop.window.getByTestId('video-source-basket')).toBeHidden()
+  await expect(desktop.window.getByTestId('video-alternatives')).toBeHidden()
   const sceneVideo = desktop.window.getByTestId('video-scene-preview').locator('video')
   await expect.poll(() => sceneVideo.evaluate(video => (video as HTMLVideoElement).readyState), { timeout: 10_000 }).toBeGreaterThanOrEqual(2)
   await sceneVideo.evaluate(async video => {
@@ -329,11 +337,15 @@ test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、�
     await new Promise<void>(resolve => element.addEventListener('seeked', () => resolve(), { once: true }))
   })
   await testInfo.attach('video-ambient-workbench', { body: await desktop.window.screenshot(), contentType: 'image/png' })
+  await desktop.window.getByRole('tab', { name: '调整', exact: true }).click()
+  await expect(desktop.window.getByTestId('video-alternatives')).toContainText('表达更完整')
 
   await desktop.window.setViewportSize({ width: 720, height: 900 })
-  await expect(desktop.window.getByRole('tab', { name: '素材', exact: true })).toBeVisible()
+  await expect(desktop.window.getByRole('tab', { name: '视频素材', exact: true })).toBeVisible()
   await desktop.window.getByRole('tab', { name: '调整', exact: true }).click()
+  await desktop.window.getByText('画面位置与速度', { exact: true }).click()
   await expect(desktop.window.getByTestId('video-visual-controls')).toBeVisible()
+  await expect(desktop.window.getByText(/revision|Scene|ASR|CTA|Take/)).toHaveCount(0)
   const responsiveSize = await desktop.window.evaluate(() => ({ width: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }))
   expect(responsiveSize.scrollWidth).toBeLessThanOrEqual(responsiveSize.width + 1)
   await testInfo.attach('video-workbench-720px', { body: await desktop.window.screenshot(), contentType: 'image/png' })
@@ -363,7 +375,7 @@ test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、�
 
   await desktop.window.getByTestId('video-view-talking').click()
   await expect(desktop.window.getByTestId('video-talking-workspace')).toBeVisible()
-  const displayText = desktop.window.getByLabel(/Scene \d+ 显示字幕/).first()
+  const displayText = desktop.window.getByLabel(/片段 \d+ 显示字幕/).first()
   await displayText.fill('用户修正后的显示字幕')
   await desktop.window.getByRole('button', { name: '保存字幕' }).first().click()
   const brollCandidate = desktop.window.getByTestId('video-broll-candidates').first().getByRole('button').first()
@@ -387,12 +399,14 @@ test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、�
   const relocatedSource = path.join(path.dirname(originalSource.file_uri), `relocated-${path.basename(originalSource.file_uri)}`)
   copyFileSync(originalSource.file_uri, relocatedSource)
   unlinkSync(originalSource.file_uri)
+  await desktop.window.getByRole('tab', { name: '视频素材', exact: true }).click()
   await desktop.window.getByTitle('刷新项目').click()
-  await expect(desktop.window.getByText('素材离线', { exact: false }).first()).toBeVisible()
+  await expect(desktop.window.getByText('找不到原视频', { exact: false }).first()).toBeVisible()
   await desktop.setVideoFiles([relocatedSource])
-  await desktop.window.getByRole('button', { name: '重新定位原素材' }).first().click()
-  await expect(desktop.window.getByText('素材离线', { exact: false })).toHaveCount(0)
+  await desktop.window.getByRole('button', { name: '重新选择原视频' }).first().click()
+  await expect(desktop.window.getByText('找不到原视频', { exact: false })).toHaveCount(0)
 
+  await desktop.window.getByRole('tab', { name: '调整', exact: true }).click()
   desktop.setVideoRenderDelay(true)
   await desktop.window.getByTestId('video-final-render').click()
   await expect(desktop.window.getByTestId('video-cancel-job')).toBeVisible()
@@ -415,7 +429,7 @@ test('剪视频双工作台完成 Scene 融合、撤销重做、正式导出、�
   await testInfo.attach('video-export-manifest', { body: Buffer.from(JSON.stringify(manifest, null, 2)), contentType: 'application/json' })
 
   const restarted = await desktop.restart()
-  await restarted.window.getByTestId('sidebar').getByText('剪视频工作台').click()
+  await restarted.window.getByTestId('sidebar').getByText('剪视频', { exact: true }).click()
   await expect(restarted.window.getByTestId('video-project-item').first()).toBeVisible()
   await restarted.window.getByTestId('video-project-item').first().click()
   await expect.poll(() => restarted.window.getByTestId('video-scene-card').count()).toBe(sceneCount + 1)
