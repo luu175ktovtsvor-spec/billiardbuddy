@@ -731,7 +731,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         permissionMode: settings.defaultPermissionMode,
         remember_approval: remember,
         ...(settings.workspaceRoot ? { working_dir: settings.workspaceRoot } : {}),
-        ...(settings.enabledPacks.length > 0 ? { enabled_packs: settings.enabledPacks } : {}),
+        enabled_packs: settings.enabledPacks,
       })
       set((s) => ({
         blocks: s.blocks.map((b) =>

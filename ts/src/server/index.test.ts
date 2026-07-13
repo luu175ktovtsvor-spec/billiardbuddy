@@ -629,6 +629,34 @@ test('POST /api/v1/agent/execute 无 working_dir 时从 session meta 自愈,写�
   rmSync(sessionDir, { recursive: true, force: true })
 })
 
+test('POST /api/v1/agent/execute 区分领域包字段缺失与显式空数组', async () => {
+  const conversationId = 'approve-pack-state'
+  const svc = new SessionService(serverRoot)
+  await svc.create({ id: conversationId, title: 'pack state', workspaceRoot: serverRoot })
+  await svc.touch(conversationId, { enabledPacks: ['billiards'] })
+  const tool = 'billiards_ops_checklist'
+  const args = { scenario: '日报' }
+  const request = (body: Record<string, unknown>) => fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tool,
+      args,
+      token: signApproval(tool, args),
+      permissionMode: 'full',
+      conversationId,
+      ...body,
+    }),
+  })
+
+  const inherited = await request({})
+  expect((await inherited.json() as any)).toMatchObject({ ok: true, tool })
+
+  const disabled = await request({ enabled_packs: [] })
+  const disabledBody = await disabled.json() as any
+  expect(disabledBody.ok).toBe(false)
+  expect(disabledBody.result).toContain('未知工具')
+})
+
 test('POST /api/v1/agent/execute uses approval_args for edited approval parameters', async () => {
   const originalArgs = { command: 'echo original-approval' }
   const editedArgs = { command: 'echo edited-approval' }
@@ -2633,6 +2661,89 @@ test('POST /agent/run exposes domain pack tools only when the pack is enabled', 
   } finally {
     packServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
+  }
+})
+
+test('POST /agent/run keeps domain packs isolated per session and removes all pack contributions after explicit disable', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-pack-session-state-'))
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'agent-pack-session-workspace-'))
+  const calls = new Map<string, { systemPrompt: string; tools: string[] }>()
+  const packServer = startServer({
+    port: 0,
+    transcriptRoot,
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body || '{}')) as {
+        messages?: Array<{ role: string; content: string }>
+        tools?: Array<{ function?: { name?: string } }>
+      }
+      const toolNames = (body.tools ?? []).map(tool => tool.function?.name ?? '').filter(Boolean)
+      const userMessage = body.messages?.filter(message => message.role === 'user').at(-1)?.content ?? ''
+      if (toolNames.includes('run_command') && userMessage.startsWith('PACK_STATE_')) {
+        calls.set(userMessage, {
+          systemPrompt: body.messages?.find(message => message.role === 'system')?.content ?? '',
+          tools: toolNames,
+        })
+      }
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\n`))
+          controller.enqueue(enc.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const run = async (conversationId: string, message: string, enabledPacks?: string[]) => {
+    const res = await fetch(`http://127.0.0.1:${packServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        conversationId,
+        working_dir: workspaceRoot,
+        permissionMode: 'full',
+        ...(enabledPacks === undefined ? {} : { enabled_packs: enabledPacks }),
+      }),
+    })
+    expect(res.status).toBe(200)
+    await res.text()
+  }
+
+  try {
+    await run('pack-session-a', 'PACK_STATE_A_ENABLED', ['billiards'])
+    await run('pack-session-b', 'PACK_STATE_B_DISABLED', [])
+    await run('pack-session-a', 'PACK_STATE_A_INHERITED')
+    await run('pack-session-a', 'PACK_STATE_A_DISABLED', [])
+
+    const enabled = calls.get('PACK_STATE_A_ENABLED')!
+    const isolated = calls.get('PACK_STATE_B_DISABLED')!
+    const inherited = calls.get('PACK_STATE_A_INHERITED')!
+    const disabled = calls.get('PACK_STATE_A_DISABLED')!
+    expect(calls.size).toBe(4)
+    expect(enabled.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(enabled.systemPrompt).toContain('\n- /billiards:daily-ops')
+    expect(enabled.tools).toContain('billiards_ops_checklist')
+
+    expect(isolated.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(isolated.tools).not.toContain('billiards_ops_checklist')
+
+    expect(inherited.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(inherited.tools).toContain('billiards_ops_checklist')
+
+    expect(disabled.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(disabled.systemPrompt).not.toContain('\n- /billiards:daily-ops')
+    expect(disabled.tools).not.toContain('billiards_ops_checklist')
+    expect(await new SessionService(transcriptRoot).get('pack-session-a')).toMatchObject({ enabledPacks: [] })
+  } finally {
+    packServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+    rmSync(workspaceRoot, { recursive: true, force: true })
   }
 })
 

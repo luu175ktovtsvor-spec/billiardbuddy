@@ -138,8 +138,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       return
     }
     const map = { ...get().enabledPacksByConv }
-    if (packs.length > 0) map[convId] = packs
-    else delete map[convId]
+    // 空数组是明确关闭,必须保留该键,才能阻止旧的后端会话状态在重开时被 adopt 回来。
+    map[convId] = packs
     persistPacksMap(map)
     set({ enabledPacksByConv: map, enabledPacks: packs })
   },

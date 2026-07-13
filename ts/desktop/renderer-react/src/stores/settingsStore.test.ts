@@ -10,7 +10,13 @@ const F3 = '/Users/swl/Desktop/测试管家台球运营管家3'
 
 beforeEach(() => {
   // 复位(无 reset action → 直接清映射与激活态)
-  useSettingsStore.setState({ workspaceByConv: {}, activeConvId: null, workspaceRoot: null })
+  useSettingsStore.setState({
+    workspaceByConv: {},
+    enabledPacksByConv: {},
+    activeConvId: null,
+    workspaceRoot: null,
+    enabledPacks: [],
+  })
 })
 
 test('多窗口各选各的:会话A=folder1、会话B=folder2,切回A仍是folder1(不串台)', () => {
@@ -81,4 +87,30 @@ test('解绑(setWorkspaceRoot null)回到后端默认', () => {
   s.setWorkspaceRoot(null)
   expect(useSettingsStore.getState().workspaceRoot).toBe(null)
   expect(useSettingsStore.getState().workspaceByConv.convA).toBeUndefined()
+})
+
+test('领域包按会话隔离:会话 A 开启台球不影响会话 B', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('convA')
+  s.setEnabledPacks(['billiards'])
+
+  s.activateConversation('convB')
+  expect(useSettingsStore.getState().enabledPacks).toEqual([])
+
+  s.activateConversation('convA')
+  expect(useSettingsStore.getState().enabledPacks).toEqual(['billiards'])
+  expect(useSettingsStore.getState().enabledPacksByConv).toEqual({ convA: ['billiards'] })
+})
+
+test('明确关闭领域包会保留空数组标记,旧的后端元数据不得重新开启', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('convA')
+  s.setEnabledPacks(['billiards'])
+  s.setEnabledPacks([])
+
+  expect(useSettingsStore.getState().enabledPacksByConv).toHaveProperty('convA', [])
+
+  s.adoptConversationPacks('convA', ['billiards'])
+  expect(useSettingsStore.getState().enabledPacks).toEqual([])
+  expect(useSettingsStore.getState().enabledPacksByConv).toHaveProperty('convA', [])
 })
