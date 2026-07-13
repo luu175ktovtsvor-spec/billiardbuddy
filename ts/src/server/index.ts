@@ -1,7 +1,6 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
 import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
-import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skillListing'
 import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
@@ -29,11 +28,11 @@ import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAM
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
 import { isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
-import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, type CommandLibrary, isBridgeSafeCommand, loadCommandsDir, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
 import { applyElicitationHooks, applyElicitationResultHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
-import { createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, resolveEnabledPacks, suggestedSkillNamesForPacks } from '../packs/domainPacks'
+import { createDomainPackTools, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, resolveEnabledPacks, suggestedSkillNamesForPacks } from '../packs/domainPacks'
 import { createGoalHookRegistry } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
@@ -68,7 +67,7 @@ import { createMediaTools } from '../media/mediaTools'
 import { VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
 import { VideoEditingService } from '../media/video-edit/service'
 import { createVideoEditRouteHandler } from '../media/video-edit/routes'
-import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
+import { loadOutputStyles, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
 import { getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
 import { TurnConsumerTracker } from './turnConsumerTracker'
@@ -99,6 +98,7 @@ import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSk
 import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
+import { createExtensionDiscoveryRouteHandler } from './routes/extensionDiscoveryRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createMcpRouteHandler } from './routes/mcpRoutes'
 import { createPluginRouteHandler } from './routes/pluginRoutes'
@@ -2176,6 +2176,12 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleTaskRoute = createTaskRouteHandler({ tasks })
   const handleWorkspaceFileRoute = createWorkspaceFileRouteHandler({ defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleWorkspaceRoute = createWorkspaceRouteHandler({ settings: userSettings, defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleExtensionDiscoveryRoute = createExtensionDiscoveryRouteHandler({
+    skillsRoot: opts.skillsRoot ?? defaultSkillsRoot(),
+    commandsRoot: opts.commandsRoot ?? defaultCommandsRoot(),
+    defaultWorkspaceRoot: getDefaultWorkspaceDir,
+    env: opts.env ?? process.env,
+  })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -2344,54 +2350,8 @@ export function startServer(opts: StartServerOptions = {}) {
       const providerResponse = await handleProviderRoute(url, req)
       if (providerResponse) return providerResponse
 
-      if (url.pathname === '/api/v1/agent/skills') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const skills = await loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot() })
-        return Response.json({
-          skills: skills.skills.map(skill => ({
-            name: skill.name,
-            description: skill.description,
-            source: skill.source,
-            argument_hint: skill.whenToUse,
-            user_invocable: true,
-          })),
-        })
-      }
-
-      if (url.pathname === '/api/v1/agent/output-styles') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const styles = await loadOutputStyles()
-        return Response.json({ output_styles: styles.styles.map(publicOutputStyle) })
-      }
-
-      if (url.pathname === '/api/v1/agent/packs') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ packs: listPublicDomainPacks() })
-      }
-
-      // 给前端 / 面板列可调用的技能/命令(对齐 cc「斜杠命令=技能」发现清单):
-      // 汇总 builtin 命令 + 已加载技能 + 已启用领域包命令(启用 billiards 时含 /台球、billiards:*)。
-      // GET /api/v1/agent/commands?conversationId=&enabledPacks=台球[,球房]&working_dir=
-      if (url.pathname === '/api/v1/agent/commands') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || getDefaultWorkspaceDir()
-        const workspace = new Workspace(workspaceRoot)
-        const queryPacks = [
-          ...url.searchParams.getAll('enabledPacks'),
-          ...url.searchParams.getAll('enabled_packs'),
-          ...url.searchParams.getAll('knowledge_packs'),
-          ...url.searchParams.getAll('knowledgePacks'),
-        ].flatMap(value => value.split(/[,，]/)).map(value => value.trim()).filter(Boolean)
-        const enabledPacks = resolveEnabledPacks({
-          enabled_packs: queryPacks.length > 0 ? queryPacks : undefined,
-          billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
-        })
-        const [skills, commands] = await Promise.all([
-          loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot(), workspaceRoot: workspace.root }),
-          loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env),
-        ])
-        return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
-      }
+      const extensionDiscoveryResponse = await handleExtensionDiscoveryRoute(url, req)
+      if (extensionDiscoveryResponse) return extensionDiscoveryResponse
 
       const mcpResponse = await handleMcpRoute(url, req)
       if (mcpResponse) return mcpResponse
@@ -3072,47 +3032,6 @@ export function startServer(opts: StartServerOptions = {}) {
         const status = await media.status(legacyMediaJobMatch[1]!)
         if (!status) return Response.json({ ok: false, detail: '任务不存在或已过期' }, { status: 404 })
         return Response.json(status)
-      }
-
-      const commandRoute = url.pathname.match(/^\/(?:api\/)?commands(?:\/(expand))?$/)
-      if (commandRoute) {
-        const queryPacks = [
-          ...url.searchParams.getAll('knowledge_packs'),
-          ...url.searchParams.getAll('knowledgePacks'),
-          ...url.searchParams.getAll('enabled_packs'),
-          ...url.searchParams.getAll('enabledPacks'),
-        ].filter(Boolean)
-        const queryBridgeOrigin = url.searchParams.get('bridge_origin') === 'true' ||
-          url.searchParams.get('bridgeOrigin') === 'true' ||
-          url.searchParams.get('remote_control') === 'true' ||
-          url.searchParams.get('remoteControl') === 'true'
-        const bodyForWorkspace = req.method === 'GET'
-          ? {
-              working_dir: url.searchParams.get('working_dir') ?? undefined,
-              workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined,
-              knowledge_packs: queryPacks.length > 0 ? queryPacks : undefined,
-              billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
-              bridgeOrigin: queryBridgeOrigin || undefined,
-            }
-          : await req.clone().json().catch(() => ({})) as Record<string, unknown>
-        const workspace = workspaceFromBody(bodyForWorkspace)
-        const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace), opts.env ?? process.env)
-        const publicCommands = bodyForWorkspace.bridgeOrigin === true || bodyForWorkspace.bridge_origin === true || bodyForWorkspace.remoteControl === true || bodyForWorkspace.remote_control === true
-          ? filterBridgeSafeCommands(commands.commands)
-          : commands.commands
-        if (!commandRoute[1] && req.method === 'GET') {
-          // 用户面清单:过滤 user-invocable:false(与新路由 /api/v1/agent/commands 的 toPublicCommandEntries 一致);
-          // disableModelInvocation 是模型面限制,用户仍可敲,不在此过滤。
-          return Response.json({ commands: publicCommands.filter(c => c.userInvocable !== false).map(publicCommand) })
-        }
-        if (commandRoute[1] === 'expand' && req.method === 'POST') {
-          const body = bodyForWorkspace
-          if (typeof body.name !== 'string') return Response.json({ ok: false, error: 'name required' }, { status: 400 })
-          const command = commands.byName.get(normalizeCommandName(body.name))
-          if (!command) return Response.json({ ok: false, error: 'command not found' }, { status: 404 })
-          return Response.json({ command: publicCommand(command), prompt: await command.getPrompt(typeof body.args === 'string' ? body.args : '', { workspace }) })
-        }
-        return new Response('Method not allowed', { status: 405 })
       }
 
       const sessionMetadataResponse = await handleSessionMetadataRoute(url, req)
