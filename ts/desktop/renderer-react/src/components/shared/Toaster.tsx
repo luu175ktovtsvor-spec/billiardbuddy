@@ -9,7 +9,7 @@ export function Toaster() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto rounded-lg px-3.5 py-2 text-[13px]"
+          className="pointer-events-none rounded-lg px-3.5 py-2 text-[13px]"
           style={{
             background: 'var(--color-surface)',
             border: '1px solid var(--color-border)',

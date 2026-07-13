@@ -27,7 +27,7 @@
 | 任务与子代理 | `tasks`、`agents` | 后台任务、子代理、团队 |
 | Remote Bridge | `tasks/bridge*`、server bridge routes | 远程控制与消息传输 |
 | 定时任务 | `ScheduledTaskRunner`、renderer scheduled | 排程、执行、运行历史 |
-| 生图/文档 | `media`、canvas/studio routes、CreationPage | 图片、canvas、Office 文档 |
+| 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `media/video*`、VideoStudioPage | 剪辑计划、渲染、素材分析 |
 | 门店知识 | `packs/billiards`、`StoreDocsService`、assets | 门店资料、RAG、领域能力 |
 | 设置与凭据 | settings/provider/credential services、SettingsPage | 偏好、provider、凭据 |

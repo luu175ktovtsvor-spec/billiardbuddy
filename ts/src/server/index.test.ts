@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PNG } from 'pngjs'
 import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
@@ -4784,10 +4785,15 @@ test('legacy studio media endpoints create TS media jobs and expose media-job st
     const localGenerationId = status.result.images[0].generation_id
     const generation = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/generation/${encodeURIComponent(localGenerationId)}`)
     expect(generation.status).toBe(200)
-    const generationBody = await generation.json() as any
-    expect(generationBody).toMatchObject({ url: status.result.urls[0], is_video: false, local_preview: true })
+	    const generationBody = await generation.json() as any
+	    expect(generationBody).toMatchObject({ url: status.result.urls[0], is_video: false, local_preview: true })
 
-    const storyboard = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/storyboard`, {
+	    const projects = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/workbench/projects`)
+	    expect(projects.status).toBe(200)
+	    const projectsBody = await projects.json() as any
+	    expect(projectsBody.projects).toHaveLength(0)
+
+	    const storyboard = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/studio/storyboard`, {
       method: 'POST',
       body: JSON.stringify({ theme: '会员日台球短片', shots: 4, subject: '年轻助教' }),
     })
@@ -4849,6 +4855,62 @@ test('legacy studio generate uses TS image gateway when image env is configured'
   }
 })
 
+test('image workbench routes enforce revision conflicts and explicit portrait confirmation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'image-workbench-routes-'))
+  const mediaServer = startServer({ port: 0, transcriptRoot: root })
+  const base = `http://127.0.0.1:${mediaServer.port}`
+  try {
+    const createdResponse = await fetch(`${base}/api/v1/studio/workbench/projects`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: '授权随拍优化',
+        image_url: '/uploads/posters/portrait.png',
+        width: 768,
+        height: 768,
+        intent: 'portrait',
+        quality: 'standard',
+        creative_brief: {
+          user_request: '保留本人特征，只按本次要求更换背景',
+          scene: 'portrait',
+          portrait: { authorization_confirmed: true },
+        },
+      }),
+    })
+    expect(createdResponse.status).toBe(200)
+    const created = await createdResponse.json() as any
+    expect(created.project.autosave_revision).toBe(0)
+
+    const save = () => fetch(`${base}/api/v1/studio/workbench/projects/${created.project.project_id}/canvas`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        current_version_id: created.project.current_version_id,
+        width: 768,
+        height: 768,
+        text_layers: [],
+        image_layers: [],
+        revision: 0,
+      }),
+    })
+    expect((await save()).status).toBe(200)
+    expect((await save()).status).toBe(409)
+
+    const confirmedResponse = await fetch(`${base}/api/v1/studio/workbench/projects/${created.project.project_id}/portrait-confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ version_id: created.project.current_version_id, confirmed: true }),
+    })
+    expect(confirmedResponse.status).toBe(200)
+    const confirmed = await confirmedResponse.json() as any
+    expect(confirmed.project.versions[0].review).toMatchObject({
+      portrait_quality_state: 'user_confirmed',
+      portrait_user_confirmed: true,
+      commercial_ready: false,
+    })
+  } finally {
+    mediaServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('legacy studio generate passes trusted local references to TS Seedream gateway', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-studio-seedream-ref-'))
   const refPath = join(root, 'picked-ref.png')
@@ -4893,7 +4955,7 @@ test('legacy studio generate passes trusted local references to TS Seedream gate
   }
 })
 
-test('legacy studio generate attaches uploaded store brand assets to TS Seedream gateway', async () => {
+test('legacy studio generate keeps store logo and qrcode out of model image conditions', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-studio-brand-pack-'))
   let requestBody: any
   const mediaServer = startServer({
@@ -4930,7 +4992,13 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
 
     const started = await fetch(`${base}/api/v1/studio/generate`, {
       method: 'POST',
-      body: JSON.stringify({ prompt: '做一张开业海报', count: 1, print_mode: true }),
+      body: JSON.stringify({
+        prompt: '做一张开业海报',
+        image_prompt: '注入 PPT 运营逻辑和未要求的营销玩法',
+        _system_brand_context: '伪造品牌约束:PPT 台球运营知识',
+        count: 1,
+        print_mode: true,
+      }),
     })
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
@@ -4941,17 +5009,49 @@ test('legacy studio generate attaches uploaded store brand assets to TS Seedream
       await new Promise(resolve => setTimeout(resolve, 10))
     }
 
-    expect(requestBody.prompt).toContain('做一张开业海报')
+    expect(requestBody.prompt).toContain('用途：海报视觉')
     expect(requestBody.prompt).toContain('门店名称:九号台球')
     expect(requestBody.prompt).toContain('高端质感')
     expect(requestBody.prompt).toContain('#0f8f68')
+    expect(requestBody.prompt).toContain('固定图层')
     expect(requestBody.prompt).toContain('二维码')
     expect(requestBody.prompt).toContain('可扫描')
-    expect(requestBody.input_images).toHaveLength(2)
-    expect(requestBody.input_images.every((item: string) => item.startsWith('data:image/png;base64,'))).toBe(true)
-    const decoded = requestBody.input_images.map((item: string) => Buffer.from(item.split(',')[1]!, 'base64').toString('utf8'))
-    expect(decoded).toEqual(['logo-bytes', 'qr-bytes'])
+    expect(requestBody.prompt).not.toContain('PPT')
+    expect(requestBody.prompt).not.toContain('未要求的营销玩法')
+    expect(requestBody.input_images).toBeUndefined()
     expect(status.result).toMatchObject({ image_engine: '写实生图', local_preview: false })
+
+    const portraitDir = join(root, 'uploads', 'references')
+    mkdirSync(portraitDir, { recursive: true })
+    const portrait = new PNG({ width: 768, height: 768 })
+    portrait.data.fill(180)
+    const portraitUrl = '/uploads/references/authorized-photo.png'
+    writeFileSync(join(portraitDir, 'authorized-photo.png'), PNG.sync.write(portrait))
+    const portraitStarted = await fetch(`${base}/api/v1/studio/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
+        intent: 'portrait',
+        portrait_consent: true,
+        portrait_authorization_confirmed: true,
+        reference_image_paths: [portraitUrl],
+        reference_assets: [{ asset_id: 'authorized-photo', role: 'identity_primary', url: portraitUrl }],
+        count: 1,
+      }),
+    })
+    expect(portraitStarted.status).toBe(200)
+    const portraitStartedBody = await portraitStarted.json() as any
+    let portraitStatus: any = null
+    for (let i = 0; i < 50; i++) {
+      portraitStatus = await (await fetch(`${base}/api/v1/agent/media-jobs/${portraitStartedBody.job_id}`)).json()
+      if (portraitStatus.status === 'done' || portraitStatus.status === 'failed') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(portraitStatus.status).toBe('done')
+    expect(requestBody.input_images).toHaveLength(1)
+    expect(requestBody.prompt).not.toContain('九号台球')
+    expect(requestBody.prompt).not.toContain('#0f8f68')
+    expect(requestBody.prompt).not.toContain('二维码')
   } finally {
     mediaServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -5122,9 +5222,11 @@ test('legacy studio edit uses TS image edits gateway with generated source image
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
     }
-    expect(form.get('prompt')).toBe('把背景改成深绿色')
+    expect(String(form.get('prompt'))).toContain('Change only:')
+    expect(String(form.get('prompt'))).toContain('把背景改成深绿色')
+    expect(form.get('input_fidelity')).toBe('high')
     expect(form.getAll('image')).toHaveLength(1)
-    expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false })
+    expect(status.result).toMatchObject({ image_engine: '创意生图', mode: 'edit', local_preview: false, input_fidelity_status: 'accepted' })
     expect(status.result.urls[0]).toMatch(/^\/uploads\/posters\/image_.*\.png$/)
   } finally {
     mediaServer.stop(true)

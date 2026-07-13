@@ -590,9 +590,20 @@ export function Composer() {
   function submit() {
     const text = value.trim()
     if (!text && pasted.length === 0) return
+    if (text === '/生图工作台' && pasted.length === 0) {
+      useUiStore.getState().setNav('creation')
+      setValue('')
+      setPasted([])
+      if (taRef.current) taRef.current.style.height = 'auto'
+      return
+    }
     // 附件文本拼在正文后(围栏标记,模型读得懂、正文不被冲散);全空正文时给一句默认引导。
     const attachTail = pasted.map((p, i) => `\n\n[粘贴的文本${pasted.length > 1 ? ` ${i + 1}` : ''}]\n"""\n${p.text}\n"""`).join('')
-    const finalText = (text || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
+    const imageSlash = text.match(/^\/生图\s+(.+)$/s)
+    const baseText = imageSlash
+      ? `请理解下面的用户原始生图需求并调用 generate_image，完成后把产物送入生图工作台。调用工具时忠实保留原始画面意图，不要引入用户未提供的领域知识、运营方案或营销内容；后端会统一编译 CreativeBrief、路由模型并优化 Prompt。用户原始生图需求:${imageSlash[1]?.trim() ?? ''}`
+      : text
+    const finalText = (baseText || (pasted.length ? '请看下面粘贴的内容:' : '')) + attachTail
     if (!finalText.trim()) return
     // 运行中也放行:sendMessage 内部会把消息排队(对标 Codex queuedMessage),不再吞掉回车。
     sendMessage(finalText)

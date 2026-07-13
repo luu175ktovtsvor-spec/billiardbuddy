@@ -6,8 +6,6 @@ interface ImageToolInput {
   style?: string
   ratio?: string
   count?: number
-  image_model?: string
-  image_prompt?: string
   reference_image_paths?: string[]
   reference_generation_ids?: string[]
   poster_text?: Record<string, unknown>
@@ -29,8 +27,6 @@ interface EditImageToolInput {
   mask_path?: string
   ratio?: string
   count?: number
-  image_model?: string
-  image_prompt?: string
   /** 追加参考图(本机绝对路径),做风格/元素参照。 */
   reference_image_paths?: string[]
   /** 追加参考图(之前生成图片的 id)。 */
@@ -115,12 +111,10 @@ function editImageBody(input: EditImageToolInput, ctx: ToolContext): Record<stri
     // 缺可读底图后端会硬报错"改图需要可读取的 source_generation_id 底图",绝不退化为文字重生。
     source_generation_id: input.source_generation_id?.trim() || undefined,
     prompt: input.description,
-    image_prompt: input.image_prompt ?? input.description,
     edit_type: input.edit_type,
     mask_path: input.mask_path,
     ratio: input.ratio ?? '3:4',
     count: input.count ?? 1,
-    image_model: input.image_model,
     reference_image_paths: referenceImagePaths.length ? referenceImagePaths : undefined,
     reference_generation_ids: input.reference_generation_ids,
     poster_text: input.poster_text,
@@ -136,9 +130,7 @@ function imageBody(input: ImageToolInput, ctx: ToolContext): Record<string, unkn
     prompt: input.description,
     style: input.style,
     ratio: input.ratio ?? '3:4',
-    count: input.count ?? 1,
-    image_model: input.image_model,
-    image_prompt: input.image_prompt ?? input.description,
+    count: input.count ?? 3,
     reference_image_paths: input.reference_image_paths,
     reference_generation_ids: input.reference_generation_ids,
     poster_text: input.poster_text,
@@ -161,7 +153,7 @@ function mediaStarted(id: string, kind: string, title: string): string {
 export function createMediaTools(media: MediaJobService): Tool[] {
   const makePoster: Tool<ImageToolInput> = {
     name: 'make_poster',
-    description: 'Generate a marketing poster/image for the store as a background media job. Expand the user request into a concrete Chinese visual prompt. Input: { description, style?, ratio?, count?, image_prompt?, reference_image_paths?, reference_generation_ids?, poster_text?, print_mode?, portrait?, portrait_consent? }. When optimizing a real person\'s photo (portrait/headshot from an uploaded reference), the job first requires portrait authorization: if the result asks for consent, tell the user and only re-run with portrait_consent:true after they confirm they hold usage rights and the subject agreed. Do not sell face-swap/deepfake as a feature.',
+    description: '生成海报或图片后台任务。description 只传用户真实提出的画面需求，不要扩写成运营方案，不要引入用户未提供的领域知识、知识库内容或营销信息；后端会通过系统统一编译 CreativeBrief、路由模型并优化最终 Prompt。可按用户明确要求传 style、ratio、参考图和精确海报文字。真人照片优化必须先确认用户持有使用权且当事人同意；不得把换脸或深伪作为功能。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -169,8 +161,6 @@ export function createMediaTools(media: MediaJobService): Tool[] {
         style: { type: 'string' },
         ratio: { type: 'string' },
         count: { type: 'number' },
-        image_model: { type: 'string' },
-        image_prompt: { type: 'string' },
         reference_image_paths: { type: 'array', items: { type: 'string' } },
         reference_generation_ids: { type: 'array', items: { type: 'string' } },
         poster_text: { type: 'object' },
@@ -194,7 +184,7 @@ export function createMediaTools(media: MediaJobService): Tool[] {
   const generateImage: Tool<ImageToolInput> = {
     ...makePoster,
     name: 'generate_image',
-    description: 'Generate a general image/poster/illustration as a background media job. Do not assume uploaded images are logos; pass explicit reference_image_paths or structured roles only when the user says so. Input is the same as make_poster.',
+    description: '生成通用图片、海报或插画后台任务。description 必须忠实保留用户真实画面需求，不引入用户未提供的领域知识、运营方案或营销内容；系统统一编译 CreativeBrief、路由模型并生成最终 Prompt。不要把上传图片擅自当作 Logo，只有用户明确说明时才传对应参考图。',
     async execute(input, ctx) {
       if (!input?.description?.trim()) throw new Error('generate_image 需要 description')
       const started = await media.startStudioGenerate(imageBody(input, ctx), {
@@ -218,8 +208,6 @@ export function createMediaTools(media: MediaJobService): Tool[] {
         mask_path: { type: 'string' },
         ratio: { type: 'string' },
         count: { type: 'number' },
-        image_model: { type: 'string' },
-        image_prompt: { type: 'string' },
         reference_image_paths: { type: 'array', items: { type: 'string' } },
         reference_generation_ids: { type: 'array', items: { type: 'string' } },
         poster_text: { type: 'object' },

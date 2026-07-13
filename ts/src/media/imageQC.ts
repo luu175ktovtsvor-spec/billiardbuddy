@@ -95,7 +95,7 @@ async function askVlmJson(model: Model, system: string, promptText: string, imag
 const INPUT_QC_SYSTEM = '你是人像照片质检助手。只依据图片内容判断,严格输出 JSON,不要解释。'
 
 const INPUT_QC_PROMPT = [
-  '判断这张(些)照片是否适合作为"真人形象照/人像优化"的输入。严格输出 JSON,形如:',
+  '判断这张(些)照片是否适合作为"授权真人照片优化"的输入。严格输出 JSON,形如:',
   '{"face_count":1,"is_real_person":true,"single_subject":true,"blurry":false,"occluded":false,"low_light":false}',
   '- face_count:能清晰看到的人脸数量(整数)。',
   '- is_real_person:是否真人照片(卡通/插画/明显 AI 生成 = false)。',
@@ -126,7 +126,7 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
 
   if (minShortSide != null) {
     if (minShortSide < PORTRAIT_MIN_SHORT_SIDE) {
-      blockReason = `这张照片分辨率偏低(短边约 ${minShortSide}px),做人像优化容易糊。建议换一张更清晰的正脸照片(短边至少 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px)再试。`
+      blockReason = `这张照片分辨率偏低(短边约 ${minShortSide}px),做照片优化容易糊。建议换一张更清晰的正脸照片(短边至少 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px)再试。`
     } else if (minShortSide < PORTRAIT_RECOMMENDED_SHORT_SIDE) {
       warnings.push(`照片短边约 ${minShortSide}px,略低于建议的 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px,清晰度可能一般。`)
     }
@@ -147,8 +147,8 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
         isRealPerson = boolOrNull(parsed.is_real_person)
         hasFace = faceCount != null ? faceCount > 0 : isRealPerson
         const singleSubject = boolOrNull(parsed.single_subject)
-        if (isRealPerson === false) warnings.push('这看起来不是真人照片(可能是卡通/AI 图),人像优化更适合清晰的真人正脸照。')
-        if (singleSubject === false || (faceCount != null && faceCount > 1)) warnings.push('照片里不止一个清晰主体,建议用单人正脸照,人像优化效果更稳。')
+        if (isRealPerson === false) warnings.push('这看起来不是真人照片(可能是卡通/AI 图),真人照片优化更适合清晰的本人照片。')
+        if (singleSubject === false || (faceCount != null && faceCount > 1)) warnings.push('照片里不止一个清晰主体,建议使用单人照片,人物保持会更稳定。')
         if (boolOrNull(parsed.blurry) === true) warnings.push('照片偏模糊/失焦,成图清晰度可能受影响。')
         if (boolOrNull(parsed.occluded) === true) warnings.push('脸部有明显遮挡,建议换一张脸部完整的照片。')
         if (boolOrNull(parsed.low_light) === true) warnings.push('光线偏暗或过曝,建议换一张光线均匀的照片。')
@@ -159,7 +159,7 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
   }
 
   if (!blockReason && autoChecked && faceCount === 0) {
-    blockReason = '没有在这张照片里检测到清晰人脸。做人像优化需要一张能看清正脸的真人照片,请换一张再试。'
+    blockReason = '没有在这张照片里检测到清晰人脸。真人照片优化需要一张能看清本人特征的照片,请换一张再试。'
   }
 
   return {
@@ -191,9 +191,17 @@ export interface ResultInspection {
   autoChecked: boolean
   warnings: string[]
   message: string
+  consistencyStatus: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'
+  candidates: CandidateResultInspection[]
 }
 
-export async function inspectPortraitResult(images: QcImage[], opts: { model?: Model | null; signal?: AbortSignal } = {}): Promise<ResultInspection> {
+export interface CandidateResultInspection {
+  status: 'passed' | 'risk' | 'unchecked'
+  warnings: string[]
+  consistencyStatus: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'
+}
+
+export async function inspectPortraitResult(images: QcImage[], opts: { model?: Model | null; signal?: AbortSignal; reference?: QcImage } = {}): Promise<ResultInspection> {
   const model = opts.model
   const hasBytes = images.some(i => i.base64)
   if (!model || !hasBytes) {
@@ -202,6 +210,8 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: false,
       warnings: [],
       message: '未自动质检(质检模型未接入或无可读成图):请人工把关手/脸/肢体是否正常、有没有过度美化、是不是还是本人,再决定是否商用。',
+      consistencyStatus: 'not_checked',
+      candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
     }
   }
   try {
@@ -213,28 +223,55 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
         autoChecked: false,
         warnings: [],
         message: '未自动质检(质检结果无法解析):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
+        consistencyStatus: 'not_checked',
+        candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
       }
     }
-    const warnings: string[] = []
-    arr.forEach((raw, i) => {
+    const candidateWarnings = images.map(() => [] as string[])
+    images.forEach((_image, i) => {
+      const raw = arr[i]
       if (!raw || typeof raw !== 'object') return
       const r = raw as Record<string, unknown>
-      const tag = arr.length > 1 ? `第 ${i + 1} 张:` : ''
-      if (boolOrNull(r.hands_ok) === false) warnings.push(`${tag}手部疑似异常(多指/少指/畸形)。`)
-      if (boolOrNull(r.face_ok) === false) warnings.push(`${tag}脸部疑似异常(五官错乱/糊脸)。`)
-      if (boolOrNull(r.limbs_ok) === false) warnings.push(`${tag}肢体疑似异常(多肢/断肢/关节反向)。`)
+      const warnings = candidateWarnings[i]!
+      if (boolOrNull(r.hands_ok) === false) warnings.push('手部疑似异常(多指/少指/畸形)。')
+      if (boolOrNull(r.face_ok) === false) warnings.push('脸部疑似异常(五官错乱/糊脸)。')
+      if (boolOrNull(r.limbs_ok) === false) warnings.push('肢体疑似异常(多肢/断肢/关节反向)。')
       const faceCount = numOrNull(r.face_count)
-      if (faceCount != null && faceCount > 1) warnings.push(`${tag}画面出现多张人脸(${faceCount}),可能不符合单人形象照预期。`)
-      if (boolOrNull(r.over_beautified) === true) warnings.push(`${tag}疑似过度美化,可辨识度可能下降(像换了个人)。`)
-      if (boolOrNull(r.realistic) === false) warnings.push(`${tag}真实感不足(偏塑料感/AI 味)。`)
-      if (boolOrNull(r.unwanted_text) === true) warnings.push(`${tag}出现未要求的文字/水印。`)
+      if (faceCount != null && faceCount > 1) warnings.push(`画面出现多张人脸(${faceCount}),可能不符合单人照片编辑目标。`)
+      if (boolOrNull(r.over_beautified) === true) warnings.push('疑似过度美化,可辨识度可能下降(像换了个人)。')
+      if (boolOrNull(r.realistic) === false) warnings.push('真实感不足(偏塑料感/AI 味)。')
+      if (boolOrNull(r.unwanted_text) === true) warnings.push('出现未要求的文字/水印。')
     })
+    let consistencyStatus: ResultInspection['consistencyStatus'] = 'not_checked'
+    let consistencyCandidates: PortraitConsistencyInspection['candidates'] = images.map(() => ({ status: 'not_checked', warnings: [] }))
+    if (opts.reference?.base64) {
+      try {
+        const consistency = await inspectPortraitConsistency(opts.reference, images, { model, signal: opts.signal })
+        consistencyStatus = consistency.status
+        consistencyCandidates = consistency.candidates
+      } catch {
+        consistencyStatus = 'uncertain'
+        consistencyCandidates = images.map(() => ({ status: 'uncertain' as const, warnings: ['参考图与成图的一致性未能自动判断,请并排确认是否像本人。'] }))
+      }
+    }
+    const candidates: CandidateResultInspection[] = images.map((_image, index) => {
+      const consistency = consistencyCandidates[index] ?? { status: 'uncertain' as const, warnings: ['参考图与成图的一致性未能自动判断,请并排确认是否像本人。'] }
+      const warnings = [...candidateWarnings[index]!, ...consistency.warnings].map(w => scrubProviderIdentifiers(w))
+      return {
+        status: warnings.length ? 'risk' : 'passed',
+        warnings,
+        consistencyStatus: consistency.status,
+      }
+    })
+    const warnings = candidates.flatMap((candidate, index) => candidate.warnings.map(warning => candidates.length > 1 ? `第 ${index + 1} 张:${warning}` : warning))
     if (warnings.length === 0) {
       return {
         status: 'passed',
         autoChecked: true,
         warnings: [],
         message: '已自动质检:手/脸/肢体未见明显问题。真人成图建议再人工确认可辨识度后投放。',
+        consistencyStatus,
+        candidates,
       }
     }
     const scrubbed = warnings.map(w => scrubProviderIdentifiers(w))
@@ -243,6 +280,8 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: true,
       warnings: scrubbed,
       message: scrubProviderIdentifiers(`自动质检发现风险:${scrubbed.join(' ')} 建议重新生成或人工确认后再用,先不要直接商用。`),
+      consistencyStatus,
+      candidates,
     }
   } catch {
     return {
@@ -250,8 +289,49 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       autoChecked: false,
       warnings: [],
       message: '未自动质检(质检模型调用失败):请人工把关手/脸/肢体、是否过度美化、是否还是本人,再决定是否商用。',
+      consistencyStatus: 'not_checked',
+      candidates: images.map(() => ({ status: 'unchecked', warnings: [], consistencyStatus: 'not_checked' })),
     }
   }
+}
+
+export interface PortraitConsistencyInspection {
+  status: 'preserved' | 'uncertain' | 'drifted'
+  warnings: string[]
+  candidates: Array<{ status: 'preserved' | 'uncertain' | 'drifted' | 'not_checked'; warnings: string[] }>
+}
+
+const CONSISTENCY_PROMPT = [
+  '第一张图片是本人主参考，后面的图片是候选结果。只判断可见特征是否保持，不做身份认证。严格输出 JSON:',
+  '{"images":[{"status":"preserved"}]}',
+  'status 只能是 preserved、uncertain、drifted。若候选脸型、五官、年龄观感明显变化，返回 drifted；无法确定返回 uncertain。',
+].join('\n')
+
+export async function inspectPortraitConsistency(
+  reference: QcImage,
+  candidates: QcImage[],
+  opts: { model?: Model | null; signal?: AbortSignal } = {},
+): Promise<PortraitConsistencyInspection> {
+  if (!opts.model || !reference.base64 || !candidates.some(item => item.base64)) {
+    const warning = '参考图与成图的一致性未完成自动检查,请并排确认是否像本人。'
+    return { status: 'uncertain', warnings: [warning], candidates: candidates.map(() => ({ status: 'uncertain', warnings: [warning] })) }
+  }
+  const parsed = await askVlmJson(opts.model, '你是参考图一致性风险筛查助手。', CONSISTENCY_PROMPT, [reference, ...candidates], 5, opts.signal)
+  const statuses = parsed && Array.isArray(parsed.images)
+    ? parsed.images.map(item => item && typeof item === 'object' ? String((item as Record<string, unknown>).status ?? '') : '')
+    : []
+  const decisions = candidates.map((_candidate, index) => {
+    const status = statuses[index]
+    if (status === 'preserved') return { status: 'preserved' as const, warnings: [] as string[] }
+    if (status === 'drifted') return { status: 'drifted' as const, warnings: ['参考图与候选的人物特征疑似发生明显漂移,不标推荐。'] }
+    return { status: 'uncertain' as const, warnings: ['参考图与候选的一致性无法完全确认,请并排确认是否像本人。'] }
+  })
+  const status = decisions.some(item => item.status === 'drifted')
+    ? 'drifted'
+    : decisions.some(item => item.status === 'uncertain')
+      ? 'uncertain'
+      : 'preserved'
+  return { status, warnings: decisions.flatMap(item => item.warnings), candidates: decisions }
 }
 
 // --- 海报硬文字 OCR 校对(生成后) ----------------------------------------

@@ -86,6 +86,10 @@ import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
 import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
 import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
+import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
+import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
+import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
+import { localStoryboard } from '../media/studioFallbacks'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
 import { VideoEditError, VideoEditProjectStore } from '../media/videoEditProjects'
@@ -102,6 +106,13 @@ import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
 import type { AgentEvent, AskQuestionField } from '../types/events'
 import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
+import {
+  imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema,
+  imageBriefCompileResponseSchema,
+  studioEditRequestSchema,
+  studioGenerateRequestSchema,
+  studioUpscaleRequestSchema,
+} from '../../shared/contracts/image-workbench'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
@@ -999,6 +1010,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const udsPeers = new UdsPeerRegistry(stateRoot)
   const bridgePeers = new BridgePeerRegistry(stateRoot)
   const bridgeRemote = new BridgeRemoteState(stateRoot)
+  const imageWorkbench = new ImageWorkbenchStore(stateRoot)
   const media = new MediaJobService({
     tasks,
     stateRoot,
@@ -1007,7 +1019,9 @@ export function startServer(opts: StartServerOptions = {}) {
     fetchImpl: opts.fetchImpl,
     pollIntervalMs: 100,
     prepareImageBody: (body, mode) => prepareStudioImageBody(body, mode),
+    workbenchStore: imageWorkbench,
   })
+  const handleImageWorkbenchRoute = createImageWorkbenchRouteHandler(imageWorkbench)
   // 资产管理器(瘦安装包):大块头资产(ffmpeg/转写权重/中文字体)首启后从静态源后台
   // 静默下载;媒体调用点经进程级注册表拿 ready 路径。测试环境默认不启动(不碰网络)。
   const assets = opts.assetManager ?? new AssetManager({
@@ -2760,25 +2774,6 @@ export function startServer(opts: StartServerOptions = {}) {
     return Response.json({ url: rel })
   }
 
-  /**
-   * 通用图片上传(区域截图/聊天附图):存 /uploads/local,返回 url。不改门店 store(与 logo/qrcode 区分)。
-   * 用途:①"基于此调整"——右侧预览框选区域截图 → 上传拿 url → 当一轮多模态 turn(图+指令)喂模型
-   * (走内核现成多模态,cc-haha 路,不改内核);②聊天里贴图。只收图片类型。
-   */
-  async function saveImageAttachment(req: Request) {
-    const form = await req.formData().catch(() => null)
-    const file = form?.get('file')
-    if (!(file instanceof File)) return jsonDetailError('file required', 400)
-    const type = file.type || ''
-    if (type && !type.startsWith('image/')) return jsonDetailError('只接受图片文件', 400)
-    const ext = extname(file.name || '') || (type.includes('png') ? '.png' : type.includes('webp') ? '.webp' : '.jpg')
-    const rel = `/uploads/local/attach-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`
-    const abs = join(stateRoot, 'uploads', 'local', basename(rel))
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, Buffer.from(await file.arrayBuffer()))
-    return Response.json({ url: rel })
-  }
-
   async function serveLocalUpload(pathname: string): Promise<Response | null> {
     if (!pathname.startsWith('/uploads/local/')) return null
     const abs = join(stateRoot, 'uploads', 'local', basename(pathname))
@@ -2868,42 +2863,48 @@ export function startServer(opts: StartServerOptions = {}) {
     if (location) lines.push(`门店位置:${location}`)
     if (brandStyle) lines.push(`品牌风格:${brandStyle}`)
     if (brandColor) lines.push(`品牌主色调呼应 ${brandColor}，背景和点缀色协调即可，不要求整图都是这个颜色。`)
-    if (hasLogo) lines.push('已附带门店 Logo 作为输入图，可自然融入画面或留出安全位置；不要扭曲、改字或把它当成装饰纹理。')
+    if (hasLogo) lines.push('已提供门店 Logo 原文件，将由固定图层准确叠加；底图只需留出安全位置，不要重绘 Logo。')
     if (hasQr) {
       const printNote = body.print_mode === true
         ? '这张图用于印刷/线下投放，二维码必须保持方正、清晰、可扫描，并留出足够静区。'
         : '二维码可作为行动入口自然出现，但必须保持方正、清晰、可扫描，不要重绘成花纹。'
-      lines.push(`已附带门店二维码作为输入图，${printNote}`)
+      lines.push(`已提供门店二维码原文件，将由固定图层准确叠加，${printNote}`)
     }
     if (hasBrandRefs) lines.push('已附带品牌参考图，只提取品牌质感和配色，不要照搬无关内容。')
-    if (mode === 'edit' && assets.length > 0) {
+    if (mode === 'edit' && hasBrandRefs) {
       lines.push('改图时第一张输入图是需要保留血缘的源图，门店素材只作为品牌融合参考。')
-    } else if (assets.length > 0) {
+    } else if (hasBrandRefs) {
       lines.push('输入素材用于品牌约束和版式参考，不要让参考图里的无关背景抢占主画面。')
     }
     return lines.length ? `门店品牌约束:\n${lines.map((line, index) => `${index + 1}. ${line}`).join('\n')}` : ''
   }
 
   async function prepareStudioImageBody(rawBody: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
-    if (rawBody._store_brand_pack_applied === true) return rawBody
     const store: Record<string, unknown> = await desktopData.getStore().catch(() => ({}))
     const assets = storeBrandAssets(store)
-    const brandReferencePaths = assets.map(asset => asset.url)
+    const suppliedBrief = rawBody.creative_brief && typeof rawBody.creative_brief === 'object'
+      ? rawBody.creative_brief as Record<string, unknown>
+      : undefined
+    const isPortrait = rawBody.scene === 'portrait'
+      || rawBody.intent === 'portrait'
+      || rawBody.portrait === true
+      || suppliedBrief?.scene === 'portrait'
+    const brandReferencePaths = isPortrait ? [] : assets.filter(asset => asset.role === 'brand').map(asset => asset.url)
     const logoAsset = assets.find(asset => asset.role === 'logo')
     const qrcodeAsset = assets.find(asset => asset.role === 'qrcode')
     const qrcodeText = optionalString(store.qrcode_text ?? store.qrcode_content ?? store.qr_content)
     const referenceImagePaths = uniqueStrings([...stringArray(rawBody.reference_image_paths), ...brandReferencePaths]).slice(0, 14)
-    const suffix = storeBrandSuffix(store, assets, rawBody, mode)
-    const prompt = optionalString(rawBody.image_prompt) ?? optionalString(rawBody.prompt) ?? optionalString(rawBody.description)
+    const suffix = isPortrait ? '' : storeBrandSuffix(store, assets, rawBody, mode)
     const body: Record<string, unknown> = {
       ...rawBody,
       _store_brand_pack_applied: true,
     }
+    delete body._system_brand_context
     if (referenceImagePaths.length > 0) body.reference_image_paths = referenceImagePaths
-    if (logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
-    if (qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
-    if (qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
-    if (suffix && prompt) body.image_prompt = `${prompt}\n\n${suffix}`
+    if (!isPortrait && logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
+    if (!isPortrait && qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
+    if (!isPortrait && qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
+    if (suffix) body._system_brand_context = suffix
     return body
   }
 
@@ -3236,27 +3237,10 @@ export function startServer(opts: StartServerOptions = {}) {
     return jsonDetailError(message, status)
   }
 
-  function localStoryboard(body: Record<string, unknown>): Record<string, unknown> {
-    const theme = stringOr(body.theme, stringOr(body.prompt, '门店短片'))
-    const subject = stringOr(body.subject, '')
-    const n = Math.max(2, Math.min(6, numberFrom(body.shots, 3)))
-    const subjectText = subject ? `，主体保持为${subject}` : ''
-    const shots = Array.from({ length: n }, (_, i) => {
-      const step = i + 1
-      if (step === 1) return `${theme}开场：给出门店环境或核心物件的建立镜头${subjectText}，运镜稳定。`
-      if (step === n) return `${theme}收尾：突出到店行动或活动信息${subjectText}，画面留出文案空间。`
-      return `${theme}分镜${step}：切到桌台、灯光、服务或互动细节${subjectText}，节奏自然。`
-    })
-    return {
-      shots,
-      caption: `${theme}，今天就来店里体验一下。`,
-      local_preview: true,
-      message: '媒体后端未配置，当前分镜为 TS 本地结构化占位；配置媒体后端后会调用真实分镜模型。',
-    }
-  }
-
   async function handleStudioRoute(url: URL, req: Request): Promise<Response | null> {
     if (!url.pathname.startsWith('/api/v1/studio/')) return null
+    const workbenchResponse = await handleImageWorkbenchRoute(url, req)
+    if (workbenchResponse) return workbenchResponse
     const action = url.pathname.slice('/api/v1/studio/'.length)
     const generationMatch = action.match(/^generation\/(.+)$/)
     if (generationMatch && req.method === 'GET') {
@@ -3265,35 +3249,53 @@ export function startServer(opts: StartServerOptions = {}) {
       if (media.hasBackend) return Response.json(await media.proxyJson(url.pathname, undefined, 'GET'))
       return Response.json({ ok: false, detail: '没找到这张本地预览成品' }, { status: 404 })
     }
+    if (action === 'brief/compile' && req.method === 'POST') {
+      try {
+        const body = imageBriefCompileRequestSchema.parse(await req.json().catch(() => ({})))
+        const brief = await media.compileBriefWithModel(body as Record<string, unknown>)
+        return Response.json(imageBriefCompileResponseSchema.parse({ brief, understanding: brief.understanding ?? brief.user_request }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
+    }
     if (action === 'generate' && req.method === 'POST') {
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = Array.isArray(rawBody.reference_image_paths)
-        ? rawBody.reference_image_paths.filter((item): item is string => typeof item === 'string')
-        : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startStudioGenerate(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioGenerateRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = rawBody.reference_image_paths ?? []
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startStudioGenerate(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'edit' && req.method === 'POST') {
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = typeof rawBody.mask_path === 'string' ? [rawBody.mask_path] : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startStudioEdit(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioEditRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = [rawBody.mask_path, rawBody.source_image_path].filter((item): item is string => typeof item === 'string')
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startStudioEdit(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'upscale' && req.method === 'POST') {
-      // 超分放大(本机 Real-ESRGAN,纯本地不代理):生图看板"放大"按钮 + agent upscale_image 工具共用。
-      const rawBody = await req.json().catch(() => ({})) as Record<string, unknown>
-      const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
-      const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-      return Response.json(await media.startUpscale(body, {
-        conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-        workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-      }))
+      try {
+        const rawBody = studioUpscaleRequestSchema.parse(await req.json().catch(() => ({})))
+        const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
+        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
+        return Response.json(await media.startUpscale(body, {
+          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
+          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
+        }))
+      } catch (err) {
+        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
+      }
     }
     if (action === 'expand' && req.method === 'POST') {
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -3458,10 +3460,11 @@ export function startServer(opts: StartServerOptions = {}) {
       }
 
       if (url.pathname === '/api/v1/stores/me') {
-        if (req.method === 'GET') return Response.json(await desktopData.getStore())
+        if (req.method === 'GET') return Response.json(imageBrandPackSchema.parse(await desktopData.getStore()))
         if (req.method === 'PUT' || req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.updateStore(body))
+          const parsed = imageBrandPackPatchSchema.safeParse(await req.json().catch(() => ({})))
+          if (!parsed.success) return jsonDetailError('invalid brand pack', 400)
+          return Response.json(imageBrandPackSchema.parse(await desktopData.updateStore(parsed.data)))
         }
         return new Response('Method not allowed', { status: 405 })
       }
@@ -3474,7 +3477,7 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/uploads/image') {
         // 通用图片上传(区域截图/聊天附图)→ 返回 /uploads/local url。供"基于此调整"+ 贴图。
         if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        return await saveImageAttachment(req)
+        return await saveLocalImageAttachment(stateRoot, req)
       }
 
       if (url.pathname === '/api/v1/stores/me/byok') {

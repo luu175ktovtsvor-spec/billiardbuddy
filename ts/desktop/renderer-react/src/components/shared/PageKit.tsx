@@ -14,12 +14,12 @@ export function IconTile({ children, muted, size = 36 }: { children: ReactNode; 
   )
 }
 
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
   return (
     <div className="mb-6 flex items-start justify-between gap-4">
       <div className="min-w-0">
         <h1 className="text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{title}</h1>
-        <p className="mt-1 max-w-[560px] text-[13px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{subtitle}</p>
+        {subtitle && <p className="mt-1 max-w-[560px] text-[13px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{subtitle}</p>}
       </div>
       {action}
     </div>
