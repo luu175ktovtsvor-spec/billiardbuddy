@@ -34,8 +34,11 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 - 涉及文件、命令、权限、IPC、密钥、远程调用、扩展或更新：叠加 `../audit-security-boundaries/SKILL.md`。
 - 需要后端真实 Agent 链路：执行 `../verify-backend-e2e/SKILL.md`；需要 Electron 用户路径：执行 `../verify-desktop-e2e/SKILL.md`。
 - 改版本、打包、打 tag 或交付安装包：执行 `../release-desktop-safely/SKILL.md`。
+- 改 AI 开发规则、工程 Skill、质量门或 CI 治理：执行 `../maintain-project-skills/SKILL.md`。
 - 新增/删除/改名模块，或改变连接、部署、验证流程：同次执行 `../maintain-project-skills/SKILL.md`。
 - 完成实现后：执行 `../verify-modular-change/SKILL.md`。
+
+纯文档任务不强行套代码类别：深度审计使用 `../audit-project-documents/SKILL.md`，明确候选的快速清理使用 `../clean-project-documents/SKILL.md`。若文档随代码改动更新，仍以代码主责模块和主 Skill 为准。
 
 一个任务可有一个主类别和附加类别。例如“新增生图任务状态字段”是 `FULLSTACK + CONTRACT + CROSS-SERVICE`，主责模块仍只能有一个。
 

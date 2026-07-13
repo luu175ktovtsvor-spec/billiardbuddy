@@ -12,6 +12,7 @@
 | `DIAGNOSIS` | 只定位问题或影响面，不授权修复 | `analyze-change-impact` |
 | `SECURITY` | 跨越文件、命令、权限、密钥、IPC、网络或扩展信任边界 | `audit-security-boundaries` |
 | `RELEASE` | 版本、安装包、签名、更新、发布或回滚 | `release-desktop-safely` |
+| `GOVERNANCE` | AI 开发规则、工程 Skill、质量门、CI 或模块地图变化 | `maintain-project-skills` |
 
 ## 组合规则
 
