@@ -11,6 +11,7 @@ import { KNOWLEDGE, SAFETY_FLOORS } from './knowledge'
 import { HARD_SPECS } from './hardSpecs'
 import { ALLOWED_TERMS, PLATFORM_TERMS, BANNED_TERMS } from './termWhitelist'
 import { renderSessionStartContext, renderOpsBriefing, billiardsPackStats } from './index'
+import { billiardsPack } from './pack'
 
 // ── 1. 禁词命中=红 ────────────────────────────────────────────────
 test('禁词命中=红:性交易/虚假承诺/免费助教/门店坐庄/假号刷评', () => {
@@ -120,4 +121,16 @@ test('注入文案含五域骨架、两条真底线、白名单纪律', () => {
   expect(ctx).toContain('门店只控金额')
   expect(ctx).toContain('擦边引流')
   expect(ctx).toContain('美团')
+})
+
+test('模型运行时统一使用台球运营知识库口径,不披露第三方材料名或 PPT 载体', () => {
+  const commandPrompt = billiardsPack.commands?.find(command => command.name === '台球')?.prompt ?? ''
+  const runtimeText = [
+    renderSessionStartContext(),
+    renderOpsBriefing('团购定价活动', []),
+    commandPrompt,
+  ].join('\n')
+  expect(runtimeText).toContain('台球运营知识库')
+  expect(runtimeText).not.toContain('台球赋能')
+  expect(runtimeText).not.toContain('PPT')
 })

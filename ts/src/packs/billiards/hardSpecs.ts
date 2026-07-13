@@ -69,7 +69,7 @@ export const HARD_SPECS: HardSpec[] = [
     ppt: { line: '386-387', page: '68' },
     quote: '充1000送99元 充3000送399元 充5000送799元 充10000送1999元',
     kind: 'reference',
-    note: '参考档位,因城市/门店自定。本金全场可用,赠送金额仅限台位费(PPT 388 行)。',
+    note: '参考档位,因城市/门店自定。本金全场可用,赠送金额仅限台位费(知识库来源 388 行)。',
   },
   // 三、平台运营 / 评分 / 好评
   {
@@ -149,7 +149,7 @@ export const HARD_SPECS: HardSpec[] = [
     ppt: { line: '2150-2152', page: '277' },
     quote: '当月个人日陪打时长第一名奖励所有助教当月总陪打时长*0.2元;周*0.3元;月*0.5元(每月最后一天除外)',
     kind: 'fixed',
-    note: '系数为 PPT 写死值;金额随门店实际陪打时长计算。',
+    note: '系数为知识库固定值;金额随门店实际陪打时长计算。',
   },
   // 五、活动 / 竞技局
   {
@@ -201,6 +201,6 @@ export function findHardSpecs(query: string): HardSpec[] {
 
 /** 渲染一条硬数字为带出处的一行文本。 */
 export function formatHardSpec(spec: HardSpec): string {
-  const tag = spec.kind === 'fixed' ? 'PPT写死' : '参考值'
-  return `[#${spec.id} ${spec.category}·${tag} | PPT ${spec.ppt.line}行/第${spec.ppt.page}页] ${spec.rule}${spec.note ? `(${spec.note})` : ''}`
+  const tag = spec.kind === 'fixed' ? '知识库固定值' : '参考值'
+  return `[#${spec.id} ${spec.category}·${tag} | 知识库来源 ${spec.ppt.line}行/第${spec.ppt.page}页] ${spec.rule}${spec.note ? `(${spec.note})` : ''}`
 }
