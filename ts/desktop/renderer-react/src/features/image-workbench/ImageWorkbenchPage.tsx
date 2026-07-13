@@ -45,7 +45,7 @@ const POSTER_TYPES: Array<{ id: string; label: string; prompt: string }> = [
   { id: 'weekend_bundle', label: '优惠/团购', prompt: '做一张优惠或团购海报' },
   { id: 'membership_recharge', label: '会员/充值', prompt: '做一张会员或充值活动海报' },
   { id: 'tournament_signup', label: '比赛/活动', prompt: '做一张比赛或活动海报' },
-  { id: 'coach_booking', label: '人物/服务', prompt: '做一张人物或服务介绍海报' },
+  { id: 'recruitment_role', label: '招聘/岗位', prompt: '做一张招聘或岗位介绍海报' },
   { id: 'holiday_moments', label: '日常/社媒', prompt: '做一张日常分享或社媒海报' },
 ]
 

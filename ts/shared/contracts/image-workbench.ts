@@ -67,6 +67,9 @@ export const posterTemplateIdSchema = z.enum([
   'membership_recharge',
   'weekend_bundle',
   'tournament_signup',
+  'recruitment_role',
+  // Legacy value kept so projects created before the category wording was
+  // corrected remain readable. New creation flows do not emit this value.
   'coach_booking',
   'holiday_moments',
 ])

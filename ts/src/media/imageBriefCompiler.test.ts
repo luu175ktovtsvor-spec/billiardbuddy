@@ -31,6 +31,24 @@ test('compiler keeps a freeform poster free of prefilled operating context', () 
   expect(compileProviderPrompt(brief, 'generate').prompt).not.toContain('经营目标')
 })
 
+test('poster categories are explicit shortcuts and never inferred from assistant wording', () => {
+  const freeform = compileImageBrief({
+    prompt: '做一张助教招聘海报，画面用我上传的照片，标题写「周末兼职」',
+    scene: 'poster',
+  })
+  expect(freeform.poster?.template_id).toBe('custom_poster')
+  expect(freeform.visual_direction.subject).toContain('助教招聘海报')
+  expect(JSON.stringify(freeform)).not.toContain('运营逻辑')
+
+  const explicit = compileImageBrief({
+    prompt: '做一张招聘海报，具体内容按我填写的信息',
+    scene: 'poster',
+    sceneTemplateId: 'recruitment_role',
+  })
+  expect(explicit.poster?.template_id).toBe('recruitment_role')
+  expect(explicit.understanding).toContain('招聘/岗位')
+})
+
 test('freeform poster does not inject billiards, store activity or unused business regions', () => {
   const brief = compileImageBrief({ prompt: '夏日音乐节的抽象艺术海报，不要任何文字' })
   const prompt = compileProviderPrompt(brief, 'generate').prompt
