@@ -99,6 +99,8 @@ test('生成图片页面在初始状态保持任务层级与无横向溢出', as
   await assertNoPageOverflow()
   await desktop.window.getByTestId('image-prompt-input').fill('做一张海报，价格 39.9 元，6月15日，地址：中山路 18 号，电话 13800138000，立即扫码报名')
   await desktop.window.getByTestId('image-generate-button').click()
+  await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 15_000 }).toBe(3)
+  await desktop.window.getByRole('tab', { name: '描述', exact: true }).click()
   await expect(desktop.window.getByTestId('poster-quick-form')).toBeVisible()
   await expect(desktop.window.getByPlaceholder('价格')).toHaveValue(/39\.9/)
   await expect(desktop.window.getByTestId('poster-address-input')).toHaveValue('中山路 18 号')
@@ -127,7 +129,8 @@ test('生成图片页面在初始状态保持任务层级与无横向溢出', as
 
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 650))
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(720)
-  await expect(desktop.window.getByRole('tab', { name: '描述', exact: true })).toBeHidden()
+  await expect(desktop.window.getByRole('tab', { name: '描述', exact: true })).toBeVisible()
+  await expect(desktop.window.getByRole('tab', { name: '描述', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(desktop.window.getByTestId('image-workflow-poster')).toHaveAttribute('aria-selected', 'true')
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
   await assertNoPageOverflow()
@@ -176,7 +179,7 @@ test('生成图片页面完成生成挑图局部改字导出并在重启后恢�
     logo.data[i + 2] = 86
     logo.data[i + 3] = 255
   }
-  await desktop.window.getByText('品牌素材', { exact: true }).click()
+  await desktop.window.getByText('Logo 和二维码', { exact: true }).click()
   await desktop.window.getByTestId('brand-logo-input').setInputFiles({
     name: 'store-logo.png',
     mimeType: 'image/png',
@@ -299,12 +302,15 @@ test('生成图片页面完成生成挑图局部改字导出并在重启后恢�
   await restarted.window.getByText('生成图片').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
   await expect(restarted.window.getByTestId('workbench-title')).toBeHidden()
+  await restarted.window.getByText('最近图片', { exact: true }).click()
   await restarted.window.getByTestId('workbench-project-item').filter({ hasText: '开业或门店焕新' }).click()
   await expect(restarted.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
+  await restarted.window.getByRole('tab', { name: '描述', exact: true }).click()
   await restarted.window.getByText('Logo 和二维码', { exact: true }).click()
   await expect(restarted.window.getByTestId('brand-logo-preview')).toBeVisible()
   await expect(restarted.window.getByTestId('brand-qrcode-preview')).toBeVisible()
-  await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/尚未自动检查|文字检查|人物照片|发布前/)
+  await restarted.window.getByRole('tab', { name: '结果', exact: true }).click()
+  await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/尚未自动检查|画面检查|文字检查|人物照片|发布前/)
 })
 
 test('授权随拍照片图生图要求授权、保留参考角色并由用户确认本人', async ({ desktop }, testInfo) => {
@@ -316,7 +322,7 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
 
   const brandLogo = new PNG({ width: 240, height: 80 })
   brandLogo.data.fill(120)
-  await desktop.window.getByText('品牌素材', { exact: true }).click()
+  await desktop.window.getByText('Logo 和二维码', { exact: true }).click()
   await desktop.window.getByTestId('brand-logo-input').setInputFiles({
     name: 'portrait-test-brand.png',
     mimeType: 'image/png',
@@ -358,7 +364,7 @@ test('授权随拍照片图生图要求授权、保留参考角色并由用户�
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1180, 760))
 
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人照片优化', { timeout: 15_000 })
+  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('照片编辑', { timeout: 15_000 })
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 20_000 }).toBe(3)
   await desktop.window.getByTestId('open-selected-candidate').click()
   await expect(desktop.window.getByTestId('confirm-portrait-button')).toBeVisible()
