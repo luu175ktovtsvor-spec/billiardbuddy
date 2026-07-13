@@ -13,17 +13,17 @@ export const VIDEO_CONTENT_TYPES: Array<{ value: VideoContentType; label: string
 ]
 
 export const VIDEO_SOURCE_ROLES: Array<{ value: VideoSourceRole; label: string }> = [
-  { value: 'unclassified', label: '待确认' },
-  { value: 'talking_take', label: '口播 Take' },
-  { value: 'live_longform', label: '长口播/直播' },
-  { value: 'venue_entry', label: '入口/建立镜头' },
+  { value: 'unclassified', label: '让系统判断' },
+  { value: 'talking_take', label: '对镜讲解' },
+  { value: 'live_longform', label: '长讲解或直播' },
+  { value: 'venue_entry', label: '地点或场地开场' },
   { value: 'space_wide', label: '空间全景' },
   { value: 'people_interaction', label: '人物互动' },
-  { value: 'play_action', label: '动作镜头' },
-  { value: 'event_moment', label: '事件高光' },
-  { value: 'detail_product', label: '细节/产品' },
+  { value: 'play_action', label: '动作画面' },
+  { value: 'event_moment', label: '活动或高光' },
+  { value: 'detail_product', label: '细节或产品' },
   { value: 'service_process', label: '服务过程' },
-  { value: 'brand_end', label: '品牌收束' },
+  { value: 'brand_end', label: '片尾或品牌画面' },
 ]
 
 export const STORY_ROLE_LABELS: Record<VideoScene['story_role'], string> = {
@@ -66,4 +66,17 @@ export function sourceRoleLabel(role: VideoSourceRole): string {
 
 export function terminalVideoJob(status: string): boolean {
   return ['done', 'done_with_warnings', 'cancelled', 'interrupted', 'error'].includes(status)
+}
+
+export function friendlyVideoText(value: string): string {
+  return value
+    .replace(/\bScenes\b/gi, '片段')
+    .replace(/\bScene\b/gi, '片段')
+    .replace(/\bASR\b/gi, '语音识别')
+    .replace(/\bTake\b/gi, '口播素材')
+    .replace(/\bCTA\b/gi, '行动提示')
+    .replace(/\brevision\b/gi, '版本')
+    .replace(/本地语音转写组件/g, '语音识别功能')
+    .replace(/稍后重试转写/g, '稍后再试')
+    .replace(/音轨/g, '声音')
 }

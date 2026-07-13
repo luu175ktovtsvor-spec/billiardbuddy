@@ -33,7 +33,7 @@ export function ScenePreview({ project, scene }: { project: VideoProject; scene?
   }, [audioRange?.source_id, audioRange?.in_ms, audioSrc])
 
   if (!scene || !source || !range) {
-    return <div className="flex aspect-video items-center justify-center text-[12px]" style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-tertiary)' }}>选择一个 Scene 查看预览</div>
+    return <div className="flex aspect-video items-center justify-center text-[12px]" style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-tertiary)' }}>选择一个片段查看预览</div>
   }
   const visibleGraphics = scene.graphics.filter(item => !item.hidden_reason && item.text)
   const crop = visualLayer?.crop
@@ -41,7 +41,7 @@ export function ScenePreview({ project, scene }: { project: VideoProject; scene?
   const cropCenterY = crop?.focal_y ?? (crop ? crop.y + crop.height / 2 : 0.5)
   const cropZoom = crop ? Math.max(1, 1 / Math.min(crop.width, crop.height)) : 1
   return (
-    <div className="relative flex max-h-[52vh] min-h-[260px] items-center justify-center overflow-hidden rounded-md" style={{ background: '#111', aspectRatio: `${project.canvas.width}/${project.canvas.height}` }} data-testid="video-scene-preview">
+    <div className="relative mx-auto flex max-h-[52vh] min-h-[260px] items-center justify-center overflow-hidden rounded-md" style={{ background: '#111', aspectRatio: `${project.canvas.width}/${project.canvas.height}` }} data-testid="video-scene-preview">
       <video ref={ref} key={src} src={src} controls muted={separateAudio}
         className={`h-full w-full ${crop?.fit === 'cover' ? 'object-cover' : 'object-contain'}`}
         style={{ transform: cropZoom > 1.001 ? `scale(${cropZoom})` : undefined, transformOrigin: `${cropCenterX * 100}% ${cropCenterY * 100}%` }}
