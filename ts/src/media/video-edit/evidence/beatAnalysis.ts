@@ -8,7 +8,7 @@
 // 缺 ffmpeg / 无 BGM / 检测失败 → 返回 null,调用方退"等分/节奏"时长,绝不崩。
 
 import { existsSync } from 'node:fs'
-import { ffmpegBinFrom, runFfmpegBinary } from './brollFfmpeg'
+import { ffmpegBinFrom, runFfmpegBinary } from './ffmpeg'
 
 export const PCM_SAMPLE_RATE = 22050
 export const ONSET_HOP = 512

@@ -11,14 +11,14 @@ import {
   transcribeVideoWordLevel,
   TranscribeUnavailableError,
   type VideoTranscript,
-} from './transcribe'
-import { classifyRoute, parseVoicedRatio, classifyContent } from './videoContentRouter'
-import { VideoEditProjectStore, buildBgmMixArgs, normalizeTimelineDoc } from './videoEditProjects'
-import { parseSceneCuts, buildShots } from './brollScenes'
-import { parseSignalstats, summarizeMetrics, scoreShot, isBlackShot, isFrozenShot, selectAndRankShots, type CandidateShot } from './brollSelect'
-import { estimateTempo, snapToBeats, planBeatDurations, beatPeriodFromBeats, onsetEnvelope } from './beatSync'
-import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, tagShots, type ShotForTag } from './brollVlmTagger'
-import type { Model } from '../types/model'
+} from '../transcribe'
+import { classifyRoute, parseVoicedRatio, classifyContent } from './evidence/contentRouter'
+import { VideoEditProjectStore, buildBgmMixArgs, normalizeTimelineDoc } from './legacyTimeline'
+import { parseSceneCuts, buildShots } from './evidence/shotDetection'
+import { parseSignalstats, summarizeMetrics, scoreShot, isBlackShot, isFrozenShot, selectAndRankShots, type CandidateShot } from './evidence/shotQuality'
+import { estimateTempo, snapToBeats, planBeatDurations, beatPeriodFromBeats, onsetEnvelope } from './evidence/beatAnalysis'
+import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, tagShots, type ShotForTag } from './evidence/visualTagger'
+import type { Model } from '../../types/model'
 
 const NO_BINARIES = { PATH: '', WHISPER_CLI: '', WHISPER_CPP_BIN: '', FFMPEG_BIN: '/nonexistent/ffmpeg', FFPROBE_BIN: '/nonexistent/ffprobe' }
 
