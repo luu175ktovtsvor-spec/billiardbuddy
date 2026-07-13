@@ -33,6 +33,15 @@
 | `design/` | 设计规范和设计资产 |
 | `子代理报告/` | 调研、审计和验证证据，不属于必读入口 |
 
+## 相关计划与研究
+
+| 文档 | 用途 |
+|---|---|
+| `plans/Claude-Code-2.1.207与cc-haha差异逆向立项-2026-07-13.md` | Claude Code 与 cc-haha 的分层逆向范围和工作包 |
+| `plans/WorkBuddy安全设计逆向与落地方案-2026-07-13.md` | WorkBuddy 安全机制证据、项目缺口和验收路线 |
+| `plans/WorkBuddy与本项目底座差异及项目理解校正-2026-07-13.md` | WorkBuddy 与本项目底座、语言分层和产品边界对照 |
+| `references/系统提示词逆向-Codex与WorkBuddy.md` | Codex 与 WorkBuddy 的系统提示词源码证据 |
+
 ## 维护规则
 
 - 活文档只写当前事实、当前规则和当前待办。
