@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, FabricImage, Path, Rect, Textbox, type FabricObject } from 'fabric'
 import { PageHeader } from '../../components/shared/PageKit'
 import { Tooltip } from '../../components/shared/Tooltip'
-import { IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
+import { IconAlertCircle, IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
 import { toast } from '../../stores/toastStore'
 import {
   assetUrl,
@@ -46,7 +46,7 @@ const POSTER_TYPES: Array<{ id: string; label: string; prompt: string }> = [
   { id: 'membership_recharge', label: '会员/充值', prompt: '做一张会员或充值活动海报' },
   { id: 'tournament_signup', label: '比赛/活动', prompt: '做一张比赛或活动海报' },
   { id: 'recruitment_role', label: '招聘/岗位', prompt: '做一张招聘或岗位介绍海报' },
-  { id: 'holiday_moments', label: '日常/社媒', prompt: '做一张日常分享或社媒海报' },
+  { id: 'daily_social', label: '日常/社媒', prompt: '做一张日常分享或社媒海报' },
 ]
 
 type MaskMode = 'select' | 'rect' | 'brush'
@@ -218,7 +218,6 @@ export function CreationPage() {
         const loaded = await workbenchApi.listProjects()
         if (cancelled) return
         setProjects(loaded)
-        if (loaded[0]) setProject(loaded[0])
       } catch {
         if (!cancelled) setProjects([])
       }
@@ -862,7 +861,7 @@ export function CreationPage() {
   const reloadProjects = async () => {
     const loaded = await workbenchApi.listProjects()
     setProjects(loaded)
-    if (loaded[0]) setProject((prev) => prev ? (loaded.find((item) => item.project_id === prev.project_id) ?? loaded[0]!) : loaded[0]!)
+    setProject((prev) => prev ? (loaded.find((item) => item.project_id === prev.project_id) ?? null) : null)
   }
 
   useEffect(() => {
@@ -1157,13 +1156,13 @@ export function CreationPage() {
   const hasTaskFeedback = busy || Boolean(lastError)
   const hasMainPanel = hasWorkbenchStage || hasTaskFeedback
   const workspaceLayoutClass = hasProject
-    ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)] min-[1500px]:grid-cols-[250px_minmax(0,1fr)_280px]'
+    ? 'grid min-h-0 grid-cols-1 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,260px)_minmax(0,1fr)] min-[1500px]:grid-cols-[250px_minmax(0,1fr)_280px]'
     : hasMainPanel
-      ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)]'
+      ? 'grid min-h-0 grid-cols-1 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,260px)_minmax(0,1fr)]'
       : 'block'
   const contentClass = hasWorkbenchStage
     ? 'max-w-[1560px] px-4 pb-7 pt-4 min-[840px]:px-6'
-    : 'max-w-[768px] px-4 py-7 min-[840px]:px-0'
+    : 'max-w-[760px] px-4 py-7 min-[840px]:px-0'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
@@ -1213,10 +1212,10 @@ export function CreationPage() {
         </div>}
 
         <div className={workspaceLayoutClass}>
-        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
+        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 ${hasWorkbenchStage ? 'min-[1180px]:border-r min-[1180px]:pr-5' : ''}`} style={{ borderColor: 'var(--color-border)' }}>
           <section className="space-y-3">
             <div
-              className={`flex flex-col ${hasWorkbenchStage ? 'rounded-xl' : 'rounded-[22px]'}`}
+              className={`flex flex-col ${hasWorkbenchStage ? 'rounded-lg' : 'rounded-[18px]'}`}
               style={{
                 background: hasWorkbenchStage ? 'var(--color-app-main)' : 'var(--color-surface)',
                 border: `1px solid ${hasWorkbenchStage ? 'var(--color-border)' : 'var(--color-border-strong)'}`,
@@ -1395,7 +1394,7 @@ export function CreationPage() {
           </section>}
         </aside>
 
-        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
+        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 min-[1180px]:px-5`}>
           {busy && (
             <div className="rounded-lg p-3" style={panelStyle} data-testid="workbench-progress">
               <div className="mb-1 flex items-center justify-between text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -1429,7 +1428,10 @@ export function CreationPage() {
                   <div
                     key={img.generation_id}
                     className="overflow-hidden rounded-md transition-colors"
-                    style={{ border: `1px solid ${selectedImageId === img.generation_id ? 'var(--color-brand)' : 'var(--color-border)'}` }}
+                    style={{
+                      border: `1px solid ${selectedImageId === img.generation_id ? 'var(--color-border-strong)' : 'var(--color-border)'}`,
+                      boxShadow: selectedImageId === img.generation_id ? 'inset 0 -2px 0 var(--color-brand)' : undefined,
+                    }}
                     data-selected={selectedImageId === img.generation_id ? 'true' : 'false'}
                     data-testid="candidate-card"
                   >
@@ -1437,7 +1439,7 @@ export function CreationPage() {
                       <CandidatePreview image={img} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />
                     </button>
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <button type="button" className="text-[11px]" style={{ color: 'var(--color-brand)' }} onClick={() => void openProjectFromImage(img)}>{img.generation_id === recommendedImageId ? '建议候选 · 编辑' : '编辑'}</button>
+                      <button type="button" className="text-[11px]" style={{ color: img.generation_id === recommendedImageId ? 'var(--color-brand)' : 'var(--color-text-secondary)' }} onClick={() => void openProjectFromImage(img)}>{img.generation_id === recommendedImageId ? '建议候选 · 精修' : '精修'}</button>
                       <button type="button" className="text-[11px]" style={{ color: compareIds.includes(img.generation_id) ? 'var(--color-brand)' : 'var(--color-text-tertiary)' }} onClick={() => toggleCompare(img.generation_id)}>A/B</button>
                     </div>
                     {!imagePassesCandidateGate(img, intent) && <div className="px-2 pb-1.5 text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>存在检查风险，请人工比较</div>}
@@ -1445,14 +1447,14 @@ export function CreationPage() {
                   ))}
                 </div>
               {selectedImage && (
-                <div className="mt-3 grid grid-cols-[minmax(0,1fr)_120px] gap-3 rounded-md p-2" style={{ border: '1px solid var(--color-border)' }} data-testid="selected-candidate-preview">
+                <div className="mt-4 grid grid-cols-[minmax(0,1fr)_132px] gap-4" data-testid="selected-candidate-preview">
                   <CandidatePreview image={selectedImage} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} compact={false} />
-                  <div className="flex flex-col justify-between gap-2">
+                  <div className="flex flex-col justify-between gap-2 border-l pl-3" style={{ borderColor: 'var(--color-border)' }}>
                     <div>
                       <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>放大预览</div>
                       <div className="mt-1 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{selectedImage.width ?? '未知'}x{selectedImage.height ?? '未知'}</div>
                     </div>
-                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">送入工作台</button>
+                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">打开精修</button>
                     {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-2 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">下载成品</button>}
                   </div>
                 </div>
@@ -1502,33 +1504,36 @@ export function CreationPage() {
           {project && <section className="border-t pt-4" style={{ borderColor: 'var(--color-border)' }} data-testid="image-quality-status">
             <div className="mb-2 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>投放检查</div>
             {reviewLines.length > 0 ? (
-              <div className="space-y-1">
+              <div>
                 {reviewLines.map((line) => (
-                  <div key={line} className="rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>{line}</div>
+                  <div key={line} className="flex items-start gap-2 border-b py-2 text-[12px] last:border-b-0" style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                    <IconAlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                    <span>{line}</span>
+                  </div>
                 ))}
               </div>
             ) : (
-              <div className="rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-tertiary)' }}>未自动质检</div>
+              <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}><IconAlertCircle size={14} />未自动质检</div>
             )}
             {intent === 'portrait' && project && currentVersion?.review?.portrait_quality_state !== 'user_confirmed' && (
-              <button type="button" onClick={() => void confirmPortrait()} disabled={!currentVersion || currentVersion.review?.portrait_quality_state === 'blocked'} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="confirm-portrait-button">
+              <button type="button" onClick={() => void confirmPortrait()} disabled={!currentVersion || currentVersion.review?.portrait_quality_state === 'blocked'} className="mt-3 rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="confirm-portrait-button">
                 像本人，可以使用
               </button>
             )}
             {intent === 'portrait' && currentVersion?.review?.portrait_quality_state === 'user_confirmed' && (
-              <>
-                <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed">已由用户确认像本人</div>
-                <button type="button" onClick={() => void usePortraitAsPoster()} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张照片做海报</button>
-              </>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{ borderColor: 'var(--color-border)' }}>
+                <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--color-text-secondary)' }} data-testid="portrait-user-confirmed"><IconCheckCircle size={14} style={{ color: 'var(--color-success)' }} />已由用户确认像本人</div>
+                <button type="button" onClick={() => void usePortraitAsPoster()} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={buttonSubtleStyle} data-testid="portrait-to-poster-button">用这张照片做海报</button>
+              </div>
             )}
           </section>}
         </main>}
 
-        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 border-t pt-5 min-[1180px]:col-span-2 min-[1500px]:col-span-1 min-[1500px]:border-l min-[1500px]:border-t-0 min-[1500px]:pl-6 min-[1500px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
+        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 border-t pt-5 min-[1180px]:col-span-2 min-[1180px]:mx-auto min-[1180px]:w-full min-[1180px]:max-w-[640px] min-[1180px]:px-5 min-[1500px]:col-span-1 min-[1500px]:mx-0 min-[1500px]:max-w-none min-[1500px]:border-l min-[1500px]:border-t-0 min-[1500px]:pl-5 min-[1500px]:pr-0 min-[1500px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconEdit size={14} />整图指令修改</div>
             <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} className="w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="说出只想改动的内容" data-testid="whole-edit-input" />
-            <button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">生成修改版本</button>
+            <div className="mt-2 flex justify-end"><button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">生成修改版本</button></div>
           </section>
 
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
@@ -1545,8 +1550,8 @@ export function CreationPage() {
             <label className="mt-2 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>笔刷 {brushSize}px</label>
             <input type="range" min={16} max={180} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="w-full" />
             <textarea value={maskText} onChange={(e) => setMaskText(e.target.value)} rows={3} className="mt-2 w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="例如:把选区里的桌布换成墨绿色" data-testid="inpaint-input" />
-            <div className="mt-2 flex gap-2">
-              <button type="button" onClick={() => void inpaint()} disabled={!project || !maskText.trim() || maskItems.length === 0 || busy} className="flex-1 rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="inpaint-button">局部重绘</button>
+            <div className="mt-2 flex justify-end gap-2">
+              <button type="button" onClick={() => void inpaint()} disabled={!project || !maskText.trim() || maskItems.length === 0 || busy} className="rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="inpaint-button">局部重绘</button>
               <button type="button" onClick={clearMask} disabled={maskItems.length === 0} className="rounded-md px-2 py-2 text-[12px] disabled:opacity-50" style={buttonSubtleStyle}>清除</button>
             </div>
           </section>

@@ -35,6 +35,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
   tournament_signup: '比赛/活动',
   recruitment_role: '招聘/岗位',
   coach_booking: '招聘/岗位',
+  daily_social: '日常/社媒',
   holiday_moments: '日常/社媒',
 }
 
@@ -112,7 +113,7 @@ function inferScene(text: string, input: ImageBriefCompileInput): 'poster' | 'po
   if (explicit === 'portrait' || intent === 'portrait') return 'portrait'
   const hasIdentityReference = input.referenceAssets?.some(ref => ref.role === 'identity_primary' || ref.role === 'identity_supporting') === true
   const hasUnclassifiedImage = (input.referenceImagePaths?.length ?? 0) > 0
-  const explicitlyAboutPerson = /人像|肖像|形象照|写真|证件照|人物照|本人|真人照片|助教照片|助教实拍/u.test(text)
+  const explicitlyAboutPerson = /人像|肖像|形象照|写真|证件照|人物照|本人|真人照片/u.test(text)
   const photoEditWithReference = (hasIdentityReference || hasUnclassifiedImage) && /照片|随拍|实拍|人物|本人|好看|自然|修饰|换服装|换背景|光线|构图/u.test(text)
   return explicitlyAboutPerson || photoEditWithReference ? 'portrait' : 'poster'
 }
@@ -153,7 +154,10 @@ function extractCta(text: string): string {
 
 function inferChange(text: string): string[] {
   const items: string[] = []
-  if (/背景|场景/u.test(text)) items.push(text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1] ? `背景：${text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1]}` : '背景')
+  if (/背景|场景/u.test(text)) {
+    const background = text.match(/(?:换成|改成|改为|换|放在)([^，。；;]{1,40})背景/u)?.[1]?.trim()
+    items.push(background ? `背景：${background}` : '背景：按用户本次目标调整')
+  }
   if (/服装|衣服|球服/u.test(text)) items.push('服装：按用户指定调整')
   if (/光线|灯光|气质|姿态|构图/u.test(text)) items.push('光线、气质或构图：按用户指定调整')
   if (/好看|自然|无明显\s*AI|无\s*AI\s*感|实拍|照片优化/u.test(text)) items.push('照片质感：自然、好看、无明显 AI 感，保留真实皮肤和自然比例')
@@ -310,11 +314,10 @@ export class ImageBriefCompiler {
       reference_assets: refs,
       visual_direction: scene === 'poster' && poster && posterControl ? makePosterDirection(userRequest, posterControl.composition) : {
         subject: '已上传实拍照片中的同一位参考人物',
-        action: '自然、好看且符合用户描述的真实照片状态',
-        environment: limitText(userRequest, 400),
-        style: '真实自然的人物摄影，无明显 AI 感',
-        lighting: '自然、柔和且与现场一致的光线',
-        composition: '人物清楚、保留真实皮肤质感和自然比例，避免过度精修、贴图感或商业样片感',
+        action: limitText(userRequest, 400),
+        style: '按用户本次目标编辑；未指定时保持真实自然、好看且无明显 AI 感',
+        lighting: '只按用户要求改变；未指定时保持原照片的自然光线关系',
+        composition: '只改变用户明确要求的内容，其余保持；保留真实皮肤质感和自然比例',
       },
       must_preserve: scene === 'poster' ? posterControl?.mustPreserve : portrait?.preserve,
       must_avoid: scene === 'poster' ? posterControl?.mustAvoid : ['额外人物、额外手指或肢体、塑料皮肤、过度磨皮、文字、水印'],
@@ -322,7 +325,7 @@ export class ImageBriefCompiler {
       portrait,
       understanding: scene === 'poster'
         ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || userRequest}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
-        : `真人照片优化 / ${portrait!.change.join('、')} / 保留本人特征`,
+        : `照片编辑 / ${limitText(userRequest, 480)} / 保留未要求改变的本人特征`,
     })
     this.cache.set(key, brief)
     return brief
