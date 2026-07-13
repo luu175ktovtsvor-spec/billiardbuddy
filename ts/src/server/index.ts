@@ -78,7 +78,6 @@ import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
 import { runMigrations } from '../migrations'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
-import { parseClientMessage } from '../../shared/contracts/agent-websocket'
 import { voiceTranscriptionResponseSchema } from '../../shared/contracts/voice'
 import { imageBrandPackPatchSchema, imageBrandPackSchema } from '../../shared/contracts/image-workbench'
 import type { ToolContext } from '../tools/Tool'
@@ -101,6 +100,7 @@ import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPat
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
   host?: string
@@ -144,11 +144,6 @@ type TurnStreamInput = Record<string, unknown> & {
   skipCommandParsing?: boolean
   skipSlashCommands?: boolean
   bridgeOrigin?: boolean
-}
-
-interface AgentWsData {
-  conversationId: string
-  after: number
 }
 
 function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | null {
@@ -2199,6 +2194,18 @@ export function startServer(opts: StartServerOptions = {}) {
 
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const websocket = createAgentWebSocketHandler({
+    assetTopic: ASSET_WS_TOPIC,
+    turnConsumers,
+    turns,
+    sessions,
+    steerInboxes,
+    interruptRequesters,
+    replayEvents: replayWsEvents,
+    runTurn: handleWsRun,
+    runApprovedTool,
+    rejectTool: handleReject,
+  })
 
   const app = Bun.serve<AgentWsData>({
     hostname: host,
@@ -3765,105 +3772,7 @@ export function startServer(opts: StartServerOptions = {}) {
       })()
       return response ? withLocalCors(response, req) : undefined as unknown as Response
     },
-    websocket: {
-      open(ws) {
-        turnConsumers.onConnect(ws.data.conversationId)
-        // 所有连接都订阅资产进度广播(前端据此画"正在准备组件 x%")。
-        ws.subscribe(ASSET_WS_TOPIC)
-        wsSend(ws, { type: 'ready', conversationId: ws.data.conversationId })
-        if (ws.data.after > 0) {
-          void replayWsEvents(ws, ws.data.conversationId, ws.data.after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-        }
-      },
-      close(ws) {
-        // 断连:消费者计数减一,若归零且回合仍在跑,宽限期后无人重连则中止(turnConsumers 内部处理)。
-        turnConsumers.onDisconnect(ws.data.conversationId)
-      },
-      message(ws, message) {
-        let body: Record<string, unknown>
-        try {
-          const parsed = JSON.parse(typeof message === 'string' ? message : message.toString('utf8'))
-          body = { ...parseClientMessage(parsed) }
-        } catch {
-          wsError(ws, 'invalid websocket message')
-          return
-        }
-        const type = body.type
-        if (type === 'ping') {
-          // 应用层心跳(对齐 cc ws/handler ping/pong):前端定时发 ping 保活,避免 Bun idle 掐断长连接。
-          wsSend(ws, { type: 'pong', ts: numberFrom(body.ts, 0) || undefined })
-          return
-        }
-        if (type === 'run') {
-          void handleWsRun(ws, body)
-          return
-        }
-        if (type === 'replay') {
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const after = numberFrom(body.after, 0)
-          ws.data.conversationId = conversationId
-          void replayWsEvents(ws, conversationId, after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'interrupt') {
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const interrupted = turns.interrupt(conversationId)
-          void (async () => {
-            if (interrupted) {
-              await sessions.touch(conversationId, { status: 'interrupted' })
-              const record = await sessions.appendEvent(conversationId, { type: 'context_note', text: '任务已请求中断' }).catch(() => null)
-              if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
-            }
-            wsSend(ws, { type: 'interrupt_result', conversationId, interrupted })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'steer') {
-          // 运行中插话纠偏走同一条 WS(对齐 cc 全走一条连接):推进 steerInbox + 落 steering 事件回灌。
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const message = typeof body.message === 'string' ? body.message.trim() : ''
-          if (!message) { wsError(ws, 'steer message required'); return }
-          void (async () => {
-            if (!turns.isRunning(conversationId)) {
-              wsSend(ws, { type: 'steer_result', conversationId, queued: 0, running: false })
-              return
-            }
-            const inbox = steerInboxes.get(conversationId) ?? []
-            inbox.push(message)
-            steerInboxes.set(conversationId, inbox)
-            // submit-interrupt(对齐 cc handlePromptSubmit:hasInterruptibleToolInProgress → abort('interrupt')):
-            // 总是通知循环有插话;循环自带闸,仅当可中断工具在飞时才当场切断,否则等价入队(safe-point drain)。
-            interruptRequesters.get(conversationId)?.()
-            const record = await sessions.appendEvent(conversationId, { type: 'steering', content: message }).catch(() => null)
-            if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
-            wsSend(ws, { type: 'steer_result', conversationId, queued: inbox.length, running: true })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'approve') {
-          // 审批放行走同一条 WS(对齐 cc):复用 runApprovedTool(验签→执行→结果写回 transcript),回 approve_result。
-          void (async () => {
-            const payload = await runApprovedTool(body)
-            if (!payload) { wsError(ws, 'tool required'); return }
-            wsSend(ws, { type: 'approve_result', ...payload })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'reject') {
-          // 审批拒绝走同一条 WS:复用 handleReject(拒绝追踪:多次拒绝后不再反复弹卡)。
-          const toolName = typeof body.tool === 'string' ? body.tool.trim() : ''
-          if (!toolName) { wsError(ws, 'tool required'); return }
-          handleReject(toolName, body.args ?? {}, {
-            workspace: workspaceFromBody(body),
-            conversationId: stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId) || undefined,
-            permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
-          })
-          wsSend(ws, { type: 'reject_result', ok: true })
-          return
-        }
-        wsError(ws, `unknown websocket message type: ${type}`)
-      },
-    },
+    websocket,
   })
   // 资产下载进度 → WS 广播(事件结构见 assets/types AssetProgressEvent)。
   const unsubscribeAssetEvents = assets.onEvent(event => {
