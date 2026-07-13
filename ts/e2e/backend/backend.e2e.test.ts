@@ -126,16 +126,18 @@ const CHECKPOINTS: Checkpoint[] = [
   },
   {
     name: 'billiards-pack-mount',
-    expectation: '挂 billiards → 发给模型的系统提示含 <domain_context id="billiards">(领域知识注入),出口不泄漏模型名',
+    expectation: '挂 billiards → 发给模型的系统提示含领域知识与“台球运营知识库”口径,不披露第三方材料名,出口不泄漏模型名',
     model: [{ text: '好的,给你想个活动方案(占位)' }],
     async run(ctx) {
       const convId = 'be2e-pack'
       const { events } = await ctx.runTurn({ message: '帮我想个开业活动方案', conversationId: convId, working_dir: ctx.workspace, permissionMode: 'bypassPermissions', enabled_packs: ['billiards'] })
       const domainInjected = ctx.captured.systems.some((s) => s.includes('<domain_context id="billiards"'))
+      const sourceLabeled = ctx.captured.systems.some((s) => s.includes('台球运营知识库'))
+      const noThirdPartySource = ctx.captured.systems.every((s) => !/台球赋能|PPT/u.test(s))
       const finalText = events.filter((e) => e.type === 'final').map((e) => JSON.stringify(e.data)).join('')
       const noModelName = !/mimo|豆包|doubao|ark\.cn/i.test(finalText) // 白标:出口不暴露真实模型名
-      const ok = domainInjected && noModelName
-      return { ok, note: `域上下文注入=${domainInjected} 出口无模型名=${noModelName}` }
+      const ok = domainInjected && sourceLabeled && noThirdPartySource && noModelName
+      return { ok, note: `域上下文注入=${domainInjected} 知识库口径=${sourceLabeled} 无第三方材料名=${noThirdPartySource} 出口无模型名=${noModelName}` }
     },
   },
   {
