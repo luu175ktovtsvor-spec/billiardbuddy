@@ -1,13 +1,12 @@
 import type { Tool, ToolContext } from '../tools/Tool'
 import type { MediaJobService } from './mediaJobs'
+import type { VideoEditingService } from './video-edit/service'
 
 interface ImageToolInput {
   description: string
   style?: string
   ratio?: string
   count?: number
-  image_model?: string
-  image_prompt?: string
   reference_image_paths?: string[]
   reference_generation_ids?: string[]
   poster_text?: Record<string, unknown>
@@ -29,8 +28,6 @@ interface EditImageToolInput {
   mask_path?: string
   ratio?: string
   count?: number
-  image_model?: string
-  image_prompt?: string
   /** 追加参考图(本机绝对路径),做风格/元素参照。 */
   reference_image_paths?: string[]
   /** 追加参考图(之前生成图片的 id)。 */
@@ -71,18 +68,6 @@ interface UpscaleImageToolInput {
   scale?: number
 }
 
-function planVideoBody(input: PlanVideoToolInput, ctx: ToolContext): Record<string, unknown> {
-  return {
-    video_paths: input.video_paths,
-    target_duration: typeof input.target_duration_s === 'number' ? input.target_duration_s : undefined,
-    ratio: input.aspect,
-    mode: input.mode,
-    goal: input.goal,
-    project: input.project,
-    conversation_id: ctx.conversationId,
-  }
-}
-
 function nonEmptyStrings(...values: Array<string | string[] | undefined>): string[] {
   const out: string[] = []
   for (const value of values) {
@@ -115,12 +100,10 @@ function editImageBody(input: EditImageToolInput, ctx: ToolContext): Record<stri
     // 缺可读底图后端会硬报错"改图需要可读取的 source_generation_id 底图",绝不退化为文字重生。
     source_generation_id: input.source_generation_id?.trim() || undefined,
     prompt: input.description,
-    image_prompt: input.image_prompt ?? input.description,
     edit_type: input.edit_type,
     mask_path: input.mask_path,
     ratio: input.ratio ?? '3:4',
     count: input.count ?? 1,
-    image_model: input.image_model,
     reference_image_paths: referenceImagePaths.length ? referenceImagePaths : undefined,
     reference_generation_ids: input.reference_generation_ids,
     poster_text: input.poster_text,
@@ -136,9 +119,7 @@ function imageBody(input: ImageToolInput, ctx: ToolContext): Record<string, unkn
     prompt: input.description,
     style: input.style,
     ratio: input.ratio ?? '3:4',
-    count: input.count ?? 1,
-    image_model: input.image_model,
-    image_prompt: input.image_prompt ?? input.description,
+    count: input.count ?? 3,
     reference_image_paths: input.reference_image_paths,
     reference_generation_ids: input.reference_generation_ids,
     poster_text: input.poster_text,
@@ -158,10 +139,10 @@ function mediaStarted(id: string, kind: string, title: string): string {
   ].join('\n')
 }
 
-export function createMediaTools(media: MediaJobService): Tool[] {
+export function createMediaTools(media: MediaJobService, deps: { videoEditing?: VideoEditingService } = {}): Tool[] {
   const makePoster: Tool<ImageToolInput> = {
     name: 'make_poster',
-    description: 'Generate a marketing poster/image for the store as a background media job. Expand the user request into a concrete Chinese visual prompt. Input: { description, style?, ratio?, count?, image_prompt?, reference_image_paths?, reference_generation_ids?, poster_text?, print_mode?, portrait?, portrait_consent? }. When optimizing a real person\'s photo (portrait/headshot from an uploaded reference), the job first requires portrait authorization: if the result asks for consent, tell the user and only re-run with portrait_consent:true after they confirm they hold usage rights and the subject agreed. Do not sell face-swap/deepfake as a feature.',
+    description: '生成海报或图片后台任务。description 只传用户真实提出的画面需求，不要扩写成运营方案，不要引入用户未提供的领域知识、知识库内容或营销信息；后端会通过系统统一编译 CreativeBrief、路由模型并优化最终 Prompt。可按用户明确要求传 style、ratio、参考图和精确海报文字。真人照片优化必须先确认用户持有使用权且当事人同意；不得把换脸或深伪作为功能。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -169,8 +150,6 @@ export function createMediaTools(media: MediaJobService): Tool[] {
         style: { type: 'string' },
         ratio: { type: 'string' },
         count: { type: 'number' },
-        image_model: { type: 'string' },
-        image_prompt: { type: 'string' },
         reference_image_paths: { type: 'array', items: { type: 'string' } },
         reference_generation_ids: { type: 'array', items: { type: 'string' } },
         poster_text: { type: 'object' },
@@ -194,7 +173,7 @@ export function createMediaTools(media: MediaJobService): Tool[] {
   const generateImage: Tool<ImageToolInput> = {
     ...makePoster,
     name: 'generate_image',
-    description: 'Generate a general image/poster/illustration as a background media job. Do not assume uploaded images are logos; pass explicit reference_image_paths or structured roles only when the user says so. Input is the same as make_poster.',
+    description: '生成通用图片、海报或插画后台任务。description 必须忠实保留用户真实画面需求，不引入用户未提供的领域知识、运营方案或营销内容；系统统一编译 CreativeBrief、路由模型并生成最终 Prompt。不要把上传图片擅自当作 Logo，只有用户明确说明时才传对应参考图。',
     async execute(input, ctx) {
       if (!input?.description?.trim()) throw new Error('generate_image 需要 description')
       const started = await media.startStudioGenerate(imageBody(input, ctx), {
@@ -218,8 +197,6 @@ export function createMediaTools(media: MediaJobService): Tool[] {
         mask_path: { type: 'string' },
         ratio: { type: 'string' },
         count: { type: 'number' },
-        image_model: { type: 'string' },
-        image_prompt: { type: 'string' },
         reference_image_paths: { type: 'array', items: { type: 'string' } },
         reference_generation_ids: { type: 'array', items: { type: 'string' } },
         poster_text: { type: 'object' },
@@ -245,7 +222,7 @@ export function createMediaTools(media: MediaJobService): Tool[] {
 
   const planVideo: Tool<PlanVideoToolInput> = {
     name: 'plan_video',
-    description: '把用户导入的视频素材剪成一版草稿方案(不是出片,是出剪辑计划)。自动判口播片还是门店环境片,或用 mode 指定:口播路本地转写(whisper)按话切+真台词字幕;环境/氛围路走视觉五步(切镜头→挑镜头→看懂画面→音乐卡点→叠门店卖点字卡)。入参:video_paths(本机视频绝对路径数组,必填)、goal(自然语言意图,如"剪成30秒抖音、去开头空镜、配节奏感")、target_duration_s(目标秒数)、aspect(9:16竖/1:1方/16:9横)、mode("speech"口播/"ambient"氛围,不传自动判)、project(续剪带同一个)。这是异步后台任务:返回后用 list_background_tasks/read_background_task 轮询拿到方案,然后**用大白话向用户复述"我打算这么剪"(切了几段/口播还是氛围/配没配乐/字幕),等用户确认满意,再调 render_video 出片**。绝不跳过确认直接出片。缺 ffmpeg/whisper 组件时任务会返回"正在准备组件 x%",如实告诉用户等一下。',
+    description: '把用户提供的真实视频素材编排成可解释草稿。goal 必须忠实保留用户原始目标，不得注入 PPT、台球运营打法、价格、人物设定、CTA 或用户未提供的营销事实。后端统一编译 VideoCreativeBrief，再分析素材并生成共享 Scene/Timeline v2 和 3 个候选；mode 只决定先从“讲清一件事”或“展示环境与氛围”视图开始，两种视图共用同一项目。返回异步任务后查询进度并向用户复述理解、素材缺口和候选取舍；用户确认后再调用 render_video。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -262,19 +239,36 @@ export function createMediaTools(media: MediaJobService): Tool[] {
     async execute(input, ctx) {
       const paths = nonEmptyStrings(input?.video_paths)
       if (!paths.length) throw new Error('plan_video 需要 video_paths(要剪的本机视频绝对路径,至少一段)。')
-      const started = await media.startVideoJob('video_auto_plan', '/api/v1/video-edit/auto_plan', planVideoBody(input, ctx), {
-        conversationId: ctx.conversationId,
-        workspaceRoot: ctx.workspace.root,
-        project: input.project,
-        title: '视频剪辑方案',
-      })
-      return mediaStarted(started.job_id, 'video_auto_plan', `已开始出剪辑方案:${(input.goal ?? paths[0] ?? '').slice(0, 80)}`)
+      if (!deps.videoEditing) throw new Error('视频 V2 编辑服务未连接')
+      const userRequest = input.goal?.trim() || '根据这些真实素材剪成一条完整、自然的视频'
+      const preferredView = input.mode === 'speech' ? 'talking' : input.mode === 'ambient' ? 'ambient' : undefined
+      const ratio = input.aspect === '1:1' || input.aspect === '16:9' ? input.aspect : '9:16'
+      const targetDurationMs = typeof input.target_duration_s === 'number' ? Math.round(input.target_duration_s * 1000) : undefined
+      let projectId = input.project?.trim()
+      let started: { job_id: string; project_id: string }
+      if (projectId) {
+        await deps.videoEditing.compileBrief(projectId, { user_request: userRequest, preferred_view: preferredView, ratio, target_duration_ms: targetDurationMs })
+        started = await deps.videoEditing.startDrafts(projectId, { conversationId: ctx.conversationId, workspaceRoot: ctx.workspace.root })
+      } else {
+        const planned = await deps.videoEditing.createPlannedProject({
+          video_paths: paths,
+          user_request: userRequest,
+          goal: preferredView,
+          ratio,
+          target_duration_ms: targetDurationMs,
+          conversation_id: ctx.conversationId,
+          working_dir: ctx.workspace.root,
+        }, { user_request: userRequest, preferred_view: preferredView, ratio, target_duration_ms: targetDurationMs })
+        projectId = planned.project.project_id
+        started = planned.job
+      }
+      return mediaStarted(started.job_id, 'video_v2_drafts', `项目 ${projectId} 已开始分析素材并生成草稿:${userRequest.slice(0, 80)}`)
     },
   }
 
   const renderVideo: Tool<RenderVideoToolInput> = {
     name: 'render_video',
-    description: '把 plan_video 出的剪辑方案渲染成成片 MP4。入参:project(plan_video 返回结果里的项目名,必填)、preview(true=快速低清预览,先给用户看效果;不传出正式成片)。异步后台任务:返回后轮询拿成片文件路径再告诉用户。出片=生成本地文件,不弹审批、直接做。**必须在用户看过 plan_video 的方案、确认满意后才调本工具**;用户要改就回去调 plan_video 重出方案,别在没确认时就渲染。',
+    description: '把用户已经确认的 Scene/Timeline v2 项目确定性渲染成 MP4。project 是 plan_video 返回的稳定项目 ID；preview=true 生成快速预览，否则锁定当前 revision 后正式导出。必须在用户看过 Brief、素材缺口和草稿后调用。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -287,17 +281,13 @@ export function createMediaTools(media: MediaJobService): Tool[] {
     async execute(input, ctx) {
       const project = typeof input?.project === 'string' ? input.project.trim() : ''
       if (!project) throw new Error('render_video 需要 project(plan_video 返回的项目名)。')
-      const started = await media.startVideoJob('video_render', `/api/v1/video-edit/projects/${encodeURIComponent(project)}/render`, {
-        project,
-        preview: input.preview === true,
-        conversation_id: ctx.conversationId,
-      }, {
+      if (!deps.videoEditing) throw new Error('视频 V2 编辑服务未连接')
+      const current = await deps.videoEditing.store.load(project)
+      const started = await deps.videoEditing.startRender(project, { revision: current.revision, preview: input.preview === true }, {
         conversationId: ctx.conversationId,
         workspaceRoot: ctx.workspace.root,
-        project,
-        title: input.preview === true ? '视频预览出片' : '视频出片',
       })
-      return mediaStarted(started.job_id, 'video_render', `已开始出片:${project}`)
+      return mediaStarted(started.job_id, 'video_v2_render', `已锁定项目 ${project} revision ${current.revision} 并开始${input.preview === true ? '预览' : '正式'}导出`)
     },
   }
 

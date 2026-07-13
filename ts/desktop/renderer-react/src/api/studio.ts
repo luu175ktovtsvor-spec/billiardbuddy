@@ -1,83 +1,92 @@
-// 生图/媒体 job api(接后端 /api/v1/studio/* + /api/v1/agent/media-jobs/:id)。
-// 生图看板用它:提交生图 → 轮询 job → 拿回图列表(poster_url)展示挑选。
+// 生图/工作台 API:renderer 只提交能力意图;真实 provider/model 留在 sidecar。
 import { api, getBaseUrl } from './client'
+import {
+  imageBrandPackSchema,
+  imageBriefCompileResponseSchema,
+  imageWorkbenchAssetResponseSchema,
+  imageWorkbenchExportResponseSchema,
+  imageWorkbenchLibraryResponseSchema,
+  imageWorkbenchProjectListResponseSchema,
+  imageWorkbenchProjectResponseSchema,
+  mediaJobSchema,
+  mediaJobStartResponseSchema,
+  type ImageIntent,
+  type ImageBrandPack,
+  type ImageBrandPackPatch,
+  type ImageQuality,
+  type ImageAssetReference,
+  type ImageReferenceRole,
+  type ImageWorkbenchAddVersionRequest,
+  type ImageWorkbenchAsset,
+  type ImageWorkbenchCreateProjectRequest,
+  type ImageWorkbenchLibraryItem,
+  type ImageWorkbenchProject,
+  type ImageWorkbenchReview,
+  type ImageWorkbenchTextLayer,
+  type ImageWorkbenchImageLayer,
+  type ImageWorkbenchVersion,
+  type ImageCreativeBrief,
+  type MediaJob as ContractMediaJob,
+  type StudioImage,
+} from '../../../../shared/contracts/image-workbench'
 
-export interface StudioImage {
-  generation_id: string
-  poster_url: string
-  source_url?: string
-  revised_prompt?: string
-  width?: number
-  height?: number
-  ratio?: string
-}
+export type { ImageIntent, ImageBrandPack, ImageBrandPackPatch, ImageQuality, ImageAssetReference, ImageReferenceRole, ImageCreativeBrief, ImageWorkbenchAsset, ImageWorkbenchLibraryItem, ImageWorkbenchProject, ImageWorkbenchReview, ImageWorkbenchTextLayer, ImageWorkbenchImageLayer, ImageWorkbenchVersion, StudioImage }
 
 export interface GenerateResult {
   urls?: string[]
   generation_ids?: string[]
   images?: StudioImage[]
+  creative_brief?: ImageCreativeBrief
   count?: number
   ratio?: string
-  /** 反逻辑保护:资产未就绪时后端返回 blocked + message("正在准备组件 x%")。 */
   blocked?: boolean
   message?: string
   local_preview?: boolean
+  [key: string]: unknown
+}
+
+export interface MediaJob extends Omit<ContractMediaJob, 'result'> {
+  result?: GenerateResult & Record<string, unknown>
 }
 
 export interface GenerateInput {
   prompt: string
+  user_request?: string
+  scene_template_id?: string
   ratio?: string
   count?: number
-  /** 白标:前端不显模型名。默认走豆包 Seedream(主力),这里只是内部路由标识。 */
-  image_provider?: 'seedream' | 'openai'
+  intent?: ImageIntent
+  quality?: ImageQuality
+  reference_image_paths?: string[]
+  reference_generation_ids?: string[]
+  reference_assets?: ImageAssetReference[]
+  poster_text?: Record<string, unknown>
+  portrait_consent?: boolean
+  portrait_authorization_confirmed?: boolean
+  input_fidelity?: 'high' | 'standard'
+  creative_brief?: ImageCreativeBrief
 }
 
-export interface MediaJob {
-  id: string
-  kind: string
-  status: 'queued' | 'running' | 'done' | 'error' | 'failed' | string
-  progress?: number
-  stage?: string
-  result?: GenerateResult & Record<string, unknown>
-  error?: string | null
+export interface EditInput {
+  source_generation_id?: string
+  source_image_path?: string
+  description: string
+  user_request?: string
+  ratio?: string
+  mask_path?: string
+  intent?: Extract<ImageIntent, 'edit_content' | 'inpaint'>
+  quality?: ImageQuality
+  reference_image_paths?: string[]
+  reference_assets?: ImageAssetReference[]
+  portrait_consent?: boolean
+  portrait_authorization_confirmed?: boolean
+  input_fidelity?: 'high' | 'standard'
 }
 
-export const studioApi = {
-  /** 提交生图(异步 job)。返回 job_id,再轮询 job()。 */
-  generate: (input: GenerateInput) =>
-    api.post<{ job_id: string }>('/api/v1/studio/generate', {
-      prompt: input.prompt,
-      image_prompt: input.prompt,
-      ratio: input.ratio ?? '3:4',
-      count: input.count ?? 2,
-      image_provider: input.image_provider ?? 'seedream',
-    }),
-  /** 查媒体 job 进度/结果。 */
-  job: (id: string) => api.get<MediaJob>(`/api/v1/agent/media-jobs/${encodeURIComponent(id)}`),
-  /** 超分放大(本机 Real-ESRGAN,印刷不糊)。异步 job,轮询拿放大后的 poster_url。 */
-  upscale: (input: { source_generation_id?: string; source_image_path?: string; scale?: number }) =>
-    api.post<{ job_id: string }>('/api/v1/studio/upscale', input),
-  /** 改图(基于某张图 + 指令做整图调整;局部重绘另传 mask)。异步 job。 */
-  edit: (input: { source_generation_id?: string; source_image_path?: string; description: string; ratio?: string; mask_path?: string }) =>
-    api.post<{ job_id: string }>('/api/v1/studio/edit', {
-      source_generation_id: input.source_generation_id,
-      source_image_path: input.source_image_path,
-      prompt: input.description,
-      image_prompt: input.description,
-      ratio: input.ratio,
-      mask_path: input.mask_path,
-    }),
+function parseJob(raw: unknown): MediaJob {
+  return mediaJobSchema.parse(raw) as MediaJob
 }
 
-/** 超分/改图结果里挑成图 url(后端字段 poster_url / url)。 */
-export function pickImageUrl(result: Record<string, unknown> | undefined): string | undefined {
-  const r = result ?? {}
-  const poster = typeof r.poster_url === 'string' ? r.poster_url : undefined
-  const url = typeof r.url === 'string' ? r.url : undefined
-  return poster ?? url
-}
-
-/** 轮询 job 到 done/error;每次 progress 回调给 UI 显示"正在生成 x%"。 */
 export async function pollJob(
   id: string,
   opts: { onProgress?: (p: number, stage?: string) => void; signal?: AbortSignal; intervalMs?: number } = {},
@@ -86,13 +95,148 @@ export async function pollJob(
   for (;;) {
     if (opts.signal?.aborted) throw new Error('已取消')
     const job = await studioApi.job(id)
-    if (opts.onProgress && typeof job.progress === 'number') opts.onProgress(job.progress, job.stage)
+    if (opts.onProgress && typeof job.progress === 'number') opts.onProgress(job.progress, job.stage ?? undefined)
     if (job.status === 'done' || job.status === 'error' || job.status === 'failed') return job
-    await new Promise((r) => setTimeout(r, interval))
+    await new Promise((resolve) => setTimeout(resolve, interval))
   }
 }
 
-/** /uploads/.. 相对 url → 可直接 <img src> 的绝对 url(接 sidecar baseUrl)。 */
+export const studioApi = {
+  compileBrief: async (input: {
+    prompt: string
+    scene?: 'poster' | 'portrait'
+    intent?: ImageIntent
+    ratio?: string
+    quality?: ImageQuality
+    poster_text?: Record<string, unknown>
+    reference_assets?: GenerateInput['reference_assets']
+    portrait_authorization_confirmed?: boolean
+    scene_template_id?: string
+  }) => imageBriefCompileResponseSchema.parse(await api.post<unknown>('/api/v1/studio/brief/compile', {
+    ...input,
+    ratio: input.ratio ?? '3:4',
+    quality: input.quality ?? 'standard',
+  })),
+
+  generate: async (input: GenerateInput) => mediaJobStartResponseSchema.parse(await api.post<unknown>('/api/v1/studio/generate', {
+    prompt: input.prompt,
+    user_request: input.user_request ?? input.prompt,
+    scene_template_id: input.scene_template_id,
+    ratio: input.ratio ?? '3:4',
+    count: input.count ?? 3,
+    intent: input.intent ?? 'poster_text',
+    quality: input.quality ?? 'standard',
+    reference_image_paths: input.reference_image_paths,
+    reference_generation_ids: input.reference_generation_ids,
+    reference_assets: input.reference_assets,
+    poster_text: input.poster_text,
+    portrait_consent: input.portrait_consent,
+    portrait_authorization_confirmed: input.portrait_authorization_confirmed,
+    input_fidelity: input.input_fidelity,
+    creative_brief: input.creative_brief,
+  })),
+
+  job: async (id: string) => parseJob(await api.get<unknown>(`/api/v1/agent/media-jobs/${encodeURIComponent(id)}`)),
+
+  cancelJob: async (id: string) => api.post<unknown>(`/api/v1/agent/tasks/${encodeURIComponent(id)}/cancel`, {}),
+
+  upscale: async (input: { source_generation_id?: string; source_image_path?: string; scale?: 2 | 3 | 4 }) =>
+    mediaJobStartResponseSchema.parse(await api.post<unknown>('/api/v1/studio/upscale', input)),
+
+  edit: async (input: EditInput) => mediaJobStartResponseSchema.parse(await api.post<unknown>('/api/v1/studio/edit', {
+    source_generation_id: input.source_generation_id,
+    source_image_path: input.source_image_path,
+    prompt: input.description,
+    user_request: input.user_request ?? input.description,
+    ratio: input.ratio,
+    mask_path: input.mask_path,
+    reference_image_paths: input.reference_image_paths,
+    reference_assets: input.reference_assets,
+    intent: input.intent ?? (input.mask_path ? 'inpaint' : 'edit_content'),
+    quality: input.quality ?? 'standard',
+    portrait_consent: input.portrait_consent,
+    portrait_authorization_confirmed: input.portrait_authorization_confirmed,
+    input_fidelity: input.input_fidelity,
+  })),
+}
+
+export const brandPackApi = {
+  get: async (): Promise<ImageBrandPack> =>
+    imageBrandPackSchema.parse(await api.get<unknown>('/api/v1/stores/me')),
+
+  update: async (input: ImageBrandPackPatch): Promise<ImageBrandPack> =>
+    imageBrandPackSchema.parse(await api.patch<unknown>('/api/v1/stores/me', input)),
+}
+
+export const workbenchApi = {
+  listProjects: async () => imageWorkbenchProjectListResponseSchema.parse(await api.get<unknown>('/api/v1/studio/workbench/projects')).projects,
+
+  createProject: async (input: ImageWorkbenchCreateProjectRequest) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>('/api/v1/studio/workbench/projects', input)).project,
+
+  getProject: async (projectId: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.get<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}`)).project,
+
+  saveCanvas: async (projectId: string, input: { current_version_id?: string; width: number; height: number; text_layers: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[]; revision?: number }) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.patch<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/canvas`, input)).project,
+
+  addVersion: async (projectId: string, input: ImageWorkbenchAddVersionRequest) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/versions`, input)).project,
+
+  rollback: async (projectId: string, version_id: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/rollback`, { version_id })).project,
+
+  uploadAsset: async (input: { kind: 'reference' | 'mask' | 'export' | 'library'; data_url: string; filename?: string; width: number; height: number }) =>
+    imageWorkbenchAssetResponseSchema.parse(await api.post<unknown>('/api/v1/studio/workbench/assets', input)).asset,
+
+  exportPng: async (projectId: string, input: { version_id?: string; data_url: string; width: number; height: number; text_layers?: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[] }) =>
+    imageWorkbenchExportResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/export`, input)),
+
+  saveToLibrary: async (projectId: string, input: { version_id?: string; export_asset_id?: string; title?: string }) =>
+    imageWorkbenchLibraryResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/library`, input)).item,
+
+  confirmPortrait: async (projectId: string, version_id?: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/portrait-confirm`, { version_id, confirmed: true })).project,
+}
+
+export async function uploadLocalImage(file: File): Promise<{ url: string }> {
+  const form = new FormData()
+  form.set('file', file)
+  const response = await fetch(`${getBaseUrl()}/api/v1/uploads/image`, { method: 'POST', body: form })
+  if (!response.ok) throw new Error(`上传图片失败(${response.status})`)
+  const body = await response.json() as { url?: unknown }
+  if (typeof body.url !== 'string') throw new Error('上传图片没有返回 url')
+  return { url: body.url }
+}
+
+export async function downloadAsset(url: string, filename: string): Promise<void> {
+  const response = await fetch(assetUrl(url))
+  if (!response.ok) throw new Error(`下载文件失败(${response.status})`)
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = filename.endsWith('.png') ? filename : `${filename}.png`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
+export async function fetchAssetFile(url: string, filename: string): Promise<File> {
+  const response = await fetch(assetUrl(url))
+  if (!response.ok) throw new Error(`读取素材失败(${response.status})`)
+  const blob = await response.blob()
+  return new File([blob], filename, { type: blob.type || 'image/png' })
+}
+
+export function pickImageUrl(result: Record<string, unknown> | undefined): string | undefined {
+  const r = result ?? {}
+  const poster = typeof r.poster_url === 'string' ? r.poster_url : undefined
+  const url = typeof r.url === 'string' ? r.url : undefined
+  return poster ?? url
+}
+
 export function assetUrl(url: string): string {
   if (/^(https?|data):/i.test(url)) return url
   return `${getBaseUrl()}${url.startsWith('/') ? url : `/${url}`}`

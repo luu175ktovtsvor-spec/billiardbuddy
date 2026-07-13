@@ -71,6 +71,53 @@ test('submit edit sends multipart to /images/edits with attached image', async (
   expect((form as unknown as FormData).getAll('image')).toHaveLength(1)
 })
 
+test('submit edit forwards input_fidelity when the deployed endpoint accepts it', async () => {
+  let form: FormData | null = null
+  const fetch = createRelayFetch({
+    env: env(),
+    fetchImpl: async (_input, init) => {
+      form = init?.body as FormData
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'edit', model: 'gpt-image-2', prompt: 'portrait', images: [`data:image/png;base64,${B64}`], input_fidelity: 'high' }),
+  }))
+  const { task_id } = await submit.json()
+  const done = await pollUntilDone(fetch, task_id)
+  expect((form as unknown as FormData).get('input_fidelity')).toBe('high')
+  expect(done).toMatchObject({
+    input_fidelity_requested: 'high',
+    input_fidelity_status: 'accepted',
+  })
+  expect(done.input_fidelity_risk).toBeUndefined()
+})
+
+test('submit edit retries without input_fidelity only after an explicit endpoint rejection', async () => {
+  const fidelities: Array<FormDataEntryValue | null> = []
+  const fetch = createRelayFetch({
+    env: env(),
+    fetchImpl: async (_input, init) => {
+      const form = init?.body as FormData
+      fidelities.push(form.get('input_fidelity'))
+      if (fidelities.length === 1) return Response.json({ error: { message: 'unknown parameter input_fidelity' } }, { status: 400 })
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'edit', model: 'gpt-image-2', prompt: 'portrait', images: [`data:image/png;base64,${B64}`], input_fidelity: 'high' }),
+  }))
+  const { task_id } = await submit.json()
+  const done = await pollUntilDone(fetch, task_id)
+  expect(fidelities).toEqual(['high', null])
+  expect(done).toMatchObject({ input_fidelity_requested: 'high', input_fidelity_status: 'unsupported' })
+  expect(done.input_fidelity_risk).toContain('自动降级')
+})
+
 test('OpenAI failure is captured as failed task, not thrown', async () => {
   const fetch = createRelayFetch({
     env: env(),

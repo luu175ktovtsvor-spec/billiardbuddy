@@ -9,16 +9,19 @@ import * as QRCode from 'qrcode'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
-import { VideoEditProjectStore } from './videoEditProjects'
+import { VideoEditProjectStore } from './video-edit/legacyTimeline'
 import { ffmpegBinFrom, gateMediaAssets } from './mediaBinaries'
 import { upscaleImage } from './imageUpscale'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 import {
   detectPortraitIntent,
   inputQualityBlockedResult,
+  portraitImpersonationBlockedResult,
   portraitConsentGranted,
   portraitConsentRequiredResult,
   portraitFlagged,
+  portraitReferenceRequiredResult,
+  requestsPortraitImpersonation,
   type PortraitIntent,
 } from './portraitGate'
 import {
@@ -30,6 +33,10 @@ import {
   type InputInspection,
   type QcImage,
 } from './imageQC'
+import { imageCreativeBriefSchema, type ImageCreativeBrief, type ImageIntent, type ImageQuality, type ImageWorkbenchReview } from '../../shared/contracts/image-workbench'
+import { compileImageBrief, compileImageBriefWithModel } from './imageBriefCompiler'
+import { compileProviderPrompt } from './imagePromptAdapters'
+import { inspectPosterHardGate } from './posterQuality'
 
 export type MediaJobKind =
   | 'generate'
@@ -66,6 +73,10 @@ export interface MediaJobServiceOptions {
   prepareImageBody?: (body: Record<string, unknown>, mode: 'generate' | 'edit') => Record<string, unknown> | Promise<Record<string, unknown>>
   /** 人像质检/OCR 用的网关 VLM(测试注入 fake;传 null 显式禁用;不传则按 env 构造,缺配置=优雅降级)。 */
   qcModel?: Model | null
+  /** 对话生图产物自动登记到同一份工作台项目真相源;工作台直调不带 conversation_id,不会自动创建。 */
+  workbenchStore?: {
+    createProject(input: unknown): Promise<unknown>
+  }
 }
 
 /** 人像闸预检结果:blocked=true 则任务直接返回该结果(正常完成、非报错),不进模型。 */
@@ -75,6 +86,7 @@ type PortraitPreflightOutcome = { blocked: true; result: Record<string, unknown>
 interface PortraitShared {
   intent?: PortraitIntent
   inputInspection?: InputInspection
+  primaryReference?: QcImage
 }
 
 interface StartMediaJobInput {
@@ -189,6 +201,17 @@ function normalizeBackendUrl(url: string | undefined): string | undefined {
 
 function normalizeProvider(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function normalizeImageIntent(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function openAiQualityFrom(value: unknown): 'low' | 'medium' | 'high' {
+  const quality = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (quality === 'draft' || quality === 'low') return 'low'
+  if (quality === 'final' || quality === 'high') return 'high'
+  return 'medium'
 }
 
 export function resolveMediaBackendUrl(env: Record<string, string | undefined> = process.env): string | undefined {
@@ -350,6 +373,83 @@ function hardTextInspectionFields(inspection: HardTextInspection): Record<string
   }
 }
 
+function stringArrayField(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key]
+  if (!Array.isArray(value)) return undefined
+  const out = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return out.length ? out.slice(0, 80) : undefined
+}
+
+function boolField(record: Record<string, unknown>, key: string): boolean | undefined {
+  return typeof record[key] === 'boolean' ? record[key] as boolean : undefined
+}
+
+function reviewFromImageRecord(record: Record<string, unknown>): ImageWorkbenchReview {
+  const review: ImageWorkbenchReview = { portrait_user_confirmed: false }
+  const stringKeys = [
+    'text_quality_status',
+    'text_quality_warning_message',
+    'portrait_qc_status',
+    'portrait_qc_message',
+    'portrait_quality_state',
+    'portrait_consistency_status',
+    'input_qc_status',
+    'image_engine_warning',
+  ] as const
+  for (const key of stringKeys) {
+    const value = stringFrom(record[key])
+    if (value) {
+      if (key === 'image_engine_warning') {
+        review.risk_messages = [...(review.risk_messages ?? []), value]
+      } else {
+        review[key] = value as never
+      }
+    }
+  }
+  const textMissing = stringArrayField(record, 'text_quality_missing')
+  if (textMissing) review.text_quality_missing = textMissing
+  const posterState = stringFrom(record.poster_quality_state)
+  if (posterState === 'blocked' || posterState === 'risk' || posterState === 'recommended' || posterState === 'user_confirmed' || posterState === 'unchecked') review.poster_quality_state = posterState
+  const posterGate = boolField(record, 'poster_hard_gate_passed')
+  if (posterGate !== undefined) review.poster_hard_gate_passed = posterGate
+  const posterWarnings = stringArrayField(record, 'poster_hard_gate_warnings')
+  if (posterWarnings) review.poster_hard_gate_warnings = posterWarnings
+  const portraitWarnings = stringArrayField(record, 'portrait_qc_warnings')
+  if (portraitWarnings) review.portrait_qc_warnings = portraitWarnings
+  const inputWarnings = stringArrayField(record, 'input_qc_warnings')
+  if (inputWarnings) review.input_qc_warnings = inputWarnings
+  const textWarning = boolField(record, 'text_quality_warning')
+  if (textWarning !== undefined) review.text_quality_warning = textWarning
+  const portraitChecked = boolField(record, 'portrait_qc_auto_checked')
+  if (portraitChecked !== undefined) review.portrait_qc_auto_checked = portraitChecked
+  const portraitConfirmed = boolField(record, 'portrait_user_confirmed')
+  if (portraitConfirmed !== undefined) review.portrait_user_confirmed = portraitConfirmed
+  const commercialReady = boolField(record, 'commercial_ready')
+  if (commercialReady !== undefined) review.commercial_ready = commercialReady
+  const fidelityRequested = stringFrom(record.input_fidelity_requested)
+  const fidelityStatus = stringFrom(record.input_fidelity_status)
+  if (fidelityRequested || fidelityStatus) {
+    review.input_fidelity = {
+      ...(fidelityRequested === 'high' || fidelityRequested === 'standard' ? { input_fidelity_requested: fidelityRequested } : {}),
+      input_fidelity_status: fidelityStatus === 'accepted' || fidelityStatus === 'unsupported' || fidelityStatus === 'unknown' || fidelityStatus === 'not_requested' ? fidelityStatus : 'unknown',
+    }
+  }
+  const fidelityRisk = stringFrom(record.input_fidelity_risk)
+  if (fidelityRisk) review.input_fidelity_risk = fidelityRisk
+  return review
+}
+
+function imageIntentFromBody(body: Record<string, unknown>, mode: 'generate' | 'edit'): ImageIntent {
+  const value = normalizeImageIntent(body.intent)
+  if (value === 'poster_text' || value === 'portrait' || value === 'creative' || value === 'edit_content' || value === 'inpaint') return value
+  return mode === 'edit' ? 'edit_content' : 'poster_text'
+}
+
+function imageQualityFromBody(body: Record<string, unknown>): ImageQuality {
+  const value = stringFrom(body.quality)?.toLowerCase()
+  return value === 'draft' || value === 'final' ? value : 'standard'
+}
+
 function isWesternDominant(text: string): boolean {
   const trimmed = text.trim()
   if (!trimmed) return false
@@ -388,8 +488,15 @@ function sanitizeMediaError(err: unknown): string {
   return scrubProviderIdentifiers(
     (err instanceof Error ? err.message : String(err))
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
+      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
+      .replace(/\/(?:ark\/)?images\/(?:generations|edits|tasks(?:\/[^\s:]+)?)/gi, '生图通道')
+      .replace(/\s+failed\b/gi, '失败'),
   ).slice(0, 500)
+}
+
+function isInputFidelityRejection(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /input[_ -]?fidelity|high fidelity|unsupported parameter/i.test(message) && /400|4\d\d|unsupported|invalid/i.test(message)
 }
 
 function clampCount(value: unknown): number {
@@ -672,6 +779,7 @@ export class MediaJobService {
   private readonly fetchImpl: FetchLike
   private readonly pollIntervalMs: number
   private readonly gptImageAsync: boolean
+  private readonly preparedImageBodies = new WeakSet<Record<string, unknown>>()
   private qcModelCache: Model | null | undefined
 
   constructor(private readonly opts: MediaJobServiceOptions) {
@@ -698,6 +806,46 @@ export class MediaJobService {
     return this.qcModelCache
   }
 
+  compileBrief(body: Record<string, unknown>, mode: 'generate' | 'edit' = 'generate'): ImageCreativeBrief {
+    const supplied = imageCreativeBriefSchema.safeParse(body.creative_brief)
+    if (supplied.success) return supplied.data
+    const userRequest = stringFrom(body.user_request) ?? stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt)
+    return compileImageBrief({
+      prompt: userRequest,
+      scene: body.scene === 'portrait' || body.intent === 'portrait' || body.portrait === true ? 'portrait' : body.scene === 'poster' ? 'poster' : undefined,
+      intent: stringFrom(body.intent) ?? (mode === 'edit' ? 'edit_content' : undefined),
+      ratio: stringFrom(body.ratio),
+      quality: imageQualityFromBody(body),
+      posterText: asRecord(body.poster_text) ?? undefined,
+      sceneTemplateId: stringFrom(body.scene_template_id),
+      referenceAssets: Array.isArray(body.reference_assets) ? body.reference_assets as never : undefined,
+      referenceImagePaths: stringArrayFrom(body.reference_image_paths),
+      portraitConsent: body.portrait_consent === true,
+      portraitAuthorizationConfirmed: body.portrait_authorization_confirmed === true,
+      brandContext: this.preparedImageBodies.has(body) ? stringFrom(body._system_brand_context) : undefined,
+    })
+  }
+
+  async compileBriefWithModel(body: Record<string, unknown>, mode: 'generate' | 'edit' = 'generate', signal?: AbortSignal): Promise<ImageCreativeBrief> {
+    const supplied = imageCreativeBriefSchema.safeParse(body.creative_brief)
+    if (supplied.success) return supplied.data
+    const userRequest = stringFrom(body.user_request) ?? stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt)
+    return compileImageBriefWithModel({
+      prompt: userRequest,
+      scene: body.scene === 'portrait' || body.intent === 'portrait' || body.portrait === true ? 'portrait' : body.scene === 'poster' ? 'poster' : undefined,
+      intent: stringFrom(body.intent) ?? (mode === 'edit' ? 'edit_content' : undefined),
+      ratio: stringFrom(body.ratio),
+      quality: imageQualityFromBody(body),
+      posterText: asRecord(body.poster_text) ?? undefined,
+      sceneTemplateId: stringFrom(body.scene_template_id),
+      referenceAssets: Array.isArray(body.reference_assets) ? body.reference_assets as never : undefined,
+      referenceImagePaths: stringArrayFrom(body.reference_image_paths),
+      portraitConsent: body.portrait_consent === true,
+      portraitAuthorizationConfirmed: body.portrait_authorization_confirmed === true,
+      brandContext: this.preparedImageBodies.has(body) ? stringFrom(body._system_brand_context) : undefined,
+    }, this.qcModel(), signal)
+  }
+
   async status(id: string): Promise<MediaJobStatus | null> {
     const task = await this.opts.tasks.get(id)
     return task ? this.statusFromMeta(task) : null
@@ -712,29 +860,42 @@ export class MediaJobService {
       params: { ...input.body, ...(input.project ? { project: input.project } : {}) },
     })
     this.opts.tasks.start(task.id, async ctx => {
-      if (input.preflight) {
-        const outcome = await input.preflight(ctx)
-        if (outcome.blocked) return outcome.result
+      try {
+        if (input.preflight) {
+          const outcome = await input.preflight(ctx)
+          if (outcome.blocked) return outcome.result
+        }
+        let result: Record<string, unknown>
+        if (this.backendUrl && input.proxyPath) {
+          result = await this.runProxyJob(ctx, input.proxyPath, input.body)
+        } else if (input.fallback) {
+          result = await input.fallback(ctx, task)
+        } else {
+          throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
+        }
+        return input.postprocess ? await input.postprocess(ctx, result) : result
+      } catch (err) {
+        throw new Error(sanitizeMediaError(err))
       }
-      let result: Record<string, unknown>
-      if (this.backendUrl && input.proxyPath) {
-        result = await this.runProxyJob(ctx, input.proxyPath, input.body)
-      } else if (input.fallback) {
-        result = await input.fallback(ctx, task)
-      } else {
-        throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
-      }
-      return input.postprocess ? await input.postprocess(ctx, result) : result
     })
     return { job_id: task.id, ...(input.project ? { project: input.project } : {}) }
   }
 
   async startStudioGenerate(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const prepared = await this.prepareImageBody(body, 'generate')
+    const brief = await this.compileBriefWithModel(prepared, 'generate')
+    const compiled = compileProviderPrompt(brief, 'generate')
     const normalized = {
       ...prepared,
       _image_mode: 'generate',
       count: clampCount(prepared.count),
+      user_request: brief.user_request,
+      creative_brief: brief,
+      image_prompt: compiled.prompt,
+      _compiled_route: compiled.route,
+      intent: brief.scene === 'portrait' ? 'portrait' : prepared.intent ?? 'poster_text',
+      portrait: brief.scene === 'portrait',
+      ...(brief.scene === 'portrait' ? { input_fidelity: prepared.input_fidelity ?? 'high' } : {}),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
     }
     const shared: PortraitShared = {}
@@ -746,17 +907,30 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/generate',
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
-      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
+      postprocess: async (ctx, result) => this.attachWorkbenchProjects(
+        await this.imageResultPostprocess(ctx, result, shared, normalized),
+        normalized,
+        'generate',
+      ),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'generate'),
     })
   }
 
   async startStudioEdit(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const prepared = await this.prepareImageBody(body, 'edit')
+    const brief = await this.compileBriefWithModel(prepared, 'edit')
+    const compiled = compileProviderPrompt(brief, 'edit')
     const normalized = {
       ...prepared,
       _image_mode: 'edit',
       count: clampCount(prepared.count),
+      user_request: brief.user_request,
+      creative_brief: brief,
+      image_prompt: compiled.prompt,
+      _compiled_route: compiled.route,
+      intent: brief.scene === 'portrait' ? 'portrait' : prepared.intent ?? 'edit_content',
+      portrait: brief.scene === 'portrait',
+      ...(brief.scene === 'portrait' ? { input_fidelity: prepared.input_fidelity ?? 'high' } : {}),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
     }
     const shared: PortraitShared = {}
@@ -768,7 +942,11 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/edit',
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
-      postprocess: (ctx, result) => this.imageResultPostprocess(ctx, result, shared),
+      postprocess: async (ctx, result) => this.attachWorkbenchProjects(
+        await this.imageResultPostprocess(ctx, result, shared, normalized),
+        normalized,
+        'edit',
+      ),
       fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'edit'),
     })
   }
@@ -799,6 +977,67 @@ export class MediaJobService {
       project,
       fallback: ctx => this.localVideoJobFallback(ctx, kind, normalized, project),
     })
+  }
+
+  private async attachWorkbenchProjects(result: Record<string, unknown>, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
+    if (!this.opts.workbenchStore || !stringFrom(body.conversation_id)) return result
+    const images = Array.isArray(result.images)
+      ? result.images.map(item => asRecord(item)).filter((item): item is Record<string, unknown> => !!item && item.local_preview !== true)
+      : []
+    if (images.length === 0 || result.blocked === true) return result
+
+    const created: Array<{ project_id: string; version_id: string; image_url: string; generation_id?: string }> = []
+    const fallbackSize = ratioSize(body.ratio)
+    for (const image of images) {
+      const imageUrl = stringFrom(image.poster_url) ?? stringFrom(image.url)
+      if (!imageUrl) continue
+      const generationId = stringFrom(image.generation_id)
+      const width = numberFrom(image.width, fallbackSize.width)
+      const height = numberFrom(image.height, fallbackSize.height)
+      try {
+        const project = await this.opts.workbenchStore.createProject({
+          title: shortText(body.prompt ?? body.description ?? body.image_prompt, mode === 'edit' ? '对话改图' : '对话生图'),
+          source_generation_id: generationId,
+          image_url: imageUrl,
+          width,
+          height,
+          ratio: stringFrom(image.ratio) ?? fallbackSize.ratio,
+          prompt: stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt),
+          user_request: stringFrom(body.user_request) ?? stringFrom(body.prompt) ?? stringFrom(body.description),
+          creative_brief: body.creative_brief,
+          brief_understanding: asRecord(body.creative_brief)?.understanding,
+          compiler_version: asRecord(body.creative_brief)?.compiler_version,
+          intent: imageIntentFromBody(body, mode),
+          quality: imageQualityFromBody(body),
+          quantity: clampCount(body.count),
+          reference_asset_ids: stringArrayFrom(body.reference_asset_ids),
+          reference_assets: Array.isArray(body.reference_assets) ? body.reference_assets : [],
+          review: reviewFromImageRecord({ ...result, ...image }),
+        }) as { project_id?: unknown; current_version_id?: unknown }
+        const projectId = typeof project.project_id === 'string' ? project.project_id : undefined
+        const versionId = typeof project.current_version_id === 'string' ? project.current_version_id : undefined
+        if (projectId && versionId) {
+          created.push({
+            project_id: projectId,
+            version_id: versionId,
+            image_url: imageUrl,
+            ...(generationId ? { generation_id: generationId } : {}),
+          })
+        }
+      } catch (err) {
+        return {
+          ...result,
+          workbench_warning: `图片已生成，但登记到工作台失败:${sanitizeMediaError(err)}`,
+        }
+      }
+    }
+    return created.length
+      ? {
+          ...result,
+          workbench_project_ids: created.map(item => item.project_id),
+          workbench_projects: created,
+        }
+      : result
   }
 
   async proxyJson(path: string, body?: Record<string, unknown>, method = 'POST'): Promise<Record<string, unknown>> {
@@ -941,12 +1180,14 @@ export class MediaJobService {
     const seedreamModel = seedreamImageModelFrom(this.env, envModel)
     const openAiModel = openAiImageModelFrom(this.env, envModel)
     const explicitProvider = normalizeProvider(body.image_provider)
+    const intent = normalizeImageIntent(body.intent)
     const providerHint = explicitProvider
-    const prompt = String(body.image_prompt ?? body.prompt ?? body.description ?? '')
+    const prompt = String(body.user_request ?? body.prompt ?? body.description ?? body.image_prompt ?? '')
 
     let model: string
     let reason: string
     let explicit = false
+    const compiledRoute = stringFrom(body._compiled_route)
     if (explicitModel) {
       model = explicitModel
       reason = 'explicit_model'
@@ -959,6 +1200,24 @@ export class MediaJobService {
       model = openAiModel
       reason = 'explicit_provider_openai'
       explicit = true
+    } else if (compiledRoute === 'seedream_4_5') {
+      model = seedreamModel
+      reason = 'compiled_domestic_visual'
+    } else if (compiledRoute === 'gpt_image_2') {
+      model = openAiModel
+      reason = 'compiled_high_fidelity_image'
+    } else if (intent === 'poster_text') {
+      model = seedreamModel
+      reason = 'intent_poster_text_seedream'
+    } else if (intent === 'creative' || intent === 'portrait') {
+      model = openAiModel
+      reason = `intent_${intent}_openai`
+    } else if (intent === 'inpaint') {
+      model = openAiModel
+      reason = 'intent_inpaint_openai'
+    } else if (intent === 'edit_content') {
+      model = openAiModel
+      reason = 'intent_edit_content_openai'
     } else if (body._image_mode === 'edit' || stringFrom(body.source_generation_id)) {
       const editType = inferImageEditType(prompt, body.edit_type)
       model = editType === 'text_fix' ? seedreamModel : openAiModel
@@ -995,7 +1254,9 @@ export class MediaJobService {
   private async prepareImageBody(body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
     if (this.backendUrl) return body
     if (!this.opts.prepareImageBody) return body
-    return await this.opts.prepareImageBody(body, mode)
+    const prepared = await this.opts.prepareImageBody(body, mode)
+    this.preparedImageBodies.add(prepared)
+    return prepared
   }
 
   private async directOrLocalImageFallback(ctx: TaskRunnerContext, body: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
@@ -1033,6 +1294,10 @@ export class MediaJobService {
     const sized = imageSizeForProvider(config.model, body.ratio)
     const hardTextInspection = inspectHardTextRequirement(body, prompt)
     const refs = await this.collectImageReferences(body, mode)
+    const wantsInputFidelity = config.provider === 'openai-compatible'
+      && /^gpt-image/i.test(config.model)
+      && refs.length > 0
+      && (body.input_fidelity === 'high' || mode === 'edit')
     const printLogoPath = this.resolvePrintLogoPath(body)
     const printQrPath = this.resolvePrintQrPath(body)
     const printQrContent = this.resolvePrintQrContent(body)
@@ -1061,10 +1326,8 @@ export class MediaJobService {
       form.set('prompt', prompt)
       form.set('n', String(count))
       form.set('size', stringFrom(body.size) ?? sized.size)
-      // input_fidelity 只对非 gpt-image-2 的 gpt-image 系列生效;gpt-image-2 恒最高保真、传了会 400(对齐老 Python)。
-      if (/^gpt-image/i.test(config.model) && !/^gpt-image-2/i.test(config.model)) {
-        form.set('input_fidelity', mode === 'edit' ? 'high' : 'low')
-      }
+      form.set('quality', openAiQualityFrom(body.quality))
+      if (wantsInputFidelity) form.set('input_fidelity', String(body.input_fidelity ?? 'high'))
       for (const ref of refs) {
         if (!ref.bytes) continue
         const file = new File([ref.bytes], ref.filename ?? `${ref.role || 'image'}.png`, { type: ref.contentType ?? 'image/png' })
@@ -1075,12 +1338,25 @@ export class MediaJobService {
         form.set('mask', new File([mask.bytes], mask.filename ?? 'mask.png', { type: mask.contentType ?? 'image/png' }))
       }
       if (form.getAll('image').length === 0) throw new Error('图片编辑网关需要本机可读取的底图或参考图')
-      const response = await this.fetchImpl(joinOpenAiImageEditEndpoint(config.baseUrl), {
-        method: 'POST',
-        headers: { 'authorization': `Bearer ${config.token}` },
-        body: form,
-      })
-      parsed = await this.readJson(response, '/images/edits')
+      const endpoint = joinOpenAiImageEditEndpoint(config.baseUrl)
+      try {
+        parsed = await this.readJson(await this.fetchImpl(endpoint, {
+          method: 'POST',
+          headers: { 'authorization': `Bearer ${config.token}` },
+          body: form,
+        }), '/images/edits')
+        if (wantsInputFidelity) body._input_fidelity_status = 'accepted'
+      } catch (err) {
+        if (!wantsInputFidelity || !isInputFidelityRejection(err)) throw err
+        body._input_fidelity_status = 'unsupported'
+        body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。'
+        form.delete('input_fidelity')
+        parsed = await this.readJson(await this.fetchImpl(endpoint, {
+          method: 'POST',
+          headers: { 'authorization': `Bearer ${config.token}` },
+          body: form,
+        }), '/images/edits')
+      }
     } else {
       parsed = await this.submitImageGenerationJson(prompt, sized, count, body, config, refs)
     }
@@ -1094,6 +1370,9 @@ export class MediaJobService {
         printQrRegenerationWarning: regeneratedPrintQr.warning,
         printQrRegenerationSource: regeneratedPrintQr.source,
         hardTextInspection,
+        inputFidelityRequested: wantsInputFidelity ? 'high' : undefined,
+        inputFidelityStatus: stringFrom(body._input_fidelity_status) as 'accepted' | 'unsupported' | 'unknown' | undefined,
+        inputFidelityRisk: stringFrom(body._input_fidelity_risk),
       })
     } finally {
       if (regeneratedPrintQr.path) await rm(regeneratedPrintQr.path, { force: true }).catch(() => undefined)
@@ -1126,6 +1405,10 @@ export class MediaJobService {
       }
     } else if (responseFormat) {
       payload.response_format = responseFormat
+    }
+    if (config.provider === 'openai-compatible') {
+      payload.quality = openAiQualityFrom(body.quality)
+      if (refs.length && body.input_fidelity === 'high') payload.input_fidelity = 'high'
     }
     const endpoint = joinImageEndpoint(config.baseUrl, config.endpointPath)
     const init: RequestInit = {
@@ -1163,12 +1446,15 @@ export class MediaJobService {
       prompt,
       n: count,
       size: stringFrom(body.size) ?? sized.size,
+      quality: openAiQualityFrom(body.quality),
     }
     const responseFormat = stringFrom(body.response_format)
     if (responseFormat) taskBody.response_format = responseFormat
-    // input_fidelity 只对非 gpt-image-2 的 gpt-image 系列设(gpt-image-2 恒最高保真、传了 400)。
-    if (/^gpt-image/i.test(config.model) && !/^gpt-image-2/i.test(config.model)) {
-      taskBody.input_fidelity = mode === 'edit' ? 'high' : 'low'
+    // Desktop -> gateway -> relay keeps the requested capability intact. The
+    // relay records the actual endpoint outcome and removes it only when the
+    // formal endpoint rejects manual input_fidelity.
+    if (/^gpt-image/i.test(config.model) && refs.length && (body.input_fidelity === 'high' || mode === 'edit')) {
+      taskBody.input_fidelity = String(body.input_fidelity ?? 'high')
     }
     if (mode === 'edit') {
       const images = refs.map(ref => ref.url).filter(Boolean).slice(0, 16)
@@ -1177,11 +1463,25 @@ export class MediaJobService {
       const mask = await this.resolveImageReference(stringFrom(body.mask_path), 'mask', this.trustedImagePaths(body))
       if (mask?.url) taskBody.mask = mask.url
     }
-    const submitted = await this.readJson(await this.fetchImpl(joinImagePath(config.baseUrl, '/images/tasks'), {
-      method: 'POST',
-      headers: { 'authorization': `Bearer ${config.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(taskBody),
-    }), '/images/tasks')
+    const endpoint = joinImagePath(config.baseUrl, '/images/tasks')
+    let submitted: Record<string, unknown>
+    try {
+      submitted = await this.readJson(await this.fetchImpl(endpoint, {
+        method: 'POST',
+        headers: { 'authorization': `Bearer ${config.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(taskBody),
+      }), '/images/tasks')
+    } catch (err) {
+      if (!taskBody.input_fidelity || !isInputFidelityRejection(err)) throw err
+      delete taskBody.input_fidelity
+      body._input_fidelity_status = 'unsupported'
+      body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。'
+      submitted = await this.readJson(await this.fetchImpl(endpoint, {
+        method: 'POST',
+        headers: { 'authorization': `Bearer ${config.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(taskBody),
+      }), '/images/tasks')
+    }
     const taskId = stringFrom(submitted.task_id)
     if (!taskId) throw new Error('图片任务提交未返回 task_id')
     await ctx.progress(15, '图片任务已提交，正在美国节点生成。')
@@ -1194,7 +1494,15 @@ export class MediaJobService {
         headers: { 'authorization': `Bearer ${config.token}` },
       }), '/images/tasks/{id}')
       const state = stringFrom(status.status)
-      if (state === 'succeeded') return { data: Array.isArray(status.data) ? status.data : [] }
+      if (state === 'succeeded') {
+        const capability = stringFrom(status.input_fidelity_status)
+        if (capability === 'accepted' || capability === 'unsupported' || capability === 'unknown') {
+          body._input_fidelity_status = capability
+        }
+        const risk = stringFrom(status.input_fidelity_risk)
+        if (risk) body._input_fidelity_risk = risk
+        return { data: Array.isArray(status.data) ? status.data : [] }
+      }
       if (state === 'failed') throw new Error(sanitizeMediaError(status.error ?? '图片任务失败'))
       await ctx.progress(Math.min(85, 20 + i), '图片仍在生成中…')
     }
@@ -1230,6 +1538,9 @@ export class MediaJobService {
       printQrRegenerationWarning?: string
       printQrRegenerationSource?: PrintQrRegenerationSource
       hardTextInspection?: HardTextInspection | null
+      inputFidelityRequested?: 'high' | 'standard'
+      inputFidelityStatus?: 'accepted' | 'unsupported' | 'unknown' | 'not_requested'
+      inputFidelityRisk?: string
     } = {},
   ): Promise<Record<string, unknown>> {
     const data = Array.isArray(parsed.data)
@@ -1289,7 +1600,12 @@ export class MediaJobService {
             ...(opts.printQrInspection ? printQrInspectionFields(opts.printQrInspection) : {}),
             ...printQrRegenerationFields(opts.printQrRegenerationStatus, opts.printQrRegenerationWarning, opts.printQrRegenerationSource),
           } : {}),
-          ...(opts.hardTextInspection ? hardTextInspectionFields(opts.hardTextInspection) : {}),
+            ...(opts.hardTextInspection ? hardTextInspectionFields(opts.hardTextInspection) : {}),
+            ...(opts.inputFidelityRequested ? {
+              input_fidelity_requested: opts.inputFidelityRequested,
+              input_fidelity_status: opts.inputFidelityStatus ?? 'unknown',
+              ...(opts.inputFidelityStatus === 'unsupported' ? { input_fidelity_risk: opts.inputFidelityRisk ?? '正式端点不接受高保真输入，已自动降级为标准图片输入。' } : {}),
+            } : {}),
         })
       }
     await ctx.progress(100, '图片已生成并保存。')
@@ -1317,6 +1633,11 @@ export class MediaJobService {
         ...printQrRegenerationFields(opts.printQrRegenerationStatus, opts.printQrRegenerationWarning, opts.printQrRegenerationSource),
       } : {}),
       ...(opts.hardTextInspection ? hardTextInspectionFields(opts.hardTextInspection) : {}),
+      ...(opts.inputFidelityRequested ? {
+        input_fidelity_requested: opts.inputFidelityRequested,
+        input_fidelity_status: opts.inputFidelityStatus ?? 'unknown',
+        ...(opts.inputFidelityStatus === 'unsupported' ? { input_fidelity_risk: opts.inputFidelityRisk ?? '正式端点不接受高保真输入，已自动降级为标准图片输入。' } : {}),
+      } : {}),
     }
   }
 
@@ -1575,16 +1896,25 @@ export class MediaJobService {
     mode: 'generate' | 'edit',
     shared: PortraitShared,
   ): Promise<PortraitPreflightOutcome> {
-    const prompt = String(body.image_prompt ?? body.prompt ?? body.description ?? '')
+    const prompt = String(body.user_request ?? body.prompt ?? body.description ?? body.image_prompt ?? '')
     const explicitFlag = portraitFlagged(body)
     const refs = await this.collectImageReferences(body, mode)
     const hasInputImage = refs.length > 0
+    const requestedPortrait = explicitFlag || asRecord(body.creative_brief)?.scene === 'portrait'
+    if (requestedPortrait && requestsPortraitImpersonation(prompt)) {
+      return { blocked: true, result: portraitImpersonationBlockedResult() }
+    }
+    if (requestedPortrait && !hasInputImage) {
+      return { blocked: true, result: portraitReferenceRequiredResult() }
+    }
     // 无真人照片输入(纯文字生成)→ 无"这张人像"可授权,不触发授权闸,直接放行。
     if (!hasInputImage) {
       shared.intent = detectPortraitIntent({ prompt, hasInputImage: false, explicitFlag })
       return { blocked: false }
     }
-    const inspection = await inspectInputImage(this.qcImagesFromRefs(refs), { model: this.qcModel(), signal: ctx.signal })
+    const referenceImages = this.qcImagesFromRefs(refs)
+    shared.primaryReference = referenceImages[0]
+    const inspection = await inspectInputImage(referenceImages, { model: this.qcModel(), signal: ctx.signal })
     shared.inputInspection = inspection
     const intent = detectPortraitIntent({ prompt, hasInputImage: true, inputFaceDetected: inspection.hasFace, explicitFlag })
     shared.intent = intent
@@ -1603,9 +1933,61 @@ export class MediaJobService {
     ctx: TaskRunnerContext,
     result: Record<string, unknown>,
     shared: PortraitShared,
+    body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     if (result.blocked === true) return result
     const extra: Record<string, unknown> = {}
+    const annotateImages = (fields: Record<string, unknown> | ((image: Record<string, unknown>, index: number) => Record<string, unknown>)) => {
+      const source = Array.isArray(extra.images) ? extra.images : Array.isArray(result.images) ? result.images : []
+      extra.images = source.map((item, index) => {
+        const image = asRecord(item) ?? {}
+        return { ...image, ...(typeof fields === 'function' ? fields(image, index) : fields) }
+      })
+    }
+    if (body.creative_brief && typeof body.creative_brief === 'object') {
+      extra.creative_brief = body.creative_brief
+      extra.brief_understanding = asRecord(body.creative_brief)?.understanding
+    }
+    if (body.input_fidelity === 'high' && (stringArrayFrom(body.reference_image_paths).length > 0 || stringArrayFrom(body.reference_generation_ids).length > 0) && !result.input_fidelity_status) {
+      extra.input_fidelity_requested = 'high'
+      extra.input_fidelity_status = 'unknown'
+      extra.input_fidelity_risk = '未能从当前部署端点证明高保真输入已接受，请人工确认参考图一致性。'
+    }
+
+    const isLocalPreview = result.local_preview === true
+    const brief = asRecord(body.creative_brief)
+    if (isLocalPreview && shared.intent?.isPortrait === true) {
+      extra.portrait_qc_status = 'unchecked'
+      extra.portrait_qc_auto_checked = false
+      extra.portrait_qc_warnings = []
+      extra.portrait_qc_message = '未自动质检:当前只是本地预览占位图，不是正式候选。请配置真实生图服务后再人工确认。'
+      extra.portrait_quality_state = 'unchecked'
+      extra.commercial_ready = false
+    }
+    const posterRequested = !isLocalPreview && (brief?.scene === 'poster' || imageIntentFromBody(body, 'generate') === 'poster_text')
+    if (posterRequested) {
+      const images = Array.isArray(result.images) ? result.images.map(item => asRecord(item)).filter((item): item is Record<string, unknown> => !!item) : []
+      const gates = await Promise.all(images.map(async image => {
+        const url = stringFrom(image.poster_url)
+        const path = url ? this.uploadPathForUrl(url) : null
+        return inspectPosterHardGate({
+          path: path ?? undefined,
+          width: numberFrom(image.width, ratioSize(body.ratio).width),
+          height: numberFrom(image.height, ratioSize(body.ratio).height),
+        })
+      }))
+      const warnings = gates.flatMap(gate => gate.warnings)
+      extra.poster_hard_gate_passed = gates.length > 0 && gates.every(gate => gate.passed)
+      extra.poster_quality_state = extra.poster_hard_gate_passed ? 'recommended' : 'risk'
+      if (warnings.length) extra.poster_hard_gate_warnings = warnings
+      annotateImages((_image, index) => ({
+        poster_hard_gate_passed: gates[index]?.passed ?? false,
+        poster_quality_state: gates[index]?.passed ? 'recommended' : 'risk',
+        poster_hard_gate_warnings: gates[index]?.warnings ?? ['未完成海报硬闸。'],
+      }))
+      const recommended = images.find((_image, index) => gates[index]?.passed)
+      if (recommended) extra.recommended_generation_id = recommended.generation_id
+    }
 
     const inputWarnings = shared.inputInspection?.warnings ?? []
     if (inputWarnings.length) {
@@ -1613,7 +1995,6 @@ export class MediaJobService {
       extra.input_qc_warnings = inputWarnings
     }
 
-    const isLocalPreview = result.local_preview === true
     const wantPortraitQc = shared.intent?.isPortrait === true && !isLocalPreview
     const model = this.qcModel()
     const expected = Array.isArray(result.hard_text_expected)
@@ -1625,14 +2006,43 @@ export class MediaJobService {
     if (wantPortraitQc || wantOcr) qcImages = await this.qcImagesFromResult(result)
 
     if (wantPortraitQc) {
-      const inspection = await inspectPortraitResult(qcImages, { model, signal: ctx.signal })
+      const inspection = await inspectPortraitResult(qcImages, { model, signal: ctx.signal, reference: shared.primaryReference })
+      const candidateStates = inspection.candidates.map(candidate => candidate.status === 'passed' && candidate.consistencyStatus === 'preserved'
+        ? 'recommended' as const
+        : candidate.status === 'risk' || candidate.consistencyStatus === 'drifted' || candidate.consistencyStatus === 'uncertain'
+          ? 'risk' as const
+          : 'unchecked' as const)
+      const recommendedIndex = candidateStates.findIndex(state => state === 'recommended')
       extra.portrait_consent_confirmed = true
       extra.portrait_qc_status = inspection.status
       extra.portrait_qc_auto_checked = inspection.autoChecked
       extra.portrait_qc_warnings = inspection.warnings
       extra.portrait_qc_message = inspection.message
-      // 商用总闸:授权已确认 + 结果质检自动通过才标可商用;未质检/有风险都不标(R13/3.3)。
-      extra.commercial_ready = inspection.status === 'passed'
+      extra.portrait_consistency_status = inspection.consistencyStatus
+      extra.portrait_quality_state = recommendedIndex >= 0
+        ? 'recommended'
+        : candidateStates.includes('risk') ? 'risk' : 'unchecked'
+      // 推荐只表示未发现明显风险;用户点击“像本人，可以使用”后才进入 user_confirmed。
+      extra.commercial_ready = false
+      extra.portrait_user_confirmed = false
+      annotateImages((_image, index) => ({
+        portrait_qc_status: inspection.candidates[index]?.status ?? 'unchecked',
+        portrait_qc_auto_checked: inspection.autoChecked,
+        portrait_qc_warnings: inspection.candidates[index]?.warnings ?? [],
+        portrait_qc_message: inspection.candidates[index]?.warnings.length
+          ? `自动检查发现风险:${inspection.candidates[index]!.warnings.join(' ')}`
+          : inspection.candidates[index]?.status === 'passed'
+            ? '未发现明显缺陷或人物漂移，仍需用户确认是否像本人。'
+            : '自动检查未完成，请人工比较。',
+        portrait_consistency_status: inspection.candidates[index]?.consistencyStatus ?? 'not_checked',
+        portrait_quality_state: candidateStates[index] ?? 'unchecked',
+        commercial_ready: false,
+        portrait_user_confirmed: false,
+      }))
+      if (recommendedIndex >= 0) {
+        const recommended = (extra.images as Array<Record<string, unknown>>)[recommendedIndex]
+        if (recommended?.generation_id) extra.recommended_generation_id = recommended.generation_id
+      }
     }
 
     if (wantOcr) {
@@ -1716,11 +2126,23 @@ export class MediaJobService {
     const sourceId = stringFrom(body.source_generation_id)
     if (mode === 'edit' && sourceId) await addGeneration(sourceId, 'source')
 
-    for (const id of stringArrayFrom(body.reference_generation_ids).slice(0, 8)) {
-      await addGeneration(id, 'reference')
+    // Persisted workbench versions survive task cleanup and app restarts as
+    // trusted /uploads assets. Treat that source as the edit base alongside
+    // the short-lived generation index.
+    const sourceImagePath = stringFrom(body.source_image_path)
+    if (mode === 'edit' && sourceImagePath) {
+      const ref = await this.resolveImageReference(sourceImagePath, 'source', trusted)
+      if (ref) refs.push(ref)
     }
-    for (const path of stringArrayFrom(body.reference_image_paths).slice(0, 8)) {
-      const ref = await this.resolveImageReference(path, 'reference', trusted)
+
+    const assetRoles = Array.isArray(body.reference_assets)
+      ? body.reference_assets.map(item => asRecord(item)?.role).map(role => typeof role === 'string' ? role : 'reference')
+      : []
+    for (const [index, id] of stringArrayFrom(body.reference_generation_ids).slice(0, 8).entries()) {
+      await addGeneration(id, assetRoles[index] ?? 'reference')
+    }
+    for (const [index, path] of stringArrayFrom(body.reference_image_paths).slice(0, 8).entries()) {
+      const ref = await this.resolveImageReference(path, assetRoles[index] ?? (mode === 'edit' && index === 0 ? 'identity_primary' : 'reference'), trusted)
       if (ref) refs.push(ref)
     }
     return refs.slice(0, 14)
@@ -1733,8 +2155,10 @@ export class MediaJobService {
       if (!parsed || !parsed.contentType.startsWith('image/')) return null
       return { role, url: dataUriFor(parsed.contentType, parsed.bytes), contentType: parsed.contentType, bytes: parsed.bytes, filename: `${role}.png` }
     }
-    if (/^https?:/i.test(value)) return { role, url: value }
-    if (/^(ms|stepfile):\/\//i.test(value)) return { role, url: value }
+    // Reference images may only come from the app's uploads or an explicitly
+    // trusted local path. Do not fetch arbitrary URLs here: portrait inputs
+    // are sensitive and remote URLs would create an SSRF/data-exfiltration path.
+    if (/^(https?|ms|stepfile):/i.test(value)) return null
 
     const abs = this.resolveLocalImagePath(value, trustedPaths)
     if (!abs) return null

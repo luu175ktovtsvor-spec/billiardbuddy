@@ -3,7 +3,7 @@
  * ReAct、权限、工具、事件、transcript 和文件副作用。真模型不进入回归套件。
  */
 import { describe, test } from 'bun:test'
-import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startServer } from '../../src/server/index'
@@ -139,6 +139,45 @@ const CHECKPOINTS: Checkpoint[] = [
     },
   },
   {
+    name: 'video-plan-shared-brief',
+    expectation: 'Agent 调 plan_video 后先分析真实素材，再经共享编译器保存 Brief；工作台用相同输入重编译得到同一份 Brief',
+    async run(ctx) {
+      const source = join(ctx.workspace, 'assistant-daily.mp4')
+      writeFileSync(source, 'backend-e2e-video')
+      const goal = '把真实助教日常剪成自然短片，不添加营销信息'
+      const events = await ctx.session('be2e-video-plan').selectFolder(ctx.workspace).setPermission('bypassPermissions').say(goal, [
+        { toolCalls: [{ id: 'video-plan-1', name: 'plan_video', input: { video_paths: [source], goal, mode: 'ambient' } }] },
+        { text: '视频素材已经开始分析和编排。' },
+      ])
+      const called = events.some(event => event.type === 'tool_call' && JSON.stringify(event.data).includes('plan_video'))
+      const result = events.some(event => event.type === 'tool_result' && JSON.stringify(event.data).includes('video_v2_drafts'))
+      const deadline = Date.now() + 5_000
+      let project: { project_id: string; revision: number; creative_brief?: Record<string, unknown>; alternatives?: unknown[] } | undefined
+      while (Date.now() < deadline) {
+        const response = await fetch(`${ctx.base}/api/v1/video-edit/projects`)
+        const body = await response.json() as { projects: Array<typeof project> }
+        project = body.projects[0]
+        if (project?.creative_brief && project.alternatives?.length === 3) break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      const agentBrief = project?.creative_brief
+      let sameBrief = false
+      if (project && agentBrief) {
+        const response = await fetch(`${ctx.base}/api/v1/video-edit/projects/${encodeURIComponent(project.project_id)}/brief/compile`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ base_revision: project.revision, user_request: goal, preferred_view: 'ambient', ratio: '9:16' }),
+        })
+        const body = await response.json() as { brief?: Record<string, unknown> }
+        sameBrief = response.ok && JSON.stringify(body.brief) === JSON.stringify(agentBrief)
+      }
+      const inferredType = agentBrief?.content_type === 'assistant_daily'
+      const noInjectedFacts = Array.isArray(agentBrief?.exact_copy) && agentBrief.exact_copy.length === 0
+      const ok = called && result && sameBrief && inferredType && noInjectedFacts
+      return { ok, note: `tool_call=${called} tool_result=${result} Brief同源=${sameBrief} 助教日常推断=${inferredType} 未注入文案=${noInjectedFacts}` }
+    },
+  },
+  {
     // 前端等价 e2e(不起壳子):把"多窗口/选目录/挂件/权限档/大白话输入/点审批卡"全等价成后端请求参数+approve消息。
     // 使用隔离临时目录模拟两个项目窗口，默认运行不读写 owner 的真实桌面。
     name: 'frontend-like-multi-session',
@@ -189,13 +228,19 @@ const CHECKPOINTS: Checkpoint[] = [
 async function runCheckpoint(cp: Checkpoint): Promise<void> {
     const transcriptRoot = mkdtempSync(join(tmpdir(), 'be2e-tr-'))
     const workspace = mkdtempSync(join(tmpdir(), 'be2e-ws-'))
+    const ffmpeg = join(workspace, 'ffmpeg.sh')
+    const ffprobe = join(workspace, 'ffprobe.sh')
+    writeFileSync(ffmpeg, '#!/bin/sh\nexit 0\n')
+    writeFileSync(ffprobe, '#!/bin/sh\nprintf %s \'{"format":{"duration":"3"},"streams":[{"codec_type":"video","width":320,"height":180,"avg_frame_rate":"24/1","r_frame_rate":"24/1"}]}\'\n')
+    chmodSync(ffmpeg, 0o755)
+    chmodSync(ffprobe, 0o755)
     const scripted = makeScriptedFetch(cp.model ?? [{ text: 'ok' }])
     const server = startServer({
       port: 0,
       transcriptRoot,
       mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
       fetchImpl: scripted,
-      env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' },
+      env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5', FFMPEG_BIN: ffmpeg, FFPROBE_BIN: ffprobe, WHISPER_CLI: '/missing' },
     })
     try {
       const base = `http://127.0.0.1:${server.port}`

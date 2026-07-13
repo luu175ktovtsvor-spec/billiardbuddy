@@ -3332,7 +3332,6 @@
 - 对照源:`~/Desktop/cc-haha-ref/src/tools/BashTool/pathValidation.ts` 的 output redirection 检查:CC 对重定向目标中的 shell expansion syntax 要求审批,因为 `$VAR`/`%VAR%`/glob 等目标无法稳定验证最终落点。
 - TS 已有 `shellOutputRedirectionNeedsApproval()` 与 `redirectionTargetNeedsApproval()` 主逻辑,本轮补回归测试锁住文字目标与展开目标的差异:`note.txt`、`"space name.txt"` 保持不审批;`"$HOME/out.txt"`、`'$HOME/out.txt'`、`${HOME}/out.txt`、`%TEMP%/out.txt`、`out*.txt` 都必须进入审批。
 - 这与 process substitution 门一起覆盖 CC Bash path validation 的两条关键旁路:写入目标不可解析时要问用户,不能让模型在 `acceptEdits/auto_files` 下静默写到工作区外或特殊路径。
-- Python 退役节奏同步写入 `docs/当前目标与文档口径-2026-07-07.md`:旧 Python 不是先删后补,而是按 dataeye receiver/board 的模式逐块接管、切入口、补测试、再删并提交;仍在真实链路里的 FastAPI 主后端、媒体重链路、OCR/语音/RAG/打包入口放到接管后或最后退。
 
 ## 3.397 2026-07-09 CC grep/rg newline pattern guard
 
@@ -3382,7 +3381,7 @@
 
 - 代码变更:`ts/src/permissions/filePathRules.ts`, `ts/src/tools/runCommandTool.ts`, `ts/src/tools/fileWriteTool.ts`, `ts/src/tools/fileEditTool.ts`, `ts/src/tools/notebookEditTool.ts`, `ts/src/tools/spreadsheetTool.ts`, `ts/src/tools/fileTools.test.ts`, `ts/src/tools/runCommandTool.test.ts`, `CLAUDE.md`。
 - 行为边界:额外目录授予后,`read_file/write_file/edit_file` 可访问该目录;撤销后恢复越界拒绝。`run_command.cwd` 可设为已授予目录,未授予时 preview 显示 cwd 无效并回到工作区。授权目录内 symlink 指向外部时仍拒绝,授权目录本身是 symlink 时可按真实目录访问。
-- 残留扫描:`rg -n "BUNDLED_VIDEO_LABEL|VIDEO_BASE_URL|VIDEO_MODEL_NAME|Seedance|seedance|generate_video|studioI2v|/studio/i2v|i2v|t2v|图生视频|文生视频|让这张图动起来|用这张图生成视频|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" desktop gateway server web ts/src CLAUDE.md docs/当前目标与文档口径-2026-07-07.md docs/plans ...` 只剩阶段目标、迁移矩阵、删除说明和历史归档;本地 ignored `desktop/bundled.env` 已移除 Seedance/`VIDEO_*` 配置,仅保留真实素材剪辑 VLM/导演网关。
+- 残留扫描:`rg -n "BUNDLED_VIDEO_LABEL|VIDEO_BASE_URL|VIDEO_MODEL_NAME|Seedance|seedance|generate_video|studioI2v|/studio/i2v|i2v|t2v|图生视频|文生视频|让这张图动起来|用这张图生成视频|doubao-seedance|contents/generations/tasks|GW_Q_VIDEO|GW_VIDEO" gateway ts/src CLAUDE.md docs/当前架构与状态-总览.md docs/plans ...` 只保留真实素材剪辑相关入口。
 - 验证:`cd ts && bun test src/tools/fileTools.test.ts src/tools/runCommandTool.test.ts src/permissions/permissionUpdate.test.ts src/permissions/resolve.test.ts --timeout 120000` = 137 pass;`cd ts && bun run typecheck` 通过。
 - 未跑:`cd web && pnpm exec tsc --noEmit` 未跑,本轮未改 Web 源码;Python/server/gateway 测试未跑,本轮不触碰这些运行链路;真机/UI E2E 未跑,需要等权限审批卡/设置页继续接线后再补。
 
@@ -3530,7 +3529,7 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 
 **D. 媒体能力规格文档(§17.8/§17.9,阶段目标要的是"研判"和"流程/标准/边界"文档,非付费实现)**
 - **§17.8 video-use 剪辑编排适配研判** → `plans/video-use-剪辑编排适配研判-2026-07-09.md`:逐条真读 `videoEditProjects.ts`/`mediaJobs.ts`/`server` 视频路由后判定——已吸收(时间线文档为唯一真相源 + 原子操作 + 回滚 `applyOperations`、渲染前校验 `validateDoc`、输出集中项目目录、字幕烧录降级、响度归一 loudnorm、异步 job 化);列入后续(padding/fade 参数化、render 后成品自检——不依赖大模型可排期);暂不吸收(老 AI 导演/VLM/模板特效不恢复)。确认全部 video-use 方法不碰红线(纯真实素材+转写驱动,不生成视频)。
-- **§17.9 生图/人像优化流程质量标准与风险边界** → `plans/生图人像优化-流程质量标准与风险边界-2026-07-09.md`:门店助教照片优化端到端流程 + 三档(自动/半自动/人工)质量判据 + 风险边界硬闸(授权前置/不把换脸当卖点/生图进 spend 闸/真人结果质检)+ 模型路由策略 + 卡 owner 决策项。发现现状已有能跑的 `routeImageModel`(8 规则国内外通道)+ 双 provider + 失败兜底,缺输入质检/授权闸/结果质检/spend 审批。
+- **§17.9 生图/人像优化** → `../生图-当前能力与设计.md`:海报与照片优化统一进入 CreativeBrief、参考图角色、输入检查、肖像授权、结果检查、用户确认、固定画布、版本与真实导出闭环；旧调研和待选型文档已合并删除。
 
 **E. 诚实缺口(§17.7 真实素材剪辑"保留并增强"的边界修正)**
 - video-use 研判子代理逐行核实发现:剪辑**骨架**(时间线/原子操作/渲染前校验/字幕/响度/异步 job)真实保留且与 video-use 同构,但 **transcript-first 真转写是占位**(`phrases:[]`、`used_vlm:false`),`mediaJobs.ts` 的 `hasBackend` 媒体后端代理路径随 Python server/ 删除后已死、实际总走 TS 本地 ffmpeg 兜底。即"真实转写/智能重写"链路当前是**待重建的死链**。

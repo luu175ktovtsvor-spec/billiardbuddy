@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <!--
       CSP(对齐 cc,收敛到我们的场景):file:// 页面要连本地 sidecar(fetch + ws),
-      故 connect-src 放行 127.0.0.1/localhost 的 http/ws;script/style 保留 unsafe-inline
-      (Vite/启动看门狗需要),img/font 放行 data:。
+      故 connect-src 放行 127.0.0.1/localhost 的 http/ws,media-src 只放行同源、blob
+      和本地 sidecar;script/style 保留 unsafe-inline(Vite/启动看门狗需要),img/font 放行 data:。
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; media-src 'self' blob: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>球房管家</title>

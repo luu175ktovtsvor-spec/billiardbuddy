@@ -1,0 +1,48 @@
+import { expect, test } from 'bun:test'
+import { getBaseUrl, setBaseUrl } from './client'
+import { brandPackApi } from './studio'
+
+test('brand pack API parses legacy GET and persists PATCH fields', async () => {
+  const previousBaseUrl = getBaseUrl()
+  let store: Record<string, unknown> = {
+    id: 'local-store',
+    name: '旧门店',
+    city: '上海',
+    logo_url: null,
+    qrcode_url: null,
+  }
+  let patchMethod = ''
+  const server = Bun.serve({
+    port: 0,
+    fetch: async request => {
+      const url = new URL(request.url)
+      if (url.pathname !== '/api/v1/stores/me') return new Response('not found', { status: 404 })
+      if (request.method === 'PATCH') {
+        patchMethod = request.method
+        store = { ...store, ...await request.json() as Record<string, unknown> }
+      }
+      return Response.json(store)
+    },
+  })
+
+  setBaseUrl(`http://127.0.0.1:${server.port}`)
+  try {
+    const legacy = await brandPackApi.get()
+    expect(legacy.brand_reference_images).toEqual([])
+    expect(legacy.city).toBe('上海')
+
+    const updated = await brandPackApi.update({
+      logo_url: '/uploads/workbench/assets/reference/reference_logo.png',
+      logo_asset_id: 'reference_logo',
+      logo_width: 320,
+      logo_height: 120,
+    })
+    expect(patchMethod).toBe('PATCH')
+    expect(updated.logo_asset_id).toBe('reference_logo')
+    expect(updated.logo_width).toBe(320)
+    expect(updated.city).toBe('上海')
+  } finally {
+    server.stop(true)
+    setBaseUrl(previousBaseUrl)
+  }
+})
