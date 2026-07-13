@@ -1089,7 +1089,7 @@ test('input QC blocks a too-low-resolution portrait input', async () => {
   }
 })
 
-test('authorized portrait passes result QC and is marked commercial-ready', async () => {
+test('authorized portrait passes result QC without claiming commercial readiness', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-portrait-pass-'))
   writeRefImage(root, 'face.png', 1024, 1024)
   try {

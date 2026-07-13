@@ -92,7 +92,7 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1180)
   await expect(desktop.window.getByTestId('image-prompt-input')).toBeVisible()
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
-  await expect(desktop.window.getByRole('tab', { name: '创作' })).toBeHidden()
+  await expect(desktop.window.getByRole('tab', { name: '创作', exact: true })).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-wide-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
 
@@ -105,8 +105,8 @@ test('生图工作台在初始创作态保持任务层级与无横向溢出', as
 
   await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 650))
   await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(720)
-  await expect(desktop.window.getByRole('tab', { name: '创作' })).toBeHidden()
-  await expect(desktop.window.getByTestId('image-workflow-select')).toHaveValue('poster')
+  await expect(desktop.window.getByRole('tab', { name: '创作', exact: true })).toBeHidden()
+  await expect(desktop.window.getByTestId('image-workflow-poster')).toHaveAttribute('aria-selected', 'true')
   await expect(desktop.window.getByTestId('whole-edit-input')).toBeHidden()
   await assertNoPageOverflow()
   await testInfo.attach('workbench-compact-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
@@ -121,6 +121,7 @@ test('生图工作台可以取消正在生成的任务，并重试一次性失�
 
   const prompt = desktop.window.getByTestId('image-prompt-input')
   const generate = desktop.window.getByTestId('image-generate-button')
+  await desktop.window.getByTestId('image-output-settings').getByText('输出设置').click()
   await desktop.window.getByTestId('image-ratio-select').selectOption('2:5')
   await prompt.fill('做一张周末畅打活动海报')
   await generate.click()
@@ -146,10 +147,8 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   await input.fill('/生图工作台')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
-  await expect(desktop.window.getByTestId('sidebar')).toBeHidden()
-  await expect(desktop.window.getByTestId('topbar')).toBeHidden()
-  await expect(desktop.window.getByTestId('workspace-drag-strip')).toBeVisible()
-  await expect(desktop.window.getByTestId('workbench-back-chat')).toBeVisible()
+  await expect(desktop.window.getByTestId('sidebar')).toBeVisible()
+  await expect(desktop.window.getByTestId('topbar')).toContainText('生图工作台')
 
   const reference = new PNG({ width: 768, height: 768 })
   for (let i = 0; i < reference.data.length; i += 4) {
@@ -177,7 +176,7 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
     return body.projects.some(project => project.versions.some(version => version.kind === 'text_export'))
   }, { timeout: 15_000 }).toBe(true)
   await desktop.window.getByTestId('open-selected-candidate').click()
-  await expect(desktop.window.getByTestId('workbench-title')).toContainText('新店开业')
+  await expect(desktop.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
 
   const versionCount = async () => desktop.window.getByTestId('version-item').count()
   const versionsBeforeWholeEdit = await versionCount()
@@ -244,17 +243,17 @@ test('生图工作台完成生成挑图局部改字导出并在重启后恢复',
   const restarted = await desktop.restart()
   await restarted.window.getByText('生图工作台').click()
   await expect(restarted.window.getByTestId('creation-page')).toBeVisible()
-  await expect(restarted.window.getByTestId('workbench-title')).toContainText('新店开业')
+  await expect(restarted.window.getByTestId('workbench-title')).toContainText('开业或门店焕新')
   await expect(restarted.window.getByTestId('image-quality-status')).toContainText(/未自动质检|OCR|人像|投放/)
 })
 
-test('助教实拍图生图要求授权、保留参考角色并由用户确认本人', async ({ desktop }) => {
+test('授权随拍照片图生图要求授权、保留参考角色并由用户确认本人', async ({ desktop }, testInfo) => {
   test.setTimeout(60_000)
   const input = desktop.window.getByTestId('chat-input')
   await input.fill('/生图工作台')
   await input.press('Enter')
   await expect(desktop.window.getByTestId('creation-page')).toBeVisible()
-  await desktop.window.getByTestId('image-workflow-select').selectOption('assistant_photo')
+  await desktop.window.getByTestId('image-workflow-photo').click()
 
   const png = new PNG({ width: 768, height: 768 })
   for (let i = 0; i < png.data.length; i += 4) {
@@ -270,8 +269,26 @@ test('助教实拍图生图要求授权、保留参考角色并由用户确认�
   })
   await desktop.window.getByTestId('portrait-authorization').getByRole('checkbox').check()
 
+  const assertNoPageOverflow = async () => {
+    const layout = await desktop.window.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      content: document.documentElement.scrollWidth,
+    }))
+    expect(layout.content).toBeLessThanOrEqual(layout.viewport + 1)
+  }
+  await desktop.window.waitForTimeout(2_300)
+  await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1180, 760))
+  await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1180)
+  await assertNoPageOverflow()
+  await testInfo.attach('photo-edit-wide-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
+  await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 760))
+  await expect.poll(() => desktop.window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(720)
+  await assertNoPageOverflow()
+  await testInfo.attach('photo-edit-compact-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
+  await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1180, 760))
+
   await desktop.window.getByTestId('image-generate-button').click()
-  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('助教实拍照片优化')
+  await expect(desktop.window.getByTestId('brief-understanding')).toContainText('真人照片优化')
   await desktop.window.getByTestId('image-generate-button').click()
   await expect.poll(() => desktop.window.getByTestId('candidate-card').count(), { timeout: 20_000 }).toBe(3)
   await desktop.window.getByTestId('open-selected-candidate').click()

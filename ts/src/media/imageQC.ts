@@ -95,7 +95,7 @@ async function askVlmJson(model: Model, system: string, promptText: string, imag
 const INPUT_QC_SYSTEM = '你是人像照片质检助手。只依据图片内容判断,严格输出 JSON,不要解释。'
 
 const INPUT_QC_PROMPT = [
-  '判断这张(些)照片是否适合作为"真人形象照/人像优化"的输入。严格输出 JSON,形如:',
+  '判断这张(些)照片是否适合作为"授权真人照片优化"的输入。严格输出 JSON,形如:',
   '{"face_count":1,"is_real_person":true,"single_subject":true,"blurry":false,"occluded":false,"low_light":false}',
   '- face_count:能清晰看到的人脸数量(整数)。',
   '- is_real_person:是否真人照片(卡通/插画/明显 AI 生成 = false)。',
@@ -126,7 +126,7 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
 
   if (minShortSide != null) {
     if (minShortSide < PORTRAIT_MIN_SHORT_SIDE) {
-      blockReason = `这张照片分辨率偏低(短边约 ${minShortSide}px),做人像优化容易糊。建议换一张更清晰的正脸照片(短边至少 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px)再试。`
+      blockReason = `这张照片分辨率偏低(短边约 ${minShortSide}px),做照片优化容易糊。建议换一张更清晰的正脸照片(短边至少 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px)再试。`
     } else if (minShortSide < PORTRAIT_RECOMMENDED_SHORT_SIDE) {
       warnings.push(`照片短边约 ${minShortSide}px,略低于建议的 ${PORTRAIT_RECOMMENDED_SHORT_SIDE}px,清晰度可能一般。`)
     }
@@ -147,8 +147,8 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
         isRealPerson = boolOrNull(parsed.is_real_person)
         hasFace = faceCount != null ? faceCount > 0 : isRealPerson
         const singleSubject = boolOrNull(parsed.single_subject)
-        if (isRealPerson === false) warnings.push('这看起来不是真人照片(可能是卡通/AI 图),人像优化更适合清晰的真人正脸照。')
-        if (singleSubject === false || (faceCount != null && faceCount > 1)) warnings.push('照片里不止一个清晰主体,建议用单人正脸照,人像优化效果更稳。')
+        if (isRealPerson === false) warnings.push('这看起来不是真人照片(可能是卡通/AI 图),真人照片优化更适合清晰的本人照片。')
+        if (singleSubject === false || (faceCount != null && faceCount > 1)) warnings.push('照片里不止一个清晰主体,建议使用单人照片,人物保持会更稳定。')
         if (boolOrNull(parsed.blurry) === true) warnings.push('照片偏模糊/失焦,成图清晰度可能受影响。')
         if (boolOrNull(parsed.occluded) === true) warnings.push('脸部有明显遮挡,建议换一张脸部完整的照片。')
         if (boolOrNull(parsed.low_light) === true) warnings.push('光线偏暗或过曝,建议换一张光线均匀的照片。')
@@ -159,7 +159,7 @@ export async function inspectInputImage(images: QcImage[], opts: { model?: Model
   }
 
   if (!blockReason && autoChecked && faceCount === 0) {
-    blockReason = '没有在这张照片里检测到清晰人脸。做人像优化需要一张能看清正脸的真人照片,请换一张再试。'
+    blockReason = '没有在这张照片里检测到清晰人脸。真人照片优化需要一张能看清本人特征的照片,请换一张再试。'
   }
 
   return {
@@ -227,7 +227,7 @@ export async function inspectPortraitResult(images: QcImage[], opts: { model?: M
       if (boolOrNull(r.face_ok) === false) warnings.push(`${tag}脸部疑似异常(五官错乱/糊脸)。`)
       if (boolOrNull(r.limbs_ok) === false) warnings.push(`${tag}肢体疑似异常(多肢/断肢/关节反向)。`)
       const faceCount = numOrNull(r.face_count)
-      if (faceCount != null && faceCount > 1) warnings.push(`${tag}画面出现多张人脸(${faceCount}),可能不符合单人形象照预期。`)
+      if (faceCount != null && faceCount > 1) warnings.push(`${tag}画面出现多张人脸(${faceCount}),可能不符合单人照片编辑目标。`)
       if (boolOrNull(r.over_beautified) === true) warnings.push(`${tag}疑似过度美化,可辨识度可能下降(像换了个人)。`)
       if (boolOrNull(r.realistic) === false) warnings.push(`${tag}真实感不足(偏塑料感/AI 味)。`)
       if (boolOrNull(r.unwanted_text) === true) warnings.push(`${tag}出现未要求的文字/水印。`)

@@ -37,6 +37,9 @@ const TEMPLATE_BY_KEYWORD: Array<[string, PosterBrief['template_id']]> = [
   ['比赛', 'tournament_signup'],
   ['报名', 'tournament_signup'],
   ['助教', 'coach_booking'],
+  ['教练', 'coach_booking'],
+  ['人物', 'coach_booking'],
+  ['服务', 'coach_booking'],
   ['陪练', 'coach_booking'],
   ['节日', 'holiday_moments'],
   ['春节', 'holiday_moments'],
@@ -49,13 +52,13 @@ const TEMPLATE_BY_KEYWORD: Array<[string, PosterBrief['template_id']]> = [
 ]
 
 const TEMPLATE_LABELS: Record<string, string> = {
-  custom_poster: '自由海报',
-  opening_anniversary: '新店开业/首周活动',
-  membership_recharge: '一卡通/器材券',
-  weekend_bundle: '引流体验/团购爆款',
-  tournament_signup: '抢一大战/会员赛',
-  coach_booking: '助教到店/预约',
-  holiday_moments: '门店日常/朋友圈',
+  custom_poster: '自由创作',
+  opening_anniversary: '开业/焕新',
+  membership_recharge: '会员/充值',
+  weekend_bundle: '优惠/团购',
+  tournament_signup: '比赛/活动',
+  coach_booking: '人物/服务',
+  holiday_moments: '日常/社媒',
 }
 
 function clean(value: unknown): string {
@@ -74,9 +77,15 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map(clean).filter(Boolean))]
 }
 
-function inferScene(text: string, explicit?: string, intent?: string): 'poster' | 'portrait' {
+function inferScene(text: string, input: ImageBriefCompileInput): 'poster' | 'portrait' {
+  const explicit = input.scene
+  const intent = input.intent
   if (explicit === 'portrait' || intent === 'portrait') return 'portrait'
-  return /人像|肖像|形象照|助教形象|助教照片|助教实拍|实拍照片|本人|换脸|换服装|换背景/u.test(text) ? 'portrait' : 'poster'
+  const hasIdentityReference = input.referenceAssets?.some(ref => ref.role === 'identity_primary' || ref.role === 'identity_supporting') === true
+  const hasUnclassifiedImage = (input.referenceImagePaths?.length ?? 0) > 0
+  const explicitlyAboutPerson = /人像|肖像|形象照|写真|证件照|人物照|本人|真人照片|助教照片|助教实拍/u.test(text)
+  const photoEditWithReference = (hasIdentityReference || hasUnclassifiedImage) && /照片|随拍|实拍|人物|本人|好看|自然|修饰|换服装|换背景|光线|构图/u.test(text)
+  return explicitlyAboutPerson || photoEditWithReference ? 'portrait' : 'poster'
 }
 
 function inferTemplate(text: string, explicit?: string): PosterBrief['template_id'] {
@@ -222,7 +231,7 @@ export class ImageBriefCompiler {
     const key = JSON.stringify({ ...input, userRequest })
     const cached = this.cache.get(key)
     if (cached) return cached
-    const scene = inferScene(userRequest, input.scene, input.intent)
+    const scene = inferScene(userRequest, input)
     const refs = referencesFrom(input, scene)
     const posterDraft = scene === 'poster' ? posterBrief(userRequest, input) : undefined
     const posterControl = posterDraft ? posterControls(posterDraft, refs, clean(input.brandContext)) : undefined
@@ -231,7 +240,7 @@ export class ImageBriefCompiler {
       : undefined
     const portrait: PortraitBrief | undefined = scene === 'portrait'
       ? {
-          subject_role: '已授权参考人物',
+          subject_role: '用户本人或已授权参考人物',
           change: inferChange(userRequest),
           preserve: ['同一位已授权参考人物的可辨识面部特征', '发型与发色（除非明确要求改变）', '肤色与年龄观感', '体型比例', '人物数量为一人'],
           authorization_confirmed: input.portraitAuthorizationConfirmed === true || input.portraitConsent === true,
@@ -260,7 +269,7 @@ export class ImageBriefCompiler {
       portrait,
       understanding: scene === 'poster'
         ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || userRequest}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
-        : `助教实拍照片优化 / ${portrait!.change.join('、')} / 保留本人特征`,
+        : `真人照片优化 / ${portrait!.change.join('、')} / 保留本人特征`,
     })
     this.cache.set(key, brief)
     return brief
