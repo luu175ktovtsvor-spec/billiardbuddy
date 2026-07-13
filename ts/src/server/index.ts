@@ -1747,7 +1747,7 @@ export function startServer(opts: StartServerOptions = {}) {
     //(与主回合 §1565 三源合并口径不一致;当前领域包工具都未 requiresApproval 故暂不可触发,但结构上是同类分叉,一并收口)。
     if (conversationId) {
       const missingWd = !stringOr(body.working_dir ?? body.workspaceRoot, '')
-      const missingPacks = resolveEnabledPacks(body).length === 0
+      const missingPacks = !['enabled_packs', 'enabledPacks', 'knowledge_packs', 'knowledgePacks'].some(key => body[key] !== undefined)
       if (missingWd || missingPacks) {
         const meta = await sessions.get(conversationId).catch(() => undefined)
         if (meta) {
