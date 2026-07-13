@@ -25,8 +25,9 @@ description: Keep this repository's engineering Skill suite synchronized with cu
 3. 只有路由判据变化时才更新总路由或单项 Skill；不要把临时实现细节塞进 Skill。
 4. 若新增一种稳定且反复使用的工作流，再创建独立 Skill，并同时提供中文 Claude 入口和中文 Codex UI 元数据。
 5. 更新根 `AGENTS.md`、`CLAUDE.md` 仅限持久规则确实变化；避免重复同一正文。
-6. 运行 `bun scripts/quality/validate-skills.ts`，校验所有权威 Skill 的 frontmatter、中文 UI 元数据和 Claude 中文入口。
-7. 报告更新原因、受影响 Skill 和未改变的模块。
+6. 逐项核对 Skill 中引用的项目路径、`bun run` 命令、默认测试覆盖和部署事实；格式校验通过不等于内容仍然正确。
+7. 运行 `bun scripts/quality/validate-skills.ts`，校验权威 Skill 的 frontmatter、中文 UI 元数据、Claude 单一入口、总路由引用、关键工程入口和命令引用。
+8. 报告已更新项、确认仍有效项、未改变模块和仍无法机械判断的语义风险。
 
 ## 实时性的准确含义
 

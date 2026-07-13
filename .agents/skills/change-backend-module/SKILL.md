@@ -18,7 +18,7 @@ description: Implement Bun and TypeScript backend changes inside the owning modu
 
 ## 项目约束
 
-- 不继续向 `ts/src/server/index.ts` 增加可独立成域的大段逻辑；新增能力优先建 `server/modules/<domain>` 路由/应用层。
+- 不继续向 `ts/src/server/index.ts` 增加可独立成域的大段逻辑；HTTP 边界进入 `ts/src/server/routes`，应用编排进入 `ts/src/server/services`，领域逻辑留在对应主责目录。
 - 后端不得依赖 renderer；跨层类型只从 `ts/shared/contracts` 输出，route 在运行时解析不可信输入。
 - Agent 内核以 cc-haha 行为测试为准；产品功能不织进模型循环。
 - 本地状态使用 JSONL/JSON 和原子写入，不引入 SQL。

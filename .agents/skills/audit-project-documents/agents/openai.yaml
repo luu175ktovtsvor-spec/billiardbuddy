@@ -1,0 +1,4 @@
+interface:
+  display_name: "项目文档体检"
+  short_description: "以源码和现行入口审计项目文档的过时、重复、失真与删除风险"
+  default_prompt: "使用 $audit-project-documents 审计项目文档并给出有证据的保留或删除结论。"

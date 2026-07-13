@@ -17,7 +17,8 @@ description: Verify the real Bun sidecar end to end with deterministic scripted 
 
 1. `write_file`：tool_call/final 事件、真实文件副作用和 transcript 记录。
 2. `billiards` 领域包：系统上下文注入和白标输出。
-3. 双会话：不同工作目录、default/bypass 权限、审批前后副作用和会话隔离。
+3. 视频共享 Brief：Agent `plan_video` 与工作台编译器产生同源 Brief，不注入不存在的业务事实。
+4. 双会话：不同工作目录、default/bypass 权限、审批前后副作用和会话隔离。
 
 ## 运行
 
