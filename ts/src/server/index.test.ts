@@ -804,7 +804,7 @@ test('POST /api/v1/agent/execute stores oversized approved command results', asy
   expect(stored).toContain('x'.repeat(20_000))
 })
 
-test('legacy MCP management endpoints write desktop library config', async () => {
+test('server mounts MCP routes with the configured desktop library', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-mcp-config-'))
   const cfgServer = startServer({
     port: 0,

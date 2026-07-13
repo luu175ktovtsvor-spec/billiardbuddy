@@ -100,6 +100,7 @@ import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPat
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createMcpRouteHandler } from './routes/mcpRoutes'
 import { createPluginRouteHandler } from './routes/pluginRoutes'
 import { createProviderRouteHandler } from './routes/providerRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
@@ -2139,6 +2140,14 @@ export function startServer(opts: StartServerOptions = {}) {
     }
   }
 
+  const handleMcpRoute = createMcpRouteHandler({
+    presets: MCP_PRESETS,
+    listStatus: workspaceRoot => listMcpStatus({ workspaceRoot }),
+    trust: mcpTrust,
+    add: body => addMcpServer(body, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+    remove: name => removeMcpServer(name, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+    setDisabled: (name, disabled) => setMcpServerDisabled(name, disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+  })
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handlePluginRoute = createPluginRouteHandler({
@@ -2382,10 +2391,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
       }
 
-      if (url.pathname === '/api/v1/agent/mcp') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await listMcpStatus({ workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined }))
-      }
+      const mcpResponse = await handleMcpRoute(url, req)
+      if (mcpResponse) return mcpResponse
 
       if (url.pathname === '/api/v1/agent/workspace-status') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
@@ -2799,41 +2806,6 @@ export function startServer(opts: StartServerOptions = {}) {
         } catch (err) {
           return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
         }
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/presets') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ presets: MCP_PRESETS })
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/trust') {
-        // 工作区级 .mcp.json 信任闸:GET 查已信任列表;POST {workspaceRoot} 批准;DELETE 撤销。
-        if (req.method === 'GET') return Response.json({ approved_workspace_roots: mcpTrust.list() })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const root = stringOr(body.workspaceRoot ?? body.working_dir, '')
-        if (!root) return jsonError('缺少 workspaceRoot', 400)
-        if (req.method === 'DELETE') { mcpTrust.revoke(root); return Response.json({ ok: true, trusted: false, approved_workspace_roots: mcpTrust.list() }) }
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        mcpTrust.trust(root)
-        return Response.json({ ok: true, trusted: true, approved_workspace_roots: mcpTrust.list() })
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/add') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await addMcpServer(body, defaultWritableMcpConfigPath(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/remove') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await removeMcpServer(body.name, defaultWritableMcpConfigPath(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/toggle') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await setMcpServerDisabled(body.name, body.disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)))
       }
 
       const pluginResponse = await handlePluginRoute(url, req)
