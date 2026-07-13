@@ -1086,6 +1086,24 @@ export async function loadMcpToolsFromFile(filePath: string | undefined, opts: L
   }
 }
 
+/** 合并应用配置和已启用插件的多个 MCP 配置；单个扩展失败只贡献警告，不拖垮整轮。 */
+export async function loadMcpToolsFromFiles(filePaths: Array<string | undefined>, opts: LoadMcpToolsOptions = {}): Promise<LoadedMcpTools> {
+  const results = await Promise.all(filePaths.filter((path): path is string => !!path && existsSync(path)).map(async path => {
+    try {
+      return { configs: await loadMcpConfigFile(path), warning: undefined }
+    } catch (err) {
+      return { configs: [] as McpServerConfig[], warning: `MCP config unavailable: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  }))
+  const configsByName = new Map<string, McpServerConfig>()
+  for (const result of results) {
+    for (const config of result.configs) if (!configsByName.has(config.name)) configsByName.set(config.name, config)
+  }
+  const loaded = await connectMcpServers([...configsByName.values()], opts)
+  loaded.warnings.unshift(...results.flatMap(result => result.warning ? [result.warning] : []))
+  return loaded
+}
+
 export async function closeMcpConnections(connections: McpConnection[]): Promise<void> {
   await Promise.allSettled(connections.map(connection => connection.close()))
 }

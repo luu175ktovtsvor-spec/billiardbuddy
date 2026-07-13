@@ -1,6 +1,5 @@
 // 插件页(照 Codex/ChatGPT「Plugins / Connectors」:主区卡片网格,给管家接能力/外部服务)。
-// 分三块:①内置能力(管家开箱就有的本机能力,恒亮、信息卡)②可挂载领域包(台球运营专家,真实开关)
-// ③MCP 连接器:一键启用预设(Playwright/高德)+ 已装列表 + 添加/删除 —— 全接**真实**后端 /api/v1/agent/mcp*。
+// 内置能力、领域包、已安装插件、MCP 和技能都消费真实后端状态。
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSettingsStore } from '../stores/settingsStore'
 import { Modal } from '../components/shared/Modal'
@@ -10,7 +9,8 @@ import {
 } from '../components/shared/icons'
 import { t } from '../i18n'
 import { toast } from '../stores/toastStore'
-import { mcpApi, addInputFromPreset, type McpPreset, type McpServerStatus, type AddMcpInput, type SkillInfo } from '../api/mcp'
+import { mcpApi, addInputFromPreset, type McpPreset, type McpServerStatus, type AddMcpInput } from '../api/mcp'
+import { extensionApi, pluginApi, type ExtensionSkill, type PluginListItem } from '../api/extensions'
 
 interface Builtin {
   id: string
@@ -53,6 +53,37 @@ function Card({ children }: { children: ReactNode }) {
       {children}
     </div>
   )
+}
+
+function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disabled?: boolean; label: string; onChange: (checked: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors disabled:opacity-50"
+      style={{ background: checked ? 'var(--color-primary)' : 'color-mix(in srgb, var(--color-text-primary) 18%, transparent)' }}
+    >
+      <span
+        className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white transition-all"
+        style={{ left: checked ? 18 : 2, boxShadow: '0 1px 2px rgba(0,0,0,.25)' }}
+      />
+    </button>
+  )
+}
+
+function pluginContributionText(plugin: PluginListItem): string {
+  const entries = [
+    ['技能', plugin.components.skills],
+    ['命令', plugin.components.commands],
+    ['自动化', plugin.components.hooks],
+    ['MCP', plugin.components.mcp],
+    ['输出风格', plugin.components['output-styles']],
+  ].filter((entry): entry is [string, number] => Number(entry[1]) > 0)
+  return entries.length > 0 ? entries.map(([label, count]) => `${label} ${count}`).join(' · ') : '未发现可加载内容'
 }
 
 /** 把表单里的「命令或 URL」拆成后端 add 入参:http/sse 开头当远程 url,否则当本机命令+参数。 */
@@ -112,27 +143,34 @@ export function PluginsPage() {
   const billiardsOn = enabledPacks.includes('billiards')
   const toggleBilliards = () =>
     setEnabledPacks(billiardsOn ? enabledPacks.filter((p) => p !== 'billiards') : [...enabledPacks, 'billiards'])
+  const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
 
   const [servers, setServers] = useState<McpServerStatus[]>([])
   const [presets, setPresets] = useState<McpPreset[]>([])
-  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [skills, setSkills] = useState<ExtensionSkill[]>([])
+  const [plugins, setPlugins] = useState<PluginListItem[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [pluginBusy, setPluginBusy] = useState<string | null>(null)
+  const [pendingPlugin, setPendingPlugin] = useState<PluginListItem | null>(null)
 
   const reload = async () => {
-    try {
-      const [list, pre] = await Promise.all([mcpApi.list(), mcpApi.presets()])
-      setServers(list.servers ?? [])
-      setPresets(pre.presets ?? [])
-    } catch {
-      // 后端未就绪/离线:列表留空,不崩(页面仍展示内置能力+领域包)。
-    }
-    try {
-      const s = await mcpApi.skills()
-      setSkills(s.skills ?? [])
-    } catch { /* 技能列表拿不到不影响页面其余部分 */ }
+    const results = await Promise.allSettled([
+      mcpApi.list(workspaceRoot ?? undefined),
+      mcpApi.presets(),
+      extensionApi.skills(),
+      pluginApi.list(),
+    ])
+    if (results[0].status === 'fulfilled') setServers(results[0].value.servers)
+    if (results[1].status === 'fulfilled') setPresets(results[1].value.presets)
+    if (results[2].status === 'fulfilled') setSkills(results[2].value)
+    if (results[3].status === 'fulfilled') setPlugins(results[3].value)
+    setLoadFailed(results.some(result => result.status === 'rejected'))
+    setLoaded(true)
   }
-  useEffect(() => { void reload() }, [])
+  useEffect(() => { void reload() }, [workspaceRoot])
 
   const installedNames = new Set(servers.map((s) => s.name))
 
@@ -162,6 +200,30 @@ export function PluginsPage() {
       toast(r.message || (r.ok ? '已删除' : '删除失败'))
       if (r.ok) await reload()
     } catch { toast('删除失败') } finally { setBusy(false) }
+  }
+
+  const toggleServer = async (server: McpServerStatus, enabled: boolean) => {
+    setBusy(true)
+    try {
+      const result = await mcpApi.toggle(server.name, !enabled)
+      toast(result.message || (result.ok ? (enabled ? '已启用' : '已停用') : '操作失败'))
+      if (result.ok) await reload()
+    } catch { toast('操作失败') } finally { setBusy(false) }
+  }
+
+  const updatePlugin = async (plugin: PluginListItem, enabled: boolean) => {
+    setPendingPlugin(null)
+    setPluginBusy(plugin.name)
+    try {
+      const result = await pluginApi.toggle(plugin.name, enabled)
+      toast(result.message || (result.ok ? (enabled ? '已启用' : '已停用') : '操作失败'))
+      if (result.ok) await reload()
+    } catch { toast('插件状态更新失败') } finally { setPluginBusy(null) }
+  }
+
+  const requestPluginToggle = (plugin: PluginListItem, enabled: boolean) => {
+    if (enabled) setPendingPlugin(plugin)
+    else void updatePlugin(plugin, false)
   }
 
   return (
@@ -227,7 +289,43 @@ export function PluginsPage() {
           </Card>
         </div>
 
-        {/* ③ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
+        {/* ③ 已安装插件 */}
+        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+          已安装插件{plugins.length > 0 ? ` · ${plugins.length} 个` : ''}
+        </h2>
+        {plugins.length > 0 ? (
+          <div className="mb-8 grid grid-cols-2 gap-3">
+            {plugins.map((plugin) => (
+              <Card key={plugin.name}>
+                <div className="flex items-center gap-3">
+                  <IconTile muted={!plugin.enabled}><IconPuzzle size={18} /></IconTile>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{plugin.name}</div>
+                  </div>
+                  <Toggle
+                    checked={plugin.enabled}
+                    disabled={pluginBusy === plugin.name}
+                    label={`${plugin.enabled ? '停用' : '启用'}插件 ${plugin.name}`}
+                    onChange={(enabled) => requestPluginToggle(plugin, enabled)}
+                  />
+                </div>
+                <p className="mt-2.5 line-clamp-2 text-[12.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                  {plugin.description || '这个插件没有提供说明。'}
+                </p>
+                <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)', opacity: 0.8 }}>
+                  {pluginContributionText(plugin)}
+                </p>
+              </Card>
+            ))}
+          </div>
+        ) : loaded ? (
+          <p className="mb-8 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有安装插件。</p>
+        ) : null}
+        {loadFailed && (
+          <p className="mb-8 text-[12px]" style={{ color: 'var(--color-danger, #e5484d)' }}>部分扩展状态暂时无法读取。</p>
+        )}
+
+        {/* ④ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
         <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
           MCP 服务
         </h2>
@@ -267,6 +365,12 @@ export function PluginsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{s.name}</div>
                 </div>
+                <Toggle
+                  checked={!s.disabled}
+                  disabled={busy}
+                  label={`${s.disabled ? '启用' : '停用'} MCP 服务 ${s.name}`}
+                  onChange={(enabled) => void toggleServer(s, enabled)}
+                />
                 <button
                   type="button"
                   aria-label={t('plugins.remove')}
@@ -295,7 +399,7 @@ export function PluginsPage() {
           </button>
         </div>
 
-        {/* ④ 技能(管家会的招式,对话里斜杠 / 唤起) */}
+        {/* ⑤ 技能(管家会的招式,对话里斜杠 / 唤起) */}
         {skills.length > 0 && (
           <>
             <h2 className="mb-2.5 mt-8 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -319,6 +423,25 @@ export function PluginsPage() {
       </div>
 
       {adding && <AddMcpForm onCancel={() => setAdding(false)} onSave={addConnector} />}
+      {pendingPlugin && (
+        <Modal
+          open
+          onClose={() => setPendingPlugin(null)}
+          title={`启用“${pendingPlugin.name}”？`}
+          maxWidth={480}
+          testId="enable-plugin"
+          footer={
+            <>
+              <SecondaryButton onClick={() => setPendingPlugin(null)}>取消</SecondaryButton>
+              <PrimaryButton onClick={() => void updatePlugin(pendingPlugin, true)}>确认启用</PrimaryButton>
+            </>
+          }
+        >
+          <p className="px-5 py-4 text-[13px] leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+            启用后，这个插件提供的技能、命令、自动化规则和外部服务会进入后续对话。只启用你信任的来源。
+          </p>
+        </Modal>
+      )}
     </div>
   )
 }

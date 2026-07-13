@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures'
 import { PNG } from 'pngjs'
 import * as QRCode from 'qrcode'
-import { copyFileSync, readdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 test.describe('首次启动', () => {
@@ -75,6 +75,57 @@ test('最小窗口尺寸下输入区仍可用且页面不横向溢出', async ({
   const inputBox = await desktop.window.getByTestId('chat-input').boundingBox()
   expect(inputBox).not.toBeNull()
   expect((inputBox?.x ?? 0) + (inputBox?.width ?? 0)).toBeLessThanOrEqual(layout.viewport + 1)
+})
+
+test('插件页通过显式确认启用插件并可启停 MCP 服务', async ({ desktop }, testInfo) => {
+  const libraryRoot = path.join(path.dirname(desktop.stateRoot), 'library')
+  const pluginDir = path.join(libraryRoot, 'plugins', 'e2e-plugin')
+  mkdirSync(path.join(pluginDir, 'skills', 'e2e-skill'), { recursive: true })
+  mkdirSync(path.join(pluginDir, 'commands'), { recursive: true })
+  mkdirSync(path.join(pluginDir, 'hooks'), { recursive: true })
+  writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'E2E 插件', description: '桌面扩展闭环测试' }))
+  writeFileSync(path.join(pluginDir, 'skills', 'e2e-skill', 'SKILL.md'), '---\nname: e2e-skill\ndescription: E2E plugin skill\n---\nE2E skill body.\n')
+  writeFileSync(path.join(pluginDir, 'commands', 'e2e-command.md'), '---\ndescription: E2E plugin command\n---\nE2E command body.\n')
+  writeFileSync(path.join(pluginDir, 'hooks', 'hooks.json'), JSON.stringify({ hooks: {} }))
+  writeFileSync(path.join(pluginDir, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
+
+  const mcpServer = path.join(libraryRoot, 'e2e-mcp-server.ts')
+  writeFileSync(mcpServer, `
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+const server = new McpServer({ name: 'desktopfixture', version: '1.0.0' })
+server.registerTool('ping', { description: 'Ping', inputSchema: {} }, async () => ({ content: [{ type: 'text', text: 'pong' }] }))
+await server.connect(new StdioServerTransport())
+`)
+  writeFileSync(path.join(libraryRoot, '.mcp.json'), JSON.stringify({
+    mcpServers: { desktopfixture: { command: process.execPath, args: [mcpServer], disabled: true } },
+  }))
+
+  await desktop.window.getByRole('button', { name: '插件', exact: true }).click()
+  await expect(desktop.window.getByTestId('plugins-page')).toBeVisible()
+  const pluginSwitch = desktop.window.getByRole('switch', { name: '启用插件 E2E 插件', exact: true })
+  await expect(pluginSwitch).toHaveAttribute('aria-checked', 'false')
+  await pluginSwitch.click()
+  await expect(desktop.window.getByTestId('enable-plugin')).toContainText('只启用你信任的来源')
+  await desktop.window.getByRole('button', { name: '确认启用', exact: true }).click()
+  await expect(desktop.window.getByRole('switch', { name: '停用插件 E2E 插件', exact: true })).toHaveAttribute('aria-checked', 'true')
+
+  await expect.poll(async () => {
+    const result = await desktop.api<{ commands: Array<{ name: string; source: string; layer?: string }> }>('/api/v1/agent/commands')
+    return result.commands.some(command => command.name === 'e2e-skill' && command.source === 'plugin' && command.layer === 'plugin')
+      && result.commands.some(command => command.name === 'e2e-command' && command.source === 'plugin')
+  }).toBe(true)
+  const listed = await desktop.api<{ plugins: Array<Record<string, unknown>> }>('/api/v1/agent/plugins')
+  expect(listed.plugins[0]).not.toHaveProperty('dir')
+
+  const mcpSwitch = desktop.window.getByRole('switch', { name: '启用 MCP 服务 desktopfixture', exact: true })
+  await expect(mcpSwitch).toHaveAttribute('aria-checked', 'false')
+  await mcpSwitch.click()
+  await expect(desktop.window.getByRole('switch', { name: '停用 MCP 服务 desktopfixture', exact: true })).toHaveAttribute('aria-checked', 'true')
+
+  await desktop.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(720, 480))
+  await expect.poll(() => desktop.window.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true)
+  await testInfo.attach('plugins-compact-layout', { body: await desktop.window.screenshot(), contentType: 'image/png' })
 })
 
 test('生成图片页面在初始状态保持任务层级与无横向溢出', async ({ desktop }, testInfo) => {

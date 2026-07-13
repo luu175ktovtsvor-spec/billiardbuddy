@@ -22,7 +22,7 @@ export const DEFAULT_CHAR_BUDGET = 8_000 // 回退:200k tokens × 4 字符/token
 export const MAX_LISTING_DESC_CHARS = 250 // 每条描述硬上限(对齐 cc);发现只为路由,展开靠工具读全文
 const MIN_DESC_LENGTH = 20
 
-export type DiscoverySource = 'builtin' | 'skill' | 'pack'
+export type DiscoverySource = 'builtin' | 'skill' | 'pack' | 'plugin'
 
 export interface DiscoveryEntry {
   name: string
@@ -67,10 +67,11 @@ export function getCharBudget(contextWindowTokens?: number): number {
   return DEFAULT_CHAR_BUDGET
 }
 
-const SOURCE_RANK: Record<DiscoverySource, number> = { pack: 0, skill: 1, builtin: 2 }
+const SOURCE_RANK: Record<DiscoverySource, number> = { pack: 0, plugin: 1, skill: 2, builtin: 3 }
 
 function commandSource(cmd: PromptCommand): DiscoverySource {
   if (cmd.filePath?.startsWith('domain-pack://')) return 'pack'
+  if (cmd.source === 'plugin') return 'plugin'
   if (cmd.source === 'skills') return 'skill'
   return 'builtin'
 }
@@ -98,7 +99,7 @@ export function collectDiscoveryEntries(opts: { commands?: CommandLibrary; skill
     })
   }
   for (const cmd of opts.commands?.commands ?? []) push(cmd, commandSource(cmd))
-  for (const skill of opts.skills?.skills ?? []) push(skill, 'skill')
+  for (const skill of opts.skills?.skills ?? []) push(skill, skill.source === 'plugin' ? 'plugin' : 'skill')
   // 已激活的条件技能并回清单(碰到命中文件才现身;默认它们被 loadLayeredSkills 排除在 skills 之外)。
   for (const skill of opts.activatedConditionalSkills ?? []) push(skill, 'skill')
   return entries

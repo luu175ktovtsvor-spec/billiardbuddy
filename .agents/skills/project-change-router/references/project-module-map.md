@@ -22,8 +22,8 @@
 | 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
 | 工作区 | `workspace`、`sandbox`、`server/routes/workspaceRoutes.ts`、`server/routes/workspaceFileRoutes.ts`、renderer workspace | 工作区与文件预览 REST、cwd、文件树、Git、终端 |
 | 权限安全 | `permissions`、`sandbox` | 权限档、审批、路径与命令护栏 |
-| 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/routes/extensionDiscoveryRoutes.ts`、`server/routes/pluginRoutes.ts` | 技能/命令/输出风格/领域包发现与展开、插件管理 REST |
-| MCP | `mcp`、`server/routes/mcpRoutes.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载 |
+| 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/extensionRoots.ts`、扩展 routes、`shared/contracts/extensions.ts`、renderer `api/extensions.ts` 与 `PluginsPage.tsx` | 技能/命令/领域包发现与展开、启用插件贡献的统一运行时装配、插件管理 REST 和前端披露 |
+| MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
 | 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
 | Remote Bridge | `tasks/bridge*`、server bridge routes | 远程控制与消息传输 |
 | 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |

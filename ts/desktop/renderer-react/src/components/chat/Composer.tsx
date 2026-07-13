@@ -9,7 +9,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useFilePreviewStore, type TreeEntry } from '../../stores/filePreviewStore'
 import { useComposerStore } from '../../stores/composerStore'
 import { useUiStore } from '../../stores/uiStore'
-import { api } from '../../api/client'
+import { extensionApi, type ExtensionLayer, type ExtensionSource } from '../../api/extensions'
 import type { PermissionMode } from '../../types/chat'
 import {
   IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconArrowUp, IconSpinner, IconSlash, IconAt,
@@ -48,11 +48,10 @@ interface SlashCommand {
   name: string
   desc: string
   /** 后端 DiscoverySource:pack=领域包命令 / skill=技能 / builtin=内置命令;决定图标、分组与作用域标注。 */
-  source?: 'builtin' | 'skill' | 'pack'
-  /** 技能落点层(bundled/user/workspace)→ 右侧「系统/个人/项目」灰字。 */
-  layer?: 'bundled' | 'user' | 'workspace'
+  source?: ExtensionSource
+  /** 技能落点层→右侧「系统/个人/项目/插件」灰字。 */
+  layer?: ExtensionLayer
 }
-interface CommandsResp { commands?: Array<{ name?: string; description?: string; desc?: string; source?: SlashCommand['source']; layer?: SlashCommand['layer'] }> }
 
 /** 轻量下拉:相对容器 + 绝对菜单 + 透明遮罩兜底关闭。 */
 function Popover({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: ReactNode; align?: 'left' | 'right' }) {
@@ -172,20 +171,21 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
 
 /** 技能进「技能」组(对标 Codex slashCommands.skillsGroup),命令(pack/builtin)无组排最前。 */
 function slashGroup(cmd: SlashCommand): string | null {
-  return cmd.source === 'skill' ? '技能' : null
+  return cmd.source === 'skill' || cmd.source === 'plugin' ? '技能' : null
 }
 
-const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '系统', user: '个人', workspace: '项目' }
+const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '系统', user: '个人', workspace: '项目', plugin: '插件' }
 
 /** 右侧灰字作用域(对标 Codex skills.scope.personal/builtIn):技能按落点层标「系统/个人/项目」,领域包命令标「专家」。 */
 function slashBadge(cmd: SlashCommand): string | null {
   if (cmd.source === 'pack') return '专家'
+  if (cmd.source === 'plugin') return '插件'
   if (cmd.source === 'skill') return cmd.layer ? LAYER_LABEL[cmd.layer] : null
   return null
 }
 
 function SlashIcon({ source }: { source?: SlashCommand['source'] }) {
-  const Icon = source === 'pack' ? IconTarget : source === 'skill' ? IconPuzzle : IconSlash
+  const Icon = source === 'pack' ? IconTarget : source === 'skill' || source === 'plugin' ? IconPuzzle : IconSlash
   return <Icon size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
 }
 
@@ -439,7 +439,7 @@ const FALLBACK_COMMANDS: SlashCommand[] = [
 ]
 
 /** 注册序(对标 Codex sortBy(group, title) + 产品语义):无组命令在前(领域包 > 内置),「技能」组殿后,组内按名。 */
-const SOURCE_ORDER: Record<NonNullable<SlashCommand['source']>, number> = { pack: 0, builtin: 1, skill: 2 }
+const SOURCE_ORDER: Record<NonNullable<SlashCommand['source']>, number> = { pack: 0, builtin: 1, plugin: 2, skill: 3 }
 function sortSlashCommands(cmds: SlashCommand[]): SlashCommand[] {
   return [...cmds].sort((a, b) =>
     (slashGroup(a) ?? '').localeCompare(slashGroup(b) ?? '')
@@ -491,19 +491,14 @@ export function Composer() {
   // 拉真实斜杠命令(带会话上下文:工作目录 + 已挂领域包,变化即重拉——漏带会看不到包命令/工作区技能)。失败/空则保留内置兜底。
   useEffect(() => {
     let stale = false
-    const params = new URLSearchParams()
-    if (workspaceRoot) params.set('working_dir', workspaceRoot)
-    if (enabledPacksKey) params.set('enabled_packs', enabledPacksKey)
-    const qs = params.toString()
-    void api
-      .get<CommandsResp>(`/api/v1/agent/commands${qs ? `?${qs}` : ''}`)
-      .then((res) => {
+    void extensionApi
+      .commands({ workspaceRoot, enabledPacks })
+      .then((raw) => {
         if (stale) return
-        const raw = res?.commands ?? []
         const cmds = raw
           .map((c) => ({
-            name: (c.name ?? '').startsWith('/') ? c.name! : `/${c.name ?? ''}`,
-            desc: c.description ?? c.desc ?? '',
+            name: c.name.startsWith('/') ? c.name : `/${c.name}`,
+            desc: c.description,
             source: c.source,
             layer: c.layer,
           }))

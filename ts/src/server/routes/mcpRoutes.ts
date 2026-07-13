@@ -1,6 +1,14 @@
 // MCP 管理 REST 边界：状态、预设、工作区信任和本地配置写入。
 
 import type { McpTrustStore } from '../../mcp/mcpTrust'
+import {
+  extensionMutationResultSchema,
+  mcpAddRequestSchema,
+  mcpListResponseSchema,
+  mcpNameRequestSchema,
+  mcpPresetsResponseSchema,
+  mcpToggleRequestSchema,
+} from '../../../shared/contracts/extensions'
 import { jsonError } from '../middleware/http'
 import { stringOr } from '../requestParams'
 
@@ -32,12 +40,12 @@ export function createMcpRouteHandler(deps: McpRouteDependencies) {
 
     if (url.pathname === '/api/v1/agent/mcp') {
       if (req.method !== 'GET') return methodNotAllowed()
-      return Response.json(await deps.listStatus(url.searchParams.get('workspaceRoot') ?? undefined))
+      return Response.json(mcpListResponseSchema.parse(await deps.listStatus(url.searchParams.get('workspaceRoot') ?? undefined)))
     }
 
     if (url.pathname === '/api/v1/agent/mcp/presets') {
       if (req.method !== 'GET') return methodNotAllowed()
-      return Response.json({ presets: deps.presets })
+      return Response.json(mcpPresetsResponseSchema.parse({ presets: deps.presets }))
     }
 
     if (url.pathname === '/api/v1/agent/mcp/trust') {
@@ -55,9 +63,19 @@ export function createMcpRouteHandler(deps: McpRouteDependencies) {
     }
 
     if (req.method !== 'POST') return methodNotAllowed()
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
-    if (url.pathname === '/api/v1/agent/mcp/add') return Response.json(await deps.add(body))
-    if (url.pathname === '/api/v1/agent/mcp/remove') return Response.json(await deps.remove(body.name))
-    return Response.json(await deps.setDisabled(body.name, body.disabled))
+    const rawBody = await req.json().catch(() => null)
+    if (url.pathname === '/api/v1/agent/mcp/add') {
+      const body = mcpAddRequestSchema.safeParse(rawBody)
+      if (!body.success) return jsonError('MCP 配置格式不正确', 400)
+      return Response.json(extensionMutationResultSchema.parse(await deps.add(body.data)))
+    }
+    if (url.pathname === '/api/v1/agent/mcp/remove') {
+      const body = mcpNameRequestSchema.safeParse(rawBody)
+      if (!body.success) return jsonError('MCP 删除请求格式不正确', 400)
+      return Response.json(extensionMutationResultSchema.parse(await deps.remove(body.data.name)))
+    }
+    const body = mcpToggleRequestSchema.safeParse(rawBody)
+    if (!body.success) return jsonError('MCP 启停请求格式不正确', 400)
+    return Response.json(extensionMutationResultSchema.parse(await deps.setDisabled(body.data.name, body.data.disabled)))
   }
 }

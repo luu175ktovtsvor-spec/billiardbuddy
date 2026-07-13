@@ -7,8 +7,10 @@ import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR } from '../harness/des
 import { MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { bundledSkillsRoot } from '../skills/skillLoader'
 import { createBuiltinCommandLibrary } from '../commands/builtinCommands'
-import { loadCommandsFromRoots, mergeCommandLibraries } from '../commands/commandLoader'
+import { loadCommandsFromRoots, mergeCommandLibraries, type CommandLibrary } from '../commands/commandLoader'
 import { createDomainPackCommandLibrary, registerDomainPackCommandAliases, type DomainPack } from '../packs/domainPacks'
+import { loadLayeredSkills, loadSkillsDir, type SkillLibrary } from '../skills/skillLoader'
+import { defaultPluginRoots, resolveEnabledPluginContributions } from '../plugins/pluginLoader'
 
 /** app 内置技能根(=cc bundled skills):`ts/src/skills/bundled`。旧值指向已删的 server/skills → 写盘/加载全废,已修。 */
 export function defaultSkillsRoot(): string {
@@ -44,6 +46,47 @@ export async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoo
   // 合并会从 commands 数组重建 byName,丢掉领域包别名键;重新挂上让 /台球、/球房、/billiards 都能解析到入口命令。
   registerDomainPackCommandAliases(merged, packs)
   return merged
+}
+
+export interface RuntimeExtensionLibraries {
+  skills: SkillLibrary
+  commands: CommandLibrary
+  pluginMcpConfigPaths: string[]
+  pluginHookConfigPaths: string[]
+}
+
+/** 主回合、审批、预热和发现接口共用的扩展装配，基础/工作区定义优先于同名插件贡献。 */
+export async function loadRuntimeExtensionLibraries(input: {
+  workspaceRoot: string
+  skillsRoot: string
+  commandsRoot: string
+  packs?: DomainPack[]
+  env?: Record<string, string | undefined>
+  userSkillsRoot?: string | null
+  pluginRoots?: string[]
+}): Promise<RuntimeExtensionLibraries> {
+  const env = input.env ?? process.env
+  const pluginContribs = await resolveEnabledPluginContributions(input.pluginRoots ?? defaultPluginRoots(env))
+    .catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [], hookConfigPaths: [] }))
+  const [baseSkills, commands, pluginSkillLibraries, pluginCommandLibraries] = await Promise.all([
+    loadLayeredSkills({ bundledRoot: input.skillsRoot, workspaceRoot: input.workspaceRoot, ...(input.userSkillsRoot !== undefined ? { userRoot: input.userSkillsRoot } : {}) }),
+    loadCommandsForWorkspace(input.workspaceRoot, input.commandsRoot, input.packs ?? [], env),
+    Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir, { source: 'plugin', layer: 'plugin' }).catch(() => null))),
+    Promise.all(pluginContribs.commandsDirs.map(dir => loadCommandsFromRoots([dir]).catch(() => null))),
+  ])
+  const skillByName = new Map(baseSkills.byName)
+  for (const library of pluginSkillLibraries) {
+    for (const skill of library?.skills ?? []) if (!skillByName.has(skill.name)) skillByName.set(skill.name, skill)
+  }
+  for (const library of pluginCommandLibraries) {
+    for (const command of library?.commands ?? []) command.source = 'plugin'
+  }
+  return {
+    skills: { skills: [...skillByName.values()], byName: skillByName },
+    commands: mergeCommandLibraries(...pluginCommandLibraries.filter((library): library is CommandLibrary => library !== null), commands),
+    pluginMcpConfigPaths: pluginContribs.mcpConfigPaths,
+    pluginHookConfigPaths: pluginContribs.hookConfigPaths,
+  }
 }
 
 export function defaultAgentsRoot(): string {
