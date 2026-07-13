@@ -100,6 +100,7 @@ import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPat
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createPluginRouteHandler } from './routes/pluginRoutes'
 import { createProviderRouteHandler } from './routes/providerRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
 import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
@@ -2140,6 +2141,11 @@ export function startServer(opts: StartServerOptions = {}) {
 
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const handlePluginRoute = createPluginRouteHandler({
+    list: () => listPlugins(defaultPluginRoots(opts.env ?? process.env)),
+    setEnabled: (name, enabled) => setPluginEnabled(name, enabled, defaultPluginRoots(opts.env ?? process.env)),
+    installFromGithub: repo => installPluginFromGithub(repo, defaultPluginInstallDir(opts.env ?? process.env)),
+  })
   const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
   const sessionArchive = new SessionArchiveService({
@@ -2830,10 +2836,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json(await setMcpServerDisabled(body.name, body.disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)))
       }
 
-      if (url.pathname === '/api/v1/agent/plugins') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ plugins: await listPlugins(defaultPluginRoots(opts.env ?? process.env)) })
-      }
+      const pluginResponse = await handlePluginRoute(url, req)
+      if (pluginResponse) return pluginResponse
 
       // 文件系统浏览(§7 工作区目录树):列一个目录的直接子项(dirs 优先),只读、隐藏文件跳过、上限 500。
       if (url.pathname === '/api/v1/agent/fs/list' && req.method === 'GET') {
@@ -2947,18 +2951,6 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/permissions/rules' && req.method === 'GET') {
         const workspace = workspaceFromBody(Object.fromEntries(url.searchParams))
         return Response.json({ rules: await loadPermissionRules(workspace.root) })
-      }
-
-      if (url.pathname === '/api/v1/agent/plugins/toggle') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await setPluginEnabled(body.name, body.enabled, defaultPluginRoots(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/plugins/install') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await installPluginFromGithub(body.repo, defaultPluginInstallDir(opts.env ?? process.env)))
       }
 
       if (url.pathname === '/api/v1/agent/execute') {
