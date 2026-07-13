@@ -198,10 +198,10 @@ test('planEdit: broll 五步只吐原子操作、走 applyOperations 落时间�
   expect(res.footage_health?.m1).toBeDefined()
   expect(res.health_summary?.total).toBe(1)
   expect(Array.isArray(res.warnings)).toBe(true)
-  // 落盘的时间线可再读回,含视频片段 + 门店卖点字卡,且区间合法(过了 validateDoc)。
+  // 没有用户提供文字时只落真实视频片段，不再自动补门店卖点字卡。
   const project = await store.getProject('p3')
   expect(project.doc.clips.length).toBeGreaterThanOrEqual(1)
-  expect(project.doc.captions.length).toBeGreaterThan(0)
+  expect(project.doc.captions).toHaveLength(0)
   const clip = project.doc.clips[0]!
   expect(clip.src_out).toBeGreaterThan(clip.src_in)
 })
@@ -397,6 +397,9 @@ test('buildTagMessages: 组多模态 prompt(文字 + 每镜头 image block)', ()
   expect(msgs.length).toBe(1)
   const imgs = msgs[0]!.content.filter(b => b.type === 'image')
   expect(imgs.length).toBe(2)
+  const prompt = JSON.stringify(msgs)
+  expect(prompt).not.toMatch(/台球|球房|门店卖点|营销叙事|PPT/u)
+  expect(prompt).toContain('实际可见证据')
 })
 
 test('parseVlmPlan: 解析 order/tags/captions/drop,补齐漏排、剔除 drop', () => {
@@ -418,16 +421,16 @@ test('faceGuardActive + heuristicPlan: 含人脸走启发式', () => {
   const plan = heuristicPlan(twoShots)
   expect(plan.usedVlm).toBe(false)
   expect(plan.order.length).toBe(2)
-  expect(plan.captions[plan.order[0]!]).toBeTruthy()
+  expect(plan.captions).toEqual({})
 })
 
-test('tagShots: 网关模型返回 JSON → usedVlm=true,应用 VLM 排序', async () => {
+test('tagShots: 网关模型返回 JSON → usedVlm=true,只采用证据标签和排序', async () => {
   const plan = await tagShots(twoShots, {
     model: fakeModel('{"shots":[{"index":0,"tag":"门头","caption":"门头亮眼"},{"index":1,"tag":"台面","caption":"台面干净"}],"order":[1,0],"grade":"warm"}'),
   })
   expect(plan.usedVlm).toBe(true)
   expect(plan.order).toEqual([1, 0])
-  expect(plan.captions[1]).toBe('台面干净')
+  expect(plan.captions).toEqual({})
   expect(plan.grade).toBe('warm')
 })
 

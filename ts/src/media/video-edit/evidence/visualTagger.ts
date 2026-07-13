@@ -1,4 +1,4 @@
-// B-Roll 五步之四:VLM 看懂每镜头(打标签 + 按营销叙事排序)。
+// VLM 只补充镜头 evidence。它不写营销文案、不决定用户目标，也不直接生成时间线。
 //
 // 走网关 VLM(= agent 自己那颗多模态模型),复用 providerConfigFromEnv + 现有模型出口
 // (Anthropic content-block 图片,proxy 自动翻 OpenAI image_url),白标、内置 key、用户零配置。
@@ -31,7 +31,7 @@ export interface BrollPlan {
   order: number[]
   /** index → 标签。 */
   tags: Record<number, string>
-  /** index → 门店卖点字卡。 */
+  /** 兼容旧响应；V2 不消费模型生成字卡。 */
   captions: Record<number, string>
   /** 建议丢弃的镜头 index。 */
   drop: number[]
@@ -46,22 +46,15 @@ export interface TagOptions {
   signal?: AbortSignal
   /** 注入模型(测试用);不给则按 env 构造网关模型。 */
   model?: Model | null
-  /** 门店卖点字卡候选池(离线启发式循环用);不给用通用中性池。 */
+  /** 仅兼容旧调用；没有用户提供文字时保持为空。 */
   captionPool?: string[]
   /** 显式允许把含人脸关键帧发网关(默认 false=保护隐私走离线)。 */
   allowFaces?: boolean
 }
 
-const DEFAULT_CAPTION_POOL = [
-  '灯光通透的球厅环境',
-  '专业台呢台面细节',
-  '约上好友来一局',
-  '安静舒适的打球空间',
-  '干净整洁的器材区',
-  '氛围感拉满的夜场',
-]
+const DEFAULT_CAPTION_POOL: string[] = []
 
-const VLM_SYSTEM = '你是门店短视频剪辑助手。看图给每个镜头打中文标签、排营销叙事顺序、写一句门店卖点字卡。只输出 JSON,不要解释。'
+const VLM_SYSTEM = '你是视频素材证据分析器。只描述画面中实际可见的主体、景别、动作和技术风险，并给出保守的镜头顺序建议。不得补充营销目标、价格、CTA、人物设定、业务知识或画面中不存在的事实。只输出 JSON。'
 
 function clampCaption(text: string, max = 16): string {
   const t = text.replace(/\s+/g, '').trim()
@@ -72,13 +65,12 @@ function clampCaption(text: string, max = 16): string {
 export function buildTagMessages(shots: ShotForTag[]): Message[] {
   const withThumb = shots.filter(s => s.thumbBase64)
   const lines = [
-    `一共 ${withThumb.length} 个门店镜头,按顺序给你缩略图(第 0 张对应 index=${withThumb[0]?.index ?? 0},以此类推)。`,
+    `一共 ${withThumb.length} 个用户视频镜头，按 index 提供缩略图。`,
     '请输出严格 JSON,形如:',
-    '{"shots":[{"index":0,"tag":"台球桌特写","caption":"专业台面细节"}],"order":[0,1,2],"drop":[],"grade":"warm"}',
-    '- tag:台球桌特写/球厅环境/顾客打球/吧台器材/灯光氛围/门头招牌 等。',
-    '- order:按"门头或环境远景开场→台面器材细节→顾客氛围→高光收尾"的营销叙事排镜头 index。',
-    '- caption:每镜头一句 ≤14 字的门店卖点,别用绝对化广告词。',
-    '- drop:跑题/重复/不宜的镜头 index(可空)。grade:warm/cool/neutral(可空)。',
+    '{"shots":[{"index":0,"tag":"室内全景"}],"order":[0,1,2],"drop":[],"grade":"neutral"}',
+    '- tag 只写实际可见证据，例如室内全景、人物交谈、动作近景、物品细节、入口标识；看不清就写不确定。',
+    '- order 只按建立关系、动作完整性、视觉连续性和技术可用性建议，不假设视频用途。',
+    '- drop 只标明显黑帧、失焦、严重抖动或重复镜头。grade 可为 warm/cool/neutral。',
   ]
   const content: ContentBlock[] = [{ type: 'text', text: lines.join('\n') }]
   for (const s of withThumb) {
@@ -120,7 +112,7 @@ export function parseVlmPlan(text: string, validIndices: number[]): Omit<BrollPl
     const idx = typeof s.index === 'number' ? s.index : Number(s.index)
     if (!Number.isFinite(idx) || !valid.has(idx)) continue
     if (typeof s.tag === 'string' && s.tag.trim()) tags[idx] = s.tag.trim().slice(0, 12)
-    if (typeof s.caption === 'string' && s.caption.trim()) captions[idx] = clampCaption(s.caption)
+    void captions
   }
   const drop = Array.isArray(root.drop)
     ? root.drop.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => Number.isFinite(v) && valid.has(v))
@@ -161,8 +153,8 @@ export function heuristicPlan(shots: ShotForTag[], opts: { captionPool?: string[
   const tags: Record<number, string> = {}
   const captions: Record<number, string> = {}
   order.forEach((idx, pos) => {
-    tags[idx] = '门店镜头'
-    captions[idx] = pool[pos % pool.length]!
+    tags[idx] = '未分类镜头'
+    if (pool.length) captions[idx] = clampCaption(pool[pos % pool.length]!)
   })
   return { order, tags, captions, drop: [], grade: null, usedVlm: false, reason: opts.reason ?? '离线启发式(未走网关 VLM)' }
 }
@@ -201,7 +193,7 @@ export async function tagShots(shots: ShotForTag[], opts: TagOptions = {}): Prom
     const text = step.text ?? ''
     const parsed = parseVlmPlan(text, validIndices)
     if (!parsed) return heuristicPlan(shots, { captionPool: opts.captionPool, reason: 'VLM 返回无法解析,退启发式' })
-    // 卖点/标签缺的用启发式补位。
+    // 缺失标签用中性本地证据补位，不补业务文案。
     const fallback = heuristicPlan(shots, { captionPool: opts.captionPool })
     const tags = { ...fallback.tags, ...parsed.tags }
     const captions = { ...fallback.captions, ...parsed.captions }

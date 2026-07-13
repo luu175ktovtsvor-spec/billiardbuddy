@@ -1,14 +1,15 @@
 import { expect, test } from 'bun:test'
 import { Buffer } from 'node:buffer'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MediaJobService } from './mediaJobs'
 import { createMediaTools } from './mediaTools'
 import { TaskService } from '../tasks/taskService'
 import { Workspace } from '../workspace/workspace'
+import { VideoEditingService } from './video-edit/service'
 
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
+async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 5000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await fn()
@@ -161,21 +162,39 @@ test('edit_image tool rejects a missing original image instead of regenerating f
   }
 })
 
-test('plan_video tool 起 video_auto_plan 任务(对话里剪视频的楼梯)', async () => {
+test('plan_video tool compiles the shared brief and starts a v2 draft task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
   try {
+    const source = join(root, 'clip.mp4')
+    const ffmpeg = join(root, 'ffmpeg.sh')
+    const ffprobe = join(root, 'ffprobe.sh')
+    writeFileSync(source, 'video-source')
+    writeFileSync(ffmpeg, '#!/bin/sh\nexit 0\n')
+    writeFileSync(ffprobe, '#!/bin/sh\nprintf %s \'{"format":{"duration":"3"},"streams":[{"codec_type":"video","width":320,"height":180,"avg_frame_rate":"24/1","r_frame_rate":"24/1"}]}\'\n')
+    chmodSync(ffmpeg, 0o755)
+    chmodSync(ffprobe, 0o755)
     const tasks = new TaskService(root)
     const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
-    const tool = createMediaTools(media).find(t => t.name === 'plan_video')
+    const videoEditing = new VideoEditingService({ stateRoot: root, tasks, env: { PATH: '', FFMPEG_BIN: ffmpeg, FFPROBE_BIN: ffprobe, WHISPER_CLI: '/missing' } })
+    const tool = createMediaTools(media, { videoEditing }).find(t => t.name === 'plan_video')
     expect(tool).toBeTruthy()
-    const output = await tool!.execute({ video_paths: ['/abs/clip.mp4'], mode: 'ambient', target_duration_s: 12 }, {
+    expect(tool!.description).not.toContain('门店卖点')
+    expect(tool!.description).not.toContain('PPT 正文')
+    const output = await tool!.execute({ video_paths: [source], goal: '展示真实环境', mode: 'ambient', target_duration_s: 12 }, {
       workspace: new Workspace(root),
       conversationId: 'c-plan',
       permissionMode: 'full',
     })
-    // 走 video_auto_plan(→ planEdit 真五步),不是占位;返回后台任务标记让模型轮询复述方案。
     expect(output).toContain('<media_job_started')
-    expect(output).toContain('kind="video_auto_plan"')
+    expect(output).toContain('kind="video_v2_drafts"')
+    await waitFor(async () => {
+      const task = (await tasks.list({ conversationId: 'c-plan' }))[0]
+      return task?.status === 'completed' ? task : null
+    })
+    const projects = await videoEditing.store.list()
+    expect(projects).toHaveLength(1)
+    expect(projects[0]?.creative_brief?.user_request).toBe('展示真实环境')
+    expect(projects[0]?.creative_brief?.preferred_view).toBe('ambient')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -198,20 +217,25 @@ test('plan_video 缺 video_paths 直接报错、不起任务', async () => {
   }
 })
 
-test('render_video tool 起 video_render 任务(方案确认后出片)', async () => {
+test('render_video tool locks the current v2 revision before rendering', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
   try {
+    const source = join(root, 'clip.mp4')
+    writeFileSync(source, 'video-source')
     const tasks = new TaskService(root)
     const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
-    const tool = createMediaTools(media).find(t => t.name === 'render_video')
+    const videoEditing = new VideoEditingService({ stateRoot: root, tasks, env: { PATH: '', FFMPEG_BIN: '/missing' } })
+    const project = await videoEditing.store.create({ video_paths: [source], goal: 'ambient' })
+    const tool = createMediaTools(media, { videoEditing }).find(t => t.name === 'render_video')
     expect(tool).toBeTruthy()
-    const output = await tool!.execute({ project: 'local_plan_1' }, {
+    const output = await tool!.execute({ project: project.project_id }, {
       workspace: new Workspace(root),
       conversationId: 'c-render',
       permissionMode: 'full',
     })
     expect(output).toContain('<media_job_started')
-    expect(output).toContain('kind="video_render"')
+    expect(output).toContain('kind="video_v2_render"')
+    expect(output).toContain(`revision ${project.revision}`)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
