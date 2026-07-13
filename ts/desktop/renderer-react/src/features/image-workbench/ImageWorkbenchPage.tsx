@@ -131,6 +131,7 @@ export function CreationPage() {
   const textRedoRef = useRef<string[]>([])
   const historyLockRef = useRef(false)
   const autosaveSnapshotRef = useRef('')
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   const currentVersion = useMemo(() => {
     if (!project) return null
@@ -385,6 +386,7 @@ export function CreationPage() {
     upperCanvas.addEventListener('pointercancel', onPointerUp)
 
     return () => {
+      void persistCurrentCanvas().catch(() => undefined)
       upperCanvas.removeEventListener('pointerdown', onPointerDown)
       upperCanvas.removeEventListener('pointermove', onPointerMove)
       upperCanvas.removeEventListener('pointerup', onPointerUp)
@@ -762,10 +764,52 @@ export function CreationPage() {
   }
 
   const refreshProject = async (next: ImageWorkbenchProject) => {
+    projectRef.current = next
     setProject(next)
     setProjects((items) => [next, ...items.filter((item) => item.project_id !== next.project_id)])
     autosaveSnapshotRef.current = JSON.stringify({ revision: next.autosave_revision, canvas: next.canvas })
     setSaveState(next.save_status)
+  }
+
+  const queueCanvasSave = (
+    base: ImageWorkbenchProject,
+    canvas: Pick<ImageWorkbenchProject['canvas'], 'width' | 'height' | 'text_layers' | 'image_layers'>,
+  ): Promise<ImageWorkbenchProject> => {
+    setSaveState('saving')
+    const run = saveQueueRef.current.then(async () => {
+      const live = projectRef.current?.project_id === base.project_id ? projectRef.current : base
+      const next = await workbenchApi.saveCanvas(base.project_id, {
+        current_version_id: live.current_version_id,
+        width: canvas.width,
+        height: canvas.height,
+        text_layers: canvas.text_layers,
+        image_layers: canvas.image_layers,
+        revision: live.autosave_revision,
+      })
+      if (projectRef.current?.project_id === next.project_id) await refreshProject(next)
+      return next
+    })
+    saveQueueRef.current = run.then(() => undefined, () => undefined)
+    void run.catch(() => setSaveState('failed'))
+    return run
+  }
+
+  const persistCurrentCanvas = (): Promise<ImageWorkbenchProject | null> => {
+    const base = projectRef.current
+    const canvas = fabricRef.current
+    if (!base || !canvas) return Promise.resolve(null)
+    return queueCanvasSave(base, {
+      width: base.canvas.width,
+      height: base.canvas.height,
+      text_layers: extractTextLayers(canvas),
+      image_layers: extractImageLayers(canvas),
+    })
+  }
+
+  const switchProject = async (next: ImageWorkbenchProject) => {
+    if (projectRef.current?.project_id === next.project_id) return
+    await persistCurrentCanvas().catch(() => undefined)
+    await refreshProject(next)
   }
 
   const waitForFabricCanvas = async (): Promise<Canvas> => {
@@ -793,35 +837,31 @@ export function CreationPage() {
     if (snapshot === autosaveSnapshotRef.current) return
     setSaveState('saving')
     const timer = window.setTimeout(() => {
-      void workbenchApi.saveCanvas(project.project_id, {
-        current_version_id: project.current_version_id,
+      void queueCanvasSave(project, {
         width: project.canvas.width,
         height: project.canvas.height,
         text_layers: project.canvas.text_layers,
         image_layers: project.canvas.image_layers,
-        revision: project.autosave_revision,
-      }).then(next => {
-        autosaveSnapshotRef.current = JSON.stringify({ revision: next.autosave_revision, canvas: next.canvas })
-        setProject(next)
-        setProjects(items => [next, ...items.filter(item => item.project_id !== next.project_id)])
-        setSaveState('saved')
-      }).catch(() => setSaveState('failed'))
+      })
     }, 800)
     return () => window.clearTimeout(timer)
   }, [project?.project_id, project?.canvas.updated_at])
 
+  useEffect(() => {
+    const flush = () => { void persistCurrentCanvas().catch(() => undefined) }
+    const flushWhenHidden = () => { if (document.visibilityState === 'hidden') flush() }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flushWhenHidden)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+      flush()
+    }
+  }, [])
+
   const saveCanvas = async () => {
-    const canvas = fabricRef.current
-    if (!project || !canvas) return
-    const next = await workbenchApi.saveCanvas(project.project_id, {
-      current_version_id: project.current_version_id,
-      width: project.canvas.width,
-      height: project.canvas.height,
-      text_layers: extractTextLayers(canvas),
-      image_layers: extractImageLayers(canvas),
-      revision: project.autosave_revision,
-    })
-    await refreshProject(next)
+    if (!projectRef.current || !fabricRef.current) return
+    await persistCurrentCanvas()
     toast('项目已保存')
   }
 
@@ -1304,7 +1344,7 @@ export function CreationPage() {
             </div>
             <div className="max-h-[220px] space-y-1 overflow-auto">
               {projects.map((item) => (
-                <button key={item.project_id} type="button" onClick={() => setProject(item)}
+                <button key={item.project_id} type="button" onClick={() => void switchProject(item)}
                   className="block w-full truncate rounded-md px-2 py-1.5 text-left text-[12px]"
                   style={segStyle(project?.project_id === item.project_id)}
                   data-testid="workbench-project-item">
@@ -1576,7 +1616,7 @@ function candidateField(image: StudioImage, key: string): unknown {
 
 function imagePassesCandidateGate(image: StudioImage, intent: ImageIntent): boolean {
   if (intent === 'portrait') {
-    return image.portrait_quality_state === 'recommended' && image.portrait_consistency_status !== 'drifted'
+    return image.portrait_quality_state === 'recommended' && image.portrait_consistency_status === 'preserved'
   }
   return candidateField(image, 'poster_hard_gate_passed') === true
 }

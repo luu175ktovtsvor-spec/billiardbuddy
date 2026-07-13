@@ -3252,7 +3252,7 @@ export function startServer(opts: StartServerOptions = {}) {
     if (action === 'brief/compile' && req.method === 'POST') {
       try {
         const body = imageBriefCompileRequestSchema.parse(await req.json().catch(() => ({})))
-        const brief = media.compileBrief(body as Record<string, unknown>)
+        const brief = await media.compileBriefWithModel(body as Record<string, unknown>)
         return Response.json(imageBriefCompileResponseSchema.parse({ brief, understanding: brief.understanding ?? brief.user_request }))
       } catch (err) {
         return jsonDetailError(err instanceof Error ? err.message : String(err), 400)

@@ -13,6 +13,20 @@ function joinParts(parts: Array<string | undefined>): string {
   return parts.map(item => item?.trim()).filter(Boolean).join('；')
 }
 
+function truncateCharacters(value: string, limit: number): string {
+  const chars = Array.from(value.trim())
+  if (chars.length <= limit) return chars.join('')
+  return `${chars.slice(0, Math.max(0, limit - 1)).join('')}…`
+}
+
+function compactSeedreamPrompt(prefixParts: Array<string | undefined>, guardParts: Array<string | undefined>): string {
+  const guards = joinParts(guardParts)
+  const guardLength = Array.from(guards).length
+  const prefixBudget = Math.max(40, 300 - guardLength - (guards ? 1 : 0))
+  const prefix = truncateCharacters(joinParts(prefixParts), prefixBudget)
+  return truncateCharacters(joinParts([prefix, guards]), 300)
+}
+
 function englishChangeItem(value: string): string {
   const text = value.trim()
   if (!text) return ''
@@ -69,23 +83,29 @@ export function compileSeedreamPrompt(brief: ImageCreativeBrief, mode: 'generate
   const direction = brief.visual_direction
   const poster = brief.poster
   const exactCopy = poster?.exact_copy.length ? `业务文字由固定图层排版，不在底图中生成` : undefined
-  return joinParts([
+  const deterministicAssets = poster?.reserved_regions.some(region => region === 'logo' || region === 'qrcode')
+    ? 'Logo、二维码由固定图层叠加，二维码原图保持可扫描，底图不要重绘'
+    : undefined
+  const references = brief.reference_assets.length ? brief.scene === 'portrait'
+    ? '以已上传的已授权实拍照片作为图像条件，保持同一人'
+    : '以已上传参考图作为图像条件，按标注角色使用'
+    : undefined
+  return compactSeedreamPrompt([
     `用途：${seedreamUseLabel(brief.output_use)}`,
-    `主体：${direction.subject}`,
-    direction.action ? `动作：${direction.action}` : undefined,
-    direction.environment ? `环境：${direction.environment}` : undefined,
-    direction.style ? `风格：${direction.style}` : undefined,
-    direction.color ? `色彩：${direction.color}` : undefined,
-    direction.lighting ? `光线：${direction.lighting}` : undefined,
-    direction.composition ? `构图：${direction.composition}` : undefined,
-    mode === 'edit' ? `仅修改：${brief.user_request}` : undefined,
-    brief.reference_assets.length ? brief.scene === 'portrait'
-      ? '以已上传的已授权实拍照片作为图像条件，保留同一人的可辨识特征'
-      : '以已上传参考图作为图像条件，按其指定角色使用'
-      : undefined,
+    direction.subject ? `主体：${truncateCharacters(direction.subject, 110)}` : undefined,
+    direction.action ? `动作：${truncateCharacters(direction.action, 48)}` : undefined,
+    direction.environment ? `环境：${truncateCharacters(direction.environment, 60)}` : undefined,
+    direction.style ? `风格：${truncateCharacters(direction.style, 48)}` : undefined,
+    direction.color ? `色彩：${truncateCharacters(direction.color, 24)}` : undefined,
+    direction.lighting ? `光线：${truncateCharacters(direction.lighting, 36)}` : undefined,
+    direction.composition ? `构图：${truncateCharacters(direction.composition, 72)}` : undefined,
+    mode === 'edit' ? `仅修改：${truncateCharacters(brief.user_request, 100)}` : undefined,
+  ], [
+    references,
     exactCopy,
-    brief.must_avoid.length ? `避免：${brief.must_avoid.join('、')}` : undefined,
-  ]).slice(0, 1200)
+    deterministicAssets,
+    brief.must_avoid.length ? `避免：${truncateCharacters(brief.must_avoid.join('、'), 76)}` : undefined,
+  ])
 }
 
 export function compileGptImagePrompt(brief: ImageCreativeBrief, mode: 'generate' | 'edit' = 'generate'): string {

@@ -34,7 +34,7 @@ import {
   type QcImage,
 } from './imageQC'
 import { imageCreativeBriefSchema, type ImageCreativeBrief, type ImageIntent, type ImageQuality, type ImageWorkbenchReview } from '../../shared/contracts/image-workbench'
-import { compileImageBrief } from './imageBriefCompiler'
+import { compileImageBrief, compileImageBriefWithModel } from './imageBriefCompiler'
 import { compileProviderPrompt } from './imagePromptAdapters'
 import { inspectPosterHardGate } from './posterQuality'
 
@@ -826,6 +826,26 @@ export class MediaJobService {
     })
   }
 
+  async compileBriefWithModel(body: Record<string, unknown>, mode: 'generate' | 'edit' = 'generate', signal?: AbortSignal): Promise<ImageCreativeBrief> {
+    const supplied = imageCreativeBriefSchema.safeParse(body.creative_brief)
+    if (supplied.success) return supplied.data
+    const userRequest = stringFrom(body.user_request) ?? stringFrom(body.prompt) ?? stringFrom(body.description) ?? stringFrom(body.image_prompt)
+    return compileImageBriefWithModel({
+      prompt: userRequest,
+      scene: body.scene === 'portrait' || body.intent === 'portrait' || body.portrait === true ? 'portrait' : body.scene === 'poster' ? 'poster' : undefined,
+      intent: stringFrom(body.intent) ?? (mode === 'edit' ? 'edit_content' : undefined),
+      ratio: stringFrom(body.ratio),
+      quality: imageQualityFromBody(body),
+      posterText: asRecord(body.poster_text) ?? undefined,
+      sceneTemplateId: stringFrom(body.scene_template_id),
+      referenceAssets: Array.isArray(body.reference_assets) ? body.reference_assets as never : undefined,
+      referenceImagePaths: stringArrayFrom(body.reference_image_paths),
+      portraitConsent: body.portrait_consent === true,
+      portraitAuthorizationConfirmed: body.portrait_authorization_confirmed === true,
+      brandContext: this.preparedImageBodies.has(body) ? stringFrom(body._system_brand_context) : undefined,
+    }, this.qcModel(), signal)
+  }
+
   async status(id: string): Promise<MediaJobStatus | null> {
     const task = await this.opts.tasks.get(id)
     return task ? this.statusFromMeta(task) : null
@@ -863,7 +883,7 @@ export class MediaJobService {
 
   async startStudioGenerate(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const prepared = await this.prepareImageBody(body, 'generate')
-    const brief = this.compileBrief(prepared, 'generate')
+    const brief = await this.compileBriefWithModel(prepared, 'generate')
     const compiled = compileProviderPrompt(brief, 'generate')
     const normalized = {
       ...prepared,
@@ -898,7 +918,7 @@ export class MediaJobService {
 
   async startStudioEdit(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const prepared = await this.prepareImageBody(body, 'edit')
-    const brief = this.compileBrief(prepared, 'edit')
+    const brief = await this.compileBriefWithModel(prepared, 'edit')
     const compiled = compileProviderPrompt(brief, 'edit')
     const normalized = {
       ...prepared,
@@ -1987,31 +2007,41 @@ export class MediaJobService {
 
     if (wantPortraitQc) {
       const inspection = await inspectPortraitResult(qcImages, { model, signal: ctx.signal, reference: shared.primaryReference })
+      const candidateStates = inspection.candidates.map(candidate => candidate.status === 'passed' && candidate.consistencyStatus === 'preserved'
+        ? 'recommended' as const
+        : candidate.status === 'risk' || candidate.consistencyStatus === 'drifted' || candidate.consistencyStatus === 'uncertain'
+          ? 'risk' as const
+          : 'unchecked' as const)
+      const recommendedIndex = candidateStates.findIndex(state => state === 'recommended')
       extra.portrait_consent_confirmed = true
       extra.portrait_qc_status = inspection.status
       extra.portrait_qc_auto_checked = inspection.autoChecked
       extra.portrait_qc_warnings = inspection.warnings
       extra.portrait_qc_message = inspection.message
       extra.portrait_consistency_status = inspection.consistencyStatus
-      extra.portrait_quality_state = inspection.status === 'passed' && inspection.consistencyStatus !== 'drifted'
+      extra.portrait_quality_state = recommendedIndex >= 0
         ? 'recommended'
-        : inspection.status === 'risk' ? 'risk' : 'unchecked'
+        : candidateStates.includes('risk') ? 'risk' : 'unchecked'
       // 推荐只表示未发现明显风险;用户点击“像本人，可以使用”后才进入 user_confirmed。
       extra.commercial_ready = false
       extra.portrait_user_confirmed = false
-      annotateImages({
-        portrait_qc_status: inspection.status,
+      annotateImages((_image, index) => ({
+        portrait_qc_status: inspection.candidates[index]?.status ?? 'unchecked',
         portrait_qc_auto_checked: inspection.autoChecked,
-        portrait_qc_warnings: inspection.warnings,
-        portrait_qc_message: inspection.message,
-        portrait_consistency_status: inspection.consistencyStatus,
-        portrait_quality_state: extra.portrait_quality_state,
+        portrait_qc_warnings: inspection.candidates[index]?.warnings ?? [],
+        portrait_qc_message: inspection.candidates[index]?.warnings.length
+          ? `自动检查发现风险:${inspection.candidates[index]!.warnings.join(' ')}`
+          : inspection.candidates[index]?.status === 'passed'
+            ? '未发现明显缺陷或人物漂移，仍需用户确认是否像本人。'
+            : '自动检查未完成，请人工比较。',
+        portrait_consistency_status: inspection.candidates[index]?.consistencyStatus ?? 'not_checked',
+        portrait_quality_state: candidateStates[index] ?? 'unchecked',
         commercial_ready: false,
         portrait_user_confirmed: false,
-      })
-      if (extra.portrait_quality_state === 'recommended') {
-        const first = (extra.images as Array<Record<string, unknown>>)[0]
-        if (first?.generation_id) extra.recommended_generation_id = first.generation_id
+      }))
+      if (recommendedIndex >= 0) {
+        const recommended = (extra.images as Array<Record<string, unknown>>)[recommendedIndex]
+        if (recommended?.generation_id) extra.recommended_generation_id = recommended.generation_id
       }
     }
 
