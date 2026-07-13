@@ -90,7 +90,7 @@ import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
-import { fallbackEventRecord, legacySseLine, sseLine, sseReplayLine, wsError, wsSend } from './sse'
+import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr, taskStatusFrom } from './requestParams'
 import { RAW_MIME_BY_EXT, isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
 import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerPath, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
@@ -101,6 +101,7 @@ import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnsw
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
+import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
 import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
@@ -2198,6 +2199,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const handleSessionActivityRoute = createSessionActivityRouteHandler({ sessions, turns })
   const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const websocket = createAgentWebSocketHandler({
@@ -3438,6 +3440,9 @@ export function startServer(opts: StartServerOptions = {}) {
       const sessionMetadataResponse = await handleSessionMetadataRoute(url, req)
       if (sessionMetadataResponse) return sessionMetadataResponse
 
+      const sessionActivityResponse = await handleSessionActivityRoute(url, req)
+      if (sessionActivityResponse) return sessionActivityResponse
+
       if (url.pathname === '/tasks') {
         if (req.method === 'GET') {
           return Response.json({
@@ -3499,61 +3504,15 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
-      const sessionMatch = url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})(?:\/(interrupt|events|messages|archive))?$/)
-      if (sessionMatch) {
-        const id = sessionMatch[1]!
-        const action = sessionMatch[2]
-        if (!action && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const includeEvents = url.searchParams.get('includeEvents') === '1'
-          const includeMessages = url.searchParams.get('includeMessages') !== '0'
-          return Response.json({
-            session,
-            ...(includeMessages ? { messages: await sessions.loadTranscript(id) } : {}),
-            ...(includeEvents ? { events: await sessions.loadEvents(id, { limit: 100 }) } : {}),
-          })
-        }
-        if (action === 'messages' && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          return Response.json(await sessions.loadTranscriptPage(id, { after, limit }))
-        }
-        if (action === 'events' && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          const events = await sessions.loadEvents(id, { after, limit })
-          if (url.searchParams.get('format') === 'sse') {
-            const body = events.map(record => sseReplayLine(record.seq, record.event)).join('')
-            return new Response(body, {
-              headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-            })
-          }
-          return Response.json({
-            events,
-            nextSeq: events.at(-1)?.seq ?? (Number.isFinite(after) ? Math.max(0, after) : 0),
-          })
-        }
-        if (action === 'interrupt' && req.method === 'POST') {
-          const interrupted = turns.interrupt(id)
-          if (interrupted) {
-            await sessions.touch(id, { status: 'interrupted' })
-            await sessions.appendEvent(id, { type: 'context_note', text: '任务已请求中断' }).catch(() => undefined)
-          }
-          return Response.json({ ok: true, interrupted })
-        }
-        if (action === 'archive' && req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          try {
-            return Response.json(await archiveSession(id, body))
-          } catch (err) {
-            const status = err instanceof TurnSetupError ? err.status : 500
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
-          }
+      const sessionArchiveMatch = url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/archive$/)
+      if (sessionArchiveMatch && req.method === 'POST') {
+        const id = sessionArchiveMatch[1]!
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>
+        try {
+          return Response.json(await archiveSession(id, body))
+        } catch (err) {
+          const status = err instanceof TurnSetupError ? err.status : 500
+          return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
         }
       }
 
