@@ -442,7 +442,7 @@ test('MediaJobService carries portrait input fidelity through the async gateway 
       },
     })
     const started = await service.startStudioGenerate({
-      prompt: '做一张本人助教形象照，换成球房背景',
+      prompt: '把这张已授权随拍照片自然优化，并按本次要求更换背景',
       intent: 'portrait',
       portrait_consent: true,
       portrait_authorization_confirmed: true,
@@ -594,6 +594,36 @@ test('MediaJobService retries transient Seedream image gateway throttling', asyn
 
     expect(calls.filter(url => url.endsWith('/ark/images/generations'))).toHaveLength(2)
     expect(done.result).toMatchObject({ image_engine: '写实生图' })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('MediaJobService redacts provider routes from user-visible job errors', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-image-error-redaction-'))
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      env: {
+        QF_GPT_IMAGE_ASYNC: '0',
+        QF_GATEWAY_URL: 'http://image-gateway.example/gw/v1',
+        QF_GATEWAY_TOKEN: 'app-token',
+        IMAGE_MODEL_NAME: 'doubao-seedream-4-5-251128',
+        SEEDREAM_IMAGE_RETRIES: '0',
+      },
+      fetchImpl: async () => Response.json({ detail: 'e2e transient image failure' }, { status: 502 }),
+    })
+    const started = await service.startStudioGenerate({ prompt: '周末活动海报', ratio: '3:4', count: 1 })
+    const failed = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'error' ? status : null
+    })
+
+    expect(failed.error).toContain('生图通道失败 502')
+    expect(failed.error).not.toContain('/ark/images/generations')
+    expect(failed.error).not.toContain('seedream')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -835,17 +865,61 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
     expect(form).toBeTruthy()
     expect(form.get('model')).toBe('gpt-image-2')
     expect(String(form.get('prompt'))).toContain('Change only:')
-    expect(form.get('input_fidelity')).toBeNull()
+    expect(form.get('input_fidelity')).toBe('high')
     expect(form.getAll('image')).toHaveLength(1)
     expect(done.result).toMatchObject({
       local_preview: false,
       image_engine: '创意生图',
       mode: 'edit',
+      input_fidelity_requested: 'high',
+      input_fidelity_status: 'accepted',
     })
     expect(done.result?.urls).toHaveLength(1)
     const served = service.serveUpload((done.result?.urls as string[])[0]!)
     expect(served?.status).toBe(200)
     expect(served?.headers.get('content-type')).toContain('image/png')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('MediaJobService retries a synchronous GPT image edit without input_fidelity after endpoint rejection', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-direct-image-fidelity-fallback-'))
+  const uploadDir = join(root, 'uploads', 'posters')
+  mkdirSync(uploadDir, { recursive: true })
+  writeFileSync(join(uploadDir, 'source.png'), 'source-bytes')
+  const fidelities: unknown[] = []
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      env: {
+        QF_GPT_IMAGE_ASYNC: '0',
+        OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
+        OPENAI_API_KEY: 'app-token',
+        IMAGE_MODEL_NAME: 'gpt-image-2',
+      },
+      fetchImpl: async (input, init) => {
+        if (!String(input).endsWith('/images/edits')) return Response.json({ detail: 'not found' }, { status: 404 })
+        const form = init?.body as FormData
+        fidelities.push(form.get('input_fidelity'))
+        if (fidelities.length === 1) return Response.json({ error: 'unknown parameter input_fidelity' }, { status: 400 })
+        return Response.json({ data: [{ b64_json: Buffer.from('edited-png').toString('base64') }] })
+      },
+    })
+    const started = await service.startStudioEdit({ prompt: '只调整背景光线', source_generation_id: 'direct-source', count: 1 })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+
+    expect(fidelities).toEqual(['high', null])
+    expect(done.result).toMatchObject({
+      input_fidelity_requested: 'high',
+      input_fidelity_status: 'unsupported',
+      input_fidelity_risk: expect.stringContaining('自动降级'),
+    })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -978,7 +1052,7 @@ test('portrait optimize without consent is blocked and asks for authorization (w
   try {
     const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV })
     const started = await service.startStudioGenerate({
-      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
       image_provider: 'openai',
       reference_image_paths: ['/uploads/local/face.png'],
     })
@@ -1004,7 +1078,7 @@ test('portrait generation requires a real approved reference instead of appearan
   try {
     const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV })
     const started = await service.startStudioGenerate({
-      prompt: '做一张助教形象照，皮肤白皙、短发',
+      prompt: '只根据短发和肤色描述重建一个具体真人',
       intent: 'portrait',
       portrait_consent: true,
       reference_image_paths: ['https://untrusted.example/person.png'],
@@ -1100,7 +1174,7 @@ test('authorized portrait passes result QC without claiming commercial readiness
     })
     const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
     const started = await service.startStudioGenerate({
-      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
       image_provider: 'openai',
       portrait_consent: true,
       reference_image_paths: ['/uploads/local/face.png'],
@@ -1133,7 +1207,7 @@ test('result QC flags corrupted portrait (bad hands) as risk, not commercial-rea
     })
     const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: vlm, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
     const started = await service.startStudioGenerate({
-      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
       image_provider: 'openai',
       portrait_consent: true,
       reference_image_paths: ['/uploads/local/face.png'],
@@ -1158,7 +1232,7 @@ test('gateway VLM unavailable degrades result QC to "unchecked" (never fakes a p
     // qcModel:null => 无网关 VLM;keyword 触发人像意图,已授权放行,结果质检降级。
     const service = new MediaJobService({ tasks: new TaskService(root), stateRoot: root, pollIntervalMs: 1, qcModel: null, env: IMAGE_ENV, fetchImpl: async i => editEndpointReturnsPng(i) })
     const started = await service.startStudioGenerate({
-      prompt: '帮我把这张助教人像形象照优化得更适合门店宣传',
+      prompt: '把这张已授权随拍照片优化得自然好看、无明显 AI 感',
       image_provider: 'openai',
       portrait_consent: true,
       reference_image_paths: ['/uploads/local/face.png'],

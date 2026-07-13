@@ -488,17 +488,15 @@ function sanitizeMediaError(err: unknown): string {
   return scrubProviderIdentifiers(
     (err instanceof Error ? err.message : String(err))
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
+      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
+      .replace(/\/(?:ark\/)?images\/(?:generations|edits|tasks(?:\/[^\s:]+)?)/gi, '生图通道')
+      .replace(/\s+failed\b/gi, '失败'),
   ).slice(0, 500)
 }
 
 function isInputFidelityRejection(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return /input[_ -]?fidelity|high fidelity|unsupported parameter/i.test(message) && /400|4\d\d|unsupported|invalid/i.test(message)
-}
-
-function isFormalGptImage2(model: string): boolean {
-  return /^gpt-image-2(?:$|[-_])/i.test(model.trim())
 }
 
 function clampCount(value: unknown): number {
@@ -842,19 +840,23 @@ export class MediaJobService {
       params: { ...input.body, ...(input.project ? { project: input.project } : {}) },
     })
     this.opts.tasks.start(task.id, async ctx => {
-      if (input.preflight) {
-        const outcome = await input.preflight(ctx)
-        if (outcome.blocked) return outcome.result
+      try {
+        if (input.preflight) {
+          const outcome = await input.preflight(ctx)
+          if (outcome.blocked) return outcome.result
+        }
+        let result: Record<string, unknown>
+        if (this.backendUrl && input.proxyPath) {
+          result = await this.runProxyJob(ctx, input.proxyPath, input.body)
+        } else if (input.fallback) {
+          result = await input.fallback(ctx, task)
+        } else {
+          throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
+        }
+        return input.postprocess ? await input.postprocess(ctx, result) : result
+      } catch (err) {
+        throw new Error(sanitizeMediaError(err))
       }
-      let result: Record<string, unknown>
-      if (this.backendUrl && input.proxyPath) {
-        result = await this.runProxyJob(ctx, input.proxyPath, input.body)
-      } else if (input.fallback) {
-        result = await input.fallback(ctx, task)
-      } else {
-        throw new Error('媒体后端未配置:请设置 MEDIA_BACKEND_URL 或 PYTHON_BACKEND_URL 后再生成。')
-      }
-      return input.postprocess ? await input.postprocess(ctx, result) : result
     })
     return { job_id: task.id, ...(input.project ? { project: input.project } : {}) }
   }
@@ -1272,6 +1274,10 @@ export class MediaJobService {
     const sized = imageSizeForProvider(config.model, body.ratio)
     const hardTextInspection = inspectHardTextRequirement(body, prompt)
     const refs = await this.collectImageReferences(body, mode)
+    const wantsInputFidelity = config.provider === 'openai-compatible'
+      && /^gpt-image/i.test(config.model)
+      && refs.length > 0
+      && (body.input_fidelity === 'high' || mode === 'edit')
     const printLogoPath = this.resolvePrintLogoPath(body)
     const printQrPath = this.resolvePrintQrPath(body)
     const printQrContent = this.resolvePrintQrContent(body)
@@ -1301,13 +1307,7 @@ export class MediaJobService {
       form.set('n', String(count))
       form.set('size', stringFrom(body.size) ?? sized.size)
       form.set('quality', openAiQualityFrom(body.quality))
-      const formalGptImage2 = isFormalGptImage2(config.model)
-      const wantsFidelity = /^gpt-image/i.test(config.model) && !formalGptImage2 && (body.input_fidelity === 'high' || mode === 'edit')
-      if (formalGptImage2 && (body.input_fidelity === 'high' || mode === 'edit')) {
-        body._input_fidelity_status = 'unsupported'
-        body._input_fidelity_risk = '当前正式端点不接受手动高保真参数，已按端点默认图片输入能力处理；请人工确认参考图一致性。'
-      }
-      if (wantsFidelity) form.set('input_fidelity', String(body.input_fidelity ?? 'high'))
+      if (wantsInputFidelity) form.set('input_fidelity', String(body.input_fidelity ?? 'high'))
       for (const ref of refs) {
         if (!ref.bytes) continue
         const file = new File([ref.bytes], ref.filename ?? `${ref.role || 'image'}.png`, { type: ref.contentType ?? 'image/png' })
@@ -1325,9 +1325,9 @@ export class MediaJobService {
           headers: { 'authorization': `Bearer ${config.token}` },
           body: form,
         }), '/images/edits')
-        if (wantsFidelity) body._input_fidelity_status = 'accepted'
+        if (wantsInputFidelity) body._input_fidelity_status = 'accepted'
       } catch (err) {
-        if (!wantsFidelity || !isInputFidelityRejection(err)) throw err
+        if (!wantsInputFidelity || !isInputFidelityRejection(err)) throw err
         body._input_fidelity_status = 'unsupported'
         body._input_fidelity_risk = '当前部署端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。'
         form.delete('input_fidelity')
@@ -1350,7 +1350,7 @@ export class MediaJobService {
         printQrRegenerationWarning: regeneratedPrintQr.warning,
         printQrRegenerationSource: regeneratedPrintQr.source,
         hardTextInspection,
-        inputFidelityRequested: body.input_fidelity === 'high' ? 'high' : undefined,
+        inputFidelityRequested: wantsInputFidelity ? 'high' : undefined,
         inputFidelityStatus: stringFrom(body._input_fidelity_status) as 'accepted' | 'unsupported' | 'unknown' | undefined,
         inputFidelityRisk: stringFrom(body._input_fidelity_risk),
       })
