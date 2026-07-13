@@ -9,7 +9,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useFilePreviewStore, type TreeEntry } from '../../stores/filePreviewStore'
 import { useComposerStore } from '../../stores/composerStore'
 import { useUiStore } from '../../stores/uiStore'
-import { extensionApi, type ExtensionLayer, type ExtensionSource } from '../../api/extensions'
+import { extensionApi, type ExtensionInvocationKind, type ExtensionLayer, type ExtensionSource } from '../../api/extensions'
 import type { PermissionMode } from '../../types/chat'
 import {
   IconPlus, IconShield, IconAlertCircle, IconChevronDown, IconArrowUp, IconSpinner, IconSlash, IconAt,
@@ -47,8 +47,10 @@ const PERM_DESC: Record<PermissionMode, string> = {
 interface SlashCommand {
   name: string
   desc: string
-  /** 后端 DiscoverySource:pack=领域包命令 / skill=技能 / builtin=内置命令;决定图标、分组与作用域标注。 */
+  /** 能力来源；调用类型由 kind 独立决定。 */
   source?: ExtensionSource
+  /** 可调用项类型:Command 是显式入口,Skill 是可复用工作流;Plugin 只表示来源。 */
+  kind?: ExtensionInvocationKind
   /** 技能落点层→右侧「系统/个人/项目/插件」灰字。 */
   layer?: ExtensionLayer
 }
@@ -171,7 +173,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
 
 /** 技能进「技能」组(对标 Codex slashCommands.skillsGroup),命令(pack/builtin)无组排最前。 */
 function slashGroup(cmd: SlashCommand): string | null {
-  return cmd.source === 'skill' || cmd.source === 'plugin' ? '技能' : null
+  return cmd.kind === 'skill' ? '技能' : null
 }
 
 const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '系统', user: '个人', workspace: '项目', plugin: '插件' }
@@ -179,13 +181,13 @@ const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundle
 /** 右侧灰字作用域(对标 Codex skills.scope.personal/builtIn):技能按落点层标「系统/个人/项目」,领域包命令标「专家」。 */
 function slashBadge(cmd: SlashCommand): string | null {
   if (cmd.source === 'pack') return '专家'
+  if (cmd.kind === 'skill') return cmd.layer ? LAYER_LABEL[cmd.layer] : null
   if (cmd.source === 'plugin') return '插件'
-  if (cmd.source === 'skill') return cmd.layer ? LAYER_LABEL[cmd.layer] : null
   return null
 }
 
-function SlashIcon({ source }: { source?: SlashCommand['source'] }) {
-  const Icon = source === 'pack' ? IconTarget : source === 'skill' || source === 'plugin' ? IconPuzzle : IconSlash
+function SlashIcon({ source, kind }: { source?: SlashCommand['source']; kind?: SlashCommand['kind'] }) {
+  const Icon = source === 'pack' ? IconTarget : kind === 'skill' ? IconPuzzle : IconSlash
   return <Icon size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
 }
 
@@ -362,7 +364,7 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
                       className={rowClass}
                       style={rowStyle(active)}
                     >
-                      <SlashIcon source={cmd.source} />
+                      <SlashIcon source={cmd.source} kind={cmd.kind} />
                       <span className={cmd.desc ? 'max-w-[60%] flex-none truncate' : 'min-w-0 flex-1 truncate'}>
                         <HighlightedName name={cmd.name} query={query} />
                       </span>
@@ -432,10 +434,10 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
 }
 
 const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)', source: 'pack' },
-  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家', source: 'pack' },
-  { name: '/帮助', desc: '看看能做什么', source: 'builtin' },
-  { name: '/清空', desc: '清空当前对话', source: 'builtin' },
+  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)', source: 'pack', kind: 'command' },
+  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家', source: 'pack', kind: 'command' },
+  { name: '/帮助', desc: '看看能做什么', source: 'builtin', kind: 'command' },
+  { name: '/清空', desc: '清空当前对话', source: 'builtin', kind: 'command' },
 ]
 
 /** 注册序(对标 Codex sortBy(group, title) + 产品语义):无组命令在前(领域包 > 内置),「技能」组殿后,组内按名。 */
@@ -500,6 +502,7 @@ export function Composer() {
             name: c.name.startsWith('/') ? c.name : `/${c.name}`,
             desc: c.description,
             source: c.source,
+            kind: c.kind,
             layer: c.layer,
           }))
           .filter((c) => c.name.length > 1)
@@ -538,7 +541,7 @@ export function Composer() {
   const atSkills = useMemo(() => {
     if (token !== '@') return [] as SlashCommand[]
     return allCommands
-      .filter((c) => c.source === 'skill' && c.name.slice(1).toLowerCase().includes(atQuery))
+      .filter((c) => c.kind === 'skill' && c.name.slice(1).toLowerCase().includes(atQuery))
       .slice(0, 5)
   }, [token, allCommands, atQuery])
   const atFiles = useMemo(() => {

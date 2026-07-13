@@ -11,8 +11,9 @@ test('extension API parses plugin sources and keeps local plugin paths out of re
       const url = new URL(request.url)
       if (url.pathname === '/api/v1/agent/commands') {
         commandQuery = url.search
-        return Response.json({ commands: [{ name: 'demo', description: 'Demo command', source: 'plugin', layer: 'plugin' }] })
+        return Response.json({ commands: [{ name: 'demo', description: 'Demo command', source: 'plugin', layer: 'plugin', kind: 'skill' }] })
       }
+      if (url.pathname === '/api/v1/agent/skills') return Response.json({ skills: [{ name: 'demo', description: 'Demo skill', source: 'skills', layer: 'workspace', user_invocable: true }] })
       if (url.pathname === '/api/v1/agent/plugins/toggle') return Response.json({ ok: true, message: 'updated' })
       if (url.pathname === '/api/v1/agent/plugins') {
         return Response.json({
@@ -32,9 +33,12 @@ test('extension API parses plugin sources and keeps local plugin paths out of re
   setBaseUrl(`http://127.0.0.1:${server.port}`)
   try {
     const commands = await extensionApi.commands({ workspaceRoot: '/tmp/project', enabledPacks: ['billiards'] })
-    expect(commands[0]).toMatchObject({ name: 'demo', source: 'plugin', layer: 'plugin' })
+    expect(commands[0]).toMatchObject({ name: 'demo', source: 'plugin', layer: 'plugin', kind: 'skill' })
     expect(commandQuery).toContain('working_dir=%2Ftmp%2Fproject')
     expect(commandQuery).toContain('enabled_packs=billiards')
+
+    const skills = await extensionApi.skills({ workspaceRoot: '/tmp/project' })
+    expect(skills[0]).toMatchObject({ name: 'demo', layer: 'workspace' })
 
     const plugins = await pluginApi.list()
     expect(plugins[0]).toMatchObject({ name: 'demo', enabled: false })

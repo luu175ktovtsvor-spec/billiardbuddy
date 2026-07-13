@@ -18,10 +18,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 function skillEntry(name: string, description: string, whenToUse?: string): DiscoveryEntry {
-  return { name, description, whenToUse, source: 'skill', alwaysInclude: true }
+  return { name, description, whenToUse, source: 'skill', kind: 'skill', alwaysInclude: true }
 }
 function builtinEntry(name: string, description: string, whenToUse?: string): DiscoveryEntry {
-  return { name, description, whenToUse, source: 'builtin', alwaysInclude: false }
+  return { name, description, whenToUse, source: 'builtin', kind: 'command', alwaysInclude: false }
 }
 
 function fakeCommand(name: string, description: string, whenToUse: string, filePath: string, source: PromptCommand['source']): PromptCommand {
@@ -187,10 +187,11 @@ test('toPublicCommandEntries: 技能的 skillLayer 透传为 layer(前端「系�
     const skill = await loadSkillFile(join(skillsDir, 'demo', 'SKILL.md'), 'skills')
     skill.skillLayer = 'user'
     const entries = toPublicCommandEntries(collectDiscoveryEntries({ skills: { skills: [skill], byName: new Map([[skill.name, skill]]) } }))
-    expect(entries.find(e => e.name === 'demo')?.layer).toBe('user')
+    expect(entries.find(e => e.name === 'demo')).toMatchObject({ layer: 'user', kind: 'skill' })
     // 无 skillLayer 的条目不带 layer 键(领域包/builtin 命令)
     const packs = resolveEnabledPacks({ enabled_packs: ['台球'] })
     const packEntries = toPublicCommandEntries(collectDiscoveryEntries({ commands: createDomainPackCommandLibrary(packs)! }))
+    expect(packEntries.find(e => e.name === '台球')).toMatchObject({ kind: 'command' })
     expect('layer' in packEntries.find(e => e.name === '台球')!).toBe(false)
   } finally {
     rmSync(skillsDir, { recursive: true, force: true })

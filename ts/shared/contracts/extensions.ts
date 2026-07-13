@@ -5,11 +5,13 @@ const nameSchema = z.string().trim().min(1).max(200)
 
 export const extensionSourceSchema = z.enum(['builtin', 'skill', 'pack', 'plugin'])
 export const extensionLayerSchema = z.enum(['bundled', 'user', 'workspace', 'plugin'])
+export const extensionInvocationKindSchema = z.enum(['command', 'skill'])
 
 export const extensionCommandSchema = z.object({
   name: nameSchema,
   description: z.string().max(2_000),
   source: extensionSourceSchema,
+  kind: extensionInvocationKindSchema,
   layer: extensionLayerSchema.optional(),
   whenToUse: z.string().max(2_000).optional(),
   argHint: shortTextSchema.optional(),
@@ -23,6 +25,8 @@ export const extensionSkillSchema = z.object({
   name: nameSchema,
   description: z.string().max(2_000),
   source: z.enum(['skills', 'plugin']),
+  layer: extensionLayerSchema,
+  when_to_use: z.string().max(2_000).optional(),
   argument_hint: shortTextSchema.optional(),
   user_invocable: z.boolean(),
 })
@@ -121,6 +125,7 @@ export const mcpToggleRequestSchema = z.object({ name: nameSchema, disabled: z.b
 
 export type ExtensionSource = z.infer<typeof extensionSourceSchema>
 export type ExtensionLayer = z.infer<typeof extensionLayerSchema>
+export type ExtensionInvocationKind = z.infer<typeof extensionInvocationKindSchema>
 export type ExtensionCommand = z.infer<typeof extensionCommandSchema>
 export type ExtensionSkill = z.infer<typeof extensionSkillSchema>
 export type PluginListItem = z.infer<typeof pluginListItemSchema>

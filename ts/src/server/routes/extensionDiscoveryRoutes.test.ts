@@ -62,15 +62,26 @@ describe('extension discovery routes', () => {
   })
 
   test('lists skills, output styles, packs and public commands', async () => {
-    const { commandsRoot, skillsRoot, outputStylesRoot, workspaceRoot, handler } = createHarness()
+    const { root, commandsRoot, skillsRoot, outputStylesRoot, handler } = createHarness()
+    const selectedWorkspaceRoot = join(root, 'selected-workspace')
+    mkdirSync(selectedWorkspaceRoot, { recursive: true })
     const skillDir = join(skillsRoot, 'fixture-skill')
     mkdirSync(skillDir, { recursive: true })
     writeFileSync(join(skillDir, 'SKILL.md'), `---
 name: fixture-skill
 description: Fixture skill description
 whenToUse: Use for fixture checks
+argument-hint: <fixture>
 ---
 Fixture instructions.
+`)
+    const workspaceSkillDir = join(selectedWorkspaceRoot, '.billiardbuddy', 'skills', 'workspace-skill')
+    mkdirSync(workspaceSkillDir, { recursive: true })
+    writeFileSync(join(workspaceSkillDir, 'SKILL.md'), `---
+name: workspace-skill
+description: Workspace skill description
+---
+Workspace instructions.
 `)
     writeFileSync(join(commandsRoot, 'review.md'), `---
 description: Review fixture changes
@@ -83,12 +94,19 @@ description: Concise fixture style
 Keep the answer concise.
 `)
 
-    const skills = await (await route(handler, '/api/v1/agent/skills')).json() as any
+    const skills = await (await route(handler, `/api/v1/agent/skills?working_dir=${encodeURIComponent(selectedWorkspaceRoot)}`)).json() as any
     expect(skills.skills).toContainEqual(expect.objectContaining({
       name: 'fixture-skill',
       description: 'Fixture skill description',
-      argument_hint: 'Use for fixture checks',
+      source: 'skills',
+      layer: 'bundled',
+      when_to_use: 'Use for fixture checks',
+      argument_hint: '<fixture>',
       user_invocable: true,
+    }))
+    expect(skills.skills).toContainEqual(expect.objectContaining({
+      name: 'workspace-skill',
+      layer: 'workspace',
     }))
 
     const styles = await (await route(handler, '/api/v1/agent/output-styles')).json() as any
@@ -103,12 +121,13 @@ Keep the answer concise.
 
     const commands = await (await route(
       handler,
-      `/api/v1/agent/commands?working_dir=${encodeURIComponent(workspaceRoot)}&enabledPacks=${encodeURIComponent('台球')}`,
+      `/api/v1/agent/commands?working_dir=${encodeURIComponent(selectedWorkspaceRoot)}&enabledPacks=${encodeURIComponent('台球')}`,
     )).json() as any
     expect(commands.commands).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: '台球', source: 'pack' }),
-      expect.objectContaining({ name: 'fixture-skill', source: 'skill' }),
-      expect.objectContaining({ name: 'review', source: 'builtin' }),
+      expect.objectContaining({ name: '台球', source: 'pack', kind: 'command' }),
+      expect.objectContaining({ name: 'fixture-skill', source: 'skill', kind: 'skill' }),
+      expect.objectContaining({ name: 'workspace-skill', source: 'skill', kind: 'skill', layer: 'workspace' }),
+      expect.objectContaining({ name: 'review', source: 'builtin', kind: 'command' }),
     ]))
   })
 
@@ -132,9 +151,9 @@ Plugin command body.
 
     const body = await (await route(handler, `/api/v1/agent/commands?working_dir=${encodeURIComponent(workspaceRoot)}`)).json() as any
     expect(body.commands).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: '台球', source: 'pack' }),
-      expect.objectContaining({ name: 'plugin-skill', source: 'plugin', layer: 'plugin' }),
-      expect.objectContaining({ name: 'plugin-command', source: 'plugin' }),
+      expect.objectContaining({ name: '台球', source: 'pack', kind: 'command' }),
+      expect.objectContaining({ name: 'plugin-skill', source: 'plugin', layer: 'plugin', kind: 'skill' }),
+      expect.objectContaining({ name: 'plugin-command', source: 'plugin', kind: 'command' }),
     ]))
     expect(body.commands.some((command: any) => command.name === 'billiards:daily-ops')).toBe(false)
   })

@@ -37,8 +37,8 @@ test('斜杠面板使用 sidecar 的真实命令和技能分组', async ({ deskt
   await expect(panel).toContainText('技能')
   await expect(panel).toContainText(/系统|个人|项目/)
 
-  const result = await desktop.api<{ commands: Array<{ source?: string; layer?: string }> }>('/api/v1/agent/commands')
-  expect(result.commands.some(command => command.source === 'skill' && command.layer)).toBe(true)
+  const result = await desktop.api<{ commands: Array<{ source?: string; layer?: string; kind?: string }> }>('/api/v1/agent/commands')
+  expect(result.commands.some(command => command.kind === 'skill' && command.source === 'skill' && command.layer)).toBe(true)
 })
 
 test('斜杠筛选、Esc 重开和 Enter 选择保持键盘语义', async ({ desktop }) => {
@@ -109,11 +109,12 @@ await server.connect(new StdioServerTransport())
   await expect(desktop.window.getByTestId('enable-plugin')).toContainText('只启用你信任的来源')
   await desktop.window.getByRole('button', { name: '确认启用', exact: true }).click()
   await expect(desktop.window.getByRole('switch', { name: '停用插件 E2E 插件', exact: true })).toHaveAttribute('aria-checked', 'true')
+  await expect(desktop.window.getByTestId('plugins-page')).toContainText('/e2e-skill')
 
   await expect.poll(async () => {
-    const result = await desktop.api<{ commands: Array<{ name: string; source: string; layer?: string }> }>('/api/v1/agent/commands')
-    return result.commands.some(command => command.name === 'e2e-skill' && command.source === 'plugin' && command.layer === 'plugin')
-      && result.commands.some(command => command.name === 'e2e-command' && command.source === 'plugin')
+    const result = await desktop.api<{ commands: Array<{ name: string; source: string; layer?: string; kind: string }> }>('/api/v1/agent/commands')
+    return result.commands.some(command => command.name === 'e2e-skill' && command.source === 'plugin' && command.layer === 'plugin' && command.kind === 'skill')
+      && result.commands.some(command => command.name === 'e2e-command' && command.source === 'plugin' && command.kind === 'command')
   }).toBe(true)
   const listed = await desktop.api<{ plugins: Array<Record<string, unknown>> }>('/api/v1/agent/plugins')
   expect(listed.plugins[0]).not.toHaveProperty('dir')
