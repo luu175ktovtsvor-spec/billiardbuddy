@@ -4643,62 +4643,20 @@ test('legacy /api/v1/agent/tasks starts a turn and streams frontend-compatible S
   }
 })
 
-test('/tasks endpoints resolve old background agent ids to the latest resumed descendant', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-task-chain-'))
+test('server mounts modern task routes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-task-route-'))
   const seededTasks = new TaskService(root)
   try {
-    const original = await seededTasks.create({
-      id: 'api_chain_root',
-      title: 'researcher: root',
-      kind: 'background_agent',
-      conversationId: 'api-chain',
-      params: { agent: 'researcher', name: 'api-chain', task: '初始任务' },
-    })
-    await seededTasks.touch(original.id, { status: 'completed', result: '旧结论' })
-    await seededTasks.appendEvent(original.id, { type: 'final', text: '旧结论' })
-    const latest = await seededTasks.create({
-      id: 'api_chain_latest',
-      title: 'researcher: latest',
-      kind: 'background_agent',
-      conversationId: 'api-chain',
-      params: { agent_id: 'api_chain_agent', agent: 'researcher', name: 'api-chain', task: '续跑任务', resumed_from: original.id },
-    })
-    await seededTasks.touch(latest.id, { status: 'completed', result: '最新结论' })
-    await seededTasks.appendEvent(latest.id, { type: 'final', text: '最新结论' })
+    const task = await seededTasks.create({ id: 'task_route_probe', title: 'route probe' })
+    await seededTasks.appendEvent(task.id, { type: 'final', text: 'mounted' })
 
     const taskServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })
     try {
-      const listed = await fetch(`http://127.0.0.1:${taskServer.port}/tasks?conversationId=api-chain`)
-      expect(listed.status).toBe(200)
-      const listedBody = await listed.json() as any
-      expect(listedBody.tasks.map((task: { id: string }) => task.id)).toEqual([latest.id])
-
-      const detail = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${original.id}?includeEvents=1`)
-      expect(detail.status).toBe(200)
-      const detailBody = await detail.json() as any
-      expect(detailBody.requestedTaskId).toBe(original.id)
-      expect(detailBody.resolvedTaskId).toBe(latest.id)
-      expect(detailBody.agentId).toBe('api_chain_agent')
-      expect(detailBody.task.id).toBe(latest.id)
-      expect(JSON.stringify(detailBody.events)).toContain('最新结论')
-      expect(JSON.stringify(detailBody.events)).not.toContain('旧结论')
-
-      const events = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${original.id}/events?after=0`)
+      const events = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${task.id}/events?after=0&limit=1`)
       expect(events.status).toBe(200)
       const eventsBody = await events.json() as any
-      expect(eventsBody.requestedTaskId).toBe(original.id)
-      expect(eventsBody.resolvedTaskId).toBe(latest.id)
-      expect(eventsBody.agentId).toBe('api_chain_agent')
-      expect(JSON.stringify(eventsBody.events)).toContain('最新结论')
-      expect(JSON.stringify(eventsBody.events)).not.toContain('旧结论')
-
-      const byStableAgentId = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/api_chain_agent?includeEvents=1`)
-      expect(byStableAgentId.status).toBe(200)
-      const stableBody = await byStableAgentId.json() as any
-      expect(stableBody.requestedTaskId).toBe('api_chain_agent')
-      expect(stableBody.resolvedTaskId).toBe(latest.id)
-      expect(stableBody.agentId).toBe('api_chain_agent')
-      expect(JSON.stringify(stableBody.events)).toContain('最新结论')
+      expect(eventsBody).toMatchObject({ nextSeq: 1 })
+      expect(eventsBody.events[0].event).toEqual({ type: 'final', text: 'mounted' })
     } finally {
       taskServer.stop(true)
     }

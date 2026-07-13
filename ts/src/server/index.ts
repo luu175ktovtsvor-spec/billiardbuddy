@@ -41,7 +41,7 @@ import { buildForkRunContext } from '../agents/forkSubagent'
 import { closeMcpConnections, defaultElicitationHandler, loadMcpToolsFromFile, type McpElicitationHandler, type McpElicitationHandlerInput } from '../mcp/client'
 import { loadMcpConfigFile } from '../mcp/config'
 import { addMcpServer, defaultWritableMcpConfigPath, MCP_PRESETS, removeMcpServer, setMcpServerDisabled } from '../mcp/configStore'
-import { TaskService, type TaskMeta, type TaskStatus } from '../tasks/taskService'
+import { TaskService, type TaskMeta } from '../tasks/taskService'
 import { TaskListService } from '../tasks/taskListService'
 import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, startBackgroundAgentRun, type BackgroundAgentTaskOptions } from '../tasks/taskTools'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
@@ -92,7 +92,7 @@ import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 
 import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
-import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr, taskStatusFrom } from './requestParams'
+import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
 import { RAW_MIME_BY_EXT, isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
 import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerPath, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
 import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
@@ -107,6 +107,7 @@ import { createSessionArchiveRouteHandler } from './routes/sessionArchiveRoutes'
 import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
+import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
@@ -574,24 +575,6 @@ export function startServer(opts: StartServerOptions = {}) {
   const providerHealthCallbacks = {
     onFailure: registerProviderFailure,
     onSuccess: registerProviderSuccess,
-  }
-
-  async function resolveTaskEndpointTarget(id: string, statuses?: TaskStatus[]): Promise<{ task: TaskMeta | null; requestedTaskId: string }> {
-    const resolution = await tasks.resolveBackgroundAgentTarget(id, {
-      ...(statuses ? { statuses } : {}),
-    })
-    if (resolution.task) return { task: resolution.task, requestedTaskId: id }
-    return { task: await tasks.get(id), requestedTaskId: id }
-  }
-
-  function taskAliasPayload(task: TaskMeta, requestedTaskId: string): Record<string, string> {
-    const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim()
-      ? task.params.agent_id.trim()
-      : ''
-    return {
-      ...(agentId ? { agentId } : {}),
-      ...(requestedTaskId !== task.id ? { requestedTaskId, resolvedTaskId: task.id } : {}),
-    }
   }
 
   function runtimeProviderHealthStatus(runtime: RuntimeProviderResolution, now = Date.now()) {
@@ -1501,7 +1484,7 @@ export function startServer(opts: StartServerOptions = {}) {
   async function* legacyTaskEventStream(requestedTaskId: string, after: number): AsyncGenerator<string> {
     let cursor = Math.max(0, after)
     for (let tick = 0; tick < 3000; tick++) {
-      const resolved = await resolveTaskEndpointTarget(requestedTaskId)
+      const resolved = await resolveTaskEndpointTarget(tasks, requestedTaskId)
       const requestedId = resolved.requestedTaskId
       const taskId = resolved.task?.id ?? requestedTaskId
       const task = resolved.task ?? await tasks.get(taskId)
@@ -2172,6 +2155,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
+  const handleTaskRoute = createTaskRouteHandler({ tasks })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -3237,7 +3221,7 @@ export function startServer(opts: StartServerOptions = {}) {
           })
         }
         if (action === 'cancel' && req.method === 'POST') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(tasks, id, ['queued', 'running'])
           const interrupted = task?.conversationId ? turns.interrupt(task.conversationId) : false
           const taskId = task?.id ?? id
           const cancelled = await tasks.cancel(taskId)
@@ -3266,7 +3250,7 @@ export function startServer(opts: StartServerOptions = {}) {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
           const message = typeof body.message === 'string' ? body.message.trim() : ''
           if (!message) return Response.json({ ok: false, detail: 'message required' }, { status: 400 })
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(tasks, id)
           if (!task?.conversationId) return Response.json({ ok: false, detail: 'task not found' }, { status: 404 })
           const inbox = steerInboxes.get(task.conversationId) ?? []
           inbox.push(message)
@@ -3419,66 +3403,8 @@ export function startServer(opts: StartServerOptions = {}) {
       const sessionArchiveResponse = await handleSessionArchiveRoute(url, req)
       if (sessionArchiveResponse) return sessionArchiveResponse
 
-      if (url.pathname === '/tasks') {
-        if (req.method === 'GET') {
-          return Response.json({
-            tasks: await tasks.list({
-              conversationId: url.searchParams.get('conversationId') ?? undefined,
-              status: taskStatusFrom(url.searchParams.get('status')),
-              limit: numberFrom(url.searchParams.get('limit'), 200),
-              collapseResumedBackgroundAgents: true,
-            }),
-          })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      const taskMatch = url.pathname.match(/^\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel|background))?$/)
-      if (taskMatch) {
-        const id = taskMatch[1]!
-        const action = taskMatch[2]
-        if (!action && req.method === 'GET') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
-          if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
-          const includeEvents = url.searchParams.get('includeEvents') === '1'
-          return Response.json({
-            task,
-            ...taskAliasPayload(task, requestedTaskId),
-            ...(includeEvents ? { events: await tasks.loadEvents(task.id, { limit: 100 }) } : {}),
-          })
-        }
-        if (action === 'events' && req.method === 'GET') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
-          if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          const events = await tasks.loadEvents(task.id, { after, limit })
-          return Response.json({
-            events,
-            ...taskAliasPayload(task, requestedTaskId),
-            nextSeq: events.at(-1)?.seq ?? (Number.isFinite(after) ? Math.max(0, after) : 0),
-          })
-        }
-        if (action === 'cancel' && req.method === 'POST') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
-          const taskId = task?.id ?? id
-          return Response.json({
-            ok: true,
-            cancelled: await tasks.cancel(taskId),
-            taskId,
-            ...(task && task.id !== requestedTaskId ? { requestedTaskId } : {}),
-          })
-        }
-        if (action === 'background' && req.method === 'POST') {
-          try {
-            const task = await tasks.requestForegroundAgentBackground(id)
-            return Response.json({ ok: true, task, ...taskAliasPayload(task, id) })
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const taskResponse = await handleTaskRoute(url, req)
+      if (taskResponse) return taskResponse
 
       if (url.pathname === '/agent/hello') {
         server.timeout(req, 0) // 关掉 Bun 空闲掐断,否则安静的 SSE 流会被杀

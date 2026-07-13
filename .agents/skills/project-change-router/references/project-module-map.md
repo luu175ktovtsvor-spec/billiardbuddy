@@ -24,7 +24,7 @@
 | 权限安全 | `permissions`、`sandbox` | 权限档、审批、路径与命令护栏 |
 | 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins` | 可发现能力与领域包 |
 | MCP | `mcp` | MCP 配置、信任、OAuth、工具加载 |
-| 任务与子代理 | `tasks`、`agents` | 后台任务、子代理、团队 |
+| 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
 | Remote Bridge | `tasks/bridge*`、server bridge routes | 远程控制与消息传输 |
 | 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |
 | 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
