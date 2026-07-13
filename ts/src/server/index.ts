@@ -100,6 +100,7 @@ import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPat
 import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
@@ -2194,6 +2195,7 @@ export function startServer(opts: StartServerOptions = {}) {
 
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
     turnConsumers,
@@ -2348,48 +2350,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ ok: true })
       }
 
-      if (url.pathname === '/api/v1/scheduled-tasks') {
-        if (req.method === 'GET') return Response.json(await desktopData.listScheduledTasks())
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.createScheduledTask(body), { status: 201 })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      // 运行历史:GET /api/v1/scheduled-tasks/:id/runs
-      const scheduledRunsMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/runs$/)
-      if (scheduledRunsMatch) {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const id = decodeURIComponent(scheduledRunsMatch[1]!)
-        return Response.json({ runs: await scheduledTasks.getTaskRuns(id) })
-      }
-
-      // 立即运行:POST /api/v1/scheduled-tasks/:id/run(面板 Run Now,无视排程直接起一个真会话)
-      const scheduledRunMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/run$/)
-      if (scheduledRunMatch) {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const id = decodeURIComponent(scheduledRunMatch[1]!)
-        const run = await scheduledTasks.runTaskNow(id)
-        if (!run) return jsonDetailError('scheduled task not found', 404)
-        return Response.json(run, { status: 202 })
-      }
-
-      const scheduledMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)$/)
-      if (scheduledMatch) {
-        const id = decodeURIComponent(scheduledMatch[1]!)
-        if (req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const item = await desktopData.updateScheduledTask(id, body)
-          if (!item) return jsonDetailError('scheduled task not found', 404)
-          return Response.json(item)
-        }
-        if (req.method === 'DELETE') {
-          await desktopData.deleteScheduledTask(id)
-          return Response.json({ status: 'ok' })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const scheduledTaskResponse = await handleScheduledTaskRoute(url, req)
+      if (scheduledTaskResponse) return scheduledTaskResponse
 
       if (url.pathname === '/api/v1/store-docs') {
         if (req.method === 'GET') return Response.json(await desktopData.getStoreDocs())
