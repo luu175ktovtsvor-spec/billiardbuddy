@@ -88,11 +88,11 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 
 import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
-import { RAW_MIME_BY_EXT, isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
+import { isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
 import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
 import { bridgeCodeSessionConfigFromBody, bridgeOutboxStatusFrom, bridgePermissionResponseFrom, bridgePermissionStatusFrom, bridgeRefreshConfigFromBody, bridgeRemoteConfigFromBody, bridgeWorkerSessionStateFrom, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
 import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadCommandsForWorkspace } from './extensionRoots'
@@ -110,6 +110,7 @@ import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoute
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
+import { createWorkspaceFileRouteHandler } from './routes/workspaceFileRoutes'
 import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
@@ -2173,6 +2174,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const handleTaskRoute = createTaskRouteHandler({ tasks })
+  const handleWorkspaceFileRoute = createWorkspaceFileRouteHandler({ defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleWorkspaceRoute = createWorkspaceRouteHandler({ settings: userSettings, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
@@ -2811,90 +2813,8 @@ export function startServer(opts: StartServerOptions = {}) {
       const pluginResponse = await handlePluginRoute(url, req)
       if (pluginResponse) return pluginResponse
 
-      // 文件系统浏览(§7 工作区目录树):列一个目录的直接子项(dirs 优先),只读、隐藏文件跳过、上限 500。
-      if (url.pathname === '/api/v1/agent/fs/list' && req.method === 'GET') {
-        const dirPath = url.searchParams.get('path')
-        if (!dirPath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          // 工作区树给的是相对 root 的路径;按 working_dir(店主选的工作目录)解析,绝对路径原样。
-          // resolve(base, p):p 绝对则返回 p,相对则相对 base——正好两种都对。修相对路径错解析到 sidecar cwd 的 bug。
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), dirPath)
-          const dirents = await readdir(resolved, { withFileTypes: true })
-          const entries = dirents
-            .filter(d => !d.name.startsWith('.'))
-            .map(d => ({ name: d.name, isDir: d.isDirectory() }))
-            .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
-            .slice(0, 500)
-          return Response.json({ path: resolved, entries })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
-
-      // 文件读(§9 右侧预览):读一个文本文件内容,上限 256KB,供预览面板显示改动后的文件。
-      if (url.pathname === '/api/v1/agent/fs/read' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
-          const stat = await import('node:fs/promises').then(m => m.stat(resolved))
-          if (stat.size > 256 * 1024) return Response.json({ path: resolved, truncated: true, content: '(文件超过 256KB,预览已截断)' })
-          return Response.json({ path: resolved, content: await readFile(resolved, 'utf8') })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
-
-      // 原始文件字节(右面板 <img> 渲染图片等二进制预览):按扩展名给 content-type;越界(../)拒绝。
-      // 图片/pdf 是二进制,不能走 fs/read 的 utf8 文本(读出来是乱码)——所以单开一条按字节返回的路。
-      if (url.pathname === '/api/v1/agent/fs/raw' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return new Response('path required', { status: 400 })
-        try {
-          const wd = url.searchParams.get('working_dir') || getDefaultWorkspaceDir()
-          const resolved = resolve(wd, filePath)
-          if (relative(wd, resolved).startsWith('..')) return new Response('forbidden', { status: 403 }) // 挡 ../ 穿越
-          const info = await import('node:fs/promises').then(m => m.stat(resolved))
-          if (info.size > 20 * 1024 * 1024) return new Response('file too large', { status: 413 }) // 预览上限 20MB
-          const data = await readFile(resolved)
-          const type = RAW_MIME_BY_EXT[extname(resolved).toLowerCase()] ?? 'application/octet-stream'
-          return new Response(data, { headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } })
-        } catch (err) {
-          return new Response(err instanceof Error ? err.message : String(err), { status: 404 })
-        }
-      }
-
-      // 文件 diff(右面板改动文件红绿 diff):HEAD 版 vs 工作区版,返回 old/new 供前端 DiffViewer。
-      if (url.pathname === '/api/v1/agent/fs/diff' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
-          const newString = await readFile(resolved, 'utf8').catch(() => '')
-          const { execFile } = await import('node:child_process')
-          const { promisify } = await import('node:util')
-          const execFileP = promisify(execFile)
-          let repoRoot = ''
-          try {
-            const { stdout } = await execFileP('git', ['rev-parse', '--show-toplevel'], { cwd: dirname(resolved), timeout: 2000 })
-            repoRoot = stdout.trim()
-          } catch { /* 非 git 仓库 */ }
-          let oldString = ''
-          if (repoRoot) {
-            const rel = relative(repoRoot, resolved)
-            try {
-              const { stdout } = await execFileP('git', ['--no-optional-locks', 'show', `HEAD:${rel}`], { cwd: repoRoot, timeout: 3000, maxBuffer: 1024 * 1024 })
-              oldString = stdout
-            } catch { oldString = '' } // git 仓库内未跟踪/新文件 → 视为全新增(符合 git/Codex 语义)
-          }
-          // ⚠️ 非 git 仓库(repoRoot 空)没有 diff 基准 → changed:false,前端显示纯文件内容;
-          // 否则每个文件都被误判成"全绿全新增"假 diff(oldString 空 !== 全文)。git 仓库内才按 HEAD 比。
-          const changed = repoRoot ? oldString !== newString : false
-          return Response.json({ path: resolved, oldString, newString, changed })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
+      const workspaceFileResponse = await handleWorkspaceFileRoute(url, req)
+      if (workspaceFileResponse) return workspaceFileResponse
 
       // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
       if (url.pathname === '/api/settings') {
