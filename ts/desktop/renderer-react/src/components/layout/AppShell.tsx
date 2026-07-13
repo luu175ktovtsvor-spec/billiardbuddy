@@ -20,7 +20,6 @@ import { pickSessionToRestore, readLastConversation } from '../../lib/sessionRec
 import { isPreviewMode, applyPreviewSeed } from '../../lib/previewSeed'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { pickWorkspaceFolder } from '../../lib/workspace'
-import { DRAG } from '../../lib/dragRegion'
 import { t } from '../../i18n'
 
 type Phase = 'connecting' | 'ready' | 'error'
@@ -40,7 +39,6 @@ export function AppShell() {
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed)
   const nav = useUiStore((s) => s.nav)
   const isChat = nav === 'chat'
-  const isStandaloneWorkspace = nav === 'creation'
 
   useEffect(() => {
     // 预览模式:跳过后端连接,注入示例数据后直接进 ready(仅 ?preview=1)。
@@ -175,13 +173,12 @@ export function AppShell() {
 
   return (
     <div className="flex h-full" data-testid="app-shell">
-      {!sidebarCollapsed && !isStandaloneWorkspace && <Sidebar />}
+      {!sidebarCollapsed && <Sidebar />}
       {/* 右侧竖排:上 = 对话 | 右面板(横排),下 = 终端抽屉(全宽,照 Codex 终端在底部)。 */}
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
           <main className="flex min-w-0 flex-1 flex-col" style={{ background: 'var(--color-app-main)' }}>
-            {isStandaloneWorkspace && <div className="h-7 shrink-0" style={DRAG} data-testid="workspace-drag-strip" />}
-            {!isStandaloneWorkspace && <TopBar />}
+            <TopBar />
             <ContentRouter />
           </main>
           {/* 右侧工作区面板(文件展示 + 工作树)——仅对话视图,由 filePreviewStore.panelOpen 控制。 */}

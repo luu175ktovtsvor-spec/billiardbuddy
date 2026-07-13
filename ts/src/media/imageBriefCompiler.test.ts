@@ -95,7 +95,7 @@ test('GPT freeform poster has no portrait identity preserve block', () => {
   expect(prompt).toContain('visible text, gibberish, watermarks')
 })
 
-test('assistant photo compilation keeps image roles and natural-photo boundary', () => {
+test('authorized everyday photo compilation keeps image roles and natural-photo boundary', () => {
   const brief = compileImageBrief({
     prompt: '用这张助教实拍照片优化得更好看，换成球房背景和黑色球服',
     scene: 'portrait',
@@ -107,7 +107,7 @@ test('assistant photo compilation keeps image roles and natural-photo boundary',
   expect(brief.portrait?.preserve.join(' ')).toContain('面部')
   expect(brief.portrait?.change.join(' ')).toContain('无明显 AI 感')
   expect(brief.visual_direction.style).toContain('无明显 AI 感')
-  expect(brief.understanding).toContain('助教实拍照片优化')
+  expect(brief.understanding).toContain('真人照片优化')
   expect(brief.output_use).toBe('photo')
   expect(routeImageBrief(brief, 'edit')).toBe('gpt_image_2')
   const prompt = compileProviderPrompt(brief, 'edit').prompt
@@ -121,4 +121,21 @@ test('assistant photo compilation keeps image roles and natural-photo boundary',
   expect(fallbackPrompt).not.toContain('形象照')
   expect(fallbackPrompt).not.toContain('Logo')
   expect(fallbackPrompt).not.toContain('二维码')
+})
+
+test('background wording alone does not turn a poster into a portrait task', () => {
+  const brief = compileImageBrief({ prompt: '做一张海报，把背景换成雨夜街道', sceneTemplateId: 'custom_poster' })
+  expect(brief.scene).toBe('poster')
+  expect(brief.reference_assets).toEqual([])
+})
+
+test('an identity reference lets an ordinary natural-photo request enter image-to-image portrait flow', () => {
+  const brief = compileImageBrief({
+    prompt: '调得自然好看一点，不要有明显 AI 感',
+    referenceAssets: [{ asset_id: 'person_main', role: 'identity_primary' }],
+    portraitAuthorizationConfirmed: true,
+  })
+  expect(brief.scene).toBe('portrait')
+  expect(brief.portrait?.primary_reference_asset_id).toBe('person_main')
+  expect(brief.visual_direction.subject).toContain('参考人物')
 })

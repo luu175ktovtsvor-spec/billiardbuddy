@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, FabricImage, Path, Rect, Textbox, type FabricObject } from 'fabric'
-import { PageHeader } from '../../components/shared/PageKit'
 import { Tooltip } from '../../components/shared/Tooltip'
-import { IconCheckCircle, IconEdit, IconMessage, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
+import { IconCheckCircle, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
 import { toast } from '../../stores/toastStore'
-import { useUiStore } from '../../stores/uiStore'
 import {
   assetUrl,
   pickImageUrl,
@@ -39,13 +37,13 @@ const RATIOS: { id: string; label: string }[] = [
 const COUNTS = [1, 2, 3, 4]
 
 const POSTER_TYPES: Array<{ id: string; label: string; prompt: string }> = [
-  { id: 'custom_poster', label: '自由描述', prompt: '' },
-  { id: 'opening_anniversary', label: '新店开业', prompt: '做一张新店开业海报' },
-  { id: 'weekend_bundle', label: '引流体验/团购', prompt: '做一张新客引流体验海报' },
-  { id: 'membership_recharge', label: '一卡通/器材券', prompt: '做一张一卡通和器材券活动海报' },
-  { id: 'tournament_signup', label: '抢一/会员赛', prompt: '做一张抢一大战或会员赛活动海报' },
-  { id: 'coach_booking', label: '助教到店/预约', prompt: '做一张助教到店预约海报' },
-  { id: 'holiday_moments', label: '门店日常/朋友圈', prompt: '做一张门店朋友圈日常海报' },
+  { id: 'custom_poster', label: '自由创作', prompt: '' },
+  { id: 'opening_anniversary', label: '开业/焕新', prompt: '做一张开业或门店焕新海报' },
+  { id: 'weekend_bundle', label: '优惠/团购', prompt: '做一张优惠或团购海报' },
+  { id: 'membership_recharge', label: '会员/充值', prompt: '做一张会员或充值活动海报' },
+  { id: 'tournament_signup', label: '比赛/活动', prompt: '做一张比赛或活动海报' },
+  { id: 'coach_booking', label: '人物/服务', prompt: '做一张人物或服务介绍海报' },
+  { id: 'holiday_moments', label: '日常/社媒', prompt: '做一张日常分享或社媒海报' },
 ]
 
 type MaskMode = 'select' | 'rect' | 'brush'
@@ -71,7 +69,6 @@ interface DrawingState {
 }
 
 export function CreationPage() {
-  const setNav = useUiStore((s) => s.setNav)
   const [prompt, setPrompt] = useState('')
   const [sceneId, setSceneId] = useState(POSTER_TYPES[0]?.id ?? 'custom_poster')
   const [intent, setIntent] = useState<ImageIntent>('poster_text')
@@ -151,7 +148,7 @@ export function CreationPage() {
     asset_id: asset.asset_id,
     role: referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index),
     url: asset.url,
-    label: intent === 'portrait' ? (index === 0 ? '助教主照片' : '补充照片') : '参考素材',
+    label: intent === 'portrait' ? (index === 0 ? '主照片' : '补充角度') : '参考素材',
   })), [intent, referenceAssets, referenceRoles])
   const projectReferenceDescriptors = useMemo<ImageAssetReference[]>(() => {
     if (referenceDescriptors.length) return referenceDescriptors
@@ -224,6 +221,8 @@ export function CreationPage() {
       selection: true,
       backgroundColor: themedColor('--color-surface-container', '#f3f3f3'),
     })
+    canvas.upperCanvasEl.draggable = false
+    canvas.upperCanvasEl.addEventListener('dragstart', event => event.preventDefault())
     fabricRef.current = canvas
 
     const updateActiveText = () => {
@@ -335,16 +334,41 @@ export function CreationPage() {
       canvas.requestRenderAll()
     }
 
+    const upperCanvas = canvas.upperCanvasEl
+    const onPointerDown = (event: PointerEvent) => {
+      const mode = maskModeRef.current
+      if (mode !== 'rect' && mode !== 'brush') return
+      event.preventDefault()
+      upperCanvas.setPointerCapture(event.pointerId)
+      onDown({ e: event })
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      if (!drawingRef.current) return
+      event.preventDefault()
+      onMove({ e: event })
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      if (!drawingRef.current) return
+      event.preventDefault()
+      onUp()
+      if (upperCanvas.hasPointerCapture(event.pointerId)) upperCanvas.releasePointerCapture(event.pointerId)
+    }
+
     canvas.on('selection:created', updateActiveText)
     canvas.on('selection:updated', updateActiveText)
     canvas.on('selection:cleared', updateActiveText)
     canvas.on('object:modified', sync)
     canvas.on('text:changed', sync)
-    canvas.on('mouse:down', onDown)
-    canvas.on('mouse:move', onMove)
-    canvas.on('mouse:up', onUp)
+    upperCanvas.addEventListener('pointerdown', onPointerDown)
+    upperCanvas.addEventListener('pointermove', onPointerMove)
+    upperCanvas.addEventListener('pointerup', onPointerUp)
+    upperCanvas.addEventListener('pointercancel', onPointerUp)
 
     return () => {
+      upperCanvas.removeEventListener('pointerdown', onPointerDown)
+      upperCanvas.removeEventListener('pointermove', onPointerMove)
+      upperCanvas.removeEventListener('pointerup', onPointerUp)
+      upperCanvas.removeEventListener('pointercancel', onPointerUp)
       void canvas.dispose()
       fabricRef.current = null
     }
@@ -382,7 +406,8 @@ export function CreationPage() {
     })
   }, [maskMode])
 
-  const canRun = (prompt.trim().length > 0 || posterTitle.trim().length > 0) && !busy
+  const hasCreationGoal = prompt.trim().length > 0 || posterTitle.trim().length > 0 || (intent === 'portrait' && referenceAssets.length > 0)
+  const canRun = hasCreationGoal && !busy && (intent !== 'portrait' || (referenceAssets.length > 0 && portraitAuthorized))
 
   const beginAction = (stageText: string) => {
     const ctrl = new AbortController()
@@ -422,11 +447,12 @@ export function CreationPage() {
     else if (lastFailedAction === 'upscale') void upscale()
   }
 
-  const selectWorkflow = (next: 'poster' | 'assistant_photo') => {
-    if (next === 'assistant_photo') {
+  const selectWorkflow = (next: 'poster' | 'photo_edit') => {
+    if (next === 'photo_edit') {
       setIntent('portrait')
-      setSceneId('assistant_photo')
-      setPrompt('用已上传的助教实拍照片优化得更好看、自然，没有明显 AI 感；保留本人面部和身形特征。')
+      setSceneId('photo_edit')
+      setPrompt('')
+      setReferenceRoles(Object.fromEntries(referenceAssets.map((asset, index) => [asset.asset_id, defaultReferenceRole('portrait', index)])))
       return
     }
     setIntent('poster_text')
@@ -449,7 +475,12 @@ export function CreationPage() {
       posterDate && `日期：${posterDate}`,
       posterPhone && `电话：${posterPhone}`,
     ].filter(Boolean)
-    return [prompt.trim(), ...fields].filter(Boolean).join('，')
+    const explicit = [prompt.trim(), ...fields].filter(Boolean).join('，')
+    if (explicit) return explicit
+    if (intent === 'portrait' && referenceAssets.length > 0) {
+      return '把上传的随手拍优化得自然好看、没有明显 AI 感，同时保留本人可辨识特征和自然比例。'
+    }
+    return ''
   }
 
   const uploadBrandAsset = async (file: File | undefined, kind: 'logo' | 'qrcode') => {
@@ -469,7 +500,7 @@ export function CreationPage() {
     const limit = intent === 'portrait' ? 3 : 8
     const available = Math.max(0, limit - referenceAssets.length)
     if (available === 0) {
-      toast(intent === 'portrait' ? '助教照片最多使用 3 张' : '最多使用 8 张参考图')
+      toast(intent === 'portrait' ? '真人照片最多使用 3 张' : '最多使用 8 张参考图')
       return
     }
     const next = await Promise.all(Array.from(files).slice(0, available).map(file => uploadWorkbenchImage(file)))
@@ -481,13 +512,26 @@ export function CreationPage() {
     toast(`已添加 ${next.length} 张参考图`)
   }
 
-  const setReferenceRole = (assetId: string, role: Extract<ImageReferenceRole, 'identity_primary' | 'identity_supporting'>) => {
+  const setReferenceRole = (assetId: string, role: ImageReferenceRole) => {
     setReferenceRoles(previous => {
       const next = { ...previous, [assetId]: role }
-      if (role === 'identity_primary') {
+      if (role === 'identity_primary' && intent === 'portrait') {
         for (const asset of referenceAssets) {
           if (asset.asset_id !== assetId && next[asset.asset_id] === 'identity_primary') next[asset.asset_id] = 'identity_supporting'
         }
+      }
+      return next
+    })
+  }
+
+  const removeReference = (assetId: string) => {
+    const remaining = referenceAssets.filter(asset => asset.asset_id !== assetId)
+    setReferenceAssets(remaining)
+    setReferenceRoles(previous => {
+      const next = { ...previous }
+      delete next[assetId]
+      if (intent === 'portrait' && remaining.length > 0 && !remaining.some(asset => next[asset.asset_id] === 'identity_primary')) {
+        next[remaining[0]!.asset_id] = 'identity_primary'
       }
       return next
     })
@@ -973,12 +1017,12 @@ export function CreationPage() {
       setReferenceAssets([asset])
       setReferenceRoles({ [asset.asset_id]: 'identity_primary' })
       setIntent('poster_text')
-      setSceneId('coach_booking')
-      setPrompt('使用已确认的助教照片作为人物素材，制作助教到店预约海报，为标题、价格、日期和二维码预留清晰区域')
+      setSceneId('custom_poster')
+      setPrompt('使用已确认的人物照片作为海报主视觉，具体主题、文字和用途按本次输入决定')
       setCreativeBrief(null)
-      toast('已带入助教照片，继续确认海报需求')
+      toast('已带入人物照片，继续填写海报目标')
     } catch (err) {
-      toast(err instanceof Error ? err.message : '带入助教照片失败')
+      toast(err instanceof Error ? err.message : '带入人物照片失败')
     }
   }
 
@@ -989,6 +1033,11 @@ export function CreationPage() {
       canvas.requestRenderAll()
     }
     setMaskItems([])
+  }
+
+  const selectMaskMode = (mode: MaskMode) => {
+    maskModeRef.current = mode
+    setMaskMode(mode)
   }
 
   const toggleCompare = (id: string) => {
@@ -1006,30 +1055,31 @@ export function CreationPage() {
   const hasTaskFeedback = busy || Boolean(lastError)
   const hasMainPanel = hasWorkbenchStage || hasTaskFeedback
   const workspaceLayoutClass = hasProject
-    ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[840px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)] min-[1180px]:grid-cols-[250px_minmax(0,1fr)_280px]'
+    ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)] min-[1500px]:grid-cols-[250px_minmax(0,1fr)_280px]'
     : hasMainPanel
-      ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[840px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)]'
+      ? 'grid min-h-0 grid-cols-1 gap-x-7 gap-y-6 min-[1180px]:grid-cols-[minmax(236px,280px)_minmax(0,1fr)]'
       : 'mx-auto max-w-[760px]'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
-      <div className="mx-auto min-h-full w-full max-w-[1560px] px-5 py-5 min-[840px]:px-8 min-[840px]:py-7">
-        <PageHeader
-          title="生图工作台"
-          action={(
-            <button
-              type="button"
-              onClick={() => setNav('chat')}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-[var(--color-surface-hover)]"
-              style={{ border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
-              data-testid="workbench-back-chat"
-            >
-              <IconMessage size={14} /> 返回对话
+      <div className="mx-auto min-h-full w-full max-w-[1560px] px-4 pb-7 pt-2 min-[840px]:px-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="inline-grid grid-cols-2 gap-1 rounded-lg p-1" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
+            <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
+              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
+              海报创作
             </button>
-          )}
-        />
+            <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
+              className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={segStyle(intent === 'portrait')} data-testid="image-workflow-photo">
+              照片优化
+            </button>
+          </div>
+          {saveState !== 'saved' && <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+            {saveState === 'saving' ? '保存中' : '保存失败'}
+          </span>}
+        </div>
 
-        {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[840px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
+        {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[1180px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
           {([
             ['create', '创作'],
             ['canvas', '挑选'],
@@ -1056,39 +1106,46 @@ export function CreationPage() {
         </div>}
 
         <div className={workspaceLayoutClass}>
-        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5`}>
-          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
+        <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
+          <section className="space-y-3">
+            {intent === 'poster_text' && (
               <label className="block">
-                <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>创作类型</span>
-                <select value={intent === 'portrait' ? 'assistant_photo' : 'poster'} onChange={event => selectWorkflow(event.target.value as 'poster' | 'assistant_photo')} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-workflow-select">
-                  <option value="poster">海报</option>
-                  <option value="assistant_photo">助教照片</option>
+                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>快捷分类</span>
+                <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="w-full rounded-md px-2.5 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
+                  {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
                 </select>
               </label>
-              {intent === 'poster_text' && (
-                <label className="block">
-                  <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>海报类型（可选）</span>
-                  <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
-                    {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-                  </select>
+            )}
+
+            <div className="rounded-lg p-3" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={4}
+                className="w-full resize-none bg-transparent text-[13px] leading-relaxed outline-none"
+                placeholder={intent === 'portrait' ? '说说想怎么调整；留空时默认自然优化并保留本人' : '说说想做什么海报，需要哪些画面和文字'}
+                style={{ color: 'var(--color-text-primary)' }}
+                data-testid="image-prompt-input"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2 border-t pt-2" style={{ borderColor: 'var(--color-border)' }}>
+                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
+                  <IconPlus size={14} /> {intent === 'portrait' ? '上传照片' : '添加参考图'}
+                  <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" data-testid="image-reference-input" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
                 </label>
-              )}
+                {intent === 'poster_text' && <button type="button" onClick={() => setQuickForm(value => !value)} className="rounded-md px-2 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }} data-testid="toggle-quick-form">
+                  {quickForm ? '收起文字' : '精确文字'}
+                </button>}
+                <span className="min-w-0 flex-1" />
+                <button type="button" onClick={() => void run()} disabled={!canRun}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }} data-testid="image-generate-button">
+                  <IconSparkles size={14} /> {busy ? '处理中' : creativeBrief ? `生成 ${count} 张` : '理解需求'}
+                </button>
+              </div>
             </div>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
-              className="mt-3 w-full resize-none rounded-md px-3 py-2 text-[13px] leading-relaxed outline-none"
-              placeholder={intent === 'portrait' ? '上传照片后，说说想要的场景、服装、氛围或状态' : '写下你想做的海报、画面主体和需要保留的文字'}
-              style={inputStyle}
-              data-testid="image-prompt-input"
-            />
-            {intent === 'poster_text' && <button type="button" onClick={() => setQuickForm(value => !value)} className="mt-2 px-0 py-1 text-[12px]" style={{ color: 'var(--color-link)' }} data-testid="toggle-quick-form">
-              {quickForm ? '收起海报文字' : '添加海报硬文字'}
-            </button>}
+
             {intent === 'poster_text' && quickForm && (
-              <div className="mt-2 grid grid-cols-2 gap-2" data-testid="poster-quick-form">
+              <div className="grid grid-cols-2 gap-2" data-testid="poster-quick-form">
                 <input value={posterTitle} onChange={e => setPosterTitle(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="主标题" />
                 <input value={posterOffer} onChange={e => setPosterOffer(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="优惠内容" />
                 <input value={posterPrice} onChange={e => setPosterPrice(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="价格" />
@@ -1096,84 +1153,81 @@ export function CreationPage() {
                 <input value={posterPhone} onChange={e => setPosterPhone(e.target.value)} className="col-span-2 rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="预约电话" />
               </div>
             )}
-            <label className="mt-3 block">
-              <span className="mb-1 block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{intent === 'portrait' ? '助教实拍照片（1-3 张）' : '参考图（可选）'}</span>
-              <input type="file" accept="image/*" multiple className="block w-full text-[12px]" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
-            </label>
             {referenceAssets.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-2" data-testid="image-reference-list">
                 {referenceAssets.map((asset, index) => (
-                  <div key={asset.asset_id} className="space-y-1">
-                    <img src={assetUrl(asset.url)} alt="" className="h-10 w-10 rounded object-cover" />
-                    {intent === 'portrait' && (
-                      <select
-                        aria-label={`参考图 ${index + 1} 角色`}
-                        value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
-                        onChange={event => setReferenceRole(asset.asset_id, event.target.value as Extract<ImageReferenceRole, 'identity_primary' | 'identity_supporting'>)}
-                        className="w-16 rounded border px-1 py-0.5 text-[10px]"
-                        style={inputStyle}
-                      >
-                        <option value="identity_primary">主照片</option>
-                        <option value="identity_supporting">补充</option>
-                      </select>
-                    )}
+                  <div key={asset.asset_id} className="w-[92px] min-w-0">
+                    <div className="group relative overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
+                      <img src={assetUrl(asset.url)} alt={`参考图 ${index + 1}`} className="aspect-square w-full object-cover" />
+                      <button type="button" onClick={() => removeReference(asset.asset_id)} aria-label={`移除参考图 ${index + 1}`} title="移除参考图"
+                        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md opacity-0 transition-opacity group-hover:opacity-100"
+                        style={{ background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)', color: 'var(--color-text-secondary)' }}>
+                        <IconTrash size={13} />
+                      </button>
+                    </div>
+                    <select
+                      aria-label={`参考图 ${index + 1} 角色`}
+                      value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
+                      onChange={event => setReferenceRole(asset.asset_id, event.target.value as ImageReferenceRole)}
+                      className="mt-1 w-full rounded-md px-1 py-1 text-[10px] outline-none"
+                      style={inputStyle}
+                    >
+                      {referenceRoleOptions(intent).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
                   </div>
                 ))}
               </div>
             )}
             {intent === 'portrait' && (
-              <label className="mt-3 flex items-start gap-2 border-t pt-3 text-[12px]" style={{ borderColor: 'var(--color-border)' }} data-testid="portrait-authorization">
+              <label className="flex items-start gap-2 text-[12px]" data-testid="portrait-authorization">
                 <input type="checkbox" checked={portraitAuthorized} onChange={e => setPortraitAuthorized(e.target.checked)} className="mt-0.5" />
-                <span style={{ color: 'var(--color-text-secondary)' }}>我拥有这些照片的使用授权，且被拍者同意用于门店宣传</span>
+                <span style={{ color: 'var(--color-text-secondary)' }}>我拥有这些照片的使用授权，且被拍者同意用于本次生成</span>
               </label>
             )}
             {intent === 'poster_text' && (
-              <details className="mt-3 border-t pt-3" style={{ borderColor: 'var(--color-border)' }}>
-                <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>添加品牌素材</summary>
+              <details>
+                <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>品牌素材</summary>
                 <div className="mt-2 grid grid-cols-2 gap-3">
-                  <label className="block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>
-                    <span>Logo</span>
-                    <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
+                  <label className="cursor-pointer rounded-md px-2 py-2 text-center text-[12px]" style={inputStyle}>
+                    <span>{logoAsset ? '更换 Logo' : '添加 Logo'}</span>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'logo')} />
                   </label>
-                  <label className="block text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>
-                    <span>二维码</span>
-                    <input type="file" accept="image/png,image/jpeg,image/webp" className="mt-1 block w-full text-[10px]" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
+                  <label className="cursor-pointer rounded-md px-2 py-2 text-center text-[12px]" style={inputStyle}>
+                    <span>{qrAsset ? '更换二维码' : '添加二维码'}</span>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={e => void uploadBrandAsset(e.target.files?.[0], 'qrcode')} />
                   </label>
                 </div>
               </details>
             )}
-          </section>
 
-          <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="grid grid-cols-3 gap-2">
-              <label className="block">
-                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>画幅</span>
-                <select value={ratio} onChange={event => setRatio(event.target.value)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-ratio-select">
-                  {RATIOS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选</span>
-                <select value={count} onChange={event => setCount(Number(event.target.value))} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-count-select">
-                  {COUNTS.map((item) => <option key={item} value={item}>{item} 张</option>)}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>精度</span>
-                <select value={quality} onChange={event => setQuality(event.target.value as ImageQuality)} className="w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} data-testid="image-quality-select">
-                  <option value="draft">草稿</option>
-                  <option value="standard">标准</option>
-                  <option value="final">成稿</option>
-                </select>
-              </label>
-            </div>
-            <button type="button" onClick={() => void run()} disabled={!canRun}
-              className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md px-4 py-2 text-[13px] font-medium disabled:opacity-50"
-              style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }} data-testid="image-generate-button">
-              <IconSparkles size={15} /> {busy ? '处理中…' : creativeBrief ? `确认并生成 ${count} 张候选` : '理解需求'}
-            </button>
+            <details data-testid="image-output-settings">
+              <summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>输出设置</summary>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>画幅</span>
+                  <select value={ratio} onChange={event => setRatio(event.target.value)} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-ratio-select">
+                    {RATIOS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>候选</span>
+                  <select value={count} onChange={event => setCount(Number(event.target.value))} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-count-select">
+                    {COUNTS.map((item) => <option key={item} value={item}>{item} 张</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px]" style={{ color: 'var(--color-text-tertiary)' }}>精度</span>
+                  <select value={quality} onChange={event => setQuality(event.target.value as ImageQuality)} className="w-full rounded-md px-2 py-1.5 text-[11px] outline-none" style={inputStyle} data-testid="image-quality-select">
+                    <option value="draft">草稿</option>
+                    <option value="standard">标准</option>
+                    <option value="final">成稿</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+
             {creativeBrief && (
-              <div className="mt-2 rounded-md px-2 py-1.5 text-[12px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }} data-testid="brief-understanding">
+              <div className="rounded-md px-2.5 py-2 text-[12px]" style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }} data-testid="brief-understanding">
                 {creativeBrief.understanding ?? creativeBrief.user_request}
               </div>
             )}
@@ -1200,7 +1254,7 @@ export function CreationPage() {
           </section>}
         </aside>
 
-        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5`}>
+        {hasMainPanel && <main className={`${compactPane === 'canvas' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
           {busy && (
             <div className="rounded-lg p-3" style={panelStyle} data-testid="workbench-progress">
               <div className="mb-1 flex items-center justify-between text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -1233,8 +1287,8 @@ export function CreationPage() {
                 {images.map((img) => (
                   <div key={img.generation_id} className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }} data-testid="candidate-card">
                     <button type="button" className="block w-full" onClick={() => setSelectedImageId(img.generation_id)} data-testid="candidate-select">
-                      <div className="relative">
-                        <img src={assetUrl(img.poster_url)} alt="" className="aspect-[3/4] w-full object-cover" />
+                      <div className="relative flex aspect-[3/4] items-center justify-center" style={{ background: 'var(--color-surface-container-low)' }}>
+                        <img src={assetUrl(img.poster_url)} alt="" className="max-h-full max-w-full object-contain" />
                         {intent === 'poster_text' && <CandidatePosterOverlay brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} />}
                       </div>
                     </button>
@@ -1262,8 +1316,8 @@ export function CreationPage() {
               {intent === 'portrait' && selectedImage && (referenceDescriptors[0] ?? projectReferenceDescriptors[0])?.url && (
                 <div className="mt-3 grid grid-cols-2 gap-3" data-testid="portrait-reference-compare">
                   <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
-                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>助教主照片</figcaption>
-                    <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="助教主照片" className="max-h-[320px] w-full object-contain" />
+                    <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>主照片</figcaption>
+                    <img src={assetUrl((referenceDescriptors[0] ?? projectReferenceDescriptors[0])!.url!)} alt="主照片" className="max-h-[320px] w-full object-contain" />
                   </figure>
                   <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
                     <figcaption className="px-2 py-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>候选结果</figcaption>
@@ -1326,10 +1380,10 @@ export function CreationPage() {
           </section>}
         </main>}
 
-        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[840px]:block'} min-w-0 space-y-5 border-t pt-5 min-[840px]:col-span-2 min-[1180px]:col-span-1 min-[1180px]:border-l min-[1180px]:border-t-0 min-[1180px]:pl-6 min-[1180px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
+        {project && <aside className={`${compactPane === 'adjust' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5 border-t pt-5 min-[1180px]:col-span-2 min-[1500px]:col-span-1 min-[1500px]:border-l min-[1500px]:border-t-0 min-[1500px]:pl-6 min-[1500px]:pt-0`} style={{ borderColor: 'var(--color-border)' }}>
           <section className="border-b pb-5" style={{ borderColor: 'var(--color-border)' }}>
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconEdit size={14} />整图指令修改</div>
-            <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} className="w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="例如:背景换成球房实景，整体更高级" data-testid="whole-edit-input" />
+            <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} className="w-full resize-none rounded-md px-3 py-2 text-[12.5px] outline-none" style={inputStyle} placeholder="说出只想改动的内容" data-testid="whole-edit-input" />
             <button type="button" onClick={() => void wholeEdit()} disabled={!project || !editText.trim() || busy} className="mt-2 w-full rounded-md px-3 py-2 text-[12px] font-medium disabled:opacity-50" style={buttonPrimaryStyle} data-testid="whole-edit-button">生成修改版本</button>
           </section>
 
@@ -1338,7 +1392,7 @@ export function CreationPage() {
             <div className="grid grid-cols-3 gap-1.5">
               {(['select', 'rect', 'brush'] as MaskMode[]).map((mode) => (
                 <Tooltip key={mode} label={mode === 'select' ? '选择/编辑文字' : mode === 'rect' ? '矩形选区' : '涂抹笔刷'}>
-                  <button type="button" onClick={() => setMaskMode(mode)} className="rounded-md px-2 py-1 text-[12px]" style={segStyle(maskMode === mode)}>
+                  <button type="button" onClick={() => selectMaskMode(mode)} className="rounded-md px-2 py-1 text-[12px]" style={segStyle(maskMode === mode)}>
                     {mode === 'select' ? '选择' : mode === 'rect' ? '矩形' : '笔刷'}
                   </button>
                 </Tooltip>
@@ -1430,6 +1484,22 @@ function defaultReferenceRole(intent: ImageIntent, index: number): ImageReferenc
   return 'environment_reference'
 }
 
+function referenceRoleOptions(intent: ImageIntent): Array<{ value: ImageReferenceRole; label: string }> {
+  if (intent === 'portrait') {
+    return [
+      { value: 'identity_primary', label: '主照片' },
+      { value: 'identity_supporting', label: '补充角度' },
+    ]
+  }
+  return [
+    { value: 'environment_reference', label: '场景参考' },
+    { value: 'style_reference', label: '风格参考' },
+    { value: 'identity_primary', label: '人物参考' },
+    { value: 'brand_reference', label: '品牌参考' },
+    { value: 'source', label: '主体素材' },
+  ]
+}
+
 async function waitForFonts(timeoutMs = 2_000): Promise<void> {
   const ready = document.fonts?.ready
   if (!ready) return
@@ -1502,9 +1572,9 @@ async function uploadWorkbenchImage(file: File): Promise<ImageWorkbenchAsset> {
 
 function segStyle(active: boolean) {
   return {
-    background: active ? 'var(--color-brand)' : 'var(--color-surface-container)',
-    color: active ? 'var(--color-on-primary)' : 'var(--color-text-secondary)',
-    border: `1px solid ${active ? 'var(--color-brand)' : 'var(--color-border)'}`,
+    background: active ? 'var(--color-surface-selected)' : 'transparent',
+    color: active ? 'var(--color-brand)' : 'var(--color-text-secondary)',
+    border: '1px solid transparent',
   } as const
 }
 
