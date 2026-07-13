@@ -83,7 +83,9 @@ export function CreationPage() {
   const [posterOffer, setPosterOffer] = useState('')
   const [posterPrice, setPosterPrice] = useState('')
   const [posterDate, setPosterDate] = useState('')
+  const [posterAddress, setPosterAddress] = useState('')
   const [posterPhone, setPosterPhone] = useState('')
+  const [posterCta, setPosterCta] = useState('')
   const [portraitAuthorized, setPortraitAuthorized] = useState(false)
   const [brandPack, setBrandPack] = useState<ImageBrandPack | null>(null)
   const [logoAsset, setLogoAsset] = useState<ImageWorkbenchAsset | null>(null)
@@ -132,6 +134,7 @@ export function CreationPage() {
   const historyLockRef = useRef(false)
   const autosaveSnapshotRef = useRef('')
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const briefHydratingRef = useRef(false)
 
   const currentVersion = useMemo(() => {
     if (!project) return null
@@ -201,8 +204,12 @@ export function CreationPage() {
   useEffect(() => { brushSizeRef.current = brushSize }, [brushSize])
   useEffect(() => { maskItemsRef.current = maskItems }, [maskItems])
   useEffect(() => {
+    if (briefHydratingRef.current) {
+      briefHydratingRef.current = false
+      return
+    }
     setCreativeBrief(null)
-  }, [prompt, posterTitle, posterOffer, posterPrice, posterDate, posterPhone, intent, ratio, quality, sceneId, referenceDescriptors.map(asset => `${asset.asset_id}:${asset.role}`).join('|'), portraitAuthorized])
+  }, [prompt, posterTitle, posterOffer, posterPrice, posterDate, posterAddress, posterPhone, posterCta, intent, ratio, quality, sceneId, referenceDescriptors.map(asset => `${asset.asset_id}:${asset.role}`).join('|'), portraitAuthorized])
 
   useEffect(() => {
     let cancelled = false
@@ -495,7 +502,9 @@ export function CreationPage() {
       posterOffer && `优惠：${posterOffer}`,
       posterPrice && `价格：${posterPrice}`,
       posterDate && `日期：${posterDate}`,
+      posterAddress && `地址：${posterAddress}`,
       posterPhone && `电话：${posterPhone}`,
+      posterCta && `行动提示：${posterCta}`,
     ].filter(Boolean)
     const explicit = [prompt.trim(), ...fields].filter(Boolean).join('，')
     if (explicit) return explicit
@@ -579,10 +588,35 @@ export function CreationPage() {
         ratio,
         quality,
         scene_template_id: sceneId,
-        poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, phone: posterPhone },
+        poster_text: { title: posterTitle, offer: posterOffer, price: posterPrice, date: posterDate, address: posterAddress, phone: posterPhone, cta: posterCta },
         reference_assets: referenceDescriptors,
         portrait_authorization_confirmed: portraitAuthorized,
       })
+      const poster = result.brief.poster
+      const extracted = poster ? {
+        title: poster.title,
+        offer: poster.offer,
+        price: poster.price,
+        date: [poster.date, poster.time].filter(Boolean).join(' '),
+        address: poster.address,
+        phone: poster.phone,
+        cta: poster.cta,
+      } : null
+      const willHydrate = Boolean(extracted && (
+        (!posterTitle && extracted.title) || (!posterOffer && extracted.offer) || (!posterPrice && extracted.price)
+        || (!posterDate && extracted.date) || (!posterAddress && extracted.address) || (!posterPhone && extracted.phone) || (!posterCta && extracted.cta)
+      ))
+      if (willHydrate && extracted) {
+        briefHydratingRef.current = true
+        if (!posterTitle) setPosterTitle(extracted.title)
+        if (!posterOffer) setPosterOffer(extracted.offer)
+        if (!posterPrice) setPosterPrice(extracted.price)
+        if (!posterDate) setPosterDate(extracted.date)
+        if (!posterAddress) setPosterAddress(extracted.address)
+        if (!posterPhone) setPosterPhone(extracted.phone)
+        if (!posterCta) setPosterCta(extracted.cta)
+        setQuickForm(true)
+      }
       setCreativeBrief(result.brief)
     } catch (err) {
       toast(err instanceof Error ? err.message : '需求理解失败')
@@ -617,7 +651,9 @@ export function CreationPage() {
           offer: posterOffer,
           price: posterPrice,
           date: posterDate,
+          address: posterAddress,
           phone: posterPhone,
+          cta: posterCta,
         },
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
@@ -702,6 +738,8 @@ export function CreationPage() {
         price: creativeBrief?.poster?.price ?? posterPrice,
         date: [creativeBrief?.poster?.date, creativeBrief?.poster?.time].filter(Boolean).join(' '),
         phone: creativeBrief?.poster?.phone ?? posterPhone,
+        address: creativeBrief?.poster?.address ?? posterAddress,
+        cta: creativeBrief?.poster?.cta ?? posterCta,
       }) : [],
       image_layers: intent === 'poster_text' ? posterBrandImageLayers(width, height, logoAsset, qrAsset) : [],
       review: reviewFromRecord(img),
@@ -1229,7 +1267,9 @@ export function CreationPage() {
                 <input value={posterOffer} onChange={e => setPosterOffer(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="优惠内容" />
                 <input value={posterPrice} onChange={e => setPosterPrice(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="价格" />
                 <input value={posterDate} onChange={e => setPosterDate(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="日期/时间" />
-                <input value={posterPhone} onChange={e => setPosterPhone(e.target.value)} className="col-span-2 rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="预约电话" />
+                <input value={posterAddress} onChange={e => setPosterAddress(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="地址" data-testid="poster-address-input" />
+                <input value={posterPhone} onChange={e => setPosterPhone(e.target.value)} className="rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="预约电话" data-testid="poster-phone-input" />
+                <input value={posterCta} onChange={e => setPosterCta(e.target.value)} className="col-span-2 rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="行动提示，例如扫码报名" data-testid="poster-cta-input" />
               </div>
             )}
             {referenceAssets.length > 0 && (
@@ -1659,7 +1699,15 @@ function CandidatePreview(props: {
 
 function CandidatePosterOverlay(props: { brief: ImageCreativeBrief | null; logoUrl?: string; qrUrl?: string }) {
   const poster = props.brief?.poster
-  const lines = [poster?.title, poster?.offer, poster?.price, [poster?.date, poster?.time].filter(Boolean).join(' '), poster?.phone].filter((line): line is string => Boolean(line?.trim()))
+  const lines = [
+    poster?.title,
+    poster?.offer,
+    poster?.price,
+    [poster?.date, poster?.time].filter(Boolean).join(' '),
+    poster?.address,
+    poster?.phone,
+    poster?.cta,
+  ].filter((line): line is string => Boolean(line?.trim()))
   if (!lines.length && !props.logoUrl && !props.qrUrl) return null
   return (
     <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-2 text-center" aria-hidden="true">
@@ -1668,7 +1716,7 @@ function CandidatePosterOverlay(props: { brief: ImageCreativeBrief | null; logoU
         {props.qrUrl ? <img src={assetUrl(props.qrUrl)} alt="" className="h-8 w-8 bg-white p-0.5 object-contain" /> : null}
       </div>
       <div className="space-y-0.5 rounded bg-black/55 px-1 py-1 text-white">
-        {lines.slice(0, 5).map((line, index) => <div key={`${index}-${line}`} className={index === 0 ? 'text-[12px] font-semibold' : 'text-[9px]'}>{line}</div>)}
+        {lines.slice(0, 7).map((line, index) => <div key={`${index}-${line}`} className={index === 0 ? 'text-[12px] font-semibold' : 'text-[9px]'}>{line}</div>)}
       </div>
     </div>
   )
@@ -1807,13 +1855,15 @@ function dimensionFromRatio(value: string): { width: number; height: number } {
   return { width: Math.max(512, Math.round(long * a / b)), height: long }
 }
 
-function posterTextLayers(width: number, height: number, fields: { title: string; offer: string; price: string; date: string; phone: string }): ImageWorkbenchTextLayer[] {
+function posterTextLayers(width: number, height: number, fields: { title: string; offer: string; price: string; date: string; address: string; phone: string; cta: string }): ImageWorkbenchTextLayer[] {
   const entries = [
     { key: 'title', text: fields.title, y: 0.14, size: Math.max(42, Math.round(width / 13)) },
     { key: 'offer', text: fields.offer, y: 0.28, size: Math.max(28, Math.round(width / 24)) },
-    { key: 'price', text: fields.price, y: 0.68, size: Math.max(44, Math.round(width / 12)) },
-    { key: 'date', text: fields.date, y: 0.78, size: Math.max(24, Math.round(width / 30)) },
+    { key: 'price', text: fields.price, y: 0.62, size: Math.max(44, Math.round(width / 12)) },
+    { key: 'date', text: fields.date, y: 0.74, size: Math.max(24, Math.round(width / 30)) },
+    { key: 'address', text: fields.address, y: 0.80, size: Math.max(20, Math.round(width / 36)) },
     { key: 'phone', text: fields.phone, y: 0.86, size: Math.max(22, Math.round(width / 34)) },
+    { key: 'cta', text: fields.cta, y: 0.92, size: Math.max(20, Math.round(width / 36)) },
   ]
   return entries.filter(item => item.text.trim()).map((item, index) => ({
     id: `poster_${item.key}_${index}`,
