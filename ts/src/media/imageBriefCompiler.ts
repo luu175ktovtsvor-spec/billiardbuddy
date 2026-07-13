@@ -143,6 +143,14 @@ function extractPhone(text: string): string {
   return text.match(/(?:电话|联系电话|预约电话|咨询电话)?\s*1[3-9]\d{9}/u)?.[0]?.trim() ?? ''
 }
 
+function extractAddress(text: string): string {
+  return text.match(/(?:地址|地点|门店地址)[:：\s]*([^，。；;]{2,100})/u)?.[1]?.trim() ?? ''
+}
+
+function extractCta(text: string): string {
+  return text.match(/((?:扫码|立即|马上|点击|进群)[^，。；;]{0,40}(?:报名|预约|咨询|购买|领取|参加))/u)?.[1]?.trim() ?? ''
+}
+
 function inferChange(text: string): string[] {
   const items: string[] = []
   if (/背景|场景/u.test(text)) items.push(text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1] ? `背景：${text.match(/(?:换|改成|改为|放在)([^，。；;]{1,40})背景/u)?.[1]}` : '背景')
@@ -171,9 +179,9 @@ function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
   const price = firstString(fields, 'price', '价格', '售价') || extractPrice(text)
   const date = firstString(fields, 'date', '日期', '活动日期') || extractDate(text)
   const time = firstString(fields, 'time', '时间', '活动时间') || extractTime(text)
-  const address = firstString(fields, 'address', '地址', '门店地址')
+  const address = firstString(fields, 'address', '地址', '门店地址') || extractAddress(text)
   const phone = firstString(fields, 'phone', 'telephone', '电话', '预约电话') || extractPhone(text)
-  const cta = firstString(fields, 'cta', '行动按钮', '按钮')
+  const cta = firstString(fields, 'cta', '行动按钮', '按钮') || extractCta(text)
   const exactCopy = unique([
     title,
     offer,

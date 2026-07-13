@@ -43,12 +43,14 @@ test('model enrichment is discarded when it invents billiards context or busines
 
 test('compiler keeps Chinese business facts in a provider-neutral brief', () => {
   const brief = compileImageBrief({
-    prompt: '做一张周末双人畅打 39.9 元，6月15日，电话 13800138000 的朋友圈海报',
+    prompt: '做一张周末双人畅打 39.9 元，6月15日，地址：中山路 18 号，电话 13800138000，立即扫码报名的朋友圈海报',
     ratio: '9:16',
   })
   expect(brief.scene).toBe('poster')
   expect(brief.poster?.price).toContain('39.9')
   expect(brief.poster?.phone).toContain('13800138000')
+  expect(brief.poster?.address).toBe('中山路 18 号')
+  expect(brief.poster?.cta).toBe('立即扫码报名')
   expect(brief.understanding).toContain('39.9')
   expect(routeImageBrief(brief)).toBe('seedream_4_5')
 })
