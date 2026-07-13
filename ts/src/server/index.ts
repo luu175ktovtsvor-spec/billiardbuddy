@@ -2880,7 +2880,6 @@ export function startServer(opts: StartServerOptions = {}) {
   }
 
   async function prepareStudioImageBody(rawBody: Record<string, unknown>, mode: 'generate' | 'edit'): Promise<Record<string, unknown>> {
-    if (rawBody._store_brand_pack_applied === true) return rawBody
     const store: Record<string, unknown> = await desktopData.getStore().catch(() => ({}))
     const assets = storeBrandAssets(store)
     const brandReferencePaths = assets.map(asset => asset.url)
@@ -2889,16 +2888,16 @@ export function startServer(opts: StartServerOptions = {}) {
     const qrcodeText = optionalString(store.qrcode_text ?? store.qrcode_content ?? store.qr_content)
     const referenceImagePaths = uniqueStrings([...stringArray(rawBody.reference_image_paths), ...brandReferencePaths]).slice(0, 14)
     const suffix = storeBrandSuffix(store, assets, rawBody, mode)
-    const prompt = optionalString(rawBody.image_prompt) ?? optionalString(rawBody.prompt) ?? optionalString(rawBody.description)
     const body: Record<string, unknown> = {
       ...rawBody,
       _store_brand_pack_applied: true,
     }
+    delete body._system_brand_context
     if (referenceImagePaths.length > 0) body.reference_image_paths = referenceImagePaths
     if (logoAsset && !body._print_logo_path) body._print_logo_path = logoAsset.url
     if (qrcodeAsset && !body._print_qr_path) body._print_qr_path = qrcodeAsset.url
     if (qrcodeText && !body._print_qr_content) body._print_qr_content = qrcodeText
-    if (suffix && prompt) body.image_prompt = `${prompt}\n\n${suffix}`
+    if (suffix) body._system_brand_context = suffix
     return body
   }
 
