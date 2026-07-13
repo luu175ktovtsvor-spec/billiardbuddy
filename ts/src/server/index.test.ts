@@ -5343,7 +5343,12 @@ test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline d
   const videoServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: { FFMPEG_BIN: ffmpegPath, FFPROBE_BIN: ffprobePath },
+    env: {
+      FFMPEG_BIN: ffmpegPath,
+      FFPROBE_BIN: ffprobePath,
+      QF_BINARIES_DIR: join(root, 'empty-binaries'),
+      PATH: '/nonexistent/bin',
+    },
   })
   try {
     const startedPlan = await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/video-edit/auto_plan_v2`, {

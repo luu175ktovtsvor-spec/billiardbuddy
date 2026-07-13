@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path'
 import { setActiveAssetManager, type ActiveAssetSource } from '../assets/assetManager'
 import type { EnsureAssetResult } from '../assets/types'
 import {
+  binaryDirs,
   ffmpegBinFrom,
   ffprobeBinFrom,
   gateMediaAssets,
@@ -57,6 +58,11 @@ function isolatedEnv(extra: Record<string, string | undefined> = {}): Record<str
 test('ffmpegBinFrom:env 显式最高且不回退(坏路径也原样用,保持旧降级语义)', () => {
   setActiveAssetManager(stubSource({ ffmpeg: '/managed/ffmpeg' }))
   expect(ffmpegBinFrom(isolatedEnv({ FFMPEG_BIN: '/nonexistent/ffmpeg' }))).toBe('/nonexistent/ffmpeg')
+})
+
+test('QF_BINARIES_DIR 是独占查找边界,不回退到 resources 或 cwd 相邻目录', () => {
+  const env = isolatedEnv({ RESOURCES_PATH: '/fallback/resources' })
+  expect(binaryDirs(env)).toEqual([env.QF_BINARIES_DIR!])
 })
 
 test('ffmpegBinFrom:无显式覆盖时优先资产管理器 ready 路径,其次内置目录,最后 PATH 兜底', () => {

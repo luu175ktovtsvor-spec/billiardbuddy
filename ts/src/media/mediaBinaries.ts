@@ -38,8 +38,10 @@ export function resolveExecutable(command: string, env: Env): string | null {
 
 /** 打包内置 binaries 候选目录:显式 env、prod resourcesPath、cwd/desktop/binaries。 */
 export function binaryDirs(env: Env): string[] {
+  const explicitDir = env.QF_BINARIES_DIR?.trim()
+  // 显式目录是受控查找边界；不要再旁路执行 cwd 或相邻目录里的同名二进制。
+  if (explicitDir) return [resolve(explicitDir)]
   const dirs: string[] = []
-  if (env.QF_BINARIES_DIR?.trim()) dirs.push(resolve(env.QF_BINARIES_DIR.trim()))
   const resourcesPath = env.RESOURCES_PATH || (process as unknown as { resourcesPath?: string }).resourcesPath
   if (resourcesPath) dirs.push(join(resourcesPath, 'binaries'))
   dirs.push(join(process.cwd(), 'desktop', 'binaries'))
