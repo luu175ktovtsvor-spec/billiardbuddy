@@ -101,6 +101,7 @@ import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnsw
 import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
 import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
+import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
@@ -2197,6 +2198,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
   const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
   const websocket = createAgentWebSocketHandler({
     assetTopic: ASSET_WS_TOPIC,
@@ -3433,56 +3435,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
-      // 最近项目(按 workspaceRoot 聚合会话):多项目 App 的项目选择器数据源。
-      if (url.pathname === '/sessions/projects' && req.method === 'GET') {
-        const limit = numberFrom(url.searchParams.get('limit') ?? undefined, 20)
-        return Response.json({ projects: await sessions.recentProjects(limit) })
-      }
-
-      if (url.pathname === '/sessions') {
-        if (req.method === 'GET') {
-          // ?workspaceRoot= 按项目过滤会话列表(项目视图)。
-          const workspaceRoot = url.searchParams.get('workspaceRoot') ?? undefined
-          return Response.json({ sessions: await sessions.list(workspaceRoot ? { workspaceRoot } : undefined) })
-        }
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const meta = await sessions.create({
-            id: typeof body.id === 'string' ? body.id : undefined,
-            title: typeof body.title === 'string' ? body.title : undefined,
-            workspaceRoot: stringOr(body.workspaceRoot, getDefaultWorkspaceDir()),
-          })
-          return Response.json({ session: meta })
-        }
-      }
-
-      // 会话管理:PATCH /sessions/:id {title?,pinned?,archived?} 重命名/置顶/归档;DELETE 删除。
-      // 侧栏会话右键菜单接这里(原来只改前端本地、刷新即丢)。
-      const sessionIdMatch = url.pathname.match(/^\/sessions\/([^/]+)$/)
-      if (sessionIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
-        const id = decodeURIComponent(sessionIdMatch[1]!)
-        const existing = await sessions.get(id).catch(() => null)
-        if (!existing) return jsonDetailError('session not found', 404)
-        if (req.method === 'DELETE') { const ok = await sessions.remove(id); return Response.json({ ok }) }
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const patch: { title?: string; pinned?: boolean; archived?: boolean } = {}
-        if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim()
-        if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
-        if (typeof body.archived === 'boolean') patch.archived = body.archived
-        return Response.json({ session: await sessions.touch(id, patch) })
-      }
-
-      // 会话 fork:用新 id 拷贝源会话 transcript 续接(对齐 cc --fork-session)。
-      const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/)
-      if (sessionForkMatch && req.method === 'POST') {
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        try {
-          const forked = await sessions.fork(decodeURIComponent(sessionForkMatch[1]!), { title: typeof body.title === 'string' ? body.title : undefined })
-          return Response.json({ session: forked })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
+      const sessionMetadataResponse = await handleSessionMetadataRoute(url, req)
+      if (sessionMetadataResponse) return sessionMetadataResponse
 
       if (url.pathname === '/tasks') {
         if (req.method === 'GET') {
