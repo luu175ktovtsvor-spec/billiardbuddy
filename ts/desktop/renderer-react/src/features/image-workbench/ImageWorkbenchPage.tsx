@@ -1085,31 +1085,28 @@ export function CreationPage() {
       : 'block'
   const contentClass = hasWorkbenchStage
     ? 'max-w-[1560px] px-4 pb-7 pt-4 min-[840px]:px-6'
-    : 'max-w-[880px] px-4 py-7 min-[840px]:px-8'
+    : 'max-w-[768px] px-4 py-7 min-[840px]:px-0'
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="creation-page">
       <div className={`mx-auto min-h-full w-full ${contentClass}`}>
         <PageHeader
           title={hasWorkbenchStage ? '创作与编辑' : '开始创作'}
-          action={(
-            <div className="flex items-center gap-3">
-              {saveState !== 'saved' && <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
-                {saveState === 'saving' ? '保存中' : '保存失败'}
-              </span>}
-              <div className="inline-grid grid-cols-2 gap-0.5 rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
-                <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
-                  className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
-                  海报创作
-                </button>
-                <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
-                  className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'portrait')} data-testid="image-workflow-photo">
-                  照片优化
-                </button>
-              </div>
-            </div>
-          )}
+          action={saveState !== 'saved' ? <span className="text-[11px]" style={{ color: saveState === 'failed' ? 'var(--color-error)' : 'var(--color-text-tertiary)' }}>
+            {saveState === 'saving' ? '保存中' : '保存失败'}
+          </span> : undefined}
         />
+
+        <div className="mb-5 inline-grid grid-cols-2 gap-0.5 rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="创作模式">
+          <button type="button" role="tab" aria-selected={intent === 'poster_text'} onClick={() => selectWorkflow('poster')}
+            className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'poster_text')} data-testid="image-workflow-poster">
+            海报创作
+          </button>
+          <button type="button" role="tab" aria-selected={intent === 'portrait'} onClick={() => selectWorkflow('photo_edit')}
+            className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={modeTabStyle(intent === 'portrait')} data-testid="image-workflow-photo">
+            照片优化
+          </button>
+        </div>
 
         {hasWorkbenchStage && <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg p-1 min-[1180px]:hidden" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="工作台视图">
           {([
@@ -1140,26 +1137,29 @@ export function CreationPage() {
         <div className={workspaceLayoutClass}>
         <aside className={`${compactPane === 'create' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-5`}>
           <section className="space-y-3">
-            {intent === 'poster_text' && (
-              <label className="flex items-center gap-3">
-                <span className="w-[64px] shrink-0 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>开始方式</span>
-                <select value={sceneId} onChange={event => selectPosterType(event.target.value)} className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-[12px] outline-none" style={inputStyle} data-testid="poster-type-select">
-                  {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-                </select>
-              </label>
-            )}
-
-            <div className="rounded-lg p-3" style={{ background: 'var(--color-surface-container-low)', border: '1px solid var(--color-border)' }}>
+            <div className="flex flex-col rounded-[22px]" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={3}
-                className="w-full resize-none bg-transparent text-[13px] leading-relaxed outline-none"
-                placeholder={intent === 'portrait' ? '说说想怎么调整；留空时默认自然优化并保留本人' : '说说想做什么海报，需要哪些画面和文字'}
+                className="w-full resize-none bg-transparent px-4 pt-3.5 text-[13px] leading-relaxed outline-none"
+                placeholder={intent === 'portrait' ? '说说想让这张照片变成什么样；不写时只做自然优化' : '说说想做什么海报，需要哪些画面和文字'}
                 style={{ color: 'var(--color-text-primary)' }}
                 data-testid="image-prompt-input"
               />
-              <div className="mt-2 flex flex-wrap items-center gap-2 border-t pt-2" style={{ borderColor: 'var(--color-border)' }}>
+              <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5 pt-1.5">
+                {intent === 'poster_text' && (
+                  <select
+                    aria-label="海报快捷类型"
+                    value={sceneId}
+                    onChange={event => selectPosterType(event.target.value)}
+                    className="max-w-[132px] rounded-md bg-transparent px-2 py-1.5 text-[12px] outline-none transition-colors hover:bg-[var(--color-surface-hover)]"
+                    style={{ color: 'var(--color-text-secondary)' }}
+                    data-testid="poster-type-select"
+                  >
+                    {POSTER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+                  </select>
+                )}
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-secondary)' }}>
                   <IconPlus size={14} /> {intent === 'portrait' ? '上传照片' : '添加参考图'}
                   <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" data-testid="image-reference-input" onChange={(e) => void uploadReferences(e.target.files).catch((err) => toast(err instanceof Error ? err.message : '上传失败'))} />
