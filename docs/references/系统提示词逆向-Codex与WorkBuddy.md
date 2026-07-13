@@ -1,11 +1,11 @@
 # 系统提示词逆向 · Codex 与 WorkBuddy
 
-> 📌 状态:✅现行 · 最后核对 2026-07-11
+> 📌 状态:✅现行 · 最后核对 2026-07-13
 > 记录两款桌面 coding agent 的后台系统提示词真实原文。标 ✅ = 从真实源码/包内抠出的逐字原文;标 🔶 = 结构层面的确认、非逐字。
 >
 > 来源:
 > - Codex:开源 `github.com/openai/codex` → `codex-rs/core/*_prompt.md`(逐字)。
-> - WorkBuddy:解包本机 `/Applications/WorkBuddy.app/Contents/Resources/app.asar`(256 MB)→ `cli/dist/codebuddy.js`(21 MB)。产品内部名 = **CodeBuddy Code**(腾讯)。
+> - WorkBuddy 5.2.5:解包本机 `/Applications/WorkBuddy.app/Contents/Resources/app.asar`，主提示词位于 `cli/product.json:880`，运行 bundle 为 `codebuddy.bun.js`。产品内部名 = **CodeBuddy Code**(腾讯)。
 
 ---
 
@@ -90,19 +90,23 @@ You are producing plain text that will later be styled by the CLI. Follow these 
 
 ## 二、WorkBuddy(CodeBuddy Code)后台系统提示词
 
-产品内部名 = **CodeBuddy Code**(腾讯),是 Claude Code 的派生实现:产品命名(CodeBuddy Code ↔ Claude Code)、子代理结构(后台 fork / 代码审查 / 轻量问答)、记忆系统(user/feedback/project/reference 四类)、`# Memory`/`IMPORTANT:`/`You MUST` 等结构均沿用 Claude Code 那套。
+产品内部名 = **CodeBuddy Code**(腾讯),是 Claude Code 的派生实现:主提示词长句与顺序、产品命名(CodeBuddy Code ↔ Claude Code)、子代理结构(后台 fork / 代码审查 / 轻量问答)、记忆系统(user/feedback/project/reference 四类)、`# Memory`/`IMPORTANT:`/`You MUST` 等结构均沿用 Claude Code 那套。
 
-### 2.1 主 coding-agent 系统提示词:未打进包(config/服务器下发)🔶
+### 2.1 主 coding-agent 系统提示词:已打进 5.2.5 包内✅
 
-主 agent 的系统提示词通过 agent 对象的 `instructions` 字段取得,不是包内明文字面量:
+WorkBuddy 5.2.5 的 `cli/product.json:880` 包含主 Agent 使用的完整 Nunjucks 模板，开头为 `You are CodeBuddy Code.`，并保留 `You are an interactive CLI tool that helps users with software engineering tasks.` 的 coding-agent 默认身份。
 
-~~~js
-getSystemPrompt(eA){return "function"==typeof this.instructions ? await this.instructions(eA,this) : this.instructions}
-~~~
+模板中可与本机 Claude Code 2.1.207 / `cc-haha-ref/src/constants/prompts.ts` 直接对齐的段落包括：
 
-在 `cli/dist/codebuddy.js`、`main/common.js`、`main/module-base.js`、`cli/dist/web-ui/assets/index-*.js` 四个 bundle 里均**搜不到** "You are CodeBuddy Code"、"interactive CLI tool"、"software engineering tasks" 等主身份行。即主 coding-agent 提示词由构造时的 `instructions`(配置/服务器下发)提供,**未随 app 以明文形式分发**,无法从本地包抠出逐字原文。
+- 只有用户要求时使用 emoji。
+- 非必要不新建文件，优先编辑现有文件。
+- 工具调用前不用冒号，并保留同一个示例。
+- 先读代码再提修改、不过度设计、谨慎执行高风险动作。
+- `<system-reminder>`、自动压缩、工具使用和输出效率规则。
 
-以下能抠到逐字原文的,是**嵌入包内的各类子提示词**(✅逐字)。
+它的语言策略也已明文化：内核系统指令和工具描述可保持英文，再用独立 `# Language` 段强制用户回复、任务和自然语言工具参数使用指定语言。
+
+下文继续记录包内其他子提示词和功能提示词。
 
 ### 2.2 后台 fork 子代理(background fork)✅
 
@@ -208,5 +212,5 @@ You MUST refuse to summarize web content that is primarily about politically sen
 ## 方法与边界
 
 - Codex:开源仓库直接读 `*_prompt.md`,逐字完整。
-- WorkBuddy:`asar` 解包 → 抠 `cli/dist/codebuddy.js` 模板字符串(按反引号边界取干净全文)。主 coding-agent 提示词走 `instructions` 字段、未随包明文分发,故只能给出嵌入的子提示词逐字原文 + 主提示词的分发方式结论。
-- 版本:WorkBuddy app.asar 2026-07-08 本机版;Codex `codex-rs` 取 GitHub `main`,随版本变。
+- WorkBuddy:`asar` 解包 → `cli/product.json:880` 主 Nunjucks 模板 + `codebuddy.bun.js` 运行产物 + 包内子提示词交叉验证。早期只搜旧 `cli/dist/codebuddy.js` 得出的“主提示词未入包”结论已被 5.2.5 新证据推翻。
+- 版本:WorkBuddy 5.2.5(2026-07-13 本机核对);Codex `codex-rs` 取 GitHub `main`,随版本变。
