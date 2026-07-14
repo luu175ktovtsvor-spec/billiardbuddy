@@ -11,6 +11,21 @@ test('文本响应', () => {
   expect(acc.finishReason).toBe('stop')
 })
 
+test('非流式 annotations 归一为引用并忽略异常字段', () => {
+  const acc = openaiChatResponseToAccumulated({
+    id: 'x', object: 'chat.completion', created: 0, model: 'm',
+    choices: [{ index: 0, message: {
+      role: 'assistant', content: '带来源回答',
+      annotations: [
+        { type: 'url_citation', url: 'https://example.com/news', title: 'News' },
+        { type: 'url_citation', url: 'https://example.com/news', title: 'Duplicate' },
+        { type: 'url_citation', url: 42 },
+      ],
+    }, finish_reason: 'stop' }],
+  })
+  expect(acc.citations).toEqual([{ url: 'https://example.com/news', title: 'News' }])
+})
+
 test('reasoning_content + tool_calls(args 容错)', () => {
   const acc = openaiChatResponseToAccumulated({
     id: 'x', object: 'chat.completion', created: 0, model: 'm',

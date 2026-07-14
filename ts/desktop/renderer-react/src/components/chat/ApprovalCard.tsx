@@ -1,5 +1,5 @@
 // 审批卡(最小版)。Block B 会用 cc PermissionDialog 替换(权限五档用词照搬 cc + 卡内 diff + 破坏性警告)。
-// 白标:审批只卡对外/不可逆/花钱;生图不弹审批(产品红线,由后端控制,不在此渲染)。
+// renderer 只展示后端权限决策,不在前端自行增加审批类别。
 import type { ChatBlock } from '../../stores/chatStore'
 import { useChatStore } from '../../stores/chatStore'
 import { t } from '../../i18n'

@@ -9,7 +9,7 @@
 //           普通命令在预算不足时先削描述、再退成 names-only。
 //
 // 「斜杠命令 = 技能」:cc SkillTool/prompt.ts 里那句「用户提到 /xxx 指的就是一个 skill,用本工具调它」
-// 在这份清单的 section 头里以中文复刻,让模型既能响应 /台球 这类显式斜杠,也能按清单主动调起。
+// 在这份清单的英文 section 头里复刻,让模型既能响应 /台球 这类显式斜杠,也能按清单主动调起。
 
 import type { CommandLibrary } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
@@ -194,10 +194,10 @@ export function buildSkillCommandListingSection(sources: DiscoverySources): stri
   const listing = formatEntriesWithinBudget(entries, sources.contextWindowTokens)
   if (!listing) return ''
   return [
-    '# 可用技能与命令(斜杠命令 = 技能)',
-    '用户敲 "/<名字>"(例如 /台球、/billiards:daily-ops)就是想调用下面清单里的某个技能或命令 —— 语义等同「斜杠命令就是一个技能」。',
-    '命中后用 use_skill / read_skill(技能)或 read_command(命令)把它展开成完整指令再执行;你也可以在判断某条相关时主动调起,不必等用户敲斜杠。',
-    '这是一份「发现清单」,只列名字 + 一句使用时机:先扫这份判断相关性,真要用某条时再展开读全文,别一次性全展开,也别调用清单里没有的名字。',
+    '# Available Skills and commands (slash commands are Skills)',
+    'When the user enters "/<name>" such as /台球 or /commit, they are invoking a Skill or command from the list below.',
+    'Use use_skill or read_skill for a Skill, or read_command for a command, to expand it into its full instructions before execution. You may also invoke a relevant entry proactively instead of waiting for an explicit slash command.',
+    'This is a discovery list containing only each name and a short usage description. Scan it for relevance, expand only the entry you need, and never invoke a name that is not listed.',
     listing,
   ].join('\n')
 }

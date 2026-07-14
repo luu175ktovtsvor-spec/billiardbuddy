@@ -216,7 +216,7 @@ export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
  * Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."
  */
 export const OUTPUT_TOKEN_LIMIT_RECOVERY_PROMPT =
-  '输出触达长度上限。直接从断点继续,别道歉、别复述你刚才在做什么;如果是在半句话处被截断,就接着那句往下写。把剩下的内容拆成更小的块逐段输出。'
+  'Output token limit hit. Resume directly with no apology or recap. Pick up mid-thought if that is where the cutoff occurred, and break the remaining work into smaller pieces.'
 /**
  * 纯硬停(用户点中断/急停)时循环 yield 的中断消息(对齐 cc createUserInterruptionMessage)。submit-interrupt
  * 不 yield 它(排队的插话会紧跟着提供上下文)。循环只 yield 这条 + return,最终答复由调用方兜底合成。
@@ -557,7 +557,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const memorySelect: MemorySelector = async ({ query, manifest, signal }) => {
         const out = await model.step({
           system: SELECT_MEMORIES_SYSTEM_PROMPT,
-          messages: [userText(`用户的问题:${query}\n\n可选记忆:\n${manifest}`)],
+          messages: [userText(`User request:\n${query}\n\nAvailable memories:\n${manifest}`)],
           tools: [],
           signal,
         })
@@ -678,9 +678,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
       const pendingVerification = ctx.pendingPlanVerification
       if (pendingVerification && !pendingVerification.verificationCompleted && (pendingVerification.toolCallsSinceApproval ?? 0) > 0 && !verifyPlanReminded) {
         verifyPlanReminded = true
-        const reminder = '计划已经开始执行,但还没有通过 VerifyPlanExecution 做收工验证。请先调用 VerifyPlanExecution,带上可复核证据,再给最终总结。'
+        const reminder = 'Plan execution has started but has not yet been verified with VerifyPlanExecution. Call VerifyPlanExecution with reproducible evidence before giving the final summary.'
         messages.push({ role: 'user', content: [textBlock(wrapReminder(reminder))] })
-        yield { type: 'context_note', text: reminder }
+        yield { type: 'context_note', text: '计划已开始执行，但还没有通过 VerifyPlanExecution 完成收工验证。' }
         continue
       }
       const continuation = await applyStopHookContinuation(step.text)
@@ -861,7 +861,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         for (const skill of opts.activateConditionalSkills(batchPaths)) {
           if (activatedConditionalNames.has(skill.name)) continue
           activatedConditionalNames.add(skill.name)
-          followup.push(textBlock(wrapReminder(`技能「${skill.name}」现在可用(你处理的文件匹配了它的触发条件):${skill.description}。需要时用 use_skill / read_skill 调用它。`)))
+          followup.push(textBlock(wrapReminder(`Skill "${skill.name}" is now available because the files you handled matched its activation conditions: ${skill.description}. Use use_skill or read_skill when needed.`)))
           yield { type: 'context_note', text: `条件技能「${skill.name}」已激活(碰到匹配文件)` }
         }
       }
@@ -1240,7 +1240,7 @@ async function* gateOneCall(
       if (answer && isPlanApprovalAnswer(answer)) {
         // cc 的 ExitPlanMode 批准默认高亮项即 "Yes, auto-accept edits" → acceptEdits;
         // 本项目单一"批准并执行"选项映射到同一档:批准整份计划后,实施阶段的文件编辑低摩擦放行,
-        // 不再逐个 write/edit 重复弹卡(对外/不可逆/高风险动作仍走审批闸)。
+        // 不再逐个 write/edit 重复确认；其它工具仍按各自权限元数据解析。
         ctx.permissionMode = 'acceptEdits'
         ctx.pendingPlanVerification = {
           plan,

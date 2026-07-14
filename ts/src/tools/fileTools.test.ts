@@ -419,7 +419,7 @@ test('read_file includes applicable directory project instructions before code c
 
   const out = await fileReadTool.execute({ path: 'packages/app/index.ts' }, ctx)
 
-  expect(out).toContain('# 项目指令')
+  expect(out).toContain('# Project instructions')
   expect(out).toContain('<project_instruction file="packages/BILLIARDBUDDY.md" truncated="false">')
   expect(out).toContain('Use package-local typecheck.')
   expect(out).toContain('export const value = 1')
@@ -506,7 +506,7 @@ test('list_project_instructions previews new-file directory rules and unlocks wr
   writeFileSync(join(root, 'src', 'BILLIARDBUDDY.md'), 'New files must export named symbols.')
 
   const instructions = await projectInstructionsTool.execute({ path: 'src/new.ts' }, ctx)
-  expect(instructions).toContain('# 项目指令')
+  expect(instructions).toContain('# Project instructions')
   expect(instructions).toContain('<project_instruction file="src/BILLIARDBUDDY.md" truncated="false">')
   expect(instructions).toContain('New files must export named symbols.')
   expect(ctx.projectInstructionScopes?.has('src')).toBe(true)

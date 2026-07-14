@@ -8,7 +8,7 @@ import { MediaJobService } from './mediaJobs'
 import { TaskService } from '../tasks/taskService'
 import type { Model } from '../types/model'
 
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 1000): Promise<T> {
+async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 3000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await fn()

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { buildGeneralRegistry } from './generalTools'
 import { Sandbox } from '../sandbox/sandbox'
 import { Workspace } from '../workspace/workspace'
+import { createWebSearchTool } from './webSearchTool'
 
 test('general registry contains the core tools', () => {
   const reg = buildGeneralRegistry()
@@ -22,7 +23,6 @@ test('general registry contains the core tools', () => {
     'SendUserMessage',
     'VerifyPlanExecution',
     'WebFetch',
-    'WebSearch',
     'ask_user_question',
     'code_outline',
     'edit_excel',
@@ -51,6 +51,12 @@ test('general registry contains the core tools', () => {
     'verify_plan_execution',
     'write_file',
   ])
+})
+
+test('general registry exposes WebSearch only when capability was explicitly enabled', () => {
+  expect(buildGeneralRegistry().get('WebSearch')).toBeUndefined()
+  const webSearch = createWebSearchTool({ QF_GATEWAY_URL: 'https://gateway.example', QF_GATEWAY_TOKEN: 'app-token' })
+  expect(buildGeneralRegistry({ webSearch }).get('WebSearch')).toBe(webSearch)
 })
 
 test('general registry specs are model-facing (have parameters)', () => {

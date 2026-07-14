@@ -1,7 +1,7 @@
 import type { Workspace } from '../workspace/workspace'
 import { loadMemoryInjection } from './claudemd'
 import { computeEnvInfo, getGitStatus, getIsGit } from './env'
-import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DENIAL_RULE, DOING_TASKS_SECTION, OUTPUT_EFFICIENCY_SECTION, SAFETY_RED_LINES, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
+import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DOING_TASKS_SECTION, LANGUAGE_SECTION, OUTPUT_EFFICIENCY_SECTION, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
 import { buildSkillCommandListingSection, type DiscoverySources } from './skillListing'
 import type { OutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { buildMemorySystemPrompt } from '../memory/memoryPrompt'
@@ -12,10 +12,11 @@ function autoMemoryEnabled(): boolean {
   return !truthy(process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY) && !truthy(process.env.BILLIARDBUDDY_DISABLE_MEMORY)
 }
 
-const BASE_IDENTITY = '你是一个装在用户电脑上的本机 AI 助手,能读写文件、跑命令,实打实把活干完。'
+const BASE_IDENTITY = 'You are a general-purpose local AI agent running on the user\'s computer. You can read and write files, run commands, and use the available tools to complete real work.'
 
 /**
- * 系统提示装配:白标身份(anti-reveal)+ 基座 + 谨慎执行动作 + 拒绝处理 + 分层记忆注入 + <env> + git 快照。
+ * 系统提示装配:白标身份(anti-reveal)+ 通用基座 + 任务执行口径 + 分层记忆注入 + <env> + git 快照。
+ * 权限模式由 ToolContext/权限解析器独立执行,不写进通用系统提示;领域知识由调用方按会话追加。
  *
  * 分层记忆注入对齐 cc(context.ts:172 getClaudeMds(getMemoryFiles())):不再只注入单层项目指令,而是
  * **四层全量**(Managed → User → Project 根到 CWD 逐级 → Local),让 User 层全局指令
@@ -37,12 +38,11 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
   return [
     buildAntiReveal(),
     BASE_IDENTITY,
-    // 安全红线无条件注入(CLAUDE.md 铁律 #1:与挂没挂领域包无关、用户偏好松不开;台球包 SAFETY_FLOORS 是领域细化版,并存不冲突)
-    SAFETY_RED_LINES,
+    LANGUAGE_SECTION,
     SYSTEM_SECTION,
     ACTIONS_SECTION,
     // 编码纪律章门控(对齐 cc:outputStyleConfig===null 或 keepCodingInstructions===true 才注入):
-    // 选了非编码输出风格且未声明保留 → 跳过「# 做任务」,让风格主导语气/结构。
+    // 选了非编码输出风格且未声明保留 → 跳过「# Doing tasks」,让风格主导语气/结构。
     ...(outputStyle == null || outputStyle.keepCodingInstructions === true ? [DOING_TASKS_SECTION] : []),
     TONE_SECTION,
     OUTPUT_EFFICIENCY_SECTION,
@@ -51,7 +51,6 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
     CODING_WORKFLOW_SECTION,
     VERIFICATION_SECTION,
     TOOL_DISCOVERY_SECTION,
-    DENIAL_RULE,
     ...(skillListing ? [skillListing] : []),
     ...(memoryPrompt ? [memoryPrompt] : []),
     ...(memoryInjection ? [memoryInjection] : []),

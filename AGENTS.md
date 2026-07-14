@@ -4,15 +4,21 @@
 
 任何代码实现、修复、重构或接口调整开始前，完整读取并执行 `.agents/skills/project-change-router/SKILL.md`。先说明改动类别、唯一主责模块、完整调用链、契约位置、预计修改范围、明确不改范围和验证清单，再编辑文件。
 
-按总路由选择一个主单项 Skill；契约、远程服务、安全或发布改动叠加对应 Skill。完成实现后执行 `.agents/skills/verify-modular-change/SKILL.md`。
+按总路由选择一个主单项 Skill；契约、远程服务、凭据或安装包改动叠加对应 Skill。完成实现后执行 `.agents/skills/verify-modular-change/SKILL.md`。
+
+## 任务授权
+
+- 用户明确要求完成某个目标，就在其指定范围内直接执行完成目标所需的步骤，不额外发明流程、限制或二次确认。
+- 授权以用户最新请求的动词、对象和范围为准：分析不等于修改，提交不等于推送，构建不等于发布；已明确要求的动作直接执行，未要求的动作不擅自扩大。
+- 只有缺少会改变结果的必要信息，或必须做超出用户请求范围的事情时才停下询问。
 
 ## 工程边界
 
 - 跨层契约统一放在 `ts/shared/contracts`，由 Zod Schema 推导类型并在边界解析。
-- 功能修改与结构重构分开。非平凡改动使用短生命周期分支和小提交。
+- 功能修改与结构重构分开。默认直接在 `main` 分支开发并使用小提交；除非用户明确要求，不新建或切换功能分支。
 - 新增、删除、改名、拆分或合并模块，或改变连接、部署、验证流程时，同次执行 `.agents/skills/maintain-project-skills/SKILL.md`。
-- 安全敏感改动执行 `audit-security-boundaries`；打包发布执行 `release-desktop-safely`。
-- 声明完成、提交或发布前运行 `bash scripts/quality_gate.sh`，保持 `main` 可构建、可回滚。
+- 涉及凭据、本地命令、远程服务或扩展边界时执行 `audit-security-boundaries`；制作安装包时执行 `release-desktop-safely`。
+- 声明完成、提交或交付前运行 `bash scripts/quality_gate.sh`，保持 `main` 可构建、可回滚。
 
 ## 文档
 

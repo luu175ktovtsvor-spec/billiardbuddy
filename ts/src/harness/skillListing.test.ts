@@ -74,8 +74,8 @@ test('collectDiscoveryEntries 汇总 builtin 命令 + 技能 + 领域包命令,�
   const entries = collectDiscoveryEntries({ commands: merged, skills: { skills: [skill], byName: new Map([[skill.name, skill]]) } })
 
   const bySource = (s: string) => entries.filter(e => e.source === s).map(e => e.name)
-  // 领域包命令(含入口 /台球)= source 'pack'
-  expect(bySource('pack')).toEqual(expect.arrayContaining(['台球', 'billiards:daily-ops', 'billiards:content-plan']))
+  // 领域包只暴露知识挂载入口 /台球
+  expect(bySource('pack')).toEqual(['台球'])
   // 技能 = source 'skill'
   expect(bySource('skill')).toEqual(['commit'])
   // doctor 这类命令 = source 'builtin'
@@ -110,14 +110,14 @@ test('formatEntriesWithinBudget: 预算不足时截断,但 alwaysInclude(技能/
   process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET = '80' // 极小预算,强制退成 names-only
   try {
     const entries = [
-      skillEntry('台球', '台球运营专家入口:切进台球房经营专家视角作答', '老板问球房经营/活动/助教/短视频时'),
+      skillEntry('台球', '挂载台球运营知识库', '需要台球运营知识时'),
       builtinEntry('doctor', '自检环境:检查依赖、模型连通、权限档,给出可执行修复建议', '排查环境/连通性问题时'),
       builtinEntry('help', '列出所有可用命令与用法', '想知道能做什么时'),
     ]
     const out = formatEntriesWithinBudget(entries)
     const lines = out.split('\n')
     // 领域包入口整行保留(name + 完整描述 + 使用时机)
-    expect(lines[0]).toBe('- /台球: 台球运营专家入口:切进台球房经营专家视角作答 - 老板问球房经营/活动/助教/短视频时')
+    expect(lines[0]).toBe('- /台球: 挂载台球运营知识库 - 需要台球运营知识时')
     // 普通命令退成 names-only,描述被削掉
     expect(out).toContain('- /doctor\n')
     expect(out).toContain('- /help')
@@ -133,11 +133,11 @@ test('formatEntriesWithinBudget: 中等预算时普通命令削描述(不整行�
   process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET = '70'
   try {
     const entries = [
-      skillEntry('台球', '台球运营专家入口', '进台球专家视角时'),
+      skillEntry('台球', '挂载台球运营知识库', '需要台球运营知识时'),
       builtinEntry('doctor', '自检环境并给出可执行修复建议,覆盖依赖/模型连通/权限档等多项检查', '排查环境/连通性问题时'),
     ]
     const out = formatEntriesWithinBudget(entries)
-    expect(out).toContain('- /台球: 台球运营专家入口 - 进台球专家视角时')
+    expect(out).toContain('- /台球: 挂载台球运营知识库 - 需要台球运营知识时')
     // doctor 保留 name + 被截断的描述(带省略号),而不是被整条丢弃或退成 names-only
     expect(out).toMatch(/- \/doctor: .+…/)
   } finally {
@@ -150,14 +150,16 @@ test('buildSkillCommandListingSection: 含 cc「斜杠命令=技能」语义 + �
   const packs = resolveEnabledPacks({ enabled_packs: ['台球'] })
   const commands = createDomainPackCommandLibrary(packs)!
   const section = buildSkillCommandListingSection({ commands })
-  expect(section).toContain('# 可用技能与命令(斜杠命令 = 技能)')
+  expect(section).toContain('# Available Skills and commands (slash commands are Skills)')
   expect(section).toContain('/台球')
-  expect(section).toContain('发现清单')
-  expect(section).toContain('别一次性全展开')
-  // billiards 领域包命令进清单
+  expect(section).toContain('This is a discovery list')
+  expect(section).toContain('expand only the entry you need')
+  // 条目描述保留 Skill/命令自身的原始语言。
+  expect(section).toContain('挂载台球运营知识库')
+  // billiards 只提供知识挂载入口,不提供预设工作流子命令
   expect(section).toContain('/台球:')
-  expect(section).toContain('/billiards:daily-ops:')
-  expect(section).toContain('/billiards:content-plan:')
+  expect(section).not.toContain('/billiards:daily-ops:')
+  expect(section).not.toContain('/billiards:content-plan:')
 })
 
 test('buildSkillCommandListingSection: 没有任何可发现条目时返回空串', () => {
@@ -173,7 +175,7 @@ test('toPublicCommandEntries: 输出 name/description/source(+可选 whenToUse/a
   expect(entry).toMatchObject({
     name: '台球',
     source: 'pack',
-    description: expect.stringContaining('台球运营专家入口'),
+    description: '挂载台球运营知识库',
     whenToUse: expect.stringContaining('也可直接敲 /台球'),
   })
   expect(entries.every(e => ['builtin', 'skill', 'pack'].includes(e.source))).toBe(true)

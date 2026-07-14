@@ -9,7 +9,7 @@ export const VERIFY_PLAN_REMIND_EVERY = 3
 /** plan 模式提醒节流:每 N 个工具批次注入一次(对齐 cc TURNS_BETWEEN_ATTACHMENTS=5),不再每批必发。 */
 export const PLAN_REMIND_EVERY = 5
 export const PLAN_MODE_REMINDER =
-  '你现在处于【计划模式】:只规划、不动手。用只读工具去探索,把完整、分步的计划讲清楚给老板;会实际改动的步骤先别做,等老板切到执行档或确认后再做。'
+  'You are in plan mode. Research and design the solution without implementing it. Use read-only tools to explore, produce a complete step-by-step plan, and wait for approval before making implementation changes.'
 
 /**
  * 计划模式系统提醒(对齐 cc getPlanModeV2Instructions:每轮以 system-reminder 注入)。带上**计划文件路径 +
@@ -20,12 +20,12 @@ export function planModeReminder(planFilePath?: string): string {
   if (!planFilePath) return PLAN_MODE_REMINDER
   return [
     PLAN_MODE_REMINDER,
-    `计划文件:${planFilePath} —— 这是计划模式下你唯一可以编辑的文件。用 write_file 新建、edit_file 增量修改,把完整、分步的方案写进去;其它一切只做只读探索。`,
-    '计划写好后,调用 ExitPlanMode 收尾请求批准(ExitPlanMode 不吃计划正文参数,它会直接从这个文件里读)。',
+    `Plan file: ${planFilePath}. This is the only file you may edit in plan mode. Create it with write_file and update it with edit_file; keep all other exploration read-only.`,
+    'When the plan is complete, call ExitPlanMode to request approval. ExitPlanMode reads the plan directly from this file and does not accept the plan body as an argument.',
   ].join('\n')
 }
 export const VERIFY_PLAN_REMINDER =
-  '你已经开始执行批准后的计划。完成实施后必须直接调用 VerifyPlanExecution,并带上命令输出、诊断、文件读取、截图或人工检查等可复核证据;不要只用一句总结代替验证。'
+  'You have started executing an approved plan. After implementation, call VerifyPlanExecution with reproducible evidence such as command output, diagnostics, file reads, screenshots, or manual checks. Do not substitute a summary for verification.'
 
 /** 系统提醒包壳:系统提示已告诉模型 <system-reminder> 是系统自动加的、不是老板说的话。 */
 export function wrapReminder(content: string): string {
@@ -61,7 +61,7 @@ export function collectReminders(ctx: ToolContext): Array<{ kind: 'progress' | '
     const pct = todos.length ? Math.round((todos.filter(t => t.status === 'done').length / todos.length) * 100) : 0
     out.push({
       kind: 'progress',
-      text: `你已经连着调了 ${PROGRESS_REMIND_EVERY} 次工具没更新任务清单。若在做多步任务,记得用 todo_write 更新进度(当前约 ${pct}%),别让老板和你自己跟丢了。`,
+      text: `You have made ${PROGRESS_REMIND_EVERY} consecutive tool calls without updating the task list. For multi-step work, use todo_write to update progress (currently about ${pct}%) so the user and you can track the remaining work.`,
     })
   }
   // plan 提醒节流(对齐 cc,不再每批必发):首批(count=0)必发,之后每 PLAN_REMIND_EVERY 批一次。

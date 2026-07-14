@@ -22,7 +22,7 @@ import { StoreDocsService, createStoreDocsTool } from './services/storeDocsServi
 import { getLogger } from '../utils/logger'
 import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLocalCors } from './middleware/http'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
-import { buildGeneralRegistry } from '../tools/generalTools'
+import { buildGeneralRegistry, createRuntimeWebSearchToolResolver } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
 import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
@@ -84,7 +84,6 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 import { getUserConfigHomeDir } from '../harness/memoryNames'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
-
 import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
 import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
 import { isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
@@ -219,6 +218,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
   const pluginRoots = defaultPluginRoots(opts.env ?? process.env)
+  const resolveWebSearchTool = createRuntimeWebSearchToolResolver(opts.env ?? process.env, opts.fetchImpl)
   // MCP OAuth 令牌落盘目录(锚 stateRoot,跨会话/重启复用):所有 MCP 加载点共享;
   // 仅主对话(用户在场的 SSE 流)允许 interactive 授权,探测/列表/legacy 执行 interactive:false——
   // 复用已落盘令牌即可,绝不让"点开设置页/查列表"触发浏览器授权弹窗。
@@ -708,8 +708,8 @@ export function startServer(opts: StartServerOptions = {}) {
     // 领域包启用来源三合一(owner 设计:斜杠命令 /台球 → 主循环注入 pack → 自动找内容 + 跨回合保持):
     //   ① 请求体 enabled_packs(前端专家选择器);② 本回合斜杠入口命令(/台球、/球房、/billiards…→ packIdForCommandName);
     //   ③ 会话已持久化的 enabledPacks(上一回合敲过入口命令,即便这回合前端没回传也保持在模式里)。
-    // 必须在 loadCommandsForWorkspace 之前合并——领域包命令(/台球、/billiards:daily-ops)只在 pack 已启用时才加载;
-    // 这样斜杠命令本回合就能被识别为命令(注入 prompt)+ 拿到 pack 的 sessionStartContext 知识 + billiards_ops_checklist 工具。
+    // 必须在 loadCommandsForWorkspace 之前合并——这样 /台球 本回合就能挂载
+    // sessionStartContext 知识目录和 billiards_knowledge_search 工具。
     const entryCommandForPack = rawBody.skipCommandParsing ? null : parseCommandInvocation(rawUserMessage)
     const slashEnabledPackId = entryCommandForPack ? packIdForCommandName(entryCommandForPack.name) : undefined
     const persistedPackIds = Array.isArray(touchedMeta.enabledPacks) ? touchedMeta.enabledPacks : []
@@ -769,8 +769,8 @@ export function startServer(opts: StartServerOptions = {}) {
       : undefined
     let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens, activatedConditionalSkills }, outputStyleConfig)
     // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style') + keepCodingInstructions
-    // 门控),不再拼到尾部 extraContext。领域包上下文(billiards 等)每回合直接进系统提示——它是"我是谁"的域身份、
-    // 每回合都得在,不再骑 SessionStart hook(那会让 SessionStart 每回合重触发,丁审计发现)。
+    // 门控),不再拼到尾部 extraContext。领域包上下文(billiards 等)是会话挂载的知识上下文,
+    // 每回合直接进系统提示,但不改写通用 Agent 身份、权限或规划逻辑。
     const domainPackContext = enabledPacks.map(pack => pack.sessionStartContext).filter(Boolean).join('\n\n')
     const extraContext = [
       supportContext(rawBody),
@@ -969,8 +969,8 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     const mediaTools = createMediaTools(media, { videoEditing })
     const storeDocTools = [createStoreDocsTool(storeDocs)]
-    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
-    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
     // 子代理 model 解析(对齐 cc getAgentModel):agent frontmatter 的 model 名匹配某个已配置 provider
     // runtime 的模型名时,用该 runtime 单独构造模型;不匹配 → null → agentTool 回退父模型。
     // 白标单模型下 runtimes 通常只有一档,匹配到同名即用、否则回退——机制真接通,owner 配多档即生效。
@@ -1046,7 +1046,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const backgroundTools = agents.length > 0
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
-    const registry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
+    const registry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
     const launchContextForkCommand = async (command: PromptCommand): Promise<string> => {
       const expandedPrompt = commandInvocation?.prompt.trim() ?? ''
       if (!expandedPrompt) return `/${command.name} 没有可执行的命令内容。`
@@ -1555,7 +1555,7 @@ export function startServer(opts: StartServerOptions = {}) {
       skills: runtimeExtensions.skills,
       skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
-      commands: runtimeExtensions.commands,
+      commands: runtimeExtensions.commands, webSearch: await resolveWebSearchTool(),
       extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
     })
     return { workspace, registry, connections: mcpTools.connections }

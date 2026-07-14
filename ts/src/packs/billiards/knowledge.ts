@@ -315,7 +315,7 @@ export const KNOWLEDGE: KnowledgeEntry[] = [
   },
 ]
 
-// 两条 PPT 自身立的真底线(独立于挂载、始终守;= 安全红线在领域里的落点)
+// 原始知识材料中的两条经营底线,作为可检索知识保留,不注入通用 Agent 权限或全局规则。
 export const SAFETY_FLOORS: { title: string; text: string; src: { line: string; page: string } }[] = [
   {
     title: '助教守自爱、不滑向实际性交易',

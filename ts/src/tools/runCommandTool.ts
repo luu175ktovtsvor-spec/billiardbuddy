@@ -163,8 +163,8 @@ function commandRiskReason(risk: CommandRisk, sensitiveRead = false, externalRea
   if (externalRead) return '该命令读取的路径超出了当前工作区(及已授权的外部目录)边界。'
   if (risk === 'read') return '这是只读查询命令。'
   if (risk === 'file') return '该命令可能修改工作区文件或生成构建产物。'
-  if (risk === 'outreach') return '该命令可能访问网络、安装依赖或触达外部服务。'
-  return '该命令可能造成不可逆删除或大范围改动。'
+  if (risk === 'outreach') return '该命令可能访问网络、安装依赖或产生系统副作用。'
+  return '该命令可能删除数据或造成大范围改动。'
 }
 
 function commandRiskImpact(risk: CommandRisk, sensitiveRead = false, externalRead = false): string {
@@ -172,7 +172,7 @@ function commandRiskImpact(risk: CommandRisk, sensitiveRead = false, externalRea
   if (externalRead) return '确认后命令可以读取工作区之外任意路径的文件内容；请确认目标路径可信。'
   if (risk === 'read') return '只读取本机状态或文件内容。'
   if (risk === 'file') return '可能写入、移动、删除或格式化工作区内文件。'
-  if (risk === 'outreach') return '可能产生网络访问、副作用或外部账号操作。'
+  if (risk === 'outreach') return '可能产生网络访问或系统副作用。'
   return '需要用户确认后才应执行;灾难级命令会被直接拒绝。'
 }
 

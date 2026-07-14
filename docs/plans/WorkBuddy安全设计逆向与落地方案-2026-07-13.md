@@ -184,6 +184,18 @@ WorkBuddy 有 `contextIsolation`、sandboxed renderer、多 preload 和本地协
 
 这些是反例，不是“大厂最佳实践”。
 
+### 3.7 Codex、CC 与 WorkBuddy 的联网和放权差异
+
+三者都不是“安装后默认获得电脑全部权限”。共同做法是把低风险读取、工作区写入、网络访问和宿主级完全访问拆开，只在用户显式选择高权限档时扩大执行边界。
+
+| 产品 | 默认文件边界 | 搜索/网页访问 | 完全访问 |
+|---|---|---|---|
+| Codex | 默认围绕当前工作区读写；工作区外动作按授权和审批处理 | 原生 `web_search` 默认走 OpenAI 维护索引的 cached 模式，与 shell 网络权限分开；live 搜索显式开启，浏览、下载、历史记录和电脑操作仍是独立能力 | 显式档位，开启前有风险确认；不是默认状态 |
+| CC/cc-haha | `default`/`acceptEdits` 等档位决定普通工具审批，沙箱和路径规则另行生效 | `WebSearch` 低打扰；`WebFetch` 对预批准文档域放行，陌生域名按 host 询问 | `bypassPermissions` 跳过普通审批，但产品宿主仍应保留强制确认和硬 deny |
+| WorkBuddy | 会话权限、沙箱、文件规则和 OS 授权分开显示 | 延续 CC 的搜索/抓取工具模型，并额外展示网络策略和审计状态 | 独立高风险入口，二次确认后生效，可随时撤回 |
+
+本项目采用三者的交集，而不是照抄某一个产品：绑定工作目录的会话默认 `acceptEdits`；`WebSearch` 通过自有 gateway 的受保护 provider 出口执行并免普通审批；`WebFetch` 只对预批准文档域免审批，陌生域名按 host 询问；`bypassPermissions` 必须由当前会话显式开启，并同时向执行层传递 `full_disk_access`，不能由后端仅凭权限档推断，更不能让定时任务等无人值守调用自动获得全盘访问。
+
 ## 4. 设置页告诫应怎样落到本项目
 
 ### 4.1 必须展示的不是说明书，而是当前事实
@@ -234,7 +246,6 @@ WorkBuddy 有 `contextIsolation`、sandboxed renderer、多 preload 和本地协
 | P0 | `fullDiskAccess` 让 OS 沙箱不激活 | `sandbox.ts:29-35` | 扩目录授权同时拆掉命令隔离 |
 | P0 | Windows Job Object 尚为占位，返回明文执行 | `ts/src/sandbox/windowsLauncher.ts:14-24` | Windows 无 OS 文件系统围栏 |
 | P0 | bypass 在危险命令判定前直接 allow | `ts/src/permissions/resolve.ts:223-230` | 完全访问可执行删根/格式化等命令 |
-| P0 | Composer 单击即切换完全访问 | `ts/desktop/renderer-react/src/components/chat/Composer.tsx:90-115` | 无风险确认与独立确认凭据 |
 | P0 | sidecar REST/WS 无启动级鉴权；CORS 不是鉴权 | `ts/src/server/index.ts:3382-3398`、`:4944-5027` | 本机网页/进程可尝试运行、回放、审批 |
 | P0 | renderer CSP 允许 `unsafe-inline`、`unsafe-eval` | `ts/desktop/renderer-react/index.html:11-12` | renderer 注入后的宿主攻击面扩大 |
 | P0 | top-level navigation 未见同等阻断；路径 IPC 仅做非空/长度检查 | `navigationGuards.ts`、`main.ts:339-347` | renderer 可请求打开任意绝对路径 |

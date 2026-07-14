@@ -160,8 +160,8 @@ test('legacy frontend capability endpoints are served by TS server', async () =>
   expect(Array.isArray(mcp.servers)).toBe(true)
 })
 
-test('GET /api/v1/agent/commands 汇总 builtin+skill+启用领域包命令,billiards 按 /台球 别名启用时进清单', async () => {
-  // 不启用领域包:激活入口始终可发现,领域子命令仍不装配
+test('GET /api/v1/agent/commands 汇总 builtin+skill+领域知识挂载入口', async () => {
+  // 不启用领域包:激活入口始终可发现
   const genericRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`)
   expect(genericRes.status).toBe(200)
   const generic = await genericRes.json() as { commands: Array<{ name: string; description: string; source: string; argHint?: string; whenToUse?: string }> }
@@ -171,15 +171,15 @@ test('GET /api/v1/agent/commands 汇总 builtin+skill+启用领域包命令,bill
   // source 只在约定枚举内
   expect(generic.commands.every(command => ['builtin', 'skill', 'pack', 'plugin'].includes(command.source))).toBe(true)
 
-  // 用别名 台球 启用领域包:入口 /台球 + billiards:* 子命令进清单,且标 source=pack
+  // 启用领域包后仍只有 /台球 入口,不新增领域工作流子命令
   const packRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands?conversationId=c1&enabledPacks=${encodeURIComponent('台球')}`)
   expect(packRes.status).toBe(200)
   const packed = await packRes.json() as { commands: Array<{ name: string; source: string }> }
   const names = packed.commands.map(command => command.name)
-  expect(names).toEqual(expect.arrayContaining(['台球', 'billiards:daily-ops', 'billiards:content-plan']))
+  expect(names).toContain('台球')
+  expect(names.some(name => name.startsWith('billiards:'))).toBe(false)
   const entry = packed.commands.find(command => command.name === '台球')!
   expect(entry.source).toBe('pack')
-  expect(packed.commands.find(command => command.name === 'billiards:daily-ops')!.source).toBe('pack')
 
   // POST 不允许
   const post = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`, { method: 'POST' })
@@ -674,8 +674,8 @@ test('POST /api/v1/agent/execute 区分领域包字段缺失与显式空数组',
   const svc = new SessionService(serverRoot)
   await svc.create({ id: conversationId, title: 'pack state', workspaceRoot: serverRoot })
   await svc.touch(conversationId, { enabledPacks: ['billiards'] })
-  const tool = 'billiards_ops_checklist'
-  const args = { scenario: '日报' }
+  const tool = 'billiards_knowledge_search'
+  const args = { query: '日报' }
   const request = (body: Record<string, unknown>) => fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
     method: 'POST',
     body: JSON.stringify({
@@ -1115,6 +1115,48 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
     realServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
   }
+})
+
+test('POST /agent/run exposes WebSearch to the model only when gateway health enables it', async () => {
+  async function modelToolNames(webSearchEnabled: boolean): Promise<string[]> {
+    const transcriptRoot = mkdtempSync(join(tmpdir(), `agent-web-search-${webSearchEnabled ? 'on' : 'off'}-`))
+    let modelRequest: any
+    const capabilityServer = startServer({
+      port: 0,
+      transcriptRoot,
+      env: {
+        DEEPSEEK_BASE_URL: 'https://model.example/v1',
+        DEEPSEEK_API_KEY: 'model-token',
+        TEXT_MODEL_NAME: 'mimo-v2.5',
+        QF_GATEWAY_URL: 'https://gateway.example',
+        QF_GATEWAY_TOKEN: 'app-token',
+      },
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        if (url === 'https://gateway.example/healthz') {
+          expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer app-token')
+          return Response.json({ ok: true, features: { web_search: webSearchEnabled } })
+        }
+        modelRequest = JSON.parse(String(init?.body ?? '{}'))
+        return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'done' }, finish_reason: 'stop' }] })
+      },
+    })
+    try {
+      const response = await fetch(`http://127.0.0.1:${capabilityServer.port}/agent/run`, {
+        method: 'POST',
+        body: JSON.stringify({ message: '查一下最新资料', conversationId: `web-search-${webSearchEnabled}`, permissionMode: 'full' }),
+      })
+      expect(response.status).toBe(200)
+      await response.text()
+      return (modelRequest.tools ?? []).map((tool: any) => tool.function.name)
+    } finally {
+      capabilityServer.stop(true)
+      rmSync(transcriptRoot, { recursive: true, force: true })
+    }
+  }
+
+  expect(await modelToolNames(false)).not.toContain('WebSearch')
+  expect(await modelToolNames(true)).toContain('WebSearch')
 })
 
 // 错误路径兜底(B 线调用方):runAgentLoop 错误出口 throw 后,server 必须在 catch 里合成一条最终答复,
@@ -2686,8 +2728,9 @@ test('POST /agent/run 域包上下文每回合直接进系统提示(不再骑 Se
     // 域包上下文每回合直接进系统提示(extraContext),不再走 SessionStart hook_context 块(那会让 SessionStart 每回合重触发)
     expect(systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
     expect(systemPrompt).not.toContain('<hook_context event="SessionStart">') // 域包不再骑 hook
-    // 启用 billiards 后系统提示应surface本包的可调命令(稳定断言用命令名,不耦合领域包措辞;task#12 在重策展 sessionStartContext 文案)。
-    expect(systemPrompt).toContain('/billiards:daily-ops')
+    expect(systemPrompt).toContain('/台球')
+    expect(systemPrompt).toContain('billiards_knowledge_search')
+    expect(systemPrompt).not.toContain('/billiards:daily-ops')
   } finally {
     packServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
@@ -2734,8 +2777,8 @@ test('POST /agent/run exposes domain pack tools only when the pack is enabled', 
     expect(enabled.status).toBe(200)
     await enabled.text()
 
-    expect(toolsByCall[0]).not.toContain('billiards_ops_checklist')
-    expect(toolsByCall[1]).toContain('billiards_ops_checklist')
+    expect(toolsByCall[0]).not.toContain('billiards_knowledge_search')
+    expect(toolsByCall[1]).toContain('billiards_knowledge_search')
   } finally {
     packServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
@@ -2805,18 +2848,18 @@ test('POST /agent/run keeps domain packs isolated per session and removes all pa
     const disabled = calls.get('PACK_STATE_A_DISABLED')!
     expect(calls.size).toBe(4)
     expect(enabled.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
-    expect(enabled.systemPrompt).toContain('\n- /billiards:daily-ops')
-    expect(enabled.tools).toContain('billiards_ops_checklist')
+    expect(enabled.systemPrompt).toContain('\n- /台球')
+    expect(enabled.tools).toContain('billiards_knowledge_search')
 
     expect(isolated.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
-    expect(isolated.tools).not.toContain('billiards_ops_checklist')
+    expect(isolated.tools).not.toContain('billiards_knowledge_search')
 
     expect(inherited.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
-    expect(inherited.tools).toContain('billiards_ops_checklist')
+    expect(inherited.tools).toContain('billiards_knowledge_search')
 
     expect(disabled.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
-    expect(disabled.systemPrompt).not.toContain('\n- /billiards:daily-ops')
-    expect(disabled.tools).not.toContain('billiards_ops_checklist')
+    expect(disabled.systemPrompt).not.toContain('\n- /台球')
+    expect(disabled.tools).not.toContain('billiards_knowledge_search')
     expect(await new SessionService(transcriptRoot).get('pack-session-a')).toMatchObject({ enabledPacks: [] })
   } finally {
     packServer.stop(true)
@@ -2825,7 +2868,7 @@ test('POST /agent/run keeps domain packs isolated per session and removes all pa
   }
 })
 
-test('POST /agent/run uses enabled pack recommendations for list_skills filtering', async () => {
+test('POST /agent/run does not prescribe skills from an enabled knowledge pack', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-pack-skills-transcript-'))
   const skillsRoot = join(transcriptRoot, 'skills')
   mkdirSync(join(skillsRoot, 'daily-report'), { recursive: true })
@@ -2877,11 +2920,12 @@ Generic instructions.
     })
     expect(res.status).toBe(200)
     const text = await res.text()
-    expect(text).toContain('daily-report [推荐]: Write daily store reports')
+    expect(text).toContain('当前没有匹配技能')
+    expect(text).not.toContain('daily-report [推荐]')
     expect(text).not.toContain('generic-helper')
     expect(calls).toBe(2)
     expect(sentBodies[0].tools.some((t: any) => t.function.name === 'list_skills')).toBe(true)
-    expect(JSON.stringify(sentBodies[1].messages)).toContain('已启用领域包推荐技能优先展示')
+    expect(JSON.stringify(sentBodies[1].messages)).not.toContain('已启用领域包推荐技能优先展示')
   } finally {
     packServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
@@ -4274,7 +4318,7 @@ Write the requested file from the fork worker.
   }
 })
 
-test('POST /agent/run expands enabled domain pack slash commands', async () => {
+test('POST /agent/run expands the billiards knowledge activation command', async () => {
   const root = mkdtempSync(join(tmpdir(), 'server-domain-pack-command-invoke-'))
   const commandsRoot = join(root, 'commands')
   mkdirSync(commandsRoot, { recursive: true })
@@ -4305,7 +4349,7 @@ test('POST /agent/run expands enabled domain pack slash commands', async () => {
     const res = await fetch(`http://127.0.0.1:${commandRunServer.port}/agent/run`, {
       method: 'POST',
       body: JSON.stringify({
-        message: '/billiards:content-plan 周末活动',
+        message: '/台球 周末活动',
         conversationId: 'domain-pack-cmd-invoke',
         workspaceRoot: root,
         permissionMode: 'full',
@@ -4316,8 +4360,9 @@ test('POST /agent/run expands enabled domain pack slash commands', async () => {
     const text = await res.text()
     expect(text).toContain('event: command_invocation')
     expect(text).toContain('内容计划完成')
-    expect(JSON.stringify(sentBody.messages)).toContain('命令: /billiards:content-plan')
-    expect(JSON.stringify(sentBody.messages)).toContain('领域包: 台球运营专家')
+    expect(JSON.stringify(sentBody.messages)).toContain('命令: /台球')
+    expect(JSON.stringify(sentBody.messages)).toContain('领域包: 台球运营知识库')
+    expect(JSON.stringify(sentBody.messages)).toContain('继续按通用 Agent 的正常方式')
     expect(JSON.stringify(sentBody.messages)).toContain('周末活动')
 
     const replay = await fetch(`http://127.0.0.1:${commandRunServer.port}/sessions/domain-pack-cmd-invoke/events`)
@@ -4325,9 +4370,9 @@ test('POST /agent/run expands enabled domain pack slash commands', async () => {
     expect(replayBody.events[0].event.type).toBe('user_prompt')
     expect(replayBody.events[1].event).toMatchObject({
       type: 'command_invocation',
-      name: 'billiards:content-plan',
+      name: '台球',
       args: '周末活动',
-      raw: '/billiards:content-plan 周末活动',
+      raw: '/台球 周末活动',
     })
   } finally {
     commandRunServer.stop(true)

@@ -6,6 +6,21 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
+import {
+  createGatewayWebSearch,
+  GatewayWebSearchError,
+  type GatewayWebSearch,
+} from './webSearch'
+import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
+import {
+  fetchMimoWithRetry,
+  loadMimoAllowedModels,
+  loadMimoNativeSearchConfig,
+  MimoRequestError,
+  MimoUsageTracker,
+  prepareMimoChatBody,
+  type MimoNativeSearchConfig,
+} from './mimoChat'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -24,21 +39,24 @@ type GatewayConfig = {
   amapBase: string
   appTokens: Map<string, string>
   mimoRpm: number
+  mimoConc: number
+  mimoUserConc: number
+  mimoQueueMaxWait: number
+  mimoRetryMax: number
+  mimoRetryBaseMs: number
+  mimoRetryMaxMs: number
+  mimoAllowedModels: ReadonlySet<string>
+  mimoNativeSearch: MimoNativeSearchConfig
   imgIpm: number
   imgConc: number
-  qChat: number
-  qImg: number
   queueMaxWait: number
   arkChatRpm: number
-  qArkChat: number
   arkImgIpm: number
   arkImgConc: number
-  qArkImg: number
-  qAmap: number
   transcribeRpm: number
   transcribeConc: number
-  qTranscribe: number
   transcribeMaxBytes: number
+  webSearchRpm: number
 }
 
 type UsageEntry = {
@@ -51,7 +69,6 @@ type UsageEntry = {
 }
 
 export interface UsageStore {
-  usedToday(user: string, model: string): number | Promise<number>
   log(entry: UsageEntry): void | Promise<void>
   todayByModel(): Array<{ model: string; total: number; ok: number }> | Promise<Array<{ model: string; total: number; ok: number }>>
   recent(n: number): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>
@@ -62,6 +79,9 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
+  webSearchImpl?: GatewayWebSearch | null
+  mimoRetrySleep?: (ms: number) => Promise<void>
+  mimoRetryRandom?: () => number
 }
 
 export class HttpError extends Error {
@@ -83,7 +103,7 @@ class TokenBucket {
     this.rate = this.capacity / 60_000
   }
 
-  async acquire(maxWaitSeconds: number): Promise<void> {
+  async acquire(maxWaitSeconds: number, signal?: AbortSignal): Promise<void> {
     const previous = this.chain
     let release!: () => void
     this.chain = new Promise<void>(resolve => { release = resolve })
@@ -91,6 +111,7 @@ class TokenBucket {
     try {
       const deadline = performance.now() + Math.max(0, maxWaitSeconds) * 1000
       while (true) {
+        if (signal?.aborted) throw new HttpError(499, '请求已取消')
         const now = performance.now()
         this.tokens = Math.min(this.capacity, this.tokens + (now - this.ts) * this.rate)
         this.ts = now
@@ -102,7 +123,7 @@ class TokenBucket {
         if (performance.now() + needMs > deadline) {
           throw new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')
         }
-        await sleep(Math.min(needMs, 500))
+        await sleep(Math.min(needMs, 500), signal)
       }
     } finally {
       release()
@@ -162,13 +183,6 @@ export class SqliteUsageStore implements UsageStore {
     )
   }
 
-  usedToday(user: string, model: string): number {
-    const row = this.db
-      .query('SELECT COUNT(*) AS n FROM usage WHERE day=? AND user=? AND model=? AND ok=1')
-      .get(todayCst(), user, model) as { n?: number } | undefined
-    return Number(row?.n ?? 0)
-  }
-
   log(entry: UsageEntry): void {
     this.db
       .query('INSERT INTO usage(ts,day,user,model,ok,status,ms,note) VALUES(?,?,?,?,?,?,?,?)')
@@ -191,11 +205,6 @@ export class SqliteUsageStore implements UsageStore {
 
 export class MemoryUsageStore implements UsageStore {
   readonly rows: Array<UsageEntry & { ts: string; day: string }> = []
-
-  usedToday(user: string, model: string): number {
-    const day = todayCst()
-    return this.rows.filter(row => row.day === day && row.user === user && row.model === model && row.ok).length
-  }
 
   log(entry: UsageEntry): void {
     this.rows.push({ ...entry, ts: timestampCst(), day: todayCst() })
@@ -227,8 +236,21 @@ export class MemoryUsageStore implements UsageStore {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new HttpError(499, '请求已取消'))
+    const timer = setTimeout(done, ms)
+    const abort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      reject(new HttpError(499, '请求已取消'))
+    }
+    function done() {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
 }
 
 function intEnv(env: Env, name: string, fallback: number): number {
@@ -273,21 +295,24 @@ function loadConfig(env: Env): GatewayConfig {
     amapBase: (env.GW_AMAP_BASE ?? 'https://restapi.amap.com').replace(/\/+$/, ''),
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 90),
+    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
+    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
+    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
+    mimoRetryMax: Math.max(0, intEnv(env, 'GW_MIMO_MAX_RETRIES', 3)),
+    mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
+    mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
+    mimoAllowedModels: loadMimoAllowedModels(env),
+    mimoNativeSearch: loadMimoNativeSearchConfig(env),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
-    qChat: intEnv(env, 'GW_Q_CHAT', 300),
-    qImg: intEnv(env, 'GW_Q_IMG', 20),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
     arkChatRpm: intEnv(env, 'GW_ARK_CHAT_RPM', 30),
-    qArkChat: intEnv(env, 'GW_Q_ARK_CHAT', 500),
     arkImgIpm: intEnv(env, 'GW_ARK_IMG_IPM', 20),
     arkImgConc: intEnv(env, 'GW_ARK_IMG_CONC', 6),
-    qArkImg: intEnv(env, 'GW_Q_ARK_IMG', 20),
-    qAmap: intEnv(env, 'GW_Q_AMAP', 300),
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
-    qTranscribe: intEnv(env, 'GW_Q_TRANSCRIBE', 100),
     transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
+    webSearchRpm: intEnv(env, 'GW_WEBSEARCH_RPM', 30),
   }
 }
 
@@ -330,27 +355,31 @@ async function proxyJsonOrRaw(resp: Response): Promise<Response> {
 }
 
 function auth(config: GatewayConfig, request: Request): string {
-  const header = request.headers.get('authorization') ?? ''
-  if (!header.toLowerCase().startsWith('bearer ')) {
-    throw new HttpError(401, '缺少 app 令牌')
+  const user = authenticatedUser(config, request)
+  if (!user) {
+    const header = request.headers.get('authorization') ?? ''
+    if (!header.toLowerCase().startsWith('bearer ')) throw new HttpError(401, '缺少 app 令牌')
+    throw new HttpError(401, 'app 令牌无效')
   }
-  const token = header.slice(7).trim()
-  const user = config.appTokens.get(token)
-  if (!user) throw new HttpError(401, 'app 令牌无效')
   return user
 }
 
-async function quotaCheck(store: UsageStore, user: string, kind: string, limit: number): Promise<void> {
-  if (await store.usedToday(user, kind) >= limit) {
-    throw new HttpError(429, `今天「${kind}」额度用完了(每天 ${limit} 次),明天再来或找管理员加`)
-  }
+function authenticatedUser(config: GatewayConfig, request: Request): string | undefined {
+  const header = request.headers.get('authorization') ?? ''
+  if (!header.toLowerCase().startsWith('bearer ')) return undefined
+  const token = header.slice(7).trim()
+  return config.appTokens.get(token)
 }
 
 async function logUsage(store: UsageStore, entry: UsageEntry): Promise<void> {
   await store.log(entry)
 }
 
-function withStreamLogging(resp: Response, onDone: () => Promise<void>): Response {
+function withStreamLogging(
+  resp: Response,
+  onDone: () => Promise<void>,
+  onChunk?: (chunk: Uint8Array) => void,
+): Response {
   const headers = new Headers()
   const contentType = resp.headers.get('content-type')
   const contentEncoding = resp.headers.get('content-encoding')
@@ -371,6 +400,7 @@ function withStreamLogging(resp: Response, onDone: () => Promise<void>): Respons
         await onDone()
         return
       }
+      onChunk?.(value)
       controller.enqueue(value)
     },
     async cancel(reason) {
@@ -387,6 +417,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const mimoBucket = new TokenBucket(config.mimoRpm)
+  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc)
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
@@ -395,15 +426,20 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
+  const webSearchBucket = new TokenBucket(config.webSearchRpm)
+  const webSearch = deps.webSearchImpl === undefined ? createGatewayWebSearch(env, fetchImpl) : deps.webSearchImpl
 
   async function fetchHandler(request: Request): Promise<Response> {
     const url = new URL(request.url)
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
+        if (!authenticatedUser(config, request)) return jsonResponse({ ok: true })
         return jsonResponse({
           ok: true,
           limits: {
             mimo_rpm: config.mimoRpm,
+            mimo_conc: config.mimoConc,
+            mimo_user_conc: config.mimoUserConc,
             img_ipm: config.imgIpm,
             img_conc: config.imgConc,
             ark_chat_rpm: config.arkChatRpm,
@@ -411,16 +447,16 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             ark_img_conc: config.arkImgConc,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
+            web_search_rpm: config.webSearchRpm,
           },
-          quota: {
-            chat: config.qChat,
-            img: config.qImg,
-            ark_chat: config.qArkChat,
-            ark_img: config.qArkImg,
-            amap: config.qAmap,
-            transcribe: config.qTranscribe,
+          // Kept for old clients that already read this field. Product-level daily quotas are disabled.
+          quota: {},
+          capacity: { mimo: mimoCapacity.snapshot() },
+          features: {
+            transcription: transcribe !== null,
+            web_search: webSearch !== null && !config.mimoNativeSearch.enabled,
+            mimo_native_web_search: config.mimoNativeSearch.enabled,
           },
-          features: { transcription: transcribe !== null },
         })
       }
 
@@ -436,29 +472,89 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'mimo', config.qChat)
-        await mimoBucket.acquire(config.queueMaxWait)
-        const body = await request.arrayBuffer()
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
+        const rawBody = await request.text()
+        const prepared = prepareMimoChatBody(rawBody, config.mimoNativeSearch, config.mimoAllowedModels)
+        const permit = await mimoCapacity.acquire(user, {
+          maxWaitMs: config.mimoQueueMaxWait * 1000,
+          signal: request.signal,
+        })
         const started = performance.now()
-        const upstream = await fetchImpl(`${config.mimoBase}/chat/completions`, {
-          method: 'POST',
-          body,
-          headers: {
-            Authorization: `Bearer ${config.mimoKey}`,
-            'Content-Type': 'application/json',
-            'Accept-Encoding': 'identity',
-          },
-        })
-        const ok = upstream.status < 400
-        return withStreamLogging(upstream, async () => {
-          await logUsage(store, { user, model: 'mimo', ok, status: upstream.status, ms: elapsedMs(started) })
-        })
+        try {
+          const { response: upstream, attempts } = await fetchMimoWithRetry(async () => {
+            try {
+              await mimoBucket.acquire(config.mimoQueueMaxWait, request.signal)
+            } catch (error) {
+              if (error instanceof HttpError) throw new MimoRequestError(error.status, error.detail)
+              throw error
+            }
+            return await fetchImpl(`${config.mimoBase}/chat/completions`, {
+              method: 'POST',
+              body: prepared.body,
+              signal: request.signal,
+              headers: {
+                Authorization: `Bearer ${config.mimoKey}`,
+                'Content-Type': 'application/json',
+                'Accept-Encoding': 'identity',
+              },
+            })
+          }, {
+            maxRetries: config.mimoRetryMax,
+            baseDelayMs: config.mimoRetryBaseMs,
+            maxDelayMs: config.mimoRetryMaxMs,
+            signal: request.signal,
+            sleep: deps.mimoRetrySleep,
+            random: deps.mimoRetryRandom,
+          })
+
+          if (!upstream.ok) {
+            const upstreamDetail = await upstream.text().catch(() => '')
+            permit.release()
+            await logUsage(store, {
+              user,
+              model: 'mimo',
+              ok: false,
+              status: upstream.status,
+              ms: elapsedMs(started),
+              note: `attempts=${attempts}`,
+            })
+            return jsonError(upstream.status, mimoPublicError(upstream.status, upstreamDetail))
+          }
+
+          const tracker = prepared.nativeSearchAvailable ? new MimoUsageTracker() : undefined
+          let completed = false
+          const complete = async () => {
+            if (completed) return
+            completed = true
+            const searchUsage = tracker?.finish()
+            permit.release()
+            const note = [
+              `attempts=${attempts}`,
+              ...(searchUsage ? [`web_search_tool_usage=${searchUsage.toolUsage}`, `web_search_page_usage=${searchUsage.pageUsage}`] : []),
+            ].join(';')
+            await logUsage(store, { user, model: 'mimo', ok: true, status: upstream.status, ms: elapsedMs(started), note })
+          }
+          return withStreamLogging(upstream, complete, chunk => tracker?.observe(chunk))
+        } catch (error) {
+          permit.release()
+          const status = error instanceof MimoRequestError ? error.status : 502
+          const detail = error instanceof MimoRequestError ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
+          await logUsage(store, {
+            user,
+            model: 'mimo',
+            ok: false,
+            status,
+            ms: elapsedMs(started),
+            note: 'upstream_request_failed',
+          })
+          throw new HttpError(status, detail)
+        }
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
         const user = auth(config, request)
         if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
-        await quotaCheck(store, user, 'transcribe', config.qTranscribe)
         const contentType = request.headers.get('content-type') ?? ''
         if (!contentType.toLowerCase().startsWith('multipart/form-data')) throw new HttpError(415, '需要上传音频文件')
         const declaredSize = Number(request.headers.get('content-length') ?? '')
@@ -490,9 +586,28 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
+      if (request.method === 'POST' && url.pathname === '/v1/web_search') {
+        const user = auth(config, request)
+        if (!webSearch) throw new HttpError(503, '联网搜索服务暂不可用')
+        await webSearchBucket.acquire(config.queueMaxWait)
+        const contentType = request.headers.get('content-type') ?? ''
+        if (!isJsonContentType(contentType)) throw new HttpError(415, '联网搜索需要 JSON 请求')
+        const body = await request.json().catch(() => null)
+        const started = performance.now()
+        try {
+          const result = await webSearch(body, { signal: request.signal })
+          await logUsage(store, { user, model: 'web_search', ok: true, status: 200, ms: elapsedMs(started) })
+          return jsonResponse(result)
+        } catch (error) {
+          const status = error instanceof GatewayWebSearchError ? error.status : 502
+          const detail = error instanceof GatewayWebSearchError ? error.publicMessage : '联网搜索暂时不可用，请稍后重试'
+          await logUsage(store, { user, model: 'web_search', ok: false, status, ms: elapsedMs(started) })
+          throw new HttpError(status, detail)
+        }
+      }
+
       if (request.method === 'POST' && url.pathname === '/v1/images/generations') {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'img', config.qImg)
         await imgBucket.acquire(config.queueMaxWait)
         return await imgSem.run(async () => {
           const started = performance.now()
@@ -513,7 +628,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/images/edits') {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'img', config.qImg)
         await imgBucket.acquire(config.queueMaxWait)
         return await imgSem.run(async () => {
           const started = performance.now()
@@ -539,7 +653,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
         const user = auth(config, request)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
-        await quotaCheck(store, user, 'img', config.qImg)
         await imgBucket.acquire(config.queueMaxWait) // 提交计入生图 IPM 限速;短请求不占 imgSem 在途并发
         const started = performance.now()
         try {
@@ -571,7 +684,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/ark/chat/completions') {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'ark_chat', config.qArkChat)
         if (!config.arkKey) throw new HttpError(503, '视觉/文案功能未配置(缺 GW_ARK_KEY)')
         await arkChatBucket.acquire(config.queueMaxWait)
         const started = performance.now()
@@ -591,7 +703,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/ark/images/generations') {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'ark_img', config.qArkImg)
         if (!config.arkKey) throw new HttpError(503, '生图功能未配置(缺 GW_ARK_KEY)')
         await arkImgBucket.acquire(config.queueMaxWait)
         return await arkImgSem.run(async () => {
@@ -614,7 +725,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       const amap = url.pathname.match(/^\/v1\/amap\/(.+)$/)
       if (request.method === 'GET' && amap) {
         const user = auth(config, request)
-        await quotaCheck(store, user, 'amap', config.qAmap)
         if (!config.amapKey) throw new HttpError(503, '地图功能未配置(缺 GW_AMAP_KEY)')
         const params = new URLSearchParams(url.searchParams)
         params.set('key', config.amapKey)
@@ -632,6 +742,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
+      if (err instanceof CapacityQueueError || err instanceof MimoRequestError) {
+        return jsonError(err.status, err.publicMessage)
+      }
       console.error('[qfgw] request failed', err)
       return jsonError(500, 'internal server error')
     }
@@ -642,6 +755,16 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
 function elapsedMs(started: number): number {
   return Math.trunc(performance.now() - started)
+}
+
+function mimoPublicError(status: number, upstreamDetail = ''): string {
+  if (status === 402 || /insufficient[_\s-]?quota|quota[_\s-]?(?:exceeded|exhausted)|credit(?:s)?[_\s-]?(?:depleted|exhausted)|balance[_\s-]?(?:insufficient|depleted)|额度不足|额度已用尽|余额不足|账户欠费/i.test(upstreamDetail)) {
+    return '模型服务额度不足，请稍后再试或联系管理员'
+  }
+  if (status === 429) return '当前使用人数较多，请稍后重试'
+  if (status === 408 || status >= 500) return '模型服务暂时不可用，请稍后重试'
+  if (status === 401 || status === 403) return '模型服务配置异常，请联系管理员'
+  return '模型请求未被服务接受，请检查输入后重试'
 }
 
 function parseArgs(argv: string[]): { host: string; port: number } {

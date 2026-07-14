@@ -159,8 +159,8 @@ export interface ToolSpec {
 
 /**
  * Tool——W2 的 name/description/schema/execute + isReadOnly,W4a 追加权限元数据(全可选)。
- * 缺省口径 = 本机可逆动作、直接放行(Delta A):不设任何权限字段的工具永远 allow。
- * 只有对外触达/不可逆工具才设 requiresApproval / forceConfirm / approvalClass(无花钱维度:内置 key、不按次计费)。
+ * 缺省口径 = 直接放行:不设任何权限字段的工具永远 allow。
+ * 需要受权限档控制或具备危险副作用的工具才设置 requiresApproval / forceConfirm / approvalClass。
  */
 export interface Tool<Input = unknown> {
   name: string
@@ -169,17 +169,17 @@ export interface Tool<Input = unknown> {
   isReadOnly: boolean
   /** 动态只读判定:同一个工具按入参可能是只读或会动手(run_command 是典型)。 */
   isReadOnlyFor?(input: Input, ctx: ToolContext): boolean
-  /** 静态:这工具总是要审批(发布/群发等)。 */
+  /** 静态:该工具始终进入权限决策。 */
   requiresApproval?: boolean
   /** 审批类别,决定档位如何对待(见 ApprovalClass)。 */
   approvalClass?: ApprovalClass
-  /** 动态审批类别:按具体入参区分 file/outreach/destructive/spend。 */
+  /** 动态审批类别:按具体入参区分 file/outreach/destructive。 */
   approvalClassFor?(input: Input, ctx: ToolContext): ApprovalClass | undefined
   /** 旁路免疫:连 bypassPermissions(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
   forceConfirm?: boolean
   /** 动态旁路免疫:同一个工具按入参区分预览/真正执行。 */
   forceConfirmFor?(input: Input, ctx: ToolContext): boolean
-  /** 必须用户交互确认:连 bypassPermissions 也不能自动执行(如登录、支付、系统授权)。 */
+  /** 必须用户交互确认:连 bypassPermissions 也不能自动执行(例如原生系统授权)。 */
   requiresUserInteraction?: boolean
   requiresUserInteractionFor?(input: Input, ctx: ToolContext): boolean
   /** 动态:按具体入参决定要不要审批(如"写到工作区外才要")。 */

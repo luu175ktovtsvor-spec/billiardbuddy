@@ -16,6 +16,8 @@ import {
   IconFolder, IconTarget, IconChecklist, IconPuzzle, IconClock, IconEdit, IconX, IconFileText,
 } from '../shared/icons'
 import { MenuList } from '../shared/Menu'
+import { Modal } from '../shared/Modal'
+import { Button } from '../shared/Button'
 import { toast } from '../../stores/toastStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { t } from '../../i18n'
@@ -93,40 +95,96 @@ function PermissionMenu() {
   const setMode = useSettingsStore((s) => s.setPermissionMode)
   const hiddenModes = useSettingsStore((s) => s.hiddenPermissionModes)
   const [open, setOpen] = useState(false)
+  const [confirmFullOpen, setConfirmFullOpen] = useState(false)
+  const [fullRiskAccepted, setFullRiskAccepted] = useState(false)
   const current = PERM_ORDER.includes(mode) ? mode : 'default'
   const full = current === 'bypassPermissions'
   // 设置页「在权限菜单中显示 XX」关掉的档位不进菜单(对齐 Codex permissionsMode toggle 语义;default/plan 常驻)。
   const visibleModes = PERM_ORDER.filter((m) => !hiddenModes.includes(m))
+  const selectMode = (next: PermissionMode) => {
+    setOpen(false)
+    if (next === 'bypassPermissions' && current !== 'bypassPermissions') {
+      setFullRiskAccepted(false)
+      setConfirmFullOpen(true)
+      return
+    }
+    setMode(next)
+  }
   return (
-    <div className="relative">
-      <ToolbarChip onClick={() => setOpen((v) => !v)} tone={full ? 'warning' : 'default'}>
-        {full ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
-        <span>{PERM_LABEL[current]}</span>
-        <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
-      </ToolbarChip>
-      <Popover open={open} onClose={() => setOpen(false)}>
-        {visibleModes.map((m) => {
-          const on = m === current
-          const warn = m === 'bypassPermissions'
-          return (
-            <button
-              key={m}
-              type="button"
-              onClick={() => { setMode(m); setOpen(false) }}
-              className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+    <>
+      <div className="relative">
+        <div data-testid="permission-menu-trigger">
+          <ToolbarChip onClick={() => setOpen((v) => !v)} tone={full ? 'warning' : 'default'}>
+            {full ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
+            <span>{PERM_LABEL[current]}</span>
+            <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+          </ToolbarChip>
+        </div>
+        <Popover open={open} onClose={() => setOpen(false)}>
+          {visibleModes.map((m) => {
+            const on = m === current
+            const warn = m === 'bypassPermissions'
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => selectMode(m)}
+                data-testid={`permission-mode-${m}`}
+                className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+              >
+                <span className="mt-0.5" style={{ color: warn ? 'var(--color-warning)' : on ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>
+                  {warn ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[13px]" style={{ color: 'var(--color-text-primary)', fontWeight: on ? 600 : 400 }}>{PERM_LABEL[m]}</span>
+                  <span className="block text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{PERM_DESC[m]}</span>
+                </span>
+              </button>
+            )
+          })}
+        </Popover>
+      </div>
+      <Modal
+        open={confirmFullOpen}
+        onClose={() => setConfirmFullOpen(false)}
+        title="开启完全访问？"
+        maxWidth={460}
+        testId="full-access-confirm"
+        footer={
+          <>
+            <Button onClick={() => setConfirmFullOpen(false)}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={!fullRiskAccepted}
+              onClick={() => {
+                if (!fullRiskAccepted) return
+                setMode('bypassPermissions')
+                setConfirmFullOpen(false)
+              }}
+              style={{ background: 'var(--color-error)' }}
             >
-              <span className="mt-0.5" style={{ color: warn ? 'var(--color-warning)' : on ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>
-                {warn ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-[13px]" style={{ color: 'var(--color-text-primary)', fontWeight: on ? 600 : 400 }}>{PERM_LABEL[m]}</span>
-                <span className="block text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{PERM_DESC[m]}</span>
-              </span>
-            </button>
-          )
-        })}
-      </Popover>
-    </div>
+              开启完全访问
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4 px-5 py-4">
+          <div className="flex gap-3 rounded-lg p-3" style={{ background: 'var(--color-error-subtle, color-mix(in srgb, var(--color-error) 10%, transparent))', color: 'var(--color-text-primary)' }}>
+            <span className="mt-0.5 shrink-0" style={{ color: 'var(--color-error)' }}><IconAlertCircle size={18} /></span>
+            <p className="text-[13px] leading-5">此会话可以不经逐次确认运行命令、访问网络以及修改或删除工作区外的文件。错误指令可能造成数据丢失或隐私泄露。</p>
+          </div>
+          <label className="flex cursor-pointer items-start gap-2.5 text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>
+            <input
+              type="checkbox"
+              checked={fullRiskAccepted}
+              onChange={(event) => setFullRiskAccepted(event.target.checked)}
+              className="mt-0.5 h-4 w-4"
+            />
+            <span>我了解风险，并确认只在可信任务中使用完全访问。</span>
+          </label>
+        </div>
+      </Modal>
+    </>
   )
 }
 
@@ -434,8 +492,8 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
 }
 
 const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: '/台球', desc: '在这个窗口挂载台球运营专家(只影响当前窗口)', source: 'pack', kind: 'command' },
-  { name: '/台球关闭', desc: '在这个窗口关闭台球运营专家', source: 'pack', kind: 'command' },
+  { name: '/台球', desc: '在这个窗口挂载台球运营知识库(只影响当前窗口)', source: 'pack', kind: 'command' },
+  { name: '/台球关闭', desc: '在这个窗口关闭台球运营知识库', source: 'pack', kind: 'command' },
   { name: '/帮助', desc: '看看能做什么', source: 'builtin', kind: 'command' },
   { name: '/清空', desc: '清空当前对话', source: 'builtin', kind: 'command' },
 ]

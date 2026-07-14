@@ -11,6 +11,7 @@ import {
   buildRelevantMemoriesReminder,
   collectSurfacedMemories,
   computeRelevantMemoryInjection,
+  SELECT_MEMORIES_SYSTEM_PROMPT,
   type MemorySelector,
 } from './relevantMemories'
 
@@ -20,6 +21,11 @@ beforeEach(() => {
 })
 afterEach(() => {
   rmSync(memdir, { recursive: true, force: true })
+})
+
+test('memory selector mechanics use English', () => {
+  expect(SELECT_MEMORIES_SYSTEM_PROMPT).toContain('Return at most 5 memory file names')
+  expect(SELECT_MEMORIES_SYSTEM_PROMPT).not.toContain('请返回最多')
 })
 
 function writeMemory(name: string, description: string, type: string, body: string): void {
@@ -81,7 +87,7 @@ test('readMemoriesForSurfacing reads body; truncates by bytes with note', async 
   const relevant = await findRelevantMemories('黄金档台费多少', memdir, async () => '["golden_hours.md"]')
   const surfaced = await readMemoriesForSurfacing(relevant)
   expect(surfaced.length).toBe(1)
-  expect(surfaced[0]!.content).toContain('被截断')
+  expect(surfaced[0]!.content).toContain('This memory was truncated')
   expect(Buffer.byteLength(surfaced[0]!.content, 'utf8')).toBeLessThan(9000)
 })
 
@@ -89,6 +95,7 @@ test('buildRelevantMemoriesReminder wraps each with a de-dup marker', () => {
   const reminder = buildRelevantMemoriesReminder([
     { path: '/mem/golden_hours.md', content: '台费TESTFEE', mtimeMs: Date.parse('2026-07-01') },
   ])
+  expect(reminder).toContain('The system recalled the following entries from persistent memory')
   expect(reminder).toContain('<recalled-memory path="/mem/golden_hours.md"')
   expect(reminder).toContain('台费TESTFEE')
 })

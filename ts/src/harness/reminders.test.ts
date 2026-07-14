@@ -81,7 +81,7 @@ describe('collectReminders', () => {
         conversationId: convId,
       }))
       const plan = rs.find(r => r.kind === 'plan')
-      expect(plan?.text).toContain('计划模式')
+      expect(plan?.text).toContain('plan mode')
       expect(plan?.text).toContain(planFilePath) // 系统提醒里含具体计划文件路径
       expect(plan?.text).toContain('ExitPlanMode') // 工作流:以 ExitPlanMode 收尾
       expect(plan?.text).toContain('write_file') // 唯一可编辑=计划文件、用 write_file/edit_file 写

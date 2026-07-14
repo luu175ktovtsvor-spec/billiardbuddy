@@ -7,6 +7,7 @@ import type { ToolCall } from '../types/message'
 import type { AccumulatedResponse } from './streamAccumulate'
 import { parseOpenAIToolArguments } from './toolArguments'
 import { openaiUsageToAnthropic } from './usage'
+import { normalizeUrlCitations } from './citations'
 
 let ID_SEQ = 0
 const defaultIdFactory = (index: number): string => `call_${index}_${(ID_SEQ++).toString(36)}`
@@ -36,6 +37,7 @@ export function openaiChatResponseToAccumulated(
   }
 
   const text = typeof message.content === 'string' ? message.content : ''
+  const citations = normalizeUrlCitations(m.annotations)
 
   const rawToolCalls = message.tool_calls ?? []
   const toolCalls: ToolCall[] = []
@@ -47,5 +49,12 @@ export function openaiChatResponseToAccumulated(
     toolCalls.push({ id: tc.id || idFactory(i), name, input: parseOpenAIToolArguments(fn.arguments) })
   }
 
-  return { text, thinking, toolCalls, finishReason: choice.finish_reason, usage }
+  return {
+    text,
+    thinking,
+    toolCalls,
+    finishReason: choice.finish_reason,
+    usage,
+    ...(citations.length ? { citations } : {}),
+  }
 }

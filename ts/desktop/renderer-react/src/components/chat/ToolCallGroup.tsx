@@ -9,7 +9,7 @@ import type { ChatBlock } from '../../stores/chatStore'
 import { ToolCallCard } from './ToolCallCard'
 import { ThinkingBlock } from './ThinkingBlock'
 import { summarizeActivity, toolIcon, statusVerb, toolSummary } from './toolMeta'
-import { IconAlertCircle, IconChevronDown, IconSpinner } from '../shared/icons'
+import { IconAlertCircle, IconChevronDown } from '../shared/icons'
 import { t } from '../../i18n'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
@@ -59,7 +59,7 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
   const headerText = runningTool
     ? `${statusVerb(runningTool.tool, 'running')} ${toolSummary(runningTool.tool, runningTool.input)}`.trim()
     : thinkingActive
-      ? '正在想…'
+      ? t('thinking.active')
       : tools.length === 1
         ? `${statusVerb(tools[0]!.tool, tools[0]!.status)} ${toolSummary(tools[0]!.tool, tools[0]!.input)}`.trim()
         : summarizeActivity(tools.map((b) => b.tool))
@@ -72,16 +72,16 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
         aria-expanded={expanded}
         className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       >
-        {isRunning ? (
-          <IconSpinner size={13} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+        {runningTool ? (
+          <GroupIcon tool={runningTool.tool} />
         ) : hasError ? (
           <IconAlertCircle size={13} className="shrink-0" style={{ color: 'var(--color-error)' }} />
-        ) : (
+        ) : !thinkingActive ? (
           // 完成态组头 = 首个工具的类型图标(对齐 Codex 聚合头 icon 语义),不画绿勾。
           <GroupIcon tool={tools[0]!.tool} />
-        )}
+        ) : null}
         {/* chevron 紧跟文字(对齐 Codex 真机:不推到行尾),文字截断保护 */}
-        <span className="min-w-0 truncate text-[12.5px]" style={{ color: 'var(--color-text-secondary)', fontStyle: thinkingActive && !runningTool ? 'italic' : undefined }}>
+        <span className={isRunning ? 'qf-shimmer-text min-w-0 truncate text-[12.5px]' : 'min-w-0 truncate text-[12.5px]'} style={{ color: 'var(--color-text-secondary)' }}>
           {headerText}
         </span>
         {hasError && !isRunning && (
@@ -95,11 +95,7 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
       </button>
       {expanded && (
         <div className="mt-0.5 flex flex-col pl-1">
-          {blocks.map((b) =>
-            b.kind === 'tool'
-              ? <ToolCallCard key={b.id} block={b} />
-              : <ThinkingBlock key={b.id} content={b.text} isActive={b.active} />,
-          )}
+          {blocks.map((b) => b.kind === 'tool' ? <ToolCallCard key={b.id} block={b} /> : null)}
         </div>
       )}
     </div>

@@ -13,7 +13,7 @@ export const zhCN = {
     newTask: '新建任务',           // 开新会话 → chatStore
     scheduled: '已安排',            // Codex:定时/计划任务入口(占位)
     plugins: '插件',                // Codex:插件/扩展入口(占位)
-    domainExpert: '领域专家',       // 挂/切领域包 packs(通用 / 台球运营专家)→ /api/v1/agent/packs
+    domainExpert: '领域知识',       // 挂/切领域知识包 packs → /api/v1/agent/packs
     domainExpertHint: '通用 / 台球',
     skillsConnectors: '技能 · 连接器', // 斜杠技能 + MCP 连接器 → /api/v1/agent/skills + /api/v1/agent/mcp
     // ── B 线(确定性产品工作台)──
@@ -109,15 +109,15 @@ export const zhCN = {
     placeholderNew: '随心输入',          // Codex 新任务态占位
     send: '发送',
     stop: '停止',
-    thinking: '思考中…',
-    working: '处理中…',
+    thinking: '正在思考',
+    working: '正在处理',
     processed: '已处理',           // Codex 助手回复上方「已处理 Ns」
     running: '运行中…',
     connected: '已连接',
     connecting: '正在连接…',
     disconnected: '连接断开了,正在重连…',
     emptyHero: '今天帮你做些什么?',
-    emptyHint: '让我读写文件、跑命令、上网查资料、生图,或者挂上「台球运营专家」聊经营。',
+    emptyHint: '让我读写文件、跑命令、上网查资料、生图,或者挂上「台球运营知识库」聊经营。',
     retry: '重试',
     runFailed: '这次没跑成:',
     maxTurns: '连着跑了好几个回合,先停下来喘口气。想接着做的话,回一句让它继续。',
@@ -136,9 +136,8 @@ export const zhCN = {
     fallbackDetail: '这次没法边想边说,等完整结果',
   },
   thinking: {
-    // 照 Codex Reasoning:进行中「深度思考」+ 呼吸点,完成「已思考」(过去式),旁边跟一行内容摘要预览
-    active: '深度思考',
-    done: '已思考',
+    active: '正在思考',
+    done: '已完成思考',
   },
   tools: {
     preparing: '准备中…',

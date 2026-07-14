@@ -10,14 +10,14 @@ test('memory prompt contains the four-type taxonomy', () => {
   expect(p).toContain('<name>feedback')
   expect(p).toContain('<name>project')
   expect(p).toContain('<name>reference')
-  expect(p).toContain('记忆的四种类型')
+  expect(p).toContain('Types of memory')
 })
 
 test('memory prompt has what-not-to-save, when-to-access, trusting-recall sections', () => {
   const p = buildMemorySystemPrompt(ROOT)
-  expect(p).toContain('不该存进记忆的东西')
-  expect(p).toContain('何时去访问记忆')
-  expect(p).toContain('据记忆给建议之前')
+  expect(p).toContain('What not to save in memory')
+  expect(p).toContain('When to access memory')
+  expect(p).toContain('Before giving advice from memory')
   // 不该存:代码/架构/git 派生
   expect(p).toContain('git log')
 })
@@ -25,21 +25,21 @@ test('memory prompt has what-not-to-save, when-to-access, trusting-recall sectio
 test('how-to-save points at the save_memory tool (not manual file writes)', () => {
   const p = buildMemorySystemPrompt(ROOT)
   expect(p).toContain('save_memory')
-  expect(p).toContain('怎么存记忆')
+  expect(p).toContain('How to save memories')
 })
 
 test('end-of-turn extraction fallback: prompt tells model to evaluate + save durable facts', () => {
   // 对齐 cc 后台 extractMemories 的意图(这轮没手写记忆时也别漏耐久事实)——轻量兜底走系统提示。
   const p = buildMemorySystemPrompt(ROOT)
-  expect(p).toContain('回合结束前')
-  expect(p).toContain('耐久事实')
+  expect(p).toContain('Before ending a turn')
+  expect(p).toContain('durable user, feedback, project, or reference fact')
   expect(p).toContain('save_memory')
 })
 
 test('searching-past-context section greps the (white-label) memdir', () => {
   const p = buildMemorySystemPrompt(ROOT)
   const memdir = getAutoMemDir(ROOT)
-  expect(p).toContain('搜索过往上下文')
+  expect(p).toContain('Searching past context')
   expect(p).toContain(memdir)
   expect(p).toContain('grep -rn')
 })
@@ -49,4 +49,13 @@ test('white-label: no CLAUDE.md / .claude / Claude branding leaks', () => {
   expect(p).not.toContain('CLAUDE.md')
   expect(p).not.toContain('.claude')
   expect(p).not.toContain('Claude')
+})
+
+test('memory mechanics are English-first and project memory is domain-neutral', () => {
+  const p = buildMemorySystemPrompt(ROOT)
+  expect(p).toContain('# Persistent memory (across sessions)')
+  expect(p).toContain('<name>project</name>')
+  expect(p).toContain('ongoing work, goals, initiatives, bugs, incidents, or decisions')
+  expect(p).not.toContain('门店近况')
+  expect(p).not.toContain('台球')
 })

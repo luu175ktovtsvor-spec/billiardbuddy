@@ -97,12 +97,16 @@ describe('createAgentWebSocketHandler', () => {
     const harness = createHarness()
 
     await harness.handler.message(harness.ws, JSON.stringify({ type: 'ping', ts: 42 }))
-    await harness.handler.message(harness.ws, JSON.stringify({ type: 'run', message: '继续' }))
+    await harness.handler.message(harness.ws, JSON.stringify({
+      type: 'run',
+      message: '继续',
+      full_disk_access: true,
+    }))
     await harness.handler.message(harness.ws, JSON.stringify({ type: 'replay', conversationId: 'session-b', after: 7 }))
     await flushAsyncMessages()
 
     expect(harness.sent).toContainEqual({ type: 'pong', ts: 42 })
-    expect(harness.runBodies[0]).toMatchObject({ type: 'run', message: '继续' })
+    expect(harness.runBodies[0]).toMatchObject({ type: 'run', message: '继续', full_disk_access: true })
     expect(harness.replayed).toContainEqual({ conversationId: 'session-b', after: 7 })
     expect(harness.ws.data.conversationId).toBe('session-b')
   })
@@ -112,9 +116,11 @@ describe('createAgentWebSocketHandler', () => {
 
     await harness.handler.message(harness.ws, '{bad json')
     await harness.handler.message(harness.ws, JSON.stringify({ type: 'run' }))
+    await harness.handler.message(harness.ws, JSON.stringify({ type: 'run', message: '继续', full_disk_access: 'true' }))
 
     expect(harness.runBodies).toHaveLength(0)
     expect(harness.sent).toEqual([
+      { type: 'error', error: 'invalid websocket message' },
       { type: 'error', error: 'invalid websocket message' },
       { type: 'error', error: 'invalid websocket message' },
     ])

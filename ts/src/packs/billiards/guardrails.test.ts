@@ -10,7 +10,7 @@ import {
 import { KNOWLEDGE, SAFETY_FLOORS } from './knowledge'
 import { HARD_SPECS } from './hardSpecs'
 import { ALLOWED_TERMS, PLATFORM_TERMS, BANNED_TERMS } from './termWhitelist'
-import { renderSessionStartContext, renderOpsBriefing, billiardsPackStats } from './index'
+import { renderSessionStartContext, renderKnowledgeMatches, billiardsPackStats } from './index'
 import { billiardsPack } from './pack'
 
 // ── 1. 禁词命中=红 ────────────────────────────────────────────────
@@ -79,7 +79,7 @@ test('知识库/白名单/硬数字/注入文案里无泄漏的第三方专名',
     ...PLATFORM_TERMS.map(p => p.term),
     ...BANNED_TERMS.flatMap(b => [b.label, b.reason, b.redirect]),
     renderSessionStartContext(),
-    renderOpsBriefing('团购定价活动', ['黄金档台费 68 元']),
+    renderKnowledgeMatches('团购定价活动'),
   ].join('\n')
   expect(scanSanitizedProperNouns(corpus)).toEqual([])
 })
@@ -112,22 +112,21 @@ test('五域知识齐、硬数字 16 条、每条带 PPT 出处', () => {
   expect(SANITIZED_PROPER_NOUNS.length).toBeGreaterThan(10)
 })
 
-test('注入文案含五域骨架、两条真底线、白名单纪律', () => {
+test('注入文案只提供五域知识目录,不强加领域流程或守卫', () => {
   const ctx = renderSessionStartContext()
   expect(ctx).toContain('<domain_context id="billiards"')
   expect(ctx).toContain('5 域知识骨架')
-  expect(ctx).toContain('两条真底线')
-  expect(ctx).toContain('助教守自爱')
-  expect(ctx).toContain('门店只控金额')
-  expect(ctx).toContain('擦边引流')
-  expect(ctx).toContain('美团')
+  expect(ctx).toContain('只提供领域事实和来源')
+  expect(ctx).toContain('billiards_knowledge_search')
+  expect(ctx).not.toContain('执行顺序')
+  expect(ctx).not.toContain('禁词')
 })
 
 test('模型运行时统一使用台球运营知识库口径,不披露第三方材料名或 PPT 载体', () => {
   const commandPrompt = billiardsPack.commands?.find(command => command.name === '台球')?.prompt ?? ''
   const runtimeText = [
     renderSessionStartContext(),
-    renderOpsBriefing('团购定价活动', []),
+    renderKnowledgeMatches('团购定价活动'),
     commandPrompt,
   ].join('\n')
   expect(runtimeText).toContain('台球运营知识库')

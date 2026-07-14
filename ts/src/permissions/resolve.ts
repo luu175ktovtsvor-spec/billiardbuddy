@@ -243,7 +243,7 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
     return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
 
-  // default/acceptEdits 档下走到这的只读+需审批或对外/不可逆工具 → 弹卡
+  // default/acceptEdits 档下走到这里的受控工具显示确认卡。
   return ask(tool, ctx, input, { type: 'mode', mode }, approvalClass)
 }
 

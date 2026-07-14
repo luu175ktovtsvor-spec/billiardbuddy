@@ -28,7 +28,7 @@ echo "[6/8] TS 全量测试"
 (cd "$ROOT/ts" && bun test)
 
 echo "[7/8] gateway / relay / dataeye 测试"
-(cd "$ROOT" && bun test gateway/app.test.ts relay/app.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
+(cd "$ROOT" && bun test gateway/*.test.ts relay/app.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
 
 if [[ "$MODE" == "full" ]]; then
   echo "[8/8] React 与 Electron 构建"

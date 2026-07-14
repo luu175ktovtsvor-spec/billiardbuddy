@@ -92,26 +92,26 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
 
     // 3. 认识权限(与设置页口径同源)
     <div key="perms" className="flex flex-col items-center text-center">
-      <h1 className="mb-3 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>它干活前,会先问你</h1>
+      <h1 className="mb-3 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>工作区内少打断,越界时再确认</h1>
       <p className="mb-6 max-w-[440px] text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
         输入框旁边有个权限开关,随时可切:
       </p>
       <div className="flex w-full max-w-[440px] flex-col gap-2">
         <PermRow icon={<IconShield size={17} />} title="默认权限" desc="改文件、跑命令前都先问你,点头才动手。日常用这个最稳。" />
-        <PermRow icon={<IconEdit size={17} />} title="接受修改" desc="改文件不逐个确认;跑命令等敏感动作仍会问。" />
+        <PermRow icon={<IconEdit size={17} />} title="接受修改" desc="选择工作文件夹后默认使用;工作区内改文件不逐个确认,敏感动作仍会问。" />
         <PermRow icon={<IconAlertCircle size={17} />} title="完全访问" desc="全部放行不再询问。只在你完全清楚要做什么时用。" />
       </div>
       <div className="mt-8"><PrimaryBtn onClick={next}>明白了</PrimaryBtn></div>
     </div>,
 
-    // 4. 专家模块(台球包介绍;挂载是会话级动作,这里只介绍入口不放开关)
+    // 4. 台球知识库(挂载是会话级动作,这里只介绍入口不放开关)
     <div key="expert" className="flex flex-col items-center text-center">
       <span className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
         <IconTarget size={28} />
       </span>
       <h1 className="mb-3 mt-6 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>开球房的老板,看这里</h1>
       <p className="max-w-[440px] text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
-        内置「台球运营专家」:懂经营复盘、活动策划、朋友圈文案这些球房生意。想用的时候,在输入框敲 <code className="rounded px-1" style={{ background: 'var(--color-surface-container)' }}>/台球</code> 就挂上;不开球房就当没看见,它默认不打扰。
+        内置「台球运营知识库」,为通用 Agent 提供球房经营资料。想用的时候,在输入框敲 <code className="rounded px-1" style={{ background: 'var(--color-surface-container)' }}>/台球</code> 就挂上;不开球房就当没看见,它默认不打扰。
       </p>
       <div className="mt-8"><PrimaryBtn onClick={finish}>开始使用</PrimaryBtn></div>
     </div>,

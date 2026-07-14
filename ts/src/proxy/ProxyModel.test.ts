@@ -33,6 +33,24 @@ test('端到端:SSE 文本 → final AssistantStep,且请求体是 OpenAI chat',
   expect(headers['content-type']).toBe('application/json')
 })
 
+test('MiMo 流式引用在最终正文追加参考来源', async () => {
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => sseResponse([
+      chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: {
+        annotations: [{ type: 'url_citation', url: 'https://example.com/source', title: '官方资料' }],
+      }, finish_reason: null }] }),
+      chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '回答' }, finish_reason: 'stop' }] }),
+      '[DONE]',
+    ]),
+  })
+  const step = await model.step({ messages: [userText('x')], tools: [] })
+  expect(step).toEqual({
+    kind: 'final',
+    text: '回答\n\n参考来源\n\n1. [官方资料](<https://example.com/source>)',
+  })
+})
+
 test('SSE 工具调用 → tool_calls AssistantStep(退出看 tool_use 不看 finish_reason)', async () => {
   // 故意 finish_reason:'stop' 但带 tool_calls —— 必须判成 tool_calls
   const model = new ProxyModel({

@@ -66,7 +66,7 @@ describe('buildRecentFileContextMessage', () => {
     expect(text).toContain('<project_instruction file="packages/BILLIARDBUDDY.md" truncated="false">')
     expect(text).toContain('Package instruction')
     expect(text).not.toContain('Root instruction')
-    expect(text.indexOf('# 项目指令')).toBeLessThan(text.indexOf('<recent_file_context'))
+    expect(text.indexOf('# Project instructions')).toBeLessThan(text.indexOf('<recent_file_context'))
   })
 
   test('文件和读取快照不一致时标记 changed_since_read', async () => {

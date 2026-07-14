@@ -58,6 +58,20 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]
 .qf-cursor { display: inline-block; margin-left: 1px; animation: qf-blink 1s steps(2) infinite; color: var(--color-text-tertiary); }
 @keyframes qf-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .qf-spark { display: inline-block; animation: qf-pulse 1.4s ease-in-out infinite; }
+
+.qf-shimmer-text {
+  color: transparent !important;
+  background: linear-gradient(90deg, var(--color-text-secondary) 20%, var(--color-text-tertiary) 50%, var(--color-text-secondary) 80%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: qf-shimmer-text 1.8s linear infinite;
+}
+
+@keyframes qf-shimmer-text {
+  from { background-position: 180% 0; }
+  to { background-position: -40% 0; }
+}
 @keyframes qf-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 .qf-spin { animation: qf-spin 0.7s linear infinite; }
 @keyframes qf-spin { to { transform: rotate(360deg); } }

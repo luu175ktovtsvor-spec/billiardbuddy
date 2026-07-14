@@ -177,13 +177,13 @@ type RenderItem =
 const EDIT_TOOLS = new Set(['edit_file', 'multi_edit_file', 'write_file', 'patch_file', 'patch_files', 'edit_excel'])
 
 // 内部机制工具:加载技能/搜工具/读暂存结果等 setup 动作,不作为用户级工具行显示——
-// 对齐 Codex(内部装载从不摊给用户,只展示对用户有意义的外部动作:读/写/跑/搜/改)。
+// 对齐 Codex(内部装载从不摊给用户,只展示对用户有意义的执行步骤:读/写/跑/搜/改)。
 // owner 截图指出「已加载工具/读取 Spreadsheets 技能」这类内部行外露=噪音。
 const HIDDEN_TOOLS = new Set(['use_skill', 'tool_search', 'read_stored_tool_result'])
 
 /** 连续「工具 + 思考」聚成一个活动组(对齐 Codex agent-activity:思考进组、不占独立行;完成态组头
  *  =分类计数段)。编辑类不混组(走「已编辑 N 个文件」汇总卡,带撤销)。 */
-function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
+export function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
   // 先滤掉内部机制工具行(藏内部 setup 噪音),再分组。
   const visible = blocks.filter((b) => !(b.kind === 'tool' && HIDDEN_TOOLS.has(b.tool)))
   const items: RenderItem[] = []
@@ -226,7 +226,7 @@ type TurnEntry = { type: 'user'; item: RenderItem } | { type: 'turn'; key: strin
 
 /** user 消息切界:每条 user 消息独立渲染,之间的所有内容(思考/工具/回复)归进同一个"回合",
  *  供 AssistantMessageHeader 统一套头。 */
-function splitTurns(items: RenderItem[]): TurnEntry[] {
+export function splitTurns(items: RenderItem[]): TurnEntry[] {
   const out: TurnEntry[] = []
   let current: RenderItem[] = []
   let turnSeq = 0
@@ -280,7 +280,7 @@ function StreamingFallbackBanner({ text }: { text: string }) {
   )
 }
 
-function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
+export function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
   switch (block.kind) {
     case 'user':
       return (
@@ -307,7 +307,6 @@ function Block({ block, isLast }: { block: ChatBlock; isLast?: boolean }) {
       return (
         <div className="group/msg text-sm leading-relaxed" data-block="assistant" data-bid={block.id} style={{ color: 'var(--color-text-primary)' }}>
           <MarkdownRenderer content={block.text} />
-          {block.streaming && <span className="qf-cursor">▍</span>}
           {!block.streaming && block.text.trim() && <MessageActions text={block.text} pinned={isLast} ts={block.ts} />}
         </div>
       )
@@ -338,33 +337,63 @@ function renderItem(item: RenderItem, isLast: boolean, lastEditKey?: string) {
   return <Block key={item.key} block={item.block} isLast={isLast} />
 }
 
-/** 一个"回合"=两条 user 消息之间的所有内容。有思考/工具/回复才套 AssistantMessageHeader;
- *  只有零散 note/approval(没有真正回复)时原样平铺,不套头(避免空回合也顶个头像)。 */
-function TurnBody({ items, lastKey, lastEditKey }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined }) {
-  const [collapsed, setCollapsed] = useState(false)
-
-  let assistantBlock: AssistantBlockT | undefined
-  let hasProcess = false
-  for (const item of items) {
-    if (item.kind === 'tool-group' || item.kind === 'edit-group') hasProcess = true
-    else if (item.block.kind === 'thinking') hasProcess = true
-    else if (item.block.kind === 'assistant') assistantBlock = item.block
+/** Codex 只折叠最终回复之前的 Agent 活动，最终回复本身始终可见。 */
+export function partitionTurnItems(items: RenderItem[]): {
+  activityItems: RenderItem[]
+  responseItems: RenderItem[]
+  finalAssistant?: AssistantBlockT
+  hasActivity: boolean
+} {
+  let finalAssistantIndex = -1
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (item?.kind === 'block' && item.block.kind === 'assistant') {
+      finalAssistantIndex = i
+      break
+    }
   }
+  const finalItem = finalAssistantIndex >= 0 ? items[finalAssistantIndex] : undefined
+  const finalAssistant = finalItem?.kind === 'block' && finalItem.block.kind === 'assistant' ? finalItem.block : undefined
+  const activityItems = finalAssistantIndex >= 0 ? items.slice(0, finalAssistantIndex) : items
+  const responseItems = finalAssistantIndex >= 0 ? items.slice(finalAssistantIndex) : []
+  const hasActivity = activityItems.some((item) =>
+    item.kind === 'tool-group' || item.kind === 'edit-group' || (item.kind === 'block' && (item.block.kind === 'thinking' || item.block.kind === 'assistant')),
+  )
+  return { activityItems, responseItems, finalAssistant, hasActivity }
+}
 
-  if (!assistantBlock && !hasProcess) {
+function TurnBody({ items, lastKey, lastEditKey, isLatest }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined; isLatest: boolean }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const status = useChatStore((s) => s.status)
+  const elapsedSeconds = useChatStore((s) => s.elapsedSeconds)
+  const { activityItems, responseItems, finalAssistant, hasActivity } = partitionTurnItems(items)
+
+  if (!finalAssistant && !hasActivity) {
     return <>{items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}</>
   }
+  const activityActive = isLatest && status === 'running' && !finalAssistant
 
   return (
     <div className="my-1" data-block="turn">
-      <AssistantMessageHeader
-        streaming={assistantBlock?.streaming ?? false}
-        durationSec={assistantBlock?.durationSec}
-        collapsed={collapsed}
-        onToggle={() => setCollapsed((v) => !v)}
-      />
-      {!collapsed &&
-        items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
+      {hasActivity && (
+        <AssistantMessageHeader
+          active={activityActive}
+          elapsedSec={activityActive ? elapsedSeconds : undefined}
+          durationSec={finalAssistant?.durationSec}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((v) => !v)}
+        />
+      )}
+      {hasActivity && !collapsed && (
+        <div data-block="turn-activity">
+          {activityItems.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
+        </div>
+      )}
+      {responseItems.length > 0 && (
+        <div data-block="turn-response">
+          {responseItems.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
+        </div>
+      )}
     </div>
   )
 }
@@ -415,11 +444,11 @@ export function MessageList() {
       <div ref={containerRef} onScroll={onScroll} className="h-full overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-[768px]">
           <SessionTaskBar />
-          {turns.map((entry) =>
+          {turns.map((entry, index) =>
             entry.type === 'user' ? (
               renderItem(entry.item, entry.item.key === lastKey, lastEditKey)
             ) : (
-              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} lastEditKey={lastEditKey} />
+              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} lastEditKey={lastEditKey} isLatest={index === turns.length - 1} />
             ),
           )}
           <StreamingIndicator />

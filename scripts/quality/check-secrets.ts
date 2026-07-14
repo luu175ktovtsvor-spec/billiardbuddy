@@ -3,10 +3,13 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const root = path.resolve(import.meta.dir, '../..')
-const tracked = Bun.spawnSync(['git', 'ls-files', '-z'], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
-if (tracked.exitCode !== 0) throw new Error(tracked.stderr.toString())
+const listed = Bun.spawnSync(
+  ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+  { cwd: root, stdout: 'pipe', stderr: 'pipe' },
+)
+if (listed.exitCode !== 0) throw new Error(listed.stderr.toString())
 
-const files = tracked.stdout.toString().split('\0').filter(Boolean)
+const files = listed.stdout.toString().split('\0').filter(Boolean)
 const errors: string[] = []
 const secretPatterns: Array<[string, RegExp]> = [
   ['私钥', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
@@ -37,4 +40,4 @@ if (errors.length > 0) {
   console.error(`密钥检查失败（${errors.length} 项）:\n${errors.join('\n')}`)
   process.exit(1)
 }
-console.log(`密钥检查通过：扫描 ${files.length} 个已跟踪文件`)
+console.log(`密钥检查通过：扫描 ${files.length} 个已跟踪或未跟踪文件`)

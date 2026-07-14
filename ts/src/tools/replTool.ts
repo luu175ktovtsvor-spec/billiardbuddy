@@ -353,8 +353,8 @@ function stableJson(value: unknown): string {
 
 function approvalClassLabel(klass: ApprovalClass): string {
   if (klass === 'file') return '文件修改'
-  if (klass === 'outreach') return '外部触达'
-  return '高风险/不可逆'
+  if (klass === 'outreach') return '受控操作'
+  return '高风险操作'
 }
 
 function xmlAttr(value: string): string {

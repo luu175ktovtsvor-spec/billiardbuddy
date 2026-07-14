@@ -5,6 +5,7 @@
 // 参照物 = 现有 vanilla app.js 的 renderEvent(交互细节的验收基线),但不搬它的 DOM 代码。
 import { create } from 'zustand'
 import { wsManager } from '../api/websocket'
+import { chatExecutionContext } from './chatExecutionContext'
 import { useSettingsStore } from './settingsStore'
 import { useSessionStore } from './sessionStore'
 import type { ClientMessage, ServerMessage } from '../types/chat'
@@ -96,7 +97,7 @@ function newBlockId(): string {
 
 const ERROR_RE = /error|错误|失败|<tool_use_error>/i
 
-// 挂件斜杠开关(按会话):把"开/关台球运营专家"的斜杠命令映射成当前会话 enabledPacks 的增删。
+// 领域知识斜杠开关(按会话):把"开/关台球运营知识库"的斜杠命令映射成当前会话 enabledPacks 的增删。
 // 关的前缀含"开"的词根,故先判关。别名与后端 packIdForCommandName 的入口对齐(billiards)。
 // ⚠️ 不用 \b 收尾——JS 的 \b 在中文字符后不成立(/台球关闭\b/ 不匹配),中文命令用 (?=$|\s) 或字符类收尾。
 const PACK_DISABLE_RE = /^\/\s*(台球关闭|关台球|取消台球|关闭台球|billiards[-_ ]?off)(?=$|\s)/i
@@ -704,11 +705,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         type: 'run',
         message: trimmed,
         conversationId: id,
-        permissionMode: settings.defaultPermissionMode,
+        ...chatExecutionContext(settings.defaultPermissionMode, settings.workspaceRoot),
       }
       // 挂件总带字段(含空数组=显式"这个窗口没开台球/关了"):后端据此以前端 per-conv 为准、支持按会话关挂件。
       run.enabled_packs = settings.enabledPacks
-      if (settings.workspaceRoot) run.working_dir = settings.workspaceRoot
       send(run)
     },
 
@@ -728,9 +728,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         args: block.args,
         token: block.token,
         conversationId: id,
-        permissionMode: settings.defaultPermissionMode,
+        ...chatExecutionContext(settings.defaultPermissionMode, settings.workspaceRoot),
         remember_approval: remember,
-        ...(settings.workspaceRoot ? { working_dir: settings.workspaceRoot } : {}),
         enabled_packs: settings.enabledPacks,
       })
       set((s) => ({
@@ -744,7 +743,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       const id = get().conversationId
       const block = get().blocks.find((b) => b.id === blockId)
       if (!id || !block || block.kind !== 'approval') return
-      send({ type: 'reject', tool: block.tool, args: block.args, conversationId: id })
+      const settings = useSettingsStore.getState()
+      send({ type: 'reject', tool: block.tool, args: block.args, conversationId: id, ...chatExecutionContext(settings.defaultPermissionMode, settings.workspaceRoot) })
       set((s) => ({
         blocks: s.blocks.map((b) => (b.id === blockId && b.kind === 'approval' ? { ...b, resolved: 'rejected' } : b)),
       }))

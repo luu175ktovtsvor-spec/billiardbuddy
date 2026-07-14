@@ -28,6 +28,28 @@ test('Electron、preload、React 和 sidecar 启动链路接通', async ({ deskt
   expect(visible).toBe(true)
 })
 
+test('完全访问需要二次确认,关闭高权限不增加阻力', async ({ desktop }) => {
+  const trigger = desktop.window.getByTestId('permission-menu-trigger')
+  await trigger.click()
+  await desktop.window.getByTestId('permission-mode-bypassPermissions').click()
+
+  const dialog = desktop.window.getByTestId('full-access-confirm')
+  await expect(dialog).toBeVisible()
+  await expect(trigger).toContainText('默认权限')
+  const confirm = dialog.getByRole('button', { name: '开启完全访问' })
+  await expect(confirm).toBeDisabled()
+
+  await dialog.getByRole('checkbox').check()
+  await confirm.click()
+  await expect(dialog).toBeHidden()
+  await expect(trigger).toContainText('完全访问')
+
+  await trigger.click()
+  await desktop.window.getByTestId('permission-mode-default').click()
+  await expect(trigger).toContainText('默认权限')
+  await expect(dialog).toBeHidden()
+})
+
 test('斜杠面板使用 sidecar 的真实命令和技能分组', async ({ desktop }) => {
   const input = desktop.window.getByTestId('chat-input')
   await input.fill('/')
