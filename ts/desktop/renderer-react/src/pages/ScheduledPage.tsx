@@ -1,7 +1,6 @@
 // 已安排页(照 Codex/ChatGPT「Scheduled tasks」:主区一张列表,每行=一个定时任务)。
-// ✅ 真接后端 /api/v1/scheduled-tasks(拉列表/建/改/删/立即跑);预览模式无后端时塞示例。
+// 真接后端 /api/v1/scheduled-tasks(拉列表/建/改/删/立即跑)。
 import { useEffect, useState } from 'react'
-import { isPreviewMode } from '../lib/previewSeed'
 import { ContextMenu } from '../components/shared/Menu'
 import { Modal } from '../components/shared/Modal'
 import { IconTile, PageHeader, PrimaryButton, SecondaryButton } from '../components/shared/PageKit'
@@ -9,12 +8,6 @@ import { toast } from '../stores/toastStore'
 import { IconClock, IconPlus, IconMoreHorizontal, IconEdit, IconTrash, IconZap } from '../components/shared/icons'
 import { t } from '../i18n'
 import { scheduledApi, toView, tasksFrom, type Freq, type TaskView } from '../api/scheduled'
-
-const SEED: TaskView[] = [
-  { id: 's1', title: '每天早上汇总昨天的营业数据', freq: 'day', time: '09:00', enabled: true },
-  { id: 's2', title: '每周一出一版本周活动文案', freq: 'week', time: '10:00', enabled: true },
-  { id: 's3', title: '每月 1 号盘一次会员到期名单', freq: 'month', time: '08:00', enabled: false },
-]
 
 const FREQ_LABEL: Record<Freq, string> = { day: '每天', week: '每周一', month: '每月 1 日' }
 const scheduleText = (f: Freq, time: string) => `${FREQ_LABEL[f]} ${time}`
@@ -91,7 +84,7 @@ function TaskForm({ initial, busy, onCancel, onSave }: { initial: TaskView | nul
 }
 
 export function ScheduledPage() {
-  const [tasks, setTasks] = useState<TaskView[]>(() => (isPreviewMode() ? SEED : []))
+  const [tasks, setTasks] = useState<TaskView[]>([])
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<TaskView | 'new' | null>(null)
   const [busy, setBusy] = useState(false)
@@ -100,7 +93,7 @@ export function ScheduledPage() {
     try { setTasks(tasksFrom(await scheduledApi.list()).map(toView)) }
     catch { /* 后端未就绪:留空,不崩 */ }
   }
-  useEffect(() => { if (!isPreviewMode()) void reload() }, [])
+  useEffect(() => { void reload() }, [])
 
   const save = async (v: FormValues) => {
     setBusy(true)

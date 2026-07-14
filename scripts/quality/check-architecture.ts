@@ -8,6 +8,22 @@ const violations: string[] = []
 const rendererRoot = path.join(root, 'ts/desktop/renderer-react/src')
 const backendRoot = path.join(root, 'ts/src')
 
+const retiredFrontendFiles = [
+  'ts/desktop/renderer/index.html',
+  'ts/desktop/renderer/app.js',
+  'ts/src/server/embeddedFrontend.ts',
+  'ts/desktop/renderer-react/src/lib/previewSeed.ts',
+  'docs/design/mockups/agent-chat.html',
+  'docs/design/mockups/agent-preview.html',
+  'docs/design/mockups/agent-welcome.html',
+]
+
+for (const file of retiredFrontendFiles) {
+  if (await Bun.file(path.join(root, file)).exists()) {
+    violations.push(`${file}:1:1 已退役的前端或假数据入口不得恢复；桌面产品只保留 renderer-react`)
+  }
+}
+
 function relative(file: string): string {
   return path.relative(root, file).split(path.sep).join('/')
 }

@@ -3521,11 +3521,11 @@ out-of-scope(cc 有、本项目桌面/免登录/全本地定位不迁移):auto/b
 - **系统托盘**(`createTray`):非 macOS 常驻托盘(显示/退出 + 单击唤起);macOS 靠 Dock 不建;缺图标用空 nativeImage 兜底不崩;before-quit 销毁。
 - **集中 IPC 白名单**:`registerIpc` + preload `contextBridge` 只暴露 `pickWorkspace`/`onMenu`,不给渲染进程裸 ipcRenderer。
 
-**C. 打包白屏真 bug 修复(§3.402 item 3 打包相关)——关键**
-- **现象**:编译后的 sidecar 二进制启动,API 全正常但**首页 GET / 返回 404**——`serveFrontendAsset` 用 `join(import.meta.dir, '../../desktop/renderer')` 解析前端根,而 `bun build --compile` 后 `import.meta.dir` 指向虚拟 `/$bunfs` 路径,读不到真实 renderer;dev(`bun run`)下 import.meta.dir 是真实路径故未暴露。打包态 Electron 用 `http://host:port/` 加载前端、app.js 依赖 `location.host` 连 WS/API,所以 sidecar 必须能 serve 前端,否则**打包后桌面 App 白屏**。
-- **修复**(`src/server/embeddedFrontend.ts` + `serveFrontendAsset`):用 Bun `import ... with { type: 'text' }` 把 `desktop/renderer/index.html` + `app.js` **编进 sidecar 二进制**,作为文件系统查找失败后的兜底(dev/test 仍走文件系统、保留灵活性;编译态走嵌入)。tsc 按扩展名把 `.html/.js` import 推成 HTMLBundle/模块类型、不识别 `type:'text'`,用 `as unknown as string` 校正。
-- **验证**:重编译 sidecar 二进制 → 启动 → `GET /` = **HTTP 200 text/html**、`GET /app.js` = **200 text/javascript**(修复前是 404);Playwright 加载 `http://127.0.0.1:8854/` 标题正确、仅 favicon.ico 一处 404(下条已修)。
-- **favicon polish**:index.html 内联 SVG data-URI favicon(中性底 + 绿点,贴合设计 token,无台球挂件),消除 console 唯一的 favicon 404。
+**C. 桌面前端打包边界(§3.402 item 3)**
+- 桌面产品只保留 `desktop/renderer-react` 源码；`bun run ui:build` 生成 `desktop/renderer-dist`，Electron 通过 `loadFile` 加载构建产物。
+- sidecar 只提供 API、WebSocket 和本地能力，不提供首页或静态前端，也不嵌入 HTML/JavaScript。
+- `desktop:dev`、`desktop:dist` 和 Windows 构建工作流都先执行 `ui:build`；electron-builder 只打包 `renderer-dist`。
+- 架构质量门禁止恢复旧静态 renderer、embedded frontend、假数据预览入口和旧 HTML mockup。
 
 **D. 媒体能力规格文档(§17.8/§17.9,阶段目标要的是"研判"和"流程/标准/边界"文档,非付费实现)**
 - **§17.8 video-use 剪辑编排适配研判** → `plans/video-use-剪辑编排适配研判-2026-07-09.md`:逐条真读 `videoEditProjects.ts`/`mediaJobs.ts`/`server` 视频路由后判定——已吸收(时间线文档为唯一真相源 + 原子操作 + 回滚 `applyOperations`、渲染前校验 `validateDoc`、输出集中项目目录、字幕烧录降级、响度归一 loudnorm、异步 job 化);列入后续(padding/fade 参数化、render 后成品自检——不依赖大模型可排期);暂不吸收(老 AI 导演/VLM/模板特效不恢复)。确认全部 video-use 方法不碰红线(纯真实素材+转写驱动,不生成视频)。

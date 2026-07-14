@@ -14,6 +14,8 @@ bun run desktop:dev
 
 React renderer 是唯一桌面界面。开发态只有显式设置本机回环地址的 `ELECTRON_RENDERER_URL` 时才加载 Vite 开发服务器；打包态始终加载包内 `renderer-dist/index.html`。sidecar 只提供 API、WebSocket 和本地能力，不提供桌面静态页面。
 
+应用没有假数据预览模式。设计走查和 Computer Use 都必须连接真实 sidecar，不允许通过 URL 参数跳过启动链或注入示例会话。
+
 ## 主要目录
 
 - `electron/`：BrowserWindow、菜单、IPC、窗口与 sidecar 生命周期。
