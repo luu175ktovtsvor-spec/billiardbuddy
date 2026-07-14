@@ -405,6 +405,11 @@ export class SessionService {
 
 export class TurnRegistry {
   private readonly controllers = new Map<string, AbortController>()
+  private readonly pendingApprovals = new Map<string, {
+    tool: string
+    token: string
+    settle: (resolution: TurnApprovalResolution) => void
+  }>()
 
   start(sessionId: string): AbortController {
     validateSessionId(sessionId)
@@ -426,6 +431,7 @@ export class TurnRegistry {
 
   finish(sessionId: string, controller: AbortController): boolean {
     if (this.controllers.get(sessionId) !== controller) return false
+    this.pendingApprovals.get(sessionId)?.settle({ behavior: 'deny', message: '当前回合已结束,审批请求已取消。' })
     this.controllers.delete(sessionId)
     return true
   }
@@ -435,7 +441,53 @@ export class TurnRegistry {
     const controller = this.controllers.get(sessionId)
     if (!controller) return false
     controller.abort()
+    this.pendingApprovals.get(sessionId)?.settle({ behavior: 'deny', message: '任务已中断,审批请求已取消。' })
     this.controllers.delete(sessionId)
     return true
   }
+
+  waitForApproval(
+    sessionId: string,
+    request: { tool: string; token: string },
+    signal?: AbortSignal,
+  ): Promise<TurnApprovalResolution> {
+    validateSessionId(sessionId)
+    if (signal?.aborted) return Promise.resolve({ behavior: 'deny', message: '任务已中断,未执行待审批工具。' })
+
+    return new Promise(resolve => {
+      let settled = false
+      const onAbort = () => settle({ behavior: 'deny', message: '任务已中断,未执行待审批工具。' })
+      const settle = (resolution: TurnApprovalResolution) => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', onAbort)
+        if (this.pendingApprovals.get(sessionId)?.settle === settle) this.pendingApprovals.delete(sessionId)
+        resolve(resolution)
+      }
+
+      this.pendingApprovals.get(sessionId)?.settle({ behavior: 'deny', message: '新的审批请求已替换上一个未决请求。' })
+      this.pendingApprovals.set(sessionId, { tool: request.tool, token: request.token, settle })
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  resolveApproval(
+    sessionId: string,
+    input: { behavior: 'allow'; tool: string; token?: string; remember?: boolean } | { behavior: 'deny'; tool: string; message?: string },
+  ): boolean {
+    validateSessionId(sessionId)
+    const pending = this.pendingApprovals.get(sessionId)
+    if (!pending || pending.tool !== input.tool) return false
+    if (input.behavior === 'allow') {
+      if (!input.token || input.token !== pending.token) return false
+      pending.settle({ behavior: 'allow', remember: input.remember === true })
+    } else {
+      pending.settle({ behavior: 'deny', message: input.message })
+    }
+    return true
+  }
 }
+
+export type TurnApprovalResolution =
+  | { behavior: 'allow'; remember: boolean }
+  | { behavior: 'deny'; message?: string }

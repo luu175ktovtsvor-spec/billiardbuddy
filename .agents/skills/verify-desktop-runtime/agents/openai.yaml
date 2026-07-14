@@ -1,0 +1,4 @@
+interface:
+  display_name: "桌面真机验证"
+  short_description: "用 Computer Use、自然语言任务、截图和运行证据验证真实桌面体验"
+  default_prompt: "使用 $verify-desktop-runtime 验证这项桌面改动的真实用户路径。"

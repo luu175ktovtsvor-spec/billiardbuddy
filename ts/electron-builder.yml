@@ -11,13 +11,10 @@ directories:
 # 再复制生产 node_modules，也不需要 electron-builder 重编其中的原生可选依赖。
 npmRebuild: false
 
-# 打进包的文件(前端渲染器 + 编译后的 electron 主/预加载 + package.json)。
-# 过渡期两套前端都打进包:vanilla(renderer,默认路径)+ React(renderer-dist,QF_UI_REACT=1 时 loadFile)。
-# React 达 parity 正式切默认后,再删 vanilla 那行(对齐蓝图:过时即删)。
+# 打进包的文件(React renderer + 编译后的 Electron 主/预加载 + package.json)。
 files:
   - desktop/electron/main.mjs
   - desktop/electron/preload.cjs
-  - desktop/renderer/**/*
   - desktop/renderer-dist/**/*
   - package.json
   - "!node_modules/**/*"

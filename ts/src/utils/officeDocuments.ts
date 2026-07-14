@@ -15,6 +15,12 @@ interface ZipEntry {
   data: Buffer
 }
 
+interface ZipReadLimits {
+  maxEntries?: number
+  maxUncompressedBytes?: number
+  include?: (name: string) => boolean
+}
+
 export class OfficeDocumentError extends Error {
   constructor(message: string, readonly status = 400) {
     super(message)
@@ -33,10 +39,15 @@ export function isXlsxPath(path: string): boolean {
   return extname(path).toLowerCase() === '.xlsx'
 }
 
-export async function readOfficeDocumentBlocks(path: string): Promise<{ name: string; kind: 'docx' | 'pptx'; blocks: CanvasBlock[] }> {
-  const zip = readZip(await readFile(path))
-  if (isDocxPath(path)) return { name: basename(path), kind: 'docx', blocks: docxBlocks(entryText(zip, 'word/document.xml')) }
-  if (isPptxPath(path)) return { name: basename(path), kind: 'pptx', blocks: pptxBlocks(zip) }
+export async function readOfficeDocumentBlocks(path: string, limits?: ZipReadLimits): Promise<{ name: string; kind: 'docx' | 'pptx'; blocks: CanvasBlock[] }> {
+  if (isDocxPath(path)) {
+    const zip = readZip(await readFile(path), { ...limits, include: name => name === 'word/document.xml' })
+    return { name: basename(path), kind: 'docx', blocks: docxBlocks(entryText(zip, 'word/document.xml')) }
+  }
+  if (isPptxPath(path)) {
+    const zip = readZip(await readFile(path), { ...limits, include: name => /^ppt\/slides\/slide\d+\.xml$/.test(name) })
+    return { name: basename(path), kind: 'pptx', blocks: pptxBlocks(zip) }
+  }
   throw new OfficeDocumentError('只支持 docx/pptx 文本块读取', 415)
 }
 
@@ -61,11 +72,28 @@ export async function saveOfficeDocumentBlocks(path: string, edits: Record<strin
   return { ok: true, path, saved }
 }
 
-export async function readXlsxSheet(path: string, sheetName?: string) {
-  const zip = readZip(await readFile(path))
-  const worksheet = findWorksheet(zip, sheetName)
-  const rows = xlsxRows(worksheet.xml, readSharedStrings(zip)).slice(0, 200)
-  return { name: basename(path), sheets: [{ name: worksheet.name, rows }], truncated: rows.length >= 200 }
+export async function readXlsxSheet(path: string, sheetName?: string, limits?: ZipReadLimits) {
+  const zip = readZip(await readFile(path), {
+    ...limits,
+    include: name => name === 'xl/workbook.xml'
+      || name === 'xl/_rels/workbook.xml.rels'
+      || name === 'xl/sharedStrings.xml'
+      || /^xl\/worksheets\/sheet\d+\.xml$/.test(name),
+  })
+  const worksheets = listWorksheets(zip)
+  const worksheet = (sheetName ? worksheets.find(item => item.name === sheetName) : worksheets[0]) ?? worksheets[0]
+  if (!worksheet) throw new OfficeDocumentError('xlsx 缺少 worksheet', 422)
+  const allRows = xlsxRows(worksheet.xml, readSharedStrings(zip))
+  const truncated = allRows.length > 200 || allRows.some(row => row.length > 200)
+  const rows = allRows.slice(0, 200).map(row => row.slice(0, 200))
+  return { name: basename(path), sheet_names: worksheets.map(item => item.name), sheets: [{ name: worksheet.name, rows }], truncated }
+}
+
+export async function readCsvSheet(path: string) {
+  const allRows = parseCsvRecords((await readFile(path, 'utf8')).replace(/^\uFEFF/, ''))
+  const truncated = allRows.length > 200 || allRows.some(row => row.length > 200)
+  const rows = allRows.slice(0, 200).map(row => row.slice(0, 200))
+  return { name: basename(path), sheet_names: ['Sheet1'], sheets: [{ name: 'Sheet1', rows }], truncated }
 }
 
 export async function editXlsxCell(path: string, cell: string, value: string, sheetName?: string) {
@@ -227,24 +255,34 @@ function slideEntries(zip: ZipEntry[]): ZipEntry[] {
     .sort((a, b) => Number(a.name.match(/slide(\d+)\.xml/)?.[1] ?? 0) - Number(b.name.match(/slide(\d+)\.xml/)?.[1] ?? 0))
 }
 
-function findWorksheet(zip: ZipEntry[], sheetName?: string): { name: string; entry: ZipEntry; xml: string } {
+function listWorksheets(zip: ZipEntry[]): Array<{ name: string; entry: ZipEntry; xml: string }> {
   const workbook = zip.find(entry => entry.name === 'xl/workbook.xml')?.data.toString('utf8') ?? ''
   const rels = zip.find(entry => entry.name === 'xl/_rels/workbook.xml.rels')?.data.toString('utf8') ?? ''
-  let targetName = sheetName || 'Sheet1'
-  let targetPath = 'xl/worksheets/sheet1.xml'
+  const fallback = zip
+    .filter(item => /^xl\/worksheets\/sheet\d+\.xml$/.test(item.name))
+    .sort((a, b) => Number(a.name.match(/sheet(\d+)\.xml/)?.[1] ?? 0) - Number(b.name.match(/sheet(\d+)\.xml/)?.[1] ?? 0))
+    .map((entry, index) => ({ name: `Sheet${index + 1}`, entry, xml: entry.data.toString('utf8') }))
   if (workbook && rels) {
     const sheets = allMatches(workbook, /<sheet\b[^>]*\/?>/g).map(tag => parseAttrs(tag))
-    const selected = sheetName ? sheets.find(sheet => sheet.name === sheetName) : sheets[0]
-    if (selected) {
-      targetName = selected.name || targetName
-      const relId = selected['r:id']
-      const rel = relId ? allMatches(rels, /<Relationship\b[^>]*\/?>/g).map(tag => parseAttrs(tag)).find(item => item.Id === relId) : undefined
-      if (rel?.Target) targetPath = `xl/${rel.Target.replace(/^\//, '').replace(/^xl\//, '')}`
-    }
+    const relationships = allMatches(rels, /<Relationship\b[^>]*\/?>/g).map(tag => parseAttrs(tag))
+    const resolved = sheets.flatMap((sheet, index) => {
+      const rel = relationships.find(item => item.Id === sheet['r:id'])
+      if (!rel?.Target) return []
+      const target = rel.Target.replace(/^\//, '').replace(/^\.\//, '')
+      const targetPath = target.startsWith('xl/') ? target : `xl/${target}`
+      const entry = zip.find(item => item.name === targetPath)
+      return entry ? [{ name: sheet.name || `Sheet${index + 1}`, entry, xml: entry.data.toString('utf8') }] : []
+    })
+    if (resolved.length > 0) return resolved
   }
-  const entry = zip.find(item => item.name === targetPath) ?? zip.find(item => /^xl\/worksheets\/sheet\d+\.xml$/.test(item.name))
-  if (!entry) throw new OfficeDocumentError('xlsx 缺少 worksheet', 422)
-  return { name: targetName, entry, xml: entry.data.toString('utf8') }
+  return fallback
+}
+
+function findWorksheet(zip: ZipEntry[], sheetName?: string): { name: string; entry: ZipEntry; xml: string } {
+  const worksheets = listWorksheets(zip)
+  const worksheet = (sheetName ? worksheets.find(item => item.name === sheetName) : worksheets[0]) ?? worksheets[0]
+  if (!worksheet) throw new OfficeDocumentError('xlsx 缺少 worksheet', 422)
+  return worksheet
 }
 
 function readSharedStrings(zip: ZipEntry[]): string[] {
@@ -398,6 +436,47 @@ function parseCsvLine(line: string): string[] {
   return out
 }
 
+function parseCsvRecords(value: string): string[][] {
+  if (!value) return []
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let quoted = false
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]!
+    if (quoted) {
+      if (ch === '"' && value[i + 1] === '"') {
+        cell += '"'
+        i++
+      } else if (ch === '"') {
+        quoted = false
+      } else {
+        cell += ch
+      }
+      continue
+    }
+    if (ch === '"') {
+      quoted = true
+    } else if (ch === ',') {
+      row.push(cell)
+      cell = ''
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && value[i + 1] === '\n') i++
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+    } else {
+      cell += ch
+    }
+  }
+  if (row.length > 0 || cell.length > 0 || value.endsWith(',')) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows
+}
+
 function formatCsvLine(row: string[]): string {
   return row.map(value => /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(',')
 }
@@ -455,30 +534,47 @@ function decodeXml(value: string): string {
     .replaceAll('&amp;', '&')
 }
 
-function readZip(input: Uint8Array): ZipEntry[] {
+function readZip(input: Uint8Array, limits: ZipReadLimits = {}): ZipEntry[] {
   const buf = Buffer.from(input)
   const eocd = findEndOfCentralDirectory(buf)
   const total = buf.readUInt16LE(eocd + 10)
+  if (limits.maxEntries !== undefined && total > limits.maxEntries) {
+    throw new OfficeDocumentError('Office 文档包含过多文件', 413)
+  }
   const centralOffset = buf.readUInt32LE(eocd + 16)
   const entries: ZipEntry[] = []
+  let expandedBytes = 0
   let pos = centralOffset
   for (let i = 0; i < total; i++) {
     if (buf.readUInt32LE(pos) !== 0x02014b50) throw new OfficeDocumentError('ZIP central directory 损坏', 422)
     const method = buf.readUInt16LE(pos + 10)
     const compressedSize = buf.readUInt32LE(pos + 20)
+    const uncompressedSize = buf.readUInt32LE(pos + 24)
     const nameLen = buf.readUInt16LE(pos + 28)
     const extraLen = buf.readUInt16LE(pos + 30)
     const commentLen = buf.readUInt16LE(pos + 32)
     const localOffset = buf.readUInt32LE(pos + 42)
     const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen)
+    if (limits.include && !limits.include(name)) {
+      pos += 46 + nameLen + extraLen + commentLen
+      continue
+    }
     const localNameLen = buf.readUInt16LE(localOffset + 26)
     const localExtraLen = buf.readUInt16LE(localOffset + 28)
     const dataStart = localOffset + 30 + localNameLen + localExtraLen
     const compressed = buf.subarray(dataStart, dataStart + compressedSize)
+    const remaining = limits.maxUncompressedBytes === undefined ? undefined : limits.maxUncompressedBytes - expandedBytes
+    if (remaining !== undefined && (remaining < 0 || uncompressedSize > remaining)) {
+      throw new OfficeDocumentError('Office 文档解压后过大', 413)
+    }
     let data: Buffer
     if (method === 0) data = Buffer.from(compressed)
-    else if (method === 8) data = inflateRawSync(compressed)
+    else if (method === 8) data = inflateRawSync(compressed, remaining === undefined ? undefined : { maxOutputLength: Math.max(1, remaining) })
     else throw new OfficeDocumentError(`ZIP 压缩方式暂不支持:${method}`, 422)
+    expandedBytes += data.length
+    if (limits.maxUncompressedBytes !== undefined && expandedBytes > limits.maxUncompressedBytes) {
+      throw new OfficeDocumentError('Office 文档解压后过大', 413)
+    }
     entries.push({ name, data })
     pos += 46 + nameLen + extraLen + commentLen
   }

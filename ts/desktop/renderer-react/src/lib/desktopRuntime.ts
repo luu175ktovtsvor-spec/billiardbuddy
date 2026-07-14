@@ -1,6 +1,6 @@
 // 后端地址发现(对齐 cc lib/desktopRuntime.initializeDesktopServerUrl):
 //  桌面端 → IPC host.runtime.getServerUrl() 拿 sidecar 地址 → setBaseUrl → 轮询 /health。
-//  浏览器端(Playwright/H5)→ 同上但 URL 来自 same-origin 或 ?serverUrl=。
+//  浏览器预览/H5 → 同上但 URL 来自 same-origin 或 ?serverUrl=。
 // ⚠️ 我们 /health 返回 { ok: true, service, ts }(不是 cc 的 { status:'ok' }),waitForHealth 按我们的形状判定。
 import { getBaseUrl, setBaseUrl, setAuthToken, getDefaultBaseUrl } from '../api/client'
 import { getDesktopHost } from './desktopHost'

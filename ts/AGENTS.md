@@ -11,6 +11,6 @@
 - 跨 renderer、sidecar、IPC 的契约放 `ts/shared/contracts`，由 Zod 推导类型并在边界解析。
 - 产品保持本地单用户、网关藏密钥、运行时白标、文件可回滚和领域包可挂载。
 - `server/index.ts`、`chatStore.ts` 不得突破质量门中的体积基线。
-- 后端真实链路使用 `bun run e2e:backend`；桌面用户路径使用 `bun run e2e:desktop`。
+- 后端真实链路使用 `bun run e2e:backend`；桌面用户路径使用 Computer Use 和自然语言任务做真机验收。
 - 完成、提交或发布前从仓库根运行 `bash scripts/quality_gate.sh`。
 - 文档只写当前实现和当前规则，不记录迁移过程或阶段性结论。

@@ -172,15 +172,15 @@ export const zhCN = {
     auto: '自动',   // 白标代称:模型选择器只显示「自动」,不露底层模型名
   },
   permission: {
-    // ✓真机权限档:默认权限 / 规划模式 / 完全访问权限(自动接受编辑 为 acceptEdits 常规写法)
+    // 普通用户三档；规划模式只由 Agent 内部流程使用，不进入权限菜单。
     default: '默认权限',
-    acceptEdits: '自动接受编辑',
+    acceptEdits: '接受修改',
     plan: '规划模式',
     bypass: '完全访问',
-    defaultDesc: '每一步对外/改动都先问你',
-    acceptEditsDesc: '自动接受文件改动,其余仍会问',
+    defaultDesc: '读取可直接进行，修改和运行命令时按需确认',
+    acceptEditsDesc: '工作目录内修改直接执行，越界或敏感操作时确认',
     planDesc: '只做规划、先不动手',
-    bypassDesc: '放开权限,少打断(谨慎)',
+    bypassDesc: '普通工具直接执行，系统授权仍由系统确认',
     title: '权限',
   },
   approval: {

@@ -33,6 +33,12 @@ export function getAuthToken() {
   return authToken
 }
 
+export async function fetchBinary(url: string, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch(url, { signal })
+  if (!res.ok) throw new ApiError(res.status, `文件读取失败 (${res.status})`)
+  return await res.blob()
+}
+
 export class ApiError extends Error {
   status: number
   body: unknown

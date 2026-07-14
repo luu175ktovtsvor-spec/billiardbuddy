@@ -3,6 +3,7 @@
 //   第 4 栏 工作树   = FileTree(工作目录浏览器)。
 // 由 filePreviewStore.panelOpen 控制显隐;TopBar 的面板按钮 togglePanel;点工具行/树里文件 → openFile。
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { fetchBinary } from '../../api/client'
 import { useFilePreviewStore, rawFileUrl, type GitSummary, type OpenFile } from '../../stores/filePreviewStore'
 import { toast } from '../../stores/toastStore'
 import { useResizableWidth } from '../../lib/useResizableWidth'
@@ -10,7 +11,7 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { FileTree, fileColor } from './FileTree'
 import { ContextMenu } from '../shared/Menu'
-import { IconChevronDown, IconFileText, IconX } from '../shared/icons'
+import { IconChevronDown, IconFileText, IconRefresh, IconX } from '../shared/icons'
 
 function baseName(p: string): string {
   return p.split('/').pop() || p
@@ -46,7 +47,7 @@ function ImagePreview({ file }: { file: OpenFile }) {
         <div className="text-[12px]" style={{ color: 'var(--color-error)' }}>图片加载失败:{baseName(file.path)}</div>
       ) : (
         <img
-          src={rawFileUrl(file.path)}
+          src={rawFileUrl(file.path, file.workspaceRoot)}
           alt={baseName(file.path)}
           onError={() => setErrored(true)}
           style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 6 }}
@@ -54,6 +55,107 @@ function ImagePreview({ file }: { file: OpenFile }) {
       )}
     </div>
   )
+}
+
+function VideoPreview({ file }: { file: OpenFile }) {
+  return (
+    <div className="flex min-h-full items-center justify-center bg-black p-2">
+      <video src={rawFileUrl(file.path, file.workspaceRoot)} controls preload="metadata" className="max-h-full max-w-full" data-testid="workspace-video-preview" />
+    </div>
+  )
+}
+
+function PdfPreview({ file }: { file: OpenFile }) {
+  const [state, setState] = useState<{ url: string | null; error: string | null }>({ url: null, error: null })
+  useEffect(() => {
+    const controller = new AbortController()
+    let objectUrl: string | null = null
+    setState({ url: null, error: null })
+    void fetchBinary(rawFileUrl(file.path, file.workspaceRoot), controller.signal)
+      .then(blob => {
+        objectUrl = URL.createObjectURL(blob)
+        setState({ url: objectUrl, error: null })
+      })
+      .catch(error => {
+        if (!controller.signal.aborted) setState({ url: null, error: error instanceof Error ? error.message : String(error) })
+      })
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [file.path, file.workspaceRoot])
+
+  if (state.error) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-error)' }}>{state.error}</div>
+  if (!state.url) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在读取 PDF…</div>
+  return <iframe src={state.url} title={baseName(file.path)} className="h-full min-h-[480px] w-full border-0" data-testid="workspace-pdf-preview" />
+}
+
+function columnLabel(index: number): string {
+  let value = index + 1
+  let label = ''
+  while (value > 0) {
+    label = String.fromCharCode(65 + ((value - 1) % 26)) + label
+    value = Math.floor((value - 1) / 26)
+  }
+  return label
+}
+
+function SpreadsheetPreview({ file }: { file: OpenFile }) {
+  const selectSheet = useFilePreviewStore((state) => state.selectSpreadsheetSheet)
+  if (file.loading) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在读取表格…</div>
+  if (file.error || file.preview?.kind !== 'spreadsheet') return <div className="p-3 text-[12px]" style={{ color: 'var(--color-error)' }}>{file.error ?? '无法读取表格'}</div>
+  const sheet = file.preview.sheets[0]
+  const columnCount = Math.max(0, ...(sheet?.rows.map(row => row.length) ?? []))
+  if (!sheet || sheet.rows.length === 0) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>表格是空的</div>
+  return (
+    <div className="min-w-max text-[12px]" data-testid="workspace-spreadsheet-preview">
+      <div className="sticky left-0 top-0 z-20 flex items-center gap-1 overflow-x-auto border-b px-2 py-1" style={{ background: 'var(--color-surface-container)', borderColor: 'var(--color-border)' }}>
+        {file.preview.sheet_names.map(name => (
+          <button
+            key={name}
+            type="button"
+            onClick={() => selectSheet(file.path, name)}
+            className="shrink-0 rounded px-2 py-0.5 font-medium transition-colors"
+            style={{ background: name === sheet.name ? 'var(--color-surface-selected)' : 'transparent', color: name === sheet.name ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <table className="border-collapse" style={{ color: 'var(--color-text-primary)' }}>
+        <thead className="sticky top-[29px] z-10"><tr><th className="sticky left-0 min-w-10 border px-2 py-1" style={{ background: 'var(--color-surface-container)', borderColor: 'var(--color-border)' }} />{Array.from({ length: columnCount }, (_, index) => <th key={index} className="min-w-24 border px-2 py-1 text-left font-medium" style={{ background: 'var(--color-surface-container)', borderColor: 'var(--color-border)', color: 'var(--color-text-tertiary)' }}>{columnLabel(index)}</th>)}</tr></thead>
+        <tbody>{sheet.rows.map((row, rowIndex) => <tr key={rowIndex}><th className="sticky left-0 border px-2 py-1 text-right font-normal" style={{ background: 'var(--color-surface-container-low)', borderColor: 'var(--color-border)', color: 'var(--color-text-tertiary)' }}>{rowIndex + 1}</th>{Array.from({ length: columnCount }, (_, colIndex) => <td key={colIndex} className="max-w-80 border px-2 py-1 align-top whitespace-pre-wrap" style={{ borderColor: 'var(--color-border)' }}>{row[colIndex] ?? ''}</td>)}</tr>)}</tbody>
+      </table>
+      {file.preview.truncated && <div className="sticky bottom-0 p-2 text-[11px]" style={{ background: 'var(--color-surface-container)', color: 'var(--color-warning)' }}>仅显示前 200 行和 200 列</div>}
+    </div>
+  )
+}
+
+function DocumentPreview({ file }: { file: OpenFile }) {
+  if (file.loading) return <div className="p-3 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在读取文档…</div>
+  if (file.error || file.preview?.kind !== 'document') return <div className="p-3 text-[12px]" style={{ color: 'var(--color-error)' }}>{file.error ?? '无法读取文档'}</div>
+  return (
+    <div className="mx-auto max-w-[760px] space-y-3 p-5" data-testid="workspace-document-preview">
+      {file.preview.blocks.length === 0 ? <div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>文档没有可预览的文字</div> : file.preview.blocks.map(block => (
+        <p key={block.id} className="whitespace-pre-wrap text-[13px] leading-6" style={{ color: 'var(--color-text-primary)' }}>{block.text}</p>
+      ))}
+      {file.preview.truncated && <div className="text-[11px]" style={{ color: 'var(--color-warning)' }}>文档较长，仅显示前 2000 个文本块</div>}
+    </div>
+  )
+}
+
+function UnsupportedPreview({ file }: { file: OpenFile }) {
+  return <div className="flex min-h-full items-center justify-center p-6 text-center text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>暂不支持在这里预览 {baseName(file.path)}<br />可从上方“打开”菜单使用系统程序查看</div>
+}
+
+function ActivePreview({ file }: { file: OpenFile }) {
+  if (file.kind === 'image') return <ImagePreview file={file} />
+  if (file.kind === 'video') return <VideoPreview file={file} />
+  if (file.kind === 'pdf') return <PdfPreview file={file} />
+  if (file.kind === 'spreadsheet') return <SpreadsheetPreview file={file} />
+  if (file.kind === 'document') return <DocumentPreview file={file} />
+  if (file.kind === 'unsupported') return <UnsupportedPreview file={file} />
+  return <FileContent file={file} />
 }
 
 function EnvRow({ label, value }: { label: string; value: ReactNode }) {
@@ -101,7 +203,7 @@ function EmptyState({ git }: { git: GitSummary | null }) {
         <LauncherRow
           icon={<IconFileText size={15} />}
           label="文件"
-          onClick={() => { void host.pickPaths?.().then((paths) => paths?.forEach((p) => openFile(p))) }}
+          onClick={() => { void host.pickPaths?.({ defaultPath: root ?? undefined }).then((paths) => paths?.forEach((p) => openFile(p))) }}
         />
       )}
       {suggested.length > 0 && (
@@ -167,6 +269,7 @@ export function FilePreviewPanel() {
   const root = useFilePreviewStore((s) => s.root)
   const git = useFilePreviewStore((s) => s.git)
   const setActive = useFilePreviewStore((s) => s.setActive)
+  const reloadFile = useFilePreviewStore((s) => s.reloadFile)
   const closeTab = useFilePreviewStore((s) => s.closeTab)
   const closeOthers = useFilePreviewStore((s) => s.closeOthers)
   const closeAll = useFilePreviewStore((s) => s.closeAll)
@@ -254,13 +357,18 @@ export function FilePreviewPanel() {
                 <IconChevronDown size={11} />
               </button>
             )}
+            {['text', 'spreadsheet', 'document'].includes(active.kind) && (
+              <button type="button" title="重新读取" aria-label="重新读取文件" onClick={() => reloadFile(active.path)} className="shrink-0 rounded-md p-1 transition-colors hover:bg-[var(--color-surface-hover)]" style={{ color: 'var(--color-text-tertiary)' }}>
+                <IconRefresh size={12} />
+              </button>
+            )}
           </div>
         )}
 
         {/* 图片实时渲染 / 文件内容(工作目录原本的样子,铺满整栏)/ 无文件时「新建标签页」启动器+环境卡。
             普通打开不做 diff 对比——红绿修改/删除是后续「审查」tab 的事(对齐 Codex)。 */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {active ? (active.isImage ? <ImagePreview file={active} /> : <FileContent file={active} />) : <EmptyState git={git} />}
+          {active ? <ActivePreview file={active} /> : <EmptyState git={git} />}
         </div>
       </div>
 

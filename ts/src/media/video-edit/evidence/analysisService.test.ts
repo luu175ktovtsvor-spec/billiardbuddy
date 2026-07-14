@@ -53,3 +53,28 @@ test('authorized music gets fingerprint-bound local evidence and degrades withou
   expect(values[0]?.value).toMatchObject({ license_id: 'licensed-by-owner', fingerprint: project.music.fingerprint, beats_ms: [] })
   expect(project.status.warnings.join(' ')).toContain('不做机械卡点')
 })
+
+test('ambient analysis skips transcription and reports visible analysis stages', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'video-ambient-evidence-'))
+  const path = join(root, 'ambient.mp4')
+  writeFileSync(path, 'video')
+  const store = new VideoProjectStore(root)
+  const project = await store.create({ video_paths: [path], goal: 'ambient' })
+  let transcribeCalls = 0
+  const asr: AsrAdapter = {
+    id: 'test-asr', version: '1',
+    async transcribe() {
+      transcribeCalls += 1
+      return { provider: 'test-asr', providerVersion: '1', transcript: null }
+    },
+  }
+  const stages: string[] = []
+  await new VideoEvidenceService(store, { asr, env: { PATH: '', FFMPEG_BIN: '/missing', FFPROBE_BIN: '/missing' } }).analyze(
+    project.project_id,
+    { signal: new AbortController().signal, emit: async () => ({ seq: 1, ts: '', event: { type: 'done' } }), progress: async (_progress, stage) => { if (stage) stages.push(stage) } },
+    { transcription: 'skip' },
+  )
+  expect(transcribeCalls).toBe(0)
+  expect(stages.some(stage => stage.includes('寻找可用画面'))).toBe(true)
+  expect(stages.some(stage => stage.includes('识别口播'))).toBe(false)
+})

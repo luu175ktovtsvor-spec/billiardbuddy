@@ -30,7 +30,6 @@ cd ts && bun install
 cd ts && bun test
 cd ts && bun run typecheck
 cd ts && bun run e2e:backend
-cd ts && bun run e2e:desktop
 cd ts && bun run desktop:dev
 cd ts && bun run desktop:dist
 ```

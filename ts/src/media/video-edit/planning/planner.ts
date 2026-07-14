@@ -27,6 +27,18 @@ function primaryRange(source: VideoSource, inMs = 0, outMs = source.duration_ms)
   return { source_id: source.id, in_ms: Math.max(0, inMs), out_ms: Math.max(inMs + 1, outMs || inMs + 1000) }
 }
 
+function fitCandidateDuration(candidate: RangeCandidate, maxDurationMs: number): RangeCandidate {
+  const duration = candidate.range.out_ms - candidate.range.in_ms
+  if (!Number.isFinite(maxDurationMs) || duration <= maxDurationMs) return candidate
+  return {
+    ...candidate,
+    range: {
+      ...candidate.range,
+      out_ms: candidate.range.in_ms + Math.max(1, Math.floor(maxDurationMs)),
+    },
+  }
+}
+
 function visualRole(source: VideoSource): VideoScene['visual_role'] {
   if (source.role === 'talking_take' || source.role === 'live_longform') return 'talking_head'
   if (source.role === 'space_wide' || source.role === 'venue_entry') return 'wide'
@@ -183,10 +195,11 @@ function ambientScenes(project: VideoProject, brief: VideoCreativeBrief, shotEvi
   let duration = 0
   for (const candidate of ranges) {
     if (selected.length >= 12) break
-    const candidateDuration = candidate.range.out_ms - candidate.range.in_ms
-    if (selected.length > 0 && duration + candidateDuration > target) continue
-    selected.push(candidate)
-    duration += candidateDuration
+    const remaining = target - duration
+    if (remaining <= 0) break
+    const fitted = fitCandidateDuration(candidate, remaining)
+    selected.push(fitted)
+    duration += fitted.range.out_ms - fitted.range.in_ms
   }
   const actual = selected.length ? selected : ranges.slice(0, 1)
   return actual.map((item, index, all) => {

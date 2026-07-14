@@ -4,7 +4,7 @@ import type { Message, ContentBlock, ImageBlock, ToolResultBlock, ToolCall } fro
 import { textBlock, toolUseBlock, toolResultBlock, userText } from '../types/message'
 import type { AssistantStep, Model, ModelStepDelta, ModelStepInput, ModelUsage } from '../types/model'
 import { MODEL_OUTPUT_TRUNCATED_NOTICE } from '../types/model'
-import type { ToolContext, ToolProgressEvent, ToolSpec } from '../tools/Tool'
+import type { ToolApprovalRequest, ToolContext, ToolProgressEvent, ToolSpec } from '../tools/Tool'
 import type { ToolRegistry } from '../tools/registry'
 import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
@@ -182,6 +182,8 @@ export interface RunAgentLoopOptions {
   sandbox?: Sandbox
   permissionMode?: PermissionMode
   initialPermissionUpdates?: PermissionUpdate[]
+  waitForApproval?: ToolContext['waitForApproval']
+  onPermissionUpdates?: ToolContext['onPermissionUpdates']
   initialAllowedTools?: string[]
   conversationId?: string
   localDenialTracking?: DenialTrackingState
@@ -293,6 +295,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     permissionMode: opts.permissionMode ?? 'default',
     sessionHooks: opts.initialSessionHooks,
     onSessionHooksChanged: opts.onSessionHooksChanged,
+    waitForApproval: opts.waitForApproval,
+    onPermissionUpdates: opts.onPermissionUpdates,
     conversationId: opts.conversationId,
     querySource: opts.querySource,
     localDenialTracking: opts.localDenialTracking,
@@ -822,7 +826,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
         if (paired.has(call.id)) continue
         const text = `工具 ${call.name} 执行中断:${detail}`
         toolResults.push(toolResultBlock(call.id, `<tool_use_error>\n${text}\n</tool_use_error>`, true))
-        yield { type: 'tool_result', tool: call.name, output: text }
+        yield { type: 'tool_result', tool: call.name, output: text, is_error: true }
       }
     }
 
@@ -1052,7 +1056,7 @@ function toolFeedback(call: ToolCall, output: string, isError = false, modelCont
   const content: ToolResultBlock['content'] = images && images.length > 0 ? [textBlock(text), ...images] : text
   return {
     result: toolResultBlock(call.id, content, isError),
-    events: [{ type: 'tool_result', tool: call.name, output }],
+    events: [{ type: 'tool_result', tool: call.name, output, is_error: isError }],
   }
 }
 
@@ -1157,7 +1161,7 @@ async function* gateOneCall(
   const feedback = (output: string, isError = false, modelContent = output): AgentEvent => {
     const content = isError ? `<tool_use_error>\n${modelContent}\n</tool_use_error>` : modelContent
     toolResults.push(toolResultBlock(call.id, content, isError))
-    return { type: 'tool_result', tool: call.name, output }
+    return { type: 'tool_result', tool: call.name, output, is_error: isError }
   }
 
   const tool = registry.get(call.name)
@@ -1368,12 +1372,20 @@ async function* gateOneCall(
       notificationType: 'permission',
     }, ctx)
     for (const extra of notify.additionalContext) yield { type: 'context_note', text: extra }
+    const approvalToken = signApproval(call.name, hookInput)
+    const approvalRequest: ToolApprovalRequest = {
+      id: call.id,
+      tool: call.name,
+      args: hookInput,
+      token: approvalToken,
+      rememberable,
+    }
     yield {
       type: 'approval_request',
       tool: call.name,
       args: hookInput,
       id: call.id,
-      token: signApproval(call.name, hookInput),
+      token: approvalToken,
       preview,
       reason: decision.behavior === 'ask'
         ? decision.approvalReason
@@ -1381,7 +1393,45 @@ async function* gateOneCall(
       ...(commandWarning ? { warning: commandWarning } : {}),
       rememberable,
     }
-    yield feedback(APPROVAL_PENDING_MSG(call.name), false)
+    if (!ctx.waitForApproval) {
+      yield feedback(APPROVAL_PENDING_MSG(call.name), false)
+      return
+    }
+
+    const resolution = await ctx.waitForApproval(approvalRequest)
+    if (resolution.behavior === 'deny') {
+      const reason = resolution.message?.trim() || `用户拒绝了工具 ${call.name} 的本次调用。`
+      clearApprovalForContext(ctx, key)
+      yield* fireDenied(reason)
+      yield feedback(reason, true)
+      return
+    }
+
+    const approvalClass = decision.behavior === 'ask'
+      ? decision.approvalClass
+      : tool.approvalClassFor?.(hookInput, ctx) ?? tool.approvalClass
+    const transientUpdates = decision.behavior === 'ask'
+      ? transientPermissionUpdatesForApproval(call.name, hookInput, ctx)
+      : []
+    if (resolution.remember && rememberable) {
+      recordApprovalForContext(ctx, key)
+      const rememberedUpdates = rememberedPermissionUpdatesForApproval(call.name, hookInput, ctx, approvalClass)
+      if (rememberedUpdates.length > 0) {
+        Object.assign(ctx, applyPermissionUpdates(ctx, rememberedUpdates))
+        ctx.onPermissionUpdates?.(rememberedUpdates)
+      }
+    }
+
+    const executionCtx = transientUpdates.length > 0 ? applyPermissionUpdates(ctx, transientUpdates) : ctx
+    const previousApprovedToolExecution = executionCtx.approvedToolExecution
+    try {
+      executionCtx.approvedToolExecution = { name: call.name, key }
+      const outcome = yield* executeAllowedToolCallWithProgress(tool, call, hookInput, executionCtx, hooks, toolResultStoreDir)
+      toolResults.push(outcome.result)
+      for (const event of outcome.events) yield event
+    } finally {
+      executionCtx.approvedToolExecution = previousApprovedToolExecution
+    }
     return
   }
 

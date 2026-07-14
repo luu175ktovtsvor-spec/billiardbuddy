@@ -16,7 +16,6 @@ import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentSto
 import { DesktopDataStore } from './services/desktopDataStore'
 import { ScheduledTaskRunner } from './services/scheduledTaskRunner'
 import { createTelemetryService } from './services/telemetry'
-import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import { getLogger } from '../utils/logger'
@@ -123,8 +122,6 @@ export interface StartServerOptions {
   sandboxEnabled?: boolean
   /** WS 断连宽限期(ms):最后消费者断连后无人重连则中止运行中回合。默认 5 分钟,QF_TURN_ABANDON_GRACE_MS 可覆盖。 */
   turnAbandonGraceMs?: number
-  /** ts-desktop 前端静态资源根目录;设置后 GET 未命中 API 路由时从此服务(Electron/浏览器加载前端)。默认 ts/desktop/renderer。 */
-  frontendRoot?: string
   skillsRoot?: string
   commandsRoot?: string
   hooksPath?: string
@@ -338,25 +335,6 @@ export function startServer(opts: StartServerOptions = {}) {
       if (turns.interrupt(id)) void sessions.touch(id, { status: 'interrupted' }).catch(() => undefined)
     },
   })
-  const frontendRoot = opts.frontendRoot ?? join(import.meta.dir, '../../desktop/renderer')
-  const FRONTEND_CT: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
-  async function serveFrontendAsset(pathname: string): Promise<Response | null> {
-    const rel = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '')
-    const resolved = resolve(frontendRoot, rel)
-    // 防路径穿越:必须落在 frontendRoot 内(越界仍可走嵌入兜底命中已知文件)
-    if (resolved === frontendRoot || resolved.startsWith(frontendRoot + sep)) {
-      try {
-        const data = await readFile(resolved)
-        return new Response(data, { headers: { 'Content-Type': FRONTEND_CT[extname(resolved).toLowerCase()] ?? 'application/octet-stream' } })
-      } catch {
-        // 文件系统没有:编译态 frontendRoot 是虚拟 bunfs 路径,落到下面嵌入兜底。
-      }
-    }
-    // 嵌入兜底:打包后 sidecar 二进制读不到真实 renderer 目录,从编进二进制的前端文件服务。
-    const embedded = EMBEDDED_FRONTEND['/' + rel]
-    if (embedded) return new Response(embedded.body, { headers: { 'Content-Type': embedded.contentType } })
-    return null
-  }
   const steerInboxes = new Map<string, string[]>()
   // 运行中"提交插话"时触发 submit-interrupt(对齐 cc handlePromptSubmit:hasInterruptibleToolInProgress → abort('interrupt'))。
   // 循环内 registerInterrupt 注册进来,自带闸(仅在可中断工具在飞时才真切断);普通工具在飞/无工具时为 no-op = 入队。
@@ -622,7 +600,10 @@ export function startServer(opts: StartServerOptions = {}) {
     }
   }
 
-  async function createTurnStream(rawBody: TurnStreamInput): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
+  async function createTurnStream(
+    rawBody: TurnStreamInput,
+    transport: { interactiveApprovals?: boolean } = {},
+  ): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
     const rawUserMessage = stringOr(rawBody.message ?? rawBody.userMessage, '') || stringOr(rawBody.messagePreview, '')
     if (!rawUserMessage) throw new TurnSetupError('message required', 400)
     const explicitUserContent = rawBody.userContent?.length ? rawBody.userContent : undefined
@@ -1230,6 +1211,15 @@ export function startServer(opts: StartServerOptions = {}) {
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
           initialPermissionUpdates: [...persistedRuleUpdates, ...(sessionPermissionUpdates.get(conversationId) ?? [])],
+          // 只有双向 WS 能在同一回合把用户决定送回来。单向 SSE/后台任务沿用
+          // approval_request + 待确认结果，不能挂起等待一个不存在的回传通道。
+          ...(transport.interactiveApprovals
+            ? { waitForApproval: (request: Parameters<typeof turns.waitForApproval>[1]) => turns.waitForApproval(conversationId, request, controller.signal) }
+            : {}),
+          onPermissionUpdates: updates => {
+            const existing = sessionPermissionUpdates.get(conversationId) ?? []
+            sessionPermissionUpdates.set(conversationId, dedupePermissionUpdates([...existing, ...updates]))
+          },
           initialAllowedTools: commandInvocation && matchedCommand && matchedCommand.context !== 'fork' ? matchedCommand.allowedToolRules ?? matchedCommand.allowedTools : undefined,
           contextWindowChars: typeof rawBody.contextWindowChars === 'number' ? rawBody.contextWindowChars : undefined,
           contextWindowTokens,
@@ -1296,7 +1286,10 @@ export function startServer(opts: StartServerOptions = {}) {
 
   async function handleWsRun(ws: { send(data: string): unknown; data: AgentWsData }, body: Record<string, unknown>): Promise<void> {
     try {
-      const { conversationId, stream } = await createTurnStream({ ...body, conversationId: body.conversationId ?? ws.data.conversationId })
+      const { conversationId, stream } = await createTurnStream(
+        { ...body, conversationId: body.conversationId ?? ws.data.conversationId },
+        { interactiveApprovals: true },
+      )
       ws.data.conversationId = conversationId
       for await (const record of stream) {
         wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
@@ -2040,6 +2033,7 @@ export function startServer(opts: StartServerOptions = {}) {
     replayEvents: replayWsEvents,
     runTurn: handleWsRun,
     runApprovedTool,
+    resolvePendingApproval: (conversationId, input) => turns.resolveApproval(conversationId, input),
     rejectTool: handleReject,
   })
 
@@ -2560,12 +2554,6 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response(bodyStream, {
           headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
         })
-      }
-
-      // ts-desktop 前端静态资源:GET 未命中任何 API 路由 → 从 frontendRoot 服务(Electron/浏览器加载前端)。
-      if (req.method === 'GET') {
-        const asset = await serveFrontendAsset(url.pathname)
-        if (asset) return asset
       }
 
       return new Response('Not found', { status: 404 })

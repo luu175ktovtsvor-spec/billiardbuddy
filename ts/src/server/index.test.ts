@@ -3369,13 +3369,9 @@ test('GET/POST /api/settings 读写 App 用户设置(默认权限档/主题)', a
   expect(reread.settings.defaultPermissionMode).toBe('acceptEdits')
 })
 
-test('GET / 服务 ts-desktop 前端 index.html + app.js content-type + 未知路径 404', async () => {
-  const html = await (await fetch(`http://127.0.0.1:${server.port}/`)).text()
-  expect(html).toContain('球房管家')
-  expect(html).toContain('id="thread"')
-  const js = await fetch(`http://127.0.0.1:${server.port}/app.js`)
-  expect(js.status).toBe(200)
-  expect(js.headers.get('content-type')).toContain('javascript')
+test('sidecar 不再服务已删除的旧桌面前端', async () => {
+  expect((await fetch(`http://127.0.0.1:${server.port}/`)).status).toBe(404)
+  expect((await fetch(`http://127.0.0.1:${server.port}/app.js`)).status).toBe(404)
   expect((await fetch(`http://127.0.0.1:${server.port}/nonexistent-asset.xyz`)).status).toBe(404)
 })
 

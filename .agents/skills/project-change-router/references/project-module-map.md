@@ -14,7 +14,7 @@
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
 | 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
-| Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
+| Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars`、`desktop/renderer-react` | 窗口、IPC、进程生命周期与唯一 React renderer 入口；sidecar 不提供旧静态页面 |
 | 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、`server/routes/sessionArchiveRoutes.ts`、renderer chat/session | 会话元数据、活动、回退与归档 REST，transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
 | 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
@@ -52,6 +52,6 @@
 |---|---|
 | AI 长期规则 | 根/路径级 `AGENTS.md`、`CLAUDE.md` |
 | 重复工作流 | `.agents/skills` 权威 Skill + `.claude/skills` 中文入口 |
-| 机械质量门 | `scripts/quality_gate.sh`、`scripts/quality/*` |
+| 机械质量门 | `scripts/quality_gate.sh`、`scripts/quality/*`；桌面用户体验另由 `verify-desktop-runtime` 真机验收 |
 | 持续集成 | `.github/workflows/ts-harness-ci.yml` |
 | Windows 安装包 | `.github/workflows/desktop-build-win.yml`，当前只产 artifact 不自动发布 |

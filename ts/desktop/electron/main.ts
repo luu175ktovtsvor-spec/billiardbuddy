@@ -1,8 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
-import { DESKTOP_IPC } from '../../shared/contracts/desktop-host'
+import { DESKTOP_IPC, desktopPickerOptionsSchema } from '../../shared/contracts/desktop-host'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { existsSync, readdirSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { platform } from 'node:os'
 import {
   SERVER_BIND_HOST,
@@ -32,6 +32,22 @@ let serverPort = 0
 let sidecarDownNotified = false
 
 const APP_NAME = '球房管家'
+let lastPickerDirectory: string | null = null
+
+function pickerDefaultPath(input: unknown, useParent = false): string {
+  const parsed = desktopPickerOptionsSchema.safeParse(input ?? {})
+  const requested = parsed.success ? parsed.data.defaultPath?.trim() : undefined
+  if (requested && isAbsolute(requested) && existsSync(requested)) return useParent ? dirname(requested) : requested
+  return lastPickerDirectory ?? app.getPath('desktop')
+}
+
+function rememberPickerDirectory(path: string, selectedDirectory: boolean): void {
+  lastPickerDirectory = selectedDirectory ? path : dirname(path)
+}
+
+function selectedPathIsDirectory(path: string): boolean {
+  try { return statSync(path).isDirectory() } catch { return false }
+}
 
 /** 解析 bun 绝对路径(spawnSidecar 要 existsSync 通过,不能只给裸命令 'bun')。 */
 function resolveBun(): string {
@@ -170,19 +186,28 @@ function createWindow(): void {
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
-/** 前端加载切换(过渡式,别破坏现有 vanilla):
- *  - QF_UI_REACT=1 → React 壳:优先 ELECTRON_RENDERER_URL(Vite dev HMR),否则 file:// 加载 renderer-dist;
- *    React 通过 IPC runtime:getServerUrl 拿 sidecar 地址再 fetch/WS(前端与 sidecar 解耦)。
- *  - 默认(未设 env) → 现有 vanilla:loadURL(sidecar http),same-origin 相对路径,行为完全不变。 */
-function loadRenderer(win: BrowserWindow): void {
-  if (process.env.QF_UI_REACT === '1') {
-    const devUrl = process.env.ELECTRON_RENDERER_URL // Vite dev server(HMR),仅 loopback
-    if (devUrl) { void win.loadURL(devUrl); return }
-    const entry = join(here, '..', 'renderer-dist', 'index.html')
-    if (existsSync(entry)) { void win.loadFile(entry); return }
-    console.error(`[main] QF_UI_REACT=1 但缺 ${entry};回退 vanilla。请先 bun run ui:build。`)
+function allowedDevRendererUrl(value: string | undefined): string | null {
+  if (!value || app.isPackaged) return null
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:') return null
+    if (!['127.0.0.1', 'localhost', '::1'].includes(url.hostname)) return null
+    return url.toString()
+  } catch {
+    return null
   }
-  void win.loadURL(`http://${SERVER_BIND_HOST}:${serverPort}/`)
+}
+
+/** 桌面产品只有 React renderer。开发态可显式使用本机 Vite HMR，否则加载构建产物。 */
+function loadRenderer(win: BrowserWindow): void {
+  const devUrl = allowedDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
+  if (devUrl) { void win.loadURL(devUrl); return }
+  const entry = join(here, '..', 'renderer-dist', 'index.html')
+  if (!existsSync(entry)) {
+    void dialog.showErrorBox('前端文件缺失', `找不到 ${entry}\n请先运行 bun run ui:build。`)
+    return
+  }
+  void win.loadFile(entry)
 }
 
 /** 重载主窗口内容(渲染进程崩溃恢复用):窗口还在就 reload,没了就重建。返回是否发起了恢复。 */
@@ -300,38 +325,47 @@ function createTray(): void {
 /** 集中注册 IPC(白名单 + 无 payload 或 payload 校验;§3.402 桌面壳架构:主↔渲染只走白名单通道)。 */
 function registerIpc(): void {
   // 后端地址发现(对齐 cc runtime:getServerUrl):main 已 reserveServerPort 抢到 serverPort,
-  // React 壳(QF_UI_REACT,file:// 加载)经此拿 sidecar 地址再 fetch/WS。vanilla 默认路径不用它,注册无副作用。
+  // React renderer 从 file:// 加载，经此拿 sidecar 地址再 fetch/WS。
   ipcMain.handle(DESKTOP_IPC.getServerUrl, () => `http://${SERVER_BIND_HOST}:${serverPort}`)
 
   // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
-  ipcMain.handle(DESKTOP_IPC.pickWorkspace, async () => {
+  ipcMain.handle(DESKTOP_IPC.pickWorkspace, async (_event, input: unknown) => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
-    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹' })
-    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
+    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹', defaultPath: pickerDefaultPath(input, true) })
+    const selected = result.canceled ? undefined : result.filePaths[0]
+    if (!selected) return null
+    rememberPickerDirectory(selected, true)
+    return selected
   })
 
   // 原生视频文件多选(剪视频看板导入素材):返回选中视频的绝对路径数组或 null。
-  ipcMain.handle(DESKTOP_IPC.pickVideoFiles, async () => {
+  ipcMain.handle(DESKTOP_IPC.pickVideoFiles, async (_event, input: unknown) => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
     const result = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'],
       title: '选择要剪的视频素材',
+      defaultPath: pickerDefaultPath(input),
       filters: [{ name: '视频', extensions: ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm', 'flv', 'wmv', '3gp'] }],
     })
-    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
+    if (result.canceled || result.filePaths.length === 0) return null
+    rememberPickerDirectory(result.filePaths[0]!, false)
+    return result.filePaths
   })
 
   // 通用「文件和文件夹」多选(对话框附件:把选中路径插进输入框,让本机 agent 去读)。文件夹与文件都可选(macOS 原生支持同时)。
-  ipcMain.handle(DESKTOP_IPC.pickPaths, async () => {
+  ipcMain.handle(DESKTOP_IPC.pickPaths, async (_event, input: unknown) => {
     const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
     if (!win) return null
     const result = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'openDirectory', 'multiSelections'],
       title: '选择文件或文件夹',
+      defaultPath: pickerDefaultPath(input),
     })
-    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths
+    if (result.canceled || result.filePaths.length === 0) return null
+    rememberPickerDirectory(result.filePaths[0]!, selectedPathIsDirectory(result.filePaths[0]!))
+    return result.filePaths
   })
 
   // 「打开/在 Finder 中显示」(右面板文件操作,对齐 Codex):openPath 用系统默认程序打开

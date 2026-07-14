@@ -1,15 +1,15 @@
-// Toast 容器(顶部居中浮层,照 Codex/常见 chat 的操作反馈)。挂在 AppShell 顶层。
+// Toast 容器。单条反馈放在工具栏下方右侧，避免遮住工作台的视图切换。
 import { useToastStore } from '../../stores/toastStore'
 
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts)
   if (toasts.length === 0) return null
   return (
-    <div className="pointer-events-none fixed left-1/2 top-4 z-[80] flex -translate-x-1/2 flex-col items-center gap-2">
+    <div className="pointer-events-none fixed right-4 top-14 z-[80] flex max-w-[min(360px,calc(100vw-32px))] flex-col items-end gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-none rounded-lg px-3.5 py-2 text-[13px]"
+          className="pointer-events-none max-w-full rounded-lg px-3.5 py-2 text-[13px]"
           style={{
             background: 'var(--color-surface)',
             border: '1px solid var(--color-border)',

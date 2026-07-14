@@ -12,7 +12,7 @@ description: Prepare, build, verify, publish, monitor, and roll back the current
 1. 工作树范围明确，版本变更与发布说明对应一个可回滚批次。
 2. `bash scripts/quality_gate.sh` 全绿；不得跳过失败项打 tag。
 3. 目标平台重新构建 React、Electron main/preload 和该平台 sidecar，再由 electron-builder 出包。
-4. 先执行 `bun run e2e:backend` 和 `bun run e2e:desktop`，再在目标平台干净环境安装并验证：启动、sidecar 健康、基本对话、审批/文件路径、关键产品页和退出清理。
+4. 先执行 `bun run e2e:backend`，再按 `verify-desktop-runtime` 用 Computer Use 验证当前开发版，并在目标平台干净环境安装验证：启动、sidecar 健康、自然语言任务、审批/文件路径、关键产品页和退出清理。
 5. 校验包内 bundled Skill/command/agent、资产下载清单、白标、密钥边界、版本和更新元数据。
 6. 写明发布渠道、兼容窗口、观察指标、暂停条件和回滚版本。
 

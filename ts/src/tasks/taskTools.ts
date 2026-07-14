@@ -849,6 +849,7 @@ function formatTaskEvents(task: NonNullable<Awaited<ReturnType<TaskService['get'
     `<background_task id="${xmlAttr(task.id)}"${requested}${agentId} status="${xmlAttr(task.status)}" title="${xmlAttr(task.title)}">`,
     task.summary ? `<summary>${xmlText(task.summary)}</summary>` : '',
     task.stage ? `<stage>${xmlText(task.stage)}</stage>` : '',
+    task.result !== undefined ? `<result>\n${xmlText(formatStructuredTaskResult(task.result))}\n</result>` : '',
     usage ? formatUsageXml(usage) : '',
     ...events.map(record => `#${record.seq} ${record.event.type} ${JSON.stringify(record.event)}`),
     '</background_task>',
@@ -912,12 +913,44 @@ function taskEventText(record: TaskEventRecord): string {
 
 function extractTaskOutput(task: TaskMeta, events: TaskEventRecord[]): string {
   if (typeof task.result === 'string' && task.result.trim()) return task.result
+  if (task.result !== undefined && task.result !== null) return formatStructuredTaskResult(task.result)
   const finalTexts = events
     .filter(record => record.event.type === 'final')
     .map(taskEventText)
     .filter(Boolean)
   if (finalTexts.length > 0) return finalTexts.join('\n')
   return events.map(record => `#${record.seq} ${record.event.type} ${taskEventText(record)}`).join('\n')
+}
+
+function formatStructuredTaskResult(result: unknown): string {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return String(result ?? '')
+  const record = result as Record<string, unknown>
+  const urls = Array.isArray(record.urls) ? record.urls.filter((value): value is string => typeof value === 'string') : []
+  const videoUrl = typeof record.video_url === 'string' ? record.video_url : ''
+  const manifestUrl = typeof record.manifest_url === 'string' ? record.manifest_url : ''
+  const workbenchProjects = Array.isArray(record.workbench_projects)
+    ? record.workbench_projects.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value))
+    : []
+  if (urls.length || videoUrl || workbenchProjects.length) {
+    const lines = ['<media_result>']
+    for (const url of urls) lines.push(`<asset_url>${xmlText(url)}</asset_url>`)
+    if (videoUrl) lines.push(`<video_url>${xmlText(videoUrl)}</video_url>`)
+    if (manifestUrl) lines.push(`<manifest_url>${xmlText(manifestUrl)}</manifest_url>`)
+    if (typeof record.count === 'number') lines.push(`<count>${record.count}</count>`)
+    if (typeof record.ratio === 'string') lines.push(`<ratio>${xmlText(record.ratio)}</ratio>`)
+    for (const project of workbenchProjects) {
+      const projectId = typeof project.project_id === 'string' ? project.project_id : ''
+      const imageUrl = typeof project.image_url === 'string' ? project.image_url : ''
+      if (projectId || imageUrl) lines.push(`<workbench_project id="${xmlAttr(projectId)}" image_url="${xmlAttr(imageUrl)}" />`)
+    }
+    lines.push('<instruction>Use the returned asset path exactly as provided. In the final answer, report the verified asset and do not search the filesystem, invent a host/port, or claim it was saved elsewhere.</instruction>')
+    lines.push('</media_result>')
+    return lines.join('\n')
+  }
+  const safe = JSON.stringify(result, (key, value) => (
+    /(?:api[_-]?key|authorization|secret|source_url|access_token)/i.test(key) ? undefined : value
+  ), 2)
+  return safe.length > 20_000 ? `${safe.slice(0, 20_000)}\n[structured result truncated]` : safe
 }
 
 function formatCcTaskOutput(status: 'success' | 'timeout' | 'not_ready', task: TaskMeta | null, events: TaskEventRecord[] = [], requestedTaskId?: string): string {
@@ -933,7 +966,11 @@ function formatCcTaskOutput(status: 'success' | 'timeout' | 'not_ready', task: T
   if (usage) parts.push(formatUsageXml(usage))
   if (task.error) parts.push(`<error>${xmlText(task.error)}</error>`)
   const output = extractTaskOutput(task, events).trimEnd()
-  if (output) parts.push(`<output>\n${xmlText(output)}\n</output>`)
+  // formatStructuredTaskResult 已逐字段转义，media_result 可安全作为嵌套结构返回。
+  // 再次 xmlText 会把标签变成 &lt;...&gt;，模型容易把相对资源路径当普通文本后猜端口。
+  if (output) parts.push(output.startsWith('<media_result>')
+    ? `<output>\n${output}\n</output>`
+    : `<output>\n${xmlText(output)}\n</output>`)
   return parts.join('\n\n')
 }
 

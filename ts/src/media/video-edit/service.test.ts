@@ -36,7 +36,7 @@ test('video service connects create -> analyze -> brief -> drafts on one v2 proj
   const { source, service } = setup()
   const created = await service.createProject({ video_paths: [source], source_roles: { [source]: 'space_wide' }, user_request: '展示真实环境' })
   const analyzed = await waitFor(() => service.getJob(created.analysis_job.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
-  expect(analyzed?.status).toBe('done_with_warnings')
+  expect(analyzed?.status).toBe('done')
   const compiled = await service.compileBrief(created.project.project_id, { user_request: '做一条自然的环境短片', content_type: 'venue_atmosphere', preferred_view: 'ambient' })
   expect(compiled.brief.user_request).toBe('做一条自然的环境短片')
   const draftStart = await service.startDrafts(created.project.project_id)

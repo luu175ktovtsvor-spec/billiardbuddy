@@ -22,9 +22,11 @@ export async function pickWorkspaceFolder(): Promise<void> {
     useFilePreviewStore.getState().setPanelOpen(true)
     return
   }
-  const dir = await host.pickWorkspace()
+  const dir = await host.pickWorkspace({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
   if (!dir) return
   const folderName = dir.split(/[\\/]/).pop() || dir
+  // 项目身份是用户选择的目录；先持久化，不能等首条消息创建会话后才出现在侧栏。
+  useProjectStore.getState().remember(dir)
   // 当前会话已经有对话记录 → 换目录开新会话(避免劈裂老会话 transcript);空会话则就地绑。
   const hasHistory = useChatStore.getState().blocks.length > 0
   if (hasHistory) {
@@ -39,5 +41,5 @@ export async function pickWorkspaceFolder(): Promise<void> {
   useFilePreviewStore.setState({ tree: null, tabs: [], activePath: null }) // 换目录后强制重载树(带新 working_dir)
   useFilePreviewStore.getState().setPanelOpen(true)
   useFilePreviewStore.getState().loadWorkspace()
-  void useProjectStore.getState().refresh() // 选目录=添加/激活项目,侧栏项目区跟着刷
+  void useProjectStore.getState().refresh() // 合并后端已有会话统计，空项目仍由本地目录记录保留
 }

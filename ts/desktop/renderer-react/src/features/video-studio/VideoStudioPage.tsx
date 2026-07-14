@@ -7,6 +7,7 @@ import {
   IconTarget,
 } from '../../components/shared/icons'
 import { getDesktopHost } from '../../lib/desktopHost'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { toast } from '../../stores/toastStore'
 import {
   pollVideoJob,
@@ -117,7 +118,7 @@ export function VideoStudioPage() {
   }, [refreshProject])
 
   const pickVideos = async () => {
-    const selected = await getDesktopHost().pickVideoFiles?.()
+    const selected = await getDesktopHost().pickVideoFiles?.({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
     if (selected?.length) setPaths(current => [...new Set([...current, ...selected])])
   }
 
@@ -219,7 +220,7 @@ export function VideoStudioPage() {
 
   const pickMusic = async () => {
     if (!project) return
-    const picked = await getDesktopHost().pickPaths?.()
+    const picked = await getDesktopHost().pickPaths?.({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
     const path = picked?.find(item => /\.(mp3|wav|m4a|aac|flac)$/i.test(item))
     if (!path) return toast('请选择一个音频文件')
     if (!musicLicense.trim()) return toast('先填写音乐授权 ID 或来源编号')
@@ -227,7 +228,7 @@ export function VideoStudioPage() {
   }
 
   const relocateSource = async (sourceId: string) => {
-    const selected = await getDesktopHost().pickVideoFiles?.()
+    const selected = await getDesktopHost().pickVideoFiles?.({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
     const path = selected?.[0]
     if (!path) return
     await applyOperation({ type: 'source.relocate', source_id: sourceId, file_uri: path })
@@ -235,7 +236,7 @@ export function VideoStudioPage() {
 
   const pickLogo = async () => {
     if (!project) return
-    const picked = await getDesktopHost().pickPaths?.()
+    const picked = await getDesktopHost().pickPaths?.({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
     const path = picked?.find(item => /\.(png|jpe?g|webp)$/i.test(item))
     if (!path) return toast('请选择 Logo 图片')
     await applyOperation({ type: 'project.set_brand', brand: { ...project.brand, logo_path: path } })
@@ -298,14 +299,14 @@ export function VideoStudioPage() {
             <ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} />
             <div className="flex items-center gap-2"><select value={project.canvas.ratio} onChange={event => void applyOperation({ type: 'project.set_canvas', ratio: event.target.value as '9:16' | '1:1' | '16:9' })} className="rounded-md px-2 py-1.5 text-[12px]" style={inputStyle} aria-label="项目画幅"><option value="9:16">竖屏 9:16</option><option value="1:1">方形 1:1</option><option value="16:9">横屏 16:9</option></select><div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>{saveStateLabel(project.status.save_state)}</div></div>
           </div>
-          <div className="mb-5 flex items-center gap-1 border-b pb-2" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="视频工作区">{([['workspace', '预览'], ['sources', '视频素材'], ['inspector', '调整']] as const).map(([pane, label]) => <button key={pane} type="button" role="tab" aria-selected={compactPane === pane} onClick={() => setCompactPane(pane)} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={{ background: compactPane === pane ? 'var(--color-surface-container)' : 'transparent', color: compactPane === pane ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{label}</button>)}</div>
+          <div className="mb-5 flex items-center gap-1 border-b pb-2 min-[1180px]:hidden" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="视频工作区">{([['workspace', '预览'], ['sources', '视频素材'], ['inspector', '调整']] as const).map(([pane, label]) => <button key={pane} type="button" role="tab" aria-selected={compactPane === pane} onClick={() => setCompactPane(pane)} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={{ background: compactPane === pane ? 'var(--color-surface-container)' : 'transparent', color: compactPane === pane ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{label}</button>)}</div>
           {job && <div className="mb-4"><JobBar job={job} onCancel={() => void cancelJob()} onRetry={() => void retryJob()} /></div>}
           {error && <div className="mb-4 flex items-center gap-2 rounded-md px-3 py-2 text-[12px]" style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-error)', border: '1px solid var(--color-border)' }}><IconAlertCircle size={14} />{error}</div>}
-          <div className={`grid min-h-0 grid-cols-1 gap-6 ${compactPane === 'workspace' ? '' : 'min-[1180px]:grid-cols-[minmax(0,1fr)_320px]'}`}>
-            <aside className={`${compactPane === 'sources' ? 'block' : 'hidden'} min-w-0 space-y-5 min-[1180px]:order-2 min-[1180px]:border-l min-[1180px]:pl-6`} style={{ borderColor: 'var(--color-border)' }}>
+          <div className="grid min-h-0 grid-cols-1 gap-6 min-[1180px]:grid-cols-[240px_minmax(0,1fr)_300px]">
+            <aside className={`${compactPane === 'sources' ? 'block' : 'hidden'} min-w-0 space-y-5 min-[1180px]:order-1 min-[1180px]:block min-[1180px]:border-r min-[1180px]:pr-5`} style={{ borderColor: 'var(--color-border)' }}>
               <SourceBasket project={project} onOperation={operation => void applyOperation(operation)} onRelocate={sourceId => void relocateSource(sourceId)} />
             </aside>
-            <main className={`${compactPane === 'workspace' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-4 min-[1180px]:order-1`}>
+            <main className={`${compactPane === 'workspace' ? 'block' : 'hidden min-[1180px]:block'} min-w-0 space-y-4 min-[1180px]:order-2`}>
               {project.creative_brief && (
                 <section className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }} data-testid="video-brief-understanding">
                   <div className="flex items-start gap-2">
@@ -338,7 +339,7 @@ export function VideoStudioPage() {
               {!scenes.length && <div className="rounded-md py-8 text-center"><button type="button" onClick={() => void generateDrafts()} disabled={!canDraft} className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-[12px] font-medium disabled:opacity-40" style={primaryButtonStyle} data-testid="video-generate-drafts"><IconTarget size={14} />生成第一版</button></div>}
               {scenes.length > 0 && <section><div className="mb-2 flex items-center justify-between"><div className="text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{view === 'talking' ? '字幕与片段' : '画面顺序'}</div><button type="button" onClick={() => void generateDrafts()} disabled={busy} className="rounded-md px-2 py-1.5 text-[12px] disabled:opacity-40" style={subtleButtonStyle}>重新整理</button></div><div className="space-y-2" data-testid={view === 'talking' ? 'video-talking-workspace' : 'video-ambient-workspace'}>{scenes.map((scene, index) => <SceneEditor key={scene.id} scene={scene} nextScene={scenes[index + 1]} project={project} view={view} selected={selectedScene?.id === scene.id} onSelect={() => setSelectedSceneId(scene.id)} onOperation={operation => void applyOperation(operation)} />)}</div></section>}
             </main>
-            <aside className={`${compactPane === 'inspector' ? 'block' : 'hidden'} min-w-0 min-[1180px]:order-2 min-[1180px]:border-l min-[1180px]:pl-6`} style={{ borderColor: 'var(--color-border)' }}>
+            <aside className={`${compactPane === 'inspector' ? 'block' : 'hidden'} min-w-0 min-[1180px]:order-3 min-[1180px]:block min-[1180px]:border-l min-[1180px]:pl-5`} style={{ borderColor: 'var(--color-border)' }}>
               <VideoInspector
                 project={project}
                 selectedScene={selectedScene}

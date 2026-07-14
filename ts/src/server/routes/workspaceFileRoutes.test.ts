@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startServer } from '../index'
 import { createWorkspaceFileRouteHandler } from './workspaceFileRoutes'
+import { renderMinimalPptx, renderMinimalXlsx } from '../../utils/officeDocuments'
 
 const roots: string[] = []
 
@@ -35,7 +36,7 @@ describe('workspace file routes', () => {
   test('ignores unrelated paths and preserves non-GET fallthrough', async () => {
     const { handler } = createHarness()
     expect(await handler(new URL('http://127.0.0.1/health'), request('/health'))).toBeNull()
-    for (const path of ['/api/v1/agent/fs/list', '/api/v1/agent/fs/read', '/api/v1/agent/fs/raw', '/api/v1/agent/fs/diff']) {
+    for (const path of ['/api/v1/agent/fs/list', '/api/v1/agent/fs/read', '/api/v1/agent/fs/raw', '/api/v1/agent/fs/preview', '/api/v1/agent/fs/diff']) {
       expect(await handler(new URL(`http://127.0.0.1${path}`), request(path, { method: 'POST' }))).toBeNull()
     }
   })
@@ -58,6 +59,7 @@ describe('workspace file routes', () => {
       { name: 'b.txt', isDir: false },
     ])
     expect((await route(handler, '/api/v1/agent/fs/list?path=a.txt')).status).toBe(404)
+    expect((await route(handler, `/api/v1/agent/fs/list?path=${encodeURIComponent('../')}`)).status).toBe(403)
   })
 
   test('reads text and returns the existing large-file truncation response', async () => {
@@ -83,9 +85,11 @@ describe('workspace file routes', () => {
     writeFileSync(image, new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
     const outside = join(root, 'outside.png')
     writeFileSync(outside, 'outside')
-    const large = join(workspaceRoot, 'large.bin')
+    const large = join(workspaceRoot, 'large.png')
     writeFileSync(large, '')
-    truncateSync(large, 20 * 1024 * 1024 + 1)
+    truncateSync(large, 50 * 1024 * 1024 + 1)
+    const video = join(workspaceRoot, 'clip.mp4')
+    writeFileSync(video, 'video-content')
 
     expect((await route(handler, '/api/v1/agent/fs/raw')).status).toBe(400)
     const raw = await route(handler, '/api/v1/agent/fs/raw?path=image.png')
@@ -93,8 +97,48 @@ describe('workspace file routes', () => {
     expect(raw.headers.get('content-type')).toBe('image/png')
     expect(raw.headers.get('cache-control')).toBe('no-cache')
     expect([...new Uint8Array(await raw.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47])
+    const ranged = await route(handler, '/api/v1/agent/fs/raw?path=clip.mp4', { headers: { Range: 'bytes=2-6' } })
+    expect(ranged.status).toBe(206)
+    expect(ranged.headers.get('content-type')).toBe('video/mp4')
+    expect(ranged.headers.get('content-range')).toBe('bytes 2-6/13')
+    expect(await ranged.text()).toBe('deo-c')
+    const suffix = await route(handler, '/api/v1/agent/fs/raw?path=clip.mp4', { headers: { Range: 'bytes=-5' } })
+    expect(suffix.status).toBe(206)
+    expect(await suffix.text()).toBe('ntent')
+    expect((await route(handler, '/api/v1/agent/fs/raw?path=clip.mp4', { headers: { Range: 'bytes=-0' } })).status).toBe(416)
     expect((await route(handler, `/api/v1/agent/fs/raw?path=${encodeURIComponent(outside)}`)).status).toBe(403)
-    expect((await route(handler, '/api/v1/agent/fs/raw?path=large.bin')).status).toBe(413)
+    expect((await route(handler, '/api/v1/agent/fs/raw?path=large.png')).status).toBe(413)
+  })
+
+  test('previews csv, xlsx and presentation files as structured workspace data', async () => {
+    const { workspaceRoot, handler } = createHarness()
+    writeFileSync(join(workspaceRoot, 'report.csv'), '指标,今天\n"营业额,含活动","1234\n元"')
+    writeFileSync(join(workspaceRoot, 'report.xlsx'), renderMinimalXlsx('指标,今天\n营业额,1234'))
+    writeFileSync(join(workspaceRoot, 'brief.pptx'), renderMinimalPptx('门店复盘\n营业额达标\n下周跟进招聘'))
+    writeFileSync(join(workspaceRoot, 'unknown.bin'), 'unknown')
+
+    const csv = await (await route(handler, '/api/v1/agent/fs/preview?path=report.csv')).json() as any
+    expect(csv).toMatchObject({ kind: 'spreadsheet', name: 'report.csv', sheet_names: ['Sheet1'], sheets: [{ rows: [['指标', '今天'], ['营业额,含活动', '1234\n元']] }] })
+    const xlsx = await (await route(handler, '/api/v1/agent/fs/preview?path=report.xlsx')).json() as any
+    expect(xlsx).toMatchObject({ kind: 'spreadsheet', name: 'report.xlsx', sheet_names: ['Sheet1'], sheets: [{ rows: [['指标', '今天'], ['营业额', '1234']] }] })
+    const pptx = await (await route(handler, '/api/v1/agent/fs/preview?path=brief.pptx')).json() as any
+    expect(pptx).toMatchObject({ kind: 'document', name: 'brief.pptx', document_kind: 'pptx' })
+    expect(pptx.blocks.map((block: any) => block.text)).toContain('门店复盘')
+    expect((await route(handler, '/api/v1/agent/fs/preview?path=../report.csv')).status).toBe(403)
+    expect((await route(handler, '/api/v1/agent/fs/preview?path=missing.xlsx')).status).toBe(404)
+    expect((await route(handler, '/api/v1/agent/fs/preview?path=unknown.bin')).status).toBe(415)
+  })
+
+  const symlinkTest = process.platform === 'win32' ? test.skip : test
+  symlinkTest('rejects workspace symlinks that escape the selected directory', async () => {
+    const { root, workspaceRoot, handler } = createHarness()
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'outside')
+    symlinkSync(outside, join(workspaceRoot, 'escape.txt'))
+
+    expect((await route(handler, '/api/v1/agent/fs/read?path=escape.txt')).status).toBe(403)
+    expect((await route(handler, '/api/v1/agent/fs/raw?path=escape.txt')).status).toBe(403)
+    expect((await route(handler, '/api/v1/agent/fs/diff?path=escape.txt')).status).toBe(403)
   })
 
   test('returns non-Git content without a false diff and compares Git files with HEAD', async () => {

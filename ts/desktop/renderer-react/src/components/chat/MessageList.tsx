@@ -354,8 +354,13 @@ export function partitionTurnItems(items: RenderItem[]): {
   }
   const finalItem = finalAssistantIndex >= 0 ? items[finalAssistantIndex] : undefined
   const finalAssistant = finalItem?.kind === 'block' && finalItem.block.kind === 'assistant' ? finalItem.block : undefined
-  const activityItems = finalAssistantIndex >= 0 ? items.slice(0, finalAssistantIndex) : items
-  const responseItems = finalAssistantIndex >= 0 ? items.slice(finalAssistantIndex) : []
+  const beforeFinal = finalAssistantIndex >= 0 ? items.slice(0, finalAssistantIndex) : items
+  const persistentResults = beforeFinal.filter(item => item.kind === 'tool-group' && item.blocks.some(block =>
+    block.kind === 'tool' && block.status === 'ok' && /(?:<|&lt;)media_result(?:>|&gt;)/.test(block.output ?? ''),
+  ))
+  const activityItems = beforeFinal.filter(item => !persistentResults.includes(item))
+  // 成品不是调试活动：即使活动区完成后折叠，图片/视频结果也必须和最终回复一起常驻。
+  const responseItems = finalAssistantIndex >= 0 ? [...persistentResults, ...items.slice(finalAssistantIndex)] : []
   const hasActivity = activityItems.some((item) =>
     item.kind === 'tool-group' || item.kind === 'edit-group' || (item.kind === 'block' && (item.block.kind === 'thinking' || item.block.kind === 'assistant')),
   )
@@ -363,10 +368,17 @@ export function partitionTurnItems(items: RenderItem[]): {
 }
 
 function TurnBody({ items, lastKey, lastEditKey, isLatest }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined; isLatest: boolean }) {
-  const [collapsed, setCollapsed] = useState(false)
   const status = useChatStore((s) => s.status)
   const elapsedSeconds = useChatStore((s) => s.elapsedSeconds)
   const { activityItems, responseItems, finalAssistant, hasActivity } = partitionTurnItems(items)
+  const [collapsed, setCollapsed] = useState(() => Boolean(finalAssistant))
+  const completedRef = useRef(Boolean(finalAssistant))
+
+  useEffect(() => {
+    const completed = Boolean(finalAssistant)
+    if (completed && !completedRef.current) setCollapsed(true)
+    completedRef.current = completed
+  }, [finalAssistant])
 
   if (!finalAssistant && !hasActivity) {
     return <>{items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}</>

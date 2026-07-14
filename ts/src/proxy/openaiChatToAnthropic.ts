@@ -5,7 +5,7 @@
 import type { OpenAIChatResponse } from './types'
 import type { ToolCall } from '../types/message'
 import type { AccumulatedResponse } from './streamAccumulate'
-import { parseOpenAIToolArguments } from './toolArguments'
+import { extractEmbeddedToolCalls, parseOpenAIToolArguments, stripEmbeddedToolCalls } from './toolArguments'
 import { openaiUsageToAnthropic } from './usage'
 import { normalizeUrlCitations } from './citations'
 
@@ -38,6 +38,8 @@ export function openaiChatResponseToAccumulated(
 
   const text = typeof message.content === 'string' ? message.content : ''
   const citations = normalizeUrlCitations(m.annotations)
+  const embeddedCalls = extractEmbeddedToolCalls(text, thinking)
+  const usedEmbedded = new Set<number>()
 
   const rawToolCalls = message.tool_calls ?? []
   const toolCalls: ToolCall[] = []
@@ -46,12 +48,15 @@ export function openaiChatResponseToAccumulated(
     const fn = tc?.function
     const name = fn?.name
     if (!tc || !fn || !name) continue // 缺 function/name 的碎片丢弃(不是有效工具调用),同 streamAccumulate 对无 name 碎片的处理
-    toolCalls.push({ id: tc.id || idFactory(i), name, input: parseOpenAIToolArguments(fn.arguments) })
+    const fallbackIndex = embeddedCalls.findIndex((call, candidateIndex) => call.name === name && !usedEmbedded.has(candidateIndex))
+    const fallback = fallbackIndex >= 0 ? embeddedCalls[fallbackIndex]!.input : undefined
+    if (fallbackIndex >= 0) usedEmbedded.add(fallbackIndex)
+    toolCalls.push({ id: tc.id || idFactory(i), name, input: parseOpenAIToolArguments(fn.arguments, fallback) })
   }
 
   return {
-    text,
-    thinking,
+    text: stripEmbeddedToolCalls(text),
+    thinking: stripEmbeddedToolCalls(thinking),
     toolCalls,
     finishReason: choice.finish_reason,
     usage,

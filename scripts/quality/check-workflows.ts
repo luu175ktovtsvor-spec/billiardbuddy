@@ -15,9 +15,7 @@ const qualityOn = quality.data.on as { push?: { branches?: string[] }; pull_requ
 if (!qualityOn?.push?.branches?.includes('main')) errors.push('ts-harness-ci.yml: push 必须监听 main')
 if (!qualityOn || !('pull_request' in qualityOn)) errors.push('ts-harness-ci.yml: 必须监听 pull_request')
 if (!quality.text.includes('bash scripts/quality_gate.sh')) errors.push('ts-harness-ci.yml: 必须执行统一质量门')
-if (!quality.text.includes('xvfb-run --auto-servernum bun run e2e:desktop')) errors.push('ts-harness-ci.yml: 必须在 Linux 虚拟显示器运行桌面 E2E')
-if (!quality.text.includes('ts/test-results/desktop-e2e/')) errors.push('ts-harness-ci.yml: 必须上传桌面 E2E 证据')
-if (!quality.text.includes('if: failure()') || !quality.text.includes('continue-on-error: true')) errors.push('ts-harness-ci.yml: E2E 证据上传必须仅在失败时尽力执行，不得覆盖测试结论')
+if (/e2e:desktop|desktop-e2e|playwright/i.test(quality.text)) errors.push('ts-harness-ci.yml: 不应重新引入已移除的桌面脚本测试')
 
 const windows = await workflow('desktop-build-win.yml')
 for (const retired of ['working-directory: web', 'working-directory: server', 'working-directory: desktop']) {

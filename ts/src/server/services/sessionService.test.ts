@@ -202,3 +202,18 @@ test('TurnRegistry:同 session 新 turn 会中断旧 turn,finish 只清自己的
   expect(c2.signal.aborted).toBe(true)
   expect(reg.interrupt('s1')).toBe(false)
 })
+
+test('TurnRegistry:审批只能由当前会话的匹配 tool/token 释放,中断会取消等待', async () => {
+  const reg = new TurnRegistry()
+  const controller = reg.start('approval-session')
+  const waiting = reg.waitForApproval('approval-session', { tool: 'run_command', token: 'token-a' }, controller.signal)
+
+  expect(reg.resolveApproval('approval-session', { behavior: 'allow', tool: 'write_file', token: 'token-a' })).toBe(false)
+  expect(reg.resolveApproval('approval-session', { behavior: 'allow', tool: 'run_command', token: 'wrong' })).toBe(false)
+  expect(reg.resolveApproval('approval-session', { behavior: 'allow', tool: 'run_command', token: 'token-a', remember: true })).toBe(true)
+  expect(await waiting).toEqual({ behavior: 'allow', remember: true })
+
+  const interruptedWaiting = reg.waitForApproval('approval-session', { tool: 'write_file', token: 'token-b' }, controller.signal)
+  expect(reg.interrupt('approval-session')).toBe(true)
+  expect(await interruptedWaiting).toEqual({ behavior: 'deny', message: '任务已中断,未执行待审批工具。' })
+})

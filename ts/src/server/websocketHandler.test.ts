@@ -4,13 +4,15 @@ import type { ToolContext } from '../tools/Tool'
 import type { SessionEventRecord, SessionStreamEvent } from './services/sessionService'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
-function createHarness(options: { running?: boolean; interrupted?: boolean } = {}) {
+function createHarness(options: { running?: boolean; interrupted?: boolean; pendingApproval?: boolean } = {}) {
   const sent: Array<Record<string, unknown>> = []
   const subscriptions: string[] = []
   const connections: string[] = []
   const disconnections: string[] = []
   const replayed: Array<{ conversationId: string; after: number }> = []
   const runBodies: Array<Record<string, unknown>> = []
+  const pendingApprovalInputs: Array<Record<string, unknown>> = []
+  let approvedToolRuns = 0
   const steerInboxes = new Map<string, string[]>()
   let interruptRequests = 0
   const interruptRequesters = new Map([['session-a', () => { interruptRequests++ }]])
@@ -54,7 +56,12 @@ function createHarness(options: { running?: boolean; interrupted?: boolean } = {
       runBodies.push(body)
     },
     async runApprovedTool() {
+      approvedToolRuns++
       return { ok: true, tool: 'run_command' }
+    },
+    resolvePendingApproval(_conversationId, input) {
+      pendingApprovalInputs.push(input)
+      return options.pendingApproval ?? false
     },
     rejectTool(_tool: string, _args: unknown, _context: ToolContext) {},
   })
@@ -68,8 +75,10 @@ function createHarness(options: { running?: boolean; interrupted?: boolean } = {
     disconnections,
     replayed,
     runBodies,
+    pendingApprovalInputs,
     steerInboxes,
     get interruptRequests() { return interruptRequests },
+    get approvedToolRuns() { return approvedToolRuns },
   }
 }
 
@@ -148,5 +157,31 @@ describe('createAgentWebSocketHandler', () => {
 
     expect(harness.steerInboxes.size).toBe(0)
     expect(harness.sent).toContainEqual({ type: 'steer_result', conversationId: 'session-a', queued: 0, running: false })
+  })
+
+  test('approve/reject resolve a live pending request without running the legacy detached executor', async () => {
+    const harness = createHarness({ pendingApproval: true })
+
+    await harness.handler.message(harness.ws, JSON.stringify({
+      type: 'approve',
+      tool: 'run_command',
+      args: { command: 'echo ok' },
+      token: 'signed-token',
+      remember_approval: true,
+    }))
+    await harness.handler.message(harness.ws, JSON.stringify({
+      type: 'reject',
+      tool: 'write_file',
+      args: { path: 'x.txt' },
+    }))
+    await flushAsyncMessages()
+
+    expect(harness.pendingApprovalInputs).toEqual([
+      { behavior: 'allow', tool: 'run_command', token: 'signed-token', remember: true },
+      { behavior: 'deny', tool: 'write_file', message: '用户拒绝了本次工具调用。' },
+    ])
+    expect(harness.approvedToolRuns).toBe(0)
+    expect(harness.sent).toContainEqual({ type: 'approve_result', ok: true, tool: 'run_command', resumed: true })
+    expect(harness.sent).toContainEqual({ type: 'reject_result', ok: true })
   })
 })

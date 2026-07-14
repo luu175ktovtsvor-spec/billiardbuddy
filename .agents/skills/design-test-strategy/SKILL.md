@@ -13,7 +13,7 @@ description: Design proportionate automated and runtime verification for a repos
 - REST、WS、SSE、IPC、Schema、错误结构：契约测试，至少覆盖合法、非法和兼容输入。
 - route -> service -> store/adapter：集成测试，使用假外部依赖。
 - ReAct、权限、工具、落盘、事件流：`verify-backend-e2e` 的脚本模型检查点。
-- React + Electron + sidecar 用户路径：`verify-desktop-e2e`，联合 DOM、截图、日志、API 和 JSONL 证据。
+- React + Electron + sidecar 用户路径：执行 `verify-desktop-runtime`，用 Computer Use、自然语言任务、截图、日志、API 和落盘结果验证真实体验。
 - 打包、资产、沙箱、真模型或远程服务：按风险选择离线 smoke；真网络测试必须明确环境、成本和不可重复性，不进普通 CI。
 
 ## 执行流程
@@ -24,7 +24,7 @@ description: Design proportionate automated and runtime verification for a repos
 4. 修 Bug 时先写能复现旧错误的失败测试；结构重构先写特征测试锁住行为。
 5. 避免脆弱断言：不绑定无关文案、时间、随机 id、内部调用次数或像素细节。
 6. 提取 route 时让行为测试跟随新模块，并保留一个跨过真实 `startServer` 装配的检查；不要只证明孤立 handler。
-7. 确认新增测试能被 `bun test`、Playwright 配置或对应 CI 自动发现；需要新验证入口时再修改质量门。手动验证必须报告观察结果。
+7. 确认新增机械测试能被 `bun test` 或对应 CI 自动发现；需要新验证入口时再修改质量门。桌面真机验证必须报告自然任务、观察结果和证据位置。
 
 ## 输出
 

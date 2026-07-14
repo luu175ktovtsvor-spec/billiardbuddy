@@ -29,7 +29,7 @@ description: Verify a completed modular change against its declared ownership, c
 bash scripts/quality_gate.sh
 ```
 
-涉及后端 Agent 链路时增加 `verify-backend-e2e`；涉及 UI 时增加 `verify-desktop-e2e` 的真实页面/Electron 验证；涉及发布时执行 `release-desktop-safely`。
+涉及后端 Agent 链路时增加 `verify-backend-e2e`；涉及 UI 时增加 `verify-desktop-runtime` 的 Computer Use 真机验证；涉及发布时执行 `release-desktop-safely`。
 
 `quality_gate.sh` 会统一发现 `gateway/*.test.ts`，新增 gateway 责任模块时测试文件必须放在该目录并使用 `.test.ts` 后缀。
 

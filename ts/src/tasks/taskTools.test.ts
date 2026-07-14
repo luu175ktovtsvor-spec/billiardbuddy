@@ -1158,6 +1158,29 @@ test('TaskOutput reads completed background task output and supports non-blockin
   }
 })
 
+test('TaskOutput preserves structured media result and exact relative video path', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-output-media-'))
+  try {
+    const tasks = new TaskService(root)
+    const task = await tasks.create({ title: '视频导出', kind: 'video_v2_render', conversationId: 'c-media' })
+    const videoUrl = '/api/v1/video-edit/projects/project-1/exports/final.mp4'
+    await tasks.touch(task.id, { status: 'completed', result: { video_url: videoUrl, manifest_url: '/manifest.json' } })
+    const taskOutput = createTaskTools(tasks).find(tool => tool.name === 'TaskOutput')!
+    const output = await taskOutput.execute({ task_id: task.id, block: false }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-media',
+      permissionMode: 'default',
+    })
+
+    expect(output).toContain(`<video_url>${videoUrl}</video_url>`)
+    expect(output).toContain('<media_result>')
+    expect(output).not.toContain('&lt;media_result&gt;')
+    expect(output).toContain('do not search the filesystem, invent a host/port')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('TaskOutput exposes CC-Haha AgentOutputTool and BashOutputTool aliases', async () => {
   const root = mkdtempSync(join(tmpdir(), 'task-output-aliases-'))
   try {
