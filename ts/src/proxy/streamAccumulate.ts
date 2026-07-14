@@ -6,7 +6,7 @@
  */
 import type { ToolCall } from '../types/message'
 import type { OpenAIChatStreamChunk, AnthropicUsage } from './types'
-import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from './toolArguments'
+import { extractEmbeddedToolCalls, parseOpenAIToolArguments, stripEmbeddedToolCalls, stringifyOpenAIToolArguments } from './toolArguments'
 import { openaiUsageToAnthropic } from './usage'
 import { mergeUrlCitations, type UrlCitation } from './citations'
 
@@ -69,6 +69,48 @@ export async function accumulateOpenAiStream(
   const citations: UrlCitation[] = []
   const tools = new Map<number, ToolFrag>()
   let orderSeq = 0
+  let visibleTextBuffer = ''
+  let suppressToolProtocol = false
+
+  const emitVisibleText = (chunk: string, flush = false): void => {
+    if (!opts.onDelta || (!chunk && !flush)) return
+    visibleTextBuffer += chunk
+    const open = '<tool_call>'
+    const close = '</tool_call>'
+    while (visibleTextBuffer) {
+      if (suppressToolProtocol) {
+        const end = visibleTextBuffer.indexOf(close)
+        if (end < 0) {
+          visibleTextBuffer = visibleTextBuffer.slice(Math.max(0, visibleTextBuffer.length - close.length + 1))
+          return
+        }
+        visibleTextBuffer = visibleTextBuffer.slice(end + close.length)
+        suppressToolProtocol = false
+        continue
+      }
+      const start = visibleTextBuffer.indexOf(open)
+      if (start >= 0) {
+        const safe = visibleTextBuffer.slice(0, start)
+        if (safe) opts.onDelta({ channel: 'text', text: safe })
+        visibleTextBuffer = visibleTextBuffer.slice(start + open.length)
+        suppressToolProtocol = true
+        continue
+      }
+      if (flush) {
+        opts.onDelta({ channel: 'text', text: visibleTextBuffer })
+        visibleTextBuffer = ''
+        return
+      }
+      let hold = 0
+      for (let size = Math.min(open.length - 1, visibleTextBuffer.length); size > 0; size--) {
+        if (open.startsWith(visibleTextBuffer.slice(-size))) { hold = size; break }
+      }
+      const safe = hold ? visibleTextBuffer.slice(0, -hold) : visibleTextBuffer
+      visibleTextBuffer = hold ? visibleTextBuffer.slice(-hold) : ''
+      if (safe) opts.onDelta({ channel: 'text', text: safe })
+      return
+    }
+  }
 
   const handleChunk = (chunk: OpenAIChatStreamChunk): void => {
     if (chunk.usage) usage = openaiUsageToAnthropic(chunk.usage)
@@ -77,9 +119,10 @@ export async function accumulateOpenAiStream(
     const delta = (choice.delta ?? {}) as Record<string, unknown>
     mergeUrlCitations(citations, delta.annotations)
 
-    if (typeof delta.content === 'string' && delta.content) { text += delta.content; opts.onDelta?.({ channel: 'text', text: delta.content }) }
+    if (typeof delta.content === 'string' && delta.content) { text += delta.content; emitVisibleText(delta.content) }
     const reasoningDelta = extractReasoning(delta)
-    if (reasoningDelta) { thinking += reasoningDelta; opts.onDelta?.({ channel: 'thinking', text: reasoningDelta }) }
+    // Codex 展示 provider 给出的 reasoning summary，而不是把原始 chain-of-thought 逐 token 摊给用户。
+    if (reasoningDelta) thinking += reasoningDelta
 
     const toolCalls = delta.tool_calls as OpenAIChatStreamChunk['choices'][number]['delta']['tool_calls']
     if (Array.isArray(toolCalls)) {
@@ -129,15 +172,30 @@ export async function accumulateOpenAiStream(
       for (const line of lines) processLine(line)
     }
     if (buffer) processLine(buffer)
+    emitVisibleText('', true)
   } finally {
     reader.releaseLock()
   }
 
   // 收尾:按到达顺序还原工具调用;缺 id 自造(有 name 就当有效工具,别静默丢)。
+  const embeddedCalls = extractEmbeddedToolCalls(text, thinking)
+  const usedEmbedded = new Set<number>()
   const toolCalls: ToolCall[] = [...tools.entries()]
     .sort((a, b) => a[1].order - b[1].order)
     .filter(([, f]) => f.name) // 无 name 的碎片丢弃(不是有效工具调用)
-    .map(([index, f]) => ({ id: f.id || idFactory(index), name: f.name, input: parseOpenAIToolArguments(f.argsBuffer) }))
+    .map(([index, f]) => {
+      const fallbackIndex = embeddedCalls.findIndex((call, candidateIndex) => call.name === f.name && !usedEmbedded.has(candidateIndex))
+      const fallback = fallbackIndex >= 0 ? embeddedCalls[fallbackIndex]!.input : undefined
+      if (fallbackIndex >= 0) usedEmbedded.add(fallbackIndex)
+      return { id: f.id || idFactory(index), name: f.name, input: parseOpenAIToolArguments(f.argsBuffer, fallback) }
+    })
 
-  return { text, thinking, toolCalls, finishReason, usage, ...(citations.length ? { citations } : {}) }
+  return {
+    text: stripEmbeddedToolCalls(text),
+    thinking: stripEmbeddedToolCalls(thinking),
+    toolCalls,
+    finishReason,
+    usage,
+    ...(citations.length ? { citations } : {}),
+  }
 }

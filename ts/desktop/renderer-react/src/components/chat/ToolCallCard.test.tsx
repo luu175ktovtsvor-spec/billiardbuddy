@@ -4,7 +4,7 @@
 import { expect, test } from 'bun:test'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ToolCallCard } from './ToolCallCard'
+import { mediaResultFromOutput, ToolCallCard } from './ToolCallCard'
 import type { ChatBlock } from '../../stores/chatStore'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
@@ -56,4 +56,26 @@ test('无实时输出的运行中命令不渲染空的实时框', () => {
   })
   // liveOutput 未到 → 不渲染实时框(不出现运行态光标)
   expect(html).not.toContain('qf-cursor')
+})
+
+test('TaskOutput 的视频产物在折叠活动下仍直接显示可播放结果', () => {
+  const html = render({
+    id: 'media-1',
+    kind: 'tool',
+    tool: 'TaskOutput',
+    input: { task_id: 'video-job' },
+    status: 'ok',
+    output: '<retrieval_status>success</retrieval_status>\n<output>\n<media_result>\n<video_url>/api/v1/video-edit/projects/p1/exports/final.mp4</video_url>\n</media_result>\n</output>',
+  })
+
+  expect(html).toContain('data-testid="chat-media-result"')
+  expect(html).toContain('data-testid="chat-video-result"')
+  expect(html).toContain('http://127.0.0.1:8850/api/v1/video-edit/projects/p1/exports/final.mp4')
+  expect(html).toContain('视频已生成')
+})
+
+test('媒体结果解析兼容旧版二次转义输出', () => {
+  expect(mediaResultFromOutput('&lt;media_result&gt;&lt;asset_url&gt;/uploads/image.png&lt;/asset_url&gt;&lt;/media_result&gt;')).toEqual({
+    assetUrls: ['/uploads/image.png'],
+  })
 })

@@ -1095,7 +1095,7 @@ export function CreationPage() {
           </span>}
         </div>
 
-        {hasMainPanel && <div className="mx-auto mb-5 grid max-w-[520px] grid-cols-3 gap-1 rounded-lg p-1" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="图片编辑视图">
+        {hasMainPanel && <div className="mx-auto mb-5 flex max-w-[420px] items-center justify-center border-b" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="图片编辑视图">
           {([
             ['create', '描述'],
             ['canvas', '结果'],
@@ -1111,10 +1111,11 @@ export function CreationPage() {
               aria-selected={compactPane === pane}
               disabled={!available}
               onClick={() => dispatchTask({ type: 'select-pane', pane })}
-              className="rounded-md px-2 py-1.5 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-45"
-              style={segStyle(compactPane === pane && available)}
+              className="relative flex-1 px-3 py-2 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-45"
+              style={{ color: compactPane === pane && available ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
             >
               {label}
+              {compactPane === pane && available && <span className="absolute inset-x-3 bottom-[-1px] h-0.5 rounded-full" style={{ background: 'var(--color-brand)' }} />}
             </button>
               )
             })()
@@ -1346,15 +1347,14 @@ export function CreationPage() {
                   ))}
                 </div>
               {selectedImage && (
-                <div className="mt-4 grid grid-cols-[minmax(0,1fr)_132px] gap-4" data-testid="selected-candidate-preview">
-                  <CandidatePreview image={selectedImage} intent={intent} brief={creativeBrief} logoUrl={logoAsset?.url} qrUrl={qrAsset?.url} compact={false} />
-                  <div className="flex flex-col justify-between gap-2 border-l pl-3" style={{ borderColor: 'var(--color-border)' }}>
-                    <div>
-                      <div className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>当前选择</div>
-                      <div className="mt-1 text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>{selectedImage.width ?? '未知'}x{selectedImage.height ?? '未知'}</div>
-                    </div>
-                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-2 py-2 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">继续编辑</button>
-                    {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-2 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">下载图片</button>}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3" style={{ borderColor: 'var(--color-border)' }} data-testid="selected-candidate-preview">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium" style={{ color: 'var(--color-text-primary)' }}>已选择一张结果</div>
+                    <div className="mt-0.5 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{selectedImage.width ?? '未知'}x{selectedImage.height ?? '未知'} · 可继续编辑文字和局部画面</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {intent === 'poster_text' && <button type="button" onClick={() => void quickDownloadCandidate(selectedImage)} className="rounded-md px-3 py-1.5 text-[11px]" style={buttonSubtleStyle} data-testid="quick-download-candidate">直接下载</button>}
+                    <button type="button" onClick={() => void openProjectFromImage(selectedImage)} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={buttonPrimaryStyle} data-testid="open-selected-candidate">继续编辑</button>
                   </div>
                 </div>
               )}

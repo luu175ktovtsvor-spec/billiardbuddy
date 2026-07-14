@@ -165,7 +165,9 @@ export class VideoEditingService {
     }, async ctx => {
       await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint: { phase: 'analysis_started' } })
       await ctx.runner.progress(8, '正在分析真实素材')
-      const analyzed = await this.evidence.analyze(created.project_id, ctx.runner)
+      const analyzed = await this.evidence.analyze(created.project_id, ctx.runner, {
+        transcription: created.goal === 'talking' ? 'required' : 'skip',
+      })
       const compiled = compileVideoBrief(briefInput, analyzed.sources)
       const withBrief = await this.store.saveBrief(created.project_id, compiled.brief, analyzed.revision)
       await this.setJobStage(ctx.taskId, 'planning', { checkpoint: { phase: 'brief_compiled', revision: withBrief.revision } })
@@ -196,8 +198,12 @@ export class VideoEditingService {
     const analyzeInput = videoAnalyzeRequestSchema.parse({ source_ids: opts.sourceIds })
     return await this.startJob('analyze', projectId, opts, async ctx => {
       await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint: { phase: 'analysis_started' } })
+      const current = await this.store.load(projectId)
       const project = await this.evidence.analyze(projectId, ctx.runner, {
         sourceIds: analyzeInput.source_ids,
+        transcription: current.creative_brief?.preferred_view === 'talking' || current.goal === 'talking'
+          ? 'required'
+          : 'skip',
         onCheckpoint: async (checkpoint, affectedSourceIds) => {
           await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint, affected_source_ids: affectedSourceIds })
         },
@@ -213,6 +219,11 @@ export class VideoEditingService {
       await this.setJobStage(ctx.taskId, 'planning', { checkpoint: { phase: 'planning_started' } })
       await ctx.runner.progress(15, '正在检查故事覆盖')
       let project = await this.store.load(projectId)
+      if (project.creative_brief?.preferred_view === 'talking' && !project.evidence.some(ref => ref.kind === 'transcript')) {
+        await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint: { phase: 'transcription_required' } })
+        project = await this.evidence.analyze(projectId, ctx.runner, { transcription: 'required' })
+        await this.setJobStage(ctx.taskId, 'planning', { checkpoint: { phase: 'planning_started' } })
+      }
       if (project.music.enabled) project = await this.evidence.analyzeMusic(projectId, ctx.runner)
       const planned = await this.planner.plan(project)
       if (!planned.scenes.length) throw new VideoProjectError('真实素材不足以生成草稿，请重新分析或补充素材', 'no_draft_scenes', 409)

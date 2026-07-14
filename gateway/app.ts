@@ -24,6 +24,7 @@ import {
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
 
 type GatewayConfig = {
   mimoKey: string
@@ -429,7 +430,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const webSearchBucket = new TokenBucket(config.webSearchRpm)
   const webSearch = deps.webSearchImpl === undefined ? createGatewayWebSearch(env, fetchImpl) : deps.webSearchImpl
 
-  async function fetchHandler(request: Request): Promise<Response> {
+  async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
@@ -553,6 +554,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
+        server?.timeout(request, 0)
         const user = auth(config, request)
         if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
         const contentType = request.headers.get('content-type') ?? ''
@@ -564,6 +566,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         await transcribeBucket.acquire(config.queueMaxWait)
         const started = performance.now()
         return await transcribeSem.run(async () => {
+          const queueMs = elapsedMs(started)
           const form = await request.formData().catch(() => null)
           const file = form?.get('file')
           if (!(file instanceof File) || file.size === 0) throw new HttpError(400, '没有收到音频文件')
@@ -573,14 +576,23 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           const language = /^[a-z]{2,8}$/.test(languageRaw) ? languageRaw : 'zh'
           const formatRaw = String(form?.get('response_format') ?? 'json')
           const responseFormat = formatRaw === 'verbose_json' ? 'verbose_json' : 'json'
+          const runStarted = performance.now()
           try {
             const result = await transcribe(file, { language, responseFormat, signal: request.signal })
-            await logUsage(store, { user, model: 'transcribe', ok: true, status: 200, ms: elapsedMs(started) })
+            const audioSeconds = Number(result.duration)
+            const note = [
+              `queue_ms=${queueMs}`,
+              `run_ms=${elapsedMs(runStarted)}`,
+              `bytes=${file.size}`,
+              ...(Number.isFinite(audioSeconds) && audioSeconds >= 0 ? [`audio_seconds=${Math.round(audioSeconds * 1000) / 1000}`] : []),
+            ].join(';')
+            await logUsage(store, { user, model: 'transcribe', ok: true, status: 200, ms: elapsedMs(started), note })
             return jsonResponse(result)
           } catch (error) {
             const status = error instanceof GatewayTranscriptionError ? error.status : 502
             const detail = error instanceof GatewayTranscriptionError ? error.publicMessage : '语音识别失败，请稍后重试'
-            await logUsage(store, { user, model: 'transcribe', ok: false, status, ms: elapsedMs(started) })
+            const note = `queue_ms=${queueMs};run_ms=${elapsedMs(runStarted)};bytes=${file.size}`
+            await logUsage(store, { user, model: 'transcribe', ok: false, status, ms: elapsedMs(started), note })
             throw new HttpError(status, detail)
           }
         })

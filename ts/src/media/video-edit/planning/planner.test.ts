@@ -68,6 +68,25 @@ test('ambient planner reports real coverage gaps instead of fabricating missing 
   ])
 })
 
+test('ambient planner clips an oversized first source to the requested target duration', async () => {
+  const { store, project: initial } = await projectWithSource('space_wide')
+  const compiled = compileVideoBrief({
+    user_request: '剪成 3 秒竖屏短视频',
+    preferred_view: 'ambient',
+    target_duration_ms: 3_000,
+  }, initial.sources)
+  const project = await store.saveBrief(initial.project_id, compiled.brief)
+  const evidence = { readEvidence: async () => [] } as unknown as VideoEvidenceService
+  const result = await new VideoDraftPlanner(evidence).plan(project)
+
+  expect(result.scenes).toHaveLength(1)
+  expect(result.scenes[0]?.source_ranges[0]).toMatchObject({
+    source_id: project.sources[0]!.id,
+    in_ms: 0,
+    out_ms: 3_000,
+  })
+})
+
 test('ambient planner keeps real footage for user review when every technical shot is rejected', async () => {
   const { store, project: initial } = await projectWithSource('space_wide')
   const compiled = compileVideoBrief({ user_request: '展示真实空间', preferred_view: 'ambient' }, initial.sources)

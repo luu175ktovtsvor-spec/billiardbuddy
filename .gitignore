@@ -101,8 +101,8 @@ desktop/e2e-pw/test-results-studio/
 **/.server-mcp-*/
 **/.task-tools-agent-mcp-*/
 
-# 验收报告写仓库外 ~/Desktop/球房-验收报告/,仓库内出现的不提交
-球房-验收报告/
+# 真机验收与 Computer Use 证据保留在仓库内，但不进入 Git
+.artifacts/
 desktop/e2e-pw/test-results-scenarios/
 desktop/.fastembed-model/
 

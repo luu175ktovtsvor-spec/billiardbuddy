@@ -134,7 +134,8 @@ function mediaStarted(id: string, kind: string, title: string): string {
   return [
     `<media_job_started id="${id}" kind="${kind}">`,
     title,
-    '可用 list_background_tasks/read_background_task 或 /api/v1/agent/media-jobs 查询进度。',
+    `使用 TaskOutput({task_id:"${id}",block:true,timeout:120000}) 等待完成并读取结果。`,
+    '任务结果会直接返回成品 URL；不要用 find、glob 或目录遍历猜测输出位置。',
     '</media_job_started>',
   ].join('\n')
 }

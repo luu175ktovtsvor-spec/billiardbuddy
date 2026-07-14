@@ -12,7 +12,12 @@ export interface AsrResult {
 export interface AsrAdapter {
   readonly id: string
   readonly version: string
-  transcribe(path: string, workDir: string, signal?: AbortSignal): Promise<AsrResult>
+  transcribe(
+    path: string,
+    workDir: string,
+    signal?: AbortSignal,
+    onProgress?: (progress: number, stage?: string) => Promise<void> | void,
+  ): Promise<AsrResult>
 }
 
 export class WhisperCppAsrAdapter implements AsrAdapter {
@@ -21,10 +26,15 @@ export class WhisperCppAsrAdapter implements AsrAdapter {
 
   constructor(private readonly env: Record<string, string | undefined> = process.env) {}
 
-  async transcribe(path: string, workDir: string, signal?: AbortSignal): Promise<AsrResult> {
+  async transcribe(
+    path: string,
+    workDir: string,
+    signal?: AbortSignal,
+    onProgress?: (progress: number, stage?: string) => Promise<void> | void,
+  ): Promise<AsrResult> {
     await mkdir(workDir, { recursive: true })
     try {
-      const transcript = await transcribeVideoWordLevel(path, workDir, { env: this.env, signal })
+      const transcript = await transcribeVideoWordLevel(path, workDir, { env: this.env, signal, onProgress })
       return { transcript, provider: this.id, providerVersion: this.version }
     } catch (error) {
       if (signal?.aborted) throw error

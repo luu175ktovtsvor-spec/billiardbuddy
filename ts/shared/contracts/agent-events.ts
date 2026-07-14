@@ -54,7 +54,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
     chunk: z.string(),
     stream: z.string().optional(),
   }),
-  z.object({ type: z.literal('tool_result'), tool: z.string(), output: z.string() }),
+  z.object({ type: z.literal('tool_result'), tool: z.string(), output: z.string(), is_error: z.boolean().optional() }),
   usageUpdateEventSchema,
   z.object({
     type: z.literal('ask_question'),

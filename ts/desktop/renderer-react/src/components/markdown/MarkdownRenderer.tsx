@@ -9,6 +9,7 @@ import hljs from 'highlight.js/lib/common'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { fileRefFromCode } from '../../lib/fileReference'
 import { fileColor } from '../workspace/FileTree'
+import { getBaseUrl } from '../../api/client'
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -71,6 +72,10 @@ export function MarkdownRenderer({ content }: { content: string }) {
   useEffect(() => {
     const root = ref.current
     if (!root) return
+    root.querySelectorAll('img').forEach((image) => {
+      const source = image.getAttribute('src') ?? ''
+      if (source.startsWith('/')) image.src = `${getBaseUrl()}${source}`
+    })
     // 语法高亮(按 language-xxx class,无则自动识别)。
     root.querySelectorAll('pre code').forEach((code) => {
       const el = code as HTMLElement

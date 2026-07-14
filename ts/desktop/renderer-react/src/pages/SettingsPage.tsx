@@ -99,7 +99,7 @@ function GeneralPane() {
       <Group title="权限">
         <Row
           title="默认权限"
-          desc="默认情况下,管家可以读取和编辑工作目录中的文件。需要时,它会请求你的确认。"
+          desc="读取工作目录可以直接进行；修改文件、运行命令或执行有副作用的操作时按需确认。"
           right={<Switch on disabled label="默认权限始终显示" />}
         />
         <Row

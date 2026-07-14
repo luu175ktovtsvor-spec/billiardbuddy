@@ -1136,6 +1136,57 @@ test('审批闸:requiresApproval 工具 → 吐 approval_request + 回灌待确�
   expect(tr && tr.type === 'tool_result' && tr.output).toContain('待用户确认')
 })
 
+test('前台审批闸:暂停同一回合,允许后原地执行且只执行一次', async () => {
+  process.env.SECRET_KEY = SECRET
+  resetDenialStore()
+  const spy = { ran: false }
+  let executions = 0
+  const tool = outreachTool(spy)
+  tool.execute = async () => { executions++; spy.ran = true; return 'SENT-ONCE' }
+  const reg = new ToolRegistry([tool])
+  const model = scriptedModel([
+    { kind: 'tool_calls', calls: [{ id: 'live-approval', name: 'send_message', input: { msg: 'hi' } }] },
+    { kind: 'final', text: '已发送' },
+  ])
+  let resolveApproval: ((value: { behavior: 'allow'; remember: boolean }) => void) | undefined
+  const iterator = runAgentLoop({
+    model,
+    registry: reg,
+    workspace: new Workspace(root),
+    systemPrompt: 'SYS',
+    userMessage: 'x',
+    permissionMode: 'default',
+    conversationId: 'live-approval',
+    waitForApproval: () => new Promise(resolve => { resolveApproval = resolve }),
+  })
+
+  const seen: AgentEvent[] = []
+  while (!seen.some(event => event.type === 'approval_request')) {
+    const next = await iterator.next()
+    expect(next.done).toBe(false)
+    seen.push(next.value)
+  }
+  expect(executions).toBe(0)
+
+  const blockedNext = iterator.next()
+  const stateBeforeDecision = await Promise.race([
+    blockedNext.then(() => 'advanced'),
+    Bun.sleep(10).then(() => 'waiting'),
+  ])
+  expect(stateBeforeDecision).toBe('waiting')
+  expect(resolveApproval).toBeDefined()
+  resolveApproval!({ behavior: 'allow', remember: false })
+
+  const firstAfterApproval = await blockedNext
+  expect(firstAfterApproval.done).toBe(false)
+  seen.push(firstAfterApproval.value)
+  for await (const event of iterator) seen.push(event)
+
+  expect(executions).toBe(1)
+  expect(seen.some(event => event.type === 'tool_result' && event.output === 'SENT-ONCE')).toBe(true)
+  expect(seen.at(-1)).toEqual({ type: 'final', text: '已发送' })
+})
+
 test('token 流式:model.step 触发 onDelta → 循环吐 content_delta 事件(先增量后 final)', async () => {
   const streamingModel: Model = {
     async step(input) {

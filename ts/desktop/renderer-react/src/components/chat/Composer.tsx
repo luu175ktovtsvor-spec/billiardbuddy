@@ -30,7 +30,8 @@ function appendPathsToInput(current: string, paths: string[]): string {
   return current + ' ' + formatted + ' '
 }
 
-const PERM_ORDER: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+// 普通用户只需要三个执行档。plan/dontAsk 仍是 Agent 内部能力，不能混进日常权限菜单。
+const USER_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions']
 const PERM_LABEL: Record<PermissionMode, string> = {
   default: t('permission.default'),
   acceptEdits: t('permission.acceptEdits'),
@@ -97,10 +98,10 @@ function PermissionMenu() {
   const [open, setOpen] = useState(false)
   const [confirmFullOpen, setConfirmFullOpen] = useState(false)
   const [fullRiskAccepted, setFullRiskAccepted] = useState(false)
-  const current = PERM_ORDER.includes(mode) ? mode : 'default'
+  const current = USER_PERMISSION_MODES.includes(mode) ? mode : 'default'
   const full = current === 'bypassPermissions'
-  // 设置页「在权限菜单中显示 XX」关掉的档位不进菜单(对齐 Codex permissionsMode toggle 语义;default/plan 常驻)。
-  const visibleModes = PERM_ORDER.filter((m) => !hiddenModes.includes(m))
+  // 设置页「在权限菜单中显示 XX」关掉的档位不进菜单；默认档始终保留。
+  const visibleModes = USER_PERMISSION_MODES.filter((m) => !hiddenModes.includes(m))
   const selectMode = (next: PermissionMode) => {
     setOpen(false)
     if (next === 'bypassPermissions' && current !== 'bypassPermissions') {
@@ -196,7 +197,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
     const host = getDesktopHost()
     if (!host.pickPaths) { toast('在桌面版里可选文件/文件夹;网页预览暂不支持'); return }
     try {
-      const paths = await host.pickPaths()
+      const paths = await host.pickPaths({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
       if (paths && paths.length) { onInsertPaths(paths); toast(`已添加 ${paths.length} 个文件/文件夹`) }
     } catch { toast('选择文件失败') }
   }

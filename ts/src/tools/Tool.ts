@@ -1,6 +1,6 @@
 import type { Workspace } from '../workspace/workspace'
 import type { Sandbox } from '../sandbox/sandbox'
-import type { AdditionalWorkingDirectory, ApprovalClass, ApprovalReason, PermissionMode, PermissionRule } from '../permissions/types'
+import type { AdditionalWorkingDirectory, ApprovalClass, ApprovalReason, PermissionMode, PermissionRule, PermissionUpdate } from '../permissions/types'
 import type { TodoItem } from '../types/todo'
 import type { Model } from '../types/model'
 import type { DocumentBlock, ImageBlock, Message } from '../types/message'
@@ -22,6 +22,18 @@ export interface ToolProgressEvent {
   stream?: 'stdout' | 'stderr' | string
   chunk: string
 }
+
+export interface ToolApprovalRequest {
+  id: string
+  tool: string
+  args: unknown
+  token: string
+  rememberable: boolean
+}
+
+export type ToolApprovalResolution =
+  | { behavior: 'allow'; remember: boolean }
+  | { behavior: 'deny'; message?: string }
 
 export type JSONSchema = {
   type: 'object'
@@ -50,6 +62,13 @@ export interface ToolContext {
   additionalWorkingDirectories?: Map<string, AdditionalWorkingDirectory>
   /** 当前 slash command / inline skill 注册的会话内 hooks。 */
   sessionHooks?: HookRegistry
+  /**
+   * 前台会话的阻塞式审批桥:工具需要确认时暂停当前调用和 Agent 循环,
+   * 用户允许/拒绝后从同一个 tool_use 原地继续。后台或独立调用不注入时保留旧的提案模式。
+   */
+  waitForApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalResolution>
+  /** “本次对话都允许”产生的会话级规则回传给宿主持久在当前进程会话中。 */
+  onPermissionUpdates?: (updates: PermissionUpdate[]) => void
   /** 会话内 hooks 变化时通知宿主持久化。 */
   onSessionHooksChanged?: (hooks: HookRegistry | undefined) => void
   /**

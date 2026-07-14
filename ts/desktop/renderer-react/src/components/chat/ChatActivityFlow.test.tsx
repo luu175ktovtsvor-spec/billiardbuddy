@@ -14,15 +14,29 @@ function render(element: ReactElement): string {
   return renderToStaticMarkup(element)
 }
 
-test('进行中的思考首帧展开，完成态首帧折叠', () => {
+test('原始思考正文不展示，进行中和完成态只显示状态摘要', () => {
   const active = render(<ThinkingBlock content="正在核对源码证据" isActive />)
   expect(active).toContain('正在思考')
-  expect(active).toContain('正在核对源码证据')
+  expect(active).not.toContain('正在核对源码证据')
   expect(active).not.toContain('qf-cursor')
 
   const completed = render(<ThinkingBlock content="已经核对完源码证据" isActive={false} />)
   expect(completed).toContain('已完成思考')
   expect(completed).not.toContain('已经核对完源码证据')
+})
+
+test('媒体成品从可折叠活动中分离并与最终回复常驻', () => {
+  const blocks: ChatBlock[] = [
+    { id: 'user-media', kind: 'user', text: '导出视频' },
+    { id: 'task-output', kind: 'tool', tool: 'TaskOutput', input: { task_id: 'v1' }, status: 'ok', output: '<media_result><video_url>/exports/final.mp4</video_url></media_result>' },
+    { id: 'assistant-media', kind: 'assistant', text: '视频已经生成', streaming: false },
+  ]
+  const turn = splitTurns(groupBlocks(blocks)).find(entry => entry.type === 'turn')
+  if (turn?.type !== 'turn') throw new Error('没有生成媒体回合')
+  const partition = partitionTurnItems(turn.items)
+  expect(partition.activityItems).toHaveLength(0)
+  expect(partition.responseItems).toHaveLength(2)
+  expect(partition.responseItems[0]?.kind).toBe('tool-group')
 })
 
 test('工具活动组用思考状态接管组头，不在明细里重复暴露思考正文', () => {

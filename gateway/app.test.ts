@@ -198,6 +198,25 @@ test('audio transcription authenticates, validates uploads and records successfu
   expect(await response.json()).toMatchObject({ text: '今天检查台球桌', segments: [{ start: 0, end: 1.2 }] })
   expect(received).toEqual([{ name: 'voice.webm', language: 'zh', format: 'verbose_json' }])
   expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'transcribe', ok: true, status: 200 }])
+  expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;run_ms=\d+;bytes=5;audio_seconds=1\.2$/)
+  expect(usage.rows[0]?.note).not.toContain('今天检查台球桌')
+})
+
+test('audio transcription disables the request idle timeout for long-running ASR', async () => {
+  const timeoutCalls: number[] = []
+  const fetch = createGatewayFetch({
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: async () => ({ text: 'ok' }),
+  })
+  const form = new FormData()
+  form.set('file', new File(['audio'], 'voice.webm', { type: 'audio/webm' }))
+  const response = await fetch(
+    new Request('http://local/v1/audio/transcriptions', authed({ method: 'POST', body: form })),
+    { timeout: (_request, seconds) => { timeoutCalls.push(seconds) } },
+  )
+  expect(response.status).toBe(200)
+  expect(timeoutCalls).toEqual([0])
 })
 
 test('audio transcription rejects unsupported and oversized files before execution', async () => {

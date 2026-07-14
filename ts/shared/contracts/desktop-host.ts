@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 export const DESKTOP_IPC = {
   getServerUrl: 'runtime:getServerUrl',
   pickWorkspace: 'desktop:pickWorkspace',
@@ -10,15 +12,21 @@ export const DESKTOP_IPC = {
   preventSleepStop: 'desktop:preventSleep:stop',
 } as const
 
+export const desktopPickerOptionsSchema = z.object({
+  defaultPath: z.string().max(4096).optional(),
+}).strict()
+
+export type DesktopPickerOptions = z.infer<typeof desktopPickerOptionsSchema>
+
 export interface DesktopHost {
   isDesktop: boolean
   platform: string
   runtime: {
     getServerUrl: () => Promise<string>
   }
-  pickWorkspace?: () => Promise<string | null>
-  pickVideoFiles?: () => Promise<string[] | null>
-  pickPaths?: () => Promise<string[] | null>
+  pickWorkspace?: (options?: DesktopPickerOptions) => Promise<string | null>
+  pickVideoFiles?: (options?: DesktopPickerOptions) => Promise<string[] | null>
+  pickPaths?: (options?: DesktopPickerOptions) => Promise<string[] | null>
   openPath?: (path: string) => Promise<string>
   revealPath?: (path: string) => Promise<boolean>
   onMenu?: (cb: (action: string) => void) => void

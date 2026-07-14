@@ -102,7 +102,7 @@ function readPreventSleep(): boolean {
 
 interface SettingsState {
   defaultPermissionMode: PermissionMode
-  /** 权限选择器里隐藏的档位(对齐 Codex「在编排器中显示 XX 权限」toggle 的关闭态;default/plan 永不可隐藏)。 */
+  /** 权限选择器里隐藏的用户档位；default 永不可隐藏，plan/dontAsk 不在普通菜单展示。 */
   hiddenPermissionModes: PermissionMode[]
   /** 运行任务时防止系统休眠(对齐 Codex preventSleepWhileRunning;App 层按 chat running 状态调 desktopHost.preventSleep)。 */
   preventSleepWhileRunning: boolean
@@ -119,7 +119,7 @@ interface SettingsState {
   /** 当前激活会话的工作目录(= workspaceByConv[activeConvId] ?? null);sendMessage 的 working_dir + 右侧面板都读它。 */
   workspaceRoot: string | null
   setPermissionMode: (mode: PermissionMode) => void
-  /** 切换某档在权限选择器里的显隐(default/plan 不接受隐藏)。 */
+  /** 切换某个用户档位在权限选择器里的显隐(default 不接受隐藏)。 */
   togglePermissionModeHidden: (mode: PermissionMode) => void
   setPreventSleepWhileRunning: (on: boolean) => void
   /** 设当前**激活会话**的领域包(不是全局);落 per-conv 映射。斜杠 /台球 开、/台球关闭 关、设置开关都走它。 */
@@ -156,7 +156,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   togglePermissionModeHidden: (mode) => {
-    if (mode === 'default' || mode === 'plan') return // 对齐 Codex「默认权限始终显示」;计划档同样常驻
+    if (mode === 'default' || mode === 'plan' || mode === 'dontAsk') return
     const cur = get().hiddenPermissionModes
     const next = cur.includes(mode) ? cur.filter((m) => m !== mode) : [...cur, mode]
     try { window.localStorage.setItem(HIDDEN_MODES_KEY, JSON.stringify(next)) } catch { /* 忽略 */ }

@@ -32,7 +32,7 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 - 只调整目录、依赖方向或拆巨型文件且必须保持行为：执行 `../refactor-module-boundaries/SKILL.md`。
 - 新功能、回归修复、契约或重构需要选择测试证据：叠加 `../design-test-strategy/SKILL.md`。
 - 涉及文件、命令、权限、IPC、密钥、远程调用、扩展或更新：叠加 `../audit-security-boundaries/SKILL.md`。
-- 需要后端真实 Agent 链路：执行 `../verify-backend-e2e/SKILL.md`；需要 Electron 用户路径：执行 `../verify-desktop-e2e/SKILL.md`。
+- 需要后端真实 Agent 链路：执行 `../verify-backend-e2e/SKILL.md`；需要 Electron 用户路径：执行 `../verify-desktop-runtime/SKILL.md`。
 - 改版本、打包、打 tag 或交付安装包：执行 `../release-desktop-safely/SKILL.md`。
 - 改 AI 开发规则、工程 Skill、质量门或 CI 治理：执行 `../maintain-project-skills/SKILL.md`。
 - 新增/删除/改名模块，或改变连接、部署、验证流程：同次执行 `../maintain-project-skills/SKILL.md`。

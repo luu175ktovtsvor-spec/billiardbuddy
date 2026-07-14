@@ -137,7 +137,7 @@ export function Sidebar() {
   // —— 项目分组(对齐 Codex byProject):非默认目录的项目 + 「任务」组 = 默认目录/未归组会话。 ——
   const defaultRoot = projects.find((p) => p.isDefault)?.workspaceRoot ?? null
   let projectRows = projects.filter((p) => !p.isDefault)
-  // 刚选的目录还没有落盘会话(后端首条消息才建 meta)→ 补一行"待落盘"项目,选完目录立刻可见不空窗。
+  // 兼容旧状态：当前目录若还没进入持久化项目 store，仍先补一行，避免升级瞬间空窗。
   if (workspaceRoot && workspaceRoot !== defaultRoot && !projectRows.some((p) => p.workspaceRoot === workspaceRoot)) {
     projectRows = [{ workspaceRoot, sessionCount: 0, lastUpdatedAt: '', lastSessionId: '', lastTitle: '', isDefault: false }, ...projectRows]
   }

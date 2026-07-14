@@ -9,7 +9,7 @@ import { chatExecutionContext } from './chatExecutionContext'
 import { useSettingsStore } from './settingsStore'
 import { useSessionStore } from './sessionStore'
 import type { ClientMessage, ServerMessage } from '../types/chat'
-import type { AgentEvent, ApprovalReason } from '../types/events'
+import { toolResultIsError, type AgentEvent, type ApprovalReason } from '../types/events'
 
 // 命令实时输出尾部上限(字符):tool_progress 逐块文本累加进 block.liveOutput 供终端/展开行实时滚动,
 // 超过就只保留尾部(实时看的是最新输出;完整全文另由命令结束的 tool_result 落 block.output)。
@@ -94,8 +94,6 @@ function newBlockId(): string {
   seqCounter += 1
   return `b${seqCounter}-${Math.random().toString(36).slice(2, 7)}`
 }
-
-const ERROR_RE = /error|错误|失败|<tool_use_error>/i
 
 // 领域知识斜杠开关(按会话):把"开/关台球运营知识库"的斜杠命令映射成当前会话 enabledPacks 的增删。
 // 关的前缀含"开"的词根,故先判关。别名与后端 packIdForCommandName 的入口对齐(billiards)。
@@ -378,7 +376,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         break
       }
       case 'tool_result': {
-        const isErr = ERROR_RE.test(ev.output || '')
+        const isErr = toolResultIsError(ev)
         set((s) => {
           // 补最近一个 running 的同类工具块(低噪)。
           const blocks = [...s.blocks]

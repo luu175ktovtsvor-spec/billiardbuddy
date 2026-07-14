@@ -1,22 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { DESKTOP_IPC, type DesktopHost } from '../../shared/contracts/desktop-host'
+import { DESKTOP_IPC, type DesktopHost, type DesktopPickerOptions } from '../../shared/contracts/desktop-host'
 
 // contextBridge 白名单:前端从 location.host 直接连 sidecar;原生能力经白名单 IPC 暴露(§3.402 桌面壳架构:
 // 只暴露显式列出的通道,不给渲染进程裸 ipcRenderer)。
 const desktopHost = {
   platform: process.platform,
   isDesktop: true,
-  // 后端地址发现(对齐 cc DesktopHost.runtime.getServerUrl):React 壳(QF_UI_REACT)从 file:// 加载,
+  // 后端地址发现(对齐 cc DesktopHost.runtime.getServerUrl):React renderer 从 file:// 加载,
   // 经此 IPC 拿到 sidecar 地址再 fetch/WS。vanilla 默认路径不用它(走 same-origin),暴露无副作用。
   runtime: {
     getServerUrl: (): Promise<string> => ipcRenderer.invoke(DESKTOP_IPC.getServerUrl),
   },
-  // 原生文件夹选择器(§7 选择工作区):无 payload,返回目录路径或 null。
-  pickWorkspace: (): Promise<string | null> => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspace),
+  // 原生文件夹选择器(§7 选择工作区):可带默认位置提示,返回目录路径或 null。
+  pickWorkspace: (options?: DesktopPickerOptions): Promise<string | null> => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspace, options),
   // 原生视频文件多选(剪视频看板导入):返回视频绝对路径数组或 null。
-  pickVideoFiles: (): Promise<string[] | null> => ipcRenderer.invoke(DESKTOP_IPC.pickVideoFiles),
+  pickVideoFiles: (options?: DesktopPickerOptions): Promise<string[] | null> => ipcRenderer.invoke(DESKTOP_IPC.pickVideoFiles, options),
   // 原生「文件和文件夹」多选(对话框附件):返回选中路径数组或 null。
-  pickPaths: (): Promise<string[] | null> => ipcRenderer.invoke(DESKTOP_IPC.pickPaths),
+  pickPaths: (options?: DesktopPickerOptions): Promise<string[] | null> => ipcRenderer.invoke(DESKTOP_IPC.pickPaths, options),
   // 「打开/在 Finder 中显示」(右面板文件,对齐 Codex):openPath 用系统默认程序打开(返回非空字符串=
   // 错误信息、''=成功);revealPath 在 Finder/文件管理器中定位文件。
   openPath: (path: string): Promise<string> => ipcRenderer.invoke(DESKTOP_IPC.openPath, path),

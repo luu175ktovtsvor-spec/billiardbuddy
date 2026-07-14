@@ -1,5 +1,5 @@
 // 预览种子(仅 ?preview=1 时启用):跳过后端连接,注入一组示例消息/会话,
-// 让 Playwright/设计走查能在无 sidecar 时看到完整应用外观(左栏任务列表、主区消息+操作条、输入框、页脚)。
+// 让设计走查能在无 sidecar 时看到完整应用外观(左栏任务列表、主区消息+操作条、输入框、页脚)。
 // 生产路径永不触发(URL 无 preview 参数即完全不加载)。
 import { useChatStore, type ChatBlock } from '../stores/chatStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -93,10 +93,12 @@ export function applyPreviewSeed(): void {
       loading: false,
       error: null,
       content: '{\n  "name": "billiardbuddy-ts-harness",\n  "type": "module",\n  "scripts": {\n    "typecheck": "tsc --noEmit",\n    "ui:dev": "vite desktop/renderer-react",\n    "ui:typecheck": "tsc -p desktop/renderer-react/tsconfig.json"\n  }\n}\n',
+      kind: 'text',
+      workspaceRoot: demoRoot,
     }],
     activePath: `${demoRoot}/ts/package.json`,
   })
 
-  // 便于 e2e 需要时直接驱动
+  // 便于开发模式下检查各区域状态
   ;(window as unknown as Record<string, unknown>).__qfStores = { useChatStore, useSessionStore, useTabStore, useFilePreviewStore }
 }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { wsManager } from '../api/websocket'
 import type { ClientMessage } from '../types/chat'
+import { toolResultIsError } from '../types/events'
 import { useChatStore } from './chatStore'
 import { useSettingsStore } from './settingsStore'
 
@@ -81,4 +82,11 @@ test('审批续跑总带当前会话领域包,空数组表示明确关闭', () =
     working_dir: '/tmp/project',
     enabled_packs: [],
   })
+})
+
+test('工具结果优先使用结构化错误位，成功文案提到 error/失败时不误判', () => {
+  expect(toolResultIsError({ type: 'tool_result', tool: 'check', output: '0 errors，失败项为 0', is_error: false })).toBe(false)
+  expect(toolResultIsError({ type: 'tool_result', tool: 'check', output: '普通输出', is_error: true })).toBe(true)
+  expect(toolResultIsError({ type: 'tool_result', tool: 'legacy', output: '错误:命令不存在' })).toBe(true)
+  expect(toolResultIsError({ type: 'tool_result', tool: 'legacy', output: '检查完成，失败项为 0' })).toBe(false)
 })

@@ -11,6 +11,7 @@ import { IconAlertCircle, IconChevronDown, IconCopy, IconSpinner, IconStopCircle
 import { toolIcon, toolSummary, statusVerb, doneVerb, resultSummary, readRangeDetail, toolTargetIsFile, formatDuration } from './toolMeta'
 import { Tooltip } from '../shared/Tooltip'
 import { t } from '../../i18n'
+import { getBaseUrl } from '../../api/client'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
 
@@ -19,6 +20,54 @@ const PREFERS_DONE_VERB = new Set(['edit_file', 'multi_edit_file', 'write_file',
 
 function inputObj(input: unknown): Record<string, unknown> {
   return input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
+}
+
+export function mediaResultFromOutput(output: string | undefined): { videoUrl?: string; assetUrls: string[] } | null {
+  if (!output) return null
+  const normalized = decodeXmlText(output)
+  if (!normalized.includes('<media_result>')) return null
+  const videoUrl = normalized.match(/<video_url>([^<]+)<\/video_url>/)?.[1]?.trim()
+  const assetUrls = [...normalized.matchAll(/<asset_url>([^<]+)<\/asset_url>/g)]
+    .map(match => match[1]?.trim() ?? '')
+    .filter(Boolean)
+  return videoUrl || assetUrls.length ? { ...(videoUrl ? { videoUrl } : {}), assetUrls } : null
+}
+
+function absoluteAssetUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path
+  return `${getBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function MediaResultPreview({ result }: { result: NonNullable<ReturnType<typeof mediaResultFromOutput>> }) {
+  const videoUrl = result.videoUrl ? absoluteAssetUrl(result.videoUrl) : ''
+  const imageUrls = result.assetUrls.slice(0, 4).map(absoluteAssetUrl)
+  return (
+    <div className="ml-6 mb-2 mt-1 overflow-hidden rounded-lg" style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface-container-low)' }} data-testid="chat-media-result">
+      {videoUrl && (
+        <>
+          <video src={videoUrl} controls preload="metadata" className="max-h-[320px] w-full bg-black object-contain" data-testid="chat-video-result" />
+          <div className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
+            <span style={{ color: 'var(--color-text-secondary)' }}>视频已生成</span>
+            <a href={videoUrl} target="_blank" rel="noreferrer" className="qf-tool-link shrink-0">打开视频</a>
+          </div>
+        </>
+      )}
+      {imageUrls.length > 0 && (
+        <div className="grid grid-cols-2 gap-1 p-1">
+          {imageUrls.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`生成结果 ${index + 1}`} className="max-h-[240px] w-full object-contain" />)}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** 折叠行「细节」段:改文件给行数、read_file 给行范围,其余走已有 resultSummary 兜底。 */
@@ -63,12 +112,10 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
   const hasWritePreview = block.tool === 'write_file' && typeof obj.content === 'string'
   const hasOutput = Boolean(block.output && block.output.trim())
   const expandable = hasEditPreview || hasWritePreview || hasOutput
+  const mediaResult = mediaResultFromOutput(block.output)
 
-  // 出错才默认展开正文;其余默认折叠(对齐 owner 铁律)。挂载后状态才转错也要跟着展开一次。
-  const [expanded, setExpanded] = useState(block.status === 'error')
-  useEffect(() => {
-    if (block.status === 'error') setExpanded(true)
-  }, [block.status])
+  // 工具详情统一默认折叠；错误摘要已在主行标红，避免协议栈和长输出抢占最终答复。
+  const [expanded, setExpanded] = useState(false)
 
   // 运行中实时输出框自动滚到底(逐块淌进来时始终看最新)。
   const liveRef = useRef<HTMLPreElement>(null)
@@ -164,6 +211,8 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
           />
         )}
       </div>
+
+      {block.status === 'ok' && mediaResult && <MediaResultPreview result={mediaResult} />}
 
       {/* 运行中实时输出:命令跑的时候就在对话流里逐块滚动(不必开终端面板),完成后收起、点行可展开看全文。 */}
       {block.status === 'running' && block.liveOutput && (

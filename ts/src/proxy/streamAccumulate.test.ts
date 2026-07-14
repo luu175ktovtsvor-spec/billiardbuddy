@@ -26,7 +26,7 @@ test('文本分片累积成整段', async () => {
   expect(acc.finishReason).toBe('stop')
 })
 
-test('onDelta:逐 chunk 触发 text/thinking 增量(token 流式)', async () => {
+test('onDelta:正文逐 chunk 流式，provider 原始 reasoning 只在内部累积', async () => {
   const deltas: Array<{ channel: string; text: string }> = []
   const acc = await accumulateOpenAiStream(sse([
     chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '你' }, finish_reason: null }] }),
@@ -34,8 +34,9 @@ test('onDelta:逐 chunk 触发 text/thinking 增量(token 流式)', async () => 
     chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { content: '好' }, finish_reason: 'stop' }] }),
     '[DONE]',
   ]), { onDelta: d => deltas.push(d) })
-  expect(deltas).toEqual([{ channel: 'text', text: '你' }, { channel: 'thinking', text: '想' }, { channel: 'text', text: '好' }])
+  expect(deltas).toEqual([{ channel: 'text', text: '你' }, { channel: 'text', text: '好' }])
   expect(acc.text).toBe('你好') // 累积结果不变
+  expect(acc.thinking).toBe('想')
 })
 
 test('provider 中途 error 帧 → 抛 StreamProviderError(不静默吞成截断空响应)', async () => {

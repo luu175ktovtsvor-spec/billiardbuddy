@@ -36,6 +36,8 @@ export const RAW_MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
   '.avif': 'image/avif', '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4', '.m4v': 'video/x-m4v', '.mov': 'video/quicktime',
+  '.webm': 'video/webm', '.ogv': 'video/ogg',
 }
 
 export async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {

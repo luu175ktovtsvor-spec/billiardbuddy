@@ -2,7 +2,7 @@
  * 后端 E2E:在 Bun 测试进程里启动真实 startServer，用确定性脚本模型验证
  * ReAct、权限、工具、事件、transcript 和文件副作用。真模型不进入回归套件。
  */
-import { describe, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { chmodSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -183,7 +183,7 @@ const CHECKPOINTS: Checkpoint[] = [
     // 前端等价 e2e(不起壳子):把"多窗口/选目录/挂件/权限档/大白话输入/点审批卡"全等价成后端请求参数+approve消息。
     // 使用隔离临时目录模拟两个项目窗口，默认运行不读写 owner 的真实桌面。
     name: 'frontend-like-multi-session',
-    expectation: '两窗口各选不同真实文件夹/各自权限/挂不挂台球 → 文件各落各夹不串台、default档弹审批bypass档不弹、挂台球窗口注入域上下文',
+    expectation: '两窗口各选不同真实文件夹/各自权限/挂不挂台球 → 文件各落各夹不串台、acceptEdits/bypass普通工具不弹审批、挂台球窗口注入域上下文',
     async run(ctx) {
       const folder1 = join(ctx.workspace, 'project-a')
       const folder2 = join(ctx.workspace, 'project-b')
@@ -191,16 +191,14 @@ const CHECKPOINTS: Checkpoint[] = [
       mkdirSync(folder2, { recursive: true })
       const report1 = join(folder1, 'be2e-经营报表.md')
       try {
-        // —— 窗口A:选文件夹1 + 挂台球 + default档 → 说"建个报表"(模型调 write_file) → default 应弹审批 → 点"允许" → 落盘文件夹1 ——
-        const A = ctx.session('be2e-winA').selectFolder(folder1).enablePack('billiards').setPermission('default')
+        // —— 窗口A:选文件夹1 + 挂台球 + acceptEdits → 工作区文件写入直接执行。默认档的阻塞审批由下方真实 WS 用例覆盖。——
+        const A = ctx.session('be2e-winA').selectFolder(folder1).enablePack('billiards').setPermission('acceptEdits')
         const aEvents = await A.say('帮我在当前文件夹建个经营报表.md,写一句:今天试营业', [
           { toolCalls: [{ id: 'wa', name: 'write_file', input: { path: 'be2e-经营报表.md', content: '# 经营报表\n今天试营业\n' } }] },
           { text: '建好了经营报表' },
         ])
-        const aAsked = aEvents.some((e) => e.type === 'approval_request')     // default 档弹审批
-        const notLandedBeforeApprove = !existsSync(report1)                   // 审批前不落盘
-        if (aAsked) await A.approve()                                        // 点"允许"
-        const aLanded = existsSync(report1)                                  // 允许后落盘文件夹1
+        const aNoAsk = !aEvents.some((e) => e.type === 'approval_request')
+        const aLanded = existsSync(report1)
         const aDomain = ctx.captured.systems.some((s) => s.includes('<domain_context id="billiards"')) // 挂台球→注入域上下文
 
         // —— 窗口B:选文件夹2 + 不挂台球 + 完全访问档 → 说"列目录"(模型调 list_dir) → bypass 不弹审批、工具直执行 ——
@@ -217,15 +215,157 @@ const CHECKPOINTS: Checkpoint[] = [
         const aTr = await ctx.transcript('be2e-winA'); const bTr = await ctx.transcript('be2e-winB')
         const bothPersisted = JSON.stringify(aTr).includes('write_file') && JSON.stringify(bTr).includes('list_dir')
 
-        const ok = aAsked && notLandedBeforeApprove && aLanded && aDomain && bNoAsk && bRanTool && notLeaked && bothPersisted
-        return { ok, note: `A[default弹审批=${aAsked} 审批前未落盘=${notLandedBeforeApprove} 允许后落盘=${aLanded} 域注入=${aDomain}] B[bypass不弹=${bNoAsk} 工具执行=${bRanTool}] 隔离[不串文件夹2=${notLeaked} 双会话分区=${bothPersisted}]` }
+        const ok = aNoAsk && aLanded && aDomain && bNoAsk && bRanTool && notLeaked && bothPersisted
+        return { ok, note: `A[acceptEdits不弹=${aNoAsk} 文件落盘=${aLanded} 域注入=${aDomain}] B[bypass不弹=${bNoAsk} 工具执行=${bRanTool}] 隔离[不串文件夹2=${notLeaked} 双会话分区=${bothPersisted}]` }
       } finally {
         rmSync(report1, { force: true })  // 清理写进真实文件夹的测试文件
       }
     },
   },
-  // 后续稳定场景:acceptEdits 权限档、会话内多轮工具链。真模型另走手动 smoke。
+  // 真模型另走手动 smoke。
 ]
+
+type WsMessage = {
+  type?: string
+  event?: { type?: string; [key: string]: unknown }
+  [key: string]: unknown
+}
+
+async function openAgentSocket(base: string, conversationId: string) {
+  const messages: WsMessage[] = []
+  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/agent/ws?conversationId=${encodeURIComponent(conversationId)}`)
+  ws.addEventListener('message', event => {
+    try { messages.push(JSON.parse(String(event.data)) as WsMessage) } catch { /* 测试只关心合法协议消息 */ }
+  })
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(), { once: true })
+    ws.addEventListener('error', () => reject(new Error('websocket open failed')), { once: true })
+  })
+
+  const waitFor = async (predicate: (message: WsMessage) => boolean, timeoutMs = 5_000): Promise<WsMessage> => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const found = messages.find(predicate)
+      if (found) return found
+      await Bun.sleep(5)
+    }
+    throw new Error(`websocket message timeout: ${JSON.stringify(messages)}`)
+  }
+
+  const waitUntil = async (predicate: () => boolean, timeoutMs = 5_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (predicate()) return
+      await Bun.sleep(5)
+    }
+    throw new Error(`websocket state timeout: ${JSON.stringify(messages)}`)
+  }
+
+  return {
+    messages,
+    send(message: Record<string, unknown>) { ws.send(JSON.stringify(message)) },
+    waitFor,
+    waitUntil,
+    close() { ws.close() },
+  }
+}
+
+function eventOfType(type: string) {
+  return (message: WsMessage) => message.type === 'event' && message.event?.type === type
+}
+
+async function runApprovalWebSocketE2E(): Promise<void> {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'be2e-approval-tr-'))
+  const workspace = mkdtempSync(join(tmpdir(), 'be2e-approval-ws-'))
+  const scripted = makeScriptedFetch([{ text: 'ok' }])
+  const server = startServer({
+    port: 0,
+    transcriptRoot,
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    fetchImpl: scripted,
+    env: { DEEPSEEK_BASE_URL: 'https://model.example/v1', DEEPSEEK_API_KEY: 'e2e-fake', TEXT_MODEL_NAME: 'mimo-v2.5' },
+  })
+  const sockets: Array<{ close(): void }> = []
+  try {
+    const base = `http://127.0.0.1:${server.port}`
+
+    scripted.setScript([
+      { toolCalls: [{ id: 'approval-write-1', name: 'write_file', input: { path: 'allowed-once.txt', content: 'once\n' } }] },
+      { text: '文件已经写入。' },
+    ])
+    const allow = await openAgentSocket(base, 'approval-allow')
+    sockets.push(allow)
+    allow.send({ type: 'run', message: '写文件', conversationId: 'approval-allow', working_dir: workspace, permissionMode: 'default' })
+    const approval = await allow.waitFor(eventOfType('approval_request'))
+    const request = approval.event as { tool: string; args: unknown; token: string }
+    expect(existsSync(join(workspace, 'allowed-once.txt'))).toBe(false)
+    expect(allow.messages.some(eventOfType('final'))).toBe(false)
+
+    allow.send({ type: 'approve', conversationId: 'approval-allow', working_dir: workspace, permissionMode: 'default', tool: request.tool, args: request.args, token: 'invalid-token' })
+    await allow.waitFor(message => message.type === 'approve_result' && message.ok === false)
+    expect(existsSync(join(workspace, 'allowed-once.txt'))).toBe(false)
+    expect(allow.messages.some(eventOfType('final'))).toBe(false)
+
+    allow.send({ type: 'approve', conversationId: 'approval-allow', working_dir: workspace, permissionMode: 'default', tool: request.tool, args: request.args, token: request.token, remember_approval: true })
+    await allow.waitFor(eventOfType('tool_result'))
+    await allow.waitFor(eventOfType('final'))
+    expect(existsSync(join(workspace, 'allowed-once.txt'))).toBe(true)
+
+    scripted.setScript([
+      { toolCalls: [{ id: 'approval-write-2', name: 'write_file', input: { path: 'remembered.txt', content: 'remembered\n' } }] },
+      { text: '第二个文件已经写入。' },
+    ])
+    const finalCount = allow.messages.filter(eventOfType('final')).length
+    allow.send({ type: 'run', message: '再写一个文件', conversationId: 'approval-allow', working_dir: workspace, permissionMode: 'default' })
+    const approvalCount = allow.messages.filter(eventOfType('approval_request')).length
+    await allow.waitUntil(() => allow.messages.filter(eventOfType('final')).length > finalCount)
+    expect(allow.messages.filter(eventOfType('approval_request')).length).toBe(approvalCount)
+    expect(existsSync(join(workspace, 'remembered.txt'))).toBe(true)
+
+    scripted.setScript([
+      { toolCalls: [{ id: 'approval-reject-1', name: 'write_file', input: { path: 'rejected.txt', content: 'no\n' } }] },
+      { text: '已按你的选择停止写入。' },
+    ])
+    const reject = await openAgentSocket(base, 'approval-reject')
+    sockets.push(reject)
+    reject.send({ type: 'run', message: '写文件', conversationId: 'approval-reject', working_dir: workspace, permissionMode: 'default' })
+    const rejectedApproval = await reject.waitFor(eventOfType('approval_request'))
+    reject.send({ type: 'reject', conversationId: 'approval-reject', working_dir: workspace, permissionMode: 'default', tool: rejectedApproval.event?.tool, args: rejectedApproval.event?.args })
+    await reject.waitFor(eventOfType('tool_result'))
+    await reject.waitFor(eventOfType('final'))
+    expect(existsSync(join(workspace, 'rejected.txt'))).toBe(false)
+
+    scripted.setScript([
+      { toolCalls: [{ id: 'approval-interrupt-1', name: 'write_file', input: { path: 'interrupted.txt', content: 'no\n' } }] },
+      { text: '不应到达这里。' },
+    ])
+    const interrupted = await openAgentSocket(base, 'approval-interrupt')
+    sockets.push(interrupted)
+    interrupted.send({ type: 'run', message: '写文件', conversationId: 'approval-interrupt', working_dir: workspace, permissionMode: 'default' })
+    await interrupted.waitFor(eventOfType('approval_request'))
+    interrupted.send({ type: 'interrupt', conversationId: 'approval-interrupt' })
+    await interrupted.waitFor(message => message.type === 'interrupt_result' && message.interrupted === true)
+    expect(existsSync(join(workspace, 'interrupted.txt'))).toBe(false)
+
+    for (const [mode, name] of [['acceptEdits', 'accepted-edit.txt'], ['bypassPermissions', 'bypassed.txt']] as const) {
+      scripted.setScript([
+        { toolCalls: [{ id: `${mode}-write`, name: 'write_file', input: { path: name, content: `${mode}\n` } }] },
+        { text: `${mode} done` },
+      ])
+      const socket = await openAgentSocket(base, `approval-${mode}`)
+      sockets.push(socket)
+      socket.send({ type: 'run', message: '写文件', conversationId: `approval-${mode}`, working_dir: workspace, permissionMode: mode })
+      await socket.waitFor(eventOfType('final'))
+      expect(socket.messages.some(eventOfType('approval_request'))).toBe(false)
+      expect(existsSync(join(workspace, name))).toBe(true)
+    }
+  } finally {
+    for (const socket of sockets) socket.close()
+    server.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true })
+  }
+}
 
 async function runCheckpoint(cp: Checkpoint): Promise<void> {
     const transcriptRoot = mkdtempSync(join(tmpdir(), 'be2e-tr-'))
@@ -268,4 +408,5 @@ describe('Bun sidecar 后端 E2E', () => {
   for (const checkpoint of CHECKPOINTS) {
     test(checkpoint.name, async () => runCheckpoint(checkpoint))
   }
+  test('approval-websocket-same-turn', runApprovalWebSocketE2E)
 })

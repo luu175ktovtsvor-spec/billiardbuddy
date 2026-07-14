@@ -102,7 +102,12 @@ function evidenceRef(source: VideoSource, kind: VideoEvidenceRef['kind'], path: 
 
 export interface VideoAnalysisOptions {
   sourceIds?: string[]
+  transcription?: 'required' | 'skip'
   onCheckpoint?: (checkpoint: Record<string, unknown>, affectedSourceIds: string[]) => Promise<void> | void
+}
+
+function progressInRange(start: number, end: number, progress: number): number {
+  return Math.round(start + (end - start) * Math.max(0, Math.min(100, progress)) / 100)
 }
 
 export class VideoEvidenceService {
@@ -128,13 +133,26 @@ export class VideoEvidenceService {
     for (let index = 0; index < targets.length; index++) {
       if (ctx?.signal.aborted) throw new DOMException('cancelled', 'AbortError')
       const source = await this.probe(targets[index]!)
-      const progressBase = Math.round((index / Math.max(1, targets.length)) * 80)
-      await ctx?.progress(progressBase, `正在分析 ${source.name}`)
+      const sourceStart = Math.round((index / Math.max(1, targets.length)) * 88)
+      const sourceEnd = Math.round(((index + 1) / Math.max(1, targets.length)) * 88)
+      const transcriptionStart = progressInRange(sourceStart, sourceEnd, 6)
+      const transcriptionEnd = progressInRange(sourceStart, sourceEnd, 45)
+      await ctx?.progress(progressInRange(sourceStart, sourceEnd, 3), `正在读取素材 ${index + 1}/${targets.length}: ${source.name}`)
       await options.onCheckpoint?.({ phase: 'source_started', source_id: source.id, source_index: index }, [source.id])
       const sourceWarnings = [...source.warnings]
+      const shouldTranscribe = options.transcription !== 'skip' && source.has_audio !== false
       const transcriptResult = source.has_audio === false
         ? { transcript: null, provider: this.asr.id, providerVersion: this.asr.version, warning: '素材没有音轨' }
-        : await this.asr.transcribe(source.file_uri, asrWorkDirectory(this.store.projectDirectory(projectId), source.id), ctx?.signal)
+        : !shouldTranscribe
+          ? { transcript: null, provider: this.asr.id, providerVersion: this.asr.version }
+          : await this.asr.transcribe(
+            source.file_uri,
+            asrWorkDirectory(this.store.projectDirectory(projectId), source.id),
+            ctx?.signal,
+            async (progress, stage) => {
+              await ctx?.progress(progressInRange(transcriptionStart, transcriptionEnd, progress), stage ?? '正在识别说话内容')
+            },
+          )
       if (transcriptResult.transcript) {
         const path = join(evidenceDir, `${source.id}.transcript.json`)
         await atomicJson(path, transcriptResult.transcript)
@@ -143,10 +161,15 @@ export class VideoEvidenceService {
         sourceWarnings.push(transcriptResult.warning)
       }
 
+      await ctx?.progress(progressInRange(sourceStart, sourceEnd, 50), `正在寻找可用画面 ${index + 1}/${targets.length}`)
       const shots = await detectScenes(source.file_uri, Math.max(0.1, source.duration_ms / 1000), { env: this.env, signal: ctx?.signal })
       const candidates: CandidateShot[] = []
       for (let shotIndex = 0; shotIndex < Math.min(shots.length, 80); shotIndex++) {
         const shot = shots[shotIndex]!
+        await ctx?.progress(
+          progressInRange(sourceStart, sourceEnd, 55 + (shotIndex / Math.max(1, Math.min(shots.length, 80))) * 38),
+          `正在评估画面 ${shotIndex + 1}/${Math.min(shots.length, 80)}`,
+        )
         candidates.push({
           id: `${source.id}-shot-${shotIndex}`,
           mediaId: source.id,
@@ -213,6 +236,7 @@ export class VideoEvidenceService {
       source.warnings = [...new Set(sourceWarnings)]
       const sourceIndex = sources.findIndex(item => item.id === source.id)
       sources[sourceIndex] = videoSourceSchema.parse(source)
+      await ctx?.progress(progressInRange(sourceStart, sourceEnd, 98), `已完成素材 ${index + 1}/${targets.length}`)
       await options.onCheckpoint?.({ phase: 'source_done', source_id: source.id, source_index: index, evidence_count: evidence.filter(ref => ref.source_id === source.id).length }, [source.id])
     }
     await ctx?.progress(90, '正在保存素材证据')

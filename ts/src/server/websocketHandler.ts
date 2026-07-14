@@ -34,6 +34,10 @@ interface AgentWebSocketDependencies {
   replayEvents(ws: AgentWebSocket, conversationId: string, after: number): Promise<void>
   runTurn(ws: AgentWebSocket, body: Record<string, unknown>): Promise<void>
   runApprovedTool(body: Record<string, unknown>): Promise<Record<string, unknown> | null>
+  resolvePendingApproval(
+    conversationId: string,
+    input: { behavior: 'allow'; tool: string; token?: string; remember?: boolean } | { behavior: 'deny'; tool: string; message?: string },
+  ): boolean
   rejectTool(tool: string, args: unknown, context: ToolContext): void
 }
 
@@ -115,6 +119,18 @@ export function createAgentWebSocketHandler(deps: AgentWebSocketDependencies): W
       }
       if (type === 'approve') {
         void (async () => {
+          const conversationId = stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId)
+          const tool = typeof body.tool === 'string' ? body.tool.trim() : ''
+          const resumed = tool ? deps.resolvePendingApproval(conversationId, {
+            behavior: 'allow',
+            tool,
+            token: typeof body.token === 'string' ? body.token : undefined,
+            remember: body.remember_approval === true || body.rememberApproval === true,
+          }) : false
+          if (resumed) {
+            wsSend(ws, { type: 'approve_result', ok: true, tool, resumed: true })
+            return
+          }
           const payload = await deps.runApprovedTool(body)
           if (!payload) {
             wsError(ws, 'tool required')
@@ -130,9 +146,11 @@ export function createAgentWebSocketHandler(deps: AgentWebSocketDependencies): W
           wsError(ws, 'tool required')
           return
         }
-        deps.rejectTool(toolName, body.args ?? {}, {
+        const conversationId = stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId)
+        const resumed = deps.resolvePendingApproval(conversationId, { behavior: 'deny', tool: toolName, message: '用户拒绝了本次工具调用。' })
+        if (!resumed) deps.rejectTool(toolName, body.args ?? {}, {
           workspace: workspaceFromBody(body),
-          conversationId: stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId) || undefined,
+          conversationId: conversationId || undefined,
           permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
         })
         wsSend(ws, { type: 'reject_result', ok: true })
