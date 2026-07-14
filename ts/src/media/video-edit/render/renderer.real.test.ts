@@ -17,7 +17,7 @@ test.skipIf(!realToolsAvailable)('real FFmpeg renders a playable H.264/AAC proje
   const root = mkdtempSync(join(tmpdir(), 'video-real-render-'))
   try {
     const source = join(root, 'venue.mp4')
-    const fixture = join(import.meta.dir, '../../../../e2e/desktop/video-source.mp4.b64')
+    const fixture = join(import.meta.dir, 'fixtures/video-source.mp4.b64')
     writeFileSync(source, Buffer.from(readFileSync(fixture, 'utf8').trim(), 'base64'))
     const env = { ...process.env, FFMPEG_BIN: ffmpeg, FFPROBE_BIN: ffprobe, WHISPER_CLI: '/missing', WHISPER_MODEL_PATH: '/missing' }
     const store = new VideoProjectStore(root)

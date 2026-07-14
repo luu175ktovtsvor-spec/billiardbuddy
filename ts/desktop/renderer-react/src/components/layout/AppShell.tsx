@@ -17,7 +17,6 @@ import { useFilePreviewStore } from '../../stores/filePreviewStore'
 import { useChatStore } from '../../stores/chatStore'
 import { openNewConversation, openExistingConversation } from '../../lib/conversations'
 import { pickSessionToRestore, readLastConversation } from '../../lib/sessionRecovery'
-import { isPreviewMode, applyPreviewSeed } from '../../lib/previewSeed'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { pickWorkspaceFolder } from '../../lib/workspace'
 import { t } from '../../i18n'
@@ -31,7 +30,7 @@ const MUTATING_TOOLS = new Set([
 ])
 
 export function AppShell() {
-  const [phase, setPhase] = useState<Phase>(isPreviewMode() ? 'ready' : 'connecting')
+  const [phase, setPhase] = useState<Phase>('connecting')
   // 首启引导(对齐 Codex onboarding):localStorage 无完成标记才显示,做完/跳过即永久收起。
   const [onboarded, setOnboarded] = useState(() => isOnboardingDone())
 
@@ -41,12 +40,6 @@ export function AppShell() {
   const isChat = nav === 'chat'
 
   useEffect(() => {
-    // 预览模式:跳过后端连接,注入示例数据后直接进 ready(仅 ?preview=1)。
-    if (isPreviewMode()) {
-      applyPreviewSeed()
-      setPhase('ready')
-      return
-    }
     let cancelled = false
     void (async () => {
       try {
