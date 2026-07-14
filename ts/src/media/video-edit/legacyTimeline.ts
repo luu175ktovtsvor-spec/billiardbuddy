@@ -671,7 +671,7 @@ export class VideoEditProjectStore {
       const [, clip] = videos[i]!
       const length = Math.max(0.1, clip.src_out - clip.src_in)
       const media = clip.media ? doc.media[clip.media] : undefined
-      // 有音轨 + 转写可用:本地转写 → 按 phrases 出真台词字幕;否则回退占位。
+      // 有音轨 + 转写可用:语音识别服务 → 按 phrases 出真台词字幕;否则回退占位。
       let captionClips: Array<{ start: number; end: number; text: string }> = []
       if (media && media.has_audio !== false && availability.available) {
         try {
@@ -974,17 +974,17 @@ export class VideoEditProjectStore {
     }
   }
 
-  /** 口播路报告口径:真转写了 / 转写模型没打包 / B-Roll 环境路 —— 各自如实说。 */
+  /** 口播路报告口径:真转写了 / 识别服务不可用 / B-Roll 环境路 —— 各自如实说。 */
   private planReport(route: EditRoute, transcribed: boolean, unavailableReason: string | null): string {
     if (route === 'speech') {
-      if (transcribed) return 'TS 本地模式已按素材创建可预览时间线,并本地转写口播(whisper-cli/离线)生成真台词字幕。'
-      if (unavailableReason) return `TS 本地模式已按素材创建可预览时间线;本地口播转写模型未打包(${unavailableReason}),字幕暂用占位,打包转写权重/二进制后自动补真台词。`
+      if (transcribed) return '已按素材创建可预览时间线,并通过语音识别服务生成真台词字幕。'
+      if (unavailableReason) return `已按素材创建可预览时间线;语音识别暂不可用(${unavailableReason}),字幕暂用占位。`
       return 'TS 本地模式已按素材创建可预览时间线;这批素材未识别到连贯口播,字幕暂用占位。'
     }
     return 'TS 本地模式已按素材顺序创建可预览时间线(判为门店环境片,走 B-Roll 视觉路);B-Roll 五步(切镜头/挑镜头/VLM 标签/卡点/叠字)为下一轮,当前为占位初剪。'
   }
 
-  /** 逐源转写(口播路);缺二进制/权重或转写失败一律优雅吞掉、退占位,不崩。 */
+  /** 逐源转写(口播路);服务不可用或识别失败一律优雅吞掉、退占位,不崩。 */
   private async transcribeForSources(
     items: Array<{ src: string; has_audio: boolean }>,
     editDir: string,

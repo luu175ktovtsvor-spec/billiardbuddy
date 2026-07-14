@@ -94,6 +94,13 @@ desktop/bundled.env.bak*
 desktop/e2e-pw/test-results/
 desktop/e2e-pw/test-results-studio/
 
+# Bun/MCP 单测在包目录旁创建的临时 fixture(中断时可能来不及清理)
+**/.agent-plugin-wired-*/
+**/.agent-tool-mcp-*/
+**/.mcp-client-*/
+**/.server-mcp-*/
+**/.task-tools-agent-mcp-*/
+
 # 验收报告写仓库外 ~/Desktop/球房-验收报告/,仓库内出现的不提交
 球房-验收报告/
 desktop/e2e-pw/test-results-scenarios/

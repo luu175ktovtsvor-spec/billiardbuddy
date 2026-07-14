@@ -5,6 +5,13 @@ import { basename, extname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { ASSET_IDS, managedAssetPath } from '../../assets/assetManager'
 import { transcribeAssetsPreparingReason } from '../../media/mediaBinaries'
+import {
+  RemoteTranscriptionError,
+  localTranscriptionRequested,
+  resolveRemoteTranscriptionConfig,
+  transcribeRemoteFile,
+  type RemoteTranscriptionFetch,
+} from '../../media/remoteTranscription'
 
 export class VoiceTranscriptionError extends Error {
   constructor(message: string, readonly status = 422) {
@@ -15,6 +22,7 @@ export class VoiceTranscriptionError extends Error {
 interface TranscribeOptions {
   stateRoot: string
   env?: Record<string, string | undefined>
+  fetchImpl?: RemoteTranscriptionFetch
   language?: string
   timeoutMs?: number
 }
@@ -33,19 +41,41 @@ interface ProcessResult {
 }
 
 export async function transcribeVoiceFile(file: File, opts: TranscribeOptions): Promise<{ text: string }> {
+  const env = opts.env ?? process.env
+  if (file.size === 0) throw new VoiceTranscriptionError('没收到录音内容，请重新录一次', 400)
+  if (resolveRemoteTranscriptionConfig(env)) {
+    try {
+      const result = await transcribeRemoteFile(file, {
+        env,
+        language: opts.language,
+        responseFormat: 'json',
+        timeoutMs: opts.timeoutMs ?? 10 * 60_000,
+        fetchImpl: opts.fetchImpl,
+      })
+      return { text: result.text }
+    } catch (error) {
+      if (error instanceof RemoteTranscriptionError) throw new VoiceTranscriptionError(error.message, error.status)
+      throw error
+    }
+  }
+  if (env.QF_TRANSCRIBE_MODE?.trim().toLowerCase() === 'remote') {
+    throw new VoiceTranscriptionError('语音识别服务器未配置', 503)
+  }
+  if (!localTranscriptionRequested(env)) {
+    throw new VoiceTranscriptionError('语音识别服务器未配置', 503)
+  }
   const bytes = Buffer.from(await file.arrayBuffer())
-  if (bytes.length === 0) throw new VoiceTranscriptionError('没收到录音内容，请重新录一次', 400)
   const workDir = join(opts.stateRoot, 'voice-tmp', crypto.randomUUID())
   await mkdir(workDir, { recursive: true })
   try {
     const suffix = safeAudioSuffix(file.name)
     const rawPath = join(workDir, `input${suffix}`)
     await writeFile(rawPath, bytes)
-    const direct = await tryTranscribePath(rawPath, workDir, opts).catch(err => err)
+    const direct = await tryTranscribePath(rawPath, workDir, { ...opts, env }).catch(err => err)
     if (!(direct instanceof Error)) return direct
-    const wav = await convertToWav(rawPath, workDir, opts.env ?? process.env).catch(() => null)
+    const wav = await convertToWav(rawPath, workDir, env).catch(() => null)
     if (wav) {
-      const converted = await tryTranscribePath(wav, workDir, opts).catch(err => err)
+      const converted = await tryTranscribePath(wav, workDir, { ...opts, env }).catch(err => err)
       if (!(converted instanceof Error)) return converted
     }
     if (direct instanceof VoiceTranscriptionError && (direct.message.includes('未配置') || direct.status === 503)) throw direct

@@ -3,8 +3,9 @@
 set -e
 APPDIR=/opt/qfgw
 mkdir -p "$APPDIR"
-mv -f /tmp/app.ts "$APPDIR/app.ts"
-mv -f /tmp/gw.env "$APPDIR/gw.env"
+install -m 644 /tmp/app.ts "$APPDIR/app.ts"
+install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
+install -m 600 /tmp/gw.env "$APPDIR/gw.env"
 chmod 600 "$APPDIR/gw.env"
 cd "$APPDIR"
 
@@ -26,6 +27,7 @@ WorkingDirectory=/opt/qfgw
 ExecStart=__BUN_BIN__ /opt/qfgw/app.ts --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
+UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT

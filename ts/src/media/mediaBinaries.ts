@@ -240,7 +240,8 @@ export function gateMediaAssets(env: Env | undefined, needs: MediaBinaryNeed[]):
 
 /**
  * 转写组件"准备中"的一句话原因(给 resolveTranscribeAvailability/语音输入用);
- * 没接资产管理器或组件齐全 → null。调用即触发缺失资产的按需下载。
+ * 仅显式本地离线模式调用；没接资产管理器或组件齐全 → null。
+ * 调用即触发缺失资产的按需下载，远程 provider 失败不得调用。
  */
 export function transcribeAssetsPreparingReason(env?: Env): string | null {
   const gate = gateMediaAssets(env, ['whisper'])
