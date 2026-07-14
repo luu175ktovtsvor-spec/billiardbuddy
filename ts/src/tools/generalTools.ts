@@ -6,7 +6,6 @@ import { listDirTool } from './listDirTool'
 import { runCommandTool } from './runCommandTool'
 import { powerShellTool } from './powerShellTool'
 import { webFetchTool } from './webFetchTool'
-import { webSearchTool } from './webSearchTool'
 import { todoWriteTool } from './todoTool'
 import { saveMemoryTool } from './saveMemoryTool'
 import { fileHistoryTool, restoreFileTool } from './fileHistoryTool'
@@ -31,9 +30,10 @@ import { createCommandTools, type CommandLibrary } from '../commands/commandLoad
 import type { Tool } from './Tool'
 import { createToolSearchTool, TOOL_SEARCH_NAME } from './toolSearchTool'
 import { createComputerUseTools, type ComputerUseToolsOptions } from './computerUse'
+export { createRuntimeWebSearchToolResolver } from './webSearchTool'
 
 /** 通用 Agent 默认工具集(对应 Python registry.py 的 general 层)。领域包只通过可选推荐/额外工具挂载,不改通用底座身份。 */
-export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; executeSkill?: ExecuteSkillFn; commands?: CommandLibrary; extraTools?: Tool[]; computerUse?: boolean | ComputerUseToolsOptions } = {}): ToolRegistry {
+export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLibrary; skillsRoot?: string; skillRecommendations?: string[]; executeSkill?: ExecuteSkillFn; commands?: CommandLibrary; extraTools?: Tool[]; computerUse?: boolean | ComputerUseToolsOptions; webSearch?: Tool } = {}): ToolRegistry {
   // 本机控制(截图/点击/键鼠)默认关闭 —— 需 owner 显式开启(computerUse: true)+ 平台为 mac/win。
   // 关闭时不构造任何工具、不起 Python;开启时惰性 bootstrap(首个 execute 才建 venv)。
   const computerUseTools = opts.computerUse
@@ -77,7 +77,7 @@ export function buildGeneralRegistry(opts: { sandbox?: Sandbox; skills?: SkillLi
     powerShellTool,
     runCmd,
     webFetchTool,
-    webSearchTool,
+    ...(opts.webSearch ? [opts.webSearch] : []),
     todoWriteTool,
     saveMemoryTool,
     fileHistoryTool,

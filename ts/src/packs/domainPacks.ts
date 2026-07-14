@@ -18,7 +18,7 @@ import { getDefaultPackRegistry } from './builtinPacks'
 import type { DomainPack, DomainPackCommand, PublicDomainPack } from './types'
 
 // 类型对外透传(server 有 `import { type DomainPack } from '../packs/domainPacks'`,保持不变)。
-export type { DomainPack, DomainPackCommand, DomainPackKnowledge, DomainPackGuardrails, PublicDomainPack } from './types'
+export type { DomainPack, DomainPackCommand, DomainPackKnowledge, PublicDomainPack } from './types'
 // 注册表 / 发现层对外透传,便于面板与后续第三方 pack 装载复用同一套加载器。
 export { PackRegistry, normalizePackId, type RegisteredPack } from './registry'
 export { getDefaultPackRegistry, registerBuiltinPacks, BUILTIN_PACKS } from './builtinPacks'
@@ -77,7 +77,7 @@ export function resolveEnabledPacks(input: Record<string, unknown>): DomainPack[
 /**
  * 斜杠命令名 → 领域包 id(owner 设计:敲 /台球 等入口斜杠命令即进入该领域包"管家"模式)。
  * 命中规则:①命令名直接是某 pack 的 id 或别名(registry.resolve 认别名,如 /台球、/球房、/billiards、/pool);
- * ②命名空间子命令 `<packid>:xxx`(如 /billiards:daily-ops)的前缀命中某 pack。都不中返回 undefined。
+ * ②命名空间命令 `<packid>:xxx` 的前缀命中某 pack。都不中返回 undefined。
  * 注意:registry.resolve 只认**已启用**的注册项,而领域包默认全部注册(defaultEnabled 只控是否默认挂,
  * 不控注册),故这里能在 pack 尚未被本会话启用时就把命令名映射到它——正是"斜杠命令启用 pack"所需。
  */
@@ -165,7 +165,7 @@ export function createDomainPackCommandLibrary(packs: DomainPack[]): CommandLibr
   return library
 }
 
-/** 用户面始终可发现的领域包激活入口；领域子命令仍只在对应 pack 已启用时进入运行时。 */
+/** 用户面始终可发现的领域包激活入口。 */
 export function createDomainPackActivationCommandLibrary(): CommandLibrary | undefined {
   const registry = getDefaultPackRegistry()
   const activationPacks = registry.list().map(pack => ({

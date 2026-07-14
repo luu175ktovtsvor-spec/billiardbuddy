@@ -299,12 +299,12 @@ export function PluginsPage() {
           {t('plugins.connectorSection')}
         </h2>
         <div className="mb-8 grid grid-cols-2 gap-3">
-          {/* 台球运营专家:真实领域包开关 */}
+          {/* 台球运营知识库:真实领域包开关 */}
           <Card>
             <div className="flex items-center gap-3">
               <IconTile muted={!billiardsOn}><IconTarget size={18} /></IconTile>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>台球运营专家</div>
+                <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>台球运营知识库</div>
               </div>
               <button
                 type="button"

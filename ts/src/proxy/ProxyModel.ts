@@ -12,6 +12,7 @@ import { withStreamIdleTimeout } from './streamIdleTimeout'
 import type { OpenAIChatRequest, OpenAIChatResponse } from './types'
 import type { ReasoningEffort } from '../model/reasoningEffort'
 import { fetchWithModelRetry, type ModelRetryOptions } from '../model/fetchRetry'
+import { appendCitationMarkdown } from './citations'
 
 /**
  * 注入用的最小 fetch 形状——故意不用 `typeof fetch`:bun-types 把 fetch 声明成
@@ -161,6 +162,7 @@ export class ProxyModel implements Model {
 
 /** 累积结果 → AssistantStep。kind 看 toolCalls 有无(needsFollowUp),不看 finishReason。 */
 function toAssistantStep(acc: AccumulatedResponse, notices?: string[]): AssistantStep {
+  const text = appendCitationMarkdown(acc.text, acc.citations ?? [])
   const thinking = acc.thinking ? { thinking: acc.thinking } : {}
   const usage = acc.usage ? { usage: acc.usage } : {}
   const allNotices = [...(notices ?? []), ...(isTruncatedFinishReason(acc.finishReason) ? [MODEL_OUTPUT_TRUNCATED_NOTICE] : [])]
@@ -169,9 +171,9 @@ function toAssistantStep(acc: AccumulatedResponse, notices?: string[]): Assistan
   // 要照常返回 tool_calls 让主循环配对执行(截断提示仍随附,让上层知情);纯正文被截断(无工具调用)才走 final,
   // 后续"从断点续写"由 loop.ts 的 max_output_tokens 恢复接手。
   if (acc.toolCalls.length > 0) {
-    return { kind: 'tool_calls', ...(acc.text ? { text: acc.text } : {}), ...thinking, calls: acc.toolCalls, ...usage, ...noticeField }
+    return { kind: 'tool_calls', ...(text ? { text } : {}), ...thinking, calls: acc.toolCalls, ...usage, ...noticeField }
   }
-  return { kind: 'final', text: acc.text, ...thinking, ...usage, ...noticeField }
+  return { kind: 'final', text, ...thinking, ...usage, ...noticeField }
 }
 
 function isTruncatedFinishReason(reason: string | null | undefined): boolean {

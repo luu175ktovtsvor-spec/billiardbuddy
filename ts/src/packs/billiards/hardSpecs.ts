@@ -179,7 +179,7 @@ export function hardSpec(id: number): HardSpec | undefined {
   return HARD_SPEC_BY_ID.get(id)
 }
 
-/** 按关键词粗筛相关硬数字(供 billiards_ops_checklist 工具按场景带出)。 */
+/** 按关键词粗筛相关硬数字(供知识检索工具返回相关资料)。 */
 export function findHardSpecs(query: string): HardSpec[] {
   const q = query.trim().toLowerCase()
   if (!q) return []

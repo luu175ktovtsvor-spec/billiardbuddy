@@ -234,7 +234,7 @@ Use workspace fix.
     })
   })
 
-  test('merges enabled domain packs and lets workspace commands override them', async () => {
+  test('keeps workspace commands independent from the enabled knowledge pack', async () => {
     const { commandsRoot, workspaceRoot, handler } = createHarness()
     const workspaceCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
     mkdirSync(workspaceCommands, { recursive: true })
@@ -250,7 +250,7 @@ Use workspace-specific daily ops.
       `/commands?working_dir=${encodeURIComponent(workspaceRoot)}&knowledge_packs=billiards`,
     )).json() as any
     expect(listed.commands.map((command: any) => command.name)).toEqual(expect.arrayContaining([
-      'billiards:content-plan',
+      '台球',
       'billiards:daily-ops',
     ]))
     expect(listed.commands.find((command: any) => command.name === 'billiards:daily-ops')).toMatchObject({
@@ -260,7 +260,7 @@ Use workspace-specific daily ops.
     const expanded = await route(handler, '/api/commands/expand', {
       method: 'POST',
       body: JSON.stringify({
-        name: '/billiards:content-plan',
+        name: '/台球',
         args: '周末活动',
         workspaceRoot,
         knowledge_packs: ['billiards'],
@@ -268,7 +268,8 @@ Use workspace-specific daily ops.
     })
     expect(expanded.status).toBe(200)
     const body = await expanded.json() as any
-    expect(body.prompt).toContain('领域包: 台球运营专家')
+    expect(body.prompt).toContain('领域包: 台球运营知识库')
+    expect(body.prompt).toContain('继续按通用 Agent 的正常方式')
     expect(body.prompt).toContain('周末活动')
   })
 

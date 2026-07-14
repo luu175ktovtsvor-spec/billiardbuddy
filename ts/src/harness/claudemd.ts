@@ -777,7 +777,7 @@ function truncateAutoMemEntrypoint(raw: string): string {
     const lastNewline = truncated.lastIndexOf('\n')
     if (lastNewline > 0) truncated = truncated.slice(0, lastNewline)
   }
-  return `${truncated.trimEnd()}\n\n> 提醒:MEMORY.md 索引已超上限被截断,只加载了前一部分。保持每条索引一行、把细节放进各自的记忆文件。`
+  return `${truncated.trimEnd()}\n\n> WARNING: The MEMORY.md index exceeded its limit and was truncated. Only the first part was loaded. Keep each index entry to one line and move details into topic files.`
 }
 
 /**

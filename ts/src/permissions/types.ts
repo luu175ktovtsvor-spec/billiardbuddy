@@ -75,8 +75,9 @@ export interface AdditionalWorkingDirectory {
 }
 
 /**
- * 需审批动作的类别:file=本机可逆文件动作(acceptEdits 放行,default 询问)· outreach=触达网络/外部服务 · destructive=不可逆。
- * ⚠️ 无 spend/花钱维度:用的是内置 key、对用户不存在按次计费,不按"花钱"门控任何工具(对齐 cc 工程设计,cc 也无此维度)。
+ * 工具审批类别:file=工作区文件动作,destructive=危险命令。
+ * outreach 是兼容既有持久化和工具元数据的历史内部名称,实际表示需按当前权限档处理的非 file 工具。
+ * 模型调用成本不参与权限决策。
  */
 export type ApprovalClass = 'file' | 'outreach' | 'destructive'
 

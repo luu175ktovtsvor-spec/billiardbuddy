@@ -69,6 +69,21 @@ describe('Agent WebSocket 共享契约', () => {
     })).toThrow()
   })
 
+  test('全盘访问必须是 run/approve/reject 上的显式布尔上下文', () => {
+    for (const message of [
+      { type: 'run', message: '继续', full_disk_access: true },
+      { type: 'approve', tool: 'run_command', token: 'signed-token', full_disk_access: true },
+      { type: 'reject', tool: 'run_command', fullDiskAccess: false },
+    ]) {
+      expect(parseClientMessage(message)).toMatchObject(message)
+    }
+    expect(() => parseClientMessage({
+      type: 'run',
+      message: '继续',
+      full_disk_access: 'true',
+    })).toThrow()
+  })
+
   test('拒绝未知客户端消息和缺少审批令牌的消息', () => {
     expect(() => parseClientMessage({ type: 'unknown' })).toThrow()
     expect(() => parseClientMessage({ type: 'approve', tool: 'write_file', args: {} })).toThrow()

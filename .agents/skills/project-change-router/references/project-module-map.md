@@ -5,7 +5,7 @@
 | 系统 | 路径 | 发布边界 |
 |---|---|---|
 | 桌面产品 | `ts/` | Electron renderer、main、Bun sidecar 同一安装包 |
-| 模型与转录网关 | `gateway/` | 国内服务器独立发布；统一承载模型代理与可替换的语音转录 provider |
+| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、`mimoChat.ts` MiMo 请求/原生搜索/重试、`modelCapacity.ts` 容量调度、`webSearch.ts` 兼容搜索 provider、`transcription.ts` 转录 provider） | 国内服务器独立发布；统一承载模型代理、联网搜索、容量池调度与可替换的语音转录 provider |
 | 生图中转 | `relay/` | 美国服务器独立发布 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
 

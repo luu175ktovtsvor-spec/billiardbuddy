@@ -104,7 +104,7 @@ function GeneralPane() {
         />
         <Row
           title={t('permission.acceptEdits')}
-          desc="管家可以直接修改工作目录里的文件,不逐个确认;跑命令等敏感动作仍会询问。关闭后此档从输入框的权限菜单中隐藏。"
+          desc="选择工作文件夹后,新会话默认使用此档:工作区内文件修改直接执行,其他工具按当前权限规则处理。关闭后此档从输入框的权限菜单中隐藏。"
           right={<Switch on={!hidden.includes('acceptEdits')} onChange={() => toggleHidden('acceptEdits')} label="在权限菜单中显示接受修改" />}
         />
         <Row
@@ -127,11 +127,11 @@ function GeneralPane() {
         />
       </Group>
 
-      <Group title="专家模块">
+      <Group title="领域知识">
         <Row
-          title="台球运营专家"
+          title="台球运营知识库"
           desc="在当前对话挂载台球房经营知识(只影响当前对话,新对话默认不挂)。也可在输入框敲 /台球 开、/台球关闭 关。"
-          right={<Switch on={billiards} onChange={(v) => { setPacks(v ? ['billiards'] : []); toast(v ? '台球运营专家已挂载(当前对话)' : '已切回通用助手(当前对话)') }} label="台球运营专家" />}
+          right={<Switch on={billiards} onChange={(v) => { setPacks(v ? ['billiards'] : []); toast(v ? '台球运营知识库已挂载(当前对话)' : '台球运营知识库已关闭(当前对话)') }} label="台球运营知识库" />}
         />
       </Group>
     </>

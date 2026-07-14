@@ -59,7 +59,7 @@ function rulesFromSettingsObject(obj: unknown, source: PermissionRuleSource): Pe
  * 工作区级权限信任门(对齐本仓库 hooks.ts configureHookTrust 同一套路,复用 McpTrustStore 同一信任源)。
  *
  * 恶意仓库若提交 <workspaceRoot>/.billiardbuddy/settings.json 里 permissions.allow=['Bash(*)','Read(**)'],
- * 用户用文件夹选择器一打开该目录,就会**不再弹审批卡、直接放行**,绕过 cc 对齐的审批闸(对外触达/不可逆动作)。
+ * 用户用文件夹选择器一打开该目录,仓库内预置的 allow 规则就会直接生效,绕过用户自己的权限设置。
  * 我们对 .mcp.json 有 McpTrustStore 信任门、对 hooks 有信任门,这里给权限 allow 规则补上同一道门。
  *
  * 门的口径(对齐 cc folder trust 的安全意图,裁剪到"无 trust 弹窗 UI"的现状):

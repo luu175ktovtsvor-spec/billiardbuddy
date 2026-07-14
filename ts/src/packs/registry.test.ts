@@ -72,11 +72,10 @@ test('registerBuiltinPacks:billiards 作为第一个注册的 pack 被发现,带
   expect(ids[0]).toBe('billiards')
   expect(registry.resolve('台球')?.id).toBe('billiards')
   expect(registry.resolve('pool')?.id).toBe('billiards')
-  expect(registry.resolve('billiards')?.version).toBe('1.0.0')
-  // 知识/守卫句柄挂在 pack 上,核心不感知形状
+  expect(registry.resolve('billiards')?.version).toBe('2.0.0')
+  // 知识句柄挂在 pack 上,核心不感知形状；领域包不参与通用权限决策。
   const pack = registry.resolve('billiards')!
   expect(typeof pack.knowledge?.stats).toBe('function')
-  expect(typeof pack.guardrails?.scan).toBe('function')
 })
 
 test('默认注册表已含 billiards,且与新注册的假 pack 共存互不影响', () => {

@@ -968,6 +968,7 @@ test('maxTurns=undefined 下计划验证提醒最多一次:模型固执连发 fi
   // 验证提醒只出现一次(不随每次 final 无限重发)
   const reminders = events.filter(e => e.type === 'context_note' && e.text.includes('还没有通过 VerifyPlanExecution'))
   expect(reminders.length).toBe(1)
+  expect(JSON.stringify(model.received)).toContain('Plan execution has started but has not yet been verified with VerifyPlanExecution')
   // 提醒一次后收敛到第二次 final,没有挂死/耗尽步骤(恰好 4 次 model.step)
   expect(events.at(-1)).toEqual({ type: 'final', text: '还是想收尾(固执不验证)' })
   expect(model.received.length).toBe(4)
@@ -1802,7 +1803,7 @@ test('plan 档:每轮注入 plan system-reminder(模型能在 messages 里看到
   // 第 2 次 step 的 messages 里有一条 user 消息、其中一个 text 块含 <system-reminder> 包壳的计划模式说明
   expect(
     received[1]!.messages.some(
-      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('计划模式')),
+      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('plan mode')),
     ),
   ).toBe(true)
 })
@@ -2017,6 +2018,7 @@ test('approved plan cannot finish after implementation until VerifyPlanExecution
   }
 
   expect(events.some(e => e.type === 'context_note' && e.text.includes('还没有通过 VerifyPlanExecution'))).toBe(true)
+  expect(JSON.stringify(model.received)).toContain('Plan execution has started but has not yet been verified with VerifyPlanExecution')
   expect(events.at(-1)).toEqual({ type: 'final', text: '已验证后收尾' })
 })
 
@@ -2101,7 +2103,7 @@ test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提�
   const last = received.at(-1)!
   expect(
     last.messages.some(
-      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('更新进度')),
+      m => m.role === 'user' && m.content.some(b => b.type === 'text' && b.text.includes('<system-reminder>') && b.text.includes('update progress')),
     ),
   ).toBe(true)
 })
@@ -3109,9 +3111,10 @@ test('条件技能同轮实时激活:本批碰到匹配文件 → 该批 tool_re
   const activations = events.filter(e => e.type === 'context_note' && e.text.includes('条件技能「sqlhelper」已激活'))
   expect(activations.length).toBe(1)
   expect(activatorCalls).toBe(2) // 两批都碰了文件、都调了激活器,但第二次命中已激活→不再注入
-  // 提醒文本确实进了发给模型的后续消息(第二次 model.step 的 messages 含"技能「sqlhelper」现在可用")
+  // 提醒文本确实进了发给模型的后续消息,且机制语言为英文、Skill 描述保留原文。
   const secondStepMessages = JSON.stringify(model.received[1]?.messages ?? [])
-  expect(secondStepMessages).toContain('技能「sqlhelper」现在可用')
+  expect(secondStepMessages).toContain('Skill \\"sqlhelper\\" is now available')
+  expect(secondStepMessages).toContain('SQL 助手')
 })
 
 test('条件技能实时激活:不碰匹配文件则不激活(碰 .ts 不触发 *.sql 技能)', async () => {

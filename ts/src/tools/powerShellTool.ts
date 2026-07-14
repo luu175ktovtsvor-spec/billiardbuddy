@@ -467,14 +467,14 @@ function powerShellRiskReason(risk: PowerShellRisk, warnings: string[]): string 
   if (warnings.length > 0) return `该命令触发 PowerShell 专用风险提示:${warnings.join('; ')}。`
   if (risk === 'read') return '这是 PowerShell 只读查询命令。'
   if (risk === 'file') return '该 PowerShell 命令可能修改工作区文件或生成产物。'
-  if (risk === 'outreach') return '该 PowerShell 命令可能访问网络、下载内容或触达外部服务。'
-  return '该 PowerShell 命令可能造成不可逆改动。'
+  if (risk === 'outreach') return '该 PowerShell 命令可能访问网络、下载内容或产生系统副作用。'
+  return '该 PowerShell 命令可能删除数据或造成大范围改动。'
 }
 
 function powerShellRiskImpact(risk: PowerShellRisk): string {
   if (risk === 'read') return '只读取本机状态或文件内容。'
   if (risk === 'file') return '可能写入、移动、删除或格式化工作区内文件。'
-  if (risk === 'outreach') return '可能产生网络访问、副作用或外部账号操作。'
+  if (risk === 'outreach') return '可能产生网络访问或系统副作用。'
   return '需要用户确认后才应执行;灾难级命令会被直接拒绝。'
 }
 

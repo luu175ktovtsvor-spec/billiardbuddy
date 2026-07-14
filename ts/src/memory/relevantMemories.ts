@@ -34,12 +34,12 @@ const RECALLED_MEMORY_MARKER_RE = /<recalled-memory path="([^"]+)"/g
 
 /** 侧路小模型选择记忆用的品牌中性 system prompt(移植 cc SELECT_MEMORIES_SYSTEM_PROMPT,去掉品牌名)。 */
 export const SELECT_MEMORIES_SYSTEM_PROMPT = [
-  '你在为一个 AI 助手挑选「处理用户当前这句话时可能用得上的记忆」。你会拿到用户的问题,以及一份可选记忆清单(每条含文件名与一句话描述)。',
+  "You are selecting memories that may help an AI agent answer the user's current request. You will receive the request and a manifest of available memories, each with a file name and short description.",
   '',
-  '请返回最多 5 个「明显对处理当前问题有帮助」的记忆文件名。只挑你根据名字和描述能确定有用的:',
-  '- 拿不准是否有用的,就别选。要挑剔、克制。',
-  '- 如果清单里没有明显有用的,返回空列表也行。',
-  '- 只用 JSON 数组返回文件名,例如 ["user_role.md","golden_hours.md"];不要多余解释。',
+  'Return at most 5 memory file names that are clearly useful for the current request:',
+  '- Be selective. If relevance is uncertain, do not include the memory.',
+  '- Return an empty list when no memory is clearly useful.',
+  '- Return only a JSON array of file names, for example ["user_role.md","golden_hours.md"], with no explanation.',
 ].join('\n')
 
 /** 记忆文件头(frontmatter 扫描结果)。 */
@@ -215,7 +215,7 @@ export async function readMemoriesForSurfacing(selected: ReadonlyArray<RelevantM
           truncatedByBytes = true
         }
         const content = truncatedByLines || truncatedByBytes
-          ? `${body}\n\n> 这条记忆被截断(${truncatedByBytes ? `${MAX_MEMORY_BYTES} 字节上限` : `前 ${MAX_MEMORY_LINES} 行`});需要完整内容用 read_file 读:${filePath}`
+          ? `${body}\n\n> This memory was truncated at ${truncatedByBytes ? `${MAX_MEMORY_BYTES} bytes` : `${MAX_MEMORY_LINES} lines`}. Use read_file to read the complete entry: ${filePath}`
           : body
         return { path: filePath, content, mtimeMs }
       } catch {
@@ -236,8 +236,8 @@ export function buildRelevantMemoriesReminder(memories: ReadonlyArray<SurfacedMe
     return `<recalled-memory path="${m.path}" saved="${saved}">\n${m.content.trim()}\n</recalled-memory>`
   })
   return [
-    '以下记忆条目由系统根据你当前的问题,从你的持久记忆库自动召回,供你参考(不是用户此刻说的话)。',
-    '若与你现在读到的实际情况冲突,以当前为准,并考虑更新或删除过时的记忆。',
+    "The system recalled the following entries from persistent memory because they may be relevant to the current request. They are not the user's current words.",
+    'If a recalled entry conflicts with current evidence, trust the current evidence and consider updating or deleting the stale memory.',
     '',
     ...blocks,
   ].join('\n')

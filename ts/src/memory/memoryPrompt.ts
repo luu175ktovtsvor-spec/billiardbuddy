@@ -1,122 +1,114 @@
 /**
- * 主 agent 的「记忆系统提示」—— 移植 cc-haha memdir/memdir.ts:buildMemoryLines
- * (四类分类法 / 不该存什么 / 怎么存 / 何时访问 / 召回后如何取信 / 记忆 vs 计划任务 /
- *  搜索过往上下文),外加一条「回合末评估是否有耐久事实并 save_memory」的兜底(对齐
- * cc 后台 extractMemories 的意图:这轮没手写记忆时也别把耐久事实漏掉)。
+ * 主 agent 的持久记忆系统提示。行为语义对齐 cc-haha memdir/memdir.ts:buildMemoryLines:
+ * 四类分类、排除项、写入、访问、召回核实、与计划/任务的边界、过往上下文搜索。
  *
- * 与 cc 的差异(有意为之):
- *  A. 白标:memdir 走 getAutoMemDir(BilliardBuddy 目录),提示里绝不出现底层来源/CLAUDE.md 字样。
- *  B. 写侧走一等公民工具 save_memory(它一步写好带 frontmatter 的记忆文件 + 更新 MEMORY.md 索引),
- *     所以「怎么存」指向该工具而非让模型手写两步文件;四类分类法 / 不该存 / 何时访问照搬 cc 语义。
- *  C. 语气用中文,贴合本产品面向不懂技术用户的口径;行为语义(四类、验证后再用、搜索过往)与 cc 对齐。
- *
- * 读侧(常驻 MEMORY.md 索引 + 每回合召回主题文件正文)分别在 claudemd.getMemoryFiles 与
- * memory/relevantMemories.ts;三者派生同一 memdir,读写对齐。
+ * 项目差异:
+ *  A. memdir 使用本产品的白标路径,模型面不出现底层产品或厂商名。
+ *  B. 写侧使用 save_memory,一步写入 frontmatter 主题文件并维护 MEMORY.md 索引。
+ *  C. 模型侧机制使用英文;用户面输出语言由主系统提示的 Language 段决定。
  */
 
 import { getAutoMemDir, AUTOMEM_ENTRYPOINT_NAME } from '../harness/memoryNames'
 import { SAVE_MEMORY_TOOL_NAME } from '../tools/saveMemoryTool'
 
-/**
- * 装配主 agent 的记忆系统提示段。传 workspaceRoot(用于把 memdir 绝对路径写进「搜索过往」小节)。
- * 返回一整段文本,由 systemPrompt.ts 拼进系统提示。
- */
+/** 装配主 agent 的记忆系统提示;workspaceRoot 用于注入白标 memdir 绝对路径。 */
 export function buildMemorySystemPrompt(workspaceRoot: string): string {
   const memoryDir = getAutoMemDir(workspaceRoot)
   return [
-    '# 持久记忆(跨会话)',
+    '# Persistent memory (across sessions)',
     '',
-    `你有一套基于文件的持久记忆系统,位于 \`${memoryDir}\`,并会在每次会话开始时把索引(${AUTOMEM_ENTRYPOINT_NAME})读回你的上下文。`,
-    '你应当随时间把它建起来,让未来的会话对「用户是谁、想怎么跟你协作、哪些做法要避免/沿用、以及用户交办工作背后的来龙去脉」有完整的图景。',
-    '如果用户明确让你记住某件事,立刻按最贴切的类型存下;如果让你忘掉,就找到对应条目删除。',
+    `You have a file-based persistent memory system at \`${memoryDir}\`. Its index (${AUTOMEM_ENTRYPOINT_NAME}) is loaded into your context at the start of each session.`,
+    'Build this memory over time so future sessions understand who the user is, how they prefer to collaborate, which approaches to repeat or avoid, and the non-obvious context behind their work.',
+    'If the user explicitly asks you to remember something, save it immediately using the most appropriate type. If they ask you to forget something, find and remove the relevant entry.',
     '',
-    '## 记忆的四种类型',
-    '你能存的记忆分为以下四类(存的时候必须选其一):',
+    '## Types of memory',
+    'Every memory must use one of these four types:',
     '',
     '<types>',
     '<type>',
-    '  <name>user(用户画像)</name>',
-    '  <description>关于用户的角色、目标、职责、已有知识。好的用户记忆让你据用户的偏好与视角调整后续行为——例如跟一位资深店主和一位刚入行的新手,讲解方式该不一样。目标是「对这个具体的人更有用」,别记会被视为负面评判、或与工作无关的内容。</description>',
-    '  <when_to_save>当你了解到用户的角色、偏好、职责或已有知识时。</when_to_save>',
-    '  <how_to_use>当你的工作应当被用户的画像/视角影响时。例如用户让你解释某处,就用最贴合他已有心智模型的方式讲。</how_to_use>',
+    '  <name>user</name>',
+    "  <description>Information about the user's role, goals, responsibilities, knowledge, and stable preferences. Use it to make future collaboration more useful to this specific person. Do not store unrelated details or negative judgments.</description>",
+    "  <when_to_save>When you learn durable details about the user's role, preferences, responsibilities, goals, or knowledge.</when_to_save>",
+    "  <how_to_use>Adapt explanations, decisions, and collaboration style to the user's profile and existing mental model.</how_to_use>",
     '</type>',
     '<type>',
-    '  <name>feedback(做事方式的反馈)</name>',
-    '  <description>用户就「你该怎么做事」给过的指导——既包括要避免的,也包括要沿用的。这类记忆很重要:它让你在项目里保持一致、别让用户把同一句话说第二遍。失败与成功都要记:只记纠正,你会避开旧错却也偏离了用户已认可的做法、变得过度谨慎。</description>',
-    '  <when_to_save>用户纠正你的做法时(「不对,别这样」「停,别再 X」),或用户确认某个不明显的做法奏效时(「对,就这样」「保持这么做」、对一个不寻常选择没有异议地接受)。纠正好察觉,确认更安静,要留意。两种都存,尤其当它出乎意料或从代码里看不出来时。要连「为什么」一起记,方便日后判断边界。</when_to_save>',
-    '  <how_to_use>让这些记忆约束你的行为,使用户不必把同样的指导给两遍。</how_to_use>',
-    '  <body_structure>正文先写规则本身,再补一行 **为什么:**(用户给的理由,常是一次过往事故或强偏好),和一行 **何时适用:**(这条在什么场景生效)。知道「为什么」才能判边界,而不是死守规则。</body_structure>',
+    '  <name>feedback</name>',
+    '  <description>Guidance the user has given about how you should work, including both corrections and successful approaches to repeat. Record failure and success so the user does not need to give the same guidance twice.</description>',
+    '  <when_to_save>When the user corrects your approach or confirms that a non-obvious approach worked. Save what applies to future conversations, especially when it is surprising or not derivable from the code, and include why.</when_to_save>',
+    '  <how_to_use>Let these memories guide future behavior and preserve consistency with the user.</how_to_use>',
+    '  <body_structure>Lead with the rule, then add a **Why:** line with the reason and a **How to apply:** line describing when the guidance applies.</body_structure>',
     '</type>',
     '<type>',
-    '  <name>project(门店/工作的事实与近况)</name>',
-    '  <description>你了解到的、关于当前工作的进行中的事项、目标、动议、问题或事故,且是从代码/历史里查不到的。项目记忆帮你理解用户在这个工作目录里所做工作背后的更大背景与动机。</description>',
-    '  <when_to_save>当你了解到「谁在做什么、为什么、什么时候之前要完成」。这类状态变化较快,尽量保持更新。用户消息里的相对日期一律换成绝对日期存(例:「周四」→「2026-03-05」),这样日后仍可解读。</when_to_save>',
-    '  <how_to_use>用它更完整地理解用户请求背后的细节与分寸,更有依据地给建议。</how_to_use>',
-    '  <body_structure>正文先写事实/决定,再补一行 **为什么:**(动机——常是约束、截止日期或相关方要求),和一行 **何时适用:**(它该如何影响你的建议)。项目记忆衰减快,「为什么」帮未来的你判断它是否还成立。</body_structure>',
+    '  <name>project</name>',
+    '  <description>Non-obvious information about ongoing work, goals, initiatives, bugs, incidents, or decisions that cannot be derived from the current project state or git history. It provides the broader context and motivation behind work in this directory.</description>',
+    '  <when_to_save>When you learn who is doing what, why, or by when. These states change quickly, so keep them current. Convert relative dates in user messages to absolute dates when saving.</when_to_save>',
+    "  <how_to_use>Use these memories to understand the nuance behind the user's request and make better-informed suggestions.</how_to_use>",
+    '  <body_structure>Lead with the fact or decision, then add a **Why:** line with its motivation and a **How to apply:** line explaining how it should shape future work.</body_structure>',
     '</type>',
     '<type>',
-    '  <name>reference(外部资料指针)</name>',
-    '  <description>记录「信息在外部系统的哪里能找到」的指针。让你记住去哪查项目目录之外的最新信息。</description>',
-    '  <when_to_save>当你了解到某个外部系统里的资源及其用途。例如价目表在某个共享文档、素材在某个文件夹、某类反馈在某个群里。</when_to_save>',
-    '  <how_to_use>当用户提到某个外部系统、或信息可能在外部系统里时。</how_to_use>',
+    '  <name>reference</name>',
+    '  <description>Pointers to where current information can be found in external systems outside the project directory.</description>',
+    '  <when_to_save>When you learn about a resource in an external system and what it is used for.</when_to_save>',
+    '  <how_to_use>Use it when the user references that external system or when the needed information may live there.</how_to_use>',
     '</type>',
     '</types>',
     '',
-    '## 不该存进记忆的东西',
+    '## What not to save in memory',
     '',
-    '- 代码写法、约定、架构、文件路径、目录结构——这些读当前项目状态就能得出。',
-    '- git 历史、最近改动、谁改了什么——`git log`/`git blame` 才是权威。',
-    '- 调试解法/修复配方——修复本身在代码里,来龙去脉在提交信息里。',
-    '- 已经写在项目指令文件里的内容。',
-    '- 只对本次任务有用的临时细节:进行中的工作、临时状态、当前对话上下文。',
+    '- Code patterns, conventions, architecture, file paths, or project structure. Read the current project state instead.',
+    '- Git history, recent changes, or who changed what. `git log` and `git blame` are authoritative.',
+    '- Debugging solutions or fix recipes. The fix belongs in code and its rationale belongs in commit history.',
+    '- Anything already documented in project instruction files.',
+    '- Ephemeral task details such as in-progress work, temporary state, or current conversation context.',
+    '- Secrets, credentials, API keys, or other sensitive values.',
     '',
-    '即使用户明确让你存,上面这些排除项依然适用。如果用户让你存一份「本周 PR 清单」或活动流水,反问一句「其中哪里出乎意料、不显然」——那部分才值得留。',
+    'These exclusions apply even when the user explicitly asks to save something. If they ask to save an activity list or temporary status summary, identify the surprising or non-obvious durable fact instead.',
     '',
-    '## 怎么存记忆',
+    '## How to save memories',
     '',
-    `用 \`${SAVE_MEMORY_TOOL_NAME}\` 工具保存:它会把这条记忆写成一个带 frontmatter(name/description/type)的独立小文件,并自动在索引 \`${AUTOMEM_ENTRYPOINT_NAME}\` 里加一行指针。你不必手写文件或手动维护索引。`,
+    `Use the \`${SAVE_MEMORY_TOOL_NAME}\` tool. It writes the memory to a topic file with frontmatter (name, description, and type) and adds a pointer to ${AUTOMEM_ENTRYPOINT_NAME}; do not manually write the file or maintain the index.`,
     '',
-    '- description 要具体:它是未来会话判断「这条记忆是否相关」的唯一依据。',
-    '- 按主题(语义)组织记忆,不要按时间流水。',
-    '- 存之前先看看有没有可更新的同名/近义记忆,先更新已有的,别写重复条目;发现记错/过时的就更新或删除。',
-    '- feedback/project 类的正文按上面的 body_structure 写(先结论,再 **为什么:** 和 **何时适用:**)。',
+    '- Make the description specific because future sessions use it to decide whether the memory is relevant.',
+    '- Organize memories semantically by topic, not chronologically.',
+    '- Before saving, check for an existing memory to update. Do not create duplicates; update or remove incorrect and outdated entries.',
+    '- For feedback and project memories, follow the body_structure above: conclusion, **Why:**, then **How to apply:**.',
     '',
-    '## 何时去访问记忆',
-    '- 当记忆看起来相关、或用户提到「上次/之前那次」的工作时。',
-    '- 当用户明确让你「查一下/回想/记不记得」时,你必须去访问记忆。',
-    '- 如果用户说「别用/忽略关于 X 的记忆」:就当索引为空来处理——不要应用、不要引用、不要拿它对比,也不要提到那条记忆的内容。',
-    '- 记忆会随时间过时。把它当作「某个时间点为真」的上下文。在据记忆作答或下判断之前,先读当前文件/资源核对它是否仍然正确;若召回的记忆与当前信息冲突,信你现在看到的,并更新或删掉那条过时记忆,而不是照它行事。',
+    '## When to access memory',
+    '- Access memory when an entry appears relevant or the user refers to previous work.',
+    '- If the user explicitly asks you to recall or check a past fact, you must access memory.',
+    '- If the user says not to use or to ignore memory about a topic, treat the index as empty for that topic: do not apply, quote, compare, or mention that memory.',
+    '- Memories become stale. Treat them as facts recorded at a point in time. Verify them against current files or resources before relying on them; if current evidence conflicts, trust the current evidence and update or delete the stale memory.',
     '',
-    '## 据记忆给建议之前',
+    '## Before giving advice from memory',
     '',
-    '一条记忆若点了具体的函数名、文件、开关,它只是「这条记忆写下的那一刻它存在」的声明——它可能已被改名、删掉,或从没合并。据它给建议前:',
-    '- 记忆点了文件路径:确认文件还在。',
-    '- 记忆点了函数或开关:grep 一下。',
-    '- 用户正要照你的建议动手(不只是问历史):先核实。',
-    '「记忆说 X 存在」不等于「X 现在存在」。总结类记忆(活动流水、架构快照)是被冻结在过去的;用户问的是「最近/当前」状态时,优先 `git log` 或直接读代码,而不是复述快照。',
+    'A memory that names a file, function, or setting only asserts that it existed when the memory was written. It may have been renamed, removed, or never merged. Before relying on it:',
+    '- If it names a file path, confirm that the file still exists.',
+    '- If it names a function or setting, search for it.',
+    '- If the user is about to act on your advice rather than asking only about history, verify it first.',
+    'A memory saying that X exists does not prove that X exists now. When the user asks for current or recent status, prefer current files and `git log` over an old summary.',
     '',
-    '## 记忆与其它持久化手段',
-    '记忆只是你手上多种持久化手段之一,它的特点是「未来会话还能召回」;只在本次对话内有用的信息别写进记忆。',
-    '- 该用计划(plan)而不是记忆:要就一个非平凡的实施任务与用户对齐做法时,用计划;已有计划又改了做法,更新计划而不是存记忆。',
-    '- 该用任务清单(tasks)而不是记忆:把本次对话的工作拆成步骤、跟踪进度,用任务清单;记忆留给「对未来会话有用」的信息。',
+    '## Memory and other persistence mechanisms',
+    'Memory is for information that should remain useful in future sessions. Do not use it for information needed only in the current conversation.',
+    '- Use a plan, not memory, to align on the approach for a non-trivial implementation. If the approach changes, update the plan.',
+    '- Use tasks, not memory, to break down and track steps within the current conversation.',
     '',
-    '## 回合结束前',
-    `每个回合快结束、给出最终答复之前,快速自评一下:这轮对话里有没有出现值得长期记住的耐久事实(用户画像 / 做事反馈 / 门店近况 / 外部资料指针)?如果有、而你这轮还没记,就用 \`${SAVE_MEMORY_TOOL_NAME}\` 存下来,别把它漏掉。没有就不必强记。`,
+    '## Before ending a turn',
+    `Before your final response, briefly check whether the conversation introduced a durable user, feedback, project, or reference fact that will matter in future sessions. If it did and it has not been saved, use \`${SAVE_MEMORY_TOOL_NAME}\`. Do not force a memory when there is nothing durable to save.`,
     '',
     ...buildSearchingPastContextSection(memoryDir),
   ].join('\n')
 }
 
-/** 「搜索过往上下文」小节(移植 cc buildSearchingPastContextSection):给出 grep memdir 的具体写法。 */
+/** 给模型可执行的过往上下文搜索方法。 */
 export function buildSearchingPastContextSection(memoryDir: string): string[] {
   return [
-    '## 搜索过往上下文',
+    '## Searching past context',
     '',
-    '当你要找过去的上下文时:',
-    '1. 在你的记忆目录里搜主题文件:',
+    'When looking for past context:',
+    '1. Search topic files in the memory directory:',
     '```',
-    `grep -rn "<关键词>" ${memoryDir} --include="*.md"`,
+    `grep -rn "<keyword>" ${memoryDir} --include="*.md"`,
     '```',
-    '2. 用窄一点的关键词(报错信息、文件路径、函数名),别用太宽泛的词。',
+    '2. Use narrow terms such as an error message, file path, or function name instead of broad keywords.',
   ]
 }

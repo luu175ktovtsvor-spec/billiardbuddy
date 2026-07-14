@@ -12,7 +12,12 @@ import type { PermissionMode } from '../types/chat'
 
 const MAP_KEY = 'qf-workspace-by-conv'
 const LEGACY_KEY = 'qf-workspace-root' // 旧的单一全局值(已废弃);仅在此清理,不再用它当任何会话的默认
-const PACKS_MAP_KEY = 'qf-packs-by-conv' // 领域包(台球运营专家等)也按会话隔离,与工作目录同构
+const PACKS_MAP_KEY = 'qf-packs-by-conv' // 领域知识包也按会话隔离,与工作目录同构
+const PERMISSION_MAP_KEY = 'qf-permission-mode-by-conv'
+
+const PERMISSION_MODES = new Set<PermissionMode>([
+  'default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk',
+])
 
 function readStoredMap(): Record<string, string> {
   if (typeof window === 'undefined') return {}
@@ -62,6 +67,29 @@ function persistPacksMap(map: Record<string, string[]>): void {
   }
 }
 
+function readStoredPermissionMap(): Record<string, PermissionMode> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(PERMISSION_MAP_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, PermissionMode] =>
+      typeof entry[1] === 'string' && PERMISSION_MODES.has(entry[1] as PermissionMode)))
+  } catch {
+    return {}
+  }
+}
+
+function persistPermissionMap(map: Record<string, PermissionMode>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PERMISSION_MAP_KEY, JSON.stringify(map))
+  } catch {
+    /* 配额满/隐私模式 → 忽略 */
+  }
+}
+
 // —— 设置页偏好(localStorage;对齐 Codex settings.agent.permissionsMode「在选择器中显示 XX」语义 + power.preventSleepWhileRunning)——
 const HIDDEN_MODES_KEY = 'qf.settings.hiddenPermissionModes'
 const PREVENT_SLEEP_KEY = 'qf.settings.preventSleepWhileRunning'
@@ -84,6 +112,8 @@ interface SettingsState {
   enabledPacksByConv: Record<string, string[]>
   /** 按 conversationId 记的工作目录映射(持久化)。 */
   workspaceByConv: Record<string, string>
+  /** 按 conversationId 记的权限档(持久化),避免切会话串档或重启回落。 */
+  permissionModeByConv: Record<string, PermissionMode>
   /** 当前激活的会话 id(由 chatStore.startConversation 切换)。 */
   activeConvId: string | null
   /** 当前激活会话的工作目录(= workspaceByConv[activeConvId] ?? null);sendMessage 的 working_dir + 右侧面板都读它。 */
@@ -111,9 +141,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enabledPacks: [],
   enabledPacksByConv: readStoredPacksMap(),
   workspaceByConv: readStoredMap(),
+  permissionModeByConv: readStoredPermissionMap(),
   activeConvId: null,
   workspaceRoot: null,
-  setPermissionMode: (mode) => set({ defaultPermissionMode: mode }),
+  setPermissionMode: (mode) => {
+    const convId = get().activeConvId
+    if (!convId) {
+      set({ defaultPermissionMode: mode })
+      return
+    }
+    const map = { ...get().permissionModeByConv, [convId]: mode }
+    persistPermissionMap(map)
+    set({ permissionModeByConv: map, defaultPermissionMode: mode })
+  },
 
   togglePermissionModeHidden: (mode) => {
     if (mode === 'default' || mode === 'plan') return // 对齐 Codex「默认权限始终显示」;计划档同样常驻
@@ -121,7 +161,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = cur.includes(mode) ? cur.filter((m) => m !== mode) : [...cur, mode]
     try { window.localStorage.setItem(HIDDEN_MODES_KEY, JSON.stringify(next)) } catch { /* 忽略 */ }
     // 当前档正要被隐藏 → 回落默认档,别让选择器显示一个菜单里不存在的档。
-    if (next.includes(get().defaultPermissionMode)) set({ defaultPermissionMode: 'default' })
+    if (next.includes(get().defaultPermissionMode)) get().setPermissionMode('default')
     set({ hiddenPermissionModes: next })
   },
 
@@ -146,14 +186,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   activateConversation: (conversationId) => {
     if (!conversationId) {
-      set({ activeConvId: null, workspaceRoot: null, enabledPacks: [] })
+      set({ activeConvId: null, workspaceRoot: null, enabledPacks: [], defaultPermissionMode: 'default' })
       return
     }
     // 该会话已有自己的目录/挂件记录 → 用它;否则空(工作目录=后端默认,挂件=通用助手不挂)。
     // 刻意不继承任何"全局/最近"值:未绑定会话继承可变全局会导致改一个会话连带改别的会话(漂移串台)。
     const bound = get().workspaceByConv[conversationId] ?? null
     const packs = get().enabledPacksByConv[conversationId] ?? []
-    set({ activeConvId: conversationId, workspaceRoot: bound, enabledPacks: packs })
+    let permissionMap = get().permissionModeByConv
+    let permissionMode = permissionMap[conversationId]
+    // 旧版本已经由用户明确绑定过工作目录的会话,升级后默认采用低打扰的工作区编辑档。
+    if (!permissionMode && bound) {
+      permissionMode = 'acceptEdits'
+      permissionMap = { ...permissionMap, [conversationId]: permissionMode }
+      persistPermissionMap(permissionMap)
+    }
+    set({
+      activeConvId: conversationId,
+      workspaceRoot: bound,
+      enabledPacks: packs,
+      permissionModeByConv: permissionMap,
+      defaultPermissionMode: permissionMode ?? 'default',
+    })
   },
 
   setWorkspaceRoot: (root) => {
@@ -167,7 +221,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (root && root.trim()) map[convId] = root
     else delete map[convId]
     persistMap(map)
-    set({ workspaceByConv: map, workspaceRoot: root })
+    let permissionMap = get().permissionModeByConv
+    let permissionMode = get().defaultPermissionMode
+    // 选择工作目录就是给当前会话划定可写边界。仅首次绑定时默认自动接受工作区内编辑；
+    // 用户此前显式选过 default/plan/full 时保留其选择，不擅自改档。
+    if (root && root.trim() && !(convId in permissionMap)) {
+      permissionMode = 'acceptEdits'
+      permissionMap = { ...permissionMap, [convId]: permissionMode }
+      persistPermissionMap(permissionMap)
+    }
+    set({
+      workspaceByConv: map,
+      workspaceRoot: root,
+      permissionModeByConv: permissionMap,
+      defaultPermissionMode: permissionMode,
+    })
   },
 
   adoptConversationWorkspace: (conversationId, root) => {

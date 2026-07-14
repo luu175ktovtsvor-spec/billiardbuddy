@@ -1,8 +1,9 @@
-// WebSearch —— web 搜索,出口走我们的网关/美国 relay(别直连、别把 key 暴露给客户端)。
+// WebSearch —— web 搜索,出口走我们的网关(别直连、别把 provider key 暴露给客户端)。
 // 对齐 cc-haha src/tools/WebSearchTool 的对外形态(query + allowed_domains/blocked_domains、
-// 未配置时优雅降级不报错),但后端换成「我们的网关」:key 只在服务端 env(QF_GATEWAY_TOKEN /
-// QF_WEBSEARCH_TOKEN),工具只把查询词发给网关,绝不内置第三方搜索 key、绝不直连搜索厂商。
+// 未配置时不向模型暴露),但后端换成「我们的网关」:客户端只持 app token,第三方搜索
+// provider key 仅存在 gateway。网关在调用期间失效时仍优雅降级,不拖垮 Agent 回合。
 import type { Tool } from './Tool'
+import type { FetchLike } from '../proxy/ProxyModel'
 
 export interface WebSearchInput {
   query: string
@@ -16,45 +17,108 @@ interface SearchHit {
   snippet?: string
 }
 
-type FetchImpl = typeof fetch
-
 interface GatewaySearchConfig {
   baseUrl: string
   token: string
   path: string
 }
 
+interface WebSearchCapabilityOptions {
+  fetchImpl?: FetchLike
+  timeoutMs?: number
+  availableTtlMs?: number
+  unavailableTtlMs?: number
+}
+
 const DEFAULT_SEARCH_PATH = '/v1/web_search'
 const MAX_RESULTS = 8
 
-export const webSearchTool: Tool<WebSearchInput> = {
-  name: 'WebSearch',
-  description: [
-    'Search the public web for up-to-date information and return ranked result titles + URLs.',
-    'Input: { query, allowed_domains?, blocked_domains? }. Use allowed_domains to restrict to specific sites, blocked_domains to exclude sites.',
-    'Runs through the built-in gateway (no API key needed). Follow up with WebFetch on a result URL to read a page in full.',
-  ].join(' '),
-  inputSchema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'The search query.' },
-      allowed_domains: { type: 'array', items: { type: 'string' }, description: 'Only include results from these domains.' },
-      blocked_domains: { type: 'array', items: { type: 'string' }, description: 'Exclude results from these domains.' },
+export function createWebSearchTool(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  fetchImpl: FetchLike = fetch,
+): Tool<WebSearchInput> {
+  return {
+    name: 'WebSearch',
+    description: [
+      'Search the public web for current or rapidly changing information and return ranked result titles, URLs, and snippets.',
+      'Use it when the answer depends on recent facts or information outside the available project context.',
+      'Input: { query, allowed_domains?, blocked_domains? }. Use allowed_domains to restrict to specific sites, blocked_domains to exclude sites.',
+      'The desktop client uses its configured gateway connection; search availability is reported by the tool result.',
+      'Follow up with WebFetch on a result URL to read a page in full.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query.' },
+        allowed_domains: { type: 'array', items: { type: 'string' }, description: 'Only include results from these domains.' },
+        blocked_domains: { type: 'array', items: { type: 'string' }, description: 'Exclude results from these domains.' },
+      },
+      required: ['query'],
     },
-    required: ['query'],
-  },
-  isReadOnly: true,
-  async execute(input, ctx) {
-    if (!input || typeof input.query !== 'string' || !input.query.trim()) throw new Error('WebSearch 需要 string 参数 query')
-    return runWebSearch(input, process.env, { signal: ctx.signal })
-  },
+    isReadOnly: true,
+    async execute(input, ctx) {
+      if (!input || typeof input.query !== 'string' || !input.query.trim()) throw new Error('WebSearch 需要 string 参数 query')
+      return runWebSearch(input, env, { signal: ctx.signal, fetchImpl })
+    },
+  }
+}
+
+/** 兼容直接导入的测试/独立调用；产品运行时应通过 createWebSearchTool 注入服务端 env。 */
+export const webSearchTool = createWebSearchTool(process.env)
+
+/**
+ * 创建按 server 实例隔离的能力解析器。只有 gateway 的 healthz 明确声明
+ * features.web_search=true 时才向模型暴露工具；短时缓存避免每个回合重复探测。
+ */
+export function createWebSearchCapabilityResolver(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  opts: WebSearchCapabilityOptions = {},
+): (signal?: AbortSignal) => Promise<boolean> {
+  const config = resolveGatewaySearchConfig(env)
+  if (!config) return async () => false
+
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const timeoutMs = positiveNumber(opts.timeoutMs, 2000)
+  const availableTtlMs = positiveNumber(opts.availableTtlMs, 5 * 60_000)
+  const unavailableTtlMs = positiveNumber(opts.unavailableTtlMs, 30_000)
+  let cached: { value: boolean; expiresAt: number } | undefined
+  let pending: Promise<boolean> | undefined
+
+  return async signal => {
+    const now = Date.now()
+    if (cached && cached.expiresAt > now) return cached.value
+    if (pending) return await pending
+
+    pending = probeGatewayWebSearch(config, fetchImpl, signal, timeoutMs)
+      .then(value => {
+        cached = {
+          value,
+          expiresAt: Date.now() + (value ? availableTtlMs : unavailableTtlMs),
+        }
+        return value
+      })
+      .finally(() => {
+        pending = undefined
+      })
+    return await pending
+  }
+}
+
+/** 给 server 装配层的单一入口：复用同一能力缓存，并返回与该 server env 绑定的工具实例。 */
+export function createRuntimeWebSearchToolResolver(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  fetchImpl?: FetchLike,
+): (signal?: AbortSignal) => Promise<Tool<WebSearchInput> | undefined> {
+  const resolveCapability = createWebSearchCapabilityResolver(env, { fetchImpl })
+  const tool = createWebSearchTool(env, fetchImpl)
+  return async signal => await resolveCapability(signal) ? tool : undefined
 }
 
 /** 可测试入口:注入 env / fetch。未配置网关时返回「不可用」提示而不抛错(对齐 cc 的优雅降级)。 */
 export async function runWebSearch(
   input: WebSearchInput,
-  env: NodeJS.ProcessEnv,
-  opts: { signal?: AbortSignal; fetchImpl?: FetchImpl } = {},
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  opts: { signal?: AbortSignal; fetchImpl?: FetchLike } = {},
 ): Promise<string> {
   const query = input.query.trim()
   const config = resolveGatewaySearchConfig(env)
@@ -72,7 +136,7 @@ export async function runWebSearch(
   return formatResults(query, filtered)
 }
 
-function resolveGatewaySearchConfig(env: NodeJS.ProcessEnv): GatewaySearchConfig | null {
+function resolveGatewaySearchConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined>): GatewaySearchConfig | null {
   const baseUrl = normalizeBaseUrl(env.QF_WEBSEARCH_URL) ?? normalizeBaseUrl(env.QF_GATEWAY_URL)
   const token = firstNonEmpty(env.QF_WEBSEARCH_TOKEN, env.QF_GATEWAY_TOKEN)
   if (!baseUrl || !token) return null
@@ -80,10 +144,38 @@ function resolveGatewaySearchConfig(env: NodeJS.ProcessEnv): GatewaySearchConfig
   return { baseUrl, token, path: path.startsWith('/') ? path : `/${path}` }
 }
 
+async function probeGatewayWebSearch(
+  config: GatewaySearchConfig,
+  fetchImpl: FetchLike,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  const controller = new AbortController()
+  const abortFromParent = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abortFromParent()
+  else signal?.addEventListener('abort', abortFromParent, { once: true })
+  const timer = setTimeout(() => controller.abort(new Error('web search capability probe timed out')), timeoutMs)
+  try {
+    const healthPath = '/healthz'
+    const response = await fetchImpl(`${config.baseUrl}${healthPath}`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+      signal: controller.signal,
+    })
+    if (!response.ok) return false
+    const body = await response.json().catch(() => null) as { features?: { web_search?: unknown } } | null
+    return body?.features?.web_search === true
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromParent)
+  }
+}
+
 async function searchViaGateway(
   config: GatewaySearchConfig,
   input: WebSearchInput,
-  fetchImpl: FetchImpl,
+  fetchImpl: FetchLike,
   signal?: AbortSignal,
 ): Promise<SearchHit[]> {
   const url = `${config.baseUrl}${config.path}`
@@ -205,6 +297,10 @@ function firstString(...values: unknown[]): string {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return ''
+}
+
+function positiveNumber(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
 }
 
 function oneLine(text: string, max: number): string {

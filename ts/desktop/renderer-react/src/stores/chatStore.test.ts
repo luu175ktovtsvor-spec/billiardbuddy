@@ -17,12 +17,50 @@ beforeEach(() => {
       token: 'signed-token',
       resolved: null,
     }],
+    status: 'idle',
   })
   useSettingsStore.setState({
     activeConvId: 'conv-approve',
     workspaceRoot: '/tmp/project',
     enabledPacks: [],
     enabledPacksByConv: { 'conv-approve': [] },
+    defaultPermissionMode: 'default',
+    permissionModeByConv: { 'conv-approve': 'default' },
+  })
+})
+
+test('完全访问档在发起、批准和拒绝时都显式传到底层', () => {
+  const sent: ClientMessage[] = []
+  wsManager.send = (_conversationId, message) => { sent.push(message) }
+  useSettingsStore.setState({
+    defaultPermissionMode: 'bypassPermissions',
+    permissionModeByConv: { 'conv-approve': 'bypassPermissions' },
+  })
+
+  useChatStore.getState().sendMessage('读取工作区外文件')
+  useChatStore.getState().approve('approval-1', false)
+  useChatStore.getState().reject('approval-1')
+
+  expect(sent).toHaveLength(3)
+  expect(sent.map(message => message.type)).toEqual(['run', 'approve', 'reject'])
+  expect(sent.every(message => 'full_disk_access' in message && message.full_disk_access === true)).toBe(true)
+  expect(sent.every(message => 'permissionMode' in message && message.permissionMode === 'bypassPermissions')).toBe(true)
+})
+
+test('接受修改档不会获得全盘访问', () => {
+  const sent: ClientMessage[] = []
+  wsManager.send = (_conversationId, message) => { sent.push(message) }
+  useSettingsStore.setState({
+    defaultPermissionMode: 'acceptEdits',
+    permissionModeByConv: { 'conv-approve': 'acceptEdits' },
+  })
+
+  useChatStore.getState().sendMessage('修改项目内文件')
+
+  expect(sent[0]).toMatchObject({
+    type: 'run',
+    permissionMode: 'acceptEdits',
+    full_disk_access: false,
   })
 })
 

@@ -120,6 +120,23 @@ test('两个并行工具调用(index 0/1)各自成块', async () => {
   expect(acc.toolCalls.map(t => t.name)).toEqual(['t0', 't1'])
 })
 
+test('流式 annotations 按 URL 收集去重，异常来源不影响正文', async () => {
+  const acc = await accumulateOpenAiStream(sse([
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: { annotations: [
+      { type: 'url_citation', url: 'https://docs.example/a', title: 'Docs A', site_name: 'Example' },
+      { type: 'url_citation', url: 'file:///tmp/private', title: 'Private' },
+      null,
+    ] }, finish_reason: null }] }),
+    chunk({ id: 'x', model: 'm', choices: [{ index: 0, delta: {
+      content: '答案',
+      annotations: [{ type: 'url_citation', url: 'https://docs.example/a', title: 'Duplicate' }],
+    }, finish_reason: 'stop' }] }),
+    '[DONE]',
+  ]))
+  expect(acc.text).toBe('答案')
+  expect(acc.citations).toEqual([{ url: 'https://docs.example/a', title: 'Docs A', siteName: 'Example' }])
+})
+
 // 补充:JSON 行被硬劈成跨 raw-chunk 两截(考验 buffer 缓冲、不能按 chunk 边界解析)。
 test('单行 JSON 被劈到两个底层 chunk 之间,缓冲后仍能正确解析', async () => {
   const lines = [

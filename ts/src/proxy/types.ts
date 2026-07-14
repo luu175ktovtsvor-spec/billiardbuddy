@@ -70,6 +70,7 @@ export interface OpenAIChatResponse {
       reasoning_content?: string
       reasoning?: string
       thinking_blocks?: unknown[]
+      annotations?: unknown[]
       tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: unknown } }>
     }
     finish_reason: string | null
@@ -90,6 +91,7 @@ export interface OpenAIChatStreamChunk {
       reasoning_content?: string
       reasoning?: string
       thinking_blocks?: Array<Record<string, unknown>>
+      annotations?: unknown[]
       tool_calls?: Array<{ index: number; id?: string; type?: string; function?: { name?: string; arguments?: unknown } }>
     }
     finish_reason: string | null

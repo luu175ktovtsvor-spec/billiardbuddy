@@ -12,11 +12,40 @@ beforeEach(() => {
   // 复位(无 reset action → 直接清映射与激活态)
   useSettingsStore.setState({
     workspaceByConv: {},
+    permissionModeByConv: {},
     enabledPacksByConv: {},
     activeConvId: null,
     workspaceRoot: null,
     enabledPacks: [],
+    defaultPermissionMode: 'default',
   })
+})
+
+test('明确选择工作目录后默认自动接受工作区编辑,且显式权限选择优先', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('convA')
+  s.setWorkspaceRoot(F1)
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('acceptEdits')
+  expect(useSettingsStore.getState().permissionModeByConv.convA).toBe('acceptEdits')
+
+  s.activateConversation('convB')
+  s.setPermissionMode('default')
+  s.setWorkspaceRoot(F2)
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('default')
+  expect(useSettingsStore.getState().permissionModeByConv.convB).toBe('default')
+})
+
+test('权限档按会话隔离,切换会话不会串档', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('convA')
+  s.setPermissionMode('acceptEdits')
+  s.activateConversation('convB')
+  s.setPermissionMode('plan')
+
+  s.activateConversation('convA')
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('acceptEdits')
+  s.activateConversation('convB')
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('plan')
 })
 
 test('多窗口各选各的:会话A=folder1、会话B=folder2,切回A仍是folder1(不串台)', () => {

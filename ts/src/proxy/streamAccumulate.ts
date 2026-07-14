@@ -8,6 +8,7 @@ import type { ToolCall } from '../types/message'
 import type { OpenAIChatStreamChunk, AnthropicUsage } from './types'
 import { parseOpenAIToolArguments, stringifyOpenAIToolArguments } from './toolArguments'
 import { openaiUsageToAnthropic } from './usage'
+import { mergeUrlCitations, type UrlCitation } from './citations'
 
 export interface AccumulatedResponse {
   text: string
@@ -15,6 +16,7 @@ export interface AccumulatedResponse {
   toolCalls: ToolCall[]
   finishReason: string | null
   usage?: AnthropicUsage
+  citations?: UrlCitation[]
 }
 
 /** provider 在 SSE 流中途吐出的 error 帧。抛这个而不是静默吞成空响应,让模型层能识别并降级/重试。 */
@@ -64,6 +66,7 @@ export async function accumulateOpenAiStream(
   let thinking = ''
   let finishReason: string | null = null
   let usage: AnthropicUsage | undefined
+  const citations: UrlCitation[] = []
   const tools = new Map<number, ToolFrag>()
   let orderSeq = 0
 
@@ -72,6 +75,7 @@ export async function accumulateOpenAiStream(
     const choice = chunk.choices?.[0]
     if (!choice) return
     const delta = (choice.delta ?? {}) as Record<string, unknown>
+    mergeUrlCitations(citations, delta.annotations)
 
     if (typeof delta.content === 'string' && delta.content) { text += delta.content; opts.onDelta?.({ channel: 'text', text: delta.content }) }
     const reasoningDelta = extractReasoning(delta)
@@ -135,5 +139,5 @@ export async function accumulateOpenAiStream(
     .filter(([, f]) => f.name) // 无 name 的碎片丢弃(不是有效工具调用)
     .map(([index, f]) => ({ id: f.id || idFactory(index), name: f.name, input: parseOpenAIToolArguments(f.argsBuffer) }))
 
-  return { text, thinking, toolCalls, finishReason, usage }
+  return { text, thinking, toolCalls, finishReason, usage, ...(citations.length ? { citations } : {}) }
 }

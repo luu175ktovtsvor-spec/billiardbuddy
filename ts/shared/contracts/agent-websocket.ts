@@ -19,6 +19,12 @@ const clientBase = {
   conversationId: z.string().min(1).optional(),
 }
 
+const workspaceAccessContext = {
+  working_dir: z.string().optional(),
+  full_disk_access: z.boolean().optional(),
+  fullDiskAccess: z.boolean().optional(),
+}
+
 export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('run'),
@@ -27,7 +33,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     permissionMode: inboundPermissionModeSchema.optional(),
     permission_mode: inboundPermissionModeSchema.optional(),
     enabled_packs: z.array(z.string()).optional(),
-    working_dir: z.string().optional(),
+    ...workspaceAccessContext,
   }).passthrough(),
   z.object({ type: z.literal('replay'), ...clientBase, after: z.number().nonnegative().default(0) }).passthrough(),
   z.object({ type: z.literal('ping'), ts: z.number().optional() }).passthrough(),
@@ -42,7 +48,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     permissionMode: inboundPermissionModeSchema.optional(),
     permission_mode: inboundPermissionModeSchema.optional(),
     remember_approval: z.boolean().optional(),
-    working_dir: z.string().optional(),
+    ...workspaceAccessContext,
     enabled_packs: z.array(z.string()).optional(),
   }).passthrough(),
   z.object({
@@ -52,6 +58,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     ...clientBase,
     permissionMode: inboundPermissionModeSchema.optional(),
     permission_mode: inboundPermissionModeSchema.optional(),
+    ...workspaceAccessContext,
   }).passthrough(),
 ])
 

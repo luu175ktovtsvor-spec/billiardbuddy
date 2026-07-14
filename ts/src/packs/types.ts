@@ -1,13 +1,13 @@
 // 领域包(domain pack)通用接口 · 可插拔架构地基
 //
-// 领域包 = 我们特有的一类「插件」:一整套可挂载的领域能力(领域上下文 + 命令 + 工具 + 知识 + 守卫)。
+// 领域包 = 可按会话挂载的领域上下文、知识入口和相关工具。
 // 台球(billiards)只是「第一个注册的领域包」,不是产品边界;新增一个领域包 = 注册一个模块,不改核心。
 //
 // 这里只放**纯接口**(无运行时值),避免 registry / 各 pack 模块 / domainPacks 门面之间形成运行时循环依赖。
 
 import type { Tool } from '../tools/Tool'
 
-/** 领域包内置的斜杠命令(渐进披露入口/子流程)。 */
+/** 领域包内置的斜杠入口。 */
 export interface DomainPackCommand {
   name: string
   description: string
@@ -29,18 +29,8 @@ export interface DomainPackKnowledge {
 }
 
 /**
- * 领域守卫句柄(可选)。对一段文本做领域级红线/脱敏扫描(禁词、须脱敏第三方专名等);
- * 返回值形状由 pack 自定(核心只当它是"能扫一段文本"的能力),真正的语义级防编造后续接 RAG。
- */
-export interface DomainPackGuardrails {
-  /** 对一段文本做守卫扫描,返回命中项(结构由 pack 决定)。 */
-  scan?: (text: string) => unknown
-  [key: string]: unknown
-}
-
-/**
  * 一个领域包的完整定义。核心通过统一接口发现/装载/启停/版本管理它,不硬编码任何具体 pack。
- * 必填 = id/name/description/sessionStartContext;其余(命令/工具/知识/守卫/版本/别名)按需提供。
+ * 必填 = id/name/description/sessionStartContext;其余(命令/工具/知识/版本/别名)按需提供。
  */
 export interface DomainPack {
   id: string
@@ -52,15 +42,13 @@ export interface DomainPack {
   aliases?: string[]
   /** 首启是否默认挂载(默认 false = 通用助手,用户显式选才挂)。 */
   defaultEnabled?: boolean
-  /** 挂载时经 SessionStart hook 注入的领域上下文(策展摘要)。 */
+  /** 挂载时注入的领域知识目录或说明,不得改变通用 Agent 权限与任务规划。 */
   sessionStartContext: string
   suggestedSkills?: string[]
   commands?: DomainPackCommand[]
   tools?: Tool[]
   /** 领域知识句柄(可选,供统计/未来 RAG)。 */
   knowledge?: DomainPackKnowledge
-  /** 领域守卫句柄(可选,禁词/脱敏扫描等)。 */
-  guardrails?: DomainPackGuardrails
 }
 
 /** 出口给前端/面板的稳定 pack 元信息(不含运行时函数/prompt 全文)。 */

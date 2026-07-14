@@ -114,18 +114,17 @@ function buildExtractionRegistry(parent: ToolRegistry): ToolRegistry {
   return new ToolRegistryCtor(tools)
 }
 
-/** 抽取指令(品牌中性、中文):只从这几条对话里提炼耐久事实,用 save_memory 存;没有就什么都别做。 */
+/** 抽取指令(品牌中性、英文):只从最近对话提炼耐久事实,用 save_memory 存;没有就结束。 */
 function buildExtractDirective(recentCount: number): string {
   return [
-    '你现在是「记忆抽取子代理」。回看上面对话的最近约 ' + recentCount + ' 条消息,把其中值得长期记住、',
-    '但还没存进记忆的耐久事实攒进记忆库。这是一次后台兜底:主对话可能忙完正事忘了存,你负责补上。',
+    `You are the memory extraction subagent. Review approximately the last ${recentCount} messages above and save any durable facts that matter to future sessions but have not yet been recorded.`,
     '',
-    '- 只看这几条对话内容本身来提炼,别再去 grep 源码 / 读代码 / 跑命令核实——你的任务是从对话里提炼,不是调查。',
-    '- 判据同你的记忆系统提示:user(用户画像)/ feedback(做事反馈,含为什么)/ project(门店近况,相对日期换绝对)',
-    '  / reference(外部资料指针)。不该存的(代码写法、git 历史、临时状态、密钥隐私、从文件/命令能查到的)一律不存。',
-    '- 安全红线:只存用户在对话里明确说过或纠正过的事实,拿不准就不存,禁止凭空补全 / 推测 / 编造门店信息。',
-    '- 用 save_memory 存;存前先想有没有可更新的同名记忆(可先 read_file/grep 记忆库),别写重复条目。',
-    '- 如果这几条消息里没有值得长期记的耐久事实,就什么都别做、直接结束,别硬凑。',
+    '- Use only the conversation messages themselves. Do not inspect source code, run commands, or investigate further; this task is extraction, not verification.',
+    '- Use the same four types as the memory system prompt: user, feedback including why, project with relative dates converted to absolute dates, and reference.',
+    '- Do not save code patterns, git history, temporary state, secrets, private credentials, or facts that can be derived from current files or commands.',
+    '- Save only facts the user clearly stated or corrections they clearly made. If uncertain, do not save it. Never infer or fabricate missing details.',
+    '- Use save_memory. Check whether an existing entry should be updated before creating a new one, and do not create duplicates.',
+    '- If these messages contain no durable fact worth saving, finish without calling a tool.',
   ].join('\n')
 }
 
