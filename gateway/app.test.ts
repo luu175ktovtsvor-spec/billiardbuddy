@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import type { GatewayTranscriber } from './transcription'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -33,12 +34,13 @@ function authed(init: RequestInit = {}): RequestInit {
   }
 }
 
-function makeGateway(overrides: Record<string, string | undefined> = {}) {
+function makeGateway(overrides: Record<string, string | undefined> = {}, transcribeImpl?: GatewayTranscriber | null) {
   const calls: Array<{ url: string; init?: RequestInit; body?: string }> = []
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
     env: env(overrides),
     usageStore: usage,
+    transcribeImpl,
     fetchImpl: async (input, init) => {
       const url = String(input)
       let body = ''
@@ -65,6 +67,50 @@ test('healthz exposes limits and quotas', async () => {
   expect(body.ok).toBe(true)
   expect(body.limits.mimo_rpm).toBe(90)
   expect(body.quota.img).toBe(1)
+  expect(body.features.transcription).toBe(false)
+})
+
+test('audio transcription authenticates, validates uploads and records successful usage', async () => {
+  const received: Array<{ name: string; language: string; format: string }> = []
+  const transcribe: GatewayTranscriber = async (file, opts) => {
+    received.push({ name: file.name, language: opts.language, format: opts.responseFormat })
+    return {
+      text: '今天检查台球桌',
+      language: opts.language,
+      duration: 1.2,
+      segments: [{ id: 0, start: 0, end: 1.2, text: '今天检查台球桌' }],
+    }
+  }
+  const { fetch, usage } = makeGateway({ GW_Q_TRANSCRIBE: '2' }, transcribe)
+  const unauthenticated = new FormData()
+  unauthenticated.set('file', new File(['audio'], 'voice.webm', { type: 'audio/webm' }))
+  expect((await fetch(new Request('http://local/v1/audio/transcriptions', { method: 'POST', body: unauthenticated }))).status).toBe(401)
+
+  const form = new FormData()
+  form.set('file', new File(['audio'], 'voice.webm', { type: 'audio/webm' }))
+  form.set('language', 'zh')
+  form.set('response_format', 'verbose_json')
+  const response = await fetch(new Request('http://local/v1/audio/transcriptions', authed({ method: 'POST', body: form })))
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ text: '今天检查台球桌', segments: [{ start: 0, end: 1.2 }] })
+  expect(received).toEqual([{ name: 'voice.webm', language: 'zh', format: 'verbose_json' }])
+  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'transcribe', ok: true, status: 200 }])
+})
+
+test('audio transcription rejects unsupported and oversized files before execution', async () => {
+  let calls = 0
+  const transcribe: GatewayTranscriber = async () => {
+    calls += 1
+    return { text: 'unexpected' }
+  }
+  const { fetch } = makeGateway({ GW_TRANSCRIBE_MAX_BYTES: '4' }, transcribe)
+  const unsupported = new FormData()
+  unsupported.set('file', new File(['abc'], 'notes.txt', { type: 'text/plain' }))
+  expect((await fetch(new Request('http://local/v1/audio/transcriptions', authed({ method: 'POST', body: unsupported })))).status).toBe(415)
+  const oversized = new FormData()
+  oversized.set('file', new File(['12345'], 'voice.wav', { type: 'audio/wav' }))
+  expect((await fetch(new Request('http://local/v1/audio/transcriptions', authed({ method: 'POST', body: oversized })))).status).toBe(413)
+  expect(calls).toBe(0)
 })
 
 test('missing or invalid bearer is rejected before upstream fetch', async () => {

@@ -1,5 +1,0 @@
-{"seq":1,"ts":"2026-07-12T12:26:59.419Z","event":{"type":"tool_call","tool":"mcp__background_agent_fixture__agent_echo","input":{"text":"hello"}}}
-{"seq":2,"ts":"2026-07-12T12:26:59.422Z","event":{"type":"tool_result","tool":"mcp__background_agent_fixture__agent_echo","output":"<mcp_result server=\"background agent fixture\" tool=\"agent_echo\">\nbackground-agent-mcp:hello\n</mcp_result>"}}
-{"seq":3,"ts":"2026-07-12T12:26:59.423Z","event":{"type":"final","text":"后台 MCP 完成"}}
-{"seq":4,"ts":"2026-07-12T12:26:59.428Z","event":{"type":"final","text":"task not found"}}
-{"seq":5,"ts":"2026-07-12T12:26:59.429Z","event":{"type":"done"}}

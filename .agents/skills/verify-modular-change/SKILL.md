@@ -18,7 +18,8 @@ description: Verify a completed modular change against its declared ownership, c
 7. 运行面：真启动、真调用接口或真点用户路径，记录实际观察结果。
 8. 文档：只有架构、部署、现行状态确实变化时才更新对应唯一真相源；删除被取代的旧口径。
 9. Skill：若新增/删除/改名模块，或连接、部署、验证流程变化，同次执行 `maintain-project-skills`；普通内部实现不更新。
-10. 机械质量门：运行 `bash scripts/quality_gate.sh`；任何失败都不能用文字说明代替修复。仅开发中快速反馈可用 `--quick`，提交/发布前跑完整模式。
+10. 新文件：暂存声明范围后复查 staged diff，并让密钥扫描覆盖新增文件；不要只扫描旧的 tracked 集合。
+11. 机械质量门：运行 `bash scripts/quality_gate.sh`；任何失败都不能用文字说明代替修复。仅开发中快速反馈可用 `--quick`，提交/发布前跑完整模式。
 
 ## 项目命令
 

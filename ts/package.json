@@ -1,7 +1,6 @@
 {
   "name": "billiards-ts-harness",
   "version": "0.0.0",
-  "module": "index.ts",
   "main": "desktop/electron/main.mjs",
   "author": "球房管家",
   "description": "球房管家 · 桌面 coding agent",
@@ -9,7 +8,6 @@
     "@playwright/test": "1.61.1",
     "@tailwindcss/vite": "^4",
     "@types/bun": "latest",
-    "@types/electron": "^1.6.12",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18",
@@ -44,15 +42,12 @@
     "desktop:build": "bun build desktop/electron/main.ts --target=node --format=esm --external=electron --outfile=desktop/electron/main.mjs && bun build desktop/electron/preload.ts --target=node --format=cjs --external=electron --outfile=desktop/electron/preload.cjs",
     "desktop:dev": "bun run desktop:build && electron desktop/electron/main.mjs",
     "desktop:dist": "bun run desktop:build && electron-builder --config electron-builder.yml",
-    "smoke:native": "bun run scripts/smoke/native-plugins.smoke.ts",
     "smoke:sandbox": "bun run scripts/smoke/sandbox.smoke.ts",
     "smoke:model": "bun run scripts/smoke/model-live.smoke.ts",
     "smoke:agent-tools": "bun run scripts/smoke/agent-tools-live.smoke.ts"
   },
   "trustedDependencies": [
-    "onnxruntime-node",
-    "protobufjs",
-    "smart-whisper"
+    "protobufjs"
   ],
   "type": "module",
   "dependencies": {
@@ -65,6 +60,7 @@
     "jpeg-js": "^0.4.4",
     "jsqr": "^1.4.0",
     "marked": "^15.0.7",
+    "picomatch": "^4.0.5",
     "pngjs": "^7.0.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",

@@ -20,8 +20,8 @@ const DOMAIN_ORDER: BilliardsDomain[] = ['strategy', 'marketing', 'customer-ops'
 export function renderSessionStartContext(): string {
   const lines: string[] = []
   lines.push('<domain_context id="billiards" source="enabled_pack">')
-  lines.push('当前会话挂载了台球运营专家。你仍是通用本机 coding agent,但遇到球房经营、活动、客户、助教、赛事、团购、短视频、海报等需求时,按下方 PPT 底本策展的真实经营语境落地。')
-  lines.push('知识铁律:以下全部来自《台球赋能》PPT 原件全文,带 PPT 行号/页码可回溯;PPT 没有的别编。硬数字以 hardSpecs 单一源为准(共 16 条,billiards_ops_checklist 会按场景带出)。')
+  lines.push('当前会话挂载了台球运营专家。你仍是通用本机 coding agent,但遇到球房经营、活动、客户、助教、赛事、团购、短视频、海报等需求时,按下方台球运营知识库策展的真实经营语境落地。')
+  lines.push('知识铁律:以下内容来自台球运营知识库,带内部来源位置可回溯;知识库没有的别编。关键经营数字以 hardSpecs 单一源为准(共 16 条,billiards_ops_checklist 会按场景带出)。')
   lines.push('')
 
   lines.push('【5 域知识骨架】')
@@ -30,22 +30,22 @@ export function renderSessionStartContext(): string {
     const entries = KNOWLEDGE.filter(e => e.domain === domain)
     lines.push(`# ${meta.name}(${domain}):${meta.blurb}`)
     for (const e of entries) {
-      lines.push(`  - ${e.title} [PPT ${e.src.line}/第${e.src.page}页]${e.hardSpecRefs?.length ? ` (硬数字#${e.hardSpecRefs.join('#')})` : ''}`)
+      lines.push(`  - ${e.title} [知识库来源 ${e.src.line}/第${e.src.page}页]${e.hardSpecRefs?.length ? ` (硬数字#${e.hardSpecRefs.join('#')})` : ''}`)
     }
   }
   lines.push('')
 
-  lines.push('【两条真底线(PPT 自身立的,始终守,独立于安全红线之外的领域落点)】')
+  lines.push('【两条真底线(台球运营知识库明确收录,始终守,独立于安全红线之外的领域落点)】')
   for (const floor of SAFETY_FLOORS) {
-    lines.push(`  - ${floor.title}:${floor.text} [PPT ${floor.src.line}/第${floor.src.page}页]`)
+    lines.push(`  - ${floor.title}:${floor.text} [知识库来源 ${floor.src.line}/第${floor.src.page}页]`)
   }
   lines.push('')
 
   lines.push('【表达纪律(白名单/禁词/脱敏)】')
-  lines.push('  - 内行词照用不消毒:' + ALLOWED_TERMS.slice(0, 16).map(t => t.term).join('、') + ' 等(美女人设/异性情绪价值/擦边引流/交友软件获客/红包/追分/助教免费体验是 PPT 在册真实打法,别当红线误杀)。')
+  lines.push('  - 内行词照用不消毒:' + ALLOWED_TERMS.slice(0, 16).map(t => t.term).join('、') + ' 等(美女人设/异性情绪价值/擦边引流/交友软件获客/红包/追分/助教免费体验是台球运营知识库收录的真实打法,别当红线误杀)。')
   lines.push('  - 平台/渠道/器材通用名照写不脱敏:' + PLATFORM_TERMS.map(p => p.term).join('、') + '。')
   lines.push('  - 真底线禁词(命中即改写):' + BANNED_TERMS.map(b => b.label).join(' / ') + ';各自的改写方向见工具输出。')
-  lines.push('  - 第三方专名脱敏:PPT 底本里的真实门店/连锁/人名/城市/机构案例名一律不搬进输出,只搬逻辑(用"某店/某城市"占位)。')
+  lines.push('  - 第三方专名脱敏:台球运营知识库素材里的真实门店/连锁/人名/城市/机构案例名一律不搬进输出,只搬逻辑(用"某店/某城市"占位)。')
   lines.push('  - 不编造:助教姓名/年龄/身高/价格/照片、客户历史、门店变化等未知信息用占位符,不瞎编;本店价格/套餐/地址/排班/合同/活动时间等事实必须来自用户输入或 search_store_docs 来源。')
   lines.push('')
 
@@ -61,8 +61,8 @@ export function renderOpsBriefing(scenario: string, facts: string[]): string {
   const knows = findKnowledge(scenario, 5)
 
   if (knows.length) {
-    lines.push('相关 PPT 知识(带出处):')
-    for (const e of knows) lines.push(`  - ${e.title} [PPT ${e.src.line}/第${e.src.page}页]:${e.points[0]}`)
+    lines.push('相关台球运营知识库内容(带内部来源位置):')
+    for (const e of knows) lines.push(`  - ${e.title} [知识库来源 ${e.src.line}/第${e.src.page}页]:${e.points[0]}`)
   }
   if (specs.length) {
     lines.push('相关硬数字(以 hardSpecs 单一源为准):')

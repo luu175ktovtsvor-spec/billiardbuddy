@@ -1,6 +1,6 @@
 import { mkdir, open, readdir, readFile, rename } from 'node:fs/promises'
-import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
 import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
 import { LIBRARY_DIR_ENV, desktopLibraryBase, isLocalMode } from '../harness/desktopEnvNames'
 
@@ -12,6 +12,7 @@ export interface PluginListItem {
   components: {
     skills: number
     commands: number
+    hooks: number
     'output-styles': number
     mcp: number
   }
@@ -42,6 +43,30 @@ async function readManifest(pluginDir: string): Promise<Record<string, unknown>>
   } catch {
     return {}
   }
+}
+
+function pluginChildPath(pluginDir: string, relativePath: string): string | undefined {
+  const root = resolve(pluginDir)
+  const candidate = resolve(root, relativePath)
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) return undefined
+  if (!existsSync(candidate)) return candidate
+  try {
+    const realRoot = realpathSync(root)
+    const realCandidate = realpathSync(candidate)
+    return realCandidate === realRoot || realCandidate.startsWith(`${realRoot}${sep}`) ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function pluginHookConfigPaths(pluginDir: string, manifest: Record<string, unknown>): string[] {
+  const candidates = [join(pluginDir, 'hooks', 'hooks.json')]
+  const declared = stringField(manifest.hooks)
+  if (declared) {
+    const safePath = pluginChildPath(pluginDir, declared)
+    if (safePath) candidates.push(safePath)
+  }
+  return [...new Set(candidates)].filter(existsSync)
 }
 
 export function defaultPluginRoots(env: Record<string, string | undefined> = process.env): string[] {
@@ -85,14 +110,15 @@ export async function listPlugins(roots = defaultPluginRoots()): Promise<PluginL
       found.add(name)
       out.push({
         name,
-        enabled: manifest.enabled !== false,
+        enabled: manifest.enabled === true,
         dir,
         description: stringField(manifest.description),
         components: {
           skills: await countDirEntries(join(dir, 'skills')),
           commands: await countDirEntries(join(dir, 'commands')),
+          hooks: pluginHookConfigPaths(dir, manifest).length,
           'output-styles': await countDirEntries(join(dir, 'output-styles')),
-          mcp: existsSync(join(dir, '.mcp.json')) || isRecord(manifest.mcpServers) ? 1 : 0,
+          mcp: existsSync(join(dir, '.mcp.json')) ? 1 : 0,
         },
       })
     }
@@ -107,6 +133,8 @@ export interface EnabledPluginContributions {
   commandsDirs: string[]
   /** 启用插件各自的 .mcp.json(app 级可信,直接加载不走工作区信任闸) */
   mcpConfigPaths: string[]
+  /** 启用插件的标准 hooks/hooks.json 和 manifest.hooks 安全相对路径 */
+  hookConfigPaths: string[]
 }
 
 /** 解析已启用插件的 skills/commands/.mcp.json 贡献,供会话构建时并入(plugin 运行时接入)。 */
@@ -115,6 +143,7 @@ export async function resolveEnabledPluginContributions(roots = defaultPluginRoo
   const skillsDirs: string[] = []
   const commandsDirs: string[] = []
   const mcpConfigPaths: string[] = []
+  const hookConfigPaths: string[] = []
   for (const p of plugins) {
     if (!p.enabled) continue
     const skillsDir = join(p.dir, 'skills')
@@ -123,8 +152,10 @@ export async function resolveEnabledPluginContributions(roots = defaultPluginRoo
     if (existsSync(commandsDir)) commandsDirs.push(commandsDir)
     const mcpPath = join(p.dir, '.mcp.json')
     if (existsSync(mcpPath)) mcpConfigPaths.push(mcpPath)
+    const manifest = await readManifest(p.dir)
+    hookConfigPaths.push(...pluginHookConfigPaths(p.dir, manifest))
   }
-  return { skillsDirs, commandsDirs, mcpConfigPaths }
+  return { skillsDirs, commandsDirs, mcpConfigPaths, hookConfigPaths }
 }
 
 /**
@@ -132,28 +163,10 @@ export async function resolveEnabledPluginContributions(roots = defaultPluginRoo
  *
  * 对齐 cc(pluginLoader.ts:1620-1662):标准位置 `<plugin>/hooks/hooks.json` 自动加载,外加 manifest.hooks
  * 显式声明的附加文件(相对插件根)。这里收全存在的候选、去重,交给 loadPluginHookRegistry 归一+合并。
- * 只收 `enabled !== false` 的插件;同名插件按 roots 顺序首见者胜(与 listPlugins 一致)。
+ * 只收显式 `enabled:true` 的插件;同名插件按 roots 顺序首见者胜(与 listPlugins 一致)。
  */
 export async function resolveEnabledPluginHookConfigPaths(roots = defaultPluginRoots()): Promise<string[]> {
-  const plugins = await listPlugins(roots)
-  const seen = new Set<string>()
-  const out: string[] = []
-  const add = (path: string) => {
-    if (existsSync(path) && !seen.has(path)) {
-      seen.add(path)
-      out.push(path)
-    }
-  }
-  for (const p of plugins) {
-    if (!p.enabled) continue
-    // cc 标准位置:<plugin>/hooks/hooks.json
-    add(join(p.dir, 'hooks', 'hooks.json'))
-    // manifest.hooks 声明的附加文件(相对插件根;默认值 'hooks.json' 也覆盖根级放置的常见布局)
-    const manifest = await readManifest(p.dir)
-    const declared = stringField(manifest.hooks)
-    if (declared) add(join(p.dir, declared))
-  }
-  return out
+  return (await resolveEnabledPluginContributions(roots)).hookConfigPaths
 }
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
@@ -221,5 +234,9 @@ export async function installPluginFromGithub(
     const detail = (stderr || stdout || '').trim().slice(0, 300)
     return { ok: false, message: `clone 失败${detail ? `：${detail}` : ''}` }
   }
-  return { ok: true, message: `已安装插件：${name}。` }
+  const manifest = await readManifest(dest)
+  manifest.name = stringField(manifest.name) || name
+  manifest.enabled = false
+  await atomicWriteJson(join(dest, 'plugin.json'), manifest)
+  return { ok: true, message: `已安装插件：${name}。启用前请先确认来源可信。` }
 }

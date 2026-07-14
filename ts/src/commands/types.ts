@@ -25,8 +25,8 @@ export interface PromptCommand {
   /** frontmatter `paths`(条件披露):非空即"条件技能"——默认不进模型发现清单,碰到命中路径的文件时才现身;仍可 by-name 调。对齐 cc parseSkillPaths。 */
   paths?: string[]
   source: 'skills' | 'commands' | 'plugin' | 'builtin' | 'mcp'
-  /** 技能落点层(bundled=随包内置/user=用户自建/workspace=工作区),前端斜杠浮层据此显示「系统/个人/项目」作用域。 */
-  skillLayer?: 'bundled' | 'user' | 'workspace'
+  /** 技能落点层,前端斜杠浮层据此显示「系统/个人/项目/插件」作用域。 */
+  skillLayer?: 'bundled' | 'user' | 'workspace' | 'plugin'
   filePath: string
   baseDir: string
   contentLength: number

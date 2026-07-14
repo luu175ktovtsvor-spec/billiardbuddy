@@ -20,6 +20,9 @@ description: Verify the Electron, React, preload IPC, and Bun sidecar user path 
 3. 斜杠面板消费 sidecar 的真实命令/Skill 列表。
 4. 筛选、Esc、重开、Enter 选择等关键键盘语义。
 5. Electron 最小窗口 `720x480` 下输入区可用且无页面级横向溢出。
+6. 生图初始层级、取消/重试、挑图、局部改字、导出和重启恢复。
+7. 人像参考授权、角色保留和本人确认。
+8. 视频双工作台的 Scene 融合、撤销重做、导出、重启恢复和语音回填。
 
 每个测试独立启动 Electron，使用临时 userData、state、workspace 和 library；禁用资产自动下载、调度和遥测。失败时保留 trace，所有测试附最终截图和 Electron/sidecar 日志。
 
