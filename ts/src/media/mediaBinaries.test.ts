@@ -119,18 +119,29 @@ test('转写可用性:资产管理器在下时 reason 是"正在后台准备(x%)
     requested.push(id)
     return { status: 'downloading', progress: 12 }
   }))
-  const availability = resolveTranscribeAvailability(isolatedEnv({ WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
+  const availability = resolveTranscribeAvailability(isolatedEnv({ QF_TRANSCRIBE_MODE: 'local', WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
   expect(availability.available).toBe(false)
   expect(availability.reason).toContain('正在后台准备')
   expect(availability.reason).toContain('12%')
   expect(requested.sort()).toEqual(['whisper-cli', 'whisper-model'])
 })
 
-test('转写可用性:没接资产管理器保持旧提示(需打包……)', () => {
+test('转写可用性:显式本地模式但没接资产管理器时给离线引擎提示', () => {
   setActiveAssetManager(null)
-  const availability = resolveTranscribeAvailability(isolatedEnv({ WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
+  const availability = resolveTranscribeAvailability(isolatedEnv({ QF_TRANSCRIBE_MODE: 'local', WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
   expect(availability.available).toBe(false)
-  expect(availability.reason).toContain('需打包')
+  expect(availability.reason).toContain('本地离线引擎')
+})
+
+test('转写可用性:远程未配置不会自动下载本地 Whisper', () => {
+  const requested: string[] = []
+  setActiveAssetManager(stubSource({}, id => {
+    requested.push(id)
+    return { status: 'downloading', progress: 1 }
+  }))
+  const availability = resolveTranscribeAvailability(isolatedEnv())
+  expect(availability).toMatchObject({ available: false, reason: '语音识别服务器未配置' })
+  expect(requested).toEqual([])
 })
 
 test('字幕中文字体:资产就绪 → fontsdir=字体所在目录 + 默认字体族,env 可换族名', () => {

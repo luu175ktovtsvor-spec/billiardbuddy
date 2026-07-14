@@ -2172,7 +2172,7 @@ export function startServer(opts: StartServerOptions = {}) {
         const file = form?.get('file')
         if (!(file instanceof File)) return jsonDetailError('file required', 400)
         try {
-          return Response.json(voiceTranscriptionResponseSchema.parse(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env })))
+          return Response.json(voiceTranscriptionResponseSchema.parse(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env, fetchImpl: opts.fetchImpl })))
         } catch (err) {
           const status = err instanceof VoiceTranscriptionError ? err.status : 500
           return jsonDetailError(err instanceof Error ? err.message : String(err), status)

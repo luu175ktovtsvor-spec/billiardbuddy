@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -98,7 +98,22 @@ test('renderTakesPacked: 生成 phrase 级 markdown', () => {
 test('resolveTranscribeAvailability: 缺二进制/权重 → available=false + 清晰提示', () => {
   const a = resolveTranscribeAvailability(NO_BINARIES)
   expect(a.available).toBe(false)
-  expect(a.reason).toContain('whisper-cli')
+  expect(a.reason).toBe('语音识别服务器未配置')
+})
+
+test('resolveTranscribeAvailability: 只有显式本地模式才检查离线引擎', () => {
+  const a = resolveTranscribeAvailability({ ...NO_BINARIES, QF_TRANSCRIBE_MODE: 'local' })
+  expect(a.available).toBe(false)
+  expect(a.reason).toContain('本地离线引擎')
+})
+
+test('resolveTranscribeAvailability: 配置网关时优先远程且不要求本地权重', () => {
+  const a = resolveTranscribeAvailability({
+    ...NO_BINARIES,
+    QF_GATEWAY_URL: 'https://gateway.example/gw',
+    QF_GATEWAY_TOKEN: 'app-token',
+  })
+  expect(a).toMatchObject({ available: true, mode: 'remote', whisperBin: null, model: null })
 })
 
 test('transcribeVideoWordLevel: 缺二进制/权重抛 TranscribeUnavailableError(上层据此回退占位)', async () => {
@@ -106,6 +121,42 @@ test('transcribeVideoWordLevel: 缺二进制/权重抛 TranscribeUnavailableErro
   const src = join(dir, 'a.mp4')
   writeFileSync(src, 'x')
   await expect(transcribeVideoWordLevel(src, dir, { env: NO_BINARIES })).rejects.toBeInstanceOf(TranscribeUnavailableError)
+})
+
+test.skipIf(process.platform === 'win32')('transcribeVideoWordLevel: 远程模式只上传抽取音轨并缓存时间戳结果', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qf-remote-transcribe-'))
+  const src = join(dir, 'take.mp4')
+  const ffmpeg = join(dir, 'fake-ffmpeg.sh')
+  writeFileSync(src, 'video-bytes')
+  writeFileSync(ffmpeg, '#!/bin/sh\nfor arg in "$@"; do out="$arg"; done\nprintf "flac-audio" > "$out"\n')
+  chmodSync(ffmpeg, 0o755)
+  let uploadedName = ''
+  const transcript = await transcribeVideoWordLevel(src, dir, {
+    env: {
+      PATH: process.env.PATH,
+      FFMPEG_BIN: ffmpeg,
+      QF_GATEWAY_URL: 'https://gateway.example/gw',
+      QF_GATEWAY_TOKEN: 'app-token',
+    },
+    fetchImpl: async (_input, init) => {
+      const form = init?.body as FormData
+      const file = form.get('file') as File
+      uploadedName = file.name
+      return Response.json({
+        text: '检查球桌卫生', language: 'zh', duration: 2.5,
+        segments: [
+          { id: 0, start: 0, end: 1, text: '检查球桌' },
+          { id: 1, start: 1.6, end: 2.5, text: '卫生' },
+        ],
+      })
+    },
+  })
+  expect(uploadedName).toBe('audio.flac')
+  expect(transcript).toMatchObject({
+    source: 'take.mp4',
+    phrases: [{ start: 0, end: 1, text: '检查球桌' }, { start: 1.6, end: 2.5, text: '卫生' }],
+  })
+  expect(existsSync(join(dir, 'transcripts', 'take.json'))).toBe(true)
 })
 
 // ── 内容分流器(VAD 三级判定)─────────────────────────────────────────────

@@ -4,8 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { _electron, type ElectronApplication, type Page } from 'playwright'
-import { test as base, expect } from '@playwright/test'
+import { _electron, test as base, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { PNG } from 'pngjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -188,6 +187,7 @@ export const test = base.extend<DesktopFixtures>({
             IMAGE_MODEL_NAME: '',
             FFMPEG_BIN: ffmpegPath,
             FFPROBE_BIN: ffprobePath,
+            QF_TRANSCRIBE_MODE: 'local',
             WHISPER_TRANSCRIBE_COMMAND: `${process.execPath} ${voiceRunner} {output}`,
           },
         })

@@ -1,4 +1,4 @@
-// 视频口播转写(口播路 · 全本地 whisper.cpp)。
+// 视频口播转写(默认走自有网关上的 whisper.cpp,显式配置时可用本地离线引擎)。
 //
 // 端到端:ffmpeg 抽 16k 单声道 wav → spawn whisper-cli(-oj 段级 / -ojf --dtw 词级)
 // → 解析 JSON → 按静音≥0.5s 分 phrases → 缓存 edits/<项目>/transcripts/<源>.json。
@@ -21,6 +21,12 @@ import {
   resolveWhisperModelPath,
   transcribeAssetsPreparingReason,
 } from './mediaBinaries'
+import {
+  resolveRemoteTranscriptionConfig,
+  localTranscriptionRequested,
+  transcribeRemotePath,
+  type RemoteTranscriptionFetch,
+} from './remoteTranscription'
 
 export interface TranscriptWord {
   start: number
@@ -46,6 +52,7 @@ export interface VideoTranscript {
 
 export interface TranscribeOptions {
   env?: Record<string, string | undefined>
+  fetchImpl?: RemoteTranscriptionFetch
   signal?: AbortSignal
   language?: string
   wordLevel?: boolean
@@ -82,6 +89,7 @@ export function resolveWhisperModel(env: Record<string, string | undefined>): st
 export interface TranscribeAvailability {
   available: boolean
   reason: string
+  mode: 'remote' | 'local' | null
   whisperBin: string | null
   model: string | null
 }
@@ -92,16 +100,25 @@ export interface TranscribeAvailability {
  */
 export function resolveTranscribeAvailability(env?: Record<string, string | undefined>): TranscribeAvailability {
   const e = toEnv(env)
+  if (resolveRemoteTranscriptionConfig(e)) {
+    return { available: true, reason: '', mode: 'remote', whisperBin: null, model: null }
+  }
+  if (e.QF_TRANSCRIBE_MODE?.trim().toLowerCase() === 'remote') {
+    return { available: false, reason: '语音识别服务器未配置', mode: null, whisperBin: null, model: null }
+  }
+  if (!localTranscriptionRequested(e)) {
+    return { available: false, reason: '语音识别服务器未配置', mode: null, whisperBin: null, model: null }
+  }
   const whisperBin = resolveWhisperCli(e)
   const model = resolveWhisperModel(e)
-  if (whisperBin && model) return { available: true, reason: '', whisperBin, model }
+  if (whisperBin && model) return { available: true, reason: '', mode: 'local', whisperBin, model }
   const preparing = transcribeAssetsPreparingReason(e)
-  if (preparing) return { available: false, reason: preparing, whisperBin, model: model || null }
+  if (preparing) return { available: false, reason: preparing, mode: null, whisperBin, model: model || null }
   if (!whisperBin && !model) {
-    return { available: false, reason: '需打包转写二进制 whisper-cli 与权重 ggml-large-v3-turbo', whisperBin, model: model || null }
+    return { available: false, reason: '语音识别服务器未配置,本地离线引擎也不可用', mode: null, whisperBin, model: model || null }
   }
-  if (!whisperBin) return { available: false, reason: '需打包转写二进制 whisper-cli(desktop/binaries)', whisperBin, model: model || null }
-  return { available: false, reason: '需打包转写权重 ggml-large-v3-turbo(desktop/binaries/models)', whisperBin, model: null }
+  if (!whisperBin) return { available: false, reason: '本地离线转写缺少 whisper-cli', mode: null, whisperBin, model: model || null }
+  return { available: false, reason: '本地离线转写缺少模型权重', mode: null, whisperBin, model: null }
 }
 
 function ffmpegBin(env: Record<string, string | undefined>): string {
@@ -271,7 +288,18 @@ export async function transcribeWavText(wavPath: string, opts: TranscribeOptions
   const language = opts.language || env.WHISPER_LANGUAGE || 'zh'
   const availability = resolveTranscribeAvailability(env)
   if (!availability.available) {
-    throw new TranscribeUnavailableError(`本地口播转写不可用:${availability.reason}`, availability.reason)
+    throw new TranscribeUnavailableError(`口播转写不可用:${availability.reason}`, availability.reason)
+  }
+  if (availability.mode === 'remote') {
+    const result = await transcribeRemotePath(wavPath, {
+      env,
+      language,
+      responseFormat: 'json',
+      signal: opts.signal,
+      timeoutMs: opts.timeoutMs ?? 5 * 60_000,
+      fetchImpl: opts.fetchImpl,
+    })
+    return result.text
   }
   const workDir = await mkdtemp(join(tmpdir(), 'qf-probe-'))
   try {
@@ -327,7 +355,7 @@ export async function transcribeVideoWordLevel(
 
   const availability = resolveTranscribeAvailability(env)
   if (!availability.available) {
-    throw new TranscribeUnavailableError(`本地口播转写不可用:${availability.reason}`, availability.reason)
+    throw new TranscribeUnavailableError(`口播转写不可用:${availability.reason}`, availability.reason)
   }
 
   const transcriptsDir = join(editDir, 'transcripts')
@@ -347,35 +375,48 @@ export async function transcribeVideoWordLevel(
   const workDir = await mkdtemp(join(tmpdir(), 'qf-transcribe-'))
   try {
     await opts.onProgress?.(0, '正在抽取音频。')
-    const wav = join(workDir, 'audio.wav')
-    // 单声道 16kHz PCM(对齐 video-use / voiceTranscription)。
-    await runProc(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav], {
+    const remote = availability.mode === 'remote'
+    const audio = join(workDir, remote ? 'audio.flac' : 'audio.wav')
+    // 远程模式用无损 FLAC 降低上传体积;本地离线模式继续用 16k PCM。
+    const codecArgs = remote ? ['-c:a', 'flac', '-compression_level', '8'] : ['-c:a', 'pcm_s16le']
+    await runProc(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath, '-vn', '-ac', '1', '-ar', '16000', ...codecArgs, audio], {
       cwd: workDir,
       signal: opts.signal,
       timeoutMs: opts.timeoutMs ?? 5 * 60_000,
     })
-    if (!existsSync(wav)) throw new Error('音频抽取失败')
+    if (!existsSync(audio)) throw new Error('音频抽取失败')
 
-    await opts.onProgress?.(30, '正在本地转写口播。')
-    const outputBase = join(workDir, 'transcript')
-    const args = ['-m', availability.model!, '-f', wav, '-l', language, '-of', outputBase]
-    if (opts.wordLevel) {
-      // P1:词/token 级 —— -ojf + DTW(中文别用 --max-len 1,会乱码,issue #761)。
-      args.push('-ojf', '--dtw', dtwPreset(availability.model!))
+    await opts.onProgress?.(30, '正在识别口播。')
+    let words: TranscriptWord[]
+    if (remote) {
+      const result = await transcribeRemotePath(audio, {
+        env,
+        language,
+        responseFormat: 'verbose_json',
+        signal: opts.signal,
+        timeoutMs: opts.timeoutMs ?? 30 * 60_000,
+        fetchImpl: opts.fetchImpl,
+      })
+      if (!('segments' in result)) throw new Error('远程转写未返回时间戳')
+      words = result.segments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
     } else {
-      args.push('-oj') // P0:段级 JSON(中文最稳基线)。
+      const outputBase = join(workDir, 'transcript')
+      const args = ['-m', availability.model!, '-f', audio, '-l', language, '-of', outputBase]
+      if (opts.wordLevel) {
+        args.push('-ojf', '--dtw', dtwPreset(availability.model!))
+      } else {
+        args.push('-oj')
+      }
+      const result = await runProc(availability.whisperBin!, args, {
+        cwd: workDir,
+        signal: opts.signal,
+        timeoutMs: opts.timeoutMs ?? 30 * 60_000,
+      })
+      if (result.code !== 0) throw new Error(result.stderr.trim().slice(-500) || `whisper-cli 退出码 ${result.code}`)
+      const jsonPath = `${outputBase}.json`
+      if (!existsSync(jsonPath)) throw new Error('whisper 未产出 JSON')
+      words = parseWhisperSegments(JSON.parse(await readFile(jsonPath, 'utf8')) as unknown)
     }
-    const result = await runProc(availability.whisperBin!, args, {
-      cwd: workDir,
-      signal: opts.signal,
-      timeoutMs: opts.timeoutMs ?? 30 * 60_000,
-    })
-    if (result.code !== 0) throw new Error(result.stderr.trim().slice(-500) || `whisper-cli 退出码 ${result.code}`)
-
-    const jsonPath = `${outputBase}.json`
-    if (!existsSync(jsonPath)) throw new Error('whisper 未产出 JSON')
-    const parsed = JSON.parse(await readFile(jsonPath, 'utf8')) as unknown
-    const words = parseWhisperSegments(parsed)
     if (!words.length) throw new Error('转写结果为空')
     const phrases = groupIntoPhrases(words)
     const duration = Math.round((words[words.length - 1]!.end) * 1000) / 1000

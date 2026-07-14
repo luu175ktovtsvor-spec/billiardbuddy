@@ -1,6 +1,11 @@
 import { Database } from 'bun:sqlite'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import {
+  createGatewayTranscriber,
+  GatewayTranscriptionError,
+  type GatewayTranscriber,
+} from './transcription'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -30,6 +35,10 @@ type GatewayConfig = {
   arkImgConc: number
   qArkImg: number
   qAmap: number
+  transcribeRpm: number
+  transcribeConc: number
+  qTranscribe: number
+  transcribeMaxBytes: number
 }
 
 type UsageEntry = {
@@ -52,6 +61,7 @@ export interface GatewayDeps {
   env?: Env
   fetchImpl?: FetchLike
   usageStore?: UsageStore
+  transcribeImpl?: GatewayTranscriber | null
 }
 
 export class HttpError extends Error {
@@ -274,7 +284,20 @@ function loadConfig(env: Env): GatewayConfig {
     arkImgConc: intEnv(env, 'GW_ARK_IMG_CONC', 6),
     qArkImg: intEnv(env, 'GW_Q_ARK_IMG', 20),
     qAmap: intEnv(env, 'GW_Q_AMAP', 300),
+    transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
+    transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
+    qTranscribe: intEnv(env, 'GW_Q_TRANSCRIBE', 100),
+    transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
   }
+}
+
+function supportedAudio(file: File): boolean {
+  const type = file.type.toLowerCase()
+  if (type.startsWith('audio/')) return true
+  if (type === 'video/mp4' || type === 'video/webm' || type === 'application/octet-stream' || type === '') {
+    return /\.(wav|wave|mp3|m4a|mp4|webm|ogg|oga|flac|aac)$/i.test(file.name)
+  }
+  return false
 }
 
 function todayCst(): string {
@@ -369,6 +392,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
   const arkImgBucket = new TokenBucket(config.arkImgIpm)
   const arkImgSem = new AsyncSemaphore(config.arkImgConc)
+  const transcribeBucket = new TokenBucket(config.transcribeRpm)
+  const transcribeSem = new AsyncSemaphore(config.transcribeConc)
+  const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
 
   async function fetchHandler(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -383,6 +409,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             ark_chat_rpm: config.arkChatRpm,
             ark_img_ipm: config.arkImgIpm,
             ark_img_conc: config.arkImgConc,
+            transcribe_rpm: config.transcribeRpm,
+            transcribe_conc: config.transcribeConc,
           },
           quota: {
             chat: config.qChat,
@@ -390,7 +418,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             ark_chat: config.qArkChat,
             ark_img: config.qArkImg,
             amap: config.qAmap,
+            transcribe: config.qTranscribe,
           },
+          features: { transcription: transcribe !== null },
         })
       }
 
@@ -422,6 +452,41 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const ok = upstream.status < 400
         return withStreamLogging(upstream, async () => {
           await logUsage(store, { user, model: 'mimo', ok, status: upstream.status, ms: elapsedMs(started) })
+        })
+      }
+
+      if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
+        const user = auth(config, request)
+        if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
+        await quotaCheck(store, user, 'transcribe', config.qTranscribe)
+        const contentType = request.headers.get('content-type') ?? ''
+        if (!contentType.toLowerCase().startsWith('multipart/form-data')) throw new HttpError(415, '需要上传音频文件')
+        const declaredSize = Number(request.headers.get('content-length') ?? '')
+        if (Number.isFinite(declaredSize) && declaredSize > config.transcribeMaxBytes + 1024 * 1024) {
+          throw new HttpError(413, '音频文件过大')
+        }
+        await transcribeBucket.acquire(config.queueMaxWait)
+        const started = performance.now()
+        return await transcribeSem.run(async () => {
+          const form = await request.formData().catch(() => null)
+          const file = form?.get('file')
+          if (!(file instanceof File) || file.size === 0) throw new HttpError(400, '没有收到音频文件')
+          if (file.size > config.transcribeMaxBytes) throw new HttpError(413, '音频文件过大')
+          if (!supportedAudio(file)) throw new HttpError(415, '不支持这种音频格式')
+          const languageRaw = String(form?.get('language') ?? 'zh').trim().toLowerCase()
+          const language = /^[a-z]{2,8}$/.test(languageRaw) ? languageRaw : 'zh'
+          const formatRaw = String(form?.get('response_format') ?? 'json')
+          const responseFormat = formatRaw === 'verbose_json' ? 'verbose_json' : 'json'
+          try {
+            const result = await transcribe(file, { language, responseFormat, signal: request.signal })
+            await logUsage(store, { user, model: 'transcribe', ok: true, status: 200, ms: elapsedMs(started) })
+            return jsonResponse(result)
+          } catch (error) {
+            const status = error instanceof GatewayTranscriptionError ? error.status : 502
+            const detail = error instanceof GatewayTranscriptionError ? error.publicMessage : '语音识别失败，请稍后重试'
+            await logUsage(store, { user, model: 'transcribe', ok: false, status, ms: elapsedMs(started) })
+            throw new HttpError(status, detail)
+          }
         })
       }
 

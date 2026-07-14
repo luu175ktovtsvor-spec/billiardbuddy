@@ -437,6 +437,46 @@ test('voice transcribe endpoint uses configured local runner and rejects empty u
   }
 })
 
+test('voice transcribe endpoint prefers the authenticated remote service without local model files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'voice-remote-'))
+  const outbound: Array<{ url: string; authorization: string; body: unknown }> = []
+  const voiceServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    env: {
+      PATH: process.env.PATH,
+      QF_GATEWAY_URL: 'https://gateway.example/gw',
+      QF_GATEWAY_TOKEN: 'app-token',
+    },
+    fetchImpl: async (input, init) => {
+      outbound.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization') ?? '',
+        body: init?.body,
+      })
+      return Response.json({ text: '远程识别成功' })
+    },
+  })
+  const base = `http://127.0.0.1:${voiceServer.port}`
+  try {
+    const form = new FormData()
+    form.set('file', new File([Buffer.from('fake-audio')], 'voice.webm', { type: 'audio/webm' }))
+    const response = await fetch(`${base}/api/v1/voice/transcribe`, { method: 'POST', body: form })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ text: '远程识别成功' })
+    expect(outbound).toHaveLength(1)
+    expect(outbound[0]).toMatchObject({
+      url: 'https://gateway.example/gw/v1/audio/transcriptions',
+      authorization: 'Bearer app-token',
+    })
+    expect(outbound[0]!.body).toBeInstanceOf(FormData)
+    expect(existsSync(join(root, 'voice-tmp'))).toBe(false)
+  } finally {
+    voiceServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('canvas local TS endpoints render and write deterministic text formats', async () => {
   const root = mkdtempSync(join(tmpdir(), 'canvas-local-'))
   const canvasServer = startServer({ port: 0, transcriptRoot: root })
@@ -5106,6 +5146,7 @@ test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline d
     `printf '%s\\n' "---call---" "$@" >> "${ffmpegArgsPath}"`,
     'out=""',
     'for arg in "$@"; do out="$arg"; done',
+    'if [ "$out" = "-" ]; then printf "fake-mp4-from-ffmpeg"; exit 0; fi',
     'mkdir -p "$(dirname "$out")"',
     'printf "fake-mp4-from-ffmpeg" > "$out"',
     '',
