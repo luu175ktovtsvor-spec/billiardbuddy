@@ -5,7 +5,7 @@
 | 系统 | 路径 | 发布边界 |
 |---|---|---|
 | 桌面产品 | `ts/` | Electron renderer、main、Bun sidecar 同一安装包 |
-| 模型网关 | `gateway/` | 国内服务器独立发布 |
+| 模型与转录网关 | `gateway/` | 国内服务器独立发布；统一承载模型代理与可替换的语音转录 provider |
 | 生图中转 | `relay/` | 美国服务器独立发布 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
 
@@ -13,23 +13,24 @@
 
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
-| 契约与传输 | `ts/shared/contracts`、`ts/src/server`、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
+| 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
 | Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars` | 窗口、IPC、进程生命周期 |
-| 会话与事件流 | `server/services/session*`、renderer chat/session | 会话、transcript、回放、rewind |
+| 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、`server/routes/sessionArchiveRoutes.ts`、renderer chat/session | 会话元数据、活动、回退与归档 REST，transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
-| 模型与代理 | `model`、`proxy`、`server/services/provider*` | provider、协议转换、降级 |
+| 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
 | 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
 | 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
-| 工作区 | `workspace`、`sandbox`、renderer workspace | cwd、文件树、Git、终端 |
+| 工作区 | `workspace`、`sandbox`、`server/routes/workspaceRoutes.ts`、`server/routes/workspaceFileRoutes.ts`、renderer workspace | 工作区与文件预览 REST、cwd、文件树、Git、终端 |
 | 权限安全 | `permissions`、`sandbox` | 权限档、审批、路径与命令护栏 |
-| 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins` | 可发现能力与领域包 |
-| MCP | `mcp` | MCP 配置、信任、OAuth、工具加载 |
-| 任务与子代理 | `tasks`、`agents` | 后台任务、子代理、团队 |
-| Remote Bridge | `tasks/bridge*`、server bridge routes | 远程控制与消息传输 |
-| 定时任务 | `ScheduledTaskRunner`、renderer scheduled | 排程、执行、运行历史 |
-| 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
+| 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/extensionRoots.ts`、扩展 routes、`shared/contracts/extensions.ts`、renderer `api/extensions.ts` 与 `PluginsPage.tsx` | 技能/命令/领域包发现与展开、启用插件贡献的统一运行时装配、插件管理 REST 和前端披露 |
+| MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
+| 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
+| Remote Bridge | `tasks/bridge*`、`server/routes/bridgeSessionRoutes.ts`、`server/routes/bridgeWorkerRoutes.ts` | 远程控制会话数据面、消息传输与 worker 生命周期 |
+| 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |
+| 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（生成编排与任务状态独立于 `ImageWorkbenchPage.tsx`，`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 视频 Brief、Scene/Timeline、素材证据、规划、预览与渲染 |
-| 门店知识 | `packs/billiards`、`StoreDocsService`、assets | 门店资料、RAG、领域能力 |
+| 语音与口播转录 | `ts/src/media/remoteTranscription.ts`、`ts/src/server/services/voiceTranscription.ts`、`ts/shared/contracts/voice.ts`、`gateway/transcription.ts` | 客户端录音/音轨上传、远程文本与时间戳契约、服务器 Whisper 或上游 ASR provider |
+| 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
 | 设置与凭据 | settings/provider/credential services、SettingsPage | 偏好、provider、凭据 |
 | 系统运维 | telemetry、backup、migrations、assets | 遥测、备份、迁移、组件资产 |
 

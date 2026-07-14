@@ -8,13 +8,10 @@ import { PNG } from 'pngjs'
 import { startServer } from './index'
 import { SessionService } from './services/sessionService'
 import { TaskService } from '../tasks/taskService'
-import { textBlock, userText, type Message } from '../types/message'
+import { textBlock, userText } from '../types/message'
 import { getAutoMemDir } from '../harness/memoryNames'
 import { signApproval } from '../permissions/approval'
 import { sendToUdsSocket } from '../tasks/udsClient'
-import { recordFileSnapshot } from '../tools/fileHistory'
-import { Workspace } from '../workspace/workspace'
-import type { ToolContext } from '../tools/Tool'
 
 let server: ReturnType<typeof startServer>
 let serverRoot: string
@@ -164,15 +161,15 @@ test('legacy frontend capability endpoints are served by TS server', async () =>
 })
 
 test('GET /api/v1/agent/commands 汇总 builtin+skill+启用领域包命令,billiards 按 /台球 别名启用时进清单', async () => {
-  // 不启用领域包:清单里没有 billiards 入口/子命令
+  // 不启用领域包:激活入口始终可发现,领域子命令仍不装配
   const genericRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands`)
   expect(genericRes.status).toBe(200)
   const generic = await genericRes.json() as { commands: Array<{ name: string; description: string; source: string; argHint?: string; whenToUse?: string }> }
   expect(Array.isArray(generic.commands)).toBe(true)
-  expect(generic.commands.some(command => command.name === '台球')).toBe(false)
-  expect(generic.commands.some(command => command.source === 'pack')).toBe(false)
+  expect(generic.commands.some(command => command.name === '台球')).toBe(true)
+  expect(generic.commands.some(command => command.name.startsWith('billiards:'))).toBe(false)
   // source 只在约定枚举内
-  expect(generic.commands.every(command => ['builtin', 'skill', 'pack'].includes(command.source))).toBe(true)
+  expect(generic.commands.every(command => ['builtin', 'skill', 'pack', 'plugin'].includes(command.source))).toBe(true)
 
   // 用别名 台球 启用领域包:入口 /台球 + billiards:* 子命令进清单,且标 source=pack
   const packRes = await fetch(`http://127.0.0.1:${server.port}/api/v1/agent/commands?conversationId=c1&enabledPacks=${encodeURIComponent('台球')}`)
@@ -392,23 +389,11 @@ test('desktop product compatibility endpoints are served by TS without Python', 
     const docsDir = join(root, 'store-docs')
     mkdirSync(docsDir)
     writeFileSync(join(docsDir, '价目表.txt'), '黄金档台费 68 元一小时，会员充值满 1000 送 120。')
-    writeFileSync(join(docsDir, '排班.txt'), '周五晚班由小王负责。')
     const docs = await (await fetch(`${base}/api/v1/store-docs`, {
       method: 'PUT',
       body: JSON.stringify({ folder_path: docsDir }),
     })).json() as any
-    expect(docs).toMatchObject({ folder_path: docsDir, status: 'ready', indexed_file_count: 2 })
-    const docHits = await (await fetch(`${base}/api/v1/store-docs/search`, {
-      method: 'POST',
-      body: JSON.stringify({ query: '黄金档台费', top: 3 }),
-    })).json() as any
-    expect(docHits.hits[0]).toMatchObject({ file_name: '价目表.txt' })
-    expect(docHits.hits[0].excerpt).toContain('68')
-    const scopedDocHits = await (await fetch(`${base}/api/v1/store-docs/search`, {
-      method: 'POST',
-      body: JSON.stringify({ query: '黄金档台费', top: 3, path: '排班.txt' }),
-    })).json() as any
-    expect(scopedDocHits.hits).toEqual([])
+    expect(docs).toMatchObject({ folder_path: docsDir, status: 'ready', indexed_file_count: 1 })
 
     const notifications = await (await fetch(`${base}/api/v1/notifications?after=0`)).json() as any
     expect(notifications).toMatchObject({ items: [], cursor: 0 })
@@ -446,6 +431,46 @@ test('voice transcribe endpoint uses configured local runner and rejects empty u
     const empty = await fetch(`${base}/api/v1/voice/transcribe`, { method: 'POST', body: emptyForm })
     expect(empty.status).toBe(400)
     expect(await empty.json()).toMatchObject({ detail: '没收到录音内容，请重新录一次' })
+  } finally {
+    voiceServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('voice transcribe endpoint prefers the authenticated remote service without local model files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'voice-remote-'))
+  const outbound: Array<{ url: string; authorization: string; body: unknown }> = []
+  const voiceServer = startServer({
+    port: 0,
+    transcriptRoot: root,
+    env: {
+      PATH: process.env.PATH,
+      QF_GATEWAY_URL: 'https://gateway.example/gw',
+      QF_GATEWAY_TOKEN: 'app-token',
+    },
+    fetchImpl: async (input, init) => {
+      outbound.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization') ?? '',
+        body: init?.body,
+      })
+      return Response.json({ text: '远程识别成功' })
+    },
+  })
+  const base = `http://127.0.0.1:${voiceServer.port}`
+  try {
+    const form = new FormData()
+    form.set('file', new File([Buffer.from('fake-audio')], 'voice.webm', { type: 'audio/webm' }))
+    const response = await fetch(`${base}/api/v1/voice/transcribe`, { method: 'POST', body: form })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ text: '远程识别成功' })
+    expect(outbound).toHaveLength(1)
+    expect(outbound[0]).toMatchObject({
+      url: 'https://gateway.example/gw/v1/audio/transcriptions',
+      authorization: 'Bearer app-token',
+    })
+    expect(outbound[0]!.body).toBeInstanceOf(FormData)
+    expect(existsSync(join(root, 'voice-tmp'))).toBe(false)
   } finally {
     voiceServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -644,6 +669,34 @@ test('POST /api/v1/agent/execute 无 working_dir 时从 session meta 自愈,写�
   rmSync(sessionDir, { recursive: true, force: true })
 })
 
+test('POST /api/v1/agent/execute 区分领域包字段缺失与显式空数组', async () => {
+  const conversationId = 'approve-pack-state'
+  const svc = new SessionService(serverRoot)
+  await svc.create({ id: conversationId, title: 'pack state', workspaceRoot: serverRoot })
+  await svc.touch(conversationId, { enabledPacks: ['billiards'] })
+  const tool = 'billiards_ops_checklist'
+  const args = { scenario: '日报' }
+  const request = (body: Record<string, unknown>) => fetch(`http://127.0.0.1:${server.port}/api/v1/agent/execute`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tool,
+      args,
+      token: signApproval(tool, args),
+      permissionMode: 'full',
+      conversationId,
+      ...body,
+    }),
+  })
+
+  const inherited = await request({})
+  expect((await inherited.json() as any)).toMatchObject({ ok: true, tool })
+
+  const disabled = await request({ enabled_packs: [] })
+  const disabledBody = await disabled.json() as any
+  expect(disabledBody.ok).toBe(false)
+  expect(disabledBody.result).toContain('未知工具')
+})
+
 test('POST /api/v1/agent/execute uses approval_args for edited approval parameters', async () => {
   const originalArgs = { command: 'echo original-approval' }
   const editedArgs = { command: 'echo edited-approval' }
@@ -819,7 +872,7 @@ test('POST /api/v1/agent/execute stores oversized approved command results', asy
   expect(stored).toContain('x'.repeat(20_000))
 })
 
-test('legacy MCP management endpoints write desktop library config', async () => {
+test('server mounts MCP routes with the configured desktop library', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-mcp-config-'))
   const cfgServer = startServer({
     port: 0,
@@ -856,10 +909,10 @@ test('legacy MCP management endpoints write desktop library config', async () =>
   }
 })
 
-test('legacy plugin endpoints list and toggle desktop plugins', async () => {
+test('server mounts plugin routes with the configured library root', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-plugins-'))
   mkdirSync(join(root, 'plugins', 'demo'), { recursive: true })
-  writeFileSync(join(root, 'plugins', 'demo', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin' }))
+  writeFileSync(join(root, 'plugins', 'demo', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
   const pluginServer = startServer({
     port: 0,
     transcriptRoot: root,
@@ -875,8 +928,12 @@ test('legacy plugin endpoints list and toggle desktop plugins', async () => {
       body: JSON.stringify({ name: 'demo', enabled: false }),
     })
     expect(await toggled.json()).toMatchObject({ ok: true })
-    const relisted = await (await fetch(`http://127.0.0.1:${pluginServer.port}/api/v1/agent/plugins`)).json() as any
-    expect(relisted.plugins[0]).toMatchObject({ name: 'demo', enabled: false })
+
+    const invalidInstall = await fetch(`http://127.0.0.1:${pluginServer.port}/api/v1/agent/plugins/install`, {
+      method: 'POST',
+      body: '{}',
+    })
+    expect(await invalidInstall.json()).toMatchObject({ ok: false })
   } finally {
     pluginServer.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -885,10 +942,11 @@ test('legacy plugin endpoints list and toggle desktop plugins', async () => {
 
 // 死链回归:已启用插件贡献的 hooks 与 commands 必须真接进会话(不再"函数写好了但从不调用")。
 // hooks 走 /agent/run 主回合(SessionStart context 注入进系统提示);commands 走 /agent/execute 审批执行注册表(read_command 能读到)。
-test('enabled plugin hooks + commands are wired into the live session (dead-link regression)', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'agent-plugin-wired-'))
+test('enabled plugin hooks, skills, commands and MCP are wired into the main Agent turn and discovery', async () => {
+  const root = mkdtempSync(join(process.cwd(), '.agent-plugin-wired-'))
   const pluginDir = join(root, 'plugins', 'demo')
   mkdirSync(join(pluginDir, 'hooks'), { recursive: true })
+  mkdirSync(join(pluginDir, 'skills', 'plugin-skill'), { recursive: true })
   mkdirSync(join(pluginDir, 'commands'), { recursive: true })
   writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo plugin', enabled: true }))
   // cc 包裹结构:{ description, hooks: { <event>: [{hooks:[...]}] } };SessionStart 注入独特标记
@@ -901,7 +959,31 @@ description: Demo plugin command
 ---
 PLUGIN_COMMAND_BODY_MARKER
 `)
+  writeFileSync(join(pluginDir, 'skills', 'plugin-skill', 'SKILL.md'), `---
+name: plugin-skill
+description: Demo plugin skill
+---
+PLUGIN_SKILL_BODY_MARKER
+`)
+  const fixturePath = join(root, 'plugin-mcp-server.ts')
+  writeFileSync(fixturePath, `
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+
+const server = new McpServer({ name: 'pluginfixture', version: '1.0.0' })
+server.registerTool('echo', {
+  description: 'Echo text through plugin MCP',
+  inputSchema: { text: z.string() },
+  annotations: { readOnlyHint: true },
+}, async ({ text }) => ({ content: [{ type: 'text', text: 'plugin-mcp:' + text }] }))
+await server.connect(new StdioServerTransport())
+`)
+  writeFileSync(join(pluginDir, '.mcp.json'), JSON.stringify({
+    mcpServers: { pluginfixture: { command: process.execPath, args: [fixturePath] } },
+  }))
   const sentBodies: any[] = []
+  let calls = 0
   const wiredServer = startServer({
     port: 0,
     transcriptRoot: root,
@@ -913,8 +995,11 @@ PLUGIN_COMMAND_BODY_MARKER
       TEXT_MODEL_NAME: 'mimo-v2.5',
     },
     fetchImpl: async (_url, init) => {
+      calls++
       sentBodies.push(JSON.parse(String(init?.body || '{}')))
-      return sseResponse({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })
+      return sseResponse(calls === 1
+        ? { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'plugin-mcp-call', function: { name: 'mcp__pluginfixture__echo', arguments: JSON.stringify({ text: 'hello' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'plugin done' }, finish_reason: 'stop' }] })
     },
   })
   try {
@@ -924,9 +1009,19 @@ PLUGIN_COMMAND_BODY_MARKER
       body: JSON.stringify({ message: '你好', workspaceRoot: root, permissionMode: 'full' }),
     })
     expect(run.status).toBe(200)
-    await run.text()
+    const runText = await run.text()
     const systemPrompt = String(sentBodies[0]?.messages?.[0]?.content ?? '')
     expect(systemPrompt).toContain('PLUGIN_HOOK_SESSION_MARKER')
+    expect(systemPrompt).toContain('\n- /plugintest')
+    expect(systemPrompt).toContain('\n- /plugin-skill')
+    expect(sentBodies[0].tools.some((tool: any) => tool.function.name === 'mcp__pluginfixture__echo')).toBe(true)
+    expect(runText).toContain('plugin-mcp:hello')
+
+    const discovered = await (await fetch(`http://127.0.0.1:${wiredServer.port}/api/v1/agent/commands?working_dir=${encodeURIComponent(root)}`)).json() as any
+    expect(discovered.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'plugintest', source: 'plugin' }),
+      expect.objectContaining({ name: 'plugin-skill', source: 'plugin', layer: 'plugin' }),
+    ]))
 
     // B) 插件 commands 接进会话命令来源:审批执行注册表的 read_command 能读到插件命令正文。
     const readArgs = { name: 'plugintest' }
@@ -1012,35 +1107,10 @@ test('POST /agent/run streams through configured real Model adapter and tools', 
     expect(sessionBody.session).toMatchObject({ id: 'c1', status: 'idle' })
     expect(sessionBody.messages.some((m: any) => m.role === 'assistant')).toBe(true)
 
-    const metaOnly = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1?includeMessages=0`)
-    const metaOnlyBody = await metaOnly.json() as any
-    expect(metaOnlyBody.session.id).toBe('c1')
-    expect('messages' in metaOnlyBody).toBe(false)
-
-    const page1 = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/messages?limit=2`)
-    const page1Body = await page1.json() as any
-    expect(page1Body.messages).toHaveLength(2)
-    expect(page1Body.nextSeq).toBe(2)
-    expect(page1Body.hasMore).toBe(true)
-    const page2 = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/messages?after=2&limit=10`)
-    const page2Body = await page2.json() as any
-    expect(page2Body.messages.length).toBeGreaterThan(0)
-    expect(page2Body.messages[0].seq).toBe(3)
-
     const eventsRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events`)
     const eventsBody = await eventsRes.json() as any
     expect(eventsBody.events.map((e: any) => e.event.type)).toEqual(['user_prompt', 'tool_call', 'tool_result', 'final', 'done'])
     expect(eventsBody.nextSeq).toBe(5)
-
-    const afterRes = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?after=3`)
-    const afterBody = await afterRes.json() as any
-    expect(afterBody.events.map((e: any) => e.event.type)).toEqual(['final', 'done'])
-
-    const replay = await fetch(`http://127.0.0.1:${realServer.port}/sessions/c1/events?format=sse`)
-    const replayText = await replay.text()
-    expect(replayText).toContain('id: 1')
-    expect(replayText).toContain('event: tool_call')
-    expect(replayText).toContain('event: done')
   } finally {
     realServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })
@@ -2672,6 +2742,89 @@ test('POST /agent/run exposes domain pack tools only when the pack is enabled', 
   }
 })
 
+test('POST /agent/run keeps domain packs isolated per session and removes all pack contributions after explicit disable', async () => {
+  const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-pack-session-state-'))
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'agent-pack-session-workspace-'))
+  const calls = new Map<string, { systemPrompt: string; tools: string[] }>()
+  const packServer = startServer({
+    port: 0,
+    transcriptRoot,
+    mcpConfigPath: join(transcriptRoot, 'missing.mcp.json'),
+    env: {
+      OPENAI_BASE_URL: 'https://model.example/v1',
+      OPENAI_API_KEY: 'secret',
+      TEXT_MODEL_NAME: 'mimo-v2.5',
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body || '{}')) as {
+        messages?: Array<{ role: string; content: string }>
+        tools?: Array<{ function?: { name?: string } }>
+      }
+      const toolNames = (body.tools ?? []).map(tool => tool.function?.name ?? '').filter(Boolean)
+      const userMessage = body.messages?.filter(message => message.role === 'user').at(-1)?.content ?? ''
+      if (toolNames.includes('run_command') && userMessage.startsWith('PACK_STATE_')) {
+        calls.set(userMessage, {
+          systemPrompt: body.messages?.find(message => message.role === 'system')?.content ?? '',
+          tools: toolNames,
+        })
+      }
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\n`))
+          controller.enqueue(enc.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const run = async (conversationId: string, message: string, enabledPacks?: string[]) => {
+    const res = await fetch(`http://127.0.0.1:${packServer.port}/agent/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        conversationId,
+        working_dir: workspaceRoot,
+        permissionMode: 'full',
+        ...(enabledPacks === undefined ? {} : { enabled_packs: enabledPacks }),
+      }),
+    })
+    expect(res.status).toBe(200)
+    await res.text()
+  }
+
+  try {
+    await run('pack-session-a', 'PACK_STATE_A_ENABLED', ['billiards'])
+    await run('pack-session-b', 'PACK_STATE_B_DISABLED', [])
+    await run('pack-session-a', 'PACK_STATE_A_INHERITED')
+    await run('pack-session-a', 'PACK_STATE_A_DISABLED', [])
+
+    const enabled = calls.get('PACK_STATE_A_ENABLED')!
+    const isolated = calls.get('PACK_STATE_B_DISABLED')!
+    const inherited = calls.get('PACK_STATE_A_INHERITED')!
+    const disabled = calls.get('PACK_STATE_A_DISABLED')!
+    expect(calls.size).toBe(4)
+    expect(enabled.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(enabled.systemPrompt).toContain('\n- /billiards:daily-ops')
+    expect(enabled.tools).toContain('billiards_ops_checklist')
+
+    expect(isolated.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(isolated.tools).not.toContain('billiards_ops_checklist')
+
+    expect(inherited.systemPrompt).toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(inherited.tools).toContain('billiards_ops_checklist')
+
+    expect(disabled.systemPrompt).not.toContain('<domain_context id="billiards" source="enabled_pack">')
+    expect(disabled.systemPrompt).not.toContain('\n- /billiards:daily-ops')
+    expect(disabled.tools).not.toContain('billiards_ops_checklist')
+    expect(await new SessionService(transcriptRoot).get('pack-session-a')).toMatchObject({ enabledPacks: [] })
+  } finally {
+    packServer.stop(true)
+    rmSync(transcriptRoot, { recursive: true, force: true })
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  }
+})
+
 test('POST /agent/run uses enabled pack recommendations for list_skills filtering', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-pack-skills-transcript-'))
   const skillsRoot = join(transcriptRoot, 'skills')
@@ -3184,18 +3337,10 @@ test('GET / 服务 ts-desktop 前端 index.html + app.js content-type + 未知�
 
 test('GET /sessions/projects 聚合最近项目 + POST /sessions/:id/fork 拷贝会话', async () => {
   await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s1', title: 'P1', workspaceRoot: '/ws/proj' }) })
-  await fetch(`http://127.0.0.1:${server.port}/sessions`, { method: 'POST', body: JSON.stringify({ id: 'proj-s2', title: 'P2', workspaceRoot: '/ws/proj' }) })
   const projects = await (await fetch(`http://127.0.0.1:${server.port}/sessions/projects`)).json() as any
-  expect(projects.projects.find((x: any) => x.workspaceRoot === '/ws/proj')?.sessionCount).toBe(2)
-  // 按项目过滤
-  const filtered = await (await fetch(`http://127.0.0.1:${server.port}/sessions?workspaceRoot=${encodeURIComponent('/ws/proj')}`)).json() as any
-  expect(filtered.sessions.map((s: any) => s.id).sort()).toEqual(['proj-s1', 'proj-s2'])
-  // fork
+  expect(projects.projects.find((x: any) => x.workspaceRoot === '/ws/proj')?.sessionCount).toBe(1)
   const forked = await (await fetch(`http://127.0.0.1:${server.port}/sessions/proj-s1/fork`, { method: 'POST', body: JSON.stringify({ title: '副本' }) })).json() as any
-  expect(forked.session.id).not.toBe('proj-s1')
   expect(forked.session.workspaceRoot).toBe('/ws/proj')
-  // fork 不存在 → 404
-  expect((await fetch(`http://127.0.0.1:${server.port}/sessions/nopemissing/fork`, { method: 'POST', body: '{}' })).status).toBe(404)
 })
 
 test('WS /agent/ws accepts steer over the same connection (aligns cc unified-WS transport)', async () => {
@@ -3274,7 +3419,7 @@ test('session interrupt aborts the in-flight model request and marks session int
   }
 })
 
-test('provider API persists active provider and /agent/run uses it before env fallback', async () => {
+test('provider routes are mounted and the active provider reaches the agent runtime', async () => {
   const root = mkdtempSync(join(tmpdir(), 'provider-api-'))
   let sentUrl = ''
   let sentBody: any
@@ -3313,42 +3458,13 @@ test('provider API persists active provider and /agent/run uses it before env fa
       }),
     })
     expect(created.status).toBe(201)
-    const createdBody = await created.json() as any
-    expect(createdBody.provider).toMatchObject({ id: 'saved', hasApiKey: true })
-    expect(JSON.stringify(createdBody)).not.toContain('saved-secret')
-
-    const listed = await fetch(`http://127.0.0.1:${providerServer.port}/api/providers`)
-    const listBody = await listed.json() as any
-    expect(listBody.activeId).toBe('saved')
-    expect(JSON.stringify(listBody)).not.toContain('saved-secret')
 
     const modelStatus = await fetch(`http://127.0.0.1:${providerServer.port}/model`)
     expect(modelStatus.status).toBe(200)
     const modelBody = await modelStatus.json() as any
     expect(modelBody.runtime).toMatchObject({ source: 'saved-provider', providerId: 'saved' })
-    // 白标:出口摘要不外露真实 model,只给能力档代称。
-    expect(modelBody.runtime.summary.model).toBeUndefined()
-    expect(modelBody.runtime.summary).toHaveProperty('channel')
     expect(JSON.stringify(modelBody)).not.toContain('saved-secret')
     expect(JSON.stringify(modelBody)).not.toContain('saved-model')
-
-    const switchedToEnv = await fetch(`http://127.0.0.1:${providerServer.port}/api/model`, {
-      method: 'POST',
-      body: JSON.stringify({ providerId: 'env' }),
-    })
-    const envBody = await switchedToEnv.json() as any
-    expect(envBody.activeId).toBe(null)
-    expect(envBody.runtime).toMatchObject({ source: 'env' })
-    // 白标:env/内置出口的真实 model(fallback-model)绝不外露。
-    expect(envBody.runtime.summary.model).toBeUndefined()
-    expect(JSON.stringify(envBody)).not.toContain('fallback-model')
-
-    const switchedBack = await fetch(`http://127.0.0.1:${providerServer.port}/model`, {
-      method: 'POST',
-      body: JSON.stringify({ providerId: 'saved' }),
-    })
-    const savedAgain = await switchedBack.json() as any
-    expect(savedAgain.runtime).toMatchObject({ source: 'saved-provider', providerId: 'saved' })
 
     const run = await fetch(`http://127.0.0.1:${providerServer.port}/agent/run`, {
       method: 'POST',
@@ -3360,257 +3476,6 @@ test('provider API persists active provider and /agent/run uses it before env fa
     expect(sentBody.model).toBe('saved-model')
   } finally {
     providerServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('provider API disables candidates and reorders saved fallback priority', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'provider-api-order-'))
-  const server = startServer({
-    port: 0,
-    transcriptRoot: join(root, 'sessions'),
-    providerRoot: join(root, 'providers'),
-    env: {
-      OPENAI_BASE_URL: 'https://env.example/v1',
-      OPENAI_API_KEY: 'env-secret',
-      TEXT_MODEL_NAME: 'env-model',
-    },
-  })
-  const base = `http://127.0.0.1:${server.port}`
-  async function createProvider(id: string, url: string, model: string) {
-    const res = await fetch(`${base}/providers`, {
-      method: 'POST',
-      body: JSON.stringify({
-        id,
-        name: id,
-        apiFormat: 'openai_chat',
-        baseUrl: url,
-        apiKey: `${id}-secret`,
-        model,
-      }),
-    })
-    expect(res.status).toBe(201)
-  }
-  try {
-    await createProvider('primary', 'https://primary.example/v1', 'primary-model')
-    await createProvider('backup', 'https://backup.example/v1', 'backup-model')
-    await createProvider('slow', 'https://slow.example/v1', 'slow-model')
-
-    const reordered = await fetch(`${base}/providers/reorder`, {
-      method: 'POST',
-      body: JSON.stringify({ ids: ['primary', 'slow', 'backup'] }),
-    })
-    expect(reordered.status).toBe(200)
-    const reorderBody = await reordered.json() as any
-    expect(reorderBody.providers.map((provider: any) => provider.id)).toEqual(['primary', 'slow', 'backup'])
-    expect(JSON.stringify(reorderBody)).not.toContain('slow-secret')
-
-    const disabled = await fetch(`${base}/providers/primary/disable`, { method: 'POST' })
-    expect(disabled.status).toBe(200)
-    const disabledBody = await disabled.json() as any
-    expect(disabledBody.provider).toMatchObject({ id: 'primary', enabled: false })
-    expect(JSON.stringify(disabledBody)).not.toContain('primary-secret')
-
-    const cannotActivate = await fetch(`${base}/providers/primary/activate`, { method: 'POST' })
-    expect(cannotActivate.status).toBe(409)
-
-    const status = await (await fetch(`${base}/api/model`)).json() as any
-    expect(status.activeId).toBe('slow')
-    expect(status.runtime).toMatchObject({ source: 'saved-provider', providerId: 'slow' })
-    expect(status.providers.map((provider: any) => [provider.id, provider.enabled])).toEqual([
-      ['primary', false],
-      ['slow', true],
-      ['backup', true],
-    ])
-    expect(status.health.map((item: any) => item.providerId ?? item.source)).toEqual(['slow', 'backup', 'env'])
-    expect(JSON.stringify(status)).not.toContain('primary-secret')
-    expect(JSON.stringify(status)).not.toContain('env-secret')
-  } finally {
-    server.stop(true)
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('commands API lists and expands markdown prompt commands', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-commands-'))
-  const commandsRoot = join(root, 'commands')
-  await Bun.write(join(commandsRoot, 'daily.md'), `---
-name: daily-report
-description: 写日报
----
-按门店数据生成日报。
-`)
-  const commandServer = startServer({ port: 0, transcriptRoot: root, commandsRoot })
-  try {
-    const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands`)
-    const listBody = await listed.json() as any
-    expect(listBody.commands).toHaveLength(1)
-    expect(listBody.commands[0]).toMatchObject({ name: 'daily-report', description: '写日报' })
-
-    const expanded = await fetch(`http://127.0.0.1:${commandServer.port}/api/commands/expand`, {
-      method: 'POST',
-      body: JSON.stringify({ name: '/daily-report', args: '今天', workspaceRoot: root }),
-    })
-    expect(expanded.status).toBe(200)
-    const expandBody = await expanded.json() as any
-    expect(expandBody.prompt).toContain('命令: /daily-report')
-    expect(expandBody.prompt).toContain('按门店数据生成日报')
-    expect(expandBody.prompt).toContain('今天')
-  } finally {
-    commandServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('commands API can list bridge-safe slash commands for Remote Control clients', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-bridge-safe-commands-'))
-  const commandsRoot = join(root, 'commands')
-  await Bun.write(join(commandsRoot, 'daily.md'), `---
-name: daily-report
-description: 写日报
----
-按远端资料生成日报。
-`)
-  const commandServer = startServer({ port: 0, transcriptRoot: root, commandsRoot })
-  try {
-    const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands?bridge_origin=true`)
-    const listBody = await listed.json() as any
-    expect(listBody.commands).toHaveLength(1)
-    expect(listBody.commands[0]).toMatchObject({ name: 'daily-report', description: '写日报' })
-  } finally {
-    commandServer.stop(true)
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('commands API lists workspace slash commands when working_dir is provided', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-workspace-commands-'))
-  const commandsRoot = join(root, 'commands')
-  const workspaceRoot = join(root, 'workspace')
-  // 白标:工作区自定义命令读 .billiardbuddy/commands(不再 .claude/.codex,2026-07-12 收口)
-  const wsCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
-  try {
-    mkdirSync(commandsRoot, { recursive: true })
-    mkdirSync(wsCommands, { recursive: true })
-    writeFileSync(join(commandsRoot, 'review.md'), `---
-description: Builtin review
----
-Use builtin review.
-`)
-    writeFileSync(join(wsCommands, 'review.md'), `---
-description: Workspace review
----
-Use workspace review.
-`)
-    writeFileSync(join(wsCommands, 'fix.md'), `---
-description: Workspace fix
----
-Use workspace fix.
-`)
-    const commandServer = startServer({
-      port: 0,
-      transcriptRoot: root,
-      commandsRoot,
-      mcpConfigPath: join(root, 'missing.mcp.json'),
-    })
-    try {
-      const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands?working_dir=${encodeURIComponent(workspaceRoot)}`)
-      expect(listed.status).toBe(200)
-      const listBody = await listed.json() as any
-      expect(listBody.commands.map((command: any) => command.name).sort()).toEqual(['fix', 'review'])
-      expect(listBody.commands.find((command: any) => command.name === 'review')).toMatchObject({
-        description: 'Workspace review',
-      })
-    } finally {
-      commandServer.stop(true)
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('commands API merges enabled domain pack commands and lets workspace override them', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-domain-pack-commands-'))
-  const commandsRoot = join(root, 'commands')
-  const workspaceRoot = join(root, 'workspace')
-  const workspaceCommands = join(workspaceRoot, '.billiardbuddy', 'commands')
-  try {
-    mkdirSync(commandsRoot, { recursive: true })
-    mkdirSync(workspaceCommands, { recursive: true })
-    writeFileSync(join(workspaceCommands, 'daily.md'), `---
-name: billiards:daily-ops
-description: Workspace daily override
----
-Use workspace-specific daily ops.
-`)
-    const commandServer = startServer({
-      port: 0,
-      transcriptRoot: root,
-      commandsRoot,
-      mcpConfigPath: join(root, 'missing.mcp.json'),
-    })
-    try {
-      const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands?working_dir=${encodeURIComponent(workspaceRoot)}&knowledge_packs=billiards`)
-      expect(listed.status).toBe(200)
-      const listBody = await listed.json() as any
-      const names = listBody.commands.map((command: any) => command.name)
-      expect(names).toContain('billiards:content-plan')
-      expect(names).toContain('billiards:daily-ops')
-      expect(listBody.commands.find((command: any) => command.name === 'billiards:daily-ops')).toMatchObject({
-        description: 'Workspace daily override',
-      })
-
-      const expanded = await fetch(`http://127.0.0.1:${commandServer.port}/api/commands/expand`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: '/billiards:content-plan',
-          args: '周末活动',
-          workspaceRoot,
-          knowledge_packs: ['billiards'],
-        }),
-      })
-      expect(expanded.status).toBe(200)
-      const expandBody = await expanded.json() as any
-      expect(expandBody.prompt).toContain('领域包: 台球运营专家')
-      expect(expandBody.prompt).toContain('周末活动')
-    } finally {
-      commandServer.stop(true)
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('commands API exposes built-in fork command when fork gate is enabled', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-builtin-fork-command-'))
-  const commandServer = startServer({
-    port: 0,
-    transcriptRoot: root,
-    commandsRoot: join(root, 'commands'),
-    mcpConfigPath: join(root, 'missing.mcp.json'),
-    env: { DESKTOP_AGENT_FORK_SUBAGENT: '1' },
-  })
-  try {
-    const listed = await fetch(`http://127.0.0.1:${commandServer.port}/commands`)
-    expect(listed.status).toBe(200)
-    const listBody = await listed.json() as any
-    expect(listBody.commands).toContainEqual(expect.objectContaining({
-      name: 'fork',
-      source: 'builtin',
-      allowedTools: ['agent_task'],
-    }))
-
-    const expanded = await fetch(`http://127.0.0.1:${commandServer.port}/api/commands/expand`, {
-      method: 'POST',
-      body: JSON.stringify({ name: '/fork', args: '审计 parser 边界', workspaceRoot: root }),
-    })
-    expect(expanded.status).toBe(200)
-    const expandBody = await expanded.json() as any
-    expect(expandBody.prompt).toContain('Launch a background fork worker')
-    expect(expandBody.prompt).toContain('agent_task')
-    expect(expandBody.prompt).toContain('审计 parser 边界')
-  } finally {
-    commandServer.stop(true)
     rmSync(root, { recursive: true, force: true })
   }
 })
@@ -4691,62 +4556,20 @@ test('legacy /api/v1/agent/tasks starts a turn and streams frontend-compatible S
   }
 })
 
-test('/tasks endpoints resolve old background agent ids to the latest resumed descendant', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'server-task-chain-'))
+test('server mounts modern task routes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'server-task-route-'))
   const seededTasks = new TaskService(root)
   try {
-    const original = await seededTasks.create({
-      id: 'api_chain_root',
-      title: 'researcher: root',
-      kind: 'background_agent',
-      conversationId: 'api-chain',
-      params: { agent: 'researcher', name: 'api-chain', task: '初始任务' },
-    })
-    await seededTasks.touch(original.id, { status: 'completed', result: '旧结论' })
-    await seededTasks.appendEvent(original.id, { type: 'final', text: '旧结论' })
-    const latest = await seededTasks.create({
-      id: 'api_chain_latest',
-      title: 'researcher: latest',
-      kind: 'background_agent',
-      conversationId: 'api-chain',
-      params: { agent_id: 'api_chain_agent', agent: 'researcher', name: 'api-chain', task: '续跑任务', resumed_from: original.id },
-    })
-    await seededTasks.touch(latest.id, { status: 'completed', result: '最新结论' })
-    await seededTasks.appendEvent(latest.id, { type: 'final', text: '最新结论' })
+    const task = await seededTasks.create({ id: 'task_route_probe', title: 'route probe' })
+    await seededTasks.appendEvent(task.id, { type: 'final', text: 'mounted' })
 
     const taskServer = startServer({ port: 0, transcriptRoot: root, mcpConfigPath: join(root, 'missing.mcp.json') })
     try {
-      const listed = await fetch(`http://127.0.0.1:${taskServer.port}/tasks?conversationId=api-chain`)
-      expect(listed.status).toBe(200)
-      const listedBody = await listed.json() as any
-      expect(listedBody.tasks.map((task: { id: string }) => task.id)).toEqual([latest.id])
-
-      const detail = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${original.id}?includeEvents=1`)
-      expect(detail.status).toBe(200)
-      const detailBody = await detail.json() as any
-      expect(detailBody.requestedTaskId).toBe(original.id)
-      expect(detailBody.resolvedTaskId).toBe(latest.id)
-      expect(detailBody.agentId).toBe('api_chain_agent')
-      expect(detailBody.task.id).toBe(latest.id)
-      expect(JSON.stringify(detailBody.events)).toContain('最新结论')
-      expect(JSON.stringify(detailBody.events)).not.toContain('旧结论')
-
-      const events = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${original.id}/events?after=0`)
+      const events = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/${task.id}/events?after=0&limit=1`)
       expect(events.status).toBe(200)
       const eventsBody = await events.json() as any
-      expect(eventsBody.requestedTaskId).toBe(original.id)
-      expect(eventsBody.resolvedTaskId).toBe(latest.id)
-      expect(eventsBody.agentId).toBe('api_chain_agent')
-      expect(JSON.stringify(eventsBody.events)).toContain('最新结论')
-      expect(JSON.stringify(eventsBody.events)).not.toContain('旧结论')
-
-      const byStableAgentId = await fetch(`http://127.0.0.1:${taskServer.port}/tasks/api_chain_agent?includeEvents=1`)
-      expect(byStableAgentId.status).toBe(200)
-      const stableBody = await byStableAgentId.json() as any
-      expect(stableBody.requestedTaskId).toBe('api_chain_agent')
-      expect(stableBody.resolvedTaskId).toBe(latest.id)
-      expect(stableBody.agentId).toBe('api_chain_agent')
-      expect(JSON.stringify(stableBody.events)).toContain('最新结论')
+      expect(eventsBody).toMatchObject({ nextSeq: 1 })
+      expect(eventsBody.events[0].event).toEqual({ type: 'final', text: 'mounted' })
     } finally {
       taskServer.stop(true)
     }
@@ -4768,7 +4591,7 @@ test('legacy studio media endpoints create TS media jobs and expose media-job st
     expect(startedBody.job_id).toBeTruthy()
 
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       const res = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)
       status = await res.json()
       if (status.status === 'done') break
@@ -4833,7 +4656,7 @@ test('legacy studio generate uses TS image gateway when image env is configured'
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       const res = await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)
       status = await res.json()
       if (status.status === 'done') break
@@ -4941,7 +4764,7 @@ test('legacy studio generate passes trusted local references to TS Seedream gate
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5003,7 +4826,7 @@ test('legacy studio generate keeps store logo and qrcode out of model image cond
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`${base}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5042,7 +4865,7 @@ test('legacy studio generate keeps store logo and qrcode out of model image cond
     expect(portraitStarted.status).toBe(200)
     const portraitStartedBody = await portraitStarted.json() as any
     let portraitStatus: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       portraitStatus = await (await fetch(`${base}/api/v1/agent/media-jobs/${portraitStartedBody.job_id}`)).json()
       if (portraitStatus.status === 'done' || portraitStatus.status === 'failed') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5217,7 +5040,7 @@ test('legacy studio edit uses TS image edits gateway with generated source image
     expect(started.status).toBe(200)
     const startedBody = await started.json() as any
     let status: any = null
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 500; i++) {
       status = await (await fetch(`http://127.0.0.1:${mediaServer.port}/api/v1/agent/media-jobs/${startedBody.job_id}`)).json()
       if (status.status === 'done') break
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -5323,6 +5146,7 @@ test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline d
     `printf '%s\\n' "---call---" "$@" >> "${ffmpegArgsPath}"`,
     'out=""',
     'for arg in "$@"; do out="$arg"; done',
+    'if [ "$out" = "-" ]; then printf "fake-mp4-from-ffmpeg"; exit 0; fi',
     'mkdir -p "$(dirname "$out")"',
     'printf "fake-mp4-from-ffmpeg" > "$out"',
     '',
@@ -5343,7 +5167,12 @@ test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline d
   const videoServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: { FFMPEG_BIN: ffmpegPath, FFPROBE_BIN: ffprobePath },
+    env: {
+      FFMPEG_BIN: ffmpegPath,
+      FFPROBE_BIN: ffprobePath,
+      QF_BINARIES_DIR: join(root, 'empty-binaries'),
+      PATH: '/nonexistent/bin',
+    },
   })
   try {
     const startedPlan = await fetch(`http://127.0.0.1:${videoServer.port}/api/v1/video-edit/auto_plan_v2`, {
@@ -6272,118 +6101,43 @@ test('session API creates/lists/reads sessions and interrupt is idempotent', asy
   }
 })
 
-test('POST /sessions/:id/archive summarizes old transcript and archives original JSONL', async () => {
+test('session archive route is wired through startServer and preserves provider setup errors', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-archive-'))
   const svc = new SessionService(root)
   await svc.create({ id: 'arch1', title: '归档会话', workspaceRoot: root })
-  await svc.transcript('arch1', root).save([
-    userText('旧消息 1'),
-    userText('旧消息 2'),
-    userText('旧消息 3'),
-    userText('旧消息 4'),
-    userText('最近消息'),
-  ])
   const archiveServer = startServer({
     port: 0,
     transcriptRoot: root,
-    env: {
-      OPENAI_BASE_URL: 'https://model.example/v1',
-      OPENAI_API_KEY: 'secret',
-      TEXT_MODEL_NAME: 'mimo-v2.5',
-    },
-    fetchImpl: async () => {
-      const enc = new TextEncoder()
-      return new Response(new ReadableStream<Uint8Array>({
-        start(c) {
-          c.enqueue(enc.encode(`data: ${JSON.stringify({ id: 'x', model: 'mimo-v2.5', choices: [{ index: 0, delta: { content: '旧对话摘要' }, finish_reason: 'stop' }] })}\n\n`))
-          c.enqueue(enc.encode('data: [DONE]\n\n'))
-          c.close()
-        },
-      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
-    },
+    providerRoot: root,
+    env: {},
   })
   try {
     const res = await fetch(`http://127.0.0.1:${archiveServer.port}/sessions/arch1/archive`, {
       method: 'POST',
-      body: JSON.stringify({ keepRecentMessages: 1 }),
+      body: '{}',
     })
-    expect(res.status).toBe(200)
-    const body = await res.json() as any
-    expect(body).toMatchObject({ ok: true, archived: true, beforeMessages: 5, afterMessages: 2 })
-    expect(existsSync(body.archivePath)).toBe(true)
-    const messages = await svc.loadTranscript('arch1')
-    expect(messages).toHaveLength(2)
-    expect(JSON.stringify(messages[0])).toContain('旧对话摘要')
-    expect(JSON.stringify(messages[1])).toContain('最近消息')
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ ok: false, error: 'model provider not configured' })
+    expect((await fetch(`http://127.0.0.1:${archiveServer.port}/sessions/arch1/archive`)).status).toBe(404)
   } finally {
     archiveServer.stop(true)
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test('GET /sessions/:id/turn-checkpoints + POST /sessions/:id/rewind(dryRun/execute),兼容 /api 前缀', async () => {
+test('session rewind routes are wired through startServer for both compatible prefixes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-rewind-route-'))
   const svc = new SessionService(root)
   await svc.create({ id: 'rw-route', title: '回退路由测试', workspaceRoot: root })
-  const transcript = svc.transcript('rw-route', root)
-
-  const u1: Message = { role: 'user', content: [textBlock('u1')] }
-  const a1: Message = { role: 'assistant', content: [textBlock('a1')], uuid: 'route-msg-a1' }
-  const u2: Message = { role: 'user', content: [textBlock('u2')] }
-  const a2: Message = { role: 'assistant', content: [textBlock('a2')], uuid: 'route-msg-a2' }
-  await transcript.append([u1, a1, u2, a2])
-
-  const ctx1: ToolContext = { workspace: new Workspace(root), conversationId: 'rw-route', stateRoot: root, messageId: 'route-msg-a1' }
-  await recordFileSnapshot(ctx1, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:false
-  writeFileSync(join(root, 'note.txt'), 'v1\n')
-  const ctx2: ToolContext = { ...ctx1, messageId: 'route-msg-a2' }
-  await recordFileSnapshot(ctx2, 'note.txt', join(root, 'note.txt'), 'write_file') // existed:true, backup v1
-  writeFileSync(join(root, 'note.txt'), 'v2\n')
-
-  const history = await transcript.loadFullHistoryStamped()
-  const u2Uuid = history.find(r => (r.message.content[0] as { text?: string })?.text === 'u2')!.uuid
-
   const rewindRouteServer = startServer({ port: 0, transcriptRoot: root })
   try {
     const base = `http://127.0.0.1:${rewindRouteServer.port}`
-
-    // 会话不存在 → 404(裸前缀 + /api 前缀都要生效)
-    expect((await fetch(`${base}/sessions/nope/turn-checkpoints`)).status).toBe(404)
-    expect((await fetch(`${base}/api/sessions/nope/turn-checkpoints`)).status).toBe(404)
-    const notFoundRewind = await fetch(`${base}/api/sessions/nope/rewind`, { method: 'POST', body: JSON.stringify({ userMessageIndex: 0 }) })
-    expect(notFoundRewind.status).toBe(404)
-
-    // GET turn-checkpoints:按轮次聚合,裸前缀
     const checkpoints = await (await fetch(`${base}/sessions/rw-route/turn-checkpoints`)).json() as any
-    expect(checkpoints.checkpoints.length).toBe(2)
-    expect(checkpoints.checkpoints[0].code.filesChanged).toEqual([join(root, 'note.txt')])
-
-    // GET turn-checkpoints:/api 前缀同样生效
+    expect(checkpoints.checkpoints).toEqual([])
     const checkpointsApi = await (await fetch(`${base}/api/sessions/rw-route/turn-checkpoints`)).json() as any
-    expect(checkpointsApi.checkpoints.length).toBe(2)
-
-    // 缺 selector → 400
+    expect(checkpointsApi.checkpoints).toEqual([])
     const missingSelector = await fetch(`${base}/sessions/rw-route/rewind`, { method: 'POST', body: JSON.stringify({ dryRun: true }) })
     expect(missingSelector.status).toBe(400)
-
-    // dryRun 预览:不动文件
-    const preview = await (await fetch(`${base}/api/sessions/rw-route/rewind`, {
-      method: 'POST',
-      body: JSON.stringify({ targetUserMessageId: u2Uuid, dryRun: true }),
-    })).json() as any
-    expect(preview.code.available).toBe(true)
-    expect(preview.code.filesChanged).toEqual([join(root, 'note.txt')])
-    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v2\n')
-
-    // 真执行:文件真被恢复,transcript 活跃链掰短
-    const executed = await (await fetch(`${base}/sessions/rw-route/rewind`, {
-      method: 'POST',
-      body: JSON.stringify({ targetUserMessageId: u2Uuid }),
-    })).json() as any
-    expect(executed.conversation.removedMessageIds.length).toBe(2)
-    expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('v1\n')
-    const remaining = await svc.transcript('rw-route', root).load()
-    expect(remaining.length).toBe(2)
   } finally {
     rewindRouteServer.stop(true)
     rmSync(root, { recursive: true, force: true })

@@ -28,4 +28,4 @@ import { reserveServerPort, waitForServer, spawnSidecar, killSidecar } from './s
 //   → waitForServer(h,p) → new BrowserWindow().loadURL(前端地址,反代到后端)
 // app.on('before-quit') → killSidecar(child, true)
 ```
-W13 另需(照 cc-haha):IPC 通道 · 首启建作品夹 + `BILLIARDBUDDY_LOCAL=1` seed · 内置资产 `asarUnpack`(whisper `.node`/ffmpeg/sharp/bge-m3 当 sidecar 文件,别指望进单二进制)· electron-builder(dmg/nsis)· electron-updater · 完整端口策略(固定→sticky→随机)+ 启动日志捕获。
+W13 另需(照 cc-haha):IPC 通道 · 首启建作品夹 + `BILLIARDBUDDY_LOCAL=1` seed · 必须本地执行的 FFmpeg 等组件由资产管理器交付(Whisper 默认走服务器,不进包)· electron-builder(dmg/nsis)· electron-updater · 完整端口策略(固定→sticky→随机)+ 启动日志捕获。

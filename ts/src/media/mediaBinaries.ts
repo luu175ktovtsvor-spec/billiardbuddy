@@ -38,8 +38,10 @@ export function resolveExecutable(command: string, env: Env): string | null {
 
 /** 打包内置 binaries 候选目录:显式 env、prod resourcesPath、cwd/desktop/binaries。 */
 export function binaryDirs(env: Env): string[] {
+  const explicitDir = env.QF_BINARIES_DIR?.trim()
+  // 显式目录是受控查找边界；不要再旁路执行 cwd 或相邻目录里的同名二进制。
+  if (explicitDir) return [resolve(explicitDir)]
   const dirs: string[] = []
-  if (env.QF_BINARIES_DIR?.trim()) dirs.push(resolve(env.QF_BINARIES_DIR.trim()))
   const resourcesPath = env.RESOURCES_PATH || (process as unknown as { resourcesPath?: string }).resourcesPath
   if (resourcesPath) dirs.push(join(resourcesPath, 'binaries'))
   dirs.push(join(process.cwd(), 'desktop', 'binaries'))
@@ -238,7 +240,8 @@ export function gateMediaAssets(env: Env | undefined, needs: MediaBinaryNeed[]):
 
 /**
  * 转写组件"准备中"的一句话原因(给 resolveTranscribeAvailability/语音输入用);
- * 没接资产管理器或组件齐全 → null。调用即触发缺失资产的按需下载。
+ * 仅显式本地离线模式调用；没接资产管理器或组件齐全 → null。
+ * 调用即触发缺失资产的按需下载，远程 provider 失败不得调用。
  */
 export function transcribeAssetsPreparingReason(env?: Env): string | null {
   const gate = gateMediaAssets(env, ['whisper'])

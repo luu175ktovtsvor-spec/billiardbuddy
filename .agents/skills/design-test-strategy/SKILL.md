@@ -23,7 +23,8 @@ description: Design proportionate automated and runtime verification for a repos
 3. 前后端契约变化同时测试生产者和消费者；不得只断言字段存在。
 4. 修 Bug 时先写能复现旧错误的失败测试；结构重构先写特征测试锁住行为。
 5. 避免脆弱断言：不绑定无关文案、时间、随机 id、内部调用次数或像素细节。
-6. 把新增检查接入 `bash scripts/quality_gate.sh` 或对应 CI；手动验证必须报告观察结果。
+6. 提取 route 时让行为测试跟随新模块，并保留一个跨过真实 `startServer` 装配的检查；不要只证明孤立 handler。
+7. 确认新增测试能被 `bun test`、Playwright 配置或对应 CI 自动发现；需要新验证入口时再修改质量门。手动验证必须报告观察结果。
 
 ## 输出
 

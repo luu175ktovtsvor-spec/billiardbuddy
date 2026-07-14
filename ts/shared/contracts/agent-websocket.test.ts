@@ -46,6 +46,29 @@ describe('Agent WebSocket 共享契约', () => {
     })).toMatchObject({ permission_mode: 'auto_files' })
   })
 
+  test('审批领域包字段保留缺失与显式空数组两种状态', () => {
+    const omitted = parseClientMessage({
+      type: 'approve',
+      tool: 'run_command',
+      token: 'signed-token',
+    })
+    const disabled = parseClientMessage({
+      type: 'approve',
+      tool: 'run_command',
+      token: 'signed-token',
+      enabled_packs: [],
+    })
+
+    expect('enabled_packs' in omitted).toBe(false)
+    expect(disabled).toMatchObject({ enabled_packs: [] })
+    expect(() => parseClientMessage({
+      type: 'approve',
+      tool: 'run_command',
+      token: 'signed-token',
+      enabled_packs: [1],
+    })).toThrow()
+  })
+
   test('拒绝未知客户端消息和缺少审批令牌的消息', () => {
     expect(() => parseClientMessage({ type: 'unknown' })).toThrow()
     expect(() => parseClientMessage({ type: 'approve', tool: 'write_file', args: {} })).toThrow()

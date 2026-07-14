@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path'
 import { setActiveAssetManager, type ActiveAssetSource } from '../assets/assetManager'
 import type { EnsureAssetResult } from '../assets/types'
 import {
+  binaryDirs,
   ffmpegBinFrom,
   ffprobeBinFrom,
   gateMediaAssets,
@@ -45,16 +46,23 @@ function stubSource(ready: Record<string, string>, ensure?: (id: string) => Ensu
   }
 }
 
-// 隔离 env:PATH 清空 + 内置目录指到空目录,避免开发机装的 ffmpeg 影响断言。
+// 隔离 env:PATH 与内置目录都指到空目录,避免开发机装的 ffmpeg 影响断言。
+// 注意不能用 PATH:''——resolveExecutable 的 `env.PATH || process.env.PATH` 会把空串
+// 当"没传"回落到真机 PATH,隔离就失效了(2026-07-13 真机逮到:~/bin/ffmpeg 泄进断言)。
 function isolatedEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   const emptyDir = mkdtempSync(join(tmpdir(), 'qf-empty-'))
   roots.push(emptyDir)
-  return { PATH: '', QF_BINARIES_DIR: emptyDir, RESOURCES_PATH: emptyDir, ...extra }
+  return { PATH: emptyDir, QF_BINARIES_DIR: emptyDir, RESOURCES_PATH: emptyDir, ...extra }
 }
 
 test('ffmpegBinFrom:env 显式最高且不回退(坏路径也原样用,保持旧降级语义)', () => {
   setActiveAssetManager(stubSource({ ffmpeg: '/managed/ffmpeg' }))
   expect(ffmpegBinFrom(isolatedEnv({ FFMPEG_BIN: '/nonexistent/ffmpeg' }))).toBe('/nonexistent/ffmpeg')
+})
+
+test('QF_BINARIES_DIR 是独占查找边界,不回退到 resources 或 cwd 相邻目录', () => {
+  const env = isolatedEnv({ RESOURCES_PATH: '/fallback/resources' })
+  expect(binaryDirs(env)).toEqual([env.QF_BINARIES_DIR!])
 })
 
 test('ffmpegBinFrom:无显式覆盖时优先资产管理器 ready 路径,其次内置目录,最后 PATH 兜底', () => {
@@ -111,18 +119,29 @@ test('转写可用性:资产管理器在下时 reason 是"正在后台准备(x%)
     requested.push(id)
     return { status: 'downloading', progress: 12 }
   }))
-  const availability = resolveTranscribeAvailability(isolatedEnv({ WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
+  const availability = resolveTranscribeAvailability(isolatedEnv({ QF_TRANSCRIBE_MODE: 'local', WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
   expect(availability.available).toBe(false)
   expect(availability.reason).toContain('正在后台准备')
   expect(availability.reason).toContain('12%')
   expect(requested.sort()).toEqual(['whisper-cli', 'whisper-model'])
 })
 
-test('转写可用性:没接资产管理器保持旧提示(需打包……)', () => {
+test('转写可用性:显式本地模式但没接资产管理器时给离线引擎提示', () => {
   setActiveAssetManager(null)
-  const availability = resolveTranscribeAvailability(isolatedEnv({ WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
+  const availability = resolveTranscribeAvailability(isolatedEnv({ QF_TRANSCRIBE_MODE: 'local', WHISPER_CLI: '', WHISPER_CPP_BIN: '' }))
   expect(availability.available).toBe(false)
-  expect(availability.reason).toContain('需打包')
+  expect(availability.reason).toContain('本地离线引擎')
+})
+
+test('转写可用性:远程未配置不会自动下载本地 Whisper', () => {
+  const requested: string[] = []
+  setActiveAssetManager(stubSource({}, id => {
+    requested.push(id)
+    return { status: 'downloading', progress: 1 }
+  }))
+  const availability = resolveTranscribeAvailability(isolatedEnv())
+  expect(availability).toMatchObject({ available: false, reason: '语音识别服务器未配置' })
+  expect(requested).toEqual([])
 })
 
 test('字幕中文字体:资产就绪 → fontsdir=字体所在目录 + 默认字体族,env 可换族名', () => {

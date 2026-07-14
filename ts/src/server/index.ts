@@ -1,22 +1,15 @@
 import { executeApproved, handleReject, runAgentLoop } from '../harness/loop'
-import { resolveBundledDir } from '../harness/bundledRoot'
 import { getWorkspaceGitStatus } from '../harness/env'
 import { buildSystemPrompt } from '../harness/systemPrompt'
-import { collectDiscoveryEntries, toPublicCommandEntries } from '../harness/skillListing'
 import { summarizeWorkspaceProjectInstructions } from '../harness/projectInstructions'
 import { scriptedModel } from '../harness/fakeModel'
 import { compactPipeline } from '../context/compaction'
-import { createModelFromProviderCandidates } from '../model/modelFactory'
 import { getConfiguredOrBuiltInModelContextWindow } from '../model/modelContextWindows'
-import {
-  PUBLIC_TEXT_CHANNEL,
-  publicProviderSummary,
-  scrubProviderIdentifiers,
-  toPublicProviderView,
-} from '../model/publicModelNames'
+import { publicProviderSummary, scrubProviderIdentifiers, toPublicProviderView } from '../model/publicModelNames'
 import { createChatOutputScrubber } from '../harness/outputScrub'
 import { SessionService, TurnRegistry, type SessionEventRecord, type SessionStatus, type SessionStreamEvent } from './services/sessionService'
-import { SessionRewindService, type RewindTargetSelector } from './services/sessionRewindService'
+import { SessionArchiveError, SessionArchiveService } from './services/sessionArchiveService'
+import { SessionRewindService } from './services/sessionRewindService'
 import { ProviderService, type RuntimeProviderResolution } from './services/providerService'
 import { ProviderHealthStore, type ProviderHealthEntry } from './services/providerHealthStore'
 import { LegacyAgentStore, type LegacyArtifact } from './services/legacyAgentStore'
@@ -26,48 +19,28 @@ import { createTelemetryService } from './services/telemetry'
 import { EMBEDDED_FRONTEND } from './embeddedFrontend'
 import { UserSettingsStore } from './services/userSettings'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
-import {
-  OfficeDocumentError,
-  editCsvCell,
-  editXlsxCell,
-  isDocxPath,
-  isPptxPath,
-  isXlsxPath,
-  readOfficeDocumentBlocks,
-  readXlsxSheet,
-  renderMinimalPptx,
-  renderMinimalXlsx,
-  saveOfficeDocumentBlocks,
-} from '../utils/officeDocuments'
 import { getLogger } from '../utils/logger'
 import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLocalCors } from './middleware/http'
 import { VoiceTranscriptionError, transcribeVoiceFile } from './services/voiceTranscription'
 import { buildGeneralRegistry } from '../tools/generalTools'
 import { workspaceForActiveWorktree } from '../tools/worktreeTools'
-import { activateConditionalSkillsForPaths, allowSkillTools, bundledSkillsRoot, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, loadLayeredSkills, loadSkillsDir, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
+import { activateConditionalSkillsForPaths, allowSkillTools, FILE_TOUCH_TOOL_NAMES, formatUseSkillResult, recordInvokedSkill, registerSkillHooks, toolInputFilePaths, userSkillsRoot } from '../skills/skillLoader'
 import { createInvokedSkillsMessage, restoreInvokedSkillsFromMessages } from '../skills/invokedSkills'
-import { createBuiltinCommandLibrary, isBuiltinForkCommand } from '../commands/builtinCommands'
+import { isBuiltinForkCommand } from '../commands/builtinCommands'
 import { allowedToolsForAgent } from '../commands/allowedTools'
-import { bridgeUnsafeCommandMessage, type CommandLibrary, filterBridgeSafeCommands, isBridgeSafeCommand, loadCommandsDir, loadCommandsFromRoots, mergeCommandLibraries, normalizeCommandName, parseCommandInvocation, publicCommand } from '../commands/commandLoader'
+import { bridgeUnsafeCommandMessage, isBridgeSafeCommand, normalizeCommandName, parseCommandInvocation } from '../commands/commandLoader'
 import type { PromptCommand } from '../commands/types'
 import { loadPluginHookRegistry, loadWorkspaceHookRegistry } from '../hooks/hookConfig'
-import { applyElicitationHooks, applyElicitationResultHooks, applySessionEndHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
-import { createDomainPackCommandLibrary, createDomainPackTools, listPublicDomainPacks, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, registerDomainPackCommandAliases, resolveEnabledPacks, suggestedSkillNamesForPacks, type DomainPack } from '../packs/domainPacks'
-import { clearThreadGoalHook, createGoalHookRegistry, ensureThreadGoalHookFromTranscript, getThreadGoal, parseGoalCommand, setThreadGoalHook } from '../goals/goalState'
+import { applyElicitationHooks, applyElicitationResultHooks, applyUserPromptExpansionHooks, configureHookTrust, type HookRegistry as ElicitationHookRegistry } from '../hooks/hooks'
+import { createDomainPackTools, mergeEnabledPacks, mergeHookRegistries, packIdForCommandName, resolveEnabledPacks, suggestedSkillNamesForPacks } from '../packs/domainPacks'
+import { createGoalHookRegistry } from '../goals/goalState'
 import { loadAgentsDir, type AgentDefinition } from '../agents/agentLoader'
 import { createAgentTaskSidechainTools, createAgentTaskTool } from '../agents/agentTool'
 import { buildForkRunContext } from '../agents/forkSubagent'
-import {
-  closeMcpConnections,
-  defaultElicitationHandler,
-  loadMcpToolsFromFile,
-  type McpElicitationHandler,
-  type McpElicitationHandlerInput,
-  type McpSamplingHandlerInput,
-} from '../mcp/client'
+import { closeMcpConnections, defaultElicitationHandler, loadMcpToolsFromFile, loadMcpToolsFromFiles, type McpElicitationHandler, type McpElicitationHandlerInput } from '../mcp/client'
 import { loadMcpConfigFile } from '../mcp/config'
 import { addMcpServer, defaultWritableMcpConfigPath, MCP_PRESETS, removeMcpServer, setMcpServerDisabled } from '../mcp/configStore'
-import { TaskService, type TaskMeta, type TaskStatus } from '../tasks/taskService'
+import { TaskService, type TaskMeta } from '../tasks/taskService'
 import { TaskListService } from '../tasks/taskListService'
 import { createBackgroundAgentTaskTool, createTaskTools, resumeBackgroundAgentTask, startBackgroundAgentRun, type BackgroundAgentTaskOptions } from '../tasks/taskTools'
 import { createStructuredTaskTools } from '../tasks/taskListTools'
@@ -76,29 +49,23 @@ import { createTeamTools } from '../tasks/teamTools'
 import { startUdsInbox, type UdsInboxServer } from '../tasks/udsInbox'
 import { UdsPeerRegistry, type UdsPeerRecord } from '../tasks/udsPeerRegistry'
 import { BridgePeerRegistry } from '../tasks/bridgePeerRegistry'
-import { BridgeRemoteState, type BridgeRemoteCredentialRecord, type BridgeRemotePermissionResponse, type BridgeRemotePermissionStatus, type BridgeRemoteOutboxStatus } from '../tasks/bridgeRemoteState'
-import { bridgeRemoteConfigFromEnv, createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
-import { BridgeRemoteSubscriber, type BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
-import { createBridgeCodeSessionClient } from '../tasks/bridgeCodeSessionClient'
-import { BridgeWorkerClient, type BridgeWorkerSessionState } from '../tasks/bridgeWorkerClient'
-import { BridgeWorkerStream } from '../tasks/bridgeWorkerStream'
-import { BridgeWorkerRefreshScheduler, type BridgeWorkerRefreshCause } from '../tasks/bridgeWorkerRefreshScheduler'
+import { BridgeRemoteState } from '../tasks/bridgeRemoteState'
+import { createBridgeRemoteTransport } from '../tasks/bridgeRemoteTransport'
+import type { BridgeRemoteWebSocketConstructor } from '../tasks/bridgeRemoteSubscriber'
 import { projectBridgeSdkEvent } from '../tasks/bridgeSdkEventProjection'
-import { resolveInboundUserMessage, type BridgeInboundContent, type BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
-import { MediaJobService, resolveMediaBackendUrl, type MediaJobKind } from '../media/mediaJobs'
+import type { BridgeResolvedInboundMessage } from '../tasks/bridgeInboundMessages'
+import { MediaJobService, resolveMediaBackendUrl } from '../media/mediaJobs'
 import { ImageWorkbenchStore } from '../media/imageWorkbenchStore'
 import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
 import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
-import { localStoryboard } from '../media/studioFallbacks'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
-import { VideoEditError, VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
+import { VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
 import { VideoEditingService } from '../media/video-edit/service'
 import { createVideoEditRouteHandler } from '../media/video-edit/routes'
-import { loadOutputStyles, publicOutputStyle, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
-import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths, setPluginEnabled } from '../plugins/pluginLoader'
-import { LIBRARY_DIR_ENV, LIBRARY_DOT_DIR, LIBRARY_SUBDIR, getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
-import { WorkspaceNameError, createNamedWorkspace } from '../workspace/workspaceProvision'
+import { loadOutputStyles, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
+import { defaultPluginInstallDir, defaultPluginRoots, installPluginFromGithub, listPlugins, setPluginEnabled } from '../plugins/pluginLoader'
+import { getDefaultWorkspaceDir } from '../harness/desktopEnvNames'
 import { TurnConsumerTracker } from './turnConsumerTracker'
 import { Workspace } from '../workspace/workspace'
 import { Sandbox } from '../sandbox/sandbox'
@@ -106,39 +73,44 @@ import { McpTrustStore, resolveTrustedMcpConfig } from '../mcp/mcpTrust'
 import { runMigrations } from '../migrations'
 import type { AssistantStep, Model } from '../types/model'
 import { textBlock, type ContentBlock, type Message } from '../types/message'
-import type { AgentEvent, AskQuestionField } from '../types/events'
-import { parseClientMessage, type ServerMessage as AgentServerMessage } from '../../shared/contracts/agent-websocket'
 import { voiceTranscriptionResponseSchema } from '../../shared/contracts/voice'
-import {
-  imageBrandPackPatchSchema, imageBrandPackSchema, imageBriefCompileRequestSchema,
-  imageBriefCompileResponseSchema,
-  studioEditRequestSchema,
-  studioGenerateRequestSchema,
-  studioUpscaleRequestSchema,
-} from '../../shared/contracts/image-workbench'
+import { imageBrandPackPatchSchema, imageBrandPackSchema } from '../../shared/contracts/image-workbench'
 import type { ToolContext } from '../tools/Tool'
 import type { PermissionUpdate } from '../permissions/types'
 import { applyPermissionUpdates } from '../permissions/permissionUpdate'
 import { configurePermissionTrust, loadPermissionRules, permissionUpdatesFromRules, persistPermissionRule } from '../permissions/permissionsSettings'
 import type { FetchLike } from '../proxy/ProxyModel'
-import type { PermissionMode } from '../permissions/types'
-import { canonicalPermissionMode } from '../permissions/canonical'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
-import { getAutoMemDir, getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
-import { existsSync, mkdirSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { getUserConfigHomeDir } from '../harness/memoryNames'
+import { existsSync } from 'node:fs'
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 
-function sseLine(ev: SessionStreamEvent): string {
-  return `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
-}
-
-function sseReplayLine(seq: number, ev: SessionStreamEvent): string {
-  return `id: ${seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`
-}
-
-function legacySseLine(data: Record<string, unknown>): string {
-  return `data: ${JSON.stringify(data)}\n\n`
-}
+import { fallbackEventRecord, legacySseLine, sseLine, wsError, wsSend } from './sse'
+import { delay, isRecord, numberFrom, permissionModeFrom, stringArray, stringOr } from './requestParams'
+import { isSensitiveFilePath, readTextIfExists, summarizeWorkspaceTree } from './workspaceTree'
+import { LEGACY_BYOK_TEXT_PROVIDER_ID, createModelFromRuntimeProviders, providerStatusFor, runtimeProviderKey, runtimeProviderLabel, sanitizeProviderError, validateImageModelPayload } from './providerRuntime'
+import { bridgeRemoteConfigFromBody, inboundContentBlocks, inboundContentPreview } from './bridgeParams'
+import { defaultAgentsRoot, defaultCommandsRoot, defaultMcpConfigPath, defaultSkillsRoot, loadRuntimeExtensionLibraries } from './extensionRoots'
+import { fireSessionEndHooks, handleGoalCommand, messageText, messagingSocketPathFrom, supportContext, workspaceFromBody } from './turnInput'
+import { isDeclineAnswer, mcpSchemaFieldLines, mcpSchemaFields, parseMcpFormAnswer, runMcpSampling, waitForInboxAnswer } from './mcpInteraction'
+import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
+import { createBridgeSessionRouteController } from './routes/bridgeSessionRoutes'
+import { createBridgeWorkerRouteController } from './routes/bridgeWorkerRoutes'
+import { createExtensionDiscoveryRouteHandler } from './routes/extensionDiscoveryRoutes'
+import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createMcpRouteHandler } from './routes/mcpRoutes'
+import { createPluginRouteHandler } from './routes/pluginRoutes'
+import { createProviderRouteHandler } from './routes/providerRoutes'
+import { createScheduledTaskRouteHandler } from './routes/scheduledTaskRoutes'
+import { createSessionActivityRouteHandler } from './routes/sessionActivityRoutes'
+import { createSessionArchiveRouteHandler } from './routes/sessionArchiveRoutes'
+import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoutes'
+import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
+import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
+import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
+import { createWorkspaceFileRouteHandler } from './routes/workspaceFileRoutes'
+import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
+import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
 export interface StartServerOptions {
   host?: string
@@ -173,14 +145,6 @@ export interface StartServerOptions {
   trustedWorkspaceRoots?: string[]
 }
 
-interface WorkspaceTreeEntry {
-  name: string
-  path: string
-  type: 'file' | 'directory'
-  children?: WorkspaceTreeEntry[]
-  truncated?: boolean
-}
-
 type TurnStreamInput = Record<string, unknown> & {
   message?: unknown
   userMessage?: unknown
@@ -190,716 +154,6 @@ type TurnStreamInput = Record<string, unknown> & {
   skipCommandParsing?: boolean
   skipSlashCommands?: boolean
   bridgeOrigin?: boolean
-}
-
-const WORKSPACE_TREE_SKIP = new Set([
-  '.git',
-  '.next',
-  '.agent-state',
-  '.cache',
-  '.mypy_cache',
-  '.playwright-cli',
-  '.pytest_cache',
-  '.ruff_cache',
-  '.superpowers',
-  '.venv',
-  '__pycache__',
-  'node_modules',
-  'dist',
-  'build',
-  'coverage',
-  'out',
-  'output',
-])
-
-// 原始文件字节预览的 content-type(右面板 <img> 渲染图片、pdf 等):按扩展名给,查不到走 octet-stream。
-const RAW_MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
-  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
-  '.avif': 'image/avif', '.pdf': 'application/pdf',
-}
-
-async function summarizeWorkspaceTree(root: string, opts: { maxDepth?: number; maxEntries?: number } = {}) {
-  const maxDepth = opts.maxDepth ?? 2
-  const maxEntries = opts.maxEntries ?? 400
-  let total = 0
-  let truncated = false
-
-  // ⚠️ 顶层(depth 0)永不因预算腰斩:此前是纯深度优先 + 总预算(120),排在前面的目录(如 .claude/.github)
-  // 一递归就把预算吃光,轮不到 ts/ docs/ 这些真正重要的顶层目录 → 文件树只显示头几个点目录=废。
-  // 现在保证同级(尤其顶层)条目全部露出,预算只管"深层要不要展开";深层没展开的目录留 children 为 undefined,
-  // 前端点开时按 fs/list 懒加载(契约已验证),既不丢顶层、又不无限膨胀。
-  async function walk(dir: string, depth: number): Promise<WorkspaceTreeEntry[]> {
-    let entries = await readdir(dir, { withFileTypes: true })
-    entries = entries
-      .filter(entry => entry.name !== '.DS_Store')
-      .filter(entry => !(entry.isDirectory() && WORKSPACE_TREE_SKIP.has(entry.name)))
-      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, 'zh-Hans-CN'))
-
-    const out: WorkspaceTreeEntry[] = []
-    for (const entry of entries) {
-      // 只有深层(depth>0)才受预算约束;顶层一律全列(顶层条目数=目录实际数,通常可控)。
-      if (depth > 0 && total >= maxEntries) {
-        truncated = true
-        break
-      }
-      const abs = resolve(dir, entry.name)
-      const item: WorkspaceTreeEntry = {
-        name: entry.name,
-        path: relative(root, abs) || entry.name,
-        type: entry.isDirectory() ? 'directory' : 'file',
-      }
-      total += 1
-      if (entry.isDirectory() && depth < maxDepth) {
-        if (total >= maxEntries) {
-          // 预算已尽:不预展开,标记 truncated,children 留空 → 前端点开时懒加载,不丢这个目录本身。
-          truncated = true
-          item.truncated = true
-        } else {
-          item.children = await walk(abs, depth + 1)
-          if (item.children.some(c => c.truncated)) item.truncated = true
-        }
-      }
-      out.push(item)
-    }
-    return out
-  }
-
-  try {
-    return { root, entries: await walk(root, 0), total, truncated }
-  } catch (err) {
-    return { root, entries: [], total: 0, truncated: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
-interface AgentWsData {
-  conversationId: string
-  after: number
-}
-
-function permissionModeFrom(value: unknown): PermissionMode {
-  return canonicalPermissionMode(value)
-}
-
-function stringOr(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim()) : []
-}
-
-function messageText(message: Message): string {
-  return message.content
-    .map(block => {
-      if (block.type === 'text') return block.text
-      if (block.type === 'thinking') return block.thinking
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-    .trim()
-}
-
-function inboundContentBlocks(content: BridgeInboundContent): ContentBlock[] {
-  return typeof content === 'string' ? [textBlock(content)] : content
-}
-
-function inboundContentPreview(content: BridgeInboundContent): string {
-  if (typeof content === 'string') return content
-  return content.map(block => {
-    if (block.type === 'text') return block.text
-    if (block.type === 'image') return `[image ${block.source.media_type}]`
-    if (block.type === 'tool_result') {
-      // 多模态兼容:tool_result.content 现在可能是 string 或 blocks 数组(#46)。
-      // string 直接返回;数组时逐块摘要(text 取正文、image 给中性占位),别把数组/对象原样塞进预览。
-      if (typeof block.content === 'string') return block.content
-      return block.content
-        .map(inner => (inner.type === 'text' ? inner.text : `[image ${inner.source.media_type}]`))
-        .filter(Boolean)
-        .join('\n')
-    }
-    return `[${block.type}]`
-  }).filter(Boolean).join('\n').trim()
-}
-
-function isSensitiveFilePath(path: string): boolean {
-  const name = basename(path).toLowerCase()
-  if (name === '.env' || name.startsWith('.env.')) return true
-  if (/\.(pem|key|p12|pfx|crt|cer)$/i.test(name)) return true
-  return /(secret|credential|token|password|api[_-]?key)/i.test(name)
-}
-
-async function readTextIfExists(path: string): Promise<string> {
-  try {
-    return await readFile(path, 'utf8')
-  } catch {
-    return ''
-  }
-}
-
-function runtimeProviderLabel(runtime: RuntimeProviderResolution): string {
-  // 白标：saved-provider 用用户自设的名字（用户自建 BYOK、自己知道），
-  // env/内置出口一律给中性代称，绝不回显 `环境变量:<真实模型>`。
-  if (runtime.source === 'saved-provider') return runtime.providerName || runtime.providerId || PUBLIC_TEXT_CHANNEL.builtin
-  return PUBLIC_TEXT_CHANNEL.builtin
-}
-
-function runtimeProviderKey(runtime: RuntimeProviderResolution): string {
-  if (runtime.source === 'saved-provider' && runtime.providerId) return `saved:${runtime.providerId}`
-  return `${runtime.source}:${runtime.config.apiFormat}:${runtime.config.baseUrl}:${runtime.config.model}`
-}
-
-function sanitizeProviderError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err)
-  // 白标：除清 Bearer/api-key 外，再过 scrubProviderIdentifiers 清掉真实模型名/供应商/endpoint，
-  // 保证这条错误进 health.lastError / 失败旁白后不泄底。
-  return scrubProviderIdentifiers(
-    raw
-      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [redacted]')
-      .replace(/(api[_-]?key["'\s:=]+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'),
-  ).slice(0, 180)
-}
-
-function createModelFromRuntimeProviders(
-  runtimes: RuntimeProviderResolution[],
-  fetchImpl?: StartServerOptions['fetchImpl'],
-  health?: {
-    onFailure?: (runtime: RuntimeProviderResolution, err: unknown) => void
-    onSuccess?: (runtime: RuntimeProviderResolution) => void
-  },
-): Model {
-  return createModelFromProviderCandidates(
-    runtimes.map(runtime => ({
-      label: runtimeProviderLabel(runtime),
-      config: runtime.config,
-      onFailure: err => health?.onFailure?.(runtime, err),
-      onSuccess: () => health?.onSuccess?.(runtime),
-    })),
-    { fetchImpl },
-  )
-}
-
-const LEGACY_BYOK_TEXT_PROVIDER_ID = 'byok-text'
-
-function validateImageModelPayload(body: Record<string, unknown>) {
-  // 白标：BYOK 生图设置校验只回一个通用结论，绝不回显真实 provider 名或 known_models
-  // （原来会吐 openai/volcengine + gpt-image-2/doubao-seedream-* 硬编码真名）。
-  const model = typeof body.model === 'string' ? body.model.trim() : ''
-  if (!model) {
-    return { ok: false, level: 'warning', message: '缺少生图模型名。' }
-  }
-  return { ok: true, level: 'info', message: '已记录生图模型设置。' }
-}
-
-/** app 内置技能根(=cc bundled skills):`ts/src/skills/bundled`。旧值指向已删的 server/skills → 写盘/加载全废,已修。 */
-function defaultSkillsRoot(): string {
-  return bundledSkillsRoot()
-}
-
-// SessionEnd 落点(对齐参考实现 executeSessionEndHooks:会话结束时触发,fire-and-forget)。
-// 宿主在"用户删除会话"处调用:载荷带结束原因,失败/超时都不拖垮删除主流程。用最小 ToolContext
-// (无 model——SessionEnd 一般是命令/清理类钩子;若配了 agent/prompt 钩子会因缺 model 优雅降级为非阻塞提示)。
-// hooks 配置走三级加载(loadWorkspaceHookRegistry:~/.billiardbuddy/settings.json + 工作区
-// .billiardbuddy/settings.json + settings.local.json,取代已删除的死路径 server/hooks.json——
-// 该目录随老 Python server/ 一并删除,旧 defaultHooksPath() 恒 undefined,SessionEnd 从未真正加载到过
-// local hook)。project/local 两级来源钩子仍过工作区信任闸;工作区取显式全局默认工作区
-// (getDefaultWorkspaceDir,不选文件夹时的落点)。
-async function fireSessionEndHooks(conversationId: string, reason: string): Promise<void> {
-  try {
-    const registry = await loadWorkspaceHookRegistry(getDefaultWorkspaceDir())
-    if (!registry || registry.rules.length === 0) return
-    const ctx: ToolContext = {
-      workspace: new Workspace(getDefaultWorkspaceDir()),
-      conversationId,
-      permissionMode: 'default',
-    }
-    await applySessionEndHooks(registry, reason, ctx)
-  } catch {
-    // 忽略 SessionEnd 钩子异常,与参考实现的 fire-and-forget 语义一致。
-  }
-}
-
-function defaultCommandsRoot(): string {
-  // 内置 slash 命令(doctor/help/model/...)在 ts/commands。⚠️打包态走 resolveBundledDir(execPath 相对,
-  // 否则编译二进制 cwd=userData / import.meta.dir=/$bunfs 都找不到,打包后内置命令静默消失)。
-  return resolveBundledDir('commands', [
-    join(process.cwd(), 'commands'),
-    join(process.cwd(), 'ts', 'commands'),
-    join(import.meta.dir, '..', '..', 'commands'),
-  ])
-}
-
-function workspaceCommandRoots(workspaceRoot: string): string[] {
-  // 白标铁律(绝不用 .claude,与记忆/指令/存储同走 .billiardbuddy 命名空间):工作区自定义命令读
-  // `<ws>/.billiardbuddy/commands`。丁审计发现此前只读 .claude/.codex、与白标命名不一致,已收口。
-  return [
-    join(workspaceRoot, MEMORY_DOT_DIR, 'commands'),
-  ].filter(existsSync)
-}
-
-async function loadCommandsForWorkspace(workspaceRoot: string, builtInRoot: string, packs: DomainPack[] = [], env: Record<string, string | undefined> = process.env) {
-  const [builtInCommands, workspaceCommands] = await Promise.all([
-    loadCommandsFromRoots([builtInRoot]),
-    // 工作区来源命令的 frontmatter hooks 标 'local'(受信任门约束,防恶意仓库经命令 hooks RCE);
-    // app 内置命令省略 → managed(可信)。与 skills 加载的信任分层同构。
-    loadCommandsFromRoots(workspaceCommandRoots(workspaceRoot), 'local'),
-  ])
-  const merged = mergeCommandLibraries(builtInCommands, createBuiltinCommandLibrary(env), createDomainPackCommandLibrary(packs), workspaceCommands)
-  // 合并会从 commands 数组重建 byName,丢掉领域包别名键;重新挂上让 /台球、/球房、/billiards 都能解析到入口命令。
-  registerDomainPackCommandAliases(merged, packs)
-  return merged
-}
-
-function localCommandMessage(name: string, args: string, output: string): Message {
-  return {
-    role: 'user',
-    content: [textBlock([
-      `<command-name>/${name}</command-name>`,
-      `<command-args>${args}</command-args>`,
-      '<local-command-stdout>',
-      output,
-      '</local-command-stdout>',
-    ].join('\n'))],
-  }
-}
-
-async function handleGoalCommand(conversationId: string, args: string, transcript: { load(): Promise<Message[]>; append(messages: Message[]): Promise<void> }): Promise<{ output: string; shouldQuery: boolean }> {
-  const messages = await transcript.load()
-  let parsed: ReturnType<typeof parseGoalCommand>
-  try {
-    parsed = parseGoalCommand(args)
-  } catch (error) {
-    const output = error instanceof Error ? error.message : String(error)
-    messages.push(localCommandMessage('goal', args, output))
-    await transcript.append(messages)
-    return { output, shouldQuery: false }
-  }
-
-  if (parsed.type === 'clear') {
-    const existing = getThreadGoal(conversationId) ?? ensureThreadGoalHookFromTranscript(conversationId, messages)
-    const cleared = clearThreadGoalHook(conversationId)
-    const output = cleared || existing ? `Goal cleared: ${(cleared ?? existing)!.objective}` : 'No active goal.'
-    messages.push(localCommandMessage('goal', args, output))
-    await transcript.append(messages)
-    return { output, shouldQuery: false }
-  }
-
-  const goal = setThreadGoalHook(conversationId, parsed.objective)
-  const output = `Goal set: ${goal.objective}`
-  messages.push(localCommandMessage('goal', args, output))
-  await transcript.append(messages)
-  return { output, shouldQuery: true }
-}
-
-function defaultAgentsRoot(): string {
-  // app 内置 agents(=cc 的 getBuiltInAgents:general-purpose / Explore / Plan)。cc 把内置 agent 编进代码;
-  // 我们放 `ts/src/agents/bundled/<name>.md`。⚠️打包态定位走 resolveBundledDir(execPath 相对,见其文档:
-  // 编译二进制 import.meta.dir=/$bunfs、cwd=userData 都失效,不修则打包后子代理静默蒸发)。
-  return resolveBundledDir('agents', [
-    join(import.meta.dir, '..', 'agents', 'bundled'),
-    join(process.cwd(), 'src', 'agents', 'bundled'),
-    join(process.cwd(), 'ts', 'src', 'agents', 'bundled'),
-  ])
-}
-
-function defaultMcpConfigPath(workspaceRoot: string, env: Record<string, string | undefined> = process.env): string | undefined {
-  const libraryDir = env[LIBRARY_DIR_ENV]
-  const candidates = [
-    join(workspaceRoot, '.mcp.json'),
-    ...(libraryDir ? [join(libraryDir, '.mcp.json')] : []),
-    join(env.HOME || env.USERPROFILE || process.cwd(), LIBRARY_DOT_DIR, LIBRARY_SUBDIR, '.mcp.json'),
-    join(process.cwd(), '.mcp.json'),
-  ]
-  return candidates.find(existsSync)
-}
-
-function providerStatusFor(error: unknown): number {
-  const message = error instanceof Error ? error.message : String(error)
-  if (message.includes('not found')) return 404
-  if (message.includes('already exists')) return 409
-  if (message.includes('cannot delete active')) return 409
-  if (message.includes('cannot activate disabled')) return 409
-  if (message.includes('required') || message.includes('unsupported') || message.includes('非法')) return 400
-  return 500
-}
-
-function providerPath(url: URL): { matched: boolean; segments: string[] } {
-  const segments = url.pathname.split('/').filter(Boolean)
-  if (segments[0] === 'providers') return { matched: true, segments: segments.slice(1) }
-  if (segments[0] === 'api' && segments[1] === 'providers') return { matched: true, segments: segments.slice(2) }
-  return { matched: false, segments: [] }
-}
-
-function numberFrom(value: unknown, fallback: number): number {
-  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number.parseInt(value, 10) : NaN
-  return Number.isFinite(n) ? n : fallback
-}
-
-function taskStatusFrom(value: unknown): TaskStatus | undefined {
-  return value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled'
-    ? value
-    : undefined
-}
-
-function bridgePermissionStatusFrom(value: unknown): BridgeRemotePermissionStatus | undefined {
-  return value === 'pending' || value === 'allowed' || value === 'denied' || value === 'cancelled'
-    ? value
-    : undefined
-}
-
-function bridgeOutboxStatusFrom(value: unknown): BridgeRemoteOutboxStatus | undefined {
-  return value === 'queued' || value === 'sent' ? value : undefined
-}
-
-function bridgeWorkerSessionStateFrom(value: unknown): BridgeWorkerSessionState | undefined {
-  return value === 'idle' || value === 'running' || value === 'requires_action'
-    ? value
-    : undefined
-}
-
-function bridgePermissionResponseFrom(body: Record<string, unknown>): BridgeRemotePermissionResponse {
-  const behavior = body.behavior
-  if (behavior === 'allow') {
-    return { behavior: 'allow', updatedInput: isRecord(body.updatedInput) ? body.updatedInput : isRecord(body.updated_input) ? body.updated_input : {} }
-  }
-  if (behavior === 'deny') {
-    return { behavior: 'deny', message: stringOr(body.message, 'Permission denied') }
-  }
-  throw new Error('behavior required')
-}
-
-function bridgeRemoteConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
-  const fromEnv = bridgeRemoteConfigFromEnv(env)
-  const nested = isRecord(rawBody.bridgeRemote) ? rawBody.bridgeRemote : isRecord(rawBody.bridge_remote) ? rawBody.bridge_remote : {}
-  const baseUrl = stringOr(rawBody.bridgeRemoteBaseUrl ?? rawBody.bridge_remote_base_url ?? nested.baseUrl ?? nested.base_url, '') || fromEnv?.baseUrl
-  const token = stringOr(rawBody.bridgeRemoteToken ?? rawBody.bridge_remote_token ?? nested.token, '') || fromEnv?.token
-  if (!baseUrl || !token) return null
-  const timeoutRaw = rawBody.bridgeRemoteTimeoutMs ?? rawBody.bridge_remote_timeout_ms ?? nested.timeoutMs ?? nested.timeout_ms
-  const timeoutMs = typeof timeoutRaw === 'number'
-    ? timeoutRaw
-    : typeof timeoutRaw === 'string'
-      ? Number.parseInt(timeoutRaw, 10)
-      : fromEnv?.timeoutMs
-  return {
-    baseUrl,
-    token,
-    orgUuid: stringOr(rawBody.bridgeRemoteOrgUuid ?? rawBody.bridge_remote_org_uuid ?? nested.orgUuid ?? nested.org_uuid, '') || fromEnv?.orgUuid,
-    betaHeader: typeof rawBody.bridgeRemoteBetaHeader === 'string'
-      ? rawBody.bridgeRemoteBetaHeader
-      : typeof rawBody.bridge_remote_beta_header === 'string'
-        ? rawBody.bridge_remote_beta_header
-        : typeof nested.betaHeader === 'string'
-          ? nested.betaHeader
-          : typeof nested.beta_header === 'string'
-            ? nested.beta_header
-            : fromEnv?.betaHeader,
-    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : undefined,
-  }
-}
-
-function bridgeCodeSessionConfigFromBody(rawBody: Record<string, unknown>, env: Record<string, string | undefined>) {
-  const remote = bridgeRemoteConfigFromBody(rawBody, env)
-  if (!remote) return null
-  return {
-    baseUrl: remote.baseUrl,
-    token: remote.token,
-    timeoutMs: remote.timeoutMs,
-  }
-}
-
-function bridgeRefreshConfigFromBody(rawBody: Record<string, unknown>) {
-  const nested = isRecord(rawBody.bridgeRefresh) ? rawBody.bridgeRefresh : isRecord(rawBody.bridge_refresh) ? rawBody.bridge_refresh : {}
-  const enabledRaw = rawBody.bridgeRefreshEnabled ?? rawBody.bridge_refresh_enabled ?? nested.enabled
-  if (enabledRaw === false || enabledRaw === 'false' || enabledRaw === 0 || enabledRaw === '0') return { enabled: false }
-  return {
-    enabled: true,
-    refreshBufferMs: numberFrom(rawBody.bridgeRefreshBufferMs ?? rawBody.bridge_refresh_buffer_ms ?? nested.refreshBufferMs ?? nested.refresh_buffer_ms, 5 * 60 * 1000),
-    minDelayMs: numberFrom(rawBody.bridgeRefreshMinDelayMs ?? rawBody.bridge_refresh_min_delay_ms ?? nested.minDelayMs ?? nested.min_delay_ms, 30_000),
-    retryDelayMs: numberFrom(rawBody.bridgeRefreshRetryDelayMs ?? rawBody.bridge_refresh_retry_delay_ms ?? nested.retryDelayMs ?? nested.retry_delay_ms, 60_000),
-    maxConsecutiveFailures: numberFrom(rawBody.bridgeRefreshMaxFailures ?? rawBody.bridge_refresh_max_failures ?? nested.maxConsecutiveFailures ?? nested.max_consecutive_failures, 3),
-  }
-}
-
-function fallbackEventRecord(event: SessionStreamEvent): SessionEventRecord {
-  return { seq: 0, ts: new Date().toISOString(), event }
-}
-
-function supportContext(rawBody: Record<string, unknown>): string {
-  const blocks: string[] = []
-  const selectedFiles = stringArray(rawBody.selected_files ?? rawBody.selectedFiles)
-  if (selectedFiles.length > 0) {
-    blocks.push(`<selected_files>\n${selectedFiles.map(file => `- ${file}`).join('\n')}\n</selected_files>`)
-  }
-  const goal = stringOr(rawBody.goal, '')
-  if (goal) {
-    blocks.push(`<user_goal>\n${goal}\n</user_goal>`)
-  }
-  if (rawBody.deep_thinking === true || rawBody.deepThinking === true) {
-    blocks.push('用户打开了深度思考。遇到多步骤任务时，先简短拆解，再动手执行；不要只给建议。')
-  }
-  return blocks.length > 0 ? blocks.join('\n\n') : ''
-}
-
-function workspaceFromBody(rawBody: Record<string, unknown>): Workspace {
-  const root = stringOr(rawBody.working_dir ?? rawBody.workspaceRoot, getDefaultWorkspaceDir())
-  // 主 agent 读放行 carve-out(对齐 cc filesystem.ts isAutoMemFile 放行):AutoMem 记忆目录在
-  // 工作区之外(~/.billiardbuddy/projects/<slug>/memory),把它加进 allowedPaths,模型才能 grep/read_file
-  // 读回自己写的记忆(与写侧 save_memory、常驻索引读侧派生同一目录)。先 mkdir 保证它作为「目录」被放行。
-  const memoryDir = getAutoMemDir(new Workspace(root).root)
-  try { mkdirSync(memoryDir, { recursive: true }) } catch { /* 记忆目录创建尽力而为,失败不阻塞会话 */ }
-  return new Workspace(root, {
-    allowedPaths: [...stringArray(rawBody.selected_files ?? rawBody.selectedFiles), memoryDir],
-    fullDiskAccess: rawBody.full_disk_access === true || rawBody.fullDiskAccess === true,
-  })
-}
-
-function messagingSocketPathFrom(rawBody: Record<string, unknown>, env: Record<string, string | undefined>): string {
-  return stringOr(
-    rawBody.messagingSocketPath ?? rawBody.messaging_socket_path ?? rawBody.udsMessagingSocketPath ?? rawBody.uds_messaging_socket_path,
-    '',
-  ) || stringOr(env.CLAUDE_CODE_MESSAGING_SOCKET, '')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function stringifyForPrompt(value: unknown): string {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function mcpSamplingContentText(content: unknown): string {
-  if (Array.isArray(content)) return content.map(mcpSamplingContentText).filter(Boolean).join('\n')
-  if (!content || typeof content !== 'object') return stringifyForPrompt(content)
-  const block = content as Record<string, unknown>
-  if (block.type === 'text' && typeof block.text === 'string') return block.text
-  if (block.type === 'image') return `[image mimeType=${typeof block.mimeType === 'string' ? block.mimeType : 'unknown'}]`
-  if (block.type === 'audio') return `[audio mimeType=${typeof block.mimeType === 'string' ? block.mimeType : 'unknown'}]`
-  if (block.type === 'tool_use') {
-    const name = typeof block.name === 'string' ? block.name : 'unknown'
-    return `<mcp_sampling_tool_use name="${name}">\n${stringifyForPrompt(block.input)}\n</mcp_sampling_tool_use>`
-  }
-  if (block.type === 'tool_result') {
-    const id = typeof block.toolUseId === 'string' ? block.toolUseId : ''
-    // 多模态兼容:tool_result.content 可能是 string 或 blocks 数组(#46)。string 直接取用;
-    // 数组/其它形态交给本函数递归摘要(Array.isArray + typeof 分支已覆盖),不会 crash 也不产出 [object Object]。
-    const inner = typeof block.content === 'string' ? block.content : mcpSamplingContentText(block.content)
-    return `<mcp_sampling_tool_result id="${id}">\n${inner}\n</mcp_sampling_tool_result>`
-  }
-  if (block.type === 'resource' && block.resource && typeof block.resource === 'object') {
-    const resource = block.resource as Record<string, unknown>
-    if (typeof resource.text === 'string') return resource.text
-    if (typeof resource.uri === 'string') return `[resource uri=${resource.uri}]`
-  }
-  if (typeof block.uri === 'string') return `[resource_link uri=${block.uri}]`
-  return stringifyForPrompt(block)
-}
-
-function mcpSamplingMessages(messages: McpSamplingHandlerInput['params']['messages']): Message[] {
-  return messages.map(message => ({
-    role: message.role,
-    content: [textBlock(mcpSamplingContentText(message.content))],
-  }))
-}
-
-async function runMcpSampling(model: Model, modelName: string, params: McpSamplingHandlerInput['params'], signal?: AbortSignal) {
-  const step = await model.step({
-    system: params.systemPrompt,
-    messages: mcpSamplingMessages(params.messages),
-    tools: [],
-    signal,
-  })
-  const text = step.kind === 'final'
-    ? step.text
-    : [
-        step.text,
-        step.calls.length > 0 ? `MCP sampling requested tool use, but this Agent only allows tool execution through the main permission gate: ${step.calls.map(call => call.name).join(', ')}` : '',
-      ].filter(Boolean).join('\n\n')
-  return {
-    model: modelName || 'agent-model',
-    role: 'assistant' as const,
-    content: { type: 'text' as const, text },
-    stopReason: step.kind === 'tool_calls' ? 'toolUse' as const : 'endTurn' as const,
-  }
-}
-
-const MCP_ELICITATION_TIMEOUT_MS = 120000
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
-}
-
-function schemaProperties(params: McpElicitationHandlerInput['params']): Record<string, unknown> {
-  if (params.mode === 'url') return {}
-  const schema = params.requestedSchema
-  return isRecord(schema) && isRecord(schema.properties) ? schema.properties : {}
-}
-
-function schemaRequired(params: McpElicitationHandlerInput['params']): string[] {
-  if (params.mode === 'url') return []
-  const schema = params.requestedSchema
-  return Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === 'string') : []
-}
-
-function primitiveDefault(value: unknown): string | number | boolean | string[] | undefined {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
-  if (Array.isArray(value) && value.every(item => typeof item === 'string')) return value
-  return undefined
-}
-
-function defaultsForSchema(params: McpElicitationHandlerInput['params']): Record<string, string | number | boolean | string[]> {
-  const content: Record<string, string | number | boolean | string[]> = {}
-  for (const [key, prop] of Object.entries(schemaProperties(params))) {
-    if (!isRecord(prop) || !Object.prototype.hasOwnProperty.call(prop, 'default')) continue
-    const value = primitiveDefault(prop.default)
-    if (value !== undefined) content[key] = value
-  }
-  return content
-}
-
-function coerceElicitationValue(raw: unknown, propSchema: unknown): string | number | boolean | string[] | undefined {
-  const schema = isRecord(propSchema) ? propSchema : {}
-  const type = schema.type
-  if (type === 'boolean') {
-    if (typeof raw === 'boolean') return raw
-    if (typeof raw === 'string') {
-      const text = raw.trim().toLowerCase()
-      if (['true', 'yes', 'y', '1', '允许', '是', '对'].includes(text)) return true
-      if (['false', 'no', 'n', '0', '取消', '否', '不'].includes(text)) return false
-    }
-    return undefined
-  }
-  if (type === 'number' || type === 'integer') {
-    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN
-    if (!Number.isFinite(n)) return undefined
-    return type === 'integer' ? Math.trunc(n) : n
-  }
-  if (type === 'array') {
-    if (Array.isArray(raw) && raw.every(item => typeof item === 'string')) return raw
-    if (typeof raw === 'string') return raw.split(/[,\n，]/).map(item => item.trim()).filter(Boolean)
-    return undefined
-  }
-  if (typeof raw === 'string') return raw
-  if (raw === undefined || raw === null) return undefined
-  return String(raw)
-}
-
-function parseKeyValueAnswer(answer: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const line of answer.split(/\r?\n/)) {
-    const match = line.match(/^\s*([^:=：]+)\s*[:=：]\s*(.+?)\s*$/)
-    if (match) out[match[1]!.trim()] = match[2]!.trim()
-  }
-  return out
-}
-
-function parseMcpFormAnswer(answer: string, params: McpElicitationHandlerInput['params']): Record<string, string | number | boolean | string[]> | null {
-  if (params.mode === 'url') return null
-  const properties = schemaProperties(params)
-  const required = schemaRequired(params)
-  const merged: Record<string, unknown> = { ...defaultsForSchema(params) }
-  const trimmed = answer.trim()
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    parsed = parseKeyValueAnswer(trimmed)
-  }
-  if (isRecord(parsed) && Object.keys(parsed).length > 0) {
-    Object.assign(merged, parsed)
-  } else {
-    const missing = required.filter(key => merged[key] === undefined)
-    if (missing.length === 1) merged[missing[0]!] = trimmed
-  }
-
-  const content: Record<string, string | number | boolean | string[]> = {}
-  for (const [key, raw] of Object.entries(merged)) {
-    const prop = properties[key]
-    if (!prop) continue
-    const value = coerceElicitationValue(raw, prop)
-    if (value !== undefined) content[key] = value
-  }
-  if (required.some(key => content[key] === undefined)) return null
-  return content
-}
-
-function mcpSchemaFieldLines(params: McpElicitationHandlerInput['params']): string[] {
-  const required = new Set(schemaRequired(params))
-  return Object.entries(schemaProperties(params)).map(([key, prop]) => {
-    const schema = isRecord(prop) ? prop : {}
-    const title = typeof schema.title === 'string' ? schema.title : key
-    const description = typeof schema.description === 'string' ? ` - ${schema.description}` : ''
-    const type = typeof schema.type === 'string' ? schema.type : 'value'
-    const requiredMark = required.has(key) ? '必填' : '可选'
-    const def = Object.prototype.hasOwnProperty.call(schema, 'default') ? `, 默认 ${stringifyForPrompt(schema.default)}` : ''
-    return `- ${key} (${title}, ${type}, ${requiredMark}${def})${description}`
-  })
-}
-
-function mcpSchemaFields(params: McpElicitationHandlerInput['params']): AskQuestionField[] | undefined {
-  if (params.mode === 'url') return undefined
-  const required = new Set(schemaRequired(params))
-  const fields = Object.entries(schemaProperties(params)).map(([key, prop]): AskQuestionField => {
-    const schema = isRecord(prop) ? prop : {}
-    const title = typeof schema.title === 'string' ? schema.title : key
-    const description = typeof schema.description === 'string' ? schema.description : undefined
-    const enumOptions = Array.isArray(schema.enum) ? schema.enum.filter((item): item is string => typeof item === 'string') : undefined
-    const arrayItemSchema = isRecord(schema.items) ? schema.items : {}
-    const arrayOptions = Array.isArray(arrayItemSchema.enum) ? arrayItemSchema.enum.filter((item): item is string => typeof item === 'string') : undefined
-    const type = schema.type === 'boolean'
-      ? 'boolean'
-      : schema.type === 'number' || schema.type === 'integer'
-        ? 'number'
-        : schema.type === 'array'
-          ? arrayOptions?.length ? 'multiselect' : 'textarea'
-          : enumOptions?.length ? 'select' : 'text'
-    return {
-      name: key,
-      label: title,
-      type,
-      required: required.has(key),
-      ...(description ? { description } : {}),
-      ...(primitiveDefault(schema.default) !== undefined ? { defaultValue: primitiveDefault(schema.default) } : {}),
-      ...((enumOptions?.length || arrayOptions?.length) ? { options: (enumOptions ?? arrayOptions)!.slice(0, 30) } : {}),
-      ...(schema.type === 'array' && !arrayOptions?.length ? { placeholder: '每行一个值' } : {}),
-    }
-  })
-  return fields.length > 0 ? fields : undefined
-}
-
-function isDeclineAnswer(answer: string): boolean {
-  return ['取消', '拒绝', '不允许', 'decline', 'cancel', 'no', '否'].includes(answer.trim().toLowerCase())
-}
-
-async function waitForInboxAnswer(inbox: string[], startLen: number, signal?: AbortSignal, timeoutMs = MCP_ELICITATION_TIMEOUT_MS): Promise<string | null> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (signal?.aborted) return null
-    if (inbox.length > startLen) {
-      const [answer] = inbox.splice(startLen, 1)
-      return typeof answer === 'string' ? answer : null
-    }
-    await delay(100)
-  }
-  return null
-}
-
-function wsSend(ws: { send(data: string): unknown }, data: AgentServerMessage): void {
-  try {
-    ws.send(JSON.stringify(data))
-  } catch {
-    // WebSocket 可能已经断开;turn 继续跑并落 event log,下次连接 replay。
-  }
-}
-
-function wsError(ws: { send(data: string): unknown }, message: string): void {
-  wsSend(ws, { type: 'error', error: message })
 }
 
 function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | null {
@@ -964,6 +218,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
   const stateRoot = resolveStateRoot({ transcriptRoot: opts.transcriptRoot, env: opts.env })
+  const pluginRoots = defaultPluginRoots(opts.env ?? process.env)
   // MCP OAuth 令牌落盘目录(锚 stateRoot,跨会话/重启复用):所有 MCP 加载点共享;
   // 仅主对话(用户在场的 SSE 流)允许 interactive 授权,探测/列表/legacy 执行 interactive:false——
   // 复用已落盘令牌即可,绝不让"点开设置页/查列表"触发浏览器授权弹窗。
@@ -1109,103 +364,6 @@ export function startServer(opts: StartServerOptions = {}) {
   const sessionSkillHooks = new Map<string, NonNullable<ReturnType<typeof mergeHookRegistries>>>()
   const sessionPermissionUpdates = new Map<string, PermissionUpdate[]>()
   const providerHealth = new ProviderHealthStore(opts.providerRoot ?? stateRoot)
-  const bridgeSubscribers = new Map<string, BridgeRemoteSubscriber>()
-  const bridgeWorkers = new Map<string, BridgeWorkerClient>()
-  const bridgeWorkerStreams = new Map<string, BridgeWorkerStream>()
-  const bridgeWorkerRefreshSchedulers = new Map<string, BridgeWorkerRefreshScheduler<BridgeWorkerRefreshValue>>()
-
-  type BridgeWorkerStartResult = {
-    worker: BridgeWorkerClient
-    initialized: Awaited<ReturnType<BridgeWorkerClient['initialize']>>
-    stream: BridgeWorkerStream | null
-    streamEnabled: boolean
-    initialSequence: number
-  }
-  type BridgeWorkerRefreshValue = {
-    credentials: BridgeRemoteCredentialRecord
-    started: BridgeWorkerStartResult
-    status: number
-  }
-
-  function cancelBridgeWorkerRefresh(codeSessionId: string): void {
-    bridgeWorkerRefreshSchedulers.get(codeSessionId)?.cancel()
-    bridgeWorkerRefreshSchedulers.delete(codeSessionId)
-  }
-
-  function closeBridgeWorkerRuntime(codeSessionId: string, opts: { cancelRefresh?: boolean } = {}): void {
-    if (opts.cancelRefresh) cancelBridgeWorkerRefresh(codeSessionId)
-    bridgeWorkerStreams.get(codeSessionId)?.close()
-    bridgeWorkerStreams.delete(codeSessionId)
-    bridgeWorkers.get(codeSessionId)?.close()
-    bridgeWorkers.delete(codeSessionId)
-  }
-
-  function bridgeWorkerRefreshStatus(codeSessionId: string) {
-    return bridgeWorkerRefreshSchedulers.get(codeSessionId)?.getStatus() ?? {
-      enabled: false,
-      sessionId: codeSessionId,
-      inFlight: false,
-      nextRefreshAt: null,
-      nextRefreshInMs: null,
-      consecutiveFailures: 0,
-      lastRefreshAt: null,
-      lastError: null,
-      lastCause: null,
-    }
-  }
-
-  async function fetchAndStoreBridgeWorkerCredentials(codeSessionId: string, body: Record<string, unknown>) {
-    const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
-    if (!config) throw new TurnSetupError('bridge code session client is not configured', 400)
-    const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
-    const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
-    const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
-    if (!fetched.ok) throw new TurnSetupError(fetched.error, fetched.status ?? 502)
-    const credentials = await bridgeRemote.storeCredentials(codeSessionId, fetched.value)
-    return { credentials, status: fetched.status }
-  }
-
-  async function refreshBridgeWorkerCredentialsAndTransport(codeSessionId: string, body: Record<string, unknown>, _cause: BridgeWorkerRefreshCause, manageRefresh: boolean): Promise<BridgeWorkerRefreshValue> {
-    const fetched = await fetchAndStoreBridgeWorkerCredentials(codeSessionId, body)
-    const started = await startBridgeWorker(codeSessionId, fetched.credentials, body, { manageRefresh })
-    return { ...fetched, started }
-  }
-
-  function scheduleBridgeWorkerRefresh(codeSessionId: string, body: Record<string, unknown>, credentials: BridgeRemoteCredentialRecord): void {
-    const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
-    const refreshConfig = bridgeRefreshConfigFromBody(body)
-    cancelBridgeWorkerRefresh(codeSessionId)
-    if (!config || !refreshConfig.enabled) return
-    const scheduler = new BridgeWorkerRefreshScheduler<BridgeWorkerRefreshValue>({
-      sessionId: codeSessionId,
-      refreshBufferMs: refreshConfig.refreshBufferMs,
-      minDelayMs: refreshConfig.minDelayMs,
-      retryDelayMs: refreshConfig.retryDelayMs,
-      maxConsecutiveFailures: refreshConfig.maxConsecutiveFailures,
-      onRefresh: async cause => {
-        const refreshed = await refreshBridgeWorkerCredentialsAndTransport(codeSessionId, body, cause, false)
-        return { value: refreshed, expiresInSeconds: refreshed.credentials.expiresIn }
-      },
-    })
-    bridgeWorkerRefreshSchedulers.set(codeSessionId, scheduler)
-    scheduler.scheduleFromExpiresIn(credentials.expiresIn)
-  }
-
-  async function recoverBridgeWorkerStreamAuth(codeSessionId: string, code: number): Promise<void> {
-    const scheduler = bridgeWorkerRefreshSchedulers.get(codeSessionId)
-    if (!scheduler) {
-      closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
-      await bridgePeers.updateStatus(codeSessionId, 'error', `worker stream closed ${code}`).catch(() => undefined)
-      return
-    }
-    await bridgePeers.updateStatus(codeSessionId, 'connecting', `worker stream closed ${code}; refreshing`).catch(() => undefined)
-    const result = await scheduler.refreshNow('auth_401_recovery')
-    if (result.ok) return
-    if (result.skipped && (result.reason === 'in_flight' || result.reason === 'stale')) return
-    closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: result.skipped && result.reason === 'cancelled' })
-    const detail = result.skipped ? result.reason : result.error
-    await bridgePeers.updateStatus(codeSessionId, 'error', `worker stream refresh failed: ${detail}`).catch(() => undefined)
-  }
 
   async function projectBridgeEventToConversation(rawBody: Record<string, unknown>, payload: Record<string, unknown>): Promise<void> {
     const conversationId = stringOr(rawBody.conversationId ?? rawBody.conversation_id, '')
@@ -1220,74 +378,6 @@ export function startServer(opts: StartServerOptions = {}) {
     for (const event of events) {
       await sessions.appendEvent(conversationId, event).catch(() => undefined)
     }
-  }
-
-  async function startBridgeWorker(
-    codeSessionId: string,
-    credentials: BridgeRemoteCredentialRecord | null,
-    body: Record<string, unknown> = {},
-    options: { manageRefresh?: boolean } = {},
-  ): Promise<BridgeWorkerStartResult> {
-    if (!credentials) throw new Error('bridge credentials not found')
-    const previousSequence = bridgeWorkerStreams.get(codeSessionId)?.getLastSequenceNum() ?? 0
-    const initialSequence = numberFrom(body.initialSequenceNum ?? body.initial_sequence_num, previousSequence)
-    const inboundConfig = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-    const manageRefresh = options.manageRefresh ?? true
-    if (manageRefresh) cancelBridgeWorkerRefresh(codeSessionId)
-    closeBridgeWorkerRuntime(codeSessionId)
-    const worker = new BridgeWorkerClient({
-      sessionId: codeSessionId,
-      credentials,
-      heartbeatIntervalMs: numberFrom(body.heartbeatIntervalMs ?? body.heartbeat_interval_ms, 20_000),
-      heartbeatJitterFraction: typeof body.heartbeatJitterFraction === 'number'
-        ? body.heartbeatJitterFraction
-        : typeof body.heartbeat_jitter_fraction === 'number'
-          ? body.heartbeat_jitter_fraction
-          : 0,
-      fetchImpl: opts.fetchImpl,
-      onEpochMismatch: () => {
-        closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
-        void bridgePeers.updateStatus(codeSessionId, 'error', 'worker epoch mismatch').catch(() => undefined)
-      },
-    })
-    const initialized = await worker.initialize()
-    if (!initialized.ok) {
-      worker.close()
-      throw new TurnSetupError(initialized.error || `worker init failed ${initialized.status ?? ''}`.trim(), initialized.status ?? 502)
-    }
-    bridgeWorkers.set(codeSessionId, worker)
-    if (manageRefresh) scheduleBridgeWorkerRefresh(codeSessionId, body, credentials)
-    const shouldStream = body.stream !== false && body.read_stream !== false
-    if (shouldStream) {
-      const stream = new BridgeWorkerStream({
-        sessionId: codeSessionId,
-        apiBaseUrl: credentials.apiBaseUrl,
-        workerJwt: credentials.workerJwt,
-        initialSequenceNum: initialSequence,
-        fetchImpl: opts.fetchImpl,
-      }, { state: bridgeRemote, worker, inbound: {
-        stateRoot,
-        baseUrl: inboundConfig?.baseUrl,
-        token: inboundConfig?.token,
-        fetchImpl: opts.fetchImpl,
-        onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: codeSessionId }, resolved) },
-      } }, {
-        onEvent: event => { void projectBridgeEventToConversation(body, event.payload) },
-        onClose: code => {
-          bridgeWorkerStreams.delete(codeSessionId)
-          if (code === 401 || code === 403) {
-            void recoverBridgeWorkerStreamAuth(codeSessionId, code).catch(err => {
-              closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
-              void bridgePeers.updateStatus(codeSessionId, 'error', err instanceof Error ? err.message : String(err)).catch(() => undefined)
-            })
-          }
-        },
-      })
-      bridgeWorkerStreams.set(codeSessionId, stream)
-      stream.connect()
-    }
-    await bridgePeers.register({ sessionId: codeSessionId, status: 'connected', inboundEnabled: true })
-    return { worker, initialized, stream: bridgeWorkerStreams.get(codeSessionId) ?? null, streamEnabled: shouldStream, initialSequence }
   }
 
   function registerProviderFailure(runtime: RuntimeProviderResolution, err: unknown): void {
@@ -1323,24 +413,6 @@ export function startServer(opts: StartServerOptions = {}) {
   const providerHealthCallbacks = {
     onFailure: registerProviderFailure,
     onSuccess: registerProviderSuccess,
-  }
-
-  async function resolveTaskEndpointTarget(id: string, statuses?: TaskStatus[]): Promise<{ task: TaskMeta | null; requestedTaskId: string }> {
-    const resolution = await tasks.resolveBackgroundAgentTarget(id, {
-      ...(statuses ? { statuses } : {}),
-    })
-    if (resolution.task) return { task: resolution.task, requestedTaskId: id }
-    return { task: await tasks.get(id), requestedTaskId: id }
-  }
-
-  function taskAliasPayload(task: TaskMeta, requestedTaskId: string): Record<string, string> {
-    const agentId = typeof task.params?.agent_id === 'string' && task.params.agent_id.trim()
-      ? task.params.agent_id.trim()
-      : ''
-    return {
-      ...(agentId ? { agentId } : {}),
-      ...(requestedTaskId !== task.id ? { requestedTaskId, resolvedTaskId: task.id } : {}),
-    }
   }
 
   function runtimeProviderHealthStatus(runtime: RuntimeProviderResolution, now = Date.now()) {
@@ -1633,7 +705,6 @@ export function startServer(opts: StartServerOptions = {}) {
     // 三层落点(白标目录):bundled(app 内置,managed) + user(~/.billiardbuddy/skills) + workspace(.billiardbuddy/skills,local 信任)。
     const skillsRoot = opts.skillsRoot ?? defaultSkillsRoot()
     const createSkillsRoot = userSkillsRoot()
-    const skills = await loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root })
     // 领域包启用来源三合一(owner 设计:斜杠命令 /台球 → 主循环注入 pack → 自动找内容 + 跨回合保持):
     //   ① 请求体 enabled_packs(前端专家选择器);② 本回合斜杠入口命令(/台球、/球房、/billiards…→ packIdForCommandName);
     //   ③ 会话已持久化的 enabledPacks(上一回合敲过入口命令,即便这回合前端没回传也保持在模式里)。
@@ -1662,7 +733,15 @@ export function startServer(opts: StartServerOptions = {}) {
     if (shouldPersist) {
       await sessions.touch(conversationId, { enabledPacks: enabledPackIds }).catch(() => undefined)
     }
-    const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env)
+    const runtimeExtensions = await loadRuntimeExtensionLibraries({
+      workspaceRoot: workspace.root,
+      skillsRoot,
+      commandsRoot: opts.commandsRoot ?? defaultCommandsRoot(),
+      packs: enabledPacks,
+      env: opts.env ?? process.env,
+      pluginRoots,
+    })
+    const { skills, commands } = runtimeExtensions
     // 技能/命令发现清单注入系统提示(对齐 cc SkillTool skill listing):汇总 builtin 命令 + 技能 + 已启用领域包命令,
     // 按约 1% 上下文预算截断,让模型「看清单 → 自动调」,/台球 等斜杠也映射到对应技能/命令。
     const outputStyleLibrary = await loadOutputStyles()
@@ -1757,8 +836,9 @@ export function startServer(opts: StartServerOptions = {}) {
     const configuredHooks = await loadWorkspaceHookRegistry(workspace.root, opts.hooksPath)
     // 已启用插件贡献的 hooks(对齐 cc loadPluginHooks:标准位置 <plugin>/hooks/hooks.json + manifest.hooks 声明的附加文件),
     // 归一为 source:'plugin' 并入本次会话 hooks(app 级可信、不走工作区信任闸)。坏插件/读失败静默跳过、不拖垮会话。
-    const pluginHookPaths = await resolveEnabledPluginHookConfigPaths(defaultPluginRoots(opts.env ?? process.env)).catch(() => [] as string[])
-    const pluginHooks = pluginHookPaths.length > 0 ? await loadPluginHookRegistry(pluginHookPaths).catch(() => undefined) : undefined
+    const pluginHooks = runtimeExtensions.pluginHookConfigPaths.length > 0
+      ? await loadPluginHookRegistry(runtimeExtensions.pluginHookConfigPaths).catch(() => undefined)
+      : undefined
     // 领域包上下文已改走 systemPrompt(extraContext)每回合注入,不再进 SessionStart hook 注册表——
     // 否则 SessionStart 每回合重触发(丁审计)。此处 hooks 只含用户配置/插件/目标 hook,SessionStart 由 loop 门控成首回合一次。
     // priorMessages 复用上方那次 load(同回合 transcript 不变),不再重复 I/O。
@@ -1785,7 +865,7 @@ export function startServer(opts: StartServerOptions = {}) {
     }
     const gatedMcp = resolveMcpConfig(rawBody, workspace.root)
     const mcpConfigPath = gatedMcp.path
-    const mcpTools = await loadMcpToolsFromFile(mcpConfigPath, {
+    const mcpTools = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], {
       cwd: workspace.root,
       signal: controller.signal,
       timeoutMs: 10000,
@@ -2250,7 +1330,7 @@ export function startServer(opts: StartServerOptions = {}) {
   async function* legacyTaskEventStream(requestedTaskId: string, after: number): AsyncGenerator<string> {
     let cursor = Math.max(0, after)
     for (let tick = 0; tick < 3000; tick++) {
-      const resolved = await resolveTaskEndpointTarget(requestedTaskId)
+      const resolved = await resolveTaskEndpointTarget(tasks, requestedTaskId)
       const requestedId = resolved.requestedTaskId
       const taskId = resolved.task?.id ?? requestedTaskId
       const task = resolved.task ?? await tasks.get(taskId)
@@ -2373,51 +1453,6 @@ export function startServer(opts: StartServerOptions = {}) {
     return { mode: 'task', conversationId, task_id: task.id, status: 'running' }
   }
 
-  async function archiveSession(id: string, rawBody: Record<string, unknown>) {
-    const session = await sessions.get(id)
-    if (!session) throw new TurnSetupError('session not found', 404)
-    if (session.status === 'running') throw new TurnSetupError('session is running', 409)
-    const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
-    if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
-    const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
-    const providerRuntime = providerRuntimes[0]!
-
-    const transcript = sessions.transcript(id, session.workspaceRoot)
-    const messages = await transcript.load()
-    restoreInvokedSkillsFromMessages(messages, id)
-    const invokedSkills = createInvokedSkillsMessage(id)
-    const keepRecentMessages = Math.max(1, Math.min(100, numberFrom(rawBody.keepRecentMessages ?? rawBody.keep_recent_messages, 12)))
-    const minOldMessages = Math.max(1, Math.min(20, numberFrom(rawBody.minOldMessages ?? rawBody.min_old_messages, 1)))
-    const model = createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
-    const compacted = await compactPipeline({
-      messages,
-      model,
-      force: true,
-      postSummaryMessages: invokedSkills ? [invokedSkills] : [],
-      keepRecentMessages,
-      minOldMessages,
-      readOnlyToolNames: new Set(),
-    })
-    if (!compacted.didCompact) {
-      return { ok: false, archived: false, reason: 'not enough transcript messages to archive', messages: messages.length }
-    }
-
-    const archiveDir = join(stateRoot, 'transcript-archives')
-    await mkdir(archiveDir, { recursive: true })
-    const archivePath = join(archiveDir, `${id}-${Date.now()}.jsonl`)
-    await copyFile(transcript.path, archivePath)
-    await transcript.save(compacted.messages)
-    await sessions.touch(id, { status: 'idle' })
-    return {
-      ok: true,
-      archived: true,
-      archivePath,
-      beforeMessages: messages.length,
-      afterMessages: compacted.messages.length,
-      note: compacted.note,
-    }
-  }
-
   async function prewarm(rawBody: Record<string, unknown>) {
     const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
     if (resolvedProviderRuntimes.length === 0) throw new TurnSetupError('model provider not configured', 503)
@@ -2431,19 +1466,22 @@ export function startServer(opts: StartServerOptions = {}) {
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const agentsRoot = opts.agentsRoot ?? defaultAgentsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
-    const [skills, commands, hooks, agents] = await Promise.all([
-      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
+    const [runtimeExtensions, configuredHooks, agents] = await Promise.all([
+      loadRuntimeExtensionLibraries({ workspaceRoot: workspace.root, skillsRoot, commandsRoot, packs: enabledPacks, env: opts.env ?? process.env, pluginRoots }),
       // hooks 三级加载(见上方 §1621 同款注释);opts.hooksPath 仍作显式覆盖路径叠加。
       loadWorkspaceHookRegistry(workspace.root, opts.hooksPath),
       loadAgentsDir(agentsRoot),
     ])
+    const pluginHooks = runtimeExtensions.pluginHookConfigPaths.length > 0
+      ? await loadPluginHookRegistry(runtimeExtensions.pluginHookConfigPaths).catch(() => undefined)
+      : undefined
+    const hooks = mergeHookRegistries(configuredHooks, pluginHooks)
 
     const includeMcp = rawBody.includeMcp === true || rawBody.includeMcp === 'true'
     let mcp: { tools: number; warnings: string[] } | undefined
     if (includeMcp) {
       const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
-      const loaded = await loadMcpToolsFromFile(mcpConfigPath, {
+      const loaded = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], {
         cwd: workspace.root,
         timeoutMs: 5000,
         fetchImpl: opts.fetchImpl,
@@ -2473,8 +1511,8 @@ export function startServer(opts: StartServerOptions = {}) {
       fallbackCount: Math.max(0, resolvedProviderRuntimes.length - 1),
       ...(orderedProviderRuntimes.notices.length ? { notices: orderedProviderRuntimes.notices } : {}),
       workspaceRoot: workspace.root,
-      skills: { root: skillsRoot, count: skills.skills.length },
-      commands: { root: commandsRoot, count: commands.commands.length },
+      skills: { root: skillsRoot, count: runtimeExtensions.skills.skills.length },
+      commands: { root: commandsRoot, count: runtimeExtensions.commands.commands.length },
       domainTools: { count: createDomainPackTools(enabledPacks).length },
       hooks: { path: opts.hooksPath, count: hooks?.rules.length ?? 0 },
       agents: { root: agentsRoot, count: agents.length },
@@ -2501,43 +1539,26 @@ export function startServer(opts: StartServerOptions = {}) {
     const commandsRoot = opts.commandsRoot ?? defaultCommandsRoot()
     const enabledPacks = resolveEnabledPacks(rawBody)
     const domainPackTools = createDomainPackTools(enabledPacks)
-    // plugin 运行时接入:已启用插件的 skills/.mcp.json 并入本次会话(插件是 app 级可信来源,mcp 直接加载不走工作区信任闸)。
-    const pluginContribs = await resolveEnabledPluginContributions(defaultPluginRoots(opts.env ?? process.env)).catch(() => ({ skillsDirs: [], commandsDirs: [], mcpConfigPaths: [] }))
-    const [skills, commands, pluginSkillsLibs, pluginCommandLibs] = await Promise.all([
-      loadLayeredSkills({ bundledRoot: skillsRoot, workspaceRoot: workspace.root }),
-      loadCommandsForWorkspace(workspace.root, commandsRoot, enabledPacks, opts.env ?? process.env),
-      Promise.all(pluginContribs.skillsDirs.map(dir => loadSkillsDir(dir).catch(() => null))),
-      Promise.all(pluginContribs.commandsDirs.map(dir => loadCommandsDir(dir).catch(() => null))),
-    ])
-    // 合并主 skills + 插件 skills(按名去重,主 skills 优先)
-    const mergedSkillByName = new Map(skills.byName)
-    for (const lib of pluginSkillsLibs) {
-      if (!lib) continue
-      for (const s of lib.skills) if (!mergedSkillByName.has(s.name)) mergedSkillByName.set(s.name, s)
-    }
-    const allSkills = { skills: [...mergedSkillByName.values()], byName: mergedSkillByName }
-    // 合并主 commands + 插件 commands(对齐 cc getPluginCommands 并入命令来源):主 commands 放最后 → 同名主/工作区/领域包优先,插件只补充新命令。
-    const mergedCommands = mergeCommandLibraries(
-      ...pluginCommandLibs.filter((lib): lib is CommandLibrary => lib !== null),
-      commands,
-    )
+    const runtimeExtensions = await loadRuntimeExtensionLibraries({
+      workspaceRoot: workspace.root,
+      skillsRoot,
+      commandsRoot,
+      packs: enabledPacks,
+      env: opts.env ?? process.env,
+      pluginRoots,
+    })
     const mcpConfigPath = resolveMcpConfig(rawBody, workspace.root).path
     // toolTimeoutMs 不硬编码:走 mcp/client.ts 的近乎无限默认值 + QF_MCP_TOOL_TIMEOUT 覆盖。
     const mcpLoadOpts = { cwd: workspace.root, timeoutMs: 10000, fetchImpl: opts.fetchImpl, oauth: { storageDir: mcpOAuthDir, interactive: false } }
-    const [mcpTools, ...pluginMcpResults] = await Promise.all([
-      loadMcpToolsFromFile(mcpConfigPath, mcpLoadOpts),
-      ...pluginContribs.mcpConfigPaths.map(path => loadMcpToolsFromFile(path, mcpLoadOpts).catch(() => ({ tools: [], connections: [], warnings: [] }))),
-    ])
-    const allMcpTools = [...mcpTools.tools, ...pluginMcpResults.flatMap(r => r.tools)]
-    const allConnections = [...mcpTools.connections, ...pluginMcpResults.flatMap(r => r.connections)]
+    const mcpTools = await loadMcpToolsFromFiles([mcpConfigPath, ...runtimeExtensions.pluginMcpConfigPaths], mcpLoadOpts)
     const registry = buildGeneralRegistry({
-      skills: allSkills,
+      skills: runtimeExtensions.skills,
       skillsRoot: userSkillsRoot(),
       skillRecommendations: suggestedSkillNamesForPacks(enabledPacks),
-      commands: mergedCommands,
-      extraTools: [...domainPackTools, ...allMcpTools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
+      commands: runtimeExtensions.commands,
+      extraTools: [...domainPackTools, ...mcpTools.tools, ...createTaskTools(tasks), ...createStructuredTaskTools(taskLists), ...createTeamTools(teams, { tasks, udsPeers, bridgePeers, sendBridgeMessage: bridgeSendMessageFor(rawBody) }), ...createMediaTools(media, { videoEditing }), createStoreDocsTool(storeDocs)],
     })
-    return { workspace, registry, connections: allConnections }
+    return { workspace, registry, connections: mcpTools.connections }
   }
 
   /** 审批放行执行的核心:POST /agent/execute 与 WS {type:'approve'} 共用。返回结果 payload 或 null(参数缺失)。 */
@@ -2554,7 +1575,7 @@ export function startServer(opts: StartServerOptions = {}) {
     //(与主回合 §1565 三源合并口径不一致;当前领域包工具都未 requiresApproval 故暂不可触发,但结构上是同类分叉,一并收口)。
     if (conversationId) {
       const missingWd = !stringOr(body.working_dir ?? body.workspaceRoot, '')
-      const missingPacks = resolveEnabledPacks(body).length === 0
+      const missingPacks = !['enabled_packs', 'enabledPacks', 'knowledge_packs', 'knowledgePacks'].some(key => body[key] !== undefined)
       if (missingWd || missingPacks) {
         const meta = await sessions.get(conversationId).catch(() => undefined)
         if (meta) {
@@ -2913,291 +1934,7 @@ export function startServer(opts: StartServerOptions = {}) {
     return body
   }
 
-  async function handleCanvasRoute(url: URL, req: Request): Promise<Response | null> {
-    if (!url.pathname.startsWith('/api/v1/canvas/')) return null
-    const action = url.pathname.slice('/api/v1/canvas/'.length)
-    const body = req.method === 'GET' ? {} : await req.json().catch(() => ({})) as Record<string, unknown>
-    if (action === 'edit' && req.method === 'POST') {
-      const content = typeof body.content === 'string' ? body.content : ''
-      const instruction = typeof body.instruction === 'string' ? body.instruction : ''
-      return Response.json({ content: instruction ? `${content}\n\n${instruction}`.trim() : content, mode: 'local_fallback' })
-    }
-    if (action === 'render' && req.method === 'POST') {
-      const content = typeof body.content === 'string' ? body.content : ''
-      const format = typeof body.format === 'string' ? body.format.toLowerCase() : 'txt'
-      const rendered = renderDeliverableBytes(content, format)
-      return Response.json({ base64: Buffer.from(rendered.bytes).toString('base64'), ext: rendered.ext })
-    }
-    if (action === 'save-to-library' && req.method === 'POST') {
-      const content = typeof body.content === 'string' ? body.content : ''
-      const format = typeof body.format === 'string' ? body.format : 'txt'
-      const rawName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : `artifact-${Date.now()}`
-      const safeName = rawName.replace(/[\\/:*?"<>|]+/g, '_')
-      const rendered = renderDeliverableBytes(content, format)
-      const ext = rendered.ext
-      const abs = join(stateRoot, 'library', `${safeName}.${ext}`)
-      await mkdir(dirname(abs), { recursive: true })
-      await writeFile(abs, rendered.bytes)
-      return Response.json({ ok: true, path: abs })
-    }
-    if (action === 'doc' && req.method === 'POST') {
-      const path = typeof body.path === 'string' ? body.path : ''
-      const text = path ? await readTextIfExists(resolve(path)) : ''
-      return Response.json({ name: basename(path || 'document.txt'), render: text.length > 200_000 ? 'toobig' : 'page', html: `<pre>${escapeHtml(text)}</pre>`, truncated: false })
-    }
-    if (action === 'sheet' && req.method === 'POST') {
-      const path = typeof body.path === 'string' ? body.path : ''
-      if (path && isXlsxPath(resolve(path))) {
-        try {
-          return Response.json(await readXlsxSheet(resolve(path), typeof body.sheet === 'string' ? body.sheet : undefined))
-        } catch (err) {
-          return canvasOfficeError(err)
-        }
-      }
-      const text = path ? await readTextIfExists(resolve(path)) : ''
-      const rows = text.split(/\r?\n/).slice(0, 200).map(line => line.split(','))
-      return Response.json({ name: basename(path || 'sheet.csv'), sheets: [{ name: 'Sheet1', rows }], truncated: false })
-    }
-    if (action === 'excel-edit' && req.method === 'POST') {
-      const path = typeof body.path === 'string' ? resolve(body.path) : ''
-      if (path && isTextSheetPath(path)) {
-        return Response.json(await editCsvCell(path, String(body.cell ?? ''), String(body.value ?? '')))
-      }
-      if (path && isXlsxPath(path)) {
-        try {
-          return Response.json(await editXlsxCell(path, String(body.cell ?? ''), String(body.value ?? ''), typeof body.sheet === 'string' ? body.sheet : undefined))
-        } catch (err) {
-          return canvasOfficeError(err)
-        }
-      }
-      return Response.json({ ok: false, sheet: 'Sheet1', cell: String(body.cell ?? ''), old: '', new: String(body.value ?? ''), detail: 'TS 本地模式仅支持 csv/xlsx 表格写回' }, { status: 501 })
-    }
-    if (action === 'doc-blocks' && req.method === 'POST') {
-      const path = typeof body.path === 'string' ? body.path : ''
-      if (path && (isDocxPath(resolve(path)) || isPptxPath(resolve(path)))) {
-        try {
-          return Response.json(await readOfficeDocumentBlocks(resolve(path)))
-        } catch (err) {
-          return canvasOfficeError(err)
-        }
-      }
-      const text = path ? await readTextIfExists(resolve(path)) : ''
-      return Response.json({ name: basename(path || 'document.txt'), kind: 'docx', blocks: text.split(/\n{2,}/).slice(0, 200).map((block, i) => ({ id: `b${i}`, kind: 'paragraph', text: block })) })
-    }
-    if (action === 'doc-save' && req.method === 'POST') {
-      const path = typeof body.path === 'string' ? resolve(body.path) : ''
-      const edits = body.edits && typeof body.edits === 'object' && !Array.isArray(body.edits)
-        ? body.edits as Record<string, unknown>
-        : {}
-      if (path && isTextDocumentPath(path)) {
-        return Response.json(await saveTextDocumentBlocks(path, edits))
-      }
-      if (path && (isDocxPath(path) || isPptxPath(path))) {
-        try {
-          return Response.json(await saveOfficeDocumentBlocks(path, edits))
-        } catch (err) {
-          return canvasOfficeError(err)
-        }
-      }
-      return Response.json({ ok: false, path: String(body.path ?? ''), saved: 0, detail: 'TS 本地模式仅支持 txt/md/html/docx/pptx 文档写回' }, { status: 501 })
-    }
-    return null
-  }
-
-  function canvasOfficeError(error: unknown): Response {
-    if (error instanceof OfficeDocumentError) return jsonDetailError(error.message, error.status)
-    return jsonDetailError(error instanceof Error ? error.message : String(error), 500)
-  }
-
-  function escapeHtml(value: string): string {
-    return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-  }
-
-  function escapeXml(value: string): string {
-    return escapeHtml(value).replaceAll('"', '&quot;').replaceAll("'", '&apos;')
-  }
-
-  function renderDeliverableBytes(content: string, format: string): { bytes: Uint8Array; ext: string } {
-    const fmt = format.toLowerCase()
-    if (fmt.includes('docx') || fmt.includes('word')) return { bytes: renderMinimalDocx(content), ext: 'docx' }
-    if (fmt.includes('pptx') || fmt.includes('powerpoint') || fmt.includes('幻灯片')) return { bytes: renderMinimalPptx(content), ext: 'pptx' }
-    if (fmt.includes('xlsx') || fmt.includes('excel') || fmt.includes('表格')) return { bytes: renderMinimalXlsx(content), ext: 'xlsx' }
-    if (fmt.includes('html') || fmt.includes('网页')) return { bytes: Buffer.from(renderMarkdownHtml(content), 'utf8'), ext: 'html' }
-    if (fmt.includes('md') || fmt.includes('markdown')) return { bytes: Buffer.from(content, 'utf8'), ext: 'md' }
-    return { bytes: Buffer.from(stripMarkdown(content), 'utf8'), ext: 'txt' }
-  }
-
-  function stripMarkdown(content: string): string {
-    return content
-      .split('\n')
-      .map(line => line
-        .replace(/^#{1,6}\s+/, '')
-        .replace(/^\s*[-*]\s+/, '- ')
-        .replace(/\*\*(.+?)\*\*/g, '$1')
-        .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '$1'))
-      .join('\n')
-  }
-
-  function renderMarkdownHtml(content: string): string {
-    const body: string[] = []
-    let inList = false
-    for (const raw of content.split('\n')) {
-      const line = raw.trimEnd()
-      const heading = line.match(/^(#{1,6})\s+(.*)$/)
-      const bullet = line.match(/^\s*[-*]\s+(.*)$/)
-      if (!bullet && inList) {
-        body.push('</ul>')
-        inList = false
-      }
-      if (heading) {
-        const level = heading[1]!.length
-        body.push(`<h${level}>${inlineMarkdownHtml(heading[2]!)}</h${level}>`)
-      } else if (bullet) {
-        if (!inList) {
-          body.push('<ul>')
-          inList = true
-        }
-        body.push(`<li>${inlineMarkdownHtml(bullet[1]!)}</li>`)
-      } else if (line.trim()) {
-        body.push(`<p>${inlineMarkdownHtml(line)}</p>`)
-      }
-    }
-    if (inList) body.push('</ul>')
-    return [
-      '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
-      '<meta name="viewport" content="width=device-width,initial-scale=1">',
-      "<style>body{font-family:-apple-system,system-ui,'PingFang SC',sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.75;color:#1d1d1f;}h1{font-size:24px;}h2{font-size:20px;}h3{font-size:17px;}</style>",
-      '</head><body>',
-      body.join('\n'),
-      '</body></html>',
-    ].join('')
-  }
-
-  function inlineMarkdownHtml(value: string): string {
-    return escapeHtml(value)
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-  }
-
-  function renderMinimalDocx(content: string): Uint8Array {
-    const paragraphs = content.split(/\n+/).map(line => line.trim()).filter(Boolean)
-    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
-      paragraphs.map(line => `<w:p><w:r><w:t xml:space="preserve">${escapeXml(stripMarkdown(line))}</w:t></w:r></w:p>`).join('') +
-      `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
-    return zipStore([
-      { name: '[Content_Types].xml', data: Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', 'utf8') },
-      { name: '_rels/.rels', data: Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', 'utf8') },
-      { name: 'word/document.xml', data: Buffer.from(documentXml, 'utf8') },
-    ])
-  }
-
-  async function backupLocalFile(path: string): Promise<string | null> {
-    if (!existsSync(path)) return null
-    const bdir = join(dirname(path), '.billiards-backups')
-    await mkdir(bdir, { recursive: true })
-    const backup = join(bdir, `${basename(path)}.${Date.now()}.bak`)
-    await copyFile(path, backup)
-    return backup
-  }
-
-  function isTextDocumentPath(path: string): boolean {
-    if (isSensitiveFilePath(path)) return false
-    return ['.txt', '.md', '.markdown', '.html', '.htm'].includes(extname(path).toLowerCase())
-  }
-
-  function isTextSheetPath(path: string): boolean {
-    if (isSensitiveFilePath(path)) return false
-    return extname(path).toLowerCase() === '.csv'
-  }
-
-  async function saveTextDocumentBlocks(path: string, edits: Record<string, unknown>) {
-    const text = await readTextIfExists(path)
-    const blocks = text.split(/\n{2,}/)
-    let saved = 0
-    for (const [id, value] of Object.entries(edits)) {
-      const match = id.match(/^b(\d+)$/)
-      if (!match || typeof value !== 'string') continue
-      const index = Number(match[1])
-      if (!Number.isInteger(index) || index < 0 || index >= blocks.length) continue
-      blocks[index] = value
-      saved++
-    }
-    if (saved > 0) {
-      await backupLocalFile(path)
-      await writeFile(path, blocks.join('\n\n'), 'utf8')
-    }
-    return { ok: true, path, saved }
-  }
-
-  function zipStore(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {
-    const localParts: Buffer[] = []
-    const centralParts: Buffer[] = []
-    let offset = 0
-    for (const file of files) {
-      const name = Buffer.from(file.name, 'utf8')
-      const data = Buffer.from(file.data)
-      const crc = crc32(data)
-      const local = Buffer.alloc(30)
-      local.writeUInt32LE(0x04034b50, 0)
-      local.writeUInt16LE(20, 4)
-      local.writeUInt16LE(0, 6)
-      local.writeUInt16LE(0, 8)
-      local.writeUInt16LE(0, 10)
-      local.writeUInt16LE(0, 12)
-      local.writeUInt32LE(crc, 14)
-      local.writeUInt32LE(data.length, 18)
-      local.writeUInt32LE(data.length, 22)
-      local.writeUInt16LE(name.length, 26)
-      local.writeUInt16LE(0, 28)
-      localParts.push(local, name, data)
-
-      const central = Buffer.alloc(46)
-      central.writeUInt32LE(0x02014b50, 0)
-      central.writeUInt16LE(20, 4)
-      central.writeUInt16LE(20, 6)
-      central.writeUInt16LE(0, 8)
-      central.writeUInt16LE(0, 10)
-      central.writeUInt16LE(0, 12)
-      central.writeUInt16LE(0, 14)
-      central.writeUInt32LE(crc, 16)
-      central.writeUInt32LE(data.length, 20)
-      central.writeUInt32LE(data.length, 24)
-      central.writeUInt16LE(name.length, 28)
-      central.writeUInt16LE(0, 30)
-      central.writeUInt16LE(0, 32)
-      central.writeUInt16LE(0, 34)
-      central.writeUInt16LE(0, 36)
-      central.writeUInt32LE(0, 38)
-      central.writeUInt32LE(offset, 42)
-      centralParts.push(central, name)
-      offset += local.length + name.length + data.length
-    }
-    const centralOffset = offset
-    const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0)
-    const end = Buffer.alloc(22)
-    end.writeUInt32LE(0x06054b50, 0)
-    end.writeUInt16LE(0, 4)
-    end.writeUInt16LE(0, 6)
-    end.writeUInt16LE(files.length, 8)
-    end.writeUInt16LE(files.length, 10)
-    end.writeUInt32LE(centralSize, 12)
-    end.writeUInt32LE(centralOffset, 16)
-    end.writeUInt16LE(0, 20)
-    return Buffer.concat([...localParts, ...centralParts, end])
-  }
-
-  const CRC_TABLE = new Uint32Array(256).map((_, n) => {
-    let c = n
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    return c >>> 0
-  })
-
-  function crc32(data: Uint8Array): number {
-    let c = 0xffffffff
-    for (const byte of data) c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8)
-    return (c ^ 0xffffffff) >>> 0
-  }
+  const handleCanvasRoute = createCanvasRouteHandler({ stateRoot })
 
   async function listMcpStatus(rawBody: Record<string, unknown> = {}) {
     const workspaceRoot = stringOr(rawBody.workspaceRoot ?? rawBody.working_dir, getDefaultWorkspaceDir())
@@ -3232,159 +1969,79 @@ export function startServer(opts: StartServerOptions = {}) {
     }
   }
 
-  async function mediaUnavailable() {
-    return Response.json({ ok: false, detail: '媒体后端未配置' }, { status: 503 })
-  }
-
-  function videoEditError(error: unknown): Response {
-    const message = error instanceof Error ? error.message : String(error)
-    const status = error instanceof VideoEditError ? error.status : 500
-    return jsonDetailError(message, status)
-  }
-
-  async function handleStudioRoute(url: URL, req: Request): Promise<Response | null> {
-    if (!url.pathname.startsWith('/api/v1/studio/')) return null
-    const workbenchResponse = await handleImageWorkbenchRoute(url, req)
-    if (workbenchResponse) return workbenchResponse
-    const action = url.pathname.slice('/api/v1/studio/'.length)
-    const generationMatch = action.match(/^generation\/(.+)$/)
-    if (generationMatch && req.method === 'GET') {
-      const local = media.localGeneration(decodeURIComponent(generationMatch[1]!))
-      if (local) return Response.json(local)
-      if (media.hasBackend) return Response.json(await media.proxyJson(url.pathname, undefined, 'GET'))
-      return Response.json({ ok: false, detail: '没找到这张本地预览成品' }, { status: 404 })
-    }
-    if (action === 'brief/compile' && req.method === 'POST') {
-      try {
-        const body = imageBriefCompileRequestSchema.parse(await req.json().catch(() => ({})))
-        const brief = await media.compileBriefWithModel(body as Record<string, unknown>)
-        return Response.json(imageBriefCompileResponseSchema.parse({ brief, understanding: brief.understanding ?? brief.user_request }))
-      } catch (err) {
-        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
-      }
-    }
-    if (action === 'generate' && req.method === 'POST') {
-      try {
-        const rawBody = studioGenerateRequestSchema.parse(await req.json().catch(() => ({})))
-        const trusted = rawBody.reference_image_paths ?? []
-        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-        return Response.json(await media.startStudioGenerate(body, {
-          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-        }))
-      } catch (err) {
-        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
-      }
-    }
-    if (action === 'edit' && req.method === 'POST') {
-      try {
-        const rawBody = studioEditRequestSchema.parse(await req.json().catch(() => ({})))
-        const trusted = [rawBody.mask_path, rawBody.source_image_path].filter((item): item is string => typeof item === 'string')
-        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-        return Response.json(await media.startStudioEdit(body, {
-          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-        }))
-      } catch (err) {
-        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
-      }
-    }
-    if (action === 'upscale' && req.method === 'POST') {
-      try {
-        const rawBody = studioUpscaleRequestSchema.parse(await req.json().catch(() => ({})))
-        const trusted = typeof rawBody.source_image_path === 'string' ? [rawBody.source_image_path] : []
-        const body: Record<string, unknown> = { ...rawBody, _trusted_image_paths: trusted }
-        return Response.json(await media.startUpscale(body, {
-          conversationId: typeof body.conversation_id === 'string' ? body.conversation_id : undefined,
-          workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir()),
-        }))
-      } catch (err) {
-        return jsonDetailError(err instanceof Error ? err.message : String(err), 400)
-      }
-    }
-    if (action === 'expand' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>
-      if (media.hasBackend) return Response.json(await media.proxyJson('/api/v1/studio/expand', body))
-      return Response.json({ image_prompt: stringOr(body.prompt, '') })
-    }
-    if (action === 'storyboard' && req.method === 'POST') {
-      const body = await req.json().catch(() => ({})) as Record<string, unknown>
-      if (media.hasBackend) return Response.json(await media.proxyJson('/api/v1/studio/storyboard', body))
-      return Response.json(localStoryboard(body))
-    }
-    if (media.hasBackend) {
-      const body = req.method === 'GET' ? undefined : await req.json().catch(() => ({})) as Record<string, unknown>
-      return Response.json(await media.proxyJson(url.pathname, body, req.method))
-    }
-    return await mediaUnavailable()
-  }
-
-  async function handleVideoEditRoute(url: URL, req: Request): Promise<Response | null> {
-    if (!url.pathname.startsWith('/api/v1/video-edit/')) return null
-    const v2Response = await handleVideoEditV2Route(url, req.clone() as unknown as Request)
-    if (v2Response) return v2Response
-    const body = req.method === 'GET' ? {} : await req.json().catch(() => ({})) as Record<string, unknown>
-    const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : undefined
-    const workspaceRoot = stringOr(body.workspaceRoot ?? body.working_dir, getDefaultWorkspaceDir())
-
-    if (url.pathname === '/api/v1/video-edit/localfile' && req.method === 'GET') {
-      return await videoEdits.localFileResponse(url.searchParams.get('path'), req.headers.get('range'))
-    }
-
-    if (url.pathname === '/api/v1/video-edit/inventory' && req.method === 'POST') {
-      const project = typeof body.project === 'string' ? body.project : undefined
-      return Response.json(await media.startVideoJob('video_inventory', '/api/v1/video-edit/inventory', body, {
-        conversationId,
-        workspaceRoot,
-        project,
-        title: '视频素材理解',
-      }))
-    }
-    const renderMatch = url.pathname.match(/^\/api\/v1\/video-edit\/projects\/([^/]+)\/(render|render_v2)$/)
-    if (renderMatch && req.method === 'POST') {
-      const project = decodeURIComponent(renderMatch[1]!)
-      const action = renderMatch[2]!
-      return Response.json(await media.startVideoJob('video_render', `/api/v1/video-edit/projects/${encodeURIComponent(project)}/${action}`, body, {
-        conversationId,
-        workspaceRoot,
-        project,
-        title: action === 'render_v2' ? 'V2 视频出片' : '视频出片',
-      }))
-    }
-
-    const projectActionMatch = url.pathname.match(/^\/api\/v1\/video-edit\/projects\/([^/]+)(?:\/([^/]+))?$/)
-    if (projectActionMatch) {
-      const project = decodeURIComponent(projectActionMatch[1]!)
-      const action = projectActionMatch[2] ? decodeURIComponent(projectActionMatch[2]) : ''
-      if (media.hasBackend) {
-        return Response.json(await media.proxyJson(url.pathname, req.method === 'GET' ? undefined : body, req.method))
-      }
-      try {
-        if (!action && req.method === 'GET') {
-          return Response.json(await videoEdits.getProject(project))
-        }
-        if (action === 'ops' && req.method === 'POST') {
-          return Response.json(await videoEdits.applyOperations(project, body.operations))
-        }
-        if (action === 'auto_caption' && req.method === 'POST') {
-          return Response.json(await videoEdits.autoCaption(project, body.track))
-        }
-        if (action === 'recaption' && req.method === 'POST') {
-          return Response.json(await videoEdits.recaption(project, body.tonality))
-        }
-        if (action === 'edit_feedback' && req.method === 'POST') {
-          return Response.json(await videoEdits.editFeedback(project, body.feedback))
-        }
-      } catch (error) {
-        return videoEditError(error)
-      }
-    }
-
-    if (media.hasBackend) {
-      return Response.json(await media.proxyJson(url.pathname, req.method === 'GET' ? undefined : body, req.method))
-    }
-    return await mediaUnavailable()
-  }
+  const handleMcpRoute = createMcpRouteHandler({
+    presets: MCP_PRESETS,
+    listStatus: workspaceRoot => listMcpStatus({ workspaceRoot }),
+    trust: mcpTrust,
+    add: body => addMcpServer(body, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+    remove: name => removeMcpServer(name, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+    setDisabled: (name, disabled) => setMcpServerDisabled(name, disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)),
+  })
+  const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
+  const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const handlePluginRoute = createPluginRouteHandler({
+    list: () => listPlugins(pluginRoots),
+    setEnabled: (name, enabled) => setPluginEnabled(name, enabled, pluginRoots),
+    installFromGithub: repo => installPluginFromGithub(repo, defaultPluginInstallDir(opts.env ?? process.env)),
+  })
+  const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
+  const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const sessionArchive = new SessionArchiveService({
+    sessions,
+    archiveRoot: join(stateRoot, 'transcript-archives'),
+    resolveModel: async () => {
+      const resolvedProviderRuntimes = await providers.resolveRuntimeConfigs(opts.env ?? process.env)
+      if (resolvedProviderRuntimes.length === 0) throw new SessionArchiveError('model provider not configured', 503)
+      const providerRuntimes = orderRuntimeProvidersForAttempt(resolvedProviderRuntimes).runtimes
+      return createModelFromRuntimeProviders(providerRuntimes, opts.fetchImpl, providerHealthCallbacks)
+    },
+  })
+  const handleSessionActivityRoute = createSessionActivityRouteHandler({ sessions, turns })
+  const handleSessionArchiveRoute = createSessionArchiveRouteHandler({ archive: sessionArchive })
+  const handleSessionMetadataRoute = createSessionMetadataRouteHandler({ sessions, defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleSessionRewindRoute = createSessionRewindRouteHandler({ sessions, rewind: sessionRewind })
+  const handleStoreDocsRoute = createStoreDocsRouteHandler({ store: desktopData, service: storeDocs })
+  const handleTaskRoute = createTaskRouteHandler({ tasks })
+  const handleWorkspaceFileRoute = createWorkspaceFileRouteHandler({ defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleWorkspaceRoute = createWorkspaceRouteHandler({ settings: userSettings, defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleExtensionDiscoveryRoute = createExtensionDiscoveryRouteHandler({
+    skillsRoot: opts.skillsRoot ?? defaultSkillsRoot(),
+    commandsRoot: opts.commandsRoot ?? defaultCommandsRoot(),
+    defaultWorkspaceRoot: getDefaultWorkspaceDir,
+    env: opts.env ?? process.env,
+    pluginRoots,
+  })
+  const bridgeSessionRoutes = createBridgeSessionRouteController({
+    state: bridgeRemote,
+    peers: bridgePeers,
+    stateRoot,
+    env: opts.env,
+    fetchImpl: opts.fetchImpl,
+    WebSocketCtor: opts.bridgeWebSocketCtor,
+    dispatchInbound: dispatchBridgeInboundToAgent,
+    projectEvent: projectBridgeEventToConversation,
+  })
+  const bridgeWorkerRoutes = createBridgeWorkerRouteController({
+    state: bridgeRemote,
+    peers: bridgePeers,
+    stateRoot,
+    env: opts.env,
+    fetchImpl: opts.fetchImpl,
+    dispatchInbound: dispatchBridgeInboundToAgent,
+    projectEvent: projectBridgeEventToConversation,
+  })
+  const websocket = createAgentWebSocketHandler({
+    assetTopic: ASSET_WS_TOPIC,
+    turnConsumers,
+    turns,
+    sessions,
+    steerInboxes,
+    interruptRequesters,
+    replayEvents: replayWsEvents,
+    runTurn: handleWsRun,
+    runApprovedTool,
+    rejectTool: handleReject,
+  })
 
   const app = Bun.serve<AgentWsData>({
     hostname: host,
@@ -3515,7 +2172,7 @@ export function startServer(opts: StartServerOptions = {}) {
         const file = form?.get('file')
         if (!(file instanceof File)) return jsonDetailError('file required', 400)
         try {
-          return Response.json(voiceTranscriptionResponseSchema.parse(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env })))
+          return Response.json(voiceTranscriptionResponseSchema.parse(await transcribeVoiceFile(file, { stateRoot, env: opts.env ?? process.env, fetchImpl: opts.fetchImpl })))
         } catch (err) {
           const status = err instanceof VoiceTranscriptionError ? err.status : 500
           return jsonDetailError(err instanceof Error ? err.message : String(err), status)
@@ -3527,169 +2184,25 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ ok: true })
       }
 
-      if (url.pathname === '/api/v1/scheduled-tasks') {
-        if (req.method === 'GET') return Response.json(await desktopData.listScheduledTasks())
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await desktopData.createScheduledTask(body), { status: 201 })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const scheduledTaskResponse = await handleScheduledTaskRoute(url, req)
+      if (scheduledTaskResponse) return scheduledTaskResponse
 
-      // 运行历史:GET /api/v1/scheduled-tasks/:id/runs
-      const scheduledRunsMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/runs$/)
-      if (scheduledRunsMatch) {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const id = decodeURIComponent(scheduledRunsMatch[1]!)
-        return Response.json({ runs: await scheduledTasks.getTaskRuns(id) })
-      }
-
-      // 立即运行:POST /api/v1/scheduled-tasks/:id/run(面板 Run Now,无视排程直接起一个真会话)
-      const scheduledRunMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)\/run$/)
-      if (scheduledRunMatch) {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const id = decodeURIComponent(scheduledRunMatch[1]!)
-        const run = await scheduledTasks.runTaskNow(id)
-        if (!run) return jsonDetailError('scheduled task not found', 404)
-        return Response.json(run, { status: 202 })
-      }
-
-      const scheduledMatch = url.pathname.match(/^\/api\/v1\/scheduled-tasks\/([^/]+)$/)
-      if (scheduledMatch) {
-        const id = decodeURIComponent(scheduledMatch[1]!)
-        if (req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const item = await desktopData.updateScheduledTask(id, body)
-          if (!item) return jsonDetailError('scheduled task not found', 404)
-          return Response.json(item)
-        }
-        if (req.method === 'DELETE') {
-          await desktopData.deleteScheduledTask(id)
-          return Response.json({ status: 'ok' })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      if (url.pathname === '/api/v1/store-docs') {
-        if (req.method === 'GET') return Response.json(await desktopData.getStoreDocs())
-        if (req.method === 'PUT') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json(await storeDocs.setFolder(typeof body.folder_path === 'string' ? body.folder_path : null))
-        }
-        if (req.method === 'DELETE') return Response.json(await storeDocs.clear())
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      if (url.pathname === '/api/v1/store-docs/reindex') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await storeDocs.reindex())
-      }
-
-      if (url.pathname === '/api/v1/store-docs/search') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const query = typeof body.query === 'string' ? body.query : ''
-        const top = typeof body.top === 'number' ? body.top : 5
-        const paths = Array.isArray(body.paths)
-          ? body.paths.filter((item): item is string => typeof item === 'string')
-          : typeof body.path === 'string'
-            ? body.path
-            : undefined
-        return Response.json({ hits: await storeDocs.search(query, top, { paths }) })
-      }
+      const storeDocsResponse = await handleStoreDocsRoute(url, req)
+      if (storeDocsResponse) return storeDocsResponse
 
       if (url.pathname === '/api/v1/notifications') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
         return Response.json(await desktopData.notificationsAfter(numberFrom(url.searchParams.get('after'), 0)))
       }
 
-      if (url.pathname === '/model/health/clear' || url.pathname === '/api/model/health/clear') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        try {
-          return Response.json(await clearModelHealth(body))
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
+      const providerResponse = await handleProviderRoute(url, req)
+      if (providerResponse) return providerResponse
 
-      if (url.pathname === '/model' || url.pathname === '/api/model') {
-        if (req.method === 'GET') {
-          const status = await currentModelStatus()
-          return Response.json(status, { status: status.ok ? 200 : 503 })
-        }
-        if (req.method === 'POST' || req.method === 'PATCH') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const providerId = typeof body.providerId === 'string'
-            ? body.providerId.trim()
-            : typeof body.id === 'string'
-              ? body.id.trim()
-              : ''
-          try {
-            if (!providerId || providerId === 'env' || providerId === 'default') await providers.clearActive()
-            else await providers.activate(providerId)
-            const status = await currentModelStatus()
-            return Response.json(status, { status: status.ok ? 200 : 503 })
-          } catch (err) {
-            return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const extensionDiscoveryResponse = await handleExtensionDiscoveryRoute(url, req)
+      if (extensionDiscoveryResponse) return extensionDiscoveryResponse
 
-      if (url.pathname === '/api/v1/agent/skills') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const skills = await loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot() })
-        return Response.json({
-          skills: skills.skills.map(skill => ({
-            name: skill.name,
-            description: skill.description,
-            source: skill.source,
-            argument_hint: skill.whenToUse,
-            user_invocable: true,
-          })),
-        })
-      }
-
-      if (url.pathname === '/api/v1/agent/output-styles') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const styles = await loadOutputStyles()
-        return Response.json({ output_styles: styles.styles.map(publicOutputStyle) })
-      }
-
-      if (url.pathname === '/api/v1/agent/packs') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ packs: listPublicDomainPacks() })
-      }
-
-      // 给前端 / 面板列可调用的技能/命令(对齐 cc「斜杠命令=技能」发现清单):
-      // 汇总 builtin 命令 + 已加载技能 + 已启用领域包命令(启用 billiards 时含 /台球、billiards:*)。
-      // GET /api/v1/agent/commands?conversationId=&enabledPacks=台球[,球房]&working_dir=
-      if (url.pathname === '/api/v1/agent/commands') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        const workspaceRoot = url.searchParams.get('working_dir') || url.searchParams.get('workspaceRoot') || getDefaultWorkspaceDir()
-        const workspace = new Workspace(workspaceRoot)
-        const queryPacks = [
-          ...url.searchParams.getAll('enabledPacks'),
-          ...url.searchParams.getAll('enabled_packs'),
-          ...url.searchParams.getAll('knowledge_packs'),
-          ...url.searchParams.getAll('knowledgePacks'),
-        ].flatMap(value => value.split(/[,，]/)).map(value => value.trim()).filter(Boolean)
-        const enabledPacks = resolveEnabledPacks({
-          enabled_packs: queryPacks.length > 0 ? queryPacks : undefined,
-          billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
-        })
-        const [skills, commands] = await Promise.all([
-          loadLayeredSkills({ bundledRoot: opts.skillsRoot ?? defaultSkillsRoot(), workspaceRoot: workspace.root }),
-          loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), enabledPacks, opts.env ?? process.env),
-        ])
-        return Response.json({ commands: toPublicCommandEntries(collectDiscoveryEntries({ commands, skills })) })
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json(await listMcpStatus({ workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined }))
-      }
+      const mcpResponse = await handleMcpRoute(url, req)
+      if (mcpResponse) return mcpResponse
 
       if (url.pathname === '/api/v1/agent/workspace-status') {
         if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
@@ -3703,532 +2216,17 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json({ root: workspaceRoot, git, projectInstructions, tree })
       }
 
-      if (url.pathname === '/api/v1/agent/bridge/peers') {
-        try {
-          if (req.method === 'GET') return Response.json({ peers: await bridgePeers.list() })
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ peer: await bridgePeers.register({
-              sessionId: stringOr(body.sessionId ?? body.session_id, ''),
-              label: typeof body.label === 'string' ? body.label : undefined,
-              workspaceRoot: typeof body.workspaceRoot === 'string' ? body.workspaceRoot : typeof body.workspace_root === 'string' ? body.workspace_root : undefined,
-              machineName: typeof body.machineName === 'string' ? body.machineName : typeof body.machine_name === 'string' ? body.machine_name : undefined,
-              status: body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error' ? body.status : undefined,
-              inboundEnabled: typeof body.inboundEnabled === 'boolean' ? body.inboundEnabled : typeof body.inbound_enabled === 'boolean' ? body.inbound_enabled : undefined,
-              lastError: typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined,
-            }) }, { status: 201 })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
+      const bridgeWorkerResponse = await bridgeWorkerRoutes.handle(url, req)
+      if (bridgeWorkerResponse) return bridgeWorkerResponse
 
-      const bridgePeerMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/peers\/([^/]+)$/)
-      if (bridgePeerMatch) {
-        const sessionId = decodeURIComponent(bridgePeerMatch[1]!)
-        try {
-          if (req.method === 'PATCH') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const status = body.status === 'connected' || body.status === 'connecting' || body.status === 'disconnected' || body.status === 'outbound_only' || body.status === 'error'
-              ? body.status
-              : undefined
-            if (!status) return jsonError('status required', 400)
-            const peer = await bridgePeers.updateStatus(sessionId, status, typeof body.lastError === 'string' ? body.lastError : typeof body.last_error === 'string' ? body.last_error : undefined)
-            if (!peer) return jsonError('bridge peer not found', 404)
-            return Response.json({ peer })
-          }
-          if (req.method === 'DELETE') {
-            await bridgePeers.unregister(sessionId)
-            return Response.json({ ok: true })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
+      const bridgeSessionResponse = await bridgeSessionRoutes.handle(url, req)
+      if (bridgeSessionResponse) return bridgeSessionResponse
 
-      if (url.pathname === '/api/v1/agent/bridge/code-sessions') {
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
-          if (!config) return jsonError('bridge code session client is not configured', 400)
-          const title = stringOr(body.title, 'Desktop Coding Agent Session')
-          const tags = stringArray(body.tags)
-          const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
-          const created = await client.createCodeSession({ title, tags })
-          if (!created.ok) return jsonError(created.error, created.status ?? 502)
-          await bridgePeers.register({
-            sessionId: created.value,
-            label: title,
-            status: 'outbound_only',
-            inboundEnabled: false,
-          })
-          return Response.json({ ok: true, sessionId: created.value, status: created.status })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
+      const pluginResponse = await handlePluginRoute(url, req)
+      if (pluginResponse) return pluginResponse
 
-      const bridgeCodeCredentialsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/credentials$/)
-      if (bridgeCodeCredentialsMatch) {
-        const sessionId = decodeURIComponent(bridgeCodeCredentialsMatch[1]!)
-        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
-        try {
-          if (req.method === 'GET') {
-            const credentials = await bridgeRemote.getCredentials(sessionId)
-            if (!credentials) return jsonError('bridge credentials not found', 404)
-            return Response.json({ credentials })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const config = bridgeCodeSessionConfigFromBody(body, opts.env ?? process.env)
-            if (!config) return jsonError('bridge code session client is not configured', 400)
-            const trustedDeviceToken = stringOr(body.trustedDeviceToken ?? body.trusted_device_token, '')
-            const client = createBridgeCodeSessionClient({ ...config, fetchImpl: opts.fetchImpl })
-            const fetched = await client.fetchRemoteCredentials(codeSessionId, trustedDeviceToken || undefined)
-            if (!fetched.ok) return jsonError(fetched.error, fetched.status ?? 502)
-            const credentials = await bridgeRemote.storeCredentials(codeSessionId, fetched.value)
-            await bridgePeers.register({
-              sessionId: codeSessionId,
-              status: 'outbound_only',
-              inboundEnabled: false,
-            })
-            return Response.json({ ok: true, sessionId: codeSessionId, credentials, status: fetched.status })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeWorkerMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/worker$/)
-      if (bridgeWorkerMatch) {
-        const sessionId = decodeURIComponent(bridgeWorkerMatch[1]!)
-        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
-        try {
-          if (req.method === 'GET') {
-            const worker = bridgeWorkers.get(codeSessionId)
-            const stream = bridgeWorkerStreams.get(codeSessionId)
-            return Response.json({
-              sessionId: codeSessionId,
-              connected: !!worker,
-              workerEpoch: worker?.getWorkerEpoch(),
-              stream: stream ? { state: stream.getState(), lastSequenceNum: stream.getLastSequenceNum() } : null,
-              refresh: bridgeWorkerRefreshStatus(codeSessionId),
-            })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const credentials = await bridgeRemote.getCredentials(codeSessionId)
-            if (!credentials) return jsonError('bridge credentials not found', 404)
-            const started = await startBridgeWorker(codeSessionId, credentials, body)
-            return Response.json({ ok: true, sessionId: codeSessionId, workerEpoch: started.worker.getWorkerEpoch(), initStatus: started.initialized.status, stream: started.streamEnabled, initialSequenceNum: started.initialSequence })
-          }
-          if (req.method === 'DELETE') {
-            closeBridgeWorkerRuntime(codeSessionId, { cancelRefresh: true })
-            await bridgePeers.updateStatus(codeSessionId, 'outbound_only').catch(() => undefined)
-            return Response.json({ ok: true, sessionId: codeSessionId })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeWorkerActionMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/code-sessions\/([^/]+)\/worker\/(event|internal-event|state|metadata|delivery|heartbeat|flush|refresh)$/)
-      if (bridgeWorkerActionMatch) {
-        const sessionId = decodeURIComponent(bridgeWorkerActionMatch[1]!)
-        const codeSessionId = sessionId.startsWith('bridge:') ? sessionId.slice('bridge:'.length) : sessionId
-        const action = bridgeWorkerActionMatch[2]!
-        try {
-          if (action === 'refresh') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const refreshed = await refreshBridgeWorkerCredentialsAndTransport(codeSessionId, body, 'manual_refresh', true)
-            return Response.json({
-              ok: true,
-              sessionId: codeSessionId,
-              workerEpoch: refreshed.started.worker.getWorkerEpoch(),
-              refreshStatus: refreshed.status,
-              initStatus: refreshed.started.initialized.status,
-              stream: refreshed.started.streamEnabled,
-              initialSequenceNum: refreshed.started.initialSequence,
-              refresh: bridgeWorkerRefreshStatus(codeSessionId),
-            })
-          }
-          const worker = bridgeWorkers.get(codeSessionId)
-          if (!worker) return jsonError('bridge worker is not connected', 409)
-          if (action === 'heartbeat') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const result = await worker.sendHeartbeatNow()
-            if (!result.ok) return jsonError(result.error || `heartbeat failed ${result.status ?? ''}`.trim(), result.status ?? 502)
-            return Response.json({ ok: true, status: result.status })
-          }
-          if (action === 'flush') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            await worker.flush()
-            return Response.json({ ok: true })
-          }
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          if (action === 'event') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const event = isRecord(body.event) ? body.event : body
-            if (typeof event.type !== 'string') return jsonError('event.type required', 400)
-            await worker.writeEvent(event as Record<string, unknown> & { type: string })
-            return Response.json({ ok: true })
-          }
-          if (action === 'internal-event') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const eventType = stringOr(body.eventType ?? body.event_type ?? body.type, '')
-            const payload = isRecord(body.payload) ? body.payload : {}
-            if (!eventType) return jsonError('eventType required', 400)
-            await worker.writeInternalEvent(eventType, payload, {
-              isCompaction: body.isCompaction === true || body.is_compaction === true,
-              agentId: stringOr(body.agentId ?? body.agent_id, '') || undefined,
-            })
-            return Response.json({ ok: true })
-          }
-          if (action === 'state') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const state = bridgeWorkerSessionStateFrom(body.state ?? body.worker_status)
-            if (!state) return jsonError('state required', 400)
-            worker.reportState(state, isRecord(body.details) ? {
-              tool_name: stringOr(body.details.tool_name ?? body.details.toolName, ''),
-              action_description: stringOr(body.details.action_description ?? body.details.actionDescription, ''),
-              tool_use_id: stringOr(body.details.tool_use_id ?? body.details.toolUseId, ''),
-              request_id: stringOr(body.details.request_id ?? body.details.requestId, ''),
-              input: isRecord(body.details.input) ? body.details.input : undefined,
-            } : undefined)
-            return Response.json({ ok: true })
-          }
-          if (action === 'metadata') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const metadata = isRecord(body.metadata) ? body.metadata : body
-            worker.reportMetadata(metadata)
-            return Response.json({ ok: true })
-          }
-          if (action === 'delivery') {
-            if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-            const eventId = stringOr(body.eventId ?? body.event_id, '')
-            const status = body.status === 'received' || body.status === 'processing' || body.status === 'processed' ? body.status : undefined
-            if (!eventId || !status) return jsonError('eventId and status required', 400)
-            worker.reportDelivery(eventId, status)
-            return Response.json({ ok: true })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeEventsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/events$/)
-      if (bridgeEventsMatch) {
-        const sessionId = decodeURIComponent(bridgeEventsMatch[1]!)
-        try {
-          if (req.method === 'GET') {
-            return Response.json({
-              events: await bridgeRemote.listEvents(sessionId, {
-                after: numberFrom(url.searchParams.get('after'), 0),
-                limit: numberFrom(url.searchParams.get('limit'), 100),
-              }),
-            })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const event = isRecord(body.event) ? body.event : body
-            return Response.json(await bridgeRemote.ingestEvent(sessionId, event), { status: 201 })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeInboundMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/inbound(?:\/resolve)?$/)
-      if (bridgeInboundMatch) {
-        const sessionId = decodeURIComponent(bridgeInboundMatch[1]!)
-        try {
-          if (req.method === 'GET') {
-            return Response.json({
-              messages: await bridgeRemote.listInboundMessages(sessionId, {
-                after: numberFrom(url.searchParams.get('after'), 0),
-                limit: numberFrom(url.searchParams.get('limit'), 100),
-              }),
-            })
-          }
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const event = isRecord(body.event) ? body.event : isRecord(body.message) ? body.message : body
-            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-            const resolved = await resolveInboundUserMessage(event, {
-              sessionId,
-              stateRoot,
-              baseUrl: config?.baseUrl,
-              token: config?.token,
-              fetchImpl: opts.fetchImpl,
-            })
-            if (!resolved) return jsonError('inbound user message content not found', 400)
-            const store = body.store !== false
-            const record = store ? await bridgeRemote.storeInboundMessage(sessionId, resolved) : undefined
-            const dispatch = body.autoRun === true || body.auto_run === true || body.conversationId || body.conversation_id
-              ? await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved)
-              : undefined
-            return Response.json({ resolved, ...(record ? { message: record } : {}), ...(dispatch ? { dispatch } : {}) }, { status: 201 })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgePermissionsMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions$/)
-      if (bridgePermissionsMatch) {
-        const sessionId = decodeURIComponent(bridgePermissionsMatch[1]!)
-        try {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          return Response.json({ permissions: await bridgeRemote.listPermissions(sessionId, bridgePermissionStatusFrom(url.searchParams.get('status'))) })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgePermissionRespondMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/permissions\/([^/]+)\/respond$/)
-      if (bridgePermissionRespondMatch) {
-        const sessionId = decodeURIComponent(bridgePermissionRespondMatch[1]!)
-        const requestId = decodeURIComponent(bridgePermissionRespondMatch[2]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const result = await bridgeRemote.respondToPermission(sessionId, requestId, bridgePermissionResponseFrom(body))
-          if (!result) return jsonError('bridge permission request not found', 404)
-          return Response.json(result)
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox$/)
-      if (bridgeOutboxMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxMatch[1]!)
-        try {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          return Response.json({ outbox: await bridgeRemote.listOutbox(sessionId, bridgeOutboxStatusFrom(url.searchParams.get('status'))) })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxSentMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/([^/]+)\/sent$/)
-      if (bridgeOutboxSentMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxSentMatch[1]!)
-        const outboxId = decodeURIComponent(bridgeOutboxSentMatch[2]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const item = await bridgeRemote.markOutboxSent(sessionId, outboxId)
-          if (!item) return jsonError('bridge outbox item not found', 404)
-          return Response.json({ outbox: item })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const bridgeOutboxFlushMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/outbox\/flush$/)
-      if (bridgeOutboxFlushMatch) {
-        const sessionId = decodeURIComponent(bridgeOutboxFlushMatch[1]!)
-        try {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-          if (!config) return jsonError('bridge remote transport is not configured', 400)
-          const transport = createBridgeRemoteTransport({ ...config, fetchImpl: opts.fetchImpl })
-          const queued = await bridgeRemote.listOutbox(sessionId, 'queued')
-          const results: Array<Record<string, unknown>> = []
-          for (const item of queued) {
-            const sent = await transport.sendOutboxItem(item)
-            if (sent.ok) {
-              const marked = await bridgeRemote.markOutboxSent(sessionId, item.id)
-              results.push({ id: item.id, requestId: item.requestId, ok: true, status: sent.status, outbox: marked })
-            } else {
-              results.push({ id: item.id, requestId: item.requestId, ok: false, status: sent.status, error: sent.error })
-            }
-          }
-          return Response.json({ ok: results.every(item => item.ok === true), flushed: results.filter(item => item.ok === true).length, total: results.length, results })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      if (url.pathname === '/api/v1/agent/bridge/subscribers') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({
-          subscribers: [...bridgeSubscribers.entries()].map(([sessionId, subscriber]) => ({
-            sessionId,
-            connected: subscriber.isConnected(),
-          })),
-        })
-      }
-
-      const bridgeSubscribeMatch = url.pathname.match(/^\/api\/v1\/agent\/bridge\/sessions\/([^/]+)\/subscribe$/)
-      if (bridgeSubscribeMatch) {
-        const sessionId = decodeURIComponent(bridgeSubscribeMatch[1]!)
-        try {
-          if (req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const config = bridgeRemoteConfigFromBody(body, opts.env ?? process.env)
-            if (!config) return jsonError('bridge remote subscriber is not configured', 400)
-            bridgeSubscribers.get(sessionId)?.close()
-            const subscriber = new BridgeRemoteSubscriber(sessionId, {
-              baseUrl: config.baseUrl,
-              token: config.token,
-              orgUuid: config.orgUuid,
-              WebSocketCtor: opts.bridgeWebSocketCtor,
-            }, { state: bridgeRemote, peers: bridgePeers, inbound: {
-              stateRoot,
-              fetchImpl: opts.fetchImpl,
-              onResolved: async resolved => { await dispatchBridgeInboundToAgent({ ...body, bridgeSessionId: sessionId }, resolved) },
-            }, onEvent: async payload => { await projectBridgeEventToConversation(body, payload) } })
-            bridgeSubscribers.set(sessionId, subscriber)
-            subscriber.connect()
-            return Response.json({ ok: true, sessionId, connected: subscriber.isConnected() })
-          }
-          if (req.method === 'DELETE') {
-            const subscriber = bridgeSubscribers.get(sessionId)
-            subscriber?.close()
-            bridgeSubscribers.delete(sessionId)
-            return Response.json({ ok: true, sessionId })
-          }
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/presets') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ presets: MCP_PRESETS })
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/trust') {
-        // 工作区级 .mcp.json 信任闸:GET 查已信任列表;POST {workspaceRoot} 批准;DELETE 撤销。
-        if (req.method === 'GET') return Response.json({ approved_workspace_roots: mcpTrust.list() })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const root = stringOr(body.workspaceRoot ?? body.working_dir, '')
-        if (!root) return jsonError('缺少 workspaceRoot', 400)
-        if (req.method === 'DELETE') { mcpTrust.revoke(root); return Response.json({ ok: true, trusted: false, approved_workspace_roots: mcpTrust.list() }) }
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        mcpTrust.trust(root)
-        return Response.json({ ok: true, trusted: true, approved_workspace_roots: mcpTrust.list() })
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/add') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await addMcpServer(body, defaultWritableMcpConfigPath(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/remove') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await removeMcpServer(body.name, defaultWritableMcpConfigPath(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/mcp/toggle') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await setMcpServerDisabled(body.name, body.disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/plugins') {
-        if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-        return Response.json({ plugins: await listPlugins(defaultPluginRoots(opts.env ?? process.env)) })
-      }
-
-      // 文件系统浏览(§7 工作区目录树):列一个目录的直接子项(dirs 优先),只读、隐藏文件跳过、上限 500。
-      if (url.pathname === '/api/v1/agent/fs/list' && req.method === 'GET') {
-        const dirPath = url.searchParams.get('path')
-        if (!dirPath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          // 工作区树给的是相对 root 的路径;按 working_dir(店主选的工作目录)解析,绝对路径原样。
-          // resolve(base, p):p 绝对则返回 p,相对则相对 base——正好两种都对。修相对路径错解析到 sidecar cwd 的 bug。
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), dirPath)
-          const dirents = await readdir(resolved, { withFileTypes: true })
-          const entries = dirents
-            .filter(d => !d.name.startsWith('.'))
-            .map(d => ({ name: d.name, isDir: d.isDirectory() }))
-            .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
-            .slice(0, 500)
-          return Response.json({ path: resolved, entries })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
-
-      // 文件读(§9 右侧预览):读一个文本文件内容,上限 256KB,供预览面板显示改动后的文件。
-      if (url.pathname === '/api/v1/agent/fs/read' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
-          const stat = await import('node:fs/promises').then(m => m.stat(resolved))
-          if (stat.size > 256 * 1024) return Response.json({ path: resolved, truncated: true, content: '(文件超过 256KB,预览已截断)' })
-          return Response.json({ path: resolved, content: await readFile(resolved, 'utf8') })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
-
-      // 原始文件字节(右面板 <img> 渲染图片等二进制预览):按扩展名给 content-type;越界(../)拒绝。
-      // 图片/pdf 是二进制,不能走 fs/read 的 utf8 文本(读出来是乱码)——所以单开一条按字节返回的路。
-      if (url.pathname === '/api/v1/agent/fs/raw' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return new Response('path required', { status: 400 })
-        try {
-          const wd = url.searchParams.get('working_dir') || getDefaultWorkspaceDir()
-          const resolved = resolve(wd, filePath)
-          if (relative(wd, resolved).startsWith('..')) return new Response('forbidden', { status: 403 }) // 挡 ../ 穿越
-          const info = await import('node:fs/promises').then(m => m.stat(resolved))
-          if (info.size > 20 * 1024 * 1024) return new Response('file too large', { status: 413 }) // 预览上限 20MB
-          const data = await readFile(resolved)
-          const type = RAW_MIME_BY_EXT[extname(resolved).toLowerCase()] ?? 'application/octet-stream'
-          return new Response(data, { headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } })
-        } catch (err) {
-          return new Response(err instanceof Error ? err.message : String(err), { status: 404 })
-        }
-      }
-
-      // 文件 diff(右面板改动文件红绿 diff):HEAD 版 vs 工作区版,返回 old/new 供前端 DiffViewer。
-      if (url.pathname === '/api/v1/agent/fs/diff' && req.method === 'GET') {
-        const filePath = url.searchParams.get('path')
-        if (!filePath) return Response.json({ error: 'path required' }, { status: 400 })
-        try {
-          const resolved = resolve(url.searchParams.get('working_dir') || getDefaultWorkspaceDir(), filePath)
-          const newString = await readFile(resolved, 'utf8').catch(() => '')
-          const { execFile } = await import('node:child_process')
-          const { promisify } = await import('node:util')
-          const execFileP = promisify(execFile)
-          let repoRoot = ''
-          try {
-            const { stdout } = await execFileP('git', ['rev-parse', '--show-toplevel'], { cwd: dirname(resolved), timeout: 2000 })
-            repoRoot = stdout.trim()
-          } catch { /* 非 git 仓库 */ }
-          let oldString = ''
-          if (repoRoot) {
-            const rel = relative(repoRoot, resolved)
-            try {
-              const { stdout } = await execFileP('git', ['--no-optional-locks', 'show', `HEAD:${rel}`], { cwd: repoRoot, timeout: 3000, maxBuffer: 1024 * 1024 })
-              oldString = stdout
-            } catch { oldString = '' } // git 仓库内未跟踪/新文件 → 视为全新增(符合 git/Codex 语义)
-          }
-          // ⚠️ 非 git 仓库(repoRoot 空)没有 diff 基准 → changed:false,前端显示纯文件内容;
-          // 否则每个文件都被误判成"全绿全新增"假 diff(oldString 空 !== 全文)。git 仓库内才按 HEAD 比。
-          const changed = repoRoot ? oldString !== newString : false
-          return Response.json({ path: resolved, oldString, newString, changed })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
+      const workspaceFileResponse = await handleWorkspaceFileRoute(url, req)
+      if (workspaceFileResponse) return workspaceFileResponse
 
       // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
       if (url.pathname === '/api/settings') {
@@ -4240,65 +2238,8 @@ export function startServer(opts: StartServerOptions = {}) {
         return new Response('Method not allowed', { status: 405 })
       }
 
-      // 工作区路径(§P1 持久化 + 新建/现有两条路 + 可配置默认存储路径)。四个动作共用 buildState():
-      //   { default(全局默认工作区), base(默认工作空间存储路径,新建落这里), persisted(上次选中), current(启动应恢复到的), exists }。
-      // - GET  /api/v1/workspace            → 读状态(前端启动据此回填上次工作目录 →「关窗即忘」修好)。
-      // - POST /api/v1/workspace { path }    → 「使用现有文件夹」:把选中的绝对路径存盘(lastWorkspaceRoot),非目录报 400。
-      // - POST /api/v1/workspace/create { name } → 「新建工作空间」:在 base 下建同名文件夹 + 初始化项目记忆(BILLIARDBUDDY.md/.billiardbuddy)+ 设为当前,返回绝对路径。
-      // - POST /api/v1/workspace/base { path } → 改「默认工作空间存储路径」(workspaceBaseDir)。
-      if (url.pathname === '/api/v1/workspace' || url.pathname === '/api/v1/workspace/create' || url.pathname === '/api/v1/workspace/base') {
-        const isDir = async (p: string): Promise<boolean> => { try { return (await stat(p)).isDirectory() } catch { return false } }
-        const effectiveBase = async (): Promise<string> => (await userSettings.get()).workspaceBaseDir || getDefaultWorkspaceDir()
-        const buildState = async (): Promise<Record<string, unknown>> => {
-          const settings = await userSettings.get()
-          const defaultDir = getDefaultWorkspaceDir()
-          const base = settings.workspaceBaseDir || defaultDir
-          const persisted = settings.lastWorkspaceRoot ?? null
-          const current = persisted && await isDir(persisted) ? persisted : defaultDir
-          return { default: defaultDir, base, persisted, current, exists: await isDir(current) }
-        }
-
-        // 「新建工作空间」:名字 → base 下建同名文件夹 + 初始化 + 设为当前。
-        if (url.pathname === '/api/v1/workspace/create') {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          try {
-            const created = await createNamedWorkspace(await effectiveBase(), typeof body.name === 'string' ? body.name : '')
-            await userSettings.update({ lastWorkspaceRoot: created.path })
-            return Response.json({ ...created, ...(await buildState()) })
-          } catch (err) {
-            if (err instanceof WorkspaceNameError) return jsonError(err.message, 400)
-            return jsonError(err instanceof Error ? err.message : String(err), 500)
-          }
-        }
-
-        // 改「默认工作空间存储路径」:mkdir -p 兜底,非目录报 400。
-        if (url.pathname === '/api/v1/workspace/base') {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const raw = typeof body.path === 'string' ? body.path.trim() : ''
-          if (!raw) return jsonError('path required', 400)
-          const abs = resolve(raw)
-          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
-          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
-          await userSettings.update({ workspaceBaseDir: abs })
-          return Response.json(await buildState())
-        }
-
-        // /api/v1/workspace 本体:GET 读状态 / POST 设「使用现有文件夹」的选中路径。
-        if (req.method === 'GET') return Response.json(await buildState())
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const raw = typeof body.path === 'string' ? body.path.trim() : ''
-          if (!raw) return jsonError('path required', 400)
-          const abs = resolve(raw)
-          try { await mkdir(abs, { recursive: true }) } catch { /* 已存在或建不出;下面 isDir 兜底判定 */ }
-          if (!await isDir(abs)) return jsonError(`不是可用目录:${raw}`, 400)
-          await userSettings.update({ lastWorkspaceRoot: abs })
-          return Response.json(await buildState())
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const workspaceResponse = await handleWorkspaceRoute(url, req)
+      if (workspaceResponse) return workspaceResponse
 
       // 规则持久化:把一条权限规则写进工作区 .claude/settings.local.json(跨重启生效),供"始终允许"选择用。
       if (url.pathname === '/api/v1/agent/permissions/persist' && req.method === 'POST') {
@@ -4314,18 +2255,6 @@ export function startServer(opts: StartServerOptions = {}) {
       if (url.pathname === '/api/v1/agent/permissions/rules' && req.method === 'GET') {
         const workspace = workspaceFromBody(Object.fromEntries(url.searchParams))
         return Response.json({ rules: await loadPermissionRules(workspace.root) })
-      }
-
-      if (url.pathname === '/api/v1/agent/plugins/toggle') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await setPluginEnabled(body.name, body.enabled, defaultPluginRoots(opts.env ?? process.env)))
-      }
-
-      if (url.pathname === '/api/v1/agent/plugins/install') {
-        if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        return Response.json(await installPluginFromGithub(body.repo, defaultPluginInstallDir(opts.env ?? process.env)))
       }
 
       if (url.pathname === '/api/v1/agent/execute') {
@@ -4503,7 +2432,7 @@ export function startServer(opts: StartServerOptions = {}) {
           })
         }
         if (action === 'cancel' && req.method === 'POST') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(tasks, id, ['queued', 'running'])
           const interrupted = task?.conversationId ? turns.interrupt(task.conversationId) : false
           const taskId = task?.id ?? id
           const cancelled = await tasks.cancel(taskId)
@@ -4532,7 +2461,7 @@ export function startServer(opts: StartServerOptions = {}) {
           const body = await req.json().catch(() => ({})) as Record<string, unknown>
           const message = typeof body.message === 'string' ? body.message.trim() : ''
           if (!message) return Response.json({ ok: false, detail: 'message required' }, { status: 400 })
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
+          const { task, requestedTaskId } = await resolveTaskEndpointTarget(tasks, id)
           if (!task?.conversationId) return Response.json({ ok: false, detail: 'task not found' }, { status: 404 })
           const inbox = steerInboxes.get(task.conversationId) ?? []
           inbox.push(message)
@@ -4557,328 +2486,20 @@ export function startServer(opts: StartServerOptions = {}) {
         return Response.json(status)
       }
 
-      const providerRoute = providerPath(url)
-      if (providerRoute.matched) {
-        try {
-          const [id, action] = providerRoute.segments
+      const sessionMetadataResponse = await handleSessionMetadataRoute(url, req)
+      if (sessionMetadataResponse) return sessionMetadataResponse
 
-          if (!id) {
-            // 白标:前端拉的 providers 列表脱敏——去 baseUrl + 真实 model,只留身份 + 能力档代称。
-            if (req.method === 'GET') {
-              const listed = await providers.list()
-              return Response.json({ activeId: listed.activeId, providers: listed.providers.map(toPublicProviderView) })
-            }
-            if (req.method === 'POST') {
-              const body = await req.json().catch(() => ({})) as Record<string, unknown>
-              return Response.json({ provider: await providers.create(body) }, { status: 201 })
-            }
-            return new Response('Method not allowed', { status: 405 })
-          }
+      const sessionActivityResponse = await handleSessionActivityRoute(url, req)
+      if (sessionActivityResponse) return sessionActivityResponse
 
-          if (id === 'reorder' && !action && req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            const ids = stringArray(body.ids ?? body.providerIds ?? body.order)
-            return Response.json(await providers.reorder(ids))
-          }
+      const sessionRewindResponse = await handleSessionRewindRoute(url, req)
+      if (sessionRewindResponse) return sessionRewindResponse
 
-          if (id === 'active' && action === 'clear' && req.method === 'POST') {
-            await providers.clearActive()
-            return Response.json({ ok: true })
-          }
+      const sessionArchiveResponse = await handleSessionArchiveRoute(url, req)
+      if (sessionArchiveResponse) return sessionArchiveResponse
 
-          if (action === 'clear-health' && req.method === 'POST') {
-            return Response.json(await clearModelHealth({ providerId: id }))
-          }
-
-          if (id === 'test' && req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ result: await providers.testProviderConfig(body, { fetchImpl: opts.fetchImpl }) })
-          }
-
-          if (action === 'activate' && req.method === 'POST') {
-            return Response.json({ provider: await providers.activate(id) })
-          }
-
-          if ((action === 'enable' || action === 'disable') && req.method === 'POST') {
-            return Response.json({ provider: await providers.setEnabled(id, action === 'enable') })
-          }
-
-          if (action === 'enabled' && (req.method === 'POST' || req.method === 'PATCH')) {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ provider: await providers.setEnabled(id, body.enabled !== false) })
-          }
-
-          if (action === 'test' && req.method === 'POST') {
-            return Response.json({ result: await providers.testProvider(id, { fetchImpl: opts.fetchImpl }) })
-          }
-
-          if (!action && req.method === 'GET') {
-            const provider = await providers.get(id)
-            if (!provider) return jsonError('provider not found', 404)
-            return Response.json({ provider })
-          }
-          if (!action && (req.method === 'PUT' || req.method === 'PATCH')) {
-            const body = await req.json().catch(() => ({})) as Record<string, unknown>
-            return Response.json({ provider: await providers.update(id, body) })
-          }
-          if (!action && req.method === 'DELETE') {
-            await providers.delete(id)
-            return Response.json({ ok: true })
-          }
-
-          return new Response('Method not allowed', { status: 405 })
-        } catch (err) {
-          return jsonError(err instanceof Error ? err.message : String(err), providerStatusFor(err))
-        }
-      }
-
-      const commandRoute = url.pathname.match(/^\/(?:api\/)?commands(?:\/(expand))?$/)
-      if (commandRoute) {
-        const queryPacks = [
-          ...url.searchParams.getAll('knowledge_packs'),
-          ...url.searchParams.getAll('knowledgePacks'),
-          ...url.searchParams.getAll('enabled_packs'),
-          ...url.searchParams.getAll('enabledPacks'),
-        ].filter(Boolean)
-        const queryBridgeOrigin = url.searchParams.get('bridge_origin') === 'true' ||
-          url.searchParams.get('bridgeOrigin') === 'true' ||
-          url.searchParams.get('remote_control') === 'true' ||
-          url.searchParams.get('remoteControl') === 'true'
-        const bodyForWorkspace = req.method === 'GET'
-          ? {
-              working_dir: url.searchParams.get('working_dir') ?? undefined,
-              workspaceRoot: url.searchParams.get('workspaceRoot') ?? undefined,
-              knowledge_packs: queryPacks.length > 0 ? queryPacks : undefined,
-              billiards_mode: url.searchParams.get('billiards_mode') === 'true' || url.searchParams.get('billiardsMode') === 'true',
-              bridgeOrigin: queryBridgeOrigin || undefined,
-            }
-          : await req.clone().json().catch(() => ({})) as Record<string, unknown>
-        const workspace = workspaceFromBody(bodyForWorkspace)
-        const commands = await loadCommandsForWorkspace(workspace.root, opts.commandsRoot ?? defaultCommandsRoot(), resolveEnabledPacks(bodyForWorkspace), opts.env ?? process.env)
-        const publicCommands = bodyForWorkspace.bridgeOrigin === true || bodyForWorkspace.bridge_origin === true || bodyForWorkspace.remoteControl === true || bodyForWorkspace.remote_control === true
-          ? filterBridgeSafeCommands(commands.commands)
-          : commands.commands
-        if (!commandRoute[1] && req.method === 'GET') {
-          // 用户面清单:过滤 user-invocable:false(与新路由 /api/v1/agent/commands 的 toPublicCommandEntries 一致);
-          // disableModelInvocation 是模型面限制,用户仍可敲,不在此过滤。
-          return Response.json({ commands: publicCommands.filter(c => c.userInvocable !== false).map(publicCommand) })
-        }
-        if (commandRoute[1] === 'expand' && req.method === 'POST') {
-          const body = bodyForWorkspace
-          if (typeof body.name !== 'string') return Response.json({ ok: false, error: 'name required' }, { status: 400 })
-          const command = commands.byName.get(normalizeCommandName(body.name))
-          if (!command) return Response.json({ ok: false, error: 'command not found' }, { status: 404 })
-          return Response.json({ command: publicCommand(command), prompt: await command.getPrompt(typeof body.args === 'string' ? body.args : '', { workspace }) })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      // 最近项目(按 workspaceRoot 聚合会话):多项目 App 的项目选择器数据源。
-      if (url.pathname === '/sessions/projects' && req.method === 'GET') {
-        const limit = numberFrom(url.searchParams.get('limit') ?? undefined, 20)
-        return Response.json({ projects: await sessions.recentProjects(limit) })
-      }
-
-      if (url.pathname === '/sessions') {
-        if (req.method === 'GET') {
-          // ?workspaceRoot= 按项目过滤会话列表(项目视图)。
-          const workspaceRoot = url.searchParams.get('workspaceRoot') ?? undefined
-          return Response.json({ sessions: await sessions.list(workspaceRoot ? { workspaceRoot } : undefined) })
-        }
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const meta = await sessions.create({
-            id: typeof body.id === 'string' ? body.id : undefined,
-            title: typeof body.title === 'string' ? body.title : undefined,
-            workspaceRoot: stringOr(body.workspaceRoot, getDefaultWorkspaceDir()),
-          })
-          return Response.json({ session: meta })
-        }
-      }
-
-      // 会话管理:PATCH /sessions/:id {title?,pinned?,archived?} 重命名/置顶/归档;DELETE 删除。
-      // 侧栏会话右键菜单接这里(原来只改前端本地、刷新即丢)。
-      const sessionIdMatch = url.pathname.match(/^\/sessions\/([^/]+)$/)
-      if (sessionIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
-        const id = decodeURIComponent(sessionIdMatch[1]!)
-        const existing = await sessions.get(id).catch(() => null)
-        if (!existing) return jsonDetailError('session not found', 404)
-        if (req.method === 'DELETE') { const ok = await sessions.remove(id); return Response.json({ ok }) }
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        const patch: { title?: string; pinned?: boolean; archived?: boolean } = {}
-        if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim()
-        if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
-        if (typeof body.archived === 'boolean') patch.archived = body.archived
-        return Response.json({ session: await sessions.touch(id, patch) })
-      }
-
-      // 会话 fork:用新 id 拷贝源会话 transcript 续接(对齐 cc --fork-session)。
-      const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/)
-      if (sessionForkMatch && req.method === 'POST') {
-        const body = await req.json().catch(() => ({})) as Record<string, unknown>
-        try {
-          const forked = await sessions.fork(decodeURIComponent(sessionForkMatch[1]!), { title: typeof body.title === 'string' ? body.title : undefined })
-          return Response.json({ session: forked })
-        } catch (err) {
-          return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-        }
-      }
-
-      if (url.pathname === '/tasks') {
-        if (req.method === 'GET') {
-          return Response.json({
-            tasks: await tasks.list({
-              conversationId: url.searchParams.get('conversationId') ?? undefined,
-              status: taskStatusFrom(url.searchParams.get('status')),
-              limit: numberFrom(url.searchParams.get('limit'), 200),
-              collapseResumedBackgroundAgents: true,
-            }),
-          })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      const taskMatch = url.pathname.match(/^\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(events|cancel|background))?$/)
-      if (taskMatch) {
-        const id = taskMatch[1]!
-        const action = taskMatch[2]
-        if (!action && req.method === 'GET') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
-          if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
-          const includeEvents = url.searchParams.get('includeEvents') === '1'
-          return Response.json({
-            task,
-            ...taskAliasPayload(task, requestedTaskId),
-            ...(includeEvents ? { events: await tasks.loadEvents(task.id, { limit: 100 }) } : {}),
-          })
-        }
-        if (action === 'events' && req.method === 'GET') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id)
-          if (!task) return Response.json({ ok: false, error: 'task not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          const events = await tasks.loadEvents(task.id, { after, limit })
-          return Response.json({
-            events,
-            ...taskAliasPayload(task, requestedTaskId),
-            nextSeq: events.at(-1)?.seq ?? (Number.isFinite(after) ? Math.max(0, after) : 0),
-          })
-        }
-        if (action === 'cancel' && req.method === 'POST') {
-          const { task, requestedTaskId } = await resolveTaskEndpointTarget(id, ['queued', 'running'])
-          const taskId = task?.id ?? id
-          return Response.json({
-            ok: true,
-            cancelled: await tasks.cancel(taskId),
-            taskId,
-            ...(task && task.id !== requestedTaskId ? { requestedTaskId } : {}),
-          })
-        }
-        if (action === 'background' && req.method === 'POST') {
-          try {
-            const task = await tasks.requestForegroundAgentBackground(id)
-            return Response.json({ ok: true, task, ...taskAliasPayload(task, id) })
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 404 })
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
-
-      const sessionMatch = url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})(?:\/(interrupt|events|messages|archive))?$/)
-      if (sessionMatch) {
-        const id = sessionMatch[1]!
-        const action = sessionMatch[2]
-        if (!action && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const includeEvents = url.searchParams.get('includeEvents') === '1'
-          const includeMessages = url.searchParams.get('includeMessages') !== '0'
-          return Response.json({
-            session,
-            ...(includeMessages ? { messages: await sessions.loadTranscript(id) } : {}),
-            ...(includeEvents ? { events: await sessions.loadEvents(id, { limit: 100 }) } : {}),
-          })
-        }
-        if (action === 'messages' && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          return Response.json(await sessions.loadTranscriptPage(id, { after, limit }))
-        }
-        if (action === 'events' && req.method === 'GET') {
-          const session = await sessions.get(id)
-          if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-          const after = Number.parseInt(url.searchParams.get('after') ?? '0', 10)
-          const limit = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
-          const events = await sessions.loadEvents(id, { after, limit })
-          if (url.searchParams.get('format') === 'sse') {
-            const body = events.map(record => sseReplayLine(record.seq, record.event)).join('')
-            return new Response(body, {
-              headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-            })
-          }
-          return Response.json({
-            events,
-            nextSeq: events.at(-1)?.seq ?? (Number.isFinite(after) ? Math.max(0, after) : 0),
-          })
-        }
-        if (action === 'interrupt' && req.method === 'POST') {
-          const interrupted = turns.interrupt(id)
-          if (interrupted) {
-            await sessions.touch(id, { status: 'interrupted' })
-            await sessions.appendEvent(id, { type: 'context_note', text: '任务已请求中断' }).catch(() => undefined)
-          }
-          return Response.json({ ok: true, interrupted })
-        }
-        if (action === 'archive' && req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          try {
-            return Response.json(await archiveSession(id, body))
-          } catch (err) {
-            const status = err instanceof TurnSetupError ? err.status : 500
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status })
-          }
-        }
-      }
-
-      // rewind/checkpoint 上层服务:同时接受裸 /sessions 与 /api/sessions 前缀(验收文档写的是 /api 形状)。
-      const rewindMatch = url.pathname.match(/^(?:\/api)?\/sessions\/([A-Za-z0-9_-]{1,128})\/(turn-checkpoints|rewind)$/)
-      if (rewindMatch) {
-        const id = rewindMatch[1]!
-        const action = rewindMatch[2]
-        const session = await sessions.get(id)
-        if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 })
-        if (action === 'turn-checkpoints') {
-          if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 })
-          try {
-            return Response.json({ checkpoints: await sessionRewind.listTurnCheckpoints(id) })
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
-          }
-        }
-        if (action === 'rewind' && req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          const selector: RewindTargetSelector = {
-            targetUserMessageId: typeof body.targetUserMessageId === 'string' ? body.targetUserMessageId : undefined,
-            userMessageIndex: typeof body.userMessageIndex === 'number' ? body.userMessageIndex : undefined,
-            expectedContent: typeof body.expectedContent === 'string' ? body.expectedContent : undefined,
-          }
-          if (!selector.targetUserMessageId && !Number.isInteger(selector.userMessageIndex)) {
-            return Response.json({ ok: false, error: 'targetUserMessageId or userMessageIndex is required' }, { status: 400 })
-          }
-          try {
-            const result = body.dryRun === true
-              ? await sessionRewind.previewRewind(id, selector)
-              : await sessionRewind.executeRewind(id, selector)
-            return Response.json(result)
-          } catch (err) {
-            return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 400 })
-          }
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const taskResponse = await handleTaskRoute(url, req)
+      if (taskResponse) return taskResponse
 
       if (url.pathname === '/agent/hello') {
         server.timeout(req, 0) // 关掉 Bun 空闲掐断,否则安静的 SSE 流会被杀
@@ -4951,105 +2572,7 @@ export function startServer(opts: StartServerOptions = {}) {
       })()
       return response ? withLocalCors(response, req) : undefined as unknown as Response
     },
-    websocket: {
-      open(ws) {
-        turnConsumers.onConnect(ws.data.conversationId)
-        // 所有连接都订阅资产进度广播(前端据此画"正在准备组件 x%")。
-        ws.subscribe(ASSET_WS_TOPIC)
-        wsSend(ws, { type: 'ready', conversationId: ws.data.conversationId })
-        if (ws.data.after > 0) {
-          void replayWsEvents(ws, ws.data.conversationId, ws.data.after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-        }
-      },
-      close(ws) {
-        // 断连:消费者计数减一,若归零且回合仍在跑,宽限期后无人重连则中止(turnConsumers 内部处理)。
-        turnConsumers.onDisconnect(ws.data.conversationId)
-      },
-      message(ws, message) {
-        let body: Record<string, unknown>
-        try {
-          const parsed = JSON.parse(typeof message === 'string' ? message : message.toString('utf8'))
-          body = { ...parseClientMessage(parsed) }
-        } catch {
-          wsError(ws, 'invalid websocket message')
-          return
-        }
-        const type = body.type
-        if (type === 'ping') {
-          // 应用层心跳(对齐 cc ws/handler ping/pong):前端定时发 ping 保活,避免 Bun idle 掐断长连接。
-          wsSend(ws, { type: 'pong', ts: numberFrom(body.ts, 0) || undefined })
-          return
-        }
-        if (type === 'run') {
-          void handleWsRun(ws, body)
-          return
-        }
-        if (type === 'replay') {
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const after = numberFrom(body.after, 0)
-          ws.data.conversationId = conversationId
-          void replayWsEvents(ws, conversationId, after).catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'interrupt') {
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const interrupted = turns.interrupt(conversationId)
-          void (async () => {
-            if (interrupted) {
-              await sessions.touch(conversationId, { status: 'interrupted' })
-              const record = await sessions.appendEvent(conversationId, { type: 'context_note', text: '任务已请求中断' }).catch(() => null)
-              if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
-            }
-            wsSend(ws, { type: 'interrupt_result', conversationId, interrupted })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'steer') {
-          // 运行中插话纠偏走同一条 WS(对齐 cc 全走一条连接):推进 steerInbox + 落 steering 事件回灌。
-          const conversationId = stringOr(body.conversationId, ws.data.conversationId)
-          const message = typeof body.message === 'string' ? body.message.trim() : ''
-          if (!message) { wsError(ws, 'steer message required'); return }
-          void (async () => {
-            if (!turns.isRunning(conversationId)) {
-              wsSend(ws, { type: 'steer_result', conversationId, queued: 0, running: false })
-              return
-            }
-            const inbox = steerInboxes.get(conversationId) ?? []
-            inbox.push(message)
-            steerInboxes.set(conversationId, inbox)
-            // submit-interrupt(对齐 cc handlePromptSubmit:hasInterruptibleToolInProgress → abort('interrupt')):
-            // 总是通知循环有插话;循环自带闸,仅当可中断工具在飞时才当场切断,否则等价入队(safe-point drain)。
-            interruptRequesters.get(conversationId)?.()
-            const record = await sessions.appendEvent(conversationId, { type: 'steering', content: message }).catch(() => null)
-            if (record) wsSend(ws, { type: 'event', seq: record.seq, ts: record.ts, event: record.event })
-            wsSend(ws, { type: 'steer_result', conversationId, queued: inbox.length, running: true })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'approve') {
-          // 审批放行走同一条 WS(对齐 cc):复用 runApprovedTool(验签→执行→结果写回 transcript),回 approve_result。
-          void (async () => {
-            const payload = await runApprovedTool(body)
-            if (!payload) { wsError(ws, 'tool required'); return }
-            wsSend(ws, { type: 'approve_result', ...payload })
-          })().catch(err => wsError(ws, err instanceof Error ? err.message : String(err)))
-          return
-        }
-        if (type === 'reject') {
-          // 审批拒绝走同一条 WS:复用 handleReject(拒绝追踪:多次拒绝后不再反复弹卡)。
-          const toolName = typeof body.tool === 'string' ? body.tool.trim() : ''
-          if (!toolName) { wsError(ws, 'tool required'); return }
-          handleReject(toolName, body.args ?? {}, {
-            workspace: workspaceFromBody(body),
-            conversationId: stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId) || undefined,
-            permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
-          })
-          wsSend(ws, { type: 'reject_result', ok: true })
-          return
-        }
-        wsError(ws, `unknown websocket message type: ${type}`)
-      },
-    },
+    websocket,
   })
   // 资产下载进度 → WS 广播(事件结构见 assets/types AssetProgressEvent)。
   const unsubscribeAssetEvents = assets.onEvent(event => {
@@ -5074,14 +2597,8 @@ export function startServer(opts: StartServerOptions = {}) {
     scheduledTasks.stop()
     assets.stop()
     if (getActiveAssetManager() === assets) setActiveAssetManager(null)
-    for (const subscriber of bridgeSubscribers.values()) subscriber.close()
-    bridgeSubscribers.clear()
-    for (const scheduler of bridgeWorkerRefreshSchedulers.values()) scheduler.cancel()
-    bridgeWorkerRefreshSchedulers.clear()
-    for (const stream of bridgeWorkerStreams.values()) stream.close()
-    bridgeWorkerStreams.clear()
-    for (const worker of bridgeWorkers.values()) worker.close()
-    bridgeWorkers.clear()
+    bridgeSessionRoutes.close()
+    bridgeWorkerRoutes.close()
     return stop(closeActiveConnections)
   }
   return app

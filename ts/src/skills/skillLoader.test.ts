@@ -484,6 +484,11 @@ test('create_skill:默认落用户白标目录 ~/.billiardbuddy/skills(server �
     expect(out).toContain(written)
     // 落在白标目录,绝不 .claude
     expect(written).not.toContain('.claude')
+    const freshSessionLibrary = await loadLayeredSkills({ bundledRoot: join(home, 'bundled'), userRoot: skillRoot })
+    expect(freshSessionLibrary.byName.get('daily-report')).toMatchObject({
+      name: 'daily-report',
+      skillLayer: 'user',
+    })
   } finally {
     if (prev === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
     else process.env.BILLIARDBUDDY_CONFIG_DIR = prev
