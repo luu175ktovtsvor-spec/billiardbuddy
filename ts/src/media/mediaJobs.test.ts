@@ -90,6 +90,37 @@ test('media jobs wait for on-demand assets and continue the same task automatica
   }
 })
 
+test('media jobs fail instead of waiting forever when asset preparation times out', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-asset-timeout-'))
+  let executions = 0
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      gateAssets: () => ({ blocked: true, asset_progress: 12, message: '组件准备中 12%' }),
+      assetWaitTimeoutMs: 0,
+    })
+    const started = await service.startJob({
+      kind: 'upscale',
+      title: '组件超时测试',
+      body: {},
+      requiredAssets: ['ffmpeg'],
+      fallback: async () => {
+        executions += 1
+        return { ok: true }
+      },
+    })
+    const failed = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'error' ? status : null
+    })
+    expect(failed.error).toContain('组件准备超时')
+    expect(executions).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('MediaJobService inspects print QR source quality and preserves QR edges during overlay', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-print-qr-quality-'))
   const uploadDir = join(root, 'uploads', 'local')

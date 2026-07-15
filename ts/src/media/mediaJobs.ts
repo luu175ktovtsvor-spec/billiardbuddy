@@ -10,7 +10,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './video-edit/legacyTimeline'
-import { ffmpegBinFrom, gateMediaAssets, type MediaBinaryNeed } from './mediaBinaries'
+import { DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS, ffmpegBinFrom, gateMediaAssets, type MediaBinaryNeed } from './mediaBinaries'
 import { upscaleImage } from './imageUpscale'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 import {
@@ -80,6 +80,7 @@ export interface MediaJobServiceOptions {
   }
   gateAssets?: typeof gateMediaAssets
   waitForAssetRetry?: (signal: AbortSignal) => Promise<void>
+  assetWaitTimeoutMs?: number
 }
 
 /** 人像闸预检结果:blocked=true 则任务直接返回该结果(正常完成、非报错),不进模型。 */
@@ -960,11 +961,13 @@ export class MediaJobService {
     })
     this.opts.tasks.start(task.id, async ctx => {
       try {
+        const assetWaitDeadline = Date.now() + Math.max(0, this.opts.assetWaitTimeoutMs ?? DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS)
         let assetGate = (this.opts.gateAssets ?? gateMediaAssets)(this.env, input.requiredAssets ?? [])
         while (assetGate) {
           const message = typeof assetGate.message === 'string' ? assetGate.message : '所需组件正在后台准备。'
           const progress = typeof assetGate.asset_progress === 'number' ? assetGate.asset_progress : 0
           await ctx.progress(Math.max(1, Math.min(99, progress)), message)
+          if (Date.now() >= assetWaitDeadline) throw new Error('所需组件准备超时，请检查网络后重试。')
           await (this.opts.waitForAssetRetry ?? (signal => delayWithSignal(750, signal)))(ctx.signal)
           assetGate = (this.opts.gateAssets ?? gateMediaAssets)(this.env, input.requiredAssets ?? [])
         }
