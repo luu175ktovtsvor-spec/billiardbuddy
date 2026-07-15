@@ -17,7 +17,7 @@ import { VideoEditProjectStore, buildBgmMixArgs, normalizeTimelineDoc } from './
 import { parseSceneCuts, buildShots } from './evidence/shotDetection'
 import { parseSignalstats, summarizeMetrics, scoreShot, isBlackShot, isFrozenShot, selectAndRankShots, type CandidateShot } from './evidence/shotQuality'
 import { estimateTempo, snapToBeats, planBeatDurations, beatPeriodFromBeats, onsetEnvelope } from './evidence/beatAnalysis'
-import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, tagShots, videoVlmConfigFromEnv, type ShotForTag } from './evidence/visualTagger'
+import { parseVlmPlan, heuristicPlan, faceGuardActive, buildTagMessages, buildVlmModel, tagShots, type ShotForTag } from './evidence/visualTagger'
 import type { Model } from '../../types/model'
 
 const NO_BINARIES = {
@@ -460,26 +460,14 @@ test('buildTagMessages: 组多模态 prompt(文字 + 每镜头 image block)', ()
   expect(prompt).toContain('实际可见证据')
 })
 
-test('video VLM prefers the dedicated ARK gateway instead of the main chat provider', () => {
-  const config = videoVlmConfigFromEnv({
-    QF_GATEWAY_URL: 'https://gateway.example/v1/',
-    QF_GATEWAY_TOKEN: 'app-token',
+test('video VLM uses the configured MiMo provider only when image content is enabled', () => {
+  const base = {
     TEXT_MODEL_NAME: 'mimo-v2.5',
     OPENAI_BASE_URL: 'https://gateway.example/v1',
     OPENAI_API_KEY: 'app-token',
-  })
-  expect(config).toMatchObject({
-    apiFormat: 'openai_chat',
-    baseUrl: 'https://gateway.example/v1/ark',
-    apiKey: 'app-token',
-    model: 'doubao-seed-1-6-250615',
-    imageContentMode: 'vision',
-  })
-  expect(videoVlmConfigFromEnv({
-    TEXT_MODEL_NAME: 'mimo-v2.5',
-    OPENAI_BASE_URL: 'https://gateway.example/v1',
-    OPENAI_API_KEY: 'app-token',
-  })).toBeNull()
+  }
+  expect(buildVlmModel(base)).not.toBeNull()
+  expect(buildVlmModel({ ...base, OPENAI_CHAT_IMAGE_MODE: 'text_only' })).toBeNull()
 })
 
 test('parseVlmPlan: 解析 order/tags/captions/drop,补齐漏排、剔除 drop', () => {

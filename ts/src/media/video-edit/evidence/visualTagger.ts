@@ -1,13 +1,13 @@
 // VLM 只补充镜头 evidence。它不写营销文案、不决定用户目标，也不直接生成时间线。
 //
-// 走网关 ARK 视觉通道(proxy 把 content-block 图片翻成 OpenAI image_url),白标、真 key 留服务器、用户零配置。
+// 复用当前会话的 MiMo 多模态出口(proxy 把 content-block 图片翻成 OpenAI image_url),白标、真 key 留服务器、用户零配置。
 // 离线/无网/无关键帧 → 降级到纯启发式排序,保证断网也能出片。
 // 若上游本地检测已标记关键帧含清晰人脸，默认不外传并降级；V2 只在用户明确请求处理视频后抽取受限代表帧。
 
 import { existsSync } from 'node:fs'
 import type { Model } from '../../../types/model'
 import type { ContentBlock, Message } from '../../../types/message'
-import type { RuntimeProviderConfig } from '../../../model/providerConfig'
+import { providerConfigFromEnv } from '../../../model/providerConfig'
 import { createModelFromProviderConfig } from '../../../model/modelFactory'
 import { ffmpegBinFrom, runFfmpegBinary } from './ffmpeg'
 import type { Shot } from './shotDetection'
@@ -158,47 +158,10 @@ export function heuristicPlan(shots: ShotForTag[], opts: { captionPool?: string[
   return { order, tags, captions, drop: [], grade: null, usedVlm: false, reason: opts.reason ?? '离线启发式(未走网关 VLM)' }
 }
 
-function nonEmpty(value: string | undefined): string | null {
-  const trimmed = value?.trim()
-  return trimmed ? trimmed : null
-}
-
-/**
- * 视频视觉使用已有 ARK 专用网关，不能复用 MiMo 等主聊天出口并假设其支持图片。
- * 生产只携带可吊销 app token；ARK 真 key 留在 gateway。直连仅保留给显式开发环境。
- */
-export function videoVlmConfigFromEnv(env: Record<string, string | undefined>): RuntimeProviderConfig | null {
-  const model = nonEmpty(env.VLM_MODEL_DOUBAO) ?? nonEmpty(env.VIDEO_VLM_MODEL) ?? 'doubao-seed-1-6-250615'
-  const gatewayBase = nonEmpty(env.QF_GATEWAY_URL)?.replace(/\/+$/, '')
-  const gatewayToken = nonEmpty(env.QF_GATEWAY_TOKEN)
-  if (gatewayBase && gatewayToken) {
-    return {
-      apiFormat: 'openai_chat',
-      baseUrl: gatewayBase.endsWith('/ark') ? gatewayBase : `${gatewayBase}/ark`,
-      apiKey: gatewayToken,
-      model,
-      imageContentMode: 'vision',
-      requestTimeoutMs: 90_000,
-      idleTimeoutMs: 90_000,
-    }
-  }
-  const directToken = nonEmpty(env.ARK_API_KEY) ?? nonEmpty(env.VLM_API_KEY)
-  if (!directToken) return null
-  return {
-    apiFormat: 'openai_chat',
-    baseUrl: (nonEmpty(env.ARK_BASE_URL) ?? 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/+$/, ''),
-    apiKey: directToken,
-    model,
-    imageContentMode: 'vision',
-    requestTimeoutMs: 90_000,
-    idleTimeoutMs: 90_000,
-  }
-}
-
-/** 按 env 构造专用网关 VLM 模型;缺配置 → null。 */
+/** 按 env 构造当前 MiMo 多模态模型;缺配置 → null。 */
 export function buildVlmModel(env: Record<string, string | undefined> | undefined): Model | null {
-  const cfg = videoVlmConfigFromEnv(env ?? process.env)
-  if (!cfg) return null
+  const cfg = providerConfigFromEnv(env ?? process.env)
+  if (!cfg || (cfg.apiFormat === 'openai_chat' && cfg.imageContentMode === 'text_only')) return null
   try {
     return createModelFromProviderConfig(cfg)
   } catch {
