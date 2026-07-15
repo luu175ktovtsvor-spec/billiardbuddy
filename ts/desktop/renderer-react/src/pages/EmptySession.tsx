@@ -54,7 +54,7 @@ function SuggestionList() {
 export function EmptyHero() {
   return (
     <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center gap-3 px-6 py-6 text-center" data-testid="empty-hero">
-      <Smiley size={40} className="opacity-40" />
+      <Smiley size={40} />
       <h1 className="whitespace-pre-wrap text-[28px] font-normal" style={{ color: 'var(--color-text-primary)' }}>{t('chat.emptyHero')}</h1>
       <SuggestionList />
     </div>
