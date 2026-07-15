@@ -156,7 +156,7 @@ test('buildSkillCommandListingSection: 含 cc「斜杠命令=技能」语义 + �
   expect(section).toContain('This is a discovery list')
   expect(section).toContain('expand only the entry you need')
   // 条目描述保留 Skill/命令自身的原始语言。
-  expect(section).toContain('挂载台球运营知识库')
+  expect(section).toContain('启用球房运营知识与建议')
   // billiards 只提供知识挂载入口,不提供预设工作流子命令
   expect(section).toContain('/台球:')
   expect(section).not.toContain('/billiards:daily-ops:')
@@ -176,7 +176,7 @@ test('toPublicCommandEntries: 输出 name/description/source(+可选 whenToUse/a
   expect(entry).toMatchObject({
     name: '台球',
     source: 'pack',
-    description: '挂载台球运营知识库',
+    description: '启用球房运营知识与建议',
     whenToUse: expect.stringContaining('也可直接敲 /台球'),
   })
   expect(entries.every(e => ['builtin', 'skill', 'pack'].includes(e.source))).toBe(true)
@@ -230,6 +230,7 @@ test('内置开发工作流只供 Agent 编排，普通斜杠面板只保留业�
   const modelListing = buildSkillCommandListingSection({ skills })
 
   expect(publicNames).toEqual(expect.arrayContaining(['boss-recruiting', 'video-editing']))
+  expect(toPublicCommandEntries(collectDiscoveryEntries({ skills })).find(entry => entry.name === 'boss-recruiting')?.description).not.toMatch(/CLI|Playwright|MCP/)
   for (const name of ['commit', 'commit-push-pr', 'debug', 'init', 'playwright-browser', 'pr-comments', 'review', 'security-review', 'simplify', 'skillify', 'verify']) {
     expect(publicNames).not.toContain(name)
     expect(modelListing).toContain(`/${name}`)
@@ -242,6 +243,8 @@ test('普通斜杠面板隐藏内部 Agent 命令，但模型仍可按需使用'
   const modelListing = buildSkillCommandListingSection({ commands })
 
   expect(publicNames).toEqual(['help', 'memory'])
+  const publicEntries = toPublicCommandEntries(collectDiscoveryEntries({ commands }))
+  expect(publicEntries.find(entry => entry.name === 'help')?.description).not.toContain('Agent')
   for (const name of ['agents', 'compact', 'context', 'cost', 'doctor', 'mcp', 'model', 'output-style', 'permissions', 'plugins', 'skills']) {
     expect(modelListing).toContain(`/${name}`)
   }
