@@ -1,7 +1,7 @@
 import type { Workspace } from '../workspace/workspace'
 import { loadMemoryInjection } from './claudemd'
 import { computeEnvInfo, getGitStatus, getIsGit } from './env'
-import { ACTIONS_SECTION, buildAntiReveal, BUSINESS_FACTS_SECTION, CODING_WORKFLOW_SECTION, DOING_TASKS_SECTION, LANGUAGE_SECTION, OUTPUT_EFFICIENCY_SECTION, PRODUCT_ROLE_SECTION, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
+import { ACTIONS_SECTION, buildAntiReveal, BUSINESS_FACTS_SECTION, DOING_TASKS_SECTION, LANGUAGE_SECTION, OUTPUT_EFFICIENCY_SECTION, PRODUCT_ROLE_SECTION, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION } from './prompts'
 import { buildSkillCommandListingSection, type DiscoverySources } from './skillListing'
 import type { OutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { buildMemorySystemPrompt } from '../memory/memoryPrompt'
@@ -40,15 +40,13 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
     SYSTEM_SECTION,
     ACTIONS_SECTION,
     BUSINESS_FACTS_SECTION,
-    // 编码纪律章门控(对齐 cc:outputStyleConfig===null 或 keepCodingInstructions===true 才注入):
-    // 选了非编码输出风格且未声明保留 → 跳过「# Doing tasks」,让风格主导语气/结构。
-    ...(outputStyle == null || outputStyle.keepCodingInstructions === true ? [DOING_TASKS_SECTION] : []),
+    // 通用工作纪律(诚实汇报/不编造完成/不过度工程/失败先诊断)永远注入,独立于任何输出风格开关——
+    // 这是所有任务(经营/生图/剪视频/编码)共享的底线,不该随风格选择被丢弃。
+    DOING_TASKS_SECTION,
     TONE_SECTION,
     OUTPUT_EFFICIENCY_SECTION,
     // 输出风格注入系统提示中部(对齐 cc systemPromptSection('output_style'),不再是 server 尾部 extraContext)。
     ...(outputStyle?.prompt ? [outputStyle.prompt] : []),
-    CODING_WORKFLOW_SECTION,
-    VERIFICATION_SECTION,
     TOOL_DISCOVERY_SECTION,
     ...(skillListing ? [skillListing] : []),
     ...(memoryPrompt ? [memoryPrompt] : []),
