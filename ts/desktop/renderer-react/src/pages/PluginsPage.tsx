@@ -206,6 +206,47 @@ function AddMcpForm({ onCancel, onSave }: { onCancel: () => void; onSave: (input
   )
 }
 
+function InstallPluginForm({ onCancel, onInstall }: { onCancel: () => void; onInstall: (repo: string) => void }) {
+  const [repo, setRepo] = useState('')
+  const canInstall = repo.trim().length > 0
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      title="从 GitHub 安装插件"
+      maxWidth={480}
+      testId="install-plugin"
+      footer={
+        <>
+          <SecondaryButton onClick={onCancel}>取消</SecondaryButton>
+          <PrimaryButton onClick={() => { if (canInstall) onInstall(repo.trim()) }}>安装</PrimaryButton>
+        </>
+      }
+    >
+      <div className="px-5 py-4">
+        <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>GitHub 仓库</label>
+        <input
+          autoFocus
+          value={repo}
+          onChange={(event) => setRepo(event.target.value)}
+          placeholder="owner/repository"
+          className="w-full rounded-lg px-3 py-2 text-[13px] outline-none"
+          style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)', fontFamily: 'var(--font-mono)' }}
+        />
+        <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+          插件会下载到本机并保持停用。检查来源和贡献内容后，再单独确认启用。
+        </p>
+      </div>
+    </Modal>
+  )
+}
+
+export function extensionHeaderActionLabel(tab: ExtensionTab): string | null {
+  if (tab === 'plugins') return '安装插件'
+  if (tab === 'mcp') return '添加 MCP'
+  return null
+}
+
 export function PluginsPage() {
   const enabledPacks = useSettingsStore((s) => s.enabledPacks)
   const setEnabledPacks = useSettingsStore((s) => s.setEnabledPacks)
@@ -222,9 +263,11 @@ export function PluginsPage() {
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [installing, setInstalling] = useState(false)
   const [busy, setBusy] = useState(false)
   const [pluginBusy, setPluginBusy] = useState<string | null>(null)
   const [pendingPlugin, setPendingPlugin] = useState<PluginListItem | null>(null)
+  const [pendingServerRemoval, setPendingServerRemoval] = useState<McpServerStatus | null>(null)
 
   const reload = async () => {
     const results = await Promise.allSettled([
@@ -270,12 +313,27 @@ export function PluginsPage() {
   }
 
   const removeServer = async (name: string) => {
+    setPendingServerRemoval(null)
     setBusy(true)
     try {
       const r = await mcpApi.remove(name)
       toast(r.message || (r.ok ? '已删除' : '删除失败'))
       if (r.ok) await reload()
     } catch { toast('删除失败') } finally { setBusy(false) }
+  }
+
+  const installPlugin = async (repo: string) => {
+    setInstalling(false)
+    setBusy(true)
+    try {
+      const result = await pluginApi.install(repo)
+      toast(result.message || (result.ok ? '插件已安装' : '插件安装失败'))
+      if (result.ok) await reload()
+    } catch {
+      toast('插件安装失败')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const toggleServer = async (server: McpServerStatus, enabled: boolean) => {
@@ -302,15 +360,21 @@ export function PluginsPage() {
     else void updatePlugin(plugin, false)
   }
 
+  const headerActionLabel = extensionHeaderActionLabel(activeTab)
+
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--color-app-main)' }} data-testid="plugins-page">
       <div className="mx-auto w-full max-w-[820px] px-8 py-8">
         <PageHeader
           title={t('plugins.title')}
           subtitle={t('plugins.subtitle')}
-          action={activeTab === 'mcp' ? (
+          action={activeTab === 'plugins' ? (
+            <SecondaryButton onClick={() => setInstalling(true)}>
+              <IconPlus size={15} /> {headerActionLabel}
+            </SecondaryButton>
+          ) : activeTab === 'mcp' ? (
             <SecondaryButton onClick={() => setAdding(true)}>
-              <IconPlus size={15} /> {t('plugins.add')}
+              <IconPlus size={15} /> {headerActionLabel}
             </SecondaryButton>
           ) : undefined}
         />
@@ -396,7 +460,7 @@ export function PluginsPage() {
                       aria-label={`${t('plugins.remove')} ${server.name}`}
                       title={t('plugins.remove')}
                       disabled={busy}
-                      onClick={() => void removeServer(server.name)}
+                      onClick={() => setPendingServerRemoval(server)}
                       className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-container)] disabled:opacity-50"
                       style={{ color: 'var(--color-text-tertiary)' }}
                     >
@@ -441,6 +505,7 @@ export function PluginsPage() {
       </div>
 
       {adding && <AddMcpForm onCancel={() => setAdding(false)} onSave={addConnector} />}
+      {installing && <InstallPluginForm onCancel={() => setInstalling(false)} onInstall={repo => void installPlugin(repo)} />}
       {pendingPlugin && (
         <Modal
           open
@@ -457,6 +522,32 @@ export function PluginsPage() {
         >
           <p className="px-5 py-4 text-[13px] leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
             启用后，这个插件提供的技能、命令、自动化规则和外部服务会进入后续对话。只启用你信任的来源。
+          </p>
+        </Modal>
+      )}
+      {pendingServerRemoval && (
+        <Modal
+          open
+          onClose={() => setPendingServerRemoval(null)}
+          title={`删除 MCP“${pendingServerRemoval.name}”？`}
+          maxWidth={480}
+          testId="remove-mcp"
+          footer={
+            <>
+              <SecondaryButton onClick={() => setPendingServerRemoval(null)}>取消</SecondaryButton>
+              <button
+                type="button"
+                onClick={() => void removeServer(pendingServerRemoval.name)}
+                className="rounded-lg px-3 py-2 text-[13px] font-medium transition-opacity hover:opacity-90"
+                style={{ background: 'var(--color-error)', color: 'white' }}
+              >
+                删除配置
+              </button>
+            </>
+          }
+        >
+          <p className="px-5 py-4 text-[13px] leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+            将从本机移除这个 MCP 的连接配置。外部服务和其中的数据不会被删除。
           </p>
         </Modal>
       )}

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PluginListItem } from '../api/extensions'
-import { ExtensionTabs, pluginContributionText, skillPresentation } from './PluginsPage'
+import { ExtensionTabs, extensionHeaderActionLabel, pluginContributionText, skillPresentation } from './PluginsPage'
 
 test('扩展管理使用 Codex 式单一类型分段，而不是把所有能力铺在一页', () => {
   const html = renderToStaticMarkup(
@@ -62,4 +62,10 @@ test('技能行优先展示 agents/openai.yaml 元数据并保留真实调用名
     layer: 'workspace',
     user_invocable: false,
   })).toMatchObject({ invocation: 'internal', detail: '项目 · Agent 自动编排' })
+})
+
+test('扩展页只给有真实写入能力的分段显示添加动作', () => {
+  expect(extensionHeaderActionLabel('plugins')).toBe('安装插件')
+  expect(extensionHeaderActionLabel('mcp')).toBe('添加 MCP')
+  expect(extensionHeaderActionLabel('skills')).toBeNull()
 })

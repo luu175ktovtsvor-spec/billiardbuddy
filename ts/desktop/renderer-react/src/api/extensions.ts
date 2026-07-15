@@ -41,4 +41,7 @@ export const pluginApi = {
   toggle: async (name: string, enabled: boolean) => extensionMutationResultSchema.parse(
     await api.post<unknown>('/api/v1/agent/plugins/toggle', { name, enabled }),
   ),
+  install: async (repo: string) => extensionMutationResultSchema.parse(
+    await api.post<unknown>('/api/v1/agent/plugins/install', { repo }),
+  ),
 }

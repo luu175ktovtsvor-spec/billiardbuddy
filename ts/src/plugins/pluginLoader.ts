@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, rename } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { getUserConfigHomeDir, MEMORY_DOT_DIR } from '../harness/memoryNames'
@@ -201,22 +201,53 @@ export async function setPluginEnabled(
   return { ok: false, message: `没找到插件「${pluginName}」。` }
 }
 
+const GITHUB_REPOSITORY_PART_RE = /^[A-Za-z0-9_.-]{1,100}$/
+
+export function parseGithubRepository(value: unknown): { name: string; url: string } | null {
+  const input = typeof value === 'string' ? value.trim() : ''
+  if (!input) return null
+
+  let owner = ''
+  let repository = ''
+  if (!input.includes('://')) {
+    const parts = input.split('/')
+    if (parts.length !== 2) return null
+    owner = parts[0] ?? ''
+    repository = parts[1] ?? ''
+  } else {
+    let parsed: URL
+    try {
+      parsed = new URL(input)
+    } catch {
+      return null
+    }
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname.toLowerCase() !== 'github.com' ||
+      parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash
+    ) return null
+    const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/')
+    if (parts.length !== 2) return null
+    owner = parts[0] ?? ''
+    repository = parts[1] ?? ''
+  }
+
+  repository = repository.replace(/\.git$/i, '')
+  if (
+    !GITHUB_REPOSITORY_PART_RE.test(owner) ||
+    !GITHUB_REPOSITORY_PART_RE.test(repository) ||
+    owner === '.' || owner === '..' || repository === '.' || repository === '..'
+  ) return null
+  return { name: repository, url: `https://github.com/${owner}/${repository}.git` }
+}
+
 export async function installPluginFromGithub(
   repoValue: unknown,
   installDir = defaultPluginInstallDir(),
 ): Promise<{ ok: boolean; message: string }> {
-  const repo = typeof repoValue === 'string' ? repoValue.trim() : ''
-  if (!repo) return { ok: false, message: '没给 repo（owner/repo 或 https url）。' }
-  let url = ''
-  let name = ''
-  if (/^https?:\/\//.test(repo)) {
-    url = repo
-    name = repo.replace(/\/$/, '').split('/').pop()?.replace(/\.git$/, '') ?? ''
-  } else if (repo.includes('/') && !repo.startsWith('/') && !/\s/.test(repo)) {
-    url = `https://github.com/${repo}.git`
-    name = repo.split('/').pop() ?? ''
-  }
-  if (!url || !name) return { ok: false, message: '格式应为 owner/repo 或 https://... url。' }
+  const repository = parseGithubRepository(repoValue)
+  if (!repository) return { ok: false, message: '仅支持 owner/repo 或 https://github.com/owner/repo。' }
+  const { name, url } = repository
 
   const dest = join(installDir, name)
   if (existsSync(dest)) return { ok: false, message: `插件目录已存在：${name}。` }
@@ -231,10 +262,19 @@ export async function installPluginFromGithub(
     new Response(proc.stderr).text().catch(() => ''),
   ])
   if (code !== 0) {
+    await rm(dest, { recursive: true, force: true }).catch(() => undefined)
     const detail = (stderr || stdout || '').trim().slice(0, 300)
     return { ok: false, message: `clone 失败${detail ? `：${detail}` : ''}` }
   }
+  if (!existsSync(join(dest, 'plugin.json'))) {
+    await rm(dest, { recursive: true, force: true })
+    return { ok: false, message: '仓库根目录缺少 plugin.json，未安装。' }
+  }
   const manifest = await readManifest(dest)
+  if (Object.keys(manifest).length === 0) {
+    await rm(dest, { recursive: true, force: true })
+    return { ok: false, message: 'plugin.json 格式不正确，未安装。' }
+  }
   manifest.name = stringField(manifest.name) || name
   manifest.enabled = false
   await atomicWriteJson(join(dest, 'plugin.json'), manifest)
