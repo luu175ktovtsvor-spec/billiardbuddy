@@ -1,36 +1,58 @@
-// 插件页展示真实的内置能力、领域包、插件、MCP 和技能状态。
+// 扩展管理页只展示可管理的领域包、插件、MCP 和技能状态。
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSettingsStore } from '../stores/settingsStore'
 import { Modal } from '../components/shared/Modal'
 import { IconTile, PageHeader, PrimaryButton, SecondaryButton } from '../components/shared/PageKit'
 import {
-  IconPlus, IconGlobe2, IconFolder, IconSparkles, IconTerminal, IconTarget, IconCheckCircle, IconPuzzle, IconWrench, IconTrash,
+  IconPlus, IconSparkles, IconTarget, IconPuzzle, IconWrench, IconTrash,
 } from '../components/shared/icons'
 import { t } from '../i18n'
 import { toast } from '../stores/toastStore'
 import { mcpApi, addInputFromPreset, type McpPreset, type McpServerStatus, type AddMcpInput } from '../api/mcp'
 import { extensionApi, pluginApi, type ExtensionSkill, type PluginListItem } from '../api/extensions'
 
-interface Builtin {
-  id: string
-  name: string
-  desc: string
-  icon: ReactNode
-}
+export type ExtensionTab = 'plugins' | 'skills' | 'mcp'
 
-const BUILTINS: Builtin[] = [
-  { id: 'web', name: '网页搜索', desc: '联网搜资料、查文档、看最新信息。', icon: <IconGlobe2 size={18} /> },
-  { id: 'files', name: '本地文件', desc: '读写、整理你电脑上的文件,改前自动备份。', icon: <IconFolder size={18} /> },
-  { id: 'image', name: '生成图片', desc: '出海报、改图、生成配图。', icon: <IconSparkles size={18} /> },
-  { id: 'shell', name: '运行命令', desc: '在本机跑命令、装工具、批处理。', icon: <IconTerminal size={18} /> },
+const EXTENSION_TABS: Array<{ id: ExtensionTab; label: string }> = [
+  { id: 'plugins', label: '插件' },
+  { id: 'skills', label: '技能' },
+  { id: 'mcp', label: 'MCP' },
 ]
 
-/** 状态药丸:恒亮「已启用」用绿勾。 */
-function OnPill() {
+export function ExtensionTabs({ active, counts, onChange }: {
+  active: ExtensionTab
+  counts: Record<ExtensionTab, number>
+  onChange: (tab: ExtensionTab) => void
+}) {
   return (
-    <span className="inline-flex items-center gap-1 text-[12px]" style={{ color: 'var(--color-success)' }}>
-      <IconCheckCircle size={14} /> {t('plugins.on')}
-    </span>
+    <div
+      role="tablist"
+      aria-label="管理扩展"
+      className="inline-flex items-center gap-0.5 rounded-lg p-0.5"
+      style={{ background: 'var(--color-surface-container)' }}
+    >
+      {EXTENSION_TABS.map(tab => {
+        const selected = tab.id === active
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(tab.id)}
+            className="rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-colors"
+            style={{
+              background: selected ? 'var(--color-surface-container-high)' : 'transparent',
+              color: selected ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              boxShadow: selected ? '0 1px 2px rgba(0,0,0,.08)' : 'none',
+            }}
+          >
+            {tab.label}
+            <span className="ml-1 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{counts[tab.id]}</span>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -46,9 +68,41 @@ function StatusPill({ s }: { s: McpServerStatus }) {
   return <span className="text-[12px]" style={{ color: it.color }}>{it.text}</span>
 }
 
-function Card({ children }: { children: ReactNode }) {
+function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="flex flex-col rounded-lg p-4" style={{ border: '1px solid var(--color-border)' }}>
+    <h2 className="mb-1 mt-6 px-1 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{children}</h2>
+  )
+}
+
+function ExtensionRow({ icon, title, description, detail, muted, actions, testId }: {
+  icon: ReactNode
+  title: ReactNode
+  description?: ReactNode
+  detail?: ReactNode
+  muted?: boolean
+  actions?: ReactNode
+  testId?: string
+}) {
+  return (
+    <div
+      className="flex min-h-[62px] items-center gap-3 px-1 py-3"
+      style={{ borderBottom: '1px solid var(--color-border)' }}
+      data-testid={testId}
+    >
+      <IconTile muted={muted} size={34}>{icon}</IconTile>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{title}</div>
+        {description && <div className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{description}</div>}
+        {detail && <div className="mt-1 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</div>}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+    </div>
+  )
+}
+
+function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-1 py-8 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>
       {children}
     </div>
   )
@@ -74,7 +128,7 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
   )
 }
 
-function pluginContributionText(plugin: PluginListItem): string {
+export function pluginContributionText(plugin: PluginListItem): string {
   const entries = [
     ['技能', plugin.components.skills],
     ['命令', plugin.components.commands],
@@ -155,6 +209,7 @@ export function PluginsPage() {
   const [presets, setPresets] = useState<McpPreset[]>([])
   const [skills, setSkills] = useState<ExtensionSkill[]>([])
   const [plugins, setPlugins] = useState<PluginListItem[]>([])
+  const [activeTab, setActiveTab] = useState<ExtensionTab>('plugins')
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [adding, setAdding] = useState(false)
@@ -179,6 +234,12 @@ export function PluginsPage() {
   useEffect(() => { void reload() }, [workspaceRoot])
 
   const installedNames = new Set(servers.map((s) => s.name))
+  const availablePresets = presets.filter(preset => !installedNames.has(preset.id))
+  const tabCounts: Record<ExtensionTab, number> = {
+    plugins: plugins.length + 1,
+    skills: skills.length,
+    mcp: servers.length + availablePresets.length,
+  }
 
   const enablePreset = async (preset: McpPreset) => {
     if (preset.needsKey) { toast(`「${preset.name}」需要先填 API key,添加时把地址里的占位替换成真实 key。`); return }
@@ -238,201 +299,133 @@ export function PluginsPage() {
         <PageHeader
           title={t('plugins.title')}
           subtitle={t('plugins.subtitle')}
-          action={
+          action={activeTab === 'mcp' ? (
             <SecondaryButton onClick={() => setAdding(true)}>
               <IconPlus size={15} /> {t('plugins.add')}
             </SecondaryButton>
-          }
+          ) : undefined}
         />
 
-        {/* ① 内置能力 */}
-        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('plugins.builtinSection')}
-        </h2>
-        <div className="mb-8 grid grid-cols-2 gap-3">
-          {BUILTINS.map((b) => (
-            <Card key={b.id}>
-              <div className="flex items-center gap-3">
-                <IconTile>{b.icon}</IconTile>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{b.name}</div>
-                </div>
-                <OnPill />
-              </div>
-              <p className="mt-2.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{b.desc}</p>
-            </Card>
-          ))}
-        </div>
+        <ExtensionTabs active={activeTab} counts={tabCounts} onChange={setActiveTab} />
 
-        {/* ② 技能:当前项目实际可发现的系统/个人/项目/插件 Skill。 */}
-        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          技能{skills.length > 0 ? ` · ${skills.length} 个` : ''}
-        </h2>
-        {skills.length > 0 ? (
-          <div className="mb-8 grid grid-cols-2 gap-3">
-            {skills.map((skill) => (
-              <Card key={`${skill.layer}:${skill.name}`}>
-                <div className="flex items-center gap-2">
-                  <IconTile muted><IconSparkles size={16} /></IconTile>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)', fontFamily: 'var(--font-mono)' }}>
-                      {skill.user_invocable ? `/${skill.name}` : skill.name}
-                    </div>
-                  </div>
-                  <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {SKILL_SCOPE_LABEL[skill.layer]}
-                  </span>
-                </div>
-                <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-                  {skill.when_to_use || skill.description}
-                </p>
-              </Card>
-            ))}
-          </div>
-        ) : loaded ? (
-          <p className="mb-8 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>当前项目没有可用技能。</p>
-        ) : null}
+        {!loaded && <EmptyState>正在读取扩展...</EmptyState>}
 
-        {/* ③ 领域包 */}
-        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          {t('plugins.connectorSection')}
-        </h2>
-        <div className="mb-8 grid grid-cols-2 gap-3">
-          {/* 台球运营知识库:真实领域包开关 */}
-          <Card>
-            <div className="flex items-center gap-3">
-              <IconTile muted={!billiardsOn}><IconTarget size={18} /></IconTile>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>台球运营知识库</div>
-              </div>
-              <button
-                type="button"
-                onClick={toggleBilliards}
-                className="rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors"
-                style={
-                  billiardsOn
-                    ? { background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }
-                    : { background: 'var(--color-brand)', color: 'var(--color-on-primary)' }
-                }
-              >
-                {billiardsOn ? t('plugins.domainOn') : t('plugins.domainOff')}
-              </button>
-            </div>
-            <p className="mt-2.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-              挂上后,管家懂球房运营——获客、留客、助教、活动那一套一线打法随问随答。
-            </p>
-          </Card>
-        </div>
+        {loaded && activeTab === 'plugins' && (
+          <div role="tabpanel" data-extension-panel="plugins">
+            <SectionLabel>知识插件</SectionLabel>
+            <ExtensionRow
+              icon={<IconTarget size={17} />}
+              title="台球运营知识库"
+              description="为当前会话提供台球经营知识、门店资料检索和领域工具。"
+              muted={!billiardsOn}
+              actions={<Toggle checked={billiardsOn} label={`${billiardsOn ? '停用' : '启用'}台球运营知识库`} onChange={toggleBilliards} />}
+              testId="domain-pack-billiards"
+            />
 
-        {/* ④ 已安装插件 */}
-        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          已安装插件{plugins.length > 0 ? ` · ${plugins.length} 个` : ''}
-        </h2>
-        {plugins.length > 0 ? (
-          <div className="mb-8 grid grid-cols-2 gap-3">
-            {plugins.map((plugin) => (
-              <Card key={plugin.name}>
-                <div className="flex items-center gap-3">
-                  <IconTile muted={!plugin.enabled}><IconPuzzle size={18} /></IconTile>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{plugin.name}</div>
-                  </div>
+            <SectionLabel>已安装插件{plugins.length > 0 ? ` · ${plugins.length}` : ''}</SectionLabel>
+            {plugins.length > 0 ? plugins.map(plugin => (
+              <ExtensionRow
+                key={plugin.name}
+                icon={<IconPuzzle size={17} />}
+                title={plugin.name}
+                description={plugin.description || '这个插件没有提供说明。'}
+                detail={pluginContributionText(plugin)}
+                muted={!plugin.enabled}
+                actions={
                   <Toggle
                     checked={plugin.enabled}
                     disabled={pluginBusy === plugin.name}
                     label={`${plugin.enabled ? '停用' : '启用'}插件 ${plugin.name}`}
-                    onChange={(enabled) => requestPluginToggle(plugin, enabled)}
+                    onChange={enabled => requestPluginToggle(plugin, enabled)}
                   />
-                </div>
-                <p className="mt-2.5 line-clamp-2 text-[12.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-                  {plugin.description || '这个插件没有提供说明。'}
-                </p>
-                <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)', opacity: 0.8 }}>
-                  {pluginContributionText(plugin)}
-                </p>
-              </Card>
-            ))}
+                }
+                testId="installed-plugin"
+              />
+            )) : <EmptyState>还没有安装插件。</EmptyState>}
           </div>
-        ) : loaded ? (
-          <p className="mb-8 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有安装插件。</p>
-        ) : null}
-        {loadFailed && (
-          <p className="mb-8 text-[12px]" style={{ color: 'var(--color-error)' }}>部分扩展状态暂时无法读取。</p>
         )}
 
-        {/* ⑤ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
-        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-          MCP 服务
-        </h2>
-        <div className="grid grid-cols-2 gap-3">
-          {/* 预设:一键启用(未装的才显示) */}
-          {presets.filter((p) => !installedNames.has(p.id)).map((p) => (
-            <Card key={`preset-${p.id}`}>
-              <div className="flex items-center gap-3">
-                <IconTile muted><IconPuzzle size={18} /></IconTile>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{p.name}</div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void enablePreset(p)}
-                  className="rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
-                  style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }}
-                >
-                  {p.needsKey ? '需 key' : '启用'}
-                </button>
-              </div>
-              <p className="mt-2.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{p.desc}</p>
-              {(p.needsAsset || p.note) && (
-                <p className="mt-1.5 text-[11.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)', opacity: 0.8 }}>
-                  {p.needsAsset ? '首次启用需后台准备组件。' : ''}{p.note ?? ''}
-                </p>
-              )}
-            </Card>
-          ))}
+        {loaded && activeTab === 'skills' && (
+          <div role="tabpanel" data-extension-panel="skills">
+            <SectionLabel>当前可用技能{skills.length > 0 ? ` · ${skills.length}` : ''}</SectionLabel>
+            {skills.length > 0 ? skills.map(skill => (
+              <ExtensionRow
+                key={`${skill.layer}:${skill.name}`}
+                icon={<IconSparkles size={16} />}
+                title={<span style={{ fontFamily: 'var(--font-mono)' }}>{skill.user_invocable ? `/${skill.name}` : skill.name}</span>}
+                description={skill.when_to_use || skill.description}
+                detail={SKILL_SCOPE_LABEL[skill.layer]}
+                muted
+                testId="extension-skill"
+              />
+            )) : <EmptyState>当前项目没有可用技能。</EmptyState>}
+          </div>
+        )}
 
-          {/* 已装 MCP 服务(真实后端) */}
-          {servers.map((s) => (
-            <Card key={`srv-${s.name}`}>
-              <div className="flex items-center gap-3">
-                <IconTile muted={s.disabled}><IconWrench size={18} /></IconTile>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{s.name}</div>
-                </div>
-                <Toggle
-                  checked={!s.disabled}
-                  disabled={busy}
-                  label={`${s.disabled ? '启用' : '停用'} MCP 服务 ${s.name}`}
-                  onChange={(enabled) => void toggleServer(s, enabled)}
-                />
-                <button
-                  type="button"
-                  aria-label={t('plugins.remove')}
-                  disabled={busy}
-                  onClick={() => void removeServer(s.name)}
-                  className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-container)] disabled:opacity-50"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  <IconTrash size={15} />
-                </button>
-              </div>
-              <div className="mt-2.5"><StatusPill s={s} /></div>
-            </Card>
-          ))}
+        {loaded && activeTab === 'mcp' && (
+          <div role="tabpanel" data-extension-panel="mcp">
+            <SectionLabel>已配置{servers.length > 0 ? ` · ${servers.length}` : ''}</SectionLabel>
+            {servers.length > 0 ? servers.map(server => (
+              <ExtensionRow
+                key={`srv-${server.name}`}
+                icon={<IconWrench size={17} />}
+                title={server.name}
+                detail={<StatusPill s={server} />}
+                muted={server.disabled}
+                actions={
+                  <>
+                    <Toggle
+                      checked={!server.disabled}
+                      disabled={busy}
+                      label={`${server.disabled ? '启用' : '停用'} MCP 服务 ${server.name}`}
+                      onChange={enabled => void toggleServer(server, enabled)}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`${t('plugins.remove')} ${server.name}`}
+                      title={t('plugins.remove')}
+                      disabled={busy}
+                      onClick={() => void removeServer(server.name)}
+                      className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-container)] disabled:opacity-50"
+                      style={{ color: 'var(--color-text-tertiary)' }}
+                    >
+                      <IconTrash size={15} />
+                    </button>
+                  </>
+                }
+                testId="mcp-server"
+              />
+            )) : <EmptyState>还没有配置 MCP 服务。</EmptyState>}
 
-          {/* 添加 MCP 服务器:虚线卡(点开表单弹窗) */}
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="flex flex-col items-center justify-center gap-2 rounded-lg px-4 py-6 text-center transition-colors hover:bg-[var(--color-surface-hover)]"
-            style={{ border: '1px dashed var(--color-border)' }}
-          >
-            <IconTile muted><IconPuzzle size={18} /></IconTile>
-            <div className="text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('plugins.add')}</div>
-            <div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>接入你自己的 MCP 服务器</div>
-          </button>
-        </div>
+            {availablePresets.length > 0 && <SectionLabel>可添加</SectionLabel>}
+            {availablePresets.map(preset => (
+              <ExtensionRow
+                key={`preset-${preset.id}`}
+                icon={<IconPuzzle size={17} />}
+                title={preset.name}
+                description={preset.desc}
+                detail={[preset.needsAsset ? '首次使用时准备组件' : '', preset.note ?? ''].filter(Boolean).join(' · ') || undefined}
+                muted
+                actions={
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void enablePreset(preset)}
+                    className="rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
+                    style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }}
+                  >
+                    {preset.needsKey ? '需 key' : '启用'}
+                  </button>
+                }
+                testId="mcp-preset"
+              />
+            ))}
+          </div>
+        )}
+
+        {loadFailed && (
+          <p className="mt-5 text-[12px]" style={{ color: 'var(--color-error)' }}>部分扩展状态暂时无法读取。</p>
+        )}
 
       </div>
 
