@@ -505,7 +505,7 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
 
   const upscaleImageTool: Tool<UpscaleImageToolInput> = {
     name: 'upscale_image',
-    description: '把一张已生成或本机的图片超分放大到高清(2/3/4 倍),给要拿去印刷(易拉宝/喷绘/大幅海报)或嫌不够清晰的图去糊、提清晰度。入参:source_generation_id(之前生图工具产出的图片 id,优先)或 source_image_path(本机图片绝对路径);scale 放大倍数(2/3/4,默认 4)。何时用:用户说"这张放大点/印出来会糊/要高清大图/清晰度不够/拿去打印"。这是本机处理工具,按当前任务直接执行。铁律:必须带原图,缺原图报错,绝不凭空生成新图。组件没下好会返回"正在准备组件 x%",如实告诉用户稍等。',
+    description: '把一张已生成或本机图片做 2/3/4 倍高清尺寸放大，使用本地 Lanczos 缩放和轻锐化，保持画面内容并生成新文件，不覆盖原图。它不会恢复原图中不存在的细节；用户要修复真实模糊、重绘内容或提升画质时改用 edit_image。入参:source_generation_id(之前生图工具产出的图片 id,优先)或 source_image_path(本机图片绝对路径);scale 默认 4。组件未就绪时原任务会等待后台准备。',
     inputSchema: {
       type: 'object',
       properties: {

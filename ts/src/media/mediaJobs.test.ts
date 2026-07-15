@@ -65,9 +65,9 @@ test('media jobs wait for on-demand assets and continue the same task automatica
     })
     const started = await service.startJob({
       kind: 'upscale',
-      title: '超分测试',
+      title: '高清放大测试',
       body: {},
-      requiredAssets: ['realesrgan'],
+      requiredAssets: ['ffmpeg'],
       fallback: async () => {
         executions += 1
         return { ok: true }

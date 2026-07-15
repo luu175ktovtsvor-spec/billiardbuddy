@@ -1,14 +1,46 @@
 import { expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { upscaleImage, upscaleAvailable, UpscaleUnavailableError } from './imageUpscale'
 
-// 干净 env:无 REALESRGAN_BIN、无资产管理器、PATH 指空目录 → 解析不到超分二进制。
 const NO_BIN = { PATH: '/nonexistent-qf-upscale-dir' }
 
-test('upscaleAvailable: 超分二进制缺 → false', () => {
+test('upscaleAvailable: FFmpeg 缺失时不可用', () => {
   expect(upscaleAvailable(NO_BIN)).toBe(false)
 })
 
-test('upscaleImage: 二进制未就绪 → 抛 UpscaleUnavailableError(优雅降级,不崩、不假装放大成功)', async () => {
-  // 反逻辑保护:二进制缺时先抛可识别错(供上层功能门回退"正在准备组件"),不静默失败。
+test('upscaleImage: FFmpeg 未就绪时抛可识别错误', async () => {
   await expect(upscaleImage('/tmp/whatever.png', { env: NO_BIN })).rejects.toBeInstanceOf(UpscaleUnavailableError)
+})
+
+test('upscaleImage: 使用 Lanczos 和轻锐化生成新的三倍尺寸图片', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'image-upscale-'))
+  const input = join(root, 'source.png')
+  const output = join(root, 'output.png')
+  const argsFile = join(root, 'args.txt')
+  const ffmpeg = join(root, 'fake-ffmpeg.sh')
+  writeFileSync(input, 'source')
+  writeFileSync(ffmpeg, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$@" > "${argsFile}"`,
+    'out=""',
+    'for arg in "$@"; do out="$arg"; done',
+    'printf "scaled" > "$out"',
+    '',
+  ].join('\n'), { mode: 0o755 })
+
+  try {
+    expect(upscaleAvailable({ PATH: '', FFMPEG_BIN: ffmpeg })).toBe(true)
+    expect(await upscaleImage(input, {
+      env: { PATH: '', FFMPEG_BIN: ffmpeg },
+      scale: 3,
+      outputPath: output,
+    })).toBe(output)
+    expect(existsSync(output)).toBe(true)
+    expect(readFileSync(argsFile, 'utf8')).toContain('scale=iw*3:ih*3:flags=lanczos')
+    expect(readFileSync(argsFile, 'utf8')).toContain('unsharp=5:5:0.35:5:5:0.0')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

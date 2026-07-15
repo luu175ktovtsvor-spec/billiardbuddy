@@ -434,7 +434,7 @@ test('render_video 缺 project 直接报错', async () => {
   }
 })
 
-test('upscale_image tool 起 upscale 任务(超分放大·印刷不糊)', async () => {
+test('upscale_image tool 启动高清尺寸放大任务', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
   try {
     const tasks = new TaskService(root)

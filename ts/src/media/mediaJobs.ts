@@ -1094,16 +1094,16 @@ export class MediaJobService {
     })
   }
 
-  /** 超分放大(本机 Real-ESRGAN,无后端代理、纯本地):把生成图/本机图放大到高清(印刷不糊)。 */
+  /** 高清尺寸放大(本机 FFmpeg,无后端代理):增加像素尺寸并轻锐化，不覆盖原图。 */
   async startUpscale(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const normalized = { ...body, conversation_id: stringFrom(body.conversation_id) ?? opts.conversationId }
     return this.startJob({
       kind: 'upscale',
-      title: '超分放大',
+      title: '高清放大',
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
-      requiredAssets: ['realesrgan'],
+      requiredAssets: ['ffmpeg'],
       fallback: ctx => this.localUpscaleFallback(ctx, normalized),
     })
   }
@@ -2457,11 +2457,11 @@ export class MediaJobService {
     }
   }
 
-  /** 超分放大本地执行(反逻辑保护:二进制没下好 → 返回"正在准备组件 x%",绝不静默失败)。 */
+  /** 高清尺寸放大本地执行；FFmpeg 没准备好时由原任务等待，绝不静默失败。 */
   private async localUpscaleFallback(ctx: TaskRunnerContext, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const gate = gateMediaAssets(this.env, ['realesrgan'])
+    const gate = gateMediaAssets(this.env, ['ffmpeg'])
     if (gate) {
-      await ctx.progress(5, String(gate.message ?? '超分组件正在后台准备。'))
+      await ctx.progress(5, String(gate.message ?? '图片处理组件正在后台准备。'))
       return gate
     }
     const scaleRaw = Number(body.scale)
@@ -2474,13 +2474,13 @@ export class MediaJobService {
       if (up?.url && up.url.startsWith('/uploads/')) srcPath = resolve(this.uploadsRoot, up.url.slice('/uploads/'.length))
     }
     if (!srcPath) srcPath = this.resolveLocalImagePath(stringFrom(body.source_image_path) ?? '', this.trustedImagePaths(body))
-    if (!srcPath || !existsSync(srcPath)) throw new Error('超分需要可读取的原图:请传 source_generation_id(之前生成图的 id)或 source_image_path(本机图片路径)。')
+    if (!srcPath || !existsSync(srcPath)) throw new Error('高清放大需要可读取的原图:请传 source_generation_id(之前生成图的 id)或 source_image_path(本机图片路径)。')
     await mkdir(join(this.uploadsRoot, 'posters'), { recursive: true })
     const outName = `upscaled_${scale}x_${Date.now()}_${crypto.randomUUID().slice(0, 8)}.png`
     const outPath = join(this.uploadsRoot, 'posters', outName)
-    await ctx.progress(20, '正在超分放大(印刷级高清)…')
+    await ctx.progress(20, '正在放大图片尺寸并轻度锐化…')
     await upscaleImage(srcPath, { env: this.env, signal: ctx.signal, scale, outputPath: outPath })
-    await ctx.progress(100, '放大完成。')
+    await ctx.progress(100, '高清尺寸放大完成，原图未修改。')
     const url = `/uploads/posters/${outName}`
     return { url, poster_url: url, generation_id: `upscale-${outName}`, upscaled: true, scale, local_preview: false }
   }
