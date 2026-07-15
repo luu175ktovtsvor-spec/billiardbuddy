@@ -205,6 +205,9 @@ function AddMcpForm({ onCancel, onSave }: { onCancel: () => void; onSave: (input
           className={field}
           style={{ ...fieldStyle, fontFamily: 'var(--font-mono)' }}
         />
+        <p className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('plugins.mcpTargetHint')}
+        </p>
       </div>
     </Modal>
   )
@@ -217,7 +220,7 @@ function InstallPluginForm({ onCancel, onInstall }: { onCancel: () => void; onIn
     <Modal
       open
       onClose={onCancel}
-      title="从 GitHub 安装插件"
+      title={t('plugins.installGithubTitle')}
       maxWidth={480}
       testId="install-plugin"
       footer={
@@ -228,17 +231,20 @@ function InstallPluginForm({ onCancel, onInstall }: { onCancel: () => void; onIn
       }
     >
       <div className="px-5 py-4">
-        <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>GitHub 仓库</label>
+        <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('plugins.installGithubLabel')}</label>
         <input
           autoFocus
           value={repo}
           onChange={(event) => setRepo(event.target.value)}
-          placeholder="owner/repository"
+          placeholder={t('plugins.installGithubPlaceholder')}
           className="w-full rounded-lg px-3 py-2 text-[13px] outline-none"
           style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)', fontFamily: 'var(--font-mono)' }}
         />
+        <p className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('plugins.installGithubHint')}
+        </p>
         <p className="mt-3 text-[12px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
-          插件会下载到本机并保持停用。检查来源和贡献内容后，再单独确认启用。
+          {t('plugins.installGithubNote')}
         </p>
       </div>
     </Modal>
