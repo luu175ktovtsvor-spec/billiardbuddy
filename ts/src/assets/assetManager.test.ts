@@ -437,6 +437,7 @@ test('parseAssetManifest:坏条目丢弃、恶意 dest/id 拒收、整体坏返�
 })
 
 test('资产清单地址拒绝公网 HTTP，但允许本地开发 loopback', () => {
+  expect(DEFAULT_ASSET_MANIFEST_URL).toBe('https://zzyppz.cn/assets/manifest.json')
   const insecure = new AssetManager({ stateRoot: makeRoot(), env: { QF_ASSET_MANIFEST_URL: 'http://assets.example/manifest.json' } })
   expect(insecure.status().manifest_url).toBe(DEFAULT_ASSET_MANIFEST_URL)
   const local = new AssetManager({ stateRoot: makeRoot(), env: { QF_ASSET_MANIFEST_URL: 'http://127.0.0.1:9000/manifest.json' } })
