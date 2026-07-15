@@ -470,6 +470,17 @@ test('video VLM uses the configured MiMo provider only when image content is ena
   expect(buildVlmModel({ ...base, OPENAI_CHAT_IMAGE_MODE: 'text_only' })).toBeNull()
 })
 
+test('video VLM never revives the removed ARK/Doubao visual provider', () => {
+  expect(buildVlmModel({
+    VLM_MODEL_DOUBAO: 'doubao-seed-1-6-250615',
+    VIDEO_VLM_MODEL: 'doubao-seed-1-6-250615',
+    ARK_BASE_URL: 'https://ark.example/api/v3',
+    ARK_API_KEY: 'ark-secret',
+    QF_GATEWAY_URL: 'https://gateway.example/v1',
+    QF_GATEWAY_TOKEN: 'app-token',
+  })).toBeNull()
+})
+
 test('parseVlmPlan: 解析 order/tags/captions/drop,补齐漏排、剔除 drop', () => {
   const text = '```json\n{"shots":[{"index":2,"tag":"门头招牌","caption":"门头亮眼"}],"order":[2],"drop":[1],"grade":"warm"}\n```'
   const plan = parseVlmPlan(text, [0, 1, 2])
