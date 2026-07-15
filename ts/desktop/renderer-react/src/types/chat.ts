@@ -22,7 +22,7 @@ export interface SessionSummary {
   workspaceRoot?: string
   /** 会话挂载的领域包(如 ['billiards']);打开老会话时前端 adopt 兜底恢复,跨重启记住每个窗口开没开台球。 */
   enabledPacks?: string[]
-  /** 前端本地态(置顶/归档);后端持久化就绪前只在本地生效。 */
+  /** 由 /sessions 元数据持久化的置顶/归档状态。 */
   pinned?: boolean
   archived?: boolean
 }

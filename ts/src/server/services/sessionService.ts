@@ -244,10 +244,16 @@ export class SessionService {
     const existed = index.delete(id)
     await this.writeIndex(index)
     const tr = this.transcript(id, meta?.workspaceRoot ?? getDefaultWorkspaceDir())
+    const archiveRoot = join(this.rootDir, 'transcript-archives')
+    const archiveFiles = await readdir(archiveRoot).catch(() => [] as string[])
+    const archivedTranscripts = archiveFiles
+      .filter(file => file.match(/^(.*)-\d+\.jsonl$/)?.[1] === id)
+      .map(file => rm(join(archiveRoot, file), { force: true }))
     await Promise.all([
       rm(tr.path, { force: true }),
       rm(tr.contentReplacementPath, { force: true }),
       rm(this.eventPath(id), { force: true }),
+      ...archivedTranscripts,
     ])
     return existed
   }

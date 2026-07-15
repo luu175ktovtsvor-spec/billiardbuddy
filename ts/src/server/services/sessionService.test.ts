@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { userText } from '../../types/message'
@@ -76,6 +76,36 @@ test('SessionService:Transcript 落 projects/<slug> 布局,读写锚同一目录
     await svc.create({ id: 's1', title: 'T', workspaceRoot: '/ws/y' })
     await svc.transcript('s1', '/ws/y').save([userText('hi')])
     expect(await svc.loadTranscript('s1')).toEqual([userText('hi')])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SessionService:永久删除会话时清理原文、事件和该会话的压缩备份', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sessions-remove-'))
+  try {
+    const svc = new SessionService(root)
+    await svc.create({ id: 's1', title: '待删除', workspaceRoot: '/ws/y' })
+    const transcript = svc.transcript('s1', '/ws/y')
+    await transcript.save([userText('原始聊天')])
+    writeFileSync(transcript.contentReplacementPath, 'replacement\n')
+    await svc.appendEvent('s1', { type: 'final', text: '完成' })
+    const archiveRoot = join(root, 'transcript-archives')
+    mkdirSync(archiveRoot, { recursive: true })
+    writeFileSync(join(archiveRoot, 's1-100.jsonl'), 'old 1')
+    writeFileSync(join(archiveRoot, 's1-200.jsonl'), 'old 2')
+    writeFileSync(join(archiveRoot, 's10-100.jsonl'), 'other session')
+    writeFileSync(join(archiveRoot, 's1-other-100.jsonl'), 'hyphenated other session')
+
+    expect(await svc.remove('s1')).toBe(true)
+    expect(await svc.get('s1')).toBeNull()
+    expect(existsSync(transcript.path)).toBe(false)
+    expect(existsSync(transcript.contentReplacementPath)).toBe(false)
+    expect(existsSync(svc.eventPath('s1'))).toBe(false)
+    expect(existsSync(join(archiveRoot, 's1-100.jsonl'))).toBe(false)
+    expect(existsSync(join(archiveRoot, 's1-200.jsonl'))).toBe(false)
+    expect(existsSync(join(archiveRoot, 's10-100.jsonl'))).toBe(true)
+    expect(existsSync(join(archiveRoot, 's1-other-100.jsonl'))).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

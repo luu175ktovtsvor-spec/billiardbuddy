@@ -126,9 +126,15 @@ export function TopBar() {
               separatorBefore: true,
               onClick: () => {
                 if (!conversationId) return
-                useSessionStore.getState().toggleArchive(conversationId)
-                toast('已归档,可在侧栏「已归档」里找回')
-                openNewConversation()
+                void (async () => {
+                  const archived = await useSessionStore.getState().setArchived(conversationId, true)
+                  if (!archived) {
+                    toast('归档失败，任务仍保留在侧栏')
+                    return
+                  }
+                  toast('已归档，可在侧栏「已归档」里找回')
+                  openNewConversation()
+                })()
               },
             },
           ]}

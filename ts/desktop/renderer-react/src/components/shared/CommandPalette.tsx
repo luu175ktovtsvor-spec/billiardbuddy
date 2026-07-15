@@ -80,9 +80,15 @@ export function CommandPalette() {
         run: () => {
           const id = useChatStore.getState().conversationId
           if (!id) return
-          useSessionStore.getState().toggleArchive(id)
-          toast('已归档,可在设置「已归档任务」找回')
-          openNewConversation()
+          void (async () => {
+            const archived = await useSessionStore.getState().setArchived(id, true)
+            if (!archived) {
+              toast('归档失败，任务仍保留在侧栏')
+              return
+            }
+            toast('已归档，可在设置「已归档任务」找回')
+            openNewConversation()
+          })()
         },
       },
       {

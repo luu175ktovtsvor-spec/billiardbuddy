@@ -41,9 +41,11 @@ export function createSessionMetadataRouteHandler(deps: SessionMetadataRouteDepe
       const existing = await deps.sessions.get(id).catch(() => null)
       if (!existing) return jsonDetailError('session not found', 404)
       if (req.method === 'DELETE') {
+        if (existing.status === 'running') return jsonDetailError('session is running', 409)
         return Response.json({ ok: await deps.sessions.remove(id) })
       }
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
+      if (body.archived === true && existing.status === 'running') return jsonDetailError('session is running', 409)
       const patch: { title?: string; pinned?: boolean; archived?: boolean } = {}
       if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim()
       if (typeof body.pinned === 'boolean') patch.pinned = body.pinned

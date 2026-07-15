@@ -3,13 +3,16 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useUiStore, type ThemeMode } from '../stores/uiStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
-import { openExistingConversation } from '../lib/conversations'
+import { useChatStore } from '../stores/chatStore'
+import { openExistingConversation, openNewConversation } from '../lib/conversations'
 import { toast } from '../stores/toastStore'
+import { Modal } from '../components/shared/Modal'
+import { SecondaryButton } from '../components/shared/PageKit'
 import {
   IconSettings, IconSun, IconPuzzle, IconArchive, IconChevronRight, IconFolder,
 } from '../components/shared/icons'
 import { t } from '../i18n'
-import type { PermissionMode } from '../types/chat'
+import type { PermissionMode, SessionSummary } from '../types/chat'
 import { mcpApi } from '../api/mcp'
 
 type SettingsNav = 'general' | 'appearance' | 'shortcuts' | 'archived'
@@ -249,11 +252,15 @@ function ShortcutsPane() {
 }
 
 // —— 已归档任务页 ——
-function ArchivedPane() {
+export function ArchivedPane() {
   const sessions = useSessionStore((s) => s.sessions)
-  const toggleArchive = useSessionStore((s) => s.toggleArchive)
+  const setArchived = useSessionStore((s) => s.setArchived)
   const removeSession = useSessionStore((s) => s.removeSession)
+  const deletingIds = useSessionStore((s) => s.deletingIds)
+  const archiveBusyIds = useSessionStore((s) => s.archiveBusyIds)
+  const activeId = useChatStore((s) => s.conversationId)
   const setNav = useUiStore((s) => s.setNav)
+  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const archived = sessions.filter((s) => s.archived)
   if (archived.length === 0) {
     return (
@@ -262,43 +269,95 @@ function ArchivedPane() {
       </div>
     )
   }
+  const deletePendingSession = async () => {
+    if (!pendingDelete) return
+    const removed = await removeSession(pendingDelete.id)
+    if (!removed) {
+      toast('删除失败，任务和聊天记录仍保留')
+      return
+    }
+    if (activeId === pendingDelete.id) openNewConversation()
+    setPendingDelete(null)
+    toast('已永久删除任务和聊天记录')
+  }
+  const deletingPending = Boolean(pendingDelete && deletingIds.includes(pendingDelete.id))
+
   return (
-    <Group title="已归档任务">
-      {archived.map((s) => (
-        <Row
-          key={s.id}
-          title={s.title || t('sidebar.newChat')}
-          right={
-            <span className="flex items-center gap-2">
+    <>
+      <Group title="已归档任务">
+        {archived.map((s) => {
+          const busy = deletingIds.includes(s.id) || archiveBusyIds.includes(s.id)
+          return (
+            <Row
+              key={s.id}
+              title={s.title || t('sidebar.newChat')}
+              right={
+                <span className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void (async () => {
+                      const restored = await setArchived(s.id, false)
+                      toast(restored ? '已恢复到侧栏' : '恢复失败，任务仍在归档中')
+                    })()}
+                    className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+                    style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                  >
+                    恢复
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => { setNav('chat'); openExistingConversation(s.id, s.title) }}
+                    className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+                    style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                  >
+                    打开
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPendingDelete(s)}
+                    className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+                    style={{ color: 'var(--color-error)', border: '1px solid var(--color-border)' }}
+                  >
+                    永久删除
+                  </button>
+                </span>
+              }
+            />
+          )
+        })}
+      </Group>
+      {pendingDelete && (
+        <Modal
+          open
+          onClose={() => { if (!deletingPending) setPendingDelete(null) }}
+          title="永久删除已归档任务？"
+          maxWidth={480}
+          testId="delete-archived-session"
+          footer={
+            <>
+              <SecondaryButton onClick={() => { if (!deletingPending) setPendingDelete(null) }}>取消</SecondaryButton>
               <button
                 type="button"
-                onClick={() => { toggleArchive(s.id); toast('已恢复到侧栏') }}
-                className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
-                style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                onClick={() => { if (!deletingPending) void deletePendingSession() }}
+                className="rounded-lg px-3 py-2 text-[13px] font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
+                style={{ background: 'var(--color-error)', color: 'white' }}
+                disabled={deletingPending}
               >
-                恢复
+                {deletingPending ? '正在删除…' : '永久删除'}
               </button>
-              <button
-                type="button"
-                onClick={() => { toggleArchive(s.id); setNav('chat'); openExistingConversation(s.id, s.title) }}
-                className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
-                style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
-              >
-                打开
-              </button>
-              <button
-                type="button"
-                onClick={() => { if (window.confirm('删除这个任务?聊天记录将一并删除。')) removeSession(s.id) }}
-                className="rounded-md px-2.5 py-1 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
-                style={{ color: 'var(--color-error)', border: '1px solid var(--color-border)' }}
-              >
-                删除
-              </button>
-            </span>
+            </>
           }
-        />
-      ))}
-    </Group>
+        >
+          <div className="px-5 py-4 text-[13px] leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+            <p>“{pendingDelete.title || t('sidebar.newChat')}”的聊天原文、事件记录和历史压缩备份都会从本机删除。</p>
+            <p className="mt-2" style={{ color: 'var(--color-error)' }}>此操作无法恢复。</p>
+          </div>
+        </Modal>
+      )}
+    </>
   )
 }
 
