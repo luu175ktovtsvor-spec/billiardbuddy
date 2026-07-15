@@ -317,7 +317,7 @@ export class VideoEditingService {
       if (!lockedRequest.preview) await this.store.recordExportUsage(project)
       await this.setJobStage(ctx.taskId, result.warnings.length ? 'done_with_warnings' : 'done', { checkpoint: { phase: 'render_done', revision: result.revision }, warnings: result.warnings })
       return result
-    }, ['ffmpeg'])
+    }, ['ffmpeg', 'ffprobe'])
     const task = await this.options.tasks.get(started.job_id)
     if (task) await this.options.tasks.touch(task.id, { params: { ...params(task), render_request: lockedRequest } })
     return started
