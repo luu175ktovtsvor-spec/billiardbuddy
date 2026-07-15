@@ -1,8 +1,4 @@
-// 视觉皮改造(owner 2026-07-11):折叠行从"每张套边框的盒子"换成 Codex 真机的
-// "无边框透气行"——图标 + 过去式动词(灰)+ 文件名/目标(蓝色链接,仅文件路径类目标)+ 细节(灰)。
-// 只换视觉,四态(running/ok/error/interrupted)、展开收起、diff 预览等交互逻辑原样保留,
-// 对齐 cc-haha-ref desktop/src/components/chat/ToolCallBlock.tsx:53-192 + :735-834 的状态判定
-// (getPendingSummary/getToolSummary/getToolResultSummary/changedLineSummary,中文化在 toolMeta.ts)。
+// 无边框工具活动行：状态动词、目标和可选结果；详细输出由用户展开查看。
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
@@ -160,37 +156,37 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
         onKeyDown={(e) => {
           if (expandable && (e.key === 'Enter' || e.key === ' ')) setExpanded((v) => !v)
         }}
-        className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+        className="flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       >
         {block.status === 'running' ? (
-          <IconSpinner size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+          <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />
         ) : block.status === 'error' ? (
-          <IconAlertCircle size={13} style={{ color: 'var(--color-error)' }} />
+          <IconAlertCircle size={16} style={{ color: 'var(--color-error)' }} />
         ) : block.status === 'interrupted' ? (
-          <IconStopCircle size={13} style={{ color: 'var(--color-text-tertiary)' }} />
+          <IconStopCircle size={16} style={{ color: 'var(--color-text-tertiary)' }} />
         ) : (
-          <Icon size={13} />
+          <Icon size={16} />
         )}
 
-        <span className="shrink-0 text-[12.5px]" style={{ color: verbColor }}>
+        <span className="shrink-0 text-[13.5px]" style={{ color: verbColor }}>
           {verb}
         </span>
 
         {summary &&
           (isFileTarget ? (
             <Tooltip label={filePath || summary}>
-              <button type="button" onClick={openPreview} className="qf-tool-link min-w-0 truncate text-[12.5px]">
+              <button type="button" onClick={openPreview} className="qf-tool-link min-w-0 truncate text-[13.5px]">
                 {summary}
               </button>
             </Tooltip>
           ) : (
-            <span className="min-w-0 truncate text-[12.5px]" title={summary} style={{ color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>
+            <span className="min-w-0 truncate text-[13.5px]" title={summary} style={{ color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>
               {summary}
             </span>
           ))}
 
         {detailValue ? (
-          <span className="min-w-0 flex-1 truncate text-[11.5px]" style={{ color: detailColor }}>
+          <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: detailColor }}>
             · {detailValue}
           </span>
         ) : (
@@ -206,7 +202,7 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
 
         {expandable && (
           <IconChevronDown
-            size={13}
+            size={14}
             style={{ color: 'var(--color-text-tertiary)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform .15s ease' }}
           />
         )}
@@ -236,7 +232,7 @@ export function ToolCallCard({ block }: { block: ToolBlock }) {
           {!hasEditPreview && !hasWritePreview && hasOutput && (
             <div className="overflow-hidden rounded-lg" style={{ background: 'var(--color-surface-container-low)' }}>
               <div className="flex items-center justify-between px-3 py-1.5" style={{ color: 'var(--color-text-tertiary)' }}>
-                <span className="text-[10px] uppercase tracking-wide">{block.status === 'error' ? t('tools.errorOutput') : t('tools.toolOutput')}</span>
+                <span className="text-[11px]">{block.status === 'error' ? t('tools.errorOutput') : t('tools.toolOutput')}</span>
                 <CopyButton text={block.output ?? ''} />
               </div>
               <pre

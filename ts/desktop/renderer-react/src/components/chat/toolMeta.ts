@@ -1,7 +1,4 @@
-// 工具名 → 图标/中文动词/摘要(对齐 cc-haha-ref desktop/src/components/chat/ToolCallBlock.tsx:29-41
-// 的 TOOL_ICONS + :735-834 的 getPendingSummary/getToolSummary/getToolResultSummary/changedLineSummary,
-// 以及 ToolCallGroup.tsx:39-64 的 TOOL_VERBS/generateSummary —— 换成我们真实后端工具名
-// (snake_case,见 ts/src/tools/*.ts 的 name 字段)+ 中文动词,不抄英文图标字体/文案。
+// 工具名到图标、中文动词和摘要的展示映射，工具标识以真实后端注册表为准。
 import type { ComponentType } from 'react'
 import {
   IconTerminal,
@@ -189,16 +186,15 @@ export function pendingVerb(tool: string): string {
   return '正在准备工具'
 }
 
-// —— 视觉皮改造新增(无框行:图标 + 过去式动词·灰 + 文件名/目标·蓝 + 细节·灰,对齐真机 Codex
-// 折叠行文案"已读取 xxx"/"已运行 xxx"/"已搜索 xxx")。只加"过去式怎么写"这层展示映射,不碰状态机。
+// 无框活动行由状态动词、目标和可选结果摘要组成。
 const PAST_VERB: Record<string, string> = {
   run_command: '已运行',
   run_command_background: '已后台运行',
   read_file: '已读取',
   read_many_files: '已读取',
   read_stored_tool_result: '已读取',
-  read_skill: '已读取',
-  use_skill: '已读取',
+  read_skill: '读取',
+  use_skill: '读取',
   tool_search: '已加载工具',
   list_dir: '已查看目录',
   git_status: '已查看 Git 状态',
@@ -359,7 +355,7 @@ function inputPath(input: unknown): string {
   return typeof path === 'string' ? path : ''
 }
 
-/** 完成态只汇总用户能理解的结果，不把工具类别机械地拼成句子。 */
+/** 完成态采用 Codex 当前活动摘要口径；具体数量和目标留在展开明细。 */
 export function summarizeActivity(items: ActivitySummaryItem[]): string {
   const done = items.filter(item => item.status === 'ok')
   if (done.length === 0) {
@@ -383,22 +379,17 @@ export function summarizeActivity(items: ActivitySummaryItem[]): string {
   const counted = folderReads + candidateSelections + loadedTools + imageReads + fileReads + searches + commands + webSearches + webFetches + agents + todos
   const parts: string[] = []
 
-  if (folderReads) parts.push(`查看了 ${folderReads} 个文件夹`)
-  if (candidateSelections) parts.push('筛选了图片')
-  if (loadedTools) parts.push(`加载了 ${loadedTools} 个工具`)
-  if (imageReads) parts.push(`查看了 ${imageReads} 张图片`)
-  if (fileReads) parts.push(`读取了 ${fileReads} 个文件`)
-  if (searches) parts.push('搜索了文件')
-  if (commands) parts.push(`运行了 ${commands} 条命令`)
-  if (webSearches) parts.push('搜索了网页')
-  if (webFetches) parts.push(`查看了 ${webFetches} 个网页`)
-  if (agents) parts.push(`完成了 ${agents} 个子任务`)
-  if (done.length > counted) parts.push(`完成了 ${done.length - counted} 个步骤`)
+  if (folderReads) parts.push('已列出文件')
+  if (candidateSelections) parts.push('已筛选图片')
+  if (loadedTools) parts.push('已加载工具')
+  if (imageReads + fileReads) parts.push('已读取文件')
+  if (searches) parts.push('已搜索文件')
+  if (commands) parts.push(commands === 1 ? '运行了一个命令' : '运行了多个命令')
+  if (webSearches) parts.push('已搜索网页')
+  if (webFetches) parts.push('已查看网页')
+  if (agents) parts.push('已完成子任务')
+  if (done.length > counted) parts.push('已完成步骤')
 
   if (parts.length === 0) return '已处理'
-  try {
-    return new Intl.ListFormat('zh-CN', { type: 'conjunction', style: 'short' }).format(parts)
-  } catch {
-    return parts.join('、')
-  }
+  return parts.join('')
 }
