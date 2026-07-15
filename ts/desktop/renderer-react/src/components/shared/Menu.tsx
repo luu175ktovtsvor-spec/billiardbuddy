@@ -16,15 +16,15 @@ export interface MenuItem {
 
 export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () => void }) {
   return (
-    <div className="min-w-[200px] py-1">
+    <div className="min-w-[200px] p-1.5">
       {items.map((it, i) => (
         <div key={i}>
-          {it.separatorBefore && <div className="my-1" style={{ borderTop: '1px solid var(--color-border)' }} />}
+          {it.separatorBefore && <div className="mx-1 my-1 h-px" style={{ background: 'var(--color-border)' }} />}
           <button
             type="button"
             disabled={it.disabled}
             onClick={() => { if (!it.disabled) { it.onClick?.(); onClose() } }}
-            className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-default disabled:opacity-40"
+            className="flex min-h-7 w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] leading-5 transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-default disabled:opacity-40"
             style={{ color: it.danger ? 'var(--color-error)' : 'var(--color-text-primary)' }}
           >
             {it.icon && (
@@ -44,15 +44,15 @@ export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () =>
 export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
   // 视口内钳制:菜单约 220×(项数*32),避免贴边溢出。
   const w = 220
-  const h = items.length * 34 + 12
+  const h = items.length * 30 + 12
   const left = typeof window !== 'undefined' ? Math.min(x, window.innerWidth - w - 8) : x
   const top = typeof window !== 'undefined' ? Math.min(y, window.innerHeight - h - 8) : y
   return (
     <>
       <div className="fixed inset-0 z-[60]" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
       <div
-        className="fixed z-[61] overflow-hidden rounded-xl"
-        style={{ left: Math.max(8, left), top: Math.max(8, top), background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
+        className="fixed z-[61] overflow-hidden rounded-[10px] backdrop-blur-sm"
+        style={{ left: Math.max(8, left), top: Math.max(8, top), background: 'color-mix(in oklab, var(--color-surface) 95%, transparent)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
       >
         <MenuList items={items} onClose={onClose} />
       </div>
