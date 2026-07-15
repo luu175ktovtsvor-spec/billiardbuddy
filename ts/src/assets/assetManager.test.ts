@@ -8,10 +8,10 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSy
 import { rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AssetManager, parseAssetManifest, setActiveAssetManager, managedAssetPath, ensureManagedAsset } from './assetManager'
+import { AssetManager, DEFAULT_ASSET_MANIFEST_URL, parseAssetManifest, setActiveAssetManager, managedAssetPath, ensureManagedAsset } from './assetManager'
 import type { AssetManifest, AssetProgressEvent } from './types'
 
-const MANIFEST_URL = 'http://assets.example/assets/manifest.json'
+const MANIFEST_URL = 'https://assets.example/assets/manifest.json'
 
 const roots: string[] = []
 const managers: AssetManager[] = []
@@ -123,14 +123,14 @@ test('首启:拉清单→Tier1 串行下载→校验→原子落位;Tier2 不自
   const events: AssetProgressEvent[] = []
   const net = mockNet(
     () => manifestWith([
-      plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', 'FFMPEG-BINARY'),
-      plainAsset('zh-font', 'http://assets.example/f/font', 'FONT-DATA'),
-      plainAsset('whisper-model', 'http://assets.example/f/model', 'MODEL-DATA', { tier: 2 }),
+      plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', 'FFMPEG-BINARY'),
+      plainAsset('zh-font', 'https://assets.example/f/font', 'FONT-DATA'),
+      plainAsset('whisper-model', 'https://assets.example/f/model', 'MODEL-DATA', { tier: 2 }),
     ]),
     {
-      'http://assets.example/f/ffmpeg': { bytes: bytesOf('FFMPEG-BINARY'), served: 0 },
-      'http://assets.example/f/font': { bytes: bytesOf('FONT-DATA'), served: 0 },
-      'http://assets.example/f/model': { bytes: bytesOf('MODEL-DATA'), served: 0 },
+      'https://assets.example/f/ffmpeg': { bytes: bytesOf('FFMPEG-BINARY'), served: 0 },
+      'https://assets.example/f/font': { bytes: bytesOf('FONT-DATA'), served: 0 },
+      'https://assets.example/f/model': { bytes: bytesOf('MODEL-DATA'), served: 0 },
     },
   )
   const manager = makeManager(root, net)
@@ -148,13 +148,13 @@ test('首启:拉清单→Tier1 串行下载→校验→原子落位;Tier2 不自
 
   // Tier2 默认不自动下。
   expect(manager.readyPath('whisper-model')).toBeNull()
-  expect(net.calls).not.toContain('fetch:http://assets.example/f/model')
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/model')
 
   // 串行:第二个资产的请求发生在第一个 ready 之后(一次只下一个,不抢带宽)。
   const readyIdx = events.findIndex(event => event.id === 'ffmpeg' && event.status === 'ready')
   expect(readyIdx).toBeGreaterThanOrEqual(0)
-  const fontFetchIdx = net.calls.indexOf('fetch:http://assets.example/f/font')
-  const ffmpegFetchIdx = net.calls.indexOf('fetch:http://assets.example/f/ffmpeg')
+  const fontFetchIdx = net.calls.indexOf('fetch:https://assets.example/f/font')
+  const ffmpegFetchIdx = net.calls.indexOf('fetch:https://assets.example/f/ffmpeg')
   expect(ffmpegFetchIdx).toBeGreaterThanOrEqual(0)
   expect(fontFetchIdx).toBeGreaterThan(ffmpegFetchIdx)
 
@@ -173,8 +173,8 @@ test('Range 断点续传:预置半截 .part → 请求带 bytes=N-,206 接着下
   const root = makeRoot()
   const content = 'RESUMABLE-CONTENT-0123456789'
   const net = mockNet(
-    () => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)]),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
+    () => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)]),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
   )
   mkdirSync(join(root, 'assets', 'tmp'), { recursive: true })
   writeFileSync(join(root, 'assets', 'tmp', 'ffmpeg.part'), content.slice(0, 10))
@@ -183,7 +183,7 @@ test('Range 断点续传:预置半截 .part → 请求带 bytes=N-,206 接着下
   manager.start()
   await manager.whenIdle()
 
-  expect(net.calls).toContain('range:http://assets.example/f/ffmpeg:10')
+  expect(net.calls).toContain('range:https://assets.example/f/ffmpeg:10')
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe(content)
 })
 
@@ -191,14 +191,14 @@ test('SHA-256 校验不过:删掉 .part 重下,第二次成功', async () => {
   const root = makeRoot()
   const content = 'GOOD-CONTENT'
   const net = mockNet(
-    () => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)]),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), corruptFirst: 1, served: 0 } },
+    () => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)]),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), corruptFirst: 1, served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
   await manager.whenIdle()
 
-  expect(net.files['http://assets.example/f/ffmpeg']!.served).toBe(2)
+  expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(2)
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe(content)
   expect(existsSync(join(root, 'assets', 'tmp', 'ffmpeg.part'))).toBe(false)
 })
@@ -207,8 +207,8 @@ test('重试上限后标 failed(带 retryScheduled),ensureAsset 再触发能重�
   const root = makeRoot()
   const content = 'NEVER-GOOD'
   const net = mockNet(
-    () => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)]),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), corruptFirst: 3, served: 0 } },
+    () => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)]),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), corruptFirst: 3, served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -229,13 +229,13 @@ test('重试上限后标 failed(带 retryScheduled),ensureAsset 再触发能重�
 test('清单拉不到 → 用本地缓存的上一份继续下', async () => {
   const root = makeRoot()
   const content = 'CACHED-MANIFEST-ASSET'
-  const cached = manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)])
+  const cached = manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)])
   mkdirSync(join(root, 'assets'), { recursive: true })
   await writeFile(join(root, 'assets', 'manifest.json'), JSON.stringify(cached), 'utf8')
 
   const net = mockNet(
     () => null, // 远端不可达
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -248,8 +248,8 @@ test('清单与缓存都没有 → 静默退避重试,网络恢复后自动继�
   const content = 'LATE-MANIFEST'
   let reachable = false
   const net = mockNet(
-    () => (reachable ? manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)]) : null),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
+    () => (reachable ? manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)]) : null),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -265,14 +265,14 @@ test('平台过滤:只认当前平台 + all,别的平台的资产不进状态', 
   const root = makeRoot()
   const net = mockNet(
     () => manifestWith([
-      { ...plainAsset('ffmpeg', 'http://assets.example/f/mac', 'MAC'), platform: 'darwin-arm64' },
-      { ...plainAsset('ffprobe', 'http://assets.example/f/win', 'WIN'), platform: 'win32-x64' },
-      { ...plainAsset('zh-font', 'http://assets.example/f/font', 'FONT'), platform: 'all' },
+      { ...plainAsset('ffmpeg', 'https://assets.example/f/mac', 'MAC'), platform: 'darwin-arm64' },
+      { ...plainAsset('ffprobe', 'https://assets.example/f/win', 'WIN'), platform: 'win32-x64' },
+      { ...plainAsset('zh-font', 'https://assets.example/f/font', 'FONT'), platform: 'all' },
     ]),
     {
-      'http://assets.example/f/mac': { bytes: bytesOf('MAC'), served: 0 },
-      'http://assets.example/f/win': { bytes: bytesOf('WIN'), served: 0 },
-      'http://assets.example/f/font': { bytes: bytesOf('FONT'), served: 0 },
+      'https://assets.example/f/mac': { bytes: bytesOf('MAC'), served: 0 },
+      'https://assets.example/f/win': { bytes: bytesOf('WIN'), served: 0 },
+      'https://assets.example/f/font': { bytes: bytesOf('FONT'), served: 0 },
     },
   )
   const manager = makeManager(root, net)
@@ -281,19 +281,19 @@ test('平台过滤:只认当前平台 + all,别的平台的资产不进状态', 
 
   const ids = (manager.status() as { assets: Array<{ id: string }> }).assets.map(asset => asset.id)
   expect(ids.sort()).toEqual(['ffmpeg', 'zh-font'])
-  expect(net.calls).not.toContain('fetch:http://assets.example/f/win')
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/win')
 })
 
 test('同一资产 id 可在清单中按平台重复，客户端只下载当前平台版本', async () => {
   const root = makeRoot()
   const net = mockNet(
     () => manifestWith([
-      { ...plainAsset('ffmpeg', 'http://assets.example/f/mac', 'MAC'), platform: 'darwin-arm64', dest: 'ffmpeg' },
-      { ...plainAsset('ffmpeg', 'http://assets.example/f/win', 'WINDOWS'), platform: 'win32-x64', dest: 'ffmpeg.exe' },
+      { ...plainAsset('ffmpeg', 'https://assets.example/f/mac', 'MAC'), platform: 'darwin-arm64', dest: 'ffmpeg' },
+      { ...plainAsset('ffmpeg', 'https://assets.example/f/win', 'WINDOWS'), platform: 'win32-x64', dest: 'ffmpeg.exe' },
     ]),
     {
-      'http://assets.example/f/mac': { bytes: bytesOf('MAC'), served: 0 },
-      'http://assets.example/f/win': { bytes: bytesOf('WINDOWS'), served: 0 },
+      'https://assets.example/f/mac': { bytes: bytesOf('MAC'), served: 0 },
+      'https://assets.example/f/win': { bytes: bytesOf('WINDOWS'), served: 0 },
     },
   )
   const manager = makeManager(root, net, { platform: 'win32-x64' })
@@ -301,15 +301,15 @@ test('同一资产 id 可在清单中按平台重复，客户端只下载当前�
   await manager.whenIdle()
 
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('WINDOWS')
-  expect(net.calls).toContain('fetch:http://assets.example/f/win')
-  expect(net.calls).not.toContain('fetch:http://assets.example/f/mac')
+  expect(net.calls).toContain('fetch:https://assets.example/f/win')
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/mac')
 })
 
 test('功能门:Tier2 ensureAsset 触发按需下载并插队;就绪后返回 ready+path', async () => {
   const root = makeRoot()
   const net = mockNet(
-    () => manifestWith([plainAsset('whisper-model', 'http://assets.example/f/model', 'MODEL', { tier: 2 })]),
-    { 'http://assets.example/f/model': { bytes: bytesOf('MODEL'), served: 0 } },
+    () => manifestWith([plainAsset('whisper-model', 'https://assets.example/f/model', 'MODEL', { tier: 2 })]),
+    { 'https://assets.example/f/model': { bytes: bytesOf('MODEL'), served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -326,8 +326,8 @@ test('功能门:Tier2 ensureAsset 触发按需下载并插队;就绪后返回 re
 
 test('功能门:未知 id / 未启动 → failed 且不排重试(调用方走旧兜底)', async () => {
   const root = makeRoot()
-  const net = mockNet(() => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', 'X')]), {
-    'http://assets.example/f/ffmpeg': { bytes: bytesOf('X'), served: 0 },
+  const net = mockNet(() => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', 'X')]), {
+    'https://assets.example/f/ffmpeg': { bytes: bytesOf('X'), served: 0 },
   })
   const idle = makeManager(root, net)
   expect(idle.ensureAsset('ffmpeg')).toEqual({ status: 'failed', retryScheduled: false })
@@ -352,9 +352,9 @@ test('zip 资产:系统 unzip 解包后原子落位,dest 为主文件', async ()
   const net = mockNet(
     () => manifestWith([{
       id: 'ffmpeg', platform: 'all', tier: 1, size: zipBytes.length, sha256: sha256(zipBytes),
-      url: 'http://assets.example/f/ffmpeg.zip', unpack: 'zip', dest: 'bin/ffmpeg',
+      url: 'https://assets.example/f/ffmpeg.zip', unpack: 'zip', dest: 'bin/ffmpeg',
     }]),
-    { 'http://assets.example/f/ffmpeg.zip': { bytes: zipBytes, served: 0 } },
+    { 'https://assets.example/f/ffmpeg.zip': { bytes: zipBytes, served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -369,20 +369,20 @@ test('重启:快速校验(存在+大小对)直接 ready 不重下;文件被删�
   const root = makeRoot()
   const content = 'PERSISTED'
   const net = mockNet(
-    () => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)]),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
+    () => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)]),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf(content), served: 0 } },
   )
   const first = makeManager(root, net)
   first.start()
   await first.whenIdle()
-  expect(net.files['http://assets.example/f/ffmpeg']!.served).toBe(1)
+  expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(1)
   first.stop()
 
   // 重启:不重下。
   const second = makeManager(root, net)
   second.start()
   await second.whenIdle()
-  expect(net.files['http://assets.example/f/ffmpeg']!.served).toBe(1)
+  expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(1)
   expect(second.readyPath('ffmpeg')).not.toBeNull()
   second.stop()
 
@@ -391,7 +391,7 @@ test('重启:快速校验(存在+大小对)直接 ready 不重下;文件被删�
   const third = makeManager(root, net)
   third.start()
   await third.whenIdle()
-  expect(net.files['http://assets.example/f/ffmpeg']!.served).toBe(2)
+  expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(2)
   expect(third.readyPath('ffmpeg')).not.toBeNull()
 })
 
@@ -399,8 +399,8 @@ test('清单换新版本(sha 变了):已 ready 的资产重下', async () => {
   const root = makeRoot()
   let content = 'V1-BINARY'
   const net = mockNet(
-    () => manifestWith([plainAsset('ffmpeg', 'http://assets.example/f/ffmpeg', content)], content),
-    { 'http://assets.example/f/ffmpeg': { bytes: bytesOf('V1-BINARY'), served: 0 } },
+    () => manifestWith([plainAsset('ffmpeg', 'https://assets.example/f/ffmpeg', content)], content),
+    { 'https://assets.example/f/ffmpeg': { bytes: bytesOf('V1-BINARY'), served: 0 } },
   )
   const manager = makeManager(root, net)
   manager.start()
@@ -408,7 +408,7 @@ test('清单换新版本(sha 变了):已 ready 的资产重下', async () => {
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('V1-BINARY')
 
   content = 'V2-BINARY-LONGER'
-  net.files['http://assets.example/f/ffmpeg']!.bytes = bytesOf('V2-BINARY-LONGER')
+  net.files['https://assets.example/f/ffmpeg']!.bytes = bytesOf('V2-BINARY-LONGER')
   await manager.refreshManifest()
   await manager.whenIdle()
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('V2-BINARY-LONGER')
@@ -422,16 +422,25 @@ test('parseAssetManifest:坏条目丢弃、恶意 dest/id 拒收、整体坏返�
   const doc = parseAssetManifest({
     version: 'v1',
     assets: [
-      { id: 'ok', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: 'ok.bin' },
-      { id: '../escape', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: 'z' },
-      { id: 'bad-dest', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: '../../etc/passwd' },
-      { id: 'abs-dest', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: '/etc/passwd' },
-      { id: 'bad-sha', platform: 'all', tier: 1, size: 3, sha256: 'zz', url: 'http://x/y', dest: 'z' },
+      { id: 'ok', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'https://x/y', dest: 'ok.bin' },
+      { id: 'local-dev', platform: 'all', tier: 2, size: 3, sha256: 'b'.repeat(64), url: 'http://127.0.0.1:9000/y', dest: 'local.bin' },
+      { id: 'insecure', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: 'z' },
+      { id: '../escape', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'https://x/y', dest: 'z' },
+      { id: 'bad-dest', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'https://x/y', dest: '../../etc/passwd' },
+      { id: 'abs-dest', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'https://x/y', dest: '/etc/passwd' },
+      { id: 'bad-sha', platform: 'all', tier: 1, size: 3, sha256: 'zz', url: 'https://x/y', dest: 'z' },
       { id: 'bad-url', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'file:///etc', dest: 'z' },
-      { id: 'tmp', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'http://x/y', dest: 'z' },
+      { id: 'tmp', platform: 'all', tier: 1, size: 3, sha256: 'a'.repeat(64), url: 'https://x/y', dest: 'z' },
     ],
   })
-  expect(doc!.assets.map(asset => asset.id)).toEqual(['ok'])
+  expect(doc!.assets.map(asset => asset.id)).toEqual(['ok', 'local-dev'])
+})
+
+test('资产清单地址拒绝公网 HTTP，但允许本地开发 loopback', () => {
+  const insecure = new AssetManager({ stateRoot: makeRoot(), env: { QF_ASSET_MANIFEST_URL: 'http://assets.example/manifest.json' } })
+  expect(insecure.status().manifest_url).toBe(DEFAULT_ASSET_MANIFEST_URL)
+  const local = new AssetManager({ stateRoot: makeRoot(), env: { QF_ASSET_MANIFEST_URL: 'http://127.0.0.1:9000/manifest.json' } })
+  expect(local.status().manifest_url).toBe('http://127.0.0.1:9000/manifest.json')
 })
 
 test('注册表:没接资产管理器时 managedAssetPath=null、ensureManagedAsset=failed 不重试', () => {

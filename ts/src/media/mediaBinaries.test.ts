@@ -97,6 +97,8 @@ test('功能门:组件缺失且资产管理器在下 → "准备中"结构化 co
   expect(gate.needs_user_action).toBe(false)
   expect(gate.asset_progress).toBe(37)
   expect(String(gate.message)).toContain('37%')
+  expect(String(gate.message)).toContain('自动继续')
+  expect(String(gate.message)).toContain('无需重新提交')
   const assets = gate.assets as Array<{ id: string; status: string; progress: number }>
   expect(assets.map(asset => asset.id).sort()).toEqual(['ffmpeg', 'ffprobe'])
 })
@@ -151,4 +153,15 @@ test('字幕中文字体:资产就绪 → fontsdir=字体所在目录 + 默认�
   expect(subtitleFontConfig(isolatedEnv({ QF_SUBTITLE_FONT_FAMILY: '思源黑体' }))!.family).toBe('思源黑体')
   setActiveAssetManager(null)
   expect(subtitleFontConfig(isolatedEnv())).toBeNull()
+})
+
+test('字幕中文字体:未就绪时作为 Tier2 资产按需准备', () => {
+  const requested: string[] = []
+  setActiveAssetManager(stubSource({}, id => {
+    requested.push(id)
+    return { status: 'downloading', progress: 9 }
+  }))
+  const gate = gateMediaAssets(isolatedEnv(), ['zh-font'])!
+  expect(gate.asset_progress).toBe(9)
+  expect(requested).toEqual(['zh-font'])
 })
