@@ -33,6 +33,7 @@
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 单一 V2 视频真相源：Brief、Scene/Timeline、素材证据、规划、预览与渲染；旧 V1 项目只在 `projectStore.ts` 读取并迁移 |
 | 语音与口播转录 | `ts/src/media/remoteTranscription.ts`、`ts/src/server/services/voiceTranscription.ts`、`ts/shared/contracts/voice.ts`、`gateway/transcription.ts` | 客户端录音/音轨上传、远程文本与时间戳契约、服务器 Whisper 或上游 ASR provider |
 | 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
+| 招聘业务 | `ts/src/recruitment`、`ts/shared/contracts/recruitment.ts`、`server/routes/recruitmentRoutes.ts` | 招聘事实源(候选人漏斗/跟进/话术草稿/岗位缺口):聊天窄工具、REST 与定时任务共用一份数据;人工交接连接器,sent 必须带读回证据(服务层强制),不做自动外发 |
 | 设置与凭据 | `server/services/userSettings.ts`、`server/routes/agentSettingsRoutes.ts`、settings/provider/credential services、`shared/contracts/agent-settings.ts`、SettingsPage | 偏好、Agent 权限上限、provider、凭据；设置损坏时保留原文件并失败关闭写入 |
 | 系统运维 | telemetry、backup、migrations、assets | 遥测、备份、迁移、组件资产 |
 
