@@ -24,12 +24,14 @@ test('BOSS 招聘 Skill 保留人工登录、业务确认和发送回执硬边�
   expect(prompt).toContain('筛选逻辑必须由当前 Agent 根据本次用户输入生成')
   expect(prompt).toContain('未知不等于不符合')
   expect(prompt).toContain('CLI 和浏览器只返回事实与执行动作')
-  expect(prompt).toContain('完整消息正文')
-  expect(prompt).toContain('必须重新确认')
+  expect(prompt).toContain('消息正文')
+  expect(prompt).toContain('需要**重新授权**的情形')
   expect(prompt).toContain('CLI 返回“已发送”只能当作动作结果')
   expect(prompt).toContain('标记为 `uncertain`')
   expect(prompt).toContain('禁止自动盲目重试')
-  expect(prompt).toContain('不要按性别、民族、宗教、婚育、残障、外貌等')
+  // 形象气质按门店实际用人要求(放开);仅保留法律禁止的就业歧视红线。
+  expect(prompt).toContain('岗位确实需要的形象气质')
+  expect(prompt).toContain('《就业促进法》明确禁止')
 })
 
 test('Playwright 浏览器 Skill 可被自然语言发现且不自动扩权', async () => {
