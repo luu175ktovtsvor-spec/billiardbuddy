@@ -8,7 +8,7 @@
 | 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、`mimoChat.ts` MiMo 请求/原生搜索/重试、`modelCapacity.ts` 容量调度、`webSearch.ts` 兼容搜索 provider、`transcription.ts` 转录 provider） | 国内服务器独立发布；统一承载模型代理、联网搜索、容量池调度与可替换的语音转录 provider |
 | 生图中转 | `relay/` | 美国服务器独立发布 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
-| 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | 大陆机 HTTPS 静态分发；Tier 1 启动后准备，Tier 2 按功能准备，客户端校验后本地执行 |
+| 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发；Tier 1 启动后准备，Tier 2 按功能准备，客户端校验后本地执行 |
 
 ## 桌面产品责任模块
 

@@ -28,8 +28,8 @@ import type {
   EnsureAssetResult,
 } from './types'
 
-/** 清单默认下载源：大陆机 nginx 的 HTTPS 静态路径。 */
-export const DEFAULT_ASSET_MANIFEST_URL = 'https://data.zzyppz.cn/assets/manifest.json'
+/** 清单默认下载源：可公网稳定访问的 HTTPS 静态路径。 */
+export const DEFAULT_ASSET_MANIFEST_URL = 'https://zzyppz.cn/assets/manifest.json'
 
 /** WS 广播主题(server 把每条 asset_progress 发到这个 topic)。 */
 export const ASSET_WS_TOPIC = 'assets'
