@@ -1,5 +1,4 @@
-// 主区「页面」通用外壳件(已安排 / 插件等非对话视图共用)。照 Codex 页面头范式:
-// 大标题 + 一行灰描述 + 右上主/次按钮;左侧图标用圆角方胶囊。
+// 非对话页面共用的标题、图标和按钮原语。
 import type { ReactNode } from 'react'
 
 /** 圆角方形图标底(照 Codex 列表项/卡片左侧的图标胶囊)。 */
@@ -18,7 +17,7 @@ export function PageHeader({ title, subtitle, action }: { title: string; subtitl
   return (
     <div className="mb-6 flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <h1 className="text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{title}</h1>
+        <h1 className="text-[20px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{title}</h1>
         {subtitle && <p className="mt-1 max-w-[560px] text-[13px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{subtitle}</p>}
       </div>
       {action}
@@ -26,14 +25,14 @@ export function PageHeader({ title, subtitle, action }: { title: string; subtitl
   )
 }
 
-/** 主按钮(照 Codex 浅蓝主按钮)。 */
+/** 主按钮使用主题的中性高对比色。 */
 export function PrimaryButton({ onClick, children }: { onClick?: () => void; children: ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
-      style={{ background: 'var(--color-brand)' }}
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-opacity hover:opacity-90"
+      style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }}
     >
       {children}
     </button>

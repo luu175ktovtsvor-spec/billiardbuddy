@@ -164,6 +164,12 @@ export const IconChecklist = (p: IconProps) => (
 export const IconRefresh = (p: IconProps) => (
   <Svg {...p}><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.3 6.4L3 16" /><path d="M3 21v-5h5" /></Svg>
 )
+export const IconUndo = (p: IconProps) => (
+  <Svg {...p}><path d="M9 14 4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 6 6v1" /></Svg>
+)
+export const IconRedo = (p: IconProps) => (
+  <Svg {...p}><path d="m15 14 5-5-5-5" /><path d="M20 9H10a6 6 0 0 0-6 6v1" /></Svg>
+)
 export const IconX = (p: IconProps) => (
   <Svg {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Svg>
 )

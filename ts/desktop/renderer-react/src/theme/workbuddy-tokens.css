@@ -88,6 +88,7 @@
 
   --radius-sm: 6px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 12px; --radius-2xl: 16px; --radius-full: 9999px;
   --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #00000012;
   --shadow-popover: 0 8px 16px -4px #0000001f, 0 0 0 .5px #0000001a;
 }
 
@@ -134,6 +135,7 @@
   --color-smiley-face: var(--cx-gray-900);
 
   --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
+  --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
   --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
 }
 
@@ -174,6 +176,7 @@
     --color-smiley-a: #f5f5f5;
     --color-smiley-face: var(--cx-gray-900);
     --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
+    --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
     --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
   }
 }

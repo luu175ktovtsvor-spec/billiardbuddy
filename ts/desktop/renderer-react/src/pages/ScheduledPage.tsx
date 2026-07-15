@@ -36,7 +36,7 @@ function FreqPicker({ value, onChange }: { value: Freq; onChange: (f: Freq) => v
         return (
           <button key={o.v} type="button" onClick={() => onChange(o.v)}
             className="flex-1 rounded-md px-3 py-1.5 text-[12.5px] transition-colors"
-            style={{ background: on ? 'var(--color-surface)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: on ? 'var(--shadow-input)' : undefined, fontWeight: on ? 600 : 400 }}>
+            style={{ background: on ? 'var(--color-surface)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: on ? 'var(--shadow-control)' : undefined, fontWeight: on ? 600 : 400 }}>
             {o.label}
           </button>
         )
@@ -148,8 +148,8 @@ export function ScheduledPage() {
                   aria-label={task.enabled ? t('scheduled.pausedToggle') : t('scheduled.enableToggle')}
                   onClick={() => void toggle(task)} className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors"
                   style={{ background: task.enabled ? 'var(--color-brand)' : 'var(--color-surface-container-high)' }}>
-                  <span className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white transition-all"
-                    style={{ left: task.enabled ? '18px' : '2px', boxShadow: '0 1px 2px rgba(0,0,0,.2)' }} />
+                  <span className="absolute top-[2px] h-[18px] w-[18px] rounded-full transition-all"
+                    style={{ left: task.enabled ? '18px' : '2px', background: task.enabled ? 'var(--color-on-primary)' : 'var(--cx-gray-0)', boxShadow: '0 1px 2px rgba(0,0,0,.2)' }} />
                 </button>
                 <button type="button" aria-label={t('scheduled.edit')} onClick={(e) => setMenu({ id: task.id, x: e.clientX, y: e.clientY })}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-container)]"
