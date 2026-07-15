@@ -2,9 +2,9 @@
 //
 // L0 无音轨直判 → B-Roll(has_audio=false)。
 // L1 ffmpeg silencedetect 有声比 < 0.15 → B-Roll(几乎全静音/无连续人声)。
-// L2 拿不准时,用已 bundled 的 whisper.cpp 只转采样窗,按字密度判 → speech / broll。
+// L2 拿不准时,通过已配置的转写服务只转采样窗,按字密度判 → speech / broll。
 //
-// 全部复用现成能力,零新依赖(has_audio 现成、silencedetect 是 ffmpeg 自带、whisper 是口播路已 bundled)。
+// 全部复用现成能力,零新依赖(has_audio 现成、silencedetect 是 ffmpeg 自带、ASR 默认走远程服务)。
 // 产出 route: 'speech' | 'broll'。本轮(地基)按整批占比选主路;逐片分流留 P1。
 
 import { existsSync } from 'node:fs'
