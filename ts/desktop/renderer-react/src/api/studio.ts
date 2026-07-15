@@ -1,5 +1,5 @@
 // 生图/工作台 API:renderer 只提交能力意图;真实 provider/model 留在 sidecar。
-import { api, getBaseUrl } from './client'
+import { api, authenticatedResourceUrl, authHeaders, authHeadersForUrl, getBaseUrl } from './client'
 import {
   imageBrandPackSchema,
   imageBriefCompileResponseSchema,
@@ -212,7 +212,7 @@ export const workbenchApi = {
 export async function uploadLocalImage(file: File): Promise<{ url: string }> {
   const form = new FormData()
   form.set('file', file)
-  const response = await fetch(`${getBaseUrl()}/api/v1/uploads/image`, { method: 'POST', body: form })
+  const response = await fetch(`${getBaseUrl()}/api/v1/uploads/image`, { method: 'POST', headers: authHeaders(), body: form })
   if (!response.ok) throw new Error(`上传图片失败(${response.status})`)
   const body = await response.json() as { url?: unknown }
   if (typeof body.url !== 'string') throw new Error('上传图片没有返回 url')
@@ -220,13 +220,14 @@ export async function uploadLocalImage(file: File): Promise<{ url: string }> {
 }
 
 export async function downloadAsset(url: string, filename: string): Promise<void> {
-  const response = await fetch(assetUrl(url))
+  const resolvedUrl = assetUrl(url)
+  const response = await fetch(resolvedUrl, { headers: authHeadersForUrl(resolvedUrl) })
   if (!response.ok) throw new Error(`下载文件失败(${response.status})`)
   const blob = await response.blob()
   const objectUrl = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = objectUrl
-  anchor.download = filename.endsWith('.png') ? filename : `${filename}.png`
+  anchor.download = /\.[A-Za-z0-9]{2,5}$/.test(filename) ? filename : `${filename}.png`
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
@@ -234,7 +235,8 @@ export async function downloadAsset(url: string, filename: string): Promise<void
 }
 
 export async function fetchAssetFile(url: string, filename: string): Promise<File> {
-  const response = await fetch(assetUrl(url))
+  const resolvedUrl = assetUrl(url)
+  const response = await fetch(resolvedUrl, { headers: authHeadersForUrl(resolvedUrl) })
   if (!response.ok) throw new Error(`读取素材失败(${response.status})`)
   const blob = await response.blob()
   return new File([blob], filename, { type: blob.type || 'image/png' })
@@ -248,6 +250,7 @@ export function pickImageUrl(result: Record<string, unknown> | undefined): strin
 }
 
 export function assetUrl(url: string): string {
-  if (/^(https?|data):/i.test(url)) return url
-  return `${getBaseUrl()}${url.startsWith('/') ? url : `/${url}`}`
+  if (/^data:/i.test(url)) return url
+  if (/^https?:/i.test(url)) return authenticatedResourceUrl(url)
+  return authenticatedResourceUrl(`${getBaseUrl()}${url.startsWith('/') ? url : `/${url}`}`)
 }

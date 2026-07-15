@@ -3,14 +3,17 @@
 // ⚠️ 白标接入点:runtime.getServerUrl 由 main.ts 的 IPC 'runtime:getServerUrl' 提供(sidecar 地址),
 //    React 通过它拿到后端地址再 fetch/WS(前端与 sidecar 彻底解耦、不再走 same-origin)。
 
-import type { DesktopHost, DesktopPickerOptions } from '../../../../shared/contracts/desktop-host'
-export type { DesktopHost, DesktopPickerOptions } from '../../../../shared/contracts/desktop-host'
+import type { DesktopHost, DesktopPickerOptions, DesktopServerConnection } from '../../../../shared/contracts/desktop-host'
+export type { DesktopHost, DesktopPickerOptions, DesktopServerConnection } from '../../../../shared/contracts/desktop-host'
 
 /** window.desktopHost(preload 注入)的宽松形状。 */
 interface InjectedDesktopHost {
   isDesktop?: boolean
   platform?: string
-  runtime?: { getServerUrl?: () => Promise<string> }
+  runtime?: {
+    getServerUrl?: () => Promise<string>
+    getServerConnection?: () => Promise<DesktopServerConnection>
+  }
   pickWorkspace?: (options?: DesktopPickerOptions) => Promise<string | null>
   pickVideoFiles?: (options?: DesktopPickerOptions) => Promise<string[] | null>
   pickPaths?: (options?: DesktopPickerOptions) => Promise<string[] | null>
@@ -55,10 +58,11 @@ export function getDesktopHost(): DesktopHost {
   const injected = typeof window !== 'undefined' ? window.desktopHost : undefined
   if (injected && injected.isDesktop && injected.runtime?.getServerUrl) {
     const getServerUrl = injected.runtime.getServerUrl.bind(injected.runtime)
+    const getServerConnection = injected.runtime.getServerConnection?.bind(injected.runtime)
     cached = {
       isDesktop: true,
       platform: injected.platform ?? 'unknown',
-      runtime: { getServerUrl },
+      runtime: { getServerUrl, getServerConnection },
       pickWorkspace: injected.pickWorkspace?.bind(injected),
       pickVideoFiles: injected.pickVideoFiles?.bind(injected),
       pickPaths: injected.pickPaths?.bind(injected),

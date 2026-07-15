@@ -21,7 +21,7 @@ import {
   type VideoSource,
   type VideoSourceRole,
 } from '../../../../shared/contracts/video-edit'
-import { api, getBaseUrl } from './client'
+import { api, authenticatedResourceUrl, getBaseUrl } from './client'
 
 export type {
   VideoAlternative,
@@ -91,13 +91,13 @@ export const videoApi = {
     return videoJobStartResponseSchema.parse(await api.post(`/api/v1/video-edit/jobs/${encodeURIComponent(jobId)}/retry`, {}))
   },
   sourceUrl(projectId: string, sourceId: string): string {
-    return `${getBaseUrl()}${projectPath(projectId, `/sources/${encodeURIComponent(sourceId)}`)}`
+    return authenticatedResourceUrl(`${getBaseUrl()}${projectPath(projectId, `/sources/${encodeURIComponent(sourceId)}`)}`)
   },
   brandLogoUrl(projectId: string): string {
-    return `${getBaseUrl()}${projectPath(projectId, '/brand/logo')}`
+    return authenticatedResourceUrl(`${getBaseUrl()}${projectPath(projectId, '/brand/logo')}`)
   },
   assetUrl(path: string): string {
-    return path.startsWith('http://') || path.startsWith('https://') ? path : `${getBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`
+    return authenticatedResourceUrl(path.startsWith('http://') || path.startsWith('https://') ? path : `${getBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`)
   },
 }
 

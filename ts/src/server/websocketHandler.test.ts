@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import type { ServerWebSocket } from 'bun'
-import type { ToolContext } from '../tools/Tool'
 import type { SessionEventRecord, SessionStreamEvent } from './services/sessionService'
 import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
 
@@ -63,7 +62,7 @@ function createHarness(options: { running?: boolean; interrupted?: boolean; pend
       pendingApprovalInputs.push(input)
       return options.pendingApproval ?? false
     },
-    rejectTool(_tool: string, _args: unknown, _context: ToolContext) {},
+    async rejectTool(_body: Record<string, unknown>) {},
   })
 
   return {
@@ -115,7 +114,7 @@ describe('createAgentWebSocketHandler', () => {
     await flushAsyncMessages()
 
     expect(harness.sent).toContainEqual({ type: 'pong', ts: 42 })
-    expect(harness.runBodies[0]).toMatchObject({ type: 'run', message: '继续', full_disk_access: true })
+    expect(harness.runBodies[0]).toMatchObject({ type: 'run', message: '继续', permissionMode: 'default', full_disk_access: false })
     expect(harness.replayed).toContainEqual({ conversationId: 'session-b', after: 7 })
     expect(harness.ws.data.conversationId).toBe('session-b')
   })

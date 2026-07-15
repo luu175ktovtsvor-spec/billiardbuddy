@@ -122,6 +122,12 @@ export const mcpAddRequestSchema = z.object({
 
 export const mcpNameRequestSchema = z.object({ name: nameSchema })
 export const mcpToggleRequestSchema = z.object({ name: nameSchema, disabled: z.boolean() })
+export const workspaceTrustRequestSchema = z.object({ workspaceRoot: z.string().trim().min(1).max(8_192) })
+export const workspaceTrustResponseSchema = z.object({
+  ok: z.boolean().optional(),
+  trusted: z.boolean().optional(),
+  approved_workspace_roots: z.array(z.string().max(8_192)).max(10_000),
+})
 
 export type ExtensionSource = z.infer<typeof extensionSourceSchema>
 export type ExtensionLayer = z.infer<typeof extensionLayerSchema>
@@ -134,3 +140,4 @@ export type McpPreset = z.infer<typeof mcpPresetSchema>
 export type McpServerStatus = z.infer<typeof mcpServerStatusSchema>
 export type McpListResponse = z.infer<typeof mcpListResponseSchema>
 export type McpAddRequest = z.infer<typeof mcpAddRequestSchema>
+export type WorkspaceTrustResponse = z.infer<typeof workspaceTrustResponseSchema>

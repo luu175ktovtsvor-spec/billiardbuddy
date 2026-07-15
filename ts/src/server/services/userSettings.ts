@@ -1,73 +1,135 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import {
+  type AgentSettingsIssue,
+  type AgentUserSettings,
+  type AgentUserSettingsPatch,
+} from '../../../shared/contracts/agent-settings'
 
-/**
- * App 级用户设置(配置基座):存单个 JSON 文件(`<stateRoot>/user-settings.json`),供设置抽屉读写。
- * 与 provider 配置(providerService)、网络设置(networkSettings)、权限规则(permissionsSettings)分工:
- * 这里放"通用偏好"(默认权限档、主题等)。刻意小而稳,新设置项按需加字段即可。
- */
+/** App 级用户设置。未知字段原样保留，损坏文件可读安全默认但不会被后续保存覆盖。 */
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'plan'] as const
-const THEMES = ['light', 'dark', 'auto'] as const
-
-export interface UserSettings {
-  /** 新对话默认权限档(前端发起 run 时用) */
-  defaultPermissionMode: (typeof PERMISSION_MODES)[number]
-  /** 界面主题 */
-  theme: (typeof THEMES)[number]
-  /** 上次选中的工作区绝对路径(§P1 持久化:关窗不忘,下次启动前端据此恢复上次工作目录)。未选过则缺省。 */
-  lastWorkspaceRoot?: string
-  /** 默认工作空间存储路径(WorkBuddy 式:新建工作空间就建在这个目录下)。缺省时用 getDefaultWorkspaceDir()。 */
-  workspaceBaseDir?: string
-}
+export type UserSettings = AgentUserSettings
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   defaultPermissionMode: 'default',
   theme: 'auto',
+  allowBypassPermissionsMode: false,
 }
 
-function coerce(raw: unknown): UserSettings {
-  const obj = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-  const mode = PERMISSION_MODES.includes(obj.defaultPermissionMode as never) ? (obj.defaultPermissionMode as UserSettings['defaultPermissionMode']) : DEFAULT_USER_SETTINGS.defaultPermissionMode
-  const theme = THEMES.includes(obj.theme as never) ? (obj.theme as UserSettings['theme']) : DEFAULT_USER_SETTINGS.theme
-  const out: UserSettings = { defaultPermissionMode: mode, theme }
-  // 可选路径字段:只在是非空字符串时保留,缺省/非法则不带该键(保持默认对象干净)。
-  if (typeof obj.lastWorkspaceRoot === 'string' && obj.lastWorkspaceRoot.trim().length > 0) {
-    out.lastWorkspaceRoot = obj.lastWorkspaceRoot
+interface SettingsSnapshot {
+  settings: UserSettings
+  issues: AgentSettingsIssue[]
+  source: 'default' | 'user'
+  raw: Record<string, unknown>
+}
+
+export class UserSettingsWriteError extends Error {
+  readonly status = 409
+  constructor(message: string) {
+    super(message)
+    this.name = 'UserSettingsWriteError'
   }
-  if (typeof obj.workspaceBaseDir === 'string' && obj.workspaceBaseDir.trim().length > 0) {
-    out.workspaceBaseDir = obj.workspaceBaseDir
+}
+
+function nonEmptyPath(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
+}
+
+function coerce(raw: Record<string, unknown>): UserSettings {
+  const mode = raw.defaultPermissionMode === 'acceptEdits' || raw.defaultPermissionMode === 'plan'
+    ? raw.defaultPermissionMode
+    : 'default'
+  const theme = raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'auto'
+  const out: UserSettings = {
+    defaultPermissionMode: mode,
+    theme,
+    allowBypassPermissionsMode: raw.allowBypassPermissionsMode === true,
   }
+  const lastWorkspaceRoot = nonEmptyPath(raw.lastWorkspaceRoot)
+  const workspaceBaseDir = nonEmptyPath(raw.workspaceBaseDir)
+  if (lastWorkspaceRoot) out.lastWorkspaceRoot = lastWorkspaceRoot
+  if (workspaceBaseDir) out.workspaceBaseDir = workspaceBaseDir
   return out
 }
 
 export class UserSettingsStore {
   private readonly path: string
+
   constructor(rootDir: string) {
     this.path = join(rootDir, 'user-settings.json')
   }
 
-  async get(): Promise<UserSettings> {
+  private async snapshot(): Promise<SettingsSnapshot> {
+    let text: string
     try {
-      return coerce(JSON.parse(await readFile(this.path, 'utf8')) as unknown)
-    } catch {
-      return { ...DEFAULT_USER_SETTINGS }
+      text = await readFile(this.path, 'utf8')
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        return { settings: { ...DEFAULT_USER_SETTINGS }, issues: [], source: 'default', raw: {} }
+      }
+      return {
+        settings: { ...DEFAULT_USER_SETTINGS },
+        issues: [{ code: 'invalid_json', message: `无法读取 user-settings.json: ${error instanceof Error ? error.message : String(error)}` }],
+        source: 'user',
+        raw: {},
+      }
     }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch (error) {
+      return {
+        settings: { ...DEFAULT_USER_SETTINGS },
+        issues: [{ code: 'invalid_json', message: `user-settings.json 不是有效 JSON: ${error instanceof Error ? error.message : String(error)}` }],
+        source: 'user',
+        raw: {},
+      }
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        settings: { ...DEFAULT_USER_SETTINGS },
+        issues: [{ code: 'invalid_shape', message: 'user-settings.json 顶层必须是对象。' }],
+        source: 'user',
+        raw: {},
+      }
+    }
+    const raw = parsed as Record<string, unknown>
+    return { settings: coerce(raw), issues: [], source: 'user', raw }
   }
 
-  /** 合并式更新:只覆盖传入的**合法**字段,非法/缺省字段保持现值(非退回默认),原子写。 */
-  async update(patch: Partial<UserSettings>): Promise<UserSettings> {
-    const current = await this.get()
-    const valid: Partial<UserSettings> = {}
-    if (PERMISSION_MODES.includes(patch.defaultPermissionMode as never)) valid.defaultPermissionMode = patch.defaultPermissionMode
-    if (THEMES.includes(patch.theme as never)) valid.theme = patch.theme
-    if (typeof patch.lastWorkspaceRoot === 'string' && patch.lastWorkspaceRoot.trim().length > 0) valid.lastWorkspaceRoot = patch.lastWorkspaceRoot
-    if (typeof patch.workspaceBaseDir === 'string' && patch.workspaceBaseDir.trim().length > 0) valid.workspaceBaseDir = patch.workspaceBaseDir
-    const merged: UserSettings = { ...current, ...valid }
+  async inspect(): Promise<Omit<SettingsSnapshot, 'raw'>> {
+    const { raw: _raw, ...visible } = await this.snapshot()
+    return visible
+  }
+
+  async get(): Promise<UserSettings> {
+    return (await this.snapshot()).settings
+  }
+
+  /** 合并更新并原子写；非法字段忽略，未知字段保留，损坏源文件拒绝覆盖。 */
+  async update(patch: AgentUserSettingsPatch | Record<string, unknown>): Promise<UserSettings> {
+    const current = await this.snapshot()
+    if (current.issues.length > 0) {
+      throw new UserSettingsWriteError(`无法保存：请先修复 user-settings.json。${current.issues[0]!.message}`)
+    }
+
+    const parsedPatch = patch as Record<string, unknown>
+    const valid: Record<string, unknown> = {}
+    if (parsedPatch.defaultPermissionMode === 'default' || parsedPatch.defaultPermissionMode === 'acceptEdits' || parsedPatch.defaultPermissionMode === 'plan') valid.defaultPermissionMode = parsedPatch.defaultPermissionMode
+    if (parsedPatch.theme === 'light' || parsedPatch.theme === 'dark' || parsedPatch.theme === 'auto') valid.theme = parsedPatch.theme
+    if (typeof parsedPatch.allowBypassPermissionsMode === 'boolean') valid.allowBypassPermissionsMode = parsedPatch.allowBypassPermissionsMode
+    const lastWorkspaceRoot = nonEmptyPath(parsedPatch.lastWorkspaceRoot)
+    const workspaceBaseDir = nonEmptyPath(parsedPatch.workspaceBaseDir)
+    if (lastWorkspaceRoot) valid.lastWorkspaceRoot = lastWorkspaceRoot
+    if (workspaceBaseDir) valid.workspaceBaseDir = workspaceBaseDir
+
+    const settings = coerce({ ...current.raw, ...current.settings, ...valid })
+    const persisted = { ...current.raw, ...settings }
     await mkdir(dirname(this.path), { recursive: true })
     const tmp = `${this.path}.tmp`
-    await writeFile(tmp, `${JSON.stringify(merged, null, 2)}\n`, 'utf8')
+    await writeFile(tmp, `${JSON.stringify(persisted, null, 2)}\n`, 'utf8')
     await rename(tmp, this.path)
-    return merged
+    return settings
   }
 }

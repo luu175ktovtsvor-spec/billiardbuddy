@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 export const DESKTOP_IPC = {
   getServerUrl: 'runtime:getServerUrl',
+  getServerConnection: 'runtime:getServerConnection',
   pickWorkspace: 'desktop:pickWorkspace',
   pickVideoFiles: 'desktop:pickVideoFiles',
   pickPaths: 'desktop:pickPaths',
@@ -11,6 +12,19 @@ export const DESKTOP_IPC = {
   preventSleepStart: 'desktop:preventSleep:start',
   preventSleepStop: 'desktop:preventSleep:stop',
 } as const
+
+export const CONTROL_WEBSOCKET_PROTOCOL_PREFIX = 'qf-control.'
+
+export function controlWebSocketProtocol(token: string): string {
+  return `${CONTROL_WEBSOCKET_PROTOCOL_PREFIX}${token}`
+}
+
+export const desktopServerConnectionSchema = z.object({
+  baseUrl: z.string().url(),
+  authToken: z.string().min(16),
+}).strict()
+
+export type DesktopServerConnection = z.infer<typeof desktopServerConnectionSchema>
 
 export const desktopPickerOptionsSchema = z.object({
   defaultPath: z.string().max(4096).optional(),
@@ -23,6 +37,7 @@ export interface DesktopHost {
   platform: string
   runtime: {
     getServerUrl: () => Promise<string>
+    getServerConnection?: () => Promise<DesktopServerConnection>
   }
   pickWorkspace?: (options?: DesktopPickerOptions) => Promise<string | null>
   pickVideoFiles?: (options?: DesktopPickerOptions) => Promise<string[] | null>

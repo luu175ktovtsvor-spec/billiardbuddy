@@ -7,7 +7,8 @@ import { IconAlertCircle, IconChevronDown, IconCopy, IconSpinner, IconStopCircle
 import { toolIcon, toolSummary, statusVerb, doneVerb, resultSummary, readRangeDetail, toolTargetIsFile, formatDuration } from './toolMeta'
 import { Tooltip } from '../shared/Tooltip'
 import { t } from '../../i18n'
-import { getBaseUrl } from '../../api/client'
+import { authenticatedResourceUrl, getBaseUrl } from '../../api/client'
+import { downloadAsset } from '../../api/studio'
 
 type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
 
@@ -39,8 +40,7 @@ export function mediaResultFromOutput(output: string | undefined): { videoUrl?: 
 }
 
 function absoluteAssetUrl(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path
-  return `${getBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`
+  return authenticatedResourceUrl(/^https?:\/\//i.test(path) ? path : `${getBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`)
 }
 
 function MediaResultPreview({ result }: { result: NonNullable<ReturnType<typeof mediaResultFromOutput>> }) {
@@ -53,7 +53,7 @@ function MediaResultPreview({ result }: { result: NonNullable<ReturnType<typeof 
           <video src={videoUrl} controls preload="metadata" className="max-h-[320px] w-full bg-black object-contain" data-testid="chat-video-result" />
           <div className="flex items-center justify-between gap-3 px-3 py-2 text-[12px]">
             <span style={{ color: 'var(--color-text-secondary)' }}>视频已生成</span>
-            <a href={videoUrl} target="_blank" rel="noreferrer" className="qf-tool-link shrink-0">打开视频</a>
+            <button type="button" onClick={() => { void downloadAsset(videoUrl, '球房管家生成视频.mp4') }} className="qf-tool-link shrink-0">下载视频</button>
           </div>
         </>
       )}

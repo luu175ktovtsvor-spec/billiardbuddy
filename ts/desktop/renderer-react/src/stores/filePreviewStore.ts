@@ -5,7 +5,7 @@
 //   - GET /api/v1/agent/fs/list?path=    → 懒加载更深目录
 // 契约:工具行文件名点击 → openFile(绝对路径) → 加/激活一个 tab + 打开面板(ToolCallCard 已用,别改名)。
 import { create } from 'zustand'
-import { api, getBaseUrl } from '../api/client'
+import { api, authenticatedResourceUrl, getBaseUrl } from '../api/client'
 import { useSettingsStore } from './settingsStore'
 import { workspaceFilePreviewSchema, type WorkspaceFilePreview } from '../../../../shared/contracts/workspace-files'
 
@@ -63,7 +63,7 @@ export function isImagePath(path: string): boolean {
 }
 /** 原始文件的绝对 URL(供右面板 <img> 直接加载):sidecar base + fs/raw + 工作目录。 */
 export function rawFileUrl(path: string, workspaceRoot?: string | null): string {
-  return `${getBaseUrl()}/api/v1/agent/fs/raw?path=${encodeURIComponent(path)}${wdParam('&', workspaceRoot ?? null)}`
+  return authenticatedResourceUrl(`${getBaseUrl()}/api/v1/agent/fs/raw?path=${encodeURIComponent(path)}${wdParam('&', workspaceRoot ?? null)}`)
 }
 
 export interface OpenFile {

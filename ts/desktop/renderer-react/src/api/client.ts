@@ -33,8 +33,34 @@ export function getAuthToken() {
   return authToken
 }
 
+export function authHeaders(): Record<string, string> {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {}
+}
+
+export function authHeadersForUrl(input: string): Record<string, string> {
+  if (!authToken) return {}
+  try {
+    return new URL(input, `${baseUrl}/`).origin === new URL(baseUrl).origin ? authHeaders() : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 浏览器标签（img/video/a）无法设置 Authorization，仅对本地 sidecar URL 附短生命周期查询令牌。 */
+export function authenticatedResourceUrl(input: string): string {
+  if (!authToken || /^(data|blob):/i.test(input)) return input
+  try {
+    const url = new URL(input, `${baseUrl}/`)
+    if (url.origin !== new URL(baseUrl).origin) return input
+    url.searchParams.set('access_token', authToken)
+    return url.toString()
+  } catch {
+    return input
+  }
+}
+
 export async function fetchBinary(url: string, signal?: AbortSignal): Promise<Blob> {
-  const res = await fetch(url, { signal })
+  const res = await fetch(url, { signal, headers: authHeaders() })
   if (!res.ok) throw new ApiError(res.status, `文件读取失败 (${res.status})`)
   return await res.blob()
 }
@@ -51,9 +77,7 @@ export class ApiError extends Error {
 }
 
 function buildHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (authToken) headers.Authorization = `Bearer ${authToken}`
-  return headers
+  return { 'Content-Type': 'application/json', ...authHeaders() }
 }
 
 async function request<T>(method: string, path: string, body?: unknown, options?: { timeout?: number }): Promise<T> {

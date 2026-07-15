@@ -2,7 +2,8 @@
 // ⚠️ 唯一改动 = URL 构造对齐我们后端:ws://host/agent/ws?conversationId=<id>&after=<n>(单端点,conversationId 走 query),
 //    不是 cc 的 /ws/<sessionId>。消息信封见 types/chat.ts。
 import { parseServerMessage, type ClientMessage, type ServerMessage } from '../types/chat'
-import { getBaseUrl } from './client'
+import { controlWebSocketProtocol } from '../../../../shared/contracts/desktop-host'
+import { getAuthToken, getBaseUrl } from './client'
 
 type MessageHandler = (msg: ServerMessage) => void
 
@@ -26,6 +27,11 @@ export function buildConversationWebSocketUrl(conversationId: string, after = 0)
   return url.toString()
 }
 
+export function conversationWebSocketProtocols(): string[] | undefined {
+  const token = getAuthToken()
+  return token ? [controlWebSocketProtocol(token)] : undefined
+}
+
 class WebSocketManager {
   private connections = new Map<string, Connection>()
 
@@ -45,7 +51,7 @@ class WebSocketManager {
       return
     }
 
-    const ws = new WebSocket(buildConversationWebSocketUrl(conversationId))
+    const ws = new WebSocket(buildConversationWebSocketUrl(conversationId), conversationWebSocketProtocols())
     const conn: Connection = {
       ws,
       handlers: existing?.handlers ?? new Set(),

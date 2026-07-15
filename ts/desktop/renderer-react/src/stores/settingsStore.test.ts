@@ -18,7 +18,25 @@ beforeEach(() => {
     workspaceRoot: null,
     enabledPacks: [],
     defaultPermissionMode: 'default',
+    allowBypassPermissionsMode: false,
+    managedBypassPermissionsDisabled: false,
+    settingsIssues: [],
   })
+})
+
+test('完全访问必须先由 App 设置允许，上级禁用仍然优先', () => {
+  const state = useSettingsStore.getState()
+  state.activateConversation('conv-full')
+  state.setPermissionMode('bypassPermissions')
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('default')
+
+  useSettingsStore.setState({ allowBypassPermissionsMode: true })
+  state.setPermissionMode('bypassPermissions')
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('bypassPermissions')
+
+  useSettingsStore.setState({ managedBypassPermissionsDisabled: true })
+  state.setPermissionMode('bypassPermissions')
+  expect(useSettingsStore.getState().defaultPermissionMode).toBe('default')
 })
 
 test('明确选择工作目录后默认自动接受工作区编辑,且显式权限选择优先', () => {

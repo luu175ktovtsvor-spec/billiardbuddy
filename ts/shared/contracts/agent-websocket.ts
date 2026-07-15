@@ -15,6 +15,20 @@ const inboundPermissionModeSchema = z.union([
   z.enum(['ask', 'auto_files', 'full']),
 ])
 
+const inboundToCanonicalPermissionMode = {
+  ask: 'default',
+  auto_files: 'acceptEdits',
+  full: 'bypassPermissions',
+} as const
+
+function canonicalInboundPermissionMode(value: unknown): PermissionMode {
+  const parsed = inboundPermissionModeSchema.safeParse(value)
+  if (!parsed.success) return 'default'
+  return parsed.data in inboundToCanonicalPermissionMode
+    ? inboundToCanonicalPermissionMode[parsed.data as keyof typeof inboundToCanonicalPermissionMode]
+    : parsed.data as PermissionMode
+}
+
 const clientBase = {
   conversationId: z.string().min(1).optional(),
 }
@@ -99,7 +113,16 @@ export function parseClientMessage(input: unknown): ClientMessage {
   const candidate = input && typeof input === 'object' && !Array.isArray(input) && !('type' in input)
     ? { ...input, type: 'run' }
     : input
-  return clientMessageSchema.parse(candidate)
+  const parsed = clientMessageSchema.parse(candidate)
+  if (parsed.type !== 'run' && parsed.type !== 'approve' && parsed.type !== 'reject') return parsed
+
+  const record = { ...parsed } as Record<string, unknown>
+  const permissionMode = canonicalInboundPermissionMode(record.permissionMode ?? record.permission_mode)
+  record.permissionMode = permissionMode
+  record.full_disk_access = permissionMode === 'bypassPermissions'
+  delete record.permission_mode
+  delete record.fullDiskAccess
+  return record as ClientMessage
 }
 
 export function parseServerMessage(input: unknown): ServerMessage {

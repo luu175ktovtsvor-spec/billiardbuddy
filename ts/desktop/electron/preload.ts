@@ -10,6 +10,7 @@ const desktopHost = {
   // 经此 IPC 拿到 sidecar 地址再 fetch/WS。vanilla 默认路径不用它(走 same-origin),暴露无副作用。
   runtime: {
     getServerUrl: (): Promise<string> => ipcRenderer.invoke(DESKTOP_IPC.getServerUrl),
+    getServerConnection: () => ipcRenderer.invoke(DESKTOP_IPC.getServerConnection),
   },
   // 原生文件夹选择器(§7 选择工作区):可带默认位置提示,返回目录路径或 null。
   pickWorkspace: (options?: DesktopPickerOptions): Promise<string | null> => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspace, options),

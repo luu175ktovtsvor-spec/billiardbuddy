@@ -7,6 +7,7 @@
 export function localCorsOrigin(req: Request): string | undefined {
   const origin = req.headers.get('origin')
   if (!origin) return undefined
+  if (origin === 'null' || origin === 'file://') return origin
   try {
     const url = new URL(origin)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
