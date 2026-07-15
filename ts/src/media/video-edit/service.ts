@@ -298,7 +298,7 @@ export class VideoEditingService {
         warnings,
         plan_summary: summarizeVideoPlan(saved, warnings),
       }
-    })
+    }, ['ffmpeg', 'ffprobe'])
   }
 
   async startRender(projectId: string, request: VideoRenderInput, opts: { conversationId?: string; workspaceRoot?: string; retryOf?: string } = {}) {

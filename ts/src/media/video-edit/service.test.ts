@@ -109,6 +109,25 @@ test('blocked component preparation automatically continues the same job when as
   expect(gateChecks).toBeGreaterThanOrEqual(3)
 }, 10_000)
 
+test('continuing an existing video project waits for FFmpeg and ffprobe before drafting', async () => {
+  const { root, source, tasks, env } = setup()
+  const requested: string[][] = []
+  const service = new VideoEditingService({
+    stateRoot: root,
+    tasks,
+    env,
+    gateAssets: (_runtimeEnv, needs) => {
+      requested.push([...needs])
+      return { blocked: true, asset_progress: 1, message: '组件准备中 1%' }
+    },
+  })
+  const project = await service.store.create({ video_paths: [source] })
+  const started = await service.startDrafts(project.project_id)
+  await waitFor(async () => requested.length, count => count >= 1)
+  expect(requested[0]).toEqual(['ffmpeg', 'ffprobe'])
+  await service.cancelJob(started.job_id)
+})
+
 test('video render requests the Tier2 Chinese font only when subtitles are enabled', async () => {
   const { root, source, tasks, env } = setup()
   const requested: string[][] = []
