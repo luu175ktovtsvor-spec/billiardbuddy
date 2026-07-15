@@ -397,6 +397,14 @@ test('render_video tool locks the current v2 revision before rendering', async (
     const project = await videoEditing.store.create({ video_paths: [source], goal: 'ambient' })
     const tool = createMediaTools(media, { videoEditing }).find(t => t.name === 'render_video')
     expect(tool).toBeTruthy()
+    const ctx = {
+      workspace: new Workspace(root),
+      conversationId: 'c-render',
+      permissionMode: 'bypassPermissions' as const,
+    }
+    expect(resolvePermission(tool!, { project: project.project_id, preview: true }, ctx).behavior).toBe('allow')
+    expect(resolvePermission(tool!, { project: project.project_id }, ctx)).toMatchObject({ behavior: 'ask', reason: { type: 'requiresUserInteraction' } })
+    expect(await tool!.previewFor?.({ project: project.project_id }, ctx)).toContain('素材缺口')
     const output = await tool!.execute({ project: project.project_id }, {
       workspace: new Workspace(root),
       conversationId: 'c-render',

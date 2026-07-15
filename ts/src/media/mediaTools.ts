@@ -4,7 +4,7 @@ import type { Tool, ToolContext } from '../tools/Tool'
 import { relativeToWorkspace, resolveToolPath } from '../permissions/filePathRules'
 import { detectImageFormat, getImageDimensions } from '../tools/imageRead'
 import type { MediaJobService } from './mediaJobs'
-import type { VideoEditingService } from './video-edit/service'
+import { summarizeVideoPlan, type VideoEditingService } from './video-edit/service'
 
 const MAX_VISUAL_CANDIDATES = 8
 const MAX_PROVIDER_REFERENCE_IMAGES = 4
@@ -470,6 +470,26 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
       required: ['project'],
     },
     isReadOnly: false,
+    requiresApprovalFor: input => input.preview !== true,
+    requiresUserInteractionFor: input => input.preview !== true,
+    approvalReasonFor: () => ({
+      what: '生成完整视频',
+      why: '确认当前草稿、素材缺口和候选取舍无误',
+      impact: '确认后会锁定当前版本并在本机生成新的 MP4，不会改动原视频',
+    }),
+    previewFor: async input => {
+      const projectId = input.project?.trim()
+      if (!projectId || !deps.videoEditing) return `视频项目:${projectId || '未选择'}`
+      const current = await deps.videoEditing.store.load(projectId)
+      const summary = summarizeVideoPlan(current)
+      return [
+        `视频项目:${projectId}`,
+        `当前版本:${current.revision}`,
+        `系统理解:${summary.understanding}`,
+        `片段:${summary.scene_count} 段 / 约 ${summary.total_duration_s} 秒`,
+        summary.missing_coverage.length ? `素材缺口:${summary.missing_coverage.join('、')}` : '素材缺口:无',
+      ].join('\n')
+    },
     async execute(input, ctx) {
       const project = typeof input?.project === 'string' ? input.project.trim() : ''
       if (!project) throw new Error('render_video 需要 project(plan_video 返回的项目名)。')
