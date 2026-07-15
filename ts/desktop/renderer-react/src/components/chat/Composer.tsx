@@ -1,4 +1,4 @@
-// 输入框(核心 · 照 Codex:大圆角 + 底部工具条)。owner 2026-07-11:
+// 输入框(核心 · 照 Codex:大圆角 + 底部工具条)。
 //  - 不显示模型名(白标),砍掉模型选择器;
 //  - 权限胶囊照 Codex:完全访问态橙色警告 + 点开权限菜单;
 //  - 斜杠命令:输入 / → 拉真实命令(/api/v1/agent/commands)浮层,上下键选、回车填入;
@@ -65,7 +65,7 @@ function Popover({ open, onClose, children, align = 'left' }: { open: boolean; o
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
-        className="absolute bottom-full z-50 mb-2 min-w-[220px] overflow-hidden rounded-xl py-1"
+        className="absolute bottom-full z-50 mb-2 min-w-[220px] overflow-hidden rounded-[10px] py-1"
         style={{ [align]: 0, background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' } as CSSProperties}
       >
         {children}
@@ -80,11 +80,8 @@ function ToolbarChip({ onClick, tone = 'default', children }: { onClick?: () => 
     <button
       type="button"
       onClick={onClick}
-      className="flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-      style={{
-        color: warning ? 'var(--color-warning)' : 'var(--color-text-secondary)',
-        border: `1px solid ${warning ? 'color-mix(in oklab, var(--color-warning) 40%, transparent)' : 'var(--color-border)'}`,
-      }}
+      className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+      style={{ color: warning ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}
     >
       {children}
     </button>
@@ -208,8 +205,8 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
         onClick={() => setOpen((v) => !v)}
         title={t('chat.attach')}
         aria-label={t('chat.attach')}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-surface-hover)]"
-        style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-[var(--color-surface-hover)]"
+        style={{ color: 'var(--color-text-secondary)' }}
       >
         <IconPlus size={17} />
       </button>
@@ -367,17 +364,16 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
   const showHeadings = sections.length > 1
 
   const fadeMask = 'linear-gradient(to bottom, transparent 0, black 8px, black calc(100% - 8px), transparent 100%)'
-  const rowClass = 'flex w-full items-center gap-2 overflow-hidden rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors'
+  const rowClass = 'flex w-full items-start gap-2 overflow-hidden rounded-[10px] px-2 py-1.5 text-left text-[13px] transition-colors'
   const rowStyle = (active: boolean): CSSProperties => ({
     background: active ? 'var(--color-surface-hover)' : 'transparent',
-    opacity: active ? 1 : 0.75,
     color: 'var(--color-text-primary)',
   })
 
   return (
     <div
       data-testid="token-panel"
-      className="absolute inset-x-0 bottom-full z-50 mb-1.5 overflow-hidden rounded-2xl p-1"
+      className="absolute inset-x-0 bottom-full z-50 mb-1.5 overflow-hidden rounded-xl p-1"
       style={{
         background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)',
         backdropFilter: 'blur(8px)',
@@ -423,12 +419,12 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
                       className={rowClass}
                       style={rowStyle(active)}
                     >
-                      <SlashIcon source={cmd.source} kind={cmd.kind} />
-                      <span className={cmd.desc ? 'max-w-[60%] flex-none truncate' : 'min-w-0 flex-1 truncate'}>
-                        <HighlightedName name={cmd.name} query={query} />
+                      <span className="mt-0.5"><SlashIcon source={cmd.source} kind={cmd.kind} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate"><HighlightedName name={cmd.name} query={query} /></span>
+                        {cmd.desc && <span className="block truncate text-xs leading-4" style={{ color: 'var(--color-text-tertiary)' }}>{cmd.desc}</span>}
                       </span>
-                      {cmd.desc && <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--color-text-tertiary)' }}>{cmd.desc}</span>}
-                      {badge && <span className="ml-auto shrink-0 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{badge}</span>}
+                      {badge && <span className="ml-auto shrink-0 pt-0.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{badge}</span>}
                     </button>
                   )
                 })}
@@ -456,12 +452,14 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
                 key={it.name}
                 type="button"
                 onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
-                className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
+                className={`${rowClass} hover:bg-[var(--color-surface-hover)]`}
                 style={rowStyle(false)}
               >
-                <IconPuzzle size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                <span className={it.desc ? 'max-w-[60%] flex-none truncate' : 'min-w-0 flex-1 truncate'}>{it.name}</span>
-                {it.desc && <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>}
+                <IconPuzzle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{it.name}</span>
+                  {it.desc && <span className="block truncate text-xs leading-4" style={{ color: 'var(--color-text-tertiary)' }}>{it.desc}</span>}
+                </span>
               </button>
             ))}
             {files.length > 0 && (
@@ -477,7 +475,7 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
                 key={it.name}
                 type="button"
                 onMouseDown={(e) => { e.preventDefault(); onPick(it.name + ' ') }}
-                className={`${rowClass} hover:bg-[var(--color-surface-hover)] hover:opacity-100`}
+                className={`${rowClass} hover:bg-[var(--color-surface-hover)]`}
                 style={rowStyle(false)}
               >
                 <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
@@ -729,8 +727,8 @@ export function Composer() {
           </div>
         )}
         <div
-          className="flex flex-col rounded-[22px]"
-          style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-strong)', boxShadow: 'var(--shadow-input)' }}
+          className="composer-surface-chrome flex flex-col overflow-hidden rounded-[20px] backdrop-blur-lg"
+          style={{ background: 'color-mix(in srgb, var(--color-surface) 90%, transparent)', boxShadow: 'var(--shadow-input)' }}
         >
           <textarea
             ref={taRef}
@@ -740,23 +738,20 @@ export function Composer() {
             onPaste={onPaste}
             rows={1}
             placeholder={placeholder}
-            className="resize-none bg-transparent px-4 pt-3.5 text-sm leading-relaxed outline-none"
+            className="mb-1 resize-none bg-transparent px-3 pt-3 text-sm leading-relaxed outline-none"
             style={{ color: 'var(--color-text-primary)', maxHeight: 200 }}
             data-testid="chat-input"
           />
-          {/* 底部工具条 */}
-          <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1.5">
-            {/* 左:添加菜单 + 权限 */}
+          <div className="mb-2 grid grid-cols-[minmax(0,auto)_auto_minmax(0,1fr)] items-center gap-x-[5px] px-2 select-none">
             <AddMenu
               onInsertPaths={(paths) => { setValue((v) => appendPathsToInput(v, paths)); taRef.current?.focus() }}
               onStartGoal={() => { setValue((v) => (v.startsWith('/goal') ? v : `/goal ${v}`)); taRef.current?.focus() }}
             />
             <PermissionMenu />
-            <div className="flex-1" />
-            {/* 右:忙时转圈 · 麦克 · 发送(不显示模型名) */}
-            {running && <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />}
-            <VoiceInputControl onTranscript={(text) => { setValue((current) => current.trim() ? `${current.trimEnd()} ${text}` : text); taRef.current?.focus() }} />
-            {running ? (
+            <div className="flex min-w-0 items-center justify-end gap-1">
+              {running && <IconSpinner size={16} style={{ color: 'var(--color-text-tertiary)' }} />}
+              <VoiceInputControl onTranscript={(text) => { setValue((current) => current.trim() ? `${current.trimEnd()} ${text}` : text); taRef.current?.focus() }} />
+              {running ? (
               <button
                 type="button"
                 onClick={interrupt}
@@ -768,7 +763,7 @@ export function Composer() {
               >
                 <span className="block h-2.5 w-2.5 rounded-[3px]" style={{ background: 'var(--color-on-primary)' }} />
               </button>
-            ) : (
+              ) : (
               <button
                 type="button"
                 onClick={submit}
@@ -781,7 +776,8 @@ export function Composer() {
               >
                 <IconArrowUp size={18} strokeWidth={2.2} />
               </button>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>
