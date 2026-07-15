@@ -15,15 +15,15 @@ import { toast } from '../stores/toastStore'
 import { openNewConversation } from './conversations'
 
 /** 弹原生文件夹选择器 → 按 cc 模型绑到(空会话就地 / 有记录则开新会话)+ 重载右侧工作区面板。浏览器/无壳时提示走默认。 */
-export async function pickWorkspaceFolder(): Promise<void> {
+export async function pickWorkspaceFolder(): Promise<string | null> {
   const host = getDesktopHost()
   if (!host.pickWorkspace) {
     toast('桌面版里可以选工作目录;当前用默认目录')
     useFilePreviewStore.getState().setPanelOpen(true)
-    return
+    return null
   }
   const dir = await host.pickWorkspace({ defaultPath: useSettingsStore.getState().workspaceRoot ?? undefined })
-  if (!dir) return
+  if (!dir) return null
   const folderName = dir.split(/[\\/]/).pop() || dir
   // 项目身份是用户选择的目录；先持久化，不能等首条消息创建会话后才出现在侧栏。
   useProjectStore.getState().remember(dir)
@@ -42,4 +42,5 @@ export async function pickWorkspaceFolder(): Promise<void> {
   useFilePreviewStore.getState().setPanelOpen(true)
   useFilePreviewStore.getState().loadWorkspace()
   void useProjectStore.getState().refresh() // 合并后端已有会话统计，空项目仍由本地目录记录保留
+  return dir
 }
