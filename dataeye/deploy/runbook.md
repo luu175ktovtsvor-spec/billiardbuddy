@@ -128,7 +128,7 @@ node /opt/dataeye/tests/make_sample.mjs --out=sample.json.gz
 直接打接收端(未经 nginx,验证服务本身活着):
 
 ```bash
-curl -s -X POST http://127.0.0.1:9100/health
+curl -s http://127.0.0.1:9100/health
 # {"ok":true}
 
 curl -s -X POST \
@@ -239,14 +239,11 @@ systemctl restart dataeye-receiver
 
 ## ⚠️ 重部署代码(改了 receiver/board 后同步到服务器)
 
-服务器 `/opt/dataeye/` 下有几样**只在服务器、开发机没有**的东西:`dataeye.env`(密钥)、`transcripts/`(数据)。
-用 `rsync --delete` 同步时必须排除这些服务器状态:
+业务数据在 PostgreSQL 和 `/data/transcripts/`，都不放在 `/opt/dataeye/`。真实令牌和数据库密码由 systemd 单元或受保护的 `EnvironmentFile` 持有，不放进代码目录。因此可以只同步代码，再重启服务:
 
 ```bash
-rsync -az --delete \
-  --exclude 'dataeye.env' --exclude 'transcripts' \
-  dataeye/ root@<app机>:/opt/dataeye/
+rsync -az --delete dataeye/ root@<app机>:/opt/dataeye/
 systemctl restart dataeye-receiver dataeye-board
 ```
 
-如果 `dataeye.env` 丢失，重建令牌后必须同步更新客户端配置；数据库和 schema 不受影响。
+重部署不复制或改写正在使用的 systemd 单元；需要变更环境变量时，单独编辑单元或 `EnvironmentFile`，再执行 `systemctl daemon-reload`。
