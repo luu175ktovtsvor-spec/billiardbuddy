@@ -59,6 +59,7 @@ test('系统提示要求直接执行真实任务，不臆造产品限制', async
   const prompt = await buildSystemPrompt(new Workspace(root))
   expect(prompt).toContain('# Carrying out the current task')
   expect(prompt).toContain('use the available tools to complete it')
+  expect(prompt).toContain('call the tool instead of asking for duplicate confirmation in prose')
   expect(prompt).toContain('Do not invent product workflows')
   expect(prompt).not.toContain('# Executing actions with care')
   expect(prompt).not.toContain('reversibility and blast radius')

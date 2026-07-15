@@ -75,17 +75,19 @@ describe('PowerShell tool permissions and execution shelling', () => {
     })
   })
 
-  test('destructive and suspicious PowerShell commands force confirmation even in full mode', () => {
-    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse build' }, { ...ctx, permissionMode: 'full' })).toMatchObject({
+  test('destructive and suspicious PowerShell commands force confirmation by default and run in full access', () => {
+    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse build' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
       behavior: 'ask',
       approvalClass: 'destructive',
       reason: { type: 'forceConfirm' },
     })
-    expect(resolvePermission(powerShellTool, { command: 'Invoke-Expression $payload' }, { ...ctx, permissionMode: 'full' })).toMatchObject({
+    expect(resolvePermission(powerShellTool, { command: 'Invoke-Expression $payload' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
       behavior: 'ask',
       approvalClass: 'destructive',
       reason: { type: 'forceConfirm' },
     })
+    expect(resolvePermission(powerShellTool, { command: 'Remove-Item -Recurse build' }, { ...ctx, permissionMode: 'bypassPermissions' }).behavior).toBe('allow')
+    expect(resolvePermission(powerShellTool, { command: 'Invoke-Expression $payload' }, { ...ctx, permissionMode: 'bypassPermissions' }).behavior).toBe('allow')
   })
 
   test('危险 PowerShell 命令走 dangerous 档(对齐 cc):default 弹卡问、完全访问档放行', () => {

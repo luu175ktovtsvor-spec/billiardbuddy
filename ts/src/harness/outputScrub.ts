@@ -6,7 +6,7 @@ import { scrubProviderIdentifiers, scrubProviderIdentifiersWith } from '../model
  *
  * 第一层是系统提示(buildAntiReveal)"劝"模型别自曝身份;但那只是提示,极端越狱下模型
  * 理论上仍可能吐真名。这一层做的是"出口硬清":把送达客户端前的助手文本(final 权威全文 +
- * content_delta 流式增量 + thinking)统一过一遍脱敏器,真名到不了用户眼前。纵深防御。
+ * content_delta 流式增量 + commentary + thinking)统一过一遍脱敏器,真名到不了用户眼前。纵深防御。
  *
  * token 表复用 #38 的 publicModelNames(单一事实源,不另写一份黑名单);聊天正文场景把命中
  * 的真名换成"本助手"这种散文友好的中性口径(#38 默认的"AI 通道"在对话正文里读着突兀),
@@ -19,6 +19,10 @@ const PROSE_NEUTRAL = '本助手'
 /** 聊天正文脱敏:命中真名/供应商/endpoint → 换成散文友好的中性代称。复用 #38 的 token 表。 */
 export function scrubProseIdentifiers(text: string): string {
   return scrubProviderIdentifiersWith(text, PROSE_NEUTRAL)
+    // Provider names are often surrounded by spaces in model prose. Those spaces are
+    // useful in English, but look broken after a Chinese replacement such as "用 本助手 看".
+    .replace(/([\u3400-\u9fff])\s+本助手/g, '$1本助手')
+    .replace(/本助手\s+([\u3400-\u9fff])/g, '本助手$1')
 }
 
 /**
@@ -47,6 +51,7 @@ function newBuffer(): ChannelBuffer {
  *
  * - content_delta:走 carry-over 缓冲,逐通道(text/thinking 各一份)累积+清洗+按窗口放行。
  * - final:先 flush 掉各通道 hold 住的尾巴(补完打字机),再吐权威全文的脱敏版(必清)。
+ * - commentary(整块):在工具边界先放行 text 通道尾巴，再发权威公开文字。
  * - thinking(整块):整段脱敏(若展示给用户)。
  * - context_note:系统旁白,沿用 #38 原口径脱敏(不改 #38 行为)。
  * - 其它事件:原样透传。
@@ -95,6 +100,10 @@ export function createChatOutputScrubber(): {
       }
       case 'thinking':
         return [{ type: 'thinking', text: scrubProseIdentifiers(event.text) }]
+      case 'commentary': {
+        // 短阶段说明通常不足 HOLD 字符；工具开始前必须在这个语义边界放行，不能一直懋到 final。
+        return [...flushChannel('text'), { type: 'commentary', text: scrubProseIdentifiers(event.text) }]
+      }
       case 'context_note':
         // 系统旁白:沿用 #38 原口径("AI 通道"),不改 #38 已有行为/测试。
         return [{ ...event, text: scrubProviderIdentifiers(event.text) }]

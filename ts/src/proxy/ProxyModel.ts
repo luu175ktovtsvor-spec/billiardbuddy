@@ -107,7 +107,7 @@ export class ProxyModel implements Model {
 
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '')
-      throw new Error(`模型请求失败 ${resp.status}:${detail.slice(0, 500)}`)
+      throw new Error(publicModelRequestError(resp.status, detail))
     }
 
     return this.readResponse(resp, onDelta)
@@ -158,6 +158,20 @@ export class ProxyModel implements Model {
       }
     }
   }
+}
+
+function publicModelRequestError(status: number, detail: string): string {
+  if (status === 413) {
+    return '发送给模型的内容过多，已停止本轮。请减少一次读取的图片或文件数量后重试。'
+  }
+  const plainDetail = detail
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500)
+  return `模型请求失败 ${status}${plainDetail ? `:${plainDetail}` : ''}`
 }
 
 /** 累积结果 → AssistantStep。kind 看 toolCalls 有无(needsFollowUp),不看 finishReason。 */

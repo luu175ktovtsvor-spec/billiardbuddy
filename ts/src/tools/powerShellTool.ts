@@ -233,8 +233,7 @@ export const powerShellTool: Tool<PowerShellToolInput> = {
   },
   forceConfirmFor(input) {
     if (typeof input?.command !== 'string') return true
-    // 灾难级命令(clear-disk/format-volume/remove-item 打盘符根)交 dangerous 档处理——对齐 cc:完全访问档放行,
-    // 不在此 forceConfirm(否则 bypass 免疫会拦住,与「灾难命令完全访问档放行」的口径冲突)。
+    // 灾难级命令(clear-disk/format-volume/remove-item 打盘符根)交 dangerous 档处理——对齐 cc:完全访问档放行。
     if (fatalPowerShellReason(input.command)) return false
     const risk = classifyPowerShellRisk(input.command)
     return risk === 'destructive' || powerShellSecurityWarnings(input.command).length > 0

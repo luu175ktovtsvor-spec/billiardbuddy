@@ -636,13 +636,17 @@ test('restore_file can revert a file creation snapshot by deleting the file', as
   expect(ctx.fileReads?.has(join(root, 'new.txt'))).toBe(false)
 })
 
-test('restore_file dry_run is read-only but real restore still force-confirms', () => {
+test('restore_file dry_run is read-only; real restore force-confirms by default and full access skips approval', () => {
   expect(resolvePermission(restoreFileTool, { path: 'note.txt', dry_run: true }, { ...ctx, permissionMode: 'plan' })).toMatchObject({ behavior: 'allow' })
   expect(resolvePermission(restoreFileTool, { path: 'note.txt', dry_run: 'true' }, { ...ctx, permissionMode: 'ask' })).toMatchObject({ behavior: 'allow' })
-  expect(resolvePermission(restoreFileTool, { path: 'note.txt' }, { ...ctx, permissionMode: 'full' })).toMatchObject({
+  expect(resolvePermission(restoreFileTool, { path: 'note.txt' }, { ...ctx, permissionMode: 'default' })).toMatchObject({
     behavior: 'ask',
     approvalClass: 'destructive',
     reason: { type: 'forceConfirm' },
+  })
+  expect(resolvePermission(restoreFileTool, { path: 'note.txt' }, { ...ctx, permissionMode: 'full' })).toMatchObject({
+    behavior: 'allow',
+    reason: { type: 'mode', mode: 'bypassPermissions' },
   })
 })
 

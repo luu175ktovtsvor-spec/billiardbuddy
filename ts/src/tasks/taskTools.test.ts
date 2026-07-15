@@ -828,28 +828,45 @@ test('background agent isolation=worktree preserves dirty worktree and resume co
   try {
     initGitRepo(root)
     const tasks = new TaskService(root)
+    const seenFullDiskAccess: boolean[] = []
+    const inspectAccess: Tool = {
+      name: 'inspect_access',
+      description: 'Inspect workspace access tier.',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: true,
+      async execute(_, toolCtx) {
+        seenFullDiskAccess.push(toolCtx.workspace.fullDiskAccess)
+        return String(toolCtx.workspace.fullDiskAccess)
+      },
+    }
     const agent: AgentDefinition = {
       name: 'researcher',
       description: '研究代理',
       prompt: '研究并总结。',
       filePath: join(root, 'researcher.md'),
-      tools: ['write_file', 'read_file'],
+      tools: ['write_file', 'read_file', 'inspect_access'],
     }
     const model = scriptedModel([
-      { kind: 'tool_calls', calls: [{ id: 'write1', name: 'write_file', input: { path: 'worker.txt', content: 'from isolated background agent' } }] },
+      { kind: 'tool_calls', calls: [
+        { id: 'write1', name: 'write_file', input: { path: 'worker.txt', content: 'from isolated background agent' } },
+        { id: 'inspect1', name: 'inspect_access', input: {} },
+      ] },
       { kind: 'final', text: '初始完成' },
-      { kind: 'tool_calls', calls: [{ id: 'read1', name: 'read_file', input: { path: 'worker.txt' } }] },
+      { kind: 'tool_calls', calls: [
+        { id: 'read1', name: 'read_file', input: { path: 'worker.txt' } },
+        { id: 'inspect2', name: 'inspect_access', input: {} },
+      ] },
       { kind: 'final', text: '续跑读到文件' },
     ])
     const opts = {
       tasks,
       agents: [agent],
       model,
-      baseTools: [fileWriteTool, fileReadTool],
+      baseTools: [fileWriteTool, fileReadTool, inspectAccess],
       baseSystemPrompt: 'base prompt',
     }
     const start = createBackgroundAgentTaskTool(opts)
-    const ctx = { workspace: new Workspace(root), conversationId: 'c-worktree', permissionMode: 'full' as const }
+    const ctx = { workspace: new Workspace(root, { fullDiskAccess: true }), conversationId: 'c-worktree', permissionMode: 'full' as const }
     await start.execute({ task: '在隔离 worktree 写文件', title: '后台隔离', isolation: 'worktree' }, ctx)
 
     const first = await waitFor(async () => {
@@ -872,6 +889,7 @@ test('background agent isolation=worktree preserves dirty worktree and resume co
     expect(resumedMetadata?.worktreePath).toBe(worktreePath)
     expect(resumed.params?.agent_id).toBe(first.id)
     expect(resumedMetadata?.agentId).toBe(first.id)
+    expect(seenFullDiskAccess).toEqual([true, true])
     const finalModelCall = model.received.at(-1)
     expect(finalModelCall?.messages.some(message => message.content.some(block => block.type === 'tool_result' && typeof block.content === 'string' && block.content.includes('from isolated background agent')))).toBe(true)
   } finally {
@@ -1423,7 +1441,7 @@ test('TaskStop force-confirms and cancels a running background task', async () =
       return current?.status === 'running' ? current : null
     })
     const taskStop = createTaskTools(tasks).find(tool => tool.name === 'TaskStop')!
-    const ctx = { workspace: new Workspace(root), conversationId: 'c4', permissionMode: 'full' as const }
+    const ctx = { workspace: new Workspace(root), conversationId: 'c4', permissionMode: 'default' as const }
 
     const decision = resolvePermission(taskStop, { task_id: task.id }, ctx)
     expect(decision.behavior).toBe('ask')

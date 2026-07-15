@@ -148,6 +148,7 @@ function inputHint(input: unknown): string {
 }
 
 function progressStageForEvent(event: AgentEvent): string {
+  if (event.type === 'commentary') return oneLine(event.text)
   if (event.type === 'thinking') {
     const text = oneLine(event.text)
     return text ? `思考:${text}` : ''
@@ -170,7 +171,7 @@ function progressStageForEvent(event: AgentEvent): string {
 }
 
 function progressValueForEvent(event: AgentEvent, current: number): number {
-  if (event.type === 'thinking' || event.type === 'context_note' || event.type === 'usage_update') return Math.max(current, 8)
+  if (event.type === 'thinking' || event.type === 'commentary' || event.type === 'context_note' || event.type === 'usage_update') return Math.max(current, 8)
   if (event.type === 'tool_call') return Math.max(current + 4, 18)
   if (event.type === 'tool_progress') return Math.max(current + 1, 22)
   if (event.type === 'tool_result' || event.type === 'todo_update') return Math.max(current + 5, 28)
@@ -397,7 +398,7 @@ async function resumeToolContext(previousTask: TaskMeta, ctx: ToolContext, metad
   if (worktreePath) {
     if (await directoryExists(worktreePath)) {
       await touchDirectoryMtime(worktreePath)
-      const workspace = new Workspace(worktreePath)
+      const workspace = ctx.workspace.retarget(worktreePath)
       const sandbox = ctx.sandbox?.isOsSandboxActive()
         ? new Sandbox({ workspace, enabled: true })
         : ctx.sandbox
@@ -438,7 +439,7 @@ async function resumeToolContext(previousTask: TaskMeta, ctx: ToolContext, metad
       },
     }
   }
-  const workspace = new Workspace(workspaceRoot)
+  const workspace = ctx.workspace.retarget(workspaceRoot)
   const sandbox = ctx.sandbox?.isOsSandboxActive()
     ? new Sandbox({ workspace, enabled: true })
     : ctx.sandbox
@@ -564,7 +565,7 @@ export async function startBackgroundAgentRun(
     : effectiveIsolation === 'worktree'
     ? await createIsolatedAgentWorktree(ctx.workspace.root, task.id, ctx.conversationId)
     : null
-  const runWorkspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+  const runWorkspaceBase = agentWorktree ? ctx.workspace.retarget(agentWorktree.session.worktreePath) : ctx.workspace
   const runWorkspace = workspaceWithAgentMemory(runWorkspaceBase, agent.name, agent.memory)
   const runSandbox = sandboxForWorkspace(ctx.sandbox, runWorkspace)
   const forkWorktreeNoticeMessages: Message[] = runOptions.forkContext && agentWorktree && handoffInitialMessages.length === 0

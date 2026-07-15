@@ -243,6 +243,7 @@ function summarizeArgs(input: unknown): string {
 }
 
 function subagentLine(agent: AgentDefinition, event: AgentEvent): string | null {
+  if (event.type === 'commentary') return `子代理 ${agent.name}: ${oneLine(event.text)}`
   if (event.type === 'thinking') return `子代理 ${agent.name} 思考:${oneLine(event.text)}`
   if (event.type === 'tool_call') {
     const hint = summarizeArgs(event.input)
@@ -488,7 +489,7 @@ export function createAgentTaskTool(opts: AgentTaskToolOptions): Tool<AgentTaskI
         agentWorktree = effectiveIsolation === 'worktree'
           ? await createIsolatedAgentWorktree(ctx.workspace.root, agentId, ctx.conversationId)
           : null
-        const workspaceBase = agentWorktree ? new Workspace(agentWorktree.session.worktreePath) : ctx.workspace
+        const workspaceBase = agentWorktree ? ctx.workspace.retarget(agentWorktree.session.worktreePath) : ctx.workspace
         const workspace = workspaceWithAgentMemory(workspaceBase, agent.name, agent.memory)
         const sandbox = sandboxForWorkspace(ctx.sandbox, workspace)
         if (sidechain) await writeAgentTaskMetadata(opts, sidechain, agent, input, ctx, agentWorktree?.session.worktreePath)

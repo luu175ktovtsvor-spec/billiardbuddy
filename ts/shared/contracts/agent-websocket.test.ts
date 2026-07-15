@@ -4,6 +4,14 @@ import { parseClientMessage, parseServerMessage } from './agent-websocket'
 import { DESKTOP_IPC } from './desktop-host'
 
 describe('Agent 共享事件契约', () => {
+  test('区分公开阶段独白和私有思考', () => {
+    expect(agentEventSchema.parse({ type: 'commentary', text: '我先看一下项目结构。' })).toEqual({
+      type: 'commentary',
+      text: '我先看一下项目结构。',
+    })
+    expect(() => agentEventSchema.parse({ type: 'commentary' })).toThrow()
+  })
+
   test('接受后端和 renderer 共用的工具进度事件', () => {
     expect(agentEventSchema.parse({
       type: 'tool_progress',

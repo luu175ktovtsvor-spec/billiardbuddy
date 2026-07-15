@@ -117,6 +117,21 @@ test('fullDiskAccess 标记公开只读可读(Sandbox.isOsSandboxActive 要联�
   expect(new Workspace(root, { fullDiskAccess: true }).fullDiskAccess).toBe(true)
 })
 
+test('retarget 更换工作区根目录时保留 fullDiskAccess 档位', () => {
+  const other = realpathSync(mkdtempSync(join(tmpdir(), 'workspace-retarget-')))
+  try {
+    const full = new Workspace(root, { fullDiskAccess: true }).retarget(other)
+    expect(full.root).toBe(other)
+    expect(full.fullDiskAccess).toBe(true)
+
+    const scoped = new Workspace(root).retarget(other)
+    expect(scoped.root).toBe(other)
+    expect(scoped.fullDiskAccess).toBe(false)
+  } finally {
+    rmSync(other, { recursive: true, force: true })
+  }
+})
+
 test('resolve fullDiskAccess allows external paths but keeps TOCTOU write guards', () => {
   const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ws-full-')))
   const ws = new Workspace(root, { fullDiskAccess: true })

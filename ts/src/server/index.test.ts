@@ -1745,8 +1745,8 @@ test('bridge worker stream projects SDK assistant events into conversation event
       const body = await (await fetch(`http://127.0.0.1:${bridgeServer.port}/sessions/${encodeURIComponent('bridge-projection-conv')}/events`)).json() as any
       return body.events?.length >= 3 ? body.events : null
     }, 1500)
-    expect(events.map((record: any) => record.event.type)).toEqual(expect.arrayContaining(['thinking', 'tool_call', 'final']))
-    expect(events.some((record: any) => record.event.type === 'thinking' && record.event.text === '远端流式片段')).toBe(true)
+    expect(events.map((record: any) => record.event.type)).toEqual(expect.arrayContaining(['commentary', 'tool_call', 'final']))
+    expect(events.some((record: any) => record.event.type === 'commentary' && record.event.text === '远端流式片段')).toBe(true)
     expect(events.some((record: any) => record.event.type === 'tool_call' && record.event.tool === 'Read')).toBe(true)
     expect(events.some((record: any) => record.event.type === 'final' && record.event.text === '远端回答完成')).toBe(true)
   } finally {
@@ -2519,7 +2519,7 @@ test('POST /agent/run exposes registered bridge peers through ListPeers', async 
   }
 })
 
-test('POST /agent/run requests approval before sending bridge messages through Remote Control transport', async () => {
+test('POST /agent/run sends bridge messages without approval in full access mode', async () => {
   const transcriptRoot = mkdtempSync(join(tmpdir(), 'agent-run-bridge-send-'))
   const remoteCalls: Array<{ url: string; body: any }> = []
   let modelCalls = 0
@@ -2584,10 +2584,18 @@ test('POST /agent/run requests approval before sending bridge messages through R
       }),
     })
     const text = await res.text()
-    expect(text).toContain('event: approval_request')
-    expect(text).toContain('向 Remote Control 会话 bridge:session_bridge_send 发送消息')
+    expect(text).not.toContain('event: approval_request')
     expect(text).toContain('已发送远端消息')
-    expect(remoteCalls).toEqual([])
+    expect(remoteCalls).toHaveLength(1)
+    expect(remoteCalls[0]!.url).toBe('https://remote.example/v1/sessions/session_bridge_send/events')
+    expect(remoteCalls[0]!.body).toMatchObject({
+      events: [{
+        session_id: 'session_bridge_send',
+        type: 'user',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: 'please inspect status' },
+      }],
+    })
   } finally {
     bridgeServer.stop(true)
     rmSync(transcriptRoot, { recursive: true, force: true })

@@ -46,7 +46,7 @@ function projectStreamEvent(rawEvent: unknown): AgentEvent[] {
   const eventType = stringField(rawEvent.type)
   if (eventType === 'content_block_delta') {
     const delta = isRecord(rawEvent.delta) ? rawEvent.delta : {}
-    if (delta.type === 'text_delta') return stringField(delta.text) ? [{ type: 'thinking', text: stringField(delta.text) }] : []
+    if (delta.type === 'text_delta') return stringField(delta.text) ? [{ type: 'commentary', text: stringField(delta.text) }] : []
     if (delta.type === 'thinking_delta') return stringField(delta.thinking) ? [{ type: 'thinking', text: stringField(delta.thinking) }] : []
     if (delta.type === 'input_json_delta') return stringField(delta.partial_json) ? [{ type: 'tool_progress', tool: 'remote_tool', chunk: stringField(delta.partial_json), stream: 'input_json' }] : []
     return []
@@ -58,7 +58,7 @@ function projectStreamEvent(rawEvent: unknown): AgentEvent[] {
       const name = stringField(block.name) || 'remote_tool'
       return [{ type: 'tool_call', tool: name, input: isRecord(block.input) ? block.input : { ...(id ? { id } : {}) } }]
     }
-    if (block.type === 'text') return stringField(block.text) ? [{ type: 'thinking', text: stringField(block.text) }] : []
+    if (block.type === 'text') return stringField(block.text) ? [{ type: 'commentary', text: stringField(block.text) }] : []
     return []
   }
   if (eventType === 'message_delta') {
@@ -78,7 +78,7 @@ function projectAssistantMessage(payload: RecordValue): AgentEvent[] {
       if (text) events.push({ type: 'final', text })
     } else if (block.type === 'thinking') {
       const text = stringField(block.thinking)
-      if (text) events.push({ type: 'thinking', text })
+      if (text) events.push({ type: 'commentary', text })
     } else if (block.type === 'tool_use') {
       events.push({
         type: 'tool_call',

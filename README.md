@@ -46,7 +46,7 @@ cd ts && bun run desktop:dist
 ## 产品边界
 
 - Agent 对话走模型驱动的工具循环；生图、剪视频、定时任务等工作台走确定性产品链路。
-- 权限采用 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk` 五档，并保留强制确认和安全护栏。
+- 权限内核支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk` 五档；普通用户菜单只展示默认权限、接受修改和完全访问三档。
 - 本地文件修改前建立可恢复记录；路径、符号链接和危险命令经过边界检查。
 - 权限模式只决定工具是否自动执行或显示确认卡；产品不预设尚未接通的用户流程。
 - 台球运营知识库只提供领域事实和检索入口，不改变通用 Agent 的身份、任务规划或权限规则。

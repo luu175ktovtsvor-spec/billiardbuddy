@@ -60,6 +60,11 @@ export class Workspace {
     })
   }
 
+  /** Switch the active workspace root without silently downgrading the session's access tier. */
+  retarget(root: string): Workspace {
+    return new Workspace(root, { fullDiskAccess: this.fullDiskAccess })
+  }
+
   private resolveOutsideRoot(requested: string, operation: FileOperation): string {
     const cleaned = normalizeRequestedPathForValidation(requested, { operation })
     return isAbsolute(cleaned) ? resolve(cleaned) : resolve(this.root, cleaned)

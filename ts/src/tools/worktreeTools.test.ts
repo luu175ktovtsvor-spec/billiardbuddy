@@ -64,6 +64,26 @@ describe('CC-Haha EnterWorktree / ExitWorktree port', () => {
     await exitWorktreeTool.execute({ action: 'remove' }, freshCtx)
   })
 
+  test('full access survives entering, restoring, and exiting a worktree', async () => {
+    const conversationId = 'worktree-full-access'
+    const fullCtx: ToolContext = {
+      workspace: new Workspace(root, { fullDiskAccess: true }),
+      conversationId,
+      permissionMode: 'bypassPermissions',
+    }
+    await enterWorktreeTool.execute({ name: 'full-access' }, fullCtx)
+    const worktreePath = fullCtx.workspace.root
+    expect(fullCtx.workspace.fullDiskAccess).toBe(true)
+
+    const restored = workspaceForActiveWorktree(new Workspace(root, { fullDiskAccess: true }), conversationId)
+    expect(restored.root).toBe(worktreePath)
+    expect(restored.fullDiskAccess).toBe(true)
+
+    await exitWorktreeTool.execute({ action: 'remove' }, fullCtx)
+    expect(fullCtx.workspace.root).toBe(root)
+    expect(fullCtx.workspace.fullDiskAccess).toBe(true)
+  })
+
   test('runAgentLoop keeps later turns in the active worktree workspace', async () => {
     const conversationId = 'loop-worktree'
     const firstSteps: AssistantStep[] = [
@@ -138,9 +158,8 @@ describe('CC-Haha EnterWorktree / ExitWorktree port', () => {
       behavior: 'allow',
     })
     expect(resolvePermission(exitWorktreeTool, { action: 'remove' }, { ...ctx, permissionMode: 'full' })).toMatchObject({
-      behavior: 'ask',
-      approvalClass: 'destructive',
-      reason: { type: 'forceConfirm' },
+      behavior: 'allow',
+      reason: { type: 'mode', mode: 'bypassPermissions' },
     })
   })
 

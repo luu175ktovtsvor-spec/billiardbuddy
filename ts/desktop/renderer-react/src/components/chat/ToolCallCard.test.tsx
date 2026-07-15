@@ -79,3 +79,17 @@ test('媒体结果解析兼容旧版二次转义输出', () => {
     assetUrls: ['/uploads/image.png'],
   })
 })
+
+test('用户拒绝修图时工具标题不得显示已修改', () => {
+  const html = render({
+    id: 'image-edit-rejected',
+    kind: 'tool',
+    tool: 'edit_image',
+    input: { source_image_path: '成都/候选.jpg', description: '自然提亮' },
+    status: 'error',
+    output: '<tool_use_error>\n用户拒绝了本次工具调用。\n</tool_use_error>',
+  })
+
+  expect(html).toContain('未修改图片')
+  expect(html).not.toContain('已修改图片')
+})

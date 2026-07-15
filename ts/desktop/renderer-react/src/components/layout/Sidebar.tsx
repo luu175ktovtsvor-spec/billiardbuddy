@@ -32,6 +32,12 @@ import { t } from '../../i18n'
 // —— 侧栏本地偏好(纯 UI 态,localStorage;换机丢了不心疼)——
 const EXPANDED_KEY = 'qf.sidebar.expandedProjects'
 const HIDDEN_KEY = 'qf.sidebar.hiddenProjectRoots'
+const PROJECT_TASKS_EXPANDED_KEY = 'qf.sidebar.expandedProjectTasks'
+export const PROJECT_TASK_PAGE_SIZE = 5
+
+export function visibleProjectTasks<T>(tasks: T[], expanded: boolean): T[] {
+  return expanded ? tasks : tasks.slice(0, PROJECT_TASK_PAGE_SIZE)
+}
 function readJson<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? '') as T } catch { return fallback }
 }
@@ -122,6 +128,14 @@ export function Sidebar() {
   const unhideRoot = (root: string) => setHiddenRoots((prev) => { const next = prev.filter((r) => r !== root); writeJson(HIDDEN_KEY, next); return next })
   // 超过 5 个项目折叠(对齐 Codex maxGroups=5 + 显示更多/收起)。
   const [showAllProjects, setShowAllProjects] = useState(false)
+  const [expandedProjectTasks, setExpandedProjectTasksRaw] = useState<Record<string, boolean>>(() => readJson(PROJECT_TASKS_EXPANDED_KEY, {}))
+  const setProjectTasksExpanded = (root: string, expanded: boolean) => {
+    setExpandedProjectTasksRaw((current) => {
+      const next = { ...current, [root]: expanded }
+      writeJson(PROJECT_TASKS_EXPANDED_KEY, next)
+      return next
+    })
+  }
   const [ctx, setCtx] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
   const [projCtx, setProjCtx] = useState<{ x: number; y: number; root: string } | null>(null)
   const [searching, setSearching] = useState(false)
@@ -205,7 +219,7 @@ export function Sidebar() {
           setCtx({ x: e.clientX, y: e.clientY, id: s.id, title: s.title || '' })
         }}
         className="mb-0.5 flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-        style={{ background: active ? 'var(--color-surface-selected)' : 'transparent' }}
+        style={{ background: active ? 'var(--color-surface-hover)' : 'transparent' }}
       >
         {s.pinned && <IconPin size={11} style={{ color: 'var(--color-text-tertiary)', transform: 'rotate(45deg)' }} />}
         <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{s.title || t('sidebar.newChat')}</span>
@@ -285,12 +299,15 @@ export function Sidebar() {
               const activeProj = rootPath === workspaceRoot
               const open = isProjOpen(rootPath)
               const group = sessionsOf(rootPath)
+              const tasksExpanded = expandedProjectTasks[rootPath] === true
+              const visibleTasks = visibleProjectTasks(group, tasksExpanded)
+              const hasMoreTasks = group.length > PROJECT_TASK_PAGE_SIZE
               return (
                 <div key={rootPath} className="mb-0.5">
                   {/* 项目行(对齐 Codex):整行点击 = 展开/折叠,无箭头,文件夹开/合图标表达状态 */}
                   <div
                     className="group/proj flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
-                    style={{ background: activeProj ? 'var(--color-surface-selected)' : undefined }}
+                    data-active-project={activeProj || undefined}
                     onContextMenu={(e) => { e.preventDefault(); setProjCtx({ x: e.clientX, y: e.clientY, root: rootPath }) }}
                   >
                     <button
@@ -318,7 +335,19 @@ export function Sidebar() {
                   </div>
                   {open && (
                     group.length > 0 ? (
-                      <div className="ml-6">{group.map(renderRow)}</div>
+                      <div className="ml-6">
+                        {visibleTasks.map(renderRow)}
+                        {hasMoreTasks && (
+                          <button
+                            type="button"
+                            onClick={() => setProjectTasksExpanded(rootPath, !tasksExpanded)}
+                            className="mb-0.5 w-full rounded-md px-2.5 py-1 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
+                            style={{ color: 'var(--color-text-tertiary)' }}
+                          >
+                            {tasksExpanded ? '折叠显示' : '展开显示'}
+                          </button>
+                        )}
+                      </div>
                     ) : (
                       <div className="ml-6 px-2.5 py-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有任务,点 + 开一个</div>
                     )

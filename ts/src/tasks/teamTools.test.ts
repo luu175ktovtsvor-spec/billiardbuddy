@@ -433,17 +433,21 @@ test('SendMessage sends plain text to connected bridge peers through an injected
   }
 })
 
-test('SendMessage bridge targets require approval and return structured unavailable errors', async () => {
+test('SendMessage bridge targets ask by default, bypass in full access, and return structured unavailable errors', async () => {
   const { root, ctx } = fixture()
   const registry = new BridgePeerRegistry(root)
   try {
     await registry.register({ sessionId: 'session_bridge_disabled', status: 'outbound_only', inboundEnabled: false, lastError: 'viewer only' })
     const tools = createTeamTools(new TeamService(root), { bridgePeers: registry })
     const sendMessage = tools[2]!
-    const decision = resolvePermission(sendMessage, { to: 'bridge:session_bridge_disabled', message: 'hello' }, { ...ctx, permissionMode: 'full' })
-    expect(decision.behavior).toBe('ask')
-    if (decision.behavior !== 'ask') throw new Error('expected bridge SendMessage to ask for approval')
-    expect(decision.approvalClass).toBe('outreach')
+    const defaultDecision = resolvePermission(sendMessage, { to: 'bridge:session_bridge_disabled', message: 'hello' }, { ...ctx, permissionMode: 'default' })
+    expect(defaultDecision.behavior).toBe('ask')
+    if (defaultDecision.behavior !== 'ask') throw new Error('expected bridge SendMessage to ask for approval')
+    expect(defaultDecision.approvalClass).toBe('outreach')
+    expect(resolvePermission(sendMessage, { to: 'bridge:session_bridge_disabled', message: 'hello' }, { ...ctx, permissionMode: 'bypassPermissions' })).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'mode', mode: 'bypassPermissions' },
+    })
 
     const output = JSON.parse(await sendMessage.execute({ to: 'bridge:session_bridge_disabled', message: 'hello remote' }, ctx))
     expect(output).toMatchObject({

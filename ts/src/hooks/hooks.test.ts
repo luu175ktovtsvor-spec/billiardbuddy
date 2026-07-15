@@ -149,7 +149,7 @@ test('hookAllowBypassesAsk:hook allow 只跳过"默认模式该问"的弹窗,不
     behavior: 'ask',
     reason: { type: 'rule', rule: { source: 'userSettings', ruleBehavior: 'ask', ruleValue: { toolName: 'run_command' } } },
   })).toBe(false)
-  // 工具自身强制交互闸(forceConfirm/requiresUserInteraction):不豁免,产品红线连 bypassPermissions 都拦
+  // 当前决策仍是 ask 时，hook allow 不能越过 forceConfirm/requiresUserInteraction。
   expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'forceConfirm' } })).toBe(false)
   expect(hookAllowBypassesAsk({ allowRequested: true }, { behavior: 'ask', reason: { type: 'requiresUserInteraction' } })).toBe(false)
   // acceptEdits 安全检查(safetyCheck):不豁免

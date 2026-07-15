@@ -477,8 +477,8 @@ export async function applyPreToolUseHooks(
  * **不**越过:
  *  - deny(调用方在 `applyPreToolUseHooks` 已提前 return,这里不会走到);
  *  - 显式 ask 规则(`decision.reason.type === 'rule'`,cc `checkRuleBasedPermissions` 的 ask 分支);
- *  - 工具自身强制交互闸(`forceConfirm`/`requiresUserInteraction`,产品红线:连 bypassPermissions
- *    也拦,hook 更不该能绕过——对应 cc `requiresInteraction` 守卫,始终优先于 hook 结果);
+ *  - 工具自身强制交互闸(`forceConfirm`/`requiresUserInteraction`)；完全访问档会在权限层
+ *    跳过 forceConfirm，但 hook allow 本身不能借此绕过当前决策。
  *  - acceptEdits 安全检查(`safetyCheck`,.git/mcp 配置等敏感路径退回询问的加固闸)。
  * 只有 `decision.reason.type === 'mode'`(纯粹因为默认权限档位要问、没有任何规则/安全闸参与,对应 cc
  * `checkRuleBasedPermissions` 返回 null 的情形)才被 hook allow 豁免。

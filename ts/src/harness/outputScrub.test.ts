@@ -103,6 +103,19 @@ test('白标守卫:thinking 块(推理)也脱敏', () => {
   assertClean(deltaText(out, 'thinking'), 'thinking-stream')
 })
 
+test('公开 commentary 在工具边界放行短流式文本并保持脱敏', () => {
+  const scrubber = createChatOutputScrubber()
+  const events = [
+    ...scrubber.push({ type: 'content_delta', channel: 'text', text: '我先用 Clau' }),
+    ...scrubber.push({ type: 'content_delta', channel: 'text', text: 'de 看一下。' }),
+    ...scrubber.push({ type: 'commentary', text: '我先用 Claude 看一下。' }),
+  ]
+  expect(events.some(event => event.type === 'content_delta' && event.channel === 'text')).toBe(true)
+  const commentary = events.find((event): event is Extract<AgentEvent, { type: 'commentary' }> => event.type === 'commentary')
+  expect(commentary?.text).toBe('我先用本助手看一下。')
+  expect(JSON.stringify(events)).not.toContain('Claude')
+})
+
 test('正常台球文本不被误伤(无真名 → 原样透传,一字不改)', () => {
   const answer = '推荐乔氏或星牌的台球桌,美团、大众点评上评分都不错;助教走探探、陌陌引流也行。'
   const events: AgentEvent[] = [

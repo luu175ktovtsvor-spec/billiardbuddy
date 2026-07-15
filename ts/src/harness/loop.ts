@@ -306,6 +306,9 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     planModeTurnCount: 0,
     toolResultStoreDir: opts.toolResultStoreDir,
     contentReplacementState,
+    // 整个用户回合共享，防止模型用多个工具步骤把大目录逐批读完。
+    imageResultBudget: { remainingBytes: 3 * 1024 * 1024, remainingImages: 8 },
+    imageCandidateBudget: 8,
     // F1 关联修复:opts.stateRoot 此前只声明、从未真正接进 ctx——file-history 快照因此在生产环境恒回退到
     // `<workspaceRoot>/.agent-file-history/`(污染用户工作区),与 SessionRewindService 读取的
     // `<stateRoot>/file-history/` 对不上,即便 ctx.messageId 接对了,checkpoint 也永远读不到真实记录。
@@ -713,9 +716,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<A
     maxOutputTokensRecoveryCount = 0
     verifyPlanReminded = false
 
-    // 展示:reasoning + 正文叙述合成一条 thinking 事件(保证每步≤1条,前端细分事件归 W16)
-    const display = [step.thinking, step.text].filter(Boolean).join('\n\n')
-    if (display) yield { type: 'thinking', text: display }
+    // Codex 把私有 reasoning 与工具前的公开阶段说明分成两种活动。
+    // 不得把 step.text 合并进 thinking，否则 renderer 为了不泄露推理只能把用户本该看到的进度文字一起藏掉。
+    if (step.thinking) yield { type: 'thinking', text: step.thinking }
+    if (step.text) yield { type: 'commentary', text: step.text }
 
     // assistant 历史块:正文 text(若有)+ tool_use 块(thinking 不进历史、不回灌模型)
     const asstContent: ContentBlock[] = []
@@ -1114,8 +1118,28 @@ async function executeAllowedToolCall(
       if (ctx.imageResultSink === imageSink) ctx.imageResultSink = previousSink
       if (ctx.activeHooks === hooks) ctx.activeHooks = previousActiveHooks
     }
-    const images = imageSink.length > 0 ? imageSink.slice() : undefined
-    const stored = await maybeStoreToolResult(call.name, call.id, output, {
+    let images = imageSink.length > 0 ? imageSink.slice() : undefined
+    let imageBudgetNote = ''
+    if (images && ctx.imageResultBudget) {
+      const accepted: ImageBlock[] = []
+      let omitted = 0
+      for (const image of images) {
+        const approximateBytes = Math.ceil(image.source.data.length * 0.75)
+        if (ctx.imageResultBudget.remainingImages > 0 && approximateBytes <= ctx.imageResultBudget.remainingBytes) {
+          accepted.push(image)
+          ctx.imageResultBudget.remainingImages--
+          ctx.imageResultBudget.remainingBytes -= approximateBytes
+        } else {
+          omitted++
+        }
+      }
+      images = accepted.length > 0 ? accepted : undefined
+      if (omitted > 0) {
+        imageBudgetNote = `\n\n<image_turn_limit omitted="${omitted}">本回合图片预览已达上限；不要继续遍历其余图片。请根据已看候选向用户推荐，或请用户缩小目录/补充偏好。</image_turn_limit>`
+      }
+    }
+    const effectiveOutput = output + imageBudgetNote
+    const stored = await maybeStoreToolResult(call.name, call.id, effectiveOutput, {
       dir: toolResultStoreDir,
       conversationId: ctx.conversationId,
     })

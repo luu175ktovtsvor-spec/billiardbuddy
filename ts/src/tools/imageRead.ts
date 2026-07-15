@@ -3,9 +3,10 @@
 //  · 从文件头解析像素宽高(不解码像素)
 //  · 按 cc 的口径估算 vision token(≈ 宽*高/750,见 FileReadTool.estimateVisionImageTokens)
 //  · 生成 Anthropic image content-block(base64)
-// 说明:cc 用原生 sharp 对超预算图做「缩放/降采样」;本仓库不装 npm 且不能碰 media,
-// 无法重采样像素,因此对「超 vision 预算」的图不做缩放,只据宽高判定并给出明确提示。
+// 超预算的 JPEG/PNG 使用现有纯 JS 依赖生成受限 JPEG 预览；无法安全缩放的格式不回灌原始大图。
 import type { ImageBlock } from '../types/message'
+import { decode as decodeJpeg, encode as encodeJpeg } from 'jpeg-js'
+import { PNG } from 'pngjs'
 
 export type SupportedImageFormat = 'png' | 'jpeg' | 'gif' | 'webp'
 export type DetectedImageFormat = SupportedImageFormat | 'bmp'
@@ -20,6 +21,9 @@ const VISION_SUPPORTED = new Set<DetectedImageFormat>(['png', 'jpeg', 'gif', 'we
 
 // cc 对齐:vision 大致按 宽*高/750 计费(不是 base64 文本长度)。
 const VISION_TOKENS_PER_PIXEL_DIVISOR = 750
+const PREVIEW_LONG_EDGE = 1280
+const PREVIEW_MAX_BYTES = 384 * 1024
+const PREVIEW_JPEG_QUALITIES = [82, 70, 56] as const
 
 export function isImageExtension(ext: string): boolean {
   return IMAGE_EXTENSIONS.has(ext.toLowerCase().replace(/^\./, ''))
@@ -151,22 +155,115 @@ export interface ImageReadResult {
   dimensions: ImageDimensions | null
   estimatedVisionTokens: number | null
   byteSize: number
+  previewDimensions: ImageDimensions | null
+  previewByteSize: number | null
+  previewResized: boolean
+  previewOmittedReason?: string
   /** vision 支持的格式生成的 image 块(bmp 等不支持则为 null)。 */
   imageBlock: ImageBlock | null
 }
 
-/** 读取图片缓冲 → 格式/宽高/vision token 估算/image 块。不做像素缩放(无原生库)。 */
+/** 读取图片缓冲 → 格式/宽高/vision token 估算/受限预览 image 块。 */
 export function readImageBuffer(buffer: Buffer): ImageReadResult | null {
   const format = detectImageFormat(buffer)
   if (!format) return null
   const dimensions = getImageDimensions(buffer, format)
   const visionSupported = isVisionSupported(format)
+  const preview = visionSupported ? buildVisionPreview(buffer, format, dimensions) : null
   return {
     format,
     visionSupported,
     dimensions,
     estimatedVisionTokens: estimateVisionTokens(dimensions),
     byteSize: buffer.length,
-    imageBlock: visionSupported ? toImageBlock(buffer, format) : null,
+    previewDimensions: preview?.dimensions ?? null,
+    previewByteSize: preview?.buffer.length ?? null,
+    previewResized: Boolean(preview?.resized),
+    ...(visionSupported && !preview ? { previewOmittedReason: '图片预览无法在安全体积内生成' } : {}),
+    imageBlock: preview ? toImageBlock(preview.buffer, preview.format) : null,
   }
+}
+
+interface VisionPreview {
+  buffer: Buffer
+  format: SupportedImageFormat
+  dimensions: ImageDimensions | null
+  resized: boolean
+}
+
+function buildVisionPreview(
+  buffer: Buffer,
+  format: SupportedImageFormat,
+  dimensions: ImageDimensions | null,
+): VisionPreview | null {
+  const longEdge = dimensions ? Math.max(dimensions.width, dimensions.height) : 0
+  const tokens = estimateVisionTokens(dimensions)
+  const needsPreview = buffer.length > PREVIEW_MAX_BYTES || longEdge > PREVIEW_LONG_EDGE || (tokens ?? 0) > 8_000
+  if (!needsPreview) return { buffer, format, dimensions, resized: false }
+
+  // jpeg-js/pngjs 都是随 sidecar 编译的纯 JS 依赖，避免为大图预览引入新的原生运行时。
+  // GIF/WebP 当前没有可靠的纯 JS 解码器；超预算时宁可不附图，也不能把原始大文件塞进模型请求。
+  if (format !== 'jpeg' && format !== 'png') return null
+
+  try {
+    const decoded = format === 'jpeg'
+      ? decodeJpeg(buffer, { useTArray: true, formatAsRGBA: false, maxMemoryUsageInMB: 768 })
+      : PNG.sync.read(buffer, { checkCRC: false })
+    if (!decoded.width || !decoded.height || !decoded.data?.length) return null
+
+    let target = constrainLongEdge(decoded.width, decoded.height, PREVIEW_LONG_EDGE)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const rgba = resizePixelsOnWhite(decoded.data, decoded.width, decoded.height, target.width, target.height, format === 'jpeg' ? 3 : 4)
+      for (const quality of PREVIEW_JPEG_QUALITIES) {
+        const encoded = Buffer.from(encodeJpeg({ data: rgba, width: target.width, height: target.height }, quality).data)
+        if (encoded.length <= PREVIEW_MAX_BYTES) {
+          return { buffer: encoded, format: 'jpeg', dimensions: target, resized: true }
+        }
+      }
+      target = constrainLongEdge(target.width, target.height, Math.max(480, Math.floor(Math.max(target.width, target.height) * 0.78)))
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function constrainLongEdge(width: number, height: number, maxLongEdge: number): ImageDimensions {
+  const longEdge = Math.max(width, height)
+  if (longEdge <= maxLongEdge) return { width, height }
+  const scale = maxLongEdge / longEdge
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  }
+}
+
+/** 最近邻足够用于模型筛选素材；缩放时把透明像素合成白底，避免 JPEG 预览出现黑块。 */
+function resizePixelsOnWhite(
+  source: Uint8Array | Uint8ClampedArray,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+  sourceChannels: 3 | 4,
+): Uint8Array {
+  const output = new Uint8Array(targetWidth * targetHeight * 4)
+  for (let y = 0; y < targetHeight; y++) {
+    const sourceY = Math.min(sourceHeight - 1, Math.floor((y * sourceHeight) / targetHeight))
+    for (let x = 0; x < targetWidth; x++) {
+      const sourceX = Math.min(sourceWidth - 1, Math.floor((x * sourceWidth) / targetWidth))
+      const src = (sourceY * sourceWidth + sourceX) * sourceChannels
+      const dst = (y * targetWidth + x) * 4
+      const alpha = sourceChannels === 4 ? source[src + 3] ?? 255 : 255
+      output[dst] = compositeOnWhite(source[src] ?? 0, alpha)
+      output[dst + 1] = compositeOnWhite(source[src + 1] ?? 0, alpha)
+      output[dst + 2] = compositeOnWhite(source[src + 2] ?? 0, alpha)
+      output[dst + 3] = 255
+    }
+  }
+  return output
+}
+
+function compositeOnWhite(channel: number, alpha: number): number {
+  return Math.round((channel * alpha + 255 * (255 - alpha)) / 255)
 }

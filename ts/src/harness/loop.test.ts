@@ -65,7 +65,7 @@ test('runs a multi-step tool task: think -> tool -> feed back -> think -> final'
     permissionMode: 'acceptEdits',
   }))
   expect(events.map(e => e.type)).toEqual([
-    'thinking', 'tool_call', 'tool_result', 'thinking', 'tool_call', 'tool_result', 'final',
+    'commentary', 'tool_call', 'tool_result', 'commentary', 'tool_call', 'tool_result', 'final',
   ])
   expect(readFileSync(join(root, 'out.txt'), 'utf8')).toBe('payload!')
   // 第 2 次 model.step:system 走独立字段 + 有一条 user 消息含 tool_result 块 content==='payload'
@@ -2159,8 +2159,8 @@ test('连调 PROGRESS_REMIND_EVERY 次工具没更新进度 → 注入进度提�
   ).toBe(true)
 })
 
-// —— 追加:thinking 白标契约(不回灌模型)—— tool_calls 分支(合并展示)与 final 分支(单独展示)都验一遍
-test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模型)——tool_calls 分支', async () => {
+// —— thinking / commentary 语义分离：私有推理不回灌，公开阶段说明保留在 assistant 历史。
+test('tool_calls 分支分开发送私有 thinking 和公开 commentary', async () => {
   // 注:用会 .slice() 快照 messages 的自定义 model,而非 scriptedModel——scriptedModel.received[i].messages
   // 存的是 loop 内部那个持续 push 的活引用,循环跑完后所有下标都会指向同一个"最终态"数组,不能拿来做
   // "第 2 次调用时看到什么"的精确断言(其余用到 received[] 精确断言的用例也都遵循这个 .slice() 惯例)。
@@ -2176,8 +2176,8 @@ test('thinking 只展示、不进 assistant 历史(白标:reasoning 不回灌模
       systemPrompt: 'SYS', userMessage: 'x',
     }),
   )
-  // thinking + 正文合并成一条 thinking 事件(展示用)
-  expect(events.some(e => e.type === 'thinking' && e.text === '内心戏A\n\n正文')).toBe(true)
+  expect(events.some(e => e.type === 'thinking' && e.text === '内心戏A')).toBe(true)
+  expect(events.some(e => e.type === 'commentary' && e.text === '正文')).toBe(true)
   // 第 2 次 step 看到的历史里,step1 的 assistant 消息只有 text+tool_use,没有 thinking 类型块/字样
   const assistantMsgs = received[1]!.messages.filter(m => m.role === 'assistant')
   // toMatchObject:发起工具调用的 assistant 消息额外带 provenance uuid(file-history messageId),只校验 role/content。
@@ -2845,6 +2845,36 @@ test('read_file 读图 → tool_result content 带 image 块回灌模型(真 vis
   expect(img).toBeDefined()
   expect(img!.source!.media_type).toBe('image/png')
   expect(img!.source!.data.length).toBeGreaterThan(0)
+})
+
+test('整个用户回合只回灌受限数量的图片，不能通过多个工具步骤继续遍历', async () => {
+  const calls = Array.from({ length: 9 }, (_, index) => {
+    const name = `shot-${index}.png`
+    const png = Buffer.alloc(24)
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+    png.write('IHDR', 12, 'ascii')
+    png.writeUInt32BE(64, 16)
+    png.writeUInt32BE(48, 20)
+    writeFileSync(join(root, name), png)
+    return { id: `r${index}`, name: 'read_file', input: { path: name } }
+  })
+  const model = scriptedModel([
+    { kind: 'tool_calls', text: '先看一批', calls: calls.slice(0, 5) },
+    { kind: 'tool_calls', text: '继续看图', calls: calls.slice(5) },
+    { kind: 'final', text: '已分批查看' },
+  ])
+  await collect(runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: '看看这些图片',
+  }))
+
+  const results = model.received.at(-1)!.messages
+    .flatMap(message => message.content)
+    .filter(block => block.type === 'tool_result')
+  const attached = results.filter(block => Array.isArray(block.content))
+  expect(attached).toHaveLength(8)
+  const limited = results.find(block => typeof block.content === 'string' && block.content.includes('image_turn_limit'))
+  expect(limited && typeof limited.content === 'string' ? limited.content : '').toContain('不要继续遍历')
 })
 
 test('read_file 读文本 → tool_result content 仍是 string(向后兼容)', async () => {

@@ -38,6 +38,7 @@ export const usageUpdateEventSchema = z.object({
 
 export const agentEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('thinking'), text: z.string() }),
+  z.object({ type: z.literal('commentary'), text: z.string() }),
   z.object({
     type: z.literal('command_invocation'),
     name: z.string(),

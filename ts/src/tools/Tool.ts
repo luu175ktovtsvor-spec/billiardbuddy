@@ -121,6 +121,10 @@ export interface ToolContext {
    * prepareParallelReadOnlyCall),因此并行执行永不往此 sink 推、不会串图。非读图工具/文本结果不碰它(向后兼容)。
    */
   imageResultSink?: ImageBlock[]
+  /** 整个用户回合可回灌给模型的图片体积/数量预算。 */
+  imageResultBudget?: { remainingBytes: number; remainingImages: number }
+  /** 整个用户回合可列给模型的图片候选数，防多次筛选变相遍历大目录。 */
+  imageCandidateBudget?: number
   /**
    * 本轮(一批 tool_call)的 PDF 文档块收集器(PDF 视觉通道):read_file 读到 PDF 时把 document 块推进来,
    * loop 在组装本批 tool_result 的尾随 user 消息时把这些块作为顶层 ContentBlock 追加(对齐 cc 把 PDF 作为
@@ -194,7 +198,7 @@ export interface Tool<Input = unknown> {
   approvalClass?: ApprovalClass
   /** 动态审批类别:按具体入参区分 file/outreach/destructive。 */
   approvalClassFor?(input: Input, ctx: ToolContext): ApprovalClass | undefined
-  /** 旁路免疫:连 bypassPermissions(跳过确认)也强制弹卡。删数据这类真危险动作设它。 */
+  /** 非完全访问档的强确认。bypassPermissions 按 Full access 语义跳过它。 */
   forceConfirm?: boolean
   /** 动态旁路免疫:同一个工具按入参区分预览/真正执行。 */
   forceConfirmFor?(input: Input, ctx: ToolContext): boolean

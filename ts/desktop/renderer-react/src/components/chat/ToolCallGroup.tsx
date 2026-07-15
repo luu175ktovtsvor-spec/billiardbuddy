@@ -3,12 +3,12 @@
 //   完成态组头 = 分类计数段 Intl.ListFormat 连接(「已读取文件运行了 6 条命令」)+ chevron 紧跟文字;
 //   进行中组头 = 最新活动实时行(「正在运行 <命令>」)或「正在想…」shimmer(思考是组头占位态,不是独立行);
 //   展开体 = 按时序的子行明细(工具行 + 思考行)。
-// 保留 cc/owner 既有行为:运行中强制展开、跑完自动收起、出错保持展开。
+// 运行中展开显示即时进度；回合完成后自动收起，错误明细由用户主动展开。
 import { useEffect, useRef, useState } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
 import { ToolCallCard } from './ToolCallCard'
 import { ThinkingBlock } from './ThinkingBlock'
-import { summarizeActivity, toolIcon, statusVerb, toolSummary } from './toolMeta'
+import { summarizeActivity, toolIcon, statusVerb, toolSummary, visibleActivityTools } from './toolMeta'
 import { IconAlertCircle, IconChevronDown } from '../shared/icons'
 import { t } from '../../i18n'
 
@@ -38,21 +38,22 @@ function GroupIcon({ tool }: { tool: string }) {
 }
 
 function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools: ToolBlock[] }) {
-  const runningTool = tools.find((b) => b.status === 'running')
+  const visibleTools = visibleActivityTools(tools)
+  const runningTool = visibleTools.find((b) => b.status === 'running')
   const thinkingActive = blocks.some((b) => b.kind === 'thinking' && b.active)
   const isRunning = !!runningTool || thinkingActive
-  const hasError = tools.some((b) => b.status === 'error')
-  const [expanded, setExpanded] = useState(isRunning || hasError)
+  const hasError = visibleTools.some((b) => b.status === 'error')
+  const [expanded, setExpanded] = useState(isRunning)
   const prevRunningRef = useRef(isRunning)
 
   useEffect(() => {
     if (isRunning) {
       setExpanded(true)
-    } else if (prevRunningRef.current && !isRunning && !hasError) {
+    } else if (prevRunningRef.current && !isRunning) {
       setExpanded(false)
     }
     prevRunningRef.current = isRunning
-  }, [isRunning, hasError])
+  }, [isRunning])
 
   // 组头文案:进行中 = 最新活动实时行(对齐 Codex fDe active 态);完成 = 分类计数段(hDe summaryParts);
   // 只有一个工具的组(工具+思考混组)直接用该工具自己的动词文案,免得兜底「已处理」和回合头重复。
@@ -60,9 +61,9 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
     ? `${statusVerb(runningTool.tool, 'running')} ${toolSummary(runningTool.tool, runningTool.input)}`.trim()
     : thinkingActive
       ? t('thinking.active')
-      : tools.length === 1
-        ? `${statusVerb(tools[0]!.tool, tools[0]!.status)} ${toolSummary(tools[0]!.tool, tools[0]!.input)}`.trim()
-        : summarizeActivity(tools.map((b) => b.tool))
+      : visibleTools.length === 1
+        ? `${statusVerb(visibleTools[0]!.tool, visibleTools[0]!.status)} ${toolSummary(visibleTools[0]!.tool, visibleTools[0]!.input)}`.trim()
+        : summarizeActivity(visibleTools)
 
   return (
     <div className="my-0.5" data-block="tool-group">
@@ -78,7 +79,7 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
           <IconAlertCircle size={13} className="shrink-0" style={{ color: 'var(--color-error)' }} />
         ) : !thinkingActive ? (
           // 完成态组头 = 首个工具的类型图标(对齐 Codex 聚合头 icon 语义),不画绿勾。
-          <GroupIcon tool={tools[0]!.tool} />
+          <GroupIcon tool={visibleTools[0]?.tool ?? tools[0]!.tool} />
         ) : null}
         {/* chevron 紧跟文字(对齐 Codex 真机:不推到行尾),文字截断保护 */}
         <span className={isRunning ? 'qf-shimmer-text min-w-0 truncate text-[12.5px]' : 'min-w-0 truncate text-[12.5px]'} style={{ color: 'var(--color-text-secondary)' }}>
@@ -95,7 +96,7 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
       </button>
       {expanded && (
         <div className="mt-0.5 flex flex-col pl-1">
-          {blocks.map((b) => b.kind === 'tool' ? <ToolCallCard key={b.id} block={b} /> : null)}
+          {visibleTools.map((block) => <ToolCallCard key={block.id} block={block} />)}
         </div>
       )}
     </div>

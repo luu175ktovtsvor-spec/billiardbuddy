@@ -12,7 +12,7 @@ test('projectBridgeSdkEvent maps assistant content blocks to frontend agent even
       ],
     },
   })).toEqual([
-    { type: 'thinking', text: '分析远端仓库' },
+    { type: 'commentary', text: '分析远端仓库' },
     { type: 'tool_call', tool: 'Read', input: { file_path: 'app.ts' } },
     { type: 'final', text: '远端完成' },
   ])
@@ -22,7 +22,7 @@ test('projectBridgeSdkEvent maps stream deltas, tool results and lifecycle messa
   expect(projectBridgeSdkEvent({
     type: 'stream_event',
     event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '流式片段' } },
-  })).toEqual([{ type: 'thinking', text: '流式片段' }])
+  })).toEqual([{ type: 'commentary', text: '流式片段' }])
 
   expect(projectBridgeSdkEvent({
     type: 'stream_event',
