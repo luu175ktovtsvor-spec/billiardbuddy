@@ -15,7 +15,7 @@ import {
   type VideoRenderInput,
 } from '../../../shared/contracts/video-edit'
 import { TaskService, type TaskMeta, type TaskRunnerContext } from '../../tasks/taskService'
-import { gateMediaAssets, type MediaBinaryNeed } from '../mediaBinaries'
+import { DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS, gateMediaAssets, type MediaBinaryNeed } from '../mediaBinaries'
 import { compileVideoBrief } from './briefCompiler'
 import { VideoEvidenceService } from './evidence/analysisService'
 import { VideoDraftPlanner } from './planning/planner'
@@ -180,6 +180,7 @@ export interface VideoEditingServiceOptions {
   env?: Record<string, string | undefined>
   gateAssets?: typeof gateMediaAssets
   waitForAssetRetry?: (signal: AbortSignal) => Promise<void>
+  assetWaitTimeoutMs?: number
 }
 
 export class VideoEditingService {
@@ -404,12 +405,14 @@ export class VideoEditingService {
     this.options.tasks.start(task.id, async taskContext => {
       try {
         await this.setJobStage(task.id, 'preparing')
+        const assetWaitDeadline = Date.now() + Math.max(0, this.options.assetWaitTimeoutMs ?? DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS)
         let assetGate = this.gateAssets(this.env, requiredAssets)
         while (assetGate) {
           const message = typeof assetGate.message === 'string' ? assetGate.message : '所需组件正在后台准备'
           const progress = typeof assetGate.asset_progress === 'number' ? assetGate.asset_progress : 0
           await this.setJobStage(task.id, 'blocked', { checkpoint: assetGate, retryable: true, warnings: [message] })
           await taskContext.progress(Math.max(1, Math.min(99, progress)), message)
+          if (Date.now() >= assetWaitDeadline) throw new Error('所需组件准备超时，请检查网络后重试。')
           await (this.options.waitForAssetRetry ?? (signal => delayWithSignal(750, signal)))(taskContext.signal)
           assetGate = this.gateAssets(this.env, requiredAssets)
         }

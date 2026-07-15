@@ -152,6 +152,9 @@ export function subtitleFontConfig(env?: Env): { fontsDir: string; family: strin
 
 export type MediaBinaryNeed = 'ffmpeg' | 'ffprobe' | 'zh-font' | 'whisper'
 
+/** Prevent a broken asset source from leaving a user task in "preparing" forever. */
+export const DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS = 8 * 60_000
+
 /** 一个 need 缺哪些资产 id(env 显式覆盖视为用户自管、不判缺,保持门与实际 spawn 一致)。 */
 function missingAssetIdsFor(need: MediaBinaryNeed, env: Env): string[] {
   if (need === 'ffmpeg') {

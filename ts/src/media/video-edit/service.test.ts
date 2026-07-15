@@ -108,6 +108,22 @@ test('blocked component preparation automatically continues the same job when as
   expect(gateChecks).toBeGreaterThanOrEqual(3)
 }, 10_000)
 
+test('video jobs become retryable errors when component preparation times out', async () => {
+  const { root, source, tasks, env } = setup()
+  const service = new VideoEditingService({
+    stateRoot: root,
+    tasks,
+    env,
+    gateAssets: () => ({ blocked: true, asset_progress: 12, message: '组件准备中 12%' }),
+    assetWaitTimeoutMs: 0,
+  })
+  const project = await service.store.create({ video_paths: [source] })
+  const started = await service.startDrafts(project.project_id)
+  const failed = await waitFor(() => service.getJob(started.job_id), job => job?.status === 'error')
+  expect(failed).toMatchObject({ status: 'error', retryable: true })
+  expect(failed?.error?.message).toContain('组件准备超时')
+})
+
 test('continuing an existing video project waits for FFmpeg and ffprobe before drafting', async () => {
   const { root, source, tasks, env } = setup()
   const requested: string[][] = []
