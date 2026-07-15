@@ -9,6 +9,8 @@
 // 打开老会话时 adopt 进来 = 跨重启也记得每个会话的文件夹。
 import { create } from 'zustand'
 import type { PermissionMode } from '../types/chat'
+import { agentSettingsApi } from '../api/agentSettings'
+import type { AgentSettingsIssue, AgentSettingsResponse } from '../../../../shared/contracts/agent-settings'
 
 const MAP_KEY = 'qf-workspace-by-conv'
 const LEGACY_KEY = 'qf-workspace-root' // 旧的单一全局值(已废弃);仅在此清理,不再用它当任何会话的默认
@@ -99,7 +101,10 @@ function persistPermissionMap(map: Record<string, PermissionMode>): void {
 const HIDDEN_MODES_KEY = 'qf.settings.hiddenPermissionModes'
 const PREVENT_SLEEP_KEY = 'qf.settings.preventSleepWhileRunning'
 function readHiddenModes(): PermissionMode[] {
-  try { return JSON.parse(window.localStorage.getItem(HIDDEN_MODES_KEY) ?? '[]') as PermissionMode[] } catch { return [] }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HIDDEN_MODES_KEY) ?? '[]') as PermissionMode[]
+    return parsed.filter(mode => mode !== 'bypassPermissions')
+  } catch { return [] }
 }
 function readPreventSleep(): boolean {
   try { return window.localStorage.getItem(PREVENT_SLEEP_KEY) === '1' } catch { return false }
@@ -111,6 +116,10 @@ interface SettingsState {
   hiddenPermissionModes: PermissionMode[]
   /** 运行任务时防止系统休眠(对齐 Codex preventSleepWhileRunning;App 层按 chat running 状态调 desktopHost.preventSleep)。 */
   preventSleepWhileRunning: boolean
+  /** 用户是否显式允许会话选择完全访问；真正上限仍由 sidecar 策略执行。 */
+  allowBypassPermissionsMode: boolean
+  managedBypassPermissionsDisabled: boolean
+  settingsIssues: AgentSettingsIssue[]
   /** 当前激活会话挂载的领域包;新会话默认挂台球包,显式空数组表示用户已关闭。sendMessage 读它。 */
   enabledPacks: string[]
   /** 按 conversationId 记的领域包映射(持久化)。挂件按会话隔离:某窗口开台球、别的窗口不受影响。 */
@@ -127,6 +136,8 @@ interface SettingsState {
   /** 切换某个用户档位在权限选择器里的显隐(default 不接受隐藏)。 */
   togglePermissionModeHidden: (mode: PermissionMode) => void
   setPreventSleepWhileRunning: (on: boolean) => void
+  hydrateAgentSettings: () => Promise<void>
+  setBypassPermissionsModeAllowed: (on: boolean) => Promise<void>
   /** 设当前**激活会话**的领域包(不是全局);落 per-conv 映射。斜杠 /台球 开、/台球关闭 关、设置开关都走它。 */
   setEnabledPacks: (packs: string[]) => void
   /** 切到某会话:workspaceRoot + enabledPacks 都变成它自己记住的;无包记录时使用产品默认,不继承其他会话。 */
@@ -143,6 +154,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   defaultPermissionMode: 'default',
   hiddenPermissionModes: readHiddenModes(),
   preventSleepWhileRunning: readPreventSleep(),
+  allowBypassPermissionsMode: false,
+  managedBypassPermissionsDisabled: false,
+  settingsIssues: [],
   enabledPacks: [],
   enabledPacksByConv: readStoredPacksMap(),
   workspaceByConv: readStoredMap(),
@@ -150,6 +164,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeConvId: null,
   workspaceRoot: null,
   setPermissionMode: (mode) => {
+    if (mode === 'bypassPermissions' && (!get().allowBypassPermissionsMode || get().managedBypassPermissionsDisabled)) mode = 'default'
     const convId = get().activeConvId
     if (!convId) {
       set({ defaultPermissionMode: mode })
@@ -173,6 +188,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setPreventSleepWhileRunning: (on) => {
     try { window.localStorage.setItem(PREVENT_SLEEP_KEY, on ? '1' : '0') } catch { /* 忽略 */ }
     set({ preventSleepWhileRunning: on })
+  },
+
+  hydrateAgentSettings: async () => {
+    const response = await agentSettingsApi.get()
+    applyAgentSettingsResponse(response)
+  },
+
+  setBypassPermissionsModeAllowed: async (on) => {
+    const response = await agentSettingsApi.update({ allowBypassPermissionsMode: on })
+    applyAgentSettingsResponse(response)
   },
 
   setEnabledPacks: (packs) => {
@@ -270,3 +295,24 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }))
   },
 }))
+
+function applyAgentSettingsResponse(response: AgentSettingsResponse): void {
+  const bypassAllowed = response.settings.allowBypassPermissionsMode && !response.policy.managedBypassDisabled
+  const current = useSettingsStore.getState()
+  let permissionModeByConv = current.permissionModeByConv
+  let defaultPermissionMode = current.defaultPermissionMode
+  if (!bypassAllowed) {
+    permissionModeByConv = Object.fromEntries(
+      Object.entries(permissionModeByConv).map(([id, mode]) => [id, mode === 'bypassPermissions' ? 'default' : mode]),
+    )
+    persistPermissionMap(permissionModeByConv)
+    if (defaultPermissionMode === 'bypassPermissions') defaultPermissionMode = 'default'
+  }
+  useSettingsStore.setState({
+    allowBypassPermissionsMode: response.settings.allowBypassPermissionsMode,
+    managedBypassPermissionsDisabled: response.policy.managedBypassDisabled,
+    settingsIssues: response.issues,
+    permissionModeByConv,
+    defaultPermissionMode,
+  })
+}

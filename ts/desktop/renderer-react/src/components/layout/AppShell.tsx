@@ -44,6 +44,8 @@ export function AppShell() {
       try {
         await initializeDesktopServerUrl()
         if (cancelled) return
+        await useSettingsStore.getState().hydrateAgentSettings()
+        if (cancelled) return
         await useSessionStore.getState().refresh()
         if (cancelled) return
         // 会话自恢复:优先恢复上次活跃会话(带历史重放),没有可恢复的才开新会话。

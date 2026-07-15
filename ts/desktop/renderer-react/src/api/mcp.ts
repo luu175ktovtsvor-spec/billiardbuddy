@@ -5,6 +5,8 @@ import {
   mcpAddRequestSchema,
   mcpListResponseSchema,
   mcpPresetsResponseSchema,
+  workspaceTrustRequestSchema,
+  workspaceTrustResponseSchema,
   type ExtensionMutationResult,
   type McpAddRequest,
   type McpListResponse,
@@ -36,6 +38,12 @@ export const mcpApi = {
   /** 停用/启用。 */
   toggle: async (name: string, disabled: boolean) => extensionMutationResultSchema.parse(
     await api.post<unknown>('/api/v1/agent/mcp/toggle', { name, disabled }),
+  ),
+  trust: async () => workspaceTrustResponseSchema.parse(await api.get<unknown>('/api/v1/agent/mcp/trust')),
+  setWorkspaceTrusted: async (workspaceRoot: string, trusted: boolean) => workspaceTrustResponseSchema.parse(
+    trusted
+      ? await api.post<unknown>('/api/v1/agent/mcp/trust', workspaceTrustRequestSchema.parse({ workspaceRoot }))
+      : await api.delete<unknown>(`/api/v1/agent/mcp/trust?workspaceRoot=${encodeURIComponent(workspaceRoot)}`),
   ),
 }
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join } from 'node:path'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { platform } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import {
   SERVER_BIND_HOST,
   reserveServerPort,
@@ -29,6 +30,7 @@ let sidecarSupervisor: SidecarSupervisor | null = null
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let serverPort = 0
+const controlToken = randomBytes(32).toString('base64url')
 let sidecarDownNotified = false
 
 const APP_NAME = '球房管家'
@@ -66,6 +68,7 @@ function buildSidecarPlan(port: number): SidecarPlan {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     QF_DESKTOP: '1',
+    QF_CONTROL_TOKEN: controlToken,
   }
   // 凭据 at-rest 加密密钥(DEK):主进程用 safeStorage(底层 macOS Keychain / Windows DPAPI)保护一把随机 DEK、
   // 以密文落盘 userData/credential-key.enc,启动时解出后经环境 QF_CRED_KEY 传给 sidecar;sidecar 用它 AES-256-GCM
@@ -327,6 +330,13 @@ function registerIpc(): void {
   // 后端地址发现(对齐 cc runtime:getServerUrl):main 已 reserveServerPort 抢到 serverPort,
   // React renderer 从 file:// 加载，经此拿 sidecar 地址再 fetch/WS。
   ipcMain.handle(DESKTOP_IPC.getServerUrl, () => `http://${SERVER_BIND_HOST}:${serverPort}`)
+  ipcMain.handle(DESKTOP_IPC.getServerConnection, (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('untrusted server connection requester')
+    return {
+      baseUrl: `http://${SERVER_BIND_HOST}:${serverPort}`,
+      authToken: controlToken,
+    }
+  })
 
   // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
   ipcMain.handle(DESKTOP_IPC.pickWorkspace, async (_event, input: unknown) => {

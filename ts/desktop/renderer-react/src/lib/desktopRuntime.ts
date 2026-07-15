@@ -2,7 +2,7 @@
 //  桌面端 → IPC host.runtime.getServerUrl() 拿 sidecar 地址 → setBaseUrl → 轮询 /health。
 //  浏览器预览/H5 → 同上但 URL 来自 same-origin 或 ?serverUrl=。
 // ⚠️ 我们 /health 返回 { ok: true, service, ts }(不是 cc 的 { status:'ok' }),waitForHealth 按我们的形状判定。
-import { getBaseUrl, setBaseUrl, setAuthToken, getDefaultBaseUrl } from '../api/client'
+import { authHeaders, getBaseUrl, setBaseUrl, setAuthToken, getDefaultBaseUrl } from '../api/client'
 import { getDesktopHost } from './desktopHost'
 
 let resolveServerReady: (() => void) | null = null
@@ -31,9 +31,11 @@ export async function initializeDesktopServerUrl(): Promise<string> {
   const host = getDesktopHost()
   const fallback = getDefaultBaseUrl()
   try {
-    const serverUrl = await host.runtime.getServerUrl()
-    setBaseUrl(serverUrl || fallback)
-    setAuthToken(null)
+    const connection = host.runtime.getServerConnection
+      ? await host.runtime.getServerConnection()
+      : { baseUrl: await host.runtime.getServerUrl(), authToken: null }
+    setBaseUrl(connection.baseUrl || fallback)
+    setAuthToken(connection.authToken)
     await waitForHealth(getBaseUrl())
     markReady()
     return getBaseUrl()
@@ -49,7 +51,7 @@ async function waitForHealth(serverUrl: string): Promise<void> {
   let lastError: unknown
   for (let attempt = 0; attempt < 30; attempt++) {
     try {
-      const response = await fetch(`${serverUrl.replace(/\/$/, '')}/health`, { cache: 'no-store' })
+      const response = await fetch(`${serverUrl.replace(/\/$/, '')}/health`, { cache: 'no-store', headers: authHeaders() })
       if (response.ok) {
         const body = await response.json().catch(() => null)
         if (body && typeof body === 'object' && (body.ok === true || body.status === 'ok')) return

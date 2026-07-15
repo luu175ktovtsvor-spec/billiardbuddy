@@ -101,6 +101,7 @@ function PermissionMenu() {
   const mode = useSettingsStore((s) => s.defaultPermissionMode)
   const setMode = useSettingsStore((s) => s.setPermissionMode)
   const hiddenModes = useSettingsStore((s) => s.hiddenPermissionModes)
+  const allowBypass = useSettingsStore((s) => s.allowBypassPermissionsMode && !s.managedBypassPermissionsDisabled)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
   const [confirmFullOpen, setConfirmFullOpen] = useState(false)
@@ -108,7 +109,7 @@ function PermissionMenu() {
   const current = USER_PERMISSION_MODES.includes(mode) ? mode : 'default'
   const full = current === 'bypassPermissions'
   // 设置页「在权限菜单中显示 XX」关掉的档位不进菜单；默认档始终保留。
-  const visibleModes = USER_PERMISSION_MODES.filter((m) => !hiddenModes.includes(m))
+  const visibleModes = USER_PERMISSION_MODES.filter((m) => !hiddenModes.includes(m) && (m !== 'bypassPermissions' || allowBypass))
   const selectMode = (next: PermissionMode) => {
     setOpen(false)
     if (next === 'bypassPermissions' && current !== 'bypassPermissions') {

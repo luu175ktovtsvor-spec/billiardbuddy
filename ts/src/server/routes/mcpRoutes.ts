@@ -8,6 +8,8 @@ import {
   mcpNameRequestSchema,
   mcpPresetsResponseSchema,
   mcpToggleRequestSchema,
+  workspaceTrustRequestSchema,
+  workspaceTrustResponseSchema,
 } from '../../../shared/contracts/extensions'
 import { jsonError } from '../middleware/http'
 import { stringOr } from '../requestParams'
@@ -49,17 +51,18 @@ export function createMcpRouteHandler(deps: McpRouteDependencies) {
     }
 
     if (url.pathname === '/api/v1/agent/mcp/trust') {
-      if (req.method === 'GET') return Response.json({ approved_workspace_roots: deps.trust.list() })
+      if (req.method === 'GET') return Response.json(workspaceTrustResponseSchema.parse({ approved_workspace_roots: deps.trust.list() }))
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
-      const root = stringOr(body.workspaceRoot ?? body.working_dir, '')
-      if (!root) return jsonError('缺少 workspaceRoot', 400)
+      const parsed = workspaceTrustRequestSchema.safeParse({ workspaceRoot: stringOr(body.workspaceRoot ?? body.working_dir ?? url.searchParams.get('workspaceRoot'), '') })
+      if (!parsed.success) return jsonError('缺少 workspaceRoot', 400)
+      const root = parsed.data.workspaceRoot
       if (req.method === 'DELETE') {
         deps.trust.revoke(root)
-        return Response.json({ ok: true, trusted: false, approved_workspace_roots: deps.trust.list() })
+        return Response.json(workspaceTrustResponseSchema.parse({ ok: true, trusted: false, approved_workspace_roots: deps.trust.list() }))
       }
       if (req.method !== 'POST') return methodNotAllowed()
       deps.trust.trust(root)
-      return Response.json({ ok: true, trusted: true, approved_workspace_roots: deps.trust.list() })
+      return Response.json(workspaceTrustResponseSchema.parse({ ok: true, trusted: true, approved_workspace_roots: deps.trust.list() }))
     }
 
     if (req.method !== 'POST') return methodNotAllowed()

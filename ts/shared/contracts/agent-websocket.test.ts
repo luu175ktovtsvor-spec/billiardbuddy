@@ -42,16 +42,16 @@ describe('Agent WebSocket 共享契约', () => {
     })
   })
 
-  test('入站兼容旧权限别名，但规范权限 Schema 不接受旧值', () => {
+  test('入站兼容旧权限字段和值，并在边界统一成规范 permissionMode', () => {
     expect(parseClientMessage({ type: 'run', message: '继续', permissionMode: 'full' })).toMatchObject({
-      permissionMode: 'full',
+      permissionMode: 'bypassPermissions',
     })
     expect(parseClientMessage({
       type: 'approve',
       tool: 'run_command',
       token: 'signed-token',
       permission_mode: 'auto_files',
-    })).toMatchObject({ permission_mode: 'auto_files' })
+    })).toMatchObject({ permissionMode: 'acceptEdits' })
   })
 
   test('审批领域包字段保留缺失与显式空数组两种状态', () => {
@@ -77,13 +77,15 @@ describe('Agent WebSocket 共享契约', () => {
     })).toThrow()
   })
 
-  test('全盘访问必须是 run/approve/reject 上的显式布尔上下文', () => {
+  test('全盘访问只由规范权限档派生，客户端布尔值不能单独提权', () => {
     for (const message of [
-      { type: 'run', message: '继续', full_disk_access: true },
-      { type: 'approve', tool: 'run_command', token: 'signed-token', full_disk_access: true },
-      { type: 'reject', tool: 'run_command', fullDiskAccess: false },
+      { type: 'run', message: '继续', permissionMode: 'default', full_disk_access: true },
+      { type: 'approve', tool: 'run_command', token: 'signed-token', permission_mode: 'full' },
+      { type: 'reject', tool: 'run_command', permissionMode: 'acceptEdits', fullDiskAccess: true },
     ]) {
-      expect(parseClientMessage(message)).toMatchObject(message)
+      const parsed = parseClientMessage(message)
+      expect(parsed.full_disk_access).toBe(parsed.permissionMode === 'bypassPermissions')
+      expect(parsed.fullDiskAccess).toBeUndefined()
     }
     expect(() => parseClientMessage({
       type: 'run',

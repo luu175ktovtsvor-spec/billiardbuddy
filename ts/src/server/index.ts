@@ -17,6 +17,7 @@ import { DesktopDataStore } from './services/desktopDataStore'
 import { ScheduledTaskRunner } from './services/scheduledTaskRunner'
 import { createTelemetryService } from './services/telemetry'
 import { UserSettingsStore } from './services/userSettings'
+import { createAgentPermissionPolicyResolver } from './services/agentPermissionPolicy'
 import { StoreDocsService, createStoreDocsTool } from './services/storeDocsService'
 import { getLogger } from '../utils/logger'
 import { jsonDetailError, jsonError, localCorsPreflight, TurnSetupError, withLocalCors } from './middleware/http'
@@ -107,7 +108,9 @@ import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
 import { createWorkspaceFileRouteHandler } from './routes/workspaceFileRoutes'
 import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
-import { createAgentWebSocketHandler, type AgentWsData } from './websocketHandler'
+import { createAgentWebSocketHandler, upgradeAgentWebSocket, type AgentWsData } from './websocketHandler'
+import { hasControlPlaneAccess } from './middleware/controlPlaneAuth'
+import { createAgentSettingsRouteHandler } from './routes/agentSettingsRoutes'
 
 export interface StartServerOptions {
   host?: string
@@ -135,6 +138,9 @@ export interface StartServerOptions {
   /** 是否启动定时任务调度引擎(到点起真 agent 会话)。默认:测试环境不启,其余启;env QF_SCHEDULER=0 显式关。 */
   scheduledTasksAutoStart?: boolean
   bridgeWebSocketCtor?: BridgeRemoteWebSocketConstructor
+  controlToken?: string
+  enforcePermissionPolicy?: boolean
+  disableBypassPermissions?: boolean
   /** 启动即预先受信的工作区根(桌面壳打开已批准的库/工作区时注入,或测试用):等价对每个根调 mcpTrust.trust(root)。
    * 受信后该工作区来源的 local hook(.claude/hooks.json 等)才被信任门放行执行。 */
   trustedWorkspaceRoots?: string[]
@@ -209,6 +215,9 @@ export function resolveStateRoot(
 export function startServer(opts: StartServerOptions = {}) {
   const host = opts.host ?? '127.0.0.1'
   const port = opts.port ?? 8850
+  const controlToken = stringOr(opts.controlToken ?? (opts.env ?? process.env).QF_CONTROL_TOKEN, '') || undefined
+  const enforcePermissionPolicy = opts.enforcePermissionPolicy ?? Boolean(controlToken)
+  const managedBypassDisabled = opts.disableBypassPermissions ?? (opts.env ?? process.env).QF_DISABLE_BYPASS_PERMISSIONS === '1'
   // OS 沙箱写围栏默认开(owner 2026-07-09);env QF_OS_SANDBOX=0 或 opts.sandboxEnabled=false 关。
   const sandboxEnabled = opts.sandboxEnabled ?? ((opts.env ?? process.env).QF_OS_SANDBOX !== '0')
   const buildSandbox = (ws: Workspace): Sandbox => new Sandbox({ workspace: ws, enabled: sandboxEnabled })
@@ -253,6 +262,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
   const desktopData = new DesktopDataStore(stateRoot)
   const userSettings = new UserSettingsStore(stateRoot)
+  const applyRequestPermissionPolicy = createAgentPermissionPolicyResolver(userSettings, { enforcePermissionPolicy, managedBypassDisabled })
   const tasks = new TaskService(stateRoot, {
     onSettled: async task => {
       const notification = backgroundTaskNotification(task)
@@ -603,6 +613,7 @@ export function startServer(opts: StartServerOptions = {}) {
     rawBody: TurnStreamInput,
     transport: { interactiveApprovals?: boolean } = {},
   ): Promise<{ conversationId: string; stream: AsyncGenerator<SessionEventRecord> }> {
+    rawBody = await applyRequestPermissionPolicy(rawBody) as TurnStreamInput
     const rawUserMessage = stringOr(rawBody.message ?? rawBody.userMessage, '') || stringOr(rawBody.messagePreview, '')
     if (!rawUserMessage) throw new TurnSetupError('message required', 400)
     const explicitUserContent = rawBody.userContent?.length ? rawBody.userContent : undefined
@@ -1557,6 +1568,7 @@ export function startServer(opts: StartServerOptions = {}) {
   async function runApprovedTool(body: Record<string, unknown>): Promise<Record<string, unknown> | null> {
     if (typeof body.tool !== 'string' || !body.tool.trim()) return null
     const tool = body.tool.trim()
+    body = await applyRequestPermissionPolicy(body)
     const args = body.args ?? {}
     const approvalArgs = isRecord(body.approval_args) ? body.approval_args : isRecord(body.approvalArgs) ? body.approvalArgs : args
     const token = typeof body.token === 'string' ? body.token : undefined
@@ -1624,8 +1636,10 @@ export function startServer(opts: StartServerOptions = {}) {
 
   async function rejectLegacyAgentTool(body: Record<string, unknown>) {
     if (typeof body.tool !== 'string' || !body.tool.trim()) return jsonDetailError('tool required', 400)
+    const tool = body.tool.trim()
+    body = await applyRequestPermissionPolicy(body)
     const workspace = workspaceFromBody(body)
-    handleReject(body.tool.trim(), body.args ?? {}, {
+    handleReject(tool, body.args ?? {}, {
       workspace,
       conversationId: stringOr(body.conversation_id ?? body.conversationId, '') || undefined,
       permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
@@ -2033,8 +2047,9 @@ export function startServer(opts: StartServerOptions = {}) {
     runTurn: handleWsRun,
     runApprovedTool,
     resolvePendingApproval: (conversationId, input) => turns.resolveApproval(conversationId, input),
-    rejectTool: handleReject,
+    rejectTool: async body => { await rejectLegacyAgentTool(body) },
   })
+  const handleAgentSettingsRoute = createAgentSettingsRouteHandler({ settings: userSettings, managedBypassDisabled })
 
   const app = Bun.serve<AgentWsData>({
     hostname: host,
@@ -2047,16 +2062,16 @@ export function startServer(opts: StartServerOptions = {}) {
       const url = new URL(req.url)
 
       if (url.pathname === '/agent/ws') {
-        const conversationId = stringOr(url.searchParams.get('conversationId'), crypto.randomUUID())
-        const after = numberFrom(url.searchParams.get('after'), 0)
-        if (server.upgrade(req, { data: { conversationId, after } satisfies AgentWsData })) {
-          return undefined as unknown as Response
-        }
-        return new Response('WebSocket upgrade failed', { status: 400 })
+        return upgradeAgentWebSocket(req, server, controlToken) ?? undefined as unknown as Response
       }
 
       if (url.pathname === '/health') {
         return Response.json({ ok: true, service: 'ts-harness', ts: Date.now() })
+      }
+
+      const allowQueryToken = req.method === 'GET' || req.method === 'HEAD'
+      if (!hasControlPlaneAccess(req, controlToken, { allowQueryToken })) {
+        return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
       }
 
       if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
@@ -2221,15 +2236,8 @@ export function startServer(opts: StartServerOptions = {}) {
       const workspaceFileResponse = await handleWorkspaceFileRoute(url, req)
       if (workspaceFileResponse) return workspaceFileResponse
 
-      // 配置基座:App 级用户设置(默认权限档/主题),供设置抽屉读写。
-      if (url.pathname === '/api/settings') {
-        if (req.method === 'GET') return Response.json({ settings: await userSettings.get() })
-        if (req.method === 'POST') {
-          const body = await req.json().catch(() => ({})) as Record<string, unknown>
-          return Response.json({ settings: await userSettings.update(body) })
-        }
-        return new Response('Method not allowed', { status: 405 })
-      }
+      const agentSettingsResponse = await handleAgentSettingsRoute(url, req)
+      if (agentSettingsResponse) return agentSettingsResponse
 
       const workspaceResponse = await handleWorkspaceRoute(url, req)
       if (workspaceResponse) return workspaceResponse

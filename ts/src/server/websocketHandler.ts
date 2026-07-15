@@ -2,15 +2,35 @@
 
 import type { ServerWebSocket, WebSocketHandler } from 'bun'
 import { parseClientMessage } from '../../shared/contracts/agent-websocket'
-import type { ToolContext } from '../tools/Tool'
 import type { SessionEventRecord, SessionStreamEvent } from './services/sessionService'
-import { numberFrom, permissionModeFrom, stringOr } from './requestParams'
+import { numberFrom, stringOr } from './requestParams'
 import { wsError, wsSend } from './sse'
-import { workspaceFromBody } from './turnInput'
+import { hasControlPlaneAccess, isTrustedWebSocketOrigin, requestedWebSocketControlProtocol } from './middleware/controlPlaneAuth'
 
 export interface AgentWsData {
   conversationId: string
   after: number
+}
+
+interface AgentWebSocketUpgradeServer {
+  upgrade(req: Request, options: { data: AgentWsData; headers?: Record<string, string> }): boolean
+}
+
+export function upgradeAgentWebSocket(
+  req: Request,
+  server: AgentWebSocketUpgradeServer,
+  controlToken: string | undefined,
+): Response | null {
+  if (!hasControlPlaneAccess(req, controlToken)) return new Response('Unauthorized', { status: 401 })
+  if (!isTrustedWebSocketOrigin(req)) return new Response('Forbidden WebSocket origin', { status: 403 })
+  const url = new URL(req.url)
+  const conversationId = stringOr(url.searchParams.get('conversationId'), crypto.randomUUID())
+  const after = numberFrom(url.searchParams.get('after'), 0)
+  const protocol = controlToken ? requestedWebSocketControlProtocol(req, controlToken) : undefined
+  return server.upgrade(req, {
+    data: { conversationId, after },
+    ...(protocol ? { headers: { 'Sec-WebSocket-Protocol': protocol } } : {}),
+  }) ? null : new Response('WebSocket upgrade failed', { status: 400 })
 }
 
 type AgentWebSocket = ServerWebSocket<AgentWsData>
@@ -38,7 +58,7 @@ interface AgentWebSocketDependencies {
     conversationId: string,
     input: { behavior: 'allow'; tool: string; token?: string; remember?: boolean } | { behavior: 'deny'; tool: string; message?: string },
   ): boolean
-  rejectTool(tool: string, args: unknown, context: ToolContext): void
+  rejectTool(body: Record<string, unknown>): Promise<void>
 }
 
 export function createAgentWebSocketHandler(deps: AgentWebSocketDependencies): WebSocketHandler<AgentWsData> {
@@ -141,19 +161,17 @@ export function createAgentWebSocketHandler(deps: AgentWebSocketDependencies): W
         return
       }
       if (type === 'reject') {
-        const toolName = typeof body.tool === 'string' ? body.tool.trim() : ''
-        if (!toolName) {
-          wsError(ws, 'tool required')
-          return
-        }
-        const conversationId = stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId)
-        const resumed = deps.resolvePendingApproval(conversationId, { behavior: 'deny', tool: toolName, message: '用户拒绝了本次工具调用。' })
-        if (!resumed) deps.rejectTool(toolName, body.args ?? {}, {
-          workspace: workspaceFromBody(body),
-          conversationId: conversationId || undefined,
-          permissionMode: permissionModeFrom(body.permission_mode ?? body.permissionMode),
-        })
-        wsSend(ws, { type: 'reject_result', ok: true })
+        void (async () => {
+          const toolName = typeof body.tool === 'string' ? body.tool.trim() : ''
+          if (!toolName) {
+            wsError(ws, 'tool required')
+            return
+          }
+          const conversationId = stringOr(body.conversation_id ?? body.conversationId, ws.data.conversationId)
+          const resumed = deps.resolvePendingApproval(conversationId, { behavior: 'deny', tool: toolName, message: '用户拒绝了本次工具调用。' })
+          if (!resumed) await deps.rejectTool(body)
+          wsSend(ws, { type: 'reject_result', ok: true })
+        })().catch(error => wsError(ws, error instanceof Error ? error.message : String(error)))
         return
       }
       wsError(ws, `unknown websocket message type: ${type}`)

@@ -1,5 +1,5 @@
 // 设置页只展示有真实实现支撑的常规、外观、快捷键、插件和归档入口。
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useUiStore, type ThemeMode } from '../stores/uiStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -10,6 +10,7 @@ import {
 } from '../components/shared/icons'
 import { t } from '../i18n'
 import type { PermissionMode } from '../types/chat'
+import { mcpApi } from '../api/mcp'
 
 type SettingsNav = 'general' | 'appearance' | 'shortcuts' | 'archived'
 
@@ -95,9 +96,44 @@ function GeneralPane() {
   const toggleHidden = useSettingsStore((s) => s.togglePermissionModeHidden)
   const preventSleep = useSettingsStore((s) => s.preventSleepWhileRunning)
   const setPreventSleep = useSettingsStore((s) => s.setPreventSleepWhileRunning)
+  const allowBypass = useSettingsStore((s) => s.allowBypassPermissionsMode)
+  const managedBypassDisabled = useSettingsStore((s) => s.managedBypassPermissionsDisabled)
+  const setBypassAllowed = useSettingsStore((s) => s.setBypassPermissionsModeAllowed)
+  const settingsIssues = useSettingsStore((s) => s.settingsIssues)
+  const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
   const packs = useSettingsStore((s) => s.enabledPacks)
   const setPacks = useSettingsStore((s) => s.setEnabledPacks)
   const billiards = packs.includes('billiards')
+  const [workspaceTrusted, setWorkspaceTrusted] = useState(false)
+  const [trustLoading, setTrustLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!workspaceRoot) {
+      setWorkspaceTrusted(false)
+      return () => { cancelled = true }
+    }
+    setTrustLoading(true)
+    void mcpApi.trust()
+      .then(result => { if (!cancelled) setWorkspaceTrusted(result.approved_workspace_roots.includes(workspaceRoot)) })
+      .catch(() => { if (!cancelled) setWorkspaceTrusted(false) })
+      .finally(() => { if (!cancelled) setTrustLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceRoot])
+
+  const changeWorkspaceTrust = async (trusted: boolean) => {
+    if (!workspaceRoot || trustLoading) return
+    setTrustLoading(true)
+    try {
+      const result = await mcpApi.setWorkspaceTrusted(workspaceRoot, trusted)
+      setWorkspaceTrusted(result.approved_workspace_roots.includes(workspaceRoot))
+      toast(trusted ? '已信任当前工作区' : '已撤销当前工作区信任')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '工作区信任设置失败')
+    } finally {
+      setTrustLoading(false)
+    }
+  }
 
   return (
     <>
@@ -114,9 +150,29 @@ function GeneralPane() {
         />
         <Row
           title={t('permission.bypass')}
-          desc="以完全访问运行时,管家无需你的批准即可编辑电脑上的文件并运行可联网的命令。这会显著增加数据丢失或意外行为的风险。关闭后此档从权限菜单中隐藏。"
-          right={<Switch on={!hidden.includes('bypassPermissions')} onChange={() => toggleHidden('bypassPermissions')} label="在权限菜单中显示完全访问" />}
+          desc={managedBypassDisabled
+            ? '当前发行策略已禁止完全访问。'
+            : '允许后，仍需在具体会话中再次确认才能开启；关闭会立即把已有会话降回默认权限。'}
+          right={<Switch
+            on={allowBypass && !managedBypassDisabled}
+            disabled={managedBypassDisabled}
+            onChange={(on) => { void setBypassAllowed(on).catch(error => toast(error instanceof Error ? error.message : '权限设置保存失败')) }}
+            label="允许完全访问"
+          />}
         />
+        <Row
+          title="信任当前工作区"
+          desc={workspaceRoot
+            ? '信任后可启用这个文件夹自带的扩展、自动化和允许规则。只对来源可靠的文件夹开启。'
+            : '选择工作文件夹后可设置。'}
+          right={<Switch
+            on={workspaceTrusted}
+            disabled={!workspaceRoot || trustLoading}
+            onChange={(on) => { void changeWorkspaceTrust(on) }}
+            label="信任当前工作区"
+          />}
+        />
+        {settingsIssues.length > 0 && <Row title="设置文件需要修复" desc={settingsIssues[0]!.message} right={<span className="text-[12px]" style={{ color: 'var(--color-error)' }}>只读保护</span>} />}
       </Group>
 
       <Group title="常规">
