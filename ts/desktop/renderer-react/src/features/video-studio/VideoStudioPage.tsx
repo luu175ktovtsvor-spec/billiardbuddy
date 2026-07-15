@@ -3,8 +3,10 @@ import {
   IconAlertCircle,
   IconCheckCircle,
   IconEdit,
+  IconRedo,
   IconRefresh,
   IconTarget,
+  IconUndo,
 } from '../../components/shared/icons'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -310,7 +312,7 @@ export function VideoStudioPage() {
         {project && <>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-1.5"><select value={project.project_id} onChange={event => void openProject(event.target.value)} className="min-w-0 max-w-[260px] rounded-md px-2 py-1.5 text-[12px]" style={inputStyle} aria-label="当前视频项目">{projects.map(item => <option key={item.project_id} value={item.project_id}>{item.name}</option>)}</select><button type="button" title="刷新项目" onClick={() => void refreshProject(project.project_id)} className="h-8 w-8 rounded-md" style={subtleButtonStyle}><IconRefresh size={14} /></button></div>
-            <div className="flex items-center gap-1.5"><button type="button" onClick={() => void undoRedo('undo')} disabled={busy} title="撤销" className="h-8 w-8 rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-undo">↶</button><button type="button" onClick={() => void undoRedo('redo')} disabled={busy} title="重做" className="h-8 w-8 rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-redo">↷</button><button type="button" onClick={newProject} className="rounded-md px-2.5 py-1.5 text-[12px]" style={subtleButtonStyle}>新项目</button></div>
+            <div className="flex items-center gap-1.5"><button type="button" onClick={() => void undoRedo('undo')} disabled={busy} title="撤销" aria-label="撤销" className="inline-flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-undo"><IconUndo size={14} /></button><button type="button" onClick={() => void undoRedo('redo')} disabled={busy} title="重做" aria-label="重做" className="inline-flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-redo"><IconRedo size={14} /></button><button type="button" onClick={newProject} className="rounded-md px-2.5 py-1.5 text-[12px]" style={subtleButtonStyle}>新项目</button></div>
           </div>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} />

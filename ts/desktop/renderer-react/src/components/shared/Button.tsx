@@ -1,4 +1,4 @@
-// 共享原语(Block G 地基件的最小起步)。Block G 会补齐 Modal/Dropdown/Toast/ConfirmDialog 等全套。
+// 共享按钮原语。
 import type { ButtonHTMLAttributes } from 'react'
 
 type Variant = 'primary' | 'ghost' | 'danger'
@@ -10,7 +10,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 const base = 'inline-flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5'
 
 const styles: Record<Variant, string> = {
-  primary: 'text-white',
+  primary: '',
   ghost: 'hover:bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)]',
   danger: 'text-[var(--color-error)] hover:bg-[var(--color-surface-hover)]',
 }

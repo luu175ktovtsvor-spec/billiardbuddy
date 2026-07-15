@@ -58,8 +58,8 @@ export function ShareModal({ open, onClose, title }: { open: boolean; onClose: (
             type="button"
             onClick={copy}
             disabled={empty}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90"
-            style={{ background: 'var(--color-brand)', opacity: empty ? 0.5 : 1 }}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-opacity hover:opacity-90"
+            style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)', opacity: empty ? 0.5 : 1 }}
           >
             <IconCopy size={13} /> {copied ? t('actions.copied') : t('share.copy')}
           </button>

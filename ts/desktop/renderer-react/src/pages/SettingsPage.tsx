@@ -26,8 +26,8 @@ function Switch({ on, disabled, onChange, label }: { on: boolean; disabled?: boo
       style={{ background: on ? 'var(--color-primary)' : 'color-mix(in srgb, var(--color-text-primary) 18%, transparent)' }}
     >
       <span
-        className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white transition-all"
-        style={{ left: on ? 18 : 2, boxShadow: '0 1px 2px rgba(0,0,0,.25)' }}
+        className="absolute top-[2px] h-[18px] w-[18px] rounded-full transition-all"
+        style={{ left: on ? 18 : 2, background: on ? 'var(--color-on-primary)' : 'var(--cx-gray-0)', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }}
       />
     </button>
   )
@@ -69,7 +69,7 @@ function Segmented<T extends string>({ value, options, onChange }: { value: T; o
             type="button"
             onClick={() => onChange(o.value)}
             className="rounded-md px-3 py-1 text-[12.5px] transition-colors"
-            style={{ background: on ? 'var(--color-surface)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: on ? 'var(--shadow-input)' : undefined, fontWeight: on ? 600 : 400 }}
+            style={{ background: on ? 'var(--color-surface)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: on ? 'var(--shadow-control)' : undefined, fontWeight: on ? 600 : 400 }}
           >
             {o.label}
           </button>

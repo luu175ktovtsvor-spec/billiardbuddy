@@ -87,8 +87,8 @@ export function ApprovalCard({ block }: { block: ApprovalBlock }) {
         <button
           type="button"
           onClick={() => approve(block.id, false)}
-          className="rounded-md px-2.5 py-1 text-[12px] font-medium text-white"
-          style={{ background: 'var(--color-primary)' }}
+          className="rounded-md px-2.5 py-1 text-[12px] font-medium"
+          style={{ background: 'var(--color-primary)', color: 'var(--color-on-primary)' }}
         >
           {t('approval.allowOnce')}
         </button>

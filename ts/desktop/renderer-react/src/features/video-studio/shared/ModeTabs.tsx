@@ -11,7 +11,7 @@ export function ModeTabs({ value, recommended, onChange }: { value: VideoStudioV
         return (
           <button key={view} type="button" role="tab" aria-selected={active} onClick={() => onChange(view)}
             className="rounded-md px-3 py-1.5 text-[12px] font-medium"
-            style={{ background: active ? 'var(--color-surface)' : 'transparent', color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: active ? 'var(--shadow-input)' : undefined }}
+            style={{ background: active ? 'var(--color-surface)' : 'transparent', color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: active ? 'var(--shadow-control)' : undefined }}
             data-testid={`video-view-${view}`}>
             {label}{recommended === view && <span className="ml-1" style={{ color: 'var(--color-brand)' }}>推荐</span>}
           </button>

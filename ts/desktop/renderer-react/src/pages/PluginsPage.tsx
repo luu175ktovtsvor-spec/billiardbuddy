@@ -67,8 +67,8 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
       style={{ background: checked ? 'var(--color-primary)' : 'color-mix(in srgb, var(--color-text-primary) 18%, transparent)' }}
     >
       <span
-        className="absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white transition-all"
-        style={{ left: checked ? 18 : 2, boxShadow: '0 1px 2px rgba(0,0,0,.25)' }}
+        className="absolute top-[2px] h-[18px] w-[18px] rounded-full transition-all"
+        style={{ left: checked ? 18 : 2, background: checked ? 'var(--color-on-primary)' : 'var(--cx-gray-0)', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }}
       />
     </button>
   )
