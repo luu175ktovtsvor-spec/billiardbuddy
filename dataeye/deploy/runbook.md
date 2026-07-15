@@ -1,6 +1,6 @@
 # dataeye 部署 Runbook(国内 app 机)
 
-> 📌 一步步照做的部署清单。目标机:owner 国内 app/staging 机(Postgres 18、Ubuntu、阿里云 ECS)。
+> 📌 一步步照做的部署清单。目标机:国内 app/staging 服务器(Postgres 18、Ubuntu、阿里云 ECS)。
 > 真实 IP/密码从服务器 `gw.env` 或密码管理器取,本文档一律用 `<占位>`,不写明文。
 > 当前部署步骤以本目录配置和服务文件为准。
 
@@ -208,7 +208,7 @@ systemctl restart cron   # 或 crond,视发行版而定
 
 ---
 
-## 9. owner 本地看库(不开公网 5432)
+## 9. 本地看库(不开公网 5432)
 
 PG 只绑 `127.0.0.1`,不对公网开放。本地看数走 SSH 隧道:
 
