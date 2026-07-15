@@ -1,6 +1,5 @@
 // 生图页组件：状态接线与布局。纯业务规则在 imageWorkbenchModel，
 // 画布操作在 imageWorkbenchCanvas，上传/版本落库在 imageWorkbenchAssets。
-
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Canvas, Path, Rect, Textbox } from 'fabric'
 import { Tooltip } from '../../components/shared/Tooltip'
@@ -73,10 +72,8 @@ import { addImageVersionFromJob, brandAssetFromPack, uploadWorkbenchImage } from
 import { CandidatePreview } from './CandidatePreview'
 import { executeImageGeneration, type PosterFields } from './imageWorkbenchGeneration'
 import { imageWorkbenchTaskReducer, initialImageWorkbenchTaskState } from './imageWorkbenchTaskState'
-
 export function CreationPage() {
   const workspaceRoot = useSettingsStore(state => state.workspaceRoot)
-  const activeConversationId = useSettingsStore(state => state.activeConvId)
   const [prompt, setPrompt] = useState('')
   const [sceneId, setSceneId] = useState(POSTER_TYPES[0]?.id ?? 'custom_poster')
   const [intent, setIntent] = useState<ImageIntent>('poster_text')
@@ -210,7 +207,6 @@ export function CreationPage() {
     }
     setCreativeBrief(null)
   }, [prompt, posterTitle, posterOffer, posterPrice, posterDate, posterAddress, posterPhone, posterCta, intent, ratio, quality, sceneId, referenceDescriptors.map(asset => `${asset.asset_id}:${asset.role}`).join('|'), portraitAuthorized])
-
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -225,7 +221,6 @@ export function CreationPage() {
     })()
     return () => { cancelled = true; abortRef.current?.abort() }
   }, [workspaceRoot])
-
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -635,7 +630,6 @@ export function CreationPage() {
       finishAction(ctrl)
     }
   }
-
   const createProjectFromImage = async (img: StudioImage): Promise<ImageWorkbenchProject> => {
     if (img.local_preview === true) {
       throw new Error('这张预览图片暂时无法编辑')
@@ -644,7 +638,7 @@ export function CreationPage() {
     const height = img.height ?? dimensionFromRatio(img.ratio ?? ratio).height
     return await workbenchApi.createProject({
       title: creativeBrief?.poster?.title || prompt.trim().slice(0, 80) || '未命名图片',
-      conversation_id: activeConversationId ?? undefined,
+      conversation_id: useSettingsStore.getState().activeConvId ?? undefined,
       working_dir: workspaceRoot ?? undefined,
       source_generation_id: img.generation_id,
       image_url: img.poster_url,
