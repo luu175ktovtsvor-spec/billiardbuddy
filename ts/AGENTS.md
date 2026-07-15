@@ -2,7 +2,7 @@
 
 `ts/CLAUDE.md` 是本目录的详细规则；根 `AGENTS.md` 和 `CLAUDE.md` 同时适用。
 
-- coding-agent 内核以 `~/Desktop/cc-haha-ref` 为重要行为参考，复杂边界先写对齐测试。
+- 用户要求参考某个 Agent 实现时，直接读取其当前本地源码或软件证据，并为复杂边界先写行为测试；不预设固定上游。
 - 使用 Bun 1.3.13 或更高版本；后端测试统一执行 `bun test`。
 - 会话、任务和元信息使用 JSONL/JSON 文件存储，不引入 SQL 数据库。
 - SSE 使用 `server.timeout(req, 0)` 和 async generator。

@@ -20,7 +20,7 @@ description: Implement Bun and TypeScript backend changes inside the owning modu
 
 - 不继续向 `ts/src/server/index.ts` 增加可独立成域的大段逻辑；HTTP 边界进入 `ts/src/server/routes`，应用编排进入 `ts/src/server/services`，领域逻辑留在对应主责目录。
 - 后端不得依赖 renderer；跨层类型只从 `ts/shared/contracts` 输出，route 在运行时解析不可信输入。
-- Agent 内核以 cc-haha 行为测试为准；产品功能不织进模型循环。
+- 用户要求对照外部 Agent 时，直接读取其当前源码或软件证据并写行为测试；不预设固定上游。产品功能不织进模型循环。
 - 本地状态使用 JSONL/JSON 和原子写入，不引入 SQL。
 - SSE 使用 async generator 并关闭 Bun 请求超时；原生 `.node` 能力遵守 sidecar 边界。
 - 权限、沙箱、路径、凭据和输出白标属于安全边界，修改时补刁钻失败用例。
