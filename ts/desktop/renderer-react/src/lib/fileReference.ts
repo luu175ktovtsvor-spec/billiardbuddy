@@ -1,6 +1,6 @@
 // 正文文件名识别(对齐 Codex markdown.fileReference):判断行内代码 `...` 是不是一个可打开的文件引用。
 // 规则:
-//   - 含 / 的路径(docs/plans/x.md、/abs/图.png):形状即认——basename 有扩展名、全串无代码字符。
+//   - 含 / 的路径(docs/方案.md、/abs/图.png):形状即认——basename 有扩展名、全串无代码字符。
 //   - 单文件名(package.json、README.md):必须在工作树里真实存在才认,防把 res.json、console.log
 //     这类代码点缀误当文件;树还没加载时返回 'need-tree',由调用方触发加载、树到位后重渲再判。
 // mac 优先:不认 C:\ 盘符路径(冒号/反斜杠都在排除字符里,Windows 对等在 Windows 波做)。

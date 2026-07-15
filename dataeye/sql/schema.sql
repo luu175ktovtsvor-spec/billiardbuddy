@@ -1,7 +1,6 @@
 -- dataeye/sql/schema.sql
 -- 六模块 DDL(原始层 + 整理层)。全部 CREATE TABLE IF NOT EXISTS,可重复执行、幂等。
 -- 执行:sudo -u postgres psql -d dataeye -f schema.sql
--- 设计出处:docs/plans/用户数据留存与利用-机制设计-2026-07-02.md PART1.2 / Task P1.S1 Step1
 
 -- 📥 原始落地层(收件箱):append-only,原样存每条上传原文,能回溯、能重解析。
 CREATE TABLE IF NOT EXISTS raw_inbox (

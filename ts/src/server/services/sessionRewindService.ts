@@ -217,7 +217,7 @@ async function computeTurnFileChanges(
  * - previewRewind/executeRewind:回退到某条 user 消息之前——预览算"回退会改动哪些文件",执行则真的把文件
  *   恢复回目标之前的状态 + 把 transcript 活跃链掰回去(Transcript.rewindTo,append-only、不重写历史)。
  *
- * 与 cc-haha 的有意分叉(详见 docs/alignment-notes.md):
+ * 与 cc-haha 的有意分叉:
  * 1) cc trimSessionMessagesFrom 是过滤后整份 transcript 重写;我们是追加一条 rewind-boundary 分支
  *    (Transcript.rewindTo),对外"活跃链被裁短"的行为等价,但存储上更贴近真 cc 的分支模型(append-only 保持)。
  * 2) cc 的 checkpoint 数据源是"每条 user 消息一份 trackedFileBackups 快照";我们从"每次写前像记录

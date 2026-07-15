@@ -33,7 +33,7 @@ npx @electron/asar extract "$ASAR" /tmp/chatgpt-asar   # 全量解包(~30s,211MB
 | 设计 token | `真实CSS摘录/全部设计token-1834条.txt` ✅ | — |
 | CSS | 6 份摘录(composer 工具条/头像/model-picker/page-layout/PR diff/消息导航 rail) | **另外 ~24 个 CSS 未摘**(`webview/assets/*.css`,如 plugins-page/onboarding-page/pdf-preview-panel/global-dictation…) |
 | 组件 JS(交互逻辑/DOM 结构) | `06-斜杠命令浮层.md`(反混淆读法全程示范) | **全部组件源码可挖**:主 bundle `app-initial~app-main~…js`(~8.8MB)含 composer/对话流/审批/命令面板;按 i18n key 反查组件位置 |
-| **i18n 功能全景** | 用法已入 `docs/plans/Codex前端对齐-差距清单-2026-07-12.md`(9697 keys 聚类 = 全功能地图) | 48 个语言包(`webview/assets/zh-CN-*.js` 等);**新功能对齐前先查这里**——比截图完整一个量级 |
+| **i18n 功能全景** | 用于核对 Codex 的功能名称与中文文案，不直接充当本项目待办 | 48 个语言包(`webview/assets/zh-CN-*.js` 等);新功能对齐前先查这里，比截图完整一个量级 |
 | 截图 | 9 张 ✅ | — |
 | 图标/字体 | 结论已记(lucide 149 + KaTeX) | 图标 JS 块可按名提取 |
 | 后端 | `Codex后端代码视图.md` ✅(asar + GitHub openai/codex) | `.vite/build/*` 主进程代码 |

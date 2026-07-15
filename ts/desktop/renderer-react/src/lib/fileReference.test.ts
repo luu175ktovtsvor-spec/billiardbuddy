@@ -15,7 +15,7 @@ const tree: TreeEntry[] = [
 
 describe('含 / 的路径:形状即认', () => {
   test('相对路径(中文名也认)', () => {
-    expect(fileRefFromCode('docs/plans/施工方案.md', null)).toEqual({ path: 'docs/plans/施工方案.md', name: '施工方案.md', sheet: false })
+    expect(fileRefFromCode('docs/施工方案.md', null)).toEqual({ path: 'docs/施工方案.md', name: '施工方案.md', sheet: false })
   })
   test('绝对路径 + 表格类标记', () => {
     expect(fileRefFromCode('/tmp/out/报表.xlsx', null)).toEqual({ path: '/tmp/out/报表.xlsx', name: '报表.xlsx', sheet: true })
