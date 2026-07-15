@@ -1,7 +1,4 @@
-// 设置全页(对齐 Codex 设置界面:整窗覆盖,左分组导航 + 右内容卡;源码规格 = settings.nav 四分组 +
-// settings.agent.permissionsMode「在选择器中显示 XX 权限」toggle 语义 + general.power.preventSleepWhileRunning)。
-// 只放有真实支撑的页:常规(权限显隐/防休眠/语言/专家模块)、外观(主题)、键盘快捷键(只读)、插件(跳转)、已归档任务。
-// 没有后端支撑的 Codex 项(语音/宠物/账户/钩子/Git/环境/工作树…)不做假入口——反 mock 铁律。
+// 设置页只展示有真实实现支撑的常规、外观、快捷键、插件和归档入口。
 import { useState, type ReactNode } from 'react'
 import { useUiStore, type ThemeMode } from '../stores/uiStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -15,7 +12,7 @@ import { t } from '../i18n'
 
 type SettingsNav = 'general' | 'appearance' | 'shortcuts' | 'archived'
 
-// —— 小件:开关(照 Codex toggle:蓝=开、灰=关;disabled 半透明)——
+// 设置开关使用主题主操作色，禁用态降低透明度。
 function Switch({ on, disabled, onChange, label }: { on: boolean; disabled?: boolean; onChange?: (v: boolean) => void; label: string }) {
   return (
     <button
@@ -54,7 +51,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mb-7">
       <h3 className="mb-2 px-1 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{title}</h3>
-      <div className="divide-y divide-[color:var(--color-border)] overflow-hidden rounded-xl" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+      <div className="divide-y divide-[color:var(--color-border)] overflow-hidden rounded-lg" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
         {children}
       </div>
     </section>
@@ -248,7 +245,7 @@ function NavRow({ icon, label, active, onClick, trailing }: { icon: ReactNode; l
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className="flex h-[32px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+      className="flex h-[30px] w-full items-center gap-2 rounded-[10px] px-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-primary)', background: active ? 'var(--color-surface-selected)' : undefined }}
     >
       <span className="flex h-4.5 w-4.5 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-secondary)' }}>{icon}</span>
@@ -276,26 +273,26 @@ export function SettingsPage() {
         <button
           type="button"
           onClick={() => setNav('chat')}
-          className="mb-3 flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+          className="mb-3 flex h-[30px] items-center gap-1.5 rounded-[10px] px-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
           style={{ color: 'var(--color-text-secondary)' }}
           data-testid="settings-back"
         >
           ← 返回应用
         </button>
-        <div className="px-2.5 pb-1 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>个人</div>
+        <div className="px-2 pb-1 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>个人</div>
         <NavRow icon={<IconSettings size={15} />} label="常规" active={pane === 'general'} onClick={() => setPane('general')} />
         <NavRow icon={<IconSun size={15} />} label="外观" active={pane === 'appearance'} onClick={() => setPane('appearance')} />
         <NavRow icon={<IconFolder size={15} />} label="键盘快捷键" active={pane === 'shortcuts'} onClick={() => setPane('shortcuts')} />
-        <div className="px-2.5 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>集成</div>
+        <div className="px-2 pb-1 pt-4 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>集成</div>
         <NavRow icon={<IconPuzzle size={15} />} label="插件" onClick={() => setNav('plugins')} trailing={<IconChevronRight size={13} style={{ color: 'var(--color-text-tertiary)' }} />} />
-        <div className="px-2.5 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>已归档</div>
+        <div className="px-2 pb-1 pt-4 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>已归档</div>
         <NavRow icon={<IconArchive size={15} />} label="已归档任务" active={pane === 'archived'} onClick={() => setPane('archived')} />
       </aside>
 
       {/* 右:内容区(标题 + 分组卡,居中限宽,照 Codex) */}
       <main className="min-w-0 flex-1 overflow-y-auto" style={{ background: 'var(--color-app-main)' }}>
         <div className="mx-auto w-full max-w-[760px] px-8 pb-16 pt-12">
-          <h1 className="mb-7 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{PANE_TITLE[pane]}</h1>
+          <h1 className="mb-7 text-[20px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{PANE_TITLE[pane]}</h1>
           {pane === 'general' && <GeneralPane />}
           {pane === 'appearance' && <AppearancePane />}
           {pane === 'shortcuts' && <ShortcutsPane />}

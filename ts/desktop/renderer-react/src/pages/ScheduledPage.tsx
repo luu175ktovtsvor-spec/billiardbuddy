@@ -125,14 +125,14 @@ export function ScheduledPage() {
           action={<PrimaryButton onClick={() => setEditing('new')}><IconPlus size={15} /> {t('scheduled.newTask')}</PrimaryButton>} />
 
         {tasks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl px-6 py-16 text-center" style={{ border: '1px dashed var(--color-border)' }}>
+          <div className="flex flex-col items-center justify-center rounded-lg px-6 py-16 text-center" style={{ border: '1px dashed var(--color-border)' }}>
             <IconTile muted><IconClock size={18} /></IconTile>
             <h2 className="mt-3 text-[15px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('scheduled.emptyTitle')}</h2>
             <p className="mt-1 max-w-[380px] text-[13px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{t('scheduled.emptyHint')}</p>
             <div className="mt-4"><PrimaryButton onClick={() => setEditing('new')}><IconPlus size={15} /> {t('scheduled.newTask')}</PrimaryButton></div>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl" style={{ border: '1px solid var(--color-border)' }}>
+          <div className="overflow-hidden rounded-lg" style={{ border: '1px solid var(--color-border)' }}>
             {tasks.map((task, i) => (
               <div key={task.id} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-[var(--color-surface-hover)]"
                 style={i > 0 ? { borderTop: '1px solid var(--color-border)' } : undefined}>

@@ -1,5 +1,4 @@
-// 插件页(照 Codex/ChatGPT「Plugins / Connectors」:主区卡片网格,给管家接能力/外部服务)。
-// 内置能力、领域包、已安装插件、MCP 和技能都消费真实后端状态。
+// 插件页展示真实的内置能力、领域包、插件、MCP 和技能状态。
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSettingsStore } from '../stores/settingsStore'
 import { Modal } from '../components/shared/Modal'
@@ -41,7 +40,7 @@ function StatusPill({ s }: { s: McpServerStatus }) {
     connected: { text: `已连接 · ${s.tools} 个工具`, color: 'var(--color-success)' },
     configured: { text: '已配置', color: 'var(--color-text-tertiary)' },
     disabled: { text: '已停用', color: 'var(--color-text-tertiary)' },
-    error: { text: '连接失败', color: 'var(--color-danger, #e5484d)' },
+    error: { text: '连接失败', color: 'var(--color-error)' },
   } as const
   const it = map[s.status] ?? map.configured
   return <span className="text-[12px]" style={{ color: it.color }}>{it.text}</span>
@@ -49,7 +48,7 @@ function StatusPill({ s }: { s: McpServerStatus }) {
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div className="flex flex-col rounded-xl p-4" style={{ border: '1px solid var(--color-border)' }}>
+    <div className="flex flex-col rounded-lg p-4" style={{ border: '1px solid var(--color-border)' }}>
       {children}
     </div>
   )
@@ -247,7 +246,7 @@ export function PluginsPage() {
         />
 
         {/* ① 内置能力 */}
-        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
           {t('plugins.builtinSection')}
         </h2>
         <div className="mb-8 grid grid-cols-2 gap-3">
@@ -266,7 +265,7 @@ export function PluginsPage() {
         </div>
 
         {/* ② 技能:当前项目实际可发现的系统/个人/项目/插件 Skill。 */}
-        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
           技能{skills.length > 0 ? ` · ${skills.length} 个` : ''}
         </h2>
         {skills.length > 0 ? (
@@ -295,7 +294,7 @@ export function PluginsPage() {
         ) : null}
 
         {/* ③ 领域包 */}
-        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
           {t('plugins.connectorSection')}
         </h2>
         <div className="mb-8 grid grid-cols-2 gap-3">
@@ -313,7 +312,7 @@ export function PluginsPage() {
                 style={
                   billiardsOn
                     ? { background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }
-                    : { background: 'var(--color-brand)', color: '#fff' }
+                    : { background: 'var(--color-brand)', color: 'var(--color-on-primary)' }
                 }
               >
                 {billiardsOn ? t('plugins.domainOn') : t('plugins.domainOff')}
@@ -326,7 +325,7 @@ export function PluginsPage() {
         </div>
 
         {/* ④ 已安装插件 */}
-        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
           已安装插件{plugins.length > 0 ? ` · ${plugins.length} 个` : ''}
         </h2>
         {plugins.length > 0 ? (
@@ -358,11 +357,11 @@ export function PluginsPage() {
           <p className="mb-8 text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>还没有安装插件。</p>
         ) : null}
         {loadFailed && (
-          <p className="mb-8 text-[12px]" style={{ color: 'var(--color-danger, #e5484d)' }}>部分扩展状态暂时无法读取。</p>
+          <p className="mb-8 text-[12px]" style={{ color: 'var(--color-error)' }}>部分扩展状态暂时无法读取。</p>
         )}
 
         {/* ⑤ MCP 连接器:一键启用预设 + 已装列表 + 添加 */}
-        <h2 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>
+        <h2 className="mb-2.5 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>
           MCP 服务
         </h2>
         <div className="grid grid-cols-2 gap-3">
@@ -379,7 +378,7 @@ export function PluginsPage() {
                   disabled={busy}
                   onClick={() => void enablePreset(p)}
                   className="rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-50"
-                  style={{ background: 'var(--color-brand)', color: '#fff' }}
+                  style={{ background: 'var(--color-brand)', color: 'var(--color-on-primary)' }}
                 >
                   {p.needsKey ? '需 key' : '启用'}
                 </button>
@@ -426,7 +425,7 @@ export function PluginsPage() {
           <button
             type="button"
             onClick={() => setAdding(true)}
-            className="flex flex-col items-center justify-center gap-2 rounded-xl px-4 py-6 text-center transition-colors hover:bg-[var(--color-surface-hover)]"
+            className="flex flex-col items-center justify-center gap-2 rounded-lg px-4 py-6 text-center transition-colors hover:bg-[var(--color-surface-hover)]"
             style={{ border: '1px dashed var(--color-border)' }}
           >
             <IconTile muted><IconPuzzle size={18} /></IconTile>
