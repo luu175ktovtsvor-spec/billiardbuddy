@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PluginListItem } from '../api/extensions'
-import { ExtensionTabs, extensionHeaderActionLabel, pluginContributionText, skillPresentation } from './PluginsPage'
+import { ExtensionTabs, extensionHeaderActionLabel, pluginContributionText, skillPresentation, visibleExtensionSkills } from './PluginsPage'
 
 test('扩展管理使用 Codex 式单一类型分段，而不是把所有能力铺在一页', () => {
   const html = renderToStaticMarkup(
@@ -68,4 +68,12 @@ test('扩展页只给有真实写入能力的分段显示添加动作', () => {
   expect(extensionHeaderActionLabel('plugins')).toBe('安装插件')
   expect(extensionHeaderActionLabel('mcp')).toBe('添加 MCP')
   expect(extensionHeaderActionLabel('skills')).toBeNull()
+})
+
+test('技能页隐藏只供 Agent 编排的工程流程', () => {
+  const base = { description: 'desc', source: 'skills' as const, layer: 'bundled' as const }
+  expect(visibleExtensionSkills([
+    { ...base, name: 'venue-daily-review', user_invocable: true },
+    { ...base, name: 'commit', user_invocable: false },
+  ]).map(skill => skill.name)).toEqual(['venue-daily-review'])
 })

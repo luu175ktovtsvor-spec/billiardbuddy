@@ -155,6 +155,10 @@ export function skillPresentation(skill: ExtensionSkill) {
   }
 }
 
+export function visibleExtensionSkills(skills: ExtensionSkill[]): ExtensionSkill[] {
+  return skills.filter(skill => skill.user_invocable)
+}
+
 /** 把表单里的「命令或 URL」拆成后端 add 入参:http/sse 开头当远程 url,否则当本机命令+参数。 */
 function parseTarget(name: string, target: string): AddMcpInput {
   const raw = target.trim()
@@ -287,9 +291,10 @@ export function PluginsPage() {
 
   const installedNames = new Set(servers.map((s) => s.name))
   const availablePresets = presets.filter(preset => !installedNames.has(preset.id))
+  const visibleSkills = visibleExtensionSkills(skills)
   const tabCounts: Record<ExtensionTab, number> = {
     plugins: plugins.length + 1,
-    skills: skills.length,
+    skills: visibleSkills.length,
     mcp: servers.length + availablePresets.length,
   }
 
@@ -420,8 +425,8 @@ export function PluginsPage() {
 
         {loaded && activeTab === 'skills' && (
           <div role="tabpanel" data-extension-panel="skills">
-            <SectionLabel>当前可用技能{skills.length > 0 ? ` · ${skills.length}` : ''}</SectionLabel>
-            {skills.length > 0 ? skills.map(skill => {
+            <SectionLabel>当前可用技能{visibleSkills.length > 0 ? ` · ${visibleSkills.length}` : ''}</SectionLabel>
+            {visibleSkills.length > 0 ? visibleSkills.map(skill => {
               const presentation = skillPresentation(skill)
               return (
                 <ExtensionRow
