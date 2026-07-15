@@ -106,8 +106,10 @@ import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoute
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
+import { createWorkflowRouteHandler } from './routes/workflowRoutes'
 import { createWorkspaceFileRouteHandler } from './routes/workspaceFileRoutes'
 import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
+import { createWorkflowRuntime } from './services/workflowRuntime'
 import { createAgentWebSocketHandler, upgradeAgentWebSocket, type AgentWsData } from './websocketHandler'
 import { hasControlPlaneAccess } from './middleware/controlPlaneAuth'
 import { createAgentSettingsRouteHandler } from './routes/agentSettingsRoutes'
@@ -305,32 +307,17 @@ export function startServer(opts: StartServerOptions = {}) {
   // 定时任务调度引擎(触发器)。到点 → 起一个真 agent 会话让模型在 cc 循环里用工具把任务干完(#66 衔接铁律,
   // 不是执行写死的 SOP 脚本)。fireTask 直接调进程内的 createTurnStream(= runAgentLoop),带任务配置的工作目录 +
   // 领域包(billiards_mode);无人值守故走 bypassPermissions(跳过审批，仍不越 fatal/显式 deny)。产出/状态写回运行历史。
+  // 经营工作流运行时(workflowRuntime.ts):工作流服务 + 定时任务触发装配。到点/每步都经
+  // createTurnStream 起真 agent 会话(无人值守走 bypassPermissions,仍不越 fatal/显式 deny)。
+  const workflowRuntime = createWorkflowRuntime({
+    stateRoot,
+    defaultWorkspaceDir: getDefaultWorkspaceDir,
+    createTurnStream: body => createTurnStream({ ...body }),
+  })
   const scheduledTasks = new ScheduledTaskRunner({
     store: desktopData,
     stateRoot,
-    fireTask: async (task, ctx) => {
-      const instruction = typeof task.instruction === 'string' ? task.instruction.trim() : ''
-      if (!instruction) return { status: 'failed', error: '定时任务没有指令内容,已跳过。' }
-      const conversationId = crypto.randomUUID()
-      const workingDir = stringOr(task.working_dir, getDefaultWorkspaceDir())
-      let finalText = ''
-      try {
-        const { stream } = await createTurnStream({
-          message: instruction,
-          conversationId,
-          working_dir: workingDir,
-          billiards_mode: task.billiards_mode === true,
-          permissionMode: 'bypassPermissions',
-        })
-        for await (const record of stream) {
-          if (ctx.signal?.aborted) break
-          if (record.event.type === 'final') finalText = record.event.text
-        }
-        return { status: 'completed', summary: finalText, conversationId }
-      } catch (err) {
-        return { status: 'failed', error: err instanceof Error ? err.message : String(err), conversationId }
-      }
-    },
+    fireTask: workflowRuntime.fireTask,
   })
   const turns = new TurnRegistry()
   // rewind/checkpoint 上层服务(对标 cc-haha sessionRewindService,存储走 Transcript.rewindTo 的 append-only 分支模型)。
@@ -1993,6 +1980,7 @@ export function startServer(opts: StartServerOptions = {}) {
   })
   const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
+  const handleWorkflowRoute = createWorkflowRouteHandler({ service: workflowRuntime.workflows, defaultWorkspaceRoot: getDefaultWorkspaceDir })
   const sessionArchive = new SessionArchiveService({
     sessions,
     archiveRoot: join(stateRoot, 'transcript-archives'),
@@ -2059,7 +2047,7 @@ export function startServer(opts: StartServerOptions = {}) {
     async fetch(req, server) {
       const preflight = localCorsPreflight(req)
       if (preflight) return preflight
-      await sessionStartupRecovery
+      await Promise.all([sessionStartupRecovery, workflowRuntime.startupCleanup])
       const response = await (async (): Promise<Response | undefined> => {
       const url = new URL(req.url)
 
@@ -2196,6 +2184,9 @@ export function startServer(opts: StartServerOptions = {}) {
 
       const scheduledTaskResponse = await handleScheduledTaskRoute(url, req)
       if (scheduledTaskResponse) return scheduledTaskResponse
+
+      const workflowResponse = await handleWorkflowRoute(url, req)
+      if (workflowResponse) return workflowResponse
 
       const storeDocsResponse = await handleStoreDocsRoute(url, req)
       if (storeDocsResponse) return storeDocsResponse
