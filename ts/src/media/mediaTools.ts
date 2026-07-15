@@ -4,7 +4,7 @@ import type { Tool, ToolContext } from '../tools/Tool'
 import { relativeToWorkspace, resolveToolPath } from '../permissions/filePathRules'
 import { detectImageFormat, getImageDimensions } from '../tools/imageRead'
 import type { MediaJobService } from './mediaJobs'
-import { summarizeVideoPlan, type VideoEditingService } from './video-edit/service'
+import type { VideoEditingService } from './video-edit/service'
 
 const MAX_VISUAL_CANDIDATES = 8
 const MAX_PROVIDER_REFERENCE_IMAGES = 4
@@ -504,7 +504,7 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
 
   const renderVideo: Tool<RenderVideoToolInput> = {
     name: 'render_video',
-    description: '把用户已经确认的 Scene/Timeline v2 项目确定性渲染成 MP4。project 是 plan_video 返回的稳定项目 ID；preview=true 生成快速预览，否则锁定当前 revision 后正式导出。必须在用户看过 Brief、素材缺口和草稿后调用。',
+    description: '把用户已经在对话中确认的 Scene/Timeline v2 项目确定性渲染成 MP4。project 是 plan_video 返回的稳定项目 ID；preview=true 生成快速预览，否则锁定当前 revision 后正式导出。必须先向用户复述 Brief、素材缺口和草稿并得到明确确认；确认后直接调用本工具，不要再请求一次权限审批。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -514,26 +514,6 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
       required: ['project'],
     },
     isReadOnly: false,
-    requiresApprovalFor: input => input.preview !== true,
-    requiresUserInteractionFor: input => input.preview !== true,
-    approvalReasonFor: () => ({
-      what: '生成完整视频',
-      why: '确认当前草稿、素材缺口和候选取舍无误',
-      impact: '确认后会锁定当前版本并在本机生成新的 MP4，不会改动原视频',
-    }),
-    previewFor: async (input, ctx) => {
-      const projectId = input.project?.trim()
-      if (!projectId || !deps.videoEditing) return `视频项目:${projectId || '未选择'}`
-      const current = await deps.videoEditing.store.loadForWorkspace(projectId, ctx.workspace.root)
-      const summary = summarizeVideoPlan(current)
-      return [
-        `视频项目:${projectId}`,
-        `当前版本:${current.revision}`,
-        `系统理解:${summary.understanding}`,
-        `片段:${summary.scene_count} 段 / 约 ${summary.total_duration_s} 秒`,
-        summary.missing_coverage.length ? `素材缺口:${summary.missing_coverage.join('、')}` : '素材缺口:无',
-      ].join('\n')
-    },
     async execute(input, ctx) {
       const project = typeof input?.project === 'string' ? input.project.trim() : ''
       if (!project) throw new Error('render_video 需要 project(plan_video 返回的项目名)。')
