@@ -259,6 +259,7 @@ export function startServer(opts: StartServerOptions = {}) {
     return resolveTrustedMcpConfig({ configPath, workspaceRoot, explicit: explicit || !!opts.mcpConfigPath, store: mcpTrust })
   }
   const sessions = new SessionService(stateRoot)
+  const sessionStartupRecovery = sessions.recoverStaleRunningSessions()
   const providers = new ProviderService(opts.providerRoot ?? stateRoot)
   const desktopData = new DesktopDataStore(stateRoot)
   const userSettings = new UserSettingsStore(stateRoot)
@@ -2058,6 +2059,7 @@ export function startServer(opts: StartServerOptions = {}) {
     async fetch(req, server) {
       const preflight = localCorsPreflight(req)
       if (preflight) return preflight
+      await sessionStartupRecovery
       const response = await (async (): Promise<Response | undefined> => {
       const url = new URL(req.url)
 

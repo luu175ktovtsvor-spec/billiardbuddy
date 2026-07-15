@@ -6099,6 +6099,30 @@ test('session archive route is wired through startServer and preserves provider 
   }
 })
 
+test('server startup recovers a prior process running marker before session management', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'session-startup-recovery-'))
+  const previousProcess = new SessionService(root)
+  await previousProcess.create({ id: 'stale-running', title: '遗留任务', workspaceRoot: root })
+  await previousProcess.touch('stale-running', { status: 'running' })
+  const recoveredServer = startServer({ port: 0, transcriptRoot: root })
+  try {
+    const listed = await (await fetch(`http://127.0.0.1:${recoveredServer.port}/sessions`)).json() as {
+      sessions: Array<{ id: string; status?: string }>
+    }
+    expect(listed.sessions.find(session => session.id === 'stale-running')).toMatchObject({ status: 'interrupted' })
+
+    const archived = await fetch(`http://127.0.0.1:${recoveredServer.port}/sessions/stale-running`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    })
+    expect(archived.status).toBe(200)
+    expect(await archived.json()).toMatchObject({ session: { status: 'interrupted', archived: true } })
+  } finally {
+    recoveredServer.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('session rewind routes are wired through startServer for both compatible prefixes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'session-rewind-route-'))
   const svc = new SessionService(root)

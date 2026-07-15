@@ -221,6 +221,24 @@ test('SessionService:touch can mark turn status', async () => {
   }
 })
 
+test('SessionService:新进程只把遗留 running 会话恢复为 interrupted', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sessions-recover-running-'))
+  try {
+    const previousProcess = new SessionService(root)
+    await previousProcess.create({ id: 'stale', title: '遗留任务', workspaceRoot: root })
+    await previousProcess.touch('stale', { status: 'running' })
+    await previousProcess.create({ id: 'idle', title: '正常任务', workspaceRoot: root })
+
+    const nextProcess = new SessionService(root)
+    expect(await nextProcess.recoverStaleRunningSessions()).toBe(1)
+    expect(await nextProcess.get('stale')).toMatchObject({ status: 'interrupted' })
+    expect(await nextProcess.get('idle')).toMatchObject({ status: 'idle' })
+    expect(await nextProcess.recoverStaleRunningSessions()).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('TurnRegistry:同 session 新 turn 会中断旧 turn,finish 只清自己的 controller', () => {
   const reg = new TurnRegistry()
   const c1 = reg.start('s1')
