@@ -45,7 +45,7 @@ export interface FireTaskResult {
   conversationId?: string
 }
 
-/** 触发一个任务 = 起一个真 agent 会话(见 index.ts 的注入实现)。 */
+/** 触发一个任务 = 起一个真 agent 会话或整条经营工作流(见 services/workflowRuntime.ts 的注入实现)。 */
 export type FireTask = (
   task: JsonObject,
   ctx: { runId: string; manual: boolean; signal?: AbortSignal },

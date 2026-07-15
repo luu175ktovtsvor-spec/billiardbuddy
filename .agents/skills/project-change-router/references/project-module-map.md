@@ -27,7 +27,8 @@
 | MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
 | 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
 | Remote Bridge | `tasks/bridge*`、`server/routes/bridgeSessionRoutes.ts`、`server/routes/bridgeWorkerRoutes.ts` | 远程控制会话数据面、消息传输与 worker 生命周期 |
-| 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史 |
+| 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史；任务可经 `workflow_id` 引用经营工作流 |
+| 经营工作流 | `ts/src/workflows`、`ts/shared/contracts/workflows.ts`、`server/routes/workflowRoutes.ts` | 确定性多步编排:定义(内置+用户 JSON)、运行记录与失败关闭;每步经注入的 runTurn(server 装配 createTurnStream)跑真 Agent 回合,整条运行共用一个会话 |
 | 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（生成编排与任务状态独立于 `ImageWorkbenchPage.tsx`，`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 单一 V2 视频真相源：Brief、Scene/Timeline、素材证据、规划、预览与渲染；旧 V1 项目只在 `projectStore.ts` 读取并迁移 |
 | 语音与口播转录 | `ts/src/media/remoteTranscription.ts`、`ts/src/server/services/voiceTranscription.ts`、`ts/shared/contracts/voice.ts`、`gateway/transcription.ts` | 客户端录音/音轨上传、远程文本与时间戳契约、服务器 Whisper 或上游 ASR provider |
