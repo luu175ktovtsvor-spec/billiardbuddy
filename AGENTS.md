@@ -15,10 +15,10 @@
 ## 工程边界
 
 - 跨层契约统一放在 `ts/shared/contracts`，由 Zod Schema 推导类型并在边界解析。
-- 功能修改与结构重构分开。默认直接在 `main` 分支开发并使用小提交；除非用户明确要求，不新建或切换功能分支。
+- 功能修改与结构重构分开。默认直接在 `main` 分支开发；每完成一个边界清晰且聚焦验证通过的主责模块修复，就单独 commit 一次。跨模块任务按主责模块拆成连续小提交，不把无关模块捆成一个大提交；除非用户明确要求，不新建或切换功能分支。
 - 新增、删除、改名、拆分或合并模块，或改变连接、部署、验证流程时，同次执行 `.agents/skills/maintain-project-skills/SKILL.md`。
 - 涉及凭据、本地命令、远程服务或扩展边界时执行 `audit-security-boundaries`；制作安装包时执行 `release-desktop-safely`。
-- 声明完成、提交或交付前运行 `bash scripts/quality_gate.sh`，保持 `main` 可构建、可回滚。
+- 模块级中间提交前运行该模块的聚焦验证；整个任务的最终提交、声明完成或交付前运行 `bash scripts/quality_gate.sh`，保持 `main` 可构建、可回滚。
 
 ## 文档
 
