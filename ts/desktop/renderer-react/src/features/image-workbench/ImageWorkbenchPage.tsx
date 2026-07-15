@@ -73,7 +73,6 @@ import { CandidatePreview } from './CandidatePreview'
 import { executeImageGeneration, type PosterFields } from './imageWorkbenchGeneration'
 import { imageWorkbenchTaskReducer, initialImageWorkbenchTaskState } from './imageWorkbenchTaskState'
 export function CreationPage() {
-  const activeConversationId = useSettingsStore(state => state.activeConvId)
   const workspaceRoot = useSettingsStore(state => state.workspaceRoot)
   const [prompt, setPrompt] = useState('')
   const [sceneId, setSceneId] = useState(POSTER_TYPES[0]?.id ?? 'custom_poster')
@@ -593,9 +592,7 @@ export function CreationPage() {
         referenceUrls,
         referenceAssets: referenceDescriptors,
         portraitAuthorized,
-        creativeBrief,
-        conversationId: activeConversationId ?? undefined,
-        workspaceRoot: workspaceRoot ?? undefined,
+        creativeBrief, conversationId: useSettingsStore.getState().activeConvId ?? undefined, workspaceRoot: workspaceRoot ?? undefined,
       }, {
         signal: ctrl.signal,
         onJobStarted: jobId => dispatchTask({ type: 'job-started', jobId }),
@@ -907,9 +904,7 @@ export function CreationPage() {
         reference_assets: projectReferenceDescriptors,
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
-        conversation_id: activeConversationId ?? undefined,
-        working_dir: workspaceRoot ?? undefined,
+        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined, conversation_id: useSettingsStore.getState().activeConvId ?? undefined, working_dir: workspaceRoot ?? undefined,
       })
       dispatchTask({ type: 'job-started', jobId: job_id })
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在修改图片…') }) })
@@ -942,9 +937,7 @@ export function CreationPage() {
         reference_assets: projectReferenceDescriptors,
         portrait_consent: portraitAuthorized,
         portrait_authorization_confirmed: portraitAuthorized,
-        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined,
-        conversation_id: activeConversationId ?? undefined,
-        working_dir: workspaceRoot ?? undefined,
+        input_fidelity: projectReferenceDescriptors.length > 0 ? 'high' : undefined, conversation_id: useSettingsStore.getState().activeConvId ?? undefined, working_dir: workspaceRoot ?? undefined,
       })
       dispatchTask({ type: 'job-started', jobId: job_id })
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在修改图片…') }) })
@@ -967,11 +960,7 @@ export function CreationPage() {
     if (!project || !currentVersion) return
     const ctrl = beginAction('正在生成高清图片…')
     try {
-      const { job_id } = await studioApi.upscale({
-        ...sourceForUpscale(currentVersion),
-        conversation_id: activeConversationId ?? undefined,
-        working_dir: workspaceRoot ?? undefined,
-      })
+      const { job_id } = await studioApi.upscale({ ...sourceForUpscale(currentVersion), conversation_id: useSettingsStore.getState().activeConvId ?? undefined, working_dir: workspaceRoot ?? undefined })
       dispatchTask({ type: 'job-started', jobId: job_id })
       const job = await pollJob(job_id, { signal: ctrl.signal, intervalMs: 600, onProgress: (p: number, s?: string) => dispatchTask({ type: 'progress', progress: p, stage: friendlyImageStage(s, '正在生成高清图片…') }) })
       const next = await addImageVersionFromJob(project, currentVersion, job, 'upscale', '高清放大')
