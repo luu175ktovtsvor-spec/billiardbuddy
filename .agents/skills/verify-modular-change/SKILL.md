@@ -16,7 +16,7 @@ description: Verify a completed modular change against its declared ownership, c
 5. IPC：main/preload/desktopHost 三层和 `desktop:build` 是否通过？
 6. 跨服务：旧请求、鉴权、失败、部署顺序和回滚是否验证？
 7. 运行面：真启动、真调用接口或真点用户路径，记录实际观察结果。
-8. 文档：只有架构、部署、现行状态确实变化时才更新对应唯一真相源；删除被取代的旧口径。
+8. 文档：只有稳定架构边界、部署入口或产品约束变化时才更新；当前实现由代码和测试表达，不维护第二份实现清单，并删除被取代的旧口径。
 9. Skill：若新增/删除/改名模块，或连接、部署、验证流程变化，同次执行 `maintain-project-skills`；普通内部实现不更新。
 10. 新文件：复查新增文件内容和归属；密钥扫描必须覆盖已跟踪及未跟踪且未被忽略的文件。
 11. 机械质量门：边界清晰的模块级中间提交先跑该模块的聚焦测试、必要的 typecheck 和 `git diff --check`；整个任务的最终提交、声明完成、打包或发布前运行 `bash scripts/quality_gate.sh`。任何失败都不能用文字说明代替修复。

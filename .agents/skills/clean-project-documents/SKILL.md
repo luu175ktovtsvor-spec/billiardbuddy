@@ -9,7 +9,7 @@ description: Quickly identify project documentation that explicitly marks itself
 
 ## 清理流程
 
-1. 读取根 `AGENTS.md`、`CLAUDE.md` 和 `docs/README.md`，排除权威入口与当前真相源。
+1. 读取根 `AGENTS.md`、`CLAUDE.md` 和 `docs/README.md`，排除权威入口与仍有效的稳定边界文档；不得把文档当作当前实现事实源。
 2. 运行 `node scripts/doc_freshness.mjs` 获取显式标记为可删、历史、已否决或久未核对的候选。
 3. 对每个候选搜索现行文档、代码注释和配置引用；仍被引用、状态冲突或包含未完成待办时，不列为直接删除。
 4. 在修改前向用户提交候选清单，写明路径、状态依据、引用结果和建议；等待明确确认。
