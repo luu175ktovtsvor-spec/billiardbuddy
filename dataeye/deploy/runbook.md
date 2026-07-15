@@ -172,7 +172,7 @@ sudo -u postgres psql -d dataeye -c "SELECT * FROM events ORDER BY id DESC LIMIT
 
 ---
 
-## 7. 装报表物化视图(P1.S2 看板用)
+## 7. 安装报表物化视图
 
 ```bash
 sudo -u postgres psql -d dataeye -f /opt/dataeye/sql/marts.sql
