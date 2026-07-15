@@ -144,6 +144,23 @@ export class SessionService {
     this.indexPath = join(rootDir, 'sessions.json')
   }
 
+  /**
+   * A new sidecar cannot still own turns from the previous process. Reconcile only
+   * persisted running markers; turns started by this process are registered later.
+   */
+  async recoverStaleRunningSessions(): Promise<number> {
+    const index = await this.readIndex()
+    const timestamp = nowIso()
+    let recovered = 0
+    for (const [id, meta] of index) {
+      if (meta.status !== 'running') continue
+      index.set(id, { ...meta, status: 'interrupted', updatedAt: timestamp })
+      recovered++
+    }
+    if (recovered > 0) await this.writeIndex(index)
+    return recovered
+  }
+
   async list(filter?: { workspaceRoot?: string }): Promise<SessionMeta[]> {
     let index = await this.readIndex()
     // 缓存空(丢失/损坏/首次)但盘上有事件日志 → 从内嵌 provenance 重建缓存并回写。
