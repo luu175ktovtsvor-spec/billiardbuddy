@@ -124,6 +124,27 @@ test('video jobs become retryable errors when component preparation times out', 
   expect(failed?.error?.message).toContain('组件准备超时')
 })
 
+test('ambient preference still uses automatic audio classification before planning', async () => {
+  const { source, service } = setup()
+  let transcription: string | undefined
+  service.evidence.analyze = async (projectId, _ctx, options) => {
+    transcription = options?.transcription
+    return await service.store.load(projectId)
+  }
+
+  const created = await service.createPlannedProject({
+    video_paths: [source],
+    user_request: '展示真实环境',
+  }, {
+    user_request: '展示真实环境',
+    preferred_view: 'ambient',
+  })
+  const done = await waitFor(() => service.getJob(created.job.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
+
+  expect(done?.status === 'done' || done?.status === 'done_with_warnings').toBe(true)
+  expect(transcription).toBe('auto')
+})
+
 test('continuing an existing video project waits for FFmpeg and ffprobe before drafting', async () => {
   const { root, source, tasks, env } = setup()
   const requested: string[][] = []

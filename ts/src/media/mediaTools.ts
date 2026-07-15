@@ -63,6 +63,18 @@ interface PlanVideoToolInput {
   project?: string
 }
 
+const TALKING_VIDEO_REQUEST_RE = /口播|采访|讲解|解说|旁白|直播切片|有人说话/u
+const AMBIENT_VIDEO_REQUEST_RE = /环境|氛围|空镜|场地|空间|卡点|现场集锦/u
+
+function explicitVideoView(input: PlanVideoToolInput): 'talking' | 'ambient' | undefined {
+  const request = input.goal?.trim() ?? ''
+  const talking = TALKING_VIDEO_REQUEST_RE.test(request)
+  const ambient = AMBIENT_VIDEO_REQUEST_RE.test(request)
+  if (input.mode === 'speech' && talking && !ambient) return 'talking'
+  if (input.mode === 'ambient' && ambient && !talking) return 'ambient'
+  return undefined
+}
+
 interface RenderVideoToolInput {
   /** plan_video 返回的项目名(必填)。 */
   project: string
@@ -457,7 +469,7 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
 
   const planVideo: Tool<PlanVideoToolInput> = {
     name: 'plan_video',
-    description: '把用户提供的真实视频素材编排成可解释草稿。goal 必须忠实保留用户原始目标，不得注入 PPT、台球运营打法、价格、人物设定、CTA 或用户未提供的营销事实。后端统一编译 VideoCreativeBrief，再分析素材并生成共享 Scene/Timeline v2 和 3 个候选；mode 只决定先从“讲清一件事”或“展示环境与氛围”视图开始，两种视图共用同一项目。返回异步任务后查询进度并向用户复述理解、素材缺口和候选取舍；用户确认后再调用 render_video。',
+    description: '分析用户选择的本机视频素材并生成可解释的 Scene/Timeline 草稿和 3 个候选方案。goal 忠实传递用户的剪辑目标；只有用户明确说这是口播或环境素材时才传 mode，拿不准就省略，由后端根据音轨、转录和代表画面判断。任务完成后复述素材理解、主要选段、缺口和候选取舍，用户确认方案后再调用 render_video。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -476,7 +488,7 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
       if (!paths.length && !requestedProjectId) throw new Error('plan_video 需要 video_paths(新项目)或 project(当前工作文件夹中的已有项目)。')
       if (!deps.videoEditing) throw new Error('视频 V2 编辑服务未连接')
       const userRequest = input.goal?.trim() || '根据这些真实素材剪成一条完整、自然的视频'
-      const preferredView = input.mode === 'speech' ? 'talking' : input.mode === 'ambient' ? 'ambient' : undefined
+      const preferredView = explicitVideoView(input)
       const ratio = input.aspect === '1:1' || input.aspect === '16:9' ? input.aspect : '9:16'
       const targetDurationMs = typeof input.target_duration_s === 'number' ? Math.round(input.target_duration_s * 1000) : undefined
       let projectId = requestedProjectId

@@ -369,8 +369,7 @@ test('plan_video tool compiles the shared brief and starts a v2 draft task', asy
     const videoEditing = new VideoEditingService({ stateRoot: root, tasks, env: { PATH: '', FFMPEG_BIN: ffmpeg, FFPROBE_BIN: ffprobe, WHISPER_CLI: '/missing' } })
     const tool = createMediaTools(media, { videoEditing }).find(t => t.name === 'plan_video')
     expect(tool).toBeTruthy()
-    expect(tool!.description).not.toContain('门店卖点')
-    expect(tool!.description).not.toContain('PPT 正文')
+    expect(tool!.description).not.toMatch(/PPT|台球运营|CTA|门店卖点/)
     const output = await tool!.execute({ video_paths: [source], goal: '展示真实环境', mode: 'ambient', target_duration_s: 12 }, {
       workspace: new Workspace(root),
       conversationId: 'c-plan',
@@ -394,6 +393,39 @@ test('plan_video tool compiles the shared brief and starts a v2 draft task', asy
     expect(projects[0]?.creative_brief?.user_request).toBe('展示真实环境')
     expect(projects[0]?.creative_brief?.preferred_view).toBe('ambient')
     expect(projects[0]).toMatchObject({ conversation_id: 'c-plan', working_dir: root })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('plan_video does not let a model-guessed ambient mode override an unclassified user request', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-mode-evidence-'))
+  try {
+    const source = join(root, '1.mp4')
+    writeFileSync(source, 'video-source')
+    let brief: Record<string, unknown> | undefined
+    const videoEditing = {
+      async createPlannedProject(_input: unknown, inputBrief: Record<string, unknown>) {
+        brief = inputBrief
+        return {
+          project: { project_id: 'video-evidence-first' },
+          job: { job_id: 'job-evidence-first', project_id: 'video-evidence-first' },
+        }
+      },
+    } as unknown as VideoEditingService
+    const tool = createMediaTools({} as MediaJobService, { videoEditing }).find(item => item.name === 'plan_video')!
+
+    await tool.execute({
+      video_paths: [source],
+      goal: '展示助教的风采和魅力',
+      mode: 'ambient',
+    }, {
+      workspace: new Workspace(root),
+      conversationId: 'c-evidence-first',
+      permissionMode: 'full',
+    })
+
+    expect(brief?.preferred_view).toBeUndefined()
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
