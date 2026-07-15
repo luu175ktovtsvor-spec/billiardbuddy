@@ -331,7 +331,7 @@ export class VideoEvidenceService {
       })
       const audioPath = join(evidenceDir, `${source.id}.audio.json`)
       await atomicJson(audioPath, audioValue)
-      evidence.push(evidenceRef(source, 'audio', audioPath, 'ffprobe-and-local-asr', 'v1'))
+      evidence.push(evidenceRef(source, 'audio', audioPath, `ffprobe-and-${this.asr.id}`, this.asr.version))
 
       const roleValue = videoSourceRoleEvidenceSchema.parse({ source_id: source.id, selected_role: source.role, suggestions })
       const rolePath = join(evidenceDir, `${source.id}.source-role.json`)
