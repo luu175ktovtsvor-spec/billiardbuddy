@@ -37,13 +37,11 @@ interface UiState {
   theme: ThemeMode
   effectiveTheme: 'light' | 'dark'
   sidebarCollapsed: boolean
-  terminalOpen: boolean
   paletteOpen: boolean
   nav: MainNav
   setTheme: (mode: ThemeMode) => void
   toggleTheme: () => void
   toggleSidebar: () => void
-  toggleTerminal: () => void
   setPaletteOpen: (open: boolean) => void
   setNav: (nav: MainNav) => void
 }
@@ -52,11 +50,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   theme: readStoredTheme(),
   effectiveTheme: resolveEffective(readStoredTheme()),
   sidebarCollapsed: false,
-  terminalOpen: false,
   paletteOpen: false,
   nav: 'chat',
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-  toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   setNav: (nav) => set({ nav }),
   setTheme: (mode) => {

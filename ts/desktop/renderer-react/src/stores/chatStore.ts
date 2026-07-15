@@ -396,7 +396,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         break
       }
       case 'tool_progress': {
-        // 实时输出:把真实 stdout/stderr 文本累加进最近一个同名 running 工具块,供终端面板 + 对话展开行
+        // 实时输出:把真实 stdout/stderr 文本累加进最近一个同名 running 工具块，供对话工具行展开。
         // 逐块实时滚动(此前只累加 chunk.length 当「N 字」、把文本丢了 = 看不到命令实际在跑什么)。
         // 同时保留 liveChars 计数(折叠行「N 字」摘要);文本按尾部截断防长命令无限增长。
         const chunk = typeof ev.chunk === 'string' ? ev.chunk : ''
