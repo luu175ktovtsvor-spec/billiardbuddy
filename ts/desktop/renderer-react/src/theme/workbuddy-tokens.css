@@ -1,6 +1,6 @@
 /* ============================================================================
- * 桌面主题层(浅蓝 accent):
- *   蓝只做强调(主按钮/发送、选中/激活、焦点环、链接);文字/表面仍中性近黑灰。
+ * 桌面主题层:
+ *   主操作与选中态使用中性色；蓝色只保留给链接和键盘焦点等语义反馈。
  * 结构:Layer 1 palette(--cx-* 原子色)→ Layer 2 semantic(--color-* 组件消费名,只重写值)。
  * 文字/边框/图标从「前景色」用 color-mix 分级,不写死灰。
  * ==========================================================================*/
@@ -11,10 +11,10 @@
   --cx-gray-0:#fff;    --cx-gray-50:#f9f9f9; --cx-gray-75:#f3f3f3; --cx-gray-100:#ededed;
   --cx-gray-300:#afafaf; --cx-gray-500:#5d5d5d; --cx-gray-550:#4f4f4f; --cx-gray-600:#414141;
   --cx-gray-700:#303030; --cx-gray-750:#282828; --cx-gray-800:#212121; --cx-gray-900:#181818; --cx-gray-1000:#0d0d0d;
-  /* 浅蓝 accent */
-  --cx-blue:#0a84ff;        /* 浅色主强调 */
+  /* 链接与焦点语义色 */
+  --cx-blue:#0a84ff;
   --cx-blue-hover:#0069d6;
-  --cx-blue-dark:#409cff;   /* 深色主强调 */
+  --cx-blue-dark:#409cff;
   --cx-blue-300:#339cff; --cx-blue-400:#0285ff;
   /* 状态色 */
   --cx-green-300:#40c977; --cx-green-500:#00a240;
@@ -31,11 +31,11 @@
 /* —— Layer 2 · semantic(--color-* 名 + 值 · 浅色默认) —— */
 :root {
   --cx-fg: var(--cx-fg-light);
-  --cx-accent: var(--cx-blue);
+  --cx-accent: var(--cx-gray-900);
 
-  --color-primary: var(--cx-accent);           /* 主按钮/发送 = 浅蓝 */
-  --color-brand: var(--cx-accent);             /* 强调 = 浅蓝 */
-  --color-brand-tint: color-mix(in oklab, var(--cx-accent) 12%, transparent);
+  --color-primary: var(--cx-accent);
+  --color-brand: var(--cx-accent);
+  --color-brand-tint: color-mix(in oklab, var(--cx-fg) 8%, transparent);
   --color-on-primary: #ffffff;
 
   /* 三区底色(侧栏暖近白、主区白;仍中性) */
@@ -51,7 +51,7 @@
   --color-surface-container-highest: #e6e6e6;
   --color-surface-sidebar: var(--cx-gray-50);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 6%, transparent);      /* hover 仍中性 */
-  --color-surface-selected: color-mix(in oklab, var(--cx-accent) 13%, transparent); /* 选中/激活 = 浅蓝染 */
+  --color-surface-selected: color-mix(in oklab, var(--cx-fg) 8%, transparent);
   --color-surface-glass: var(--cx-gray-0);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 8%, transparent);
 
@@ -62,25 +62,24 @@
   --color-on-surface: var(--cx-fg);
   --color-on-surface-variant: color-mix(in oklab, var(--cx-fg) 70%, transparent);
 
-  /* 边框:前景分级;焦点 = 浅蓝 */
+  /* 边框从前景色分级；焦点保留蓝色可访问性语义。 */
   --color-border: color-mix(in oklab, var(--cx-fg) 8%, transparent);
   --color-border-strong: color-mix(in oklab, var(--cx-fg) 12%, transparent);
-  --color-border-focus: var(--cx-accent);
-  --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
+  --color-border-focus: var(--cx-blue);
+  --color-focus-ring: color-mix(in oklab, var(--cx-blue) 70%, transparent);
 
   --color-error: var(--cx-red-500);
   --color-success: var(--cx-green-500);
   --color-warning: var(--cx-orange-500);
 
-  /* 文件名链接蓝(与 accent 同蓝系) */
+  /* 文件名链接蓝 */
   --color-link: #006ab1;
   --color-link-hover: var(--cx-blue-hover);
 
   --color-bubble-user: var(--cx-gray-100);     /* 用户气泡 = 浅灰(仍中性,不抢蓝) */
 
-  /* 吉祥物(浅蓝系,呼应新风格) */
-  --color-smiley-a: var(--cx-blue);
-  --color-smiley-b: var(--cx-blue-400);
+  --color-smiley-a: var(--cx-gray-900);
+  --color-smiley-b: var(--cx-gray-600);
 
   --font-body: var(--wb-font);
   --font-headline: var(--wb-font);
@@ -88,19 +87,19 @@
   --font-mono: var(--wb-font-mono);
 
   --radius-sm: 6px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 12px; --radius-2xl: 16px; --radius-full: 9999px;
-  --shadow-input: 0 4px 8px -2px #0000001a, 0 0 0 .5px #0000001a;
+  --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
   --shadow-popover: 0 8px 16px -4px #0000001f, 0 0 0 .5px #0000001a;
 }
 
 /* —— 深色 —— */
 :root[data-theme="dark"] {
   --cx-fg: var(--cx-fg-dark);
-  --cx-accent: var(--cx-blue-dark);
+  --cx-accent: #f5f5f5;
 
   --color-primary: var(--cx-accent);
   --color-brand: var(--cx-accent);
-  --color-brand-tint: color-mix(in oklab, var(--cx-accent) 20%, transparent);
-  --color-on-primary: #ffffff;
+  --color-brand-tint: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+  --color-on-primary: var(--cx-gray-900);
 
   --color-app-sidebar: var(--cx-gray-900);
   --color-app-main: var(--cx-gray-800);
@@ -114,14 +113,14 @@
   --color-surface-container-highest: var(--cx-gray-600);
   --color-surface-sidebar: var(--cx-gray-900);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-  --color-surface-selected: color-mix(in oklab, var(--cx-accent) 24%, transparent);
+  --color-surface-selected: color-mix(in oklab, var(--cx-fg) 10%, transparent);
   --color-surface-glass: var(--cx-gray-750);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
 
   --color-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
   --color-border-strong: color-mix(in oklab, var(--cx-fg) 16%, transparent);
-  --color-border-focus: var(--cx-accent);
-  --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
+  --color-border-focus: var(--cx-blue-dark);
+  --color-focus-ring: color-mix(in oklab, var(--cx-blue-dark) 70%, transparent);
 
   --color-error: var(--cx-red-300);
   --color-success: var(--cx-green-300);
@@ -131,10 +130,10 @@
   --color-link: #3794ff;
   --color-link-hover: #7ab8e8;
 
-  --color-smiley-a: var(--cx-blue-dark);
-  --color-smiley-b: var(--cx-blue-300);
+  --color-smiley-a: #f5f5f5;
+  --color-smiley-b: var(--cx-gray-300);
 
-  --shadow-input: 0 12px 28px -12px rgba(0,0,0,.55), 0 0 0 .5px rgba(255,255,255,.08);
+  --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
   --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
 }
 
@@ -142,11 +141,11 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --cx-fg: var(--cx-fg-dark);
-    --cx-accent: var(--cx-blue-dark);
+    --cx-accent: #f5f5f5;
     --color-primary: var(--cx-accent);
     --color-brand: var(--cx-accent);
-    --color-brand-tint: color-mix(in oklab, var(--cx-accent) 20%, transparent);
-    --color-on-primary: #ffffff;
+    --color-brand-tint: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+    --color-on-primary: var(--cx-gray-900);
     --color-app-sidebar: var(--cx-gray-900);
     --color-app-main: var(--cx-gray-800);
     --color-background: var(--cx-gray-800);
@@ -159,22 +158,22 @@
     --color-surface-container-highest: var(--cx-gray-600);
     --color-surface-sidebar: var(--cx-gray-900);
     --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-    --color-surface-selected: color-mix(in oklab, var(--cx-accent) 24%, transparent);
+    --color-surface-selected: color-mix(in oklab, var(--cx-fg) 10%, transparent);
     --color-surface-glass: var(--cx-gray-750);
     --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
     --color-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
     --color-border-strong: color-mix(in oklab, var(--cx-fg) 16%, transparent);
-    --color-border-focus: var(--cx-accent);
-    --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
+    --color-border-focus: var(--cx-blue-dark);
+    --color-focus-ring: color-mix(in oklab, var(--cx-blue-dark) 70%, transparent);
     --color-error: var(--cx-red-300);
     --color-success: var(--cx-green-300);
     --color-warning: var(--cx-orange-300);
     --color-bubble-user: var(--cx-gray-700);
     --color-link: #3794ff;
     --color-link-hover: #7ab8e8;
-    --color-smiley-a: var(--cx-blue-dark);
-    --color-smiley-b: var(--cx-blue-300);
-    --shadow-input: 0 12px 28px -12px rgba(0,0,0,.55), 0 0 0 .5px rgba(255,255,255,.08);
+    --color-smiley-a: #f5f5f5;
+    --color-smiley-b: var(--cx-gray-300);
+    --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
     --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
   }
 }
