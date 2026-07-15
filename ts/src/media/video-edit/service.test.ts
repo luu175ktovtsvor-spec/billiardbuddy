@@ -42,6 +42,13 @@ test('video service connects create -> analyze -> brief -> drafts on one v2 proj
   const draftStart = await service.startDrafts(created.project.project_id)
   const drafted = await waitFor(() => service.getJob(draftStart.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
   expect(drafted?.result?.alternative_ids).toHaveLength(3)
+  expect(drafted?.result?.plan_summary).toMatchObject({
+    understanding: '展示环境与氛围 / 做一条自然的环境短片 / 1 段素材',
+    preferred_view: 'ambient',
+    source_count: 1,
+    scene_count: 1,
+  })
+  expect(JSON.stringify(drafted?.result?.plan_summary)).not.toContain(source)
   const project = await service.store.load(created.project.project_id)
   expect(project.scenes.length).toBeGreaterThan(0)
   expect(project.status.missing_coverage.length).toBeGreaterThan(0)

@@ -345,9 +345,16 @@ test('plan_video tool compiles the shared brief and starts a v2 draft task', asy
     })
     expect(output).toContain('<media_job_started')
     expect(output).toContain('kind="video_v2_drafts"')
-    await waitFor(async () => {
+    const task = await waitFor(async () => {
       const task = (await tasks.list({ conversationId: 'c-plan' }))[0]
       return task?.status === 'completed' ? task : null
+    })
+    expect(task.result).toMatchObject({
+      plan_summary: {
+        preferred_view: 'ambient',
+        source_count: 1,
+        scene_count: 1,
+      },
     })
     const projects = await videoEditing.store.list()
     expect(projects).toHaveLength(1)
