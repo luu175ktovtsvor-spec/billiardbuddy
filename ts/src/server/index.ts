@@ -130,8 +130,8 @@ export interface StartServerOptions {
   mediaBackendUrl?: string
   /** 资产管理器注入(测试用);缺省按 stateRoot/env/fetchImpl 自建。 */
   assetManager?: AssetManager
-  /** 是否启动后台资产下载调度。默认:测试环境(NODE_ENV=test)不启,其余启;
-   * env QF_ASSETS_AUTOSTART=0 可显式关(开发机不想联网下资产时)。 */
+  /** 是否初始化资产清单和按需下载调度。默认:测试环境(NODE_ENV=test)不启,其余启;
+   * env QF_ASSETS_AUTOSTART=0 可显式关(开发机不想访问资产清单时)。 */
   assetAutoStart?: boolean
   /** 是否启动定时任务调度引擎(到点起真 agent 会话)。默认:测试环境不启,其余启;env QF_SCHEDULER=0 显式关。 */
   scheduledTasksAutoStart?: boolean
@@ -277,7 +277,7 @@ export function startServer(opts: StartServerOptions = {}) {
     workbenchStore: imageWorkbench,
   })
   const handleImageWorkbenchRoute = createImageWorkbenchRouteHandler(imageWorkbench, { defaultWorkspaceRoot: getDefaultWorkspaceDir() })
-  // 资产管理器(瘦安装包):FFmpeg/ffprobe 启动后准备，可选本地组件按功能准备；
+  // 资产管理器(瘦安装包):启动时只加载清单，本地组件在媒体功能真正需要时准备；
   // 默认远程转录不会下载 Whisper 权重。媒体调用点经进程级注册表拿 ready 路径。
   // 测试环境默认不启动(不碰网络)。
   const assets = opts.assetManager ?? new AssetManager({

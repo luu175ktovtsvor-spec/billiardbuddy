@@ -60,6 +60,12 @@ test('GET /api/v1/assets/status:返回清单版本/平台/逐资产状态(未启
 
   manager.start()
   await manager.whenIdle()
+  const initialized = await fetch(`http://127.0.0.1:${server.port}/api/v1/assets/status`)
+  const initializedBody = await initialized.json() as any
+  expect(initializedBody.assets.find((asset: any) => asset.id === 'ffmpeg')?.status).toBe('pending')
+
+  manager.ensureAsset('ffmpeg')
+  await manager.whenIdle()
   const after = await fetch(`http://127.0.0.1:${server.port}/api/v1/assets/status`)
   const body = await after.json() as any
   expect(body.manifest_version).toBe('v1')
@@ -81,6 +87,8 @@ test('WS /agent/ws:资产下载进度以 asset_progress 事件广播(downloading
   })
 
   manager.start()
+  await manager.whenIdle()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
   const deadline = Date.now() + 3000
   while (Date.now() < deadline) {

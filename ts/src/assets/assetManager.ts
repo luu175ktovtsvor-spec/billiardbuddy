@@ -1,12 +1,12 @@
-// 资产管理器:瘦安装包的另一半。安装包只装 app + 内核 + bundled md；FFmpeg/ffprobe
-// 由 Tier 1 在启动后准备，其他经过验证的可选组件可由 Tier 2 在功能需要时准备。
+// 资产管理器:瘦安装包的另一半。安装包只装 app + 内核 + bundled md；本地媒体组件
+// 统一在功能真正需要时准备，避免没有使用媒体能力的用户也下载 FFmpeg/ffprobe。
 //
 // 设计(业界标准 manifest 模式):
 // - 清单:QF_ASSET_MANIFEST_URL(默认大陆机 nginx 静态路径)拉 JSON;拉不到用本地缓存的
 //   上一份;都没有 → 指数退避静默重试,绝不弹错。
 // - 下载:<stateRoot>/assets/tmp/<id>.part,Range 断点续传(nginx 静态文件天然支持 206);
 //   SHA-256 校验通过才原子 rename 落位 <stateRoot>/assets/<id>/…;校验不过删掉重下。
-// - 调度:Tier1(ffmpeg/ffprobe)启动后自动串行下(一次一个,不抢满用户带宽);
+// - 调度:功能门按需请求资产，下载串行执行(一次一个,不抢满用户带宽);
 //   Whisper 只为显式本地离线模式保留兼容资产 id,远程转录失败不会触发下载。
 // - 状态:pending|downloading|verifying|ready|failed,持久化 state.json(文件式,无 SQL);
 //   启动时对 ready 资产做快速校验(存在 + 大小对,不必每次全量 hash)。
@@ -203,7 +203,7 @@ export class AssetManager {
     this.manifestRetryMaxMs = opts.manifestRetryMaxMs ?? 15 * 60_000
   }
 
-  /** 首启后调用:加载状态 → 快速校验 → 拉清单(退缓存/退避重试)→ 自动排 Tier1。幂等。 */
+  /** 首启后调用:加载状态 → 快速校验 → 拉清单(退缓存/退避重试)。不下载资产。幂等。 */
   start(): void {
     if (this.started || this.stopped) return
     this.started = true
@@ -458,9 +458,6 @@ export class AssetManager {
     for (const id of [...this.wanted]) {
       this.wanted.delete(id)
       if (specs.has(id) && !this.readyPath(id)) this.enqueue(id, { front: true })
-    }
-    for (const [id, spec] of specs) {
-      if (spec.tier === 1 && this.state.assets[id]?.status !== 'ready') this.enqueue(id)
     }
   }
 

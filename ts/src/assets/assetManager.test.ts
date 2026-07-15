@@ -1,4 +1,4 @@
-// 资产管理器边界测试:mock fetch 全离线——清单拉取/缓存回退/静默重试、Tier 调度、
+// 资产管理器边界测试:mock fetch 全离线——清单拉取/缓存回退/静默重试、按需调度、
 // Range 断点续传(206)、SHA-256 校验失败重下、平台过滤、功能门语义、zip 解包、重启快速校验。
 
 import { afterEach, expect, test } from 'bun:test'
@@ -118,7 +118,7 @@ function plainAsset(id: string, url: string, content: string, extra: Record<stri
 
 // ── 清单/调度/校验/落位 ───────────────────────────────────────────────────────
 
-test('首启:拉清单→Tier1 串行下载→校验→原子落位;Tier2 不自动下', async () => {
+test('首启只加载清单；功能门按需串行下载、校验并原子落位', async () => {
   const root = makeRoot()
   const events: AssetProgressEvent[] = []
   const net = mockNet(
@@ -138,6 +138,17 @@ test('首启:拉清单→Tier1 串行下载→校验→原子落位;Tier2 不自
   manager.start()
   await manager.whenIdle()
 
+  expect(manager.readyPath('ffmpeg')).toBeNull()
+  expect(manager.readyPath('zh-font')).toBeNull()
+  expect(manager.readyPath('whisper-model')).toBeNull()
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/ffmpeg')
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/font')
+  expect(net.calls).not.toContain('fetch:https://assets.example/f/model')
+
+  expect(manager.ensureAsset('ffmpeg').status).toBe('downloading')
+  expect(manager.ensureAsset('zh-font').status).toBe('downloading')
+  await manager.whenIdle()
+
   const ffmpegPath = manager.readyPath('ffmpeg')
   expect(ffmpegPath).toBe(join(root, 'assets', 'ffmpeg', 'ffmpeg'))
   expect(readFileSync(ffmpegPath!, 'utf8')).toBe('FFMPEG-BINARY')
@@ -146,7 +157,7 @@ test('首启:拉清单→Tier1 串行下载→校验→原子落位;Tier2 不自
     expect(statSync(ffmpegPath!).mode & 0o111).toBeGreaterThan(0) // 可执行位
   }
 
-  // Tier2 默认不自动下。
+  // 没有被功能门请求的资产不下载，不受 tier 影响。
   expect(manager.readyPath('whisper-model')).toBeNull()
   expect(net.calls).not.toContain('fetch:https://assets.example/f/model')
 
@@ -181,6 +192,7 @@ test('Range 断点续传:预置半截 .part → 请求带 bytes=N-,206 接着下
 
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
 
   expect(net.calls).toContain('range:https://assets.example/f/ffmpeg:10')
@@ -196,6 +208,7 @@ test('SHA-256 校验不过:删掉 .part 重下,第二次成功', async () => {
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
 
   expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(2)
@@ -212,6 +225,7 @@ test('重试上限后标 failed(带 retryScheduled),ensureAsset 再触发能重�
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
 
   const status = manager.status() as { assets: Array<Record<string, unknown>> }
@@ -239,6 +253,7 @@ test('清单拉不到 → 用本地缓存的上一份继续下', async () => {
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe(content)
 })
@@ -253,6 +268,7 @@ test('清单与缓存都没有 → 静默退避重试,网络恢复后自动继�
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
   expect(manager.readyPath('ffmpeg')).toBeNull()
 
@@ -298,6 +314,7 @@ test('同一资产 id 可在清单中按平台重复，客户端只下载当前�
   )
   const manager = makeManager(root, net, { platform: 'win32-x64' })
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
 
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('WINDOWS')
@@ -358,6 +375,7 @@ test('zip 资产:系统 unzip 解包后原子落位,dest 为主文件', async ()
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
 
   const path = manager.readyPath('ffmpeg')
@@ -374,6 +392,7 @@ test('重启:快速校验(存在+大小对)直接 ready 不重下;文件被删�
   )
   const first = makeManager(root, net)
   first.start()
+  first.ensureAsset('ffmpeg')
   await first.whenIdle()
   expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(1)
   first.stop()
@@ -390,6 +409,7 @@ test('重启:快速校验(存在+大小对)直接 ready 不重下;文件被删�
   await rm(join(root, 'assets', 'ffmpeg'), { recursive: true, force: true })
   const third = makeManager(root, net)
   third.start()
+  third.ensureAsset('ffmpeg')
   await third.whenIdle()
   expect(net.files['https://assets.example/f/ffmpeg']!.served).toBe(2)
   expect(third.readyPath('ffmpeg')).not.toBeNull()
@@ -404,12 +424,14 @@ test('清单换新版本(sha 变了):已 ready 的资产重下', async () => {
   )
   const manager = makeManager(root, net)
   manager.start()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('V1-BINARY')
 
   content = 'V2-BINARY-LONGER'
   net.files['https://assets.example/f/ffmpeg']!.bytes = bytesOf('V2-BINARY-LONGER')
   await manager.refreshManifest()
+  manager.ensureAsset('ffmpeg')
   await manager.whenIdle()
   expect(readFileSync(manager.readyPath('ffmpeg')!, 'utf8')).toBe('V2-BINARY-LONGER')
 })
