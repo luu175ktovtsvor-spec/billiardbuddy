@@ -49,6 +49,47 @@ test('MediaJobService creates local preview image jobs when no backend is config
   }
 })
 
+test('media jobs wait for on-demand assets and continue the same task automatically', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-asset-resume-'))
+  const retryWaiters: Array<() => void> = []
+  let gateChecks = 0
+  let executions = 0
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      gateAssets: () => ++gateChecks <= 2
+        ? { blocked: true, asset_progress: gateChecks * 30, message: `组件准备中 ${gateChecks * 30}%` }
+        : null,
+      waitForAssetRetry: () => new Promise(resolve => retryWaiters.push(resolve)),
+    })
+    const started = await service.startJob({
+      kind: 'upscale',
+      title: '超分测试',
+      body: {},
+      requiredAssets: ['realesrgan'],
+      fallback: async () => {
+        executions += 1
+        return { ok: true }
+      },
+    })
+    await waitFor(async () => retryWaiters.length === 1 ? true : null)
+    expect((await service.status(started.job_id))?.stage).toContain('组件准备中')
+    retryWaiters.shift()?.()
+    await waitFor(async () => retryWaiters.length === 1 ? true : null)
+    retryWaiters.shift()?.()
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    expect(done.id).toBe(started.job_id)
+    expect(done.result).toEqual({ ok: true })
+    expect(executions).toBe(1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('MediaJobService inspects print QR source quality and preserves QR edges during overlay', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-print-qr-quality-'))
   const uploadDir = join(root, 'uploads', 'local')
