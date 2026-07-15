@@ -87,6 +87,7 @@ test('video jobs keep cancelled and interrupted states and retry creates a succe
 test('blocked component preparation automatically continues the same job when assets become ready', async () => {
   const { root, source, tasks, env } = setup()
   let gateChecks = 0
+  const retryWaiters: Array<() => void> = []
   const service = new VideoEditingService({
     stateRoot: root,
     tasks,
@@ -94,10 +95,15 @@ test('blocked component preparation automatically continues the same job when as
     gateAssets: () => ++gateChecks <= 2
       ? { blocked: true, asset_progress: gateChecks * 35, message: `组件准备中 ${gateChecks * 35}%` }
       : null,
+    waitForAssetRetry: () => new Promise(resolve => retryWaiters.push(resolve)),
   })
   const created = await service.createProject({ video_paths: [source] })
   const blocked = await waitFor(() => service.getJob(created.analysis_job.job_id), job => job?.status === 'blocked')
   expect(blocked?.warnings[0]).toContain('组件准备中')
+  await waitFor(async () => retryWaiters.length, count => count === 1)
+  retryWaiters.shift()?.()
+  await waitFor(async () => retryWaiters.length, count => count === 1)
+  retryWaiters.shift()?.()
   const done = await waitFor(() => service.getJob(created.analysis_job.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
   expect(done?.id).toBe(created.analysis_job.job_id)
   expect(gateChecks).toBeGreaterThanOrEqual(3)

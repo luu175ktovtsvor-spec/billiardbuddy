@@ -179,6 +179,7 @@ export interface VideoEditingServiceOptions {
   tasks: TaskService
   env?: Record<string, string | undefined>
   gateAssets?: typeof gateMediaAssets
+  waitForAssetRetry?: (signal: AbortSignal) => Promise<void>
 }
 
 export class VideoEditingService {
@@ -407,7 +408,7 @@ export class VideoEditingService {
           const progress = typeof assetGate.asset_progress === 'number' ? assetGate.asset_progress : 0
           await this.setJobStage(task.id, 'blocked', { checkpoint: assetGate, retryable: true, warnings: [message] })
           await taskContext.progress(Math.max(1, Math.min(99, progress)), message)
-          await delayWithSignal(750, taskContext.signal)
+          await (this.options.waitForAssetRetry ?? (signal => delayWithSignal(750, signal)))(taskContext.signal)
           assetGate = this.gateAssets(this.env, requiredAssets)
         }
         await this.setJobStage(task.id, 'preparing', { checkpoint: { phase: 'assets_ready' }, retryable: false, warnings: [] })
