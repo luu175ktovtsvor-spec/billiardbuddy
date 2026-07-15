@@ -337,6 +337,8 @@ function normalizeScheduledTask(input: JsonObject): JsonObject {
     id: crypto.randomUUID(),
     name: cleanString(input.name) ?? '定时任务',
     instruction: cleanString(input.instruction) ?? '',
+    // 引用经营工作流的任务:到点执行整条工作流(fireTask 的 workflow_id 分支),instruction 可为空。
+    workflow_id: cleanString(input.workflow_id),
     billiards_mode: input.billiards_mode !== false,
     working_dir: cleanString(input.working_dir ?? input.workspaceRoot ?? input.folder_path),
     schedule_kind: cleanString(input.schedule_kind) ?? 'daily',
