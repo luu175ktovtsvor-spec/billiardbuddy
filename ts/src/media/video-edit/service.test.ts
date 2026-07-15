@@ -56,22 +56,21 @@ test('video service connects create -> analyze -> brief -> drafts on one v2 proj
 
 test('video jobs keep cancelled and interrupted states and retry creates a successor job', async () => {
   const { root, source, tasks, service } = setup()
-  const created = await service.createProject({ video_paths: [source], source_roles: { [source]: 'space_wide' } })
-  await waitFor(() => service.getJob(created.analysis_job.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
-  await service.compileBrief(created.project.project_id, { user_request: '展示环境', preferred_view: 'ambient' })
-  const drafts = await service.startDrafts(created.project.project_id)
-  await waitFor(() => service.getJob(drafts.job_id), job => job?.status === 'done' || job?.status === 'done_with_warnings')
-
-  const slow = join(root, 'slow-ffmpeg.sh')
-  writeFileSync(slow, ['#!/bin/sh', 'sleep 2', 'for last in "$@"; do :; done', ': > "$last"', 'exit 0'].join('\n'))
-  chmodSync(slow, 0o755)
-  const renderService = new VideoEditingService({ stateRoot: root, tasks, env: { PATH: process.env.PATH, FFMPEG_BIN: slow } })
-  const project = await renderService.store.load(created.project.project_id)
+  const project = await service.store.create({ video_paths: [source], source_roles: { [source]: 'space_wide' } })
+  const renderService = new VideoEditingService({
+    stateRoot: root,
+    tasks,
+    env: { PATH: '' },
+    gateAssets: () => ({ blocked: true, asset_progress: 10, message: '组件准备中' }),
+    waitForAssetRetry: signal => new Promise(resolve => signal.addEventListener('abort', () => resolve(), { once: true })),
+  })
   const render = await renderService.startRender(project.project_id, { revision: project.revision })
+  await waitFor(() => renderService.getJob(render.job_id), job => job?.status === 'blocked')
   const cancelled = await renderService.cancelJob(render.job_id)
   expect(cancelled.status).toBe('cancelled')
   const retry = await renderService.retryJob(render.job_id)
   expect(retry.job_id).not.toBe(render.job_id)
+  await waitFor(() => renderService.getJob(retry.job_id), job => job?.status === 'blocked')
   await renderService.cancelJob(retry.job_id)
 
   const stale = await tasks.create({
