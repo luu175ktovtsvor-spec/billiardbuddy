@@ -1,8 +1,4 @@
-// 活动组(对齐 Codex 源码 agent-activity 结构,asar 反混淆:hDe/fDe/nwe/vDe):
-// 一个回合内连续的「工具 + 思考」聚成一个可展开组——
-//   完成态组头 = 分类计数段 Intl.ListFormat 连接(「已读取文件运行了 6 条命令」)+ chevron 紧跟文字;
-//   进行中组头 = 最新活动实时行(「正在运行 <命令>」)或「正在想…」shimmer(思考是组头占位态,不是独立行);
-//   展开体 = 按时序的子行明细(工具行 + 思考行)。
+// 连续工具活动聚成一个可展开组：完成态显示紧凑摘要，运行态显示最新动作。
 // 运行中展开显示即时进度；回合完成后自动收起，错误明细由用户主动展开。
 import { useEffect, useRef, useState } from 'react'
 import type { ChatBlock } from '../../stores/chatStore'
@@ -32,7 +28,7 @@ function GroupIcon({ tool }: { tool: string }) {
   const Icon = toolIcon(tool)
   return (
     <span style={{ color: 'var(--color-text-tertiary)' }}>
-      <Icon size={13} />
+      <Icon size={16} />
     </span>
   )
 }
@@ -71,31 +67,31 @@ function ActivityGroupMulti({ blocks, tools }: { blocks: ActivityBlock[]; tools:
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+        className="flex min-h-8 w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       >
         {runningTool ? (
           <GroupIcon tool={runningTool.tool} />
         ) : hasError ? (
-          <IconAlertCircle size={13} className="shrink-0" style={{ color: 'var(--color-error)' }} />
+          <IconAlertCircle size={16} className="shrink-0" style={{ color: 'var(--color-error)' }} />
         ) : !thinkingActive ? (
           // 完成态组头 = 首个工具的类型图标(对齐 Codex 聚合头 icon 语义),不画绿勾。
           <GroupIcon tool={visibleTools[0]?.tool ?? tools[0]!.tool} />
         ) : null}
         {/* chevron 紧跟文字(对齐 Codex 真机:不推到行尾),文字截断保护 */}
-        <span className={isRunning ? 'qf-shimmer-text min-w-0 truncate text-[12.5px]' : 'min-w-0 truncate text-[12.5px]'} style={{ color: 'var(--color-text-secondary)' }}>
+        <span className={isRunning ? 'qf-shimmer-text min-w-0 truncate text-[13.5px]' : 'min-w-0 truncate text-[13.5px]'} style={{ color: 'var(--color-text-secondary)' }}>
           {headerText}
         </span>
         {hasError && !isRunning && (
-          <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--color-error)' }}>{t('tools.error')}</span>
+          <span className="shrink-0 text-[12px]" style={{ color: 'var(--color-error)' }}>{t('tools.error')}</span>
         )}
         <IconChevronDown
-          size={13}
+          size={14}
           className="shrink-0"
           style={{ color: 'var(--color-text-tertiary)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform .15s ease' }}
         />
       </button>
       {expanded && (
-        <div className="mt-0.5 flex flex-col pl-1">
+        <div className="mt-0.5 flex flex-col">
           {visibleTools.map((block) => <ToolCallCard key={block.id} block={block} />)}
         </div>
       )}

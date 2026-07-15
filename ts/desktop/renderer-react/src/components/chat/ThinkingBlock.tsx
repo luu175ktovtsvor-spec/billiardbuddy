@@ -2,10 +2,11 @@
 import { t } from '../../i18n'
 
 export function ThinkingBlock({ content: _content, isActive }: { content: string; isActive: boolean }) {
+  if (!isActive) return null
   return (
     <div className="mb-1.5 py-0.5 text-[12px]" data-block="thinking" style={{ color: 'var(--color-text-tertiary)' }}>
       <span className={isActive ? 'qf-shimmer-text' : undefined}>
-        {isActive ? t('thinking.active') : t('thinking.done')}
+        {t('thinking.active')}
       </span>
     </div>
   )
