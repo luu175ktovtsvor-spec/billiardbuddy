@@ -1,4 +1,4 @@
-// 右侧「工作区面板」store(照 Codex artifact 面板:多 tab 文件展示 + 工作目录树 + 环境信息)。
+// 右侧工作区面板状态：多标签文件预览、工作目录树和工作区状态。
 // 数据全接真实后端:
 //   - GET /api/v1/agent/workspace-status → { root, git(汇总), tree(工作目录树 depth-2) }
 //   - GET /api/v1/agent/fs/read?path=    → 单文件内容(打开一个 tab)

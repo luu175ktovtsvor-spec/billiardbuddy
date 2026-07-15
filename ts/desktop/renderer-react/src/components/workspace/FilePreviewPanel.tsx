@@ -1,10 +1,8 @@
-// 右侧「工作区面板」(照 Codex artifact 面板):可开合、可拖宽;内部两栏 —
-//   第 3 栏 文件展示 = tab 条(每个打开的文件一个 tab,可关) + 面包屑 + 文件内容(带行号);无文件时显示「环境信息」卡。
-//   第 4 栏 工作树   = FileTree(工作目录浏览器)。
+// 右侧工作区面板可开合、可拖宽：文件标签和预览位于左侧，工作目录树位于右侧。
 // 由 filePreviewStore.panelOpen 控制显隐;TopBar 的面板按钮 togglePanel;点工具行/树里文件 → openFile。
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { fetchBinary } from '../../api/client'
-import { useFilePreviewStore, rawFileUrl, type GitSummary, type OpenFile } from '../../stores/filePreviewStore'
+import { useFilePreviewStore, rawFileUrl, type OpenFile } from '../../stores/filePreviewStore'
 import { toast } from '../../stores/toastStore'
 import { useResizableWidth } from '../../lib/useResizableWidth'
 import { getDesktopHost } from '../../lib/desktopHost'
@@ -158,15 +156,6 @@ function ActivePreview({ file }: { file: OpenFile }) {
   return <FileContent file={file} />
 }
 
-function EnvRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span style={{ color: 'var(--color-text-tertiary)' }}>{label}</span>
-      <span style={{ color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>{value}</span>
-    </div>
-  )
-}
-
 function LauncherRow({ icon, label, onClick }: { icon: ReactNode; label: string; onClick: () => void }) {
   return (
     <button
@@ -183,8 +172,8 @@ function LauncherRow({ icon, label, onClick }: { icon: ReactNode; label: string;
 
 const NOTABLE_FILES = ['README.md', 'CLAUDE.md', 'AGENTS.md', 'package.json']
 
-/** 空态 = Codex「新建标签页」轻量版:文件 入口 + 「推荐」文件(终端入口等真 xterm+pty 终端落地再加;侧边任务/浏览器暂略);环境卡保留下方。 */
-function EmptyState({ git }: { git: GitSummary | null }) {
+/** 空态只保留可执行入口和推荐文件，不展示环境说明或实现状态。 */
+function EmptyState() {
   const tree = useFilePreviewStore((s) => s.tree)
   const root = useFilePreviewStore((s) => s.root)
   const openFile = useFilePreviewStore((s) => s.openFile)
@@ -226,38 +215,6 @@ function EmptyState({ git }: { git: GitSummary | null }) {
           })}
         </>
       )}
-      <div className="mx-1 mt-3" style={{ borderTop: '1px solid var(--color-border)' }} />
-      <EnvCard git={git} />
-    </div>
-  )
-}
-
-function EnvCard({ git }: { git: GitSummary | null }) {
-  return (
-    <div className="p-4">
-      <div className="mb-3 text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>环境信息</div>
-      {!git ? (
-        <div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>正在读取工作区状态…</div>
-      ) : !git.isGit ? (
-        <div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>当前工作目录不是 git 仓库。</div>
-      ) : (
-        <div className="flex flex-col gap-2 text-[12.5px]">
-          <EnvRow label="分支" value={git.branch ?? '—'} />
-          <EnvRow
-            label="变更"
-            value={
-              <>
-                <span style={{ color: 'var(--color-success)' }}>{git.changed} 处改动</span>
-                <span style={{ color: 'var(--color-text-tertiary)' }}> · 未跟踪 {git.untracked}</span>
-              </>
-            }
-          />
-          <EnvRow label="领先 / 落后" value={`↑${git.ahead}  ↓${git.behind}`} />
-        </div>
-      )}
-      <div className="mt-4 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>
-        右边是工作目录,点任意文件在这里打开查看。
-      </div>
     </div>
   )
 }
@@ -267,7 +224,6 @@ export function FilePreviewPanel() {
   const tabs = useFilePreviewStore((s) => s.tabs)
   const activePath = useFilePreviewStore((s) => s.activePath)
   const root = useFilePreviewStore((s) => s.root)
-  const git = useFilePreviewStore((s) => s.git)
   const setActive = useFilePreviewStore((s) => s.setActive)
   const reloadFile = useFilePreviewStore((s) => s.reloadFile)
   const closeTab = useFilePreviewStore((s) => s.closeTab)
@@ -365,10 +321,9 @@ export function FilePreviewPanel() {
           </div>
         )}
 
-        {/* 图片实时渲染 / 文件内容(工作目录原本的样子,铺满整栏)/ 无文件时「新建标签页」启动器+环境卡。
-            普通打开不做 diff 对比——红绿修改/删除是后续「审查」tab 的事(对齐 Codex)。 */}
+        {/* 普通文件显示工作目录中的原始内容；修改审查属于独立视图。 */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {active ? <ActivePreview file={active} /> : <EmptyState git={git} />}
+          {active ? <ActivePreview file={active} /> : <EmptyState />}
         </div>
       </div>
 
