@@ -1,5 +1,4 @@
-// AppShell(对齐 cc:bootstrap → 左 Sidebar | 右 main(TabBar + ContentRouter))。
-// bootstrap 顺序:initializeDesktopServerUrl()(IPC 拿 sidecar 地址 + /health)→ 刷会话列表 → 开一个新会话。
+// 唯一桌面应用壳：左侧导航、主内容和可选的右侧工作区面板。
 import { useEffect, useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'

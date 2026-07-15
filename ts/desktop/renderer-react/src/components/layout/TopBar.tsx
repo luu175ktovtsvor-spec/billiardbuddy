@@ -1,6 +1,4 @@
-// 主区顶栏(对齐 Codex 线程头「📁 任务名 ···」):左=文件夹图标+对话标题+「···」线程菜单、右=图标排[搜索/分享/历史/右侧面板开关]。
-// 「···」菜单 = Codex threadHeader 动作里前端数据现成的那部分:复制整段对话/复制会话 ID/复制工作目录/归档;
-// fork/新窗口/副任务要后端与 IPC 配合,等接轨指令再加。右侧面板按钮 → filePreviewStore.togglePanel。
+// 主区顶栏：标题入口位于左侧，搜索、分享、历史和工作区面板位于右侧。
 import { useState, type ReactNode } from 'react'
 import { useTabStore } from '../../stores/tabStore'
 import { useFilePreviewStore } from '../../stores/filePreviewStore'
@@ -10,7 +8,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { openNewConversation } from '../../lib/conversations'
 import { DRAG, NODRAG } from '../../lib/dragRegion'
-import { IconSearch, IconShareUp, IconClock, IconPanelRight, IconPanelLeft, IconFolder, IconMoreHorizontal, IconCopy, IconArchive } from '../shared/icons'
+import { IconSearch, IconShareUp, IconClock, IconPanelRight, IconPanelLeft, IconFolder, IconChevronDown, IconCopy, IconArchive } from '../shared/icons'
 import { ShareModal, composeConversationText } from '../chat/ShareModal'
 import { ContextMenu } from '../shared/Menu'
 import { toast } from '../../stores/toastStore'
@@ -68,25 +66,24 @@ export function TopBar() {
 
   return (
     <>
-      <header className={`flex h-14 shrink-0 items-center justify-between pr-6 ${collapsed ? 'pl-[80px]' : 'pl-6'}`} style={DRAG} data-testid="topbar">
-        <div className="group/title flex min-w-0 items-center gap-1.5" style={NODRAG}>
+      <header className={`flex h-[46px] shrink-0 items-center justify-between pr-3 ${collapsed ? 'pl-[78px]' : 'pl-3'}`} style={DRAG} data-testid="topbar">
+        <div className="flex min-w-0 items-center gap-1" style={NODRAG}>
           {collapsed && <IconBtn label="展开侧栏" onClick={toggleSidebar}><IconPanelLeft size={18} /></IconBtn>}
-          {isChat && <IconFolder size={15} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />}
-          <span className="truncate text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{title}</span>
-          {/* 「···」线程菜单(对齐 Codex threadHeader.moreActions,hover 标题区淡入) */}
           {isChat && (
             <button
               type="button"
-              title="更多操作"
-              aria-label="更多操作"
+              title="任务操作"
+              aria-label={`任务操作：${title}`}
               onClick={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setMenuAt({ x: r.left, y: r.bottom + 4 }) }}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 transition-opacity hover:bg-[var(--color-surface-hover)] group-hover/title:opacity-100"
-              style={{ color: 'var(--color-text-tertiary)' }}
+              className="group/history -ml-1 flex h-8 min-w-0 max-w-full items-center gap-1 rounded-lg px-2 text-left text-base font-medium transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-secondary)' }}
               data-testid="thread-more"
             >
-              <IconMoreHorizontal size={15} />
+              <span className="truncate">{title}</span>
+              <IconChevronDown size={12} className="shrink-0 opacity-0 transition-opacity group-hover/history:opacity-60 group-focus-visible/history:opacity-60" />
             </button>
           )}
+          {!isChat && <span className="px-2 text-base font-medium" style={{ color: 'var(--color-text-secondary)' }}>{title}</span>}
         </div>
         {/* 对话专属操作(搜索/分享/历史/面板)只在对话视图显示;已安排/插件页不挂。
             终端按钮已随假终端下架(asar 核实 Codex 终端=真交互 xterm+pty,不是 AI 命令回放板;等真终端落地再回来)。 */}

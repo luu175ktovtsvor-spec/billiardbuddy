@@ -79,7 +79,7 @@
   --color-bubble-user: var(--cx-gray-100);     /* 用户气泡 = 浅灰(仍中性,不抢蓝) */
 
   --color-smiley-a: var(--cx-gray-900);
-  --color-smiley-b: var(--cx-gray-600);
+  --color-smiley-face: #ffffff;
 
   --font-body: var(--wb-font);
   --font-headline: var(--wb-font);
@@ -131,7 +131,7 @@
   --color-link-hover: #7ab8e8;
 
   --color-smiley-a: #f5f5f5;
-  --color-smiley-b: var(--cx-gray-300);
+  --color-smiley-face: var(--cx-gray-900);
 
   --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
   --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
@@ -172,7 +172,7 @@
     --color-link: #3794ff;
     --color-link-hover: #7ab8e8;
     --color-smiley-a: #f5f5f5;
-    --color-smiley-b: var(--cx-gray-300);
+    --color-smiley-face: var(--cx-gray-900);
     --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
     --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
   }

@@ -10,7 +10,6 @@ import { ThinkingBlock } from './ThinkingBlock'
 import { ApprovalCard } from './ApprovalCard'
 import { SessionTaskBar } from './SessionTaskBar'
 import { StreamingIndicator } from './StreamingIndicator'
-import { StepCapsule } from './StepCapsule'
 import { MessageActions } from './MessageActions'
 import { IconRefresh, IconChevronDown, IconEdit, IconSearch, IconX } from '../shared/icons'
 import { useComposerStore } from '../../stores/composerStore'
@@ -223,8 +222,7 @@ export function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
 
 type TurnEntry = { type: 'user'; item: RenderItem } | { type: 'turn'; key: string; items: RenderItem[] }
 
-/** user 消息切界:每条 user 消息独立渲染,之间的所有内容(思考/工具/回复)归进同一个"回合",
- *  供 AssistantMessageHeader 统一套头。 */
+/** user 消息切界：每条用户消息独立渲染，其后的活动和回复归入同一回合。 */
 export function splitTurns(items: RenderItem[]): TurnEntry[] {
   const out: TurnEntry[] = []
   let current: RenderItem[] = []
@@ -398,7 +396,6 @@ export function MessageList() {
             ),
           )}
           <StreamingIndicator />
-          <StepCapsule />
           <div ref={endRef} />
         </div>
       </div>

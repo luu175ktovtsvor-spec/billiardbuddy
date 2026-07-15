@@ -1,7 +1,4 @@
-// 空态 hero(对标 Codex 空态:居中头像 + 标题[h1/500] + 描述[text-weak/body])+ 新任务建议卡
-// (对标 Codex home.newChatPageSuggestions:场景短标题 pill,点击把完整 prompt 填进输入框让用户改完再发;
-//  建议集贴我们真实能力:整理文件/写文档/查资料/定时任务/生图,挂台球包的会话前置两条台球场景)。
-// 头像 = 我们的绿色笑脸吉祥物(glow 变体);白标文案走 i18n。
+// 新任务页使用当前 Codex 的居中标题和无边框建议列表；点击建议只填入输入框。
 import type { ReactNode } from 'react'
 import { t } from '../i18n'
 import { Smiley } from '../components/shared/Smiley'
@@ -30,24 +27,24 @@ const BILLIARDS_SUGGESTIONS: Suggestion[] = [
   { icon: <IconZap size={14} />, label: '写朋友圈文案', prompt: '帮我写 3 条球房朋友圈文案,风格接地气、能吸引人到店,写完让我挑。' },
 ]
 
-function SuggestionPills() {
+function SuggestionList() {
   const setDraft = useComposerStore((s) => s.setDraft)
   const packs = useSettingsStore((s) => s.enabledPacks)
   const billiards = packs.includes('billiards')
   // 挂台球包的会话:台球场景前置;通用会话只给通用建议(领域不越界)。
   const suggestions = billiards ? [...BILLIARDS_SUGGESTIONS, ...GENERAL_SUGGESTIONS.slice(0, 3)] : GENERAL_SUGGESTIONS
   return (
-    <div className="mt-6 flex max-w-[560px] flex-wrap items-center justify-center gap-2" data-testid="suggestion-pills">
+    <div className="mt-6 flex w-full max-w-[560px] flex-col py-2 pl-6" data-testid="suggestion-list">
       {suggestions.map((s) => (
         <button
           key={s.label}
           type="button"
           onClick={() => setDraft(s.prompt)}
-          className="flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
-          style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+          className="flex min-h-10 w-full items-center rounded-lg pr-1 text-left text-[14px] transition-transform hover:bg-[var(--color-surface-hover)] active:scale-[0.99]"
+          style={{ color: 'var(--color-text-secondary)' }}
         >
-          <span style={{ color: 'var(--color-text-tertiary)' }}>{s.icon}</span>
-          {s.label}
+          <span className="mr-2 flex size-4 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-tertiary)' }}>{s.icon}</span>
+          <span className="min-w-0 flex-1 truncate">{s.label}</span>
         </button>
       ))}
     </div>
@@ -56,13 +53,10 @@ function SuggestionPills() {
 
 export function EmptyHero() {
   return (
-    <div className="flex h-full flex-col items-center justify-center px-6 text-center" data-testid="empty-hero">
-      <div className="mb-5">
-        <Smiley size={56} variant="glow" />
-      </div>
-      <h1 className="mb-2 text-2xl font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('chat.emptyHero')}</h1>
-      <p className="max-w-[440px] text-sm leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{t('chat.emptyHint')}</p>
-      <SuggestionPills />
+    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center gap-3 px-6 py-6 text-center" data-testid="empty-hero">
+      <Smiley size={40} className="opacity-40" />
+      <h1 className="whitespace-pre-wrap text-[28px] font-normal" style={{ color: 'var(--color-text-primary)' }}>{t('chat.emptyHero')}</h1>
+      <SuggestionList />
     </div>
   )
 }

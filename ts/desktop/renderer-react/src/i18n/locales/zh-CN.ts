@@ -111,7 +111,6 @@ export const zhCN = {
     stop: '停止',
     thinking: '正在思考',
     working: '正在处理',
-    processed: '已处理',           // Codex 助手回复上方「已处理 Ns」
     running: '运行中…',
     connected: '已连接',
     connecting: '正在连接…',
