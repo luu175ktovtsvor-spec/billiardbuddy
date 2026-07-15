@@ -184,7 +184,7 @@ function imageBody(input: ImageToolInput, ctx: ToolContext): Record<string, unkn
     prompt: input.description,
     style: input.style,
     ratio: input.ratio ?? '3:4',
-    count: input.count ?? 1,
+    count: input.count ?? 3,
     quality: input.quality ?? 'standard',
     reference_image_paths: input.reference_image_paths,
     reference_generation_ids: input.reference_generation_ids,

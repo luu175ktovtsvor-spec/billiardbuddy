@@ -76,38 +76,23 @@ test('编译 brief 后生成候选,返回推荐项和固定文字回填', async 
   expect(result.compareIds).toEqual(['pass-1', 'pass-2'])
 })
 
-test('三张海报少于两张过闸时只补生成一次,并优先保留过闸候选', async () => {
+test('质量补生成由后端任务统一处理,工作台不再发起第二个任务', async () => {
   const events = callbacks()
   let generateCalls = 0
-  const first = [image('risk-1'), image('risk-2'), image('pass-1', { poster_hard_gate_passed: true })]
-  const retry = [image('pass-2', { poster_hard_gate_passed: true }), image('risk-3')]
+  const reviewed = [image('pass-1', { poster_hard_gate_passed: true }), image('pass-2', { poster_hard_gate_passed: true }), image('risk-1')]
   const result = await executeImageGeneration(input(brief()), events.value, {
     async compileBrief() { throw new Error('已有 brief 时不应重编译') },
     async generate() { generateCalls += 1; return { job_id: `job-${generateCalls}` } },
-    async pollJob(id) {
-      return { status: 'done', result: { images: id === 'job-1' ? first : retry } } as MediaJob
+    async pollJob() {
+      return { status: 'done', result: { images: reviewed, quality_retry_performed: true } } as MediaJob
     },
   })
-  expect(generateCalls).toBe(2)
-  expect(events.jobs).toEqual(['job-1', 'job-2'])
-  expect(events.stages).toContain('部分结果需要确认，正在再试一次…')
+  expect(generateCalls).toBe(1)
+  expect(events.jobs).toEqual(['job-1'])
   expect(result.images.map(item => item.generation_id)).toEqual(['pass-1', 'pass-2', 'risk-1'])
 })
 
-test('补生成失败时保留第一批,本地预览不能伪装成真实结果', async () => {
-  const events = callbacks()
-  let generateCalls = 0
-  const result = await executeImageGeneration(input(brief()), events.value, {
-    async compileBrief() { throw new Error('not used') },
-    async generate() {
-      generateCalls += 1
-      if (generateCalls === 2) throw new Error('retry failed')
-      return { job_id: 'job-1' }
-    },
-    async pollJob() { return { status: 'done', result: { images: [image('a'), image('b'), image('c')] } } as MediaJob },
-  })
-  expect(result.images.map(item => item.generation_id)).toEqual(['a', 'b', 'c'])
-
+test('本地预览不能伪装成真实结果', async () => {
   await expect(executeImageGeneration(input(brief()), callbacks().value, {
     async compileBrief() { throw new Error('not used') },
     async generate() { return { job_id: 'preview' } },
