@@ -26,6 +26,11 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 const HISTORY_LIMIT = 30
 const SOURCE_OFFLINE_WARNING = '原素材已离线，请重新定位后继续预览或导出'
 
+export interface VideoProjectListOptions {
+  workingDir?: string
+  includeUnscoped?: boolean
+}
+
 type HistoryEntry = {
   id: string
   kind: 'operation' | 'alternative' | 'undo' | 'redo' | 'migration'
@@ -55,6 +60,11 @@ function now(): string {
 
 function projectId(): string {
   return `video-${Date.now()}-${randomUUID().slice(0, 8)}`
+}
+
+function normalizedWorkingDir(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? resolve(trimmed) : undefined
 }
 
 function canvasForRatio(ratio: '9:16' | '1:1' | '16:9') {
@@ -506,9 +516,10 @@ export class VideoProjectStore {
     try { return existsSync(this.projectPath(id)) } catch { return false }
   }
 
-  async list(): Promise<VideoProject[]> {
+  async list(options: VideoProjectListOptions = {}): Promise<VideoProject[]> {
     let entries: Dirent[] = []
     try { entries = await readdir(this.root, { withFileTypes: true }) } catch { return [] }
+    const requestedWorkingDir = normalizedWorkingDir(options.workingDir)
     const projects: VideoProject[] = []
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue
@@ -516,7 +527,14 @@ export class VideoProjectStore {
       let discoverable = false
       try { discoverable = this.hasV2Project(id) || existsSync(this.legacyPath(id)) } catch { /* ignore invalid directory names */ }
       if (!discoverable) continue
-      try { projects.push(await this.load(id)) } catch { /* one broken or unmigratable project must not hide the rest */ }
+      try {
+        const project = await this.load(id)
+        const projectWorkingDir = normalizedWorkingDir(project.working_dir)
+        if (requestedWorkingDir && projectWorkingDir !== requestedWorkingDir) {
+          if (!(options.includeUnscoped && !projectWorkingDir)) continue
+        }
+        projects.push(project)
+      } catch { /* one broken or unmigratable project must not hide the rest */ }
     }
     return projects.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   }
@@ -538,6 +556,8 @@ export class VideoProjectStore {
       schema_version: 2,
       project_id: id,
       name: input.name?.trim() || `视频项目 ${new Date().toLocaleDateString('zh-CN')}`,
+      conversation_id: input.conversation_id,
+      working_dir: normalizedWorkingDir(input.working_dir),
       revision: 0,
       updated_at: now(),
       goal: input.goal ?? 'ambient',
@@ -565,6 +585,16 @@ export class VideoProjectStore {
       if (error instanceof VideoProjectError) throw error
       throw new VideoProjectError('视频项目文件损坏，已停止读取且不会用旧时间线覆盖', 'project_corrupt', 500, { project_id: id })
     }
+  }
+
+  async loadForWorkspace(id: string, workingDir: string): Promise<VideoProject> {
+    const project = await this.load(id)
+    const expected = normalizedWorkingDir(workingDir)
+    const actual = normalizedWorkingDir(project.working_dir)
+    if (expected && actual && expected !== actual) {
+      throw new VideoProjectError('这个视频项目属于另一个工作文件夹，请切换到对应项目后继续', 'workspace_mismatch', 409)
+    }
+    return project
   }
 
   private async migrateV1Once(id: string): Promise<VideoProject> {

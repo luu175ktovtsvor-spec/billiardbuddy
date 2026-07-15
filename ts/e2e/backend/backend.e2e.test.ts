@@ -142,7 +142,7 @@ const CHECKPOINTS: Checkpoint[] = [
   },
   {
     name: 'video-plan-shared-brief',
-    expectation: 'Agent 调 plan_video 后先分析真实素材，再经共享编译器保存 Brief；工作台用相同输入重编译得到同一份 Brief',
+    expectation: 'Agent 调 plan_video 后先分析真实素材，再经共享编译器保存 Brief；工作台用相同输入重编译得到同一份 Brief，后续会话可在同一工作区发现该项目',
     async run(ctx) {
       const source = join(ctx.workspace, 'assistant-daily.mp4')
       writeFileSync(source, 'backend-e2e-video')
@@ -156,7 +156,7 @@ const CHECKPOINTS: Checkpoint[] = [
       const deadline = Date.now() + 5_000
       let project: { project_id: string; revision: number; creative_brief?: Record<string, unknown>; alternatives?: unknown[] } | undefined
       while (Date.now() < deadline) {
-        const response = await fetch(`${ctx.base}/api/v1/video-edit/projects`)
+        const response = await fetch(`${ctx.base}/api/v1/video-edit/projects?working_dir=${encodeURIComponent(ctx.workspace)}`)
         const body = await response.json() as { projects: Array<typeof project> }
         project = body.projects[0]
         if (project?.creative_brief && project.alternatives?.length === 3) break
@@ -173,10 +173,17 @@ const CHECKPOINTS: Checkpoint[] = [
         const body = await response.json() as { brief?: Record<string, unknown> }
         sameBrief = response.ok && JSON.stringify(body.brief) === JSON.stringify(agentBrief)
       }
+      const discoveryEvents = await ctx.session('be2e-video-discovery').selectFolder(ctx.workspace).setPermission('bypassPermissions').say('继续刚才的视频', [
+        { toolCalls: [{ id: 'video-list-1', name: 'list_media_projects', input: { kind: 'video' } }] },
+        { text: '找到了刚才的视频项目。' },
+      ])
+      const discoverable = Boolean(project) && discoveryEvents.some(event => (
+        event.type === 'tool_result' && JSON.stringify(event.data).includes(project!.project_id)
+      ))
       const inferredType = agentBrief?.content_type === 'assistant_daily'
       const noInjectedFacts = Array.isArray(agentBrief?.exact_copy) && agentBrief.exact_copy.length === 0
-      const ok = called && result && sameBrief && inferredType && noInjectedFacts
-      return { ok, note: `tool_call=${called} tool_result=${result} Brief同源=${sameBrief} 助教日常推断=${inferredType} 未注入文案=${noInjectedFacts}` }
+      const ok = called && result && sameBrief && discoverable && inferredType && noInjectedFacts
+      return { ok, note: `tool_call=${called} tool_result=${result} Brief同源=${sameBrief} 同工作区可续作=${discoverable} 助教日常推断=${inferredType} 未注入文案=${noInjectedFacts}` }
     },
   },
   {

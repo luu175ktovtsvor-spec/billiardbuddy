@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { ZodError } from 'zod'
 import {
   videoAnalyzeRequestSchema,
@@ -35,6 +36,11 @@ function text(value: unknown, fallback = ''): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
+function sameWorkingDir(left: string | undefined, right: string | undefined): boolean {
+  if (!left?.trim() || !right?.trim()) return false
+  return resolve(left) === resolve(right)
+}
+
 function errorResponse(error: unknown): Response {
   if (error instanceof VideoProjectError) {
     return Response.json(videoErrorSchema.parse({ error: { code: error.code, message: error.message, retryable: error.status >= 500, ...error.detail } }), { status: error.status })
@@ -68,7 +74,8 @@ export function createVideoEditRouteHandler(service: VideoEditingService, option
         const workspaceRoot = text(body.workspaceRoot ?? body.working_dir, options.defaultWorkspaceRoot)
         const brief = { user_request: userRequest, preferred_view: preferredView, ratio, target_duration_ms: targetDurationMs }
         if (projectId) {
-          await service.store.load(projectId)
+          if (workspaceRoot) await service.store.loadForWorkspace(projectId, workspaceRoot)
+          else await service.store.load(projectId)
           await service.compileBrief(projectId, brief)
           const started = await service.startDrafts(projectId, { conversationId, workspaceRoot })
           return Response.json({ job_id: started.job_id, project: projectId, project_id: projectId })
@@ -86,8 +93,20 @@ export function createVideoEditRouteHandler(service: VideoEditingService, option
       }
 
       if (url.pathname === '/api/v1/video-edit/projects') {
-        if (req.method === 'POST') return Response.json(videoCreateProjectResponseSchema.parse(await service.createProject(videoCreateProjectRequestSchema.parse(await json(req)))), { status: 201 })
-        if (req.method === 'GET') return Response.json(videoProjectListResponseSchema.parse({ projects: await service.store.list() }))
+        if (req.method === 'POST') {
+          const raw = record(await json(req))
+          const body = videoCreateProjectRequestSchema.parse({ ...raw, working_dir: raw.working_dir ?? options.defaultWorkspaceRoot })
+          return Response.json(videoCreateProjectResponseSchema.parse(await service.createProject(body)), { status: 201 })
+        }
+        if (req.method === 'GET') {
+          const workingDir = url.searchParams.get('working_dir')?.trim() || options.defaultWorkspaceRoot
+          return Response.json(videoProjectListResponseSchema.parse({
+            projects: await service.store.list({
+              workingDir,
+              includeUnscoped: sameWorkingDir(workingDir, options.defaultWorkspaceRoot),
+            }),
+          }))
+        }
         return new Response('Method not allowed', { status: 405 })
       }
 

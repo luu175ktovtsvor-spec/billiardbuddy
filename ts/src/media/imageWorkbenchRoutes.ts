@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import {
   imageWorkbenchAddVersionRequestSchema,
   imageWorkbenchAssetResponseSchema,
@@ -15,20 +16,43 @@ import {
 } from '../../shared/contracts/image-workbench'
 import { ImageWorkbenchError, type ImageWorkbenchStore } from './imageWorkbenchStore'
 
-export function createImageWorkbenchRouteHandler(imageWorkbench: ImageWorkbenchStore) {
+interface ImageWorkbenchRouteOptions {
+  defaultWorkspaceRoot?: string
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function sameWorkingDir(left: string | undefined, right: string | undefined): boolean {
+  if (!left?.trim() || !right?.trim()) return false
+  return resolve(left) === resolve(right)
+}
+
+export function createImageWorkbenchRouteHandler(imageWorkbench: ImageWorkbenchStore, options: ImageWorkbenchRouteOptions = {}) {
   return async function handleImageWorkbenchRoute(url: URL, req: Request): Promise<Response | null> {
     if (!url.pathname.startsWith('/api/v1/studio/workbench/')) return null
     const action = url.pathname.slice('/api/v1/studio/'.length)
     if (action === 'workbench/projects' && req.method === 'GET') {
       try {
-        return Response.json(imageWorkbenchProjectListResponseSchema.parse({ projects: await imageWorkbench.listProjects() }))
+        const workingDir = url.searchParams.get('working_dir')?.trim() || options.defaultWorkspaceRoot
+        return Response.json(imageWorkbenchProjectListResponseSchema.parse({
+          projects: await imageWorkbench.listProjects({
+            workingDir,
+            includeUnscoped: sameWorkingDir(workingDir, options.defaultWorkspaceRoot),
+          }),
+        }))
       } catch (err) {
         return imageWorkbenchError(err)
       }
     }
     if (action === 'workbench/projects' && req.method === 'POST') {
       try {
-        const body = imageWorkbenchCreateProjectRequestSchema.parse(await req.json().catch(() => ({})))
+        const raw = record(await req.json().catch(() => ({})))
+        const body = imageWorkbenchCreateProjectRequestSchema.parse({
+          ...raw,
+          working_dir: raw.working_dir ?? options.defaultWorkspaceRoot,
+        })
         const project = await imageWorkbench.createProject(body)
         return Response.json(imageWorkbenchProjectResponseSchema.parse({ project }))
       } catch (err) {

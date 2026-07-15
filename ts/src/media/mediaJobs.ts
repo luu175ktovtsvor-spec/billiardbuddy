@@ -33,7 +33,7 @@ import {
   type InputInspection,
   type QcImage,
 } from './imageQC'
-import { imageCreativeBriefSchema, type ImageCreativeBrief, type ImageIntent, type ImageQuality, type ImageWorkbenchReview } from '../../shared/contracts/image-workbench'
+import { imageCreativeBriefSchema, type ImageCreativeBrief, type ImageIntent, type ImageQuality, type ImageWorkbenchProject, type ImageWorkbenchReview } from '../../shared/contracts/image-workbench'
 import { compileImageBrief, compileImageBriefWithModel } from './imageBriefCompiler'
 import { compileProviderPrompt } from './imagePromptAdapters'
 import { inspectPosterHardGate } from './posterQuality'
@@ -76,6 +76,7 @@ export interface MediaJobServiceOptions {
   /** 对话生图产物自动登记到同一份工作台项目真相源;工作台直调不带 conversation_id,不会自动创建。 */
   workbenchStore?: {
     createProject(input: unknown): Promise<unknown>
+    listProjects?(options?: { workingDir?: string; includeUnscoped?: boolean }): Promise<ImageWorkbenchProject[]>
   }
   gateAssets?: typeof gateMediaAssets
   waitForAssetRetry?: (signal: AbortSignal) => Promise<void>
@@ -945,6 +946,10 @@ export class MediaJobService {
     return task ? this.statusFromMeta(task) : null
   }
 
+  async listWorkbenchProjects(workingDir: string): Promise<ImageWorkbenchProject[]> {
+    return await this.opts.workbenchStore?.listProjects?.({ workingDir }) ?? []
+  }
+
   async startJob(input: StartMediaJobInput): Promise<MediaJobStartResult> {
     const task = await this.opts.tasks.create({
       title: input.title,
@@ -1001,6 +1006,7 @@ export class MediaJobService {
       portrait: brief.scene === 'portrait',
       ...(brief.scene === 'portrait' ? { input_fidelity: prepared.input_fidelity ?? 'high' } : {}),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
+      working_dir: stringFrom(prepared.working_dir) ?? stringFrom(prepared.workspaceRoot) ?? opts.workspaceRoot,
     }
     const shared: PortraitShared = {}
     return this.startJob({
@@ -1008,7 +1014,7 @@ export class MediaJobService {
       title: `生图:${shortText(body.prompt ?? body.description, '图片')}`,
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
-      workspaceRoot: opts.workspaceRoot,
+      workspaceRoot: stringFrom(normalized.working_dir) ?? opts.workspaceRoot,
       requiredAssets: this.printPostprocessAssets(normalized),
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
       run: ctx => this.generateWithQualitySupplement(ctx, normalized, shared),
@@ -1050,13 +1056,14 @@ export class MediaJobService {
         creative_brief: brief,
         intent: 'edit_content',
         conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
+        working_dir: stringFrom(prepared.working_dir) ?? stringFrom(prepared.workspaceRoot) ?? opts.workspaceRoot,
       }
       return this.startJob({
         kind: 'edit',
         title: `调整图片:${shortText(body.prompt, '自然调整')}`,
         body: normalized,
         conversationId: stringFrom(normalized.conversation_id),
-        workspaceRoot: opts.workspaceRoot,
+        workspaceRoot: stringFrom(normalized.working_dir) ?? opts.workspaceRoot,
         requiredAssets: ['ffmpeg'],
         fallback: ctx => this.localImageAdjustment(ctx, normalized),
         postprocess: async (_ctx, result) => this.attachWorkbenchProjects(result, normalized, 'edit'),
@@ -1076,6 +1083,7 @@ export class MediaJobService {
       portrait: brief.scene === 'portrait',
       ...(brief.scene === 'portrait' ? { input_fidelity: prepared.input_fidelity ?? 'high' } : {}),
       conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
+      working_dir: stringFrom(prepared.working_dir) ?? stringFrom(prepared.workspaceRoot) ?? opts.workspaceRoot,
     }
     const shared: PortraitShared = {}
     return this.startJob({
@@ -1083,7 +1091,7 @@ export class MediaJobService {
       title: `改图:${shortText(body.prompt, '图片调整')}`,
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
-      workspaceRoot: opts.workspaceRoot,
+      workspaceRoot: stringFrom(normalized.working_dir) ?? opts.workspaceRoot,
       proxyPath: '/api/v1/studio/edit',
       requiredAssets: this.printPostprocessAssets(normalized),
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
@@ -1144,6 +1152,8 @@ export class MediaJobService {
       try {
         const project = await this.opts.workbenchStore.createProject({
           title: shortText(body.prompt ?? body.description ?? body.image_prompt, mode === 'edit' ? '对话改图' : '对话生图'),
+          conversation_id: stringFrom(body.conversation_id),
+          working_dir: stringFrom(body.working_dir) ?? stringFrom(body.workspaceRoot),
           source_generation_id: generationId,
           image_url: imageUrl,
           width,

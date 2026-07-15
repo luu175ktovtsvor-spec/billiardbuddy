@@ -262,6 +262,8 @@ export const imageWorkbenchProjectSchema = z.object({
   schema_version: z.literal(1),
   project_id: imageWorkbenchIdSchema,
   title: z.string().min(1).max(120),
+  conversation_id: z.string().max(256).optional(),
+  working_dir: z.string().min(1).max(4096).optional(),
   source_generation_id: z.string().min(1).max(256).optional(),
   current_version_id: imageWorkbenchIdSchema,
   prompt: z.string().max(8000).optional(),
@@ -391,6 +393,8 @@ export const studioUpscaleRequestSchema = z.object({
 
 export const imageWorkbenchCreateProjectRequestSchema = z.object({
   title: z.string().min(1).max(120).optional(),
+  conversation_id: z.string().max(256).optional(),
+  working_dir: z.string().min(1).max(4096).optional(),
   source_generation_id: z.string().min(1).max(256).optional(),
   image_url: imageWorkbenchUrlSchema,
   width: z.number().int().positive().max(12000),

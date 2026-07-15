@@ -57,6 +57,8 @@ test('workbench project contract persists controlled review fields on versions',
     schema_version: 1,
     project_id: 'wb_contract',
     title: '会员日',
+    conversation_id: 'conversation-1',
+    working_dir: '/workspace/a',
     current_version_id: 'v_contract',
     quality: 'standard',
     canvas: { width: 1024, height: 1024, text_layers: [], updated_at: '2026-07-13T00:00:00.000Z' },
@@ -79,6 +81,7 @@ test('workbench project contract persists controlled review fields on versions',
 
   expect(project.versions[0]?.review?.text_quality_status).toBe('pending_ocr')
   expect(project.versions[0]?.review?.commercial_ready).toBe(false)
+  expect(project).toMatchObject({ conversation_id: 'conversation-1', working_dir: '/workspace/a' })
 })
 
 test('legacy project format receives safe defaults for brief, image layers and revision', () => {
@@ -97,6 +100,7 @@ test('legacy project format receives safe defaults for brief, image layers and r
   expect(project.reference_assets).toEqual([])
   expect(project.autosave_revision).toBe(0)
   expect(project.save_status).toBe('saved')
+  expect(project.working_dir).toBeUndefined()
 })
 
 test('brief and portrait confirmation contracts keep provider details out of the user boundary', () => {

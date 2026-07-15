@@ -26,6 +26,22 @@ function draftScene(sourceId: string) {
   })
 }
 
+test('video projects persist workspace provenance and lists never mix scoped workspaces', async () => {
+  const { root, source, store } = setup()
+  const workspaceA = join(root, 'workspace-a')
+  const workspaceB = join(root, 'workspace-b')
+  const projectA = await store.create({ video_paths: [source], working_dir: workspaceA, conversation_id: 'a-1' })
+  const projectB = await store.create({ video_paths: [source], working_dir: workspaceB, conversation_id: 'b-1' })
+  const legacy = await store.create({ video_paths: [source] })
+
+  expect(projectA).toMatchObject({ working_dir: workspaceA, conversation_id: 'a-1' })
+  expect((await store.list({ workingDir: workspaceA })).map(item => item.project_id)).toEqual([projectA.project_id])
+  expect((await store.list({ workingDir: workspaceB })).map(item => item.project_id)).toEqual([projectB.project_id])
+  expect(new Set((await store.list({ workingDir: workspaceA, includeUnscoped: true })).map(item => item.project_id))).toEqual(new Set([projectA.project_id, legacy.project_id]))
+  await expect(store.loadForWorkspace(projectA.project_id, workspaceB)).rejects.toMatchObject({ code: 'workspace_mismatch' })
+  await expect(store.loadForWorkspace(legacy.project_id, workspaceB)).resolves.toMatchObject({ project_id: legacy.project_id })
+})
+
 function writeLegacyProject(root: string, source: string, id = 'legacy-project') {
   const dir = join(root, 'uploads', 'edits', id)
   mkdirSync(dir, { recursive: true })
