@@ -3,16 +3,16 @@
 import { useEffect, useState } from 'react'
 import { ContextMenu } from '../components/shared/Menu'
 import { Modal } from '../components/shared/Modal'
-import { IconTile, PageHeader, PrimaryButton, SecondaryButton } from '../components/shared/PageKit'
+import { PageHeader, PrimaryButton, SecondaryButton } from '../components/shared/PageKit'
 import { toast } from '../stores/toastStore'
 import { IconClock, IconPlus, IconMoreHorizontal, IconEdit, IconTrash, IconZap } from '../components/shared/icons'
 import { t } from '../i18n'
 import { scheduledApi, toView, tasksFrom, type Freq, type TaskView } from '../api/scheduled'
 
 const FREQ_LABEL: Record<Freq, string> = { day: '每天', week: '每周一', month: '每月 1 日' }
-const scheduleText = (f: Freq, time: string) => `${FREQ_LABEL[f]} ${time}`
+export const scheduleText = (f: Freq, time: string) => `${FREQ_LABEL[f]} ${time}`
 
-function formatNext(next: number | string | null | undefined, freq: Freq, time: string): string {
+export function formatNext(next: number | string | null | undefined, freq: Freq, time: string): string {
   if (typeof next === 'number' && next > 0) {
     try {
       const d = new Date(next)
@@ -46,6 +46,65 @@ function FreqPicker({ value, onChange }: { value: Freq; onChange: (f: Freq) => v
 }
 
 interface FormValues { title: string; freq: Freq; time: string; enabled: boolean }
+
+export function ScheduledTaskList({ tasks, onToggle, onOpenMenu }: {
+  tasks: TaskView[]
+  onToggle: (task: TaskView) => void
+  onOpenMenu: (task: TaskView, point: { x: number; y: number }) => void
+}) {
+  return (
+    <div role="list" aria-label="已安排任务" className="flex flex-col gap-0.5">
+      {tasks.map(task => (
+        <div
+          key={task.id}
+          role="listitem"
+          className="group flex min-h-[56px] items-center gap-2 rounded-md px-2 py-2 transition-colors hover:bg-[var(--color-surface-hover)]"
+          data-testid="scheduled-task-row"
+        >
+          <div className="flex w-5 shrink-0 items-center justify-center">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: task.enabled ? 'var(--color-success)' : 'var(--color-text-tertiary)' }}
+              aria-label={task.enabled ? '运行中' : '已暂停'}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-normal" style={{ color: 'var(--color-text-primary)' }}>{task.title}</div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+              <span className="shrink-0">{scheduleText(task.freq, task.time)}</span>
+              <span aria-hidden>·</span>
+              <span className="truncate">{t('scheduled.nextRun')} {formatNext(task.nextRunAt, task.freq, task.time)}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={task.enabled}
+            aria-label={task.enabled ? t('scheduled.pausedToggle') : t('scheduled.enableToggle')}
+            onClick={() => onToggle(task)}
+            className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors"
+            style={{ background: task.enabled ? 'var(--color-brand)' : 'var(--color-surface-container-high)' }}
+          >
+            <span
+              className="absolute top-[2px] h-[18px] w-[18px] rounded-full transition-all"
+              style={{ left: task.enabled ? '18px' : '2px', background: task.enabled ? 'var(--color-on-primary)' : 'var(--cx-gray-0)', boxShadow: '0 1px 2px rgba(0,0,0,.2)' }}
+            />
+          </button>
+          <button
+            type="button"
+            aria-label={t('scheduled.edit')}
+            title={t('scheduled.edit')}
+            onClick={event => onOpenMenu(task, { x: event.clientX, y: event.clientY })}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md opacity-70 transition-colors hover:bg-[var(--color-surface-container)] group-hover:opacity-100 focus:opacity-100"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            <IconMoreHorizontal size={17} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 /** 新建/编辑表单弹窗。onSave 只回表单值,建/改由页面走后端。 */
 function TaskForm({ initial, busy, onCancel, onSave }: { initial: TaskView | null; busy: boolean; onCancel: () => void; onSave: (v: FormValues) => void }) {
@@ -88,10 +147,18 @@ export function ScheduledPage() {
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<TaskView | 'new' | null>(null)
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   const reload = async () => {
-    try { setTasks(tasksFrom(await scheduledApi.list()).map(toView)) }
-    catch { /* 后端未就绪:留空,不崩 */ }
+    try {
+      setTasks(tasksFrom(await scheduledApi.list()).map(toView))
+      setLoadFailed(false)
+    } catch {
+      setLoadFailed(true)
+    } finally {
+      setLoaded(true)
+    }
   }
   useEffect(() => { void reload() }, [])
 
@@ -124,42 +191,23 @@ export function ScheduledPage() {
         <PageHeader title={t('scheduled.title')} subtitle={t('scheduled.subtitle')}
           action={<PrimaryButton onClick={() => setEditing('new')}><IconPlus size={15} /> {t('scheduled.newTask')}</PrimaryButton>} />
 
-        {tasks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-lg px-6 py-16 text-center" style={{ border: '1px dashed var(--color-border)' }}>
-            <IconTile muted><IconClock size={18} /></IconTile>
+        {!loaded ? (
+          <div className="px-2 py-10 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>正在读取已安排任务...</div>
+        ) : tasks.length === 0 ? (
+          <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+            <IconClock size={20} style={{ color: 'var(--color-text-tertiary)' }} />
             <h2 className="mt-3 text-[15px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('scheduled.emptyTitle')}</h2>
             <p className="mt-1 max-w-[380px] text-[13px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{t('scheduled.emptyHint')}</p>
             <div className="mt-4"><PrimaryButton onClick={() => setEditing('new')}><IconPlus size={15} /> {t('scheduled.newTask')}</PrimaryButton></div>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-lg" style={{ border: '1px solid var(--color-border)' }}>
-            {tasks.map((task, i) => (
-              <div key={task.id} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-[var(--color-surface-hover)]"
-                style={i > 0 ? { borderTop: '1px solid var(--color-border)' } : undefined}>
-                <IconTile muted={!task.enabled}><IconClock size={17} /></IconTile>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{task.title}</div>
-                  <div className="mt-0.5 flex items-center gap-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>
-                    <span>{scheduleText(task.freq, task.time)}</span><span aria-hidden>·</span>
-                    <span>{t('scheduled.nextRun')} {formatNext(task.nextRunAt, task.freq, task.time)}</span>
-                  </div>
-                </div>
-                <button type="button" role="switch" aria-checked={task.enabled}
-                  aria-label={task.enabled ? t('scheduled.pausedToggle') : t('scheduled.enableToggle')}
-                  onClick={() => void toggle(task)} className="relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors"
-                  style={{ background: task.enabled ? 'var(--color-brand)' : 'var(--color-surface-container-high)' }}>
-                  <span className="absolute top-[2px] h-[18px] w-[18px] rounded-full transition-all"
-                    style={{ left: task.enabled ? '18px' : '2px', background: task.enabled ? 'var(--color-on-primary)' : 'var(--cx-gray-0)', boxShadow: '0 1px 2px rgba(0,0,0,.2)' }} />
-                </button>
-                <button type="button" aria-label={t('scheduled.edit')} onClick={(e) => setMenu({ id: task.id, x: e.clientX, y: e.clientY })}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--color-surface-container)]"
-                  style={{ color: 'var(--color-text-tertiary)' }}>
-                  <IconMoreHorizontal size={17} />
-                </button>
-              </div>
-            ))}
-          </div>
+          <ScheduledTaskList
+            tasks={tasks}
+            onToggle={task => void toggle(task)}
+            onOpenMenu={(task, point) => setMenu({ id: task.id, ...point })}
+          />
         )}
+        {loaded && loadFailed && <p className="mt-4 px-2 text-[12px]" style={{ color: 'var(--color-error)' }}>暂时无法读取全部任务。</p>}
       </div>
 
       {menu && (
