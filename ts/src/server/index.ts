@@ -277,8 +277,9 @@ export function startServer(opts: StartServerOptions = {}) {
     workbenchStore: imageWorkbench,
   })
   const handleImageWorkbenchRoute = createImageWorkbenchRouteHandler(imageWorkbench)
-  // 资产管理器(瘦安装包):大块头资产(ffmpeg/转写权重/中文字体)首启后从静态源后台
-  // 静默下载;媒体调用点经进程级注册表拿 ready 路径。测试环境默认不启动(不碰网络)。
+  // 资产管理器(瘦安装包):FFmpeg/ffprobe 启动后准备，可选本地组件按功能准备；
+  // 默认远程转录不会下载 Whisper 权重。媒体调用点经进程级注册表拿 ready 路径。
+  // 测试环境默认不启动(不碰网络)。
   const assets = opts.assetManager ?? new AssetManager({
     stateRoot,
     env: opts.env ?? process.env,
