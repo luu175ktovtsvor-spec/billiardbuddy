@@ -1,6 +1,6 @@
 /* ============================================================================
  * 桌面主题层:
- *   主操作保持中性；品牌提示、选中态、链接与键盘焦点使用克制的蓝色反馈。
+ *   主操作、品牌提示、选中态、链接与键盘焦点使用同一套浅蓝强调色。
  * 结构:Layer 1 palette(--cx-* 原子色)→ Layer 2 semantic(--color-* 组件消费名,只重写值)。
  * 文字/边框/图标从「前景色」用 color-mix 分级,不写死灰。
  * ==========================================================================*/
@@ -11,7 +11,7 @@
   --cx-gray-0:#fff;    --cx-gray-50:#f9f9f9; --cx-gray-75:#f3f3f3; --cx-gray-100:#ededed;
   --cx-gray-300:#afafaf; --cx-gray-500:#5d5d5d; --cx-gray-550:#4f4f4f; --cx-gray-600:#414141;
   --cx-gray-700:#303030; --cx-gray-750:#282828; --cx-gray-800:#212121; --cx-gray-900:#181818; --cx-gray-1000:#0d0d0d;
-  /* 链接与焦点语义色 */
+  /* 浅蓝强调色 */
   --cx-blue:#0a84ff;
   --cx-blue-hover:#0069d6;
   --cx-blue-dark:#409cff;
@@ -31,11 +31,11 @@
 /* —— Layer 2 · semantic(--color-* 名 + 值 · 浅色默认) —— */
 :root {
   --cx-fg: var(--cx-fg-light);
-  --cx-accent: var(--cx-gray-900);
+  --cx-accent: var(--cx-blue);
 
   --color-primary: var(--cx-accent);
-  --color-brand: var(--cx-blue);
-  --color-brand-tint: color-mix(in oklab, var(--cx-blue) 12%, transparent);
+  --color-brand: var(--cx-accent);
+  --color-brand-tint: color-mix(in oklab, var(--cx-accent) 12%, transparent);
   --color-on-primary: #ffffff;
 
   /* 三区底色(侧栏暖近白、主区白;仍中性) */
@@ -51,7 +51,7 @@
   --color-surface-container-highest: #e6e6e6;
   --color-surface-sidebar: var(--cx-gray-50);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 6%, transparent);      /* hover 仍中性 */
-  --color-surface-selected: color-mix(in oklab, var(--cx-blue) 11%, transparent);
+  --color-surface-selected: color-mix(in oklab, var(--cx-accent) 13%, transparent);
   --color-surface-glass: var(--cx-gray-0);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 8%, transparent);
 
@@ -62,11 +62,11 @@
   --color-on-surface: var(--cx-fg);
   --color-on-surface-variant: color-mix(in oklab, var(--cx-fg) 70%, transparent);
 
-  /* 边框从前景色分级；焦点保留蓝色可访问性语义。 */
+  /* 边框从前景色分级；焦点使用浅蓝强调色。 */
   --color-border: color-mix(in oklab, var(--cx-fg) 8%, transparent);
   --color-border-strong: color-mix(in oklab, var(--cx-fg) 12%, transparent);
-  --color-border-focus: var(--cx-blue);
-  --color-focus-ring: color-mix(in oklab, var(--cx-blue) 70%, transparent);
+  --color-border-focus: var(--cx-accent);
+  --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
 
   --color-error: var(--cx-red-500);
   --color-success: var(--cx-green-500);
@@ -78,8 +78,8 @@
 
   --color-bubble-user: var(--cx-gray-100);     /* 用户气泡 = 浅灰(仍中性,不抢蓝) */
 
-  --color-smiley-a: var(--cx-gray-900);
-  --color-smiley-face: #ffffff;
+  --color-smiley-a: var(--cx-blue);
+  --color-smiley-b: var(--cx-blue-400);
 
   --font-body: var(--wb-font);
   --font-headline: var(--wb-font);
@@ -95,12 +95,12 @@
 /* —— 深色 —— */
 :root[data-theme="dark"] {
   --cx-fg: var(--cx-fg-dark);
-  --cx-accent: #f5f5f5;
+  --cx-accent: var(--cx-blue-dark);
 
   --color-primary: var(--cx-accent);
-  --color-brand: var(--cx-blue-dark);
-  --color-brand-tint: color-mix(in oklab, var(--cx-blue-dark) 20%, transparent);
-  --color-on-primary: var(--cx-gray-900);
+  --color-brand: var(--cx-accent);
+  --color-brand-tint: color-mix(in oklab, var(--cx-accent) 20%, transparent);
+  --color-on-primary: #ffffff;
 
   --color-app-sidebar: var(--cx-gray-900);
   --color-app-main: var(--cx-gray-800);
@@ -114,14 +114,14 @@
   --color-surface-container-highest: var(--cx-gray-600);
   --color-surface-sidebar: var(--cx-gray-900);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-  --color-surface-selected: color-mix(in oklab, var(--cx-blue-dark) 18%, transparent);
+  --color-surface-selected: color-mix(in oklab, var(--cx-accent) 24%, transparent);
   --color-surface-glass: var(--cx-gray-750);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
 
   --color-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
   --color-border-strong: color-mix(in oklab, var(--cx-fg) 16%, transparent);
-  --color-border-focus: var(--cx-blue-dark);
-  --color-focus-ring: color-mix(in oklab, var(--cx-blue-dark) 70%, transparent);
+  --color-border-focus: var(--cx-accent);
+  --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
 
   --color-error: var(--cx-red-300);
   --color-success: var(--cx-green-300);
@@ -131,8 +131,8 @@
   --color-link: #3794ff;
   --color-link-hover: #7ab8e8;
 
-  --color-smiley-a: #f5f5f5;
-  --color-smiley-face: var(--cx-gray-900);
+  --color-smiley-a: var(--cx-blue-dark);
+  --color-smiley-b: var(--cx-blue-300);
 
   --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
   --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
@@ -143,11 +143,11 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --cx-fg: var(--cx-fg-dark);
-    --cx-accent: #f5f5f5;
+    --cx-accent: var(--cx-blue-dark);
     --color-primary: var(--cx-accent);
-    --color-brand: var(--cx-blue-dark);
-    --color-brand-tint: color-mix(in oklab, var(--cx-blue-dark) 20%, transparent);
-    --color-on-primary: var(--cx-gray-900);
+    --color-brand: var(--cx-accent);
+    --color-brand-tint: color-mix(in oklab, var(--cx-accent) 20%, transparent);
+    --color-on-primary: #ffffff;
     --color-app-sidebar: var(--cx-gray-900);
     --color-app-main: var(--cx-gray-800);
     --color-background: var(--cx-gray-800);
@@ -160,21 +160,21 @@
     --color-surface-container-highest: var(--cx-gray-600);
     --color-surface-sidebar: var(--cx-gray-900);
     --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-    --color-surface-selected: color-mix(in oklab, var(--cx-blue-dark) 18%, transparent);
+    --color-surface-selected: color-mix(in oklab, var(--cx-accent) 24%, transparent);
     --color-surface-glass: var(--cx-gray-750);
     --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
     --color-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
     --color-border-strong: color-mix(in oklab, var(--cx-fg) 16%, transparent);
-    --color-border-focus: var(--cx-blue-dark);
-    --color-focus-ring: color-mix(in oklab, var(--cx-blue-dark) 70%, transparent);
+    --color-border-focus: var(--cx-accent);
+    --color-focus-ring: color-mix(in oklab, var(--cx-accent) 70%, transparent);
     --color-error: var(--cx-red-300);
     --color-success: var(--cx-green-300);
     --color-warning: var(--cx-orange-300);
     --color-bubble-user: var(--cx-gray-700);
     --color-link: #3794ff;
     --color-link-hover: #7ab8e8;
-    --color-smiley-a: #f5f5f5;
-    --color-smiley-face: var(--cx-gray-900);
+    --color-smiley-a: var(--cx-blue-dark);
+    --color-smiley-b: var(--cx-blue-300);
     --shadow-input: 0 0 0 .5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
     --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
     --shadow-popover: 0 8px 20px -6px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.08);
