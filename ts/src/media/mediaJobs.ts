@@ -10,7 +10,7 @@ import type { FetchLike } from '../proxy/ProxyModel'
 import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
 import { VideoEditProjectStore } from './video-edit/legacyTimeline'
-import { ffmpegBinFrom, gateMediaAssets } from './mediaBinaries'
+import { ffmpegBinFrom, gateMediaAssets, type MediaBinaryNeed } from './mediaBinaries'
 import { upscaleImage } from './imageUpscale'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
 import {
@@ -77,6 +77,8 @@ export interface MediaJobServiceOptions {
   workbenchStore?: {
     createProject(input: unknown): Promise<unknown>
   }
+  gateAssets?: typeof gateMediaAssets
+  waitForAssetRetry?: (signal: AbortSignal) => Promise<void>
 }
 
 /** 人像闸预检结果:blocked=true 则任务直接返回该结果(正常完成、非报错),不进模型。 */
@@ -97,6 +99,7 @@ interface StartMediaJobInput {
   workspaceRoot?: string
   proxyPath?: string
   project?: string
+  requiredAssets?: MediaBinaryNeed[]
   fallback?: (ctx: TaskRunnerContext, task: TaskMeta) => Promise<Record<string, unknown>>
   /** 生成前的合规/质检闸;返回 blocked 则短路,不调模型。 */
   preflight?: (ctx: TaskRunnerContext) => Promise<PortraitPreflightOutcome>
@@ -622,6 +625,20 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException('已取消', 'AbortError'))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolvePromise()
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function dataUriFor(contentType: string, bytes: Buffer): string {
   return `data:${contentType.split(';')[0]};base64,${bytes.toString('base64')}`
 }
@@ -872,6 +889,14 @@ export class MediaJobService {
     })
     this.opts.tasks.start(task.id, async ctx => {
       try {
+        let assetGate = (this.opts.gateAssets ?? gateMediaAssets)(this.env, input.requiredAssets ?? [])
+        while (assetGate) {
+          const message = typeof assetGate.message === 'string' ? assetGate.message : '所需组件正在后台准备。'
+          const progress = typeof assetGate.asset_progress === 'number' ? assetGate.asset_progress : 0
+          await ctx.progress(Math.max(1, Math.min(99, progress)), message)
+          await (this.opts.waitForAssetRetry ?? (signal => delayWithSignal(750, signal)))(ctx.signal)
+          assetGate = (this.opts.gateAssets ?? gateMediaAssets)(this.env, input.requiredAssets ?? [])
+        }
         if (input.preflight) {
           const outcome = await input.preflight(ctx)
           if (outcome.blocked) return outcome.result
@@ -947,6 +972,7 @@ export class MediaJobService {
         body: normalized,
         conversationId: stringFrom(normalized.conversation_id),
         workspaceRoot: opts.workspaceRoot,
+        requiredAssets: ['ffmpeg'],
         fallback: ctx => this.localImageAdjustment(ctx, normalized),
         postprocess: async (_ctx, result) => this.attachWorkbenchProjects(result, normalized, 'edit'),
       })
@@ -993,6 +1019,7 @@ export class MediaJobService {
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
+      requiredAssets: ['realesrgan'],
       fallback: ctx => this.localUpscaleFallback(ctx, normalized),
     })
   }
@@ -1008,6 +1035,7 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       proxyPath,
       project,
+      requiredAssets: ['ffmpeg', 'ffprobe'],
       fallback: ctx => this.localVideoJobFallback(ctx, kind, normalized, project),
     })
   }
