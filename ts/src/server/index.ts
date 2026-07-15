@@ -294,7 +294,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
   // 定时任务调度引擎(触发器)。到点 → 起一个真 agent 会话让模型在 cc 循环里用工具把任务干完(#66 衔接铁律,
   // 不是执行写死的 SOP 脚本)。fireTask 直接调进程内的 createTurnStream(= runAgentLoop),带任务配置的工作目录 +
-  // 领域包(billiards_mode);无人值守故走 bypassPermissions(仍不越 forceConfirm/硬拒红线)。产出/状态写回运行历史。
+  // 领域包(billiards_mode);无人值守故走 bypassPermissions(跳过审批，仍不越 fatal/显式 deny)。产出/状态写回运行历史。
   const scheduledTasks = new ScheduledTaskRunner({
     store: desktopData,
     stateRoot,

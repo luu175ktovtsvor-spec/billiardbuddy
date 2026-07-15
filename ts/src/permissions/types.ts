@@ -85,7 +85,7 @@ export type ApprovalClass = 'file' | 'outreach' | 'destructive'
 export type DecisionReason =
   | { type: 'mode'; mode: CanonicalPermissionMode }
   | { type: 'rule'; rule: PermissionRule }
-  | { type: 'forceConfirm' } // 旁路免疫:连 bypassPermissions 也拦
+  | { type: 'forceConfirm' } // default/acceptEdits 下的强确认；完全访问档跳过
   | { type: 'requiresUserInteraction' } // 必须由用户交互确认,连 bypassPermissions 也拦
   | { type: 'fatal'; text: string } // 硬拒,永不执行
   | { type: 'sessionAllowedTool'; tool: string } // skill/command frontmatter 授权的会话内工具

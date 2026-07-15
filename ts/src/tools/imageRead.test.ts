@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { PNG } from 'pngjs'
 import { detectImageFormat, estimateVisionTokens, getImageDimensions, isImageExtension, readImageBuffer } from './imageRead'
 
 function pngBuffer(width: number, height: number): Buffer {
@@ -71,4 +72,24 @@ test('readImageBuffer marks bmp as not vision-supported and rejects garbage', ()
   expect(bmp?.visionSupported).toBe(false)
   expect(bmp?.imageBlock).toBeNull()
   expect(readImageBuffer(Buffer.from('not an image at all'))).toBeNull()
+})
+
+test('readImageBuffer downsizes a large PNG before creating the vision block', () => {
+  const png = new PNG({ width: 1800, height: 1200 })
+  for (let y = 0; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      const offset = (y * png.width + x) * 4
+      png.data[offset] = (x * 17 + y * 11) % 256
+      png.data[offset + 1] = (x * 7 + y * 19) % 256
+      png.data[offset + 2] = (x * 23 + y * 5) % 256
+      png.data[offset + 3] = 255
+    }
+  }
+  const original = PNG.sync.write(png)
+  const result = readImageBuffer(original)
+  expect(result?.previewResized).toBe(true)
+  expect(Math.max(result!.previewDimensions!.width, result!.previewDimensions!.height)).toBeLessThanOrEqual(1280)
+  expect(result!.previewByteSize).toBeLessThanOrEqual(384 * 1024)
+  expect(Buffer.from(result!.imageBlock!.source.data, 'base64').length).toBe(result!.previewByteSize!)
+  expect(result!.imageBlock!.source.media_type).toBe('image/jpeg')
 })

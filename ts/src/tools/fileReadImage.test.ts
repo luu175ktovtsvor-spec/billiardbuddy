@@ -70,13 +70,13 @@ test('read_file pushes a real vision image block into ctx.imageResultSink (png)'
   expect(imageResultSink[0]!.source.data.length).toBeGreaterThan(0)
 })
 
-test('read_file still feeds an over-budget image to the model (no downsample available)', async () => {
+test('read_file omits an over-budget image when a safe preview cannot be generated', async () => {
   writePng('huge.png', 4000, 4000)
   const imageResultSink: ImageBlock[] = []
   const out = await fileReadTool.execute({ path: 'huge.png' }, { ...ctx, imageResultSink })
   expect(out).toContain('over_vision_budget="true"')
-  // 无重采样能力 → 超预算仍把原图回灌(而不是吞掉),让模型真看到 4K 截图等常见大图。
-  expect(imageResultSink).toHaveLength(1)
+  expect(out).toContain('无法生成安全预览')
+  expect(imageResultSink).toHaveLength(0)
 })
 
 test('read_file does not push a vision block for non-vision formats (bmp)', async () => {

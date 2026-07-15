@@ -177,10 +177,10 @@ export const zhCN = {
     acceptEdits: '接受修改',
     plan: '规划模式',
     bypass: '完全访问',
-    defaultDesc: '读取可直接进行，修改和运行命令时按需确认',
-    acceptEditsDesc: '工作目录内修改直接执行，越界或敏感操作时确认',
+    defaultDesc: '读取直接进行；修改文件和运行受控命令时请求确认',
+    acceptEditsDesc: '工作目录内普通修改直接执行；命令、越界或敏感修改仍按需确认',
     planDesc: '只做规划、先不动手',
-    bypassDesc: '普通工具直接执行，系统授权仍由系统确认',
+    bypassDesc: '可联网并修改电脑上的任意文件，不再逐次审批；系统授权仍由系统确认',
     title: '权限',
   },
   approval: {

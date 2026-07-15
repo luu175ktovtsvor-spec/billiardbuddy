@@ -58,7 +58,7 @@ export function activateWorktreeSessionForContext(ctx: ToolContext): WorktreeSes
   if (!session) return null
   if (ctx.workspace.root !== session.originalRoot && ctx.workspace.root !== session.worktreePath) return null
   ctx.worktreeSession = session
-  if (ctx.workspace.root !== session.worktreePath) ctx.workspace = new Workspace(session.worktreePath)
+  if (ctx.workspace.root !== session.worktreePath) ctx.workspace = ctx.workspace.retarget(session.worktreePath)
   return session
 }
 
@@ -66,7 +66,7 @@ export function workspaceForActiveWorktree(workspace: Workspace, conversationId:
   const session = getActiveWorktreeSession(conversationId)
   if (!session) return workspace
   if (workspace.root !== session.originalRoot && workspace.root !== session.worktreePath) return workspace
-  return workspace.root === session.worktreePath ? workspace : new Workspace(session.worktreePath)
+  return workspace.root === session.worktreePath ? workspace : workspace.retarget(session.worktreePath)
 }
 
 export async function createIsolatedAgentWorktree(workspaceRoot: string, agentId: string, conversationId?: string): Promise<AgentWorktree> {
@@ -166,7 +166,7 @@ export const enterWorktreeTool: Tool<EnterWorktreeInput> = {
       session = await createWorktreeForSession(repoRoot, name, ctx.conversationId)
     }
     rememberWorktreeSession(ctx, session)
-    ctx.workspace = new Workspace(session.worktreePath)
+    ctx.workspace = ctx.workspace.retarget(session.worktreePath)
     return [
       '<enter_worktree>',
       `worktree_path: ${session.worktreePath}`,
@@ -252,7 +252,7 @@ export const exitWorktreeTool: Tool<ExitWorktreeInput> = {
 
     if (action === 'keep') {
       forgetWorktreeSession(ctx)
-      ctx.workspace = new Workspace(session.originalRoot)
+      ctx.workspace = ctx.workspace.retarget(session.originalRoot)
       return [
         '<exit_worktree action="keep">',
         `worktree_path: ${session.worktreePath}`,
@@ -273,7 +273,7 @@ export const exitWorktreeTool: Tool<ExitWorktreeInput> = {
       await removeWorktree(session)
     }
     forgetWorktreeSession(ctx)
-    ctx.workspace = new Workspace(session.originalRoot)
+    ctx.workspace = ctx.workspace.retarget(session.originalRoot)
     return [
       '<exit_worktree action="remove">',
       `worktree_path: ${session.worktreePath}`,

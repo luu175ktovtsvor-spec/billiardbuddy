@@ -108,10 +108,9 @@ describe('resolvePermission 瀑布', () => {
     expect(d).toMatchObject({ behavior: 'deny', reason: { type: 'mode', mode: 'dontAsk' } })
   })
 
-  test('Delta B:forceConfirm 连 bypassPermissions(跳过确认)也弹卡', () => {
+  test('bypassPermissions 跳过 forceConfirm，完全访问不再逐次审批', () => {
     const d = resolvePermission(tool({ requiresApproval: true, forceConfirm: true, approvalClass: 'destructive' }), {}, ctx('bypassPermissions'))
-    expect(d.behavior).toBe('ask')
-    expect(d.behavior === 'ask' && d.reason?.type).toBe('forceConfirm')
+    expect(d).toMatchObject({ behavior: 'allow', reason: { type: 'mode', mode: 'bypassPermissions' } })
   })
 
   test('forceConfirmFor 可按入参动态强制确认', () => {
@@ -121,11 +120,15 @@ describe('resolvePermission 瀑布', () => {
       approvalClassFor: input => (input as { restore?: boolean }).restore ? 'destructive' : undefined,
     })
     expect(resolvePermission(t, { restore: false }, ctx('bypassPermissions')).behavior).toBe('allow')
-    const d = resolvePermission(t, { restore: true }, ctx('bypassPermissions'))
+    const d = resolvePermission(t, { restore: true }, ctx('default'))
     expect(d).toMatchObject({ behavior: 'ask', approvalClass: 'destructive', reason: { type: 'forceConfirm' } })
+    expect(resolvePermission(t, { restore: true }, ctx('bypassPermissions'))).toMatchObject({
+      behavior: 'allow',
+      reason: { type: 'mode', mode: 'bypassPermissions' },
+    })
   })
 
-  test('bypassPermissions:跳过普通审批,但不跳过 fatal/forceConfirm/必须用户交互', () => {
+  test('bypassPermissions:跳过普通审批和 forceConfirm，但不跳过 fatal/必须用户交互', () => {
     expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach' }), {}, ctx('bypassPermissions')).behavior).toBe('allow')
 
     const fatal = resolvePermission(tool({ fatalReasonFor: () => '禁止' }), {}, ctx('bypassPermissions'))
@@ -136,8 +139,7 @@ describe('resolvePermission 瀑布', () => {
       {},
       ctx('bypassPermissions'),
     )
-    expect(forced.behavior).toBe('ask')
-    expect(forced.behavior === 'ask' && forced.reason?.type).toBe('forceConfirm')
+    expect(forced).toMatchObject({ behavior: 'allow', reason: { type: 'mode', mode: 'bypassPermissions' } })
 
     const interactive = resolvePermission(
       tool({ requiresApproval: true, requiresUserInteraction: true, approvalClass: 'outreach' }),
@@ -283,10 +285,10 @@ describe('resolvePermission 瀑布', () => {
     })
   })
 
-  test('bypassPermissions 档:outreach 类按普通审批跳过,强确认另由 forceConfirm 表达', () => {
+  test('bypassPermissions 档:outreach 与 forceConfirm 都不弹审批', () => {
     const t = tool({ requiresApproval: true, approvalClass: 'outreach' })
     expect(resolvePermission(t, {}, ctx('bypassPermissions')).behavior).toBe('allow')
-    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach', forceConfirm: true }), {}, ctx('bypassPermissions')).behavior).toBe('ask')
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'outreach', forceConfirm: true }), {}, ctx('bypassPermissions')).behavior).toBe('allow')
   })
 
   test('safePrefixFor 命中 → allow(即便 requiresApproval)', () => {
@@ -516,8 +518,8 @@ describe('同族文件工具受路径规则 gate(POC:bypassPermissions + deny �
     const restore = tool({ name: 'restore_file', isReadOnly: false, requiresApproval: true, approvalClass: 'destructive', forceConfirm: true })
     const rules = [fileRule('deny', 'Edit', '.env')]
     expect(resolvePermission(restore, { path: '.env' }, fctx(w, 'bypassPermissions', rules)).behavior).toBe('deny')
-    // 对照:无关文件放行(还原本身仍会另走 forceConfirm,这里只验路径 deny 生效)。
-    expect(resolvePermission(restore, { path: 'notes.txt' }, fctx(w, 'bypassPermissions', rules)).behavior).toBe('ask')
+    // 对照:无关文件在完全访问档直接放行，路径 deny 仍独立生效。
+    expect(resolvePermission(restore, { path: 'notes.txt' }, fctx(w, 'bypassPermissions', rules)).behavior).toBe('allow')
   })
 
   test('code_outline{path:.env} 被 deny Read(.env) 拦下(原漏网洞:读工具未 gate,防泄露 import/符号)', () => {

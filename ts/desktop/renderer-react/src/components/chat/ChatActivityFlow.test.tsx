@@ -9,6 +9,7 @@ const { Block, groupBlocks, partitionTurnItems, splitTurns } = await import('./M
 const { shouldShowInitialWaiting } = await import('./StreamingIndicator')
 const { ThinkingBlock } = await import('./ThinkingBlock')
 const { ToolCallGroup } = await import('./ToolCallGroup')
+const { concatenatedToolParts, summarizeActivity, visibleActivityTools } = await import('./toolMeta')
 
 function render(element: ReactElement): string {
   return renderToStaticMarkup(element)
@@ -69,6 +70,37 @@ test('最终回复与可折叠活动区分离，流式正文不渲染字符光�
   expect(response).not.toContain('qf-cursor')
 })
 
+test('回合运行中的助手文字是阶段独白，不提前当成最终回复', () => {
+  const blocks: ChatBlock[] = [
+    { id: 'user-running', kind: 'user', text: '检查项目' },
+    { id: 'commentary-running', kind: 'assistant', text: '我先看一下这个项目的结构。', streaming: false },
+    { id: 'tool-running', kind: 'tool', tool: 'list_dir', input: { path: '/tmp/project' }, status: 'running' },
+  ]
+  const turn = splitTurns(groupBlocks(blocks)).find((entry) => entry.type === 'turn')
+  if (turn?.type !== 'turn') throw new Error('没有生成运行中回合')
+
+  const partition = partitionTurnItems(turn.items, true)
+  expect(partition.finalAssistant).toBeUndefined()
+  expect(partition.responseItems).toHaveLength(0)
+  expect(partition.activityItems.some((item) => item.kind === 'block' && item.block.kind === 'assistant')).toBe(true)
+})
+
+test('技能和工具加载保留在活动流，大结果分页回读仍隐藏', () => {
+  const items = groupBlocks([
+    { id: 'skill-1', kind: 'tool', tool: 'use_skill', input: { skill: 'Project Change Router' }, status: 'ok' },
+    { id: 'search-1', kind: 'tool', tool: 'tool_search', input: { query: '读取文件' }, status: 'ok' },
+    { id: 'stored-1', kind: 'tool', tool: 'read_stored_tool_result', input: { path: 'tool-1.txt' }, status: 'ok' },
+  ])
+  expect(items).toHaveLength(1)
+  expect(items[0]?.kind).toBe('tool-group')
+  if (items[0]?.kind !== 'tool-group') throw new Error('工具没有生成活动组')
+  expect(items[0].blocks.filter((block) => block.kind === 'tool').map((block) => block.tool)).toEqual(['use_skill', 'tool_search'])
+
+  const html = render(<ToolCallGroup blocks={items[0].blocks} />)
+  expect(html).toContain('加载了 2 个工具')
+  expect(html).not.toContain('read_stored_tool_result')
+})
+
 test('尚无活动事件时只显示轻量等待分隔行，活动出现后由活动区接管', () => {
   expect(shouldShowInitialWaiting('running', [{ id: 'user-1', kind: 'user', text: '开始' }])).toBe(true)
   expect(shouldShowInitialWaiting('idle', [{ id: 'user-1', kind: 'user', text: '开始' }])).toBe(false)
@@ -76,4 +108,59 @@ test('尚无活动事件时只显示轻量等待分隔行，活动出现后由�
       { id: 'user-1', kind: 'user', text: '开始' },
       { id: 'thinking-1', kind: 'thinking', text: '分析中', active: true },
   ])).toBe(false)
+})
+
+test('完成后的活动组默认折叠，已恢复的拼接工具错误不再外露', () => {
+  const blocks: ChatBlock[] = [
+    { id: 'bad-1', kind: 'tool', tool: 'list_dirlist_dirlist_dir', input: {}, status: 'error', output: '错误:未知工具' },
+    { id: 'folder-1', kind: 'tool', tool: 'list_dir', input: { path: '成都' }, status: 'ok', output: '18 行输出' },
+    { id: 'folder-2', kind: 'tool', tool: 'list_dir', input: { path: '晋江' }, status: 'ok', output: '34 行输出' },
+    { id: 'image-1', kind: 'tool', tool: 'read_file', input: { path: '候选-1.jpg' }, status: 'ok' },
+    { id: 'image-2', kind: 'tool', tool: 'read_file', input: { path: '候选-2.jpg' }, status: 'ok' },
+  ]
+
+  const html = render(<ToolCallGroup blocks={blocks} />)
+  expect(html).toContain('aria-expanded="false"')
+  expect(html).toContain('查看了 2 个文件夹')
+  expect(html).toContain('查看了 2 张图片')
+  expect(html).not.toContain('list_dirlist_dirlist_dir')
+  expect(html).not.toContain('出错了')
+})
+
+test('活动摘要使用具体数量和用户语言，不再机械拼接工具类别', () => {
+  expect(summarizeActivity([
+    ...Array.from({ length: 5 }, (_, index) => ({ tool: 'list_dir', status: 'ok' as const, input: { path: `folder-${index}` } })),
+    ...Array.from({ length: 3 }, () => ({ tool: 'select_image_candidates', status: 'ok' as const })),
+    ...Array.from({ length: 7 }, (_, index) => ({ tool: 'read_file', status: 'ok' as const, input: { path: `image-${index}.jpg` } })),
+  ])).toBe('查看了 5 个文件夹、筛选了图片和查看了 7 张图片')
+})
+
+test('未恢复的错误仍保留但不强制展开整组', () => {
+  const html = render(<ToolCallGroup blocks={[
+    { id: 'read-ok', kind: 'tool', tool: 'read_file', input: { path: 'a.txt' }, status: 'ok' },
+    { id: 'command-failed', kind: 'tool', tool: 'run_command', input: { command: 'bad' }, status: 'error', output: '命令失败' },
+  ]} />)
+  expect(html).toContain('aria-expanded="false"')
+  expect(html).toContain('出错了')
+  expect(html).not.toContain('命令失败')
+})
+
+test('回合级摘要也排除已成功重试的拼接工具错误', () => {
+  const tools = visibleActivityTools([
+    { id: 'bad-read', tool: 'read_fileread_file', status: 'error' as const },
+    { id: 'good-read', tool: 'read_file', status: 'ok' as const, input: { path: 'a.txt' } },
+  ])
+  expect(tools.map((tool) => tool.id)).toEqual(['good-read'])
+  expect(summarizeActivity(tools)).toBe('读取了 1 个文件')
+})
+
+test('同名与混合工具名粘连都识别为 provider 协议噪音', () => {
+  expect(concatenatedToolParts('read_many_filesread_many_files')).toEqual(['read_many_files', 'read_many_files'])
+  expect(concatenatedToolParts('read_many_filesread_file')).toEqual(['read_many_files', 'read_file'])
+  expect(concatenatedToolParts('read_file')).toBeNull()
+
+  expect(visibleActivityTools([
+    { id: 'mixed', tool: 'read_many_filesread_file', status: 'error' as const },
+    { id: 'real', tool: 'run_command', status: 'error' as const },
+  ]).map((tool) => tool.id)).toEqual(['real'])
 })

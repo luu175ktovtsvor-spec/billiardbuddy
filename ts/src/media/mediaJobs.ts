@@ -450,6 +450,17 @@ function imageQualityFromBody(body: Record<string, unknown>): ImageQuality {
   return value === 'draft' || value === 'final' ? value : 'standard'
 }
 
+const LOCAL_IMAGE_ADJUSTMENT_RE = /调亮|亮度|曝光|对比度|饱和度|色温|调色|清晰|锐化|通透|自然|不要过度美颜|brightness|exposure|contrast|saturation|sharpen|color balance/iu
+const GENERATIVE_IMAGE_EDIT_RE = /换背景|改背景|替换背景|增加|添加|删除|移除|替换|换装|换衣|改衣|重绘|补画|扩图|局部|遮罩|去水印|改字|改文字|改文案|错别字|修复老照片|background|remove|replace|inpaint|outpaint|retouch object/iu
+
+function shouldUseLocalImageAdjustment(body: Record<string, unknown>): boolean {
+  if (stringFrom(body.image_provider) || stringFrom(body.image_model) || stringFrom(body.model)) return false
+  if (stringFrom(body.mask_path) || stringArrayFrom(body.reference_image_paths).length || stringArrayFrom(body.reference_generation_ids).length) return false
+  if (body.edit_type === 'text_fix') return false
+  const prompt = String(body.user_request ?? body.prompt ?? body.description ?? '')
+  return LOCAL_IMAGE_ADJUSTMENT_RE.test(prompt) && !GENERATIVE_IMAGE_EDIT_RE.test(prompt)
+}
+
 function isWesternDominant(text: string): boolean {
   const trimmed = text.trim()
   if (!trimmed) return false
@@ -918,6 +929,28 @@ export class MediaJobService {
 
   async startStudioEdit(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {
     const prepared = await this.prepareImageBody(body, 'edit')
+    if (shouldUseLocalImageAdjustment(prepared)) {
+      const brief = this.compileBrief(prepared, 'edit')
+      const normalized = {
+        ...prepared,
+        _image_mode: 'edit',
+        _edit_strategy: 'local_adjustment',
+        count: 1,
+        user_request: brief.user_request,
+        creative_brief: brief,
+        intent: 'edit_content',
+        conversation_id: stringFrom(prepared.conversation_id) ?? opts.conversationId,
+      }
+      return this.startJob({
+        kind: 'edit',
+        title: `调整图片:${shortText(body.prompt, '自然调整')}`,
+        body: normalized,
+        conversationId: stringFrom(normalized.conversation_id),
+        workspaceRoot: opts.workspaceRoot,
+        fallback: ctx => this.localImageAdjustment(ctx, normalized),
+        postprocess: async (_ctx, result) => this.attachWorkbenchProjects(result, normalized, 'edit'),
+      })
+    }
     const brief = await this.compileBriefWithModel(prepared, 'edit')
     const compiled = compileProviderPrompt(brief, 'edit')
     const normalized = {
@@ -1294,6 +1327,10 @@ export class MediaJobService {
     const sized = imageSizeForProvider(config.model, body.ratio)
     const hardTextInspection = inspectHardTextRequirement(body, prompt)
     const refs = await this.collectImageReferences(body, mode)
+    const referenceLimit = config.provider === 'openai-compatible' ? 4 : 8
+    if (refs.length > referenceLimit) {
+      throw new Error(`当前图片引擎一次最多提交 ${referenceLimit} 张原图/参考图；请减少候选后重试。`)
+    }
     const wantsInputFidelity = config.provider === 'openai-compatible'
       && /^gpt-image/i.test(config.model)
       && refs.length > 0
@@ -1314,7 +1351,7 @@ export class MediaJobService {
       : regeneratedPrintQr.status === 'failed'
         ? 'failed'
         : printQrPath ? 'source_only' : 'none'
-    if (mode === 'edit' && refs.length === 0) throw new Error('改图需要可读取的 source_generation_id 底图')
+    if (mode === 'edit' && refs.length === 0) throw new Error('改图需要可读取的原图路径或已生成图片 id')
     await ctx.progress(12, refs.length ? '正在提交到图片编辑网关。' : '正在提交到图片生成网关。')
     let parsed: Record<string, unknown>
     if (config.provider === 'openai-compatible' && this.gptImageAsync) {
@@ -1398,7 +1435,7 @@ export class MediaJobService {
       payload.response_format = responseFormat ?? 'url'
       payload.watermark = body.watermark === true ? true : false
       if (refs.length) {
-        const images = refs.map(ref => ref.url).slice(0, 14)
+        const images = refs.map(ref => ref.url).slice(0, 8)
         payload.image = images.length === 1 ? images[0] : images
         payload.input_images = images
         payload.sequential_image_generation = 'disabled'
@@ -1457,7 +1494,7 @@ export class MediaJobService {
       taskBody.input_fidelity = String(body.input_fidelity ?? 'high')
     }
     if (mode === 'edit') {
-      const images = refs.map(ref => ref.url).filter(Boolean).slice(0, 16)
+      const images = refs.map(ref => ref.url).filter(Boolean).slice(0, 4)
       if (images.length === 0) throw new Error('改图需要本机可读取的底图或参考图')
       taskBody.images = images
       const mask = await this.resolveImageReference(stringFrom(body.mask_path), 'mask', this.trustedImagePaths(body))
@@ -2225,6 +2262,87 @@ export class MediaJobService {
       })
     }
     return await this.unavailableFallback(ctx, '视频剪辑需要媒体后端。')
+  }
+
+  private async localImageAdjustment(ctx: TaskRunnerContext, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const gate = gateMediaAssets(this.env, ['ffmpeg'])
+    if (gate) {
+      await ctx.progress(5, String(gate.message ?? '图片处理组件正在后台准备。'))
+      return gate
+    }
+
+    let sourcePath: string | null = null
+    const generationId = stringFrom(body.source_generation_id)
+    if (generationId) {
+      const upload = this.posterUploadForGenerationId(generationId)
+      if (upload?.url?.startsWith('/uploads/')) sourcePath = resolve(this.uploadsRoot, upload.url.slice('/uploads/'.length))
+    }
+    if (!sourcePath) sourcePath = this.resolveLocalImagePath(stringFrom(body.source_image_path) ?? '', this.trustedImagePaths(body))
+    if (!sourcePath || !existsSync(sourcePath)) throw new Error('图片调整需要可读取的原图路径或已生成图片 id')
+
+    const sourceBytes = await readFile(sourcePath)
+    const sourceDimensions = imageDimensions(sourceBytes)
+    const sourceExt = extname(sourcePath).toLowerCase()
+    const outputExt = sourceExt === '.png' ? '.png' : '.jpg'
+    const filename = `adjusted_${Date.now()}_${crypto.randomUUID().slice(0, 8)}${outputExt}`
+    const outputDir = join(this.uploadsRoot, 'posters')
+    const outputPath = join(outputDir, filename)
+    await mkdir(outputDir, { recursive: true })
+    await ctx.progress(20, '正在做自然提亮和轻度清晰化。')
+
+    const args = [
+      ffmpegBinFrom(this.env),
+      '-y',
+      '-loglevel',
+      'error',
+      '-i',
+      sourcePath,
+      '-vf',
+      'eq=brightness=0.025:contrast=1.035:saturation=0.98,unsharp=5:5:0.3:5:5:0.0',
+      '-frames:v',
+      '1',
+      '-map_metadata',
+      '0',
+      ...(outputExt === '.jpg' ? ['-q:v', '2'] : ['-compression_level', '4']),
+      outputPath,
+    ]
+    try {
+      const proc = Bun.spawn(args, { stdout: 'ignore', stderr: 'pipe' })
+      const result = await Promise.race([
+        (async () => ({ code: await proc.exited, stderr: await new Response(proc.stderr).text() }))(),
+        delay(60_000).then(() => {
+          proc.kill()
+          return { code: -1, stderr: '图片调整超时' }
+        }),
+      ])
+      if (result.code !== 0 || !existsSync(outputPath)) throw new Error(result.stderr.trim().slice(-500) || '图片调整失败')
+    } catch (error) {
+      await rm(outputPath, { force: true }).catch(() => undefined)
+      throw error
+    }
+
+    await ctx.progress(100, '图片调整完成，原图未修改。')
+    const url = `/uploads/posters/${filename}`
+    const image = {
+      generation_id: `adjusted-${filename.replace(/\.[^.]+$/, '')}`,
+      poster_url: url,
+      url,
+      width: sourceDimensions?.width,
+      height: sourceDimensions?.height,
+      local_preview: false,
+      local_adjustment: true,
+      original_preserved: true,
+    }
+    return {
+      urls: [url],
+      generation_ids: [image.generation_id],
+      images: [image],
+      count: 1,
+      local_preview: false,
+      local_adjustment: true,
+      original_preserved: true,
+      message: '已用本地受控图片处理完成自然提亮与轻度清晰化，未上传到生成式模型，原图未覆盖。',
+    }
   }
 
   /** 超分放大本地执行(反逻辑保护:二进制没下好 → 返回"正在准备组件 x%",绝不静默失败)。 */

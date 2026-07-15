@@ -89,6 +89,7 @@ const HOT_TOOL_NAMES = new Set([
   'make_poster',
   'generate_image',
   'edit_image',
+  'select_image_candidates',
 ])
 
 const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
@@ -167,6 +168,7 @@ const TOOL_SEARCH_ALIASES: Record<string, string[]> = {
   make_poster: ['做海报', '生成海报', '门店海报', 'poster'],
   generate_image: ['生图', '生成图片', '图片生成', '画图', 'image generation'],
   edit_image: ['改图', '编辑图片', '修图', '局部重绘', '换背景', '改颜色', '去水印', '改图上文字', 'image edit', 'edit image', 'inpaint'],
+  select_image_candidates: ['挑图', '选图', '筛选图片', '从文件夹选照片', '图片候选', 'select images', 'image candidates'],
 }
 
 interface ToolSearchInput {

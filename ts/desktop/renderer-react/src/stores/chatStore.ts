@@ -1,8 +1,4 @@
-// chatStore —— 地基最高风险件。消息 reducer 逐字段对齐我们真实的 /agent/ws 协议:
-//   顶层信封(ServerMessage):ready / error / event / pong / approve_result / reject_result / steer_result / interrupt_result
-//   event.event(AgentEvent,见 types/events.ts):content_delta / thinking / tool_call(用 input!) / tool_result /
-//     final / approval_request / context_note / steering / max_turns_reached / done ...
-// 参照物 = 现有 vanilla app.js 的 renderEvent(交互细节的验收基线),但不搬它的 DOM 代码。
+// Agent WS 消息 store：信封与 AgentEvent 从共享契约解析，reducer 只管会话 UI 状态。
 import { create } from 'zustand'
 import { wsManager } from '../api/websocket'
 import { chatExecutionContext } from './chatExecutionContext'
@@ -11,8 +7,7 @@ import { useSessionStore } from './sessionStore'
 import type { ClientMessage, ServerMessage } from '../types/chat'
 import { toolResultIsError, type AgentEvent, type ApprovalReason } from '../types/events'
 
-// 命令实时输出尾部上限(字符):tool_progress 逐块文本累加进 block.liveOutput 供终端/展开行实时滚动,
-// 超过就只保留尾部(实时看的是最新输出;完整全文另由命令结束的 tool_result 落 block.output)。
+// 实时命令输出只保留尾部；完整结果由 tool_result 落到 block.output。
 const LIVE_OUTPUT_CAP = 48_000
 
 export type RunVerb = 'working' | 'thinking' | 'running'
@@ -26,10 +21,8 @@ export interface TodoItem {
 
 export type ChatBlock =
   | { id: string; kind: 'user'; text: string }
-  // durationSec:视觉皮改造新增(对齐 Codex 助手回合头「已完成 Xs」),只在 'done' 时快照一次,不参与任何状态机判断。
   | { id: string; kind: 'assistant'; text: string; streaming: boolean; ts?: number; tokens?: number; durationSec?: number }
   | { id: string; kind: 'thinking'; text: string; active: boolean }
-  // startedAt/endedAt:视觉皮改造新增(工具编组折叠头「已完成 Xs」耗时展示),纯展示用元数据。
   | { id: string; kind: 'tool'; tool: string; input: unknown; output?: string; status: ToolStatus; liveChars?: number; liveOutput?: string; startedAt?: number; endedAt?: number }
   | {
       id: string
@@ -95,9 +88,7 @@ function newBlockId(): string {
   return `b${seqCounter}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-// 领域知识斜杠开关(按会话):把"开/关台球运营知识库"的斜杠命令映射成当前会话 enabledPacks 的增删。
-// 关的前缀含"开"的词根,故先判关。别名与后端 packIdForCommandName 的入口对齐(billiards)。
-// ⚠️ 不用 \b 收尾——JS 的 \b 在中文字符后不成立(/台球关闭\b/ 不匹配),中文命令用 (?=$|\s) 或字符类收尾。
+// 台球领域包斜杠开关按会话生效；关闭别名先于开启别名匹配。
 const PACK_DISABLE_RE = /^\/\s*(台球关闭|关台球|取消台球|关闭台球|billiards[-_ ]?off)(?=$|\s)/i
 const PACK_ENABLE_RE = /^\/\s*(台球|球房|billiards|pool)(?=$|\s)/i
 function applyPackSlashToggle(message: string): void {
@@ -110,8 +101,7 @@ function applyPackSlashToggle(message: string): void {
   }
 }
 
-// —— 流式节流(file:line 对齐 cc-haha-ref desktop/src/stores/chatStore.ts:1743-1765 的
-// content_delta 50ms 攒批量刷:攒够 50ms 里到的所有 delta 一次性提交,不逐字触发重渲染)。
+// content_delta 在 50ms 窗口内攒批提交，避免逐 token 重渲染。
 let pendingAssistantDelta = ''
 let assistantFlushTimer: ReturnType<typeof setTimeout> | null = null
 let pendingThinkingDelta = ''
@@ -120,8 +110,7 @@ let thinkingFlushTimer: ReturnType<typeof setTimeout> | null = null
 // user_prompt 事件发回(事件日志=回放唯一真相源)。计数>0 时吞掉一次回声防双气泡;回放时计数=0 → 正常重建。
 let pendingUserEcho = 0
 
-// todo_update 载荷是后端 formatTodoChecklist()(ts/src/types/todo.ts)吐出的大白话清单文本,
-// 前端从 ☐/◐/☑ 行标记反解析回结构化项,渲成 SessionTaskBar(对齐 cc SessionTaskBar 的结构化 task 列表)。
+// todo_update 的 ☐/◐/☑ 文本反解析为 SessionTaskBar 结构化项。
 const TODO_MARK_STATUS: Record<string, TodoItem['status']> = { '☐': 'pending', '◐': 'in_progress', '☑': 'done' }
 function parseTodoChecklist(content: string): TodoItem[] {
   const items: TodoItem[] = []
@@ -339,6 +328,19 @@ export const useChatStore = create<ChatState>((set, get) => {
           set({ runVerb: 'thinking' })
           appendThinking(ev.text)
         }
+        break
+      }
+      case 'commentary': {
+        flushAssistantDelta()
+        finalizeThinking()
+        const id = get()._currentAssistantId
+        set((s) => {
+          const last = s.blocks[s.blocks.length - 1]
+          const blocks = id
+            ? s.blocks.map((block) => block.id === id && block.kind === 'assistant' ? { ...block, text: ev.text, streaming: false } : block)
+            : last?.kind === 'assistant' && last.text === ev.text ? s.blocks : [...s.blocks, { id: newBlockId(), kind: 'assistant' as const, text: ev.text, streaming: false, ts: Date.now() }]
+          return { _currentAssistantId: null, blocks, runVerb: 'working' }
+        })
         break
       }
       case 'command_invocation': {

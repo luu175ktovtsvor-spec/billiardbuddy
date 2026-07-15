@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { Buffer } from 'node:buffer'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as QRCode from 'qrcode'
@@ -1045,6 +1045,134 @@ function writeRefImage(root: string, name: string, width: number, height: number
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, name), pngHeaderWithSize(width, height))
 }
+
+test('local image edit uploads the original bytes after confirmation instead of the compressed chat preview', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-edit-original-bytes-'))
+  const source = join(root, 'original.png')
+  const original = pngHeaderWithSize(1600, 2400)
+  writeFileSync(source, original)
+  let uploaded: Buffer | undefined
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      qcModel: null,
+      env: IMAGE_ENV,
+      fetchImpl: async (input, init) => {
+        if (String(input).endsWith('/images/edits')) {
+          const form = init?.body as FormData
+          const file = form.getAll('image')[0] as File
+          uploaded = Buffer.from(await file.arrayBuffer())
+          return editEndpointReturnsPng(input)
+        }
+        return Response.json({ detail: 'not found' }, { status: 404 })
+      },
+    })
+    const started = await service.startStudioEdit({
+      source_image_path: source,
+      _trusted_image_paths: [source],
+      prompt: '把背景改成纯蓝色',
+    })
+    await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    expect(uploaded).toEqual(original)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('simple tonal photo adjustment stays local, preserves the original, and creates a new file', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-edit-local-adjustment-'))
+  const source = join(root, 'original.png')
+  const fakeFfmpeg = join(root, 'ffmpeg.sh')
+  const original = pngHeaderWithSize(1200, 1800)
+  writeFileSync(source, original)
+  writeFileSync(fakeFfmpeg, [
+    '#!/bin/sh',
+    'src=""',
+    'prev=""',
+    'out=""',
+    'for arg in "$@"; do',
+    '  if [ "$prev" = "-i" ]; then src="$arg"; fi',
+    '  prev="$arg"',
+    '  out="$arg"',
+    'done',
+    'cp "$src" "$out"',
+  ].join('\n'))
+  chmodSync(fakeFfmpeg, 0o755)
+  let upstreamCalled = false
+  try {
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      qcModel: null,
+      env: { ...IMAGE_ENV, FFMPEG_BIN: fakeFfmpeg },
+      fetchImpl: async () => {
+        upstreamCalled = true
+        return editEndpointReturnsPng('/images/edits')
+      },
+    })
+    const started = await service.startStudioEdit({
+      source_image_path: source,
+      _trusted_image_paths: [source],
+      prompt: '自然提亮并轻度变清晰，不要过度美颜',
+    })
+    const done = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'done' ? status : null
+    })
+    expect(done.result).toMatchObject({ local_adjustment: true, original_preserved: true })
+    expect(upstreamCalled).toBe(false)
+    expect(Buffer.from(await Bun.file(source).arrayBuffer()).toString('hex')).toBe(original.toString('hex'))
+    const outputUrl = (done.result?.urls as string[])[0]!
+    const outputPath = join(root, 'uploads', outputUrl.replace(/^\/uploads\//, ''))
+    expect(existsSync(outputPath)).toBe(true)
+    expect(Buffer.from(await Bun.file(outputPath).arrayBuffer()).toString('hex')).toBe(original.toString('hex'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('GPT image route rejects more than four original/reference images before calling upstream', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-edit-reference-limit-'))
+  let upstreamCalled = false
+  try {
+    for (const name of ['source.png', 'ref-1.png', 'ref-2.png', 'ref-3.png', 'ref-4.png']) {
+      writeRefImage(root, name, 1024, 1024)
+    }
+    const source = join(root, 'uploads', 'local', 'source.png')
+    const refs = ['ref-1.png', 'ref-2.png', 'ref-3.png', 'ref-4.png'].map(name => `/uploads/local/${name}`)
+    const service = new MediaJobService({
+      tasks: new TaskService(root),
+      stateRoot: root,
+      pollIntervalMs: 1,
+      qcModel: null,
+      env: IMAGE_ENV,
+      fetchImpl: async () => {
+        upstreamCalled = true
+        return editEndpointReturnsPng('/images/edits')
+      },
+    })
+    const started = await service.startStudioEdit({
+      source_image_path: source,
+      _trusted_image_paths: [source],
+      reference_image_paths: refs,
+      prompt: '综合参考图修改原图',
+    })
+    const failed = await waitFor(async () => {
+      const status = await service.status(started.job_id)
+      return status?.status === 'error' ? status : null
+    })
+    expect(failed.error).toContain('一次最多提交 4 张')
+    expect(upstreamCalled).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('portrait optimize without consent is blocked and asks for authorization (white-label)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-portrait-consent-'))

@@ -15,6 +15,7 @@ export function buildAntiReveal(productName: string = process.env.BUNDLED_PRODUC
 export const ACTIONS_SECTION = [
   '# Carrying out the current task',
   '- When the user clearly asks for an action, use the available tools to complete it. Do not stop at advice or hand the execution steps back to the user.',
+  '- When the user has already requested an action and the matching tool is guarded by a runtime approval prompt, call the tool instead of asking for duplicate confirmation in prose. The runtime prompt is the confirmation step.',
   '- Ask only when necessary information is missing and the answer would materially change the result. Otherwise inspect the current project, tool results, and existing configuration, then continue.',
   '- Do not invent product workflows, user rules, or usage restrictions that do not exist. Treat the available tools and current code as the source of truth for product capabilities.',
 ].join('\n')

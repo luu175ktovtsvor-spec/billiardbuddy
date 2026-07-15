@@ -73,6 +73,23 @@ test('非 2xx → 抛描述性错误', async () => {
   await expect(model.step({ messages: [userText('x')], tools: [] })).rejects.toThrow('400')
 })
 
+test('413 → 隐藏 nginx HTML 并给出可执行的人话提示', async () => {
+  const model = new ProxyModel({
+    baseUrl: 'https://x/v1', apiKey: 'k', model: 'm',
+    fetchImpl: async () => new Response('<html><h1>413 Request Entity Too Large</h1><p>nginx/1.18.0</p></html>', { status: 413 }),
+  })
+  try {
+    await model.step({ messages: [userText('看图片')], tools: [] })
+    throw new Error('expected failure')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    expect(message).toContain('内容过多')
+    expect(message).toContain('减少一次读取的图片或文件数量')
+    expect(message).not.toContain('<html>')
+    expect(message).not.toContain('nginx')
+  }
+})
+
 test('429 瞬时限流 → 退避重试后成功(不冒泡失败)', async () => {
   let calls = 0
   const model = new ProxyModel({

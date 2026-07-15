@@ -8,9 +8,9 @@ import { detectEncodingFromBuffer, FULL_READ_MAX_BYTES, hasBinaryExtension, isBl
 import { isImageExtension, readImageBuffer } from './imageRead'
 import { detectPdf, isPdfExtension, PDF_MAX_BYTES, readPdfBuffer } from './pdfRead'
 
-// 图像整读上限:防超大图 OOM。cc 用原生 sharp 对超预算图缩放,本仓库无重采样能力,只据宽高判定并提示。
+// 图像整读上限:防超大图 OOM。上限内的大图由 imageRead 生成受限视觉预览，原文件不改。
 const IMAGE_MAX_BYTES = 20 * 1024 * 1024
-// vision token 预算(对齐 cc 默认读文件 token 上限量级);超预算的图给出明确提示、不做缩放。
+// vision token 预算(对齐 cc 默认读文件 token 上限量级)。
 const IMAGE_VISION_TOKEN_BUDGET = 8_000
 
 const MAX_MANY_FILES = 20
@@ -426,8 +426,7 @@ function xmlAttr(value: string): string {
 // 返回 { text, imageBlock }:text 是给模型看的图像元信息(格式/宽高/估算 token/超预算提示),imageBlock 是
 // vision 支持格式(png/jpeg/gif/webp)的真图像块——由 loop 组进 tool_result content,让模型真看到图。
 // bmp/超大/无法识别 → imageBlock 为 null(仅回文本,避免把图当 UTF-8 读成乱码)。
-// 超 vision 预算:cc 会用原生 sharp 降采样后再送;本仓库无重采样能力,故仍把原图送进去(模型看得到)+ 文本
-// 标注 over_vision_budget 让上层知情,不因估算超预算就把图吞掉(那会使 4K 截图等常见图失去 vision)。
+// 超 vision 预算时本地生成受限预览；生成失败则只返回元信息，绝不把超大原图塞进模型请求。
 // 二进制读错文案:统一给"别当文本读会乱码 + 该怎么办"的可执行提示,替代原来直接吐乱码的行为。
 function binaryReadError(path: string, ext: string): string {
   const what = ext ? `看起来是 ${ext} 二进制文件` : '内容看起来是二进制'
@@ -484,23 +483,35 @@ async function formatImageRead(abs: string, label: string, size: number, signal?
     }
   }
   const dims = result.dimensions ? `${result.dimensions.width}x${result.dimensions.height}` : 'unknown'
-  const estTokens = result.estimatedVisionTokens
-  const overBudget = estTokens !== null && estTokens > IMAGE_VISION_TOKEN_BUDGET
+  const originalTokens = result.estimatedVisionTokens
+  const previewTokens = estimatePreviewTokens(result.previewDimensions)
+  const overBudget = originalTokens !== null && originalTokens > IMAGE_VISION_TOKEN_BUDGET
   const attrs = [
     `path="${xmlAttr(label)}"`,
     `format="${result.format}"`,
     `dimensions="${dims}"`,
     `bytes="${result.byteSize}"`,
     `vision_supported="${result.visionSupported}"`,
-    ...(estTokens !== null ? [`est_vision_tokens="${estTokens}"`] : []),
+    ...(originalTokens !== null ? [`original_est_vision_tokens="${originalTokens}"`] : []),
+    ...(previewTokens !== null ? [`est_vision_tokens="${previewTokens}"`] : []),
+    ...(result.previewDimensions ? [`preview_dimensions="${result.previewDimensions.width}x${result.previewDimensions.height}"`] : []),
+    ...(result.previewByteSize !== null ? [`preview_bytes="${result.previewByteSize}"`] : []),
+    ...(result.previewResized ? ['preview_resized="true"'] : []),
     ...(overBudget ? ['over_vision_budget="true"'] : []),
   ].join(' ')
   const notes: string[] = []
   if (!result.visionSupported) notes.push(`格式 ${result.format} 不是 vision 支持的图片类型(仅 png/jpeg/gif/webp),无法作为图像输入。`)
-  if (overBudget) notes.push(`估算 vision token(${estTokens})超过预算 ${IMAGE_VISION_TOKEN_BUDGET};图较大(已随结果附上原图,未缩放),必要时先缩放再读。`)
+  if (result.previewResized) notes.push('原图较大，已在本地生成受限预览供模型查看；原文件没有修改。')
+  if (overBudget && !result.imageBlock) notes.push(`原图估算 vision token(${originalTokens})超过预算 ${IMAGE_VISION_TOKEN_BUDGET}，且无法生成安全预览；本次只返回元信息。`)
+  if (result.previewOmittedReason) notes.push(result.previewOmittedReason)
   const body = notes.length ? `\n${notes.join('\n')}\n` : '\n'
   return {
     text: `<file_image ${attrs}>${body}</file_image>`,
     imageBlock: result.imageBlock,
   }
+}
+
+function estimatePreviewTokens(dimensions: { width: number; height: number } | null): number | null {
+  if (!dimensions) return null
+  return Math.ceil((dimensions.width * dimensions.height) / 750)
 }

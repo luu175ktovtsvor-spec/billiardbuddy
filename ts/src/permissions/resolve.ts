@@ -169,9 +169,9 @@ function matchingRule(ctx: ToolContext, tool: Tool, input: unknown, behavior: Pe
  *  3. deny/ask/allow 规则按 cc-haha source/behavior 进入同一瀑布
  *  4. 算 needsApproval;不需要 → allow
  *  5. autoApprove:
- *     5a forceConfirm → ask(在 mode 之前判,连 bypassPermissions 也拦,旁路免疫)
- *     5b requiresUserInteraction → ask(连 bypassPermissions 也拦)
- *     5c bypassPermissions → allow(但不越过 fatal/forceConfirm/userInteraction)
+ *     5a requiresUserInteraction → ask(真正需要用户选择的交互不能自动代答)
+ *     5b bypassPermissions → allow(跳过普通审批与 forceConfirm,但不越过 fatal/deny/userInteraction)
+ *     5c forceConfirm → ask(仅 default/acceptEdits 等非完全访问档生效)
  *     5d dangerous    → ask(危险命令:bypass 上面已放行;其余档 ask,且优先于 allow 规则/safePrefix,对齐 cc)
  *     5e safePrefix   → allow
  *     5f acceptEdits 下 file 类本机动作 → allow
@@ -209,19 +209,23 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
   const needsApproval = tool.requiresApproval === true || (tool.requiresApprovalFor?.(input, ctx) ?? false)
 
   // —— autoApprove ——
-  if (tool.forceConfirm || (tool.forceConfirmFor?.(input, ctx) ?? false)) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
   if (tool.requiresUserInteraction || (tool.requiresUserInteractionFor?.(input, ctx) ?? false)) {
     return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
   }
 
+  // 合并 Codex Full access + Claude bypassPermissions 的用户语义：不逐次审批。
+  // fatal 与显式 deny 已在上方失败关闭；必须让用户做决定的交互也已保留。
+  if (mode === 'bypassPermissions') {
+    return { behavior: 'allow', reason: { type: 'mode', mode } }
+  }
+
+  if (tool.forceConfirm || (tool.forceConfirmFor?.(input, ctx) ?? false)) return ask(tool, ctx, input, { type: 'forceConfirm' }, approvalClass)
+
   const askRule = matchingRule(ctx, tool, input, 'ask')
-  if (askRule && mode !== 'bypassPermissions') return ask(tool, ctx, input, { type: 'rule', rule: askRule }, approvalClass)
+  if (askRule) return ask(tool, ctx, input, { type: 'rule', rule: askRule }, approvalClass)
 
   if (sessionAllowsTool(tool, input, ctx)) {
     return { behavior: 'allow', reason: { type: 'sessionAllowedTool', tool: tool.name } }
-  }
-  if (mode === 'bypassPermissions') {
-    return { behavior: 'allow', reason: { type: 'mode', mode } }
   }
   // 危险命令(rm -rf 根/format c:/mkfs 等):完全访问档已在上面放行(对齐 cc:bypass 忽略 ask);其余档一律 ask,
   // 且排在 allow 规则/safePrefix 之前——即用户配了 allow run_command(*) 也不能让危险命令免审批(对齐 cc

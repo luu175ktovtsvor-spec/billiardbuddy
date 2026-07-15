@@ -8,6 +8,9 @@ import { createMediaTools } from './mediaTools'
 import { TaskService } from '../tasks/taskService'
 import { Workspace } from '../workspace/workspace'
 import { VideoEditingService } from './video-edit/service'
+import { resolvePermission } from '../permissions/resolve'
+import { fileReadTool } from '../tools/fileReadTool'
+import type { ToolContext } from '../tools/Tool'
 
 async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 5000): Promise<T> {
   const deadline = Date.now() + timeoutMs
@@ -46,7 +49,8 @@ test('generate_image tool starts a media task in the current conversation', asyn
     })
     expect(done.kind).toBe('generate')
     expect(done.result).toMatchObject({ local_preview: true })
-    expect(done.params?.count).toBe(3)
+    expect(done.params?.count).toBe(1)
+    expect(done.params?.quality).toBe('standard')
     expect(done.params?.image_model).toBeUndefined()
     expect(String(done.params?.image_prompt)).toContain('做一张周末促销海报')
     expect(String(done.params?.image_prompt)).not.toContain('PPT 运营逻辑')
@@ -148,7 +152,7 @@ test('edit_image tool rejects a missing original image instead of regenerating f
     const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
     const tool = createMediaTools(media).find(t => t.name === 'edit_image')
     expect(tool).toBeTruthy()
-    // 缺原图标识(source_generation_id / source_image_path / 参考图都没有)→ 工具层直接报错。
+    // 缺原图标识(source_generation_id / source_image_path)→ 工具层直接报错，参考图不能冒充原图。
     await expect(tool!.execute({ description: '把背景换成蓝色' }, {
       workspace: new Workspace(root),
       conversationId: 'c-edit-missing',
@@ -157,6 +161,160 @@ test('edit_image tool rejects a missing original image instead of regenerating f
     // 反逻辑保护:没有原图时绝不退化成"凭文字重新生成一张",因此不应启动任何媒体任务。
     const list = await tasks.list({ conversationId: 'c-edit-missing' })
     expect(list.length).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('edit_image requires visual review and explicit user confirmation even in full access mode', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-review-'))
+  try {
+    const source = join(root, 'candidate.png')
+    const png = Buffer.alloc(24)
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+    png.write('IHDR', 12, 'ascii')
+    png.writeUInt32BE(640, 16)
+    png.writeUInt32BE(960, 20)
+    writeFileSync(source, png)
+
+    let submitted: Record<string, unknown> | undefined
+    const media = {
+      async startStudioEdit(body: Record<string, unknown>) {
+        submitted = body
+        return { job_id: 'edit-reviewed' }
+      },
+    } as unknown as MediaJobService
+    const tool = createMediaTools(media).find(item => item.name === 'edit_image')!
+    const input = { source_image_path: source, description: '自然提亮并保持真实长相' }
+    const ctx: ToolContext = {
+      workspace: new Workspace(root),
+      conversationId: 'c-reviewed-edit',
+      permissionMode: 'bypassPermissions',
+      fileReads: new Map(),
+    }
+
+    expect(resolvePermission(tool, input, ctx)).toMatchObject({
+      behavior: 'ask',
+      reason: { type: 'requiresUserInteraction' },
+      approvalReason: { what: '修改选中的图片' },
+    })
+    expect(await tool.previewFor!(input, ctx)).toContain('candidate.png')
+    expect(await tool.previewFor!(input, ctx)).toContain('自然提亮')
+    await expect(tool.execute(input, ctx)).rejects.toThrow(/尚未经过视觉查看/)
+    expect(submitted).toBeUndefined()
+
+    await fileReadTool.execute({ path: source }, ctx)
+    const output = await tool.execute(input, ctx)
+    expect(output).toContain('edit-reviewed')
+    expect(submitted?.source_image_path).toBe(source)
+    expect(submitted?.reference_image_paths).toBeUndefined()
+    expect(submitted?._trusted_image_paths).toEqual([source])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('select_image_candidates scans locally but returns at most eight metadata candidates', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-candidates-'))
+  try {
+    for (let index = 0; index < 12; index++) {
+      const portrait = index % 2 === 0
+      const png = Buffer.alloc(20 * 1024)
+      png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+      png.write('IHDR', 12, 'ascii')
+      png.writeUInt32BE(portrait ? 900 : 1600, 16)
+      png.writeUInt32BE(portrait ? 1600 : 900, 20)
+      writeFileSync(join(root, `photo-${String(index).padStart(2, '0')}.png`), png)
+    }
+    const tool = createMediaTools({} as MediaJobService).find(item => item.name === 'select_image_candidates')!
+    const ctx: ToolContext = {
+      workspace: new Workspace(root),
+      permissionMode: 'bypassPermissions',
+      imageCandidateBudget: 8,
+    }
+    const output = await tool.execute({ goal: '挑一张适合朋友圈的照片' }, ctx)
+    expect(output).toContain('scanned="12"')
+    expect(output).toContain('selected="8"')
+    expect((output.match(/<candidate /g) ?? [])).toHaveLength(8)
+    expect(output).toContain('不要继续遍历其余图片')
+    expect(output).toContain('按本回合实际成功的 read_file 数量')
+    expect(output).toContain('同一回合直接调用 edit_image')
+    const first = output.split('\n').find(line => line.startsWith('<candidate '))
+    expect(first).toContain('dimensions="900x1600"')
+    const exhausted = await tool.execute({ goal: '再筛一批', limit: 8 }, ctx)
+    expect(exhausted).toContain('本回合已列出 8 张')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('select_image_candidates shares its eight-item budget across calls in one user turn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-candidate-budget-'))
+  try {
+    for (let index = 0; index < 12; index++) {
+      const png = Buffer.alloc(20 * 1024)
+      png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+      png.write('IHDR', 12, 'ascii')
+      png.writeUInt32BE(900, 16)
+      png.writeUInt32BE(1600, 20)
+      writeFileSync(join(root, `photo-${String(index).padStart(2, '0')}.png`), png)
+    }
+    const tool = createMediaTools({} as MediaJobService).find(item => item.name === 'select_image_candidates')!
+    const ctx: ToolContext = {
+      workspace: new Workspace(root),
+      permissionMode: 'bypassPermissions',
+      imageCandidateBudget: 8,
+    }
+
+    const first = await tool.execute({ goal: '挑选朋友圈照片', limit: 3 }, ctx)
+    const second = await tool.execute({ goal: '继续筛选', limit: 8 }, ctx)
+    const exhausted = await tool.execute({ goal: '再找一批', limit: 1 }, ctx)
+
+    expect((first.match(/<candidate /g) ?? [])).toHaveLength(3)
+    expect((second.match(/<candidate /g) ?? [])).toHaveLength(5)
+    expect(ctx.imageCandidateBudget).toBe(0)
+    expect(exhausted).toContain('本回合已列出 8 张')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('image tools reject too many provider references before starting a paid request', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-reference-limit-'))
+  try {
+    let called = false
+    const media = {
+      async startStudioEdit() {
+        called = true
+        return { job_id: 'should-not-start' }
+      },
+    } as unknown as MediaJobService
+    const tool = createMediaTools(media).find(item => item.name === 'edit_image')!
+    await expect(tool.execute({
+      source_generation_id: 'source-1',
+      description: '综合这些参考图修改',
+      reference_generation_ids: ['ref-1', 'ref-2', 'ref-3', 'ref-4'],
+    }, {
+      workspace: new Workspace(root),
+      permissionMode: 'bypassPermissions',
+    })).rejects.toThrow(/一次最多提交 4 张/)
+    expect(called).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('generate_image only requires confirmation when local reference images will be submitted', () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-reference-'))
+  try {
+    const media = {} as MediaJobService
+    const tool = createMediaTools(media).find(item => item.name === 'generate_image')!
+    const ctx: ToolContext = { workspace: new Workspace(root), permissionMode: 'bypassPermissions' }
+    expect(resolvePermission(tool, { description: '生成一张新海报' }, ctx).behavior).toBe('allow')
+    expect(resolvePermission(tool, {
+      description: '参考这张图生成海报',
+      reference_image_paths: [join(root, 'reference.png')],
+    }, ctx)).toMatchObject({ behavior: 'ask', reason: { type: 'requiresUserInteraction' } })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

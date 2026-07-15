@@ -771,10 +771,14 @@ test('agent_task sidechain stores aggregate replacements for large subagent tool
 
 test('agent_task isolation=worktree runs tools in an isolated git worktree and keeps dirty work', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tool-worktree-'))
+  const outside = mkdtempSync(join(tmpdir(), 'agent-tool-full-access-'))
   try {
     initGitRepo(root)
     const model = scriptedModel([
-      { kind: 'tool_calls', calls: [{ id: 'w1', name: 'write_file', input: { path: 'worker.txt', content: 'from subagent' } }] },
+      { kind: 'tool_calls', calls: [
+        { id: 'w1', name: 'write_file', input: { path: 'worker.txt', content: 'from subagent' } },
+        { id: 'w2', name: 'write_file', input: { path: join(outside, 'outside.txt'), content: 'full access inherited' } },
+      ] },
       { kind: 'final', text: '写入完成' },
     ])
     const tool = createAgentTaskTool({
@@ -785,7 +789,7 @@ test('agent_task isolation=worktree runs tools in an isolated git worktree and k
     })
 
     const out = await tool.execute({ task: '写 worker.txt', isolation: 'worktree' }, {
-      workspace: new Workspace(root),
+      workspace: new Workspace(root, { fullDiskAccess: true }),
       permissionMode: 'full',
       conversationId: 'parent_conv',
     })
@@ -795,12 +799,14 @@ test('agent_task isolation=worktree runs tools in an isolated git worktree and k
     expect(worktreePath).toBeTruthy()
     expect(existsSync(join(worktreePath!, 'worker.txt'))).toBe(true)
     expect(existsSync(join(root, 'worker.txt'))).toBe(false)
+    expect(readFileSync(join(outside, 'outside.txt'), 'utf8')).toBe('full access inherited')
     const transcriptDir = join(root, 'sidechains', 'transcripts')
     const metadataFile = readdirSync(transcriptDir).find(name => name.endsWith('.meta.json'))
     expect(metadataFile).toBeTruthy()
     expect(readFileSync(join(transcriptDir, metadataFile!), 'utf8')).toContain(`"worktreePath": "${worktreePath}"`)
   } finally {
     rmSync(root, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
   }
 })
 

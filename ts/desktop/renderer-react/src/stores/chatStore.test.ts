@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { wsManager } from '../api/websocket'
 import type { ClientMessage } from '../types/chat'
+import type { ServerMessage } from '../types/chat'
 import { toolResultIsError } from '../types/events'
 import { useChatStore } from './chatStore'
 import { useSettingsStore } from './settingsStore'
@@ -89,4 +90,37 @@ test('工具结果优先使用结构化错误位，成功文案提到 error/失�
   expect(toolResultIsError({ type: 'tool_result', tool: 'check', output: '普通输出', is_error: true })).toBe(true)
   expect(toolResultIsError({ type: 'tool_result', tool: 'legacy', output: '错误:命令不存在' })).toBe(true)
   expect(toolResultIsError({ type: 'tool_result', tool: 'legacy', output: '检查完成，失败项为 0' })).toBe(false)
+})
+
+test('流式正文和步末 commentary 合并成一条阶段独白', () => {
+  const originalOnMessage = wsManager.onMessage.bind(wsManager)
+  const originalConnect = wsManager.connect.bind(wsManager)
+  const originalIsConnected = wsManager.isConnected.bind(wsManager)
+  let handler: ((message: ServerMessage) => void) | null = null
+  wsManager.onMessage = (_conversationId, next) => { handler = next; return () => {} }
+  wsManager.connect = () => {}
+  wsManager.isConnected = () => false
+
+  try {
+    useChatStore.getState().startConversation('conv-commentary')
+    const emit = (event: ServerMessage['event']) => handler?.({
+      type: 'event',
+      seq: 1,
+      ts: '2026-07-15T00:00:00.000Z',
+      event,
+    })
+    emit({ type: 'content_delta', channel: 'text', text: '我先看一下项目结构。' })
+    emit({ type: 'commentary', text: '我先看一下项目结构。' })
+    emit({ type: 'tool_call', tool: 'list_dir', input: { path: '.' } })
+
+    const blocks = useChatStore.getState().blocks
+    expect(blocks.filter(block => block.kind === 'assistant').map(block => block.kind === 'assistant' ? block.text : '')).toEqual([
+      '我先看一下项目结构。',
+    ])
+    expect(blocks.at(-1)).toMatchObject({ kind: 'tool', tool: 'list_dir' })
+  } finally {
+    wsManager.onMessage = originalOnMessage
+    wsManager.connect = originalConnect
+    wsManager.isConnected = originalIsConnected
+  }
 })
