@@ -1009,6 +1009,7 @@ export class MediaJobService {
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
+      requiredAssets: this.printPostprocessAssets(normalized),
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
       run: ctx => this.generateWithQualitySupplement(ctx, normalized, shared),
       postprocess: async (_ctx, result) => this.attachWorkbenchProjects(result, normalized, 'generate'),
@@ -1084,6 +1085,7 @@ export class MediaJobService {
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
       proxyPath: '/api/v1/studio/edit',
+      requiredAssets: this.printPostprocessAssets(normalized),
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'edit', shared),
       postprocess: async (ctx, result) => this.attachWorkbenchProjects(
         await this.imageResultPostprocess(ctx, result, shared, normalized),
@@ -1841,6 +1843,16 @@ export class MediaJobService {
       stringFrom(body.qrcode_content) ??
       stringFrom(body.qr_content)
     return value ?? null
+  }
+
+  private printPostprocessAssets(body: Record<string, unknown>): MediaBinaryNeed[] {
+    if (body.print_mode !== true) return []
+    const hasOverlay = Boolean(
+      this.resolvePrintLogoPath(body) ||
+      this.resolvePrintQrPath(body) ||
+      this.resolvePrintQrContent(body),
+    )
+    return hasOverlay ? ['ffmpeg'] : []
   }
 
   private async resolvePrintQrRegenerationInput(
