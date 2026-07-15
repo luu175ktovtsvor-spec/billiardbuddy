@@ -28,7 +28,7 @@ import { ModeTabs } from './shared/ModeTabs'
 import { ScenePreview } from './shared-preview/ScenePreview'
 import { SourceBasket } from './source-basket/SourceBasket'
 import { SceneEditor } from './workbench/SceneEditor'
-import { VIDEO_CONTENT_TYPES, coverageLabel, formatDuration, friendlyVideoText, sceneDuration } from './videoStudioModel'
+import { VIDEO_CONTENT_TYPES, coverageLabel, formatDuration, friendlyVideoText, initialVideoProjectInput, sceneDuration, videoBriefInput } from './videoStudioModel'
 import { inputStyle, primaryButtonStyle, subtleButtonStyle } from './videoStudioStyles'
 import type { VideoStudioView as View } from './videoStudioTypes'
 
@@ -99,16 +99,17 @@ export function VideoStudioPage() {
     return next
   }, [acceptProject])
 
-  const compileUnderstanding = useCallback(async (projectId: string) => {
-    const result = await videoApi.compileBrief(projectId, {
-      base_revision: project?.project_id === projectId ? project.revision : undefined,
-      user_request: goalText.trim(),
-      content_type: contentType,
-      preferred_view: view,
+  const compileUnderstanding = useCallback(async (projectId: string, inferStrategy = false) => {
+    const result = await videoApi.compileBrief(projectId, videoBriefInput({
+      baseRevision: project?.project_id === projectId ? project.revision : undefined,
+      goalText,
+      contentType,
+      view,
       ratio,
-      target_duration_ms: durationSec * 1000,
-      exact_copy: exactCopyText.split(/\r?\n|，/).map(item => item.trim()).filter(Boolean),
-    })
+      durationSec,
+      exactCopyText,
+      inferStrategy,
+    }))
     setBriefResult(result)
     await refreshProject(projectId)
     return result
@@ -135,21 +136,18 @@ export function VideoStudioPage() {
     if (!canCreate) return
     setBusy(true); setError(''); setRenderUrl('')
     try {
-      const created = await videoApi.createProject({
-        name: goalText.trim().slice(0, 80),
-        video_paths: paths,
-        goal: view,
-        user_request: goalText.trim(),
-        content_type: contentType,
+      const created = await videoApi.createProject(initialVideoProjectInput({
+        goalText,
+        paths,
         ratio,
-        target_duration_ms: durationSec * 1000,
-        conversation_id: activeConversationId ?? undefined,
-        working_dir: workspaceRoot ?? undefined,
-      })
+        durationSec,
+        conversationId: activeConversationId ?? undefined,
+        workspaceRoot: workspaceRoot ?? undefined,
+      }))
       acceptProject(created.project)
       setJob(await videoApi.getJob(created.analysis_job.job_id))
       await watchJob(created.analysis_job.job_id, created.project.project_id)
-      await compileUnderstanding(created.project.project_id)
+      await compileUnderstanding(created.project.project_id, true)
       setCompactPane('workspace')
     } catch (cause) {
       const message = errorMessage(cause); setError(message); toast(message)
@@ -288,18 +286,14 @@ export function VideoStudioPage() {
       <div className={`mx-auto min-h-full w-full ${project ? 'max-w-[1480px] px-4 pb-7 pt-2 min-[840px]:px-6' : 'max-w-[760px] px-4 pb-7 pt-4 min-[840px]:px-8'}`}>
 
         {!project && <ProjectEntry
-          view={view}
           goalText={goalText}
-          contentType={contentType}
           ratio={ratio}
           durationSec={durationSec}
           exactCopyText={exactCopyText}
           paths={paths}
           projects={projects}
           busy={busy}
-          onViewChange={setViewState}
           onGoalChange={setGoalText}
-          onContentTypeChange={setContentType}
           onRatioChange={setRatio}
           onDurationChange={setDurationSec}
           onExactCopyChange={setExactCopyText}
@@ -315,7 +309,7 @@ export function VideoStudioPage() {
             <div className="flex items-center gap-1.5"><button type="button" onClick={() => void undoRedo('undo')} disabled={busy} title="撤销" aria-label="撤销" className="inline-flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-undo"><IconUndo size={14} /></button><button type="button" onClick={() => void undoRedo('redo')} disabled={busy} title="重做" aria-label="重做" className="inline-flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-35" style={subtleButtonStyle} data-testid="video-redo"><IconRedo size={14} /></button><button type="button" onClick={newProject} className="rounded-md px-2.5 py-1.5 text-[12px]" style={subtleButtonStyle}>新项目</button></div>
           </div>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} />
+            <span />
             <div className="flex items-center gap-2"><select value={project.canvas.ratio} onChange={event => void applyOperation({ type: 'project.set_canvas', ratio: event.target.value as '9:16' | '1:1' | '16:9' })} className="rounded-md px-2 py-1.5 text-[12px]" style={inputStyle} aria-label="项目画幅"><option value="9:16">竖屏 9:16</option><option value="1:1">方形 1:1</option><option value="16:9">横屏 16:9</option></select><div className="text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>{saveStateLabel(project.status.save_state)}</div></div>
           </div>
           <div className="mb-5 flex items-center gap-1 border-b pb-2 min-[1180px]:hidden" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="视频工作区">{([['workspace', '预览'], ['sources', '视频素材'], ['inspector', '调整']] as const).map(([pane, label]) => <button key={pane} type="button" role="tab" aria-selected={compactPane === pane} onClick={() => setCompactPane(pane)} className="rounded-md px-3 py-1.5 text-[12px] font-medium" style={{ background: compactPane === pane ? 'var(--color-surface-container)' : 'transparent', color: compactPane === pane ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{label}</button>)}</div>
@@ -348,7 +342,7 @@ export function VideoStudioPage() {
                     </div>
                     <button type="button" onClick={() => setBriefEditing(value => !value)} title="修改内容理解" className="rounded-md px-2 py-1 text-[12px]" style={subtleButtonStyle}><IconEdit size={13} /></button>
                   </div>
-                  {briefEditing && <div className="mt-3 grid gap-2 border-t pt-3 min-[760px]:grid-cols-2" style={{ borderColor: 'var(--color-border)' }} data-testid="video-brief-editor"><textarea value={goalText} onChange={event => setGoalText(event.target.value)} rows={3} className="min-[760px]:col-span-2 resize-none rounded-md px-2 py-2 text-[13px] outline-none" style={inputStyle} /><select value={contentType} onChange={event => setContentType(event.target.value as VideoContentType)} className="rounded-md px-2 py-2 text-[12px]" style={inputStyle}>{VIDEO_CONTENT_TYPES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><input value={exactCopyText} onChange={event => setExactCopyText(event.target.value)} placeholder="必须原样显示的文字，每行一条" className="rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} /><div className="min-[760px]:col-span-2 flex justify-end"><button type="button" disabled={!goalText.trim() || busy} onClick={() => void compileUnderstanding(project.project_id).then(() => setBriefEditing(false))} className="rounded-md px-3 py-1.5 text-[12px] font-medium disabled:opacity-40" style={primaryButtonStyle}>更新理解</button></div></div>}
+                  {briefEditing && <div className="mt-3 grid gap-2 border-t pt-3 min-[760px]:grid-cols-2" style={{ borderColor: 'var(--color-border)' }} data-testid="video-brief-editor"><textarea value={goalText} onChange={event => setGoalText(event.target.value)} rows={3} className="min-[760px]:col-span-2 resize-none rounded-md px-2 py-2 text-[13px] outline-none" style={inputStyle} /><div className="min-[760px]:col-span-2"><div className="mb-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>剪辑方向</div><ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} /></div><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>内容侧重<select value={contentType} onChange={event => setContentType(event.target.value as VideoContentType)} className="mt-1 w-full rounded-md px-2 py-2 text-[12px]" style={inputStyle} aria-label="内容侧重">{VIDEO_CONTENT_TYPES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>精确文字<input value={exactCopyText} onChange={event => setExactCopyText(event.target.value)} placeholder="必须原样显示的文字，每行一条" className="mt-1 w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} /></label><div className="min-[760px]:col-span-2 flex justify-end"><button type="button" disabled={!goalText.trim() || busy} onClick={() => void compileUnderstanding(project.project_id).then(() => setBriefEditing(false))} className="rounded-md px-3 py-1.5 text-[12px] font-medium disabled:opacity-40" style={primaryButtonStyle}>更新理解</button></div></div>}
                 </section>
               )}
               {project.status.warnings.length > 0 && <details className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }}><summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-warning)' }}>需要留意 {project.status.warnings.length} 项</summary>{project.status.warnings.map(item => <div key={item} className="mt-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>{friendlyVideoText(item)}</div>)}</details>}

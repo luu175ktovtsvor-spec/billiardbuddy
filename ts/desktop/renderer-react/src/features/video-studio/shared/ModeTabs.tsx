@@ -4,8 +4,8 @@ export function ModeTabs({ value, recommended, onChange }: { value: VideoStudioV
   return (
     <div className="inline-grid grid-cols-2 gap-0.5 rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }} role="tablist" aria-label="视频内容方式">
       {([
-        ['talking', '有人讲解'],
-        ['ambient', '画面为主'],
+        ['talking', '讲解优先'],
+        ['ambient', '氛围优先'],
       ] as const).map(([view, label]) => {
         const active = value === view
         return (

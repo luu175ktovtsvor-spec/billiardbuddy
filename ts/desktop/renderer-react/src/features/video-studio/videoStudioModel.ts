@@ -1,4 +1,49 @@
-import type { VideoContentType, VideoScene, VideoSourceRole } from '../../api/video'
+import type { VideoBriefCompileInput, VideoContentType, VideoCreateProjectInput, VideoScene, VideoSourceRole } from '../../api/video'
+import type { VideoStudioView } from './videoStudioTypes'
+
+interface InitialVideoProjectDraft {
+  goalText: string
+  paths: string[]
+  ratio: '9:16' | '1:1' | '16:9'
+  durationSec: number
+  conversationId?: string
+  workspaceRoot?: string
+}
+
+interface VideoBriefDraft {
+  baseRevision?: number
+  goalText: string
+  contentType: VideoContentType
+  view: VideoStudioView
+  ratio: '9:16' | '1:1' | '16:9'
+  durationSec: number
+  exactCopyText: string
+  inferStrategy?: boolean
+}
+
+export function initialVideoProjectInput(input: InitialVideoProjectDraft): VideoCreateProjectInput {
+  const goal = input.goalText.trim()
+  return {
+    name: goal.slice(0, 80),
+    video_paths: input.paths,
+    user_request: goal,
+    ratio: input.ratio,
+    target_duration_ms: input.durationSec * 1000,
+    conversation_id: input.conversationId,
+    working_dir: input.workspaceRoot,
+  }
+}
+
+export function videoBriefInput(input: VideoBriefDraft): VideoBriefCompileInput {
+  return {
+    base_revision: input.baseRevision,
+    user_request: input.goalText.trim(),
+    ...(!input.inferStrategy ? { content_type: input.contentType, preferred_view: input.view } : {}),
+    ratio: input.ratio,
+    target_duration_ms: input.durationSec * 1000,
+    exact_copy: input.exactCopyText.split(/\r?\n|，/).map(item => item.trim()).filter(Boolean),
+  }
+}
 
 export const VIDEO_CONTENT_TYPES: Array<{ value: VideoContentType; label: string }> = [
   { value: 'freeform', label: '自由创作' },
