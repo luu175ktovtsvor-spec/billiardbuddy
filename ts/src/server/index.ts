@@ -106,10 +106,13 @@ import { createSessionMetadataRouteHandler } from './routes/sessionMetadataRoute
 import { createSessionRewindRouteHandler } from './routes/sessionRewindRoutes'
 import { createStoreDocsRouteHandler } from './routes/storeDocsRoutes'
 import { createTaskRouteHandler, resolveTaskEndpointTarget } from './routes/taskRoutes'
+import { createRecruitmentRouteHandler } from './routes/recruitmentRoutes'
 import { createWorkflowRouteHandler } from './routes/workflowRoutes'
 import { createWorkspaceFileRouteHandler } from './routes/workspaceFileRoutes'
 import { createWorkspaceRouteHandler } from './routes/workspaceRoutes'
 import { createWorkflowRuntime } from './services/workflowRuntime'
+import { RecruitmentService } from '../recruitment/recruitmentService'
+import { createRecruitmentTools } from '../recruitment/recruitmentTools'
 import { createAgentWebSocketHandler, upgradeAgentWebSocket, type AgentWsData } from './websocketHandler'
 import { hasControlPlaneAccess } from './middleware/controlPlaneAuth'
 import { createAgentSettingsRouteHandler } from './routes/agentSettingsRoutes'
@@ -304,6 +307,9 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleVideoEditV2Route = createVideoEditRouteHandler(videoEditing, { defaultWorkspaceRoot: getDefaultWorkspaceDir() })
   const legacyStore = new LegacyAgentStore(stateRoot)
   const storeDocs = new StoreDocsService(desktopData, stateRoot)
+  // 招聘业务事实源:聊天窄工具、REST 工作台和定时任务复用同一份漏斗/草稿/跟进数据。
+  const recruitment = new RecruitmentService(stateRoot)
+  const recruitmentTools = createRecruitmentTools(recruitment)
   // 定时任务调度引擎(触发器)。到点 → 起一个真 agent 会话让模型在 cc 循环里用工具把任务干完(#66 衔接铁律,
   // 不是执行写死的 SOP 脚本)。fireTask 直接调进程内的 createTurnStream(= runAgentLoop),带任务配置的工作目录 +
   // 领域包(billiards_mode);无人值守故走 bypassPermissions(跳过审批，仍不越 fatal/显式 deny)。产出/状态写回运行历史。
@@ -949,8 +955,8 @@ export function startServer(opts: StartServerOptions = {}) {
     })
     const mediaTools = createMediaTools(media, { videoEditing })
     const storeDocTools = [createStoreDocsTool(storeDocs)]
-    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
-    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools] })
+    const backgroundBaseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...recruitmentTools] })
+    const baseRegistry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...recruitmentTools] })
     // 子代理 model 解析(对齐 cc getAgentModel):agent frontmatter 的 model 名匹配某个已配置 provider
     // runtime 的模型名时,用该 runtime 单独构造模型;不匹配 → null → agentTool 回退父模型。
     // 白标单模型下 runtimes 通常只有一档,匹配到同名即用、否则回退——机制真接通,owner 配多档即生效。
@@ -1026,7 +1032,7 @@ export function startServer(opts: StartServerOptions = {}) {
     const backgroundTools = agents.length > 0
       ? [createBackgroundAgentTaskTool(backgroundAgentOptions)]
       : []
-    const registry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
+    const registry = buildGeneralRegistry({ skills, skillsRoot: createSkillsRoot, skillRecommendations, executeSkill, commands, webSearch: await resolveWebSearchTool(controller.signal), extraTools: [...domainPackTools, ...mcpTools.tools, ...taskTools, ...teamTools, ...mediaTools, ...storeDocTools, ...recruitmentTools, ...agentTools, ...agentSidechainTools, ...backgroundTools] })
     const launchContextForkCommand = async (command: PromptCommand): Promise<string> => {
       const expandedPrompt = commandInvocation?.prompt.trim() ?? ''
       if (!expandedPrompt) return `/${command.name} 没有可执行的命令内容。`
@@ -1982,6 +1988,7 @@ export function startServer(opts: StartServerOptions = {}) {
   const handleProviderRoute = createProviderRouteHandler({ providers, currentModelStatus, clearModelHealth, fetchImpl: opts.fetchImpl })
   const handleScheduledTaskRoute = createScheduledTaskRouteHandler({ store: desktopData, runner: scheduledTasks })
   const handleWorkflowRoute = createWorkflowRouteHandler({ service: workflowRuntime.workflows, defaultWorkspaceRoot: getDefaultWorkspaceDir })
+  const handleRecruitmentRoute = createRecruitmentRouteHandler({ service: recruitment })
   const sessionArchive = new SessionArchiveService({
     sessions,
     archiveRoot: join(stateRoot, 'transcript-archives'),
@@ -2188,6 +2195,9 @@ export function startServer(opts: StartServerOptions = {}) {
 
       const workflowResponse = await handleWorkflowRoute(url, req)
       if (workflowResponse) return workflowResponse
+
+      const recruitmentResponse = await handleRecruitmentRoute(url, req)
+      if (recruitmentResponse) return recruitmentResponse
 
       const storeDocsResponse = await handleStoreDocsRoute(url, req)
       if (storeDocsResponse) return storeDocsResponse
