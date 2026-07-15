@@ -307,7 +307,6 @@ export function Sidebar() {
                   {/* 项目行(对齐 Codex):整行点击 = 展开/折叠,无箭头,文件夹开/合图标表达状态 */}
                   <div
                     className="group/proj flex h-[34px] w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
-                    style={{ background: activeProj ? 'var(--color-surface-selected)' : 'transparent' }}
                     data-active-project={activeProj || undefined}
                     onContextMenu={(e) => { e.preventDefault(); setProjCtx({ x: e.clientX, y: e.clientY, root: rootPath }) }}
                   >
@@ -336,7 +335,7 @@ export function Sidebar() {
                   </div>
                   {open && (
                     group.length > 0 ? (
-                      <div className="ml-6">
+                      <div className="ml-6 mt-1">
                         {visibleTasks.map(renderRow)}
                         {hasMoreTasks && (
                           <button
