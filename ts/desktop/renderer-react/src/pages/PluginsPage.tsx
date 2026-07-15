@@ -146,6 +146,15 @@ const SKILL_SCOPE_LABEL: Record<ExtensionSkill['layer'], string> = {
   plugin: '插件',
 }
 
+export function skillPresentation(skill: ExtensionSkill) {
+  return {
+    title: skill.display_name || skill.name,
+    description: skill.short_description || skill.when_to_use || skill.description,
+    invocation: skill.user_invocable ? `/${skill.name}` : skill.name,
+    detail: `${SKILL_SCOPE_LABEL[skill.layer]}${skill.user_invocable ? '' : ' · Agent 自动编排'}`,
+  }
+}
+
 /** 把表单里的「命令或 URL」拆成后端 add 入参:http/sse 开头当远程 url,否则当本机命令+参数。 */
 function parseTarget(name: string, target: string): AddMcpInput {
   const raw = target.trim()
@@ -348,17 +357,19 @@ export function PluginsPage() {
         {loaded && activeTab === 'skills' && (
           <div role="tabpanel" data-extension-panel="skills">
             <SectionLabel>当前可用技能{skills.length > 0 ? ` · ${skills.length}` : ''}</SectionLabel>
-            {skills.length > 0 ? skills.map(skill => (
-              <ExtensionRow
-                key={`${skill.layer}:${skill.name}`}
-                icon={<IconSparkles size={16} />}
-                title={<span style={{ fontFamily: 'var(--font-mono)' }}>{skill.user_invocable ? `/${skill.name}` : skill.name}</span>}
-                description={skill.when_to_use || skill.description}
-                detail={SKILL_SCOPE_LABEL[skill.layer]}
-                muted
-                testId="extension-skill"
-              />
-            )) : <EmptyState>当前项目没有可用技能。</EmptyState>}
+            {skills.length > 0 ? skills.map(skill => {
+              const presentation = skillPresentation(skill)
+              return (
+                <ExtensionRow
+                  key={`${skill.layer}:${skill.name}`}
+                  icon={<IconSparkles size={16} />}
+                  title={presentation.title}
+                  description={presentation.description}
+                  detail={<><span style={{ fontFamily: 'var(--font-mono)' }}>{presentation.invocation}</span>{` · ${presentation.detail}`}</>}
+                  testId="extension-skill"
+                />
+              )
+            }) : <EmptyState>当前项目没有可用技能。</EmptyState>}
           </div>
         )}
 

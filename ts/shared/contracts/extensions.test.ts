@@ -28,8 +28,25 @@ test('extension contracts accept current and compatible plugin/command responses
   }).commands[0]).toMatchObject({ source: 'plugin', kind: 'skill' })
 
   expect(extensionSkillsResponseSchema.parse({
-    skills: [{ name: 'review', description: 'Review changes', source: 'skills', layer: 'user', user_invocable: true }],
-  }).skills[0]).toMatchObject({ layer: 'user', user_invocable: true })
+    skills: [{
+      name: 'review',
+      description: 'Review changes',
+      display_name: '变更审查',
+      short_description: '检查当前改动中的风险',
+      source: 'skills',
+      layer: 'user',
+      user_invocable: true,
+    }],
+  }).skills[0]).toMatchObject({
+    display_name: '变更审查',
+    short_description: '检查当前改动中的风险',
+    layer: 'user',
+    user_invocable: true,
+  })
+
+  expect(extensionSkillsResponseSchema.parse({
+    skills: [{ name: 'legacy', description: 'Legacy skill', source: 'skills', layer: 'bundled', user_invocable: true }],
+  }).skills[0]).toMatchObject({ name: 'legacy' })
 })
 
 test('extension contracts reject malformed trust and discovery fields', () => {

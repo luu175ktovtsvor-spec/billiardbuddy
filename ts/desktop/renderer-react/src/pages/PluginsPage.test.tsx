@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PluginListItem } from '../api/extensions'
-import { ExtensionTabs, pluginContributionText } from './PluginsPage'
+import { ExtensionTabs, pluginContributionText, skillPresentation } from './PluginsPage'
 
 test('扩展管理使用 Codex 式单一类型分段，而不是把所有能力铺在一页', () => {
   const html = renderToStaticMarkup(
@@ -37,4 +37,29 @@ test('插件行只汇总真实贡献，不把空贡献伪装成已加载能力',
     ...plugin,
     components: { skills: 0, commands: 0, hooks: 0, mcp: 0, 'output-styles': 0 },
   })).toBe('未发现可加载内容')
+})
+
+test('技能行优先展示 agents/openai.yaml 元数据并保留真实调用名', () => {
+  expect(skillPresentation({
+    name: 'venue-daily-review',
+    description: 'Long routing description',
+    display_name: '经营日报复盘',
+    short_description: '汇总真实数据并形成次日动作',
+    source: 'skills',
+    layer: 'bundled',
+    user_invocable: true,
+  })).toEqual({
+    title: '经营日报复盘',
+    description: '汇总真实数据并形成次日动作',
+    invocation: '/venue-daily-review',
+    detail: '系统',
+  })
+
+  expect(skillPresentation({
+    name: 'internal',
+    description: 'Agent workflow',
+    source: 'skills',
+    layer: 'workspace',
+    user_invocable: false,
+  })).toMatchObject({ invocation: 'internal', detail: '项目 · Agent 自动编排' })
 })

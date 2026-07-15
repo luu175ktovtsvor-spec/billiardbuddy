@@ -5,6 +5,10 @@ export interface PromptCommand {
   type: 'prompt'
   name: string
   description: string
+  /** agents/openai.yaml 中供扩展管理界面展示的人类可读名称。 */
+  displayName?: string
+  /** agents/openai.yaml 中供扩展管理界面快速扫读的简介。 */
+  shortDescription?: string
   whenToUse?: string
   allowedTools?: string[]
   allowedToolRules?: string[]

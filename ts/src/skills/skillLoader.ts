@@ -81,7 +81,7 @@ export function registerSkillHooks(skill: PromptCommand, ctx: ToolContext): void
 // execute() 里灌工具/挂 hook。allowlist 口径照 cc:任何不在安全名单里的属性只要有实义值即视为需审批,
 // 未来新增字段默认从严。
 const SAFE_SKILL_PROPERTIES = new Set<string>([
-  'type', 'name', 'description', 'whenToUse',
+  'type', 'name', 'description', 'displayName', 'shortDescription', 'whenToUse',
   'argumentHint', 'argNames', 'model', 'context', 'agent',
   // 可见性/别名/条件披露字段纯元数据,不授予工具/hook,不触发审批(否则带这些字段的普通技能会被误判需审批)。
   'disableModelInvocation', 'userInvocable', 'aliases', 'skillLayer', 'paths',
@@ -196,6 +196,32 @@ export function toolInputFilePaths(input: unknown): string[] {
   return [...new Set(out)]
 }
 
+interface SkillInterfaceMetadata {
+  displayName?: string
+  shortDescription?: string
+}
+
+async function readSkillInterfaceMetadata(baseDir: string): Promise<SkillInterfaceMetadata> {
+  try {
+    const raw = await readFile(join(baseDir, 'agents', 'openai.yaml'), 'utf8')
+    const parsed = Bun.YAML.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const ui = (parsed as Record<string, unknown>).interface
+    if (!ui || typeof ui !== 'object' || Array.isArray(ui)) return {}
+    const fields = ui as Record<string, unknown>
+    const displayNameValue = fields.display_name
+    const shortDescriptionValue = fields.short_description
+    const displayName = typeof displayNameValue === 'string' ? displayNameValue.trim().slice(0, 200) : ''
+    const shortDescription = typeof shortDescriptionValue === 'string' ? shortDescriptionValue.trim().slice(0, 2_000) : ''
+    return {
+      ...(displayName ? { displayName } : {}),
+      ...(shortDescription ? { shortDescription } : {}),
+    }
+  } catch {
+    return {}
+  }
+}
+
 /**
  * 条件技能激活(对齐 cc activateConditionalSkillsForPaths):给一批被"碰到"的文件路径,返回其中命中某条件技能
  * `paths` glob 的技能名集合。调用方(loop)把这些名字并进本回合发现清单,让条件技能"碰到匹配文件才现身"。
@@ -237,11 +263,13 @@ export async function loadSkillFile(filePath: string, source: PromptCommand['sou
   const aliases = (stringArrayField(doc.frontmatter, 'aliases') ?? []).map(safeName).filter(a => a && a !== name)
   const paths = parseSkillPaths(doc.frontmatter.paths)
   const body = doc.body.trim()
+  const interfaceMetadata = await readSkillInterfaceMetadata(baseDir)
 
   return {
     type: 'prompt',
     name,
     description,
+    ...interfaceMetadata,
     whenToUse,
     allowedTools,
     allowedToolRules,

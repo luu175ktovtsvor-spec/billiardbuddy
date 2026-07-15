@@ -105,3 +105,25 @@ test('生图 Skill 复用媒体链路并守住事实、真人和交付边界', a
   expect(prompt).toContain('不能声称找回了原图中不存在的细节')
   expect(prompt).not.toMatch(/^\d+\.\s/m)
 })
+
+test('球房经营 Skills 覆盖 PPT 的高频闭环且不预设门店数据', async () => {
+  const library = await loadSkillsDir(bundledSkillsRoot(), { layer: 'bundled' })
+  const expectations = [
+    ['venue-daily-review', '经营日报复盘', '不预设门店目标'],
+    ['customer-follow-up', '客户维护与邀约', '不保存客户数据库'],
+    ['venue-campaign-planning', '门店活动策划', '不预设折扣'],
+    ['venue-inspection-followup', '巡店整改闭环', '不预设每家门店的检查标准'],
+    ['staff-performance-coaching', '员工表现辅导', '不预设薪酬'],
+  ] as const
+
+  for (const [name, displayName, boundary] of expectations) {
+    const skill = library.byName.get(name)
+    expect(skill).toBeDefined()
+    expect(skill).toMatchObject({ displayName, skillLayer: 'bundled' })
+    expect(skillRequiresApproval(skill!)).toBe(false)
+    const prompt = await skill!.getPrompt('', { workspace: new Workspace(process.cwd()) })
+    expect(prompt).toContain(boundary)
+    expect(prompt).toMatch(/只追问|才追问|只询问/)
+    expect(prompt).not.toMatch(/^\d+\.\s/m)
+  }
+})

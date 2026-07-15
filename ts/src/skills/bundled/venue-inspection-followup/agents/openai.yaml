@@ -1,0 +1,4 @@
+interface:
+  display_name: "巡店整改闭环"
+  short_description: "把巡店观察整理成责任明确、可验证完成情况的问题与整改清单"
+  default_prompt: "使用 $venue-inspection-followup 帮我处理这次巡店发现的问题。"

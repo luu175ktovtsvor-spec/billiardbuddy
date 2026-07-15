@@ -72,6 +72,38 @@ aliases: [模块化开工, project-router]
   }
 })
 
+test('loadSkillsDir:读取 agents/openai.yaml 展示元数据且不扩大技能权限', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skills-interface-'))
+  try {
+    const dir = join(root, 'daily-review')
+    mkdirSync(join(dir, 'agents'), { recursive: true })
+    writeFileSync(join(dir, 'SKILL.md'), `---
+name: daily-review
+description: Review daily data
+---
+Review facts.
+`)
+    writeFileSync(join(dir, 'agents', 'openai.yaml'), `interface:
+  display_name: "经营日报复盘"
+  short_description: "汇总真实数据并形成次日动作"
+  default_prompt: "使用 $daily-review 复盘今天。"
+`)
+
+    const skill = (await loadSkillsDir(root)).skills[0]!
+    expect(skill).toMatchObject({
+      displayName: '经营日报复盘',
+      shortDescription: '汇总真实数据并形成次日动作',
+    })
+    expect(skillRequiresApproval(skill)).toBe(false)
+
+    writeFileSync(join(dir, 'agents', 'openai.yaml'), 'interface: [bad')
+    const malformed = (await loadSkillsDir(root)).skills[0]!
+    expect(malformed.displayName).toBeUndefined()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('loadSkillsDir:解析 argument-hint/arguments frontmatter 并挂到 PromptCommand', async () => {
   const root = mkdtempSync(join(tmpdir(), 'skills-argument-hint-'))
   try {

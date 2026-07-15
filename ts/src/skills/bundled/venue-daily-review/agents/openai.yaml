@@ -1,0 +1,4 @@
+interface:
+  display_name: "经营日报复盘"
+  short_description: "汇总门店真实经营数据，发现异常并形成可执行的日报与次日跟进"
+  default_prompt: "使用 $venue-daily-review 帮我复盘今天的门店经营情况。"

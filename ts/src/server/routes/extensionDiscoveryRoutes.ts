@@ -58,6 +58,8 @@ export function createExtensionDiscoveryRouteHandler(deps: ExtensionDiscoveryRou
         skills: skills.skills.map(skill => ({
           name: skill.name,
           description: skill.description,
+          ...(skill.displayName ? { display_name: skill.displayName } : {}),
+          ...(skill.shortDescription ? { short_description: skill.shortDescription } : {}),
           source: skill.source,
           layer: skill.skillLayer,
           ...(skill.whenToUse ? { when_to_use: skill.whenToUse } : {}),
