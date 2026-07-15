@@ -105,35 +105,12 @@ test('系统提示含"做任务"诚实纪律:工具没真跑成不许谎报已�
   expect(prompt).toContain('OWASP')
 })
 
-test('系统提示要求代码改动后做就近验证', async () => {
+test('系统提示不再无条件塞代码工具节奏/改后验证章节(已迁到按需加载的 code-change-workflow skill)', async () => {
   const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('# Verifying completed work')
-  expect(prompt).toContain('list_project_instructions')
-  expect(prompt).toContain('project_diagnostics')
-  expect(prompt).toContain('typecheck or lint')
-  expect(prompt).toContain('test_paths')
-  expect(prompt).toContain('nearby test candidates')
-  expect(prompt).toContain('not as tests that already ran')
-  expect(prompt).toContain('do not claim success')
-})
-
-test('系统提示把 coding 工具工作流限制在真正的软件任务中', async () => {
-  const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('# Software implementation (only when needed)')
-  expect(prompt).toContain("Apply this section only when the user's goal actually requires software development")
-  expect(prompt).toContain('list_dir({recursive:true,max_depth:2})')
-  expect(prompt).toContain('grep_files({files_only:true})')
-  expect(prompt).toContain('grep_files({ranges:true})')
-  expect(prompt).toContain('path/paths input to grep_files may be a directory or specific files')
-  expect(prompt).toContain('code_outline({ranges:true})')
-  expect(prompt).toContain('read_many_files({ranges})')
-  expect(prompt).toContain('paths/ranges inputs accept a single value')
-  expect(prompt).toContain('multi_edit_file')
-  expect(prompt).toContain('patch_files')
-  expect(prompt).toContain('git_history({paths})')
-  expect(prompt).toContain('read_stored_tool_result')
-  expect(prompt).toContain('run_command({cwd:"subdirectory",command:"..."})')
-  expect(prompt).toContain('git_status({include_diff:true,staged:"both"})')
+  expect(prompt).not.toContain('# Verifying completed work')
+  expect(prompt).not.toContain('# Software implementation (only when needed)')
+  expect(prompt).not.toContain('grep_files({files_only:true})')
+  expect(prompt).not.toContain('project_diagnostics')
 })
 
 test('系统提示把 Agent 定位为球房管家的执行层，而不是面向开发者的编码产品', async () => {
@@ -223,7 +200,7 @@ test('目录级项目指令按目标路径从根到近合并(projectInstructions
   expect(out).toContain('App rule')
 })
 
-test('outputStyle 门控(对齐 cc keepCodingInstructions):未选风格保留「# 做任务」;选非编码风格且未声明保留则跳过;声明保留则仍在;风格正文注入系统提示中部', async () => {
+test('「# Doing tasks」通用工作纪律永远注入,不随输出风格选择被丢弃;风格正文注入系统提示中部', async () => {
   const root = mkdtempSync(join(tmpdir(), 'sp-style-'))
   try {
     const ws = new Workspace(root)
@@ -231,15 +208,10 @@ test('outputStyle 门控(对齐 cc keepCodingInstructions):未选风格保留「
     const base = await buildSystemPrompt(ws)
     expect(base).toContain('# Doing tasks')
 
-    // 选了非编码风格、未声明 keepCodingInstructions → 跳过 # Doing tasks,但风格正文在
+    // 选了风格 → # Doing tasks 仍在(通用纪律不受风格门控),风格正文注入中部
     const styled = await buildSystemPrompt(ws, undefined, { prompt: '【输出风格 · 老师】用启发式讲解' })
-    expect(styled).not.toContain('# Doing tasks')
+    expect(styled).toContain('# Doing tasks')
     expect(styled).toContain('【输出风格 · 老师】用启发式讲解')
-
-    // 声明 keepCodingInstructions:true → 保留 # Doing tasks + 风格正文
-    const kept = await buildSystemPrompt(ws, undefined, { prompt: '【输出风格 · 严谨】', keepCodingInstructions: true })
-    expect(kept).toContain('# Doing tasks')
-    expect(kept).toContain('【输出风格 · 严谨】')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

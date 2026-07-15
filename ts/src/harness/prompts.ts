@@ -109,30 +109,12 @@ export const OUTPUT_EFFICIENCY_SECTION = [
   '- After completing work, state what changed and how it was verified without a ceremonial introduction or summary template.',
 ].join('\n')
 
-export const CODING_WORKFLOW_SECTION = [
-  '# Software implementation (only when needed)',
-  'Apply this section only when the user\'s goal actually requires software development, configuration, debugging, or repository work. Do not expose this workflow as the default framing for an ordinary billiards-operations task.',
-  'Survey the change surface, read the relevant code, then edit in coherent batches. In an unfamiliar project, start with list_dir({recursive:true,max_depth:2}); in a large repository use grep_files({files_only:true}), glob_files, or code_outline to locate candidates. Use grep_files({ranges:true}) or code_outline({ranges:true}) to produce focused windows for read_many_files({ranges}).',
-  'The path/paths input to grep_files may be a directory or specific files. When searching only a few files, scope the search to those files instead of falling back to shell grep.',
-  'Use read_file or read_many_files({ranges}) for focused inspection. The paths/ranges inputs accept a single value, but use arrays for multiple files or windows.',
-  'Read every target file before editing it so read-before-write protection can detect concurrent changes. In an unfamiliar directory, call list_project_instructions({path}) first.',
-  'Choose the smallest reliable edit tool: edit_file for one precise replacement, multi_edit_file for several replacements in one file, patch_file for complex hunks, and patch_files for a coherent multi-file change that should validate and apply together while retaining a recoverable diff.',
-  'Use git_history({paths}) when implementation history, regression origin, or rationale matters. Prefer its bounded read-only history over arbitrary shell exploration.',
-  'When <stored_tool_result path="..."> previews do not contain enough context, use read_stored_tool_result for the required window rather than reading arbitrary paths with shell cat.',
-  'When running a command in a subpackage, use run_command({cwd:"subdirectory",command:"..."}) instead of composing `cd ... && ...`.',
-  'After editing, inspect the actual changes with git_status({include_diff:true,staged:"both"}) or the returned file_change/diff, including staged, unstaged, and untracked files, then run validation close to the change. Report failures and the next action accurately.',
-].join('\n')
-
-/** 改代码后的验证纪律:让模型主动使用最近项目的安全诊断,别改完就口头收尾。 */
-export const VERIFICATION_SECTION = [
-  '# Verifying completed work',
-  'Verify the real user-visible outcome with the closest available evidence before saying the task is complete.',
-  'After changing code, configuration, scripts, or frontend styles, run validation that is close to the affected behavior before finishing.',
-  'Before creating a file or changing an unfamiliar subdirectory, call list_project_instructions({path}) if you have not read the applicable project instructions.',
-  'Use project_diagnostics near the changed files to discover safe scripts from package.json and run the auto checks such as typecheck or lint. For behavioral changes, explicitly run check:"test" and use test_paths for focused tests when appropriate.',
-  'If project_diagnostics returns nearby test candidates, treat them as leads for a subsequent test_paths call, not as tests that already ran.',
-  'If no suitable script exists, execution is unavailable, or the validation environment is missing, do not claim success. State what could not be run and the remaining risk.',
-].join('\n')
+/**
+ * 纯代码工具节奏与改后验证(grep_files/code_outline/patch_file 等工具节奏 + project_diagnostics/test_paths
+ * 验证纪律)已迁到按需加载的 `code-change-workflow` bundled skill(见
+ * ts/src/skills/bundled/code-change-workflow/SKILL.md),不再无条件注入每一次系统提示——经营/生图/剪视频
+ * 等业务任务不该被灌满 grep/git/typecheck 指令。模型在判断任务确实要碰代码时,自己 use_skill 加载。
+ */
 
 /** 工具膨胀后的渐进式披露纪律:隐藏长尾工具时先搜工具,别猜。 */
 export const TOOL_DISCOVERY_SECTION = [

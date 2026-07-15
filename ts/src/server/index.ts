@@ -754,8 +754,8 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       : undefined
     let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens, activatedConditionalSkills }, outputStyleConfig)
-    // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style') + keepCodingInstructions
-    // 门控),不再拼到尾部 extraContext。领域包上下文(billiards 等)是会话挂载的知识上下文,
+    // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style')),不再拼到尾部
+    // extraContext。领域包上下文(billiards 等)是会话挂载的知识上下文,
     // 每回合直接进系统提示,但不改写通用 Agent 身份、权限或规划逻辑。
     const domainPackContext = enabledPacks.map(pack => pack.sessionStartContext).filter(Boolean).join('\n\n')
     const extraContext = [

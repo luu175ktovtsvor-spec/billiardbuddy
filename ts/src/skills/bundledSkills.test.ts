@@ -108,6 +108,25 @@ test('生图 Skill 复用媒体链路并守住事实、真人和交付边界', a
   expect(prompt).not.toMatch(/^\d+\.\s/m)
 })
 
+test('code-change-workflow Skill 可被模型自动发现,承接原无条件注入的编码工具节奏与改后验证', async () => {
+  const library = await loadSkillsDir(bundledSkillsRoot(), { layer: 'bundled' })
+  const skill = library.byName.get('code-change-workflow')
+
+  expect(skill).toBeDefined()
+  expect(skill?.skillLayer).toBe('bundled')
+  expect(skill?.disableModelInvocation).toBeUndefined() // 模型可自主 use_skill,不需要用户手动触发
+  expect(formatSkillIndex(library, { query: '调试仓库问题' })).toContain('code-change-workflow')
+
+  const prompt = await skill!.getPrompt('', { workspace: new Workspace(process.cwd()) })
+  expect(prompt).toContain('list_dir({recursive:true,max_depth:2})')
+  expect(prompt).toContain('grep_files({files_only:true})')
+  expect(prompt).toContain('patch_files')
+  expect(prompt).toContain('git_history({paths})')
+  expect(prompt).toContain('project_diagnostics')
+  expect(prompt).toContain('test_paths')
+  expect(prompt).toContain('别声称成功')
+})
+
 test('球房经营 Skills 覆盖 PPT 的高频闭环且不预设门店数据', async () => {
   const library = await loadSkillsDir(bundledSkillsRoot(), { layer: 'bundled' })
   const expectations = [
