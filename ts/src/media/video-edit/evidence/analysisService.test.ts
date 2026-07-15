@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Model } from '../../../types/model'
 import type { AsrAdapter } from './asr'
 import { VideoEvidenceService } from './analysisService'
 import { VideoProjectStore } from '../projectStore'
@@ -77,4 +78,93 @@ test('ambient analysis skips transcription and reports visible analysis stages',
   expect(transcribeCalls).toBe(0)
   expect(stages.some(stage => stage.includes('寻找可用画面'))).toBe(true)
   expect(stages.some(stage => stage.includes('识别口播'))).toBe(false)
+})
+
+test('auto analysis classifies speech before deciding whether to run the full transcript', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'video-auto-route-'))
+  const path = join(root, 'ordinary-name.mp4')
+  writeFileSync(path, 'video')
+  const store = new VideoProjectStore(root)
+  const project = await store.create({ video_paths: [path] })
+  let transcribeCalls = 0
+  let classifyCalls = 0
+  const asr: AsrAdapter = {
+    id: 'test-asr', version: '1',
+    async transcribe(source) {
+      transcribeCalls += 1
+      return {
+        provider: 'test-asr', providerVersion: '1',
+        transcript: { source, language: 'zh', duration: 3, words: [], phrases: [{ start: 0, end: 3, text: '这是实际口播内容' }] },
+      }
+    },
+  }
+  const analyzed = await new VideoEvidenceService(store, {
+    asr,
+    env: { PATH: '', FFMPEG_BIN: '/missing', FFPROBE_BIN: '/missing' },
+    classifyContent: async () => {
+      classifyCalls += 1
+      return {
+        route: 'speech', level: 'L2', reason: '测试识别为口播',
+        perSource: [{ src: 'ordinary-name.mp4', has_audio: true }],
+        signals: { hasAudioAny: true, probeAvailable: true, probeCharsPerSec: 1, probeWindowsWithText: 1, probeTotalWindows: 1 },
+      }
+    },
+  }).analyze(project.project_id, undefined, { transcription: 'auto' })
+  expect(classifyCalls).toBe(1)
+  expect(transcribeCalls).toBe(1)
+  expect(analyzed.sources[0]?.role).toBe('talking_take')
+  expect(analyzed.evidence.some(item => item.kind === 'transcript')).toBe(true)
+})
+
+test('auto analysis does not run a full transcript for a source classified as ambient footage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'video-auto-ambient-'))
+  const path = join(root, 'clip.mp4')
+  writeFileSync(path, 'video')
+  const store = new VideoProjectStore(root)
+  const project = await store.create({ video_paths: [path] })
+  let transcribeCalls = 0
+  const asr: AsrAdapter = {
+    id: 'test-asr', version: '1',
+    async transcribe() {
+      transcribeCalls += 1
+      return { provider: 'test-asr', providerVersion: '1', transcript: null }
+    },
+  }
+  await new VideoEvidenceService(store, {
+    asr,
+    env: { PATH: '', FFMPEG_BIN: '/missing', FFPROBE_BIN: '/missing' },
+    classifyContent: async () => ({
+      route: 'broll', level: 'L1', reason: '测试识别为环境素材',
+      perSource: [{ src: 'clip.mp4', has_audio: true }],
+      signals: { hasAudioAny: true, voicedRatio: 0.05 },
+    }),
+  }).analyze(project.project_id, undefined, { transcription: 'auto' })
+  expect(transcribeCalls).toBe(0)
+})
+
+test('visual evidence uses a bounded gateway VLM sample and promotes observed source roles', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'video-vlm-evidence-'))
+  const path = join(root, 'clip.mp4')
+  writeFileSync(path, 'video')
+  const store = new VideoProjectStore(root)
+  const project = await store.create({ video_paths: [path], goal: 'ambient' })
+  let modelCalls = 0
+  const model: Model = {
+    async step() {
+      modelCalls += 1
+      return { kind: 'final', text: '{"shots":[{"index":0,"tag":"人物击球动作"}],"order":[0],"drop":[],"grade":"neutral"}' }
+    },
+  }
+  const analyzed = await new VideoEvidenceService(store, {
+    env: { PATH: '', FFMPEG_BIN: '/missing', FFPROBE_BIN: '/missing' },
+    visualModel: model,
+    extractKeyframe: async () => 'jpeg-base64',
+  }).analyze(project.project_id, undefined, { transcription: 'skip' })
+  expect(modelCalls).toBe(1)
+  expect(analyzed.sources[0]?.role).toBe('play_action')
+  const ref = analyzed.evidence.find(item => item.kind === 'visual')
+  expect(ref).toMatchObject({ provider: 'gateway-vlm-visual-evidence' })
+  const visual = await new VideoEvidenceService(store).readEvidence(analyzed, 'visual')
+  expect(visual[0]?.value).toMatchObject({ local_only: false })
+  expect(JSON.stringify(visual[0]?.value)).toContain('人物击球动作')
 })

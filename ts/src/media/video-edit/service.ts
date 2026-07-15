@@ -166,7 +166,11 @@ export class VideoEditingService {
       await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint: { phase: 'analysis_started' } })
       await ctx.runner.progress(8, '正在分析真实素材')
       const analyzed = await this.evidence.analyze(created.project_id, ctx.runner, {
-        transcription: created.goal === 'talking' ? 'required' : 'skip',
+        transcription: briefInput.preferred_view === 'talking'
+          ? 'required'
+          : briefInput.preferred_view === 'ambient'
+            ? 'skip'
+            : 'auto',
       })
       const compiled = compileVideoBrief(briefInput, analyzed.sources)
       const withBrief = await this.store.saveBrief(created.project_id, compiled.brief, analyzed.revision)
