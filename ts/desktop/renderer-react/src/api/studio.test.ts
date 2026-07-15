@@ -1,6 +1,34 @@
 import { expect, test } from 'bun:test'
 import { getBaseUrl, setBaseUrl } from './client'
-import { brandPackApi, workbenchApi } from './studio'
+import { brandPackApi, studioApi, workbenchApi } from './studio'
+
+test('studio media requests preserve the active conversation and working directory', async () => {
+  const previousBaseUrl = getBaseUrl()
+  const requests: Array<{ path: string; body: Record<string, unknown> }> = []
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      requests.push({ path: new URL(request.url).pathname, body: await request.json() as Record<string, unknown> })
+      return Response.json({ job_id: `job-${requests.length}` })
+    },
+  })
+  setBaseUrl(`http://127.0.0.1:${server.port}`)
+  try {
+    const scope = { conversation_id: 'conversation-1', working_dir: '/workspace/a' }
+    await studioApi.generate({ prompt: '生成海报', ...scope })
+    await studioApi.edit({ source_image_path: '/workspace/a/source.png', description: '调亮一点', ...scope })
+    await studioApi.upscale({ source_image_path: '/workspace/a/source.png', scale: 4, ...scope })
+
+    expect(requests).toEqual([
+      expect.objectContaining({ path: '/api/v1/studio/generate', body: expect.objectContaining(scope) }),
+      expect.objectContaining({ path: '/api/v1/studio/edit', body: expect.objectContaining(scope) }),
+      expect.objectContaining({ path: '/api/v1/studio/upscale', body: expect.objectContaining(scope) }),
+    ])
+  } finally {
+    server.stop(true)
+    setBaseUrl(previousBaseUrl)
+  }
+})
 
 test('workbench API scopes project discovery to the active working directory', async () => {
   const previousBaseUrl = getBaseUrl()

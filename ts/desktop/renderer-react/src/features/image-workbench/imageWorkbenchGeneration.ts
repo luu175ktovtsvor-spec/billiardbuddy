@@ -38,6 +38,8 @@ export interface ImageGenerationCommandInput {
   referenceAssets: ImageAssetReference[]
   portraitAuthorized: boolean
   creativeBrief: ImageCreativeBrief | null
+  conversationId?: string
+  workspaceRoot?: string
 }
 
 export interface ImageGenerationCommandCallbacks {
@@ -124,6 +126,8 @@ export async function executeImageGeneration(
     portrait_authorization_confirmed: input.portraitAuthorized,
     input_fidelity: input.referenceAssets.length > 0 ? 'high' : undefined,
     creative_brief: brief,
+    conversation_id: input.conversationId,
+    working_dir: input.workspaceRoot,
   }
   const started = await dependencies.generate(generateInput)
   callbacks.onJobStarted(started.job_id)

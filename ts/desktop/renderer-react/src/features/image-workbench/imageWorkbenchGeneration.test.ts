@@ -33,6 +33,8 @@ function input(existingBrief: ImageCreativeBrief | null = null): ImageGeneration
     referenceAssets: [],
     portraitAuthorized: false,
     creativeBrief: existingBrief,
+    conversationId: 'conversation-1',
+    workspaceRoot: '/workspace/a',
   }
 }
 
@@ -56,9 +58,10 @@ function callbacks() {
 test('编译 brief 后生成候选,返回推荐项和固定文字回填', async () => {
   const events = callbacks()
   let compileCalls = 0
+  let generateInput: Record<string, unknown> | undefined
   const result = await executeImageGeneration(input(), events.value, {
     async compileBrief() { compileCalls += 1; return { brief: brief() } },
-    async generate() { return { job_id: 'job-1' } },
+    async generate(value) { generateInput = value; return { job_id: 'job-1' } },
     async pollJob(_id, options) {
       options.onProgress?.(60, '排队中')
       return { status: 'done', result: { images: [
@@ -71,6 +74,7 @@ test('编译 brief 后生成候选,返回推荐项和固定文字回填', async 
   expect(compileCalls).toBe(1)
   expect(events.jobs).toEqual(['job-1'])
   expect(events.progress).toEqual([60])
+  expect(generateInput).toMatchObject({ conversation_id: 'conversation-1', working_dir: '/workspace/a' })
   expect(result.compiledPoster?.title).toBe('开业')
   expect(result.recommendedId).toBe('pass-1')
   expect(result.compareIds).toEqual(['pass-1', 'pass-2'])
