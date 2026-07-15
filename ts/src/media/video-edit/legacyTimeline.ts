@@ -731,7 +731,7 @@ export class VideoEditProjectStore {
     const message = transcribed
       ? '已本地转写口播(whisper-cli/离线)生成真台词字幕。'
       : unavailableReason
-        ? `本地口播转写模型未打包(${unavailableReason}),已生成占位字幕;打包转写权重/二进制后自动补真台词。`
+        ? `本地离线转写未配置(${unavailableReason}),已生成占位字幕;配置离线组件后可重新生成真台词。`
         : '未识别到连贯口播,已生成占位字幕。'
     return {
       ok: true,

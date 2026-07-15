@@ -1,12 +1,12 @@
-// 资产管理器:瘦安装包的另一半。安装包只装 app + 内核 + bundled md,大块头资产
-// (ffmpeg/ffprobe、字幕中文字体等)首启后从静态资源服务器后台静默下载。
+// 资产管理器:瘦安装包的另一半。安装包只装 app + 内核 + bundled md；FFmpeg/ffprobe
+// 由 Tier 1 在启动后准备，字体、超分等可选组件由 Tier 2 在功能需要时准备。
 //
 // 设计(业界标准 manifest 模式):
 // - 清单:QF_ASSET_MANIFEST_URL(默认大陆机 nginx 静态路径)拉 JSON;拉不到用本地缓存的
 //   上一份;都没有 → 指数退避静默重试,绝不弹错。
 // - 下载:<stateRoot>/assets/tmp/<id>.part,Range 断点续传(nginx 静态文件天然支持 206);
 //   SHA-256 校验通过才原子 rename 落位 <stateRoot>/assets/<id>/…;校验不过删掉重下。
-// - 调度:Tier1(ffmpeg/ffprobe/中文字体)首启自动串行下(一次一个,不抢满用户带宽);
+// - 调度:Tier1(ffmpeg/ffprobe)启动后自动串行下(一次一个,不抢满用户带宽);
 //   Whisper 只为显式本地离线模式保留兼容资产 id,远程转录失败不会触发下载。
 // - 状态:pending|downloading|verifying|ready|failed,持久化 state.json(文件式,无 SQL);
 //   启动时对 ready 资产做快速校验(存在 + 大小对,不必每次全量 hash)。
