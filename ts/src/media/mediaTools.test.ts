@@ -121,11 +121,12 @@ test('generate_image compiles the user request and registers real candidates in 
       },
     })
     const tool = createMediaTools(media).find(t => t.name === 'generate_image')!
-    await tool.execute({ description: '做一张海边音乐节海报，画面中有朋友跳舞，不要文字' }, {
+    const output = await tool.execute({ description: '做一张海边音乐节海报，画面中有朋友跳舞，不要文字' }, {
       workspace: new Workspace(root),
       conversationId: 'c-media-workbench',
       permissionMode: 'full',
     })
+    expect(output).toContain('timeout:600000')
 
     const done = await waitFor(async () => {
       const list = await tasks.list({ conversationId: 'c-media-workbench' })

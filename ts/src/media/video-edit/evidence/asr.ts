@@ -1,6 +1,11 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { TranscribeUnavailableError, transcribeVideoWordLevel, type VideoTranscript } from '../../transcribe'
+import {
+  resolveTranscribeAvailability,
+  TranscribeUnavailableError,
+  transcribeVideoWordLevel,
+  type VideoTranscript,
+} from '../../transcribe'
 
 export interface AsrResult {
   transcript: VideoTranscript | null
@@ -21,10 +26,18 @@ export interface AsrAdapter {
 }
 
 export class WhisperCppAsrAdapter implements AsrAdapter {
-  readonly id = 'whisper.cpp'
-  readonly version = 'baseline-v1'
-
   constructor(private readonly env: Record<string, string | undefined> = process.env) {}
+
+  get id(): string {
+    const requestedMode = this.env.QF_TRANSCRIBE_MODE?.trim().toLowerCase()
+    return requestedMode === 'remote' || resolveTranscribeAvailability(this.env).mode === 'remote'
+      ? 'gateway-asr'
+      : 'whisper.cpp'
+  }
+
+  get version(): string {
+    return this.id === 'gateway-asr' ? 'remote-v1' : 'baseline-v1'
+  }
 
   async transcribe(
     path: string,
@@ -39,7 +52,7 @@ export class WhisperCppAsrAdapter implements AsrAdapter {
     } catch (error) {
       if (signal?.aborted) throw error
       if (error instanceof TranscribeUnavailableError) {
-        return { transcript: null, provider: this.id, providerVersion: this.version, warning: '本地语音转写组件尚未就绪，可继续环境剪辑或稍后重试转写' }
+        return { transcript: null, provider: this.id, providerVersion: this.version, warning: error.reason }
       }
       return {
         transcript: null,
