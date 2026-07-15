@@ -1,6 +1,6 @@
 ---
 name: verify-modular-change
-description: Verify a completed modular change against its declared ownership, contracts, consumers, tests, runtime behavior, compatibility, and documentation. Use after any code implementation or refactor, before declaring completion, committing, packaging, or releasing.
+description: Verify a completed modular change against its declared ownership, contracts, consumers, tests, runtime behavior, compatibility, and documentation. Use after implementation or refactoring, before a module commit, and again before final completion, packaging, or release.
 ---
 
 # 模块化验证收尾
@@ -19,11 +19,11 @@ description: Verify a completed modular change against its declared ownership, c
 8. 文档：只有架构、部署、现行状态确实变化时才更新对应唯一真相源；删除被取代的旧口径。
 9. Skill：若新增/删除/改名模块，或连接、部署、验证流程变化，同次执行 `maintain-project-skills`；普通内部实现不更新。
 10. 新文件：复查新增文件内容和归属；密钥扫描必须覆盖已跟踪及未跟踪且未被忽略的文件。
-11. 机械质量门：运行 `bash scripts/quality_gate.sh`；任何失败都不能用文字说明代替修复。仅开发中快速反馈可用 `--quick`，提交/发布前跑完整模式。
+11. 机械质量门：边界清晰的模块级中间提交先跑该模块的聚焦测试、必要的 typecheck 和 `git diff --check`；整个任务的最终提交、声明完成、打包或发布前运行 `bash scripts/quality_gate.sh`。任何失败都不能用文字说明代替修复。
 
 ## 项目命令
 
-开发中按影响范围选择；声明完成、提交或发布前统一运行：
+开发中按影响范围选择聚焦验证，每个主责模块验证通过后可单独提交。整个任务的最终提交、声明完成或发布前统一运行：
 
 ```bash
 bash scripts/quality_gate.sh
