@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createWorkflowRuntime, type WorkflowTurnStreamBody } from './workflowRuntime'
+import { createWorkflowRuntime, workflowRunNotification, type WorkflowTurnStreamBody } from './workflowRuntime'
 
 async function* streamOf(finalText: string): AsyncGenerator<{ event: { type: string; text?: string } }> {
   yield { event: { type: 'content_delta', text: '…' } }
@@ -86,5 +86,35 @@ describe('createWorkflowRuntime.fireTask', () => {
     const runtime = await makeRuntime(calls)
     await runtime.fireTask({ instruction: '做点事' }, { runId: 'r1', manual: false })
     expect(calls[0]!.working_dir).toBe('/default/workspace')
+  })
+})
+
+describe('workflowRuntime 通知', () => {
+  it('运行收尾落桌面通知:失败带步骤进度与原因', async () => {
+    const notifications: Record<string, unknown>[] = []
+    const root = await mkdtemp(join(tmpdir(), 'workflow-runtime-'))
+    const runtime = createWorkflowRuntime({
+      stateRoot: root,
+      defaultWorkspaceDir: () => '/default/workspace',
+      createTurnStream: async () => { throw new Error('通道不可用') },
+      addNotification: async notification => { notifications.push(notification) },
+      logger: { warn: () => {}, error: () => {} },
+    })
+    const result = await runtime.fireTask({ workflow_id: 'venue-daily-report' }, { runId: 'r1', manual: false })
+    expect(result.status).toBe('failed')
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toMatchObject({ title: '工作流失败', kind: 'workflow_run' })
+    expect(String(notifications[0]!.body)).toContain('营业日报(0/3 步完成)')
+    expect(String(notifications[0]!.body)).toContain('通道不可用')
+  })
+
+  it('workflowRunNotification:completed 有文案,running 不通知', () => {
+    const base = {
+      id: 'r1', workflowId: 'w', workflowName: '演示', trigger: 'manual' as const,
+      startedAt: '2026-07-16T00:00:00.000Z',
+      steps: [{ stepId: 's', title: '步骤', status: 'completed' as const }],
+    }
+    expect(workflowRunNotification({ ...base, status: 'completed' })).toMatchObject({ title: '工作流已完成' })
+    expect(workflowRunNotification({ ...base, status: 'running' })).toBeNull()
   })
 })

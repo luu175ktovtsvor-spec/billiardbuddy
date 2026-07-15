@@ -37,6 +37,8 @@ export interface WorkflowRunServiceOptions {
   stateRoot: string
   definitions: WorkflowDefinitionStore
   runTurn: RunWorkflowTurn
+  /** 运行收尾(completed/failed/cancelled)后的旁路钩子(如桌面通知);钩子失败不反向污染运行状态。 */
+  onSettled?: (run: WorkflowRun) => Promise<void> | void
   now?: () => number
   logger?: Pick<Console, 'warn' | 'error'>
 }
@@ -81,6 +83,7 @@ export class WorkflowRunService {
   private readonly runsPath: string
   private readonly definitions: WorkflowDefinitionStore
   private readonly runTurn: RunWorkflowTurn
+  private readonly onSettled?: (run: WorkflowRun) => Promise<void> | void
   private readonly now: () => number
   private readonly logger: Pick<Console, 'warn' | 'error'>
   private readonly runningWorkflows = new Map<string, { runId: string; controller: AbortController }>()
@@ -90,6 +93,7 @@ export class WorkflowRunService {
     this.runsPath = join(opts.stateRoot, 'workflows', 'workflow-runs.json')
     this.definitions = opts.definitions
     this.runTurn = opts.runTurn
+    this.onSettled = opts.onSettled
     this.now = opts.now ?? (() => Date.now())
     this.logger = opts.logger ?? console
   }
@@ -243,6 +247,11 @@ export class WorkflowRunService {
       run.completedAt = this.iso()
       this.runningWorkflows.delete(run.workflowId)
       await this.saveRun(run).catch(err => this.logger.error('[workflows] save run failed:', err))
+      try {
+        await this.onSettled?.(structuredClone(run))
+      } catch {
+        // 旁路钩子失败不能反向污染运行状态。
+      }
     }
     return run
   }

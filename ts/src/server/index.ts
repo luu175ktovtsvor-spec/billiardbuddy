@@ -313,6 +313,7 @@ export function startServer(opts: StartServerOptions = {}) {
     stateRoot,
     defaultWorkspaceDir: getDefaultWorkspaceDir,
     createTurnStream: body => createTurnStream({ ...body }),
+    addNotification: notification => desktopData.addNotification(notification),
   })
   const scheduledTasks = new ScheduledTaskRunner({
     store: desktopData,

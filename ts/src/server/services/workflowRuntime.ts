@@ -4,10 +4,36 @@
 // - fireTask 两个分支:任务带 workflow_id → 执行整条已验证工作流;否则沿用单条裸指令起一回合会话。
 
 import { join } from 'node:path'
+import type { WorkflowRun } from '../../../shared/contracts/workflows'
 import { bundledWorkflowDefinitions } from '../../workflows/bundledWorkflows'
 import { WorkflowDefinitionStore } from '../../workflows/definitionStore'
 import { WorkflowRunService, type RunWorkflowTurn } from '../../workflows/workflowRunService'
 import type { FireTask } from './scheduledTaskRunner'
+
+/** 运行收尾 → 通知中心文案;running 等中间态不通知。 */
+export function workflowRunNotification(run: WorkflowRun): Record<string, unknown> | null {
+  const title = run.status === 'completed'
+    ? '工作流已完成'
+    : run.status === 'failed'
+      ? '工作流失败'
+      : run.status === 'cancelled'
+        ? '工作流已取消'
+        : null
+  if (!title) return null
+  const doneSteps = run.steps.filter(step => step.status === 'completed').length
+  const progress = `${doneSteps}/${run.steps.length} 步完成`
+  return {
+    title,
+    body: run.error ? `${run.workflowName}(${progress}): ${run.error}` : `${run.workflowName}(${progress})`,
+    kind: 'workflow_run',
+    meta: {
+      runId: run.id,
+      workflowId: run.workflowId,
+      status: run.status,
+      conversationId: run.conversationId,
+    },
+  }
+}
 
 interface TurnEventRecord {
   event: { type: string; text?: string }
@@ -25,6 +51,8 @@ export interface WorkflowRuntimeOptions {
   stateRoot: string
   defaultWorkspaceDir: () => string
   createTurnStream: (body: WorkflowTurnStreamBody) => Promise<{ stream: AsyncIterable<TurnEventRecord> }>
+  /** 运行收尾通知落点(桌面通知中心);缺省不通知。 */
+  addNotification?: (notification: Record<string, unknown>) => Promise<unknown>
   logger?: Pick<Console, 'warn' | 'error'>
 }
 
@@ -66,6 +94,11 @@ export function createWorkflowRuntime(opts: WorkflowRuntimeOptions): WorkflowRun
       bundled: bundledWorkflowDefinitions,
     }),
     runTurn,
+    // 无人值守运行(定时/后台)的结果必须能被用户看见:收尾即落桌面通知,失败带原因。
+    onSettled: async run => {
+      const notification = workflowRunNotification(run)
+      if (notification) await opts.addNotification?.(notification)
+    },
     logger,
   })
 
