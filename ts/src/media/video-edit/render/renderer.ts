@@ -1,10 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
-import { ffmpegBinFrom, subtitleFontConfig } from '../../mediaBinaries'
+import { ffmpegBinFrom, ffprobeBinFrom, subtitleFontConfig } from '../../mediaBinaries'
 import { videoProjectSchema, videoRenderRequestSchema, type VideoAudioLayer, type VideoProject, type VideoRenderInput, type VideoScene } from '../../../../shared/contracts/video-edit'
+import { runFfmpegText } from '../evidence/ffmpeg'
+
+export interface VideoQualityReport {
+  passed: boolean
+  duration_ms: number
+  width: number
+  height: number
+  has_video: boolean
+  has_audio: boolean
+  decode_verified: boolean
+  warnings: string[]
+}
+
+export interface VideoQualityExpectation {
+  expectedDurationMs: number
+  expectedWidth: number
+  expectedHeight: number
+  preview: boolean
+}
 
 export interface VideoRenderResult {
   project_id: string
@@ -21,6 +40,7 @@ export interface VideoRendererOptions {
   env?: Record<string, string | undefined>
   onProgress?: (progress: number, stage: string) => Promise<void> | void
   signal?: AbortSignal
+  qualityCheck?: typeof inspectRenderedVideo
 }
 
 function ffmpegRun(bin: string, args: string[], signal?: AbortSignal): Promise<void> {
@@ -32,6 +52,74 @@ function ffmpegRun(bin: string, args: string[], signal?: AbortSignal): Promise<v
     proc.on('error', reject)
     proc.on('close', code => code === 0 ? resolve() : reject(new Error(stderr.trim().slice(-3000) || `ffmpeg failed:${code}`)))
   })
+}
+
+function detectedDurations(stderr: string, key: 'black_duration' | 'freeze_duration'): number[] {
+  const pattern = new RegExp(`${key}:\\s*([0-9]+(?:\\.[0-9]+)?)`, 'g')
+  return [...stderr.matchAll(pattern)].map(match => Number(match[1])).filter(Number.isFinite)
+}
+
+export async function inspectRenderedVideo(
+  path: string,
+  expected: VideoQualityExpectation,
+  env: Record<string, string | undefined> = process.env,
+  signal?: AbortSignal,
+): Promise<VideoQualityReport> {
+  const info = await stat(path).catch(() => null)
+  if (!info?.isFile() || info.size <= 0) throw new Error('导出质检失败:成片文件为空')
+  const probe = await runFfmpegText(ffprobeBinFrom(env), ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', path], {
+    signal,
+    timeoutMs: 60_000,
+  })
+  if (probe.code !== 0) throw new Error(`导出质检失败:无法读取成片信息${probe.stderr.trim() ? ` (${probe.stderr.trim().slice(-300)})` : ''}`)
+  let parsed: { format?: { duration?: string }; streams?: Array<Record<string, unknown>> }
+  try {
+    parsed = JSON.parse(probe.stdout)
+  } catch {
+    throw new Error('导出质检失败:成片信息不是有效 JSON')
+  }
+  const streams = parsed.streams ?? []
+  const video = streams.find(stream => stream.codec_type === 'video')
+  const audio = streams.find(stream => stream.codec_type === 'audio')
+  if (!video) throw new Error('导出质检失败:成片没有视频轨')
+  if (!audio) throw new Error('导出质检失败:成片没有音频轨')
+  const durationMs = Math.round(Number(parsed.format?.duration ?? 0) * 1000)
+  const width = Math.round(Number(video.width ?? 0))
+  const height = Math.round(Number(video.height ?? 0))
+  if (!(durationMs > 0)) throw new Error('导出质检失败:成片时长无效')
+  if (width !== expected.expectedWidth || height !== expected.expectedHeight) {
+    throw new Error(`导出质检失败:成片画幅 ${width}x${height} 与计划 ${expected.expectedWidth}x${expected.expectedHeight} 不一致`)
+  }
+  const durationToleranceMs = Math.max(500, Math.round(expected.expectedDurationMs * 0.03))
+  if (Math.abs(durationMs - expected.expectedDurationMs) > durationToleranceMs) {
+    throw new Error(`导出质检失败:成片时长 ${durationMs}ms 与计划 ${expected.expectedDurationMs}ms 偏差过大`)
+  }
+
+  const warnings: string[] = []
+  let decodeVerified = false
+  if (!expected.preview) {
+    const decoded = await runFfmpegText(ffmpegBinFrom(env), [
+      '-hide_banner', '-nostats', '-v', 'warning', '-i', path,
+      '-vf', 'blackdetect=d=1:pix_th=0.02,freezedetect=n=-60dB:d=2',
+      '-f', 'null', '-',
+    ], { signal, timeoutMs: 30 * 60_000 })
+    if (decoded.code !== 0) throw new Error(`导出质检失败:成片无法完整解码${decoded.stderr.trim() ? ` (${decoded.stderr.trim().slice(-300)})` : ''}`)
+    decodeVerified = true
+    const blackDuration = Math.max(0, ...detectedDurations(decoded.stderr, 'black_duration'))
+    const freezeDuration = Math.max(0, ...detectedDurations(decoded.stderr, 'freeze_duration'))
+    if (blackDuration >= 1) warnings.push(`检测到持续黑场 ${blackDuration.toFixed(1)} 秒，请预览确认`)
+    if (freezeDuration >= 2) warnings.push(`检测到画面冻结 ${freezeDuration.toFixed(1)} 秒，请预览确认`)
+  }
+  return {
+    passed: true,
+    duration_ms: durationMs,
+    width,
+    height,
+    has_video: true,
+    has_audio: true,
+    decode_verified: decodeVerified,
+    warnings,
+  }
 }
 
 function assTime(ms: number): string {
@@ -301,7 +389,23 @@ export class VideoRenderer {
       )
       await this.options.onProgress?.(75, '正在合成字幕、图形和音频')
       await ffmpegRun(bin, args, this.options.signal)
-      await rename(temporary, target)
+      const expectedWidth = request.preview ? Math.min(project.canvas.width, 540) : project.canvas.width
+      const expectedHeight = request.preview ? Math.round(expectedWidth * project.canvas.height / project.canvas.width) : project.canvas.height
+      await this.options.onProgress?.(92, request.preview ? '正在检查预览文件' : '正在检查成片完整性')
+      let qualityChecks: VideoQualityReport
+      try {
+        qualityChecks = await (this.options.qualityCheck ?? inspectRenderedVideo)(temporary, {
+          expectedDurationMs: transitions.durationMs,
+          expectedWidth,
+          expectedHeight,
+          preview: request.preview,
+        }, this.env, this.options.signal)
+        warnings.push(...qualityChecks.warnings)
+        await rename(temporary, target)
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => undefined)
+        throw error
+      }
       const manifestPath = join(exportDir, `${renderId}.manifest.json`)
       const manifest = {
         schema_version: 1,
@@ -320,6 +424,7 @@ export class VideoRenderer {
         music_semantics: project.music,
         brand_semantics: project.brand,
         loudness_target: { integrated_lufs: -16, true_peak_db: -1.5, loudness_range: 11 },
+        quality_checks: qualityChecks,
       }
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
       await this.options.onProgress?.(100, '导出完成')
