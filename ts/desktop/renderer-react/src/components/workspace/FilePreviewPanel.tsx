@@ -161,7 +161,7 @@ function LauncherRow({ icon, label, onClick }: { icon: ReactNode; label: string;
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-primary)' }}
     >
       <span className="flex h-4 w-4 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-tertiary)' }}>{icon}</span>
@@ -187,7 +187,7 @@ function EmptyState() {
 
   return (
     <div className="flex flex-col p-2" data-testid="panel-empty-state">
-      <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>新建标签页</div>
+      <div className="px-2 pb-1 pt-2 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>新建标签页</div>
       {host.pickPaths && (
         <LauncherRow
           icon={<IconFileText size={15} />}
@@ -197,7 +197,7 @@ function EmptyState() {
       )}
       {suggested.length > 0 && (
         <>
-          <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>推荐</div>
+          <div className="px-2 pb-1 pt-3 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>推荐</div>
           {suggested.map((f) => {
             const abs = root ? `${root}/${f.path}` : f.path
             return (
@@ -205,7 +205,7 @@ function EmptyState() {
                 key={f.path}
                 type="button"
                 onClick={() => openFile(abs)}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
+                className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 <span className="shrink-0" style={{ width: 7, height: 7, borderRadius: 2, background: fileColor(f.name) }} />
@@ -262,9 +262,9 @@ export function FilePreviewPanel() {
       {/* 第 3 栏:文件展示 */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* tab 条 */}
-        <div className="flex items-center gap-1 overflow-x-auto px-2 py-1.5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <div className="flex h-10 items-center gap-1 overflow-x-auto px-2" style={{ borderBottom: '1px solid var(--color-border)' }}>
           {tabs.length === 0 ? (
-            <span className="px-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>工作区</span>
+            <span className="px-2 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>工作区</span>
           ) : (
             tabs.map((tb) => {
               const on = tb.path === activePath
@@ -272,7 +272,7 @@ export function FilePreviewPanel() {
                 <div
                   key={tb.path}
                   onContextMenu={(e) => { e.preventDefault(); setTabCtx({ x: e.clientX, y: e.clientY, path: tb.path }) }}
-                  className="flex shrink-0 items-center gap-1 rounded-md py-1 pl-2 pr-1 text-[12px] transition-colors"
+                  className="flex h-[30px] shrink-0 items-center gap-1 rounded-lg pl-2 pr-1 text-[13px] transition-colors"
                   style={{ background: on ? 'var(--color-surface-selected)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
                 >
                   <span className="shrink-0" style={{ width: 7, height: 7, borderRadius: 2, background: fileColor(baseName(tb.path)) }} />
@@ -294,7 +294,7 @@ export function FilePreviewPanel() {
 
         {/* 面包屑 + 「打开」菜单(对齐 Codex:用默认程序打开 / 在 Finder 中显示;shell 能力只在桌面壳有,浏览器端不显示按钮) */}
         {active && (
-          <div className="flex items-center gap-2 px-3 py-1 text-[11px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)' }}>
+          <div className="flex h-8 items-center gap-2 px-3 text-[12px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)' }}>
             <span className="min-w-0 flex-1 truncate" style={{ fontFamily: 'var(--font-mono)' }}>
               {relTo(root, active.path).split('/').join('  ›  ')}
             </span>
@@ -345,7 +345,7 @@ export function FilePreviewPanel() {
         />
       )}
 
-      {/* 「打开」下拉(锚在按钮下方;ContextMenu 自带遮罩关闭 + 视口钳制)。app 枚举(打开方式列具体应用)后续再做。 */}
+      {/* 「打开」下拉锚在按钮下方，ContextMenu 负责关闭与视口钳制。 */}
       {openMenu && active && (
         <ContextMenu
           x={openMenu.x}
