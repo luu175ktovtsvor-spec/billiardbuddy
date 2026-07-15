@@ -1,5 +1,5 @@
 // 资产管理器:瘦安装包的另一半。安装包只装 app + 内核 + bundled md；FFmpeg/ffprobe
-// 由 Tier 1 在启动后准备，字体、超分等可选组件由 Tier 2 在功能需要时准备。
+// 由 Tier 1 在启动后准备，其他经过验证的可选组件可由 Tier 2 在功能需要时准备。
 //
 // 设计(业界标准 manifest 模式):
 // - 清单:QF_ASSET_MANIFEST_URL(默认大陆机 nginx 静态路径)拉 JSON;拉不到用本地缓存的
@@ -41,9 +41,6 @@ export const ASSET_IDS = {
   zhFont: 'zh-font',
   whisperCli: 'whisper-cli',
   whisperModel: 'whisper-model',
-  // 生图增强:超分放大二进制(Real-ESRGAN ncnn-vulkan,含 x4plus 模型;免费商用,不引 Python)。
-  // 解包出目录:realesrgan-ncnn-vulkan 二进制 + models/*.param/.bin。owner 服务器托管后后台下载。
-  realesrgan: 'realesrgan',
 } as const
 
 const ASSET_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i
