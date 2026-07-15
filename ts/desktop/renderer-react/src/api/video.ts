@@ -43,8 +43,9 @@ function projectPath(projectId: string, suffix = ''): string {
 }
 
 export const videoApi = {
-  async listProjects(): Promise<VideoProject[]> {
-    return videoProjectListResponseSchema.parse(await api.get('/api/v1/video-edit/projects')).projects
+  async listProjects(workingDir?: string | null): Promise<VideoProject[]> {
+    const query = workingDir ? `?working_dir=${encodeURIComponent(workingDir)}` : ''
+    return videoProjectListResponseSchema.parse(await api.get(`/api/v1/video-edit/projects${query}`)).projects
   },
   async getProject(projectId: string): Promise<VideoProject> {
     return videoProjectResponseSchema.parse(await api.get(projectPath(projectId))).project

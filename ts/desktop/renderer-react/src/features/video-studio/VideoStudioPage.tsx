@@ -37,6 +37,8 @@ function errorMessage(error: unknown): string {
   return typeof error === 'string' ? friendlyVideoText(error) : '操作失败'
 }
 export function VideoStudioPage() {
+  const workspaceRoot = useSettingsStore(state => state.workspaceRoot)
+  const activeConversationId = useSettingsStore(state => state.activeConvId)
   const [projects, setProjects] = useState<VideoProject[]>([])
   const [project, setProject] = useState<VideoProject | null>(null)
   const [paths, setPaths] = useState<string[]>([])
@@ -64,12 +66,17 @@ export function VideoStudioPage() {
   const canDraft = Boolean(project?.creative_brief) && !busy
 
   const reloadProjects = useCallback(async () => {
-    const list = await videoApi.listProjects()
+    const list = await videoApi.listProjects(workspaceRoot)
     setProjects(list)
     return list
-  }, [])
+  }, [workspaceRoot])
 
-  useEffect(() => { void reloadProjects().catch(() => undefined) }, [reloadProjects])
+  useEffect(() => {
+    setProject(null)
+    setJob(null)
+    setRenderUrl('')
+    void reloadProjects().catch(() => undefined)
+  }, [reloadProjects])
 
   const acceptProject = useCallback((next: VideoProject) => {
     setProject(next)
@@ -126,7 +133,17 @@ export function VideoStudioPage() {
     if (!canCreate) return
     setBusy(true); setError(''); setRenderUrl('')
     try {
-      const created = await videoApi.createProject({ name: goalText.trim().slice(0, 80), video_paths: paths, goal: view, user_request: goalText.trim(), content_type: contentType, ratio, target_duration_ms: durationSec * 1000 })
+      const created = await videoApi.createProject({
+        name: goalText.trim().slice(0, 80),
+        video_paths: paths,
+        goal: view,
+        user_request: goalText.trim(),
+        content_type: contentType,
+        ratio,
+        target_duration_ms: durationSec * 1000,
+        conversation_id: activeConversationId ?? undefined,
+        working_dir: workspaceRoot ?? undefined,
+      })
       acceptProject(created.project)
       setJob(await videoApi.getJob(created.analysis_job.job_id))
       await watchJob(created.analysis_job.job_id, created.project.project_id)

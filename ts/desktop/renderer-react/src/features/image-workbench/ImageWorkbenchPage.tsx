@@ -6,6 +6,7 @@ import { Canvas, Path, Rect, Textbox } from 'fabric'
 import { Tooltip } from '../../components/shared/Tooltip'
 import { IconAlertCircle, IconCheckCircle, IconChevronRight, IconEdit, IconPlus, IconRefresh, IconShareUp, IconSparkles, IconTarget, IconTrash, IconZap } from '../../components/shared/icons'
 import { toast } from '../../stores/toastStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import {
   assetUrl,
   brandPackApi,
@@ -74,6 +75,8 @@ import { executeImageGeneration, type PosterFields } from './imageWorkbenchGener
 import { imageWorkbenchTaskReducer, initialImageWorkbenchTaskState } from './imageWorkbenchTaskState'
 
 export function CreationPage() {
+  const workspaceRoot = useSettingsStore(state => state.workspaceRoot)
+  const activeConversationId = useSettingsStore(state => state.activeConvId)
   const [prompt, setPrompt] = useState('')
   const [sceneId, setSceneId] = useState(POSTER_TYPES[0]?.id ?? 'custom_poster')
   const [intent, setIntent] = useState<ImageIntent>('poster_text')
@@ -212,7 +215,8 @@ export function CreationPage() {
     let cancelled = false
     void (async () => {
       try {
-        const loaded = await workbenchApi.listProjects()
+        setProject(null)
+        const loaded = await workbenchApi.listProjects(workspaceRoot)
         if (cancelled) return
         setProjects(loaded)
       } catch {
@@ -220,7 +224,7 @@ export function CreationPage() {
       }
     })()
     return () => { cancelled = true; abortRef.current?.abort() }
-  }, [])
+  }, [workspaceRoot])
 
   useEffect(() => {
     let cancelled = false
@@ -640,6 +644,8 @@ export function CreationPage() {
     const height = img.height ?? dimensionFromRatio(img.ratio ?? ratio).height
     return await workbenchApi.createProject({
       title: creativeBrief?.poster?.title || prompt.trim().slice(0, 80) || '未命名图片',
+      conversation_id: activeConversationId ?? undefined,
+      working_dir: workspaceRoot ?? undefined,
       source_generation_id: img.generation_id,
       image_url: img.poster_url,
       width,
@@ -780,7 +786,7 @@ export function CreationPage() {
   }
 
   const reloadProjects = async () => {
-    const loaded = await workbenchApi.listProjects()
+    const loaded = await workbenchApi.listProjects(workspaceRoot)
     setProjects(loaded)
     setProject((prev) => prev ? (loaded.find((item) => item.project_id === prev.project_id) ?? null) : null)
   }

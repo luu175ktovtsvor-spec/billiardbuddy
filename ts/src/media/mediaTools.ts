@@ -50,7 +50,7 @@ interface EditImageToolInput {
 
 interface PlanVideoToolInput {
   /** 要剪的本机视频素材绝对路径(必填,可多段)。 */
-  video_paths: string[]
+  video_paths?: string[]
   /** 自然语言意图(如"剪成 30 秒抖音、去开头空镜、配点节奏感");供你自己判参,引擎按结构化参数干活。 */
   goal?: string
   /** 目标时长(秒)。 */
@@ -68,6 +68,10 @@ interface RenderVideoToolInput {
   project: string
   /** true=快速低清预览;不传出正式成片。 */
   preview?: boolean
+}
+
+interface ListMediaProjectsInput {
+  kind?: 'all' | 'image' | 'video'
 }
 
 interface UpscaleImageToolInput {
@@ -291,6 +295,45 @@ function mediaStarted(id: string, kind: string, title: string): string {
 }
 
 export function createMediaTools(media: MediaJobService, deps: { videoEditing?: VideoEditingService } = {}): Tool[] {
+  const listMediaProjects: Tool<ListMediaProjectsInput> = {
+    name: 'list_media_projects',
+    description: '列出当前工作文件夹中由对话 Agent 或图片/视频工作台创建的媒体项目。用户说“继续刚才的图”“打开工作台项目”“继续剪这个视频”时先调用，不得猜测 project 或 generation id。不会列出其他工作文件夹的项目。',
+    inputSchema: {
+      type: 'object',
+      properties: { kind: { type: 'string', enum: ['all', 'image', 'video'] } },
+    },
+    isReadOnly: true,
+    async execute(input, ctx) {
+      const kind = input?.kind ?? 'all'
+      const [imageProjects, videoProjects] = await Promise.all([
+        kind === 'video' ? Promise.resolve([]) : media.listWorkbenchProjects(ctx.workspace.root),
+        kind === 'image' || !deps.videoEditing ? Promise.resolve([]) : deps.videoEditing.store.list({ workingDir: ctx.workspace.root }),
+      ])
+      return JSON.stringify({
+        working_dir: ctx.workspace.root,
+        image_projects: imageProjects.map(project => {
+          const current = project.versions.find(version => version.id === project.current_version_id) ?? project.versions.at(-1)
+          return {
+            project: project.project_id,
+            title: project.title,
+            updated_at: project.updated_at,
+            source_generation_id: current?.generation_id ?? project.source_generation_id,
+            image_url: current?.image_url,
+            conversation_id: project.conversation_id,
+          }
+        }),
+        video_projects: videoProjects.map(project => ({
+          project: project.project_id,
+          title: project.name,
+          updated_at: project.updated_at,
+          status: project.status.phase,
+          scene_count: project.scenes.filter(scene => !scene.deleted).length,
+          conversation_id: project.conversation_id,
+        })),
+      })
+    },
+  }
+
   const candidateSelector: Tool<SelectImageCandidatesInput> = {
     name: 'select_image_candidates',
     description: '从图片很多的工作区目录做本地元数据初筛，最多返回 8 张候选。用户让你“从文件夹挑一张”时先用它，再用 read_file 真正查看这些少量预览；不要对整个目录逐张读图。',
@@ -425,20 +468,21 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
         mode: { type: 'string', enum: ['speech', 'ambient'] },
         project: { type: 'string' },
       },
-      required: ['video_paths'],
     },
     isReadOnly: false,
     async execute(input, ctx) {
       const paths = nonEmptyStrings(input?.video_paths)
-      if (!paths.length) throw new Error('plan_video 需要 video_paths(要剪的本机视频绝对路径,至少一段)。')
+      const requestedProjectId = input.project?.trim()
+      if (!paths.length && !requestedProjectId) throw new Error('plan_video 需要 video_paths(新项目)或 project(当前工作文件夹中的已有项目)。')
       if (!deps.videoEditing) throw new Error('视频 V2 编辑服务未连接')
       const userRequest = input.goal?.trim() || '根据这些真实素材剪成一条完整、自然的视频'
       const preferredView = input.mode === 'speech' ? 'talking' : input.mode === 'ambient' ? 'ambient' : undefined
       const ratio = input.aspect === '1:1' || input.aspect === '16:9' ? input.aspect : '9:16'
       const targetDurationMs = typeof input.target_duration_s === 'number' ? Math.round(input.target_duration_s * 1000) : undefined
-      let projectId = input.project?.trim()
+      let projectId = requestedProjectId
       let started: { job_id: string; project_id: string }
       if (projectId) {
+        await deps.videoEditing.store.loadForWorkspace(projectId, ctx.workspace.root)
         await deps.videoEditing.compileBrief(projectId, { user_request: userRequest, preferred_view: preferredView, ratio, target_duration_ms: targetDurationMs })
         started = await deps.videoEditing.startDrafts(projectId, { conversationId: ctx.conversationId, workspaceRoot: ctx.workspace.root })
       } else {
@@ -477,10 +521,10 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
       why: '确认当前草稿、素材缺口和候选取舍无误',
       impact: '确认后会锁定当前版本并在本机生成新的 MP4，不会改动原视频',
     }),
-    previewFor: async input => {
+    previewFor: async (input, ctx) => {
       const projectId = input.project?.trim()
       if (!projectId || !deps.videoEditing) return `视频项目:${projectId || '未选择'}`
-      const current = await deps.videoEditing.store.load(projectId)
+      const current = await deps.videoEditing.store.loadForWorkspace(projectId, ctx.workspace.root)
       const summary = summarizeVideoPlan(current)
       return [
         `视频项目:${projectId}`,
@@ -494,7 +538,7 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
       const project = typeof input?.project === 'string' ? input.project.trim() : ''
       if (!project) throw new Error('render_video 需要 project(plan_video 返回的项目名)。')
       if (!deps.videoEditing) throw new Error('视频 V2 编辑服务未连接')
-      const current = await deps.videoEditing.store.load(project)
+      const current = await deps.videoEditing.store.loadForWorkspace(project, ctx.workspace.root)
       const started = await deps.videoEditing.startRender(project, { revision: current.revision, preview: input.preview === true }, {
         conversationId: ctx.conversationId,
         workspaceRoot: ctx.workspace.root,
@@ -530,5 +574,5 @@ export function createMediaTools(media: MediaJobService, deps: { videoEditing?: 
     },
   }
 
-  return [candidateSelector, makePoster, generateImage, editImage, upscaleImageTool, planVideo, renderVideo]
+  return [listMediaProjects, candidateSelector, makePoster, generateImage, editImage, upscaleImageTool, planVideo, renderVideo]
 }

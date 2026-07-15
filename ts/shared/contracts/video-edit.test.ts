@@ -33,6 +33,8 @@ test('Scene/Timeline v2 parses separate source and output time domains', () => {
     schema_version: 2,
     project_id: 'video-1',
     name: '测试项目',
+    conversation_id: 'conversation-1',
+    working_dir: '/workspace/a',
     revision: 1,
     updated_at: new Date().toISOString(),
     goal: 'talking',
@@ -44,6 +46,7 @@ test('Scene/Timeline v2 parses separate source and output time domains', () => {
   expect(project.scenes[0]?.source_ranges[0]).toMatchObject({ in_ms: 0, out_ms: 3000 })
   expect(project.scenes[0]?.output_range).toEqual({ start_ms: 0, end_ms: 3000 })
   expect(project.brand.preset).toBe('neutral')
+  expect(project).toMatchObject({ conversation_id: 'conversation-1', working_dir: '/workspace/a' })
 })
 
 test('invalid source range and non-cut transition without reason are rejected', () => {

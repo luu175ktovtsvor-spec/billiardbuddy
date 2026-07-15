@@ -351,6 +351,8 @@ export const videoProjectSchema = z.object({
   schema_version: z.literal(2),
   project_id: z.string().min(1).max(160),
   name: z.string().min(1).max(500),
+  conversation_id: z.string().max(200).optional(),
+  working_dir: z.string().min(1).max(4096).optional(),
   revision: z.number().int().min(0),
   updated_at: z.string().datetime(),
   goal: videoViewSchema,

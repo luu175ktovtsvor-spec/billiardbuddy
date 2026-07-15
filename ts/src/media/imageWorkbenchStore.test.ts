@@ -6,6 +6,26 @@ import { PNG } from 'pngjs'
 import * as QRCode from 'qrcode'
 import { ImageWorkbenchStore } from './imageWorkbenchStore'
 
+test('ImageWorkbenchStore scopes projects by working directory and keeps legacy projects in the default view only', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'image-workbench-scope-'))
+  try {
+    const store = new ImageWorkbenchStore(root)
+    const base = { image_url: '/uploads/posters/source.png', width: 320, height: 240, intent: 'creative' as const, quality: 'standard' as const }
+    const projectA = await store.createProject({ ...base, title: 'A', working_dir: join(root, 'workspace-a'), conversation_id: 'a-1' })
+    const projectB = await store.createProject({ ...base, title: 'B', working_dir: join(root, 'workspace-b'), conversation_id: 'b-1' })
+    const legacy = await store.createProject({ ...base, title: '旧项目' })
+
+    expect(projectA.working_dir).toBe(join(root, 'workspace-a'))
+    expect(projectA.conversation_id).toBe('a-1')
+    expect((await store.listProjects({ workingDir: join(root, 'workspace-a') })).map(item => item.project_id)).toEqual([projectA.project_id])
+    expect((await store.listProjects({ workingDir: join(root, 'workspace-b') })).map(item => item.project_id)).toEqual([projectB.project_id])
+    expect(new Set((await store.listProjects({ workingDir: join(root, 'workspace-a'), includeUnscoped: true })).map(item => item.project_id))).toEqual(new Set([projectA.project_id, legacy.project_id]))
+    expect(await store.listProjects()).toHaveLength(3)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('ImageWorkbenchStore persists versions, rollback, mask assets, export and library entries', async () => {
   const root = mkdtempSync(join(tmpdir(), 'image-workbench-store-'))
   try {

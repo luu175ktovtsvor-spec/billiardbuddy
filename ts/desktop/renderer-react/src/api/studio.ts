@@ -169,7 +169,9 @@ export const brandPackApi = {
 }
 
 export const workbenchApi = {
-  listProjects: async () => imageWorkbenchProjectListResponseSchema.parse(await api.get<unknown>('/api/v1/studio/workbench/projects')).projects,
+  listProjects: async (workingDir?: string | null) => imageWorkbenchProjectListResponseSchema.parse(await api.get<unknown>(
+    `/api/v1/studio/workbench/projects${workingDir ? `?working_dir=${encodeURIComponent(workingDir)}` : ''}`,
+  )).projects,
 
   createProject: async (input: ImageWorkbenchCreateProjectRequest) =>
     imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>('/api/v1/studio/workbench/projects', input)).project,

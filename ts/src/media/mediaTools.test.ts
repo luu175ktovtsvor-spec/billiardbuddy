@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MediaJobService } from './mediaJobs'
 import { createMediaTools } from './mediaTools'
+import { ImageWorkbenchStore } from './imageWorkbenchStore'
 import { TaskService } from '../tasks/taskService'
 import { Workspace } from '../workspace/workspace'
 import { VideoEditingService } from './video-edit/service'
@@ -21,6 +22,32 @@ async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 5000): Promis
   }
   throw new Error('waitFor timeout')
 }
+
+test('list_media_projects exposes Agent and workbench projects only from the current workspace', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-project-list-'))
+  try {
+    const source = join(root, 'clip.mp4')
+    writeFileSync(source, 'video-source')
+    const otherWorkspace = join(root, 'other-workspace')
+    const tasks = new TaskService(root)
+    const imageWorkbench = new ImageWorkbenchStore(root)
+    const imageCurrent = await imageWorkbench.createProject({ title: '当前图片', image_url: '/uploads/current.png', width: 320, height: 240, intent: 'creative', quality: 'standard', working_dir: root, conversation_id: 'image-current' })
+    const imageOther = await imageWorkbench.createProject({ title: '其他图片', image_url: '/uploads/other.png', width: 320, height: 240, intent: 'creative', quality: 'standard', working_dir: otherWorkspace })
+    const media = new MediaJobService({ tasks, stateRoot: root, workbenchStore: imageWorkbench })
+    const videoEditing = new VideoEditingService({ stateRoot: root, tasks })
+    const videoCurrent = await videoEditing.store.create({ name: '当前视频', video_paths: [source], working_dir: root, conversation_id: 'video-current' })
+    const videoOther = await videoEditing.store.create({ name: '其他视频', video_paths: [source], working_dir: otherWorkspace })
+    const tool = createMediaTools(media, { videoEditing }).find(item => item.name === 'list_media_projects')!
+
+    const result = JSON.parse(await tool.execute({ kind: 'all' }, { workspace: new Workspace(root), conversationId: 'current', permissionMode: 'full' }))
+    expect(result.image_projects).toEqual([expect.objectContaining({ project: imageCurrent.project_id, conversation_id: 'image-current' })])
+    expect(result.video_projects).toEqual([expect.objectContaining({ project: videoCurrent.project_id, conversation_id: 'video-current' })])
+    expect(JSON.stringify(result)).not.toContain(imageOther.project_id)
+    expect(JSON.stringify(result)).not.toContain(videoOther.project_id)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('generate_image tool starts a media task in the current conversation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-tools-'))
@@ -110,6 +137,7 @@ test('generate_image compiles the user request and registers real candidates in 
     expect(projects).toHaveLength(3)
     expect(projects[0]?.user_request).toBe('做一张海边音乐节海报，画面中有朋友跳舞，不要文字')
     expect((projects[0]?.creative_brief as Record<string, unknown>)?.user_request).toBe(projects[0]?.user_request)
+    expect(projects[0]).toMatchObject({ conversation_id: 'c-media-workbench', working_dir: root })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -364,6 +392,7 @@ test('plan_video tool compiles the shared brief and starts a v2 draft task', asy
     expect(projects).toHaveLength(1)
     expect(projects[0]?.creative_brief?.user_request).toBe('展示真实环境')
     expect(projects[0]?.creative_brief?.preferred_view).toBe('ambient')
+    expect(projects[0]).toMatchObject({ conversation_id: 'c-plan', working_dir: root })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -381,6 +410,34 @@ test('plan_video 缺 video_paths 直接报错、不起任务', async () => {
       permissionMode: 'full',
     })).rejects.toThrow(/video_paths/)
     expect((await tasks.list({ conversationId: 'c-plan-empty' })).length).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('plan_video can continue an existing project only from its owning workspace', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'media-tools-existing-video-'))
+  try {
+    const source = join(root, 'clip.mp4')
+    const ffmpeg = join(root, 'ffmpeg.sh')
+    const ffprobe = join(root, 'ffprobe.sh')
+    writeFileSync(source, 'video-source')
+    writeFileSync(ffmpeg, '#!/bin/sh\nexit 0\n')
+    writeFileSync(ffprobe, '#!/bin/sh\nprintf %s \'{"format":{"duration":"3"},"streams":[{"codec_type":"video","width":320,"height":180,"avg_frame_rate":"24/1","r_frame_rate":"24/1"}]}\'\n')
+    chmodSync(ffmpeg, 0o755)
+    chmodSync(ffprobe, 0o755)
+    const tasks = new TaskService(root)
+    const media = new MediaJobService({ tasks, stateRoot: root, pollIntervalMs: 1 })
+    const videoEditing = new VideoEditingService({ stateRoot: root, tasks, env: { PATH: '', FFMPEG_BIN: ffmpeg, FFPROBE_BIN: ffprobe, WHISPER_CLI: '/missing' } })
+    const project = await videoEditing.store.create({ video_paths: [source], working_dir: root, conversation_id: 'origin' })
+    const tool = createMediaTools(media, { videoEditing }).find(item => item.name === 'plan_video')!
+    const ctx = { workspace: new Workspace(root), conversationId: 'continue', permissionMode: 'full' as const }
+
+    await expect(tool.execute({ project: project.project_id, goal: '重新编排为环境展示', mode: 'ambient' }, ctx)).resolves.toContain('<media_job_started')
+    await expect(tool.execute({ project: project.project_id }, {
+      ...ctx,
+      workspace: new Workspace(join(root, 'other-workspace')),
+    })).rejects.toThrow(/另一个工作文件夹/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -27,6 +27,16 @@ import {
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024
 
+export interface ImageWorkbenchListOptions {
+  workingDir?: string
+  includeUnscoped?: boolean
+}
+
+function normalizedWorkingDir(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? resolve(trimmed) : undefined
+}
+
 interface ParsedDataUrl {
   contentType: string
   bytes: Buffer
@@ -46,15 +56,21 @@ export class ImageWorkbenchStore {
     this.libraryRoot = join(this.uploadsRoot, 'library', 'images')
   }
 
-  async listProjects(): Promise<ImageWorkbenchProject[]> {
+  async listProjects(options: ImageWorkbenchListOptions = {}): Promise<ImageWorkbenchProject[]> {
     await mkdir(this.projectsRoot, { recursive: true })
+    const requestedWorkingDir = normalizedWorkingDir(options.workingDir)
     const names = await readdir(this.projectsRoot).catch(() => [])
     const projects: ImageWorkbenchProject[] = []
     for (const name of names) {
       if (!name.endsWith('.json')) continue
       const id = name.slice(0, -'.json'.length)
       const project = await this.getProject(id).catch(() => null)
-      if (project) projects.push(project)
+      if (!project) continue
+      const projectWorkingDir = normalizedWorkingDir(project.working_dir)
+      if (requestedWorkingDir && projectWorkingDir !== requestedWorkingDir) {
+        if (!(options.includeUnscoped && !projectWorkingDir)) continue
+      }
+      projects.push(project)
     }
     return projects.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   }
@@ -75,6 +91,8 @@ export class ImageWorkbenchStore {
       schema_version: 1,
       project_id: projectId,
       title: req.title?.trim() || titleFromPrompt(req.prompt) || '未命名图片项目',
+      conversation_id: req.conversation_id,
+      working_dir: normalizedWorkingDir(req.working_dir),
       source_generation_id: req.source_generation_id,
       current_version_id: versionId,
       prompt: req.prompt,
