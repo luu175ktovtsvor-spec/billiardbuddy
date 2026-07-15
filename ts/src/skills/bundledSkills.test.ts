@@ -71,3 +71,37 @@ test('视频 Skill 用文字引导编排，不强制数字步骤或预设业务�
   expect(prompt).not.toContain('15–30 秒最好')
   expect(prompt).not.toContain('9:16 最适合')
 })
+
+test('生图 Skill 可被自然语言发现且不自动扩张工具权限', async () => {
+  const library = await loadSkillsDir(bundledSkillsRoot(), { layer: 'bundled' })
+  const skill = library.byName.get('image-creation')
+
+  expect(skill).toBeDefined()
+  expect(skill?.description).toContain('图片')
+  expect(formatSkillIndex(library, { query: '门店宣传图' })).toContain('image-creation')
+  expect(formatSkillIndex(library, { query: '修图' })).toContain('image-creation')
+  expect(skill?.skillLayer).toBe('bundled')
+  expect(skill?.allowedTools).toBeUndefined()
+  expect(skillRequiresApproval(skill!)).toBe(false)
+})
+
+test('生图 Skill 复用媒体链路并守住事实、真人和交付边界', async () => {
+  const library = await loadSkillsDir(bundledSkillsRoot())
+  const skill = library.byName.get('image-creation')
+  const prompt = await skill!.getPrompt('', { workspace: new Workspace(process.cwd()) })
+
+  expect(prompt).toContain('最多三个')
+  expect(prompt).toContain('让用户自己给出')
+  expect(prompt).toContain('不要把上传图片默认当成 logo')
+  expect(prompt).toContain('先实际查看')
+  expect(prompt).toContain('generate_image')
+  expect(prompt).toContain('edit_image')
+  expect(prompt).toContain('upscale_image')
+  expect(prompt).toContain('select_image_candidates')
+  expect(prompt).toContain('TaskOutput')
+  expect(prompt).toContain('图片工作台')
+  expect(prompt).toContain('使用权和当事人同意')
+  expect(prompt).toContain('换脸、深度伪造、公众人物代言或身份冒充')
+  expect(prompt).toContain('不能声称找回了原图中不存在的细节')
+  expect(prompt).not.toMatch(/^\d+\.\s/m)
+})

@@ -19,3 +19,7 @@ test('slash discovery uses venue-owner language instead of implementation jargon
   expect(source).not.toContain("return cmd.kind === 'skill' ? '技能' : null")
   expect(source).not.toContain("if (cmd.source === 'pack') return '专家'")
 })
+
+test('composer fallback keeps image creation available before discovery loads', () => {
+  expect(source).toContain("{ name: '/image-creation', desc: '制作或修改门店图片', source: 'skill', kind: 'skill', layer: 'bundled' }")
+})

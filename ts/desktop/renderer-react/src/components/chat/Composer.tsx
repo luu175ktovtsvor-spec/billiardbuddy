@@ -506,6 +506,7 @@ const FALLBACK_COMMANDS: SlashCommand[] = [
   { name: '/help', desc: '看看球房管家能帮你做什么', source: 'builtin', kind: 'command' },
   { name: '/memory', desc: '查看可以长期记住的门店资料', source: 'builtin', kind: 'command' },
   { name: '/boss-recruiting', desc: '在 BOSS 直聘招聘球房员工', source: 'skill', kind: 'skill', layer: 'bundled' },
+  { name: '/image-creation', desc: '制作或修改门店图片', source: 'skill', kind: 'skill', layer: 'bundled' },
   { name: '/video-editing', desc: '把素材整理成可发布的视频', source: 'skill', kind: 'skill', layer: 'bundled' },
 ]
 

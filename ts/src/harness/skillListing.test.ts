@@ -229,7 +229,8 @@ test('内置开发工作流只供 Agent 编排，普通斜杠面板只保留业�
   const publicNames = toPublicCommandEntries(collectDiscoveryEntries({ skills })).map(entry => entry.name)
   const modelListing = buildSkillCommandListingSection({ skills })
 
-  expect(publicNames).toEqual(expect.arrayContaining(['boss-recruiting', 'video-editing']))
+  expect(publicNames).toEqual(expect.arrayContaining(['boss-recruiting', 'image-creation', 'video-editing']))
+  expect(modelListing).toContain('/image-creation')
   expect(toPublicCommandEntries(collectDiscoveryEntries({ skills })).find(entry => entry.name === 'boss-recruiting')?.description).not.toMatch(/CLI|Playwright|MCP/)
   for (const name of ['commit', 'commit-push-pr', 'debug', 'init', 'playwright-browser', 'pr-comments', 'review', 'security-review', 'simplify', 'skillify', 'verify']) {
     expect(publicNames).not.toContain(name)

@@ -42,7 +42,7 @@ export const billiardsPack: DomainPack = {
   version: '2.0.0',
   aliases: ['billiard', 'pool', '台球', '球房', '台球房'],
   defaultEnabled: true,
-  suggestedSkills: ['boss-recruiting', 'video-editing'],
+  suggestedSkills: ['boss-recruiting', 'image-creation', 'video-editing'],
   commands: [
     {
       name: '台球',
