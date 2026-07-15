@@ -157,48 +157,55 @@ export function CommandPalette() {
         type="button"
         onMouseEnter={() => setSel(myIdx)}
         onClick={() => { it.run(); close() }}
-        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left"
-        style={{ background: active ? 'var(--color-surface-selected)' : 'transparent' }}
+        className="flex min-h-7 w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors"
+        style={{
+          background: active ? 'var(--color-surface-hover)' : 'transparent',
+          opacity: active ? 1 : 0.75,
+        }}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: active ? 'var(--color-brand)' : 'var(--color-text-tertiary)' }}>{it.icon}</span>
-        <span className="min-w-0 flex-1 truncate text-[13.5px]" style={{ color: 'var(--color-text-primary)' }}>{it.label}</span>
-        {it.sub && <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{it.sub}</span>}
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-secondary)' }}>{it.icon}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{it.label}</span>
+        {it.sub && <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>{it.sub}</span>}
       </button>
     )
   }
 
   return (
-    <div className="fixed inset-0 z-[75] flex justify-center px-6 pt-[14vh]" style={{ background: 'color-mix(in srgb, #000 30%, transparent)' }} onClick={close} data-testid="command-palette">
+    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4" style={{ background: 'color-mix(in srgb, #000 30%, transparent)' }} onClick={close} data-testid="command-palette">
       <div
-        className="flex h-fit max-h-[64vh] w-full max-w-[600px] flex-col overflow-hidden rounded-2xl"
+        className="flex h-fit max-h-[min(504px,90vh)] w-[min(520px,92vw)] flex-col gap-1 overflow-hidden rounded-2xl p-1"
         style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="命令菜单"
       >
-        <div className="flex items-center gap-2.5 px-4" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <div className="flex min-h-11 items-center gap-2.5 px-2.5">
           <IconSearch size={17} style={{ color: 'var(--color-text-tertiary)' }} />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索对话,或跳到操作…"
-            className="w-full bg-transparent py-3.5 text-[14px] outline-none"
+            placeholder="搜索任务或运行命令"
+            className="w-full bg-transparent py-2.5 text-[14px] outline-none"
             style={{ color: 'var(--color-text-primary)' }}
+            aria-label="搜索任务或运行命令"
           />
         </div>
-        <div className="min-h-0 flex-1 overflow-auto p-2">
+        <div className="min-h-0 max-h-[min(440px,calc(90vh-64px))] flex-1 overflow-auto">
           {flat.length === 0 ? (
-            <div className="px-3 py-6 text-center text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>没有匹配的结果</div>
+            <div className="flex h-12 items-center justify-center px-2.5 text-center text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>无匹配项</div>
           ) : (
             <>
               {shownActions.length > 0 && (
                 <>
-                  <div className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>操作</div>
+                  <div className="px-2 pt-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>操作</div>
                   {shownActions.map(Row)}
                 </>
               )}
               {shownSessions.length > 0 && (
                 <>
-                  <div className="px-3 pb-1 pt-2.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--color-text-tertiary)' }}>对话</div>
+                  <div className="px-2 pt-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>任务</div>
                   {shownSessions.map(Row)}
                 </>
               )}
