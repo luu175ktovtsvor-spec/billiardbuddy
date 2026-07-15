@@ -65,6 +65,8 @@ export interface GenerateInput {
   portrait_authorization_confirmed?: boolean
   input_fidelity?: 'high' | 'standard'
   creative_brief?: ImageCreativeBrief
+  conversation_id?: string
+  working_dir?: string
 }
 
 export interface EditInput {
@@ -81,6 +83,8 @@ export interface EditInput {
   portrait_consent?: boolean
   portrait_authorization_confirmed?: boolean
   input_fidelity?: 'high' | 'standard'
+  conversation_id?: string
+  working_dir?: string
 }
 
 function parseJob(raw: unknown): MediaJob {
@@ -134,13 +138,15 @@ export const studioApi = {
     portrait_authorization_confirmed: input.portrait_authorization_confirmed,
     input_fidelity: input.input_fidelity,
     creative_brief: input.creative_brief,
+    conversation_id: input.conversation_id,
+    working_dir: input.working_dir,
   })),
 
   job: async (id: string) => parseJob(await api.get<unknown>(`/api/v1/agent/media-jobs/${encodeURIComponent(id)}`)),
 
   cancelJob: async (id: string) => api.post<unknown>(`/api/v1/agent/tasks/${encodeURIComponent(id)}/cancel`, {}),
 
-  upscale: async (input: { source_generation_id?: string; source_image_path?: string; scale?: 2 | 3 | 4 }) =>
+  upscale: async (input: { source_generation_id?: string; source_image_path?: string; scale?: 2 | 3 | 4; conversation_id?: string; working_dir?: string }) =>
     mediaJobStartResponseSchema.parse(await api.post<unknown>('/api/v1/studio/upscale', input)),
 
   edit: async (input: EditInput) => mediaJobStartResponseSchema.parse(await api.post<unknown>('/api/v1/studio/edit', {
@@ -157,6 +163,8 @@ export const studioApi = {
     portrait_consent: input.portrait_consent,
     portrait_authorization_confirmed: input.portrait_authorization_confirmed,
     input_fidelity: input.input_fidelity,
+    conversation_id: input.conversation_id,
+    working_dir: input.working_dir,
   })),
 }
 
