@@ -1,7 +1,7 @@
 #!/bin/bash
 # 在【美国服务器】(zzyppz.cn,与 OpenAI 同区)部署 GPT 生图异步任务服务(relay/app.ts)。
 # 只占 127.0.0.1:8790 + 一个 systemd 服务;真 OpenAI key 只放本机 relay.env(chmod 600,不进 git)。
-# 部署后需在该机 nginx 加一段(见 relay/README.md「nginx」):
+# 部署后需在该机 nginx 加一段:
 #   location /relay/imgtasks/ { proxy_pass http://127.0.0.1:8790/; proxy_read_timeout 120s; }
 set -e
 APPDIR=/opt/qfrelay
