@@ -7,8 +7,7 @@
   --font-sans: var(--wb-font);
   --font-mono: var(--wb-font-mono);
 }
-/* 说明:--color-brand 不再登记进 @theme(避免主题无关值覆盖按主题切换的语义层);
- * 强调=中性墨色,--color-brand 由 workbuddy-tokens.css 的 :root 按浅/深两套定义。 */
+/* --color-brand 由语义层按浅色和深色主题分别定义。 */
 
 /* —— 基础版式 —— */
 html, body, #root {
@@ -31,9 +30,7 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
-/* 键盘焦点环(照 Codex:蓝 focus,只在键盘 focus-visible 时出,鼠标点击不出)。
-   ⚠️ 文本框(input/textarea)不上圈:规范规定文本框只要聚焦就命中 :focus-visible(鼠标点进去也出蓝圈),
-   输入框常年带圈很怪(owner 2026-07-12 点名清理);光标本身就是聚焦指示,Codex 输入框也无圈。 */
+/* 键盘焦点环只在 focus-visible 时出现；文本框以光标作为聚焦反馈。 */
 :focus { outline: none; }
 button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--color-focus-ring);
@@ -96,9 +93,7 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]
 .qf-pulse-dot { animation: qf-pulse-dot 1.2s ease-in-out infinite; }
 @keyframes qf-pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
 
-/* —— 工具行「文件名」链接(Codex 浅蓝强调色,仅用于文件名/目标)。 —— */
-/* 工具行文件名:走我们自家品牌浅蓝(强调色 #0a84ff 系,--color-link),hover 才加下划线。
-   ⚠️ 不照抄 Codex 的近黑——颜色是我们软件专有配色(铁律:强调色浅蓝、不用 Codex 原色);对齐 Codex 只对结构/布局/交互。 */
+/* 工具行文件名使用链接语义色，hover 时增加下划线。 */
 .qf-tool-link { color: var(--color-link); }
 .qf-tool-link:hover { text-decoration: underline; color: var(--color-link-hover); }
 
@@ -106,17 +101,17 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]
 .qf-markdown { line-height: 1.65; word-break: break-word; }
 .qf-markdown > :first-child { margin-top: 0; }
 .qf-markdown > :last-child { margin-bottom: 0; }
-.qf-markdown h1, .qf-markdown h2, .qf-markdown h3 { font-weight: 600; margin: 1em 0 .5em; line-height: 1.3; letter-spacing: -.014em; }
+.qf-markdown h1, .qf-markdown h2, .qf-markdown h3 { font-weight: 600; margin: 1em 0 .5em; line-height: 1.3; letter-spacing: 0; }
 .qf-markdown h1 { font-size: 1.3em; }
 .qf-markdown h2 { font-size: 1.15em; }
 .qf-markdown h3 { font-size: 1.05em; }
 .qf-markdown p { margin: .5em 0; }
 .qf-markdown ul, .qf-markdown ol { margin: .5em 0; padding-left: 1.4em; }
 .qf-markdown li { margin: .2em 0; }
-.qf-markdown a { color: var(--color-brand); text-decoration: none; }
-.qf-markdown a:hover { text-decoration: underline; }
+.qf-markdown a { color: var(--color-link); text-decoration: none; }
+.qf-markdown a:hover { color: var(--color-link-hover); text-decoration: underline; }
 .qf-markdown code { font-family: var(--font-mono); font-size: .9em; background: var(--color-surface-container); padding: .1em .35em; border-radius: 4px; }
-/* —— 正文文件名 chip(对齐 Codex markdown.fileReference:普通=灰底 chip、表格类=蓝链接+类型色点;蓝 = 自家品牌浅蓝,不抄 Codex 原色)。 —— */
+/* 正文文件引用：普通文件使用中性 chip，表格类使用链接语义。 */
 .qf-file-chip { display: inline-flex; align-items: center; gap: .35em; max-width: 100%; font-family: var(--font-mono); font-size: .9em; background: var(--color-surface-container); padding: .1em .45em; border-radius: 5px; color: var(--color-text-primary); cursor: pointer; vertical-align: baseline; white-space: normal; word-break: break-all; text-align: left; }
 .qf-file-chip:hover { background: var(--color-surface-hover); }
 .qf-file-chip--sheet { background: transparent; padding: .1em .2em; color: var(--color-link); }

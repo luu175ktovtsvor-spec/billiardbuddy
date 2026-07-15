@@ -1,4 +1,4 @@
-// 左栏 —— 照 Codex(ChatGPT Codex)左栏信息架构(owner 2026-07-11:左栏直接改成 Codex 的)。
+// 左栏使用 Codex 的信息架构，同时保留项目、多会话和运行状态等产品能力。
 // 结构:红绿灯位+工具图标 → 品牌行 → 主导航(新建任务/已安排/插件) → 项目分组 → 任务分组 → 底部设置。
 // 项目/任务/工作目录模型(2026-07-12,对齐 Codex 侧栏逆向规格,asar 组件 Th/Hh 反混淆读出):
 //   项目 = 工作目录本身(后端 /sessions/projects 按会话 workspaceRoot 聚合,无独立项目表);
@@ -66,10 +66,10 @@ function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: str
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className="flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+      className="flex h-[30px] w-full items-center gap-2 rounded-[10px] px-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-primary)', background: active ? 'var(--color-surface-selected)' : undefined }}
     >
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: active ? 'var(--color-brand)' : 'var(--color-text-secondary)' }}>{icon}</span>
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>{icon}</span>
       <span className="flex-1 truncate text-[13.5px]">{label}</span>
     </button>
   )
@@ -81,7 +81,7 @@ function SectionHeader({ label, count, open, onToggle, action }: { label: string
       <button
         type="button"
         onClick={onToggle}
-        className="flex min-w-0 flex-1 items-center gap-1 px-2.5 py-1 text-left text-[11px] font-medium uppercase tracking-wide transition-colors hover:text-[var(--color-text-secondary)]"
+        className="flex h-[30px] min-w-0 flex-1 items-center gap-1 px-2 text-left text-[12px] font-medium transition-colors hover:text-[var(--color-text-secondary)]"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
         <span className="transition-transform" style={{ transform: open ? 'none' : 'rotate(-90deg)' }}>
@@ -218,7 +218,7 @@ export function Sidebar() {
           e.preventDefault()
           setCtx({ x: e.clientX, y: e.clientY, id: s.id, title: s.title || '' })
         }}
-        className="mb-0.5 flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+        className="mb-0.5 flex h-[30px] w-full items-center gap-1.5 rounded-[10px] px-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
         style={{ background: active ? 'var(--color-surface-hover)' : 'transparent' }}
       >
         {s.pinned && <IconPin size={11} style={{ color: 'var(--color-text-tertiary)', transform: 'rotate(45deg)' }} />}
@@ -306,14 +306,14 @@ export function Sidebar() {
                 <div key={rootPath} className="mb-0.5">
                   {/* 项目行(对齐 Codex):整行点击 = 展开/折叠,无箭头,文件夹开/合图标表达状态 */}
                   <div
-                    className="group/proj flex w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
+                    className="group/proj flex h-[30px] w-full items-center rounded-[10px] pr-1 transition-colors hover:bg-[var(--color-surface-hover)]"
                     data-active-project={activeProj || undefined}
                     onContextMenu={(e) => { e.preventDefault(); setProjCtx({ x: e.clientX, y: e.clientY, root: rootPath }) }}
                   >
                     <button
                       type="button"
                       onClick={() => setExpandedProjects((m) => ({ ...m, [rootPath]: !open }))}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                      className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
                       title={rootPath}
                       aria-expanded={open}
                     >
@@ -341,7 +341,7 @@ export function Sidebar() {
                           <button
                             type="button"
                             onClick={() => setProjectTasksExpanded(rootPath, !tasksExpanded)}
-                            className="mb-0.5 w-full rounded-md px-2.5 py-1 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
+                            className="mb-0.5 h-[30px] w-full rounded-[10px] px-2 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface-hover)]"
                             style={{ color: 'var(--color-text-tertiary)' }}
                           >
                             {tasksExpanded ? '折叠显示' : '展开显示'}
@@ -360,7 +360,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => setShowAllProjects((v) => !v)}
-                className="flex w-full items-center rounded-lg px-2 py-1 text-left text-[12.5px] opacity-75 transition-opacity hover:opacity-100"
+                className="flex h-[30px] w-full items-center rounded-[10px] px-2 text-left text-[12.5px] opacity-75 transition-opacity hover:opacity-100"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
                 {showAllProjects ? '收起' : `显示更多(${projectRows.length - visibleProjectRows.length})`}
@@ -376,7 +376,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => { setNav('chat'); openNewConversation() }}
-                className="flex w-full items-center rounded-lg px-2.5 py-1.5 text-left"
+                className="flex h-[30px] w-full items-center rounded-[10px] px-2 text-left"
                 style={{ background: 'var(--color-surface-selected)' }}
               >
                 <span className="truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{t('sidebar.newChat')}</span>
@@ -403,7 +403,7 @@ export function Sidebar() {
         <button
           type="button"
           onClick={openSettings}
-          className="flex h-9 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+          className="flex h-[30px] flex-1 items-center gap-2 rounded-[10px] px-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
           style={{ color: 'var(--color-text-primary)' }}
         >
           <span className="shrink-0" style={{ color: 'var(--color-text-secondary)' }}><IconSettings size={17} /></span>
