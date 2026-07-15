@@ -3,7 +3,8 @@
 //  - 权限胶囊照 Codex:完全访问态橙色警告 + 点开权限菜单;
 //  - 斜杠命令:输入 / → 拉真实命令(/api/v1/agent/commands)浮层,上下键选、回车填入;
 //  - 占位照 Codex:新任务态「随心输入」/ 跟进态「要求后续变更」。
-import { useRef, useState, useEffect, useMemo, type KeyboardEvent, type ReactNode, type CSSProperties } from 'react'
+import { useRef, useState, useEffect, useMemo, type KeyboardEvent, type ReactNode, type CSSProperties, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import { useChatStore } from '../../stores/chatStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useFilePreviewStore, type TreeEntry } from '../../stores/filePreviewStore'
@@ -58,20 +59,28 @@ interface SlashCommand {
   layer?: ExtensionLayer
 }
 
-/** 轻量下拉:相对容器 + 绝对菜单 + 透明遮罩兜底关闭。 */
-function Popover({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: ReactNode; align?: 'left' | 'right' }) {
-  if (!open) return null
-  return (
+/** 轻量下拉挂到 body，避免被输入框的圆角裁切。 */
+function Popover({ open, onClose, children, anchorRef, align = 'left' }: { open: boolean; onClose: () => void; children: ReactNode; anchorRef: RefObject<HTMLElement | null>; align?: 'left' | 'right' }) {
+  if (!open || typeof document === 'undefined') return null
+  const anchor = anchorRef.current
+  if (!anchor) return null
+  const rect = anchor.getBoundingClientRect()
+  const position = align === 'right'
+    ? { right: Math.max(8, window.innerWidth - rect.right) }
+    : { left: Math.max(8, Math.min(rect.left, window.innerWidth - 228)) }
+  const popover = (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
-        className="absolute bottom-full z-50 mb-2 min-w-[220px] overflow-hidden rounded-[10px] py-1"
-        style={{ [align]: 0, background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' } as CSSProperties}
+        className="fixed z-50 min-w-[220px] overflow-hidden rounded-[10px] py-1"
+        style={{ ...position, bottom: window.innerHeight - rect.top + 8, background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
+        data-testid="composer-popover"
       >
         {children}
       </div>
     </>
   )
+  return createPortal(popover, document.body)
 }
 
 function ToolbarChip({ onClick, tone = 'default', children }: { onClick?: () => void; tone?: 'default' | 'warning'; children: ReactNode }) {
@@ -93,6 +102,7 @@ function PermissionMenu() {
   const setMode = useSettingsStore((s) => s.setPermissionMode)
   const hiddenModes = useSettingsStore((s) => s.hiddenPermissionModes)
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLDivElement>(null)
   const [confirmFullOpen, setConfirmFullOpen] = useState(false)
   const [fullRiskAccepted, setFullRiskAccepted] = useState(false)
   const current = USER_PERMISSION_MODES.includes(mode) ? mode : 'default'
@@ -110,7 +120,7 @@ function PermissionMenu() {
   }
   return (
     <>
-      <div className="relative">
+      <div className="relative" ref={triggerRef}>
         <div data-testid="permission-menu-trigger">
           <ToolbarChip onClick={() => setOpen((v) => !v)} tone={full ? 'warning' : 'default'}>
             {full ? <IconAlertCircle size={15} /> : <IconShield size={15} />}
@@ -118,7 +128,7 @@ function PermissionMenu() {
             <IconChevronDown size={13} style={{ color: 'var(--color-text-tertiary)' }} />
           </ToolbarChip>
         </div>
-        <Popover open={open} onClose={() => setOpen(false)}>
+        <Popover open={open} onClose={() => setOpen(false)} anchorRef={triggerRef}>
           {visibleModes.map((m) => {
             const on = m === current
             const warn = m === 'bypassPermissions'
@@ -189,6 +199,7 @@ function PermissionMenu() {
 /** + 添加菜单(照 Codex:文件和文件夹 / 目标 / 计划模式 / 插件)。 */
 function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string[]) => void; onStartGoal: () => void }) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLDivElement>(null)
   // 「文件和文件夹」:原生多选 → 把绝对路径插进输入框(本机 agent 用 read_file/ls 去读)。非桌面壳时提示。
   const pickFilesAndFolders = async () => {
     const host = getDesktopHost()
@@ -199,7 +210,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
     } catch { toast('选择文件失败') }
   }
   return (
-    <div className="relative">
+    <div className="relative" ref={triggerRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -210,7 +221,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
       >
         <IconPlus size={17} />
       </button>
-      <Popover open={open} onClose={() => setOpen(false)}>
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={triggerRef}>
         <MenuList
           onClose={() => setOpen(false)}
           items={[
