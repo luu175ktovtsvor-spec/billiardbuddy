@@ -1,6 +1,6 @@
 ---
 name: help
-description: 查看当前 Agent 能力、常用命令和下一步建议
+description: 看看球房管家能帮你做什么，以及下一步可以怎么说
 whenToUse: 用户输入 /help 或询问你能做什么
 allowedTools: [list_commands, list_skills]
 ---

@@ -1,6 +1,6 @@
 ---
 name: memory
-description: 说明门店记忆和可沉淀的信息
+description: 查看球房管家可以长期记住哪些门店资料
 whenToUse: 用户询问记忆、店铺资料、AI 记住什么、如何利用历史经验
 allowedTools: [list_dir, read_file]
 ---

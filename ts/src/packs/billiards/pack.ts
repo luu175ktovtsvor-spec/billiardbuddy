@@ -38,7 +38,7 @@ const billiardsKnowledgeSearchTool: Tool = {
 export const billiardsPack: DomainPack = {
   id: 'billiards',
   name: '台球运营知识库',
-  description: '挂载台球运营知识库,让通用 Agent 在回答和执行任务时使用相关领域知识。',
+  description: '启用球房运营知识与建议，帮助理解和完成球房经营任务。',
   version: '2.0.0',
   aliases: ['billiard', 'pool', '台球', '球房', '台球房'],
   defaultEnabled: true,
@@ -46,11 +46,11 @@ export const billiardsPack: DomainPack = {
   commands: [
     {
       name: '台球',
-      description: '挂载台球运营知识库',
+      description: '启用球房运营知识与建议',
       whenToUse: '用户希望当前会话使用台球运营知识时;也可直接敲 /台球。',
       aliases: ['billiards', '球房', '台球房', 'pool', 'billiard'],
       prompt: [
-        '当前会话已挂载台球运营知识库。继续按通用 Agent 的正常方式理解并完成用户任务。',
+        '当前会话已启用球房运营知识与建议。继续按球房管家的正常方式理解并完成用户任务。',
         '需要知识目录之外的具体做法或数字时,调用 billiards_knowledge_search;涉及本店自身事实时,从用户输入或门店资料中获取。',
       ].join('\n'),
     },

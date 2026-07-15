@@ -61,7 +61,7 @@ test('billiards pack exposes only the knowledge activation command', async () =>
   expect(prompt).toContain('领域包: 台球运营知识库')
   expect(prompt).toContain('命令参数')
   expect(prompt).toContain('今天收入下滑')
-  expect(prompt).toContain('继续按通用 Agent 的正常方式')
+  expect(prompt).toContain('继续按球房管家的正常方式')
   expect(prompt).toContain('billiards_knowledge_search')
 })
 
@@ -70,7 +70,7 @@ test('billiards 入口命令 /台球 及别名(/billiards、/球房)都解析到
   const commands = createDomainPackCommandLibrary(packs)!
   // 入口命令在清单里只出一条(canonical = 台球),别名不重复占位
   const entry = commands.byName.get('台球')
-  expect(entry?.description).toBe('挂载台球运营知识库')
+  expect(entry?.description).toBe('启用球房运营知识与建议')
   expect(commands.commands).toHaveLength(1)
   // 别名 /billiards、/球房、/台球房、/pool 都解析到同一入口命令对象
   for (const alias of ['billiards', '球房', '台球房', 'pool', 'billiard']) {

@@ -306,7 +306,7 @@ Use workspace-specific daily ops.
     expect(expanded.status).toBe(200)
     const body = await expanded.json() as any
     expect(body.prompt).toContain('领域包: 台球运营知识库')
-    expect(body.prompt).toContain('继续按通用 Agent 的正常方式')
+    expect(body.prompt).toContain('继续按球房管家的正常方式')
     expect(body.prompt).toContain('周末活动')
   })
 

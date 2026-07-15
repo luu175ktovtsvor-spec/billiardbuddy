@@ -238,18 +238,18 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
 
 // —— 斜杠浮层分组、作用域和匹配高亮 ——
 
-/** 技能进「技能」组(对标 Codex slashCommands.skillsGroup),命令(pack/builtin)无组排最前。 */
+/** 专项工作单独成组，普通入口保持在前。 */
 function slashGroup(cmd: SlashCommand): string | null {
-  return cmd.kind === 'skill' ? '技能' : null
+  return cmd.kind === 'skill' ? '专项工作' : null
 }
 
-const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '系统', user: '个人', workspace: '项目', plugin: '插件' }
+const LAYER_LABEL: Record<NonNullable<SlashCommand['layer']>, string> = { bundled: '内置', user: '我的', workspace: '当前门店', plugin: '扩展' }
 
-/** 右侧灰字作用域(对标 Codex skills.scope.personal/builtIn):技能按落点层标「系统/个人/项目」,领域包命令标「专家」。 */
+/** 右侧灰字只表达用户能理解的来源，不暴露内部扩展层级。 */
 function slashBadge(cmd: SlashCommand): string | null {
-  if (cmd.source === 'pack') return '专家'
+  if (cmd.source === 'pack') return '球房运营'
   if (cmd.kind === 'skill') return cmd.layer ? LAYER_LABEL[cmd.layer] : null
-  if (cmd.source === 'plugin') return '插件'
+  if (cmd.source === 'plugin') return '扩展'
   return null
 }
 
@@ -445,17 +445,17 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
         ) : skills.length === 0 && files.length === 0 ? (
           <div className="flex items-center gap-2 px-2 py-1.5">
             <IconAt size={14} className="shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的技能或文件</span>
+            <span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的工作或文件</span>
           </div>
         ) : (
           <>
-            {/* 技能段(对齐 Codex atMentionList 混排:技能在前,选中插入 /技能名) */}
+            {/* 专项工作在前，选中后仍插入后端可识别的入口名。 */}
             {skills.length > 0 && (
               <div
                 className="sticky top-0 z-10 px-2 py-1 text-xs"
                 style={{ color: 'var(--color-text-tertiary)', background: 'color-mix(in srgb, var(--color-surface) 95%, transparent)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
               >
-                技能
+                专项工作
               </div>
             )}
             {skills.map((it) => (
@@ -502,10 +502,11 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
 }
 
 const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: '/台球', desc: '在这个窗口挂载台球运营知识库(只影响当前窗口)', source: 'pack', kind: 'command' },
-  { name: '/台球关闭', desc: '在这个窗口关闭台球运营知识库', source: 'pack', kind: 'command' },
-  { name: '/帮助', desc: '看看能做什么', source: 'builtin', kind: 'command' },
-  { name: '/清空', desc: '清空当前对话', source: 'builtin', kind: 'command' },
+  { name: '/台球', desc: '启用球房运营知识与建议', source: 'pack', kind: 'command' },
+  { name: '/help', desc: '看看球房管家能帮你做什么', source: 'builtin', kind: 'command' },
+  { name: '/memory', desc: '查看可以长期记住的门店资料', source: 'builtin', kind: 'command' },
+  { name: '/boss-recruiting', desc: '在 BOSS 直聘招聘球房员工', source: 'skill', kind: 'skill', layer: 'bundled' },
+  { name: '/video-editing', desc: '把素材整理成可发布的视频', source: 'skill', kind: 'skill', layer: 'bundled' },
 ]
 
 /** 注册序(对标 Codex sortBy(group, title) + 产品语义):无组命令在前(领域包 > 内置),「技能」组殿后,组内按名。 */
