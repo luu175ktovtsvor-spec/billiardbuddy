@@ -37,17 +37,18 @@ test('listPublicDomainPacks exposes stable pack metadata for the frontend', () =
       id: 'billiards',
       name: '台球运营知识库',
       version: '2.0.0',
-      default_enabled: false,
-      suggested_skills: [],
+      default_enabled: true,
+      suggested_skills: ['boss-recruiting', 'video-editing'],
       suggested_commands: ['台球'],
       suggested_tools: ['billiards_knowledge_search'],
     }),
   ])
 })
 
-test('billiards knowledge pack does not prescribe skills', () => {
+test('billiards knowledge pack prioritizes vertical skills without granting tools', () => {
   const packs = resolveEnabledPacks({ enabled_packs: ['台球', 'pool'] })
-  expect(suggestedSkillNamesForPacks(packs)).toEqual([])
+  expect(suggestedSkillNamesForPacks(packs)).toEqual(['boss-recruiting', 'video-editing'])
+  expect(createDomainPackTools(packs).map(tool => tool.name)).toEqual(['billiards_knowledge_search'])
 })
 
 test('billiards pack exposes only the knowledge activation command', async () => {

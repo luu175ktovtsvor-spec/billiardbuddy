@@ -118,17 +118,25 @@ test('解绑(setWorkspaceRoot null)回到后端默认', () => {
   expect(useSettingsStore.getState().workspaceByConv.convA).toBeUndefined()
 })
 
-test('领域包按会话隔离:会话 A 开启台球不影响会话 B', () => {
+test('球房发行版的新会话默认挂载台球知识', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('conv-new')
+
+  expect(useSettingsStore.getState().enabledPacks).toEqual(['billiards'])
+  expect(useSettingsStore.getState().enabledPacksByConv).not.toHaveProperty('conv-new')
+})
+
+test('领域包按会话隔离:会话 A 关闭台球不影响新会话 B 的产品默认', () => {
   const s = useSettingsStore.getState()
   s.activateConversation('convA')
-  s.setEnabledPacks(['billiards'])
+  s.setEnabledPacks([])
 
   s.activateConversation('convB')
-  expect(useSettingsStore.getState().enabledPacks).toEqual([])
+  expect(useSettingsStore.getState().enabledPacks).toEqual(['billiards'])
 
   s.activateConversation('convA')
-  expect(useSettingsStore.getState().enabledPacks).toEqual(['billiards'])
-  expect(useSettingsStore.getState().enabledPacksByConv).toEqual({ convA: ['billiards'] })
+  expect(useSettingsStore.getState().enabledPacks).toEqual([])
+  expect(useSettingsStore.getState().enabledPacksByConv).toEqual({ convA: [] })
 })
 
 test('明确关闭领域包会保留空数组标记,旧的后端元数据不得重新开启', () => {
@@ -142,4 +150,14 @@ test('明确关闭领域包会保留空数组标记,旧的后端元数据不得�
   s.adoptConversationPacks('convA', ['billiards'])
   expect(useSettingsStore.getState().enabledPacks).toEqual([])
   expect(useSettingsStore.getState().enabledPacksByConv).toHaveProperty('convA', [])
+})
+
+test('adopt 后端显式空包记录会覆盖新会话默认', () => {
+  const s = useSettingsStore.getState()
+  s.activateConversation('convGeneric')
+  expect(useSettingsStore.getState().enabledPacks).toEqual(['billiards'])
+
+  s.adoptConversationPacks('convGeneric', [])
+  expect(useSettingsStore.getState().enabledPacks).toEqual([])
+  expect(useSettingsStore.getState().enabledPacksByConv).toHaveProperty('convGeneric', [])
 })

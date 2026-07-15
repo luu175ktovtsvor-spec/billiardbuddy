@@ -154,7 +154,7 @@ test('legacy frontend capability endpoints are served by TS server', async () =>
   const mcp = await mcpRes.json() as any
   expect(Array.isArray(skills.skills)).toBe(true)
   expect(Array.isArray(styles.output_styles)).toBe(true)
-  expect(packs.packs).toEqual([expect.objectContaining({ id: 'billiards', default_enabled: false })])
+  expect(packs.packs).toEqual([expect.objectContaining({ id: 'billiards', default_enabled: true })])
   expect(commands.commands.some((command: any) => command.name === 'doctor')).toBe(true)
   expect(Array.isArray(plugins.plugins)).toBe(true)
   expect(Array.isArray(mcp.servers)).toBe(true)
