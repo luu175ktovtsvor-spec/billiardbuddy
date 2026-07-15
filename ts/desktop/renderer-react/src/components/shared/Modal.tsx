@@ -1,4 +1,4 @@
-// 通用弹窗基件(照 Codex 弹窗:暗遮罩+模糊、居中圆角卡、头=标题+关闭、Esc/点遮罩关)。
+// 通用弹窗基件。表面参数对齐 Codex Dialog primitive；头/脚只承载本产品内容。
 // 供设置/分享/新建定时任务/添加 MCP 等复用。纯前端,无数据依赖。
 import { useEffect, type ReactNode } from 'react'
 import { IconX } from './icons'
@@ -34,25 +34,30 @@ export function Modal({
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-6"
-      style={{ background: 'color-mix(in srgb, #000 38%, transparent)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+      style={{ background: '#00000022' }}
       onClick={onClose}
       data-testid={testId}
     >
       <div
-        className="flex max-h-[80vh] w-full flex-col overflow-hidden rounded-2xl"
-        style={{ maxWidth, background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}
+        className="flex max-h-[80vh] w-full flex-col overflow-hidden rounded-3xl backdrop-blur-xl"
+        style={{
+          maxWidth,
+          background: 'color-mix(in oklab, var(--color-surface) 90%, transparent)',
+          boxShadow: 'var(--shadow-popover)',
+          outline: '0.5px solid var(--color-border)',
+        }}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
         {title !== undefined && (
-          <div className="flex shrink-0 items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+          <div className="flex shrink-0 items-center justify-between px-5 py-4">
             <span className="text-[15px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>{title}</span>
             <button
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="rounded-md p-1 transition-colors hover:bg-[var(--color-surface-hover)]"
+              className="rounded p-1 leading-none transition-colors hover:bg-[var(--color-surface-hover)]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <IconX size={16} />
@@ -61,7 +66,7 @@ export function Modal({
         )}
         <div className="min-h-0 flex-1 overflow-auto">{children}</div>
         {footer && (
-          <div className="flex shrink-0 items-center justify-end gap-2 px-5 py-3.5" style={{ borderTop: '1px solid var(--color-border)' }}>
+          <div className="flex shrink-0 items-center justify-end gap-2 px-5 py-4">
             {footer}
           </div>
         )}
