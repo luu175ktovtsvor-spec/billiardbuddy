@@ -219,9 +219,7 @@ export class VideoEditingService {
       const analyzed = await this.evidence.analyze(created.project_id, ctx.runner, {
         transcription: briefInput.preferred_view === 'talking'
           ? 'required'
-          : briefInput.preferred_view === 'ambient'
-            ? 'skip'
-            : 'auto',
+          : 'auto',
       })
       const compiled = compileVideoBrief(briefInput, analyzed.sources)
       const withBrief = await this.store.saveBrief(created.project_id, compiled.brief, analyzed.revision)
@@ -264,7 +262,7 @@ export class VideoEditingService {
         sourceIds: analyzeInput.source_ids,
         transcription: current.creative_brief?.preferred_view === 'talking' || current.goal === 'talking'
           ? 'required'
-          : 'skip',
+          : 'auto',
         onCheckpoint: async (checkpoint, affectedSourceIds) => {
           await this.setJobStage(ctx.taskId, 'analyzing', { checkpoint, affected_source_ids: affectedSourceIds })
         },
