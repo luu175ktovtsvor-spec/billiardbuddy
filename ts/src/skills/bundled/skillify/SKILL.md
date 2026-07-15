@@ -1,5 +1,6 @@
 ---
 name: skillify
+user-invocable: false
 description: "把已经跑通的重复流程沉淀为可复用 Skill。用户说把这个流程存成技能、下次直接用、做成 skill 时使用；先确认触发场景、输入、成功标准、权限和不可逆步骤，再写入用户技能目录。"
 whenToUse: "用户说'把这个流程存成技能 / 记下来下次直接用 / 做成一个 skill',或刚跑完一段可重复的多步流程、想把它固化下来时。"
 allowedTools:

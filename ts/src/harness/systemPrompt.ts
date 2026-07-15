@@ -1,7 +1,7 @@
 import type { Workspace } from '../workspace/workspace'
 import { loadMemoryInjection } from './claudemd'
 import { computeEnvInfo, getGitStatus, getIsGit } from './env'
-import { ACTIONS_SECTION, buildAntiReveal, CODING_WORKFLOW_SECTION, DOING_TASKS_SECTION, LANGUAGE_SECTION, OUTPUT_EFFICIENCY_SECTION, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
+import { ACTIONS_SECTION, buildAntiReveal, BUSINESS_FACTS_SECTION, CODING_WORKFLOW_SECTION, DOING_TASKS_SECTION, LANGUAGE_SECTION, OUTPUT_EFFICIENCY_SECTION, PRODUCT_ROLE_SECTION, SYSTEM_SECTION, TONE_SECTION, TOOL_DISCOVERY_SECTION, VERIFICATION_SECTION } from './prompts'
 import { buildSkillCommandListingSection, type DiscoverySources } from './skillListing'
 import type { OutputStyleConfig } from '../outputStyles/outputStyleLoader'
 import { buildMemorySystemPrompt } from '../memory/memoryPrompt'
@@ -11,8 +11,6 @@ function autoMemoryEnabled(): boolean {
   const truthy = (v: string | undefined): boolean => v === '1' || v === 'true' || v === 'yes'
   return !truthy(process.env.BILLIARDBUDDY_DISABLE_AUTO_MEMORY) && !truthy(process.env.BILLIARDBUDDY_DISABLE_MEMORY)
 }
-
-const BASE_IDENTITY = 'You are a general-purpose local AI agent running on the user\'s computer. You can read and write files, run commands, and use the available tools to complete real work.'
 
 /**
  * 系统提示装配:白标身份(anti-reveal)+ 通用基座 + 任务执行口径 + 分层记忆注入 + <env> + git 快照。
@@ -37,10 +35,11 @@ export async function buildSystemPrompt(workspace: Workspace, discovery?: Discov
   const memoryPrompt = autoMemoryEnabled() ? buildMemorySystemPrompt(workspace.root) : ''
   return [
     buildAntiReveal(),
-    BASE_IDENTITY,
+    PRODUCT_ROLE_SECTION,
     LANGUAGE_SECTION,
     SYSTEM_SECTION,
     ACTIONS_SECTION,
+    BUSINESS_FACTS_SECTION,
     // 编码纪律章门控(对齐 cc:outputStyleConfig===null 或 keepCodingInstructions===true 才注入):
     // 选了非编码输出风格且未声明保留 → 跳过「# Doing tasks」,让风格主导语气/结构。
     ...(outputStyle == null || outputStyle.keepCodingInstructions === true ? [DOING_TASKS_SECTION] : []),

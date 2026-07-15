@@ -1,5 +1,6 @@
 ---
 name: mcp
+user-invocable: false
 description: 检查外接 MCP 工具能力和使用方式
 whenToUse: 用户询问 MCP、外接工具、资源、prompts、第三方工具
 allowedTools: [list_mcp_resources, read_mcp_resource, list_mcp_prompts, read_mcp_prompt]

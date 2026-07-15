@@ -1,5 +1,6 @@
 ---
 name: output-style
+user-invocable: false
 description: 查看和解释输出风格如何影响回答
 whenToUse: 用户询问输出风格、想让回答更短/更详细/更像执行日志
 allowedTools: []

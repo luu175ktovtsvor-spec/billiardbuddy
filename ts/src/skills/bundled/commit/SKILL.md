@@ -1,5 +1,6 @@
 ---
 name: commit
+user-invocable: false
 description: "创建一次范围清晰的 Git 提交。用户说提交一下、commit、把改动提交了时使用；检查全部差异但只暂存本次任务相关文件，不夹带用户的无关改动。"
 whenToUse: "用户说'提交一下 / commit / 把改动提交了'时。"
 allowedTools:

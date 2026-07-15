@@ -1,5 +1,6 @@
 ---
 name: agents
+user-invocable: false
 description: 说明可用子代理和何时派后台任务
 whenToUse: 用户询问子代理、多任务、后台执行、专家分工
 allowedTools: [list_background_tasks, read_background_task]

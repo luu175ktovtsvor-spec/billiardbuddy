@@ -107,7 +107,7 @@ test('系统提示含"做任务"诚实纪律:工具没真跑成不许谎报已�
 
 test('系统提示要求代码改动后做就近验证', async () => {
   const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('# Verification after changes')
+  expect(prompt).toContain('# Verifying completed work')
   expect(prompt).toContain('list_project_instructions')
   expect(prompt).toContain('project_diagnostics')
   expect(prompt).toContain('typecheck or lint')
@@ -117,9 +117,10 @@ test('系统提示要求代码改动后做就近验证', async () => {
   expect(prompt).toContain('do not claim success')
 })
 
-test('系统提示给出 coding 工具工作流', async () => {
+test('系统提示把 coding 工具工作流限制在真正的软件任务中', async () => {
   const prompt = await buildSystemPrompt(new Workspace(root))
-  expect(prompt).toContain('# Coding workflow')
+  expect(prompt).toContain('# Software implementation (only when needed)')
+  expect(prompt).toContain("Apply this section only when the user's goal actually requires software development")
   expect(prompt).toContain('list_dir({recursive:true,max_depth:2})')
   expect(prompt).toContain('grep_files({files_only:true})')
   expect(prompt).toContain('grep_files({ranges:true})')
@@ -133,6 +134,35 @@ test('系统提示给出 coding 工具工作流', async () => {
   expect(prompt).toContain('read_stored_tool_result')
   expect(prompt).toContain('run_command({cwd:"subdirectory",command:"..."})')
   expect(prompt).toContain('git_status({include_diff:true,staged:"both"})')
+})
+
+test('系统提示把 Agent 定位为球房管家的执行层，而不是面向开发者的编码产品', async () => {
+  const prompt = await buildSystemPrompt(new Workspace(root))
+  expect(prompt).toContain('# Product role')
+  expect(prompt).toContain('execution agent inside 球房管家')
+  expect(prompt).toContain('billiards venue owner or operator, not a software developer')
+  expect(prompt).toContain('Code, shell commands, Skills, MCP, providers, and models are implementation details')
+  expect(prompt).toContain('Use ordinary business language')
+  expect(prompt).not.toContain('You are a general-purpose local AI agent')
+})
+
+test('系统提示要求工作流向用户补齐门店事实，不把参考知识冒充真实数据', async () => {
+  const prompt = await buildSystemPrompt(new Workspace(root))
+  expect(prompt).toContain('# Business facts and workflow guidance')
+  expect(prompt).toContain('Ask for missing facts only when they materially change the result')
+  expect(prompt).toContain('Never invent store-specific facts')
+  expect(prompt).toContain('prices, staffing, schedules, promotions, addresses, dates, hiring requirements')
+  expect(prompt).toContain('Reference knowledge may guide the workflow')
+  expect(prompt).toContain("must not be presented as the user's current store data")
+  expect(prompt).toContain('Before producing a final plan, message, job post, schedule, offer, or other ready-to-use business artifact')
+  expect(prompt).toContain('stop and ask the user before drafting the final artifact')
+  expect(prompt).toContain('A request to "finalize", "set", "publish", or "execute" does not authorize guessed values')
+  expect(prompt).toContain('Placeholders or clearly labeled options are allowed only when the user asks for a template, exploratory ideas, or alternatives')
+  expect(prompt).toContain('On the first clarification turn, ask no more than three compact, grouped questions')
+  expect(prompt).toContain('Do not send a long numbered questionnaire')
+  expect(prompt).toContain('Do not embed an unconfirmed promotion, discount, benefit, or staffing choice as the default answer inside a question')
+  expect(prompt).toContain('When this clarification gate applies, the entire user-facing reply for that turn must contain only a brief reason and the questions')
+  expect(prompt).toContain('Do not number the questions, nest subquestions, show a draft, recommend options, quote reference values, or include examples in that turn')
 })
 
 test('系统提示要求用 tool_search 发现隐藏长尾工具', async () => {

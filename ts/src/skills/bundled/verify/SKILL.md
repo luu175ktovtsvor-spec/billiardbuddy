@@ -1,5 +1,6 @@
 ---
 name: verify
+user-invocable: false
 description: "端到端验证代码改动的真实行为。改完运行时功能、提交前或用户要求验收时使用；按受影响模块覆盖契约、测试、构建和真实入口，不用 typecheck 或单测单独代替验收。"
 whenToUse: "改完一处有运行时行为的代码、提交前想确认它真的生效时(纯文档 / 纯测试改动没有可观察的运行面,不必用)。"
 allowedTools:

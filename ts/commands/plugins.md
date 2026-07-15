@@ -1,5 +1,6 @@
 ---
 name: plugins
+user-invocable: false
 description: 说明插件机制和当前能通过插件扩展什么
 whenToUse: 用户询问插件、安装扩展、打包技能/命令/MCP
 allowedTools: [list_skills, list_commands]

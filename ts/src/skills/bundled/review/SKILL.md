@@ -1,5 +1,6 @@
 ---
 name: review
+user-invocable: false
 description: "审阅 GitHub Pull Request 并优先报告可验证的缺陷、回归、安全风险和缺失测试。用户说审一下 PR、review PR、帮我看看这个 PR 时使用；结论必须引用具体文件和行号。"
 whenToUse: "用户说'审一下这个 PR / review PR #123 / 帮我看看这个 PR'时(评审 GitHub 上的 PR;想审本地未提交改动用 code-review)。"
 allowedTools:

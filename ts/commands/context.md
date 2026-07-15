@@ -1,5 +1,6 @@
 ---
 name: context
+user-invocable: false
 description: 查看当前会话上下文、工作区和长会话风险
 whenToUse: 用户询问上下文、当前会话、记不记得前面、要不要新会话
 allowedTools: [list_dir, file_history, list_background_tasks]

@@ -1,5 +1,6 @@
 ---
 name: pr-comments
+user-invocable: false
 description: "读取并整理 GitHub PR 的普通评论、逐行评审和回复线程。用户说看看 PR 评论、拉一下评审意见、PR 上别人说了什么时使用；保留文件行号、diff 上下文和线程关系。"
 whenToUse: "用户说'看看这个 PR 的评论 / 拉一下 PR 评论 / PR 上别人说了啥'时。"
 allowedTools:
