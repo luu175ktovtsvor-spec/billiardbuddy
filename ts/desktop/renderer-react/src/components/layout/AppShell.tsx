@@ -166,7 +166,7 @@ export function AppShell() {
   return (
     <div className="flex h-full" data-testid="app-shell">
       {!sidebarCollapsed && <Sidebar />}
-      {/* 右侧竖排:上 = 对话 | 右面板(横排),下 = 终端抽屉(全宽,照 Codex 终端在底部)。 */}
+      {/* 主内容与右侧工作区面板。 */}
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
           <main className="flex min-w-0 flex-1 flex-col" style={{ background: 'var(--color-app-main)' }}>
