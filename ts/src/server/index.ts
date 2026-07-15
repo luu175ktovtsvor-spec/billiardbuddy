@@ -59,7 +59,6 @@ import { createImageWorkbenchRouteHandler } from '../media/imageWorkbenchRoutes'
 import { saveLocalImageAttachment } from '../media/imageUploadRoutes'
 import { AssetManager, ASSET_WS_TOPIC, getActiveAssetManager, setActiveAssetManager } from '../assets/assetManager'
 import { createMediaTools } from '../media/mediaTools'
-import { VideoEditProjectStore } from '../media/video-edit/legacyTimeline'
 import { VideoEditingService } from '../media/video-edit/service'
 import { createVideoEditRouteHandler } from '../media/video-edit/routes'
 import { loadOutputStyles, resolveOutputStyleConfig } from '../outputStyles/outputStyleLoader'
@@ -95,7 +94,7 @@ import { createCanvasRouteHandler, escapeXml } from './routes/canvasRoutes'
 import { createBridgeSessionRouteController } from './routes/bridgeSessionRoutes'
 import { createBridgeWorkerRouteController } from './routes/bridgeWorkerRoutes'
 import { createExtensionDiscoveryRouteHandler } from './routes/extensionDiscoveryRoutes'
-import { createLegacyVideoEditRouteHandler, createStudioRouteHandler } from './routes/legacyMediaRoutes'
+import { createStudioRouteHandler } from './routes/studioRoutes'
 import { createMcpRouteHandler } from './routes/mcpRoutes'
 import { createPluginRouteHandler } from './routes/pluginRoutes'
 import { createProviderRouteHandler } from './routes/providerRoutes'
@@ -288,7 +287,6 @@ export function startServer(opts: StartServerOptions = {}) {
   setActiveAssetManager(assets)
   const assetAutoStart = opts.assetAutoStart ?? (process.env.NODE_ENV !== 'test' && (opts.env ?? process.env).QF_ASSETS_AUTOSTART !== '0')
   if (assetAutoStart) assets.start()
-  const videoEdits = new VideoEditProjectStore(stateRoot)
   const videoEditing = new VideoEditingService({ stateRoot, tasks, env: opts.env ?? process.env })
   const handleVideoEditV2Route = createVideoEditRouteHandler(videoEditing, { defaultWorkspaceRoot: getDefaultWorkspaceDir() })
   const legacyStore = new LegacyAgentStore(stateRoot)
@@ -1972,7 +1970,7 @@ export function startServer(opts: StartServerOptions = {}) {
     setDisabled: (name, disabled) => setMcpServerDisabled(name, disabled, defaultWritableMcpConfigPath(opts.env ?? process.env)),
   })
   const handleStudioRoute = createStudioRouteHandler({ media, imageWorkbenchRoute: handleImageWorkbenchRoute })
-  const handleVideoEditRoute = createLegacyVideoEditRouteHandler({ media, videoEdits, videoEditV2Route: handleVideoEditV2Route })
+  const handleVideoEditRoute = handleVideoEditV2Route
   const handlePluginRoute = createPluginRouteHandler({
     list: () => listPlugins(pluginRoots),
     setEnabled: (name, enabled) => setPluginEnabled(name, enabled, pluginRoots),

@@ -9,7 +9,6 @@ import * as QRCode from 'qrcode'
 import type { FetchLike } from '../proxy/ProxyModel'
 import type { Model } from '../types/model'
 import type { TaskMeta, TaskRunnerContext, TaskService, TaskStatus } from '../tasks/taskService'
-import { VideoEditProjectStore } from './video-edit/legacyTimeline'
 import { DEFAULT_MEDIA_ASSET_WAIT_TIMEOUT_MS, ffmpegBinFrom, gateMediaAssets, type MediaBinaryNeed } from './mediaBinaries'
 import { upscaleImage } from './imageUpscale'
 import { PUBLIC_IMAGE_FALLBACK_NOTE, publicImageEngineLabel, scrubProviderIdentifiers } from '../model/publicModelNames'
@@ -44,9 +43,6 @@ export type MediaJobKind =
   | 'upscale'
   // 注:'variations'/'compose' 曾声明但从未接产出/派发(死类型),已删。
   // "出几张挑一张"由 generate 的 count 参数覆盖;变体/合成如需再作为工作台能力另接。
-  | 'video_inventory'
-  | 'video_render'
-  | 'video_auto_plan'
 
 export interface MediaJobStatus {
   id: string
@@ -619,11 +615,6 @@ function joinImagePath(baseUrl: string, subPath: string): string {
   return `${base}/v1${subPath}`
 }
 
-function ensureProjectName(value: unknown): string {
-  const raw = typeof value === 'string' ? basename(value).replace(/[^A-Za-z0-9_-]/g, '') : ''
-  return raw || crypto.randomUUID().replaceAll('-', '').slice(0, 10)
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -1118,22 +1109,6 @@ export class MediaJobService {
       workspaceRoot: opts.workspaceRoot,
       requiredAssets: ['ffmpeg'],
       fallback: ctx => this.localUpscaleFallback(ctx, normalized),
-    })
-  }
-
-  startVideoJob(kind: MediaJobKind, proxyPath: string, body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string; project?: string; title?: string } = {}): Promise<MediaJobStartResult> {
-    const project = opts.project ?? ensureProjectName(body.project)
-    const normalized = { ...body, project, conversation_id: stringFrom(body.conversation_id) ?? opts.conversationId }
-    return this.startJob({
-      kind,
-      title: opts.title ?? `视频任务:${project}`,
-      body: normalized,
-      conversationId: stringFrom(normalized.conversation_id),
-      workspaceRoot: opts.workspaceRoot,
-      proxyPath,
-      project,
-      requiredAssets: ['ffmpeg', 'ffprobe'],
-      fallback: ctx => this.localVideoJobFallback(ctx, kind, normalized, project),
     })
   }
 
@@ -2363,42 +2338,6 @@ export class MediaJobService {
     const abs = resolve(raw)
     if (!trustedPaths.has(abs)) return null
     return existsSync(abs) ? abs : null
-  }
-
-  private async localVideoJobFallback(ctx: TaskRunnerContext, kind: MediaJobKind, body: Record<string, unknown>, project: string): Promise<Record<string, unknown>> {
-    // 功能门(反逻辑保护):本地剪辑/出片依赖 ffmpeg+ffprobe;组件还没下好时任务正常完成、
-    // 返回"正在准备组件 x%"结构化结果(照 portraitGate 模式),并已触发按需下载——绝不静默失败。
-    const assetGate = gateMediaAssets(this.env, ['ffmpeg', 'ffprobe'])
-    if (assetGate) {
-      await ctx.progress(5, String(assetGate.message ?? '所需组件正在后台准备。'))
-      return assetGate
-    }
-    const store = new VideoEditProjectStore(this.opts.stateRoot)
-    if (kind === 'video_auto_plan') {
-      // 出方案走真五步(口播路本地转写 / B-Roll 视觉五步:切镜头→挑镜头→VLM→卡点→叠字),
-      // 不再走 createLocalPlan 的 B-Roll 占位初剪。planEdit 已收敛素材健康报告,口径不丢。
-      return await store.planEdit(body, {
-        env: this.env,
-        signal: ctx.signal,
-        onProgress: (progress, stage) => ctx.progress(progress, stage),
-      })
-    }
-    if (kind === 'video_inventory') {
-      // 素材理解=探规格 + 健康报告(轻量),仍走 createLocalPlan(不跑五步/转写的重活)。
-      return await store.createLocalPlan(body, {
-        env: this.env,
-        signal: ctx.signal,
-        onProgress: (progress, stage) => ctx.progress(progress, stage),
-      })
-    }
-    if (kind === 'video_render') {
-      return await store.renderProject(project, body, {
-        env: this.env,
-        signal: ctx.signal,
-        onProgress: (progress, stage) => ctx.progress(progress, stage),
-      })
-    }
-    return await this.unavailableFallback(ctx, '视频剪辑需要媒体后端。')
   }
 
   private async localImageAdjustment(ctx: TaskRunnerContext, body: Record<string, unknown>): Promise<Record<string, unknown>> {

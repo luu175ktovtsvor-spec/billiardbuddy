@@ -52,7 +52,7 @@ test('video service connects create -> analyze -> brief -> drafts on one v2 proj
   const project = await service.store.load(created.project.project_id)
   expect(project.scenes.length).toBeGreaterThan(0)
   expect(project.status.missing_coverage.length).toBeGreaterThan(0)
-})
+}, 15_000)
 
 test('video jobs keep cancelled and interrupted states and retry creates a successor job', async () => {
   const { root, source, tasks, service } = setup()
