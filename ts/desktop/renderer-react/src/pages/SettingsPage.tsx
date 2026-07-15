@@ -9,8 +9,17 @@ import {
   IconSettings, IconSun, IconPuzzle, IconArchive, IconChevronRight, IconFolder,
 } from '../components/shared/icons'
 import { t } from '../i18n'
+import type { PermissionMode } from '../types/chat'
 
 type SettingsNav = 'general' | 'appearance' | 'shortcuts' | 'archived'
+
+export const PERMISSION_MODE_LABEL: Record<PermissionMode, string> = {
+  default: '默认权限',
+  acceptEdits: '接受修改',
+  plan: '规划模式',
+  bypassPermissions: '完全访问',
+  dontAsk: '不询问',
+}
 
 // 设置开关使用主题主操作色，禁用态降低透明度。
 function Switch({ on, disabled, onChange, label }: { on: boolean; disabled?: boolean; onChange?: (v: boolean) => void; label: string }) {
@@ -89,15 +98,14 @@ function GeneralPane() {
   const packs = useSettingsStore((s) => s.enabledPacks)
   const setPacks = useSettingsStore((s) => s.setEnabledPacks)
   const billiards = packs.includes('billiards')
-  void perm
 
   return (
     <>
       <Group title="权限">
         <Row
           title="默认权限"
-          desc="读取工作目录可以直接进行；修改文件、运行命令或执行有副作用的操作时按需确认。"
-          right={<Switch on disabled label="默认权限始终显示" />}
+          desc="当前会话执行工具时使用的权限档位；可在聊天输入框中切换。"
+          right={<span className="text-[13px]" style={{ color: 'var(--color-text-secondary)' }}>{PERMISSION_MODE_LABEL[perm]}</span>}
         />
         <Row
           title={t('permission.acceptEdits')}
@@ -239,13 +247,13 @@ function ArchivedPane() {
 }
 
 // —— 导航项 ——
-function NavRow({ icon, label, active, onClick, trailing }: { icon: ReactNode; label: string; active?: boolean; onClick: () => void; trailing?: ReactNode }) {
+export function SettingsNavRow({ icon, label, active, onClick, trailing }: { icon: ReactNode; label: string; active?: boolean; onClick: () => void; trailing?: ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className="flex h-[30px] w-full items-center gap-2 rounded-[10px] px-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+      className="flex min-h-[32px] w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-primary)', background: active ? 'var(--color-surface-selected)' : undefined }}
     >
       <span className="flex h-4.5 w-4.5 shrink-0 items-center justify-center" style={{ color: 'var(--color-text-secondary)' }}>{icon}</span>
@@ -273,20 +281,20 @@ export function SettingsPage() {
         <button
           type="button"
           onClick={() => setNav('chat')}
-          className="mb-3 flex h-[30px] items-center gap-1.5 rounded-[10px] px-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+          className="mb-3 flex min-h-[32px] items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
           style={{ color: 'var(--color-text-secondary)' }}
           data-testid="settings-back"
         >
           ← 返回应用
         </button>
         <div className="px-2 pb-1 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>个人</div>
-        <NavRow icon={<IconSettings size={15} />} label="常规" active={pane === 'general'} onClick={() => setPane('general')} />
-        <NavRow icon={<IconSun size={15} />} label="外观" active={pane === 'appearance'} onClick={() => setPane('appearance')} />
-        <NavRow icon={<IconFolder size={15} />} label="键盘快捷键" active={pane === 'shortcuts'} onClick={() => setPane('shortcuts')} />
+        <SettingsNavRow icon={<IconSettings size={15} />} label="常规" active={pane === 'general'} onClick={() => setPane('general')} />
+        <SettingsNavRow icon={<IconSun size={15} />} label="外观" active={pane === 'appearance'} onClick={() => setPane('appearance')} />
+        <SettingsNavRow icon={<IconFolder size={15} />} label="键盘快捷键" active={pane === 'shortcuts'} onClick={() => setPane('shortcuts')} />
         <div className="px-2 pb-1 pt-4 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>集成</div>
-        <NavRow icon={<IconPuzzle size={15} />} label="插件" onClick={() => setNav('plugins')} trailing={<IconChevronRight size={13} style={{ color: 'var(--color-text-tertiary)' }} />} />
+        <SettingsNavRow icon={<IconPuzzle size={15} />} label="插件" onClick={() => setNav('plugins')} trailing={<IconChevronRight size={13} style={{ color: 'var(--color-text-tertiary)' }} />} />
         <div className="px-2 pb-1 pt-4 text-[12px] font-medium" style={{ color: 'var(--color-text-tertiary)' }}>已归档</div>
-        <NavRow icon={<IconArchive size={15} />} label="已归档任务" active={pane === 'archived'} onClick={() => setPane('archived')} />
+        <SettingsNavRow icon={<IconArchive size={15} />} label="已归档任务" active={pane === 'archived'} onClick={() => setPane('archived')} />
       </aside>
 
       {/* 右:内容区(标题 + 分组卡,居中限宽,照 Codex) */}
