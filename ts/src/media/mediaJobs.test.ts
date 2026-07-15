@@ -105,6 +105,7 @@ test('MediaJobService inspects print QR source quality and preserves QR edges du
     'printf "qr-overlaid" > "$out"',
     '',
   ].join('\n'), { mode: 0o755 })
+  const requestedAssets: string[][] = []
   try {
     const service = new MediaJobService({
       tasks: new TaskService(root),
@@ -116,6 +117,10 @@ test('MediaJobService inspects print QR source quality and preserves QR edges du
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
         FFMPEG_BIN: ffmpegPath,
+      },
+      gateAssets: (_env, needs) => {
+        requestedAssets.push([...needs])
+        return null
       },
       fetchImpl: async (input) => {
         const url = String(input)
@@ -147,6 +152,7 @@ test('MediaJobService inspects print QR source quality and preserves QR edges du
     expect(result.print_qr_source_warnings.join('\n')).toContain('不是标准方形')
     expect(result.images[0]).toMatchObject({ print_qr_source_quality: 'warning' })
     expect(readFileSync(ffmpegArgsPath, 'utf8')).toContain('flags=neighbor')
+    expect(requestedAssets).toContainEqual(['ffmpeg'])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -876,6 +882,15 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
   const uploadDir = join(root, 'uploads', 'posters')
   mkdirSync(uploadDir, { recursive: true })
   writeFileSync(join(uploadDir, 'source.png'), 'source-bytes')
+  const ffmpegPath = join(root, 'fake-ffmpeg.sh')
+  writeFileSync(ffmpegPath, [
+    '#!/bin/sh',
+    'out=""',
+    'for arg in "$@"; do out="$arg"; done',
+    'printf "logo-overlaid" > "$out"',
+    '',
+  ].join('\n'), { mode: 0o755 })
+  const requestedAssets: string[][] = []
   let form: any = null
   try {
     const service = new MediaJobService({
@@ -887,6 +902,11 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
         OPENAI_BASE_URL: 'http://image-gateway.example/gw/v1',
         OPENAI_API_KEY: 'app-token',
         IMAGE_MODEL_NAME: 'gpt-image-2',
+        FFMPEG_BIN: ffmpegPath,
+      },
+      gateAssets: (_env, needs) => {
+        requestedAssets.push([...needs])
+        return null
       },
       fetchImpl: async (input, init) => {
         const url = String(input)
@@ -897,7 +917,13 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
         return Response.json({ detail: 'not found' }, { status: 404 })
       },
     })
-    const started = await service.startStudioEdit({ prompt: '把背景改成深绿色', source_generation_id: 'direct-source', count: 1 })
+    const started = await service.startStudioEdit({
+      prompt: '把背景改成深绿色',
+      source_generation_id: 'direct-source',
+      count: 1,
+      print_mode: true,
+      _print_logo_path: '/uploads/posters/source.png',
+    })
     const done = await waitFor(async () => {
       const status = await service.status(started.job_id)
       return status?.status === 'done' ? status : null
@@ -914,7 +940,9 @@ test('MediaJobService edits a generated image through OpenAI-compatible image ed
       mode: 'edit',
       input_fidelity_requested: 'high',
       input_fidelity_status: 'accepted',
+      print_logo_overlay: 'ffmpeg',
     })
+    expect(requestedAssets).toContainEqual(['ffmpeg'])
     expect(done.result?.urls).toHaveLength(1)
     const served = service.serveUpload((done.result?.urls as string[])[0]!)
     expect(served?.status).toBe(200)
