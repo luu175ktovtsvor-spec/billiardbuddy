@@ -1,5 +1,6 @@
 ---
 name: init
+user-invocable: false
 description: "扫描当前代码库并生成或更新 BILLIARDBUDDY.md。用户说初始化项目记忆、生成项目说明、init 时使用；从源码和现有 AGENTS.md、CLAUDE.md、README、清单文件提取可验证的命令、模块和约束。"
 whenToUse: "用户说'初始化项目记忆 / 生成 BILLIARDBUDDY.md / init / 给这个仓库建个说明'时。"
 allowedTools:

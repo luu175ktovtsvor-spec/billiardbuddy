@@ -1,5 +1,6 @@
 ---
 name: model
+user-invocable: false
 description: 说明当前模型连接状态和切换入口
 whenToUse: 用户要查看或切换大语言模型、API Key、provider
 allowedTools: [run_command]

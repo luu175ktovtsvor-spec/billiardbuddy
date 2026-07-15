@@ -112,14 +112,26 @@ test('五域知识齐、硬数字 16 条、每条带 PPT 出处', () => {
   expect(SANITIZED_PROPER_NOUNS.length).toBeGreaterThan(10)
 })
 
-test('注入文案只提供五域知识目录,不强加领域流程或守卫', () => {
+test('注入文案只提供五域知识目录和事实边界,不强加固定业务流程', () => {
   const ctx = renderSessionStartContext()
   expect(ctx).toContain('<domain_context id="billiards"')
   expect(ctx).toContain('5 域知识骨架')
   expect(ctx).toContain('只提供领域事实和来源')
   expect(ctx).toContain('billiards_knowledge_search')
+  expect(ctx).toContain('参考值不能直接写成本店活动规则')
+  expect(ctx).toContain('先询问用户并停在提问处')
   expect(ctx).not.toContain('执行顺序')
   expect(ctx).not.toContain('禁词')
+})
+
+test('知识检索结果把参考资料与门店最终方案隔开', () => {
+  const matches = renderKnowledgeMatches('周末活动比赛')
+  expect(matches).toContain('【使用边界】')
+  expect(matches).toContain('只作为明确标注的参考选项')
+  expect(matches).toContain('不得自行补出折扣、价格、免费时长、活动时间、奖金、人数或门店承诺')
+  expect(matches).toContain('先向用户补齐，并在本轮停在提问处')
+  expect(matches).toContain('本轮最终回复只做简短提问')
+  expect(matches).toContain('不复述本工具里的具体方法、选项或参考数字')
 })
 
 test('模型运行时统一使用台球运营知识库口径,不披露第三方材料名或 PPT 载体', () => {

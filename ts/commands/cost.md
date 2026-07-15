@@ -1,5 +1,6 @@
 ---
 name: cost
+user-invocable: false
 description: 解释当前用量查询能力
 whenToUse: 用户询问本月用量、token、额度或账单
 allowedTools: []

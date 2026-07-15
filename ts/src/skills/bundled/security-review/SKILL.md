@@ -1,5 +1,6 @@
 ---
 name: security-review
+user-invocable: false
 description: "对当前分支或待提交改动做高置信度安全评审。准备提交、开 PR 或用户要求安全检查时使用；追踪不可信输入跨越鉴权、权限、文件、命令、网络和密钥边界的真实利用路径。"
 whenToUse: "改动准备提交 / 开 PR 前,想让人过一遍安全性时。"
 allowedTools:

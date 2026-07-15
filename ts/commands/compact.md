@@ -1,5 +1,6 @@
 ---
 name: compact
+user-invocable: false
 description: 总结当前会话，给长会话归档和继续工作的摘要
 whenToUse: 用户输入 /compact、要求压缩上下文、准备继续长任务
 allowedTools: [file_history, list_background_tasks]

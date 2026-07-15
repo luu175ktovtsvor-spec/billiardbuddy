@@ -1,5 +1,6 @@
 ---
 name: commit-push-pr
+user-invocable: false
 description: "把本次任务相关改动整理成提交、推送分支并创建或更新 PR。用户说提交并开 PR、commit push pr、把这个提了发 PR 时使用；不得夹带无关工作树改动。"
 whenToUse: "用户说'提交并开 PR / commit push pr / 把这个提了发个 PR'时。"
 allowedTools:

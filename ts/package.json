@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "main": "desktop/electron/main.mjs",
   "author": "球房管家",
-  "description": "球房管家 · 桌面 coding agent",
+  "description": "球房管家 · 球房运营桌面 Agent",
   "devDependencies": {
     "@tailwindcss/vite": "^4",
     "@types/bun": "latest",

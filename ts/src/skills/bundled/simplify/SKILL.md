@@ -1,5 +1,6 @@
 ---
 name: simplify
+user-invocable: false
 description: "在功能已正确后复查本次改动的复用、模块边界、代码质量和效率，并就地清理高价值问题。用户说简化代码、清理改动、别重复造轮子时使用；不得借机改变契约或扩大重构范围。"
 whenToUse: "写完 / 改完一段代码,想让它更干净、别重复造轮子、别留低效写法时。"
 allowedTools:

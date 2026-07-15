@@ -1,5 +1,6 @@
 ---
 name: permissions
+user-invocable: false
 description: 解释当前权限模式和哪些动作会请求确认
 whenToUse: 用户询问权限、审批、安全模式、为什么弹确认
 allowedTools: []

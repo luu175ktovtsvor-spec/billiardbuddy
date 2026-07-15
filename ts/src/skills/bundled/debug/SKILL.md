@@ -1,5 +1,6 @@
 ---
 name: debug
+user-invocable: false
 description: "诊断并修复可复现的软件问题。用户说有 bug、报错了、为什么不工作、帮我 debug 时使用；先追完整调用链和模块边界，再用证据验证单一根因并做最小修复。"
 whenToUse: "用户说'这有个 bug / 报错了 / 帮我 debug / 为什么不工作'时。"
 allowedTools:

@@ -1,5 +1,6 @@
 ---
 name: doctor
+user-invocable: false
 description: 检查本机 Agent 运行环境、模型配置、工具和扩展状态
 whenToUse: 用户怀疑模型、工具、MCP、工作区或环境异常
 allowedTools: [run_command, list_dir, list_commands, list_skills, list_background_tasks]

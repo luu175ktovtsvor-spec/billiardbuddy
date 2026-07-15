@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { commandLibraryFromCommands } from '../commands/commandLoader'
+import { commandLibraryFromCommands, loadCommandsFromRoots } from '../commands/commandLoader'
 import { createBuiltinCommandLibrary } from '../commands/builtinCommands'
 import { createDomainPackCommandLibrary, resolveEnabledPacks } from '../packs/domainPacks'
 import { loadSkillFile } from '../skills/skillLoader'
@@ -16,6 +16,7 @@ import {
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { bundledSkillsRoot, loadSkillsDir } from '../skills/skillLoader'
 
 function skillEntry(name: string, description: string, whenToUse?: string): DiscoveryEntry {
   return { name, description, whenToUse, source: 'skill', kind: 'skill', alwaysInclude: true }
@@ -221,6 +222,29 @@ test('用户面清单(toPublicCommandEntries)剔除 user-invocable:false;模型�
   expect(section).toContain('/open')
   expect(section).toContain('/userhidden')
   expect(section).not.toContain('/modelhidden')
+})
+
+test('内置开发工作流只供 Agent 编排，普通斜杠面板只保留业务工作流', async () => {
+  const skills = await loadSkillsDir(bundledSkillsRoot(), { layer: 'bundled' })
+  const publicNames = toPublicCommandEntries(collectDiscoveryEntries({ skills })).map(entry => entry.name)
+  const modelListing = buildSkillCommandListingSection({ skills })
+
+  expect(publicNames).toEqual(expect.arrayContaining(['boss-recruiting', 'video-editing']))
+  for (const name of ['commit', 'commit-push-pr', 'debug', 'init', 'playwright-browser', 'pr-comments', 'review', 'security-review', 'simplify', 'skillify', 'verify']) {
+    expect(publicNames).not.toContain(name)
+    expect(modelListing).toContain(`/${name}`)
+  }
+})
+
+test('普通斜杠面板隐藏内部 Agent 命令，但模型仍可按需使用', async () => {
+  const commands = await loadCommandsFromRoots([join(import.meta.dir, '../../commands')])
+  const publicNames = toPublicCommandEntries(collectDiscoveryEntries({ commands })).map(entry => entry.name)
+  const modelListing = buildSkillCommandListingSection({ commands })
+
+  expect(publicNames).toEqual(['help', 'memory'])
+  for (const name of ['agents', 'compact', 'context', 'cost', 'doctor', 'mcp', 'model', 'output-style', 'permissions', 'plugins', 'skills']) {
+    expect(modelListing).toContain(`/${name}`)
+  }
 })
 
 test('问题3修复:条件技能激活后经 activatedConditionalSkills 并回发现清单(默认隐身→碰到文件现身)', async () => {

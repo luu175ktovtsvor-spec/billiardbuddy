@@ -1,5 +1,6 @@
 ---
 name: skills
+user-invocable: false
 description: 列出可用技能，并建议什么时候调用哪个技能
 whenToUse: 用户想看技能、安装技能、知道有哪些专项能力
 allowedTools: [list_skills, read_skill]

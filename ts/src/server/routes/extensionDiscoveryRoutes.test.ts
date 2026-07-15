@@ -131,6 +131,43 @@ Keep the answer concise.
     ]))
   })
 
+  test('public command discovery omits Agent-only workflows without disabling model discovery', async () => {
+    const { commandsRoot, skillsRoot, workspaceRoot, handler } = createHarness()
+    writeFileSync(join(commandsRoot, 'visible.md'), `---
+name: visible
+description: Visible command
+---
+Visible command body.
+`)
+    writeFileSync(join(commandsRoot, 'internal.md'), `---
+name: internal
+description: Internal command
+user-invocable: false
+---
+Internal command body.
+`)
+    for (const [name, userInvocable] of [['business-work', true], ['agent-work', false]] as const) {
+      const dir = join(skillsRoot, name)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'SKILL.md'), `---
+name: ${name}
+description: ${name} description
+user-invocable: ${userInvocable}
+---
+${name} body.
+`)
+    }
+
+    const body = await (await route(handler, `/api/v1/agent/commands?working_dir=${encodeURIComponent(workspaceRoot)}`)).json() as any
+    const names = body.commands.map((command: any) => command.name)
+    expect(names).toEqual(expect.arrayContaining(['visible', 'business-work']))
+    expect(names).not.toContain('internal')
+    expect(names).not.toContain('agent-work')
+
+    const skills = await (await route(handler, `/api/v1/agent/skills?working_dir=${encodeURIComponent(workspaceRoot)}`)).json() as any
+    expect(skills.skills).toContainEqual(expect.objectContaining({ name: 'agent-work', user_invocable: false }))
+  })
+
   test('keeps pack activation discoverable and includes enabled plugin skills and commands with plugin source', async () => {
     const { pluginsRoot, workspaceRoot, handler } = createHarness()
     const pluginDir = join(pluginsRoot, 'demo')

@@ -1,5 +1,6 @@
 ---
 name: playwright-browser
+user-invocable: false
 description: "使用 Playwright MCP 在可见浏览器中完成网页查询、表单填写、上传、发布或其他可核验任务。用户说打开网站、查页面、填表、用浏览器填网页表单、在网页里操作或用 Playwright 时使用；先补齐会改变结果的事实，登录与安全验证由用户完成，对外动作在执行前确认对象和内容，执行后读回页面证据。"
 ---
 
