@@ -117,7 +117,7 @@ Keep the answer concise.
     }])
 
     const packs = await (await route(handler, '/api/v1/agent/packs')).json() as any
-    expect(packs.packs).toEqual([expect.objectContaining({ id: 'billiards', default_enabled: false })])
+    expect(packs.packs).toEqual([expect.objectContaining({ id: 'billiards', default_enabled: true })])
 
     const commands = await (await route(
       handler,

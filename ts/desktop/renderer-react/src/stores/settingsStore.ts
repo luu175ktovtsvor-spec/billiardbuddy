@@ -14,6 +14,11 @@ const MAP_KEY = 'qf-workspace-by-conv'
 const LEGACY_KEY = 'qf-workspace-root' // 旧的单一全局值(已废弃);仅在此清理,不再用它当任何会话的默认
 const PACKS_MAP_KEY = 'qf-packs-by-conv' // 领域知识包也按会话隔离,与工作目录同构
 const PERMISSION_MAP_KEY = 'qf-permission-mode-by-conv'
+const PRODUCT_DEFAULT_PACKS = ['billiards'] as const
+
+function productDefaultPacks(): string[] {
+  return [...PRODUCT_DEFAULT_PACKS]
+}
 
 const PERMISSION_MODES = new Set<PermissionMode>([
   'default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk',
@@ -106,7 +111,7 @@ interface SettingsState {
   hiddenPermissionModes: PermissionMode[]
   /** 运行任务时防止系统休眠(对齐 Codex preventSleepWhileRunning;App 层按 chat running 状态调 desktopHost.preventSleep)。 */
   preventSleepWhileRunning: boolean
-  /** 当前激活会话挂载的领域包(= enabledPacksByConv[activeConvId] ?? []);空 = 通用 Agent。sendMessage 读它。 */
+  /** 当前激活会话挂载的领域包;新会话默认挂台球包,显式空数组表示用户已关闭。sendMessage 读它。 */
   enabledPacks: string[]
   /** 按 conversationId 记的领域包映射(持久化)。挂件按会话隔离:某窗口开台球、别的窗口不受影响。 */
   enabledPacksByConv: Record<string, string[]>
@@ -124,7 +129,7 @@ interface SettingsState {
   setPreventSleepWhileRunning: (on: boolean) => void
   /** 设当前**激活会话**的领域包(不是全局);落 per-conv 映射。斜杠 /台球 开、/台球关闭 关、设置开关都走它。 */
   setEnabledPacks: (packs: string[]) => void
-  /** 切到某会话:workspaceRoot + enabledPacks 都变成它自己记住的(没有则空,不串台)。 */
+  /** 切到某会话:workspaceRoot + enabledPacks 都变成它自己记住的;无包记录时使用产品默认,不继承其他会话。 */
   activateConversation: (conversationId: string | null) => void
   /** 选文件夹:把目录绑到**当前激活会话**(不是全局);null = 解绑回后端默认。 */
   setWorkspaceRoot: (root: string | null) => void
@@ -189,10 +194,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ activeConvId: null, workspaceRoot: null, enabledPacks: [], defaultPermissionMode: 'default' })
       return
     }
-    // 该会话已有自己的目录/挂件记录 → 用它;否则空(工作目录=后端默认,挂件=通用助手不挂)。
-    // 刻意不继承任何"全局/最近"值:未绑定会话继承可变全局会导致改一个会话连带改别的会话(漂移串台)。
+    // 该会话已有自己的目录/挂件记录 → 用它;否则工作目录回后端默认,领域包用球房发行版默认。
+    // 产品默认是不可变常量,不继承其他会话的最近值;用户显式关闭会以 [] 落入本会话映射。
     const bound = get().workspaceByConv[conversationId] ?? null
-    const packs = get().enabledPacksByConv[conversationId] ?? []
+    const packs = conversationId in get().enabledPacksByConv
+      ? get().enabledPacksByConv[conversationId]!
+      : productDefaultPacks()
     let permissionMap = get().permissionModeByConv
     let permissionMode = permissionMap[conversationId]
     // 旧版本已经由用户明确绑定过工作目录的会话,升级后默认采用低打扰的工作区编辑档。
@@ -252,10 +259,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   adoptConversationPacks: (conversationId, packs) => {
-    if (!packs || packs.length === 0) return
+    if (!packs) return
     // 本地已有该会话的挂件记录(哪怕是空——用户可能刚手动关了)→ 前端为准,不覆盖。
     if (conversationId in get().enabledPacksByConv) return
-    const map = { ...get().enabledPacksByConv, [conversationId]: packs }
+    const map = { ...get().enabledPacksByConv, [conversationId]: [...packs] }
     persistPacksMap(map)
     set((s) => ({
       enabledPacksByConv: map,

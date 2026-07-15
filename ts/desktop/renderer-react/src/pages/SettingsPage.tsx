@@ -135,7 +135,7 @@ function GeneralPane() {
       <Group title="领域知识">
         <Row
           title="台球运营知识库"
-          desc="在当前对话挂载台球房经营知识(只影响当前对话,新对话默认不挂)。也可在输入框敲 /台球 开、/台球关闭 关。"
+          desc="在当前对话挂载台球房经营知识。新对话默认开启，只影响当前对话；也可在输入框敲 /台球 开、/台球关闭 关。"
           right={<Switch on={billiards} onChange={(v) => { setPacks(v ? ['billiards'] : []); toast(v ? '台球运营知识库已挂载(当前对话)' : '台球运营知识库已关闭(当前对话)') }} label="台球运营知识库" />}
         />
       </Group>

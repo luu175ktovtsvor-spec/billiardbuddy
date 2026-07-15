@@ -41,7 +41,8 @@ export const billiardsPack: DomainPack = {
   description: '挂载台球运营知识库,让通用 Agent 在回答和执行任务时使用相关领域知识。',
   version: '2.0.0',
   aliases: ['billiard', 'pool', '台球', '球房', '台球房'],
-  defaultEnabled: false,
+  defaultEnabled: true,
+  suggestedSkills: ['boss-recruiting', 'video-editing'],
   commands: [
     {
       name: '台球',
