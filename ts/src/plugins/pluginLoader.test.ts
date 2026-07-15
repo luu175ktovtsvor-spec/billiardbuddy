@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listPlugins, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths } from './pluginLoader'
+import { listPlugins, parseGithubRepository, resolveEnabledPluginContributions, resolveEnabledPluginHookConfigPaths } from './pluginLoader'
 import { loadSkillsDir } from '../skills/skillLoader'
 import { loadPluginHookRegistry } from '../hooks/hookConfig'
 import { runHookEvent } from '../hooks/hooks'
@@ -17,6 +17,21 @@ function makePlugin(root: string, name: string, opts: { enabled?: boolean; skill
   if (opts.mcp) writeFileSync(join(dir, '.mcp.json'), '{"mcpServers":{}}')
   return dir
 }
+
+test('parseGithubRepository:只接受无凭据的标准 GitHub 仓库并归一化 clone URL', () => {
+  expect(parseGithubRepository('openai/codex')).toEqual({ name: 'codex', url: 'https://github.com/openai/codex.git' })
+  expect(parseGithubRepository('https://github.com/openai/codex.git')).toEqual({ name: 'codex', url: 'https://github.com/openai/codex.git' })
+
+  for (const value of [
+    'http://github.com/openai/codex',
+    'https://example.com/openai/codex',
+    'https://token@github.com/openai/codex',
+    'https://github.com/openai/codex?ref=main',
+    'https://github.com/openai/codex/tree/main',
+    '../outside',
+    'owner/..',
+  ]) expect(parseGithubRepository(value)).toBeNull()
+})
 
 test('resolveEnabledPluginContributions:只收启用插件的 skills/commands/.mcp.json', async () => {
   const root = mkdtempSync(join(tmpdir(), 'plugin-contrib-'))

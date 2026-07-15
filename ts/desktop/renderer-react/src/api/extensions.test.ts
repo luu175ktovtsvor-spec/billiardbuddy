@@ -5,9 +5,10 @@ import { extensionApi, pluginApi } from './extensions'
 test('extension API parses plugin sources and keeps local plugin paths out of renderer data', async () => {
   const previousBaseUrl = getBaseUrl()
   let commandQuery = ''
+  let installBody: unknown
   const server = Bun.serve({
     port: 0,
-    fetch: request => {
+    fetch: async request => {
       const url = new URL(request.url)
       if (url.pathname === '/api/v1/agent/commands') {
         commandQuery = url.search
@@ -15,6 +16,10 @@ test('extension API parses plugin sources and keeps local plugin paths out of re
       }
       if (url.pathname === '/api/v1/agent/skills') return Response.json({ skills: [{ name: 'demo', description: 'Demo skill', display_name: '演示技能', short_description: '演示界面元数据', source: 'skills', layer: 'workspace', user_invocable: true }] })
       if (url.pathname === '/api/v1/agent/plugins/toggle') return Response.json({ ok: true, message: 'updated' })
+      if (url.pathname === '/api/v1/agent/plugins/install') {
+        installBody = await request.json()
+        return Response.json({ ok: true, message: 'installed' })
+      }
       if (url.pathname === '/api/v1/agent/plugins') {
         return Response.json({
           plugins: [{
@@ -44,6 +49,8 @@ test('extension API parses plugin sources and keeps local plugin paths out of re
     expect(plugins[0]).toMatchObject({ name: 'demo', enabled: false })
     expect('dir' in (plugins[0] as object)).toBe(false)
     expect(await pluginApi.toggle('demo', true)).toEqual({ ok: true, message: 'updated' })
+    expect(await pluginApi.install('owner/repo')).toEqual({ ok: true, message: 'installed' })
+    expect(installBody).toEqual({ repo: 'owner/repo' })
   } finally {
     server.stop(true)
     setBaseUrl(previousBaseUrl)
