@@ -11,10 +11,8 @@ import {
   type StudioImage,
 } from '../../api/studio'
 import {
-  chooseThreeCandidates,
   friendlyImageStage,
   imagePassesCandidateGate,
-  portraitCandidateHasHardRisk,
 } from './imageWorkbenchModel'
 
 export interface PosterFields {
@@ -142,28 +140,6 @@ export async function executeImageGeneration(
     throw new Error('当前没有可用的图片生成服务，暂时无法生成图片。')
   }
   if (images.length === 0) throw new Error('没有生成图片,换个描述再试试')
-
-  const hardGatePassed = images.filter(image => imagePassesCandidateGate(image, input.intent)).length
-  const needsPosterSupplement = input.intent === 'poster_text' && images.length === 3 && hardGatePassed < 2
-  const needsPortraitSupplement = input.intent === 'portrait' && images.length === 3 && images.every(portraitCandidateHasHardRisk)
-  if (needsPosterSupplement || needsPortraitSupplement) {
-    callbacks.onStage('部分结果需要确认，正在再试一次…')
-    try {
-      const retry = await dependencies.generate(generateInput)
-      callbacks.onJobStarted(retry.job_id)
-      const retryJob = await dependencies.pollJob(retry.job_id, {
-        signal: callbacks.signal,
-        onProgress: (progress, stage) => callbacks.onProgress(progress, friendlyImageStage(stage, '正在生成图片…')),
-        intervalMs: 600,
-      })
-      const retryImages = retryJob.status === 'done' && !retryJob.result?.blocked
-        ? usableImages(retryJob.result?.images)
-        : []
-      images = chooseThreeCandidates([...images, ...retryImages], input.intent)
-    } catch {
-      // The first batch stays usable. One supplemental generation is the cost ceiling.
-    }
-  }
 
   const finalBrief = result.creative_brief ?? brief
   const recommendedId = images.find(image => imagePassesCandidateGate(image, input.intent))?.generation_id

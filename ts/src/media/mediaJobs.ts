@@ -100,6 +100,7 @@ interface StartMediaJobInput {
   proxyPath?: string
   project?: string
   requiredAssets?: MediaBinaryNeed[]
+  run?: (ctx: TaskRunnerContext, task: TaskMeta) => Promise<Record<string, unknown>>
   fallback?: (ctx: TaskRunnerContext, task: TaskMeta) => Promise<Record<string, unknown>>
   /** 生成前的合规/质检闸;返回 blocked 则短路,不调模型。 */
   preflight?: (ctx: TaskRunnerContext) => Promise<PortraitPreflightOutcome>
@@ -800,6 +801,71 @@ function stringArrayFrom(value: unknown): string[] {
     : []
 }
 
+function imageRecords(result: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(result.images)
+    ? result.images.map(item => asRecord(item)).filter((item): item is Record<string, unknown> => !!item)
+    : []
+}
+
+function imageCandidateKey(image: Record<string, unknown>): string {
+  return stringFrom(image.generation_id) ?? stringFrom(image.poster_url) ?? stringFrom(image.url) ?? JSON.stringify(image)
+}
+
+function imageCandidateRank(image: Record<string, unknown>, portrait: boolean): number {
+  if (portrait) {
+    const state = stringFrom(image.portrait_quality_state)
+    return state === 'recommended' ? 3 : state === 'unchecked' ? 1 : 0
+  }
+  return image.poster_hard_gate_passed === true ? 3 : 0
+}
+
+function needsImageQualitySupplement(result: Record<string, unknown>, body: Record<string, unknown>): boolean {
+  if (result.blocked === true || result.local_preview === true || clampCount(body.count) !== 3) return false
+  const images = imageRecords(result)
+  if (images.length !== 3) return false
+  const brief = asRecord(body.creative_brief)
+  const portrait = brief?.scene === 'portrait' || body.intent === 'portrait'
+  if (portrait) return images.every(image => imageCandidateRank(image, true) === 0)
+  const poster = brief?.scene === 'poster' || body.intent === 'poster_text'
+  return poster && images.filter(image => imageCandidateRank(image, false) === 3).length < 2
+}
+
+function mergeImageQualityAttempts(first: Record<string, unknown>, second: Record<string, unknown>, body: Record<string, unknown>): Record<string, unknown> {
+  const brief = asRecord(body.creative_brief)
+  const portrait = brief?.scene === 'portrait' || body.intent === 'portrait'
+  const seen = new Set<string>()
+  const combined = [...imageRecords(first), ...imageRecords(second)].filter(image => {
+    const key = imageCandidateKey(image)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  combined.sort((a, b) => imageCandidateRank(b, portrait) - imageCandidateRank(a, portrait))
+  const images = combined.slice(0, clampCount(body.count))
+  const urls = images.map(image => stringFrom(image.poster_url) ?? stringFrom(image.url)).filter((value): value is string => !!value)
+  const generationIds = images.map(image => stringFrom(image.generation_id)).filter((value): value is string => !!value)
+  const recommended = images.find(image => imageCandidateRank(image, portrait) === 3)
+  return {
+    ...first,
+    images,
+    urls,
+    generation_ids: generationIds,
+    count: images.length,
+    quality_retry_performed: true,
+    ...(recommended ? { recommended_generation_id: stringFrom(recommended.generation_id) } : {}),
+    ...(portrait
+      ? { portrait_quality_state: recommended ? 'recommended' : images.some(image => imageCandidateRank(image, true) === 0) ? 'risk' : 'unchecked' }
+      : { poster_hard_gate_passed: images.length > 0 && images.every(image => image.poster_hard_gate_passed === true), poster_quality_state: recommended ? 'recommended' : 'risk' }),
+  }
+}
+
+function progressWindow(ctx: TaskRunnerContext, start: number, end: number): TaskRunnerContext {
+  return {
+    ...ctx,
+    progress: (progress, stage) => ctx.progress(Math.round(start + (Math.max(0, Math.min(100, progress)) / 100) * (end - start)), stage),
+  }
+}
+
 export class MediaJobService {
   private readonly backendUrl?: string
   private readonly env: Record<string, string | undefined>
@@ -902,7 +968,9 @@ export class MediaJobService {
           if (outcome.blocked) return outcome.result
         }
         let result: Record<string, unknown>
-        if (this.backendUrl && input.proxyPath) {
+        if (input.run) {
+          result = await input.run(ctx, task)
+        } else if (this.backendUrl && input.proxyPath) {
           result = await this.runProxyJob(ctx, input.proxyPath, input.body)
         } else if (input.fallback) {
           result = await input.fallback(ctx, task)
@@ -941,15 +1009,31 @@ export class MediaJobService {
       body: normalized,
       conversationId: stringFrom(normalized.conversation_id),
       workspaceRoot: opts.workspaceRoot,
-      proxyPath: '/api/v1/studio/generate',
       preflight: ctx => this.portraitPreflight(ctx, normalized, 'generate', shared),
-      postprocess: async (ctx, result) => this.attachWorkbenchProjects(
-        await this.imageResultPostprocess(ctx, result, shared, normalized),
-        normalized,
-        'generate',
-      ),
-      fallback: ctx => this.directOrLocalImageFallback(ctx, normalized, 'generate'),
+      run: ctx => this.generateWithQualitySupplement(ctx, normalized, shared),
+      postprocess: async (_ctx, result) => this.attachWorkbenchProjects(result, normalized, 'generate'),
     })
+  }
+
+  private async generateWithQualitySupplement(ctx: TaskRunnerContext, body: Record<string, unknown>, shared: PortraitShared): Promise<Record<string, unknown>> {
+    const runAttempt = async (attemptCtx: TaskRunnerContext) => {
+      const raw = this.backendUrl
+        ? await this.runProxyJob(attemptCtx, '/api/v1/studio/generate', body)
+        : await this.directOrLocalImageFallback(attemptCtx, body, 'generate')
+      return await this.imageResultPostprocess(attemptCtx, raw, shared, body)
+    }
+    const first = await runAttempt(progressWindow(ctx, 0, 72))
+    if (!needsImageQualitySupplement(first, body)) return first
+    try {
+      const second = await runAttempt(progressWindow(ctx, 72, 98))
+      return mergeImageQualityAttempts(first, second, body)
+    } catch (error) {
+      return {
+        ...first,
+        quality_retry_performed: true,
+        quality_retry_warning: `补生成未完成，已保留第一批结果:${sanitizeMediaError(error)}`,
+      }
+    }
   }
 
   async startStudioEdit(body: Record<string, unknown>, opts: { conversationId?: string; workspaceRoot?: string } = {}): Promise<MediaJobStartResult> {

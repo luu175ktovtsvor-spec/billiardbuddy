@@ -49,7 +49,7 @@ test('generate_image tool starts a media task in the current conversation', asyn
     })
     expect(done.kind).toBe('generate')
     expect(done.result).toMatchObject({ local_preview: true })
-    expect(done.params?.count).toBe(1)
+    expect(done.params?.count).toBe(3)
     expect(done.params?.quality).toBe('standard')
     expect(done.params?.image_model).toBeUndefined()
     expect(String(done.params?.image_prompt)).toContain('做一张周末促销海报')
@@ -62,6 +62,7 @@ test('generate_image tool starts a media task in the current conversation', asyn
 test('generate_image compiles the user request and registers real candidates in the workbench', async () => {
   const root = mkdtempSync(join(tmpdir(), 'media-tools-workbench-'))
   const projects: Array<Record<string, unknown>> = []
+  let generationCalls = 0
   try {
     const tasks = new TaskService(root)
     const media = new MediaJobService({
@@ -75,6 +76,7 @@ test('generate_image compiles the user request and registers real candidates in 
       },
       fetchImpl: async input => {
         if (String(input).endsWith('/ark/images/generations')) {
+          generationCalls += 1
           return Response.json({
             data: Array.from({ length: 3 }, (_, index) => ({
               b64_json: Buffer.from(`candidate-${index + 1}`).toString('base64'),
@@ -103,6 +105,8 @@ test('generate_image compiles the user request and registers real candidates in 
       return list[0]?.status === 'completed' ? list[0] : null
     })
     expect((done.result as Record<string, unknown> | undefined)?.workbench_project_ids).toHaveLength(3)
+    expect((done.result as Record<string, unknown> | undefined)?.quality_retry_performed).toBe(true)
+    expect(generationCalls).toBe(2)
     expect(projects).toHaveLength(3)
     expect(projects[0]?.user_request).toBe('做一张海边音乐节海报，画面中有朋友跳舞，不要文字')
     expect((projects[0]?.creative_brief as Record<string, unknown>)?.user_request).toBe(projects[0]?.user_request)
