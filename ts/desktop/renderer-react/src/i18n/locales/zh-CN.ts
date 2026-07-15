@@ -112,9 +112,15 @@ export const zhCN = {
     mcpNamePlaceholder: '例如:我的 GitHub',
     mcpTarget: '启动命令或地址',
     mcpTargetPlaceholder: '例如:npx -y @modelcontextprotocol/server-github',
+    mcpTargetHint: '这是服务商或开发者提供的启动命令、或以 http/https 开头的地址,不确定就先向对方要一份,或者暂不添加。',
     save: '保存',
     cancel: '取消',
     remove: '移除',
+    installGithubTitle: '从 GitHub 安装插件',
+    installGithubLabel: 'GitHub 仓库',
+    installGithubPlaceholder: 'owner/repository',
+    installGithubHint: '在提供插件的 GitHub 页面地址栏里找:github.com/ 后面那一段(比如 anthropics/claude-code)就是要填的内容;拿不准就先别装。',
+    installGithubNote: '插件会下载到本机并保持停用。检查来源和贡献内容后，再单独确认启用。',
   },
   chat: {
     // ✓真机占位写法(owner 截图):今天帮你做些什么？ + @ 引用 + / 技能
