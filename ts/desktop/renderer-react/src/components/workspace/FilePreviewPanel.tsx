@@ -262,9 +262,9 @@ export function FilePreviewPanel() {
       {/* 第 3 栏:文件展示 */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* tab 条 */}
-        <div className="flex h-10 items-center gap-1 overflow-x-auto px-2" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <div className="flex items-center gap-1 overflow-x-auto px-2 py-1.5" style={{ borderBottom: '1px solid var(--color-border)' }}>
           {tabs.length === 0 ? (
-            <span className="px-2 text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>工作区</span>
+            <span className="px-2 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>工作区</span>
           ) : (
             tabs.map((tb) => {
               const on = tb.path === activePath
@@ -272,7 +272,7 @@ export function FilePreviewPanel() {
                 <div
                   key={tb.path}
                   onContextMenu={(e) => { e.preventDefault(); setTabCtx({ x: e.clientX, y: e.clientY, path: tb.path }) }}
-                  className="flex h-[30px] shrink-0 items-center gap-1 rounded-lg pl-2 pr-1 text-[13px] transition-colors"
+                  className="flex shrink-0 items-center gap-1 rounded-md py-1 pl-2 pr-1 text-[12px] transition-colors"
                   style={{ background: on ? 'var(--color-surface-selected)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
                 >
                   <span className="shrink-0" style={{ width: 7, height: 7, borderRadius: 2, background: fileColor(baseName(tb.path)) }} />
@@ -294,7 +294,7 @@ export function FilePreviewPanel() {
 
         {/* 面包屑 + 「打开」菜单(对齐 Codex:用默认程序打开 / 在 Finder 中显示;shell 能力只在桌面壳有,浏览器端不显示按钮) */}
         {active && (
-          <div className="flex h-8 items-center gap-2 px-3 text-[12px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)' }}>
+          <div className="flex items-center gap-2 px-3 py-1.5 text-[11px]" style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-tertiary)' }}>
             <span className="min-w-0 flex-1 truncate" style={{ fontFamily: 'var(--font-mono)' }}>
               {relTo(root, active.path).split('/').join('  ›  ')}
             </span>
