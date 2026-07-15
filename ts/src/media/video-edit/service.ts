@@ -305,6 +305,8 @@ export class VideoEditingService {
     const parsedRequest = videoRenderRequestSchema.parse(request)
     const current = await this.store.load(projectId)
     const lockedRequest = videoRenderRequestSchema.parse({ ...parsedRequest, revision: parsedRequest.revision ?? current.revision })
+    const requiredAssets: MediaBinaryNeed[] = ['ffmpeg', 'ffprobe']
+    if (lockedRequest.include_subtitles) requiredAssets.push('zh-font')
     const started = await this.startJob('render', projectId, opts, async ctx => {
       await this.setJobStage(ctx.taskId, 'rendering', { checkpoint: { phase: 'render_started' } })
       const project = await this.store.load(projectId)
@@ -318,7 +320,7 @@ export class VideoEditingService {
       if (!lockedRequest.preview) await this.store.recordExportUsage(project)
       await this.setJobStage(ctx.taskId, result.warnings.length ? 'done_with_warnings' : 'done', { checkpoint: { phase: 'render_done', revision: result.revision }, warnings: result.warnings })
       return result
-    }, ['ffmpeg', 'ffprobe'])
+    }, requiredAssets)
     const task = await this.options.tasks.get(started.job_id)
     if (task) await this.options.tasks.touch(task.id, { params: { ...params(task), render_request: lockedRequest } })
     return started

@@ -3,7 +3,7 @@
 // 每个镜头抽样几帧算 signalstats:YAVG(曝光)+ YDIF(帧间差=运动/生动度),
 // 复刻 auto-editor 的 motion + blackdetect 思路:太黑淘汰、冻结/发呆淘汰、
 // 曝光偏离中间调扣分、几乎静止扣分、过抖(YDIF 过大)扣分,综合分排序砍差的。
-// 全本地零依赖(bundled ffmpeg + 轻量 TS 计算),语义好坏交给第 3 步 VLM。
+// 全本地处理(资产管理器准备的 FFmpeg + 轻量 TS 计算),语义好坏交给第 3 步 VLM。
 
 import { existsSync } from 'node:fs'
 import { ffmpegBinFrom, runFfmpegText } from './ffmpeg'

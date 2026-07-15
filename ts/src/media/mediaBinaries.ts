@@ -150,7 +150,7 @@ export function subtitleFontConfig(env?: Env): { fontsDir: string; family: strin
 
 // ── 功能门 ────────────────────────────────────────────────────────────────────
 
-export type MediaBinaryNeed = 'ffmpeg' | 'ffprobe' | 'whisper'
+export type MediaBinaryNeed = 'ffmpeg' | 'ffprobe' | 'zh-font' | 'whisper'
 
 /** 一个 need 缺哪些资产 id(env 显式覆盖视为用户自管、不判缺,保持门与实际 spawn 一致)。 */
 function missingAssetIdsFor(need: MediaBinaryNeed, env: Env): string[] {
@@ -163,6 +163,10 @@ function missingAssetIdsFor(need: MediaBinaryNeed, env: Env): string[] {
     if (explicitOf(env, ['FFPROBE_BIN', 'FFPROBE_PATH'])) return []
     const found = managedAssetPath(ASSET_IDS.ffprobe) ?? bundledBinary('ffprobe', env) ?? resolveExecutable('ffprobe', env)
     return found ? [] : [ASSET_IDS.ffprobe]
+  }
+  if (need === 'zh-font') {
+    if (explicitOf(env, ['QF_SUBTITLE_FONT_DIR'])) return []
+    return subtitleFontConfig(env) ? [] : [ASSET_IDS.zhFont]
   }
   // whisper = 转写二进制 + 权重都要;用户显式自管(自定义命令/直指路径)则不判缺。
   const missing: string[] = []
@@ -205,7 +209,7 @@ export function assetPreparingResult(entries: AssetGateEntry[]): Record<string, 
       status: entry.ensure.status,
       progress: entry.ensure.status === 'downloading' ? entry.ensure.progress : 0,
     })),
-    message: `这个功能需要的组件正在后台准备(${progress}%),准备好后会自动可用;稍等片刻再试一次就行,不用做任何操作。`,
+    message: `这个功能需要的组件正在后台准备(${progress}%)；当前任务会在准备完成后自动继续，无需重新提交。`,
   }
 }
 

@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { startServer } from './index'
 import { AssetManager } from '../assets/assetManager'
 
-const MANIFEST_URL = 'http://assets.example/assets/manifest.json'
+const MANIFEST_URL = 'https://assets.example/assets/manifest.json'
 
 const cleanups: Array<() => void> = []
 afterEach(() => {
@@ -28,10 +28,10 @@ function makeServerWithAssets() {
     if (url === MANIFEST_URL) {
       return Response.json({
         version: 'v1',
-        assets: [{ id: 'ffmpeg', platform: 'all', tier: 1, size: content.length, sha256: sha256(content), url: 'http://assets.example/f/ffmpeg', dest: 'ffmpeg' }],
+        assets: [{ id: 'ffmpeg', platform: 'all', tier: 1, size: content.length, sha256: sha256(content), url: 'https://assets.example/f/ffmpeg', dest: 'ffmpeg' }],
       })
     }
-    if (url === 'http://assets.example/f/ffmpeg') return new Response(content, { status: 200 })
+    if (url === 'https://assets.example/f/ffmpeg') return new Response(content, { status: 200 })
     return new Response('not found', { status: 404 })
   }
   const manager = new AssetManager({

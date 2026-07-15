@@ -1,6 +1,6 @@
 // B-Roll 五步之一:镜头切分(scene detect)。
 //
-// 复刻 PySceneDetect ContentDetector 思路,但不带 Python/onnx——用 bundled ffmpeg 的
+// 复刻 PySceneDetect ContentDetector 思路,但不带 Python/onnx——用本地 FFmpeg 的
 // `scene` 分数(帧间差,和 HSV 差同源)。命令:
 //   ffmpeg -i <src> -filter:v "select='gt(scene,T)',showinfo" -an -f null -
 // 解析 stderr 里每个命中帧的 pts_time 得切点;TS 侧后处理复刻两个保护:

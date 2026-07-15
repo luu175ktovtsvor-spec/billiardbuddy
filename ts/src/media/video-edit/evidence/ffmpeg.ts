@@ -1,6 +1,6 @@
 // B-Roll 视觉引擎共用的 ffmpeg spawn 小工具。
 //
-// 三条硬约束:全本地(bundled ffmpeg)、免 key、Windows 可打包。
+// 三条硬约束:使用资产管理器准备的本地 FFmpeg、免 key、Windows 可运行。
 // 只用 node:child_process spawn 外部 ffmpeg,不 require 任何 .node(避开 ts/CLAUDE.md §8
 // Bun+Windows 段错误)。缺 ffmpeg / 失败一律由各调用方 try/catch 优雅降级,绝不崩。
 

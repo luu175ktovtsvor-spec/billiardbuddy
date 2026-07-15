@@ -109,6 +109,31 @@ test('blocked component preparation automatically continues the same job when as
   expect(gateChecks).toBeGreaterThanOrEqual(3)
 }, 10_000)
 
+test('video render requests the Tier2 Chinese font only when subtitles are enabled', async () => {
+  const { root, source, tasks, env } = setup()
+  const requested: string[][] = []
+  const service = new VideoEditingService({
+    stateRoot: root,
+    tasks,
+    env,
+    gateAssets: (_runtimeEnv, needs) => {
+      requested.push([...needs])
+      return { blocked: true, asset_progress: 1, message: '组件准备中 1%' }
+    },
+  })
+  const project = await service.store.create({ video_paths: [source] })
+  const withSubtitles = await service.startRender(project.project_id, { revision: project.revision, include_subtitles: true })
+  await waitFor(async () => requested.length, count => count >= 1)
+  expect(requested[0]).toEqual(['ffmpeg', 'ffprobe', 'zh-font'])
+  await service.cancelJob(withSubtitles.job_id)
+
+  requested.length = 0
+  const withoutSubtitles = await service.startRender(project.project_id, { revision: project.revision, include_subtitles: false })
+  await waitFor(async () => requested.length, count => count >= 1)
+  expect(requested[0]).toEqual(['ffmpeg', 'ffprobe'])
+  await service.cancelJob(withoutSubtitles.job_id)
+})
+
 test('source range responses support browser suffix requests and reject multiple ranges', async () => {
   const { source, service } = setup()
   const created = await service.store.create({ video_paths: [source] })

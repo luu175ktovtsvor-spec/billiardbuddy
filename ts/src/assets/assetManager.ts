@@ -28,8 +28,8 @@ import type {
   EnsureAssetResult,
 } from './types'
 
-/** 清单默认下载源:owner 大陆机 nginx 静态路径(可换域名/HTTPS 后改这一处或用 env 覆盖)。 */
-export const DEFAULT_ASSET_MANIFEST_URL = 'http://39.106.214.21/assets/manifest.json'
+/** 清单默认下载源：大陆机 nginx 的 HTTPS 静态路径。 */
+export const DEFAULT_ASSET_MANIFEST_URL = 'https://data.zzyppz.cn/assets/manifest.json'
 
 /** WS 广播主题(server 把每条 asset_progress 发到这个 topic)。 */
 export const ASSET_WS_TOPIC = 'assets'
@@ -80,6 +80,17 @@ function safeDestParts(dest: unknown): string[] | null {
   return parts
 }
 
+function trustedAssetUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return ''
+  try {
+    const url = new URL(value.trim())
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+    return url.protocol === 'https:' || (url.protocol === 'http:' && loopback) ? url.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
 function parseSpec(raw: unknown): AssetSpec | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const entry = raw as Record<string, unknown>
@@ -93,7 +104,7 @@ function parseSpec(raw: unknown): AssetSpec | null {
   if (size === null) return null
   const sha256 = typeof entry.sha256 === 'string' && SHA256_RE.test(entry.sha256.trim()) ? entry.sha256.trim().toLowerCase() : ''
   if (!sha256) return null
-  const url = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url.trim()) ? entry.url.trim() : ''
+  const url = trustedAssetUrl(entry.url)
   if (!url) return null
   const destParts = safeDestParts(entry.dest)
   if (!destParts) return null
@@ -181,7 +192,7 @@ export class AssetManager {
     this.statePath = join(this.assetsRoot, 'state.json')
     this.manifestCachePath = join(this.assetsRoot, 'manifest.json')
     const env = opts.env ?? process.env
-    this.manifestUrl = env.QF_ASSET_MANIFEST_URL?.trim() || DEFAULT_ASSET_MANIFEST_URL
+    this.manifestUrl = trustedAssetUrl(env.QF_ASSET_MANIFEST_URL) || DEFAULT_ASSET_MANIFEST_URL
     this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input as string, init))
     this.platform = opts.platform ?? `${process.platform}-${process.arch}`
     this.retryBaseMs = opts.retryBaseMs ?? 3_000
