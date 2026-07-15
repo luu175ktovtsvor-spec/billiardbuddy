@@ -482,14 +482,17 @@ export const useChatStore = create<ChatState>((set, get) => {
           break
         }
         // api_retry/streaming_fallback 两种严重度分开(对齐 cc StreamingIndicator 的琥珀/中性两条横幅):
-        // 后端目前只把这两类塞进通用 context_note 文本(远程子代理桥接场景,见 tasks/bridgeSdkEventProjection.ts),
-        // 前端按文本模式识别、渲成对应色阶的横幅,而不是普通灰字旁白。
-        if (/^Remote API retry/i.test(text)) {
-          pushNote(text, 'api_retry')
+        // 后端目前只把这两类塞进通用 context_note 英文文本(远程子代理桥接场景,见
+        // tasks/bridgeSdkEventProjection.ts),前端按这个英文模式识别分类、但展示给用户的文案要翻成中文,
+        // 不能把 "Remote API retry 2/3" 这种技术串直接怼给不懂技术的门店老板。
+        const apiRetryMatch = text.match(/^Remote API retry\s+(\d+)\s*\/\s*(\d+)/i)
+        if (apiRetryMatch) {
+          pushNote(`正在重试连接(第 ${apiRetryMatch[1]}/${apiRetryMatch[2]} 次)`, 'api_retry')
           break
         }
         if (/^Remote streaming fallback/i.test(text)) {
-          pushNote(text, 'streaming_fallback')
+          console.debug('[context_note] streaming_fallback', text)
+          pushNote('网络不稳定,已自动切换连接方式', 'streaming_fallback')
           break
         }
         if (/压缩|compact/i.test(text)) set({ runVerb: 'working' })

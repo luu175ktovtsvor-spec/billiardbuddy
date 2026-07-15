@@ -124,3 +124,36 @@ test('流式正文和步末 commentary 合并成一条阶段独白', () => {
     wsManager.isConnected = originalIsConnected
   }
 })
+
+test('远程重连/降级横幅翻成中文,不把内核英文技术串直接怼给用户', () => {
+  const originalOnMessage = wsManager.onMessage.bind(wsManager)
+  const originalConnect = wsManager.connect.bind(wsManager)
+  const originalIsConnected = wsManager.isConnected.bind(wsManager)
+  let handler: ((message: ServerMessage) => void) | null = null
+  wsManager.onMessage = (_conversationId, next) => { handler = next; return () => {} }
+  wsManager.connect = () => {}
+  wsManager.isConnected = () => false
+
+  try {
+    useChatStore.getState().startConversation('conv-fallback')
+    const emit = (event: ServerMessage['event']) => handler?.({
+      type: 'event',
+      seq: 1,
+      ts: '2026-07-15T00:00:00.000Z',
+      event,
+    })
+    emit({ type: 'context_note', text: 'Remote API retry 2/3' })
+    emit({ type: 'context_note', text: 'Remote streaming fallback: fetch failed' })
+
+    const notes = useChatStore.getState().blocks.filter(block => block.kind === 'note')
+    expect(notes).toHaveLength(2)
+    expect(notes[0]).toMatchObject({ variant: 'api_retry', text: '正在重试连接(第 2/3 次)' })
+    expect(notes[0]?.kind === 'note' && notes[0].text).not.toContain('Remote')
+    expect(notes[1]).toMatchObject({ variant: 'streaming_fallback', text: '网络不稳定,已自动切换连接方式' })
+    expect(notes[1]?.kind === 'note' && notes[1].text).not.toContain('fetch failed')
+  } finally {
+    wsManager.onMessage = originalOnMessage
+    wsManager.connect = originalConnect
+    wsManager.isConnected = originalIsConnected
+  }
+})
