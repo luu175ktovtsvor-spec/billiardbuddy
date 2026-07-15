@@ -7,7 +7,8 @@ import { PageHeader, PrimaryButton, SecondaryButton } from '../components/shared
 import { toast } from '../stores/toastStore'
 import { IconClock, IconPlus, IconMoreHorizontal, IconEdit, IconTrash, IconZap } from '../components/shared/icons'
 import { t } from '../i18n'
-import { scheduledApi, toView, tasksFrom, type Freq, type TaskView } from '../api/scheduled'
+import { scheduledApi, toView, tasksFrom, type Freq, type ScheduledFormValues, type TaskView } from '../api/scheduled'
+import { workflowsApi, type WorkflowDefinition, type WorkflowRun } from '../api/workflows'
 
 const FREQ_LABEL: Record<Freq, string> = { day: '每天', week: '每周一', month: '每月 1 日' }
 export const scheduleText = (f: Freq, time: string) => `${FREQ_LABEL[f]} ${time}`
@@ -45,7 +46,71 @@ function FreqPicker({ value, onChange }: { value: Freq; onChange: (f: Freq) => v
   )
 }
 
-interface FormValues { title: string; freq: Freq; time: string; enabled: boolean }
+type FormValues = ScheduledFormValues
+
+/** 任务类型二选一(样式同 FreqPicker 的分段控件)。 */
+function TypePicker({ isWorkflow, onChange }: { isWorkflow: boolean; onChange: (workflow: boolean) => void }) {
+  const opts = [
+    { v: false, label: t('scheduled.formTypeInstruction') },
+    { v: true, label: t('scheduled.formTypeWorkflow') },
+  ]
+  return (
+    <div className="inline-flex w-full rounded-lg p-0.5" style={{ background: 'var(--color-surface-container)' }}>
+      {opts.map((o) => {
+        const on = o.v === isWorkflow
+        return (
+          <button key={String(o.v)} type="button" onClick={() => onChange(o.v)}
+            className="flex-1 rounded-md px-3 py-1.5 text-[12.5px] transition-colors"
+            style={{ background: on ? 'var(--color-surface)' : 'transparent', color: on ? 'var(--color-text-primary)' : 'var(--color-text-secondary)', boxShadow: on ? 'var(--shadow-control)' : undefined, fontWeight: on ? 600 : 400 }}>
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+export const RUN_STATUS_LABEL: Record<WorkflowRun['status'], string> = {
+  running: t('scheduled.runStatusRunning'),
+  completed: t('scheduled.runStatusCompleted'),
+  failed: t('scheduled.runStatusFailed'),
+  cancelled: t('scheduled.runStatusCancelled'),
+}
+
+export function formatRunTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** 工作流运行记录(轻列表:名称、时间、状态、步骤进度、失败原因)。 */
+export function WorkflowRunList({ runs }: { runs: WorkflowRun[] }) {
+  return (
+    <div role="list" aria-label={t('scheduled.runsTitle')} className="flex flex-col gap-0.5">
+      {runs.map(run => {
+        const done = run.steps.filter(step => step.status === 'completed').length
+        const statusColor = run.status === 'failed'
+          ? 'var(--color-error)'
+          : run.status === 'completed' ? 'var(--color-success)' : 'var(--color-text-tertiary)'
+        return (
+          <div key={run.id} role="listitem" data-testid="workflow-run-row"
+            className="flex min-h-[44px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--color-surface-hover)]">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px]" style={{ color: 'var(--color-text-primary)' }}>{run.workflowName}</div>
+              <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+                <span className="shrink-0">{formatRunTime(run.startedAt)}</span>
+                <span aria-hidden>·</span>
+                <span className="shrink-0">{done}/{run.steps.length} 步</span>
+                {run.error && <><span aria-hidden>·</span><span className="truncate">{run.error}</span></>}
+              </div>
+            </div>
+            <span className="shrink-0 text-[11.5px]" style={{ color: statusColor }}>{RUN_STATUS_LABEL[run.status]}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export function ScheduledTaskList({ tasks, onToggle, onOpenMenu }: {
   tasks: TaskView[]
@@ -71,6 +136,15 @@ export function ScheduledTaskList({ tasks, onToggle, onOpenMenu }: {
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-normal" style={{ color: 'var(--color-text-primary)' }}>{task.title}</div>
             <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }}>
+              {task.workflowId && (
+                <>
+                  <span className="shrink-0 rounded px-1 py-px text-[10.5px]" data-testid="workflow-badge"
+                    style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
+                    {t('scheduled.workflowBadge')}
+                  </span>
+                  <span aria-hidden>·</span>
+                </>
+              )}
               <span className="shrink-0">{scheduleText(task.freq, task.time)}</span>
               <span aria-hidden>·</span>
               <span className="truncate">{t('scheduled.nextRun')} {formatNext(task.nextRunAt, task.freq, task.time)}</span>
@@ -111,21 +185,67 @@ function TaskForm({ initial, busy, onCancel, onSave }: { initial: TaskView | nul
   const [title, setTitle] = useState(initial?.title ?? '')
   const [freq, setFreq] = useState<Freq>(initial?.freq ?? 'day')
   const [time, setTime] = useState(initial?.time ?? '09:00')
-  const canSave = title.trim().length > 0 && !busy
+  const [isWorkflow, setIsWorkflow] = useState(!!initial?.workflowId)
+  const [workflowId, setWorkflowId] = useState(initial?.workflowId ?? '')
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[] | null>(null)
+
+  // 工作流清单按需拉取一次(打开表单即拉,选项立即可用;失败落 [] 显示空态)。
+  useEffect(() => {
+    let alive = true
+    workflowsApi.list()
+      .then(list => { if (alive) setWorkflows(list) })
+      .catch(() => { if (alive) setWorkflows([]) })
+    return () => { alive = false }
+  }, [])
+
+  const selected = workflows?.find(w => w.id === workflowId) ?? null
+  const canSave = !busy && (isWorkflow ? !!workflowId : title.trim().length > 0)
+  const save = () => {
+    if (!canSave) return
+    if (isWorkflow) onSave({ title: selected?.name ?? workflowId, freq, time, enabled: initial?.enabled ?? true, workflowId })
+    else onSave({ title: title.trim(), freq, time, enabled: initial?.enabled ?? true })
+  }
 
   return (
     <Modal open onClose={onCancel} title={initial ? t('scheduled.formEdit') : t('scheduled.formNew')} maxWidth={480} testId="task-form"
       footer={<>
         <SecondaryButton onClick={onCancel}>{t('scheduled.cancel')}</SecondaryButton>
-        <PrimaryButton onClick={() => { if (canSave) onSave({ title: title.trim(), freq, time, enabled: initial?.enabled ?? true }) }}>
+        <PrimaryButton onClick={save}>
           {busy ? '保存中…' : t('scheduled.save')}
         </PrimaryButton>
       </>}>
       <div className="px-5 py-4">
-        <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.formContent')}</label>
-        <textarea autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('scheduled.formContentPlaceholder')} rows={3}
-          className="w-full resize-none rounded-lg px-3 py-2 text-[13px] outline-none"
-          style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }} />
+        <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.formType')}</label>
+        <TypePicker isWorkflow={isWorkflow} onChange={setIsWorkflow} />
+        {isWorkflow ? (
+          <div className="mt-4">
+            <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.formWorkflow')}</label>
+            {workflows === null ? (
+              <p className="text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{t('scheduled.formWorkflowLoading')}</p>
+            ) : workflows.length === 0 ? (
+              <p className="text-[12.5px]" style={{ color: 'var(--color-text-tertiary)' }}>{t('scheduled.formWorkflowEmpty')}</p>
+            ) : (
+              <>
+                <select value={workflowId} onChange={(e) => setWorkflowId(e.target.value)} data-testid="workflow-select"
+                  className="w-full rounded-lg px-3 py-2 text-[13px] outline-none"
+                  style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }}>
+                  <option value="">{t('scheduled.formWorkflow')}</option>
+                  {workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+                {selected?.description && (
+                  <p className="mt-1.5 text-[11.5px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{selected.description}</p>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="mt-4">
+            <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.formContent')}</label>
+            <textarea autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('scheduled.formContentPlaceholder')} rows={3}
+              className="w-full resize-none rounded-lg px-3 py-2 text-[13px] outline-none"
+              style={{ background: 'var(--color-surface-container-low)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }} />
+          </div>
+        )}
         <div className="mt-4 flex items-end gap-3">
           <div className="min-w-0 flex-1">
             <label className="mb-1.5 block text-[12.5px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.formFreq')}</label>
@@ -144,6 +264,7 @@ function TaskForm({ initial, busy, onCancel, onSave }: { initial: TaskView | nul
 
 export function ScheduledPage() {
   const [tasks, setTasks] = useState<TaskView[]>([])
+  const [runs, setRuns] = useState<WorkflowRun[]>([])
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<TaskView | 'new' | null>(null)
   const [busy, setBusy] = useState(false)
@@ -159,6 +280,8 @@ export function ScheduledPage() {
     } finally {
       setLoaded(true)
     }
+    // 运行记录是补充信息:拉不到不影响任务列表。
+    try { setRuns((await workflowsApi.listRuns()).slice(0, 10)) } catch { /* 保持上次 */ }
   }
   useEffect(() => { void reload() }, [])
 
@@ -208,6 +331,13 @@ export function ScheduledPage() {
           />
         )}
         {loaded && loadFailed && <p className="mt-4 px-2 text-[12px]" style={{ color: 'var(--color-error)' }}>暂时无法读取全部任务。</p>}
+
+        {runs.length > 0 && (
+          <div className="mt-8" data-testid="workflow-runs-section">
+            <h2 className="mb-2 px-2 text-[13px] font-medium" style={{ color: 'var(--color-text-secondary)' }}>{t('scheduled.runsTitle')}</h2>
+            <WorkflowRunList runs={runs} />
+          </div>
+        )}
       </div>
 
       {menu && (

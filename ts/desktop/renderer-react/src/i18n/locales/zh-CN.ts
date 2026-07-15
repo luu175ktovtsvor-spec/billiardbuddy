@@ -78,6 +78,19 @@ export const zhCN = {
     freqMonth: '每月',
     save: '保存',
     cancel: '取消',
+    // 任务类型:自由指令 or 整条经营工作流(/api/v1/workflows)
+    formType: '任务类型',
+    formTypeInstruction: '自由指令',
+    formTypeWorkflow: '经营工作流',
+    formWorkflow: '选择工作流',
+    formWorkflowLoading: '正在读取工作流…',
+    formWorkflowEmpty: '暂时没有可用的工作流。',
+    workflowBadge: '工作流',
+    runsTitle: '工作流运行记录',
+    runStatusRunning: '进行中',
+    runStatusCompleted: '已完成',
+    runStatusFailed: '失败',
+    runStatusCancelled: '已取消',
   },
   // 插件(能力/连接器 · 照 Codex/ChatGPT「Plugins / Connectors」)
   plugins: {
