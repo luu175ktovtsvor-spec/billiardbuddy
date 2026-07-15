@@ -5,7 +5,7 @@ import type { ChatBlock } from '../../stores/chatStore'
 
 mock.module('dompurify', () => ({ default: { sanitize: (raw: string) => raw } }))
 
-const { Block, groupBlocks, partitionTurnItems, splitTurns } = await import('./MessageList')
+const { Block, groupBlocks, splitTurns } = await import('./MessageList')
 const { shouldShowInitialWaiting } = await import('./StreamingIndicator')
 const { ThinkingBlock } = await import('./ThinkingBlock')
 const { ToolCallGroup } = await import('./ToolCallGroup')
@@ -26,18 +26,22 @@ test('原始思考正文不展示，进行中和完成态只显示状态摘要',
   expect(completed).not.toContain('已经核对完源码证据')
 })
 
-test('媒体成品从可折叠活动中分离并与最终回复常驻', () => {
+test('媒体成品被拆成独立活动项，不会埋进前后工具组', () => {
   const blocks: ChatBlock[] = [
     { id: 'user-media', kind: 'user', text: '导出视频' },
+    { id: 'read-before', kind: 'tool', tool: 'read_file', input: { path: 'brief.md' }, status: 'ok' },
     { id: 'task-output', kind: 'tool', tool: 'TaskOutput', input: { task_id: 'v1' }, status: 'ok', output: '<media_result><video_url>/exports/final.mp4</video_url></media_result>' },
+    { id: 'read-after', kind: 'tool', tool: 'read_file', input: { path: 'manifest.json' }, status: 'ok' },
     { id: 'assistant-media', kind: 'assistant', text: '视频已经生成', streaming: false },
   ]
   const turn = splitTurns(groupBlocks(blocks)).find(entry => entry.type === 'turn')
   if (turn?.type !== 'turn') throw new Error('没有生成媒体回合')
-  const partition = partitionTurnItems(turn.items)
-  expect(partition.activityItems).toHaveLength(0)
-  expect(partition.responseItems).toHaveLength(2)
-  expect(partition.responseItems[0]?.kind).toBe('tool-group')
+  expect(turn.items).toHaveLength(4)
+  expect(turn.items.map(item => item.key)).toEqual(['read-before', 'task-output', 'read-after', 'assistant-media'])
+  const media = turn.items[1]
+  expect(media?.kind).toBe('tool-group')
+  if (media?.kind !== 'tool-group') throw new Error('媒体结果没有生成独立活动项')
+  expect(media.blocks.map(block => block.id)).toEqual(['task-output'])
 })
 
 test('工具活动组用思考状态接管组头，不在明细里重复暴露思考正文', () => {
@@ -50,9 +54,10 @@ test('工具活动组用思考状态接管组头，不在明细里重复暴露�
   expect(html).not.toContain('不应在工具明细里重复出现')
 })
 
-test('最终回复与可折叠活动区分离，流式正文不渲染字符光标', () => {
+test('阶段独白、工具活动和最终回复保持真实时序，流式正文不渲染字符光标', () => {
   const blocks: ChatBlock[] = [
     { id: 'user-1', kind: 'user', text: '检查项目' },
+    { id: 'commentary-1', kind: 'assistant', text: '我先看一下项目结构。', streaming: false },
     { id: 'thinking-1', kind: 'thinking', text: '先阅读文件', active: false },
     { id: 'tool-1', kind: 'tool', tool: 'read_file', input: { file_path: '/tmp/a.ts' }, status: 'ok' },
     { id: 'assistant-1', kind: 'assistant', text: '这是最终结论', streaming: true },
@@ -60,17 +65,14 @@ test('最终回复与可折叠活动区分离，流式正文不渲染字符光�
   const turn = splitTurns(groupBlocks(blocks)).find((entry) => entry.type === 'turn')
   expect(turn?.type).toBe('turn')
   if (turn?.type !== 'turn') throw new Error('没有生成回合')
-  const partition = partitionTurnItems(turn.items)
-  expect(partition.hasActivity).toBe(true)
-  expect(partition.activityItems).toHaveLength(1)
-  expect(partition.responseItems).toHaveLength(1)
-  expect(partition.finalAssistant?.text).toBe('这是最终结论')
+  expect(turn.items.map(item => item.key)).toEqual(['commentary-1', 'thinking-1', 'assistant-1'])
+  expect(turn.items[1]?.kind).toBe('tool-group')
 
   const response = render(<Block block={{ id: 'assistant-stream', kind: 'assistant', text: '流式正文没有字符光标', streaming: true }} />)
   expect(response).not.toContain('qf-cursor')
 })
 
-test('回合运行中的助手文字是阶段独白，不提前当成最终回复', () => {
+test('回合运行中的助手文字保持为独立阶段独白', () => {
   const blocks: ChatBlock[] = [
     { id: 'user-running', kind: 'user', text: '检查项目' },
     { id: 'commentary-running', kind: 'assistant', text: '我先看一下这个项目的结构。', streaming: false },
@@ -79,10 +81,9 @@ test('回合运行中的助手文字是阶段独白，不提前当成最终回�
   const turn = splitTurns(groupBlocks(blocks)).find((entry) => entry.type === 'turn')
   if (turn?.type !== 'turn') throw new Error('没有生成运行中回合')
 
-  const partition = partitionTurnItems(turn.items, true)
-  expect(partition.finalAssistant).toBeUndefined()
-  expect(partition.responseItems).toHaveLength(0)
-  expect(partition.activityItems.some((item) => item.kind === 'block' && item.block.kind === 'assistant')).toBe(true)
+  expect(turn.items[0]?.kind).toBe('block')
+  expect(turn.items[0]?.kind === 'block' && turn.items[0].block.kind === 'assistant').toBe(true)
+  expect(turn.items[1]?.kind).toBe('tool-group')
 })
 
 test('技能和工具加载保留在活动流，大结果分页回读仍隐藏', () => {
