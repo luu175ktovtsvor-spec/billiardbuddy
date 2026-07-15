@@ -171,7 +171,7 @@ export function CommandPalette() {
   }
 
   return (
-    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4" style={{ background: 'color-mix(in srgb, #000 30%, transparent)' }} onClick={close} data-testid="command-palette">
+    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4" style={{ background: '#00000022' }} onClick={close} data-testid="command-palette">
       <div
         className="flex h-fit max-h-[min(504px,90vh)] w-[min(520px,92vw)] flex-col gap-1 overflow-hidden rounded-2xl p-1"
         style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-popover)' }}

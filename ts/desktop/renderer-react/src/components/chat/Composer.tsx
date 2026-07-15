@@ -341,7 +341,7 @@ function QueuedMessages() {
 }
 
 /**
- * 斜杠命令 / @ 引用浮层(对标 Codex 逆向规格):与输入框同宽、rounded-2xl + p-1 内衬 + 半透明毛玻璃、
+ * 斜杠命令 / @ 引用浮层:与输入框同宽，使用 Codex cmdk-root 的 3xl 圆角、p-1 和半透明毛玻璃、
  * 上下渐隐遮罩、行 rounded-lg(非选中整行 75% 透明度、选中中性灰底)、技能组 sticky 标题 + 右侧作用域灰字。
  */
 function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onPick }: {
@@ -373,9 +373,9 @@ function TokenPanel({ token, commands, files, skills = [], activeIdx, query, onP
   return (
     <div
       data-testid="token-panel"
-      className="absolute inset-x-0 bottom-full z-50 mb-1.5 overflow-hidden rounded-xl p-1"
+      className="absolute inset-x-0 bottom-full z-50 mb-1.5 overflow-hidden rounded-3xl p-1"
       style={{
-        background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)',
+        background: 'color-mix(in oklab, var(--color-surface) 95%, transparent)',
         backdropFilter: 'blur(8px)',
         WebkitBackdropFilter: 'blur(8px)',
         border: '1px solid var(--color-border)',
