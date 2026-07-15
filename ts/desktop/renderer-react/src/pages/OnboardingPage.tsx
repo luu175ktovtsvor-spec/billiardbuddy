@@ -21,7 +21,7 @@ function PrimaryBtn({ children, onClick }: { children: ReactNode; onClick: () =>
     <button
       type="button"
       onClick={onClick}
-      className="rounded-full px-6 py-2 text-[13.5px] font-medium transition-opacity hover:opacity-90"
+      className="rounded-lg px-4 py-2 text-[13.5px] font-medium transition-opacity hover:opacity-90"
       style={{ background: 'var(--color-primary)', color: 'var(--color-on-primary)' }}
     >
       {children}
@@ -34,7 +34,7 @@ function GhostBtn({ children, onClick }: { children: ReactNode; onClick: () => v
     <button
       type="button"
       onClick={onClick}
-      className="rounded-full px-4 py-2 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+      className="rounded-lg px-4 py-2 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
       {children}
@@ -45,7 +45,7 @@ function GhostBtn({ children, onClick }: { children: ReactNode; onClick: () => v
 /** 权限档说明行(文案与设置页同源口径)。 */
 function PermRow({ icon, title, desc }: { icon: ReactNode; title: string; desc: string }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl px-4 py-3 text-left" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+    <div className="flex items-start gap-3 rounded-lg px-4 py-3 text-left" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
       <span className="mt-0.5 shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{icon}</span>
       <span className="min-w-0">
         <span className="block text-[13.5px] font-medium" style={{ color: 'var(--color-text-primary)' }}>{title}</span>
@@ -64,7 +64,7 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
   const steps: ReactNode[] = [
     // 1. 欢迎
     <div key="welcome" className="flex flex-col items-center text-center">
-      <Smiley size={72} variant="glow" />
+      <Smiley size={64} />
       <h1 className="mb-3 mt-6 text-[26px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>欢迎使用球房管家</h1>
       <p className="max-w-[420px] text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
         它是装在你电脑上的 AI 助手:能读写文件、跑命令、上网查资料、生成图片,把活实打实干完。说句大白话,它就开工。
@@ -74,7 +74,7 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
 
     // 2. 选工作目录(对齐 Codex workspace 步「添加项目以继续」,但允许跳过用默认)
     <div key="workspace" className="flex flex-col items-center text-center">
-      <span className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
+      <span className="flex h-14 w-14 items-center justify-center rounded-lg" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
         <IconFolder size={28} />
       </span>
       <h1 className="mb-3 mt-6 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>选一个工作文件夹</h1>
@@ -106,7 +106,7 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
 
     // 4. 台球知识库(挂载是会话级动作,这里只介绍入口不放开关)
     <div key="expert" className="flex flex-col items-center text-center">
-      <span className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
+      <span className="flex h-14 w-14 items-center justify-center rounded-lg" style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-secondary)' }}>
         <IconTarget size={28} />
       </span>
       <h1 className="mb-3 mt-6 text-[22px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>开球房的老板,看这里</h1>
