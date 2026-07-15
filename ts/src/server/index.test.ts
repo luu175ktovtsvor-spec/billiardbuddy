@@ -5202,15 +5202,15 @@ test('legacy video-edit aliases delegate to Scene Timeline v2 without timeline d
   ].join('\n'), { mode: 0o755 })
   writeFileSync(ffprobePath, [
     '#!/bin/sh',
-    'cat <<\'JSON\'',
-    JSON.stringify({
-      streams: [
-        { codec_type: 'video', duration: '7.5', width: 1920, height: 1080, avg_frame_rate: '30/1', codec_name: 'h264' },
-        { codec_type: 'audio', codec_name: 'aac' },
-      ],
-      format: { duration: '7.5' },
-    }),
+    'input=""',
+    'for arg in "$@"; do input="$arg"; done',
+    'duration="7.5"',
+    'case "$input" in *.tmp.mp4) duration="4" ;; esac',
+    'cat <<JSON',
+    '{"streams":[{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30/1","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}],"format":{"duration":"${duration}"}}',
     'JSON',
+    'exit_code=$?',
+    'exit "$exit_code"',
     '',
   ].join('\n'), { mode: 0o755 })
   const videoServer = startServer({
