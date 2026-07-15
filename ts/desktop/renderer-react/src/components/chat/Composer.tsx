@@ -228,7 +228,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
   )
 }
 
-// —— 斜杠浮层的 Codex 对标辅助(分组/作用域/图标/匹配高亮;逆向规格见 docs/references/Codex逆向档案)——
+// —— 斜杠浮层分组、作用域和匹配高亮 ——
 
 /** 技能进「技能」组(对标 Codex slashCommands.skillsGroup),命令(pack/builtin)无组排最前。 */
 function slashGroup(cmd: SlashCommand): string | null {
