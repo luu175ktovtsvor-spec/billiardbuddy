@@ -1,6 +1,7 @@
 // 通用弹窗基件。表面参数对齐 Codex Dialog primitive；头/脚只承载本产品内容。
 // 供设置/分享/新建定时任务/添加 MCP 等复用。纯前端,无数据依赖。
 import { useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { IconX } from './icons'
 
 export function Modal({
@@ -31,7 +32,7 @@ export function Modal({
 
   if (!open) return null
 
-  return (
+  const modal = (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-6"
       style={{ background: '#00000022' }}
@@ -73,4 +74,8 @@ export function Modal({
       </div>
     </div>
   )
+
+  // Dialogs can be opened from clipped surfaces such as the chat composer.
+  // Mounting at body keeps the overlay relative to the application window.
+  return typeof document === 'undefined' ? modal : createPortal(modal, document.body)
 }
