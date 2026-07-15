@@ -4,7 +4,7 @@
 
 ## 当前目标
 
-`ts/` 提供桌面产品的共享契约、Agent 内核、本地服务、React renderer、Electron 主进程和验证入口。内核行为参考 `~/Desktop/cc-haha-ref`，产品边界以根 `CLAUDE.md` 和当前架构总览为准。
+`ts/` 提供桌面产品的共享契约、Agent 内核、本地服务、React renderer、Electron 主进程和验证入口。具体任务按用户指定直接读取相关本地实现，产品边界以根 `CLAUDE.md` 为准。
 
 ## 硬规则
 
