@@ -1,6 +1,6 @@
 /* ============================================================================
  * 桌面主题层:
- *   主操作与选中态使用中性色；蓝色只保留给链接和键盘焦点等语义反馈。
+ *   主操作保持中性；品牌提示、选中态、链接与键盘焦点使用克制的蓝色反馈。
  * 结构:Layer 1 palette(--cx-* 原子色)→ Layer 2 semantic(--color-* 组件消费名,只重写值)。
  * 文字/边框/图标从「前景色」用 color-mix 分级,不写死灰。
  * ==========================================================================*/
@@ -34,8 +34,8 @@
   --cx-accent: var(--cx-gray-900);
 
   --color-primary: var(--cx-accent);
-  --color-brand: var(--cx-accent);
-  --color-brand-tint: color-mix(in oklab, var(--cx-fg) 8%, transparent);
+  --color-brand: var(--cx-blue);
+  --color-brand-tint: color-mix(in oklab, var(--cx-blue) 12%, transparent);
   --color-on-primary: #ffffff;
 
   /* 三区底色(侧栏暖近白、主区白;仍中性) */
@@ -51,7 +51,7 @@
   --color-surface-container-highest: #e6e6e6;
   --color-surface-sidebar: var(--cx-gray-50);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 6%, transparent);      /* hover 仍中性 */
-  --color-surface-selected: color-mix(in oklab, var(--cx-fg) 8%, transparent);
+  --color-surface-selected: color-mix(in oklab, var(--cx-blue) 11%, transparent);
   --color-surface-glass: var(--cx-gray-0);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 8%, transparent);
 
@@ -98,8 +98,8 @@
   --cx-accent: #f5f5f5;
 
   --color-primary: var(--cx-accent);
-  --color-brand: var(--cx-accent);
-  --color-brand-tint: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+  --color-brand: var(--cx-blue-dark);
+  --color-brand-tint: color-mix(in oklab, var(--cx-blue-dark) 20%, transparent);
   --color-on-primary: var(--cx-gray-900);
 
   --color-app-sidebar: var(--cx-gray-900);
@@ -114,7 +114,7 @@
   --color-surface-container-highest: var(--cx-gray-600);
   --color-surface-sidebar: var(--cx-gray-900);
   --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-  --color-surface-selected: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+  --color-surface-selected: color-mix(in oklab, var(--cx-blue-dark) 18%, transparent);
   --color-surface-glass: var(--cx-gray-750);
   --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
 
@@ -145,8 +145,8 @@
     --cx-fg: var(--cx-fg-dark);
     --cx-accent: #f5f5f5;
     --color-primary: var(--cx-accent);
-    --color-brand: var(--cx-accent);
-    --color-brand-tint: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+    --color-brand: var(--cx-blue-dark);
+    --color-brand-tint: color-mix(in oklab, var(--cx-blue-dark) 20%, transparent);
     --color-on-primary: var(--cx-gray-900);
     --color-app-sidebar: var(--cx-gray-900);
     --color-app-main: var(--cx-gray-800);
@@ -160,7 +160,7 @@
     --color-surface-container-highest: var(--cx-gray-600);
     --color-surface-sidebar: var(--cx-gray-900);
     --color-surface-hover: color-mix(in oklab, var(--cx-fg) 8%, transparent);
-    --color-surface-selected: color-mix(in oklab, var(--cx-fg) 10%, transparent);
+    --color-surface-selected: color-mix(in oklab, var(--cx-blue-dark) 18%, transparent);
     --color-surface-glass: var(--cx-gray-750);
     --color-surface-glass-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
     --color-border: color-mix(in oklab, var(--cx-fg) 12%, transparent);
