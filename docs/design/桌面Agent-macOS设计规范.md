@@ -101,6 +101,8 @@
 
 - 页面与组件通过 feature API 和 store 使用后端能力，不在组件里拼接路由或解释原始响应。
 - renderer、preload、Electron main 和 sidecar 的共享字段放在 `ts/shared/contracts`，由 Zod 在边界解析。
+- Electron main 每次启动生成 sidecar 控制令牌；preload 只向受信主窗口返回连接地址和令牌。除最小健康检查外，renderer 的 REST、WS 和本地资源访问必须携带该令牌，WS 还要拒绝非本地浏览器来源。
+- 完全访问不是前端菜单显隐。设置页先修改后端持久权限上限，会话再做一次风险确认；发行策略可以禁用该上限。工作区扩展信任同样必须由后端持久化，不能因选择文件夹而自动授予。
 - `AppShell` 只负责应用启动、全局布局和顶层状态，不灌示例业务数据。
 - 新功能进入现有应用壳和功能域，不新增 HTML 入口、静态旧页面或另一套 renderer。
 
