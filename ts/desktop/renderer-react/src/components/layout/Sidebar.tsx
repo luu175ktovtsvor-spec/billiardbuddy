@@ -20,6 +20,8 @@ import { DRAG, NODRAG } from '../../lib/dragRegion'
 import { useResizableWidth } from '../../lib/useResizableWidth'
 import { ResizeHandle } from '../shared/ResizeHandle'
 import { ContextMenu } from '../shared/Menu'
+import { Modal } from '../shared/Modal'
+import { SecondaryButton } from '../shared/PageKit'
 import { Smiley } from '../shared/Smiley'
 import { toast } from '../../stores/toastStore'
 import {
@@ -103,6 +105,7 @@ export function Sidebar() {
   const removeSession = useSessionStore((s) => s.removeSession)
   const togglePin = useSessionStore((s) => s.togglePin)
   const toggleArchive = useSessionStore((s) => s.toggleArchive)
+  const deletingIds = useSessionStore((s) => s.deletingIds)
   const activeId = useChatStore((s) => s.conversationId)
   const chatRunning = useChatStore((s) => s.status === 'running')
   const toggleTheme = useUiStore((s) => s.toggleTheme)
@@ -137,6 +140,7 @@ export function Sidebar() {
     })
   }
   const [ctx, setCtx] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null)
   const [projCtx, setProjCtx] = useState<{ x: number; y: number; root: string } | null>(null)
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState('')
@@ -177,9 +181,15 @@ export function Sidebar() {
     }
     setEditingId(null)
   }
-  const doDelete = (id: string) => {
-    removeSession(id)
+  const doDelete = async (id: string) => {
+    const removed = await removeSession(id)
+    if (!removed) {
+      toast('删除失败，任务和聊天记录仍保留')
+      return
+    }
     if (id === activeId) openNewConversation()
+    setPendingDelete(null)
+    toast('已永久删除任务和聊天记录')
   }
   const ctxSession = ctx ? sessions.find((s) => s.id === ctx.id) : null
 
@@ -446,7 +456,7 @@ export function Sidebar() {
         />
       )}
 
-      {/* 会话右键上下文菜单(照 Codex 任务卡右键;前端本地生效,后端持久化后端接) */}
+      {/* 会话右键上下文菜单；归档与删除都等待后端持久化结果。 */}
       {ctx && (
         <ContextMenu
           x={ctx.x}
@@ -470,17 +480,54 @@ export function Sidebar() {
               icon: <IconArchive size={15} />,
               shortcut: '⇧⌘A',
               separatorBefore: true,
-              onClick: () => toggleArchive(ctx.id),
+              onClick: () => void (async () => {
+                const wasArchived = Boolean(ctxSession?.archived)
+                const changed = await toggleArchive(ctx.id)
+                if (!changed) {
+                  toast('归档状态更新失败')
+                  return
+                }
+                toast(wasArchived ? '已恢复到侧栏' : '已归档')
+                if (!wasArchived && ctx.id === activeId) openNewConversation()
+              })(),
             },
             {
               label: '删除',
               icon: <IconTrash size={15} />,
               danger: true,
               separatorBefore: true,
-              onClick: () => doDelete(ctx.id),
+              onClick: () => setPendingDelete({ id: ctx.id, title: ctx.title }),
             },
           ]}
         />
+      )}
+      {pendingDelete && (
+        <Modal
+          open
+          onClose={() => { if (!deletingIds.includes(pendingDelete.id)) setPendingDelete(null) }}
+          title="永久删除任务？"
+          maxWidth={480}
+          testId="delete-session"
+          footer={
+            <>
+              <SecondaryButton onClick={() => { if (!deletingIds.includes(pendingDelete.id)) setPendingDelete(null) }}>取消</SecondaryButton>
+              <button
+                type="button"
+                onClick={() => { if (!deletingIds.includes(pendingDelete.id)) void doDelete(pendingDelete.id) }}
+                className="rounded-lg px-3 py-2 text-[13px] font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
+                style={{ background: 'var(--color-error)', color: 'white' }}
+                disabled={deletingIds.includes(pendingDelete.id)}
+              >
+                {deletingIds.includes(pendingDelete.id) ? '正在删除…' : '永久删除'}
+              </button>
+            </>
+          }
+        >
+          <div className="px-5 py-4 text-[13px] leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+            <p>“{pendingDelete.title || t('sidebar.newChat')}”的聊天记录将从本机删除。</p>
+            <p className="mt-2" style={{ color: 'var(--color-error)' }}>此操作无法恢复。</p>
+          </div>
+        </Modal>
       )}
     </aside>
   )

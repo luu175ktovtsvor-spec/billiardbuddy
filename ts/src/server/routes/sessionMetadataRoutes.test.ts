@@ -78,6 +78,19 @@ describe('session metadata routes', () => {
     expect((await route(handler, '/sessions/missing', { method: 'PATCH', body: '{}' })).status).toBe(404)
   })
 
+  test('refuses to archive or permanently delete a running session', async () => {
+    const { handler, sessions } = createHarness()
+    await sessions.create({ id: 'running', title: '执行中', workspaceRoot: '/workspace/project' })
+    await sessions.touch('running', { status: 'running' })
+
+    expect((await route(handler, '/sessions/running', {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    })).status).toBe(409)
+    expect((await route(handler, '/sessions/running', { method: 'DELETE' })).status).toBe(409)
+    expect(await sessions.get('running')).toMatchObject({ status: 'running' })
+  })
+
   test('forks a session and keeps malformed or missing sources compatible', async () => {
     const { handler, sessions } = createHarness()
     await sessions.create({ id: 'source', title: '源会话', workspaceRoot: '/workspace/project' })
