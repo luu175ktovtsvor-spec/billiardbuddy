@@ -1,15 +1,10 @@
-// 消息流。对齐 cc-haha-ref desktop/src/components/chat/MessageList.tsx 的整体切法:
-// 连续 tool_use 折成一组(ToolCallGroup,见 file:line 对齐见该组件顶部注释)、thinking 走独立
-// ThinkingBlock、todo 清单走 sticky SessionTaskBar、api_retry/streaming_fallback 两种严重度分开渲染。
-//
-// 视觉皮改造(owner 2026-07-11)新增一层"回合分组":user 消息之间的所有内容(深度思考+工具行+
-// 助手回复)按回合归类。运行中的阶段独白与工具活动直接按时序展示；
-// 最终回复开始后，先前活动才合并成一条可展开摘要，对齐 Codex OOn + completedHeader 状态机。
+// 消息流按 user 消息切回合，同时保留回合内部的原始时序。连续工具和思考折成活动组；
+// 阶段独白与最终回复都保持正文可见，不再把整轮内容二次吞进一个总折叠行。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore, type ChatBlock } from '../../stores/chatStore'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { ToolCallGroup } from './ToolCallGroup'
-import { ToolCallCard } from './ToolCallCard'
+import { mediaResultFromOutput } from './ToolCallCard'
 import { EditSummaryCard } from './EditSummaryCard'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ApprovalCard } from './ApprovalCard'
@@ -17,8 +12,7 @@ import { SessionTaskBar } from './SessionTaskBar'
 import { StreamingIndicator } from './StreamingIndicator'
 import { StepCapsule } from './StepCapsule'
 import { MessageActions } from './MessageActions'
-import { IconRefresh, IconChevronDown, IconEdit, IconSearch, IconX, IconAlertCircle } from '../shared/icons'
-import { summarizeActivity, toolIcon, visibleActivityTools } from './toolMeta'
+import { IconRefresh, IconChevronDown, IconEdit, IconSearch, IconX } from '../shared/icons'
 import { useComposerStore } from '../../stores/composerStore'
 import { t } from '../../i18n'
 
@@ -168,7 +162,6 @@ function UserMessageRail({ containerRef }: { containerRef: React.RefObject<HTMLD
 type ToolBlockT = Extract<ChatBlock, { kind: 'tool' }>
 type ThinkingBlockT = Extract<ChatBlock, { kind: 'thinking' }>
 type ActivityBlockT = ToolBlockT | ThinkingBlockT
-type AssistantBlockT = Extract<ChatBlock, { kind: 'assistant' }>
 type RenderItem =
   | { key: string; kind: 'tool-group'; blocks: ActivityBlockT[] }
   | { key: string; kind: 'edit-group'; blocks: ToolBlockT[] }
@@ -181,8 +174,11 @@ const EDIT_TOOLS = new Set(['edit_file', 'multi_edit_file', 'write_file', 'patch
 // Codex 安装包的 completedHeader 明确包含 loaded-tools，展开后也会列出已读取的技能。
 const HIDDEN_TOOLS = new Set(['read_stored_tool_result'])
 
-/** 连续「工具 + 思考」聚成一个活动组(对齐 Codex agent-activity:思考进组、不占独立行;完成态组头
- *  =分类计数段)。编辑类不混组(走「已编辑 N 个文件」汇总卡,带撤销)。 */
+function isMediaResultTool(block: ChatBlock): block is ToolBlockT {
+  return block.kind === 'tool' && block.status === 'ok' && mediaResultFromOutput(block.output) !== null
+}
+
+/** 连续「工具 + 思考」聚成活动片段。编辑类单独汇总；媒体成品单独成组并始终可见。 */
 export function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
   // 先滤掉内部机制工具行(藏内部 setup 噪音),再分组。
   const visible = blocks.filter((b) => !(b.kind === 'tool' && HIDDEN_TOOLS.has(b.tool)))
@@ -203,12 +199,15 @@ export function groupBlocks(blocks: ChatBlock[]): RenderItem[] {
       }
       items.push({ key: b.id, kind: 'edit-group', blocks: group })
       i = j
+    } else if (isMediaResultTool(b)) {
+      items.push({ key: b.id, kind: 'tool-group', blocks: [b] })
+      i += 1
     } else if (isActivity(b)) {
       const group: ActivityBlockT[] = [b]
       let j = i + 1
       while (j < visible.length) {
         const next = visible[j]
-        if (!next || !isActivity(next)) break
+        if (!next || !isActivity(next) || isMediaResultTool(next)) break
         group.push(next)
         j += 1
       }
@@ -337,135 +336,10 @@ function renderItem(item: RenderItem, isLast: boolean, lastEditKey?: string) {
   return <Block key={item.key} block={item.block} isLast={isLast} />
 }
 
-/** Codex 只折叠最终回复之前的 Agent 活动，最终回复本身始终可见。 */
-export function partitionTurnItems(items: RenderItem[], turnInProgress = false): {
-  activityItems: RenderItem[]
-  responseItems: RenderItem[]
-  finalAssistant?: AssistantBlockT
-  hasActivity: boolean
-} {
-  let finalAssistantIndex = -1
-  if (!turnInProgress) {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i]
-      if (item?.kind === 'block' && item.block.kind === 'assistant') {
-        finalAssistantIndex = i
-        break
-      }
-    }
-  }
-  const finalItem = finalAssistantIndex >= 0 ? items[finalAssistantIndex] : undefined
-  const finalAssistant = finalItem?.kind === 'block' && finalItem.block.kind === 'assistant' ? finalItem.block : undefined
-  const beforeFinal = finalAssistantIndex >= 0 ? items.slice(0, finalAssistantIndex) : items
-  const persistentResults = beforeFinal.filter(item => item.kind === 'tool-group' && item.blocks.some(block =>
-    block.kind === 'tool' && block.status === 'ok' && /(?:<|&lt;)media_result(?:>|&gt;)/.test(block.output ?? ''),
-  ))
-  const activityItems = beforeFinal.filter(item => !persistentResults.includes(item))
-  // 成品不是调试活动：即使活动区完成后折叠，图片/视频结果也必须和最终回复一起常驻。
-  const responseItems = finalAssistantIndex >= 0 ? [...persistentResults, ...items.slice(finalAssistantIndex)] : []
-  const hasActivity = activityItems.some((item) =>
-    item.kind === 'tool-group' || item.kind === 'edit-group' || (item.kind === 'block' && (item.block.kind === 'thinking' || item.block.kind === 'assistant')),
-  )
-  return { activityItems, responseItems, finalAssistant, hasActivity }
-}
-
-function activityBlocks(items: RenderItem[]): ActivityBlockT[] {
-  return items.flatMap((item) => {
-    if (item.kind === 'tool-group') return item.blocks
-    if (item.kind === 'edit-group') return item.blocks
-    if (item.kind === 'block' && item.block.kind === 'thinking') return [item.block]
-    return []
-  })
-}
-
-function CompletedTurnActivity({
-  items,
-  collapsed,
-  onToggle,
-  lastKey,
-  lastEditKey,
-}: {
-  items: RenderItem[]
-  collapsed: boolean
-  onToggle: () => void
-  lastKey: string | undefined
-  lastEditKey: string | undefined
-}) {
-  const blocks = activityBlocks(items)
-  const tools = visibleActivityTools(blocks.filter((block): block is ToolBlockT => block.kind === 'tool'))
-  const hasError = tools.some((tool) => tool.status === 'error')
-  const Icon = tools.length > 0 ? toolIcon(tools[0]!.tool) : null
-  const summary = tools.length > 0 ? summarizeActivity(tools) : '已完成处理'
-
+function TurnBody({ items, lastKey, lastEditKey }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined }) {
   return (
-    <div className="my-1" data-block="turn-activity-summary">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        className="group/activity-header inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-1 text-left transition-colors hover:text-[var(--color-text-primary)]"
-        style={{ color: 'var(--color-text-secondary)' }}
-      >
-        {hasError ? <IconAlertCircle size={13} style={{ color: 'var(--color-error)' }} /> : Icon ? <Icon size={13} /> : null}
-        <span className="min-w-0 truncate text-[12.5px]">{summary}</span>
-        <IconChevronDown
-          size={11}
-          className="shrink-0 opacity-60 transition-transform group-hover/activity-header:opacity-100"
-          style={{ transform: collapsed ? 'rotate(-90deg)' : undefined }}
-        />
-      </button>
-      {!collapsed && (
-        <div className="mt-1" data-block="turn-activity-details">
-          {items.map((item) => {
-            if (item.kind === 'tool-group') {
-              const tools = visibleActivityTools(item.blocks.filter((block): block is ToolBlockT => block.kind === 'tool'))
-              return <div key={item.key} className="flex flex-col">{tools.map((tool) => <ToolCallCard key={tool.id} block={tool} />)}</div>
-            }
-            return renderItem(item, item.key === lastKey, lastEditKey)
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TurnBody({ items, lastKey, lastEditKey, isLatest }: { items: RenderItem[]; lastKey: string | undefined; lastEditKey: string | undefined; isLatest: boolean }) {
-  const status = useChatStore((s) => s.status)
-  const turnInProgress = isLatest && status === 'running'
-  const { activityItems, responseItems, finalAssistant, hasActivity } = partitionTurnItems(items, turnInProgress)
-  const [collapsed, setCollapsed] = useState(() => Boolean(finalAssistant))
-  const completedRef = useRef(Boolean(finalAssistant))
-
-  useEffect(() => {
-    const completed = Boolean(finalAssistant)
-    if (completed && !completedRef.current) setCollapsed(true)
-    completedRef.current = completed
-  }, [finalAssistant])
-
-  if (!finalAssistant && !hasActivity) {
-    return <>{items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}</>
-  }
-  return (
-    <div className="my-1" data-block="turn">
-      {hasActivity && (turnInProgress || !finalAssistant) && (
-        <div data-block="turn-activity">
-          {activityItems.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
-        </div>
-      )}
-      {hasActivity && finalAssistant && (
-        <CompletedTurnActivity
-          items={activityItems}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed((value) => !value)}
-          lastKey={lastKey}
-          lastEditKey={lastEditKey}
-        />
-      )}
-      {responseItems.length > 0 && (
-        <div data-block="turn-response">
-          {responseItems.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
-        </div>
-      )}
+    <div className="my-1 space-y-1" data-block="turn">
+      {items.map((item) => renderItem(item, item.key === lastKey, lastEditKey))}
     </div>
   )
 }
@@ -516,11 +390,11 @@ export function MessageList() {
       <div ref={containerRef} onScroll={onScroll} className="h-full overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-[768px]">
           <SessionTaskBar />
-          {turns.map((entry, index) =>
+          {turns.map((entry) =>
             entry.type === 'user' ? (
               renderItem(entry.item, entry.item.key === lastKey, lastEditKey)
             ) : (
-              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} lastEditKey={lastEditKey} isLatest={index === turns.length - 1} />
+              <TurnBody key={entry.key} items={entry.items} lastKey={lastKey} lastEditKey={lastEditKey} />
             ),
           )}
           <StreamingIndicator />
