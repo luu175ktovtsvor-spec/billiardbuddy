@@ -1,0 +1,4 @@
+interface:
+  display_name: "客户维护与邀约"
+  short_description: "结合客户真实情况准备邀约、回访、好评引导和持续跟进内容"
+  default_prompt: "使用 $customer-follow-up 帮我整理这批客户的跟进安排。"

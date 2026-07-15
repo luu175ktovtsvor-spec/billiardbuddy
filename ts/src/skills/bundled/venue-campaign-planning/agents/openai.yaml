@@ -1,0 +1,4 @@
+interface:
+  display_name: "门店活动策划"
+  short_description: "围绕目标客群、门店条件和预算编排活动方案、物料与复盘指标"
+  default_prompt: "使用 $venue-campaign-planning 帮我策划这次门店活动。"

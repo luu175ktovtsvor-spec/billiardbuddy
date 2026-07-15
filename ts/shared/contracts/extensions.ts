@@ -24,6 +24,8 @@ export const extensionCommandsResponseSchema = z.object({
 export const extensionSkillSchema = z.object({
   name: nameSchema,
   description: z.string().max(2_000),
+  display_name: nameSchema.optional(),
+  short_description: z.string().max(2_000).optional(),
   source: z.enum(['skills', 'plugin']),
   layer: extensionLayerSchema,
   when_to_use: z.string().max(2_000).optional(),

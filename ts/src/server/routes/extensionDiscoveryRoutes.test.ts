@@ -66,7 +66,7 @@ describe('extension discovery routes', () => {
     const selectedWorkspaceRoot = join(root, 'selected-workspace')
     mkdirSync(selectedWorkspaceRoot, { recursive: true })
     const skillDir = join(skillsRoot, 'fixture-skill')
-    mkdirSync(skillDir, { recursive: true })
+    mkdirSync(join(skillDir, 'agents'), { recursive: true })
     writeFileSync(join(skillDir, 'SKILL.md'), `---
 name: fixture-skill
 description: Fixture skill description
@@ -74,6 +74,10 @@ whenToUse: Use for fixture checks
 argument-hint: <fixture>
 ---
 Fixture instructions.
+`)
+    writeFileSync(join(skillDir, 'agents', 'openai.yaml'), `interface:
+  display_name: "Fixture display"
+  short_description: "Fixture summary"
 `)
     const workspaceSkillDir = join(selectedWorkspaceRoot, '.billiardbuddy', 'skills', 'workspace-skill')
     mkdirSync(workspaceSkillDir, { recursive: true })
@@ -98,6 +102,8 @@ Keep the answer concise.
     expect(skills.skills).toContainEqual(expect.objectContaining({
       name: 'fixture-skill',
       description: 'Fixture skill description',
+      display_name: 'Fixture display',
+      short_description: 'Fixture summary',
       source: 'skills',
       layer: 'bundled',
       when_to_use: 'Use for fixture checks',

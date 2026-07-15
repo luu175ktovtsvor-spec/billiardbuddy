@@ -1,0 +1,4 @@
+interface:
+  display_name: "视频剪辑"
+  short_description: "根据自然语言目标分析素材、编排镜头并交付可预览和修改的视频"
+  default_prompt: "使用 $video-editing 帮我把这批素材剪成视频。"
