@@ -14,15 +14,15 @@
 
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
-| 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析和兼容入口 |
-| Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars`、`desktop/renderer-react` | 窗口、IPC、进程生命周期与唯一 React renderer 入口；sidecar 不提供旧静态页面 |
+| 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期、`middleware/controlPlaneAuth.ts` 本地控制面身份）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析、兼容入口和每次启动的本地控制令牌 |
+| Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars`、`desktop/renderer-react` | 窗口、IPC、进程生命周期与唯一 React renderer 入口；main 生成控制令牌并经 preload 交付可信 renderer，sidecar 不提供旧静态页面 |
 | 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、`server/routes/sessionArchiveRoutes.ts`、renderer chat/session | 会话元数据、活动、回退与归档 REST，transcript、回放、rewind |
 | Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
 | 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
 | 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
 | 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
 | 工作区 | `workspace`、`sandbox`、`server/routes/workspaceRoutes.ts`、`server/routes/workspaceFileRoutes.ts`、renderer workspace | 工作区与文件预览 REST、cwd、文件树、Git、终端 |
-| 权限安全 | `permissions`、`sandbox` | 权限档、审批、路径与命令护栏 |
+| 权限安全 | `permissions`、`sandbox`、`server/services/agentPermissionPolicy.ts`、`server/services/userSettings.ts` | 权限档、审批、路径与命令护栏；用户设置和发行策略限制会话权限上限，全盘访问只从最终权限档派生 |
 | 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/extensionRoots.ts`、扩展 routes、`shared/contracts/extensions.ts`、renderer `api/extensions.ts` 与 `PluginsPage.tsx` | 技能/命令/领域包发现与展开、启用插件贡献的统一运行时装配、插件管理 REST 和前端披露 |
 | MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
 | 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
@@ -32,7 +32,7 @@
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 单一 V2 视频真相源：Brief、Scene/Timeline、素材证据、规划、预览与渲染；旧 V1 项目只在 `projectStore.ts` 读取并迁移 |
 | 语音与口播转录 | `ts/src/media/remoteTranscription.ts`、`ts/src/server/services/voiceTranscription.ts`、`ts/shared/contracts/voice.ts`、`gateway/transcription.ts` | 客户端录音/音轨上传、远程文本与时间戳契约、服务器 Whisper 或上游 ASR provider |
 | 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
-| 设置与凭据 | settings/provider/credential services、SettingsPage | 偏好、provider、凭据 |
+| 设置与凭据 | `server/services/userSettings.ts`、`server/routes/agentSettingsRoutes.ts`、settings/provider/credential services、`shared/contracts/agent-settings.ts`、SettingsPage | 偏好、Agent 权限上限、provider、凭据；设置损坏时保留原文件并失败关闭写入 |
 | 系统运维 | telemetry、backup、migrations、assets | 遥测、备份、迁移、组件资产 |
 
 ## 前端功能域
