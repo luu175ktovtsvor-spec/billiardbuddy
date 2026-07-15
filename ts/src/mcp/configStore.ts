@@ -37,7 +37,8 @@ export const MCP_PRESETS: McpPreset[] = [
     desc: '让 AI 打开网页、点击、填表、截图——帮你在网页后台代操作。',
     transport: 'stdio',
     command: 'npx',
-    args: ['@playwright/mcp@latest'],
+    // 固定版本:招聘等业务流程依赖此通道的行为稳定,不跟随 latest 漂移;升级需回归后改这里。
+    args: ['@playwright/mcp@0.0.78'],
     needsAsset: 'node',
     note: '需 Node 运行时(首次启用后台准备);属对外操作,每步走审批确认。',
   },
