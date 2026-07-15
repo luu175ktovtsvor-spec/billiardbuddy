@@ -9,7 +9,7 @@ export const VERIFY_PLAN_REMIND_EVERY = 3
 /** plan 模式提醒节流:每 N 个工具批次注入一次(对齐 cc TURNS_BETWEEN_ATTACHMENTS=5),不再每批必发。 */
 export const PLAN_REMIND_EVERY = 5
 export const PLAN_MODE_REMINDER =
-  'You are in plan mode. Research and design the solution without implementing it. Use read-only tools to explore, produce a complete step-by-step plan, and wait for approval before making implementation changes.'
+  'You are in plan mode. Investigate what this task actually needs and think through your approach, but do not take any real action yet. Use only read-only or inspection tools to gather information, produce a complete, concrete plan, and wait for approval before making any change, sending anything, or taking any other consequential action.'
 
 /**
  * 计划模式系统提醒(对齐 cc getPlanModeV2Instructions:每轮以 system-reminder 注入)。带上**计划文件路径 +

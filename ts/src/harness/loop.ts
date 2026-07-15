@@ -1223,17 +1223,17 @@ async function* gateOneCall(
         const planFilePath = getPlanFilePath(ctx.workspace.root, ctx.conversationId)
         yield feedback([
           '<plan_mode_entered />',
-          'Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.',
+          'Entered plan mode. You should now focus on understanding what this task actually needs and designing your approach before doing anything consequential.',
           `Your plan file is: ${planFilePath}`,
-          'This plan file is the ONLY file you are allowed to edit in plan mode — build your plan incrementally by writing to it with write_file, then refining with edit_file. Everything else must stay read-only.',
+          'This plan file is the ONLY file you are allowed to edit in plan mode — build your plan incrementally by writing to it with write_file, then refining with edit_file. Everything else must stay read-only or non-consequential: no edits, sends, publishes, purchases, or other real-world actions yet.',
           'In plan mode, you should:',
-          '1. Thoroughly explore the codebase to understand existing patterns (read-only tools only).',
-          '2. Identify similar features and architectural approaches.',
+          '1. Thoroughly investigate what is actually needed — read the relevant files, data, or context (read-only tools only). If this is a software task, study existing code patterns; for any other kind of task, gather the concrete facts and material you need instead.',
+          '2. Identify comparable precedents already in use here (existing code, prior content, prior decisions) and how this task fits them.',
           '3. Consider multiple approaches and their trade-offs.',
           '4. Use ask_user_question if you need to clarify the approach.',
           '5. Write the concrete, step-by-step plan into the plan file above.',
           '6. When the plan file is ready, call ExitPlanMode to present it for approval (ExitPlanMode reads the plan from that file — do NOT pass the plan as an argument).',
-          'Remember: DO NOT write or edit any files other than the plan file yet. This is a read-only exploration and planning phase.',
+          'Remember: do not make any real change, send anything, or take any other consequential action yet — only write to the plan file. This is a read-only investigation and planning phase.',
         ].join('\n'), false)
       } else if (answer) {
         yield feedback(`<plan_mode_rejected>\n${answer}\n</plan_mode_rejected>`, false)
