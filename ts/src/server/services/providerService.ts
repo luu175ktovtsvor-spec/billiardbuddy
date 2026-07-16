@@ -540,7 +540,9 @@ export class ProviderService {
         return null
       }
       if (isQfGatewayProviderId(providerId)) {
-        return this.qfGatewayProxyConfig()
+        // Fail closed on the explicit-providerId path too: without URL+token there
+        // is no valid target, so never emit an empty `Authorization: Bearer `.
+        return qfGatewayConfigured() ? this.qfGatewayProxyConfig() : null
       }
       const provider = await this.getProvider(providerId)
       return {
@@ -558,7 +560,7 @@ export class ProviderService {
       return null
     }
     if (isQfGatewayProviderId(index.activeId)) {
-      return this.qfGatewayProxyConfig()
+      return qfGatewayConfigured() ? this.qfGatewayProxyConfig() : null
     }
     const provider = await this.getProvider(index.activeId).catch(() => null)
     if (!provider) return null

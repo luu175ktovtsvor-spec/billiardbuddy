@@ -13,7 +13,7 @@ import { teamWatcher } from './services/teamWatcher.js'
 import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
-import { ensureQfGatewayProviderRegistered } from './services/qfGatewayProvider.js'
+import { ensureQfGatewayRegistration } from './services/qfGatewayProvider.js'
 import { handleHahaOAuthCallback } from './api/haha-oauth.js'
 import { handleHahaOpenAIOAuthCallback } from './api/haha-openai-oauth.js'
 import { handlePreviewFs } from './api/previewFs.js'
@@ -447,17 +447,15 @@ export function startServer(port = PORT, host = HOST) {
     throw new Error(message, { cause: error })
   }
 
-  // Product-managed gateway auto-routing: when QF_GATEWAY_URL is configured and
-  // the user hasn't chosen their own provider, route the agent through the local
+  // Product-managed gateway auto-routing: when the gateway is configured (URL+token)
+  // and the user hasn't chosen their own provider, route the agent through the local
   // proxy → gateway. Idempotent; never overwrites a user's active provider.
-  // Fire-and-forget to keep startServer synchronous (matches the launcher install
-  // below); registration only needs to land before the first CLI request.
-  void ensureQfGatewayProviderRegistered(new ProviderService()).catch((error) => {
-    console.error(
-      '[qf-gateway] failed to register product gateway provider:',
-      error instanceof Error ? error.message : error,
-    )
-  })
+  // startServer is synchronous, so registration is kicked off (not awaited) here —
+  // but it is memoized, and every session-start path awaits whenQfGatewayReady()
+  // before reading the active provider, so the first session never races a
+  // pre-registration null activeId. Kept AFTER setServerPort so the proxy base URL
+  // synced into settings carries the finalized port.
+  void ensureQfGatewayRegistration(new ProviderService())
 
   // Start watching ~/.claude/teams/ for real-time WebSocket push
   teamWatcher.start()

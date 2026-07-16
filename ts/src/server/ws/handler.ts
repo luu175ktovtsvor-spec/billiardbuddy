@@ -18,7 +18,7 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
-import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
+import { isQfGatewayProviderId, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import {
   buildConversationTitleInput,
@@ -2507,6 +2507,9 @@ export function isKnownRuntimeProviderId(
 }
 
 async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> {
+  // Gate every session/turn start on the product-gateway registration so the first
+  // session never reads a pre-registration null activeId. No-op after first resolve.
+  await whenQfGatewayReady()
   const launchInfo = sessionId
     ? await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
     : null

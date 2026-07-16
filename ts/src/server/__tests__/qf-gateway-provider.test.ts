@@ -191,6 +191,90 @@ describe('qf-gateway startup auto-enable', () => {
   })
 })
 
+// ─── Readiness predicate & startup race (ISSUE 2) ───────────────────────────
+
+describe('qf-gateway readiness predicate & startup race', () => {
+  beforeEach(async () => {
+    await setup()
+    const { resetQfGatewayRegistrationForTests } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    resetQfGatewayRegistrationForTests()
+  })
+  afterEach(async () => {
+    const { resetQfGatewayRegistrationForTests } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    resetQfGatewayRegistrationForTests()
+    await teardown()
+  })
+
+  test('missing URL (token set) is not configured: no activation, not authed, no proxy target', async () => {
+    delete process.env.QF_GATEWAY_URL
+    const { qfGatewayConfigured, ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    expect(qfGatewayConfigured()).toBe(false)
+
+    const svc = new ProviderService()
+    await ensureQfGatewayProviderRegistered(svc)
+    expect((await svc.listProviders()).activeId).toBeNull()
+    expect((await svc.checkAuthStatus()).hasAuth).toBe(false)
+    expect(await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)).toBeNull()
+  })
+
+  test('missing token (URL set) fails closed: no activation, not authed, never an empty Bearer', async () => {
+    delete process.env.QF_GATEWAY_TOKEN
+    const { qfGatewayConfigured, ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    expect(qfGatewayConfigured()).toBe(false)
+
+    const svc = new ProviderService()
+    await ensureQfGatewayProviderRegistered(svc)
+    expect((await svc.listProviders()).activeId).toBeNull()
+    const auth = await svc.checkAuthStatus()
+    expect(auth.hasAuth).toBe(false)
+    // Explicit-providerId proxy path must also refuse rather than emit `Bearer `.
+    expect(await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)).toBeNull()
+  })
+
+  test('first session waits for registration: whenQfGatewayReady resolves after activation settles', async () => {
+    const { ensureQfGatewayRegistration, whenQfGatewayReady } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    const svc = new ProviderService()
+    // Kick off registration WITHOUT awaiting it (mirrors startServer's call site)...
+    ensureQfGatewayRegistration(svc)
+    // ...then the session-start gate awaits readiness before reading the provider.
+    await whenQfGatewayReady()
+    expect((await svc.listProviders()).activeId).toBe(QF_GATEWAY_PROVIDER_ID)
+  })
+
+  test('registration is memoized: concurrent callers share one settled promise', async () => {
+    const { ensureQfGatewayRegistration } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    const svc = new ProviderService()
+    const a = ensureQfGatewayRegistration(svc)
+    const b = ensureQfGatewayRegistration(svc)
+    expect(a).toBe(b)
+    await Promise.all([a, b])
+    expect((await svc.listProviders()).activeId).toBe(QF_GATEWAY_PROVIDER_ID)
+  })
+
+  test('init failure is swallowed: whenQfGatewayReady still resolves, no unhandled rejection', async () => {
+    const { ensureQfGatewayRegistration, whenQfGatewayReady } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    const svc = new ProviderService()
+    svc.activateProvider = mock(async () => { throw new Error('boom: activation failed') })
+    // The kicked-off registration must resolve (error caught), not reject.
+    await expect(ensureQfGatewayRegistration(svc)).resolves.toBeUndefined()
+    await expect(whenQfGatewayReady()).resolves.toBeUndefined()
+  })
+})
+
 // ─── Credential boundary: token in env, not on disk ─────────────────────────
 
 describe('qf-gateway credential boundary', () => {
