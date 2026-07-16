@@ -54,9 +54,14 @@ export function getQfGatewayModel(): string {
   return readEnv('QF_GATEWAY_MODEL') || QF_GATEWAY_DEFAULT_MODEL
 }
 
-/** The gateway is only usable when QF_GATEWAY_URL is configured. */
+/**
+ * The gateway is only usable when BOTH the URL and the app token are present.
+ * Requiring the token here is the single choke point: activation, checkAuthStatus
+ * and the proxy target all gate on this, so a URL-without-token can never activate,
+ * report authed, or emit an empty `Authorization: Bearer ` to the upstream.
+ */
 export function qfGatewayConfigured(): boolean {
-  return getQfGatewayUrl().length > 0
+  return getQfGatewayUrl().length > 0 && getQfGatewayToken().length > 0
 }
 
 /**
@@ -112,4 +117,36 @@ export async function ensureQfGatewayProviderRegistered(
   if (activeId !== null && !isQfGatewayProviderId(activeId)) return
 
   await service.activateProvider(QF_GATEWAY_PROVIDER_ID)
+}
+
+/**
+ * Memoized registration used at server startup to remove the fire-and-forget race
+ * between registration and the first session. `ensureQfGatewayRegistration` kicks
+ * registration off once (errors swallowed so a failed activation never becomes an
+ * unhandled rejection or blocks startup), and `whenQfGatewayReady` lets every
+ * session-start path wait for it to settle before reading the active provider.
+ * After the first resolve the awaited promise is a no-op, so the cost is one-time.
+ */
+let registration: Promise<void> | null = null
+
+export function ensureQfGatewayRegistration(service: ProviderService): Promise<void> {
+  if (!registration) {
+    registration = ensureQfGatewayProviderRegistered(service).catch((error) => {
+      console.error(
+        '[qf-gateway] failed to register product gateway provider:',
+        error instanceof Error ? error.message : error,
+      )
+    })
+  }
+  return registration
+}
+
+/** Resolves once startup registration has settled; immediate no-op if never started. */
+export function whenQfGatewayReady(): Promise<void> {
+  return registration ?? Promise.resolve()
+}
+
+/** Test-only: reset the memoized registration so each case starts clean. */
+export function resetQfGatewayRegistrationForTests(): void {
+  registration = null
 }
