@@ -13,6 +13,17 @@ import { useUiStore } from '../stores/uiStore'
 import { useProjectStore } from '../stores/projectStore'
 import { toast } from '../stores/toastStore'
 import { openNewConversation } from './conversations'
+import { api } from '../api/client'
+
+/** 不选文件夹时管家实际落盘的默认目录(D4:首启引导两个"不选"出口要让用户知道文件去哪了)。 */
+export async function getDefaultWorkspacePath(): Promise<string | null> {
+  try {
+    const state = await api.get<{ default?: string }>('/api/v1/workspace')
+    return typeof state.default === 'string' && state.default ? state.default : null
+  } catch {
+    return null
+  }
+}
 
 /** 弹原生文件夹选择器 → 按 cc 模型绑到(空会话就地 / 有记录则开新会话)+ 重载右侧工作区面板。浏览器/无壳时提示走默认。 */
 export async function pickWorkspaceFolder(): Promise<string | null> {
