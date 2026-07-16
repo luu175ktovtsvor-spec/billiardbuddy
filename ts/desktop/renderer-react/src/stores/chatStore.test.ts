@@ -125,6 +125,34 @@ test('流式正文和步末 commentary 合并成一条阶段独白', () => {
   }
 })
 
+test('工具收尾后 runVerb 回落成 working,不再误报"还在跑这个工具"', () => {
+  const originalOnMessage = wsManager.onMessage.bind(wsManager)
+  const originalConnect = wsManager.connect.bind(wsManager)
+  const originalIsConnected = wsManager.isConnected.bind(wsManager)
+  let handler: ((message: ServerMessage) => void) | null = null
+  wsManager.onMessage = (_conversationId, next) => { handler = next; return () => {} }
+  wsManager.connect = () => {}
+  wsManager.isConnected = () => false
+
+  try {
+    useChatStore.getState().startConversation('conv-runverb')
+    const emit = (event: ServerMessage['event']) => handler?.({
+      type: 'event',
+      seq: 1,
+      ts: '2026-07-15T00:00:00.000Z',
+      event,
+    })
+    emit({ type: 'tool_call', tool: 'read_file', input: { path: 'a.ts' } })
+    expect(useChatStore.getState().runVerb).toBe('running')
+    emit({ type: 'tool_result', tool: 'read_file', output: '内容', is_error: false })
+    expect(useChatStore.getState().runVerb).toBe('working')
+  } finally {
+    wsManager.onMessage = originalOnMessage
+    wsManager.connect = originalConnect
+    wsManager.isConnected = originalIsConnected
+  }
+})
+
 test('远程重连/降级横幅翻成中文,不把内核英文技术串直接怼给用户', () => {
   const originalOnMessage = wsManager.onMessage.bind(wsManager)
   const originalConnect = wsManager.connect.bind(wsManager)

@@ -389,7 +389,8 @@ export const useChatStore = create<ChatState>((set, get) => {
               break
             }
           }
-          return { blocks }
+          // 工具跑完了就不再是"运行中"——不然下一个事件到来前的间隙,阶段提示会误显示成还在跑这个工具。
+          return { blocks, runVerb: 'working' }
         })
         finalizeThinking()
         settleAssistant()
