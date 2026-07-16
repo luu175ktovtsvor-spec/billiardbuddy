@@ -33,6 +33,16 @@
       "src-tauri/resources/preview-agent.js",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build",
+        "to": ".",
+        "filter": [
+          "product-config.json",
+          "product-secrets.json"
+        ]
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [

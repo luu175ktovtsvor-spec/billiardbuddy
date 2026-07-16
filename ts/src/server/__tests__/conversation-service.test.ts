@@ -237,6 +237,25 @@ describe('ConversationService', () => {
     })
   })
 
+  test('strips the product-gateway token/url/model from the CLI subprocess env', () => {
+    const env = {
+      CLAUDECODE: '1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456/proxy/providers/qf-gateway',
+      QF_GATEWAY_TOKEN: 'app-token-SECRET',
+      QF_GATEWAY_URL: 'https://gateway.example',
+      QF_GATEWAY_MODEL: 'qwen3-coder-plus',
+    }
+    const opts = buildConversationCliSpawnOptions('/workspace/project', env)
+    // The CLI reaches the gateway via the local proxy, so it must NOT carry the token.
+    expect(opts.env.QF_GATEWAY_TOKEN).toBeUndefined()
+    expect(opts.env.QF_GATEWAY_URL).toBeUndefined()
+    expect(opts.env.QF_GATEWAY_MODEL).toBeUndefined()
+    // But the local proxy base URL it actually needs is preserved.
+    expect(opts.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3456/proxy/providers/qf-gateway')
+    // The caller's env object is not mutated.
+    expect(env.QF_GATEWAY_TOKEN).toBe('app-token-SECRET')
+  })
+
   test('buildChildEnv pins desktop memory to the current sanitized project directory', async () => {
     const service = new ConversationService() as any
     const workDir = path.join(tmpDir, 'workspace', 'myself_code', 'claude-code-haha')

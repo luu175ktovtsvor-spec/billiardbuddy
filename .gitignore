@@ -89,6 +89,8 @@ gateway/gw.env
 # 桌面 app 内置配置(含 app 令牌+网关地址)——打包时打进包,不进 git;.bak 是含 key 的手工备份,同样绝不进 git
 desktop/bundled.env
 desktop/bundled.env.bak*
+# 装机版可撤销 app token(打包时由构建密钥写入 extraResources,绝不进 git);product-config.json 是公开配置,可入库
+ts/desktop/build/product-secrets.json
 
 # Playwright-Electron 测试输出(可再生,不入库)
 desktop/e2e-pw/test-results/

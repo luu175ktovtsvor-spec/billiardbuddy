@@ -20,12 +20,15 @@ import {
   type SidecarChild,
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
+import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
   appRoot?: string
   h5DistDir?: string
   resolveSystemProxy?: (url: string) => Promise<string>
+  /** Product gateway config injected into the SERVER sidecar only (never adapters). */
+  resolveGatewayConfig?: () => ProductGatewayConfig
 }
 
 export class ElectronServerRuntime {
@@ -33,6 +36,7 @@ export class ElectronServerRuntime {
   private readonly appRoot: string
   private readonly h5DistDir: string
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
+  private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private adapters: SidecarChild[] = []
@@ -44,6 +48,16 @@ export class ElectronServerRuntime {
     this.appRoot = options.appRoot ?? options.desktopRoot
     this.h5DistDir = options.h5DistDir ?? path.join(options.desktopRoot, 'dist')
     this.resolveSystemProxy = options.resolveSystemProxy
+    this.resolveGatewayConfig = options.resolveGatewayConfig
+  }
+
+  /**
+   * The SERVER sidecar env is the base env plus the product gateway config. The
+   * token goes ONLY here — adapter sidecars keep the plain base env. A value
+   * already present (shell/ops override) always wins over the injected default.
+   */
+  private buildServerEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return applyGatewayConfigToEnv(baseEnv, this.resolveGatewayConfig?.())
   }
 
   async startServer(): Promise<string> {
@@ -84,7 +98,7 @@ export class ElectronServerRuntime {
     const port = await reserveServerPort(SERVER_BIND_HOST, preferredServerPorts())
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
-    const env = await this.resolveSidecarBaseEnv()
+    const env = this.buildServerEnv(await this.resolveSidecarBaseEnv())
     const plan = createServerPlan({
       desktopRoot: this.desktopRoot,
       appRoot: this.appRoot,
