@@ -1898,6 +1898,32 @@ test('AskUserQuestion emits question card and feeds the answer back as tool_resu
   expect(events.at(-1)).toEqual({ type: 'final', text: '收到选择' })
 })
 
+test('B4: AskUserQuestion 超时没人答时,回灌文本明确要求别猜答案、别假装收到了确认', async () => {
+  const inbox: string[] = []
+  const model = scriptedModel([
+    {
+      kind: 'tool_calls',
+      calls: [{
+        id: 'ask1',
+        name: 'AskUserQuestion',
+        input: { question: '选择执行方式', options: [{ label: '保守' }, { label: '直接做' }], timeout_ms: 10 },
+      }],
+    },
+    { kind: 'final', text: '还在等' },
+  ])
+  for await (const _event of runAgentLoop({
+    model, registry: buildGeneralRegistry(), workspace: new Workspace(root),
+    systemPrompt: 'SYS', userMessage: 'x', steerInbox: inbox,
+    // 不往 inbox push 任何答案 → 必然超时
+  })) { /* 不应答,只跑到收敛 */ }
+
+  const answerBlock = model.received[1]!.messages
+    .flatMap(m => m.content)
+    .find(b => b.type === 'tool_result' && b.tool_use_id === 'ask1')
+  expect(answerBlock && answerBlock.type === 'tool_result' && answerBlock.content).toContain('status="timeout"')
+  expect(answerBlock && answerBlock.type === 'tool_result' && answerBlock.content).toContain('Do not guess, assume, or fabricate')
+})
+
 test('EnterPlanMode approval switches current turn into read-only plan mode', async () => {
   const inbox: string[] = []
   const model = scriptedModel([
