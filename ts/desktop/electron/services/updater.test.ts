@@ -99,6 +99,18 @@ describe('Electron updater service', () => {
     }
   })
 
+  it('fails closed when disabled: checks resolve null and nothing is downloaded', async () => {
+    const localUpdater = fakeUpdater()
+    const service = new ElectronUpdaterService(localUpdater, undefined, { disabled: true })
+
+    await expect(service.checkForUpdates()).resolves.toBeNull()
+    // Never touches the network / underlying updater.
+    expect(localUpdater.checkForUpdates).not.toHaveBeenCalled()
+    // With no pending update, a download attempt is refused.
+    await expect(service.downloadUpdate(() => {})).rejects.toThrow(/no electron update/i)
+    expect(localUpdater.downloadUpdate).not.toHaveBeenCalled()
+  })
+
   it('treats missing GitHub channel metadata as no update', async () => {
     const service = new ElectronUpdaterService(updater)
     updater.checkForUpdates.mockRejectedValueOnce(Object.assign(

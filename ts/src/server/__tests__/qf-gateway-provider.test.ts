@@ -275,6 +275,32 @@ describe('qf-gateway readiness predicate & startup race', () => {
   })
 })
 
+// ─── Managed runtime privacy: default-disable non-essential/telemetry traffic ─
+
+describe('qf-gateway managed runtime privacy', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('the managed CLI env disables non-essential traffic and telemetry by default', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const { readActiveProviderManagedEnv } = await import(
+      '../services/providerRuntimeEnv.js'
+    )
+    const env = readActiveProviderManagedEnv(tmpDir, { serverPort: TEST_SERVER_PORT })
+    expect(env).not.toBeNull()
+    expect(env!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
+    expect(env!.DISABLE_TELEMETRY).toBe('1')
+    // Still routes through the local proxy and never carries the real app token.
+    expect(env!.ANTHROPIC_BASE_URL).toContain(`/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`)
+    expect(JSON.stringify(env)).not.toContain(GATEWAY_TOKEN)
+  })
+})
+
 // ─── Credential boundary: token in env, not on disk ─────────────────────────
 
 describe('qf-gateway credential boundary', () => {

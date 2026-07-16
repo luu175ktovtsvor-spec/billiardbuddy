@@ -3,10 +3,8 @@
   "private": true,
   "version": "0.4.5",
   "description": "Desktop coding agent workbench for BilliardBuddy.",
-  "homepage": "https://github.com/NanmiCoder/cc-haha",
   "author": {
-    "name": "NanmiCoder",
-    "email": "relakkes@gmail.com"
+    "name": "BilliardBuddy"
   },
   "type": "module",
   "main": "electron-dist/main.cjs",
@@ -75,15 +73,8 @@
       ],
       "icon": "src-tauri/icons",
       "category": "Development",
-      "maintainer": "NanmiCoder <relakkes@gmail.com>"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "NanmiCoder",
-        "repo": "cc-haha"
-      }
-    ]
+      "maintainer": "BilliardBuddy"
+    }
   },
   "scripts": {
     "dev": "vite",

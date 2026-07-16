@@ -395,10 +395,17 @@ export function readActiveProviderManagedEnv(
     }
 
     if (isQfGatewayProviderId(index.activeId)) {
-      return buildProviderManagedEnv(buildQfGatewayProvider(), {
-        proxyPath: QF_GATEWAY_PROXY_PATH,
-        serverPort: options?.serverPort,
-      })
+      return {
+        ...buildProviderManagedEnv(buildQfGatewayProvider(), {
+          proxyPath: QF_GATEWAY_PROXY_PATH,
+          serverPort: options?.serverPort,
+        }),
+        // Product-managed default mode: suppress the kernel's non-essential / telemetry
+        // outbound traffic (statsig, error & feedback upload, update pings, voiceStream).
+        // Anthropic-private capabilities only connect when the user explicitly opts in.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        DISABLE_TELEMETRY: '1',
+      }
     }
 
     const provider = index.providers.find((entry) => entry.id === index.activeId)
