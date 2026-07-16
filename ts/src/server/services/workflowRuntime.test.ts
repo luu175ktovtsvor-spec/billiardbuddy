@@ -46,6 +46,44 @@ describe('createWorkflowRuntime.fireTask 的 token 可见性(D3)', () => {
   })
 })
 
+describe('createWorkflowRuntime C4:空产出不算 completed', () => {
+  it('裸指令任务没抛错但没有任何 final 文本时,标为 failed 而不是 completed', async () => {
+    const runtime = await (async () => createWorkflowRuntime({
+      stateRoot: await mkdtemp(join(tmpdir(), 'workflow-runtime-empty-')),
+      defaultWorkspaceDir: () => '/default/workspace',
+      createTurnStream: async () => ({
+        stream: (async function* () {
+          yield { event: { type: 'content_delta', text: '…' } }
+          // 没有 final 事件:模型可能撞了轮次上限或提前收敛却什么都没说。
+        })(),
+      }),
+      logger: { warn: () => {}, error: () => {} },
+    }))()
+    const result = await runtime.fireTask({ instruction: '整理今天的门店文件' }, { runId: 'r1', manual: false })
+    expect(result.status).toBe('failed')
+    expect(result.error).toContain('没有产出任何结果')
+  })
+
+  it('工作流某一步没抛错但空产出时,整条运行按 failed 关闭、后续步骤 skipped', async () => {
+    const runtime = await (async () => createWorkflowRuntime({
+      stateRoot: await mkdtemp(join(tmpdir(), 'workflow-runtime-empty-step-')),
+      defaultWorkspaceDir: () => '/default/workspace',
+      createTurnStream: async () => ({
+        stream: (async function* () {
+          yield { event: { type: 'content_delta', text: '…' } }
+        })(),
+      }),
+      logger: { warn: () => {}, error: () => {} },
+    }))()
+    const result = await runtime.fireTask({ workflow_id: 'venue-daily-report', working_dir: '/my/venue' }, { runId: 'r1', manual: false })
+    expect(result.status).toBe('failed')
+    const runs = await runtime.workflows.listRuns('venue-daily-report')
+    expect(runs[0]!.status).toBe('failed')
+    expect(runs[0]!.steps[0]!.status).toBe('failed')
+    expect(runs[0]!.steps.slice(1).every(step => step.status === 'skipped')).toBe(true)
+  })
+})
+
 describe('createWorkflowRuntime.fireTask', () => {
   it('裸指令任务:起单回合会话,带任务工作目录与 billiards_mode,收敛 final 文本', async () => {
     const calls: WorkflowTurnStreamBody[] = []

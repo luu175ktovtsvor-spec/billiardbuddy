@@ -101,6 +101,10 @@ export function createWorkflowRuntime(opts: WorkflowRuntimeOptions): WorkflowRun
       permissionMode: 'bypassPermissions',
       unattended: true,
     }, input.signal)
+    // C4:没抛错不等于真做完了——模型可能一个 final 都没给(比如撞了轮次上限、或提前收敛却什么都没说)。
+    // 这种情况之前会被无条件记成 completed,用户看到"步骤已完成"却压根没有产出。
+    // 真正的取消由调用方独立按 signal.aborted 判定并覆盖成 cancelled,不受这里影响。
+    if (!text.trim()) return { status: 'failed', error: '这一步没有产出任何结果(模型没有给出最终回复)。' }
     return { status: 'completed', summary: withTokenNote(text, totalTokens) }
   }
 
@@ -140,6 +144,8 @@ export function createWorkflowRuntime(opts: WorkflowRuntimeOptions): WorkflowRun
         permissionMode: 'bypassPermissions',
         unattended: true,
       }, ctx.signal)
+      // C4:没抛错不等于真做完了,同 runTurn 的道理——空产出别当成功报。
+      if (!text.trim()) return { status: 'failed', error: '这次定时任务没有产出任何结果(模型没有给出最终回复)。', conversationId }
       return { status: 'completed', summary: withTokenNote(text, totalTokens), conversationId }
     } catch (err) {
       return { status: 'failed', error: err instanceof Error ? err.message : String(err), conversationId }
