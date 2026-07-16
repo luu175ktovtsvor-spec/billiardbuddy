@@ -49,9 +49,18 @@ export function getQfGatewayToken(): string {
   return readEnv('QF_GATEWAY_TOKEN')
 }
 
-/** Model the gateway forwards to (Qwen/MiMo). Defaults to qwen3-coder-plus. */
+/** Model the gateway forwards to (Qwen/MiMo/DeepSeek). Defaults to qwen3-coder-plus. */
 export function getQfGatewayModel(): string {
   return readEnv('QF_GATEWAY_MODEL') || QF_GATEWAY_DEFAULT_MODEL
+}
+
+/**
+ * Per-install id (X-QF-Client-ID). Injected by Electron into the SERVER sidecar env only
+ * (BB_INSTALLATION_ID). Empty when unset (single-token dev / old build) — the gateway then
+ * falls back to token-only scheduling. Never sent to a non-gateway provider.
+ */
+export function getInstallationId(): string {
+  return readEnv('BB_INSTALLATION_ID')
 }
 
 /**
@@ -65,16 +74,18 @@ export function qfGatewayConfigured(): boolean {
 }
 
 /**
- * Env keys carrying the product-gateway credential/config. NO CLI subprocess — and
- * no adapter sidecar — may inherit these: the agent reaches the gateway through the
- * local provider proxy, never these vars. They MUST be stripped at every process
- * spawn chokepoint (interactive CLI, cron/scheduled-task CLI, adapter sidecars) so a
- * single missed path can't leak the token via e.g. `printenv` under bypassPermissions.
+ * Env keys the SERVER sidecar holds but NO CLI subprocess — and no adapter sidecar — may
+ * inherit: the product-gateway credential/config plus the per-install id. The agent reaches
+ * the gateway through the local provider proxy, never these vars. They MUST be stripped at
+ * every process spawn chokepoint (interactive CLI, cron/scheduled-task CLI, adapter sidecars)
+ * so a single missed path can't leak the token — or the install id — via e.g. `printenv`
+ * under bypassPermissions.
  */
 export const HOST_ONLY_GATEWAY_ENV_KEYS = [
   'QF_GATEWAY_TOKEN',
   'QF_GATEWAY_URL',
   'QF_GATEWAY_MODEL',
+  'BB_INSTALLATION_ID',
 ] as const
 
 /** Return a copy of `env` with the host-only gateway keys removed (never mutates input). */

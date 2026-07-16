@@ -25,6 +25,7 @@ import {
   QF_GATEWAY_PROVIDER_ID,
   QF_GATEWAY_PROVIDER_NAME,
   buildQfGatewayProvider,
+  getInstallationId,
   isQfGatewayProviderId,
   qfGatewayConfigured,
   resolveQfGatewayProxyTarget,
@@ -517,14 +518,19 @@ export class ProviderService {
     baseUrl: string
     apiKey: string
     apiFormat: ApiFormat
+    clientId?: string
   } {
     const target = resolveQfGatewayProxyTarget()
+    // clientId is set ONLY on the gateway config — so the proxy attaches X-QF-Client-ID
+    // exclusively on the gateway path, never leaking the install id to a user's own provider.
+    const clientId = getInstallationId()
     return {
       id: QF_GATEWAY_PROVIDER_ID,
       name: QF_GATEWAY_PROVIDER_NAME,
       baseUrl: target.baseUrl,
       apiKey: target.apiKey,
       apiFormat: 'openai_chat',
+      ...(clientId ? { clientId } : {}),
     }
   }
 
@@ -534,6 +540,7 @@ export class ProviderService {
     baseUrl: string
     apiKey: string
     apiFormat: ApiFormat
+    clientId?: string
   } | null> {
     if (providerId) {
       if (isOpenAIOfficialProviderId(providerId)) {

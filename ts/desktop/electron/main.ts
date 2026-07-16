@@ -15,6 +15,7 @@ import { installApplicationMenu } from './services/menu'
 import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
 import { resolveProductGatewayConfig } from './services/productConfig'
+import { ensureInstallationId } from './services/installationId'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
@@ -157,6 +158,10 @@ function getServerRuntime() {
       devBuildDir: path.join(unpackedRoot(), 'build'),
       env: process.env,
     }),
+    // Per-install id persisted in the product data root (active CLAUDE_CONFIG_DIR).
+    // Injected into the SERVER sidecar only → attached as X-QF-Client-ID upstream; the CLI
+    // subprocess, adapters, renderer and providers.json never see it.
+    resolveInstallationId: () => ensureInstallationId(process.env.CLAUDE_CONFIG_DIR || app.getPath('userData')),
   })
   return serverRuntime
 }
