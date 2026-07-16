@@ -1172,34 +1172,30 @@ export function CreationPage() {
                 <input value={posterCta} onChange={e => setPosterCta(e.target.value)} className="col-span-2 rounded-md px-2 py-1.5 text-[12px] outline-none" style={inputStyle} placeholder="行动提示，例如扫码报名" data-testid="poster-cta-input" />
               </div>
             )}
+            {referenceAssets.length > 0 && <p className="text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }} data-testid="image-reference-role-hint">每张图下面的用途是按顺序默认猜的，不对的话改一下再生成。</p>}
             {referenceAssets.length > 0 && (
-              <div className="flex flex-col gap-1.5" data-testid="image-reference-section">
-                <p className="text-[11.5px]" style={{ color: 'var(--color-text-tertiary)' }} data-testid="image-reference-role-hint">
-                  每张图下面的用途是按顺序默认猜的，不对的话改一下再生成。
-                </p>
-                <div className="flex flex-wrap gap-2" data-testid="image-reference-list">
-                  {referenceAssets.map((asset, index) => (
-                    <div key={asset.asset_id} className="w-[92px] min-w-0">
-                      <div className="group relative overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
-                        <img src={assetUrl(asset.url)} alt={`参考图 ${index + 1}`} className="aspect-square w-full object-cover" />
-                        <button type="button" onClick={() => removeReference(asset.asset_id)} aria-label={`移除参考图 ${index + 1}`} title="移除参考图"
-                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md opacity-0 transition-opacity group-hover:opacity-100"
-                          style={{ background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)', color: 'var(--color-text-secondary)' }}>
-                          <IconTrash size={13} />
-                        </button>
-                      </div>
-                      <select
-                        aria-label={`参考图 ${index + 1} 用途`}
-                        value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
-                        onChange={event => setReferenceRole(asset.asset_id, event.target.value as ImageReferenceRole)}
-                        className="mt-1 w-full rounded-md px-1 py-1 text-[12px] outline-none"
-                        style={inputStyle}
-                      >
-                        {referenceRoleOptions(intent).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
+              <div className="flex flex-wrap gap-2" data-testid="image-reference-list">
+                {referenceAssets.map((asset, index) => (
+                  <div key={asset.asset_id} className="w-[92px] min-w-0">
+                    <div className="group relative overflow-hidden rounded-md" style={{ border: '1px solid var(--color-border)' }}>
+                      <img src={assetUrl(asset.url)} alt={`参考图 ${index + 1}`} className="aspect-square w-full object-cover" />
+                      <button type="button" onClick={() => removeReference(asset.asset_id)} aria-label={`移除参考图 ${index + 1}`} title="移除参考图"
+                        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md opacity-0 transition-opacity group-hover:opacity-100"
+                        style={{ background: 'color-mix(in srgb, var(--color-surface) 92%, transparent)', color: 'var(--color-text-secondary)' }}>
+                        <IconTrash size={13} />
+                      </button>
                     </div>
-                  ))}
-                </div>
+                    <select
+                      aria-label={`参考图 ${index + 1} 用途`}
+                      value={referenceRoles[asset.asset_id] ?? defaultReferenceRole(intent, index)}
+                      onChange={event => setReferenceRole(asset.asset_id, event.target.value as ImageReferenceRole)}
+                      className="mt-1 w-full rounded-md px-1 py-1 text-[12px] outline-none"
+                      style={inputStyle}
+                    >
+                      {referenceRoleOptions(intent).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                ))}
               </div>
             )}
             {intent === 'portrait' && (
