@@ -149,7 +149,7 @@ class DiskBlobStore implements BlobStore {
 
 type TaskRow = {
   id: string
-  owner: string | null
+  owner: string // '' = legacy/no-owner (a sentinel, NOT SQL NULL, so the unique idempotency index still dedups)
   idempotency_key: string | null
   status: TaskState
   error: string | null
@@ -174,7 +174,7 @@ class TaskStore {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
   }
 
-  insert(id: string, owner: string | null, key: string | null): void {
+  insert(id: string, owner: string, key: string | null): void {
     const ts = this.now()
     this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,created,updated) VALUES(?,?,?,?,?,?,?,?)')
       .run(id, owner, key, 'queued', null, null, ts, ts)
@@ -184,8 +184,10 @@ class TaskStore {
     return (this.db.query('SELECT * FROM tasks WHERE id=?').get(id) as TaskRow | null) ?? null
   }
 
-  findByIdempotency(owner: string | null, key: string): TaskRow | null {
-    return (this.db.query('SELECT * FROM tasks WHERE idempotency_key=? AND owner IS ?').get(key, owner) as TaskRow | null) ?? null
+  // owner is a '' sentinel (never NULL) so `owner = ?` dedups the no-owner path too — SQL
+  // would treat NULLs as distinct and silently skip the unique index.
+  findByIdempotency(owner: string, key: string): TaskRow | null {
+    return (this.db.query('SELECT * FROM tasks WHERE idempotency_key=? AND owner=?').get(key, owner) as TaskRow | null) ?? null
   }
 
   setStatus(id: string, status: TaskState, error?: string, inputFidelity?: InputFidelityCapability): void {
@@ -203,7 +205,7 @@ class TaskStore {
   }
 
   countActiveByOwner(owner: string): number {
-    const row = this.db.query("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('queued','running') AND owner IS ?").get(owner) as { c: number }
+    const row = this.db.query("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('queued','running') AND owner=?").get(owner) as { c: number }
     return Number(row.c ?? 0)
   }
 
@@ -247,9 +249,11 @@ function inputFidelityRejected(status: number, detail: string): boolean {
   return status >= 400 && status < 500 && /input[_ -]?fidelity|unsupported parameter|unknown parameter/i.test(detail)
 }
 
-function readOwner(req: Request): string | null {
+// '' sentinel (never null) for the no-owner/legacy path, so the SQLite unique idempotency
+// index still dedups. A present owner enables ownership enforcement on poll.
+function readOwner(req: Request): string {
   const raw = (req.headers.get('x-relay-owner') ?? '').trim()
-  return raw ? raw.slice(0, 256) : null
+  return raw ? raw.slice(0, 256) : ''
 }
 
 export type RelayDeps = { env: Env; fetchImpl?: FetchLike; now?: () => number }
@@ -424,9 +428,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const id = url.pathname.slice('/images/tasks/'.length)
         const rec = store.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        // 归属绑定:带 owner 的任务只有同 owner 能轮询(越权 403)。旧任务(owner 为空)不设防,兼容期可轮询。
+        // 归属绑定:带 owner 的任务只有同 owner 能轮询(越权 403)。旧任务(owner='' 空哨兵)不设防,兼容期可轮询。
         const requester = readOwner(req)
-        if (rec.owner !== null && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
+        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         return pollResponse(rec)
       }
       return new Response('Not found', { status: 404 })
