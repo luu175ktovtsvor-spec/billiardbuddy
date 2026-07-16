@@ -460,6 +460,70 @@ describe('qf-gateway proxy round-trip', () => {
     expect(stripped.PATH).toBe('/x')
   })
 
+  test('rejects an image request for a non-multimodal gateway model (Qwen) with 400 and no upstream call', async () => {
+    const originalFetch = globalThis.fetch
+    let called = 0
+    globalThis.fetch = mock(async () => { called++; return new Response('{}', { status: 200 }) }) as typeof fetch
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'qwen3-coder-plus', max_tokens: 16,
+            messages: [{ role: 'user', content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+              { type: 'text', text: 'what is in this image?' },
+            ] }],
+          }),
+        },
+      )
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(400)
+      expect(JSON.stringify(await res.json())).toContain('图片')
+      expect(called).toBe(0) // explicit reject — never silently reroutes to another provider
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('allows an image request for MiMo (the multimodal upstream) — reaches the gateway as image_url', async () => {
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return new Response(
+        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'mimo-v2.5',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'mimo-v2.5', max_tokens: 16,
+            messages: [{ role: 'user', content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+              { type: 'text', text: 'what is in this image?' },
+            ] }],
+          }),
+        },
+      )
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+      expect(calls).toHaveLength(1) // reached the gateway (not rejected)
+      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url') // image preserved in vision mode
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('streams tool_use through the proxy', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () => {

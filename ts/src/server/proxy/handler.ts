@@ -32,8 +32,31 @@ import {
   type TraceBodySnapshot,
   type TraceProviderInfo,
 } from '../services/traceCaptureService.js'
+import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
 
 const providerService = new ProviderService()
+
+/** Any image content block in the Anthropic request? (multimodal input detection) */
+function requestHasImageInput(body: AnthropicRequest): boolean {
+  for (const m of body.messages ?? []) {
+    const c = m.content
+    if (Array.isArray(c)) {
+      for (const block of c) {
+        if (block && (block as { type?: string }).type === 'image') return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Which qf-gateway models are real multimodal (image-input) upstreams. Only MiMo v2.5 is —
+ * so on the gateway path, image input is allowed ONLY for MiMo; Qwen/DeepSeek image requests
+ * are rejected explicitly rather than silently stripped or rerouted to another provider.
+ */
+function isMultimodalGatewayModel(model: string | undefined): boolean {
+  return typeof model === 'string' && /(^|[./_-])mimo([./_-]|$)/i.test(model)
+}
 
 type ProxyFetchOptions = ReturnType<typeof getProxyFetchOptions>
 type UpstreamRequestInit = RequestInit & ProxyFetchOptions
@@ -217,6 +240,22 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
   body = {
     ...body,
     model: normalizeModelStringForAPI(body.model),
+  }
+
+  // 产品策略:图片输入只允许进入真实多模态的 MiMo 链路。qf-gateway 上选中 Qwen/DeepSeek 却带图片时
+  // 显式拒绝(明确 4xx),绝不静默丢图或改投别家。仅约束网关路径 —— 用户自建 provider(可能是
+  // gpt-4o 等多模态)不受此限,由其自身能力决定。
+  if (isQfGatewayProviderId(config.id) && requestHasImageInput(body) && !isMultimodalGatewayModel(body.model)) {
+    return Response.json(
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: '当前模型不支持图片输入,请切换到支持图片的模型后重试。',
+        },
+      },
+      { status: 400 },
+    )
   }
 
   const isStream = body.stream === true
