@@ -5,8 +5,9 @@ import { createGatewayWebSearch, GatewayWebSearchError } from './webSearch'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
-    GW_MIMO_KEY: 'mimo-secret',
-    GW_MIMO_BASE: 'https://mimo.example/v1',
+    GW_QWEN_KEY: 'qwen-secret',
+    GW_QWEN_BASE: 'https://qwen.example/v1',
+    GW_QWEN_MODEL: 'qwen3-coder-plus',
     GW_RELAY_BASE: 'https://relay.example/relay/openai/v1',
     GW_RELAY_TOKEN: 'relay-secret',
     GW_ARK_KEY: 'ark-secret',
@@ -24,7 +25,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_Q_ARK_IMG: '1',
     GW_Q_AMAP: '1',
     GW_QUEUE_MAX_WAIT: '0.01',
-    GW_MIMO_QUEUE_MAX_WAIT: '0.2',
+    GW_QWEN_QUEUE_MAX_WAIT: '0.2',
     ...overrides,
   }
 }
@@ -82,14 +83,13 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(res.status).toBe(200)
   const body = await res.json()
   expect(body.ok).toBe(true)
-  expect(body.limits.mimo_rpm).toBe(90)
-  expect(body.limits.mimo_conc).toBe(16)
-  expect(body.limits.mimo_user_conc).toBe(2)
+  expect(body.limits.qwen_rpm).toBe(90)
+  expect(body.limits.qwen_conc).toBe(16)
+  expect(body.limits.qwen_user_conc).toBe(2)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
   expect(body.features.web_search).toBe(true)
-  expect(body.features.mimo_native_web_search).toBe(false)
-  expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
+  expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
 })
 
 test('web search authenticates, keeps provider key server-side and normalizes filtered results', async () => {
@@ -251,46 +251,95 @@ test('missing or invalid bearer is rejected before upstream fetch', async () => 
   expect(calls).toEqual([])
 })
 
-test('chat completions stream is proxied with MiMo key and logged after consumption', async () => {
+test('chat completions stream is proxied to Qwen with the server key and logged after consumption', async () => {
   const { fetch, calls, usage } = makeGateway()
-  const rawBody = JSON.stringify({ model: 'mimo-v2.5', stream: true })
+  const rawBody = JSON.stringify({ model: 'qwen3-coder-plus', stream: true })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     body: rawBody,
     headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
   })))
   expect(res.status).toBe(200)
-  expect(await res.text()).toBe('data: hello\n\n')
-  expect(calls[0]?.url).toBe('https://mimo.example/v1/chat/completions')
+  const text = await res.text()
+  expect(text).toBe('data: hello\n\n')
+  expect(calls[0]?.url).toBe('https://qwen.example/v1/chat/completions')
   expect(calls[0]?.body).toBe(rawBody)
-  expect((calls[0]?.init?.headers as Record<string, string>).Authorization).toBe('Bearer mimo-secret')
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'mimo', ok: true, status: 200 }])
+  expect((calls[0]?.init?.headers as Record<string, string>).Authorization).toBe('Bearer qwen-secret')
+  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'qwen', ok: true, status: 200 }])
+  // 服务器密钥只出现在给上游的 Authorization 头,绝不进入客户端响应或用量日志。
+  expect(text).not.toContain('qwen-secret')
+  expect(JSON.stringify(usage.rows)).not.toContain('qwen-secret')
 })
 
-test('MiMo native search is injected alongside function tools and hides the legacy tool capability', async () => {
-  const { fetch, calls } = makeGateway({ GW_MIMO_NATIVE_WEB_SEARCH: '1' })
-  const health = await (await fetch(new Request('http://local/healthz', authed()))).json()
-  expect(health.features).toMatchObject({ web_search: false, mimo_native_web_search: true })
+test('non-stream JSON responses are proxied through unchanged', async () => {
+  const fetch = createGatewayFetch({
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async () => Response.json({
+      id: 'chatcmpl-1', model: 'qwen3-coder-plus',
+      choices: [{ index: 0, message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    }),
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus', messages: [{ role: 'user', content: 'hi' }] }),
+  })))
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.choices[0].message.content).toBe('你好')
+  expect(body.usage.total_tokens).toBe(5)
+})
 
+test('SSE tool_call deltas are streamed through byte-for-byte (tool call increments preserved)', async () => {
+  const chunk = 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Read","arguments":"{\\"p"}}]}}]}\n\n'
+    + 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ath\\":1}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+    + 'data: [DONE]\n\n'
+  const fetch = createGatewayFetch({
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async () => new Response(chunk, { headers: { 'content-type': 'text/event-stream' } }),
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true, tools: [{ type: 'function', function: { name: 'Read' } }] }),
+  })))
+  expect(await res.text()).toBe(chunk)
+})
+
+test('function tools and tool_choice pass through to Qwen unchanged — no hidden search channel is injected', async () => {
+  const { fetch, calls } = makeGateway()
   const response = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'mimo-v2.5',
+      model: 'qwen3-coder-plus',
       stream: true,
-      tools: [{ type: 'function', function: { name: 'Read', parameters: { type: 'object' } } }],
+      tool_choice: 'auto',
+      tools: [
+        { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
+        { type: 'web_search' },
+      ],
     }),
   })))
   await response.text()
   const upstreamBody = JSON.parse(calls[0]!.body!)
+  // 客户端传什么工具就原样透传,网关既不追加也不改写(联网搜索走独立 /v1/web_search)。
+  expect(upstreamBody.tool_choice).toBe('auto')
   expect(upstreamBody.tools).toEqual([
     { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
-    { type: 'web_search', max_keyword: 5, force_search: false, limit: 5 },
+    { type: 'web_search' },
   ])
 })
 
-test('MiMo native search rejects malformed JSON before capacity or upstream work', async () => {
-  const { fetch, calls } = makeGateway({ GW_MIMO_NATIVE_WEB_SEARCH: '1' })
+test('malformed chat JSON fails closed before capacity or upstream work', async () => {
+  const { fetch, calls } = makeGateway()
   const malformed = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -300,29 +349,29 @@ test('MiMo native search rejects malformed JSON before capacity or upstream work
   expect(calls).toEqual([])
 })
 
-test('MiMo rejects models outside the server allowlist before upstream work', async () => {
+test('client cannot bypass the model whitelist: an out-of-list model is coerced to the server model', async () => {
   const { fetch, calls } = makeGateway()
-  const rejected = await fetch(new Request('http://local/v1/chat/completions', authed({
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'unapproved-expensive-model', messages: [] }),
+    body: JSON.stringify({ model: 'unapproved-expensive-model', messages: [{ role: 'user', content: 'hi' }] }),
   })))
-  expect(rejected.status).toBe(400)
-  expect(await rejected.json()).toEqual({ detail: '当前模型不可用' })
-  expect(calls).toEqual([])
+  expect(res.status).toBe(200)
+  // 上游只会收到服务器配置的模型,客户端无法指定别的模型。
+  expect(JSON.parse(calls[0]!.body!).model).toBe('qwen3-coder-plus')
 })
 
-test('MiMo retries transient upstream responses and records the attempt count without leaking details', async () => {
+test('Qwen retries transient upstream responses and records the attempt count without leaking details', async () => {
   const usage = new MemoryUsageStore()
   const calls: string[] = []
   const sleeps: number[] = []
   const fetch = createGatewayFetch({
-    env: env({ GW_Q_CHAT: '10', GW_MIMO_MAX_RETRIES: '2' }),
+    env: env({ GW_Q_CHAT: '10', GW_QWEN_MAX_RETRIES: '2' }),
     usageStore: usage,
     transcribeImpl: null,
     webSearchImpl: null,
-    mimoRetrySleep: async ms => { sleeps.push(ms) },
-    mimoRetryRandom: () => 0,
+    qwenRetrySleep: async ms => { sleeps.push(ms) },
+    qwenRetryRandom: () => 0,
     fetchImpl: async (_input, init) => {
       calls.push(String(init?.body))
       if (calls.length === 1) return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
@@ -332,7 +381,7 @@ test('MiMo retries transient upstream responses and records the attempt count wi
   const response = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
+    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true }),
   })))
   expect(response.status).toBe(200)
   await response.text()
@@ -342,9 +391,9 @@ test('MiMo retries transient upstream responses and records the attempt count wi
   expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
 })
 
-test('MiMo distinguishes upstream account exhaustion from temporary concurrency limits', async () => {
+test('Qwen distinguishes upstream account exhaustion from temporary concurrency limits and redacts detail', async () => {
   const fetch = createGatewayFetch({
-    env: env({ GW_MIMO_MAX_RETRIES: '0' }),
+    env: env({ GW_QWEN_MAX_RETRIES: '0' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
     webSearchImpl: null,
@@ -355,22 +404,25 @@ test('MiMo distinguishes upstream account exhaustion from temporary concurrency 
   const response = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'mimo-v2.5', messages: [] }),
+    body: JSON.stringify({ model: 'qwen3-coder-plus', messages: [] }),
   })))
 
   expect(response.status).toBe(429)
-  expect(await response.json()).toEqual({ detail: '模型服务额度不足，请稍后再试或联系管理员' })
+  const body = await response.json()
+  expect(body).toEqual({ detail: '模型服务额度不足，请稍后再试或联系管理员' })
+  // 上游原始错误细节(余额/账户)不外泄给客户端。
+  expect(JSON.stringify(body)).not.toContain('balance')
 })
 
-test('MiMo concurrency permit is held until the proxied stream completes', async () => {
+test('Qwen concurrency permit is held until the proxied stream completes', async () => {
   let firstController: ReadableStreamDefaultController<Uint8Array> | undefined
   let upstreamCalls = 0
   const fetch = createGatewayFetch({
     env: env({
       GW_Q_CHAT: '10',
-      GW_MIMO_CONC: '1',
-      GW_MIMO_USER_CONC: '1',
-      GW_MIMO_QUEUE_MAX_WAIT: '1',
+      GW_QWEN_CONC: '1',
+      GW_QWEN_USER_CONC: '1',
+      GW_QWEN_QUEUE_MAX_WAIT: '1',
     }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -391,7 +443,7 @@ test('MiMo concurrency permit is held until the proxied stream completes', async
   const request = () => new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
+    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true }),
   }))
 
   const first = await fetch(request())
@@ -405,6 +457,34 @@ test('MiMo concurrency permit is held until the proxied stream completes', async
   const second = await secondPromise
   expect(upstreamCalls).toBe(2)
   expect(await second.text()).toBe('data: second\n\n')
+})
+
+test('client cancellation aborts the upstream request and fails closed (no hung request)', async () => {
+  const controller = new AbortController()
+  const fetch = createGatewayFetch({
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+      const abort = () => {
+        const err = new Error('aborted')
+        err.name = 'AbortError'
+        reject(err)
+      }
+      if (init?.signal?.aborted) return abort()
+      init?.signal?.addEventListener('abort', abort, { once: true })
+    }),
+  })
+  const pending = fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true }),
+    signal: controller.signal,
+  })))
+  controller.abort()
+  const res = await pending
+  expect(res.status).toBeGreaterThanOrEqual(400)
 })
 
 test('image generation ignores legacy daily quota settings and proxies every capacity-admitted request', async () => {
