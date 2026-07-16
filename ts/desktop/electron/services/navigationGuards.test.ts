@@ -1,46 +1,97 @@
-import { describe, expect, test } from 'bun:test'
-import { installMainWindowNavigationGuards } from './navigationGuards'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  installMainWindowNavigationGuards,
+  installPreviewNavigationGuards,
+  isHttpUrl,
+} from './navigationGuards'
 
-function fakeWebContents(currentUrl = 'file:///app/index.html') {
-  let openHandler: ((details: { url: string }) => { action: 'deny' } | { action: 'allow' }) | undefined
-  let navigateHandler: ((event: { preventDefault: () => void }, url: string) => void) | undefined
+function fakeWebContents() {
+  let windowOpenHandler: ((details: { url: string }) => { action: 'deny' } | { action: 'allow' }) | null = null
+  let willNavigateHandler: ((event: { preventDefault: () => void }, url: string) => void) | null = null
   return {
-    webContents: {
-      getURL: () => currentUrl,
-      setWindowOpenHandler(handler: typeof openHandler) { openHandler = handler },
-      on(_event: 'will-navigate', handler: typeof navigateHandler) { navigateHandler = handler },
+    contents: {
+      setWindowOpenHandler(handler: (details: { url: string }) => { action: 'deny' } | { action: 'allow' }) {
+        windowOpenHandler = handler
+      },
+      on(event: 'will-navigate', handler: (event: { preventDefault: () => void }, url: string) => void) {
+        if (event === 'will-navigate') willNavigateHandler = handler
+        return this
+      },
     },
-    open(url: string) { return openHandler?.({ url }) },
+    openWindow(url: string) {
+      if (!windowOpenHandler) throw new Error('window open handler not installed')
+      return windowOpenHandler({ url })
+    },
     navigate(url: string) {
-      let prevented = false
-      navigateHandler?.({ preventDefault: () => { prevented = true } }, url)
-      return prevented
+      const event = { preventDefault: vi.fn() }
+      willNavigateHandler?.(event, url)
+      return event.preventDefault
+    },
+    hasWillNavigate() {
+      return willNavigateHandler !== null
     },
   }
 }
 
-describe('主窗口导航守卫', () => {
-  test('普通 Markdown 外链不能替换应用页面，并交给系统浏览器', () => {
-    const fake = fakeWebContents()
-    const opened: string[] = []
-    installMainWindowNavigationGuards(fake.webContents, { openExternal: url => opened.push(url) })
+describe('isHttpUrl', () => {
+  it('accepts only http(s) URLs', () => {
+    expect(isHttpUrl('https://example.com')).toBe(true)
+    expect(isHttpUrl('http://127.0.0.1:8080')).toBe(true)
+    expect(isHttpUrl('file:///etc/passwd')).toBe(false)
+    expect(isHttpUrl('javascript:alert(1)')).toBe(false)
+    expect(isHttpUrl('not a url')).toBe(false)
+  })
+})
 
-    expect(fake.navigate('https://example.com/task')).toBe(true)
-    expect(opened).toEqual(['https://example.com/task'])
+describe('installMainWindowNavigationGuards', () => {
+  it('denies popups and routes http(s) ones to the system browser', () => {
+    const openExternal = vi.fn()
+    const wc = fakeWebContents()
+    installMainWindowNavigationGuards(wc.contents, { openExternal })
+
+    expect(wc.openWindow('https://example.com')).toEqual({ action: 'deny' })
+    expect(openExternal).toHaveBeenCalledWith('https://example.com')
   })
 
-  test('同一开发服务器内的导航不被误拦', () => {
-    const fake = fakeWebContents('http://127.0.0.1:5173/index.html')
-    installMainWindowNavigationGuards(fake.webContents, { openExternal: () => undefined })
-    expect(fake.navigate('http://127.0.0.1:5173/settings')).toBe(false)
+  it('denies non-http popups without opening anything', () => {
+    const openExternal = vi.fn()
+    const wc = fakeWebContents()
+    installMainWindowNavigationGuards(wc.contents, { openExternal })
+
+    expect(wc.openWindow('file:///etc/passwd')).toEqual({ action: 'deny' })
+    expect(openExternal).not.toHaveBeenCalled()
   })
 
-  test('file 和自定义协议跳转直接拦截且不外开', () => {
-    const fake = fakeWebContents()
-    const opened: string[] = []
-    installMainWindowNavigationGuards(fake.webContents, { openExternal: url => opened.push(url) })
-    expect(fake.navigate('file:///tmp/hostile.html')).toBe(true)
-    expect(fake.navigate('javascript:alert(1)')).toBe(true)
-    expect(opened).toEqual([])
+  it('does not install a will-navigate guard so dev reloads keep working', () => {
+    const wc = fakeWebContents()
+    installMainWindowNavigationGuards(wc.contents, { openExternal: vi.fn() })
+    expect(wc.hasWillNavigate()).toBe(false)
+  })
+})
+
+describe('installPreviewNavigationGuards', () => {
+  it('allows in-page http(s) navigation so the preview keeps working as a browser', () => {
+    const wc = fakeWebContents()
+    installPreviewNavigationGuards(wc.contents, { openExternal: vi.fn() })
+
+    const preventDefault = wc.navigate('https://example.com/page')
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('blocks navigation to non-http(s) schemes', () => {
+    const wc = fakeWebContents()
+    installPreviewNavigationGuards(wc.contents, { openExternal: vi.fn() })
+
+    const preventDefault = wc.navigate('file:///etc/passwd')
+    expect(preventDefault).toHaveBeenCalledTimes(1)
+  })
+
+  it('denies popups and routes http(s) ones to the system browser', () => {
+    const openExternal = vi.fn()
+    const wc = fakeWebContents()
+    installPreviewNavigationGuards(wc.contents, { openExternal })
+
+    expect(wc.openWindow('https://example.com')).toEqual({ action: 'deny' })
+    expect(openExternal).toHaveBeenCalledWith('https://example.com')
   })
 })

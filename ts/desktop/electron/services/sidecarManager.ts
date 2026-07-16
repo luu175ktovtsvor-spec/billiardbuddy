@@ -1,74 +1,378 @@
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import net from 'node:net'
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { Readable } from 'node:stream'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 
-export const SERVER_BIND_HOST = '127.0.0.1'
+export const SERVER_BIND_HOST = '0.0.0.0'
+export const SERVER_CONTROL_HOST = '127.0.0.1'
+export const SERVER_STARTUP_TIMEOUT_MS = 30_000
+export const SERVER_STARTUP_LOG_LIMIT = 80
+// Shared with the Tauri shell (src-tauri/src/lib.rs) so both desktop builds
+// reuse the same sticky port across restarts (issue #767).
+export const SERVER_STATE_FILE = 'desktop-server-state.json'
+// Mirrors the server-side fixedPort range (h5AccessService MIN/MAX_FIXED_PORT).
+const MIN_FIXED_PORT = 1024
+const MAX_FIXED_PORT = 65535
 
 export type SidecarChild = ChildProcessByStdio<null, Readable, Readable>
-/** cwd:显式指定 sidecar 工作目录。打包后从 Finder/开始菜单启动时 Electron 进程 cwd=`/`,
- *  若不显式传,spawn 出的 sidecar 会继承这个坏 cwd(任何相对路径解析/落盘都可能失败)。 */
-export type SidecarPlan = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }
 
-function canBindPort(bindHost: string, port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const server = net.createServer()
-    server.once('error', () => resolve(false))
-    server.listen(port, bindHost, () => server.close(() => resolve(true)))
-  })
+export type SidecarPlan = {
+  command: string
+  args: string[]
+  env: NodeJS.ProcessEnv
 }
 
-async function reserveLocalPort(bindHost = SERVER_BIND_HOST): Promise<number> {
+export type SpawnSidecarDeps = {
+  existsSyncFn?: typeof existsSync
+  spawnFn?: typeof spawn
+}
+
+const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'https_proxy',
+] as const
+const LOOPBACK_NO_PROXY_ENTRIES = ['localhost', '127.0.0.1', '::1'] as const
+
+export function resolveHostTriple(platform = process.platform, arch = process.arch): string {
+  if (platform === 'darwin' && arch === 'arm64') return 'aarch64-apple-darwin'
+  if (platform === 'darwin' && arch === 'x64') return 'x86_64-apple-darwin'
+  if (platform === 'win32' && arch === 'arm64') return 'aarch64-pc-windows-msvc'
+  if (platform === 'win32') return 'x86_64-pc-windows-msvc'
+  if (platform === 'linux' && arch === 'arm64') return 'aarch64-unknown-linux-gnu'
+  if (platform === 'linux') return 'x86_64-unknown-linux-gnu'
+  throw new Error(`Unsupported Electron sidecar platform: ${platform}/${arch}`)
+}
+
+export function resolveSidecarExecutable(desktopRoot: string, triple = resolveHostTriple()): string {
+  const base = path.join(desktopRoot, 'src-tauri', 'binaries', `claude-sidecar-${triple}`)
+  return process.platform === 'win32' ? `${base}.exe` : base
+}
+
+export function httpToWebSocketUrl(serverHttpUrl: string): string {
+  if (serverHttpUrl.startsWith('http://')) return `ws://${serverHttpUrl.slice('http://'.length)}`
+  if (serverHttpUrl.startsWith('https://')) return `wss://${serverHttpUrl.slice('https://'.length)}`
+  return serverHttpUrl
+}
+
+export async function reserveLocalPort(bindHost = SERVER_BIND_HOST): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = net.createServer()
-    server.once('error', reject)
+    server.once('error', error => reject(error))
     server.listen(0, bindHost, () => {
       const address = server.address()
       server.close(() => {
-        if (!address || typeof address === 'string') return reject(new Error('no port'))
+        if (!address || typeof address === 'string') {
+          reject(new Error('Could not resolve reserved local port'))
+          return
+        }
         resolve(address.port)
       })
     })
   })
 }
 
-/** 首选端口(固定/上次)优先,全占了回落随机——起步版,sticky 落盘是 W13。 */
-export async function reserveServerPort(bindHost: string, preferred: number[]): Promise<number> {
+function canBindPort(bindHost: string, port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const server = net.createServer()
+    server.once('error', () => resolve(false))
+    server.listen(port, bindHost, () => {
+      server.close(() => resolve(true))
+    })
+  })
+}
+
+/**
+ * Try the preferred ports in order (h5Access.fixedPort first, then the port
+ * used by the previous run) and fall back to an OS-assigned random port when
+ * all of them are taken, so the app always starts.
+ */
+export async function reserveServerPort(
+  bindHost: string,
+  preferred: number[],
+): Promise<number> {
   for (const port of preferred) {
     if (!Number.isInteger(port) || port <= 0 || port > 65535) continue
     if (await canBindPort(bindHost, port)) return port
+    console.error(`[desktop] preferred server port ${port} unavailable`)
   }
   return await reserveLocalPort(bindHost)
 }
 
-function canConnect(host: string, port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const socket = net.connect({ host, port, timeout: 200 })
-    socket.once('connect', () => { socket.destroy(); resolve(true) })
-    socket.once('timeout', () => { socket.destroy(); resolve(false) })
-    socket.once('error', () => resolve(false))
-  })
+export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
 }
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-export async function waitForServer(host: string, port: number, timeoutMs = 10_000): Promise<void> {
+/** Parse h5Access.fixedPort out of cc-haha/settings.json contents. */
+export function parseH5FixedPort(contents: string): number | null {
+  let value: unknown
+  try {
+    value = JSON.parse(contents)
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== 'object') return null
+  const h5Access = (value as Record<string, unknown>).h5Access
+  if (!h5Access || typeof h5Access !== 'object') return null
+  const port = (h5Access as Record<string, unknown>).fixedPort
+  if (typeof port !== 'number' || !Number.isInteger(port)) return null
+  return port >= MIN_FIXED_PORT && port <= MAX_FIXED_PORT ? port : null
+}
+
+export function readH5FixedPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  try {
+    const settingsPath = path.join(claudeConfigDir(env), 'cc-haha', 'settings.json')
+    return parseH5FixedPort(readFileSync(settingsPath, 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+export function readLastServerPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  try {
+    const statePath = path.join(claudeConfigDir(env), SERVER_STATE_FILE)
+    const state: unknown = JSON.parse(readFileSync(statePath, 'utf-8'))
+    if (!state || typeof state !== 'object') return null
+    const port = (state as Record<string, unknown>).lastPort
+    if (typeof port !== 'number' || !Number.isInteger(port)) return null
+    return port > 0 && port <= 65535 ? port : null
+  } catch {
+    return null
+  }
+}
+
+export function writeLastServerPort(port: number, env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    const dir = claudeConfigDir(env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, SERVER_STATE_FILE), `${JSON.stringify({ lastPort: port }, null, 2)}\n`, 'utf-8')
+  } catch (error) {
+    console.error('[desktop] failed to persist server state', error)
+  }
+}
+
+/** Preferred ports for the next server start: explicit fixed port first, then the sticky last-used port. */
+export function preferredServerPorts(env: NodeJS.ProcessEnv = process.env): number[] {
+  const ports: number[] = []
+  const fixedPort = readH5FixedPort(env)
+  if (fixedPort !== null) ports.push(fixedPort)
+  const lastPort = readLastServerPort(env)
+  if (lastPort !== null && !ports.includes(lastPort)) ports.push(lastPort)
+  return ports
+}
+
+export async function waitForServer(host: string, port: number, timeoutMs = SERVER_STARTUP_TIMEOUT_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs
+  const healthUrl = `http://${host}:${port}/health`
+  let lastError: Error | null = null
+
   while (Date.now() < deadline) {
-    if (await canConnect(host, port)) return
+    try {
+      await assertServerHealth(healthUrl, Math.min(500, Math.max(100, deadline - Date.now())))
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    }
     await sleep(150)
   }
-  throw new Error(`sidecar did not start listening on ${host}:${port} within ${Math.round(timeoutMs / 1000)}s`)
+
+  const reason = lastError ? `: ${lastError.message}` : ''
+  throw new Error(`desktop server did not report healthy at ${healthUrl} within ${Math.round(timeoutMs / 1000)} seconds${reason}`)
 }
 
-export type SpawnSidecarDeps = { existsSyncFn?: typeof existsSync; spawnFn?: typeof spawn }
+async function assertServerHealth(healthUrl: string, timeoutMs: number): Promise<void> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(healthUrl, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`healthcheck returned ${response.status}`)
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.toLowerCase().includes('application/json')) {
+      throw new Error(`healthcheck returned non-JSON response from ${healthUrl}`)
+    }
+
+    const body = await response.json().catch(() => null)
+    if (!body || typeof body !== 'object' || !('status' in body) || body.status !== 'ok') {
+      throw new Error(`healthcheck returned invalid response from ${healthUrl}`)
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+export function pushStartupLog(logs: string[], line: string) {
+  const trimmed = line.trimEnd()
+  if (!trimmed) return
+  if (logs.length >= SERVER_STARTUP_LOG_LIMIT) logs.shift()
+  logs.push(trimmed)
+}
+
+export function formatStartupError(message: string, logs: string[]): string {
+  const logText = logs.length > 0
+    ? logs.join('\n')
+    : 'No server stdout/stderr was captured before the timeout.'
+  return `${message}\n\nRecent server logs:\n${logText}`
+}
+
+export function proxyUrlFromElectronProxyRules(rules: string | undefined): string | undefined {
+  if (!rules) return undefined
+
+  for (const rawRule of rules.split(';')) {
+    const rule = rawRule.trim()
+    if (!rule || /^DIRECT$/i.test(rule)) continue
+
+    const match = rule.match(/^(PROXY|HTTPS)\s+(.+)$/i)
+    if (!match) continue
+
+    const scheme = match[1]!.toUpperCase() === 'HTTPS' ? 'https' : 'http'
+    const hostPort = match[2]!.trim()
+    if (!hostPort) continue
+
+    return `${scheme}://${hostPort}`
+  }
+
+  return undefined
+}
+
+export function mergeProxyEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  proxyUrl: string | undefined,
+): NodeJS.ProcessEnv {
+  if (!proxyUrl) return baseEnv
+  if (PROXY_ENV_KEYS.some(key => baseEnv[key])) {
+    const noProxy = mergeLoopbackNoProxy(baseEnv.no_proxy || baseEnv.NO_PROXY)
+    return { ...baseEnv, NO_PROXY: noProxy, no_proxy: noProxy }
+  }
+
+  const noProxy = mergeLoopbackNoProxy(baseEnv.no_proxy || baseEnv.NO_PROXY)
+
+  return {
+    ...baseEnv,
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+  }
+}
+
+function mergeLoopbackNoProxy(existing: string | undefined): string {
+  const entries = (existing ?? '')
+    .split(/[,\s]+/)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+  const lowerEntries = new Set(entries.map(entry => entry.toLowerCase()))
+
+  for (const entry of LOOPBACK_NO_PROXY_ENTRIES) {
+    if (!lowerEntries.has(entry.toLowerCase())) entries.push(entry)
+  }
+
+  return entries.join(',')
+}
+
+// The agent's PowerShellTool reads this env var to honor the user's chosen shell
+// (mirrors src/utils/shell/powershellDetection.ts). Without it the agent would
+// re-autodetect PowerShell instead of using the shell the user picked in the UI.
+export const POWERSHELL_PATH_OVERRIDE_ENV = 'CLAUDE_CODE_POWERSHELL_PATH'
+
+/**
+ * Map a resolved Windows shell path to a PowerShell override for the sidecar env.
+ * Returns the path only on Windows when it points at pwsh/powershell, so that a
+ * cmd.exe or non-PowerShell custom shell selection does not get misreported as a
+ * PowerShell override. Matches the consumer's isPowerShellExecutablePath check.
+ */
+export function windowsPowerShellOverride(
+  shellPath: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== 'win32') return null
+  const trimmed = shellPath?.trim()
+  if (!trimmed) return null
+  const base = trimmed.split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
+  return base === 'pwsh' || base === 'powershell' ? trimmed : null
+}
+
+export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv, h5DistDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    CLAUDE_H5_AUTO_PUBLIC_URL: '1',
+    CLAUDE_H5_DIST_DIR: h5DistDir,
+  }
+  const configDir = baseEnv.CLAUDE_CONFIG_DIR
+  if (configDir) {
+    const cacheDir = path.join(configDir, 'Cache')
+    mkdirSync(cacheDir, { recursive: true })
+    env.CLAUDE_CONFIG_DIR = configDir
+    env.XDG_CACHE_HOME = cacheDir
+  }
+  return env
+}
+
+export function createServerPlan({
+  desktopRoot,
+  appRoot,
+  port,
+  bindHost = SERVER_BIND_HOST,
+  h5DistDir = path.join(desktopRoot, 'dist'),
+  env = process.env,
+}: {
+  desktopRoot: string
+  appRoot: string
+  port: number
+  bindHost?: string
+  h5DistDir?: string
+  env?: NodeJS.ProcessEnv
+}): SidecarPlan {
+  return {
+    command: resolveSidecarExecutable(desktopRoot),
+    args: ['server', '--app-root', appRoot, '--host', bindHost, '--port', String(port)],
+    env: buildSidecarEnv(env, h5DistDir),
+  }
+}
+
+export function createAdapterPlan({
+  desktopRoot,
+  appRoot,
+  serverUrl,
+  flag,
+  h5DistDir = path.join(desktopRoot, 'dist'),
+  env = process.env,
+}: {
+  desktopRoot: string
+  appRoot: string
+  serverUrl: string
+  flag: '--feishu' | '--telegram' | '--wechat' | '--dingtalk' | '--whatsapp'
+  h5DistDir?: string
+  env?: NodeJS.ProcessEnv
+}): SidecarPlan {
+  return {
+    command: resolveSidecarExecutable(desktopRoot),
+    args: ['adapters', '--app-root', appRoot, flag],
+    env: {
+      ...buildSidecarEnv(env, h5DistDir),
+      ADAPTER_SERVER_URL: httpToWebSocketUrl(serverUrl),
+    },
+  }
+}
+
 export function spawnSidecar(plan: SidecarPlan, deps: SpawnSidecarDeps = {}): SidecarChild {
   const exists = deps.existsSyncFn ?? existsSync
   if (!exists(plan.command)) {
-    throw new Error(`sidecar binary not found: ${plan.command}. Run "bun run build:sidecar" first.`)
+    throw new Error(`Electron sidecar binary not found: ${plan.command}. Run "cd desktop && bun run build:sidecars" first.`)
   }
   return (deps.spawnFn ?? spawn)(plan.command, plan.args, {
-    // 显式可写 cwd(打包后 Electron 进程 cwd 可能是 `/`,别让 sidecar 继承坏 cwd)。
-    cwd: plan.cwd,
     env: plan.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -80,12 +384,14 @@ export type KillSidecarDeps = {
   spawnAsync?: typeof spawn
   spawnSyncFn?: typeof spawnSync
 }
-/** Win 上 taskkill /T 收整棵进程树防孤儿(Bun sidecar 会派 worker);其余 child.kill。 */
-export function killSidecar(
-  child: { pid?: number; kill: () => void },
-  sync = false,
-  deps: KillSidecarDeps = {},
-): void {
+
+/**
+ * Terminate a sidecar process. On Windows we shell out to `taskkill /T` to also
+ * reap the child process tree (the Bun sidecar spawns workers). Pass `sync=true`
+ * during app shutdown so the kill completes before the process exits — otherwise
+ * the async `taskkill` is fire-and-forget and can leave orphaned processes.
+ */
+export function killSidecar(child: SidecarChild, sync = false, deps: KillSidecarDeps = {}) {
   const platform = deps.platform ?? process.platform
   if (platform === 'win32' && child.pid) {
     const args = ['/F', '/T', '/PID', String(child.pid)]
@@ -95,137 +401,4 @@ export function killSidecar(
     return
   }
   child.kill()
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Sidecar 守护(意外退出 → 自动重启 + 指数退避 + 次数封顶):长会话 agent 循环里 sidecar 任
-// 何时候崩了都不该让整个应用停摆。守护器监听 child 的 'exit',若非主动关闭就按退避拉起下一个;
-// 端口由调用方保持稳定(同口重启),这样 renderer 的 baseUrl 不失效、现有 WS 指数退避重连即可复连。
-// 防雪崩:滚动窗口内累计重启达上限就停手并回调 onGaveUp(交给 main 弹窗提示,而不是无限重启烧 CPU)。
-// ────────────────────────────────────────────────────────────────────────────
-
-export interface SidecarSupervisorConfig {
-  /** 滚动窗口内允许的最大重启次数,超过就停手。默认 5。 */
-  maxRestarts: number
-  /** 统计重启次数的滚动窗口(ms)。默认 60s。 */
-  restartWindowMs: number
-  /** 退避基数(ms):第 n 次重启延迟 = min(base * 2^n, max)。默认 1s。 */
-  backoffBaseMs: number
-  /** 退避上限(ms)。默认 16s。 */
-  backoffMaxMs: number
-  /** sidecar 稳定存活超过此时长(ms)后视为"健康",重置重启计数。默认 30s。 */
-  healthyResetMs: number
-}
-
-export const DEFAULT_SIDECAR_SUPERVISOR: SidecarSupervisorConfig = {
-  maxRestarts: 5,
-  restartWindowMs: 60_000,
-  backoffBaseMs: 1_000,
-  backoffMaxMs: 16_000,
-  healthyResetMs: 30_000,
-}
-
-export interface SidecarSupervisorHooks {
-  /** 每次(重)spawn 出新 child 后回调:用于挂 stdout/stderr 管道等。 */
-  onSpawn?: (child: SidecarChild) => void
-  /** child 退出时回调(willRestart 表示是否会自动重启)。 */
-  onExit?: (code: number | null, willRestart: boolean) => void
-  /** 已排定重启时回调(attempt 从 1 起,delayMs 为本次退避)。 */
-  onRestartScheduled?: (attempt: number, delayMs: number) => void
-  /** 触顶放弃自动重启时回调(交给 main 优雅提示用户)。 */
-  onGaveUp?: (restartsInWindow: number) => void
-}
-
-export interface SidecarSupervisorDeps {
-  setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
-  clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void
-  now?: () => number
-}
-
-type ExitListenerChild = SidecarChild & { on(event: 'exit', listener: (code: number | null) => void): unknown }
-
-/** 守护单个 sidecar 子进程:意外退出自动退避重启,主动 stop() 则不再拉起。 */
-export class SidecarSupervisor {
-  private child: SidecarChild | null = null
-  private stopped = false
-  private restartTimes: number[] = []
-  private restartTimer: ReturnType<typeof setTimeout> | null = null
-  private startedAt = 0
-  private readonly cfg: SidecarSupervisorConfig
-  private readonly setTimeoutFn: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
-  private readonly clearTimeoutFn: (handle: ReturnType<typeof setTimeout>) => void
-  private readonly now: () => number
-
-  constructor(
-    private readonly spawnFn: () => SidecarChild,
-    private readonly hooks: SidecarSupervisorHooks = {},
-    config: Partial<SidecarSupervisorConfig> = {},
-    deps: SidecarSupervisorDeps = {},
-  ) {
-    this.cfg = { ...DEFAULT_SIDECAR_SUPERVISOR, ...config }
-    this.setTimeoutFn = deps.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms))
-    this.clearTimeoutFn = deps.clearTimeoutFn ?? ((h) => clearTimeout(h))
-    this.now = deps.now ?? (() => Date.now())
-  }
-
-  /** 首次拉起 sidecar(返回当前 child)。 */
-  start(): SidecarChild {
-    this.stopped = false
-    return this.spawnOnce()
-  }
-
-  /** 当前 child(可能为 null:已 stop 或触顶放弃)。 */
-  current(): SidecarChild | null {
-    return this.child
-  }
-
-  /** 主动停止守护并杀掉当前 child;停止后 exit 不再触发重启(before-quit 用)。 */
-  stop(sync = false, killDeps: KillSidecarDeps = {}): void {
-    this.stopped = true
-    if (this.restartTimer) {
-      this.clearTimeoutFn(this.restartTimer)
-      this.restartTimer = null
-    }
-    if (this.child) {
-      killSidecar(this.child, sync, killDeps)
-      this.child = null
-    }
-  }
-
-  private spawnOnce(): SidecarChild {
-    const child = this.spawnFn()
-    this.child = child
-    this.startedAt = this.now()
-    this.hooks.onSpawn?.(child)
-    ;(child as ExitListenerChild).on('exit', (code) => this.handleExit(code))
-    return child
-  }
-
-  private handleExit(code: number | null): void {
-    if (this.stopped) return // 主动关闭,不重启
-    this.child = null
-
-    // 稳定存活够久 → 视为健康,清空重启计数(避免"跑了几小时后偶发崩一次"被误判为雪崩)。
-    if (this.now() - this.startedAt >= this.cfg.healthyResetMs) this.restartTimes = []
-
-    // 滚动窗口裁剪:只统计最近 restartWindowMs 内的重启。
-    const cutoff = this.now() - this.cfg.restartWindowMs
-    this.restartTimes = this.restartTimes.filter((t) => t >= cutoff)
-
-    if (this.restartTimes.length >= this.cfg.maxRestarts) {
-      this.hooks.onExit?.(code, false)
-      this.hooks.onGaveUp?.(this.restartTimes.length)
-      return
-    }
-
-    const attempt = this.restartTimes.length // 0-based:本次是窗口内第 attempt 次
-    this.restartTimes.push(this.now())
-    const delay = Math.min(this.cfg.backoffBaseMs * 2 ** attempt, this.cfg.backoffMaxMs)
-    this.hooks.onExit?.(code, true)
-    this.hooks.onRestartScheduled?.(attempt + 1, delay)
-    this.restartTimer = this.setTimeoutFn(() => {
-      this.restartTimer = null
-      if (!this.stopped) this.spawnOnce()
-    }, delay)
-  }
 }

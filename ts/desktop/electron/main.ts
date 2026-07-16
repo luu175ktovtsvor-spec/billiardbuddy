@@ -1,458 +1,451 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, Tray, nativeImage, screen, shell, type MenuItemConstructorOptions } from 'electron'
-import { DESKTOP_IPC, desktopPickerOptionsSchema } from '../../shared/contracts/desktop-host'
-import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join } from 'node:path'
-import { existsSync, readdirSync, statSync } from 'node:fs'
-import { platform } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
+import { autoUpdater } from 'electron-updater'
+import path from 'node:path'
+import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
+import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
+import { ElectronServerRuntime } from './services/serverRuntime'
+import { openDialog, saveDialog } from './services/dialogs'
+import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
 import {
-  SERVER_BIND_HOST,
-  reserveServerPort,
-  spawnSidecar,
-  waitForServer,
-  SidecarSupervisor,
-  type SidecarPlan,
-} from './services/sidecarManager'
-import { installProcessCrashGuards, installAppCrashGuards } from './services/crashGuard'
-// 桌面基建(对齐 cc-haha,能抄就抄):窗口状态持久化 / 防休眠 / 钥匙串弹窗拦截 / 导航守卫 / Windows 通知身份 / 单实例聚焦。
-import { readWindowState, windowOptionsFromState, restoreWindowMaximized, installWindowStatePersistence, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT } from './services/windows'
-import { startPreventSleep, stopPreventSleep, forceStopPreventSleep, isPreventingSleep } from './services/preventSleep'
-import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
-import { installMainWindowNavigationGuards } from './services/navigationGuards'
-import { applyWindowsAppUserModelId } from './services/appIdentity'
+  notificationPermissionState,
+  requestNotificationPermission,
+  sendDesktopNotification,
+} from './services/notifications'
+import { installApplicationMenu } from './services/menu'
 import { acquireSingleInstanceLock } from './services/singleInstance'
-import { resolveCredentialKey } from './services/credentialKey'
+import { installTray, shouldInstallTray, type TrayController } from './services/tray'
+import { ElectronUpdaterService } from './services/updater'
+import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
+import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
+import { ElectronPreviewService, type PreviewBounds } from './services/preview'
+import {
+  applyStartupPortableMode,
+  detectPortableDir,
+  getAppMode,
+  setAppMode,
+  type PortableDetection,
+} from './services/appMode'
+import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
+import { applyWindowsAppUserModelId } from './services/appIdentity'
+import { installMainWindowNavigationGuards, installPreviewNavigationGuards } from './services/navigationGuards'
+import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
+import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
+import { normalizeZoomFactor } from './services/zoom'
+import { resolveRendererEntry } from './services/rendererEntry'
+import { writeWindowSmokeSnapshot } from './services/windowSmoke'
+import {
+  installWindowLifecycle,
+  readWindowState,
+  refreshWindowsDragHitTest,
+  restoreWindowMaximized,
+  saveWindowState,
+  showMainWindow,
+  windowChromeOptionsForPlatform,
+  windowOptionsFromState,
+  MIN_WINDOW_HEIGHT,
+  MIN_WINDOW_WIDTH,
+} from './services/windows'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const PREFERRED_PORTS = [8850, 8851, 8852, 8877]
-
-let sidecarSupervisor: SidecarSupervisor | null = null
 let mainWindow: BrowserWindow | null = null
-let tray: Tray | null = null
-let serverPort = 0
-const controlToken = randomBytes(32).toString('base64url')
-let sidecarDownNotified = false
+let serverRuntime: ElectronServerRuntime | null = null
+let updaterService: ElectronUpdaterService | null = null
+let terminalService: ElectronTerminalService | null = null
+let previewService: ElectronPreviewService | null = null
+const traceWindows = new Map<string, BrowserWindow>()
+let isQuitting = false
+let trayController: TrayController | null = null
 
-const APP_NAME = '球房管家'
-let lastPickerDirectory: string | null = null
+installMacOsChromiumKeychainPromptGuard(app)
 
-function pickerDefaultPath(input: unknown, useParent = false): string {
-  const parsed = desktopPickerOptionsSchema.safeParse(input ?? {})
-  const requested = parsed.success ? parsed.data.defaultPath?.trim() : undefined
-  if (requested && isAbsolute(requested) && existsSync(requested)) return useParent ? dirname(requested) : requested
-  return lastPickerDirectory ?? app.getPath('desktop')
+function appRoot() {
+  return app.isPackaged ? app.getAppPath() : process.cwd()
 }
 
-function rememberPickerDirectory(path: string, selectedDirectory: boolean): void {
-  lastPickerDirectory = selectedDirectory ? path : dirname(path)
+function unpackedRoot() {
+  const root = appRoot()
+  return app.isPackaged ? root.replace(/\.asar$/, '.asar.unpacked') : root
 }
 
-function selectedPathIsDirectory(path: string): boolean {
-  try { return statSync(path).isDirectory() } catch { return false }
+function preloadPath() {
+  return path.join(appRoot(), 'electron-dist', 'preload.cjs')
 }
 
-/** 解析 bun 绝对路径(spawnSidecar 要 existsSync 通过,不能只给裸命令 'bun')。 */
-function resolveBun(): string {
-  const candidates = [
-    process.env.BUN_INSTALL ? join(process.env.BUN_INSTALL, 'bin', 'bun') : '',
-    process.env.HOME ? join(process.env.HOME, '.bun', 'bin', 'bun') : '',
-    '/opt/homebrew/bin/bun',
-    '/usr/local/bin/bun',
-  ].filter(Boolean)
-  for (const c of candidates) if (existsSync(c)) return c
-  return 'bun'
+function previewPreloadPath() {
+  return path.join(appRoot(), 'electron-dist', 'preview-preload.cjs')
 }
 
-/** dev:bun 直跑 sidecar 源码;prod:随包的编译二进制。 */
-function buildSidecarPlan(port: number): SidecarPlan {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    QF_DESKTOP: '1',
-    QF_CONTROL_TOKEN: controlToken,
+function previewAgentPath() {
+  return path.join(appRoot(), 'src-tauri', 'resources', 'preview-agent.js')
+}
+
+function rendererEntry() {
+  return resolveRendererEntry({
+    isPackaged: app.isPackaged,
+    appRoot: appRoot(),
+    env: process.env,
+  })
+}
+
+async function loadRendererEntry(
+  window: BrowserWindow,
+  query?: Record<string, string>,
+) {
+  const entry = rendererEntry()
+  if (/^https?:\/\//.test(entry)) {
+    const url = new URL(entry)
+    for (const [key, value] of Object.entries(query ?? {})) {
+      url.searchParams.set(key, value)
+    }
+    await window.loadURL(url.toString())
+  } else {
+    await window.loadFile(entry, query ? { query } : undefined)
   }
-  // 凭据 at-rest 加密密钥(DEK):主进程用 safeStorage(底层 macOS Keychain / Windows DPAPI)保护一把随机 DEK、
-  // 以密文落盘 userData/credential-key.enc,启动时解出后经环境 QF_CRED_KEY 传给 sidecar;sidecar 用它 AES-256-GCM
-  // 加密 providers.json 里的 apiKey/authToken(密文落盘,不再明文)。safeStorage 不可用时不传 → sidecar 回退明文(不倒退)。
-  try {
-    const credKey = resolveCredentialKey(safeStorage, join(app.getPath('userData'), 'credential-key.enc'))
-    if (credKey) env.QF_CRED_KEY = credKey
-    else console.warn('[main] safeStorage 不可用,凭据将以明文落盘(providers.json)。')
-  } catch (err) {
-    console.error('[main] 凭据加密密钥初始化失败,回退明文存储:', err)
-  }
-  // 显式给 sidecar 一个稳定可写的 cwd:打包后从 Finder/开始菜单启动,Electron 进程 cwd=`/` 或 `/Applications`,
-  // 若不显式传,sidecar 继承这个坏 cwd 会导致相对路径解析/落盘失败。userData 目录永远存在且可写。
-  const cwd = app.getPath('userData')
-  const args = ['server', '--host', SERVER_BIND_HOST, '--port', String(port)]
-  if (!app.isPackaged) {
-    // dev:用 bun 直跑 sidecar 入口(bun 绝对路径)。内置 env 显式指到仓库 desktop/bundled.env:
-    // sidecar 的 cwd=userData,靠 cwd 相对路径永远指不到仓库文件(envLoader 的候选链会先认这个显式路径)。
-    const devBundledEnv = join(here, '../bundled.env')
-    if (!env.QF_BUNDLED_ENV && existsSync(devBundledEnv)) env.QF_BUNDLED_ENV = devBundledEnv
-    return { command: resolveBun(), args: ['run', join(here, '../sidecars/backend-sidecar.ts'), ...args], env, cwd }
-  }
-  // prod:随包编译二进制(build-sidecar 产物,放在 resources/binaries,命名用完整 target triple)。
-  const binariesDir = join(process.resourcesPath, 'binaries')
-  const exact = join(binariesDir, `backend-sidecar-${sidecarTriple()}${platform() === 'win32' ? '.exe' : ''}`)
-  if (existsSync(exact)) return { command: exact, args, env, cwd }
-  // 兜底:扫 binaries 目录里匹配当前平台的 backend-sidecar-*(triple 未精确命中时)。
-  const platformMark = platform() === 'win32' ? 'windows' : platform() === 'darwin' ? 'apple-darwin' : 'linux'
-  try {
-    const match = readdirSync(binariesDir).find(f => f.startsWith('backend-sidecar-') && f.includes(platformMark))
-    if (match) return { command: join(binariesDir, match), args, env, cwd }
-  } catch { /* 目录不存在 */ }
-  return { command: exact, args, env, cwd } // 找不到:返回预期路径,spawnSidecar 会给出清晰"binary not found"错误
 }
 
-/** 与 desktop/scripts/build-sidecar.ts 同款 target triple(命名一致才能在包里找到二进制)。 */
-function sidecarTriple(): string {
-  const p = process.platform, a = process.arch
-  if (p === 'darwin' && a === 'arm64') return 'aarch64-apple-darwin'
-  if (p === 'darwin' && a === 'x64') return 'x86_64-apple-darwin'
-  if (p === 'win32' && a === 'x64') return 'x86_64-pc-windows-msvc'
-  if (p === 'win32' && a === 'arm64') return 'aarch64-pc-windows-msvc'
-  if (p === 'linux' && a === 'x64') return 'x86_64-unknown-linux-gnu'
-  return `${a}-${p}`
-}
+async function openTraceWindow(sessionId: string) {
+  const existing = traceWindows.get(sessionId)
+  if (existing && !existing.isDestroyed()) {
+    showMainWindow(existing, app)
+    return
+  }
 
-async function startSidecar(): Promise<void> {
-  // 端口只抢一次并全程复用:sidecar 崩溃重启时用同一个口拉起,renderer 的 baseUrl 不失效、
-  // 现有 WS 指数退避重连即可自动复连。
-  serverPort = await reserveServerPort(SERVER_BIND_HOST, PREFERRED_PORTS)
-  sidecarSupervisor = new SidecarSupervisor(
-    () => spawnSidecar(buildSidecarPlan(serverPort)),
-    {
-      onSpawn: (child) => {
-        child.stdout.on('data', d => process.stdout.write(`[sidecar] ${d}`))
-        child.stderr.on('data', d => process.stderr.write(`[sidecar] ${d}`))
-      },
-      onExit: (code, willRestart) => {
-        if (code) console.error(`[sidecar] exited code=${code}${willRestart ? '(将自动重启)' : ''}`)
-      },
-      onRestartScheduled: (attempt, delayMs) => {
-        console.warn(`[sidecar] 意外退出,${Math.round(delayMs / 1000)}s 后第 ${attempt} 次重启`)
-      },
-      onGaveUp: (restarts) => {
-        console.error(`[sidecar] 短时间内连续崩溃 ${restarts} 次,已停止自动重启`)
-        notifySidecarDown()
-      },
+  const traceWindow = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 860,
+    minHeight: 560,
+    title: 'Trace',
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
-  )
-  sidecarSupervisor.start()
-  await waitForServer(SERVER_BIND_HOST, serverPort, 30_000)
+  })
+  traceWindows.set(sessionId, traceWindow)
+  traceWindow.on('closed', () => {
+    traceWindows.delete(sessionId)
+  })
+  installMainWindowNavigationGuards(traceWindow.webContents, { openExternal: openExternalUrl })
+  await loadRendererEntry(traceWindow, {
+    traceWindow: '1',
+    traceSessionId: sessionId,
+  })
+  showMainWindow(traceWindow, app)
 }
 
-/** sidecar 反复崩溃、放弃自动重启时提示用户(一次性,避免弹窗风暴)。 */
-function notifySidecarDown(): void {
-  if (sidecarDownNotified) return
-  sidecarDownNotified = true
-  const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-  const opts = {
-    type: 'error' as const,
-    title: '后端服务已停止',
-    message: '后端服务多次异常退出,已暂停自动重启。',
-    detail: '请重启本应用。如果反复出现,请把这条信息反馈给我们。',
-    buttons: ['重启应用', '暂不'],
-    defaultId: 0,
-    cancelId: 1,
+function getServerRuntime() {
+  serverRuntime ??= new ElectronServerRuntime({
+    desktopRoot: unpackedRoot(),
+    appRoot: appRoot(),
+    h5DistDir: path.join(unpackedRoot(), 'dist'),
+    resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
+  })
+  return serverRuntime
+}
+
+function getUpdaterService() {
+  const smokeUpdater = createUpdateSmokeUpdaterFromEnv(process.env)
+  updaterService ??= new ElectronUpdaterService(smokeUpdater ?? autoUpdater, {
+    async apply(proxy) {
+      const config = proxy
+        ? { proxyRules: proxy, proxyBypassRules: '<local>' }
+        : {}
+      await Promise.all([
+        app.setProxy(config),
+        session.defaultSession.setProxy(config),
+      ])
+      await session.defaultSession.forceReloadProxyConfig()
+    },
+  }, {
+    updateConfigPath: !smokeUpdater && app.isPackaged ? path.join(process.resourcesPath, 'app-update.yml') : undefined,
+  })
+  return updaterService
+}
+
+function nodePtyRuntimeCacheDir() {
+  if (!app.isPackaged || process.platform !== 'darwin') return undefined
+  return path.join(app.getPath('userData'), 'native', `node-pty-${process.platform}-${process.arch}-${app.getVersion()}`)
+}
+
+function getTerminalService() {
+  terminalService ??= new ElectronTerminalService({
+    app,
+    nodePtySourceDir: app.isPackaged ? path.join(unpackedRoot(), 'node_modules', 'node-pty') : undefined,
+    nodePtyCacheDir: nodePtyRuntimeCacheDir(),
+  })
+  return terminalService
+}
+
+function getPreviewService() {
+  previewService ??= new ElectronPreviewService({
+    previewScriptPath: previewAgentPath(),
+    createView: () => {
+      const view = new WebContentsView({
+        webPreferences: {
+          preload: previewPreloadPath(),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      })
+      installPreviewNavigationGuards(view.webContents, { openExternal: openExternalUrl })
+      return view
+    },
+  })
+  return previewService
+}
+
+function currentWindow(event: Electron.IpcMainInvokeEvent) {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) throw new Error('No BrowserWindow for Electron IPC event')
+  return window
+}
+
+function registerHandler<T>(
+  channel: ElectronIpcChannel,
+  handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => T | Promise<T>,
+) {
+  ipcMain.handle(channel, async (event, payload) => {
+    if (!isElectronIpcChannel(channel) || !validateElectronIpcPayload(channel, payload)) {
+      throw new Error(`Invalid Electron IPC payload for ${channel}`)
+    }
+    return handler(event, payload)
+  })
+}
+
+function unsupported(name: string): never {
+  throw new Error(`${name} is not implemented in the Electron host yet`)
+}
+
+function emitNotificationAction(payload: unknown) {
+  showMainWindow(mainWindow, app)
+  mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.notificationAction, payload)
+}
+
+async function handleCommandInvoke(payload: unknown): Promise<unknown> {
+  const { command, args } = payload as { command: string, args?: Record<string, unknown> }
+
+  switch (command) {
+    case 'plugin:notification|is_permission_granted':
+      return notificationPermissionState(Notification) === 'granted'
+    case 'plugin:notification|request_permission':
+    case 'macos_request_notification_permission':
+      return requestNotificationPermission(Notification)
+    case 'macos_notification_permission_state':
+      return notificationPermissionState(Notification)
+    case 'macos_send_notification':
+      return sendDesktopNotification({
+        NotificationClass: Notification,
+        options: args,
+        onAction: emitNotificationAction,
+      })
+    case 'macos_open_notification_settings':
+      return openSystemSettingsUrl('x-apple.systempreferences:com.apple.preference.notifications')
+    case 'open_windows_notification_settings':
+      return openSystemSettingsUrl('ms-settings:notifications')
+    default:
+      return unsupported(`Electron command ${command}`)
   }
-  const handleChoice = (index: number) => { if (index === 0) { app.relaunch(); app.exit(0) } }
-  if (win) void dialog.showMessageBox(win, opts).then(r => handleChoice(r.response))
-  else void dialog.showMessageBox(opts).then(r => handleChoice(r.response))
 }
 
-function createWindow(): void {
-  // 窗口状态持久化:读回上次的尺寸/位置(漂到屏外或换屏时已在 readWindowState 内校正/丢弃),没有历史就用默认尺寸。
+function registerIpcHandlers() {
+  ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
+    void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
+  registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
+  registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.shellOpen, (_event, payload) => openExternalUrl(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.shellOpenPath, (_event, payload) => openSystemPath(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.traceOpenWindow, (_event, payload) => openTraceWindow(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.dialogOpen, (event, payload) =>
+    openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
+    saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
+    getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateDownload, () => getUpdaterService().downloadUpdate(event => {
+    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.updateDownloadEvent, event)
+  }))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateInstall, () => getUpdaterService().stageDownloadedUpdate())
+  registerHandler(ELECTRON_IPC_CHANNELS.updatePrepareInstall, () => getServerRuntime().stopAll())
+  registerHandler(ELECTRON_IPC_CHANNELS.updateCancelInstall, () => getUpdaterService().cancelInstall())
+  registerHandler(ELECTRON_IPC_CHANNELS.updateRelaunch, () => {
+    if (getUpdaterService().hasDownloadedUpdate()) {
+      isQuitting = true
+      getUpdaterService().quitAndInstallDownloadedUpdate()
+      return
+    }
+    app.relaunch()
+    app.quit()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationPermissionState, () => notificationPermissionState(Notification))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationRequestPermission, () => requestNotificationPermission(Notification))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationSend, (_event, payload) => sendDesktopNotification({
+    NotificationClass: Notification,
+    options: payload,
+    onAction: emitNotificationAction,
+  }))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationActionAck, (_event, payload) =>
+    logNotificationSmokeRendererAck(process.env, payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.windowMinimize, event => currentWindow(event).minimize())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowToggleMaximize, event => {
+    const window = currentWindow(event)
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.windowClose, event => currentWindow(event).close())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowStartDragging, () => undefined)
+  registerHandler(ELECTRON_IPC_CHANNELS.windowRequestAttention, event => currentWindow(event).flashFrame(true))
+  registerHandler(ELECTRON_IPC_CHANNELS.windowFocus, event => currentWindow(event).focus())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) =>
+    getTerminalService().spawn((payload ?? {}) as TerminalSpawnInput, event.sender))
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (_event, payload) => {
+    const { sessionId, data } = payload as { sessionId: number, data: string }
+    return getTerminalService().write(sessionId, data)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, (_event, payload) => {
+    const { sessionId, cols, rows } = payload as { sessionId: number, cols: number, rows: number }
+    return getTerminalService().resize(sessionId, cols, rows)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, (_event, payload) => {
+    const { sessionId } = payload as { sessionId: number }
+    return getTerminalService().kill(sessionId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, () => getTerminalService().getBashPath())
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, (_event, payload) => getTerminalService().setBashPath(payload as string | null))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewOpen, (event, payload) => {
+    const { url, bounds } = payload as { url: string, bounds?: PreviewBounds }
+    return getPreviewService().open(currentWindow(event), url, bounds ?? { x: 0, y: 0, width: 0, height: 0 })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.previewNavigate, (_event, payload) => getPreviewService().navigate(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetBounds, (_event, payload) => getPreviewService().setBounds(payload as PreviewBounds))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetVisible, (_event, payload) => getPreviewService().setVisible(Boolean(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetZoom, (_event, payload) => getPreviewService().setZoomFactor(payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewClose, () => getPreviewService().close())
+  registerHandler(ELECTRON_IPC_CHANNELS.previewMessage, (event, payload) => getPreviewService().message(payload, event.sender))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeGet, () => getAppMode(app))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeSet, (_event, payload) => setAppMode(app, payload as Parameters<typeof setAppMode>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeDetectPortableDir, () => detectPortableDir(app) as PortableDetection)
+  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, () => getServerRuntime().stopAll())
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeRestart, () => {
+    isQuitting = true
+    app.relaunch()
+    app.quit()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.adaptersRestartSidecar, () => getServerRuntime().restartAdaptersSidecars())
+  registerHandler(ELECTRON_IPC_CHANNELS.zoomSet, (event, payload) => currentWindow(event).webContents.setZoomFactor(normalizeZoomFactor(payload)))
+}
+
+async function createMainWindow() {
   const restoredState = readWindowState(app, screen.getAllDisplays())
   const bounds = windowOptionsFromState(restoredState)
   mainWindow = new BrowserWindow({
     ...bounds,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
-    title: '球房管家',
-    // macOS 原生质感:隐藏式标题栏 + 原生红绿灯;Windows 用叠加标题栏
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    backgroundColor: '#ffffff',
+    show: false,
+    ...windowChromeOptionsForPlatform(process.platform),
     webPreferences: {
-      preload: join(here, 'preload.cjs'),
+      preload: preloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   })
-  // 上次是最大化的就恢复最大化。
+
+  installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: openExternalUrl })
+  installPreviewCleanupOnRendererNavigation(mainWindow.webContents, () => {
+    previewService?.close()
+  })
+
+  installWindowLifecycle({
+    app,
+    window: mainWindow,
+    shouldQuit: () => isQuitting,
+  })
+
+  mainWindow.on('resize', () => {
+    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    writeWindowSmokeSnapshot(mainWindow, 'did-finish-load')
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    writeWindowSmokeSnapshot(mainWindow, `did-fail-load:${errorCode}:${errorDescription}:${validatedURL}`)
+  })
+
+  writeWindowSmokeSnapshot(mainWindow, 'after-create')
+
+  await loadRendererEntry(mainWindow)
+
   restoreWindowMaximized(mainWindow, restoredState)
-  // 导航守卫(安全):window.open/外链走系统浏览器,拒绝渲染进程弹出不受控子窗口。
-  installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: (url) => { void shell.openExternal(url) } })
-  // 移动/缩放/关闭时保存窗口状态(去抖写盘)。
-  installWindowStatePersistence(app, mainWindow)
-  loadRenderer(mainWindow)
-  mainWindow.on('closed', () => { mainWindow = null })
+  showMainWindow(mainWindow, app)
+  refreshWindowsDragHitTest(mainWindow, process.platform)
+  writeWindowSmokeSnapshot(mainWindow, 'after-final-show')
 }
 
-function allowedDevRendererUrl(value: string | undefined): string | null {
-  if (!value || app.isPackaged) return null
-  try {
-    const url = new URL(value)
-    if (url.protocol !== 'http:') return null
-    if (!['127.0.0.1', 'localhost', '::1'].includes(url.hostname)) return null
-    return url.toString()
-  } catch {
-    return null
-  }
+if (!acquireSingleInstanceLock(app, () => mainWindow)) {
+  process.exit(0)
 }
 
-/** 桌面产品只有 React renderer。开发态可显式使用本机 Vite HMR，否则加载构建产物。 */
-function loadRenderer(win: BrowserWindow): void {
-  const devUrl = allowedDevRendererUrl(process.env.ELECTRON_RENDERER_URL)
-  if (devUrl) { void win.loadURL(devUrl); return }
-  const entry = join(here, '..', 'renderer-dist', 'index.html')
-  if (!existsSync(entry)) {
-    void dialog.showErrorBox('前端文件缺失', `找不到 ${entry}\n请先运行 bun run ui:build。`)
-    return
-  }
-  void win.loadFile(entry)
-}
+registerIpcHandlers()
 
-/** 重载主窗口内容(渲染进程崩溃恢复用):窗口还在就 reload,没了就重建。返回是否发起了恢复。 */
-function reloadMainWindow(): boolean {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.reload()
-    return true
-  }
-  createWindow()
-  return true
-}
-
-/** 让主窗口回到前台(托盘/菜单"显示"共用);窗口没了就重建。 */
-function showMainWindow(): void {
-  const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-  if (win) {
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  } else {
-    createWindow()
-  }
-}
-
-/** 原生应用菜单(§8/§3.402 原生能力):macOS 走标准 app 菜单模板,Windows/Linux 给精简菜单。 */
-function buildAppMenu(): void {
-  const isMac = process.platform === 'darwin'
-  const template: MenuItemConstructorOptions[] = []
-
-  if (isMac) {
-    template.push({
-      label: APP_NAME,
-      submenu: [
-        { role: 'about', label: `关于 ${APP_NAME}` },
-        { type: 'separator' },
-        { role: 'hide', label: `隐藏 ${APP_NAME}` },
-        { role: 'hideOthers', label: '隐藏其他' },
-        { role: 'unhide', label: '全部显示' },
-        { type: 'separator' },
-        { role: 'quit', label: `退出 ${APP_NAME}` },
-      ],
-    })
-  }
-
-  template.push({
-    label: '文件',
-    submenu: [
-      {
-        label: '选择工作区…',
-        accelerator: 'CmdOrCtrl+O',
-        click: () => { void mainWindow?.webContents.send(DESKTOP_IPC.menu, 'pick-workspace') },
+app.whenReady().then(async () => {
+  applyWindowsAppUserModelId(app)
+  applyStartupPortableMode(app)
+  await getServerRuntime().startServer().catch(error => {
+    console.error('[desktop] failed to start Electron server sidecar', error)
+  })
+  await installApplicationMenu(app, () => mainWindow)
+  if (shouldInstallTray(process.platform)) {
+    trayController = await installTray({
+      app,
+      desktopRoot: appRoot(),
+      show: () => showMainWindow(mainWindow, app),
+      quit: () => {
+        isQuitting = true
+        app.quit()
       },
-      { type: 'separator' },
-      isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' },
-    ],
-  })
-
-  template.push({
-    label: '编辑',
-    submenu: [
-      { role: 'undo', label: '撤销' },
-      { role: 'redo', label: '重做' },
-      { type: 'separator' },
-      { role: 'cut', label: '剪切' },
-      { role: 'copy', label: '复制' },
-      { role: 'paste', label: '粘贴' },
-      { role: 'selectAll', label: '全选' },
-    ],
-  })
-
-  template.push({
-    label: '视图',
-    submenu: [
-      { role: 'reload', label: '重新加载' },
-      { role: 'toggleDevTools', label: '开发者工具' },
-      { type: 'separator' },
-      { role: 'resetZoom', label: '实际大小' },
-      { role: 'zoomIn', label: '放大' },
-      { role: 'zoomOut', label: '缩小' },
-      { type: 'separator' },
-      { role: 'togglefullscreen', label: '全屏' },
-    ],
-  })
-
-  template.push({
-    label: '窗口',
-    submenu: [
-      { role: 'minimize', label: '最小化' },
-      { role: 'zoom', label: '缩放' },
-      ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const, label: '前置全部窗口' }] : []),
-    ],
-  })
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-}
-
-/** 系统托盘(§8 原生能力):非 macOS 常驻托盘,右键菜单显示/退出;macOS 用 Dock,不建托盘。
- *  没有图标资源时用空 nativeImage 兜底,保证不因缺图崩溃(托盘用系统默认呈现)。 */
-function createTray(): void {
-  if (process.platform === 'darwin') return // macOS 靠 Dock,不额外占用菜单栏
-  try {
-    tray = new Tray(nativeImage.createEmpty())
-    tray.setToolTip(APP_NAME)
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: `显示 ${APP_NAME}`, click: showMainWindow },
-      { type: 'separator' },
-      { label: '退出', click: () => app.quit() },
-    ]))
-    tray.on('click', showMainWindow)
-  } catch (err) {
-    console.error('[main] 托盘创建失败(忽略):', err)
+    }).catch(error => {
+      console.error('[desktop] failed to create Electron tray', error)
+      return null
+    })
   }
-}
+  await createMainWindow()
+  scheduleNotificationSmoke({
+    env: process.env,
+    NotificationClass: Notification,
+    onAction: emitNotificationAction,
+  })
 
-/** 集中注册 IPC(白名单 + 无 payload 或 payload 校验;§3.402 桌面壳架构:主↔渲染只走白名单通道)。 */
-function registerIpc(): void {
-  // 后端地址发现(对齐 cc runtime:getServerUrl):main 已 reserveServerPort 抢到 serverPort,
-  // React renderer 从 file:// 加载，经此拿 sidecar 地址再 fetch/WS。
-  ipcMain.handle(DESKTOP_IPC.getServerUrl, () => `http://${SERVER_BIND_HOST}:${serverPort}`)
-  ipcMain.handle(DESKTOP_IPC.getServerConnection, (event) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('untrusted server connection requester')
-    return {
-      baseUrl: `http://${SERVER_BIND_HOST}:${serverPort}`,
-      authToken: controlToken,
+  app.on('activate', () => {
+    if (mainWindow) {
+      showMainWindow(mainWindow, app)
+      return
     }
+    void createMainWindow()
   })
-
-  // 原生文件夹选择器(§7 用户选择工作区):无 payload,返回选中目录或 null。
-  ipcMain.handle(DESKTOP_IPC.pickWorkspace, async (_event, input: unknown) => {
-    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-    if (!win) return null
-    const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择工作区文件夹', defaultPath: pickerDefaultPath(input, true) })
-    const selected = result.canceled ? undefined : result.filePaths[0]
-    if (!selected) return null
-    rememberPickerDirectory(selected, true)
-    return selected
-  })
-
-  // 原生视频文件多选(剪视频看板导入素材):返回选中视频的绝对路径数组或 null。
-  ipcMain.handle(DESKTOP_IPC.pickVideoFiles, async (_event, input: unknown) => {
-    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-    if (!win) return null
-    const result = await dialog.showOpenDialog(win, {
-      properties: ['openFile', 'multiSelections'],
-      title: '选择要剪的视频素材',
-      defaultPath: pickerDefaultPath(input),
-      filters: [{ name: '视频', extensions: ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm', 'flv', 'wmv', '3gp'] }],
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    rememberPickerDirectory(result.filePaths[0]!, false)
-    return result.filePaths
-  })
-
-  // 通用「文件和文件夹」多选(对话框附件:把选中路径插进输入框,让本机 agent 去读)。文件夹与文件都可选(macOS 原生支持同时)。
-  ipcMain.handle(DESKTOP_IPC.pickPaths, async (_event, input: unknown) => {
-    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-    if (!win) return null
-    const result = await dialog.showOpenDialog(win, {
-      properties: ['openFile', 'openDirectory', 'multiSelections'],
-      title: '选择文件或文件夹',
-      defaultPath: pickerDefaultPath(input),
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    rememberPickerDirectory(result.filePaths[0]!, selectedPathIsDirectory(result.filePaths[0]!))
-    return result.filePaths
-  })
-
-  // 「打开/在 Finder 中显示」(右面板文件操作,对齐 Codex):openPath 用系统默认程序打开
-  //(shell.openPath 契约:返回非空字符串 = 错误信息、'' = 成功);revealPath 在 Finder/文件管理器里定位文件。
-  const isSanePath = (p: unknown): p is string => typeof p === 'string' && p.trim().length > 0 && p.length < 4096
-  ipcMain.handle(DESKTOP_IPC.openPath, async (_e, p: unknown) => {
-    if (!isSanePath(p)) return '无效路径'
-    try { return await shell.openPath(p) } catch (err) { return err instanceof Error ? err.message : String(err) }
-  })
-  ipcMain.handle(DESKTOP_IPC.revealPath, (_e, p: unknown) => {
-    if (!isSanePath(p)) return false
-    shell.showItemInFolder(p)
-    return true
-  })
-
-  // 防休眠:长任务(生图/渲染/长 agent 循环)开始时调 start、结束时调 stop,阻止系统睡眠打断任务。
-  // 引用计数式,可并发多个长任务;渲染层从 desktopHost.preventSleep.start()/stop() 成对调用。
-  ipcMain.handle(DESKTOP_IPC.preventSleepStart, () => { startPreventSleep(); return isPreventingSleep() })
-  ipcMain.handle(DESKTOP_IPC.preventSleepStop, () => { stopPreventSleep(); return isPreventingSleep() })
-}
-
-async function boot(): Promise<void> {
-  try {
-    // Windows 通知身份:必须在建窗口前设好,否则原生 toast 通知不显示应用名/图标。
-    applyWindowsAppUserModelId(app)
-    // app 级崩溃兜底:渲染进程崩溃自动重载恢复、子进程挂掉记录。
-    installAppCrashGuards(app, {
-      reloadWindow: reloadMainWindow,
-      onReloadGaveUp: () => notifySidecarDown(),
-    })
-    registerIpc()
-    buildAppMenu()
-    await startSidecar()
-    createWindow()
-    createTray()
-  } catch (err) {
-    console.error('[main] 启动失败:', err)
-    app.quit()
-  }
-}
-
-// process 级全局兜底:未捕获异常/未处理 Promise 拒绝只记录、不静默崩;尽早挂,好接住启动早期的错。
-installProcessCrashGuards({
-  onFirstFatal: (kind, error) => {
-    const win = mainWindow ?? BrowserWindow.getAllWindows()[0]
-    const message = error instanceof Error ? error.message : String(error)
-    const opts = {
-      type: 'warning' as const,
-      title: '出了点小状况',
-      message: '程序遇到一个内部错误,但仍在继续运行。',
-      detail: `${kind}: ${message}\n\n如果界面异常,可从「视图 → 重新加载」恢复。`,
-      buttons: ['知道了'],
-    }
-    // app 未 ready 时 dialog 不可用,吞掉即可(已有 console 记录)。
-    try { if (win) void dialog.showMessageBox(win, opts); else void dialog.showMessageBox(opts) } catch { /* app 未 ready */ }
-  },
-})
-
-// macOS 钥匙串弹窗拦截:必须在 app ready 前追加命令行开关才生效。
-installMacOsChromiumKeychainPromptGuard(app)
-
-// 单实例聚焦:拿不到锁说明已有实例在跑(内部已 app.quit()),这里直接不再进入启动流程。
-if (acquireSingleInstanceLock(app, showMainWindow)) {
-  app.whenReady().then(boot).catch(err => { console.error(err); app.quit() })
-}
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (isQuitting && process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
-  forceStopPreventSleep()
-  // 主动停守护:标记 stopped 后 sidecar 退出不再触发重启,并同步杀干净子进程。
-  if (sidecarSupervisor) { sidecarSupervisor.stop(true); sidecarSupervisor = null }
-  if (tray) { tray.destroy(); tray = null }
+  isQuitting = true
+  if (mainWindow) saveWindowState(app, mainWindow)
+  trayController?.dispose()
+  trayController = null
+  terminalService?.killAll()
+  previewService?.close()
+  // Synchronous on quit so the Windows taskkill completes before the process
+  // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.
+  getServerRuntime().stopAll(true)
 })

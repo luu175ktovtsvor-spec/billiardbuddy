@@ -1,180 +1,306 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, it, vi } from 'vitest'
 import net from 'node:net'
-import { reserveServerPort, waitForServer, killSidecar, SidecarSupervisor } from './sidecarManager'
+import http from 'node:http'
+import path from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import {
+  buildSidecarEnv,
+  createAdapterPlan,
+  createServerPlan,
+  httpToWebSocketUrl,
+  killSidecar,
+  mergeProxyEnv,
+  parseH5FixedPort,
+  preferredServerPorts,
+  proxyUrlFromElectronProxyRules,
+  pushStartupLog,
+  readH5FixedPort,
+  readLastServerPort,
+  reserveLocalPort,
+  reserveServerPort,
+  resolveHostTriple,
+  spawnSidecar,
+  waitForServer,
+  windowsPowerShellOverride,
+  writeLastServerPort,
+  type SidecarChild,
+} from './sidecarManager'
 
-/** 假 sidecar child:只实现守护器用到的 on('exit') / kill / pid,并可手动触发退出。 */
-function makeFakeChild(id: number) {
-  let exitListener: ((code: number | null) => void) | null = null
-  return {
-    pid: 1000 + id,
-    killed: false,
-    on(event: string, listener: (code: number | null) => void) {
-      if (event === 'exit') exitListener = listener
-      return this
-    },
-    kill() { this.killed = true },
-    triggerExit(code: number | null) { exitListener?.(code) },
-    // 守护器不直接读 stdout/stderr(交给 onSpawn 钩子),这里给占位以贴合类型。
-    stdout: { on() {} },
-    stderr: { on() {} },
-  }
+function fakeChild(pid = 4321) {
+  return { pid, kill: vi.fn() } as unknown as SidecarChild & { kill: ReturnType<typeof vi.fn> }
 }
 
-/** 受控时钟 + 手动 flush 的假定时器,让退避逻辑可确定性断言。 */
-function makeFakeClock() {
-  let now = 0
-  const pending: { fn: () => void; at: number }[] = []
-  return {
-    now: () => now,
-    setTimeoutFn: (fn: () => void, ms: number) => {
-      const handle = { fn, at: now + ms }
-      pending.push(handle)
-      return handle as unknown as ReturnType<typeof setTimeout>
-    },
-    clearTimeoutFn: (h: ReturnType<typeof setTimeout>) => {
-      const i = pending.indexOf(h as unknown as { fn: () => void; at: number })
-      if (i >= 0) pending.splice(i, 1)
-    },
-    advance: (ms: number) => {
-      now += ms
-      const due = pending.filter((p) => p.at <= now)
-      for (const p of due) pending.splice(pending.indexOf(p), 1)
-      for (const p of due) p.fn()
-    },
-    pendingCount: () => pending.length,
-  }
+function listen(server: http.Server, host = '127.0.0.1'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, host, () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        reject(new Error('Could not resolve HTTP test port'))
+        return
+      }
+      resolve(address.port)
+    })
+  })
 }
 
-test('reserveServerPort returns a bindable port when preferred are taken', async () => {
-  // 占住一个端口,证明 reserve 会跳过它、回落到可用端口
-  const blocker = net.createServer()
-  await new Promise<void>(r => blocker.listen(0, '127.0.0.1', () => r()))
-  const takenPort = (blocker.address() as net.AddressInfo).port
-  const port = await reserveServerPort('127.0.0.1', [takenPort])
-  expect(port).toBeGreaterThan(0)
-  expect(port).not.toBe(takenPort)
-  blocker.close()
-})
+function close(server: http.Server): Promise<void> {
+  return new Promise(resolve => server.close(() => resolve()))
+}
 
-test('waitForServer resolves once something listens, rejects on timeout', async () => {
-  const srv = net.createServer()
-  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
-  const port = (srv.address() as net.AddressInfo).port
-  await waitForServer('127.0.0.1', port, 2000) // 应立即 resolve
-  srv.close()
-  await new Promise<void>(r => srv.on('close', () => r()))
-  await expect(waitForServer('127.0.0.1', port, 500)).rejects.toThrow(/did not start/)
-})
+describe('Electron sidecar manager', () => {
+  it('maps host platform to existing sidecar target triples', () => {
+    expect(resolveHostTriple('darwin', 'arm64')).toBe('aarch64-apple-darwin')
+    expect(resolveHostTriple('darwin', 'x64')).toBe('x86_64-apple-darwin')
+    expect(resolveHostTriple('win32', 'x64')).toBe('x86_64-pc-windows-msvc')
+    expect(resolveHostTriple('win32', 'arm64')).toBe('aarch64-pc-windows-msvc')
+    expect(resolveHostTriple('linux', 'arm64')).toBe('aarch64-unknown-linux-gnu')
+  })
 
-test('killSidecar uses taskkill on win32 and child.kill elsewhere (deps injected)', () => {
-  let taskkillCalled = false
-  let childKilled = false
-  const fakeChild = { pid: 4242, kill: () => { childKilled = true } }
-  const spawnAsync = ((cmd: string) => { if (cmd === 'taskkill') taskkillCalled = true; return {} }) as any
-  killSidecar(fakeChild, false, { platform: 'win32', spawnAsync })
-  expect(taskkillCalled).toBe(true)
-  expect(childKilled).toBe(false)
+  it('builds server sidecar args without changing the REST/WebSocket boundary', () => {
+    const plan = createServerPlan({
+      desktopRoot: '/app/desktop',
+      appRoot: '/app',
+      port: 49321,
+      env: {},
+    })
 
-  taskkillCalled = false
-  killSidecar(fakeChild, false, { platform: 'darwin', spawnAsync })
-  expect(taskkillCalled).toBe(false)
-  expect(childKilled).toBe(true)
-})
+    expect(plan.args).toEqual([
+      'server',
+      '--app-root',
+      '/app',
+      '--host',
+      '0.0.0.0',
+      '--port',
+      '49321',
+    ])
+    expect(plan.env.CLAUDE_H5_AUTO_PUBLIC_URL).toBe('1')
+    expect(plan.env.CLAUDE_H5_DIST_DIR).toBe(path.join('/app/desktop', 'dist'))
+  })
 
-test('SidecarSupervisor: 意外退出后按退避重启,且端口/工厂被复用', () => {
-  const clock = makeFakeClock()
-  const children: ReturnType<typeof makeFakeChild>[] = []
-  let spawnCount = 0
-  const restarts: { attempt: number; delayMs: number }[] = []
+  it('can keep sidecar binaries and H5 assets unpacked while pointing app-root at app.asar', () => {
+    const plan = createServerPlan({
+      desktopRoot: '/Applications/App.app/Contents/Resources/app.asar.unpacked',
+      appRoot: '/Applications/App.app/Contents/Resources/app.asar',
+      h5DistDir: '/Applications/App.app/Contents/Resources/app.asar.unpacked/dist',
+      port: 49321,
+      env: {},
+    })
 
-  const sup = new SidecarSupervisor(
-    () => { const c = makeFakeChild(spawnCount++); children.push(c); return c as never },
-    { onRestartScheduled: (attempt, delayMs) => restarts.push({ attempt, delayMs }) },
-    { backoffBaseMs: 1000, backoffMaxMs: 16_000, healthyResetMs: 30_000 },
-    { setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn, now: clock.now },
-  )
+    expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-')
+    expect(plan.args).toContain('/Applications/App.app/Contents/Resources/app.asar')
+    expect(plan.env.CLAUDE_H5_DIST_DIR).toBe('/Applications/App.app/Contents/Resources/app.asar.unpacked/dist')
+  })
 
-  sup.start()
-  expect(spawnCount).toBe(1)
+  it('passes portable config and adapter server URL through the sidecar env', () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), 'cc-haha-config-'))
+    try {
+      const env = buildSidecarEnv({ CLAUDE_CONFIG_DIR: configDir }, '/app/dist')
+      expect(env.CLAUDE_CONFIG_DIR).toBe(configDir)
+      expect(env.XDG_CACHE_HOME).toBe(path.join(configDir, 'Cache'))
 
-  // 第一个 child 崩溃 → 排定第 1 次重启(退避 base*2^0 = 1000ms)。
-  children[0]!.triggerExit(1)
-  expect(restarts[0]).toEqual({ attempt: 1, delayMs: 1000 })
-  expect(spawnCount).toBe(1) // 还没到点,尚未重启
-  clock.advance(1000)
-  expect(spawnCount).toBe(2) // 到点后拉起第二个
+      const adapter = createAdapterPlan({
+        desktopRoot: '/app/desktop',
+        appRoot: '/app',
+        serverUrl: 'http://127.0.0.1:4567',
+        flag: '--telegram',
+        env: { CLAUDE_CONFIG_DIR: configDir },
+      })
+      expect(adapter.env.ADAPTER_SERVER_URL).toBe('ws://127.0.0.1:4567')
+      expect(adapter.args).toEqual(['adapters', '--app-root', '/app', '--telegram'])
 
-  // 第二个 child 立刻又崩(仍在窗口内)→ 第 2 次重启退避翻倍 = 2000ms。
-  children[1]!.triggerExit(1)
-  expect(restarts[1]).toEqual({ attempt: 2, delayMs: 2000 })
-  clock.advance(2000)
-  expect(spawnCount).toBe(3)
-})
+      const whatsappAdapter = createAdapterPlan({
+        desktopRoot: '/app/desktop',
+        appRoot: '/app',
+        serverUrl: 'http://127.0.0.1:4567',
+        flag: '--whatsapp',
+        env: { CLAUDE_CONFIG_DIR: configDir },
+      })
+      expect(whatsappAdapter.args).toEqual(['adapters', '--app-root', '/app', '--whatsapp'])
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
 
-test('SidecarSupervisor: 滚动窗口内重启触顶 → 停手并回调 onGaveUp', () => {
-  const clock = makeFakeClock()
-  let spawnCount = 0
-  let gaveUp = 0
-  const children: ReturnType<typeof makeFakeChild>[] = []
+  it('converts Electron system proxy rules into sidecar proxy env', () => {
+    expect(proxyUrlFromElectronProxyRules('DIRECT')).toBeUndefined()
+    expect(proxyUrlFromElectronProxyRules('SOCKS5 127.0.0.1:7891; DIRECT')).toBeUndefined()
+    expect(proxyUrlFromElectronProxyRules('PROXY 127.0.0.1:7897; DIRECT')).toBe('http://127.0.0.1:7897')
+    expect(proxyUrlFromElectronProxyRules('HTTPS proxy.example:8443; DIRECT')).toBe('https://proxy.example:8443')
 
-  const sup = new SidecarSupervisor(
-    () => { const c = makeFakeChild(spawnCount++); children.push(c); return c as never },
-    { onGaveUp: () => { gaveUp++ } },
-    { maxRestarts: 3, restartWindowMs: 60_000, backoffBaseMs: 100, backoffMaxMs: 100, healthyResetMs: 30_000 },
-    { setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn, now: clock.now },
-  )
+    const env = mergeProxyEnv({}, 'http://127.0.0.1:7897')
+    expect(env.HTTP_PROXY).toBe('http://127.0.0.1:7897')
+    expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7897')
+    expect(env.http_proxy).toBe('http://127.0.0.1:7897')
+    expect(env.https_proxy).toBe('http://127.0.0.1:7897')
+    expect(env.NO_PROXY).toContain('127.0.0.1')
+    expect(env.no_proxy).toContain('localhost')
+  })
 
-  sup.start()
-  // 连续崩溃:每次崩→到点重启→再崩。前 3 次会重启,第 4 次触顶放弃。
-  for (let i = 0; i < 3; i++) {
-    children[i]!.triggerExit(1)
-    clock.advance(100)
-  }
-  expect(spawnCount).toBe(4) // 初次 + 3 次重启
-  expect(gaveUp).toBe(0)
+  it('does not override explicit sidecar proxy environment and still preserves loopback bypasses', () => {
+    const env = mergeProxyEnv(
+      { HTTPS_PROXY: 'http://manual.example:8080', NO_PROXY: '.corp.local' },
+      'http://system.example:8080',
+    )
 
-  children[3]!.triggerExit(1) // 第 4 次崩溃:窗口内已达上限
-  expect(gaveUp).toBe(1)
-  expect(clock.pendingCount()).toBe(0) // 不再排定新的重启
-})
+    expect(env.HTTPS_PROXY).toBe('http://manual.example:8080')
+    expect(env.HTTP_PROXY).toBeUndefined()
+    expect(env.NO_PROXY).toBe('.corp.local,localhost,127.0.0.1,::1')
+    expect(env.no_proxy).toBe('.corp.local,localhost,127.0.0.1,::1')
+  })
 
-test('SidecarSupervisor: 稳定存活够久后崩溃 → 重置计数,退避从头来', () => {
-  const clock = makeFakeClock()
-  let spawnCount = 0
-  const children: ReturnType<typeof makeFakeChild>[] = []
-  const restarts: number[] = []
+  it('keeps startup logs bounded', () => {
+    const logs: string[] = []
+    for (let index = 0; index < 85; index++) {
+      pushStartupLog(logs, `line ${index}`)
+    }
+    expect(logs).toHaveLength(80)
+    expect(logs[0]).toBe('line 5')
+  })
 
-  const sup = new SidecarSupervisor(
-    () => { const c = makeFakeChild(spawnCount++); children.push(c); return c as never },
-    { onRestartScheduled: (_a, delayMs) => restarts.push(delayMs) },
-    { backoffBaseMs: 1000, backoffMaxMs: 16_000, healthyResetMs: 30_000 },
-    { setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn, now: clock.now },
-  )
+  it('maps http urls to adapter websocket urls', () => {
+    expect(httpToWebSocketUrl('http://127.0.0.1:3456')).toBe('ws://127.0.0.1:3456')
+    expect(httpToWebSocketUrl('https://example.com')).toBe('wss://example.com')
+  })
 
-  sup.start()
-  children[0]!.triggerExit(1)          // 退避 1000
-  clock.advance(1000)
-  // 第二个稳定跑了很久(超过 healthyResetMs)才崩 → 计数重置,退避回到 1000 而非 2000。
-  clock.advance(40_000)
-  children[1]!.triggerExit(1)
-  expect(restarts).toEqual([1000, 1000])
-})
+  it('kills non-Windows sidecars with a signal', () => {
+    const child = fakeChild()
+    const spawnAsync = vi.fn()
+    const spawnSyncFn = vi.fn()
+    killSidecar(child, false, { platform: 'darwin', spawnAsync: spawnAsync as never, spawnSyncFn: spawnSyncFn as never })
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(spawnAsync).not.toHaveBeenCalled()
+    expect(spawnSyncFn).not.toHaveBeenCalled()
+  })
 
-test('SidecarSupervisor: stop() 后子进程退出不再重启', () => {
-  const clock = makeFakeClock()
-  let spawnCount = 0
-  const children: ReturnType<typeof makeFakeChild>[] = []
+  it('uses async taskkill on Windows by default', () => {
+    const child = fakeChild(777)
+    const spawnAsync = vi.fn()
+    const spawnSyncFn = vi.fn()
+    killSidecar(child, false, { platform: 'win32', spawnAsync: spawnAsync as never, spawnSyncFn: spawnSyncFn as never })
+    expect(spawnAsync).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '777'], { stdio: 'ignore', windowsHide: true })
+    expect(spawnSyncFn).not.toHaveBeenCalled()
+    expect(child.kill).not.toHaveBeenCalled()
+  })
 
-  const sup = new SidecarSupervisor(
-    () => { const c = makeFakeChild(spawnCount++); children.push(c); return c as never },
-    {},
-    {},
-    { setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn, now: clock.now },
-  )
+  it('uses synchronous taskkill on Windows during shutdown to avoid orphaned sidecars', () => {
+    const child = fakeChild(777)
+    const spawnAsync = vi.fn()
+    const spawnSyncFn = vi.fn()
+    killSidecar(child, true, { platform: 'win32', spawnAsync: spawnAsync as never, spawnSyncFn: spawnSyncFn as never })
+    expect(spawnSyncFn).toHaveBeenCalledWith('taskkill', ['/F', '/T', '/PID', '777'], { stdio: 'ignore', windowsHide: true })
+    expect(spawnAsync).not.toHaveBeenCalled()
+  })
 
-  sup.start()
-  sup.stop() // 主动关闭(before-quit)
-  expect(children[0]!.killed).toBe(true)
-  children[0]!.triggerExit(0) // 主动关闭后的退出事件
-  expect(spawnCount).toBe(1)  // 不再拉起
+  it('hides Windows console windows when launching sidecars', () => {
+    const spawned = {} as SidecarChild
+    const spawnFn = vi.fn(() => spawned)
+    const existsSyncFn = vi.fn(() => true)
+    const plan = {
+      command: '/app/desktop/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe',
+      args: ['server', '--port', '49321'],
+      env: { CLAUDE_H5_AUTO_PUBLIC_URL: '1' },
+    }
+
+    expect(spawnSidecar(plan, { existsSyncFn, spawnFn: spawnFn as never })).toBe(spawned)
+    expect(existsSyncFn).toHaveBeenCalledWith(plan.command)
+    expect(spawnFn).toHaveBeenCalledWith(plan.command, plan.args, {
+      env: plan.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+  })
+
+  it('forwards a PowerShell shell choice to the sidecar only on Windows', () => {
+    expect(windowsPowerShellOverride('pwsh.exe', 'win32')).toBe('pwsh.exe')
+    expect(windowsPowerShellOverride('powershell.exe', 'win32')).toBe('powershell.exe')
+    expect(windowsPowerShellOverride('C:\\tools\\PowerShell\\pwsh.exe', 'win32')).toBe('C:\\tools\\PowerShell\\pwsh.exe')
+    // non-PowerShell selections must not be reported as a PowerShell override
+    expect(windowsPowerShellOverride('cmd.exe', 'win32')).toBeNull()
+    expect(windowsPowerShellOverride('C:\\bin\\bash.exe', 'win32')).toBeNull()
+    expect(windowsPowerShellOverride(null, 'win32')).toBeNull()
+    // never applies off Windows
+    expect(windowsPowerShellOverride('pwsh', 'darwin')).toBeNull()
+    expect(windowsPowerShellOverride('powershell.exe', 'linux')).toBeNull()
+  })
+
+  it('parses only in-range integer h5Access.fixedPort values', () => {
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":28670}}')).toBe(28670)
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":80}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":70000}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":"3456"}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":null}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{}}')).toBeNull()
+    expect(parseH5FixedPort('{}')).toBeNull()
+    expect(parseH5FixedPort('not json')).toBeNull()
+  })
+
+  it('persists and prioritizes preferred server ports from the config dir', () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), 'cchh-server-state-'))
+    const env = { CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv
+    try {
+      // Nothing stored yet: no preferred ports.
+      expect(preferredServerPorts(env)).toEqual([])
+
+      // Sticky port from the previous run.
+      writeLastServerPort(50123, env)
+      expect(readLastServerPort(env)).toBe(50123)
+      expect(preferredServerPorts(env)).toEqual([50123])
+
+      // An explicit fixed port wins over the sticky port.
+      mkdirSync(path.join(configDir, 'cc-haha'), { recursive: true })
+      writeFileSync(
+        path.join(configDir, 'cc-haha', 'settings.json'),
+        JSON.stringify({ h5Access: { fixedPort: 28670 } }),
+        'utf-8',
+      )
+      expect(readH5FixedPort(env)).toBe(28670)
+      expect(preferredServerPorts(env)).toEqual([28670, 50123])
+
+      // Identical fixed and sticky ports are not duplicated.
+      writeLastServerPort(28670, env)
+      expect(preferredServerPorts(env)).toEqual([28670])
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reserves a free preferred port and falls back when it is taken', async () => {
+    // Reserve a random free port, verify preference picks it while free.
+    const freePort = await reserveLocalPort('127.0.0.1')
+    await expect(reserveServerPort('127.0.0.1', [freePort])).resolves.toBe(freePort)
+
+    // Occupy it and verify the fallback hands out a different port.
+    const blocker = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject)
+      blocker.listen(freePort, '127.0.0.1', () => resolve())
+    })
+    try {
+      const fallback = await reserveServerPort('127.0.0.1', [freePort])
+      expect(fallback).not.toBe(freePort)
+    } finally {
+      await new Promise<void>(resolve => blocker.close(() => resolve()))
+    }
+
+    // Invalid entries are skipped without throwing.
+    await expect(reserveServerPort('127.0.0.1', [0, -1, 1.5, 70000])).resolves.toBeGreaterThan(0)
+  })
+
+  it('does not treat a raw TCP accept as server readiness without healthy /health', async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(503, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ status: 'starting' }))
+    })
+    const port = await listen(server)
+
+    try {
+      await expect(waitForServer('127.0.0.1', port, 300)).rejects.toThrow(
+        /desktop server did not report healthy at http:\/\/127\.0\.0\.1:\d+\/health/,
+      )
+    } finally {
+      await close(server)
+    }
+  })
 })

@@ -1,20 +1,23 @@
-import { readFile } from 'node:fs/promises'
-import { isAbsolute, join, relative } from 'node:path'
+import type { UUID } from 'crypto'
+import { chmod, copyFile, mkdir, readFile, stat, unlink } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { createTwoFilesPatch, diffLines } from 'diff'
-import { Workspace } from '../../workspace/workspace'
-import type { ToolContext } from '../../tools/Tool'
-import { fileHistoryBackupPath, loadFileHistory, restoreFileFromHistory, type FileHistoryRecord } from '../../tools/fileHistory'
-import type { StampedHistoryRecord } from '../../memory/transcript'
-import type { SessionMeta, SessionService, TurnRegistry } from './sessionService'
+import { ApiError } from '../middleware/errorHandler.js'
+import {
+  type FileHistorySnapshot,
+} from '../../utils/fileHistory.js'
+import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { conversationService } from './conversationService.js'
+import { sessionService, type MessageEntry } from './sessionService.js'
 
-/** 回退/checkpoint 目标选择器(对齐 cc RewindTargetSelector 的对外形状)。 */
-export interface RewindTargetSelector {
-  targetUserMessageId?: string
-  userMessageIndex?: number
-  expectedContent?: string
+type RewindTarget = {
+  targetUserMessageId: string
+  userMessageIndex: number
+  userMessageCount: number
+  messagesRemoved: number
 }
 
-export interface RewindCodePreview {
+type RewindCodePreview = {
   available: boolean
   reason?: string
   filesChanged: string[]
@@ -22,7 +25,21 @@ export interface RewindCodePreview {
   deletions: number
 }
 
-export interface SessionRewindPreview {
+type TranscriptFileChange = {
+  path: string
+  absolutePath: string
+  additions: number
+  deletions: number
+  diff?: string
+}
+
+export type RewindTargetSelector = {
+  targetUserMessageId?: string
+  userMessageIndex?: number
+  expectedContent?: string
+}
+
+export type SessionRewindPreview = {
   target: {
     targetUserMessageId: string
     userMessageIndex: number
@@ -34,10 +51,17 @@ export interface SessionRewindPreview {
   code: RewindCodePreview
 }
 
-export type SessionTurnCheckpointPreview = SessionRewindPreview & { workDir: string }
+export type SessionRewindExecuteResult = SessionRewindPreview & {
+  conversation: SessionRewindPreview['conversation'] & {
+    removedMessageIds: string[]
+  }
+}
 
-/** 单文件 diff 结果(对齐 cc SessionTurnCheckpointDiffResult):state 区分"有 diff/没有可用变更/读取出错"三态。 */
-export interface SessionTurnCheckpointDiffResult {
+export type SessionTurnCheckpointPreview = SessionRewindPreview & {
+  workDir: string
+}
+
+export type SessionTurnCheckpointDiffResult = {
   target: SessionRewindPreview['target']
   workDir: string
   path: string
@@ -46,480 +70,1083 @@ export interface SessionTurnCheckpointDiffResult {
   error?: string
 }
 
-export type SessionRewindExecuteResult = SessionRewindPreview & {
-  conversation: SessionRewindPreview['conversation'] & { removedMessageIds: string[] }
-}
-
-interface ResolvedRewindTarget {
-  targetUserMessageId: string
-  userMessageIndex: number
-  userMessageCount: number
-  messagesRemoved: number
-}
-
-interface TurnRange {
-  userUuid: string
-  /** 该轮在完整活跃链(stamped history)里的起始下标(= user 消息自身的下标)。 */
-  start: number
-  /** 该轮结束(不含,= 下一条 user 消息的下标,或链长度)。 */
-  end: number
-}
-
-interface TurnFileChange {
-  path: string
-  insertions: number
-  deletions: number
-}
-
-const INTERRUPT_WAIT_TIMEOUT_MS = 10_000
-const INTERRUPT_POLL_INTERVAL_MS = 50
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
-  return !!block && typeof block === 'object' && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string'
-}
-
-/** 从 user 消息的 content-block 数组里抠出纯文本(拼接所有 text 块),供 expectedContent 比对用。 */
-function extractUserPromptText(content: unknown): string {
-  if (!Array.isArray(content)) return ''
-  return content.filter(isTextBlock).map(b => b.text).join('\n')
+function normalizeDiffStats(diffStats: {
+  filesChanged?: string[]
+  insertions?: number
+  deletions?: number
+} | undefined): RewindCodePreview {
+  return {
+    available: true,
+    filesChanged: diffStats?.filesChanged ?? [],
+    insertions: diffStats?.insertions ?? 0,
+    deletions: diffStats?.deletions ?? 0,
+  }
 }
 
 function normalizePromptText(text: string): string {
   return text.replace(/\r\n/g, '\n').trim()
 }
 
-async function readTextOrNull(path: string): Promise<string | null> {
+function extractUserPromptText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+
+  return content
+    .flatMap((block) => {
+      if (!block || typeof block !== 'object') return []
+      const record = block as Record<string, unknown>
+      return record.type === 'text' && typeof record.text === 'string'
+        ? [record.text]
+        : []
+    })
+    .join('\n')
+}
+
+function assertExpectedPromptMatches(
+  targetMessage: { content: unknown },
+  expectedContent: string | undefined,
+): void {
+  if (expectedContent === undefined) return
+
+  const actual = normalizePromptText(extractUserPromptText(targetMessage.content))
+  const expected = normalizePromptText(expectedContent)
+  if (actual !== expected) {
+    throw ApiError.badRequest(
+      'The resolved rewind target does not match the selected prompt. Refresh the session and try again.',
+    )
+  }
+}
+
+async function resolveRewindTarget(
+  sessionId: string,
+  selector: RewindTargetSelector,
+): Promise<RewindTarget> {
+  const activeMessages = await sessionService.getSessionMessages(sessionId)
+  const userMessages = activeMessages.filter((message) => message.type === 'user')
+
+  if (userMessages.length === 0) {
+    throw ApiError.badRequest('This session has no user messages to rewind.')
+  }
+
+  let targetUserMessage = null as (typeof userMessages)[number] | null
+  let userMessageIndex = -1
+
+  if (selector.targetUserMessageId) {
+    const activeMessage = activeMessages.find(
+      (message) => message.id === selector.targetUserMessageId,
+    )
+    if (activeMessage) {
+      if (activeMessage.type !== 'user') {
+        throw ApiError.badRequest('The selected rewind target is not a user message.')
+      }
+      targetUserMessage = activeMessage
+      userMessageIndex = userMessages.findIndex(
+        (message) => message.id === activeMessage.id,
+      )
+    }
+  }
+
+  if (!targetUserMessage && Number.isInteger(selector.userMessageIndex)) {
+    userMessageIndex = selector.userMessageIndex!
+    if (userMessageIndex >= 0 && userMessageIndex < userMessages.length) {
+      targetUserMessage = userMessages[userMessageIndex]!
+    }
+  }
+
+  if (
+    !targetUserMessage ||
+    userMessageIndex < 0 ||
+    userMessageIndex >= userMessages.length
+  ) {
+    throw ApiError.badRequest(
+      `Invalid rewind target. Expected targetUserMessageId or userMessageIndex 0-${userMessages.length - 1}.`,
+    )
+  }
+
+  assertExpectedPromptMatches(targetUserMessage, selector.expectedContent)
+
+  const activeMessageIndex = activeMessages.findIndex(
+    (message) => message.id === targetUserMessage.id,
+  )
+
+  if (activeMessageIndex < 0) {
+    throw ApiError.badRequest('The selected user message is not in the active chain.')
+  }
+
+  return {
+    targetUserMessageId: targetUserMessage.id,
+    userMessageIndex,
+    userMessageCount: userMessages.length,
+    messagesRemoved: activeMessages.length - activeMessageIndex,
+  }
+}
+
+async function loadFileHistorySnapshots(
+  sessionId: string,
+): Promise<FileHistorySnapshot[] | null> {
+  const snapshots = await sessionService.getSessionFileHistorySnapshots(sessionId)
+  if (snapshots.length === 0) {
+    return null
+  }
+
+  return snapshots
+}
+
+function expandTrackingPath(workDir: string, trackingPath: string): string {
+  return isAbsolute(trackingPath) ? trackingPath : join(workDir, trackingPath)
+}
+
+function resolveBackupPath(sessionId: string, backupFileName: string): string {
+  return join(getClaudeConfigHomeDir(), 'file-history', sessionId, backupFileName)
+}
+
+function collectTrackedPaths(
+  snapshots: FileHistorySnapshot[],
+): Set<string> {
+  const trackedPaths = new Set<string>()
+  for (const snapshot of snapshots) {
+    for (const trackingPath of Object.keys(snapshot.trackedFileBackups)) {
+      trackedPaths.add(trackingPath)
+    }
+  }
+  return trackedPaths
+}
+
+function findTargetSnapshot(
+  snapshots: FileHistorySnapshot[],
+  targetUserMessageId: string,
+): FileHistorySnapshot | null {
+  return (
+    snapshots.findLast((snapshot) => snapshot.messageId === (targetUserMessageId as UUID)) ??
+    null
+  )
+}
+
+function getEarliestBackupFileName(
+  trackingPath: string,
+  snapshots: FileHistorySnapshot[],
+): string | null | undefined {
+  for (const snapshot of snapshots) {
+    const backup = snapshot.trackedFileBackups[trackingPath]
+    if (backup !== undefined) {
+      return backup.backupFileName
+    }
+  }
+
+  return undefined
+}
+
+function getBackupFileNameForTarget(
+  trackingPath: string,
+  snapshots: FileHistorySnapshot[],
+  targetSnapshot: FileHistorySnapshot,
+): string | null | undefined {
+  const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
+  if (targetBackup && 'backupFileName' in targetBackup) {
+    return targetBackup.backupFileName
+  }
+
+  return getEarliestBackupFileName(trackingPath, snapshots)
+}
+
+async function resolveSessionWorkDir(sessionId: string): Promise<string> {
+  return (
+    (conversationService.hasSession(sessionId)
+      ? conversationService.getSessionWorkDir(sessionId)
+      : null) ||
+    (await sessionService.getSessionWorkDir(sessionId)) ||
+    process.cwd()
+  )
+}
+
+async function resolveCheckpointBaseDir(
+  sessionId: string,
+  targetUserMessageId: string,
+  fallbackWorkDir?: string,
+): Promise<string> {
+  return (
+    (await sessionService.getSessionMessageCwd(sessionId, targetUserMessageId)) ||
+    fallbackWorkDir ||
+    (await resolveSessionWorkDir(sessionId))
+  )
+}
+
+function normalizeComparablePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/')
+}
+
+function toCheckpointResponsePath(
+  trackingPath: string,
+  checkpointBaseDir: string,
+): string {
+  if (isAbsolute(trackingPath)) {
+    return trackingPath
+  }
+
+  const absolutePath = expandTrackingPath(checkpointBaseDir, trackingPath)
+  const relativePath = normalizeComparablePath(relative(checkpointBaseDir, absolutePath))
+  return relativePath && !relativePath.startsWith('../')
+    ? relativePath
+    : normalizeComparablePath(trackingPath)
+}
+
+function matchesCheckpointPath(
+  requestedPath: string,
+  trackingPath: string,
+  checkpointBaseDir: string,
+): boolean {
+  const normalizedRequestedPath = normalizeComparablePath(requestedPath)
+  const absolutePath = normalizeComparablePath(
+    expandTrackingPath(checkpointBaseDir, trackingPath),
+  )
+  const responsePath = normalizeComparablePath(
+    toCheckpointResponsePath(trackingPath, checkpointBaseDir),
+  )
+
+  return normalizedRequestedPath === absolutePath ||
+    normalizedRequestedPath === normalizeComparablePath(trackingPath) ||
+    normalizedRequestedPath === responsePath
+}
+
+function buildTurnPreview(
+  target: RewindTarget,
+  preview: RewindCodePreview,
+  workDir: string,
+): SessionTurnCheckpointPreview {
+  return {
+    target: {
+      targetUserMessageId: target.targetUserMessageId,
+      userMessageIndex: target.userMessageIndex,
+      userMessageCount: target.userMessageCount,
+    },
+    conversation: {
+      messagesRemoved: target.messagesRemoved,
+    },
+    code: preview,
+    workDir,
+  }
+}
+
+async function readFileOrNull(filePath: string): Promise<string | null> {
   try {
-    return await readFile(path, 'utf8')
+    return await readFile(filePath, 'utf-8')
   } catch {
     return null
   }
 }
 
-function countDiffStats(before: string, after: string): { insertions: number; deletions: number } {
+function countInsertedLines(content: string): number {
+  return diffLines('', content).reduce((total, change) => (
+    change.added ? total + (change.count || 0) : total
+  ), 0)
+}
+
+function buildCheckpointDiff(
+  displayPath: string,
+  oldContent: string,
+  newContent: string,
+  oldExists: boolean,
+  newExists: boolean,
+): string {
+  const oldFileName = oldExists ? `a/${displayPath}` : '/dev/null'
+  const newFileName = newExists ? `b/${displayPath}` : '/dev/null'
+
+  return createTwoFilesPatch(
+    oldFileName,
+    newFileName,
+    oldContent,
+    newContent,
+    '',
+    '',
+    { context: 3 },
+  )
+}
+
+async function readBackupContent(
+  sessionId: string,
+  backupFileName: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (backupFileName === undefined) return undefined
+  if (backupFileName === null) return null
+  return await readFileOrNull(resolveBackupPath(sessionId, backupFileName))
+}
+
+function countTurnDiffStats(
+  beforeContent: string | null,
+  afterContent: string | null,
+): { insertions: number; deletions: number } {
   let insertions = 0
   let deletions = 0
-  for (const change of diffLines(before, after)) {
+  for (const change of diffLines(beforeContent ?? '', afterContent ?? '')) {
     if (change.added) insertions += change.count || 0
     if (change.removed) deletions += change.count || 0
   }
   return { insertions, deletions }
 }
 
-function absPath(workspaceRoot: string, relPath: string): string {
-  return isAbsolute(relPath) ? relPath : join(workspaceRoot, relPath)
+function getTurnMessageRange(
+  activeMessages: Awaited<ReturnType<typeof sessionService.getSessionMessages>>,
+  targetUserMessageId: string,
+): { start: number; end: number } | null {
+  const start = activeMessages.findIndex((message) => message.id === targetUserMessageId)
+  if (start < 0) return null
+  const nextUserIndex = activeMessages.findIndex(
+    (message, index) => index > start && message.type === 'user',
+  )
+  return { start, end: nextUserIndex >= 0 ? nextUserIndex : activeMessages.length }
 }
 
-/** 把请求方传来的路径(可能是绝对路径,也可能是相对工作区的路径)归一成 fileHistory 记录用的相对路径。 */
-function relativeToWorkspace(workspaceRoot: string, requestedPath: string): string {
-  const abs = isAbsolute(requestedPath) ? requestedPath : join(workspaceRoot, requestedPath)
-  return relative(workspaceRoot, abs) || '.'
+function hasCompletedTurn(
+  activeMessages: Awaited<ReturnType<typeof sessionService.getSessionMessages>>,
+  targetUserMessageId: string,
+): boolean {
+  const range = getTurnMessageRange(activeMessages, targetUserMessageId)
+  if (!range) return false
+  return activeMessages.slice(range.start + 1, range.end).some((message) =>
+    message.type === 'assistant' ||
+    message.type === 'tool_use' ||
+    message.type === 'tool_result' ||
+    message.type === 'error',
+  )
 }
 
-/** 按 path 分组,取每组"首条"(loadFileHistory 按 append 顺序返回,首个出现的即最早那条)。 */
-function firstRecordPerPath(records: FileHistoryRecord[]): Map<string, FileHistoryRecord> {
-  const out = new Map<string, FileHistoryRecord>()
-  for (const r of records) {
-    if (!out.has(r.path)) out.set(r.path, r)
+function getNextUserMessageId(
+  userMessages: Awaited<ReturnType<typeof sessionService.getSessionMessages>>,
+  userMessageIndex: number,
+): string | null {
+  return userMessages[userMessageIndex + 1]?.id ?? null
+}
+
+function isWithinBaseDir(absolutePath: string, baseDir: string): boolean {
+  const relativePath = relative(baseDir, absolutePath)
+  return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+function normalizeTranscriptRelativePath(filePath: string): string {
+  return normalizeComparablePath(filePath).replace(/^\/+/, '')
+}
+
+function resolveTranscriptToolPath(
+  filePath: unknown,
+  baseDir: string,
+): { path: string; absolutePath: string } | null {
+  if (typeof filePath !== 'string' || !filePath.trim()) return null
+  const normalizedBaseDir = resolve(baseDir)
+  const absolutePath = isAbsolute(filePath)
+    ? resolve(filePath)
+    : resolve(normalizedBaseDir, filePath)
+  if (!isWithinBaseDir(absolutePath, normalizedBaseDir)) return null
+
+  return {
+    path: normalizeTranscriptRelativePath(relative(normalizedBaseDir, absolutePath)),
+    absolutePath,
   }
-  return out
 }
 
-/**
- * 某条 fileHistory 记录的"前像"内容:existed=false → 空字符串(文件当时不存在);skippedReason(超 5MB / 非普通
- * 文件,没留真实备份内容)→ null(没法可靠读到,调用方应如实跳过、别编造数字);否则读备份文件本体。
- */
-async function readRecordBackupContent(ctx: ToolContext, record: FileHistoryRecord): Promise<string | null> {
-  if (!record.existed) return ''
-  if (record.skippedReason) return null
-  const backupPath = fileHistoryBackupPath(ctx, record)
-  if (!backupPath) return null
-  return await readTextOrNull(backupPath)
-}
-
-/** 活跃链按 user 消息切成"轮次"区间:[user_i, user_{i+1}) 或 [user_last, 链尾]。 */
-function turnRanges(history: StampedHistoryRecord[]): TurnRange[] {
-  const userIndices: number[] = []
-  history.forEach((r, i) => { if (r.message.role === 'user') userIndices.push(i) })
-  return userIndices.map((start, k) => ({
-    userUuid: history[start]!.uuid,
-    start,
-    end: userIndices[k + 1] ?? history.length,
-  }))
-}
-
-/** 某区间(不含起点的 user 消息自身)里全部 assistant 消息的 uuid——fileHistory 记录按这些 uuid 归到所属轮次。 */
-function assistantUuidsInRange(history: StampedHistoryRecord[], start: number, end: number): Set<string> {
-  const out = new Set<string>()
-  for (let i = start + 1; i < end; i++) {
-    if (history[i]!.message.role === 'assistant') out.add(history[i]!.uuid)
+function countTranscriptLines(content: string): number {
+  if (!content) return 0
+  const lines = content.split(/\r\n|\r|\n/)
+  if (lines[lines.length - 1] === '') {
+    lines.pop()
   }
-  return out
+  return lines.length
 }
 
-/** 从 fromIndex(含)起到链尾,全部 assistant 消息 uuid——"目标轮起(含)之后"要移除/预览的全部改动都绑在这些 uuid 上。 */
-function assistantUuidsFromIndex(history: StampedHistoryRecord[], fromIndex: number): Set<string> {
-  const out = new Set<string>()
-  for (let i = fromIndex; i < history.length; i++) {
-    if (history[i]!.message.role === 'assistant') out.add(history[i]!.uuid)
+function buildTranscriptDiff(
+  oldPath: string,
+  newPath: string,
+  oldContent: string,
+  newContent: string,
+): string {
+  const oldLines = oldContent ? oldContent.split('\n') : []
+  const newLines = newContent ? newContent.split('\n') : []
+  if (oldLines.at(-1) === '') oldLines.pop()
+  if (newLines.at(-1) === '') newLines.pop()
+
+  return [
+    `diff --session a/${oldPath} b/${newPath}`,
+    `--- ${oldPath === '/dev/null' ? '/dev/null' : `a/${oldPath}`}`,
+    `+++ b/${newPath}`,
+    `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+    ...oldLines.map((line) => `-${line}`),
+    ...newLines.map((line) => `+${line}`),
+  ].join('\n')
+}
+
+function buildTranscriptEditChange(
+  filePath: { path: string; absolutePath: string },
+  input: Record<string, unknown>,
+): TranscriptFileChange {
+  const oldString = typeof input.old_string === 'string' ? input.old_string : ''
+  const newString = typeof input.new_string === 'string' ? input.new_string : ''
+  return {
+    path: filePath.path,
+    absolutePath: filePath.absolutePath,
+    additions: countTranscriptLines(newString),
+    deletions: countTranscriptLines(oldString),
+    diff: buildTranscriptDiff(filePath.path, filePath.path, oldString, newString),
   }
-  return out
 }
 
-/**
- * 某轮"本轮变更"= diff(该轮首条该文件记录的前像, 下一轮首条该文件记录的前像 ?? 当前盘上内容)
- * (对齐 cc getTurnBoundaryContents 语义)。前像/后像任一读不到(skippedReason)就如实跳过该文件,不编造数字。
- */
-async function computeTurnFileChanges(
-  ctx: ToolContext,
-  workspaceRoot: string,
-  records: FileHistoryRecord[],
-  turnAssistantUuids: Set<string>,
-  nextTurnAssistantUuids: Set<string> | null,
-): Promise<TurnFileChange[]> {
-  const turnRecords = records.filter(r => r.messageId !== undefined && turnAssistantUuids.has(r.messageId))
-  if (turnRecords.length === 0) return []
-  const firstByPath = firstRecordPerPath(turnRecords)
-  const nextFirstByPath = nextTurnAssistantUuids
-    ? firstRecordPerPath(records.filter(r => r.messageId !== undefined && nextTurnAssistantUuids.has(r.messageId)))
-    : new Map<string, FileHistoryRecord>()
+function extractApplyPatchTranscriptChanges(
+  patch: unknown,
+  baseDir: string,
+): TranscriptFileChange[] {
+  if (typeof patch !== 'string') return []
+  const changes: TranscriptFileChange[] = []
 
-  const changes: TurnFileChange[] = []
-  for (const [path, record] of firstByPath) {
-    const before = await readRecordBackupContent(ctx, record)
-    if (before === null) continue
+  for (const line of patch.split('\n')) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
+    if (!match?.[1]) continue
+    const filePath = resolveTranscriptToolPath(match[1], baseDir)
+    if (!filePath) continue
+    changes.push({
+      path: filePath.path,
+      absolutePath: filePath.absolutePath,
+      additions: 0,
+      deletions: 0,
+    })
+  }
 
-    const nextRecord = nextFirstByPath.get(path)
-    let after: string | null
-    if (nextRecord) {
-      after = await readRecordBackupContent(ctx, nextRecord)
-      if (after === null) continue
-    } else {
-      after = (await readTextOrNull(absPath(workspaceRoot, path))) ?? ''
+  return changes
+}
+
+function extractTranscriptChangesFromTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  baseDir: string,
+): TranscriptFileChange[] {
+  const normalizedToolName = toolName.toLowerCase()
+  if (normalizedToolName === 'write') {
+    const filePath = resolveTranscriptToolPath(input.file_path ?? input.path, baseDir)
+    if (!filePath) return []
+    const content = typeof input.content === 'string' ? input.content : ''
+    return [{
+      path: filePath.path,
+      absolutePath: filePath.absolutePath,
+      additions: countTranscriptLines(content),
+      deletions: 0,
+      diff: buildTranscriptDiff('/dev/null', filePath.path, '', content),
+    }]
+  }
+
+  if (normalizedToolName === 'edit') {
+    const filePath = resolveTranscriptToolPath(input.file_path ?? input.path, baseDir)
+    if (!filePath) return []
+    return [buildTranscriptEditChange(filePath, input)]
+  }
+
+  if (normalizedToolName === 'multiedit') {
+    const filePath = resolveTranscriptToolPath(input.file_path ?? input.path, baseDir)
+    if (!filePath || !Array.isArray(input.edits)) return []
+    return input.edits
+      .filter((edit): edit is Record<string, unknown> => !!edit && typeof edit === 'object')
+      .map((edit) => buildTranscriptEditChange(filePath, edit))
+  }
+
+  if (normalizedToolName === 'notebookedit') {
+    const filePath = resolveTranscriptToolPath(
+      input.notebook_path ?? input.file_path ?? input.path,
+      baseDir,
+    )
+    if (!filePath) return []
+    const oldString = typeof input.old_source === 'string' ? input.old_source : ''
+    const newString = typeof input.new_source === 'string' ? input.new_source : ''
+    return [{
+      path: filePath.path,
+      absolutePath: filePath.absolutePath,
+      additions: countTranscriptLines(newString),
+      deletions: countTranscriptLines(oldString),
+      diff: buildTranscriptDiff(filePath.path, filePath.path, oldString, newString),
+    }]
+  }
+
+  if (normalizedToolName === 'apply_patch') {
+    return extractApplyPatchTranscriptChanges(input.patch, baseDir)
+  }
+
+  return []
+}
+
+function getToolUseIds(messages: MessageEntry[]): Set<string> {
+  const ids = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'tool_use' || !Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue
+      const record = block as Record<string, unknown>
+      if (record.type === 'tool_use' && typeof record.id === 'string') {
+        ids.add(record.id)
+      }
+    }
+  }
+  return ids
+}
+
+function getTranscriptTurnMessages(
+  activeMessages: MessageEntry[],
+  targetUserMessageId: string,
+): MessageEntry[] {
+  const range = getTurnMessageRange(activeMessages, targetUserMessageId)
+  if (!range) return []
+
+  const rawTurnMessages = activeMessages.slice(range.start + 1, range.end)
+  const parentTurnMessages = rawTurnMessages.filter((message) => !message.parentToolUseId)
+  const turnToolUseIds = getToolUseIds(parentTurnMessages)
+  if (turnToolUseIds.size === 0) return parentTurnMessages
+
+  const inlineChildMessages = rawTurnMessages.filter((message) =>
+    message.parentToolUseId && turnToolUseIds.has(message.parentToolUseId)
+  )
+  const turnMessages = [...parentTurnMessages, ...inlineChildMessages]
+  const includedIds = new Set(turnMessages.map((message) => message.id))
+  const childMessages = activeMessages.filter((message) =>
+    message.parentToolUseId &&
+    turnToolUseIds.has(message.parentToolUseId) &&
+    !includedIds.has(message.id)
+  )
+
+  return [...turnMessages, ...childMessages]
+}
+
+function collectTranscriptTurnFileChanges(
+  activeMessages: MessageEntry[],
+  targetUserMessageId: string,
+  baseDir: string,
+): TranscriptFileChange[] {
+  const turnMessages = getTranscriptTurnMessages(activeMessages, targetUserMessageId)
+  if (turnMessages.length === 0) return []
+
+  const changes = new Map<string, TranscriptFileChange>()
+  for (const message of turnMessages) {
+    if (message.type !== 'tool_use' || !Array.isArray(message.content)) continue
+
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue
+      const record = block as Record<string, unknown>
+      if (record.type !== 'tool_use' || typeof record.name !== 'string') continue
+      const input = record.input
+      if (!input || typeof input !== 'object') continue
+
+      for (const change of extractTranscriptChangesFromTool(
+        record.name,
+        input as Record<string, unknown>,
+        baseDir,
+      )) {
+        const existing = changes.get(change.path)
+        if (!existing) {
+          changes.set(change.path, change)
+          continue
+        }
+
+        changes.set(change.path, {
+          ...existing,
+          additions: existing.additions + change.additions,
+          deletions: existing.deletions + change.deletions,
+          diff: [existing.diff, change.diff].filter(Boolean).join('\n'),
+        })
+      }
+    }
+  }
+
+  return [...changes.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+function buildTranscriptTurnCodePreview(
+  activeMessages: MessageEntry[],
+  targetUserMessageId: string,
+  baseDir: string,
+): RewindCodePreview {
+  const changes = collectTranscriptTurnFileChanges(activeMessages, targetUserMessageId, baseDir)
+  if (changes.length === 0) {
+    return {
+      available: false,
+      reason: 'No transcript file changes were recorded for this turn.',
+      filesChanged: [],
+      insertions: 0,
+      deletions: 0,
+    }
+  }
+
+  return normalizeDiffStats({
+    filesChanged: changes.map((change) => change.absolutePath),
+    insertions: changes.reduce((total, change) => total + change.additions, 0),
+    deletions: changes.reduce((total, change) => total + change.deletions, 0),
+  })
+}
+
+function findTranscriptTurnDiff(
+  activeMessages: MessageEntry[],
+  targetUserMessageId: string,
+  baseDir: string,
+  requestedPath: string,
+): TranscriptFileChange | null {
+  const changes = collectTranscriptTurnFileChanges(activeMessages, targetUserMessageId, baseDir)
+  return changes.find((change) =>
+    matchesCheckpointPath(requestedPath, change.path, baseDir) ||
+    normalizeComparablePath(requestedPath) === normalizeComparablePath(change.absolutePath)
+  ) ?? null
+}
+
+async function getTurnBoundaryContents(
+  sessionId: string,
+  checkpointBaseDir: string,
+  trackingPath: string,
+  targetSnapshot: FileHistorySnapshot,
+  nextSnapshot: FileHistorySnapshot | null,
+): Promise<{ beforeContent: string | null; afterContent: string | null }> {
+  const absolutePath = expandTrackingPath(checkpointBaseDir, trackingPath)
+  const beforeContent = await readBackupContent(
+    sessionId,
+    targetSnapshot.trackedFileBackups[trackingPath]?.backupFileName,
+  )
+
+  if (!nextSnapshot) {
+    return {
+      beforeContent: beforeContent ?? null,
+      afterContent: await readFileOrNull(absolutePath),
+    }
+  }
+
+  const nextContent = await readBackupContent(
+    sessionId,
+    nextSnapshot.trackedFileBackups[trackingPath]?.backupFileName,
+  )
+
+  return {
+    beforeContent: beforeContent ?? null,
+    afterContent: nextContent === undefined ? beforeContent ?? null : nextContent,
+  }
+}
+
+async function buildTurnCodePreview(
+  sessionId: string,
+  checkpointBaseDir: string,
+  targetSnapshot: FileHistorySnapshot,
+  nextSnapshot: FileHistorySnapshot | null,
+): Promise<RewindCodePreview> {
+  const trackedPaths = new Set([
+    ...Object.keys(targetSnapshot.trackedFileBackups),
+    ...Object.keys(nextSnapshot?.trackedFileBackups ?? {}),
+  ])
+  const filesChanged: string[] = []
+  let insertions = 0
+  let deletions = 0
+
+  for (const trackingPath of trackedPaths) {
+    const { beforeContent, afterContent } = await getTurnBoundaryContents(
+      sessionId,
+      checkpointBaseDir,
+      trackingPath,
+      targetSnapshot,
+      nextSnapshot,
+    )
+    if (beforeContent === afterContent) continue
+
+    filesChanged.push(expandTrackingPath(checkpointBaseDir, trackingPath))
+    const stats = countTurnDiffStats(beforeContent, afterContent)
+    insertions += stats.insertions
+    deletions += stats.deletions
+  }
+
+  return normalizeDiffStats({ filesChanged, insertions, deletions })
+}
+
+async function hasFileChanged(
+  filePath: string,
+  backupFilePath: string,
+): Promise<boolean> {
+  try {
+    const [currentStat, backupStat] = await Promise.all([
+      stat(filePath),
+      stat(backupFilePath),
+    ])
+
+    if (currentStat.size !== backupStat.size) {
+      return true
     }
 
-    if (before === after) continue
-    const stats = countDiffStats(before, after)
-    changes.push({ path, insertions: stats.insertions, deletions: stats.deletions })
+    const [currentContent, backupContent] = await Promise.all([
+      readFile(filePath),
+      readFile(backupFilePath),
+    ])
+    return !currentContent.equals(backupContent)
+  } catch {
+    return true
   }
-  return changes.sort((a, b) => a.path.localeCompare(b.path))
 }
 
-/**
- * rewind/checkpoint 上层服务(对标 cc-haha sessionRewindService,存储机制走我们自己的 append-only 模型):
- * - listTurnCheckpoints:按轮次聚合 fileHistory 记录 → 每轮的文件改动预览(供"按轮次回退"UI 列表)。
- * - getSessionTurnCheckpointDiff:定位到某轮 + 某个具体文件,算出该轮对这个文件的 unified diff 文本
- *   (对齐 cc getSessionTurnCheckpointDiff,供"展开某个 checkpoint 看这个文件到底改了什么"用)。
- * - previewRewind/executeRewind:回退到某条 user 消息之前——预览算"回退会改动哪些文件",执行则真的把文件
- *   恢复回目标之前的状态 + 把 transcript 活跃链掰回去(Transcript.rewindTo,append-only、不重写历史)。
- *
- * 与 cc-haha 的有意分叉:
- * 1) cc trimSessionMessagesFrom 是过滤后整份 transcript 重写;我们是追加一条 rewind-boundary 分支
- *    (Transcript.rewindTo),对外"活跃链被裁短"的行为等价,但存储上更贴近真 cc 的分支模型(append-only 保持)。
- * 2) cc 的 checkpoint 数据源是"每条 user 消息一份 trackedFileBackups 快照";我们从"每次写前像记录
- *    (绑 assistant messageId)"按轮次推导,数据形状不同但语义对齐。
- * 3) cc 执行中会话用 stopSessionAndWait 无界等；我们 interrupt + 最多 10s 轮询等停,超时报错不硬回退。
- */
-export class SessionRewindService {
-  constructor(
-    private readonly sessions: SessionService,
-    private readonly turns: TurnRegistry,
-    private readonly stateRoot: string,
-  ) {}
+async function restoreBackupFile(
+  filePath: string,
+  backupFilePath: string,
+): Promise<void> {
+  const backupStats = await stat(backupFilePath)
+  try {
+    await copyFile(backupFilePath, filePath)
+  } catch (error) {
+    const maybeErr = error as NodeJS.ErrnoException
+    if (maybeErr.code !== 'ENOENT') throw error
+    await mkdir(dirname(filePath), { recursive: true })
+    await copyFile(backupFilePath, filePath)
+  }
+  await chmod(filePath, backupStats.mode)
+}
 
-  async listTurnCheckpoints(sessionId: string): Promise<SessionTurnCheckpointPreview[]> {
-    const session = await this.requireSession(sessionId)
-    const workspaceRoot = session.workspaceRoot
-    const history = await this.loadStampedHistory(sessionId, workspaceRoot)
-    const userMessages = history.filter(r => r.message.role === 'user')
-    if (userMessages.length === 0) return []
-
-    const ctx = this.buildBaseCtx(sessionId, workspaceRoot)
-    const records = await loadFileHistory(ctx)
-    const ranges = turnRanges(history)
-    const checkpoints: SessionTurnCheckpointPreview[] = []
-
-    for (let i = 0; i < ranges.length; i++) {
-      const range = ranges[i]!
-      const turnUuids = assistantUuidsInRange(history, range.start, range.end)
-      const nextRange = ranges[i + 1]
-      const nextTurnUuids = nextRange ? assistantUuidsInRange(history, nextRange.start, nextRange.end) : null
-      const changes = await computeTurnFileChanges(ctx, workspaceRoot, records, turnUuids, nextTurnUuids)
-      if (changes.length === 0) continue // 没有文件变更的轮次跳过(对齐 cc)
-
-      const userMessageIndex = userMessages.findIndex(r => r.uuid === range.userUuid)
-      checkpoints.push({
-        target: {
-          targetUserMessageId: range.userUuid,
-          userMessageIndex,
-          userMessageCount: userMessages.length,
-        },
-        conversation: {
-          messagesRemoved: history.length - range.start,
-        },
-        code: {
-          available: true,
-          filesChanged: changes.map(c => absPath(workspaceRoot, c.path)),
-          insertions: changes.reduce((s, c) => s + c.insertions, 0),
-          deletions: changes.reduce((s, c) => s + c.deletions, 0),
-        },
-        workDir: workspaceRoot,
-      })
+async function buildCodePreview(
+  sessionId: string,
+  checkpointBaseDir: string,
+  targetUserMessageId: string,
+): Promise<{
+  snapshots: FileHistorySnapshot[] | null
+  preview: RewindCodePreview
+}> {
+  const snapshots = await loadFileHistorySnapshots(sessionId)
+  if (!snapshots) {
+    return {
+      snapshots: null,
+      preview: {
+        available: false,
+        reason: 'No file checkpoints were recorded for this session.',
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      },
     }
-
-    return checkpoints
   }
 
-  /**
-   * 单文件 diff(对齐 cc getSessionTurnCheckpointDiff):给定回退目标(某条 user 消息,= 一个"轮次")与具体
-   * 文件路径,算出"该轮对这个文件的改动"的 unified diff 文本。复用 listTurnCheckpoints 同一套"按轮次首条
-   * fileHistory 记录取前像/下一轮首条记录取后像 ?? 当前盘上内容"的语义(见 computeTurnFileChanges),只是
-   * 聚焦单个 path 并额外产出 diff 正文(而不只是行数统计)。本轮只补服务层能力,HTTP 路由不在本次改动范围。
-   */
-  async getSessionTurnCheckpointDiff(
-    sessionId: string,
-    selector: RewindTargetSelector,
-    requestedPath: string,
-  ): Promise<SessionTurnCheckpointDiffResult> {
-    const session = await this.requireSession(sessionId)
-    const workspaceRoot = session.workspaceRoot
-    const history = await this.loadStampedHistory(sessionId, workspaceRoot)
-    const target = this.resolveTarget(history, selector)
-    const targetView = {
+  const targetSnapshot = findTargetSnapshot(snapshots, targetUserMessageId)
+  if (!targetSnapshot) {
+    return {
+      snapshots,
+      preview: {
+        available: false,
+        reason: 'No file checkpoint is available for the selected message.',
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      },
+    }
+  }
+
+  const trackedPaths = collectTrackedPaths(snapshots)
+  const filesChanged: string[] = []
+  let insertions = 0
+  let deletions = 0
+
+  for (const trackingPath of trackedPaths) {
+    const backupFileName = getBackupFileNameForTarget(
+      trackingPath,
+      snapshots,
+      targetSnapshot,
+    )
+
+    if (backupFileName === undefined) continue
+
+    const absolutePath = expandTrackingPath(checkpointBaseDir, trackingPath)
+
+    if (backupFileName === null) {
+      const currentContent = await readFileOrNull(absolutePath)
+      if (currentContent !== null) {
+        filesChanged.push(absolutePath)
+        insertions += countInsertedLines(currentContent)
+      }
+      continue
+    }
+
+    const backupFilePath = resolveBackupPath(sessionId, backupFileName)
+    if (!(await hasFileChanged(absolutePath, backupFilePath))) {
+      continue
+    }
+
+    filesChanged.push(absolutePath)
+    const [currentContent, backupContent] = await Promise.all([
+      readFileOrNull(absolutePath),
+      readFileOrNull(backupFilePath),
+    ])
+    for (const change of diffLines(currentContent ?? '', backupContent ?? '')) {
+      if (change.added) {
+        insertions += change.count || 0
+      }
+      if (change.removed) {
+        deletions += change.count || 0
+      }
+    }
+  }
+
+  return {
+    snapshots,
+    preview: normalizeDiffStats({
+      filesChanged,
+      insertions,
+      deletions,
+    }),
+  }
+}
+
+export async function previewSessionRewind(
+  sessionId: string,
+  selector: RewindTargetSelector,
+): Promise<SessionRewindPreview> {
+  const target = await resolveRewindTarget(sessionId, selector)
+  const workDir = await resolveSessionWorkDir(sessionId)
+  const checkpointBaseDir = await resolveCheckpointBaseDir(
+    sessionId,
+    target.targetUserMessageId,
+    workDir,
+  )
+  const { preview } = await buildCodePreview(
+    sessionId,
+    checkpointBaseDir,
+    target.targetUserMessageId,
+  )
+
+  return {
+    target: {
       targetUserMessageId: target.targetUserMessageId,
       userMessageIndex: target.userMessageIndex,
       userMessageCount: target.userMessageCount,
-    }
-    const normalizedPath = relativeToWorkspace(workspaceRoot, requestedPath)
-    const displayPath = absPath(workspaceRoot, normalizedPath)
-    const missing = (): SessionTurnCheckpointDiffResult => ({ target: targetView, workDir: workspaceRoot, path: displayPath, state: 'missing' })
+    },
+    conversation: {
+      messagesRemoved: target.messagesRemoved,
+    },
+    code: preview,
+  }
+}
 
-    const ranges = turnRanges(history)
-    const rangeIndex = ranges.findIndex(r => r.userUuid === target.targetUserMessageId)
-    if (rangeIndex === -1) return missing()
-    const range = ranges[rangeIndex]!
-    const nextRange = ranges[rangeIndex + 1]
-    const turnUuids = assistantUuidsInRange(history, range.start, range.end)
-    const nextTurnUuids = nextRange ? assistantUuidsInRange(history, nextRange.start, nextRange.end) : null
-
-    const ctx = this.buildBaseCtx(sessionId, workspaceRoot)
-    const records = await loadFileHistory(ctx)
-    const turnRecords = records.filter(r => r.messageId !== undefined && turnUuids.has(r.messageId) && r.path === normalizedPath)
-    if (turnRecords.length === 0) return missing() // 该轮没碰过这个文件
-
-    try {
-      // 首条(append 顺序里最早那条)= 本轮对该文件的前像,对齐 computeTurnFileChanges 的 firstRecordPerPath。
-      const record = turnRecords[0]!
-      const before = await readRecordBackupContent(ctx, record)
-      if (before === null) return missing() // skippedReason,没留真实备份内容,如实跳过、不编数字
-
-      const nextRecords = nextTurnUuids
-        ? records.filter(r => r.messageId !== undefined && nextTurnUuids.has(r.messageId) && r.path === normalizedPath)
-        : []
-      const nextRecord = nextRecords[0]
-
-      let after: string
-      let afterExists: boolean
-      if (nextRecord) {
-        const nextContent = await readRecordBackupContent(ctx, nextRecord)
-        if (nextContent === null) return missing()
-        after = nextContent
-        afterExists = nextRecord.existed
-      } else {
-        const disk = await readTextOrNull(absPath(workspaceRoot, normalizedPath))
-        after = disk ?? ''
-        afterExists = disk !== null
-      }
-
-      if (before === after) return missing() // 本轮没有实际改动这个文件
-
-      const diff = createTwoFilesPatch(
-        record.existed ? `a/${normalizedPath}` : '/dev/null',
-        afterExists ? `b/${normalizedPath}` : '/dev/null',
-        before,
-        after,
-        '', '',
-        { context: 3 },
-      )
-      return { target: targetView, workDir: workspaceRoot, path: displayPath, state: 'ok', diff }
-    } catch (err) {
-      return { target: targetView, workDir: workspaceRoot, path: displayPath, state: 'error', error: err instanceof Error ? err.message : String(err) }
-    }
+export async function listSessionTurnCheckpoints(
+  sessionId: string,
+): Promise<SessionTurnCheckpointPreview[]> {
+  const activeMessages = await sessionService.getSessionMessages(sessionId)
+  const userMessages = activeMessages.filter((message) => message.type === 'user')
+  if (userMessages.length === 0) {
+    return []
   }
 
-  async previewRewind(sessionId: string, selector: RewindTargetSelector): Promise<SessionRewindPreview> {
-    const session = await this.requireSession(sessionId)
-    const workspaceRoot = session.workspaceRoot
-    const history = await this.loadStampedHistory(sessionId, workspaceRoot)
-    const target = this.resolveTarget(history, selector)
-    const ctx = this.buildBaseCtx(sessionId, workspaceRoot)
-    const code = await this.buildRewindCodePreview(ctx, workspaceRoot, history, target)
-    return {
-      target: {
-        targetUserMessageId: target.targetUserMessageId,
-        userMessageIndex: target.userMessageIndex,
-        userMessageCount: target.userMessageCount,
-      },
-      conversation: { messagesRemoved: target.messagesRemoved },
-      code,
-    }
-  }
+  const workDir = await resolveSessionWorkDir(sessionId)
+  const snapshots = await loadFileHistorySnapshots(sessionId)
+  const checkpoints: SessionTurnCheckpointPreview[] = []
 
-  async executeRewind(sessionId: string, selector: RewindTargetSelector): Promise<SessionRewindExecuteResult> {
-    const session = await this.requireSession(sessionId)
-    const workspaceRoot = session.workspaceRoot
-    const history = await this.loadStampedHistory(sessionId, workspaceRoot)
-    const target = this.resolveTarget(history, selector)
-    const ctx = this.buildBaseCtx(sessionId, workspaceRoot)
-    // 先(在改动任何东西之前)算好预览要返回的 diff 统计——真正恢复之后,现盘内容就等于恢复源了,diff 会变成 0。
-    const code = await this.buildRewindCodePreview(ctx, workspaceRoot, history, target)
+  for (const [userMessageIndex, userMessage] of userMessages.entries()) {
+    const activeMessageIndex = activeMessages.findIndex(
+      (message) => message.id === userMessage.id,
+    )
+    if (activeMessageIndex < 0) continue
+    if (!hasCompletedTurn(activeMessages, userMessage.id)) continue
 
-    if (this.turns.isRunning(sessionId)) {
-      this.turns.interrupt(sessionId)
-      await this.waitUntilStopped(sessionId)
-    }
-
-    if (code.available) {
-      const targetIndex = history.findIndex(r => r.uuid === target.targetUserMessageId)
-      const removedAssistantUuids = assistantUuidsFromIndex(history, targetIndex)
-      const records = await loadFileHistory(ctx)
-      const relevantRecords = records.filter(r => r.messageId !== undefined && removedAssistantUuids.has(r.messageId))
-      const earliestByPath = firstRecordPerPath(relevantRecords)
-      for (const record of earliestByPath.values()) {
-        if (record.skippedReason) continue // 没留真实备份内容,没法恢复,如实跳过
-        await restoreFileFromHistory(ctx, { path: record.path, snapshot_id: record.id })
-      }
-    }
-
-    const { removedUuids } = await this.sessions.transcript(sessionId, workspaceRoot).rewindTo(target.targetUserMessageId)
-
-    await this.sessions.touch(sessionId, { status: 'idle' })
-    await this.sessions
-      .appendEvent(sessionId, { type: 'context_note', text: `会话已回退到更早的消息(移除 ${removedUuids.length} 条)` })
-      .catch(() => undefined)
-
-    return {
-      target: {
-        targetUserMessageId: target.targetUserMessageId,
-        userMessageIndex: target.userMessageIndex,
-        userMessageCount: target.userMessageCount,
-      },
-      conversation: {
-        messagesRemoved: target.messagesRemoved,
-        removedMessageIds: removedUuids,
-      },
-      code,
-    }
-  }
-
-  private async requireSession(sessionId: string): Promise<SessionMeta> {
-    const session = await this.sessions.get(sessionId)
-    if (!session) throw new Error(`会话不存在: ${sessionId}`)
-    return session
-  }
-
-  private async loadStampedHistory(sessionId: string, workspaceRoot: string): Promise<StampedHistoryRecord[]> {
-    return await this.sessions.transcript(sessionId, workspaceRoot).loadFullHistoryStamped()
-  }
-
-  private buildBaseCtx(sessionId: string, workspaceRoot: string): ToolContext {
-    return { workspace: new Workspace(workspaceRoot), stateRoot: this.stateRoot, conversationId: sessionId }
-  }
-
-  /** 解析/校验回退目标(照抄 cc resolveRewindTarget 的语义):id 优先、不是 user 消息报错、expectedContent 归一化比对不匹配报错。 */
-  private resolveTarget(history: StampedHistoryRecord[], selector: RewindTargetSelector): ResolvedRewindTarget {
-    const userMessages = history.filter(r => r.message.role === 'user')
-    if (userMessages.length === 0) throw new Error('该会话没有可回退的 user 消息。')
-
-    let target: StampedHistoryRecord | undefined
-    let userMessageIndex = -1
-
-    if (selector.targetUserMessageId) {
-      const found = history.find(r => r.uuid === selector.targetUserMessageId)
-      if (found) {
-        if (found.message.role !== 'user') throw new Error('回退目标不是 user 消息。')
-        target = found
-        userMessageIndex = userMessages.findIndex(r => r.uuid === found.uuid)
-      }
-    }
-
-    if (!target && Number.isInteger(selector.userMessageIndex)) {
-      const idx = selector.userMessageIndex!
-      if (idx >= 0 && idx < userMessages.length) {
-        target = userMessages[idx]
-        userMessageIndex = idx
-      }
-    }
-
-    if (!target || userMessageIndex < 0) {
-      throw new Error(`回退目标无效,需要 targetUserMessageId,或 0-${userMessages.length - 1} 范围内的 userMessageIndex。`)
-    }
-
-    if (selector.expectedContent !== undefined) {
-      const actual = normalizePromptText(extractUserPromptText(target.message.content))
-      const expected = normalizePromptText(selector.expectedContent)
-      if (actual !== expected) throw new Error('回退目标的内容与所选提示词不一致,请刷新会话后重试。')
-    }
-
-    const activeIndex = history.findIndex(r => r.uuid === target!.uuid)
-    return {
-      targetUserMessageId: target.uuid,
+    const target: RewindTarget = {
+      targetUserMessageId: userMessage.id,
       userMessageIndex,
       userMessageCount: userMessages.length,
-      messagesRemoved: history.length - activeIndex,
+      messagesRemoved: activeMessages.length - activeMessageIndex,
+    }
+    const checkpointBaseDir = await resolveCheckpointBaseDir(
+      sessionId,
+      target.targetUserMessageId,
+      workDir,
+    )
+    const targetSnapshot = snapshots ? findTargetSnapshot(snapshots, target.targetUserMessageId) : null
+    const nextUserMessageId = getNextUserMessageId(userMessages, userMessageIndex)
+    const nextSnapshot = nextUserMessageId && snapshots
+      ? findTargetSnapshot(snapshots, nextUserMessageId)
+      : null
+    const checkpointPreview = targetSnapshot
+      ? await buildTurnCodePreview(sessionId, checkpointBaseDir, targetSnapshot, nextSnapshot)
+      : null
+    const preview = checkpointPreview?.available && checkpointPreview.filesChanged.length > 0
+      ? checkpointPreview
+      : buildTranscriptTurnCodePreview(
+          activeMessages,
+          target.targetUserMessageId,
+          checkpointBaseDir,
+        )
+
+    if (!preview.available || preview.filesChanged.length === 0) continue
+    checkpoints.push(buildTurnPreview(target, preview, checkpointBaseDir))
+  }
+
+  return checkpoints
+}
+
+export async function getSessionTurnCheckpointDiff(
+  sessionId: string,
+  selector: RewindTargetSelector,
+  requestedPath: string,
+): Promise<SessionTurnCheckpointDiffResult> {
+  const target = await resolveRewindTarget(sessionId, selector)
+  const workDir = await resolveSessionWorkDir(sessionId)
+  const checkpointBaseDir = await resolveCheckpointBaseDir(
+    sessionId,
+    target.targetUserMessageId,
+    workDir,
+  )
+  const activeMessages = await sessionService.getSessionMessages(sessionId)
+  const snapshots = await loadFileHistorySnapshots(sessionId)
+  const missingResult = {
+    target: buildTurnPreview(
+      target,
+      {
+        available: false,
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      },
+      checkpointBaseDir,
+    ).target,
+    workDir: checkpointBaseDir,
+    path: normalizeComparablePath(requestedPath),
+    state: 'missing' as const,
+  }
+  const transcriptChange = findTranscriptTurnDiff(
+    activeMessages,
+    target.targetUserMessageId,
+    checkpointBaseDir,
+    requestedPath,
+  )
+  const transcriptResult = transcriptChange?.diff
+    ? {
+        target: missingResult.target,
+        workDir: checkpointBaseDir,
+        path: transcriptChange.path,
+        state: 'ok' as const,
+        diff: transcriptChange.diff,
+      }
+    : null
+
+  if (!snapshots) {
+    return transcriptResult ?? missingResult
+  }
+
+  const targetSnapshot = findTargetSnapshot(snapshots, target.targetUserMessageId)
+  if (!targetSnapshot) {
+    return transcriptResult ?? missingResult
+  }
+  const userMessages = activeMessages.filter((message) => message.type === 'user')
+  const nextUserMessageId = getNextUserMessageId(userMessages, target.userMessageIndex)
+  const nextSnapshot = nextUserMessageId
+    ? findTargetSnapshot(snapshots, nextUserMessageId)
+    : null
+
+  for (const trackingPath of new Set([
+    ...Object.keys(targetSnapshot.trackedFileBackups),
+    ...Object.keys(nextSnapshot?.trackedFileBackups ?? {}),
+  ])) {
+    if (!matchesCheckpointPath(requestedPath, trackingPath, checkpointBaseDir)) {
+      continue
+    }
+
+    const displayPath = toCheckpointResponsePath(trackingPath, checkpointBaseDir)
+
+    try {
+      const { beforeContent, afterContent } = await getTurnBoundaryContents(
+        sessionId,
+        checkpointBaseDir,
+        trackingPath,
+        targetSnapshot,
+        nextSnapshot,
+      )
+
+      if (beforeContent === afterContent) {
+        return {
+          ...missingResult,
+          path: displayPath,
+        }
+      }
+
+      return {
+        target: missingResult.target,
+        workDir: checkpointBaseDir,
+        path: displayPath,
+        state: 'ok',
+        diff: buildCheckpointDiff(
+          displayPath,
+          beforeContent ?? '',
+          afterContent ?? '',
+          beforeContent !== null,
+          afterContent !== null,
+        ),
+      }
+    } catch (error) {
+      return {
+        target: missingResult.target,
+        workDir: checkpointBaseDir,
+        path: displayPath,
+        state: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      }
     }
   }
 
-  /**
-   * 回退预览的 code 部分:"回退到目标轮之前"——目标轮起(含)之后所有被动过的 path,每个取最早一条记录作恢复源,
-   * diff(当前盘上内容, 恢复源前像)算 insertions/deletions(顺序对齐 cc:insertions = 恢复后会多出的行)。
-   * 没有任何记录 → available:false + reason(文案对齐 cc 的两级兜底)。
-   */
-  private async buildRewindCodePreview(
-    ctx: ToolContext,
-    workspaceRoot: string,
-    history: StampedHistoryRecord[],
-    target: ResolvedRewindTarget,
-  ): Promise<RewindCodePreview> {
-    const records = await loadFileHistory(ctx)
-    if (records.length === 0) {
-      return { available: false, reason: 'No file checkpoints were recorded for this session.', filesChanged: [], insertions: 0, deletions: 0 }
+  return transcriptResult ?? missingResult
+}
+
+export async function executeSessionRewind(
+  sessionId: string,
+  selector: RewindTargetSelector,
+): Promise<SessionRewindExecuteResult> {
+  const target = await resolveRewindTarget(sessionId, selector)
+  const workDir = await resolveSessionWorkDir(sessionId)
+  const checkpointBaseDir = await resolveCheckpointBaseDir(
+    sessionId,
+    target.targetUserMessageId,
+    workDir,
+  )
+  const { snapshots, preview } = await buildCodePreview(
+    sessionId,
+    checkpointBaseDir,
+    target.targetUserMessageId,
+  )
+
+  await conversationService.stopSessionAndWait(sessionId)
+
+  if (preview.available && snapshots) {
+    const targetSnapshot = findTargetSnapshot(snapshots, target.targetUserMessageId)
+    if (!targetSnapshot) {
+      throw ApiError.badRequest('No file checkpoint is available for the selected message.')
     }
 
-    const targetIndex = history.findIndex(r => r.uuid === target.targetUserMessageId)
-    const removedAssistantUuids = assistantUuidsFromIndex(history, targetIndex)
-    const relevantRecords = records.filter(r => r.messageId !== undefined && removedAssistantUuids.has(r.messageId))
-    if (relevantRecords.length === 0) {
-      return { available: false, reason: 'No file checkpoint is available for the selected message.', filesChanged: [], insertions: 0, deletions: 0 }
-    }
+    for (const trackingPath of collectTrackedPaths(snapshots)) {
+      const backupFileName = getBackupFileNameForTarget(
+        trackingPath,
+        snapshots,
+        targetSnapshot,
+      )
 
-    const earliestByPath = firstRecordPerPath(relevantRecords)
-    const filesChanged: string[] = []
-    let insertions = 0
-    let deletions = 0
-    for (const [path, record] of earliestByPath) {
-      const restoreSource = await readRecordBackupContent(ctx, record)
-      if (restoreSource === null) continue
-      const current = (await readTextOrNull(absPath(workspaceRoot, path))) ?? ''
-      if (current === restoreSource) continue
-      filesChanged.push(absPath(workspaceRoot, path))
-      const stats = countDiffStats(current, restoreSource)
-      insertions += stats.insertions
-      deletions += stats.deletions
-    }
+      if (backupFileName === undefined) continue
 
-    return { available: true, filesChanged: filesChanged.sort(), insertions, deletions }
+      const absolutePath = expandTrackingPath(checkpointBaseDir, trackingPath)
+
+      if (backupFileName === null) {
+        try {
+          await unlink(absolutePath)
+        } catch (error) {
+          const maybeErr = error as NodeJS.ErrnoException
+          if (maybeErr.code !== 'ENOENT') throw error
+        }
+        continue
+      }
+
+      await restoreBackupFile(
+        absolutePath,
+        resolveBackupPath(sessionId, backupFileName),
+      )
+    }
   }
 
-  private async waitUntilStopped(sessionId: string): Promise<void> {
-    const deadline = Date.now() + INTERRUPT_WAIT_TIMEOUT_MS
-    while (this.turns.isRunning(sessionId)) {
-      if (Date.now() >= deadline) throw new Error(`等待会话 ${sessionId} 停止超时(> ${INTERRUPT_WAIT_TIMEOUT_MS}ms),回退已取消。`)
-      await sleep(INTERRUPT_POLL_INTERVAL_MS)
-    }
+  const trimResult = await sessionService.trimSessionMessagesFrom(
+    sessionId,
+    target.targetUserMessageId,
+  )
+
+  return {
+    target: {
+      targetUserMessageId: target.targetUserMessageId,
+      userMessageIndex: target.userMessageIndex,
+      userMessageCount: target.userMessageCount,
+    },
+    conversation: {
+      messagesRemoved: trimResult.removedCount,
+      removedMessageIds: trimResult.removedMessageIds,
+    },
+    code: preview,
   }
 }
