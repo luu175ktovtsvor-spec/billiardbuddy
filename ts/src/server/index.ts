@@ -151,13 +151,6 @@ export interface StartServerOptions {
   trustedWorkspaceRoots?: string[]
 }
 
-/**
- * D3:无人值守(定时任务/工作流)单回合轮次上限——交互式会话故意不设上限(maxTurns undefined,
- * 由在场用户自己判断要不要中断);无人盯守时没有人会发现跑飞的循环,必须有硬上限。
- * 数值对齐仓库里已有的 fork worker 轮次上限(buildForkedPrompt 的 maxTurns:80),不是新拍的数字。
- */
-const UNATTENDED_MAX_TURNS = 80
-
 type TurnStreamInput = Record<string, unknown> & {
   message?: unknown
   userMessage?: unknown
@@ -167,12 +160,7 @@ type TurnStreamInput = Record<string, unknown> & {
   skipCommandParsing?: boolean
   skipSlashCommands?: boolean
   bridgeOrigin?: boolean
-  /**
-   * D2/D3:定时任务/工作流(无人值守)发起的回合置真——即使权限档是 bypassPermissions,
-   * 危险命令也走 headless 自动拒绝(resolve.ts),不依赖"完全访问开关是否被降级"这一层兜底。
-   * 交互式会话(用户在场、有 WS 回传通道)不设此项。
-   */
-  unattended?: boolean
+  unattended?: boolean // D2/D3:无人值守回合标记,headless 危险命令走自动拒绝(resolve.ts),不依赖权限降级兜底。
 }
 
 function backgroundTaskNotification(task: TaskMeta): Record<string, unknown> | null {
@@ -767,9 +755,8 @@ export function startServer(opts: StartServerOptions = {}) {
         }
       : undefined
     let systemPrompt = await buildSystemPrompt(workspace, { commands, skills, contextWindowTokens, activatedConditionalSkills }, outputStyleConfig)
-    // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style')),不再拼到尾部
-    // extraContext。领域包上下文(billiards 等)是会话挂载的知识上下文,
-    // 每回合直接进系统提示,但不改写通用 Agent 身份、权限或规划逻辑。
+    // 输出风格已在 buildSystemPrompt 中部注入(对齐 cc systemPromptSection('output_style')),不再拼到尾部 extraContext。
+    // 领域包上下文(billiards 等)是会话挂载的知识上下文,每回合直接进系统提示,但不改写通用 Agent 身份、权限或规划逻辑。
     const domainPackContext = enabledPacks.map(pack => pack.sessionStartContext).filter(Boolean).join('\n\n')
     const extraContext = [
       supportContext(rawBody),
@@ -1229,10 +1216,9 @@ export function startServer(opts: StartServerOptions = {}) {
           signal: controller.signal,
           permissionMode: permissionModeFrom(rawBody.permissionMode),
           avoidPermissionPrompts: rawBody.unattended === true,
-          maxTurns: rawBody.unattended === true ? UNATTENDED_MAX_TURNS : undefined,
+          maxTurns: rawBody.unattended === true ? 80 : undefined, // D3:无人值守上限,对齐仓库里 fork worker 已有的 80
           initialPermissionUpdates: [...persistedRuleUpdates, ...(sessionPermissionUpdates.get(conversationId) ?? [])],
-          // 只有双向 WS 能在同一回合把用户决定送回来。单向 SSE/后台任务沿用
-          // approval_request + 待确认结果，不能挂起等待一个不存在的回传通道。
+          // 只有双向 WS 能在同一回合把用户决定送回来。单向 SSE/后台任务沿用 approval_request + 待确认结果,不能挂起等一个不存在的回传通道。
           ...(transport.interactiveApprovals
             ? { waitForApproval: (request: Parameters<typeof turns.waitForApproval>[1]) => turns.waitForApproval(conversationId, request, controller.signal) }
             : {}),
