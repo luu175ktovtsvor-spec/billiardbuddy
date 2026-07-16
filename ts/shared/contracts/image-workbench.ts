@@ -422,6 +422,8 @@ export const imageWorkbenchUpdateCanvasRequestSchema = z.object({
   text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).default([]),
   image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).default([]),
   revision: z.number().int().nonnegative().optional(),
+  /** 调用方当前工作区(门店文件夹),存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const imageWorkbenchAddVersionRequestSchema = z.object({
@@ -437,16 +439,22 @@ export const imageWorkbenchAddVersionRequestSchema = z.object({
   job_id: z.string().max(256).optional(),
   mask: imageWorkbenchMaskSchema.optional(),
   review: imageWorkbenchReviewSchema.optional(),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
   set_current: z.boolean().default(true),
 })
 
 export const imageWorkbenchRollbackRequestSchema = z.object({
   version_id: imageWorkbenchIdSchema,
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const imageWorkbenchPortraitConfirmRequestSchema = z.object({
   version_id: imageWorkbenchIdSchema.optional(),
   confirmed: z.literal(true),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const imageWorkbenchAssetKindSchema = z.enum(['reference', 'mask', 'export', 'library'])
@@ -475,12 +483,16 @@ export const imageWorkbenchExportRequestSchema = z.object({
   height: z.number().int().positive().max(12000),
   text_layers: z.array(imageWorkbenchTextLayerSchema).max(80).optional(),
   image_layers: z.array(imageWorkbenchImageLayerSchema).max(24).optional(),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const imageWorkbenchSaveToLibraryRequestSchema = z.object({
   version_id: imageWorkbenchIdSchema.optional(),
   export_asset_id: imageWorkbenchIdSchema.optional(),
   title: z.string().min(1).max(120).optional(),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const imageWorkbenchProjectResponseSchema = z.object({

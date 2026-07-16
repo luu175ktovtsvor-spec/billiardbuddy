@@ -705,7 +705,7 @@ export function CreationPage() {
         height: next.canvas.height,
         text_layers: extractTextLayers(canvas),
         image_layers: extractImageLayers(canvas),
-      })
+      }, next.working_dir ?? undefined)
       setLastExport(result.asset)
       await refreshProject(result.project)
       dispatchTask({ type: 'select-pane', pane: 'canvas' })
@@ -742,7 +742,7 @@ export function CreationPage() {
         text_layers: canvas.text_layers,
         image_layers: canvas.image_layers,
         revision: live.autosave_revision,
-      })
+      }, live.working_dir ?? undefined)
       if (projectRef.current?.project_id === next.project_id) await refreshProject(next)
       return next
     })
@@ -992,7 +992,7 @@ export function CreationPage() {
         height: project.canvas.height,
         text_layers: layers,
         image_layers: imageLayers,
-      })
+      }, project.working_dir ?? undefined)
       setLastExport(result.asset)
       await refreshProject(result.project)
       await downloadAsset(result.asset.url, `${project.title}-${new Date().toISOString().slice(0, 10)}`)
@@ -1007,7 +1007,7 @@ export function CreationPage() {
   const saveToLibrary = async () => {
     if (!project) return
     try {
-      const item = await workbenchApi.saveToLibrary(project.project_id, { export_asset_id: lastExport?.asset_id, title: project.title })
+      const item = await workbenchApi.saveToLibrary(project.project_id, { export_asset_id: lastExport?.asset_id, title: project.title }, project.working_dir ?? undefined)
       toast(`已保存到图片库：${item.title}`)
     } catch (err) {
       toast(friendlyImageError(err, '保存到图片库失败'))
@@ -1017,7 +1017,7 @@ export function CreationPage() {
   const confirmPortrait = async () => {
     if (!project || intent !== 'portrait' || !currentVersion) return
     try {
-      const next = await workbenchApi.confirmPortrait(project.project_id, currentVersion.id)
+      const next = await workbenchApi.confirmPortrait(project.project_id, currentVersion.id, project.working_dir ?? undefined)
       await refreshProject(next)
       toast('已确认像本人。下载前仍需确认照片授权和用途。')
     } catch (err) {
@@ -1491,7 +1491,7 @@ export function CreationPage() {
             <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--color-text-secondary)' }}><IconZap size={14} />版本与下载</div>
             <div className="max-h-[180px] space-y-1 overflow-auto">
               {project?.versions.slice().reverse().map((version) => (
-                <button key={version.id} type="button" onClick={() => void workbenchApi.rollback(project.project_id, version.id).then(refreshProject).catch((err) => toast(friendlyImageError(err, '切换版本失败')))}
+                <button key={version.id} type="button" onClick={() => void workbenchApi.rollback(project.project_id, version.id, project.working_dir ?? undefined).then(refreshProject).catch((err) => toast(friendlyImageError(err, '切换版本失败')))}
                   className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[12px]" style={segStyle(version.id === project.current_version_id)} data-testid="version-item">
                   <span className="truncate">{versionKindLabel(version.kind)}</span>
                   {version.id === project.current_version_id && <IconCheckCircle size={13} />}

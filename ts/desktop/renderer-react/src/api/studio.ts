@@ -187,26 +187,26 @@ export const workbenchApi = {
   getProject: async (projectId: string) =>
     imageWorkbenchProjectResponseSchema.parse(await api.get<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}`)).project,
 
-  saveCanvas: async (projectId: string, input: { current_version_id?: string; width: number; height: number; text_layers: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[]; revision?: number }) =>
-    imageWorkbenchProjectResponseSchema.parse(await api.patch<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/canvas`, input)).project,
+  saveCanvas: async (projectId: string, input: { current_version_id?: string; width: number; height: number; text_layers: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[]; revision?: number }, workingDir?: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.patch<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/canvas`, { ...input, working_dir: workingDir })).project,
 
-  addVersion: async (projectId: string, input: ImageWorkbenchAddVersionRequest) =>
-    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/versions`, input)).project,
+  addVersion: async (projectId: string, input: ImageWorkbenchAddVersionRequest, workingDir?: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/versions`, { ...input, working_dir: workingDir })).project,
 
-  rollback: async (projectId: string, version_id: string) =>
-    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/rollback`, { version_id })).project,
+  rollback: async (projectId: string, version_id: string, workingDir?: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/rollback`, { version_id, working_dir: workingDir })).project,
 
   uploadAsset: async (input: { kind: 'reference' | 'mask' | 'export' | 'library'; data_url: string; filename?: string; width: number; height: number }) =>
     imageWorkbenchAssetResponseSchema.parse(await api.post<unknown>('/api/v1/studio/workbench/assets', input)).asset,
 
-  exportPng: async (projectId: string, input: { version_id?: string; data_url: string; width: number; height: number; text_layers?: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[] }) =>
-    imageWorkbenchExportResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/export`, input)),
+  exportPng: async (projectId: string, input: { version_id?: string; data_url: string; width: number; height: number; text_layers?: ImageWorkbenchTextLayer[]; image_layers?: ImageWorkbenchImageLayer[] }, workingDir?: string) =>
+    imageWorkbenchExportResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/export`, { ...input, working_dir: workingDir })),
 
-  saveToLibrary: async (projectId: string, input: { version_id?: string; export_asset_id?: string; title?: string }) =>
-    imageWorkbenchLibraryResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/library`, input)).item,
+  saveToLibrary: async (projectId: string, input: { version_id?: string; export_asset_id?: string; title?: string }, workingDir?: string) =>
+    imageWorkbenchLibraryResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/library`, { ...input, working_dir: workingDir })).item,
 
-  confirmPortrait: async (projectId: string, version_id?: string) =>
-    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/portrait-confirm`, { version_id, confirmed: true })).project,
+  confirmPortrait: async (projectId: string, version_id?: string, workingDir?: string) =>
+    imageWorkbenchProjectResponseSchema.parse(await api.post<unknown>(`/api/v1/studio/workbench/projects/${encodeURIComponent(projectId)}/portrait-confirm`, { version_id, confirmed: true, working_dir: workingDir })).project,
 }
 
 export async function uploadLocalImage(file: File): Promise<{ url: string }> {
