@@ -265,12 +265,7 @@ async function handleOpenaiChat(
   networkSettings: NetworkSettings,
   traceContext: ProxyTraceContext | null,
 ): Promise<Response> {
-  const deepSeekCompatible = shouldUseDeepSeekReasoningCompat(baseUrl)
-  const transformed = anthropicToOpenaiChat(body, {
-    roundTripReasoningContent: deepSeekCompatible,
-    passThinkingToggle: deepSeekCompatible,
-    imageContentMode: shouldUseTextOnlyOpenAIChatContent(baseUrl) ? 'text_only' : 'vision',
-  })
+  const transformed = anthropicToOpenaiChat(body, resolveOpenaiChatCompatOptions(baseUrl, body.model))
   const url = `${baseUrl}/v1/chat/completions`
   const upstreamRequestHeaders = {
     'Content-Type': 'application/json',
@@ -419,15 +414,42 @@ async function handleOpenaiChat(
   return Response.json(anthropicResponse)
 }
 
-function shouldUseDeepSeekReasoningCompat(baseUrl: string): boolean {
+/** DeepSeek model ids (deepseek-v4-flash / -pro / -chat / -reasoner) carry "deepseek". */
+function isDeepSeekModel(model: string | undefined): boolean {
+  return typeof model === 'string' && /(^|[./_-])deepseek([./_-]|$)/i.test(model)
+}
+
+function shouldUseDeepSeekReasoningCompat(baseUrl: string, model?: string): boolean {
   return (
     /(^|[./-])deepseek([./-]|$)/i.test(baseUrl) ||
-    /(^|[./-])opencode\.ai([:/]|$)/i.test(baseUrl)
+    /(^|[./-])opencode\.ai([:/]|$)/i.test(baseUrl) ||
+    isDeepSeekModel(model)
   )
 }
 
-function shouldUseTextOnlyOpenAIChatContent(baseUrl: string): boolean {
-  return shouldUseDeepSeekReasoningCompat(baseUrl)
+function shouldUseTextOnlyOpenAIChatContent(baseUrl: string, model?: string): boolean {
+  return shouldUseDeepSeekReasoningCompat(baseUrl, model)
+}
+
+/**
+ * Resolve the openai_chat transform options from BOTH the base URL and the selected
+ * model. This is exported so it can be unit-tested: under the qf-gateway the base URL is
+ * our own gateway domain (never contains "deepseek"), so DeepSeek compat MUST be driven
+ * by the model id. Enabling it turns on unconditional reasoning_content round-trip — the
+ * safe DeepSeek multi-turn strategy (a prior tool-call turn REQUIRES the reasoning_content
+ * back or DeepSeek 400s; a no-tool-call turn tolerates it) — plus the thinking toggle.
+ */
+export function resolveOpenaiChatCompatOptions(baseUrl: string, model: string | undefined): {
+  roundTripReasoningContent: boolean
+  passThinkingToggle: boolean
+  imageContentMode: 'text_only' | 'vision'
+} {
+  const deepSeekCompatible = shouldUseDeepSeekReasoningCompat(baseUrl, model)
+  return {
+    roundTripReasoningContent: deepSeekCompatible,
+    passThinkingToggle: deepSeekCompatible,
+    imageContentMode: shouldUseTextOnlyOpenAIChatContent(baseUrl, model) ? 'text_only' : 'vision',
+  }
 }
 
 async function handleOpenaiResponses(
