@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createFunAsrTranscriber, createGatewayTranscriber, createUpstreamTranscriber, GatewayTranscriptionError, parseFunAsrResult, parseWhisperJson } from './transcription'
+import { createFunAsrTranscriber, createGatewayTranscriber, GatewayTranscriptionError, parseFunAsrResult } from './transcription'
 
 // Fun-ASR 成功响应:套两层 output.output.{text, sentence:{text, words}}。
 function funAsrOk(words: Array<{ text: string; begin_time: number; end_time: number }>, text: string) {
@@ -8,62 +8,6 @@ function funAsrOk(words: Array<{ text: string; begin_time: number; end_time: num
     usage: { audio_tokens: 100, seconds: 2 },
   })
 }
-
-test('parseWhisperJson normalizes whisper.cpp offsets and Chinese spacing', () => {
-  expect(parseWhisperJson({
-    transcription: [
-      { offsets: { from: 0, to: 900 }, text: ' 今天 ' },
-      { offsets: { from: 1000, to: 1800 }, text: '检查球桌' },
-      { offsets: { from: 'bad', to: 2000 }, text: 'ignored' },
-    ],
-  }, 'zh')).toEqual({
-    text: '今天检查球桌',
-    language: 'zh',
-    duration: 1.8,
-    segments: [
-      { id: 0, start: 0, end: 0.9, text: '今天' },
-      { id: 1, start: 1, end: 1.8, text: '检查球桌' },
-    ],
-  })
-})
-
-test('parseWhisperJson rejects empty model output without leaking internals', () => {
-  expect(() => parseWhisperJson({ transcription: [] }, 'zh')).toThrow(GatewayTranscriptionError)
-})
-
-test('upstream provider preserves the public contract and server-only bearer', async () => {
-  let authorization = ''
-  const transcribe = createUpstreamTranscriber({
-    GW_TRANSCRIBE_UPSTREAM_URL: 'http://127.0.0.1:8000/v1/audio/transcriptions',
-    GW_TRANSCRIBE_UPSTREAM_TOKEN: 'internal-token',
-  }, async (_input, init) => {
-    authorization = new Headers(init?.headers).get('authorization') ?? ''
-    return Response.json({
-      text: '检查球桌', language: 'zh', duration: 1,
-      segments: [{ start: 0, end: 1, text: '检查球桌' }],
-    })
-  })
-  expect(transcribe).not.toBeNull()
-  const result = await transcribe!(new File(['audio'], 'voice.wav', { type: 'audio/wav' }), {
-    language: 'zh', responseFormat: 'verbose_json',
-  })
-  expect(authorization).toBe('Bearer internal-token')
-  expect(result).toMatchObject({ text: '检查球桌', segments: [{ id: 0, start: 0, end: 1 }] })
-})
-
-test('unknown provider fails closed', () => {
-  expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'unknown' })).toBeNull()
-})
-
-test('upstream credentials and provider errors are not exposed to clients', async () => {
-  const transcribe = createUpstreamTranscriber({
-    GW_TRANSCRIBE_UPSTREAM_URL: 'https://provider.example/audio',
-    GW_TRANSCRIBE_UPSTREAM_TOKEN: 'provider-secret',
-  }, async () => Response.json({ error: { message: 'qwen internal key provider-secret is invalid' } }, { status: 401 }))
-  await expect(transcribe!(new File(['audio'], 'voice.wav', { type: 'audio/wav' }), {
-    language: 'zh', responseFormat: 'json',
-  })).rejects.toMatchObject({ status: 502, publicMessage: '语音识别上游暂时不可用' })
-})
 
 test('Fun-ASR provider:verbose_json 请求带 format+enable_words,响应词级毫秒→秒级 segments', async () => {
   let sentBody: any = null
@@ -117,9 +61,13 @@ test('Fun-ASR 无 key 时 provider 关闭(fail closed)', () => {
   expect(createFunAsrTranscriber({})).toBeNull()
 })
 
-test('createGatewayTranscriber:provider=funasr 时启用 Fun-ASR', () => {
+test('createGatewayTranscriber defaults to Fun-ASR and rejects retired providers', () => {
+  expect(createGatewayTranscriber({ GW_FUNASR_KEY: 'k' })).not.toBeNull()
   expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'funasr', GW_FUNASR_KEY: 'k' })).not.toBeNull()
   expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'funasr' })).toBeNull() // 缺 key 关闭
+  expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'whisper', GW_FUNASR_KEY: 'k' })).toBeNull()
+  expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'upstream', GW_FUNASR_KEY: 'k' })).toBeNull()
+  expect(createGatewayTranscriber({ GW_TRANSCRIBE_PROVIDER: 'unknown', GW_FUNASR_KEY: 'k' })).toBeNull()
 })
 
 test('parseFunAsrResult:空文字关闭,不返回空结果', () => {
