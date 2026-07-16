@@ -5,7 +5,8 @@ interface InitialVideoProjectDraft {
   goalText: string
   paths: string[]
   ratio: '9:16' | '1:1' | '16:9'
-  durationSec: number
+  /** 用户在「更多设置」里实际改过时长才带这个值;没碰过就是 undefined,不臆造一个默认时长下发给后端。 */
+  durationSec?: number
   conversationId?: string
   workspaceRoot?: string
 }
@@ -16,7 +17,8 @@ interface VideoBriefDraft {
   contentType: VideoContentType
   view: VideoStudioView
   ratio: '9:16' | '1:1' | '16:9'
-  durationSec: number
+  /** 同上:未确认时长时省略 target_duration_ms,让后端按内容自己判断合适时长。 */
+  durationSec?: number
   exactCopyText: string
   inferStrategy?: boolean
 }
@@ -28,7 +30,7 @@ export function initialVideoProjectInput(input: InitialVideoProjectDraft): Video
     video_paths: input.paths,
     user_request: goal,
     ratio: input.ratio,
-    target_duration_ms: input.durationSec * 1000,
+    ...(input.durationSec != null ? { target_duration_ms: input.durationSec * 1000 } : {}),
     conversation_id: input.conversationId,
     working_dir: input.workspaceRoot,
   }
@@ -40,7 +42,7 @@ export function videoBriefInput(input: VideoBriefDraft): VideoBriefCompileInput 
     user_request: input.goalText.trim(),
     ...(!input.inferStrategy ? { content_type: input.contentType, preferred_view: input.view } : {}),
     ratio: input.ratio,
-    target_duration_ms: input.durationSec * 1000,
+    ...(input.durationSec != null ? { target_duration_ms: input.durationSec * 1000 } : {}),
     exact_copy: input.exactCopyText.split(/\r?\n|，/).map(item => item.trim()).filter(Boolean),
   }
 }
