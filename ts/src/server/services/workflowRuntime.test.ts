@@ -22,6 +22,30 @@ function makeRuntime(record: WorkflowTurnStreamBody[], opts: { fail?: boolean } 
   }))()
 }
 
+describe('createWorkflowRuntime.fireTask 的 token 可见性(D3)', () => {
+  it('回合带 usage_update 时,累计 token 数拼进摘要;没有 usage_update 时摘要不变', async () => {
+    const runtime = await (async () => createWorkflowRuntime({
+      stateRoot: await mkdtemp(join(tmpdir(), 'workflow-runtime-tokens-')),
+      defaultWorkspaceDir: () => '/default/workspace',
+      createTurnStream: async () => ({
+        stream: (async function* () {
+          yield { event: { type: 'content_delta', text: '…' } }
+          yield { event: { type: 'usage_update', total_tokens: 1200 } }
+          yield { event: { type: 'usage_update', total_tokens: 3456 } }
+          yield { event: { type: 'final', text: '整理完成' } }
+        })(),
+      }),
+      logger: { warn: () => {}, error: () => {} },
+    }))()
+    const result = await runtime.fireTask({ instruction: '整理今天的门店文件' }, { runId: 'r1', manual: false })
+    expect(result.status).toBe('completed')
+    expect(result.summary).toContain('整理完成')
+    // 取最后一次 usage_update(累计值),不是求和或第一次。
+    expect(result.summary).toContain('3,456')
+    expect(result.summary).not.toContain('1,200')
+  })
+})
+
 describe('createWorkflowRuntime.fireTask', () => {
   it('裸指令任务:起单回合会话,带任务工作目录与 billiards_mode,收敛 final 文本', async () => {
     const calls: WorkflowTurnStreamBody[] = []
@@ -39,6 +63,8 @@ describe('createWorkflowRuntime.fireTask', () => {
       working_dir: '/my/venue',
       billiards_mode: true,
       permissionMode: 'bypassPermissions',
+      // D2:标记无人值守回合,让 resolve.ts 对危险命令走 headless 自动拒绝,不只靠完全访问开关降级兜底。
+      unattended: true,
     })
   })
 
@@ -69,6 +95,8 @@ describe('createWorkflowRuntime.fireTask', () => {
     expect(calls).toHaveLength(3)
     expect(new Set(calls.map(call => call.conversationId)).size).toBe(1)
     expect(calls.every(call => call.working_dir === '/my/venue' && call.billiards_mode)).toBe(true)
+    // D2:工作流的每一步回合都要标无人值守,危险命令走 headless 自动拒绝,不只靠完全访问开关降级兜底。
+    expect(calls.every(call => call.unattended === true)).toBe(true)
     const runs = await runtime.workflows.listRuns('venue-daily-report')
     expect(runs).toHaveLength(1)
     expect(runs[0]!.status).toBe('completed')
