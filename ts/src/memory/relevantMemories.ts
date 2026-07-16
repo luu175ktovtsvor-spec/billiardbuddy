@@ -49,12 +49,15 @@ export interface MemoryHeader {
   mtimeMs: number
   description: string | null
   type: string | undefined
+  provenance: string | undefined
 }
 
-/** 召回结果:绝对路径 + mtime(供上层显示新鲜度,免二次 stat)。 */
+/** 召回结果:绝对路径 + mtime(供上层显示新鲜度,免二次 stat)+ type/provenance(供时效/来源提醒)。 */
 export interface RelevantMemory {
   path: string
   mtimeMs: number
+  type: string | undefined
+  provenance: string | undefined
 }
 
 /** 读回待注入的记忆正文。 */
@@ -62,7 +65,15 @@ export interface SurfacedMemory {
   path: string
   content: string
   mtimeMs: number
+  type: string | undefined
+  provenance: string | undefined
 }
+
+/**
+ * 门店数字类记忆(type=project,如台费/规则/活动)超过这个天数就在召回提醒里附加时效警告——
+ * 一次存入不代表永久有效,owner 亲点的风险:过时台费/规则被当"现状"注入且本轮没有相反证据可比对。
+ */
+export const PROJECT_MEMORY_STALE_DAYS = 30
 
 /**
  * 侧路小模型选择器:给用户问题 + 记忆清单,返回小模型的**原始文本**回复
@@ -100,7 +111,8 @@ export async function scanMemoryFiles(memoryDir: string): Promise<MemoryHeader[]
         const { frontmatter } = parseFrontmatter(raw)
         const description = typeof frontmatter.description === 'string' ? frontmatter.description : null
         const type = typeof frontmatter.type === 'string' ? frontmatter.type : undefined
-        return { filename: rel, filePath, mtimeMs: info.mtimeMs, description, type }
+        const provenance = typeof frontmatter.provenance === 'string' ? frontmatter.provenance : undefined
+        return { filename: rel, filePath, mtimeMs: info.mtimeMs, description, type, provenance }
       } catch {
         return null
       }
@@ -188,7 +200,7 @@ export async function findRelevantMemories(
     .map(f => byFilename.get(f))
     .filter((m): m is MemoryHeader => m !== undefined)
     .slice(0, MAX_RELEVANT_MEMORIES)
-    .map(m => ({ path: m.filePath, mtimeMs: m.mtimeMs }))
+    .map(m => ({ path: m.filePath, mtimeMs: m.mtimeMs, type: m.type, provenance: m.provenance }))
 }
 
 /**
@@ -197,7 +209,7 @@ export async function findRelevantMemories(
  */
 export async function readMemoriesForSurfacing(selected: ReadonlyArray<RelevantMemory>): Promise<SurfacedMemory[]> {
   const results = await Promise.all(
-    selected.map(async ({ path: filePath, mtimeMs }): Promise<SurfacedMemory | null> => {
+    selected.map(async ({ path: filePath, mtimeMs, type, provenance }): Promise<SurfacedMemory | null> => {
       try {
         const raw = await readFile(filePath, 'utf8')
         const lines = raw.split('\n')
@@ -217,7 +229,7 @@ export async function readMemoriesForSurfacing(selected: ReadonlyArray<RelevantM
         const content = truncatedByLines || truncatedByBytes
           ? `${body}\n\n> This memory was truncated at ${truncatedByBytes ? `${MAX_MEMORY_BYTES} bytes` : `${MAX_MEMORY_LINES} lines`}. Use read_file to read the complete entry: ${filePath}`
           : body
-        return { path: filePath, content, mtimeMs }
+        return { path: filePath, content, mtimeMs, type, provenance }
       } catch {
         return null
       }
@@ -228,12 +240,31 @@ export async function readMemoriesForSurfacing(selected: ReadonlyArray<RelevantM
 
 /**
  * 把召回记忆拼成一条 <system-reminder> 正文(loop 侧再用 wrapReminder 包壳注入)。
- * 每条带 `<recalled-memory path="..." saved="...">` 标记,供 collectSurfacedMemoryPaths 跨回合去重。
+ * 每条带 `<recalled-memory path="..." saved="...">` 标记(path 必须紧跟在标签名后,
+ * RECALLED_MEMORY_MARKER_RE 靠这个位置识别),供 collectSurfacedMemoryPaths 跨回合去重。
+ *
+ * C2(owner 亲点的风险):门店数字类记忆(type=project)一次存入没有时效标记,本轮若无相反证据就会被
+ * 当"现状"直接注入——过时台费/规则可能被当真。超过 PROJECT_MEMORY_STALE_DAYS 天的 project 记忆
+ * 额外带 `stale_days` 属性并在正文前加一句提醒,不再一律当作"当前仍然有效"注入。
+ * 同时把 provenance=background_extract(后台抽取、未经用户当场确认)的记忆标出来,可信度天然低一档。
  */
-export function buildRelevantMemoriesReminder(memories: ReadonlyArray<SurfacedMemory>): string {
+export function buildRelevantMemoriesReminder(memories: ReadonlyArray<SurfacedMemory>, now: number = Date.now()): string {
   const blocks = memories.map(m => {
     const saved = new Date(m.mtimeMs).toISOString().slice(0, 10)
-    return `<recalled-memory path="${m.path}" saved="${saved}">\n${m.content.trim()}\n</recalled-memory>`
+    const ageDays = Math.floor((now - m.mtimeMs) / (24 * 60 * 60 * 1000))
+    const isStaleProjectFact = m.type === 'project' && ageDays >= PROJECT_MEMORY_STALE_DAYS
+    const attrs = [
+      `path="${m.path}"`,
+      `saved="${saved}"`,
+      isStaleProjectFact ? `stale_days="${ageDays}"` : '',
+      m.provenance ? `provenance="${m.provenance}"` : '',
+    ].filter(Boolean).join(' ')
+    const caveats = [
+      isStaleProjectFact ? `This store fact was saved ${ageDays} days ago and may be outdated (prices, hours, promotions, and rules change). Confirm with the user before treating it as the current state.` : '',
+      m.provenance === 'background_extract' ? 'This entry was saved by an unattended background process reviewing past conversation, not confirmed live by the user in the moment. Treat it as slightly lower confidence.' : '',
+    ].filter(Boolean).map(line => `> ${line}`).join('\n')
+    const body = caveats ? `${caveats}\n${m.content.trim()}` : m.content.trim()
+    return `<recalled-memory ${attrs}>\n${body}\n</recalled-memory>`
   })
   return [
     "The system recalled the following entries from persistent memory because they may be relevant to the current request. They are not the user's current words.",
