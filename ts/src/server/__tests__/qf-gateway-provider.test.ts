@@ -348,7 +348,7 @@ describe('qf-gateway credential boundary', () => {
     expect(env.ANTHROPIC_BASE_URL).toBe(
       `http://127.0.0.1:${TEST_SERVER_PORT}/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
     )
-    expect(env.ANTHROPIC_MODEL).toBe('qwen3-coder-plus')
+    expect(env.ANTHROPIC_MODEL).toBe('mimo-v2.5') // BilliardBuddy product default = MiMo v2.5
     // The real app token must appear nowhere in the subprocess env.
     expect(JSON.stringify(env)).not.toContain(GATEWAY_TOKEN)
   })

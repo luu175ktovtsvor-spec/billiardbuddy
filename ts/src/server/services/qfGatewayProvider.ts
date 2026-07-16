@@ -26,7 +26,9 @@ import type { ProviderService } from './providerService.js'
 export { QF_GATEWAY_PROVIDER_ID }
 export const QF_GATEWAY_PROVIDER_NAME = 'QF Gateway'
 
-const QF_GATEWAY_DEFAULT_MODEL = 'qwen3-coder-plus'
+// BilliardBuddy 产品默认模型 = MiMo v2.5(唯一真实多模态上游,图片输入只走它)。显式请求
+// qwen3-coder-plus / deepseek-v4-flash 时由网关按 model 固定路由到对应家,不跨供应商回退。
+const QF_GATEWAY_DEFAULT_MODEL = 'mimo-v2.5'
 
 /** The provider-scoped local proxy path the gateway routes through. */
 export const QF_GATEWAY_PROXY_PATH = `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`
