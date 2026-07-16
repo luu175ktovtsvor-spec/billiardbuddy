@@ -36,7 +36,14 @@ export function workflowRunNotification(run: WorkflowRun): Record<string, unknow
 }
 
 interface TurnEventRecord {
-  event: { type: string; text?: string }
+  event: { type: string; text?: string; total_tokens?: number }
+}
+
+/** D3:把累计 token 数拼进摘要文案,让无人值守的一步花了多少算力对用户可见,而不是算了却不展示。 */
+function withTokenNote(text: string, totalTokens: number | undefined): string {
+  if (!totalTokens) return text
+  const note = `(本步约用 ${totalTokens.toLocaleString('zh-CN')} tokens)`
+  return text ? `${text}\n${note}` : note
 }
 
 export interface WorkflowTurnStreamBody {
@@ -45,6 +52,12 @@ export interface WorkflowTurnStreamBody {
   working_dir: string
   billiards_mode: boolean
   permissionMode: 'bypassPermissions'
+  /**
+   * D2:标记这是无人值守回合——即使完全访问档位放行一切,危险命令(rm -rf 根、mkfs 等)
+   * 仍会在 resolve.ts 里被挡下、按 headless 语义自动拒绝,不依赖"完全访问开关是否被降级"
+   * 这一层兜底(那层只在 enforcePermissionPolicy 生产默认下生效,owner 主动开启完全访问后就不再挡)。
+   */
+  unattended: true
 }
 
 export interface WorkflowRuntimeOptions {
@@ -66,25 +79,29 @@ export interface WorkflowRuntime {
 export function createWorkflowRuntime(opts: WorkflowRuntimeOptions): WorkflowRuntime {
   const logger = opts.logger ?? console
 
-  async function collectFinalText(body: WorkflowTurnStreamBody, signal?: AbortSignal): Promise<string> {
+  async function collectFinalText(body: WorkflowTurnStreamBody, signal?: AbortSignal): Promise<{ text: string; totalTokens?: number }> {
     let finalText = ''
+    let totalTokens: number | undefined
     const { stream } = await opts.createTurnStream(body)
     for await (const record of stream) {
       if (signal?.aborted) break
       if (record.event.type === 'final') finalText = record.event.text ?? ''
+      // usage_update.total_tokens 是累计值(对齐前端 chatStore 的读法),取本回合最后一次即为总用量。
+      if (record.event.type === 'usage_update' && typeof record.event.total_tokens === 'number') totalTokens = record.event.total_tokens
     }
-    return finalText
+    return { text: finalText, totalTokens }
   }
 
   const runTurn: RunWorkflowTurn = async input => {
-    const finalText = await collectFinalText({
+    const { text, totalTokens } = await collectFinalText({
       message: input.instruction,
       conversationId: input.conversationId,
       working_dir: input.workingDir ?? opts.defaultWorkspaceDir(),
       billiards_mode: input.billiardsMode,
       permissionMode: 'bypassPermissions',
+      unattended: true,
     }, input.signal)
-    return { status: 'completed', summary: finalText }
+    return { status: 'completed', summary: withTokenNote(text, totalTokens) }
   }
 
   const workflows = new WorkflowRunService({
@@ -115,14 +132,15 @@ export function createWorkflowRuntime(opts: WorkflowRuntimeOptions): WorkflowRun
     if (!instruction) return { status: 'failed', error: '定时任务没有指令内容,已跳过。' }
     const conversationId = crypto.randomUUID()
     try {
-      const finalText = await collectFinalText({
+      const { text, totalTokens } = await collectFinalText({
         message: instruction,
         conversationId,
         working_dir: workingDir,
         billiards_mode: task.billiards_mode === true,
         permissionMode: 'bypassPermissions',
+        unattended: true,
       }, ctx.signal)
-      return { status: 'completed', summary: finalText, conversationId }
+      return { status: 'completed', summary: withTokenNote(text, totalTokens), conversationId }
     } catch (err) {
       return { status: 'failed', error: err instanceof Error ? err.message : String(err), conversationId }
     }
