@@ -49,6 +49,9 @@ export function VideoStudioPage() {
   const [contentType, setContentType] = useState<VideoContentType>('freeform')
   const [ratio, setRatio] = useState<'9:16' | '1:1' | '16:9'>('9:16')
   const [durationSec, setDurationSec] = useState(30)
+  // 「更多设置」里的时长输入框需要一个可显示的数字,但用户没碰过之前不能当成他选的时长下发给后端
+  // (skill 明写"不预设时长")——只有用户手动改过,或从已保存项目回填过,才真正把它传给后端。
+  const [durationTouched, setDurationTouched] = useState(false)
   const [exactCopyText, setExactCopyText] = useState('')
   const [briefResult, setBriefResult] = useState<VideoBriefCompileResponse | null>(null)
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
@@ -87,7 +90,10 @@ export function VideoStudioPage() {
     setRatio(next.canvas.ratio)
     setGoalText(next.creative_brief?.user_request ?? '')
     setContentType(next.creative_brief?.content_type ?? 'freeform')
-    if (next.creative_brief?.target_duration_ms) setDurationSec(Math.round(next.creative_brief.target_duration_ms / 1000))
+    if (next.creative_brief?.target_duration_ms) {
+      setDurationSec(Math.round(next.creative_brief.target_duration_ms / 1000))
+      setDurationTouched(true)
+    }
     setExactCopyText(next.creative_brief?.exact_copy.join('\n') ?? '')
     setMusicLicense(next.music.license_id ?? '')
     setSelectedSceneId(current => next.scenes.some(scene => scene.id === current) ? current : next.scenes.find(scene => !scene.deleted)?.id ?? next.scenes[0]?.id ?? null)
@@ -106,14 +112,14 @@ export function VideoStudioPage() {
       contentType,
       view,
       ratio,
-      durationSec,
+      durationSec: durationTouched ? durationSec : undefined,
       exactCopyText,
       inferStrategy,
     }))
     setBriefResult(result)
     await refreshProject(projectId)
     return result
-  }, [contentType, durationSec, exactCopyText, goalText, project?.project_id, project?.revision, ratio, refreshProject, view])
+  }, [contentType, durationSec, durationTouched, exactCopyText, goalText, project?.project_id, project?.revision, ratio, refreshProject, view])
 
   const watchJob = useCallback(async (jobId: string, projectId: string) => {
     const controller = new AbortController()
@@ -140,7 +146,7 @@ export function VideoStudioPage() {
         goalText,
         paths,
         ratio,
-        durationSec,
+        durationSec: durationTouched ? durationSec : undefined,
         conversationId: activeConversationId ?? undefined,
         workspaceRoot: workspaceRoot ?? undefined,
       }))
@@ -278,7 +284,7 @@ export function VideoStudioPage() {
   }
 
   const newProject = () => {
-    setProject(null); setBriefResult(null); setPaths([]); setGoalText(''); setExactCopyText(''); setJob(null); setRenderUrl(''); setError(''); setSelectedSceneId(null); setBriefEditing(false)
+    setProject(null); setBriefResult(null); setPaths([]); setGoalText(''); setExactCopyText(''); setJob(null); setRenderUrl(''); setError(''); setSelectedSceneId(null); setBriefEditing(false); setDurationTouched(false)
   }
 
   return (
@@ -295,7 +301,7 @@ export function VideoStudioPage() {
           busy={busy}
           onGoalChange={setGoalText}
           onRatioChange={setRatio}
-          onDurationChange={setDurationSec}
+          onDurationChange={value => { setDurationSec(value); setDurationTouched(true) }}
           onExactCopyChange={setExactCopyText}
           onPickVideos={() => void pickVideos()}
           onRemovePath={path => setPaths(items => items.filter(item => item !== path))}
@@ -342,7 +348,7 @@ export function VideoStudioPage() {
                     </div>
                     <button type="button" onClick={() => setBriefEditing(value => !value)} title="修改内容理解" className="rounded-md px-2 py-1 text-[12px]" style={subtleButtonStyle}><IconEdit size={13} /></button>
                   </div>
-                  {briefEditing && <div className="mt-3 grid gap-2 border-t pt-3 min-[760px]:grid-cols-2" style={{ borderColor: 'var(--color-border)' }} data-testid="video-brief-editor"><textarea value={goalText} onChange={event => setGoalText(event.target.value)} rows={3} className="min-[760px]:col-span-2 resize-none rounded-md px-2 py-2 text-[13px] outline-none" style={inputStyle} /><div className="min-[760px]:col-span-2"><div className="mb-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>剪辑方向</div><ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} /></div><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>内容侧重<select value={contentType} onChange={event => setContentType(event.target.value as VideoContentType)} className="mt-1 w-full rounded-md px-2 py-2 text-[12px]" style={inputStyle} aria-label="内容侧重">{VIDEO_CONTENT_TYPES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>精确文字<input value={exactCopyText} onChange={event => setExactCopyText(event.target.value)} placeholder="必须原样显示的文字，每行一条" className="mt-1 w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} /></label><div className="min-[760px]:col-span-2 flex justify-end"><button type="button" disabled={!goalText.trim() || busy} onClick={() => void compileUnderstanding(project.project_id).then(() => setBriefEditing(false))} className="rounded-md px-3 py-1.5 text-[12px] font-medium disabled:opacity-40" style={primaryButtonStyle}>更新理解</button></div></div>}
+                  {briefEditing && <div className="mt-3 grid gap-2 border-t pt-3 min-[760px]:grid-cols-2" style={{ borderColor: 'var(--color-border)' }} data-testid="video-brief-editor"><textarea value={goalText} onChange={event => setGoalText(event.target.value)} rows={3} className="min-[760px]:col-span-2 resize-none rounded-md px-2 py-2 text-[13px] outline-none" style={inputStyle} /><div className="min-[760px]:col-span-2"><div className="mb-1 text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>剪辑方向</div><ModeTabs value={view} recommended={recommendedView} onChange={next => void setView(next)} />{briefResult?.recommendation_reason && <div className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }} data-testid="video-recommendation-reason">{briefResult.recommendation_reason}</div>}</div><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>内容侧重<select value={contentType} onChange={event => setContentType(event.target.value as VideoContentType)} className="mt-1 w-full rounded-md px-2 py-2 text-[12px]" style={inputStyle} aria-label="内容侧重">{VIDEO_CONTENT_TYPES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="text-[11px]" style={{ color: 'var(--color-text-tertiary)' }}>精确文字<input value={exactCopyText} onChange={event => setExactCopyText(event.target.value)} placeholder="必须原样显示的文字，每行一条" className="mt-1 w-full rounded-md px-2 py-2 text-[12px] outline-none" style={inputStyle} /></label><div className="min-[760px]:col-span-2 flex justify-end"><button type="button" disabled={!goalText.trim() || busy} onClick={() => void compileUnderstanding(project.project_id).then(() => setBriefEditing(false))} className="rounded-md px-3 py-1.5 text-[12px] font-medium disabled:opacity-40" style={primaryButtonStyle}>更新理解</button></div></div>}
                 </section>
               )}
               {project.status.warnings.length > 0 && <details className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }}><summary className="cursor-pointer text-[12px]" style={{ color: 'var(--color-warning)' }}>需要留意 {project.status.warnings.length} 项</summary>{project.status.warnings.map(item => <div key={item} className="mt-1 text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>{friendlyVideoText(item)}</div>)}</details>}

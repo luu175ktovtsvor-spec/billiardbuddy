@@ -18,9 +18,28 @@ test('新建视频项目不在分析前强制片种和内容类型', () => {
     workspaceRoot: '/workspace',
   })
 
-  expect(input).toMatchObject({ name: '把这些素材剪成门店宣传片', user_request: '把这些素材剪成门店宣传片' })
+  expect(input).toMatchObject({ name: '把这些素材剪成门店宣传片', user_request: '把这些素材剪成门店宣传片', target_duration_ms: 30_000 })
   expect('goal' in input).toBe(false)
   expect('content_type' in input).toBe(false)
+})
+
+test('用户没碰过时长设置时不下发 target_duration_ms(不预设 30 秒)', () => {
+  const input = initialVideoProjectInput({
+    goalText: '把这些素材剪成门店宣传片',
+    paths: ['/workspace/a.mp4'],
+    ratio: '9:16',
+  })
+
+  expect('target_duration_ms' in input).toBe(false)
+
+  const brief = videoBriefInput({
+    goalText: '展示现场氛围',
+    contentType: 'event_highlight',
+    view: 'talking',
+    ratio: '9:16',
+    exactCopyText: '',
+  })
+  expect('target_duration_ms' in brief).toBe(false)
 })
 
 test('首次理解让后端推断策略，用户纠偏时才传显式值', () => {
