@@ -10,6 +10,7 @@ import { openaiResponsesToAnthropic } from '../proxy/transform/openaiResponsesTo
 import { stripLeadingBillingHeader } from '../proxy/transform/billingHeader.js'
 import { openaiUsageToAnthropic } from '../proxy/transform/usage.js'
 import { resolvePromptCacheKey } from '../proxy/promptCacheKey.js'
+import { resolveOpenaiChatCompatOptions } from '../proxy/handler.js'
 import type { AnthropicRequest, OpenAIChatResponse, OpenAIResponsesResponse } from '../proxy/transform/types.js'
 
 const BILLING_HEADER = 'x-anthropic-billing-header: cc_version=2.1.92.693; cc_entrypoint=cli; cch=00000;'
@@ -970,5 +971,71 @@ describe('prompt caching semantics', () => {
       output_tokens: 50,
       cache_read_input_tokens: 80,
     })
+  })
+})
+
+// ─── DeepSeek compat: detect by MODEL (not just base URL) ───────
+
+describe('resolveOpenaiChatCompatOptions — DeepSeek detection by model', () => {
+  const GATEWAY = 'https://mp.zzyppz.cn/gw' // our gateway domain — never contains "deepseek"
+
+  test('a DeepSeek model routed through the gateway enables reasoning round-trip + thinking toggle', () => {
+    const opts = resolveOpenaiChatCompatOptions(GATEWAY, 'deepseek-v4-flash')
+    expect(opts.roundTripReasoningContent).toBe(true)
+    expect(opts.passThinkingToggle).toBe(true)
+    expect(opts.imageContentMode).toBe('text_only')
+  })
+
+  test('deepseek-v4-pro / -reasoner are also detected', () => {
+    expect(resolveOpenaiChatCompatOptions(GATEWAY, 'deepseek-v4-pro').roundTripReasoningContent).toBe(true)
+    expect(resolveOpenaiChatCompatOptions(GATEWAY, 'deepseek-reasoner').passThinkingToggle).toBe(true)
+  })
+
+  test('Qwen/MiMo through the same gateway do NOT get DeepSeek compat', () => {
+    const qwen = resolveOpenaiChatCompatOptions(GATEWAY, 'qwen3-coder-plus')
+    expect(qwen.roundTripReasoningContent).toBe(false)
+    expect(qwen.passThinkingToggle).toBe(false)
+    expect(qwen.imageContentMode).toBe('vision')
+    expect(resolveOpenaiChatCompatOptions(GATEWAY, 'mimo-v2.5').roundTripReasoningContent).toBe(false)
+  })
+
+  test('base-URL detection still works (direct api.deepseek.com, any model)', () => {
+    expect(resolveOpenaiChatCompatOptions('https://api.deepseek.com', 'whatever').roundTripReasoningContent).toBe(true)
+  })
+})
+
+// ─── DeepSeek multi-turn: reasoning_content MUST ride back with tool_calls ───
+
+describe('anthropicToOpenaiChat — DeepSeek multi-turn reasoning passback', () => {
+  const priorToolCallTurn: AnthropicRequest = {
+    model: 'deepseek-v4-flash',
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: 'weather in Beijing?' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should call the weather tool.' },
+          { type: 'text', text: 'Let me check.' },
+          { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'Beijing' } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'sunny 25C' }] },
+    ],
+  }
+
+  test('with round-trip on, the prior assistant turn carries reasoning_content AND keeps tool_calls', () => {
+    const out = anthropicToOpenaiChat(priorToolCallTurn, { roundTripReasoningContent: true })
+    const assistant = out.messages.find(m => m.role === 'assistant')!
+    expect(assistant.reasoning_content).toBe('I should call the weather tool.') // required back or DeepSeek 400s
+    expect(assistant.tool_calls).toHaveLength(1) // tool call NOT dropped when coexisting with reasoning
+    expect(assistant.tool_calls?.[0]?.function.name).toBe('get_weather')
+  })
+
+  test('without round-trip (default, non-DeepSeek), reasoning_content is not sent back', () => {
+    const out = anthropicToOpenaiChat(priorToolCallTurn)
+    const assistant = out.messages.find(m => m.role === 'assistant')!
+    expect(assistant.reasoning_content).toBeUndefined()
+    expect(assistant.tool_calls).toHaveLength(1)
   })
 })
