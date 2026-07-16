@@ -17,6 +17,19 @@ import { getAutoMemDir, getAutoMemEntrypoint } from '../harness/memoryNames'
 const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'] as const
 type MemoryKind = (typeof MEMORY_TYPES)[number]
 
+/**
+ * 记忆 provenance(C1):区分「主 agent 在活跃对话里当场存的」vs「后台无人值守抽取子代理事后补存的」。
+ * 用户在场时存的,存错了用户能立刻纠正;后台抽取没有这层实时校验,可信度天然低一档。
+ * `extractMemories.ts` 的抽取 fork 用 querySource=MEMORY_EXTRACT_QUERY_SOURCE 调 runAgentLoop,
+ * 该值经 loop.ts 写进 ToolContext.querySource,此处据此判断来源,不需要额外传参。
+ */
+export const MEMORY_EXTRACT_QUERY_SOURCE = 'builtin:memory-extract'
+export type MemoryProvenance = 'agent' | 'background_extract'
+
+function resolveProvenance(ctx: ToolContext): MemoryProvenance {
+  return ctx.querySource === MEMORY_EXTRACT_QUERY_SOURCE ? 'background_extract' : 'agent'
+}
+
 interface SaveMemoryInput {
   name?: unknown
   description?: unknown
@@ -90,9 +103,10 @@ export const saveMemoryTool: Tool<SaveMemoryInput> = {
     if (!content) return '存记忆失败:保存时必须给出 content(记忆正文);只想删除请传 forget=true。'
     const type = normalizeType(input?.type)
     const description = cleanString(input?.description) ?? firstLine(content)
+    const provenance = resolveProvenance(ctx)
 
     await mkdir(memoryDir, { recursive: true })
-    const body = renderMemoryFile({ name, description, type, content })
+    const body = renderMemoryFile({ name, description, type, content, provenance })
     await atomicWrite(filePath, body)
     await upsertIndexLine(getAutoMemEntrypoint(ctx.workspace.root), fileName, name, description)
 
@@ -115,12 +129,13 @@ async function forgetMemory(memoryDir: string, fileName: string, filePath: strin
   return `已忘掉「${name}」。`
 }
 
-function renderMemoryFile(m: { name: string; description: string; type: MemoryKind; content: string }): string {
+function renderMemoryFile(m: { name: string; description: string; type: MemoryKind; content: string; provenance: MemoryProvenance }): string {
   const fm = [
     '---',
     `name: ${yamlScalar(m.name)}`,
     `description: ${yamlScalar(m.description)}`,
     `type: ${m.type}`,
+    `provenance: ${m.provenance}`,
     '---',
     '',
     m.content.trim(),

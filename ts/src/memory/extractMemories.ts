@@ -24,7 +24,7 @@ import type { Message, ToolUseBlock } from '../types/message'
 import type { Workspace } from '../workspace/workspace'
 import type { ToolRegistry } from '../tools/registry'
 import { ToolRegistry as ToolRegistryCtor } from '../tools/registry'
-import { saveMemoryTool, SAVE_MEMORY_TOOL_NAME } from '../tools/saveMemoryTool'
+import { saveMemoryTool, SAVE_MEMORY_TOOL_NAME, MEMORY_EXTRACT_QUERY_SOURCE } from '../tools/saveMemoryTool'
 import { sanitizeResumeMessages } from '../harness/messageSanitize'
 import { runAgentLoop } from '../harness/loop'
 
@@ -45,7 +45,9 @@ const MAX_TRACKED_CONVERSATIONS = 128
 const EXTRACT_READONLY_TOOLS = new Set(['read_file', 'read_many_files', 'grep', 'glob', 'ls', 'list_directory'])
 
 const EXTRACT_SUBAGENT = { agentId: 'memory-extract', agentType: 'memory-extract' } as const
-const EXTRACT_QUERY_SOURCE = 'builtin:memory-extract'
+// provenance 标记(saveMemoryTool.ts 据此判断这条记忆是不是背着用户在后台存的):同一个常量,
+// 避免两处各写一份字符串字面量导致以后改一处漏一处。
+const EXTRACT_QUERY_SOURCE = MEMORY_EXTRACT_QUERY_SOURCE
 
 /** 每会话的抽取状态:pending(在飞抽取,供 drain/互斥)+ lastCount(已抽取到的消息水位,防重复抽同一段)。 */
 interface ExtractState {

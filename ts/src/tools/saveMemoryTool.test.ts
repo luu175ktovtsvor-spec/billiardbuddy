@@ -6,7 +6,7 @@ import { Workspace } from '../workspace/workspace'
 import { getAutoMemDir, getAutoMemEntrypoint } from '../harness/memoryNames'
 import { loadMemoryInjection } from '../harness/claudemd'
 import type { ToolContext } from './Tool'
-import { saveMemoryTool } from './saveMemoryTool'
+import { MEMORY_EXTRACT_QUERY_SOURCE, saveMemoryTool } from './saveMemoryTool'
 
 const ENV_KEYS = ['BILLIARDBUDDY_CONFIG_DIR', 'BILLIARDBUDDY_DISABLE_AUTO_MEMORY'] as const
 
@@ -98,6 +98,19 @@ test('非法 type 兜底为 project(不失败)', async () => {
   await saveMemoryTool.execute({ name: 'x', type: '乱写的', content: '内容' }, ctx())
   const topic = readFileSync(join(getAutoMemDir(root), 'x.md'), 'utf8')
   expect(topic).toContain('type: project')
+})
+
+test('主 agent 活跃对话里存的记忆标 provenance: agent', async () => {
+  await saveMemoryTool.execute({ name: '现场存的', type: 'project', content: '内容' }, ctx())
+  const topic = readFileSync(join(getAutoMemDir(root), '现场存的.md'), 'utf8')
+  expect(topic).toContain('provenance: agent')
+})
+
+test('后台抽取子代理存的记忆标 provenance: background_extract(querySource 识别)', async () => {
+  const extractCtx = { ...ctx(), querySource: MEMORY_EXTRACT_QUERY_SOURCE }
+  await saveMemoryTool.execute({ name: '后台存的', type: 'project', content: '内容' }, extractCtx)
+  const topic = readFileSync(join(getAutoMemDir(root), '后台存的.md'), 'utf8')
+  expect(topic).toContain('provenance: background_extract')
 })
 
 test('恶意 name(路径穿越)不逃出 memdir', async () => {
