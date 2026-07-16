@@ -111,6 +111,29 @@ test('尚无活动事件时只显示轻量等待分隔行，活动出现后由�
   ])).toBe(false)
 })
 
+test('上一个工具收尾、下一个事件还没到的空档，等待行重新出现（不再只靠零散工具卡猜进度）', () => {
+  expect(shouldShowInitialWaiting('running', [
+    { id: 'user-1', kind: 'user', text: '开始' },
+    { id: 'tool-1', kind: 'tool', tool: 'read_file', input: { path: 'a.ts' }, status: 'running' },
+  ])).toBe(false)
+  expect(shouldShowInitialWaiting('running', [
+    { id: 'user-1', kind: 'user', text: '开始' },
+    { id: 'tool-1', kind: 'tool', tool: 'read_file', input: { path: 'a.ts' }, status: 'ok' },
+  ])).toBe(true)
+  expect(shouldShowInitialWaiting('running', [
+    { id: 'user-1', kind: 'user', text: '开始' },
+    { id: 'thinking-1', kind: 'thinking', text: '分析中', active: false },
+  ])).toBe(true)
+  expect(shouldShowInitialWaiting('running', [
+    { id: 'user-1', kind: 'user', text: '开始' },
+    { id: 'assistant-1', kind: 'assistant', text: '正文', streaming: true },
+  ])).toBe(false)
+  expect(shouldShowInitialWaiting('running', [
+    { id: 'user-1', kind: 'user', text: '开始' },
+    { id: 'assistant-1', kind: 'assistant', text: '正文', streaming: false },
+  ])).toBe(true)
+})
+
 test('完成后的活动组默认折叠，已恢复的拼接工具错误不再外露', () => {
   const blocks: ChatBlock[] = [
     { id: 'bad-1', kind: 'tool', tool: 'list_dirlist_dirlist_dir', input: {}, status: 'error', output: '错误:未知工具' },
