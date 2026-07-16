@@ -99,5 +99,5 @@ export async function addImageVersionFromJob(
     mask: mask ? { asset_id: mask.asset_id, url: mask.url, width: mask.width, height: mask.height, mode: 'alpha_transparent_edit' } : undefined,
     review: reviewFromRecord({ ...result, ...(img ?? {}) }),
     set_current: true,
-  })
+  }, project.working_dir ?? undefined)
 }

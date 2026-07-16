@@ -137,7 +137,7 @@ export class ImageWorkbenchStore {
   async saveCanvas(projectId: string, input: unknown): Promise<ImageWorkbenchProject> {
     return this.withLock(`project:${projectId}`, async () => {
       const req = imageWorkbenchUpdateCanvasRequestSchema.parse(input)
-      const project = await this.requireProject(projectId)
+      const project = await this.requireProject(projectId, req.working_dir)
       if (req.revision !== undefined && req.revision !== project.autosave_revision) {
         throw new ImageWorkbenchError('project revision conflict', 409)
       }
@@ -167,7 +167,7 @@ export class ImageWorkbenchStore {
   async addVersion(projectId: string, input: unknown): Promise<ImageWorkbenchProject> {
     return this.withLock(`project:${projectId}`, async () => {
       const req = imageWorkbenchAddVersionRequestSchema.parse(input)
-      const project = await this.requireProject(projectId)
+      const project = await this.requireProject(projectId, req.working_dir)
       const parentId = req.parent_version_id ?? project.current_version_id
       if (parentId && !project.versions.some(version => version.id === parentId)) {
         throw new ImageWorkbenchError('parent version not found', 404)
@@ -212,7 +212,7 @@ export class ImageWorkbenchStore {
   async rollback(projectId: string, input: unknown): Promise<ImageWorkbenchProject> {
     return this.withLock(`project:${projectId}`, async () => {
       const req = imageWorkbenchRollbackRequestSchema.parse(input)
-      const project = await this.requireProject(projectId)
+      const project = await this.requireProject(projectId, req.working_dir)
       const version = project.versions.find(item => item.id === req.version_id)
       if (!version) throw new ImageWorkbenchError('version not found', 404)
       const now = new Date().toISOString()
@@ -237,7 +237,7 @@ export class ImageWorkbenchStore {
   async confirmPortrait(projectId: string, input: unknown): Promise<ImageWorkbenchProject> {
     return this.withLock(`project:${projectId}`, async () => {
       const req = imageWorkbenchPortraitConfirmRequestSchema.parse(input)
-      const project = await this.requireProject(projectId)
+      const project = await this.requireProject(projectId, req.working_dir)
       if (project.intent !== 'portrait' || project.creative_brief?.portrait?.authorization_confirmed !== true) {
         throw new ImageWorkbenchError('portrait authorization must be confirmed before final person confirmation', 403)
       }
@@ -305,7 +305,7 @@ export class ImageWorkbenchStore {
       ...exportInput,
       current_version_id: exportInput.version_id ?? exportInput.current_version_id,
     })
-    const project = await this.requireProject(projectId)
+    const project = await this.requireProject(projectId, canvasReq.working_dir)
     const versionId = canvasReq.current_version_id ?? project.current_version_id
     const version = project.versions.find(item => item.id === versionId)
     if (!version) throw new ImageWorkbenchError('version not found', 404)
@@ -401,10 +401,10 @@ export class ImageWorkbenchStore {
     }
   }
 
-  async saveToLibrary(projectId: string, input: { version_id?: string; export_asset_id?: string; title?: string }): Promise<ImageWorkbenchLibraryItem> {
+  async saveToLibrary(projectId: string, input: { version_id?: string; export_asset_id?: string; title?: string; working_dir?: string }): Promise<ImageWorkbenchLibraryItem> {
     return this.withLock(`project:${projectId}`, async () => {
       const request = imageWorkbenchSaveToLibraryRequestSchema.parse(input)
-      const project = await this.requireProject(projectId)
+      const project = await this.requireProject(projectId, request.working_dir)
       const version = request.version_id
         ? project.versions.find(item => item.id === request.version_id)
         : project.versions.find(item => item.id === project.current_version_id)
@@ -455,9 +455,21 @@ export class ImageWorkbenchStore {
     throw new ImageWorkbenchError('asset not found', 404)
   }
 
-  private async requireProject(projectId: string): Promise<ImageWorkbenchProject> {
+  /**
+   * D1:媒体项目归属校验。之前只有 getProject/list 按 working_dir 过滤展示,真正会改数据的
+   * 6 个方法(saveCanvas/addVersion/rollback/confirmPortrait/exportProject/saveToLibrary)全部
+   * 裸读,前端一旦状态串线(切换门店工作区后某个组件还带着旧 project_id 发请求)就会静默改错门店的
+   * 项目。workingDir 由调用方(路由层解析请求体里的 working_dir)传入,缺省(未提供)时不校验,
+   * 向后兼容还没升级的旧客户端。
+   */
+  private async requireProject(projectId: string, workingDir?: string): Promise<ImageWorkbenchProject> {
     const project = await this.getProject(projectId)
     if (!project) throw new ImageWorkbenchError('project not found', 404)
+    const expected = normalizedWorkingDir(workingDir)
+    const actual = normalizedWorkingDir(project.working_dir)
+    if (expected && actual && expected !== actual) {
+      throw new ImageWorkbenchError('这个生图项目属于另一个工作文件夹，请切换到对应项目后继续', 409)
+    }
     return project
   }
 
