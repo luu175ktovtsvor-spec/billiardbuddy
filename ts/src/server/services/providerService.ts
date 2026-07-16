@@ -21,6 +21,14 @@ import {
   OPENAI_OFFICIAL_PROVIDER,
   isOpenAIOfficialProviderId,
 } from './openaiOfficialProvider.js'
+import {
+  QF_GATEWAY_PROVIDER_ID,
+  QF_GATEWAY_PROVIDER_NAME,
+  buildQfGatewayProvider,
+  isQfGatewayProviderId,
+  qfGatewayConfigured,
+  resolveQfGatewayProxyTarget,
+} from './qfGatewayProvider.js'
 import { hahaOpenAIOAuthService } from './hahaOpenAIOAuthService.js'
 import {
   CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
@@ -202,6 +210,9 @@ export class ProviderService {
     if (isOpenAIOfficialProviderId(id)) {
       return OPENAI_OFFICIAL_PROVIDER
     }
+    if (isQfGatewayProviderId(id)) {
+      return buildQfGatewayProvider()
+    }
 
     const index = await this.readIndex()
     const provider = index.providers.find((p) => p.id === id)
@@ -332,7 +343,9 @@ export class ProviderService {
     const index = await this.readIndex()
     const provider = isOpenAIOfficialProviderId(id)
       ? OPENAI_OFFICIAL_PROVIDER
-      : index.providers.find((p) => p.id === id)
+      : isQfGatewayProviderId(id)
+        ? buildQfGatewayProvider()
+        : index.providers.find((p) => p.id === id)
     if (!provider) throw ApiError.notFound(`Provider not found: ${id}`)
 
     index.activeId = id
@@ -453,6 +466,12 @@ export class ProviderService {
         }
       }
 
+      if (isQfGatewayProviderId(index.activeId)) {
+        return qfGatewayConfigured()
+          ? { hasAuth: true, source: 'cc-haha-provider', activeProvider: QF_GATEWAY_PROVIDER_NAME }
+          : { hasAuth: false, source: 'none', activeProvider: QF_GATEWAY_PROVIDER_NAME }
+      }
+
       const provider = index.providers.find(p => p.id === index.activeId)
       if (provider) {
         const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)
@@ -487,6 +506,28 @@ export class ProviderService {
 
   // --- Proxy support ---
 
+  /**
+   * Proxy config for the product-managed gateway. The base URL and app token are
+   * read from process.env at request time (resolveQfGatewayProxyTarget) — never
+   * from providers.json — so the token stays off disk.
+   */
+  private qfGatewayProxyConfig(): {
+    id: string
+    name: string
+    baseUrl: string
+    apiKey: string
+    apiFormat: ApiFormat
+  } {
+    const target = resolveQfGatewayProxyTarget()
+    return {
+      id: QF_GATEWAY_PROVIDER_ID,
+      name: QF_GATEWAY_PROVIDER_NAME,
+      baseUrl: target.baseUrl,
+      apiKey: target.apiKey,
+      apiFormat: 'openai_chat',
+    }
+  }
+
   async getProviderForProxy(providerId?: string): Promise<{
     id: string
     name: string
@@ -497,6 +538,9 @@ export class ProviderService {
     if (providerId) {
       if (isOpenAIOfficialProviderId(providerId)) {
         return null
+      }
+      if (isQfGatewayProviderId(providerId)) {
+        return this.qfGatewayProxyConfig()
       }
       const provider = await this.getProvider(providerId)
       return {
@@ -512,6 +556,9 @@ export class ProviderService {
     if (!index.activeId) return null
     if (isOpenAIOfficialProviderId(index.activeId)) {
       return null
+    }
+    if (isQfGatewayProviderId(index.activeId)) {
+      return this.qfGatewayProxyConfig()
     }
     const provider = await this.getProvider(index.activeId).catch(() => null)
     if (!provider) return null

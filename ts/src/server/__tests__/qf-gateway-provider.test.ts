@@ -1,0 +1,451 @@
+/**
+ * Tests for the product-managed "qf-gateway" provider.
+ *
+ * Covers: startup auto-enable (without overwriting a user's choice), the
+ * credential boundary (token stays in process.env, never on disk / never in the
+ * CLI subprocess env), the full Anthropic → OpenAI Chat proxy round-trip through
+ * the local proxy, streaming tool_use, and MiMo model selection.
+ */
+
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import * as fs from 'fs/promises'
+import * as path from 'path'
+import * as os from 'os'
+import { ProviderService } from '../services/providerService.js'
+import { handleProxyRequest } from '../proxy/handler.js'
+import { buildProviderManagedEnv } from '../services/providerRuntimeEnv.js'
+import {
+  QF_GATEWAY_PROVIDER_ID,
+  buildQfGatewayProvider,
+} from '../services/qfGatewayProvider.js'
+
+// ─── Test harness ───────────────────────────────────────────────────────────
+
+const GATEWAY_URL = 'https://gateway.example.com'
+const GATEWAY_TOKEN = 'qf-app-token-SECRET-value'
+const TEST_SERVER_PORT = 4599
+
+let tmpDir: string
+let savedServerPort: number
+const savedEnv: Record<string, string | undefined> = {}
+
+function stashEnv(key: string): void {
+  savedEnv[key] = process.env[key]
+}
+
+async function setup(): Promise<void> {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qf-gateway-test-'))
+  for (const key of [
+    'CLAUDE_CONFIG_DIR',
+    'QF_GATEWAY_URL',
+    'QF_GATEWAY_TOKEN',
+    'QF_GATEWAY_MODEL',
+  ]) {
+    stashEnv(key)
+  }
+  process.env.CLAUDE_CONFIG_DIR = tmpDir
+  process.env.QF_GATEWAY_URL = GATEWAY_URL
+  process.env.QF_GATEWAY_TOKEN = GATEWAY_TOKEN
+  delete process.env.QF_GATEWAY_MODEL
+  // ProviderService.serverPort is a process-wide static — snapshot and restore it
+  // so this suite never leaks its port into other files' runtime-env assertions.
+  savedServerPort = ProviderService.getServerPort()
+  ProviderService.setServerPort(TEST_SERVER_PORT)
+}
+
+async function teardown(): Promise<void> {
+  ProviderService.setServerPort(savedServerPort)
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true })
+}
+
+async function readProvidersRaw(): Promise<string> {
+  return fs.readFile(path.join(tmpDir, 'cc-haha', 'providers.json'), 'utf-8')
+}
+
+async function readSettingsRaw(): Promise<string> {
+  try {
+    return await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')
+  } catch {
+    return ''
+  }
+}
+
+function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk))
+      }
+      controller.close()
+    },
+  })
+}
+
+async function collectSse(
+  stream: ReadableStream<Uint8Array>,
+): Promise<Array<{ event: string; data: Record<string, unknown> }>> {
+  const decoder = new TextDecoder()
+  const reader = stream.getReader()
+  let text = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    text += decoder.decode(value, { stream: true })
+  }
+
+  const events: Array<{ event: string; data: Record<string, unknown> }> = []
+  for (const block of text.split('\n\n').filter(Boolean)) {
+    let event = ''
+    let data = ''
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event: ')) event = line.slice(7)
+      if (line.startsWith('data: ')) data = line.slice(6)
+    }
+    if (event && data) {
+      try {
+        events.push({ event, data: JSON.parse(data) })
+      } catch {
+        // skip unparseable
+      }
+    }
+  }
+  return events
+}
+
+const sampleManualInput = {
+  presetId: 'custom',
+  name: 'User Manual Provider',
+  baseUrl: 'https://api.example.com',
+  apiKey: 'sk-user-manual',
+  apiFormat: 'anthropic' as const,
+  models: { main: 'm', haiku: 'm', sonnet: 'm', opus: 'm' },
+}
+
+// ─── Startup auto-enable ────────────────────────────────────────────────────
+
+describe('qf-gateway startup auto-enable', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('activates the gateway when configured and no provider is active', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const { activeId, providers } = await svc.listProviders()
+    expect(activeId).toBe(QF_GATEWAY_PROVIDER_ID)
+    // Synthetic provider — never appended to the saved list.
+    expect(providers).toHaveLength(0)
+  })
+
+  test('does NOT overwrite a user-chosen active provider', async () => {
+    const svc = new ProviderService()
+    const manual = await svc.addProvider(sampleManualInput)
+    await svc.activateProvider(manual.id)
+
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const { activeId, providers } = await svc.listProviders()
+    expect(activeId).toBe(manual.id)
+    expect(providers).toHaveLength(1)
+  })
+
+  test('is a no-op when the gateway is not configured', async () => {
+    delete process.env.QF_GATEWAY_URL
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const { activeId } = await svc.listProviders()
+    expect(activeId).toBeNull()
+  })
+
+  test('re-running is idempotent when the gateway is already active', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const { activeId, providers } = await svc.listProviders()
+    expect(activeId).toBe(QF_GATEWAY_PROVIDER_ID)
+    expect(providers).toHaveLength(0)
+  })
+})
+
+// ─── Credential boundary: token in env, not on disk ─────────────────────────
+
+describe('qf-gateway credential boundary', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('the token never lands in providers.json or settings.json after activation', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+
+    const providersRaw = await readProvidersRaw()
+    const settingsRaw = await readSettingsRaw()
+
+    expect(providersRaw).not.toContain(GATEWAY_TOKEN)
+    // The synthetic provider must not be persisted into the saved list at all.
+    expect(providersRaw).not.toContain('"apiKey"')
+    expect(settingsRaw).not.toContain(GATEWAY_TOKEN)
+  })
+
+  test('getProviderForProxy overlays the env token at request time', async () => {
+    const svc = new ProviderService()
+    const config = await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)
+
+    expect(config).not.toBeNull()
+    expect(config!.apiKey).toBe(GATEWAY_TOKEN)
+    expect(config!.baseUrl).toBe(GATEWAY_URL)
+    expect(config!.apiFormat).toBe('openai_chat')
+  })
+
+  test('the CLI subprocess env carries proxy-managed auth + local proxy, never the token', () => {
+    const env = buildProviderManagedEnv(buildQfGatewayProvider(), {
+      proxyPath: `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
+      serverPort: TEST_SERVER_PORT,
+    })
+
+    expect(env.ANTHROPIC_API_KEY).toBe('proxy-managed')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(env.ANTHROPIC_BASE_URL).toBe(
+      `http://127.0.0.1:${TEST_SERVER_PORT}/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
+    )
+    expect(env.ANTHROPIC_MODEL).toBe('qwen3-coder-plus')
+    // The real app token must appear nowhere in the subprocess env.
+    expect(JSON.stringify(env)).not.toContain(GATEWAY_TOKEN)
+  })
+})
+
+// ─── Proxy round-trip ───────────────────────────────────────────────────────
+
+describe('qf-gateway proxy round-trip', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('forwards an Anthropic request to the gateway as OpenAI Chat with the app token', async () => {
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      })
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-qf',
+          object: 'chat.completion',
+          created: 0,
+          model: 'qwen3-coder-plus',
+          choices: [
+            { index: 0, message: { role: 'assistant', content: 'ok from gateway' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'qwen3-coder-plus',
+            max_tokens: 64,
+            messages: [{ role: 'user', content: 'hello gateway' }],
+          }),
+        },
+      )
+
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+
+      // Upstream request assertions.
+      expect(calls).toHaveLength(1)
+      expect(calls[0].url).toBe(`${GATEWAY_URL}/v1/chat/completions`)
+      expect(calls[0].headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
+      expect(calls[0].body.model).toBe('qwen3-coder-plus')
+
+      // Response transformed back to Anthropic shape.
+      const anthropic = (await res.json()) as Record<string, unknown>
+      expect(anthropic.type).toBe('message')
+      expect(anthropic.role).toBe('assistant')
+      expect(Array.isArray(anthropic.content)).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('streams tool_use through the proxy', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(async () => {
+      const sseChunks = [
+        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n',
+        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"NYC\\"}"}}]},"finish_reason":null}]}\n\n',
+        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        'data: [DONE]\n\n',
+      ]
+      return new Response(makeStream(sseChunks), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'qwen3-coder-plus',
+            max_tokens: 64,
+            stream: true,
+            messages: [{ role: 'user', content: 'weather in NYC?' }],
+          }),
+        },
+      )
+
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+      expect(res.body).not.toBeNull()
+
+      const events = await collectSse(res.body as ReadableStream<Uint8Array>)
+      const toolUseStart = events.find(
+        (e) =>
+          e.event === 'content_block_start' &&
+          (e.data.content_block as Record<string, unknown>)?.type === 'tool_use',
+      )
+      expect(toolUseStart).toBeDefined()
+
+      const messageDelta = events.find((e) => e.event === 'message_delta')
+      expect(
+        (messageDelta?.data.delta as Record<string, unknown>)?.stop_reason,
+      ).toBe('tool_use')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+// ─── MiMo model selection ───────────────────────────────────────────────────
+
+describe('qf-gateway MiMo selection', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('QF_GATEWAY_MODEL flows to ANTHROPIC_MODEL and the forwarded upstream model', async () => {
+    const mimoModel = 'mimo-7b-rl'
+    process.env.QF_GATEWAY_MODEL = mimoModel
+
+    // Subprocess env picks the mimo id.
+    const env = buildProviderManagedEnv(buildQfGatewayProvider(), {
+      proxyPath: `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
+      serverPort: TEST_SERVER_PORT,
+    })
+    expect(env.ANTHROPIC_MODEL).toBe(mimoModel)
+
+    // And the proxy forwards that same model id upstream.
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-mimo',
+          object: 'chat.completion',
+          created: 0,
+          model: mimoModel,
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: 64,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        },
+      )
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+      expect(calls[0].body.model).toBe(mimoModel)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+// Regression: qf-gateway is a synthetic built-in that is NEVER in the saved
+// providers list. Every "is this a known provider" check must recognize it via
+// isQfGatewayProviderId, or the first real session (ws getDefaultRuntimeSettings)
+// treats it as stale and calls activateOfficial(), silently destroying routing.
+describe('qf-gateway consumer recognition (must not be treated as stale)', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('ws isKnownRuntimeProviderId recognizes qf-gateway even with an empty saved list', async () => {
+    const { isKnownRuntimeProviderId } = await import('../ws/handler.js')
+    expect(isKnownRuntimeProviderId(QF_GATEWAY_PROVIDER_ID, [])).toBe(true)
+  })
+
+  test('active qf-gateway survives a ProviderService round-trip (migration must not null activeId)', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+    // A fresh service re-reads from disk, running the persistent-storage migration.
+    const fresh = new ProviderService()
+    const { activeId } = await fresh.listProviders()
+    expect(activeId).toBe(QF_GATEWAY_PROVIDER_ID)
+  })
+
+  test('checkAuthStatus reports authed when qf-gateway is active and configured', async () => {
+    const svc = new ProviderService()
+    const { ensureQfGatewayProviderRegistered } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    await ensureQfGatewayProviderRegistered(svc)
+    const status = await svc.checkAuthStatus()
+    expect(status.hasAuth).toBe(true)
+    expect(status.source).toBe('cc-haha-provider')
+  })
+})

@@ -185,6 +185,17 @@ export async function generateTitle(
       )
     }
 
+    // OpenAI-compatible providers (incl. the product-managed gateway) do not speak
+    // the Anthropic Messages API at their baseUrl — a POST to `${baseUrl}/v1/messages`
+    // would fail. Skip AI title generation rather than issue a doomed request.
+    // Native-anthropic providers (apiFormat undefined/'anthropic') are unaffected.
+    if (
+      resolvedProvider?.apiFormat === 'openai_chat' ||
+      resolvedProvider?.apiFormat === 'openai_responses'
+    ) {
+      return null
+    }
+
     if (!resolvedProvider?.baseUrl || !resolvedProvider?.apiKey) return null
 
     const model = resolvedProvider.models.haiku || resolvedProvider.models.main

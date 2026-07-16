@@ -13,6 +13,7 @@ import { teamWatcher } from './services/teamWatcher.js'
 import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
+import { ensureQfGatewayProviderRegistered } from './services/qfGatewayProvider.js'
 import { handleHahaOAuthCallback } from './api/haha-oauth.js'
 import { handleHahaOpenAIOAuthCallback } from './api/haha-openai-oauth.js'
 import { handlePreviewFs } from './api/previewFs.js'
@@ -445,6 +446,18 @@ export function startServer(port = PORT, host = HOST) {
       : `Failed to start server. Is port ${port} in use?`
     throw new Error(message, { cause: error })
   }
+
+  // Product-managed gateway auto-routing: when QF_GATEWAY_URL is configured and
+  // the user hasn't chosen their own provider, route the agent through the local
+  // proxy → gateway. Idempotent; never overwrites a user's active provider.
+  // Fire-and-forget to keep startServer synchronous (matches the launcher install
+  // below); registration only needs to land before the first CLI request.
+  void ensureQfGatewayProviderRegistered(new ProviderService()).catch((error) => {
+    console.error(
+      '[qf-gateway] failed to register product gateway provider:',
+      error instanceof Error ? error.message : error,
+    )
+  })
 
   // Start watching ~/.claude/teams/ for real-time WebSocket push
   teamWatcher.start()

@@ -19,6 +19,10 @@ import {
   OPENAI_OFFICIAL_PROVIDER_NAME,
   isOpenAIOfficialProviderId,
 } from '../services/openaiOfficialProvider.js'
+import {
+  buildQfGatewayProvider,
+  isQfGatewayProviderId,
+} from '../services/qfGatewayProvider.js'
 
 // ─── Fallback models (used when no provider is configured) ────────────────────
 
@@ -209,7 +213,9 @@ async function handleModelsList(): Promise<Response> {
     })
   }
 
-  const activeProvider = activeId ? providers.find((p) => p.id === activeId) : null
+  const activeProvider = activeId
+    ? (isQfGatewayProviderId(activeId) ? buildQfGatewayProvider() : providers.find((p) => p.id === activeId))
+    : null
   if (activeProvider) {
     const modelList = buildProviderModelList(activeProvider.models)
     return Response.json({
@@ -225,7 +231,9 @@ async function handleCurrentModel(req: Request): Promise<Response> {
     // Build the full model list: prefer active provider's models, fall back to defaults
     const { providers, activeId } = await providerService.listProviders()
     const isOpenAIProviderActive = isOpenAIOfficialProviderId(activeId)
-    const activeProvider = activeId ? providers.find((p) => p.id === activeId) : null
+    const activeProvider = activeId
+    ? (isQfGatewayProviderId(activeId) ? buildQfGatewayProvider() : providers.find((p) => p.id === activeId))
+    : null
     const settings = activeProvider || isOpenAIProviderActive
       ? await providerService.getManagedSettings()
       : await settingsService.getUserSettings()
