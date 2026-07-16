@@ -529,17 +529,25 @@ function withStreamLogging(
   const reader = resp.body.getReader()
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const { done, value } = await reader.read()
-      if (done) {
-        controller.close()
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.close()
+          await onDone()
+          return
+        }
+        onChunk?.(value)
+        controller.enqueue(value)
+      } catch (error) {
+        // 上游中途断流(reader.read 抛错):既有实现只在 done/cancel 调 onDone,此路径会漏放许可。
+        // 显式在这里 error + 释放许可,保证任何终止路径 active/queued 都回落,不泄漏并发名额。
+        controller.error(error)
         await onDone()
-        return
       }
-      onChunk?.(value)
-      controller.enqueue(value)
     },
     async cancel(reason) {
-      await reader.cancel(reason)
+      // 客户端断开:释放许可。cancel body 本身失败不应吞掉许可释放。
+      try { await reader.cancel(reason) } catch { /* ignore */ }
       await onDone()
     },
   })

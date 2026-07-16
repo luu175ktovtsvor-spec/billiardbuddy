@@ -1,168 +1,238 @@
-// 假 upstream 容量证据(不连真上游):证明 50~100 装机、峰值并发下的公平调度与全局上限。
+// 假 upstream 容量证据(不连真上游):证明 50~100 装机、峰值并发下三家独立池的公平调度、隔离、
+// 二级 token 闸、以及各类错误/中断路径下不泄漏并发许可。
 //
-// 关键被测行为:
-//  - 装机身份(X-QF-Client-ID)细分单用户公平额度 —— 100 个装机各拿一份,直到打满全局并发上限;
-//    而同一 token 不带装机身份时,退化成一份单用户额度(证明"不再把所有安装视为同一用户")。
-//  - 全局并发上限对上游是硬边界:无论多少装机同时请求,在途上游调用数永不超过 GW_QWEN_CONC。
-//  - 一次逻辑调用只产生一次上游请求(无重试放大),且所有请求最终公平排空、无饿死。
-//
-// 手法:用一个"闸门"假 upstream —— 每个上游调用进入时计数(反映当前占用的并发许可),然后挂起
-// 在闸门上;测试先在闸门关闭时测峰值(=容量上限),再开闸放行、消费全部响应体、断言全部成功。
+// 手法:一个"闸门 + 分池"假 upstream —— 每个上游调用按 URL 归类到 qwen/mimo/deepseek 池,进入时
+// 计数(反映当前占用的并发许可)并挂起在闸门上;测试先在闸门关闭时测峰值(=容量上限),再开闸放行、
+// 消费全部响应体、断言全部成功;并用鉴权 healthz 的 capacity 快照断言收尾后 active/queued 归零。
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
-    GW_QWEN_KEY: 'qwen-secret',
-    GW_QWEN_BASE: 'https://qwen.example/v1',
-    GW_QWEN_MODEL: 'qwen3-coder-plus',
-    GW_RELAY_BASE: 'https://relay.example/v1',
-    GW_RELAY_TOKEN: 'relay-secret',
+    GW_QWEN_KEY: 'qwen-secret', GW_QWEN_BASE: 'https://qwen.example/v1', GW_QWEN_MODEL: 'qwen3-coder-plus',
+    GW_QWEN_CONC: '16', GW_QWEN_USER_CONC: '2', GW_QWEN_RPM: '1000000', GW_QWEN_QUEUE_MAX_WAIT: '30', GW_QWEN_MAX_RETRIES: '1',
+    GW_MIMO_KEY: 'mimo-secret', GW_MIMO_BASE: 'https://mimo.example/v1', GW_MIMO_MODEL: 'mimo-v2.5',
+    GW_MIMO_CONC: '16', GW_MIMO_USER_CONC: '2', GW_MIMO_RPM: '1000000', GW_MIMO_QUEUE_MAX_WAIT: '30', GW_MIMO_MAX_RETRIES: '1',
+    GW_DEEPSEEK_KEY: 'deepseek-secret', GW_DEEPSEEK_BASE: 'https://deepseek.example', GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
+    GW_DEEPSEEK_CONC: '32', GW_DEEPSEEK_USER_CONC: '2', GW_DEEPSEEK_RPM: '1000000', GW_DEEPSEEK_QUEUE_MAX_WAIT: '30', GW_DEEPSEEK_MAX_RETRIES: '1',
+    GW_RELAY_BASE: 'https://relay.example/v1', GW_RELAY_TOKEN: 'relay-secret',
     GW_APP_TOKENS: JSON.stringify({ 'app-token': 'beta' }),
-    // 峰值 20 并发活跃会话、单装机最多 2 路;RPM 拉高,让令牌桶不介入(只测并发公平)。
-    GW_QWEN_CONC: '20',
-    GW_QWEN_USER_CONC: '2',
-    GW_QWEN_RPM: '1000000',
-    GW_QWEN_QUEUE_MAX_WAIT: '30',
-    GW_QWEN_MAX_RETRIES: '1',
     ...overrides,
   }
 }
 
-/** 闸门假 upstream:进入即占用一份"在途",挂起在闸门上;开闸后返回一个可消费的 SSE 响应体。 */
-function gatedUpstream() {
-  let inFlight = 0
-  let peak = 0
-  let chatCalls = 0
+type Pool = 'qwen' | 'mimo' | 'deepseek'
+const POOLS: Array<{ pool: Pool; model: string; conc: number; host: string }> = [
+  { pool: 'qwen', model: 'qwen3-coder-plus', conc: 16, host: 'qwen.example' },
+  { pool: 'mimo', model: 'mimo-v2.5', conc: 16, host: 'mimo.example' },
+  { pool: 'deepseek', model: 'deepseek-v4-flash', conc: 32, host: 'deepseek.example' },
+]
+
+/** 闸门分池假 upstream:按 URL 归类到三池,记录每池在途/峰值/调用数,gate 控制放行;cross=错路由。 */
+function poolUpstream() {
+  const stats = {
+    qwen: { inFlight: 0, peak: 0, calls: 0 },
+    mimo: { inFlight: 0, peak: 0, calls: 0 },
+    deepseek: { inFlight: 0, peak: 0, calls: 0 },
+    cross: 0,
+  }
   let gateOpen = false
   const waiters: Array<() => void> = []
+  const poolOf = (url: string): Pool | null =>
+    url.includes('qwen.example') ? 'qwen' : url.includes('mimo.example') ? 'mimo' : url.includes('deepseek.example') ? 'deepseek' : null
   const fetchImpl = async (input: RequestInfo | URL): Promise<Response> => {
     const url = String(input)
     if (!url.endsWith('/chat/completions')) return new Response('{}', { headers: { 'content-type': 'application/json' } })
-    chatCalls += 1
-    inFlight += 1
-    peak = Math.max(peak, inFlight)
-    await new Promise<void>(resolve => {
-      if (gateOpen) resolve()
-      else waiters.push(resolve)
-    })
-    inFlight -= 1
+    const pool = poolOf(url)
+    if (!pool) { stats.cross += 1; return new Response('{}', { headers: { 'content-type': 'application/json' } }) }
+    const s = stats[pool]
+    s.calls += 1; s.inFlight += 1; s.peak = Math.max(s.peak, s.inFlight)
+    await new Promise<void>(resolve => { if (gateOpen) resolve(); else waiters.push(resolve) })
+    s.inFlight -= 1
     return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
   }
-  return {
-    fetchImpl,
-    peak: () => peak,
-    inFlight: () => inFlight,
-    chatCalls: () => chatCalls,
-    open() {
-      gateOpen = true
-      for (const w of waiters.splice(0)) w()
-    },
-  }
+  return { fetchImpl, stats, open() { gateOpen = true; for (const w of waiters.splice(0)) w() } }
 }
 
-function fireChat(
-  fetch: (req: Request) => Promise<Response>,
-  clientId: string | null,
-  token = 'app-token',
-): Promise<number> {
+function makeGateway(fetchImpl: (input: RequestInfo | URL) => Promise<Response>, overrides: Record<string, string | undefined> = {}) {
+  return createGatewayFetch({ env: env(overrides), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl })
+}
+
+function chatReq(model: string, client: string | null, token = 'app-token', signal?: AbortSignal): Request {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-  if (clientId) headers['X-QF-Client-ID'] = clientId
-  return fetch(new Request('http://local/v1/chat/completions', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true }),
-  })).then(async res => {
-    await res.text() // 消费响应体 → 触发流结束 → 释放并发许可
-    return res.status
+  if (client) headers['X-QF-Client-ID'] = client
+  return new Request('http://local/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model, stream: true }), signal })
+}
+
+function fire(fetch: (r: Request) => Promise<Response>, model: string, client: string | null, token = 'app-token'): Promise<number> {
+  return fetch(chatReq(model, client, token)).then(async res => { await res.text(); return res.status })
+}
+
+async function capacity(fetch: (r: Request) => Promise<Response>): Promise<Record<Pool, { active: number; queued: number }>> {
+  const res = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const cap = (await res.json()).capacity as Record<Pool, { active: number; queued: number }>
+  // project just active/queued (snapshot also carries the static max* fields)
+  return {
+    qwen: { active: cap.qwen.active, queued: cap.qwen.queued },
+    mimo: { active: cap.mimo.active, queued: cap.mimo.queued },
+    deepseek: { active: cap.deepseek.active, queued: cap.deepseek.queued },
+  }
+}
+
+const tick = (ms = 30) => new Promise(r => setTimeout(r, ms))
+
+// ── 三池分别:100 装机 × 2 请求 ──────────────────────────────────
+for (const p of POOLS) {
+  test(`${p.model}: 100 装机×2 请求在全局 ${p.conc} 下峰值不超上限、无饿死、N=N上游、许可不泄漏`, async () => {
+    const u = poolUpstream()
+    const fetch = makeGateway(u.fetchImpl)
+    const reqs: Array<Promise<number>> = []
+    for (let i = 0; i < 100; i++) {
+      const id = `install-${String(i).padStart(4, '0')}`
+      reqs.push(fire(fetch, p.model, id)); reqs.push(fire(fetch, p.model, id))
+    }
+    await tick()
+    expect(u.stats[p.pool].peak).toBe(p.conc)   // 峰值 = 该池全局上限
+    expect(u.stats.cross).toBe(0)               // 无错路由
+    u.open()
+    const statuses = await Promise.all(reqs)
+    expect(statuses.every(s => s === 200)).toBe(true) // 全部排空,无饿死
+    expect(u.stats[p.pool].calls).toBe(200)     // N 次逻辑 = N 次上游,无放大
+    expect(u.stats[p.pool].peak).toBe(p.conc)   // 全程 ≤ 上限
+    const cap = await capacity(fetch)
+    expect(cap[p.pool]).toEqual({ active: 0, queued: 0 }) // 收尾无许可泄漏
   })
 }
 
-const tick = (ms = 25) => new Promise(r => setTimeout(r, ms))
-
-test('100 个装机身份各占一份公平额度,打满全局并发上限(20),不带装机身份则退化为一份', async () => {
-  // A 组:100 个不同装机(同一 token),每个各发 1 个请求。
-  const a = gatedUpstream()
-  const fetchA = createGatewayFetch({ env: env(), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl: a.fetchImpl })
-  const aReqs = Array.from({ length: 100 }, (_, i) => fireChat(fetchA, `install-${String(i).padStart(4, '0')}`))
+test('单装机并发不超过单装机上限(2):一个装机发 5 个请求只有 2 路在途', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
+  const reqs = Array.from({ length: 5 }, () => fire(fetch, 'mimo-v2.5', 'install-solo-0001'))
   await tick()
-  // 100 个装机都想要名额,但全局硬顶 20 → 恰好 20 路在途。
-  expect(a.peak()).toBe(20)
-  expect(a.inFlight()).toBe(20)
-  a.open()
-  const aStatuses = await Promise.all(aReqs)
-  expect(aStatuses.every(s => s === 200)).toBe(true)
-  expect(a.peak()).toBe(20) // 排空过程中在途始终 ≤ 20
-  expect(a.chatCalls()).toBe(100) // 一次逻辑调用 = 一次上游调用,无放大
-
-  // B 组:同样 100 个请求、同一 token,但不带 X-QF-Client-ID → 全部落到同一调度身份。
-  const b = gatedUpstream()
-  const fetchB = createGatewayFetch({ env: env(), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl: b.fetchImpl })
-  const bReqs = Array.from({ length: 100 }, () => fireChat(fetchB, null))
-  await tick()
-  // 没有装机身份 → 单用户额度只有 2 → 只有 2 路在途(其余排队)。这就是"不再视为同一用户"的对照。
-  expect(b.peak()).toBe(2)
-  b.open()
-  const bStatuses = await Promise.all(bReqs)
-  expect(bStatuses.every(s => s === 200)).toBe(true)
+  expect(u.stats.mimo.peak).toBe(2)
+  u.open()
+  expect((await Promise.all(reqs)).every(s => s === 200)).toBe(true)
 })
 
-test('100 装机 × 每个 2 请求(共 200)在 20 全局并发下全部公平排空,在途永不超上限,无重试放大', async () => {
-  const u = gatedUpstream()
-  const fetch = createGatewayFetch({ env: env(), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl: u.fetchImpl })
+test('三池混合流量:各自路由正确、跨供应商调用=0、各池峰值≤各自上限且互不阻塞、全部排空', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
   const reqs: Array<Promise<number>> = []
-  for (let i = 0; i < 100; i++) {
-    const id = `install-${String(i).padStart(4, '0')}`
-    reqs.push(fireChat(fetch, id))
-    reqs.push(fireChat(fetch, id))
+  for (let i = 0; i < 40; i++) {
+    const n = String(i).padStart(3, '0')
+    reqs.push(fire(fetch, 'qwen3-coder-plus', `qw-inst-${n}`))
+    reqs.push(fire(fetch, 'mimo-v2.5', `mo-inst-${n}`))
+    reqs.push(fire(fetch, 'deepseek-v4-flash', `ds-inst-${n}`))
   }
   await tick()
-  // 单装机最多 2 路 + 全局 20 → 峰值 20 路在途(约 10 个装机同时活跃)。
-  expect(u.peak()).toBe(20)
+  expect(u.stats.cross).toBe(0)               // 每个 model 只打到对应 fake upstream
+  expect(u.stats.qwen.peak).toBe(16)          // qwen 打满 16
+  expect(u.stats.mimo.peak).toBe(16)          // mimo 打满 16(mimo 满不阻塞 qwen/deepseek)
+  expect(u.stats.deepseek.peak).toBe(32)      // deepseek 打满 32,三池同时活跃 = 隔离
   u.open()
-  const statuses = await Promise.all(reqs)
-  expect(statuses).toHaveLength(200)
-  expect(statuses.every(s => s === 200)).toBe(true) // 无饿死,全部成功
-  expect(u.peak()).toBe(20) // 全程在途 ≤ 全局上限
-  expect(u.chatCalls()).toBe(200) // 200 次逻辑调用 = 200 次上游调用
+  expect((await Promise.all(reqs)).every(s => s === 200)).toBe(true)
+  expect(u.stats.qwen.calls).toBe(40); expect(u.stats.mimo.calls).toBe(40); expect(u.stats.deepseek.calls).toBe(40)
+  const cap = await capacity(fetch)
+  for (const k of ['qwen', 'mimo', 'deepseek'] as Pool[]) expect(cap[k]).toEqual({ active: 0, queued: 0 })
 })
 
-test('单 token 的二级上限(GW_QWEN_TOKEN_CONC)封顶伪造装机独占,保护其它 token', async () => {
-  // 两个 token;token-a 把单 token 在途封在 4。即使 token-a 伪造 10 个装机 id,也只能占 4 路,
-  // 剩下的池子留给 token-b —— 这正是"单 token 伪造多装机独占整池"的二级闸(HIGH#1 修复)。
-  const u = gatedUpstream()
-  const fetch = createGatewayFetch({
-    env: env({
-      GW_APP_TOKENS: JSON.stringify({ 'token-a': 'userA', 'token-b': 'userB' }),
-      GW_QWEN_TOKEN_CONC: '4',
-    }),
-    usageStore: new MemoryUsageStore(),
-    transcribeImpl: null,
-    webSearchImpl: null,
-    fetchImpl: u.fetchImpl,
+test('单 token 二级闸:伪造大量 installationId 也拿不到超过 token 级上限,保护其它 token', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl, {
+    GW_APP_TOKENS: JSON.stringify({ 'token-a': 'userA', 'token-b': 'userB' }),
+    GW_QWEN_TOKEN_CONC: '4',
   })
-  // token-a 伪造 10 个装机 id,但整 token 只能占 4。
-  const aReqs = Array.from({ length: 10 }, (_, i) => fireChat(fetch, `fake-${String(i).padStart(4, '0')}`, 'token-a'))
+  const aReqs = Array.from({ length: 10 }, (_, i) => fire(fetch, 'qwen3-coder-plus', `fake-inst-${String(i).padStart(2, '0')}`, 'token-a'))
   await tick()
-  expect(u.inFlight()).toBe(4) // token-a 被 token 级上限封顶,伪造再多装机也没用
-  // token-b(诚实,2 台真机)此时仍能拿到名额,没有被 token-a 挤死。
-  const bReqs = [fireChat(fetch, 'real-b-0001', 'token-b'), fireChat(fetch, 'real-b-0002', 'token-b')]
+  expect(u.stats.qwen.inFlight).toBe(4) // token-a 被 token 级上限封在 4,伪造 10 装机无效
+  const bReqs = [fire(fetch, 'qwen3-coder-plus', 'real-inst-b1', 'token-b'), fire(fetch, 'qwen3-coder-plus', 'real-inst-b2', 'token-b')]
   await tick()
-  expect(u.inFlight()).toBe(6) // 4(A 封顶) + 2(B 拿到),B 未被饿死
+  expect(u.stats.qwen.inFlight).toBe(6) // token-b 拿到 2,未被 token-a 挤死
   u.open()
-  const statuses = await Promise.all([...aReqs, ...bReqs])
-  expect(statuses.every(s => s === 200)).toBe(true)
+  expect((await Promise.all([...aReqs, ...bReqs])).every(s => s === 200)).toBe(true)
 })
 
-test('伪造/畸形装机身份不放大额度:落回按 token 调度(与不带身份同一份额度)', async () => {
-  const u = gatedUpstream()
-  const fetch = createGatewayFetch({ env: env(), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl: u.fetchImpl })
-  // 畸形身份(太短/非法字符)一律被网关丢弃 → schedId 退回 token 'beta' → 单用户额度 2。
-  const reqs = Array.from({ length: 40 }, (_, i) => fireChat(fetch, i % 2 === 0 ? 'x' : 'has space!!'))
+// ── 错误 / 中断路径:许可必须释放(active/queued 回 0) ─────────────
+test('429 立即回传不重试,一次逻辑调用只一次上游,许可释放', async () => {
+  let calls = 0
+  const fetch = makeGateway(async () => { calls += 1; return new Response('busy', { status: 429 }) })
+  const res = await fetch(chatReq('mimo-v2.5', 'e-1'))
+  expect(res.status).toBe(429)
+  expect(calls).toBe(1) // 429 不重试
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+})
+
+test('可重试 5xx 最多额外一次(共 2 次)后回传,许可释放', async () => {
+  let calls = 0
+  const fetch = makeGateway(async () => { calls += 1; return new Response('down', { status: 503 }) })
+  const res = await fetch(chatReq('mimo-v2.5', 'e-2'))
+  expect(res.status).toBeGreaterThanOrEqual(500)
+  expect(calls).toBe(2) // 1 + 最多额外一次
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+})
+
+test('连接错误(上游 fetch 抛出)重试后失败,许可释放', async () => {
+  let calls = 0
+  const fetch = makeGateway(async () => { calls += 1; throw new Error('ECONNRESET') })
+  const res = await fetch(chatReq('deepseek-v4-flash', 'e-3'))
+  expect(res.status).toBe(502)
+  expect(calls).toBe(2) // 连接错误也最多额外一次
+  expect((await capacity(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
+})
+
+test('上游中途断流:客户端读到错误,许可释放,active/queued 回 0', async () => {
+  const fetch = makeGateway(async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('data: partial\n\n')); c.error(new Error('upstream dropped mid-stream')) },
+    })
+    return new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+  })
+  const res = await fetch(chatReq('mimo-v2.5', 'e-4'))
+  expect(res.status).toBe(200)
+  try { await res.text() } catch { /* 流中途报错,预期 */ }
   await tick()
-  expect(u.peak()).toBe(2) // 无法靠伪造 id 拿到超过一份单用户额度
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+})
+
+test('客户端断开(取消响应体)释放许可', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
+  u.open() // 上游立即返回 SSE 体
+  const res = await fetch(chatReq('mimo-v2.5', 'e-5'))
+  await res.body?.cancel() // 客户端断开,不读完
+  await tick()
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+})
+
+test('排队等待超时(池满 + 极短 queue wait)返回 429,许可释放', async () => {
+  const u = poolUpstream() // 闸门关:占住的请求一直在途
+  const fetch = makeGateway(u.fetchImpl, { GW_MIMO_CONC: '2', GW_MIMO_QUEUE_MAX_WAIT: '0.05' })
+  const held = [fire(fetch, 'mimo-v2.5', 'h-1'), fire(fetch, 'mimo-v2.5', 'h-2')] // 占满 conc=2
+  await tick()
+  const timedOut = await fetch(chatReq('mimo-v2.5', 'q-timeout')) // 第三个排队 → 极短超时 → 429
+  expect(timedOut.status).toBe(429)
+  await timedOut.text()
+  expect((await capacity(fetch)).mimo.queued).toBe(0) // 超时的请求已出队,不泄漏
   u.open()
-  const statuses = await Promise.all(reqs)
-  expect(statuses.every(s => s === 200)).toBe(true)
+  await Promise.all(held)
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+})
+
+test('客户端 abort 排队中的请求:出队释放,active/queued 回落', async () => {
+  const u = poolUpstream() // 闸门关
+  const fetch = makeGateway(u.fetchImpl, { GW_MIMO_CONC: '2' })
+  const held = [fire(fetch, 'mimo-v2.5', 'a-1'), fire(fetch, 'mimo-v2.5', 'a-2')] // 占满
+  await tick()
+  const ac = new AbortController()
+  const aborted = fetch(chatReq('mimo-v2.5', 'a-queued', 'app-token', ac.signal)).then(r => r.status).catch(() => 'aborted')
+  await tick()
+  expect((await capacity(fetch)).mimo.queued).toBe(1) // 已排队
+  ac.abort()
+  await aborted
+  await tick()
+  expect((await capacity(fetch)).mimo.queued).toBe(0) // abort 后出队
+  u.open()
+  await Promise.all(held)
+  expect((await capacity(fetch)).mimo).toEqual({ active: 0, queued: 0 })
 })
