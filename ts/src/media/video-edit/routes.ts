@@ -56,6 +56,17 @@ async function json(req: Request): Promise<unknown> {
 }
 
 export function createVideoEditRouteHandler(service: VideoEditingService, options: VideoEditRouteOptions = {}) {
+  // D1:brief/compile、analyze、drafts、ops、undo、redo、render(_v2)、alternatives/apply 这些改数据的
+  // 端点之前只裸调 service.store.load(projectId),不比对 working_dir——只有 auto_plan 一个端点接了
+  // loadForWorkspace 校验。前端状态串线(切换门店工作区后某组件还带旧 project_id)就能悄悄改错门店的
+  // 视频项目。这里在每个动作分发前统一跑一次校验,复用已经验证过的 loadForWorkspace,不改 service
+  // 内部实现。对齐 auto_plan 既有口径:只在调用方**显式**带 working_dir 时才校验,不回退到
+  // defaultWorkspaceRoot——这是"这个项目是否属于调用方声称的工作区"的校验,不是"没说就假定当前
+  // 桌面会话默认目录"的场景(那是 create/list 的既有语义,互不相干)。
+  const assertWorkspace = async (projectId: string, workingDir: string | undefined): Promise<void> => {
+    const resolved = workingDir?.trim()
+    if (resolved) await service.store.loadForWorkspace(projectId, resolved)
+  }
   return async (url: URL, req: Request): Promise<Response | null> => {
     if (!url.pathname.startsWith('/api/v1/video-edit/')) return null
     try {
@@ -135,6 +146,7 @@ export function createVideoEditRouteHandler(service: VideoEditingService, option
         const projectId = decodeURIComponent(alternativeMatch[1]!)
         const alternativeId = decodeURIComponent(alternativeMatch[2]!)
         const input = videoAlternativeApplyRequestSchema.parse(await json(req))
+        await assertWorkspace(projectId, input.working_dir)
         return Response.json(videoAlternativeApplyResponseSchema.parse({ project: await service.store.applyAlternative(projectId, alternativeId, input.base_revision, input.scope, input.scene_id) }))
       }
 
@@ -147,32 +159,49 @@ export function createVideoEditRouteHandler(service: VideoEditingService, option
       if (!service.store.hasV2Project(projectId) && action !== '') return null
       if (!action && req.method === 'GET') {
         if (!service.store.hasV2Project(projectId)) return null
-        return Response.json(videoProjectResponseSchema.parse({ project: await service.store.load(projectId) }))
+        const workingDir = url.searchParams.get('working_dir')?.trim()
+        return Response.json(videoProjectResponseSchema.parse({ project: workingDir ? await service.store.loadForWorkspace(projectId, workingDir) : await service.store.load(projectId) }))
       }
-      if (action === 'brief/compile' && req.method === 'POST') return Response.json(await service.compileBrief(projectId, videoBriefCompileRequestSchema.parse(await json(req))))
+      if (action === 'brief/compile' && req.method === 'POST') {
+        const input = videoBriefCompileRequestSchema.parse(await json(req))
+        await assertWorkspace(projectId, input.working_dir)
+        return Response.json(await service.compileBrief(projectId, input))
+      }
       if (action === 'analyze' && req.method === 'POST') {
         const input = videoAnalyzeRequestSchema.parse(await json(req))
+        await assertWorkspace(projectId, input.working_dir)
         return Response.json(videoJobStartResponseSchema.parse(await service.startAnalyze(projectId, { sourceIds: input.source_ids })), { status: 202 })
       }
-      if (action === 'drafts' && req.method === 'POST') return Response.json(videoJobStartResponseSchema.parse(await service.startDrafts(projectId)), { status: 202 })
+      if (action === 'drafts' && req.method === 'POST') {
+        const raw = record(await json(req))
+        await assertWorkspace(projectId, text(raw.working_dir) || undefined)
+        return Response.json(videoJobStartResponseSchema.parse(await service.startDrafts(projectId)), { status: 202 })
+      }
       if (action === 'ops' && req.method === 'POST') {
         const raw = await json(req)
         if (!raw || typeof raw !== 'object' || !('base_revision' in raw)) return null
         const input = videoOpsRequestSchema.parse(raw)
+        await assertWorkspace(projectId, input.working_dir)
         const result = await service.store.apply(projectId, input.base_revision, input.operations)
         return Response.json(videoOpsResponseSchema.parse({ project: result.project, affected_scene_ids: result.affectedSceneIds, operation_id: result.operationId }))
       }
       if (action === 'undo' && req.method === 'POST') {
-        const input = await json(req) as { base_revision?: unknown }
+        const input = await json(req) as { base_revision?: unknown; working_dir?: unknown }
         if (!Number.isInteger(input.base_revision)) throw new VideoProjectError('撤销需要 base_revision', 'invalid_revision')
+        await assertWorkspace(projectId, text(input.working_dir) || undefined)
         return Response.json(videoMutationResponseSchema.parse({ project: await service.store.undo(projectId, Number(input.base_revision)) }))
       }
       if (action === 'redo' && req.method === 'POST') {
-        const input = await json(req) as { base_revision?: unknown }
+        const input = await json(req) as { base_revision?: unknown; working_dir?: unknown }
         if (!Number.isInteger(input.base_revision)) throw new VideoProjectError('重做需要 base_revision', 'invalid_revision')
+        await assertWorkspace(projectId, text(input.working_dir) || undefined)
         return Response.json(videoMutationResponseSchema.parse({ project: await service.store.redo(projectId, Number(input.base_revision)) }))
       }
-      if ((action === 'render' || action === 'render_v2') && req.method === 'POST') return Response.json(videoJobStartResponseSchema.parse(await service.startRender(projectId, videoRenderRequestSchema.parse(await json(req)))), { status: 202 })
+      if ((action === 'render' || action === 'render_v2') && req.method === 'POST') {
+        const input = videoRenderRequestSchema.parse(await json(req))
+        await assertWorkspace(projectId, input.working_dir)
+        return Response.json(videoJobStartResponseSchema.parse(await service.startRender(projectId, input)), { status: 202 })
+      }
       return new Response('Method not allowed', { status: 405 })
     } catch (error) {
       return errorResponse(error)

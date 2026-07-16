@@ -85,3 +85,50 @@ test('v2 project routes scope create and list to the selected workspace', async 
   expect(crossWorkspacePlan?.status).toBe(409)
   expect(await crossWorkspacePlan!.json()).toMatchObject({ error: { code: 'workspace_mismatch' } })
 })
+
+test('D1: 改数据的端点(brief/compile、ops、undo、redo、analyze、drafts、render、alternatives/apply、单项目 GET)都拒绝跨工作区操作', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'video-routes-guard-'))
+  const source = join(root, 'source.mp4')
+  const workspaceA = join(root, 'workspace-a')
+  const workspaceB = join(root, 'workspace-b')
+  writeFileSync(source, 'video')
+  const service = new VideoEditingService({ stateRoot: root, tasks: new TaskService(root), env: { FFMPEG_BIN: '/missing', FFPROBE_BIN: '/missing' } })
+  const handler = createVideoEditRouteHandler(service, { defaultWorkspaceRoot: workspaceA })
+  const createdB = await handler(new URL('http://127.0.0.1/api/v1/video-edit/projects'), request('/api/v1/video-edit/projects', 'POST', { name: 'B', video_paths: [source], working_dir: workspaceB }))
+  const projectB = (await createdB!.json() as any).project
+  const id = projectB.project_id
+
+  // 前端(真实调用点)会显式带上当前工作区 working_dir=workspaceA——项目却属于 workspaceB,应全部 409。
+  // 不显式传 working_dir 时(旧客户端/直接调 API 的场景,如 e2e 里模拟另一个客户端复用同一编译器)
+  // 不做校验,对齐 auto_plan 既有口径,不因为调用方没提供就假定匹配或假定不匹配。
+  const attempts: Array<() => Promise<Response | null>> = [
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}?working_dir=${encodeURIComponent(workspaceA)}`), request(`/api/v1/video-edit/projects/${id}?working_dir=${encodeURIComponent(workspaceA)}`)),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/brief/compile`), request(`/api/v1/video-edit/projects/${id}/brief/compile`, 'POST', { user_request: '展示真实环境', working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/ops`), request(`/api/v1/video-edit/projects/${id}/ops`, 'POST', { base_revision: 0, operations: [{ type: 'project.set_view', goal: 'talking' }], working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/undo`), request(`/api/v1/video-edit/projects/${id}/undo`, 'POST', { base_revision: 0, working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/redo`), request(`/api/v1/video-edit/projects/${id}/redo`, 'POST', { base_revision: 0, working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/analyze`), request(`/api/v1/video-edit/projects/${id}/analyze`, 'POST', { working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/drafts`), request(`/api/v1/video-edit/projects/${id}/drafts`, 'POST', { working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/render`), request(`/api/v1/video-edit/projects/${id}/render`, 'POST', { working_dir: workspaceA })),
+    () => handler(new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/alternatives/alt-1/apply`), request(`/api/v1/video-edit/projects/${id}/alternatives/alt-1/apply`, 'POST', { base_revision: 0, scope: 'whole', working_dir: workspaceA })),
+  ]
+  for (const attempt of attempts) {
+    const response = await attempt()
+    expect(response?.status).toBe(409)
+    expect(await response!.json()).toMatchObject({ error: { code: 'workspace_mismatch' } })
+  }
+
+  // 显式传对的 working_dir 就能读到(brief/compile 之类会因为其他业务前置条件返回别的状态码,但不应是 409 workspace_mismatch)。
+  const okGet = await handler(
+    new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}?working_dir=${encodeURIComponent(workspaceB)}`),
+    request(`/api/v1/video-edit/projects/${id}?working_dir=${encodeURIComponent(workspaceB)}`),
+  )
+  expect(okGet?.status).toBe(200)
+
+  // 不传 working_dir 时不做校验(对齐 auto_plan 既有口径),brief/compile 应该正常成功而不是被误拦。
+  const noWorkingDirCompile = await handler(
+    new URL(`http://127.0.0.1/api/v1/video-edit/projects/${id}/brief/compile`),
+    request(`/api/v1/video-edit/projects/${id}/brief/compile`, 'POST', { user_request: '展示真实环境' }),
+  )
+  expect(noWorkingDirCompile?.status).toBe(200)
+})

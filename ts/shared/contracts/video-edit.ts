@@ -427,6 +427,8 @@ export const videoBriefCompileRequestSchema = z.object({
   must_preserve: z.array(z.string().min(1).max(500)).max(50).optional(),
   must_avoid: z.array(z.string().min(1).max(500)).max(50).optional(),
   source_roles: z.record(z.string(), videoSourceRoleSchema).optional(),
+  /** 调用方当前工作区(门店文件夹),存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const videoBriefCompileResponseSchema = z.object({
@@ -439,6 +441,8 @@ export const videoBriefCompileResponseSchema = z.object({
 export const videoOpsRequestSchema = z.object({
   base_revision: z.number().int().min(0),
   operations: z.array(videoOperationSchema).min(1).max(100),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const videoOpsResponseSchema = z.object({
@@ -449,12 +453,16 @@ export const videoOpsResponseSchema = z.object({
 
 export const videoAnalyzeRequestSchema = z.object({
   source_ids: z.array(z.string().min(1).max(160)).max(200).optional(),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const videoAlternativeApplyRequestSchema = z.object({
   base_revision: z.number().int().min(0),
   scope: z.enum(['whole', 'scene']),
   scene_id: z.string().min(1).optional(),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 }).superRefine((value, ctx) => {
   if (value.scope === 'scene' && !value.scene_id) ctx.addIssue({ code: 'custom', message: 'scene scope requires scene_id' })
 })
@@ -465,6 +473,8 @@ export const videoRenderRequestSchema = z.object({
   scene_id: z.string().min(1).max(160).optional(),
   include_subtitles: z.boolean().default(true),
   include_music: z.boolean().default(true),
+  /** 调用方当前工作区,存在时校验目标项目确实属于这个工作区,防跨门店误改。 */
+  working_dir: z.string().max(4096).optional(),
 })
 
 export const videoJobKindSchema = z.enum(['probe', 'analyze', 'drafts', 'render'])
