@@ -22,6 +22,11 @@ import {
   buildOpenAIOfficialRuntimeEnv,
   isOpenAIOfficialProviderId,
 } from './openaiOfficialProvider.js'
+import {
+  QF_GATEWAY_PROXY_PATH,
+  buildQfGatewayProvider,
+  isQfGatewayProviderId,
+} from './qfGatewayProvider.js'
 
 export const MANAGED_PROVIDER_ENV_KEYS = [
   'ANTHROPIC_BASE_URL',
@@ -227,7 +232,8 @@ export function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
         : null
   const activeId = rawActiveId && (
     providers.some((provider) => provider.id === rawActiveId) ||
-    isOpenAIOfficialProviderId(rawActiveId)
+    isOpenAIOfficialProviderId(rawActiveId) ||
+    isQfGatewayProviderId(rawActiveId)
   )
     ? rawActiveId
     : null
@@ -388,6 +394,13 @@ export function readActiveProviderManagedEnv(
       return buildOpenAIOfficialRuntimeEnv()
     }
 
+    if (isQfGatewayProviderId(index.activeId)) {
+      return buildProviderManagedEnv(buildQfGatewayProvider(), {
+        proxyPath: QF_GATEWAY_PROXY_PATH,
+        serverPort: options?.serverPort,
+      })
+    }
+
     const provider = index.providers.find((entry) => entry.id === index.activeId)
     if (!provider) return null
 
@@ -405,6 +418,10 @@ export function activeProviderNeedsProxy(configDir: string): boolean {
     const index = normalizeProvidersIndex(JSON.parse(raw))
     if (!index?.activeId || isOpenAIOfficialProviderId(index.activeId)) {
       return false
+    }
+
+    if (isQfGatewayProviderId(index.activeId)) {
+      return true
     }
 
     const provider = index.providers.find((entry) => entry.id === index.activeId)

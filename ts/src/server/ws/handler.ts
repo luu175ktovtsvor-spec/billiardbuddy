@@ -18,6 +18,7 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
+import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import {
   buildConversationTitleInput,
@@ -2494,12 +2495,13 @@ type RuntimeSettings = {
   providerId?: string | null
 }
 
-function isKnownRuntimeProviderId(
+export function isKnownRuntimeProviderId(
   providerId: string,
   providers: Array<{ id: string }>,
 ): boolean {
   return (
     isOpenAIOfficialProviderId(providerId) ||
+    isQfGatewayProviderId(providerId) ||
     providers.some((provider) => provider.id === providerId)
   )
 }

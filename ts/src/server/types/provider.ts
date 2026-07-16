@@ -9,6 +9,11 @@ import { z } from 'zod'
 
 export const CLAUDE_OFFICIAL_PROVIDER_ID = 'claude-official'
 export const OPENAI_OFFICIAL_PROVIDER_ID = 'openai-official'
+// Product-managed gateway. Synthetic like the official providers, but intentionally
+// NOT a member of BUILT_IN_PROVIDER_IDS: it is invisible plumbing (auto-routed from
+// env), so it must not surface as a selectable row in the provider list/order. All
+// runtime paths recognize it via isQfGatewayProviderId() instead.
+export const QF_GATEWAY_PROVIDER_ID = 'qf-gateway'
 export const BUILT_IN_PROVIDER_IDS = [
   CLAUDE_OFFICIAL_PROVIDER_ID,
   OPENAI_OFFICIAL_PROVIDER_ID,
