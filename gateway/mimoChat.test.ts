@@ -15,15 +15,28 @@ test('allowlist defaults to mimo-v2.5, takes GW_MIMO_MODEL as primary plus GW_MI
   })]).toEqual(['mimo-v2.5', 'mimo-v2.5-pro', 'future-model'])
 })
 
-test('allowed model passes through byte-for-byte; tools/tool_choice/messages untouched (no native search injection)', () => {
-  const raw = JSON.stringify({
+test('passes tools/tool_choice/messages through untouched (no native search injection), injects thinking:disabled', () => {
+  const input = {
     model: 'mimo-v2.5',
     stream: true,
     tools: [{ type: 'function', function: { name: 'Read', parameters: { type: 'object' } } }],
     tool_choice: 'auto',
     messages: [{ role: 'user', content: 'hi' }],
-  })
-  expect(prepareMimoChatBody(raw, new Set(['mimo-v2.5']), 'mimo-v2.5')).toEqual({ body: raw })
+  }
+  const out = JSON.parse(prepareMimoChatBody(JSON.stringify(input), new Set(['mimo-v2.5']), 'mimo-v2.5').body)
+  expect(out.tools).toEqual(input.tools)
+  expect(out.tool_choice).toBe('auto')
+  expect(out.messages).toEqual(input.messages)
+  expect(out.stream).toBe(true)
+  expect(out.thinking).toEqual({ type: 'disabled' }) // MiMo 默认关思考(慢 + 与工具不稳定)
+})
+
+test('defaults MiMo thinking OFF, but respects an explicit thinking toggle from the client', () => {
+  const allowed = new Set(['mimo-v2.5'])
+  const dflt = JSON.parse(prepareMimoChatBody(JSON.stringify({ model: 'mimo-v2.5', messages: [] }), allowed, 'mimo-v2.5').body)
+  expect(dflt.thinking).toEqual({ type: 'disabled' })
+  const on = JSON.parse(prepareMimoChatBody(JSON.stringify({ model: 'mimo-v2.5', thinking: { type: 'enabled' }, messages: [] }), allowed, 'mimo-v2.5').body)
+  expect(on.thinking).toEqual({ type: 'enabled' }) // 显式开启不被覆盖
 })
 
 test('client cannot bypass the whitelist: unknown or missing model is coerced to the server default', () => {

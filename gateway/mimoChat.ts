@@ -38,6 +38,10 @@ export function loadMimoAllowedModels(env: Env): ReadonlySet<string> {
 /**
  * 归一化 MiMo 聊天请求体:
  * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
+ * - **默认关闭 MiMo 思考模式**(`thinking:{type:'disabled'}`),除非客户端已显式带 `thinking`。
+ *   原因(官方核实):MiMo 默认思考开,对普通/Agent 请求会先思考几分钟再答(实测单请求 ~360s),
+ *   且官方明确"思考 + 工具调用不稳定,tool_calls 会混进 reasoning_content"。MiMo 是产品默认模型、
+ *   Agent 工具循环高频调用,所以默认关思考保证快而稳;需要思考时客户端显式传 `thinking:{type:'enabled'}`。
  * - 不做任何原生 web_search 注入 —— Agent 联网搜索走独立、受管的 `/v1/web_search` 工具。
  * 其余字段(messages / tools / tool_choice / stream / temperature …)原样透传,保持 OpenAI
  * Chat Completions 请求契约。
@@ -62,7 +66,11 @@ export function prepareMimoChatBody(
   const requested = typeof parsed.model === 'string' ? parsed.model : ''
   const model = allowedModels.has(requested) ? requested : defaultModel
   if (!MODEL_PATTERN.test(model)) throw new MimoRequestError(503, '模型服务未配置')
-  return model === requested ? { body: rawBody } : { body: JSON.stringify({ ...parsed, model }) }
+  const injectThinkingOff = parsed.thinking === undefined
+  if (model === requested && !injectThinkingOff) return { body: rawBody }
+  const next: Record<string, unknown> = { ...parsed, model }
+  if (injectThinkingOff) next.thinking = { type: 'disabled' }
+  return { body: JSON.stringify(next) }
 }
 
 export async function fetchMimoWithRetry(
