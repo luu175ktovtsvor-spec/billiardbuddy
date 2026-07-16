@@ -24,6 +24,13 @@ import {
   prepareMimoChatBody,
   MimoRequestError,
 } from './mimoChat'
+import {
+  deepseekOpaqueUserId,
+  fetchDeepSeekWithRetry,
+  loadDeepSeekAllowedModels,
+  prepareDeepSeekChatBody,
+  DeepSeekRequestError,
+} from './deepseekChat'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -45,10 +52,10 @@ interface ChatRequestError {
 
 type ChatRequestErrorCtor = new (status: number, publicMessage: string) => Error & ChatRequestError
 
-// 一个可路由的聊天上游(千问 / MiMo)。每个上游各自持有独立的凭据、白名单、限速、
+// 一个可路由的聊天上游(千问 / MiMo / DeepSeek)。每个上游各自持有独立的凭据、白名单、限速、
 // 并发、重试与用量标签;共享的代理逻辑由 createChatHandler 消费本结构,互不串台。
 type ChatProvider = {
-  label: 'qwen' | 'mimo'
+  label: 'qwen' | 'mimo' | 'deepseek'
   base: string
   key: string
   defaultModel: string
@@ -59,7 +66,9 @@ type ChatProvider = {
   retryMax: number
   retryBaseMs: number
   retryMaxMs: number
-  prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string) => { body: string }
+  prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string, ctx?: { userId?: string }) => { body: string }
+  // 可选:由受信身份(token#client)派生出传给上游的 opaque user_id(仅 DeepSeek 用)。
+  deriveUserId?: (user: string, client: string) => string | undefined
   fetchWithRetry: (
     doRequest: (attempt: number) => Promise<Response>,
     opts: ChatRetryOptions,
@@ -69,7 +78,9 @@ type ChatProvider = {
   retryRandom?: () => number
 }
 
-type ChatHandler = (request: Request, rawBody: string, user: string) => Promise<Response>
+// user = token 归属(用量/额度按 token 记账);client = 装机身份(X-QF-Client-ID,格式校验后)。
+// 公平调度身份 = user#client(每个装机各占一份单用户公平额度),缺 client 时退回按 token 调度。
+type ChatHandler = (request: Request, rawBody: string, user: string, client: string) => Promise<Response>
 
 type GatewayConfig = {
   qwenKey: string
@@ -104,6 +115,17 @@ type GatewayConfig = {
   mimoRetryBaseMs: number
   mimoRetryMaxMs: number
   mimoAllowedModels: ReadonlySet<string>
+  deepseekKey: string
+  deepseekBase: string
+  deepseekModel: string
+  deepseekRpm: number
+  deepseekConc: number
+  deepseekUserConc: number
+  deepseekQueueMaxWait: number
+  deepseekRetryMax: number
+  deepseekRetryBaseMs: number
+  deepseekRetryMaxMs: number
+  deepseekAllowedModels: ReadonlySet<string>
   imgIpm: number
   imgConc: number
   queueMaxWait: number
@@ -359,7 +381,9 @@ function loadConfig(env: Env): GatewayConfig {
     qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
     qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', 2)),
     qwenQueueMaxWait: Math.max(0, floatEnv(env, 'GW_QWEN_QUEUE_MAX_WAIT', 120)),
-    qwenRetryMax: Math.max(0, intEnv(env, 'GW_QWEN_MAX_RETRIES', 3)),
+    // 一次逻辑调用最多只额外尝试一次(连接错误/可重试 5xx),硬夹在 [0,1]:CC CLI 自己也会重试,
+    // 网关再叠加多次会把一次调用放大成对上游的多次请求。429 由 isRetryableStatus 直接不重试。
+    qwenRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_QWEN_MAX_RETRIES', 1))),
     qwenRetryBaseMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_BASE_MS', 500)),
     qwenRetryMaxMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_MAX_MS', 8000)),
     qwenAllowedModels: loadQwenAllowedModels(env),
@@ -370,10 +394,25 @@ function loadConfig(env: Env): GatewayConfig {
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
-    mimoRetryMax: Math.max(0, intEnv(env, 'GW_MIMO_MAX_RETRIES', 3)),
+    // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
+    mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
+    // DeepSeek V4 Flash:真 key 只在服务器。首版保守放开——全局 32、单装机 2、RPM 保守值,
+    // 靠真实压测再调,不因官方账号并发(~2500)就直接放开。缺 key 时路由到它会 503,绝不改投千问/MiMo。
+    deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
+    deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
+    deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
+    deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 60),
+    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 32)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', 2)),
+    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
+    // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
+    deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
+    deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
+    deepseekRetryMaxMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_MAX_MS', 8000)),
+    deepseekAllowedModels: loadDeepSeekAllowedModels(env),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
@@ -442,6 +481,23 @@ function authenticatedUser(config: GatewayConfig, request: Request): string | un
   return config.appTokens.get(token)
 }
 
+const CLIENT_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/
+
+/**
+ * 装机身份(X-QF-Client-ID = 桌面端持久化的 installationId)。只做格式校验:
+ * 合法则返回,非法/缺失返回空串(退回按 token 调度,老客户端不破)。装机身份只用于细分
+ * 单用户公平与用量归属,不参与鉴权、不提权,伪造它也拿不到超过全局上限的额度。
+ */
+function readClientId(request: Request): string {
+  const raw = (request.headers.get('x-qf-client-id') ?? '').trim()
+  return CLIENT_ID_PATTERN.test(raw) ? raw : ''
+}
+
+/** 传给美国 relay 的受信任务归属身份 = user#client(缺 client 时退回 user)。 */
+function relayOwner(user: string, client: string): string {
+  return client ? `${user}#${client}` : user
+}
+
 async function logUsage(store: UsageStore, entry: UsageEntry): Promise<void> {
   await store.log(entry)
 }
@@ -503,10 +559,16 @@ function isRecord(value: unknown): value is Record<string, any> {
  * 关键:handler 只会用 provider 自己的凭据/白名单/限速/重试,永不跨上游回退。
  */
 function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
-  return async function chatHandler(request: Request, rawBody: string, user: string): Promise<Response> {
+  return async function chatHandler(request: Request, rawBody: string, user: string, client: string): Promise<Response> {
     // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
-    const prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel)
-    const permit = await provider.capacity.acquire(user, {
+    // DeepSeek 在这里注入受信 opaque user_id;千问/MiMo 无 deriveUserId,ctx 被忽略。
+    const userId = provider.deriveUserId?.(user, client)
+    const prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel, { userId })
+    // 公平调度按装机身份细分:同一 token 的不同装机各占一份单用户额度。装机身份只细分单用户
+    // 公平,永远受同一个 provider 全局并发上限约束,伪造装机 id 也无法放大全局额度或提权。
+    const schedId = client ? `${user}#${client}` : user
+    const usageNote = (attempts: number) => `attempts=${attempts}${client ? `;client=${client}` : ''}`
+    const permit = await provider.capacity.acquire(schedId, {
       maxWaitMs: provider.queueMaxWait * 1000,
       signal: request.signal,
     })
@@ -547,7 +609,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
           ok: false,
           status: upstream.status,
           ms: elapsedMs(started),
-          note: `attempts=${attempts}`,
+          note: usageNote(attempts),
         })
         return jsonError(upstream.status, modelPublicError(upstream.status, upstreamDetail))
       }
@@ -557,7 +619,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         if (completed) return
         completed = true
         permit.release()
-        await logUsage(store, { user, model: provider.label, ok: true, status: upstream.status, ms: elapsedMs(started), note: `attempts=${attempts}` })
+        await logUsage(store, { user, model: provider.label, ok: true, status: upstream.status, ms: elapsedMs(started), note: usageNote(attempts) })
       }
       return withStreamLogging(upstream, complete)
     } catch (error) {
@@ -628,6 +690,27 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       retryRandom: deps.mimoRetryRandom,
     }, fetchImpl, store)
     : null
+  const deepseekBucket = new TokenBucket(config.deepseekRpm)
+  const deepseekCapacity = new FairCapacityScheduler(config.deepseekConc, config.deepseekUserConc)
+  const deepseekChat: ChatHandler | null = config.deepseekKey
+    ? createChatHandler({
+      label: 'deepseek',
+      base: config.deepseekBase,
+      key: config.deepseekKey,
+      defaultModel: config.deepseekModel,
+      allowedModels: config.deepseekAllowedModels,
+      bucket: deepseekBucket,
+      capacity: deepseekCapacity,
+      queueMaxWait: config.deepseekQueueMaxWait,
+      retryMax: config.deepseekRetryMax,
+      retryBaseMs: config.deepseekRetryBaseMs,
+      retryMaxMs: config.deepseekRetryMaxMs,
+      prepareBody: prepareDeepSeekChatBody,
+      fetchWithRetry: fetchDeepSeekWithRetry,
+      RequestError: DeepSeekRequestError,
+      deriveUserId: deepseekOpaqueUserId,
+    }, fetchImpl, store)
+    : null
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
@@ -653,6 +736,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
             mimo_user_conc: config.mimoUserConc,
+            deepseek_rpm: config.deepseekRpm,
+            deepseek_conc: config.deepseekConc,
+            deepseek_user_conc: config.deepseekUserConc,
             img_ipm: config.imgIpm,
             img_conc: config.imgConc,
             ark_chat_rpm: config.arkChatRpm,
@@ -664,12 +750,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
-          capacity: { qwen: qwenCapacity.snapshot(), mimo: mimoCapacity.snapshot() },
+          capacity: { qwen: qwenCapacity.snapshot(), mimo: mimoCapacity.snapshot(), deepseek: deepseekCapacity.snapshot() },
           features: {
             transcription: transcribe !== null,
             web_search: webSearch !== null,
             chat_qwen: qwenChat !== null,
             chat_mimo: mimoChat !== null,
+            chat_deepseek: deepseekChat !== null,
           },
         })
       }
@@ -684,22 +771,40 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
+      // 鉴权后的模型目录:只列出当前真正可路由的上游(缺 key 的上游不出现在目录里),
+      // 每项标 owned_by=qwen|mimo 供客户端做"显式 Qwen/MiMo 目录 + 会话级切换"。切换本身复用
+      // CC-Haha 的 set_runtime_config → CLI --model,模型名随请求体 model 到网关按上面的路由分流。
+      if (request.method === 'GET' && url.pathname === '/v1/models') {
+        auth(config, request)
+        const data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> = []
+        if (qwenChat) for (const id of config.qwenAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'qwen' })
+        if (mimoChat) for (const id of config.mimoAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'mimo' })
+        if (deepseekChat) for (const id of config.deepseekAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'deepseek' })
+        return jsonResponse({ object: 'list', data })
+      }
+
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const user = auth(config, request)
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         const rawBody = await request.text()
-        // 路由规则:请求 model 命中 MiMo 白名单 → 只能走 MiMo;MiMo 未配置时显式 503,绝不改投千问。
-        // 未命中 MiMo 白名单(未知或千问模型)→ 默认千问,千问把白名单外 model 改写为 GW_QWEN_MODEL。
-        // MiMo 白名单由 loadMimoAllowedModels 独立于 GW_MIMO_KEY 加载(始终含默认 mimo-v2.5),因此
-        // 缺 key 时仍能识别 MiMo 目标模型并 fail closed。两家各用各自凭据/限速/重试,任一失败都不跨模型回退。
+        // 路由规则(按 model 显式分流,绝不自动跨供应商回退):
+        //   命中 DeepSeek 白名单 → 只能走 DeepSeek;命中 MiMo 白名单 → 只能走 MiMo;
+        //   两者未配置对应 key 时各自显式 503,绝不改投千问。未命中任何白名单(未知或千问模型)
+        //   → 默认千问,千问把白名单外 model 改写为 GW_QWEN_MODEL(供应商内归一,非跨供应商回退)。
+        //   DeepSeek/MiMo 白名单都独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。
+        const client = readClientId(request)
         const requestedModel = parseChatModel(rawBody)
+        if (config.deepseekAllowedModels.has(requestedModel)) {
+          if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
+          return await deepseekChat(request, rawBody, user, client)
+        }
         if (config.mimoAllowedModels.has(requestedModel)) {
           if (!mimoChat) throw new HttpError(503, 'MiMo 模型服务未配置（缺 GW_MIMO_KEY）')
-          return await mimoChat(request, rawBody, user)
+          return await mimoChat(request, rawBody, user, client)
         }
         if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
-        return await qwenChat(request, rawBody, user)
+        return await qwenChat(request, rawBody, user, client)
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
@@ -817,10 +922,19 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         await imgBucket.acquire(config.queueMaxWait) // 提交计入生图 IPM 限速;短请求不占 imgSem 在途并发
         const started = performance.now()
         try {
+          // 把受信任务归属身份传给 relay(relay 据此绑定 owner、越权轮询 403);客户端若带
+          // Idempotency-Key 则透传,relay 按 (owner,key) 去重,重复提交只跑一次真实上游。
+          const submitHeaders: Record<string, string> = {
+            Authorization: `Bearer ${config.relayToken}`,
+            'Content-Type': 'application/json',
+            'X-Relay-Owner': relayOwner(user, readClientId(request)),
+          }
+          const idempotencyKey = request.headers.get('idempotency-key')
+          if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
           const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
             method: 'POST',
             body: await request.arrayBuffer(),
-            headers: { Authorization: `Bearer ${config.relayToken}`, 'Content-Type': 'application/json' },
+            headers: submitHeaders,
           })
           await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
           return await proxyJsonOrRaw(upstream)
@@ -830,15 +944,19 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
       }
 
-      // GPT 生图异步任务:轮询状态(短请求,不计配额)。
+      // GPT 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",
+      // 拿别人的 task id 轮询会被 relay 返 403。
       if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
-        auth(config, request)
+        const user = auth(config, request)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
         const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}`, {
           method: 'GET',
-          headers: { Authorization: `Bearer ${config.relayToken}` },
+          headers: {
+            Authorization: `Bearer ${config.relayToken}`,
+            'X-Relay-Owner': relayOwner(user, readClientId(request)),
+          },
         })
         return await proxyJsonOrRaw(upstream)
       }
@@ -903,7 +1021,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof CapacityQueueError || err instanceof QwenRequestError || err instanceof MimoRequestError) {
+      if (err instanceof CapacityQueueError || err instanceof QwenRequestError || err instanceof MimoRequestError || err instanceof DeepSeekRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
       console.error('[qfgw] request failed', err)
