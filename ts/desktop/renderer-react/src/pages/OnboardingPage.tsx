@@ -1,8 +1,8 @@
 // 首启引导只保留通用 Agent 的主流程:欢迎 → 选项目工作目录 → 完成。
 // 纯前端:完成标记落 localStorage(qf.onboarding.done),AppShell ready 后未标记才显示;「跳过」随时可点。
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Smiley } from '../components/shared/Smiley'
-import { pickWorkspaceFolder } from '../lib/workspace'
+import { getDefaultWorkspacePath, pickWorkspaceFolder } from '../lib/workspace'
 import { useSettingsStore } from '../stores/settingsStore'
 import { IconFolder } from '../components/shared/icons'
 
@@ -38,11 +38,12 @@ function PrimaryBtn({ children, onClick }: { children: ReactNode; onClick: () =>
   )
 }
 
-function GhostBtn({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+function GhostBtn({ children, onClick, title }: { children: ReactNode; onClick: () => void; title?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className="rounded-lg px-4 py-2 text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
@@ -54,7 +55,9 @@ function GhostBtn({ children, onClick }: { children: ReactNode; onClick: () => v
 export function OnboardingPage({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0)
   const [picking, setPicking] = useState(false)
+  const [defaultWorkspacePath, setDefaultWorkspacePath] = useState<string | null>(null)
   const workspaceRoot = useSettingsStore((s) => s.workspaceRoot)
+  useEffect(() => { void getDefaultWorkspacePath().then(setDefaultWorkspacePath) }, [])
   const finish = () => { markDone(); onDone() }
   const next = () => setStep((s) => s + 1)
   const chooseWorkspace = async () => {
@@ -92,8 +95,11 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
       )}
       <div className="mt-8 flex items-center gap-2">
         <PrimaryBtn onClick={() => { void chooseWorkspace() }}>{picking ? '正在打开...' : '选择文件夹'}</PrimaryBtn>
-        <GhostBtn onClick={finish}>先用默认位置</GhostBtn>
+        <GhostBtn onClick={finish} title={defaultWorkspacePath ?? undefined}>先用默认位置</GhostBtn>
       </div>
+      {!workspaceRoot && defaultWorkspacePath && (
+        <p className="mt-2 max-w-[420px] truncate text-[12px]" style={{ color: 'var(--color-text-tertiary)' }}>不选的话,文件会落在:{defaultWorkspacePath}</p>
+      )}
     </div>,
   ]
 
@@ -107,7 +113,7 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
             <span key={i} className="block h-1.5 w-1.5 rounded-full transition-colors" style={{ background: i === step ? 'var(--color-text-secondary)' : 'color-mix(in srgb, var(--color-text-tertiary) 35%, transparent)' }} />
           ))}
         </div>
-        {step < steps.length - 1 && <GhostBtn onClick={finish}>跳过引导</GhostBtn>}
+        {step < steps.length - 1 && <GhostBtn onClick={finish} title={defaultWorkspacePath ? `不选文件夹会用默认目录:${defaultWorkspacePath}` : undefined}>跳过引导</GhostBtn>}
       </div>
     </div>
   )
