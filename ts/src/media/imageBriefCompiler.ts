@@ -175,17 +175,32 @@ function referencesFrom(input: ImageBriefCompileInput, scene: 'poster' | 'portra
   }))
 }
 
-function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
+/** 海报字段编译结果 + 哪些字段是从自由文本正则猜的(未经用户在结构化表单里明确给出)。 */
+interface PosterBriefResult {
+  brief: PosterBrief
+  guessedLabels: string[]
+}
+
+function posterBrief(text: string, input: ImageBriefCompileInput): PosterBriefResult {
   const fields = input.posterText
   const templateId = inferTemplate(input.sceneTemplateId)
   const title = firstString(fields, 'title', '主标题', 'headline') || extractQuoted(text)
   const offer = firstString(fields, 'offer', 'subtitle', '副标题', '优惠')
-  const price = firstString(fields, 'price', '价格', '售价') || extractPrice(text)
-  const date = firstString(fields, 'date', '日期', '活动日期') || extractDate(text)
-  const time = firstString(fields, 'time', '时间', '活动时间') || extractTime(text)
-  const address = firstString(fields, 'address', '地址', '门店地址') || extractAddress(text)
-  const phone = firstString(fields, 'phone', 'telephone', '电话', '预约电话') || extractPhone(text)
-  const cta = firstString(fields, 'cta', '行动按钮', '按钮') || extractCta(text)
+  const guessedLabels: string[] = []
+  // 数字/日期/电话这类字段一旦用正则从自由文本里猜,语义可能错位(比如"满100减20"被当成价格20),
+  // 记下猜过哪些字段,让 understanding 摘要里提醒用户核对,而不是悄悄当成确定事实渲染上海报。
+  function guessedField(label: string, explicit: string, guess: () => string): string {
+    if (explicit) return explicit
+    const value = guess()
+    if (value) guessedLabels.push(label)
+    return value
+  }
+  const price = guessedField('价格', firstString(fields, 'price', '价格', '售价'), () => extractPrice(text))
+  const date = guessedField('日期', firstString(fields, 'date', '日期', '活动日期'), () => extractDate(text))
+  const time = guessedField('时间', firstString(fields, 'time', '时间', '活动时间'), () => extractTime(text))
+  const address = guessedField('地址', firstString(fields, 'address', '地址', '门店地址'), () => extractAddress(text))
+  const phone = guessedField('预约电话', firstString(fields, 'phone', 'telephone', '电话', '预约电话'), () => extractPhone(text))
+  const cta = guessedField('行动提示', firstString(fields, 'cta', '行动按钮', '按钮'), () => extractCta(text))
   const exactCopy = unique([
     title,
     offer,
@@ -198,18 +213,21 @@ function posterBrief(text: string, input: ImageBriefCompileInput): PosterBrief {
     ...Object.values(fields ?? {}).filter(value => typeof value === 'string').map(value => String(value)),
   ])
   return {
-    template_id: templateId,
-    title,
-    offer,
-    price,
-    date,
-    time,
-    address,
-    phone,
-    cta,
-    exact_copy: exactCopy,
-    brand_asset_ids: [],
-    reserved_regions: [],
+    brief: {
+      template_id: templateId,
+      title,
+      offer,
+      price,
+      date,
+      time,
+      address,
+      phone,
+      cta,
+      exact_copy: exactCopy,
+      brand_asset_ids: [],
+      reserved_regions: [],
+    },
+    guessedLabels,
   }
 }
 
@@ -290,7 +308,8 @@ export class ImageBriefCompiler {
     if (cached) return cached
     const scene = inferScene(userRequest, input)
     const refs = referencesFrom(input, scene)
-    const posterDraft = scene === 'poster' ? posterBrief(userRequest, input) : undefined
+    const posterResult = scene === 'poster' ? posterBrief(userRequest, input) : undefined
+    const posterDraft = posterResult?.brief
     const posterControl = posterDraft ? posterControls(posterDraft, refs, input.brandContext) : undefined
     const poster = posterDraft && posterControl
       ? { ...posterDraft, reserved_regions: posterControl.regions }
@@ -324,7 +343,7 @@ export class ImageBriefCompiler {
       poster,
       portrait,
       understanding: scene === 'poster'
-        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || userRequest}${poster!.price ? ` / ${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}`
+        ? `${TEMPLATE_LABELS[poster!.template_id]} / ${poster!.title || userRequest}${poster!.price ? ` / 价格:${poster!.price}` : ''}${input.ratio ? ` / ${input.ratio}` : ''}${posterResult?.guessedLabels.length ? `（${posterResult.guessedLabels.join('、')}是我从描述里猜的，生成前麻烦确认一下）` : ''}`
         : `照片编辑 / ${limitText(userRequest, 480)} / 保留未要求改变的本人特征`,
     })
     this.cache.set(key, brief)
