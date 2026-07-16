@@ -18,12 +18,11 @@ description: Verify the real Electron, React, preload IPC, and Bun sidecar user 
 
 ```bash
 cd ts
-bun run ui:build
-bun run desktop:build
-bun run desktop:dev
+bun run check:desktop   # renderer lint + Vitest + 生产构建
+bun run check:native    # sidecar 构建、Electron 主进程检查、--dir 打包与当前平台冒烟
 ```
 
-确认操作对象是开发版 `cn.zzyppz.billiards.desktop.dev`，且页面来自当前仓库的 `desktop/renderer-dist/index.html`。不要连接已安装的旧版本。
+交互式开发版在 `ts/desktop` 内启动(见该目录 package.json 的 `dev` / `electron:dev` 脚本)。确认操作对象是本仓库当前构建的 BilliardBuddy(`com.billiardbuddy.desktop`),页面来自当前仓库 `ts/desktop/dist/index.html`,不要连接已安装的旧版本或 CC-Haha。
 
 ## 默认场景
 

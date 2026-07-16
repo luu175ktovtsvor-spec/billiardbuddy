@@ -22,7 +22,7 @@ description: Audit security-sensitive changes across local files, shell commands
 2. 追踪输入从 renderer/模型/远程请求到最终文件、命令、网络或持久化操作。
 3. 检查默认拒绝、最小权限、失败关闭、脱敏和可回滚；不得用前端校验替代后端校验。客户端只能选择后端策略允许的权限档，`full_disk_access` 等派生能力不得由传输字段单独提升。
 4. 覆盖越界路径、畸形 payload、重放、并发、超时、断网、旧格式和敏感输出测试。
-5. 运行 `bun run check:secrets` 与受影响安全测试；扫描器会覆盖已跟踪及未跟踪且未被忽略的文件。需要远程验证时使用假 upstream 优先。
+5. 运行 `bun scripts/quality/check-secrets.ts` 与受影响安全测试；扫描器会覆盖已跟踪及未跟踪且未被忽略的文件。需要远程验证时使用假 upstream 优先。
 
 安全审计解决技术边界问题，不自动转化为新的产品文案、确认弹窗或用户使用限制。
 

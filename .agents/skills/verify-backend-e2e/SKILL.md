@@ -24,11 +24,11 @@ description: Verify the real Bun sidecar end to end with deterministic scripted 
 
 ```bash
 cd ts
-bun run e2e:backend
+bun test src/server/__tests__/e2e   # 真实 startServer + 脚本模型出口的后端 E2E
 ```
 
-该文件命名为 `backend.e2e.test.ts`，因此 `bun test` 和统一质量门也会自动发现。失败由 Bun 标准报告定位，不再维护第二套自写 manifest/退出码。
+这些 `*.test.ts` 位于 `ts/src/server/__tests__/e2e`,`bun test` 和 `bun run check:server` 都会自动发现。失败由 Bun 标准报告定位,不再维护第二套自写 manifest/退出码。真实 CLI-经-网关的活体链路验证由 `ts/src/server/__tests__/qf-gateway-cli-live.ts`(env 门控手动 runner)承担,不进普通 CI。
 
 ## 新增测试
 
-在 `ts/e2e/backend/backend.e2e.test.ts` 增加稳定检查点。每项同时断言事件/响应、持久化证据和适用的真实副作用；用 `finally` 停 server、清临时目录。真模型只做手动 live smoke，必须显式开启并报告实际出口、费用和不确定性，不得混进普通 CI。
+在 `ts/src/server/__tests__/e2e` 增加稳定检查点。每项同时断言事件/响应、持久化证据和适用的真实副作用；用 `finally` 停 server、清临时目录。真模型只做手动 live smoke，必须显式开启并报告实际出口、费用和不确定性，不得混进普通 CI。

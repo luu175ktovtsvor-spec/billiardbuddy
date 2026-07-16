@@ -12,34 +12,32 @@
 
 ## 桌面产品责任模块
 
+> 事实源:当前 `ts/` 已整体是导入的 CC-Haha(Claude Code)内核,REST 边界在 `ts/src/server/api/*`(由 `ts/src/server/router.ts` 分发),WS 事件契约在 `ts/src/server/ws/events.ts`;历史台球产品域(门店知识/招聘/经营工作流/生图/视频工作台)尚未在内核之上重建,见下方"产品业务层"。
+
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
-| 契约与传输 | `ts/shared/contracts`、`ts/src/server`（`index.ts` 装配、`websocketHandler.ts` WS 生命周期、`middleware/controlPlaneAuth.ts` 本地控制面身份）、renderer `api` | REST/SSE/WS/IPC Schema、边界解析、兼容入口和每次启动的本地控制令牌 |
-| Electron/sidecar | `ts/desktop/electron`、`desktop/sidecars`、`desktop/renderer-react` | 窗口、IPC、进程生命周期与唯一 React renderer 入口；main 生成控制令牌并经 preload 交付可信 renderer，sidecar 不提供旧静态页面 |
-| 会话与事件流 | `server/services/session*`、`server/routes/sessionMetadataRoutes.ts`、`server/routes/sessionActivityRoutes.ts`、`server/routes/sessionRewindRoutes.ts`、`server/routes/sessionArchiveRoutes.ts`、renderer chat/session | 会话元数据、活动、回退与归档 REST，transcript、回放、rewind |
-| Agent 循环 | `ts/src/harness` | ReAct 循环和系统提示 |
-| 模型与代理 | `model`、`proxy`、`server/services/provider*`、`server/routes/providerRoutes.ts` | provider 管理 REST、协议转换、降级 |
-| 上下文与记忆 | `context`、`memory`、`goals` | 压缩、记忆、目标状态 |
-| 工具执行 | `tools` | 文件、命令、搜索、交互工具 |
-| 工作区 | `workspace`、`sandbox`、`server/routes/workspaceRoutes.ts`、`server/routes/workspaceFileRoutes.ts`、renderer workspace | 工作区与文件预览 REST、cwd、文件树、Git、终端 |
-| 权限安全 | `permissions`、`sandbox`、`server/services/agentPermissionPolicy.ts`、`server/services/userSettings.ts` | 权限档、审批、路径与命令护栏；用户设置和发行策略限制会话权限上限，全盘访问只从最终权限档派生 |
-| 扩展系统 | `skills`、`commands`、`hooks`、`packs`、`plugins`、`server/extensionRoots.ts`、扩展 routes、`shared/contracts/extensions.ts`、renderer `api/extensions.ts` 与 `PluginsPage.tsx` | 技能/命令/领域包发现与展开、启用插件贡献的统一运行时装配、插件管理 REST 和前端披露 |
-| MCP | `mcp`、`server/routes/mcpRoutes.ts`、`shared/contracts/extensions.ts`、renderer `api/mcp.ts` | MCP 管理 REST、配置、信任、OAuth、工具加载和前端连接状态 |
-| 任务与子代理 | `tasks`、`agents`、`server/routes/taskRoutes.ts` | 后台任务 REST 边界、子代理、团队 |
-| Remote Bridge | `tasks/bridge*`、`server/routes/bridgeSessionRoutes.ts`、`server/routes/bridgeWorkerRoutes.ts` | 远程控制会话数据面、消息传输与 worker 生命周期 |
-| 定时任务 | `ScheduledTaskRunner`、`server/routes/scheduledTaskRoutes.ts`、renderer scheduled | 排程、REST 边界、执行、运行历史；任务可经 `workflow_id` 引用经营工作流 |
-| 经营工作流 | `ts/src/workflows`、`ts/shared/contracts/workflows.ts`、`server/routes/workflowRoutes.ts` | 确定性多步编排:定义(内置+用户 JSON)、运行记录与失败关闭;每步经注入的 runTurn(server 装配 createTurnStream)跑真 Agent 回合,整条运行共用一个会话 |
-| 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（生成编排与任务状态独立于 `ImageWorkbenchPage.tsx`，`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
-| 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 单一 V2 视频真相源：Brief、Scene/Timeline、素材证据、规划、预览与渲染；旧 V1 项目只在 `projectStore.ts` 读取并迁移 |
+| 契约与传输 | `ts/src/server`（`router.ts` REST 分发、`ws/events.ts` WS 事件契约、`ws/handler.ts` WS 生命周期、`middleware` 本地控制面身份）、`ts/src/server/api/*` | REST/WS 边界解析、每次启动的本地控制令牌与兼容入口 |
+| Electron/sidecar | `ts/desktop/electron`（`main.ts`、`services/serverRuntime.ts`、`services/sidecarManager.ts`）、`ts/desktop/src` renderer、`ts/src/entrypoints` sidecar 入口 | 窗口、IPC、Bun sidecar 生命周期与产品身份/数据根隔离；main 生成控制令牌并经 preload 交付可信 renderer |
+| 会话与事件流 | `ts/src/server/api/sessions.ts`、`ts/src/server/api/conversations.ts`、`ts/src/server/sessionManager.ts`、`ts/src/server/services` | 会话元数据、transcript、活动与回放 REST；CLI 子进程会话装配与事件流 |
+| Agent 循环 | `ts/src/query`、`ts/src/assistant`、`ts/src/tools` | ReAct 回合、系统提示、工具调用与上下文压缩(内核,不改内部) |
+| 模型与代理 | `ts/src/server/api/models.ts`、`ts/src/server/api/providers.ts`、`ts/src/server/services/provider*`、`ts/src/server/services/qfGatewayProvider.ts`、`ts/src/server/proxy` | provider 管理 REST、Anthropic↔OpenAI 协议转换、托管 qf-gateway 自动激活与凭据边界 |
+| 上下文与记忆 | `ts/src/context`、`ts/src/memdir`、`ts/src/goals`、`ts/src/server/api/memory.ts` | 压缩、记忆、目标状态 |
+| 工作区与文件 | `ts/src/server/api/filesystem.ts`、`ts/src/server/api/localFile.ts`、`ts/src/server/api/previewFs.ts` | 工作区、文件树/预览 REST |
+| 权限与安全 | `ts/src/server/api/settings.ts`、`ts/src/server/services`、`ts/src/server/middleware` | 权限档、审批、路径与命令护栏；控制面身份与失败关闭写入 |
+| 扩展系统 | `ts/src/skills`、`ts/src/commands`、`ts/src/hooks`、`ts/src/plugins`、`ts/src/server/api/skills.ts`、`ts/src/server/api/plugins.ts` | 技能/命令/hook/plugin 发现与运行时装配、扩展管理 REST |
+| MCP | `ts/src/server/api/mcp.ts`、mcp 相关 services | MCP 管理 REST、配置、信任、OAuth 与工具加载 |
+| 任务与子代理 | `ts/src/tasks`、`ts/src/server/api/agents.ts`、`ts/src/server/api/teams.ts` | 后台任务、子代理与团队 REST 边界 |
+| 远程桥接 | `ts/src/bridge`、`ts/src/remote` | 远程控制会话数据面、消息传输与 worker 生命周期(默认托管模式不后台连接私有端点) |
+| 定时任务 | `ts/src/server/api/scheduled-tasks.ts`、`ts/src/jobs` | 排程、REST 边界、执行与运行历史 |
+| OAuth 与设置 | `ts/src/server/api/settings.ts`、`ts/src/server/api/haha-oauth.ts`、`ts/src/server/api/haha-openai-oauth.ts` | 偏好、Agent 权限上限、官方能力 OAuth(仅用户显式开启才连) |
+| 诊断与运维 | `ts/src/server/api/diagnostics.ts`、`ts/src/server/api/doctor.ts`、`ts/src/server/api/status.ts`、`ts/src/migrations` | 诊断、Doctor 默认拒绝修复、迁移与运行状态 |
+| IM 适配器 | `ts/adapters`（telegram/feishu/wechat/dingtalk/whatsapp）、`ts/src/server/api/adapters.ts` | IM 适配器 sidecar 与绑定 REST；可选依赖(如 baileys)懒加载,不阻断 server 启动 |
 | 语音与口播转录 | `gateway/transcription.ts`(Fun-ASR provider)、桌面端录音/音轨上传与远程文本+时间戳契约 | 客户端录音/音轨上传、远程文本与时间戳契约、网关 Fun-ASR-Flash 转录 provider(Whisper 已退役) |
-| 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
-| 招聘业务 | `ts/src/recruitment`、`ts/shared/contracts/recruitment.ts`、`server/routes/recruitmentRoutes.ts` | 招聘事实源(候选人漏斗/跟进/话术草稿/岗位缺口):聊天窄工具、REST 与定时任务共用一份数据;人工交接连接器,sent 必须带读回证据(服务层强制),不做自动外发 |
-| 设置与凭据 | `server/services/userSettings.ts`、`server/routes/agentSettingsRoutes.ts`、settings/provider/credential services、`shared/contracts/agent-settings.ts`、SettingsPage | 偏好、Agent 权限上限、provider、凭据；设置损坏时保留原文件并失败关闭写入 |
-| 系统运维 | telemetry、backup、migrations、assets | 遥测、备份、迁移、组件资产 |
+| 产品网关边缘 | `gateway/`(`app.ts` 双模型路由 + `qwenChat.ts`/`mimoChat.ts`/`webSearch.ts`/`transcription.ts`/`modelCapacity.ts`)、`relay/`、`dataeye/` | Qwen/MiMo 双模型代理、独立联网搜索、图片中转与数据服务;真上游密钥只在服务器 |
 
-## 前端功能域
+## 产品业务层(Phase-2 重建目标)
 
-把代码逐步聚合为聊天会话、工作区、扩展管理、定时任务、生图、视频、门店设置、应用外壳八个功能域。组件、store、API 和测试应跟随功能域；跨域只通过公共入口通信。
+历史台球产品域——门店知识 RAG、招聘事实源、经营工作流、生图/视频工作台——在导入的 CC-Haha 内核中尚不存在,属于在内核之上重建的目标,不在当前模块地图内以既有模块声明。重建时新增责任模块须同次更新本地图与相关 Skill,并优先落在 `ts/src/server/api` 边界 + `ts/src/server/ws/events.ts` 事件契约。
 
 ## 依赖规则
 

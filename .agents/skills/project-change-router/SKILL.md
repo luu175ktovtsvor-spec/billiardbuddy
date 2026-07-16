@@ -59,7 +59,7 @@ node .agents/skills/project-change-router/scripts/inspect-change-surface.mjs <�
 - 先判 A 线 Agent 循环还是 B 线确定性产品功能；不要创建第三套“衔接层”。
 - 保持本地内核的 JSONL/JSON 文件存储，不引入 SQL。
 - 不在 React 组件里拼路由或解释原始响应；通过功能 API 和 store 入口归一化。
-- 新增 WS、SSE、IPC 和跨层 REST 契约优先落 `ts/shared/contracts`，用 Zod 推导类型并在边界解析；禁止新增手写镜像。
+- WS/SSE 事件契约落 `ts/src/server/ws/events.ts`,跨层 REST 契约由 `ts/src/server/api` 对应 handler 定义并在边界解析;同一契约只留一处、消费者导入,禁止新增手写镜像。
 - 不继续向 `ts/src/server/index.ts` 堆独立业务逻辑；新增路由优先进入责任模块。
 - 本地 renderer 与 sidecar 同包发布，可原子改契约；远程服务必须向后兼容并按服务器先、客户端后发布。
 - 保留工作树中用户已有改动；禁止借模块化之名扩大重构范围。
