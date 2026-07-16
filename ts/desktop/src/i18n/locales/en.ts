@@ -199,7 +199,7 @@ export const en = {
   'settings.activity.title': 'Token usage',
   'settings.activity.profileTitle': 'Profile',
   'settings.activity.profilePrivacy': 'Local only',
-  'settings.activity.defaultHandle': 'github.com/NanmiCoder/cc-haha',
+  'settings.activity.defaultHandle': 'BilliardBuddy',
   'settings.activity.editProfile': 'Edit profile',
   'settings.activity.displayName': 'Display name',
   'settings.activity.subtitle': 'Second line',

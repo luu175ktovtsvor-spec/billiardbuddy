@@ -26,6 +26,7 @@ import {
 } from '../types/provider.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
+import { whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 
 const providerService = new ProviderService()
 
@@ -50,6 +51,9 @@ export async function handleProvidersApi(
 
     // GET /api/providers/auth-status
     if (id === 'auth-status' && req.method === 'GET') {
+      // Wait for startup gateway registration so auth-status doesn't race a
+      // pre-registration read of activeId on first load.
+      await whenQfGatewayReady()
       const status = await providerService.checkAuthStatus()
       return Response.json(status)
     }

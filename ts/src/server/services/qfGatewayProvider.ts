@@ -65,6 +65,26 @@ export function qfGatewayConfigured(): boolean {
 }
 
 /**
+ * Env keys carrying the product-gateway credential/config. NO CLI subprocess — and
+ * no adapter sidecar — may inherit these: the agent reaches the gateway through the
+ * local provider proxy, never these vars. They MUST be stripped at every process
+ * spawn chokepoint (interactive CLI, cron/scheduled-task CLI, adapter sidecars) so a
+ * single missed path can't leak the token via e.g. `printenv` under bypassPermissions.
+ */
+export const HOST_ONLY_GATEWAY_ENV_KEYS = [
+  'QF_GATEWAY_TOKEN',
+  'QF_GATEWAY_URL',
+  'QF_GATEWAY_MODEL',
+] as const
+
+/** Return a copy of `env` with the host-only gateway keys removed (never mutates input). */
+export function stripHostOnlyGatewayEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env }
+  for (const key of HOST_ONLY_GATEWAY_ENV_KEYS) delete out[key]
+  return out
+}
+
+/**
  * Resolve the upstream proxy target from process.env at request time.
  * This is where the real app token is overlaid onto the proxy — it is the only
  * place the token is read for outbound requests.

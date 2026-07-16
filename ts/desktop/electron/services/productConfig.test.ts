@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { applyGatewayConfigToEnv, resolveProductGatewayConfig } from './productConfig'
+import { applyGatewayConfigToEnv, resolveProductGatewayConfig, stripGatewayEnvForAdapters } from './productConfig'
 
 const tempDirs: string[] = []
 
@@ -117,5 +117,20 @@ describe('applyGatewayConfigToEnv', () => {
     const base = { PATH: '/usr/bin' }
     // Adapter sidecars pass undefined → same object back, so the token never leaks to them.
     expect(applyGatewayConfigToEnv(base, undefined)).toBe(base)
+  })
+})
+
+describe('stripGatewayEnvForAdapters', () => {
+  it('removes gateway keys so an env-override token never reaches adapter sidecars', () => {
+    const out = stripGatewayEnvForAdapters({
+      PATH: '/usr/bin',
+      QF_GATEWAY_TOKEN: 'ops-override-token',
+      QF_GATEWAY_URL: 'https://gw/gw',
+      QF_GATEWAY_MODEL: 'qwen3-coder-plus',
+    })
+    expect(out.QF_GATEWAY_TOKEN).toBeUndefined()
+    expect(out.QF_GATEWAY_URL).toBeUndefined()
+    expect(out.QF_GATEWAY_MODEL).toBeUndefined()
+    expect(out.PATH).toBe('/usr/bin')
   })
 })

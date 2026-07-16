@@ -20,7 +20,7 @@ import {
   type SidecarChild,
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
-import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
+import { applyGatewayConfigToEnv, stripGatewayEnvForAdapters, type ProductGatewayConfig } from './productConfig'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
@@ -124,7 +124,9 @@ export class ElectronServerRuntime {
   }
 
   private async startAdaptersSidecars(serverUrl: string): Promise<void> {
-    const env = await this.resolveSidecarBaseEnv()
+    // Adapters never call the gateway; strip the token so the dev/ops env-override
+    // path (QF_GATEWAY_TOKEN in the Electron process env) can't leak into adapters.
+    const env = stripGatewayEnvForAdapters(await this.resolveSidecarBaseEnv())
     for (const [label, flag] of [
       ['feishu', '--feishu'],
       ['telegram', '--telegram'],

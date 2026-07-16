@@ -10,6 +10,7 @@
 import * as fs from 'fs/promises'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'path'
+import { stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { CronService, type CronTask } from './cronService.js'
@@ -50,7 +51,11 @@ export function buildCronTaskSpawnOptions(
     stdout: 'pipe',
     stderr: 'pipe',
     cwd,
-    env,
+    // Cron/scheduled-task CLI subprocesses run under bypassPermissions, so a task's
+    // Bash tool could `printenv` any inherited value. The product-gateway token/URL/
+    // model must never reach the CLI (it uses the local proxy), so strip them here —
+    // the same chokepoint guarantee as the interactive CLI spawn.
+    env: stripHostOnlyGatewayEnv(env),
     windowsHide: true,
   } as const
 }

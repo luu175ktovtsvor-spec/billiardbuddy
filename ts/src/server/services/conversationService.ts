@@ -9,6 +9,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
 import { ProviderService } from './providerService.js'
 import {
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
@@ -65,23 +66,16 @@ export function cliExitSeverity(code: number | null): 'info' | 'error' {
 // The product-gateway app token / URL / model live ONLY in the server process env
 // (injected by the desktop host). The CLI subprocess reaches the gateway through the
 // local provider proxy (ANTHROPIC_BASE_URL), so it must never inherit these. Stripping
-// them at the single spawn chokepoint guarantees the token stays out of the CLI env
-// regardless of how the child env was assembled upstream.
-const HOST_ONLY_GATEWAY_ENV_KEYS = [
-  'QF_GATEWAY_TOKEN',
-  'QF_GATEWAY_URL',
-  'QF_GATEWAY_MODEL',
-] as const
-
+// them at this spawn chokepoint guarantees the token stays out of the CLI env
+// regardless of how the child env was assembled upstream. The same strip runs at the
+// cron/scheduled-task spawn chokepoint (cronScheduler.buildCronTaskSpawnOptions).
 export function buildConversationCliSpawnOptions(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ) {
-  const sanitizedEnv: NodeJS.ProcessEnv = { ...env }
-  for (const key of HOST_ONLY_GATEWAY_ENV_KEYS) delete sanitizedEnv[key]
   return {
     cwd,
-    env: sanitizedEnv,
+    env: stripHostOnlyGatewayEnv(env),
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',

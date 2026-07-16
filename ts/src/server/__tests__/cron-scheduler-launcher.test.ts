@@ -225,6 +225,26 @@ describe('cron scheduler launcher resolution', () => {
     })
   })
 
+  it('strips the product-gateway token/url/model from the scheduled-task CLI env', () => {
+    // Cron tasks run under bypassPermissions, so a leaked token would be readable via
+    // the Bash tool. The token must never reach the scheduled-task CLI subprocess.
+    const env = {
+      CLAUDECODE: '1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456/proxy/providers/qf-gateway',
+      QF_GATEWAY_TOKEN: 'app-token-SECRET',
+      QF_GATEWAY_URL: 'https://gateway.example',
+      QF_GATEWAY_MODEL: 'qwen3-coder-plus',
+    }
+    const opts = buildCronTaskSpawnOptions('/workspace/project', env)
+    expect(opts.env.QF_GATEWAY_TOKEN).toBeUndefined()
+    expect(opts.env.QF_GATEWAY_URL).toBeUndefined()
+    expect(opts.env.QF_GATEWAY_MODEL).toBeUndefined()
+    // The local proxy base URL the CLI actually needs is preserved.
+    expect(opts.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3456/proxy/providers/qf-gateway')
+    // Caller's env object is not mutated.
+    expect(env.QF_GATEWAY_TOKEN).toBe('app-token-SECRET')
+  })
+
   it('prefers an explicit CC_HAHA_ROOT when it points at a source checkout', async () => {
     const sourceRoot = path.join(tmpDir, 'source')
     await createSourceRoot(sourceRoot)

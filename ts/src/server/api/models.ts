@@ -22,6 +22,7 @@ import {
 import {
   buildQfGatewayProvider,
   isQfGatewayProviderId,
+  whenQfGatewayReady,
 } from '../services/qfGatewayProvider.js'
 
 // ─── Fallback models (used when no provider is configured) ────────────────────
@@ -202,6 +203,9 @@ export async function handleModelsApi(
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 async function handleModelsList(): Promise<Response> {
+  // Gate on the startup gateway registration so a first-load /api/models call never
+  // races a pre-registration null activeId (same guarantee as WS session start).
+  await whenQfGatewayReady()
   const { providers, activeId } = await providerService.listProviders()
   if (isOpenAIOfficialProviderId(activeId)) {
     return Response.json({
