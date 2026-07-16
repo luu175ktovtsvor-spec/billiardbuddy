@@ -12,6 +12,7 @@ test('capacity scheduler applies per-user limits without blocking other users', 
     queued: 1,
     maxConcurrent: 2,
     maxConcurrentPerUser: 1,
+    maxConcurrentPerToken: 2, // defaults to the global cap when not specified
   })
 
   firstB.release()

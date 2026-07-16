@@ -99,6 +99,7 @@ type GatewayConfig = {
   qwenRpm: number
   qwenConc: number
   qwenUserConc: number
+  qwenTokenConc: number
   qwenQueueMaxWait: number
   qwenRetryMax: number
   qwenRetryBaseMs: number
@@ -110,6 +111,7 @@ type GatewayConfig = {
   mimoRpm: number
   mimoConc: number
   mimoUserConc: number
+  mimoTokenConc: number
   mimoQueueMaxWait: number
   mimoRetryMax: number
   mimoRetryBaseMs: number
@@ -121,6 +123,7 @@ type GatewayConfig = {
   deepseekRpm: number
   deepseekConc: number
   deepseekUserConc: number
+  deepseekTokenConc: number
   deepseekQueueMaxWait: number
   deepseekRetryMax: number
   deepseekRetryBaseMs: number
@@ -380,6 +383,9 @@ function loadConfig(env: Env): GatewayConfig {
     qwenRpm: intEnv(env, 'GW_QWEN_RPM', 90),
     qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
     qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', 2)),
+    // 单 token 名下所有装机合计在途上限:默认=全局并发(共享私测 token 需用满整池)。发独立用户
+    // token 后设为低于全局以在 token 间预留 headroom;是防"单 token 伪造多装机独占池"的二级闸。
+    qwenTokenConc: Math.max(1, intEnv(env, 'GW_QWEN_TOKEN_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
     qwenQueueMaxWait: Math.max(0, floatEnv(env, 'GW_QWEN_QUEUE_MAX_WAIT', 120)),
     // 一次逻辑调用最多只额外尝试一次(连接错误/可重试 5xx),硬夹在 [0,1]:CC CLI 自己也会重试,
     // 网关再叠加多次会把一次调用放大成对上游的多次请求。429 由 isRetryableStatus 直接不重试。
@@ -393,6 +399,7 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 90),
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
+    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
     // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
@@ -407,6 +414,7 @@ function loadConfig(env: Env): GatewayConfig {
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 60),
     deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 32)),
     deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', 2)),
+    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 32))),
     deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
@@ -568,9 +576,12 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
     // 公平,永远受同一个 provider 全局并发上限约束,伪造装机 id 也无法放大全局额度或提权。
     const schedId = client ? `${user}#${client}` : user
     const usageNote = (attempts: number) => `attempts=${attempts}${client ? `;client=${client}` : ''}`
+    // tokenId=user 让"同一 token 名下所有装机"合计受 maxConcurrentPerToken 约束:即使伪造任意多
+    // client id,一个 token 也拿不到超过其 token 级上限的在途,防单 token 独占整池。
     const permit = await provider.capacity.acquire(schedId, {
       maxWaitMs: provider.queueMaxWait * 1000,
       signal: request.signal,
+      tokenId: user,
     })
     const started = performance.now()
     try {
@@ -646,9 +657,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const qwenBucket = new TokenBucket(config.qwenRpm)
-  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc)
+  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc)
   const mimoBucket = new TokenBucket(config.mimoRpm)
-  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc)
+  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc, config.mimoTokenConc)
   // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
   const qwenChat: ChatHandler | null = config.qwenKey
     ? createChatHandler({
@@ -691,7 +702,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     }, fetchImpl, store)
     : null
   const deepseekBucket = new TokenBucket(config.deepseekRpm)
-  const deepseekCapacity = new FairCapacityScheduler(config.deepseekConc, config.deepseekUserConc)
+  const deepseekCapacity = new FairCapacityScheduler(config.deepseekConc, config.deepseekUserConc, config.deepseekTokenConc)
   const deepseekChat: ChatHandler | null = config.deepseekKey
     ? createChatHandler({
       label: 'deepseek',
