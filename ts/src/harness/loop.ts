@@ -1200,7 +1200,7 @@ async function* gateOneCall(
       const answerStartLen = ctx.steerInbox?.length ?? 0
       yield questionEvent(question)
       const answer = await waitForSteeringAnswer(ctx, question.timeoutMs, answerStartLen)
-      yield feedback(answer ? `<user_answer>\n${answer}\n</user_answer>` : '<user_answer status="timeout" />', false)
+      yield feedback(answer ? `<user_answer>\n${answer}\n</user_answer>` : '<user_answer status="timeout">The user has not answered yet. Do not guess, assume, or fabricate what they would choose and proceed as if they had. Tell the user you are still waiting, or ask again if it still matters; otherwise continue with only what is already confirmed.</user_answer>', false)
     } catch (err) {
       yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
     }
@@ -1238,7 +1238,7 @@ async function* gateOneCall(
       } else if (answer) {
         yield feedback(`<plan_mode_rejected>\n${answer}\n</plan_mode_rejected>`, false)
       } else {
-        yield feedback('<plan_mode_enter status="timeout" />', false)
+        yield feedback('<plan_mode_enter status="timeout">The user has not responded yet. Do not assume approval and do not enter plan mode on your own. Tell the user you are still waiting for their decision.</plan_mode_enter>', false)
       }
     } catch (err) {
       yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
@@ -1280,7 +1280,7 @@ async function* gateOneCall(
       } else if (answer) {
         yield feedback(`<plan_needs_revision>\n${answer}\n</plan_needs_revision>`, false)
       } else {
-        yield feedback('<plan_approval status="timeout" />', false)
+        yield feedback('<plan_approval status="timeout">The user has not approved or rejected the plan yet. Do not assume approval and do not start implementing it. Tell the user the plan is still waiting for their decision.</plan_approval>', false)
       }
     } catch (err) {
       yield feedback(`错误:${err instanceof Error ? err.message : String(err)}`, true)
