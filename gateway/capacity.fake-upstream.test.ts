@@ -153,6 +153,61 @@ test('单 token 二级闸:伪造大量 installationId 也拿不到超过 token �
   expect((await Promise.all([...aReqs, ...bReqs])).every(s => s === 200)).toBe(true)
 })
 
+// ── 100 用户 × 3 窗口 = 300 并发(容量证据,假 upstream;不打真上游)──────
+test('单装机 3 窗口:同一装机同时只有 2 路在途,第 3 窗口排队(单装机上限)', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
+  const reqs = Array.from({ length: 3 }, () => fire(fetch, 'deepseek-v4-flash', 'solo-user-0001'))
+  await tick()
+  expect(u.stats.deepseek.peak).toBe(2) // 3 个窗口,单装机只 2 路在途,第 3 个排队
+  u.open()
+  expect((await Promise.all(reqs)).every(s => s === 200)).toBe(true)
+})
+
+test('100 装机 × 每机 3 窗口(300 并发)同池:全局上限封顶、全部排空、N=N、许可归零', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
+  const reqs: Array<Promise<number>> = []
+  for (let i = 0; i < 100; i++) {
+    const id = `user-${String(i).padStart(4, '0')}`
+    reqs.push(fire(fetch, 'deepseek-v4-flash', id))
+    reqs.push(fire(fetch, 'deepseek-v4-flash', id))
+    reqs.push(fire(fetch, 'deepseek-v4-flash', id)) // 3 窗口
+  }
+  await tick(80)
+  expect(u.stats.deepseek.peak).toBe(32) // 300 想跑,全局硬顶 32,其余排队(伪造装机也超不过)
+  expect(u.stats.cross).toBe(0)
+  u.open()
+  const statuses = await Promise.all(reqs)
+  expect(statuses.filter(s => s === 200).length).toBe(300) // 全部排空,无饿死
+  expect(u.stats.deepseek.calls).toBe(300) // 300 次逻辑 = 300 次上游,无放大
+  expect(u.stats.deepseek.peak).toBe(32) // 全程 ≤ 上限
+  expect(await capacity(fetch).then(c => c.deepseek)).toEqual({ active: 0, queued: 0 }) // 无许可泄漏
+})
+
+test('100 装机 × 3 窗口混合三池(300 并发):各池独立封顶、跨供应商=0、全部排空、许可归零', async () => {
+  const u = poolUpstream()
+  const fetch = makeGateway(u.fetchImpl)
+  const reqs: Array<Promise<number>> = []
+  for (let i = 0; i < 100; i++) {
+    const id = `mixuser-${String(i).padStart(4, '0')}`
+    reqs.push(fire(fetch, 'qwen3-coder-plus', id))
+    reqs.push(fire(fetch, 'mimo-v2.5', id))
+    reqs.push(fire(fetch, 'deepseek-v4-flash', id)) // 3 个窗口分别用三家
+  }
+  await tick(80)
+  expect(u.stats.cross).toBe(0)
+  expect(u.stats.qwen.peak).toBe(16)      // 三池各自独立封顶,互不阻塞
+  expect(u.stats.mimo.peak).toBe(16)
+  expect(u.stats.deepseek.peak).toBe(32)
+  u.open()
+  const statuses = await Promise.all(reqs)
+  expect(statuses.filter(s => s === 200).length).toBe(300)
+  expect(u.stats.qwen.calls).toBe(100); expect(u.stats.mimo.calls).toBe(100); expect(u.stats.deepseek.calls).toBe(100)
+  const cap = await capacity(fetch)
+  for (const k of ['qwen', 'mimo', 'deepseek'] as Pool[]) expect(cap[k]).toEqual({ active: 0, queued: 0 })
+})
+
 // ── 错误 / 中断路径:许可必须释放(active/queued 回 0) ─────────────
 test('429 立即回传不重试,一次逻辑调用只一次上游,许可释放', async () => {
   let calls = 0
