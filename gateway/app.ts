@@ -18,10 +18,58 @@ import {
   prepareQwenChatBody,
   QwenRequestError,
 } from './qwenChat'
+import {
+  fetchMimoWithRetry,
+  loadMimoAllowedModels,
+  prepareMimoChatBody,
+  MimoRequestError,
+} from './mimoChat'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
+
+type ChatRetryOptions = {
+  maxRetries: number
+  baseDelayMs: number
+  maxDelayMs: number
+  signal?: AbortSignal
+  sleep?: (ms: number) => Promise<void>
+  random?: () => number
+}
+
+interface ChatRequestError {
+  readonly status: number
+  readonly publicMessage: string
+}
+
+type ChatRequestErrorCtor = new (status: number, publicMessage: string) => Error & ChatRequestError
+
+// 一个可路由的聊天上游(千问 / MiMo)。每个上游各自持有独立的凭据、白名单、限速、
+// 并发、重试与用量标签;共享的代理逻辑由 createChatHandler 消费本结构,互不串台。
+type ChatProvider = {
+  label: 'qwen' | 'mimo'
+  base: string
+  key: string
+  defaultModel: string
+  allowedModels: ReadonlySet<string>
+  bucket: TokenBucket
+  capacity: FairCapacityScheduler
+  queueMaxWait: number
+  retryMax: number
+  retryBaseMs: number
+  retryMaxMs: number
+  prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string) => { body: string }
+  fetchWithRetry: (
+    doRequest: (attempt: number) => Promise<Response>,
+    opts: ChatRetryOptions,
+  ) => Promise<{ response: Response; attempts: number }>
+  RequestError: ChatRequestErrorCtor
+  retrySleep?: (ms: number) => Promise<void>
+  retryRandom?: () => number
+}
+
+type ChatHandler = (request: Request, rawBody: string, user: string) => Promise<Response>
 
 type GatewayConfig = {
   qwenKey: string
@@ -45,6 +93,17 @@ type GatewayConfig = {
   qwenRetryBaseMs: number
   qwenRetryMaxMs: number
   qwenAllowedModels: ReadonlySet<string>
+  mimoKey: string
+  mimoBase: string
+  mimoModel: string
+  mimoRpm: number
+  mimoConc: number
+  mimoUserConc: number
+  mimoQueueMaxWait: number
+  mimoRetryMax: number
+  mimoRetryBaseMs: number
+  mimoRetryMaxMs: number
+  mimoAllowedModels: ReadonlySet<string>
   imgIpm: number
   imgConc: number
   queueMaxWait: number
@@ -80,6 +139,8 @@ export interface GatewayDeps {
   webSearchImpl?: GatewayWebSearch | null
   qwenRetrySleep?: (ms: number) => Promise<void>
   qwenRetryRandom?: () => number
+  mimoRetrySleep?: (ms: number) => Promise<void>
+  mimoRetryRandom?: () => number
 }
 
 export class HttpError extends Error {
@@ -279,9 +340,10 @@ function parseAppTokens(raw: string | undefined): Map<string, string> {
 
 function loadConfig(env: Env): GatewayConfig {
   return {
-    qwenKey: required(env, 'GW_QWEN_KEY'),
+    // 真实上游密钥只在服务端读取,缺失时对应上游 handler 置空(路由到它会 503),绝不回退到另一家。
+    qwenKey: env.GW_QWEN_KEY ?? '',
     qwenBase: (env.GW_QWEN_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
-    qwenModel: required(env, 'GW_QWEN_MODEL'),
+    qwenModel: env.GW_QWEN_MODEL ?? 'qwen3-coder-plus',
     relayBase: required(env, 'GW_RELAY_BASE').replace(/\/+$/, ''),
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
@@ -301,6 +363,17 @@ function loadConfig(env: Env): GatewayConfig {
     qwenRetryBaseMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_BASE_MS', 500)),
     qwenRetryMaxMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_MAX_MS', 8000)),
     qwenAllowedModels: loadQwenAllowedModels(env),
+    mimoKey: env.GW_MIMO_KEY ?? '',
+    mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
+    mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
+    mimoRpm: intEnv(env, 'GW_MIMO_RPM', 90),
+    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
+    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
+    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
+    mimoRetryMax: Math.max(0, intEnv(env, 'GW_MIMO_MAX_RETRIES', 3)),
+    mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
+    mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
+    mimoAllowedModels: loadMimoAllowedModels(env),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
@@ -409,6 +482,102 @@ function withStreamLogging(
   return new Response(stream, { status: resp.status, headers })
 }
 
+// 仅用于路由决策:宽松解析 model 名,解析失败返回空串(交由 handler 的 prepareBody 兜底 400)。
+function parseChatModel(rawBody: string): string {
+  try {
+    const parsed = JSON.parse(rawBody)
+    if (isRecord(parsed) && typeof parsed.model === 'string') return parsed.model
+  } catch {
+    // 请求体不是合法 JSON 时不在此报错;路由到默认上游后由 prepareBody 统一 fail closed。
+  }
+  return ''
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * 把单个聊天上游(千问 / MiMo)的代理逻辑收敛成一个 handler:鉴权后的容量许可、令牌桶限速、
+ * 带重试的上游 fetch、SSE 原样透传、上游错误脱敏、用量落库都走同一套,只由传入的 provider 参数化。
+ * 关键:handler 只会用 provider 自己的凭据/白名单/限速/重试,永不跨上游回退。
+ */
+function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
+  return async function chatHandler(request: Request, rawBody: string, user: string): Promise<Response> {
+    // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
+    const prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel)
+    const permit = await provider.capacity.acquire(user, {
+      maxWaitMs: provider.queueMaxWait * 1000,
+      signal: request.signal,
+    })
+    const started = performance.now()
+    try {
+      const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
+        try {
+          await provider.bucket.acquire(provider.queueMaxWait, request.signal)
+        } catch (error) {
+          if (error instanceof HttpError) throw new provider.RequestError(error.status, error.detail)
+          throw error
+        }
+        return await fetchImpl(`${provider.base}/chat/completions`, {
+          method: 'POST',
+          body: prepared.body,
+          signal: request.signal,
+          headers: {
+            Authorization: `Bearer ${provider.key}`,
+            'Content-Type': 'application/json',
+            'Accept-Encoding': 'identity',
+          },
+        })
+      }, {
+        maxRetries: provider.retryMax,
+        baseDelayMs: provider.retryBaseMs,
+        maxDelayMs: provider.retryMaxMs,
+        signal: request.signal,
+        sleep: provider.retrySleep,
+        random: provider.retryRandom,
+      })
+
+      if (!upstream.ok) {
+        const upstreamDetail = await upstream.text().catch(() => '')
+        permit.release()
+        await logUsage(store, {
+          user,
+          model: provider.label,
+          ok: false,
+          status: upstream.status,
+          ms: elapsedMs(started),
+          note: `attempts=${attempts}`,
+        })
+        return jsonError(upstream.status, modelPublicError(upstream.status, upstreamDetail))
+      }
+
+      let completed = false
+      const complete = async () => {
+        if (completed) return
+        completed = true
+        permit.release()
+        await logUsage(store, { user, model: provider.label, ok: true, status: upstream.status, ms: elapsedMs(started), note: `attempts=${attempts}` })
+      }
+      return withStreamLogging(upstream, complete)
+    } catch (error) {
+      permit.release()
+      const known = error instanceof provider.RequestError
+      const status = known ? error.status : 502
+      const detail = known ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
+      await logUsage(store, {
+        user,
+        model: provider.label,
+        ok: false,
+        status,
+        ms: elapsedMs(started),
+        note: 'upstream_request_failed',
+      })
+      throw new HttpError(status, detail)
+    }
+  }
+}
+
 export function createGatewayFetch(deps: GatewayDeps = {}) {
   const env = deps.env ?? process.env
   const config = loadConfig(env)
@@ -416,6 +585,49 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const qwenBucket = new TokenBucket(config.qwenRpm)
   const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc)
+  const mimoBucket = new TokenBucket(config.mimoRpm)
+  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc)
+  // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
+  const qwenChat: ChatHandler | null = config.qwenKey
+    ? createChatHandler({
+      label: 'qwen',
+      base: config.qwenBase,
+      key: config.qwenKey,
+      defaultModel: config.qwenModel,
+      allowedModels: config.qwenAllowedModels,
+      bucket: qwenBucket,
+      capacity: qwenCapacity,
+      queueMaxWait: config.qwenQueueMaxWait,
+      retryMax: config.qwenRetryMax,
+      retryBaseMs: config.qwenRetryBaseMs,
+      retryMaxMs: config.qwenRetryMaxMs,
+      prepareBody: prepareQwenChatBody,
+      fetchWithRetry: fetchQwenWithRetry,
+      RequestError: QwenRequestError,
+      retrySleep: deps.qwenRetrySleep,
+      retryRandom: deps.qwenRetryRandom,
+    }, fetchImpl, store)
+    : null
+  const mimoChat: ChatHandler | null = config.mimoKey
+    ? createChatHandler({
+      label: 'mimo',
+      base: config.mimoBase,
+      key: config.mimoKey,
+      defaultModel: config.mimoModel,
+      allowedModels: config.mimoAllowedModels,
+      bucket: mimoBucket,
+      capacity: mimoCapacity,
+      queueMaxWait: config.mimoQueueMaxWait,
+      retryMax: config.mimoRetryMax,
+      retryBaseMs: config.mimoRetryBaseMs,
+      retryMaxMs: config.mimoRetryMaxMs,
+      prepareBody: prepareMimoChatBody,
+      fetchWithRetry: fetchMimoWithRetry,
+      RequestError: MimoRequestError,
+      retrySleep: deps.mimoRetrySleep,
+      retryRandom: deps.mimoRetryRandom,
+    }, fetchImpl, store)
+    : null
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
@@ -438,6 +650,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             qwen_rpm: config.qwenRpm,
             qwen_conc: config.qwenConc,
             qwen_user_conc: config.qwenUserConc,
+            mimo_rpm: config.mimoRpm,
+            mimo_conc: config.mimoConc,
+            mimo_user_conc: config.mimoUserConc,
             img_ipm: config.imgIpm,
             img_conc: config.imgConc,
             ark_chat_rpm: config.arkChatRpm,
@@ -449,10 +664,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
-          capacity: { qwen: qwenCapacity.snapshot() },
+          capacity: { qwen: qwenCapacity.snapshot(), mimo: mimoCapacity.snapshot() },
           features: {
             transcription: transcribe !== null,
             web_search: webSearch !== null,
+            chat_qwen: qwenChat !== null,
+            chat_mimo: mimoChat !== null,
           },
         })
       }
@@ -472,75 +689,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         const rawBody = await request.text()
-        const prepared = prepareQwenChatBody(rawBody, config.qwenAllowedModels, config.qwenModel)
-        const permit = await qwenCapacity.acquire(user, {
-          maxWaitMs: config.qwenQueueMaxWait * 1000,
-          signal: request.signal,
-        })
-        const started = performance.now()
-        try {
-          const { response: upstream, attempts } = await fetchQwenWithRetry(async () => {
-            try {
-              await qwenBucket.acquire(config.qwenQueueMaxWait, request.signal)
-            } catch (error) {
-              if (error instanceof HttpError) throw new QwenRequestError(error.status, error.detail)
-              throw error
-            }
-            return await fetchImpl(`${config.qwenBase}/chat/completions`, {
-              method: 'POST',
-              body: prepared.body,
-              signal: request.signal,
-              headers: {
-                Authorization: `Bearer ${config.qwenKey}`,
-                'Content-Type': 'application/json',
-                'Accept-Encoding': 'identity',
-              },
-            })
-          }, {
-            maxRetries: config.qwenRetryMax,
-            baseDelayMs: config.qwenRetryBaseMs,
-            maxDelayMs: config.qwenRetryMaxMs,
-            signal: request.signal,
-            sleep: deps.qwenRetrySleep,
-            random: deps.qwenRetryRandom,
-          })
-
-          if (!upstream.ok) {
-            const upstreamDetail = await upstream.text().catch(() => '')
-            permit.release()
-            await logUsage(store, {
-              user,
-              model: 'qwen',
-              ok: false,
-              status: upstream.status,
-              ms: elapsedMs(started),
-              note: `attempts=${attempts}`,
-            })
-            return jsonError(upstream.status, modelPublicError(upstream.status, upstreamDetail))
-          }
-
-          let completed = false
-          const complete = async () => {
-            if (completed) return
-            completed = true
-            permit.release()
-            await logUsage(store, { user, model: 'qwen', ok: true, status: upstream.status, ms: elapsedMs(started), note: `attempts=${attempts}` })
-          }
-          return withStreamLogging(upstream, complete)
-        } catch (error) {
-          permit.release()
-          const status = error instanceof QwenRequestError ? error.status : 502
-          const detail = error instanceof QwenRequestError ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
-          await logUsage(store, {
-            user,
-            model: 'qwen',
-            ok: false,
-            status,
-            ms: elapsedMs(started),
-            note: 'upstream_request_failed',
-          })
-          throw new HttpError(status, detail)
-        }
+        // 路由规则:MiMo 已配置且请求 model 命中 MiMo 白名单 → 走 MiMo;否则一律走千问(默认上游,
+        // 千问会把白名单外的 model 强制改写为 GW_QWEN_MODEL)。两家各用各自的凭据/限速/重试,永不互相回退。
+        const requestedModel = parseChatModel(rawBody)
+        const routeToMimo = mimoChat !== null && config.mimoAllowedModels.has(requestedModel)
+        const handler = routeToMimo ? mimoChat : qwenChat
+        if (!handler) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
+        return await handler(request, rawBody, user)
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
@@ -744,7 +899,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof CapacityQueueError || err instanceof QwenRequestError) {
+      if (err instanceof CapacityQueueError || err instanceof QwenRequestError || err instanceof MimoRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
       console.error('[qfgw] request failed', err)
