@@ -1,28 +1,11 @@
-// 导航守卫(安全):渲染进程是从固定入口加载的单页应用,不该自己弹出不受控的子窗口、也不该被诱导跳到外站。
-// 拦掉 window.open / target=_blank:http(s) 链接交给系统浏览器打开,Electron 弹窗一律 deny。
-// 移植自 cc-haha desktop/electron/services/navigationGuards.ts。
 export type WindowOpenHandlerResult = { action: 'deny' } | { action: 'allow' }
 
 export type NavigationGuardWebContents = {
-  getURL?(): string
   setWindowOpenHandler(handler: (details: { url: string }) => WindowOpenHandlerResult): void
   on(
     event: 'will-navigate',
     handler: (event: { preventDefault: () => void }, url: string) => void,
   ): unknown
-}
-
-function sameApplicationLocation(current: string, target: string): boolean {
-  try {
-    const currentUrl = new URL(current)
-    const targetUrl = new URL(target)
-    if (currentUrl.protocol === 'http:' || currentUrl.protocol === 'https:') {
-      return targetUrl.origin === currentUrl.origin
-    }
-    return currentUrl.protocol === 'file:' && targetUrl.href === currentUrl.href
-  } catch {
-    return false
-  }
 }
 
 export type NavigationGuardOptions = {
@@ -38,7 +21,13 @@ export function isHttpUrl(url: string): boolean {
   }
 }
 
-// 主窗口守卫:外链交系统浏览器，普通 <a href> 也不能把受信 renderer 替换成远程页面。
+/**
+ * Main app window guard. The renderer is a single-page app loaded from a fixed
+ * entry; it should never spawn an uncontrolled child window. Any window.open /
+ * target=_blank with an http(s) URL is routed to the system browser and the
+ * Electron popup is denied. We intentionally do NOT install a `will-navigate`
+ * guard here so that dev HMR reloads and in-app navigations keep working.
+ */
 export function installMainWindowNavigationGuards(
   webContents: NavigationGuardWebContents,
   { openExternal }: NavigationGuardOptions,
@@ -47,16 +36,14 @@ export function installMainWindowNavigationGuards(
     if (isHttpUrl(url)) openExternal(url)
     return { action: 'deny' }
   })
-  webContents.on('will-navigate', (event, url) => {
-    const current = webContents.getURL?.() ?? ''
-    if (sameApplicationLocation(current, url)) return
-    event.preventDefault()
-    if (isHttpUrl(url)) openExternal(url)
-  })
 }
 
-// 预览容器守卫(留给将来的 WebContentsView 预览用):它渲染的是不可信远程页,需要像浏览器一样能页内 http(s) 跳转;
-// 弹窗仍一律拒(http(s) 交系统浏览器),非 http(s) 协议(file:/自定义协议)的跳转直接拦掉。
+/**
+ * Preview (WebContentsView) guard. The preview renders untrusted remote pages,
+ * so it must keep working as a browser: in-page http(s) navigation is allowed.
+ * Popups are denied (http(s) ones handed to the system browser), and navigation
+ * to any non-http(s) scheme (file:, custom schemes) is blocked outright.
+ */
 export function installPreviewNavigationGuards(
   webContents: NavigationGuardWebContents,
   { openExternal }: NavigationGuardOptions,

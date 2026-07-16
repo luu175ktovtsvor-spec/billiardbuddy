@@ -1,4 +1,0 @@
-interface:
-  display_name: "BOSS 招聘"
-  short_description: "在 BOSS 直聘筛选候选人并经确认后完成招聘沟通"
-  default_prompt: "使用 $boss-recruiting 帮我在 BOSS 直聘招聘当前岗位。"

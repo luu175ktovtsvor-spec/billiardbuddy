@@ -1,4 +1,0 @@
-interface:
-  display_name: "员工表现辅导"
-  short_description: "基于真实岗位与表现记录准备一对一辅导、训练和公平的激励方案"
-  default_prompt: "使用 $staff-performance-coaching 帮我准备这次员工辅导。"

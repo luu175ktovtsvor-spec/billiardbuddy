@@ -1,4 +1,0 @@
-interface:
-  display_name: "生图与改图"
-  short_description: "生成、修改、放大并交付可继续编辑的球房宣传海报和门店图片"
-  default_prompt: "使用 $image-creation 帮我完成这次图片制作。"

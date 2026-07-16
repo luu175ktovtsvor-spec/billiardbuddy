@@ -1,15 +1,25 @@
-import type { HookDecision, HookPayload, HookRegistry } from '../hooks/hooks'
-import type { ToolContext } from '../tools/Tool'
-import type { Message } from '../types/message'
+import {
+  COMMAND_NAME_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+} from '../constants/xml.js'
+import type { ToolUseContext } from '../Tool.js'
+import type { Message } from '../types/message.js'
+import { shouldSkipHookDueToTrust } from '../utils/hooks.js'
+import {
+  addSessionHook,
+  removeSessionHook,
+} from '../utils/hooks/sessionHooks.js'
+import {
+  shouldAllowManagedHooksOnly,
+  shouldDisableAllHooksIncludingManaged,
+} from '../utils/hooks/hooksConfigSnapshot.js'
+import type { PromptHook } from '../utils/settings/types.js'
 
-export interface ThreadGoal {
+export type ThreadGoal = {
   threadId: string
   objective: string
-  hook: {
-    type: 'prompt'
-    prompt: string
-    timeout: number
-  }
+  hook: PromptHook
   createdAt: number
 }
 
@@ -21,7 +31,6 @@ const GOAL_HOOK_MARKER = '<cc-haha-goal-hook>'
 const GOAL_HOOK_TIMEOUT_SECONDS = 45
 const RESERVED_GOAL_ARGS = new Set(['status', 'pause', 'resume', 'complete'])
 const goalsByThread = new Map<string, ThreadGoal>()
-const goalHookRules = new WeakMap<object, string>()
 
 export function parseGoalCommand(args: string): ParsedGoalCommand {
   const trimmed = args.trim()
@@ -33,7 +42,27 @@ export function parseGoalCommand(args: string): ParsedGoalCommand {
   return { type: 'set', objective: trimmed }
 }
 
-export function setThreadGoalHook(threadId: string, objective: string, now = Date.now()): ThreadGoal {
+export function getGoalHookUnavailableReason(): string | null {
+  if (shouldDisableAllHooksIncludingManaged()) {
+    return 'Cannot set /goal because hooks are disabled by policy settings.'
+  }
+  if (shouldAllowManagedHooksOnly()) {
+    return 'Cannot set /goal because only managed hooks are allowed.'
+  }
+  if (shouldSkipHookDueToTrust()) {
+    return 'Cannot set /goal until this workspace is trusted.'
+  }
+  return null
+}
+
+export function setThreadGoalHook(
+  context: Pick<ToolUseContext, 'setAppState'>,
+  threadId: string,
+  objective: string,
+  now = Date.now(),
+): ThreadGoal {
+  clearThreadGoalHook(context, threadId)
+
   const hook = createGoalPromptHook(objective)
   const goal: ThreadGoal = {
     threadId,
@@ -41,6 +70,21 @@ export function setThreadGoalHook(threadId: string, objective: string, now = Dat
     hook,
     createdAt: now,
   }
+
+  addSessionHook(
+    context.setAppState,
+    threadId,
+    'Stop',
+    '',
+    hook,
+    () => {
+      removeSessionHook(context.setAppState, threadId, 'Stop', hook)
+      const current = goalsByThread.get(threadId)
+      if (current?.hook === hook) {
+        goalsByThread.delete(threadId)
+      }
+    },
+  )
   goalsByThread.set(threadId, goal)
   return goal
 }
@@ -49,46 +93,30 @@ export function getThreadGoal(threadId: string): ThreadGoal | null {
   return goalsByThread.get(threadId) ?? null
 }
 
-export function clearThreadGoalHook(threadId: string): ThreadGoal | null {
+export function clearThreadGoalHook(
+  context: Pick<ToolUseContext, 'setAppState'>,
+  threadId: string,
+): ThreadGoal | null {
   const goal = goalsByThread.get(threadId) ?? null
-  goalsByThread.delete(threadId)
+  if (goal) {
+    removeSessionHook(context.setAppState, threadId, 'Stop', goal.hook)
+    goalsByThread.delete(threadId)
+  }
   return goal
 }
 
-export function ensureThreadGoalHookFromTranscript(threadId: string, messages: Message[], now = Date.now()): ThreadGoal | null {
+export function ensureThreadGoalHookFromTranscript(
+  context: Pick<ToolUseContext, 'setAppState'>,
+  threadId: string,
+  messages: Message[],
+  now = Date.now(),
+): ThreadGoal | null {
   const current = goalsByThread.get(threadId)
   if (current) return current
+
   const restored = findActiveGoalObjective(messages)
   if (!restored) return null
-  return setThreadGoalHook(threadId, restored, now)
-}
-
-export function createGoalHookRegistry(threadId: string, messages: Message[] = []): HookRegistry | undefined {
-  const goal = getThreadGoal(threadId) ?? ensureThreadGoalHookFromTranscript(threadId, messages)
-  if (!goal) return undefined
-  const rule = {
-    event: 'Stop' as const,
-    handler: async (payload: HookPayload, ctx: ToolContext) => {
-      const { normalizeHookRegistry } = await import('../hooks/hookConfig')
-      const registry = normalizeHookRegistry({ hooks: { Stop: [{ hooks: [goal.hook] }] } })
-      const decisions: HookDecision[] = []
-      for (const registryRule of registry.rules) {
-        const result = await registryRule.handler(payload, ctx)
-        if (Array.isArray(result)) decisions.push(...result)
-        else if (result) decisions.push(result)
-      }
-      return decisions
-    },
-  }
-  goalHookRules.set(rule, threadId)
-  return {
-    rules: [rule],
-  }
-}
-
-export function hookRegistryHasGoalHook(registry: HookRegistry | undefined, threadId: string | undefined): boolean {
-  if (!registry || !threadId) return false
-  return registry.rules.some(rule => goalHookRules.get(rule) === threadId)
+  return setThreadGoalHook(context, threadId, restored, now)
 }
 
 export function isGoalPromptHookCommand(command: string | undefined): boolean {
@@ -103,36 +131,13 @@ export function goalObjectiveFromHookCommand(command: string | undefined): strin
 }
 
 export function isGoalLocalCommandOutputContent(content: string): boolean {
-  const output = readXmlTag(content, 'local-command-stdout') ?? readXmlTag(content, 'local-command-stderr')
+  const output =
+    readXmlTag(content, LOCAL_COMMAND_STDOUT_TAG) ??
+    readXmlTag(content, LOCAL_COMMAND_STDERR_TAG)
   return output ? looksLikeGoalStatusOutput(output) : false
 }
 
-export function formatGoalContinuationStatusOutput(reason: string): string {
-  const normalizedReason = reason
-    .replace(/^Stop hook feedback:\s*/i, '')
-    .replace(/^Prompt hook condition was not met:\s*/i, '')
-    .replace(/[<>&]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 240)
-
-  return normalizedReason
-    ? `Goal continuing: ${normalizedReason}`
-    : 'Goal continuing: more work is required'
-}
-
-export function goalLocalStatusMessage(output: string): Message {
-  return {
-    role: 'user',
-    content: [{ type: 'text', text: `<local-command-stdout>${output}</local-command-stdout>` }],
-  }
-}
-
-export function goalCompletionStatusOutput(): string {
-  return 'Goal marked complete.'
-}
-
-function createGoalPromptHook(objective: string): ThreadGoal['hook'] {
+function createGoalPromptHook(objective: string): PromptHook {
   const trimmedObjective = objective.trim()
   return {
     type: 'prompt',
@@ -161,29 +166,32 @@ function findActiveGoalObjective(messages: Message[]): string | null {
     const text = messageToText(message)
     if (!text) continue
 
-    const commandName = readXmlTag(text, 'command-name')
-    if (commandName) pendingGoalCommand = commandName.replace(/^\//, '') === 'goal'
-
-    const output = readXmlTag(text, 'local-command-stdout')
-    if (!output) {
-      if (commandName) continue
-      continue
-    }
-    if (!pendingGoalCommand && !looksLikeGoalStatusOutput(output)) {
-      pendingGoalCommand = false
+    const commandName = readXmlTag(text, COMMAND_NAME_TAG)
+    if (commandName) {
+      pendingGoalCommand = commandName.replace(/^\//, '') === 'goal'
       continue
     }
 
-    activeObjective = activeGoalFromLocalCommandOutput(output, activeObjective)
+    const output = readXmlTag(text, LOCAL_COMMAND_STDOUT_TAG)
+    if (!output) continue
+    if (!pendingGoalCommand && !looksLikeGoalStatusOutput(output)) continue
+
+    const next = activeGoalFromLocalCommandOutput(output, activeObjective)
+    activeObjective = next
     pendingGoalCommand = false
   }
 
   return activeObjective
 }
 
-function activeGoalFromLocalCommandOutput(output: string, current: string | null): string | null {
+function activeGoalFromLocalCommandOutput(
+  output: string,
+  current: string | null,
+): string | null {
   const trimmed = output.trim()
-  if (trimmed === 'Goal cleared.' || trimmed.startsWith('Goal cleared:')) return null
+  if (trimmed === 'Goal cleared.' || trimmed.startsWith('Goal cleared:')) {
+    return null
+  }
   if (trimmed === 'Goal marked complete.') return null
   if (trimmed === 'No active goal.') return current
   if (trimmed.startsWith('Goal set:')) {
@@ -194,8 +202,19 @@ function activeGoalFromLocalCommandOutput(output: string, current: string | null
 }
 
 function messageToText(message: Message): string {
-  return message.content
-    .map(block => block.type === 'text' ? block.text : '')
+  if (message.type === 'system') {
+    return typeof message.content === 'string' ? message.content : ''
+  }
+  if (!('message' in message)) return ''
+  const content = message.message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((block) => {
+      if (!block || typeof block !== 'object') return ''
+      if ('text' in block && typeof block.text === 'string') return block.text
+      return ''
+    })
     .filter(Boolean)
     .join('\n')
 }
