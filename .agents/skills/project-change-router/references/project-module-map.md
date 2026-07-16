@@ -5,8 +5,8 @@
 | 系统 | 路径 | 发布边界 |
 |---|---|---|
 | 桌面产品 | `ts/` | Electron renderer、main、Bun sidecar 同一安装包 |
-| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配与双模型路由、`qwenChat.ts` 默认 Qwen 上游、`mimoChat.ts` 第二 MiMo 上游(无原生搜索)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search` provider、`transcription.ts` Fun-ASR 转录 provider） | 国内服务器独立发布；承载 Qwen/MiMo 双模型代理(绝不跨模型回退)、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
-| 生图中转 | `relay/` | 美国服务器独立发布 |
+| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、装机公平调度(X-QF-Client-ID)、`/v1/models` 目录与三模型路由、`qwenChat.ts` 默认 Qwen、`mimoChat.ts` MiMo、`deepseekChat.ts` DeepSeek V4 Flash(注入 opaque user_id)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search`、`transcription.ts` Fun-ASR 转录） | 国内服务器独立发布；承载 Qwen/MiMo/DeepSeek 三模型代理(绝不跨供应商回退)、装机公平调度、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
+| 生图中转 | `relay/`(SQLite 持久化 + 幂等 + 归属绑定 + 队列上限 + 重启恢复) | 美国服务器独立发布;仅大陆 qfgw 出口 IP 经 nginx 可达,客户端不得直连 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
 | 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发；启动只加载清单，所有本地组件由功能门按需准备，客户端校验后本地执行 |
 
@@ -17,7 +17,7 @@
 | 模块 | 当前主要路径 | 负责内容 |
 |---|---|---|
 | 契约与传输 | `ts/src/server`（`router.ts` REST 分发、`ws/events.ts` WS 事件契约、`ws/handler.ts` WS 生命周期、`middleware` 本地控制面身份）、`ts/src/server/api/*` | REST/WS 边界解析、每次启动的本地控制令牌与兼容入口 |
-| Electron/sidecar | `ts/desktop/electron`（`main.ts`、`services/serverRuntime.ts`、`services/sidecarManager.ts`）、`ts/desktop/src` renderer、`ts/src/entrypoints` sidecar 入口 | 窗口、IPC、Bun sidecar 生命周期与产品身份/数据根隔离；main 生成控制令牌并经 preload 交付可信 renderer |
+| Electron/sidecar | `ts/desktop/electron`（`main.ts`、`services/serverRuntime.ts`、`services/sidecarManager.ts`、`services/productConfig.ts`、`services/installationId.ts`）、`ts/desktop/src` renderer、`ts/src/entrypoints` sidecar 入口 | 窗口、IPC、Bun sidecar 生命周期与产品身份/数据根隔离；main 生成控制令牌并经 preload 交付可信 renderer；生成 installationId 并只注入 server sidecar(BB_INSTALLATION_ID→X-QF-Client-ID),CLI/adapter/renderer/providers.json 一律剥离 |
 | 会话与事件流 | `ts/src/server/api/sessions.ts`、`ts/src/server/api/conversations.ts`、`ts/src/server/sessionManager.ts`、`ts/src/server/services` | 会话元数据、transcript、活动与回放 REST；CLI 子进程会话装配与事件流 |
 | Agent 循环 | `ts/src/query`、`ts/src/assistant`、`ts/src/tools` | ReAct 回合、系统提示、工具调用与上下文压缩(内核,不改内部) |
 | 模型与代理 | `ts/src/server/api/models.ts`、`ts/src/server/api/providers.ts`、`ts/src/server/services/provider*`、`ts/src/server/services/qfGatewayProvider.ts`、`ts/src/server/proxy` | provider 管理 REST、Anthropic↔OpenAI 协议转换、托管 qf-gateway 自动激活与凭据边界 |
@@ -33,7 +33,7 @@
 | 诊断与运维 | `ts/src/server/api/diagnostics.ts`、`ts/src/server/api/doctor.ts`、`ts/src/server/api/status.ts`、`ts/src/migrations` | 诊断、Doctor 默认拒绝修复、迁移与运行状态 |
 | IM 适配器 | `ts/adapters`（telegram/feishu/wechat/dingtalk/whatsapp）、`ts/src/server/api/adapters.ts` | IM 适配器 sidecar 与绑定 REST；可选依赖(如 baileys)懒加载,不阻断 server 启动 |
 | 语音与口播转录 | `gateway/transcription.ts`(Fun-ASR provider)、桌面端录音/音轨上传与远程文本+时间戳契约 | 客户端录音/音轨上传、远程文本与时间戳契约、网关 Fun-ASR-Flash 转录 provider(Whisper 已退役) |
-| 产品网关边缘 | `gateway/`(`app.ts` 双模型路由 + `qwenChat.ts`/`mimoChat.ts`/`webSearch.ts`/`transcription.ts`/`modelCapacity.ts`)、`relay/`、`dataeye/` | Qwen/MiMo 双模型代理、独立联网搜索、图片中转与数据服务;真上游密钥只在服务器 |
+| 产品网关边缘 | `gateway/`(`app.ts` 装机公平调度+`/v1/models`+三模型路由 + `qwenChat.ts`/`mimoChat.ts`/`deepseekChat.ts`/`webSearch.ts`/`transcription.ts`/`modelCapacity.ts`)、`relay/`(幂等+归属+队列上限+重启恢复)、`dataeye/` | Qwen/MiMo/DeepSeek 三模型代理、装机公平调度、独立联网搜索、图片中转(受信 owner+幂等)与数据服务;真上游密钥只在服务器 |
 
 ## 产品业务层(Phase-2 重建目标)
 
