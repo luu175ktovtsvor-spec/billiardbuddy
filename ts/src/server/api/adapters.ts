@@ -12,12 +12,16 @@ import {
   startWechatLoginWithQr,
   WECHAT_DEFAULT_BASE_URL,
 } from '../../../adapters/wechat/protocol.js'
-import {
-  logoutWhatsAppAuth,
-  pollWhatsAppLoginWithQr,
-  startWhatsAppLoginWithQr,
-} from '../../../adapters/whatsapp/protocol.js'
 import { loadConfig } from '../../../adapters/common/config.js'
+
+// WhatsApp support pulls @whiskeysockets/baileys, an OPTIONAL adapter dependency
+// (declared only in the adapters workspace). Importing it eagerly here would make
+// the whole server fail to boot when that dep is not installed. Load it lazily so
+// booting the server never requires the optional dep, while the WhatsApp login
+// endpoints still work wherever the adapter dependency IS installed.
+function loadWhatsAppProtocol() {
+  return import('../../../adapters/whatsapp/protocol.js')
+}
 
 const ALLOWED_TOP_KEYS = new Set(['serverUrl', 'defaultProjectDir', 'telegram', 'feishu', 'wechat', 'dingtalk', 'whatsapp', 'pairing'])
 
@@ -241,6 +245,7 @@ async function handleWechatAdaptersApi(req: Request, tail: string[]): Promise<Re
 
 async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<Response> {
   if (req.method === 'POST' && tail[0] === 'login' && tail[1] === 'start') {
+    const { startWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const config = loadConfig()
     const result = await startWhatsAppLoginWithQr({
       authDir: config.whatsapp.authDir,
@@ -255,6 +260,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
   if (req.method === 'POST' && tail[0] === 'login' && tail[1] === 'poll') {
     const body = (await req.json()) as { sessionKey?: string }
     if (!body.sessionKey) throw ApiError.badRequest('Missing sessionKey')
+    const { pollWhatsAppLoginWithQr } = await loadWhatsAppProtocol()
     const result = await pollWhatsAppLoginWithQr({ sessionKey: body.sessionKey })
     if (result.connected) {
       await adapterService.updateConfig({
@@ -273,6 +279,7 @@ async function handleWhatsAppAdaptersApi(req: Request, tail: string[]): Promise<
   }
 
   if (req.method === 'POST' && tail[0] === 'unbind') {
+    const { logoutWhatsAppAuth } = await loadWhatsAppProtocol()
     const config = loadConfig()
     await logoutWhatsAppAuth(config.whatsapp.authDir)
     await adapterService.updateConfig({

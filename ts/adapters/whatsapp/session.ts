@@ -1,18 +1,17 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import {
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  makeWASocket,
-  useMultiFileAuthState,
-} from '@whiskeysockets/baileys'
 
-export type WhatsAppSocket = ReturnType<typeof makeWASocket>
+// @whiskeysockets/baileys is an OPTIONAL adapter dependency. It is imported lazily
+// inside createWhatsAppSocket so that importing this module — and the fs-only auth
+// helpers (hasWhatsAppAuth / clearWhatsAppAuth / logout) — never requires the dep.
+// Only actually opening a WhatsApp socket needs baileys installed.
+export type WhatsAppSocket = any
 
 const CREDS_FILE = 'creds.json'
 const CREDS_BACKUP_FILE = 'creds.json.bak'
-const LOGGED_OUT_STATUS = DisconnectReason?.loggedOut ?? 401
+// Mirrors baileys DisconnectReason.loggedOut (401); kept as a literal so this module
+// loads without the optional baileys dependency present.
+const LOGGED_OUT_STATUS = 401
 
 const credsSaveQueues = new Map<string, Promise<void>>()
 
@@ -42,6 +41,12 @@ export async function createWhatsAppSocket(options: {
   onQr?: (qr: string) => void
   verbose?: boolean
 }): Promise<WhatsAppSocket> {
+  const {
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    makeWASocket,
+    useMultiFileAuthState,
+  } = await import('@whiskeysockets/baileys')
   const authDir = path.resolve(options.authDir)
   fs.mkdirSync(authDir, { recursive: true, mode: 0o700 })
   maybeRestoreCredsFromBackup(authDir)
