@@ -21,6 +21,7 @@ import {
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
 import { applyGatewayConfigToEnv, stripGatewayEnvForAdapters, type ProductGatewayConfig } from './productConfig'
+import { applyInstallationIdToEnv } from './installationId'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
@@ -29,6 +30,8 @@ type ServerRuntimeOptions = {
   resolveSystemProxy?: (url: string) => Promise<string>
   /** Product gateway config injected into the SERVER sidecar only (never adapters). */
   resolveGatewayConfig?: () => ProductGatewayConfig
+  /** Per-install id injected into the SERVER sidecar only (X-QF-Client-ID upstream). */
+  resolveInstallationId?: () => string
 }
 
 export class ElectronServerRuntime {
@@ -37,6 +40,7 @@ export class ElectronServerRuntime {
   private readonly h5DistDir: string
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
+  private readonly resolveInstallationId?: () => string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private adapters: SidecarChild[] = []
@@ -49,15 +53,18 @@ export class ElectronServerRuntime {
     this.h5DistDir = options.h5DistDir ?? path.join(options.desktopRoot, 'dist')
     this.resolveSystemProxy = options.resolveSystemProxy
     this.resolveGatewayConfig = options.resolveGatewayConfig
+    this.resolveInstallationId = options.resolveInstallationId
   }
 
   /**
-   * The SERVER sidecar env is the base env plus the product gateway config. The
-   * token goes ONLY here — adapter sidecars keep the plain base env. A value
-   * already present (shell/ops override) always wins over the injected default.
+   * The SERVER sidecar env is the base env plus the product gateway config AND the
+   * per-install id. Both go ONLY here — adapter sidecars keep the plain base env, and
+   * the CLI subprocess strips them again. A value already present (shell/ops override)
+   * always wins over the injected default.
    */
   private buildServerEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    return applyGatewayConfigToEnv(baseEnv, this.resolveGatewayConfig?.())
+    const withGateway = applyGatewayConfigToEnv(baseEnv, this.resolveGatewayConfig?.())
+    return applyInstallationIdToEnv(withGateway, this.resolveInstallationId?.())
   }
 
   async startServer(): Promise<string> {

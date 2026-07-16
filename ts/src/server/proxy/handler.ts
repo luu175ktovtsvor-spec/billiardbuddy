@@ -227,7 +227,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
 
   try {
     if (config.apiFormat === 'openai_chat') {
-      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext)
+      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, config.clientId)
     } else {
       return await handleOpenaiResponses(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, promptCacheKey)
     }
@@ -264,6 +264,7 @@ async function handleOpenaiChat(
   isStream: boolean,
   networkSettings: NetworkSettings,
   traceContext: ProxyTraceContext | null,
+  clientId?: string,
 ): Promise<Response> {
   const transformed = anthropicToOpenaiChat(body, resolveOpenaiChatCompatOptions(baseUrl, body.model))
   const url = `${baseUrl}/v1/chat/completions`
@@ -271,6 +272,12 @@ async function handleOpenaiChat(
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
   }
+  // X-QF-Client-ID is set ONLY for the qf-gateway (config.clientId present); it rides on the
+  // wire but is deliberately kept OUT of the traced headers so the install id never lands in
+  // the local proxy trace/logs. A user's own OpenAI-compat provider has no clientId → no header.
+  const fetchHeaders = clientId
+    ? { ...upstreamRequestHeaders, 'X-QF-Client-ID': clientId }
+    : upstreamRequestHeaders
   const proxyOptions = getNetworkProxyFetchOptions(networkSettings, url)
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
@@ -289,7 +296,7 @@ async function handleOpenaiChat(
   try {
     upstream = await fetchUpstreamWithTimeout(url, {
       method: 'POST',
-      headers: upstreamRequestHeaders,
+      headers: fetchHeaders,
       body: JSON.stringify(transformed),
       ...proxyOptions,
     }, networkSettings.aiRequestTimeoutMs, isStream)

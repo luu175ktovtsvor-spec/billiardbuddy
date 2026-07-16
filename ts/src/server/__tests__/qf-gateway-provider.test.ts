@@ -15,8 +15,10 @@ import { ProviderService } from '../services/providerService.js'
 import { handleProxyRequest } from '../proxy/handler.js'
 import { buildProviderManagedEnv } from '../services/providerRuntimeEnv.js'
 import {
+  HOST_ONLY_GATEWAY_ENV_KEYS,
   QF_GATEWAY_PROVIDER_ID,
   buildQfGatewayProvider,
+  stripHostOnlyGatewayEnv,
 } from '../services/qfGatewayProvider.js'
 
 // ─── Test harness ───────────────────────────────────────────────────────────
@@ -40,6 +42,7 @@ async function setup(): Promise<void> {
     'QF_GATEWAY_URL',
     'QF_GATEWAY_TOKEN',
     'QF_GATEWAY_MODEL',
+    'BB_INSTALLATION_ID',
   ]) {
     stashEnv(key)
   }
@@ -47,6 +50,7 @@ async function setup(): Promise<void> {
   process.env.QF_GATEWAY_URL = GATEWAY_URL
   process.env.QF_GATEWAY_TOKEN = GATEWAY_TOKEN
   delete process.env.QF_GATEWAY_MODEL
+  delete process.env.BB_INSTALLATION_ID
   // ProviderService.serverPort is a process-wide static — snapshot and restore it
   // so this suite never leaks its port into other files' runtime-env assertions.
   savedServerPort = ProviderService.getServerPort()
@@ -402,6 +406,8 @@ describe('qf-gateway proxy round-trip', () => {
       expect(calls[0].url).toBe(`${GATEWAY_URL}/v1/chat/completions`)
       expect(calls[0].headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
       expect(calls[0].body.model).toBe('qwen3-coder-plus')
+      // No install id set → no X-QF-Client-ID header (falls back to token-only scheduling).
+      expect(calls[0].headers['X-QF-Client-ID']).toBeUndefined()
 
       // Response transformed back to Anthropic shape.
       const anthropic = (await res.json()) as Record<string, unknown>
@@ -411,6 +417,47 @@ describe('qf-gateway proxy round-trip', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  test('attaches X-QF-Client-ID upstream when an install id is present (gateway path only)', async () => {
+    process.env.BB_INSTALLATION_ID = 'bb-install-abcdef12'
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ headers: Record<string, string> }> = []
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ headers: (init?.headers ?? {}) as Record<string, string> })
+      return new Response(
+        JSON.stringify({
+          id: 'c', object: 'chat.completion', created: 0, model: 'qwen3-coder-plus',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'qwen3-coder-plus', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+        },
+      )
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+      expect(calls[0].headers['X-QF-Client-ID']).toBe('bb-install-abcdef12')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('the install id is a host-only key stripped from the CLI subprocess env', () => {
+    expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain('BB_INSTALLATION_ID')
+    const stripped = stripHostOnlyGatewayEnv({ PATH: '/x', BB_INSTALLATION_ID: 'bb-1', QF_GATEWAY_TOKEN: 't' })
+    expect(stripped.BB_INSTALLATION_ID).toBeUndefined()
+    expect(stripped.QF_GATEWAY_TOKEN).toBeUndefined()
+    expect(stripped.PATH).toBe('/x')
   })
 
   test('streams tool_use through the proxy', async () => {

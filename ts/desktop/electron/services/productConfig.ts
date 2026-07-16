@@ -72,14 +72,17 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
   }
 }
 
-/** Gateway credential/config keys that only the SERVER sidecar may hold. */
-const GATEWAY_ENV_KEYS = ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_URL', 'QF_GATEWAY_MODEL'] as const
+/**
+ * Keys that only the SERVER sidecar may hold: the gateway credential/config AND the
+ * per-install id. Adapters never call the gateway, so they must not carry either.
+ */
+const GATEWAY_ENV_KEYS = ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_URL', 'QF_GATEWAY_MODEL', 'BB_INSTALLATION_ID'] as const
 
 /**
- * Remove the gateway keys from an adapter sidecar env. Adapters talk to the local
- * server over WS and never call the gateway, so they must not carry the token — this
- * closes the dev/ops env-override path where QF_GATEWAY_TOKEN is set in the Electron
- * process env and would otherwise be inherited by every adapter sidecar.
+ * Remove the server-only keys from an adapter sidecar env. Adapters talk to the local
+ * server over WS and never call the gateway, so they must not carry the token or the
+ * install id — this closes the dev/ops env-override path where these are set in the
+ * Electron process env and would otherwise be inherited by every adapter sidecar.
  */
 export function stripGatewayEnvForAdapters(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env }
