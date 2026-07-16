@@ -439,7 +439,10 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
 if (import.meta.main) {
   const port = Number(process.env.RELAY_PORT ?? 8790)
+  // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 qfgw 出口 IP 放行;
+  // 绝不把 relay 直接绑到公网口(否则绕过 nginx 允许名单,只剩 Bearer 一层)。
+  const hostname = process.env.RELAY_HOST ?? '127.0.0.1'
   const handler = createRelayFetch({ env: process.env }) // 配置非法(缺 RELAY_TOKEN/RELAY_OPENAI_KEY)会在此抛错
-  Bun.serve({ port, fetch: handler })
-  console.log(`[relay] GPT 生图异步任务服务监听 :${port}`)
+  Bun.serve({ hostname, port, fetch: handler })
+  console.log(`[relay] GPT 生图异步任务服务监听 ${hostname}:${port}`)
 }
