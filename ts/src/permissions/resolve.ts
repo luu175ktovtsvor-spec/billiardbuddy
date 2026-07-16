@@ -213,6 +213,16 @@ function resolvePermissionInner(tool: Tool, input: unknown, ctx: ToolContext): P
     return ask(tool, ctx, input, { type: 'requiresUserInteraction' }, approvalClass)
   }
 
+  // D2:无人值守(定时任务/工作流,headless)场景下,即使完全访问档位放行一切,危险命令
+  // (rm -rf 根、mkfs、format 等)也不能悄悄执行——没有人在场确认、也没人能在出事时立刻发现。
+  // 危险判定挪到 bypassPermissions 短路之前,只在 ctx.shouldAvoidPermissionPrompts 为真时生效;
+  // ask() 的结果在 headless 上下文会被 loop 自动拒绝(见 loop.ts shouldAvoidPermissionPrompts 分支),
+  // 不会挂起等一个不存在的人。有人在场的交互式 bypass 会话维持原语义不变(cc 对齐:bypass 忽略 ask)。
+  if (mode === 'bypassPermissions' && ctx.shouldAvoidPermissionPrompts) {
+    const dangerous = tool.dangerousReasonFor?.(input, ctx)
+    if (dangerous) return ask(tool, ctx, input, { type: 'dangerous', text: dangerous }, approvalClass)
+  }
+
   // 合并 Codex Full access + Claude bypassPermissions 的用户语义：不逐次审批。
   // fatal 与显式 deny 已在上方失败关闭；必须让用户做决定的交互也已保留。
   if (mode === 'bypassPermissions') {

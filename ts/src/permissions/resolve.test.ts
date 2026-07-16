@@ -82,6 +82,18 @@ describe('resolvePermission 瀑布', () => {
     expect(resolvePermission(danger, { command: 'rm -rf /' }, withAllow as ToolContext).behavior).toBe('ask')
   })
 
+  test('D2:无人值守(headless)下即便完全访问档也不放行危险命令,交互式 bypass 会话不受影响', () => {
+    const danger = tool({ name: 'run_command', dangerousReasonFor: () => '危险命令:rm -rf /', requiresApproval: true, approvalClass: 'destructive' })
+    // headless(定时任务/工作流,没人能确认审批卡)+ bypassPermissions → 仍然 ask,不悄悄放行。
+    const headless = resolvePermission(danger, { command: 'rm -rf /' }, ctx('bypassPermissions', { shouldAvoidPermissionPrompts: true }))
+    expect(headless.behavior).toBe('ask')
+    expect(headless.behavior === 'ask' && headless.reason?.type).toBe('dangerous')
+    // 交互式(有人在场)bypass 会话维持原语义:放行(对齐上面「危险命令」测试的既有断言)。
+    expect(resolvePermission(danger, { command: 'rm -rf /' }, ctx('bypassPermissions', { shouldAvoidPermissionPrompts: false })).behavior).toBe('allow')
+    // 非危险的普通工具在 headless+bypass 下依旧正常放行,不受这条改动影响。
+    expect(resolvePermission(tool({ requiresApproval: true, approvalClass: 'file' }), {}, ctx('bypassPermissions', { shouldAvoidPermissionPrompts: true })).behavior).toBe('allow')
+  })
+
   test('无 requiresApproval 的普通工具在执行档和 dontAsk 直接 allow', () => {
     for (const m of ['default', 'acceptEdits', 'bypassPermissions', 'dontAsk'] as const) {
       expect(resolvePermission(tool({}), {}, ctx(m)).behavior).toBe('allow')
