@@ -52,7 +52,21 @@ test('compiler keeps Chinese business facts in a provider-neutral brief', () => 
   expect(brief.poster?.address).toBe('中山路 18 号')
   expect(brief.poster?.cta).toBe('立即扫码报名')
   expect(brief.understanding).toContain('39.9')
+  // 价格/日期/地址/电话/行动提示都是从自由文本正则猜的(没有走 posterText 结构化字段),
+  // understanding 摘要要提醒用户核对,而不是悄悄当成确定事实。
+  expect(brief.understanding).toContain('麻烦确认')
+  expect(brief.understanding).toContain('价格')
+  expect(brief.understanding).toContain('预约电话')
   expect(routeImageBrief(brief)).toBe('seedream_4_5')
+})
+
+test('explicit posterText price is not flagged as a guess in the understanding summary', () => {
+  const brief = compileImageBrief({
+    prompt: '做一张周末双人畅打海报',
+    posterText: { title: '周末畅打', price: '39.9 元' },
+  })
+  expect(brief.poster?.price).toBe('39.9 元')
+  expect(brief.understanding).not.toContain('麻烦确认')
 })
 
 test('compiler keeps a freeform poster free of prefilled operating context', () => {
