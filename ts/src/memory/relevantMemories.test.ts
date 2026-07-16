@@ -12,6 +12,7 @@ import {
   collectSurfacedMemories,
   computeRelevantMemoryInjection,
   SELECT_MEMORIES_SYSTEM_PROMPT,
+  PROJECT_MEMORY_STALE_DAYS,
   type MemorySelector,
 } from './relevantMemories'
 
@@ -93,11 +94,48 @@ test('readMemoriesForSurfacing reads body; truncates by bytes with note', async 
 
 test('buildRelevantMemoriesReminder wraps each with a de-dup marker', () => {
   const reminder = buildRelevantMemoriesReminder([
-    { path: '/mem/golden_hours.md', content: '台费TESTFEE', mtimeMs: Date.parse('2026-07-01') },
-  ])
+    { path: '/mem/golden_hours.md', content: '台费TESTFEE', mtimeMs: Date.parse('2026-07-01'), type: 'project', provenance: 'agent' },
+  ], Date.parse('2026-07-02'))
   expect(reminder).toContain('The system recalled the following entries from persistent memory')
   expect(reminder).toContain('<recalled-memory path="/mem/golden_hours.md"')
   expect(reminder).toContain('台费TESTFEE')
+})
+
+test('buildRelevantMemoriesReminder(C2): 过时门店数字记忆带 stale_days 提醒,新鲜的不带', () => {
+  const now = Date.parse('2026-07-16')
+  const savedLongAgo = now - (PROJECT_MEMORY_STALE_DAYS + 5) * 24 * 60 * 60 * 1000
+  const stale = buildRelevantMemoriesReminder([
+    { path: '/mem/golden_hours.md', content: '台费68元', mtimeMs: savedLongAgo, type: 'project', provenance: 'agent' },
+  ], now)
+  expect(stale).toContain(`stale_days="${PROJECT_MEMORY_STALE_DAYS + 5}"`)
+  expect(stale).toContain('may be outdated')
+  expect(stale).toContain('Confirm with the user before treating it as the current state')
+
+  const fresh = buildRelevantMemoriesReminder([
+    { path: '/mem/golden_hours.md', content: '台费68元', mtimeMs: now - 1000, type: 'project', provenance: 'agent' },
+  ], now)
+  expect(fresh).not.toContain('stale_days')
+  expect(fresh).not.toContain('may be outdated')
+
+  // 非 project 类型(如 user/feedback)不做时效判断,再久也不标 stale
+  const nonProjectOld = buildRelevantMemoriesReminder([
+    { path: '/mem/owner.md', content: '店主偏好', mtimeMs: savedLongAgo, type: 'feedback', provenance: 'agent' },
+  ], now)
+  expect(nonProjectOld).not.toContain('stale_days')
+})
+
+test('buildRelevantMemoriesReminder(C1): 后台抽取存的记忆标 provenance 且带置信度提醒', () => {
+  const now = Date.parse('2026-07-16')
+  const extracted = buildRelevantMemoriesReminder([
+    { path: '/mem/x.md', content: '内容', mtimeMs: now - 1000, type: 'project', provenance: 'background_extract' },
+  ], now)
+  expect(extracted).toContain('provenance="background_extract"')
+  expect(extracted).toContain('unattended background process')
+
+  const live = buildRelevantMemoriesReminder([
+    { path: '/mem/x.md', content: '内容', mtimeMs: now - 1000, type: 'project', provenance: 'agent' },
+  ], now)
+  expect(live).not.toContain('unattended background process')
 })
 
 test('collectSurfacedMemories finds prior injected paths for cross-turn de-dup', () => {
