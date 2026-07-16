@@ -201,7 +201,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.activity.title': '토큰 사용량',
   'settings.activity.profileTitle': '프로필',
   'settings.activity.profilePrivacy': '로컬 전용',
-  'settings.activity.defaultHandle': 'github.com/NanmiCoder/cc-haha',
+  'settings.activity.defaultHandle': 'BilliardBuddy',
   'settings.activity.editProfile': '프로필 편집',
   'settings.activity.displayName': '표시 이름',
   'settings.activity.subtitle': '둘째 줄',

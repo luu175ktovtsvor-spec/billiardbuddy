@@ -72,6 +72,21 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
   }
 }
 
+/** Gateway credential/config keys that only the SERVER sidecar may hold. */
+const GATEWAY_ENV_KEYS = ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_URL', 'QF_GATEWAY_MODEL'] as const
+
+/**
+ * Remove the gateway keys from an adapter sidecar env. Adapters talk to the local
+ * server over WS and never call the gateway, so they must not carry the token — this
+ * closes the dev/ops env-override path where QF_GATEWAY_TOKEN is set in the Electron
+ * process env and would otherwise be inherited by every adapter sidecar.
+ */
+export function stripGatewayEnvForAdapters(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env }
+  for (const key of GATEWAY_ENV_KEYS) delete out[key]
+  return out
+}
+
 /**
  * Overlay resolved gateway config onto a SERVER sidecar env. A value already present
  * (shell/ops override) always wins over the injected default. Returns a new object;
