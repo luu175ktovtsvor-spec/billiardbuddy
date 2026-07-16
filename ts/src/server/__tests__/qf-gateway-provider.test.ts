@@ -488,6 +488,33 @@ describe('qf-gateway proxy round-trip', () => {
     }
   })
 
+  test('rejects an image request for mimo-v2.5-pro (text-only reasoning model) with 400', async () => {
+    const originalFetch = globalThis.fetch
+    let called = 0
+    globalThis.fetch = mock(async () => { called++; return new Response('{}', { status: 200 }) }) as typeof fetch
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'mimo-v2.5-pro', max_tokens: 16, // -pro is text-only per MiMo docs
+            messages: [{ role: 'user', content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+              { type: 'text', text: 'what is in this image?' },
+            ] }],
+          }),
+        },
+      )
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(400)
+      expect(called).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('allows an image request for MiMo (the multimodal upstream) — reaches the gateway as image_url', async () => {
     const originalFetch = globalThis.fetch
     const calls: Array<{ body: Record<string, unknown> }> = []
