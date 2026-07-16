@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import ts from '../../ts/node_modules/typescript/lib/typescript.js'
+import ts from '../../ts/desktop/node_modules/typescript/lib/typescript.js'
 
 const root = path.resolve(import.meta.dir, '../..')
 const violations: string[] = []
@@ -40,6 +40,14 @@ function resolvedImport(file: string, specifier: string): string | null {
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const files: string[] = []
+  // The billiard renderer-react tree may not exist yet in the imported kernel-only
+  // state; skip a missing root instead of crashing (its boundary rules simply have
+  // no files to scan until that layer is rebuilt).
+  try {
+    if (!(await stat(dir)).isDirectory()) return files
+  } catch {
+    return files
+  }
   for (const pattern of ['**/*.ts', '**/*.tsx']) {
     const glob = new Bun.Glob(pattern)
     for await (const item of glob.scan({ cwd: dir, absolute: true, onlyFiles: true })) {

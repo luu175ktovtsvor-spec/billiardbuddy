@@ -9,6 +9,8 @@ if [[ "$MODE" != "full" && "$MODE" != "--quick" ]]; then
   exit 2
 fi
 
+# ts/ 已整体是导入的 CC-Haha 内核,其真实验证入口是自带的 check:* 命令(cc-haha CI 也用它们),
+# 而非旧台球产品的 typecheck/ui:build/desktop:build。这里的 ts 步骤统一指向 cc-haha 的真实命令。
 echo "[1/8] 工程 Skill"
 bun "$ROOT/scripts/quality/validate-skills.ts"
 
@@ -21,20 +23,20 @@ bun "$ROOT/scripts/quality/check-secrets.ts"
 echo "[4/8] 模块边界"
 bun "$ROOT/scripts/quality/check-architecture.ts"
 
-echo "[5/8] TypeScript 类型"
-(cd "$ROOT/ts" && bun run typecheck)
+echo "[5/8] 后端 server/tools/utils 测试 (check:server)"
+(cd "$ROOT/ts" && bun run check:server)
 
-echo "[6/8] TS 全量测试"
-(cd "$ROOT/ts" && bun test)
+echo "[6/8] Electron 桌面宿主检查:tsc + 测试 + 主进程构建 (check:electron)"
+(cd "$ROOT/ts" && bun run check:electron)
 
 echo "[7/8] gateway / relay / dataeye 测试"
 (cd "$ROOT" && bun test gateway/*.test.ts relay/app.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
 
 if [[ "$MODE" == "full" ]]; then
-  echo "[8/8] React 与 Electron 构建"
-  (cd "$ROOT/ts" && bun run ui:build && bun run desktop:build)
+  echo "[8/8] React renderer 生产构建 (check:desktop)"
+  (cd "$ROOT/ts" && bun run check:desktop)
 else
-  echo "[8/8] --quick: 跳过 React 与 Electron 构建"
+  echo "[8/8] --quick: 跳过 React renderer 构建"
 fi
 
 git -C "$ROOT" diff --check
