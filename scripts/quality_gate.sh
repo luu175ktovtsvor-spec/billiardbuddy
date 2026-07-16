@@ -30,7 +30,7 @@ echo "[6/8] Electron 桌面宿主检查:tsc + 测试 + 主进程构建 (check:el
 (cd "$ROOT/ts" && bun run check:electron)
 
 echo "[7/8] gateway / relay / dataeye 测试"
-(cd "$ROOT" && bun test gateway/*.test.ts relay/app.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
+(cd "$ROOT" && bun test gateway/*.test.ts relay/*.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
 
 if [[ "$MODE" == "full" ]]; then
   echo "[8/8] React renderer 生产构建 (check:desktop)"
