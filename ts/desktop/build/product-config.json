@@ -1,0 +1,5 @@
+{
+  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The revocable app token is supplied separately via product-secrets.json (git-ignored, injected at build time) or the QF_GATEWAY_TOKEN env override. gatewayUrl is the stable public product gateway entry (nginx /gw); override per-env with QF_GATEWAY_URL.",
+  "gatewayUrl": "https://mp.zzyppz.cn/gw",
+  "gatewayModel": "qwen3-coder-plus"
+}

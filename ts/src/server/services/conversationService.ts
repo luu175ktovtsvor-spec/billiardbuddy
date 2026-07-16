@@ -62,13 +62,26 @@ export function cliExitSeverity(code: number | null): 'info' | 'error' {
   return 'error'
 }
 
+// The product-gateway app token / URL / model live ONLY in the server process env
+// (injected by the desktop host). The CLI subprocess reaches the gateway through the
+// local provider proxy (ANTHROPIC_BASE_URL), so it must never inherit these. Stripping
+// them at the single spawn chokepoint guarantees the token stays out of the CLI env
+// regardless of how the child env was assembled upstream.
+const HOST_ONLY_GATEWAY_ENV_KEYS = [
+  'QF_GATEWAY_TOKEN',
+  'QF_GATEWAY_URL',
+  'QF_GATEWAY_MODEL',
+] as const
+
 export function buildConversationCliSpawnOptions(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ) {
+  const sanitizedEnv: NodeJS.ProcessEnv = { ...env }
+  for (const key of HOST_ONLY_GATEWAY_ENV_KEYS) delete sanitizedEnv[key]
   return {
     cwd,
-    env,
+    env: sanitizedEnv,
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',

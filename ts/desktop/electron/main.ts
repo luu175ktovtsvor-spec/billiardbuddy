@@ -14,6 +14,7 @@ import {
 import { installApplicationMenu } from './services/menu'
 import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
+import { resolveProductGatewayConfig } from './services/productConfig'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
@@ -148,6 +149,14 @@ function getServerRuntime() {
     appRoot: appRoot(),
     h5DistDir: path.join(unpackedRoot(), 'dist'),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
+    // Packaged product gateway config for the server sidecar (env override wins).
+    // The app token reaches only the server env here — the CLI subprocess is stripped.
+    resolveGatewayConfig: () => resolveProductGatewayConfig({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      devBuildDir: path.join(unpackedRoot(), 'build'),
+      env: process.env,
+    }),
   })
   return serverRuntime
 }
