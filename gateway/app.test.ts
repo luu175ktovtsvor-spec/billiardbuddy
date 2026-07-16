@@ -11,6 +11,9 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_MIMO_KEY: 'mimo-secret',
     GW_MIMO_BASE: 'https://mimo.example/v1',
     GW_MIMO_MODEL: 'mimo-v2.5',
+    GW_DEEPSEEK_KEY: 'deepseek-secret',
+    GW_DEEPSEEK_BASE: 'https://deepseek.example',
+    GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_RELAY_BASE: 'https://relay.example/relay/openai/v1',
     GW_RELAY_TOKEN: 'relay-secret',
     GW_ARK_KEY: 'ark-secret',
@@ -367,12 +370,38 @@ test('a MiMo upstream 5xx failure never falls back to the Qwen upstream', async 
   expect(usage.rows).toMatchObject([{ model: 'mimo', ok: false, status: 500 }])
 })
 
-test('MiMo retries a transient 429 then succeeds, logging the attempt count without leaking upstream detail', async () => {
+test('MiMo does not retry a 429 even when retries are configured — it surfaces immediately', async () => {
+  const usage = new MemoryUsageStore()
+  const bodies: string[] = []
+  const fetch = createGatewayFetch({
+    // Even with a retry budget, a 429 is never retried (no amplification with the CC CLI).
+    env: env({ GW_MIMO_MAX_RETRIES: '1' }),
+    usageStore: usage,
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async (_input, init) => {
+      bodies.push(String(init?.body))
+      return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
+    },
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
+  })))
+  expect(res.status).toBe(429)
+  expect(bodies).toHaveLength(1)
+  expect(usage.rows[0]?.note).toBe('attempts=1')
+  expect(usage.rows[0]?.model).toBe('mimo')
+  expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
+})
+
+test('MiMo retries a transient 5xx at most once then succeeds, logging the attempt count without leaking detail', async () => {
   const usage = new MemoryUsageStore()
   const bodies: string[] = []
   const sleeps: number[] = []
   const fetch = createGatewayFetch({
-    env: env({ GW_MIMO_MAX_RETRIES: '2' }),
+    env: env({ GW_MIMO_MAX_RETRIES: '2' }), // clamps to 1 → exactly one extra attempt
     usageStore: usage,
     transcribeImpl: null,
     webSearchImpl: null,
@@ -380,7 +409,7 @@ test('MiMo retries a transient 429 then succeeds, logging the attempt count with
     mimoRetryRandom: () => 0,
     fetchImpl: async (_input, init) => {
       bodies.push(String(init?.body))
-      if (bodies.length === 1) return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
+      if (bodies.length === 1) return new Response('provider detail', { status: 503, headers: { 'retry-after': '0' } })
       return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } })
     },
   })
@@ -557,12 +586,12 @@ test('client cannot bypass the model whitelist: an out-of-list model is coerced 
   expect(JSON.parse(calls[0]!.body!).model).toBe('qwen3-coder-plus')
 })
 
-test('Qwen retries transient upstream responses and records the attempt count without leaking details', async () => {
+test('Qwen retries a transient 5xx at most once and records the attempt count without leaking details', async () => {
   const usage = new MemoryUsageStore()
   const calls: string[] = []
   const sleeps: number[] = []
   const fetch = createGatewayFetch({
-    env: env({ GW_Q_CHAT: '10', GW_QWEN_MAX_RETRIES: '2' }),
+    env: env({ GW_Q_CHAT: '10', GW_QWEN_MAX_RETRIES: '2' }), // clamps to 1
     usageStore: usage,
     transcribeImpl: null,
     webSearchImpl: null,
@@ -570,7 +599,7 @@ test('Qwen retries transient upstream responses and records the attempt count wi
     qwenRetryRandom: () => 0,
     fetchImpl: async (_input, init) => {
       calls.push(String(init?.body))
-      if (calls.length === 1) return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
+      if (calls.length === 1) return new Response('provider detail', { status: 503, headers: { 'retry-after': '0' } })
       return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } })
     },
   })
@@ -585,6 +614,29 @@ test('Qwen retries transient upstream responses and records the attempt count wi
   expect(sleeps).toEqual([0])
   expect(usage.rows[0]?.note).toBe('attempts=2')
   expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
+})
+
+test('Qwen does not retry a 429 even with a retry budget — surfaces it in one upstream call', async () => {
+  const usage = new MemoryUsageStore()
+  const calls: string[] = []
+  const fetch = createGatewayFetch({
+    env: env({ GW_QWEN_MAX_RETRIES: '1' }),
+    usageStore: usage,
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async (_input, init) => {
+      calls.push(String(init?.body))
+      return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
+    },
+  })
+  const response = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus' }),
+  })))
+  expect(response.status).toBe(429)
+  expect(calls).toHaveLength(1)
+  expect(usage.rows[0]?.note).toBe('attempts=1')
 })
 
 test('Qwen distinguishes upstream account exhaustion from temporary concurrency limits and redacts detail', async () => {
@@ -772,6 +824,69 @@ test('admin usage requires admin token and returns recent rows', async () => {
   const body = await res.json()
   expect(body.today_by_model).toMatchObject([{ model: 'img', total: 1, ok: 1 }])
   expect(body.recent[0]).toMatchObject({ user: 'owner-a', model: 'img', ok: 1 })
+})
+
+test('GET /v1/models requires auth and lists explicit Qwen/MiMo/DeepSeek catalog for configured upstreams', async () => {
+  const { fetch } = makeGateway()
+  const unauth = await fetch(new Request('http://local/v1/models', { method: 'GET' }))
+  expect(unauth.status).toBe(401)
+  const res = await fetch(new Request('http://local/v1/models', authed({ method: 'GET' })))
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.object).toBe('list')
+  const catalog = (body.data as Array<{ id: string; owned_by: string }>).map(m => ({ id: m.id, owned_by: m.owned_by }))
+  expect(catalog).toContainEqual({ id: 'qwen3-coder-plus', owned_by: 'qwen' })
+  expect(catalog).toContainEqual({ id: 'mimo-v2.5', owned_by: 'mimo' })
+  expect(catalog).toContainEqual({ id: 'deepseek-v4-flash', owned_by: 'deepseek' })
+})
+
+test('GET /v1/models omits an upstream whose key is missing (honest catalog)', async () => {
+  const { fetch } = makeGateway({ GW_DEEPSEEK_KEY: '', GW_MIMO_KEY: '' })
+  const res = await fetch(new Request('http://local/v1/models', authed({ method: 'GET' })))
+  const body = await res.json()
+  const owners = new Set((body.data as Array<{ owned_by: string }>).map(m => m.owned_by))
+  expect(owners.has('qwen')).toBe(true)
+  expect(owners.has('mimo')).toBe(false)
+  expect(owners.has('deepseek')).toBe(false)
+})
+
+test('deepseek-v4-flash routes to the DeepSeek upstream and injects a trusted opaque user', async () => {
+  const { fetch, calls, usage } = makeGateway()
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json', 'X-QF-Client-ID': 'install-0001' },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  expect(calls[0].url).toBe('https://deepseek.example/chat/completions')
+  expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer deepseek-secret')
+  const sent = JSON.parse(calls[0].body ?? '{}')
+  expect(sent.model).toBe('deepseek-v4-flash')
+  expect(String(sent.user_id)).toStartWith('bb_') // official user_id field, opaque, not the raw installationId
+  expect(String(sent.user_id)).not.toContain('install-0001')
+  expect(usage.rows[0]?.model).toBe('deepseek')
+})
+
+test('a deepseek model with no GW_DEEPSEEK_KEY returns 503 and never falls back to Qwen', async () => {
+  const { fetch, calls } = makeGateway({ GW_DEEPSEEK_KEY: '' })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
+  })))
+  expect(res.status).toBe(503)
+  expect(calls.length).toBe(0) // fail closed — no upstream call at all, no cross-provider fallback
+})
+
+test('healthz reports chat_deepseek and deepseek capacity when configured', async () => {
+  const { fetch } = makeGateway()
+  const res = await fetch(new Request('http://local/healthz', authed({})))
+  const body = await res.json()
+  expect(body.features.chat_deepseek).toBe(true)
+  expect(body.capacity.deepseek).toBeDefined()
+  expect(body.limits.deepseek_conc).toBe(32)
+  expect(body.limits.deepseek_user_conc).toBe(2)
 })
 
 test('image task submit/poll proxies to relay tasks base with relay token when configured', async () => {
