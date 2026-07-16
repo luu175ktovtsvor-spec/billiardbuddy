@@ -68,7 +68,7 @@ export function CommandPalette() {
           const st = useSettingsStore.getState()
           const on = st.defaultPermissionMode === 'plan'
           st.setPermissionMode(on ? 'default' : 'plan')
-          toast(on ? '已回到默认权限' : '已切换到计划模式(只读)')
+          toast(on ? '已回到默认权限' : '已切换到规划模式(只读)')
         },
       },
       {

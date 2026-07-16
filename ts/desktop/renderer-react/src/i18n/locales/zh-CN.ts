@@ -9,30 +9,15 @@ export const zhCN = {
   },
   sidebar: {
     // 主导航按「两条线」重排(owner 2026-07-11):不照抄 WorkBuddy 的多助理协作 IA,每一项都接我们后端真实系统。
-    // ── A 线(喂给模型循环的东西)──
     newTask: '新建任务',           // 开新会话 → chatStore
-    scheduled: '已安排',            // Codex:定时/计划任务入口(占位)
-    plugins: '插件',                // Codex:插件/扩展入口(占位)
-    domainExpert: '领域知识',       // 挂/切领域知识包 packs → /api/v1/agent/packs
-    domainExpertHint: '通用 / 台球',
-    skillsConnectors: '技能 · 连接器', // 斜杠技能 + MCP 连接器 → /api/v1/agent/skills + /api/v1/agent/mcp
-    // ── B 线(确定性产品工作台)──
-    workbench: '创作工作台',        // 生图 + 视频剪辑 → /api/v1/studio + /api/v1/video-edit
-    automation: '自动化',           // 定时任务 → /api/v1/scheduled-tasks
-    sectionTasks: '任务',
+    scheduled: '已安排',            // 定时/工作流任务入口 → /api/v1/scheduled-tasks
+    plugins: '插件',                // 插件/MCP/技能入口 → /api/v1/agent/*
     sectionProjects: '项目',        // Codex 左栏「项目」分组
     sectionConversations: '任务',   // 对齐 Codex 中文:thread=「任务」,与顶部「新建任务」统一
-
     archived: '已归档',
-    sectionWorkspace: '工作区',
-    workspaceDefault: '默认工作区',
     newChat: '新对话',
-    sessions: '对话',
-    empty: '还没有对话,点上面「新建任务」开个头。',
     settings: '设置',
-    notifications: '通知',
     collapse: '收起侧栏',
-    filter: '筛选',
     search: '搜索',
   },
   topbar: {
@@ -55,7 +40,6 @@ export const zhCN = {
     newTask: '新建定时任务',
     emptyTitle: '还没有定时任务',
     emptyHint: '点右上角「新建定时任务」,让管家按你定的时间自动开工。',
-    comingSoon: '定时任务即将上线',
     nextRun: '下次',
     enabled: '已启用',
     paused: '已暂停',
@@ -97,15 +81,6 @@ export const zhCN = {
     title: '插件',
     subtitle: '给管家接上更多能力和外部服务。开箱内置这些,也能接你自己的 MCP 服务器。',
     add: '添加 MCP 服务器',
-    comingSoon: 'MCP 服务器接入即将上线',
-    builtinSection: '内置能力',
-    connectorSection: '连接器',
-    on: '已启用',
-    off: '未启用',
-    connect: '连接',
-    manage: '管理',
-    domainOn: '已挂载',
-    domainOff: '挂载',
     // 添加 MCP 弹窗
     mcpTitle: '添加 MCP 服务器',
     mcpName: '名称',

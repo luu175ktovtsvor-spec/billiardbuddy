@@ -197,7 +197,7 @@ function PermissionMenu() {
   )
 }
 
-/** + 添加菜单(照 Codex:文件和文件夹 / 目标 / 计划模式 / 插件)。 */
+/** + 添加菜单(照 Codex:文件和文件夹 / 目标 / 规划模式 / 插件)。 */
 function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string[]) => void; onStartGoal: () => void }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -228,7 +228,7 @@ function AddMenu({ onInsertPaths, onStartGoal }: { onInsertPaths: (paths: string
           items={[
             { label: '文件和文件夹', icon: <IconFolder size={15} />, onClick: () => void pickFilesAndFolders() },
             { label: '目标', icon: <IconTarget size={15} />, onClick: onStartGoal },
-            { label: '计划模式', icon: <IconChecklist size={15} />, onClick: () => { useSettingsStore.getState().setPermissionMode('plan'); toast('已切换到计划模式') } },
+            { label: t('permission.plan'), icon: <IconChecklist size={15} />, onClick: () => { useSettingsStore.getState().setPermissionMode('plan'); toast(`已切换到${t('permission.plan')}`) } },
             { label: '插件', icon: <IconPuzzle size={15} />, separatorBefore: true, onClick: () => useUiStore.getState().setNav('plugins') },
           ]}
         />
