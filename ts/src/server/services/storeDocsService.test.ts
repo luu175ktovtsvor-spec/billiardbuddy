@@ -56,6 +56,10 @@ test('search_store_docs tool exposes sourced excerpts to the agent', async () =>
     expect(out).toContain('可信度:')
     expect(out).toContain('匹配:')
     expect(out).toContain('路径:')
+    // C3:摘录是文件片段,不是当场确认的事实——具体数字要跟用户核实,低置信命中要标出来不能和高置信同等看待。
+    expect(out).toContain('不是当场向用户确认过的事实')
+    expect(out).toContain('先跟用户核实')
+    expect(out).toContain('confidence:low')
     const json = out.match(/<store_doc_sources_json>\s*([\s\S]*?)\s*<\/store_doc_sources_json>/)?.[1]
     expect(json).toBeTruthy()
     expect(JSON.parse(json || '{}').hits[0]).toMatchObject({
@@ -150,6 +154,28 @@ test('search_store_docs tool accepts path scope without reading arbitrary files'
     const hit = await tool.execute({ query: '租期', paths: ['合同.md'] }, { workspace: new Workspace(root) })
     expect(hit).toContain('合同.md')
     expect(hit).toContain('<store_doc_sources_json>')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('C3: 低置信命中在文案里明确标出来,不和高置信同等看待', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'store-docs-low-confidence-'))
+  try {
+    const docsDir = join(root, 'docs')
+    mkdirSync(docsDir)
+    // 只弱相关地提到查询里的一个词,凑不齐短语/覆盖率门槛 → confidenceFor 应判 low。
+    writeFileSync(join(docsDir, '杂记.md'), '今天进了一批新球杆和台费收据本,顺便记一下库存。')
+
+    const data = new DesktopDataStore(root)
+    const service = new StoreDocsService(data, root)
+    await service.setFolder(docsDir)
+    const hits = await service.search('黄金档台费优惠活动方案', 3)
+    expect(hits[0]?.confidence).toBe('low')
+
+    const tool = createStoreDocsTool(service)
+    const out = await tool.execute({ query: '黄金档台费优惠活动方案' }, { workspace: new Workspace(root) })
+    expect(out).toContain('可信度:low(弱相关，谨慎使用)')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

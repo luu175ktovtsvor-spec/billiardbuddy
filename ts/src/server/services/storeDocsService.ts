@@ -272,9 +272,13 @@ export function createStoreDocsTool(service: StoreDocsService): Tool {
       }
       return [
         '<store_doc_sources>',
-        '回答时优先引用这些店铺文件来源；若信息不足，要明确说“资料库里没看到”。引用格式建议写成「据 S1《文件名》」。',
+        [
+          '回答时优先引用这些店铺文件来源；若信息不足，要明确说“资料库里没看到”。引用格式建议写成「据 S1《文件名》」。',
+          '这些都是文件里摘出来的片段，不是当场向用户确认过的事实——价格、电话、日期这类具体数字，摘录里有也不代表现在还准确，回答前先跟用户核实一下再当定论；'
+          + '标 confidence:low 的命中relevance 较弱，不要当成和 high/medium 一样确定，必要时向用户说明这条只是弱相关、请他确认。',
+        ].join('\n'),
         ...hits.map(hit => [
-          `[${hit.source_id}] ${hit.file_name} · 片段 ${hit.chunk_index + 1} · 可信度:${hit.confidence} · 分数:${hit.score}`,
+          `[${hit.source_id}] ${hit.file_name} · 片段 ${hit.chunk_index + 1} · 可信度:${hit.confidence}${hit.confidence === 'low' ? '(弱相关，谨慎使用)' : ''} · 分数:${hit.score}`,
           `匹配:${hit.matched_terms.length ? hit.matched_terms.join('、') : '无'}`,
           `原因:${hit.why}`,
           `摘录:${hit.excerpt}`,
