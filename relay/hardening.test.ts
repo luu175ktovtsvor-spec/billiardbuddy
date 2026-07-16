@@ -40,6 +40,20 @@ test('same (owner, Idempotency-Key) resubmit returns the original task_id and ru
   expect(calls).toBe(1) // 重复提交只跑一次真实上游、只扣一次费
 })
 
+test('concurrent same-key submits dedup to one task and one upstream call — even with no owner', async () => {
+  let calls = 0
+  const fetch = createRelayFetch({ env: baseEnv(), fetchImpl: async () => { calls++; return Response.json({ data: [{ b64_json: B64 }] }) } })
+  // Legacy path: NO X-Relay-Owner (owner='' sentinel) + same Idempotency-Key, fired truly concurrently.
+  const h = { 'idempotency-key': 'concurrent-key' }
+  const [r1, r2] = await Promise.all([
+    fetch(submit(GEN, h)).then(r => r.json()),
+    fetch(submit(GEN, h)).then(r => r.json()),
+  ])
+  expect(r1.task_id).toBe(r2.task_id) // both callers get the same task
+  await tick(10)
+  expect(calls).toBe(1) // only one real upstream task despite concurrent duplicate submits
+})
+
 test('a task bound to an owner rejects cross-owner polling with 403, allows the same owner', async () => {
   const fetch = createRelayFetch({ env: baseEnv(), fetchImpl: async () => Response.json({ data: [{ b64_json: B64 }] }) })
   const { task_id } = await (await fetch(submit(GEN, { 'x-relay-owner': 'ownerA' }))).json()
