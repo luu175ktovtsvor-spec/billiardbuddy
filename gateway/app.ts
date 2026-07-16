@@ -689,13 +689,17 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         const rawBody = await request.text()
-        // 路由规则:MiMo 已配置且请求 model 命中 MiMo 白名单 → 走 MiMo;否则一律走千问(默认上游,
-        // 千问会把白名单外的 model 强制改写为 GW_QWEN_MODEL)。两家各用各自的凭据/限速/重试,永不互相回退。
+        // 路由规则:请求 model 命中 MiMo 白名单 → 只能走 MiMo;MiMo 未配置时显式 503,绝不改投千问。
+        // 未命中 MiMo 白名单(未知或千问模型)→ 默认千问,千问把白名单外 model 改写为 GW_QWEN_MODEL。
+        // MiMo 白名单由 loadMimoAllowedModels 独立于 GW_MIMO_KEY 加载(始终含默认 mimo-v2.5),因此
+        // 缺 key 时仍能识别 MiMo 目标模型并 fail closed。两家各用各自凭据/限速/重试,任一失败都不跨模型回退。
         const requestedModel = parseChatModel(rawBody)
-        const routeToMimo = mimoChat !== null && config.mimoAllowedModels.has(requestedModel)
-        const handler = routeToMimo ? mimoChat : qwenChat
-        if (!handler) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
-        return await handler(request, rawBody, user)
+        if (config.mimoAllowedModels.has(requestedModel)) {
+          if (!mimoChat) throw new HttpError(503, 'MiMo 模型服务未配置（缺 GW_MIMO_KEY）')
+          return await mimoChat(request, rawBody, user)
+        }
+        if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
+        return await qwenChat(request, rawBody, user)
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {

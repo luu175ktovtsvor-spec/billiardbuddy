@@ -434,19 +434,26 @@ test('an out-of-list default model routes to Qwen and is coerced to the Qwen ser
   expect(usage.rows).toMatchObject([{ model: 'qwen', ok: true }])
 })
 
-test('when only MiMo is unconfigured, a MiMo model still routes to the default Qwen upstream (no cross-serve)', async () => {
+test('a MiMo-allowlisted model with MiMo unconfigured fails closed with 503 and never routes to Qwen', async () => {
   const { fetch, calls, usage } = makeGateway({ GW_MIMO_KEY: '' })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', messages: [{ role: 'user', content: 'hi' }] }),
   })))
+  // 命中 MiMo 白名单但 MiMo 未配置 → 显式 503,绝不改投千问;上游一次都没碰,用量也不记。
+  expect(res.status).toBe(503)
+  expect(calls).toEqual([])
+  expect(usage.rows).toEqual([])
+})
+
+test('healthz reports chat_mimo=false but chat_qwen=true when only the MiMo key is missing', async () => {
+  const { fetch } = makeGateway({ GW_MIMO_KEY: '' })
+  const res = await fetch(new Request('http://local/healthz', authed({ headers: { Authorization: 'Bearer app-token' } })))
   expect(res.status).toBe(200)
-  await res.text()
-  // MiMo 未配置 → 不路由到 MiMo;走默认千问并把 model 改写成千问服务器模型。
-  expect(calls[0]?.url).toBe('https://qwen.example/v1/chat/completions')
-  expect(JSON.parse(calls[0]!.body!).model).toBe('qwen3-coder-plus')
-  expect(usage.rows).toMatchObject([{ model: 'qwen', ok: true }])
+  const body = await res.json() as { features: { chat_qwen: boolean; chat_mimo: boolean } }
+  expect(body.features.chat_qwen).toBe(true)
+  expect(body.features.chat_mimo).toBe(false)
 })
 
 test('when the routed default provider (Qwen) is unconfigured, chat fails closed with 503 and no upstream fetch', async () => {
