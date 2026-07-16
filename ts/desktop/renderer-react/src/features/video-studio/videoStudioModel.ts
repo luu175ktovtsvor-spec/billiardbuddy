@@ -21,6 +21,8 @@ interface VideoBriefDraft {
   durationSec?: number
   exactCopyText: string
   inferStrategy?: boolean
+  /** D1:带上当前工作区,后端据此校验目标项目确实属于这个门店文件夹,防跨门店误改。 */
+  workspaceRoot?: string
 }
 
 export function initialVideoProjectInput(input: InitialVideoProjectDraft): VideoCreateProjectInput {
@@ -44,6 +46,7 @@ export function videoBriefInput(input: VideoBriefDraft): VideoBriefCompileInput 
     ratio: input.ratio,
     ...(input.durationSec != null ? { target_duration_ms: input.durationSec * 1000 } : {}),
     exact_copy: input.exactCopyText.split(/\r?\n|，/).map(item => item.trim()).filter(Boolean),
+    working_dir: input.workspaceRoot,
   }
 }
 

@@ -56,30 +56,31 @@ export const videoApi = {
   async compileBrief(projectId: string, input: VideoBriefCompileInput): Promise<VideoBriefCompileResponse> {
     return videoBriefCompileResponseSchema.parse(await api.post(projectPath(projectId, '/brief/compile'), input))
   },
-  async analyze(projectId: string, sourceIds?: string[]) {
-    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/analyze'), { source_ids: sourceIds }))
+  async analyze(projectId: string, sourceIds?: string[], workingDir?: string) {
+    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/analyze'), { source_ids: sourceIds, working_dir: workingDir }))
   },
-  async drafts(projectId: string) {
-    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/drafts'), {}))
+  async drafts(projectId: string, workingDir?: string) {
+    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/drafts'), { working_dir: workingDir }))
   },
-  async applyOperations(projectId: string, baseRevision: number, operations: VideoOperation[]) {
-    return videoOpsResponseSchema.parse(await api.post(projectPath(projectId, '/ops'), { base_revision: baseRevision, operations }))
+  async applyOperations(projectId: string, baseRevision: number, operations: VideoOperation[], workingDir?: string) {
+    return videoOpsResponseSchema.parse(await api.post(projectPath(projectId, '/ops'), { base_revision: baseRevision, operations, working_dir: workingDir }))
   },
-  async undo(projectId: string, baseRevision: number): Promise<VideoProject> {
-    return videoMutationResponseSchema.parse(await api.post(projectPath(projectId, '/undo'), { base_revision: baseRevision })).project
+  async undo(projectId: string, baseRevision: number, workingDir?: string): Promise<VideoProject> {
+    return videoMutationResponseSchema.parse(await api.post(projectPath(projectId, '/undo'), { base_revision: baseRevision, working_dir: workingDir })).project
   },
-  async redo(projectId: string, baseRevision: number): Promise<VideoProject> {
-    return videoMutationResponseSchema.parse(await api.post(projectPath(projectId, '/redo'), { base_revision: baseRevision })).project
+  async redo(projectId: string, baseRevision: number, workingDir?: string): Promise<VideoProject> {
+    return videoMutationResponseSchema.parse(await api.post(projectPath(projectId, '/redo'), { base_revision: baseRevision, working_dir: workingDir })).project
   },
-  async applyAlternative(projectId: string, alternativeId: string, baseRevision: number, scope: 'whole' | 'scene', sceneId?: string): Promise<VideoProject> {
+  async applyAlternative(projectId: string, alternativeId: string, baseRevision: number, scope: 'whole' | 'scene', sceneId?: string, workingDir?: string): Promise<VideoProject> {
     return videoAlternativeApplyResponseSchema.parse(await api.post(projectPath(projectId, `/alternatives/${encodeURIComponent(alternativeId)}/apply`), {
       base_revision: baseRevision,
       scope,
       scene_id: sceneId,
+      working_dir: workingDir,
     })).project
   },
-  async render(projectId: string, input: VideoRenderInput) {
-    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/render'), input))
+  async render(projectId: string, input: VideoRenderInput, workingDir?: string) {
+    return videoJobStartResponseSchema.parse(await api.post(projectPath(projectId, '/render'), { ...input, working_dir: workingDir }))
   },
   async getJob(jobId: string): Promise<VideoJob> {
     return videoJobResponseSchema.parse(await api.get(`/api/v1/video-edit/jobs/${encodeURIComponent(jobId)}`)).job

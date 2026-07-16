@@ -115,11 +115,12 @@ export function VideoStudioPage() {
       durationSec: durationTouched ? durationSec : undefined,
       exactCopyText,
       inferStrategy,
+      workspaceRoot: workspaceRoot ?? undefined,
     }))
     setBriefResult(result)
     await refreshProject(projectId)
     return result
-  }, [contentType, durationSec, durationTouched, exactCopyText, goalText, project?.project_id, project?.revision, ratio, refreshProject, view])
+  }, [contentType, durationSec, durationTouched, exactCopyText, goalText, project?.project_id, project?.revision, ratio, refreshProject, view, workspaceRoot])
 
   const watchJob = useCallback(async (jobId: string, projectId: string) => {
     const controller = new AbortController()
@@ -165,7 +166,7 @@ export function VideoStudioPage() {
     setBusy(true); setError('')
     try {
       await compileUnderstanding(project.project_id)
-      const started = await videoApi.drafts(project.project_id)
+      const started = await videoApi.drafts(project.project_id, workspaceRoot ?? undefined)
       setJob(await videoApi.getJob(started.job_id))
       await watchJob(started.job_id, project.project_id)
       setCompactPane('workspace')
@@ -178,7 +179,7 @@ export function VideoStudioPage() {
     if (!project || busy) return
     setBusy(true); setError('')
     try {
-      const result = await videoApi.applyOperations(project.project_id, project.revision, [operation])
+      const result = await videoApi.applyOperations(project.project_id, project.revision, [operation], workspaceRoot ?? undefined)
       acceptProject(result.project)
     } catch (cause) {
       await refreshProject(project.project_id).catch(() => undefined)
@@ -194,7 +195,7 @@ export function VideoStudioPage() {
   const undoRedo = async (kind: 'undo' | 'redo') => {
     if (!project || busy) return
     setBusy(true)
-    try { acceptProject(await videoApi[kind](project.project_id, project.revision)) }
+    try { acceptProject(await videoApi[kind](project.project_id, project.revision, workspaceRoot ?? undefined)) }
     catch (cause) { toast(errorMessage(cause)) }
     finally { setBusy(false) }
   }
@@ -202,7 +203,7 @@ export function VideoStudioPage() {
   const applyAlternative = async (alternative: VideoAlternative, scope: 'whole' | 'scene') => {
     if (!project || busy) return
     setBusy(true)
-    try { acceptProject(await videoApi.applyAlternative(project.project_id, alternative.id, project.revision, scope, scope === 'scene' ? selectedScene?.id : undefined)) }
+    try { acceptProject(await videoApi.applyAlternative(project.project_id, alternative.id, project.revision, scope, scope === 'scene' ? selectedScene?.id : undefined, workspaceRoot ?? undefined)) }
     catch (cause) { toast(errorMessage(cause)) }
     finally { setBusy(false) }
   }
@@ -211,7 +212,7 @@ export function VideoStudioPage() {
     if (!project || !project.scenes.length || busy) return
     setBusy(true); setError(''); setRenderUrl('')
     try {
-      const started = await videoApi.render(project.project_id, { revision: project.revision, preview, scene_id: preview ? selectedScene?.id : undefined, include_music: true, include_subtitles: true })
+      const started = await videoApi.render(project.project_id, { revision: project.revision, preview, scene_id: preview ? selectedScene?.id : undefined, include_music: true, include_subtitles: true }, workspaceRoot ?? undefined)
       setJob(await videoApi.getJob(started.job_id))
       const final = await watchJob(started.job_id, project.project_id)
       const path = typeof final.result?.video_url === 'string' ? final.result.video_url : ''
