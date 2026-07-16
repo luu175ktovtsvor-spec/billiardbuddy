@@ -1,8 +1,8 @@
 {
-  "name": "claude-code-desktop",
+  "name": "billiardbuddy-desktop",
   "private": true,
   "version": "0.4.5",
-  "description": "Desktop coding agent workbench for Claude Code Haha.",
+  "description": "Desktop coding agent workbench for BilliardBuddy.",
   "homepage": "https://github.com/NanmiCoder/cc-haha",
   "author": {
     "name": "NanmiCoder",
@@ -11,15 +11,15 @@
   "type": "module",
   "main": "electron-dist/main.cjs",
   "build": {
-    "appId": "com.claude-code-haha.desktop",
-    "productName": "Claude Code Haha",
+    "appId": "com.billiardbuddy.desktop",
+    "productName": "BilliardBuddy",
     "asar": true,
     "asarUnpack": [
       "dist/**",
       "node_modules/node-pty/**",
       "src-tauri/binaries/**"
     ],
-    "artifactName": "Claude-Code-Haha-${version}-${os}-${arch}.${ext}",
+    "artifactName": "BilliardBuddy-${version}-${os}-${arch}.${ext}",
     "npmRebuild": false,
     "directories": {
       "output": "build-artifacts/electron"

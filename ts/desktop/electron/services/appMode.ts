@@ -23,6 +23,35 @@ export function defaultPortableDir(app: AppModeAppLike): string {
   return path.join(path.dirname(app.getPath('exe')), 'CLAUDE_CONFIG_DIR')
 }
 
+/**
+ * BilliardBuddy's OWN product data root. Lives under the (rebranded) userData so
+ * the kernel never falls back to the shared ~/.claude / ~/.claude/cc-haha that an
+ * installed CC-Haha or Claude Code would own. Host-layer isolation only — the
+ * kernel's internal <configDir>/cc-haha/* layout is unchanged.
+ */
+export function defaultProductDataDir(app: AppModeAppLike): string {
+  return path.join(app.getPath('userData'), 'config')
+}
+
+/**
+ * When neither a shell/ops override nor portable mode set CLAUDE_CONFIG_DIR, point
+ * it at BilliardBuddy's own data root so a fresh double-click install does not read
+ * shared CC-Haha state. Marks BB_DEFAULT_CONFIG_DIR so getAppMode still reports this
+ * as the normal "default/system" mode rather than a user "environment" override.
+ * Must run AFTER applyStartupPortableMode so an explicit portable dir wins.
+ */
+export function applyDefaultConfigDir(
+  app: AppModeAppLike,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (env.CLAUDE_CONFIG_DIR) return null
+  const dir = defaultProductDataDir(app)
+  fs.mkdirSync(dir, { recursive: true })
+  env.CLAUDE_CONFIG_DIR = dir
+  env.BB_DEFAULT_CONFIG_DIR = '1'
+  return dir
+}
+
 export function dirHasPortableData(dir: string): boolean {
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return false
   return [
@@ -102,14 +131,16 @@ export function getAppMode(
   env: NodeJS.ProcessEnv = process.env,
 ): AppModeConfig {
   const envConfigDir = env.CLAUDE_CONFIG_DIR || null
+  // The app-set BilliardBuddy default is NOT a user override: report it as default/system.
+  const appDefault = envConfigDir != null && env.BB_DEFAULT_CONFIG_DIR === '1'
+  const userOverride = envConfigDir != null && !appDefault
   const activeConfigDir = envConfigDir || app.getPath('userData')
-  const portableDir = envConfigDir || defaultPortableDir(app)
   return {
-    mode: envConfigDir ? 'portable' : 'default',
-    portableDir,
+    mode: userOverride ? 'portable' : 'default',
+    portableDir: userOverride ? envConfigDir : defaultPortableDir(app),
     defaultPortableDir: defaultPortableDir(app),
     activeConfigDir,
-    configDirSource: envConfigDir
+    configDirSource: userOverride
       ? env.CC_HAHA_APP_PORTABLE_DIR ? 'portable' : 'environment'
       : 'system',
   }
