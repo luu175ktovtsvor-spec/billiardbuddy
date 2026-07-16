@@ -19,9 +19,19 @@
 #   }
 set -e
 APPDIR=/opt/qfrelay
+[ -f /tmp/relay-app.ts ] || { echo "缺少 /tmp/relay-app.ts" >&2; exit 1; }
 mkdir -p "$APPDIR"
-mv -f /tmp/relay-app.ts "$APPDIR/app.ts"
-mv -f /tmp/relay.env "$APPDIR/relay.env"
+install -m 644 /tmp/relay-app.ts "$APPDIR/app.ts" && rm -f /tmp/relay-app.ts
+# 只在显式提供 /tmp/relay.env 时才覆盖现网 relay.env;否则保留现网凭据(真 OpenAI key 不被清空)。
+# 更新代码时必须先 `rm -f /tmp/relay.env`,与 gateway/deploy.sh 对 gw.env 的处理一致。
+if [ -f /tmp/relay.env ]; then
+  install -m 600 /tmp/relay.env "$APPDIR/relay.env.new"
+  mv -f "$APPDIR/relay.env.new" "$APPDIR/relay.env"
+  rm -f /tmp/relay.env
+elif [ ! -f "$APPDIR/relay.env" ]; then
+  echo "缺少 /tmp/relay.env,且现网不存在 $APPDIR/relay.env" >&2
+  exit 1
+fi
 chmod 600 "$APPDIR/relay.env"
 # blob 目录(700):应用启动也会自建,这里预建保证属主与权限正确。
 mkdir -p "$APPDIR/blobs"
