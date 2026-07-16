@@ -2,12 +2,13 @@
 # 在大陆机上部署网关阀门(零干扰现网:只占 127.0.0.1:8799 + 一个 systemd 服务)
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts mimoChat.ts modelCapacity.ts transcription.ts webSearch.ts; do
+for source in app.ts qwenChat.ts modelCapacity.ts transcription.ts webSearch.ts; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
 install -m 644 /tmp/app.ts "$APPDIR/app.ts"
-install -m 644 /tmp/mimoChat.ts "$APPDIR/mimoChat.ts"
+install -m 644 /tmp/qwenChat.ts "$APPDIR/qwenChat.ts"
+rm -f "$APPDIR/mimoChat.ts"  # 旧 MiMo 聊天模块已被 qwenChat.ts 取代
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
 install -m 644 /tmp/webSearch.ts "$APPDIR/webSearch.ts"

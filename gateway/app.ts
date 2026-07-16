@@ -13,22 +13,20 @@ import {
 } from './webSearch'
 import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
 import {
-  fetchMimoWithRetry,
-  loadMimoAllowedModels,
-  loadMimoNativeSearchConfig,
-  MimoRequestError,
-  MimoUsageTracker,
-  prepareMimoChatBody,
-  type MimoNativeSearchConfig,
-} from './mimoChat'
+  fetchQwenWithRetry,
+  loadQwenAllowedModels,
+  prepareQwenChatBody,
+  QwenRequestError,
+} from './qwenChat'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
 
 type GatewayConfig = {
-  mimoKey: string
-  mimoBase: string
+  qwenKey: string
+  qwenBase: string
+  qwenModel: string
   relayBase: string
   relayToken: string
   relayTasksBase: string
@@ -39,15 +37,14 @@ type GatewayConfig = {
   amapKey: string
   amapBase: string
   appTokens: Map<string, string>
-  mimoRpm: number
-  mimoConc: number
-  mimoUserConc: number
-  mimoQueueMaxWait: number
-  mimoRetryMax: number
-  mimoRetryBaseMs: number
-  mimoRetryMaxMs: number
-  mimoAllowedModels: ReadonlySet<string>
-  mimoNativeSearch: MimoNativeSearchConfig
+  qwenRpm: number
+  qwenConc: number
+  qwenUserConc: number
+  qwenQueueMaxWait: number
+  qwenRetryMax: number
+  qwenRetryBaseMs: number
+  qwenRetryMaxMs: number
+  qwenAllowedModels: ReadonlySet<string>
   imgIpm: number
   imgConc: number
   queueMaxWait: number
@@ -81,8 +78,8 @@ export interface GatewayDeps {
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
   webSearchImpl?: GatewayWebSearch | null
-  mimoRetrySleep?: (ms: number) => Promise<void>
-  mimoRetryRandom?: () => number
+  qwenRetrySleep?: (ms: number) => Promise<void>
+  qwenRetryRandom?: () => number
 }
 
 export class HttpError extends Error {
@@ -282,8 +279,9 @@ function parseAppTokens(raw: string | undefined): Map<string, string> {
 
 function loadConfig(env: Env): GatewayConfig {
   return {
-    mimoKey: required(env, 'GW_MIMO_KEY'),
-    mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
+    qwenKey: required(env, 'GW_QWEN_KEY'),
+    qwenBase: (env.GW_QWEN_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
+    qwenModel: required(env, 'GW_QWEN_MODEL'),
     relayBase: required(env, 'GW_RELAY_BASE').replace(/\/+$/, ''),
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
@@ -295,15 +293,14 @@ function loadConfig(env: Env): GatewayConfig {
     amapKey: env.GW_AMAP_KEY ?? '',
     amapBase: (env.GW_AMAP_BASE ?? 'https://restapi.amap.com').replace(/\/+$/, ''),
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
-    mimoRpm: intEnv(env, 'GW_MIMO_RPM', 90),
-    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
-    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
-    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
-    mimoRetryMax: Math.max(0, intEnv(env, 'GW_MIMO_MAX_RETRIES', 3)),
-    mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
-    mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
-    mimoAllowedModels: loadMimoAllowedModels(env),
-    mimoNativeSearch: loadMimoNativeSearchConfig(env),
+    qwenRpm: intEnv(env, 'GW_QWEN_RPM', 90),
+    qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
+    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', 2)),
+    qwenQueueMaxWait: Math.max(0, floatEnv(env, 'GW_QWEN_QUEUE_MAX_WAIT', 120)),
+    qwenRetryMax: Math.max(0, intEnv(env, 'GW_QWEN_MAX_RETRIES', 3)),
+    qwenRetryBaseMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_BASE_MS', 500)),
+    qwenRetryMaxMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_MAX_MS', 8000)),
+    qwenAllowedModels: loadQwenAllowedModels(env),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
@@ -417,8 +414,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const config = loadConfig(env)
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
-  const mimoBucket = new TokenBucket(config.mimoRpm)
-  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc)
+  const qwenBucket = new TokenBucket(config.qwenRpm)
+  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc)
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
@@ -438,9 +435,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         return jsonResponse({
           ok: true,
           limits: {
-            mimo_rpm: config.mimoRpm,
-            mimo_conc: config.mimoConc,
-            mimo_user_conc: config.mimoUserConc,
+            qwen_rpm: config.qwenRpm,
+            qwen_conc: config.qwenConc,
+            qwen_user_conc: config.qwenUserConc,
             img_ipm: config.imgIpm,
             img_conc: config.imgConc,
             ark_chat_rpm: config.arkChatRpm,
@@ -452,11 +449,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
-          capacity: { mimo: mimoCapacity.snapshot() },
+          capacity: { qwen: qwenCapacity.snapshot() },
           features: {
             transcription: transcribe !== null,
-            web_search: webSearch !== null && !config.mimoNativeSearch.enabled,
-            mimo_native_web_search: config.mimoNativeSearch.enabled,
+            web_search: webSearch !== null,
           },
         })
       }
@@ -476,37 +472,37 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         const rawBody = await request.text()
-        const prepared = prepareMimoChatBody(rawBody, config.mimoNativeSearch, config.mimoAllowedModels)
-        const permit = await mimoCapacity.acquire(user, {
-          maxWaitMs: config.mimoQueueMaxWait * 1000,
+        const prepared = prepareQwenChatBody(rawBody, config.qwenAllowedModels, config.qwenModel)
+        const permit = await qwenCapacity.acquire(user, {
+          maxWaitMs: config.qwenQueueMaxWait * 1000,
           signal: request.signal,
         })
         const started = performance.now()
         try {
-          const { response: upstream, attempts } = await fetchMimoWithRetry(async () => {
+          const { response: upstream, attempts } = await fetchQwenWithRetry(async () => {
             try {
-              await mimoBucket.acquire(config.mimoQueueMaxWait, request.signal)
+              await qwenBucket.acquire(config.qwenQueueMaxWait, request.signal)
             } catch (error) {
-              if (error instanceof HttpError) throw new MimoRequestError(error.status, error.detail)
+              if (error instanceof HttpError) throw new QwenRequestError(error.status, error.detail)
               throw error
             }
-            return await fetchImpl(`${config.mimoBase}/chat/completions`, {
+            return await fetchImpl(`${config.qwenBase}/chat/completions`, {
               method: 'POST',
               body: prepared.body,
               signal: request.signal,
               headers: {
-                Authorization: `Bearer ${config.mimoKey}`,
+                Authorization: `Bearer ${config.qwenKey}`,
                 'Content-Type': 'application/json',
                 'Accept-Encoding': 'identity',
               },
             })
           }, {
-            maxRetries: config.mimoRetryMax,
-            baseDelayMs: config.mimoRetryBaseMs,
-            maxDelayMs: config.mimoRetryMaxMs,
+            maxRetries: config.qwenRetryMax,
+            baseDelayMs: config.qwenRetryBaseMs,
+            maxDelayMs: config.qwenRetryMaxMs,
             signal: request.signal,
-            sleep: deps.mimoRetrySleep,
-            random: deps.mimoRetryRandom,
+            sleep: deps.qwenRetrySleep,
+            random: deps.qwenRetryRandom,
           })
 
           if (!upstream.ok) {
@@ -514,36 +510,30 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             permit.release()
             await logUsage(store, {
               user,
-              model: 'mimo',
+              model: 'qwen',
               ok: false,
               status: upstream.status,
               ms: elapsedMs(started),
               note: `attempts=${attempts}`,
             })
-            return jsonError(upstream.status, mimoPublicError(upstream.status, upstreamDetail))
+            return jsonError(upstream.status, modelPublicError(upstream.status, upstreamDetail))
           }
 
-          const tracker = prepared.nativeSearchAvailable ? new MimoUsageTracker() : undefined
           let completed = false
           const complete = async () => {
             if (completed) return
             completed = true
-            const searchUsage = tracker?.finish()
             permit.release()
-            const note = [
-              `attempts=${attempts}`,
-              ...(searchUsage ? [`web_search_tool_usage=${searchUsage.toolUsage}`, `web_search_page_usage=${searchUsage.pageUsage}`] : []),
-            ].join(';')
-            await logUsage(store, { user, model: 'mimo', ok: true, status: upstream.status, ms: elapsedMs(started), note })
+            await logUsage(store, { user, model: 'qwen', ok: true, status: upstream.status, ms: elapsedMs(started), note: `attempts=${attempts}` })
           }
-          return withStreamLogging(upstream, complete, chunk => tracker?.observe(chunk))
+          return withStreamLogging(upstream, complete)
         } catch (error) {
           permit.release()
-          const status = error instanceof MimoRequestError ? error.status : 502
-          const detail = error instanceof MimoRequestError ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
+          const status = error instanceof QwenRequestError ? error.status : 502
+          const detail = error instanceof QwenRequestError ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
           await logUsage(store, {
             user,
-            model: 'mimo',
+            model: 'qwen',
             ok: false,
             status,
             ms: elapsedMs(started),
@@ -754,7 +744,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof CapacityQueueError || err instanceof MimoRequestError) {
+      if (err instanceof CapacityQueueError || err instanceof QwenRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
       console.error('[qfgw] request failed', err)
@@ -769,7 +759,7 @@ function elapsedMs(started: number): number {
   return Math.trunc(performance.now() - started)
 }
 
-function mimoPublicError(status: number, upstreamDetail = ''): string {
+function modelPublicError(status: number, upstreamDetail = ''): string {
   if (status === 402 || /insufficient[_\s-]?quota|quota[_\s-]?(?:exceeded|exhausted)|credit(?:s)?[_\s-]?(?:depleted|exhausted)|balance[_\s-]?(?:insufficient|depleted)|额度不足|额度已用尽|余额不足|账户欠费/i.test(upstreamDetail)) {
     return '模型服务额度不足，请稍后再试或联系管理员'
   }
