@@ -29,20 +29,30 @@ CC-Haha Desktop/Server
 
 ## 网关模型路由(`gateway/`)
 
-- 三个独立上游 provider,各自 key/base/allowlist/并发/单用户并发/限流/重试/用量标签,**绝不静默跨供应商回退**:
-  - **Qwen(默认)**:`GW_QWEN_KEY` / `GW_QWEN_BASE`(默认百炼 OpenAI 兼容端点)/ `GW_QWEN_MODEL`(默认 `qwen3-coder-plus`)/ `GW_QWEN_MODELS`。
-  - **MiMo(可选)**:`GW_MIMO_KEY` / `GW_MIMO_BASE`(默认 `api.xiaomimimo.com/v1`)/ `GW_MIMO_MODEL`(默认 `mimo-v2.5`)/ `GW_MIMO_MODELS`。
-  - **DeepSeek V4 Flash(可选)**:`GW_DEEPSEEK_KEY` / `GW_DEEPSEEK_BASE`(默认 `https://api.deepseek.com`)/ `GW_DEEPSEEK_MODEL`(默认 `deepseek-v4-flash`)/ `GW_DEEPSEEK_MODELS`;首版并发保守(全局 32、单装机 2、RPM 保守),不因官方并发 2500 就放开。注入受信 opaque `user_id`(`bb_<hash>`,官方字段名,不含隐私、不提权)。
-- 路由:`model` 命中 DeepSeek allowlist→DeepSeek;命中 MiMo allowlist→MiMo;否则默认 Qwen(未知 model 归一为 `GW_QWEN_MODEL`,供应商内归一非跨供应商回退)。命中的上游 handler 为 null → `503`,绝不改投另一家。DeepSeek/MiMo allowlist 独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。
+- 三个独立上游 provider,各自 key/base/allowlist/并发/单装机并发/单 token 二级并发/限流/重试/用量标签,**绝不静默跨供应商回退**:
+  - **MiMo v2.5(产品默认)**:`GW_MIMO_KEY` / `GW_MIMO_BASE`(默认 `api.xiaomimimo.com/v1`)/ `GW_MIMO_MODEL`(默认 `mimo-v2.5`)/ `GW_MIMO_MODELS`。全局 16、单装机 2、RPM 90(官方 100/账户,留余量)。
+  - **Qwen3-Coder-Plus(可选)**:`GW_QWEN_KEY` / `GW_QWEN_BASE`(默认百炼 OpenAI 兼容端点)/ `GW_QWEN_MODEL` / `GW_QWEN_MODELS`。全局 16、单装机 2、RPM 90。
+  - **DeepSeek V4 Flash(可选)**:`GW_DEEPSEEK_KEY` / `GW_DEEPSEEK_BASE`(默认 `https://api.deepseek.com`)/ `GW_DEEPSEEK_MODEL`(默认 `deepseek-v4-flash`)/ `GW_DEEPSEEK_MODELS`。全局 32、单装机 2、RPM 60(保守,不因官方并发 2500 就放开)。注入受信 opaque `user_id`(`bb_<hash>`,官方字段名,不含隐私、不提权)。
+- 三池容量互不共享(key/RPM/并发/队列/重试/二级 token 闸独立);一池打满不阻塞另两池。每池三层闸:全局并发、单 token 二级并发(`GW_*_TOKEN_CONC`,默认=全局,防单 token 伪造多装机独占)、单装机并发。
+- 路由:`model` 命中 DeepSeek allowlist→DeepSeek;命中 MiMo allowlist→MiMo;否则默认 Qwen(未知 model 归一为 `GW_QWEN_MODEL`,供应商内归一非跨供应商回退)。命中的上游 handler 为 null → `503`,绝不改投另一家。DeepSeek/MiMo allowlist 独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。**一次会话/Agent 工具循环模型固定**(model 随请求体透传、命中白名单不改写),不在输出开始后或 tool_use 循环中静默换。
 - `GET /v1/models`:鉴权后返回三家显式目录(`owned_by`),只列当前真正可路由的上游,供前端显式选择 + 会话级切换(复用 `set_runtime_config → CLI --model`,不改 Agent 循环)。
-- **重试**:429 一律不重试直接回传;连接错误/可重试 5xx 最多额外一次(`GW_*_MAX_RETRIES` 硬夹 [0,1],与 CC CLI 重试不相乘)。
-- 保留 app token 鉴权、公平队列、单用户并发、RPM、取消、超时、OpenAI Chat Completions + SSE + tool_call 逐字节透传、上游错误与 key 脱敏。
+- **重试**:429 一律不重试直接回传;连接错误/可重试 5xx 最多额外一次(`GW_*_MAX_RETRIES` 硬夹 [0,1],与 CC CLI 重试不相乘)。SSE 正常结束、上游中途断流、客户端断开三条路径都释放并发许可(active/queued 必回落)。
+- 保留 app token 鉴权、公平轮转(无饿死)、单装机并发、RPM、取消、超时、OpenAI Chat Completions + SSE + tool_call 逐字节透传、上游错误与 key 脱敏。healthz 只对鉴权请求暴露三池 active/queued/capacity。
 - 转录只保留 **Fun-ASR-Flash**;`GW_TRANSCRIBE_PROVIDER=whisper|upstream` fail closed;Whisper 不运行/下载/部署/回退。
 
-## DeepSeek 思考模式与 reasoning_content(本地 Proxy)
+## 厂商能力矩阵与图片/思考路由(本地 Proxy,按 model 判定;已按官方文档核实)
 
-- qf-gateway 路径下 Proxy 看到的 base URL 是网关域名,故 DeepSeek 兼容**按选中的 model 判定**(不只看 base URL)。
-- 选中 DeepSeek 模型即启用:`thinking` 开关透传、`reasoning_content` 流式/非流式转换、多轮**无条件 verbatim 回传** `reasoning_content`(上一轮有 tool_call 时 DeepSeek 强制要求回传,否则 400)、`tool_calls` 与 `reasoning_content` 共存不丢工具调用。现有 SSE 解析已容忍 `: keep-alive` 与 `data: [DONE]`。不改原始提示词。
+| 上游模型 | 图片输入(多模态) | 思考模式 / reasoning_content | 工具调用 | 官方限流 |
+|---|---|---|---|---|
+| **mimo-v2.5**(默认) | ✅ 唯一多模态(image_url,官方) | ✅ `thinking:{type:enabled\|disabled}`,有 reasoning_content;**官方提醒 thinking+工具不稳定** | ✅ | 100 RPM/账户 |
+| mimo-v2.5-pro | ❌ 纯文本推理 | ✅ | ✅ | 100 RPM/账户 |
+| deepseek-v4-flash | ❌ | ✅ `thinking:{type}`,多轮有 tool_call 时**必须 verbatim 回传 reasoning_content**否则 400 | ✅ | 2500 并发/账户(本产品保守放开) |
+| qwen3-coder-plus | ❌ | ❌(coder,无思考) | ✅ | — |
+| Fun-ASR-Flash | —(ASR 转录,非对话) | ❌ N/A | — | — |
+| Whisper | 已退役,不运行/下载/回退 | — | — | — |
+
+- **图片输入策略(item 8)**:图片只允许进入真实多模态的 **`mimo-v2.5`**(精确匹配,排除纯文本的 `mimo-v2.5-pro`)。qf-gateway 路径下选中 Qwen/DeepSeek/`mimo-v2.5-pro` 却带图片时,本地 Proxy 返回明确 `400`,**绝不静默丢图或改投别家**;MiMo 路径按 vision 透传 `image_url`。仅约束网关路径,用户自建 provider 不受此限。
+- **DeepSeek 兼容**(本地 Proxy 按选中 model 判定,base URL 是网关域名故不能只看 URL):启用 `thinking` 开关透传、`reasoning_content` 流式/非流式转换、多轮**无条件 verbatim 回传** `reasoning_content`、`tool_calls` 与 `reasoning_content` 共存不丢工具调用。SSE 解析已容忍 `: keep-alive` 与 `data: [DONE]`。不改原始提示词。
 
 ## CC-Haha 托管 Provider(`ts/src/server/`)
 
