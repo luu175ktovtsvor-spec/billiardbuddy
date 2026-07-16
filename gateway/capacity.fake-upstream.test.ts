@@ -65,8 +65,9 @@ function gatedUpstream() {
 function fireChat(
   fetch: (req: Request) => Promise<Response>,
   clientId: string | null,
+  token = 'app-token',
 ): Promise<number> {
-  const headers: Record<string, string> = { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' }
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
   if (clientId) headers['X-QF-Client-ID'] = clientId
   return fetch(new Request('http://local/v1/chat/completions', {
     method: 'POST',
@@ -125,6 +126,33 @@ test('100 装机 × 每个 2 请求(共 200)在 20 全局并发下全部公平�
   expect(statuses.every(s => s === 200)).toBe(true) // 无饿死,全部成功
   expect(u.peak()).toBe(20) // 全程在途 ≤ 全局上限
   expect(u.chatCalls()).toBe(200) // 200 次逻辑调用 = 200 次上游调用
+})
+
+test('单 token 的二级上限(GW_QWEN_TOKEN_CONC)封顶伪造装机独占,保护其它 token', async () => {
+  // 两个 token;token-a 把单 token 在途封在 4。即使 token-a 伪造 10 个装机 id,也只能占 4 路,
+  // 剩下的池子留给 token-b —— 这正是"单 token 伪造多装机独占整池"的二级闸(HIGH#1 修复)。
+  const u = gatedUpstream()
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_APP_TOKENS: JSON.stringify({ 'token-a': 'userA', 'token-b': 'userB' }),
+      GW_QWEN_TOKEN_CONC: '4',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: u.fetchImpl,
+  })
+  // token-a 伪造 10 个装机 id,但整 token 只能占 4。
+  const aReqs = Array.from({ length: 10 }, (_, i) => fireChat(fetch, `fake-${String(i).padStart(4, '0')}`, 'token-a'))
+  await tick()
+  expect(u.inFlight()).toBe(4) // token-a 被 token 级上限封顶,伪造再多装机也没用
+  // token-b(诚实,2 台真机)此时仍能拿到名额,没有被 token-a 挤死。
+  const bReqs = [fireChat(fetch, 'real-b-0001', 'token-b'), fireChat(fetch, 'real-b-0002', 'token-b')]
+  await tick()
+  expect(u.inFlight()).toBe(6) // 4(A 封顶) + 2(B 拿到),B 未被饿死
+  u.open()
+  const statuses = await Promise.all([...aReqs, ...bReqs])
+  expect(statuses.every(s => s === 200)).toBe(true)
 })
 
 test('伪造/畸形装机身份不放大额度:落回按 token 调度(与不带身份同一份额度)', async () => {

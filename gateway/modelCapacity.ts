@@ -14,10 +14,20 @@ export interface CapacitySnapshot {
   queued: number
   maxConcurrent: number
   maxConcurrentPerUser: number
+  maxConcurrentPerToken: number
+}
+
+export interface AcquireOptions {
+  maxWaitMs: number
+  signal?: AbortSignal
+  /** Token this identity belongs to. Bounds ALL of one token's clients together (defends
+   *  against a single token forging many X-QF-Client-IDs). Defaults to the user id. */
+  tokenId?: string
 }
 
 type Pending = {
   user: string
+  tokenId: string
   resolve: (permit: CapacityPermit) => void
   reject: (error: CapacityQueueError) => void
   timer?: ReturnType<typeof setTimeout>
@@ -26,33 +36,50 @@ type Pending = {
 }
 
 /**
- * One capacity pool with round-robin admission across users. A user may queue
- * several requests, but each scheduling pass grants at most one before moving
- * to the next user.
+ * One capacity pool with round-robin admission across users. A user may queue several
+ * requests, but each scheduling pass grants at most one before moving to the next user.
+ *
+ * Three tiers gate every grant:
+ *  - `maxConcurrent`        — global pool ceiling (protects the upstream). Never exceeded.
+ *  - `maxConcurrentPerToken`— all clients under one token combined. This is the defense
+ *    against a single token forging many `X-QF-Client-ID`s to monopolize the pool: even
+ *    with unlimited fake client ids, a token can hold at most this many in-flight.
+ *  - `maxConcurrentPerUser` — a single fair-scheduling identity (token#client, i.e. one
+ *    install). Gives honest multi-install usage its per-install fair share.
  */
 export class FairCapacityScheduler {
   private active = 0
   private readonly activeByUser = new Map<string, number>()
+  private readonly activeByToken = new Map<string, number>()
   private readonly pendingByUser = new Map<string, Pending[]>()
   private readonly waitingUsers: string[] = []
+  private readonly maxConcurrentPerToken: number
 
   constructor(
     private readonly maxConcurrent: number,
     private readonly maxConcurrentPerUser: number,
+    maxConcurrentPerToken?: number,
   ) {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('maxConcurrent must be >= 1')
     if (!Number.isInteger(maxConcurrentPerUser) || maxConcurrentPerUser < 1) {
       throw new Error('maxConcurrentPerUser must be >= 1')
     }
+    // Default: the pool ceiling (no extra restriction beyond the global cap). Deployments
+    // that issue per-user tokens can set this below the global cap to reserve headroom
+    // across tokens; for the shared beta token it defaults to the global cap.
+    const perToken = maxConcurrentPerToken ?? maxConcurrent
+    if (!Number.isInteger(perToken) || perToken < 1) throw new Error('maxConcurrentPerToken must be >= 1')
+    this.maxConcurrentPerToken = perToken
   }
 
-  acquire(user: string, opts: { maxWaitMs: number; signal?: AbortSignal }): Promise<CapacityPermit> {
+  acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit> {
+    const tokenId = opts.tokenId ?? user
     if (opts.signal?.aborted) {
       return Promise.reject(new CapacityQueueError(499, '请求已取消'))
     }
 
-    if (this.waitingUsers.length === 0 && this.canStart(user)) {
-      return Promise.resolve(this.grant(user))
+    if (this.waitingUsers.length === 0 && this.canStart(user, tokenId)) {
+      return Promise.resolve(this.grant(user, tokenId))
     }
 
     if (opts.maxWaitMs <= 0) {
@@ -60,7 +87,7 @@ export class FairCapacityScheduler {
     }
 
     return new Promise<CapacityPermit>((resolve, reject) => {
-      const pending: Pending = { user, resolve, reject, signal: opts.signal }
+      const pending: Pending = { user, tokenId, resolve, reject, signal: opts.signal }
       let queue = this.pendingByUser.get(user)
       if (!queue) {
         queue = []
@@ -93,26 +120,32 @@ export class FairCapacityScheduler {
       queued,
       maxConcurrent: this.maxConcurrent,
       maxConcurrentPerUser: this.maxConcurrentPerUser,
+      maxConcurrentPerToken: this.maxConcurrentPerToken,
     }
   }
 
-  private canStart(user: string): boolean {
+  private canStart(user: string, tokenId: string): boolean {
     return this.active < this.maxConcurrent
       && (this.activeByUser.get(user) ?? 0) < this.maxConcurrentPerUser
+      && (this.activeByToken.get(tokenId) ?? 0) < this.maxConcurrentPerToken
   }
 
-  private grant(user: string): CapacityPermit {
+  private grant(user: string, tokenId: string): CapacityPermit {
     this.active += 1
     this.activeByUser.set(user, (this.activeByUser.get(user) ?? 0) + 1)
+    this.activeByToken.set(tokenId, (this.activeByToken.get(tokenId) ?? 0) + 1)
     let released = false
     return {
       release: () => {
         if (released) return
         released = true
         this.active = Math.max(0, this.active - 1)
-        const next = Math.max(0, (this.activeByUser.get(user) ?? 1) - 1)
-        if (next === 0) this.activeByUser.delete(user)
-        else this.activeByUser.set(user, next)
+        const nextUser = Math.max(0, (this.activeByUser.get(user) ?? 1) - 1)
+        if (nextUser === 0) this.activeByUser.delete(user)
+        else this.activeByUser.set(user, nextUser)
+        const nextToken = Math.max(0, (this.activeByToken.get(tokenId) ?? 1) - 1)
+        if (nextToken === 0) this.activeByToken.delete(tokenId)
+        else this.activeByToken.set(tokenId, nextToken)
         this.drain()
       },
     }
@@ -129,7 +162,8 @@ export class FairCapacityScheduler {
           this.pendingByUser.delete(user)
           continue
         }
-        if (!this.canStart(user)) {
+        // All pendings for one user share the same tokenId (user = token#client).
+        if (!this.canStart(user, queue[0].tokenId)) {
           this.waitingUsers.push(user)
           continue
         }
@@ -138,7 +172,7 @@ export class FairCapacityScheduler {
         if (queue.length > 0) this.waitingUsers.push(user)
         else this.pendingByUser.delete(user)
         this.cleanupPending(pending)
-        pending.resolve(this.grant(user))
+        pending.resolve(this.grant(user, pending.tokenId))
         granted = true
         break
       }
