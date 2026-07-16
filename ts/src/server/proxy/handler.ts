@@ -50,12 +50,14 @@ function requestHasImageInput(body: AnthropicRequest): boolean {
 }
 
 /**
- * Which qf-gateway models are real multimodal (image-input) upstreams. Only MiMo v2.5 is —
- * so on the gateway path, image input is allowed ONLY for MiMo; Qwen/DeepSeek image requests
- * are rejected explicitly rather than silently stripped or rerouted to another provider.
+ * Which qf-gateway models are real multimodal (image-input) upstreams. Per MiMo's official
+ * docs ONLY `mimo-v2.5` understands images — `mimo-v2.5-pro` is a text-only reasoning model,
+ * and Qwen/DeepSeek here are text-only too. So image input is allowed ONLY for exactly
+ * `mimo-v2.5`; everything else on the gateway path is rejected (never silently stripped or
+ * rerouted). Match the exact id (not a loose `mimo` prefix) so `-pro` never slips through.
  */
 function isMultimodalGatewayModel(model: string | undefined): boolean {
-  return typeof model === 'string' && /(^|[./_-])mimo([./_-]|$)/i.test(model)
+  return typeof model === 'string' && /^mimo-v2\.5$/i.test(model.trim())
 }
 
 type ProxyFetchOptions = ReturnType<typeof getProxyFetchOptions>
