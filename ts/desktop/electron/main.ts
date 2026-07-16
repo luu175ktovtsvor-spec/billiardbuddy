@@ -19,6 +19,7 @@ import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import {
+  applyDefaultConfigDir,
   applyStartupPortableMode,
   detectPortableDir,
   getAppMode,
@@ -45,6 +46,11 @@ import {
   MIN_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
 } from './services/windows'
+
+// Own the product identity before anything resolves app.getPath('userData'):
+// this pins userData under "BilliardBuddy" in both dev and packaged builds, so the
+// app never inherits an installed CC-Haha's userData / product state.
+app.setName('BilliardBuddy')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
@@ -400,6 +406,9 @@ registerIpcHandlers()
 app.whenReady().then(async () => {
   applyWindowsAppUserModelId(app)
   applyStartupPortableMode(app)
+  // After portable/ops override is resolved, default the kernel config dir to
+  // BilliardBuddy's own data root so the sidecar never reads shared CC-Haha state.
+  applyDefaultConfigDir(app)
   await getServerRuntime().startServer().catch(error => {
     console.error('[desktop] failed to start Electron server sidecar', error)
   })

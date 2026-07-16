@@ -3,8 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  applyDefaultConfigDir,
   applyStartupPortableMode,
   defaultPortableDir,
+  defaultProductDataDir,
   detectPortableDir,
   determineStartupPortableDir,
   dirHasPortableData,
@@ -96,6 +98,33 @@ describe('Electron app mode service', () => {
     expect(getAppMode(fakeApp, { CLAUDE_CONFIG_DIR: '/external' })).toMatchObject({
       configDirSource: 'environment',
     })
+  })
+
+  it('defaults the sidecar config dir to the BilliardBuddy data root, isolated from ~/.claude', () => {
+    const fakeApp = app()
+    const env: NodeJS.ProcessEnv = {}
+    const dataRoot = defaultProductDataDir(fakeApp)
+
+    expect(dataRoot).toBe(path.join(fakeApp.getPath('userData'), 'config'))
+    expect(applyDefaultConfigDir(fakeApp, env)).toBe(dataRoot)
+    expect(env.CLAUDE_CONFIG_DIR).toBe(dataRoot)
+    expect(env.BB_DEFAULT_CONFIG_DIR).toBe('1')
+    expect(fs.existsSync(dataRoot)).toBe(true)
+    // The app-set default is not a user override — still default/system, not portable.
+    expect(getAppMode(fakeApp, env)).toMatchObject({
+      mode: 'default',
+      activeConfigDir: dataRoot,
+      configDirSource: 'system',
+    })
+  })
+
+  it('applyDefaultConfigDir defers to an explicit CLAUDE_CONFIG_DIR (ops/portable override wins)', () => {
+    const fakeApp = app()
+    const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '/external' }
+    expect(applyDefaultConfigDir(fakeApp, env)).toBeNull()
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/external')
+    expect(env.BB_DEFAULT_CONFIG_DIR).toBeUndefined()
+    expect(getAppMode(fakeApp, env)).toMatchObject({ configDirSource: 'environment' })
   })
 
   it('writes app-mode.json to active, target portable, and system config dirs', () => {
