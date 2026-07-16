@@ -5,7 +5,7 @@
 | 系统 | 路径 | 发布边界 |
 |---|---|---|
 | 桌面产品 | `ts/` | Electron renderer、main、Bun sidecar 同一安装包 |
-| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、`mimoChat.ts` MiMo 请求/原生搜索/重试、`modelCapacity.ts` 容量调度、`webSearch.ts` 兼容搜索 provider、`transcription.ts` 转录 provider） | 国内服务器独立发布；统一承载模型代理、联网搜索、容量池调度与可替换的语音转录 provider |
+| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配与双模型路由、`qwenChat.ts` 默认 Qwen 上游、`mimoChat.ts` 第二 MiMo 上游(无原生搜索)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search` provider、`transcription.ts` Fun-ASR 转录 provider） | 国内服务器独立发布；承载 Qwen/MiMo 双模型代理(绝不跨模型回退)、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
 | 生图中转 | `relay/` | 美国服务器独立发布 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
 | 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发；启动只加载清单，所有本地组件由功能门按需准备，客户端校验后本地执行 |
@@ -31,7 +31,7 @@
 | 经营工作流 | `ts/src/workflows`、`ts/shared/contracts/workflows.ts`、`server/routes/workflowRoutes.ts` | 确定性多步编排:定义(内置+用户 JSON)、运行记录与失败关闭;每步经注入的 runTurn(server 装配 createTurnStream)跑真 Agent 回合,整条运行共用一个会话 |
 | 生图/文档 | `ts/src/media`、`ts/shared/contracts/image-workbench.ts`、studio/workbench routes、renderer `features/image-workbench`（生成编排与任务状态独立于 `ImageWorkbenchPage.tsx`，`pages/CreationPage.tsx` 仅兼容导出）、`api/studio.ts` | 图片 Brief/模型适配、候选质检、固定画布、项目资产/版本、Office 文档 |
 | 视频 | `ts/src/media/video-edit`、`ts/shared/contracts/video-edit.ts`、renderer `features/video-studio` | 单一 V2 视频真相源：Brief、Scene/Timeline、素材证据、规划、预览与渲染；旧 V1 项目只在 `projectStore.ts` 读取并迁移 |
-| 语音与口播转录 | `ts/src/media/remoteTranscription.ts`、`ts/src/server/services/voiceTranscription.ts`、`ts/shared/contracts/voice.ts`、`gateway/transcription.ts` | 客户端录音/音轨上传、远程文本与时间戳契约、服务器 Whisper 或上游 ASR provider |
+| 语音与口播转录 | `gateway/transcription.ts`(Fun-ASR provider)、桌面端录音/音轨上传与远程文本+时间戳契约 | 客户端录音/音轨上传、远程文本与时间戳契约、网关 Fun-ASR-Flash 转录 provider(Whisper 已退役) |
 | 门店知识 | `packs/billiards`、`StoreDocsService`、`server/routes/storeDocsRoutes.ts`、assets | 门店资料、REST 边界、RAG、领域能力 |
 | 招聘业务 | `ts/src/recruitment`、`ts/shared/contracts/recruitment.ts`、`server/routes/recruitmentRoutes.ts` | 招聘事实源(候选人漏斗/跟进/话术草稿/岗位缺口):聊天窄工具、REST 与定时任务共用一份数据;人工交接连接器,sent 必须带读回证据(服务层强制),不做自动外发 |
 | 设置与凭据 | `server/services/userSettings.ts`、`server/routes/agentSettingsRoutes.ts`、settings/provider/credential services、`shared/contracts/agent-settings.ts`、SettingsPage | 偏好、Agent 权限上限、provider、凭据；设置损坏时保留原文件并失败关闭写入 |
