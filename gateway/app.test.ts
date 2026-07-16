@@ -8,6 +8,9 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_QWEN_KEY: 'qwen-secret',
     GW_QWEN_BASE: 'https://qwen.example/v1',
     GW_QWEN_MODEL: 'qwen3-coder-plus',
+    GW_MIMO_KEY: 'mimo-secret',
+    GW_MIMO_BASE: 'https://mimo.example/v1',
+    GW_MIMO_MODEL: 'mimo-v2.5',
     GW_RELAY_BASE: 'https://relay.example/relay/openai/v1',
     GW_RELAY_TOKEN: 'relay-secret',
     GW_ARK_KEY: 'ark-secret',
@@ -86,10 +89,17 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.qwen_rpm).toBe(90)
   expect(body.limits.qwen_conc).toBe(16)
   expect(body.limits.qwen_user_conc).toBe(2)
+  expect(body.limits.mimo_rpm).toBe(90)
+  expect(body.limits.mimo_conc).toBe(16)
+  expect(body.limits.mimo_user_conc).toBe(2)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
   expect(body.features.web_search).toBe(true)
+  // 两家上游都配了 dummy 密钥,healthz 各自报告可用性;web_search / transcription 字段保持不变。
+  expect(body.features.chat_qwen).toBe(true)
+  expect(body.features.chat_mimo).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
+  expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
 })
 
 test('web search authenticates, keeps provider key server-side and normalizes filtered results', async () => {
@@ -269,6 +279,185 @@ test('chat completions stream is proxied to Qwen with the server key and logged 
   // 服务器密钥只出现在给上游的 Authorization 头,绝不进入客户端响应或用量日志。
   expect(text).not.toContain('qwen-secret')
   expect(JSON.stringify(usage.rows)).not.toContain('qwen-secret')
+  // 千问路由绝不碰 MiMo 上游。
+  expect(calls.every(c => !c.url.includes('mimo.example'))).toBe(true)
+})
+
+test('chat completions requires a valid app token before any routing or upstream fetch', async () => {
+  const { fetch, calls } = makeGateway()
+  const missing = await fetch(new Request('http://local/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus' }),
+  }))
+  const invalid = await fetch(new Request('http://local/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer nope', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5' }),
+  }))
+  expect(missing.status).toBe(401)
+  expect(invalid.status).toBe(401)
+  expect(calls).toEqual([])
+})
+
+test('chat completions routes an allowlisted MiMo model to the MiMo upstream with the MiMo key and usage label', async () => {
+  const { fetch, calls, usage } = makeGateway()
+  const rawBody = JSON.stringify({
+    model: 'mimo-v2.5',
+    stream: true,
+    tool_choice: 'auto',
+    tools: [
+      { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
+      { type: 'web_search' },
+    ],
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: rawBody,
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+  })))
+  expect(res.status).toBe(200)
+  const text = await res.text()
+  expect(text).toBe('data: hello\n\n')
+  // 走 MiMo 上游、用 MiMo 密钥;千问上游一次都没碰(无跨上游回退)。
+  expect(calls[0]?.url).toBe('https://mimo.example/v1/chat/completions')
+  expect(calls.every(c => !c.url.includes('qwen.example'))).toBe(true)
+  expect((calls[0]?.init?.headers as Record<string, string>).Authorization).toBe('Bearer mimo-secret')
+  // tools/tool_choice 原样透传,网关不注入隐藏搜索通道(联网搜索走独立 /v1/web_search)。
+  const upstreamBody = JSON.parse(calls[0]!.body!)
+  expect(upstreamBody.model).toBe('mimo-v2.5')
+  expect(upstreamBody.tool_choice).toBe('auto')
+  expect(upstreamBody.tools).toEqual([
+    { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
+    { type: 'web_search' },
+  ])
+  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'mimo', ok: true, status: 200 }])
+  // MiMo 密钥只在给上游的 Authorization 头,绝不进入响应或用量日志。
+  expect(text).not.toContain('mimo-secret')
+  expect(JSON.stringify(usage.rows)).not.toContain('mimo-secret')
+})
+
+test('a MiMo upstream 5xx failure never falls back to the Qwen upstream', async () => {
+  const usage = new MemoryUsageStore()
+  const calls: string[] = []
+  const fetch = createGatewayFetch({
+    env: env({ GW_MIMO_MAX_RETRIES: '0' }),
+    usageStore: usage,
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async input => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes('mimo.example')) return new Response('mimo upstream boom', { status: 500 })
+      // 若网关错误地回退到千问,这里会返回 200,让断言失败。
+      return new Response('data: qwen fallback\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
+  })))
+  expect(res.status).toBe(500)
+  const body = await res.json()
+  expect(body).toEqual({ detail: '模型服务暂时不可用，请稍后重试' })
+  expect(String(body)).not.toContain('mimo upstream boom')
+  // 只打了 MiMo 上游一次,千问上游一次都没碰。
+  expect(calls).toEqual(['https://mimo.example/v1/chat/completions'])
+  expect(usage.rows).toMatchObject([{ model: 'mimo', ok: false, status: 500 }])
+})
+
+test('MiMo retries a transient 429 then succeeds, logging the attempt count without leaking upstream detail', async () => {
+  const usage = new MemoryUsageStore()
+  const bodies: string[] = []
+  const sleeps: number[] = []
+  const fetch = createGatewayFetch({
+    env: env({ GW_MIMO_MAX_RETRIES: '2' }),
+    usageStore: usage,
+    transcribeImpl: null,
+    webSearchImpl: null,
+    mimoRetrySleep: async ms => { sleeps.push(ms) },
+    mimoRetryRandom: () => 0,
+    fetchImpl: async (_input, init) => {
+      bodies.push(String(init?.body))
+      if (bodies.length === 1) return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
+      return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  expect(bodies).toHaveLength(2)
+  expect(sleeps).toEqual([0])
+  expect(usage.rows[0]?.note).toBe('attempts=2')
+  expect(usage.rows[0]?.model).toBe('mimo')
+  expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
+})
+
+test('MiMo distinguishes upstream account exhaustion from concurrency limits and redacts detail', async () => {
+  const fetch = createGatewayFetch({
+    env: env({ GW_MIMO_MAX_RETRIES: '0' }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async () => Response.json({
+      error: { code: 'insufficient_quota', message: 'provider balance and account details' },
+    }, { status: 429 }),
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5', messages: [] }),
+  })))
+  expect(res.status).toBe(429)
+  const body = await res.json()
+  expect(body).toEqual({ detail: '模型服务额度不足，请稍后再试或联系管理员' })
+  expect(JSON.stringify(body)).not.toContain('balance')
+})
+
+test('an out-of-list default model routes to Qwen and is coerced to the Qwen server model', async () => {
+  const { fetch, calls, usage } = makeGateway()
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'unapproved-expensive-model', messages: [{ role: 'user', content: 'hi' }] }),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  // 白名单外的 model 交给默认上游千问,并被改写成千问服务器模型;MiMo 一次都没碰。
+  expect(calls[0]?.url).toBe('https://qwen.example/v1/chat/completions')
+  expect(JSON.parse(calls[0]!.body!).model).toBe('qwen3-coder-plus')
+  expect(usage.rows).toMatchObject([{ model: 'qwen', ok: true }])
+})
+
+test('when only MiMo is unconfigured, a MiMo model still routes to the default Qwen upstream (no cross-serve)', async () => {
+  const { fetch, calls, usage } = makeGateway({ GW_MIMO_KEY: '' })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5', messages: [{ role: 'user', content: 'hi' }] }),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  // MiMo 未配置 → 不路由到 MiMo;走默认千问并把 model 改写成千问服务器模型。
+  expect(calls[0]?.url).toBe('https://qwen.example/v1/chat/completions')
+  expect(JSON.parse(calls[0]!.body!).model).toBe('qwen3-coder-plus')
+  expect(usage.rows).toMatchObject([{ model: 'qwen', ok: true }])
+})
+
+test('when the routed default provider (Qwen) is unconfigured, chat fails closed with 503 and no upstream fetch', async () => {
+  const { fetch, calls } = makeGateway({ GW_QWEN_KEY: '' })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus', messages: [] }),
+  })))
+  expect(res.status).toBe(503)
+  expect(calls).toEqual([])
 })
 
 test('non-stream JSON responses are proxied through unchanged', async () => {
