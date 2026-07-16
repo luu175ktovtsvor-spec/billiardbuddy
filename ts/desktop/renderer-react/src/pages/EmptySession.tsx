@@ -24,7 +24,7 @@ const GENERAL_SUGGESTIONS: Suggestion[] = [
 
 const BILLIARDS_SUGGESTIONS: Suggestion[] = [
   { icon: <IconTarget size={14} />, label: '今日经营复盘', prompt: '帮我做今天的球房经营复盘:先问我今天的营业数据和特别情况,再给我一份日报和明天的改进建议。' },
-  { icon: <IconZap size={14} />, label: '写朋友圈文案', prompt: '帮我写 3 条球房朋友圈文案,风格接地气、能吸引人到店,写完让我挑。' },
+  { icon: <IconZap size={14} />, label: '写朋友圈文案', prompt: '帮我写 3 条球房朋友圈文案。先问我这次想发什么(活动优惠、日常氛围还是招生招聘)、有没有具体的价格或时间信息,风格接地气、能吸引人到店,写完让我挑。' },
 ]
 
 function SuggestionList() {
