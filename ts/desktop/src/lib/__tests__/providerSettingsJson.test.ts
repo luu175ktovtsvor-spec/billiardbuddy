@@ -69,12 +69,12 @@ describe('provider settings JSON helpers', () => {
         ANTHROPIC_MODEL: 'old-model',
         CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: '{"old":100000}',
         CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
-        CC_HAHA_OPENAI_OAUTH_PROVIDER: '1',
+        BB_OPENAI_OAUTH_PROVIDER: '1',
         OPENAI_CODEX_OAUTH_FILE: '/tmp/openai-oauth.json',
-        CC_HAHA_SEND_DISABLED_THINKING: '1',
+        BB_SEND_DISABLED_THINKING: '1',
         USER_DEFINED: 'keep-me',
       },
-      ['CC_HAHA_SEND_DISABLED_THINKING'],
+      ['BB_SEND_DISABLED_THINKING'],
     )
 
     expect(cleaned).toEqual({ USER_DEFINED: 'keep-me' })

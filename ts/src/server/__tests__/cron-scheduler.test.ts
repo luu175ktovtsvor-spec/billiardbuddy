@@ -19,7 +19,7 @@ import { CronService, type CronTask } from '../services/cronService.js'
 let tmpDir: string
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalClaudeCliPath = process.env.CLAUDE_CLI_PATH
-const originalDisableTerminalShellEnv = process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 
 async function createTmpDir(): Promise<string> {
   const dir = path.join(
@@ -178,7 +178,7 @@ describe('CronScheduler', () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
     process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
-    process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
     scheduler = new CronScheduler(cronService)
   })
@@ -196,9 +196,9 @@ describe('CronScheduler', () => {
       delete process.env.CLAUDE_CLI_PATH
     }
     if (originalDisableTerminalShellEnv) {
-      process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
+      process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
     } else {
-      delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+      delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -402,7 +402,7 @@ describe('Execution log trimming', () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
     process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
-    process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
     scheduler = new CronScheduler(cronService)
   })
@@ -420,9 +420,9 @@ describe('Execution log trimming', () => {
       delete process.env.CLAUDE_CLI_PATH
     }
     if (originalDisableTerminalShellEnv) {
-      process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
+      process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
     } else {
-      delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+      delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     }
     await cleanupTmpDir(tmpDir)
   })

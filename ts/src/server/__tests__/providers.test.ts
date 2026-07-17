@@ -303,7 +303,7 @@ describe('ProviderService', () => {
 
       const settings = await readSettings()
       const env = settings.env as Record<string, string>
-      expect(env.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+      expect(env.BB_SEND_DISABLED_THINKING).toBeUndefined()
       expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
         'thinking,effort,adaptive_thinking,max_effort',
       )
@@ -412,7 +412,7 @@ describe('ProviderService', () => {
         const settings = await readSettings()
         expect(config.activeId).toBe('openai-official')
         const env = settings.env as Record<string, string>
-        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+        expect(env.BB_OPENAI_OAUTH_PROVIDER).toBe('1')
         expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
           path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
         )
@@ -451,7 +451,7 @@ describe('ProviderService', () => {
 
         const settings = await readSettings()
         const env = settings.env as Record<string, string>
-        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+        expect(env.BB_OPENAI_OAUTH_PROVIDER).toBe('1')
         expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
           path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
         )
@@ -503,7 +503,7 @@ describe('ProviderService', () => {
         await svc.activateProvider(provider.id)
 
         const env = (await readSettings()).env as Record<string, string>
-        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBeUndefined()
+        expect(env.BB_OPENAI_OAUTH_PROVIDER).toBeUndefined()
         expect(env.OPENAI_CODEX_OAUTH_FILE).toBeUndefined()
         expect(env.ANTHROPIC_BASE_URL).toBe('https://api.example.com')
         expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test-key-123')

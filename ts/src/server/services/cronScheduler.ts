@@ -269,9 +269,9 @@ function trimRuns(data: RunsFile): void {
 const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
 
 export function resolveCronTaskTimeoutMs(
-  env: { CC_HAHA_TASK_TIMEOUT_MS?: string } = process.env,
+  env: { BB_TASK_TIMEOUT_MS?: string } = process.env,
 ): number {
-  const raw = env.CC_HAHA_TASK_TIMEOUT_MS?.trim()
+  const raw = env.BB_TASK_TIMEOUT_MS?.trim()
   if (!raw) return DEFAULT_TASK_TIMEOUT_MS
 
   const timeoutMs = Number(raw)
@@ -316,7 +316,7 @@ export function resolveCronProjectRoot(
   options: CronCliResolutionOptions = {},
 ): string {
   const env = options.env ?? process.env
-  const explicitRoot = env.CC_HAHA_ROOT?.trim()
+  const explicitRoot = env.BB_ROOT?.trim()
   if (explicitRoot && isSourceProjectRoot(path.resolve(explicitRoot))) {
     return path.resolve(explicitRoot)
   }
@@ -726,7 +726,7 @@ export class CronScheduler {
       CLAUDE_CODE_ENTRYPOINT: 'sdk-cli',
       CALLER_DIR: workDir,
       PWD: workDir,
-      CC_HAHA_SKIP_DOTENV: '1',
+      BB_SKIP_DOTENV: '1',
       ...(explicitProviderEnv
         ? {
             CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',

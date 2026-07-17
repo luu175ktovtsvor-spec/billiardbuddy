@@ -1070,7 +1070,7 @@ export class ConversationService {
       'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
       'ANTHROPIC_DEFAULT_OPUS_MODEL',
       'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
-      'CC_HAHA_SEND_DISABLED_THINKING',
+      'BB_SEND_DISABLED_THINKING',
       'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
       'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
       'CLAUDE_CODE_ATTRIBUTION_HEADER',
@@ -1084,9 +1084,9 @@ export class ConversationService {
     if (options?.resumeInterruptedTurn === false) {
       delete cleanEnv.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
     }
-    delete cleanEnv.CC_HAHA_TRACE_PROVIDER_ID
-    delete cleanEnv.CC_HAHA_TRACE_PROVIDER_NAME
-    delete cleanEnv.CC_HAHA_TRACE_PROVIDER_FORMAT
+    delete cleanEnv.BB_TRACE_PROVIDER_ID
+    delete cleanEnv.BB_TRACE_PROVIDER_NAME
+    delete cleanEnv.BB_TRACE_PROVIDER_FORMAT
     if (this.shouldStripInheritedProviderEnv(options?.providerId)) {
       for (const key of PROVIDER_ENV_KEYS) {
         delete cleanEnv[key]
@@ -1167,31 +1167,31 @@ export class ConversationService {
       CALLER_DIR: workDir,
       PWD: workDir,
       ...(sdkUrl
-        ? { CC_HAHA_COMPUTER_USE_HOST_BUNDLE_ID: 'com.billiardbuddy.desktop' }
+        ? { BB_COMPUTER_USE_HOST_BUNDLE_ID: 'com.billiardbuddy.desktop' }
         : {}),
       ...(sdkUrl && traceCaptureEnabled
-        ? { CC_HAHA_TRACE_API_CALLS: '1' }
+        ? { BB_TRACE_API_CALLS: '1' }
         : {}),
       ...(sdkUrl && traceCaptureEnabled && explicitProvider
         ? {
-            CC_HAHA_TRACE_PROVIDER_ID: explicitProvider.id,
-            CC_HAHA_TRACE_PROVIDER_NAME: explicitProvider.name,
-            CC_HAHA_TRACE_PROVIDER_FORMAT: explicitProvider.apiFormat ?? 'anthropic',
+            BB_TRACE_PROVIDER_ID: explicitProvider.id,
+            BB_TRACE_PROVIDER_NAME: explicitProvider.name,
+            BB_TRACE_PROVIDER_FORMAT: explicitProvider.apiFormat ?? 'anthropic',
           }
         : {}),
       ...(desktopServerUrl
-        ? { CC_HAHA_DESKTOP_SERVER_URL: desktopServerUrl }
+        ? { BB_DESKTOP_SERVER_URL: desktopServerUrl }
         : {}),
       ...(sdkUrl
         ? {
-            CC_HAHA_DESKTOP_AWAIT_MCP: '1',
-            CC_HAHA_DESKTOP_AWAIT_MCP_TIMEOUT_MS: '5000',
+            BB_DESKTOP_AWAIT_MCP: '1',
+            BB_DESKTOP_AWAIT_MCP_TIMEOUT_MS: '5000',
           }
         : {}),
       // Tell the CLI entrypoint to skip project .env loading. Provider env
       // should come from Desktop-managed config or inherited launch env, not
       // be reintroduced from the repo's .env file.
-      CC_HAHA_SKIP_DOTENV: '1',
+      BB_SKIP_DOTENV: '1',
       ...(explicitProviderEnv
         ? { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' }
         : {}),
@@ -1309,7 +1309,7 @@ export class ConversationService {
         'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
         'ANTHROPIC_DEFAULT_OPUS_MODEL',
         'ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
-        'CC_HAHA_SEND_DISABLED_THINKING',
+        'BB_SEND_DISABLED_THINKING',
         'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
         'CLAUDE_CODE_ATTRIBUTION_HEADER',
         'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS',

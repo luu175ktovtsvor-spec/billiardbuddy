@@ -27,7 +27,7 @@ describe('Electron window smoke diagnostics', () => {
           isLoading: vi.fn(() => false),
         },
       } as never, 'did-finish-load', {
-        CC_HAHA_ELECTRON_WINDOW_SMOKE_LOG: logPath,
+        BB_ELECTRON_WINDOW_SMOKE_LOG: logPath,
       })
 
       expect(JSON.parse(readFileSync(logPath, 'utf8')).trim).toBeUndefined()
