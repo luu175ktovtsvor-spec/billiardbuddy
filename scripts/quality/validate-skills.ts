@@ -199,7 +199,7 @@ for (const skill of canonical.values()) {
 const moduleMap = await requiredText(path.join(canonicalRoot, 'project-change-router/references/project-module-map.md'))
 
 // Retired structures must not reappear in engineering skills or the module map.
-// (renderer-react tree, ts/shared contracts dir, and ts/src/assets are gone from the cc-haha base.)
+// (renderer-react tree, ts/shared contracts dir, and ts/src/assets are gone from the billiardbuddy base.)
 const retiredMarkers = ['renderer-react', 'ts/shared/', 'ts/src/assets']
 const deadScanTargets: Array<[string, string]> = [
   ...[...canonical.values()].map(skill => [`.agents/skills/${skill.folder}/SKILL.md`, skill.body] as [string, string]),
@@ -207,7 +207,7 @@ const deadScanTargets: Array<[string, string]> = [
 ]
 for (const [label, text] of deadScanTargets) {
   for (const marker of retiredMarkers) {
-    if (text.includes(marker)) errors.push(`${label}: 引用了已退役结构 ${marker}（当前 cc-haha 底座已无此路径）`)
+    if (text.includes(marker)) errors.push(`${label}: 引用了已退役结构 ${marker}（当前 billiardbuddy 底座已无此路径）`)
   }
 }
 
