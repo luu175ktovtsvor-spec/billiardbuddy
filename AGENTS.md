@@ -21,7 +21,7 @@
 
 ## 工程边界
 
-- 跨层契约统一放在 `ts/shared/contracts`，由 Zod Schema 推导类型并在边界解析。
+- 跨层契约没有独立 `shared` 目录：WS 事件以 `ts/src/server/ws/events.ts`（`ServerMessage`/`ClientMessage`）为单一事实源、renderer `ts/desktop/src/types/chat.ts` 手写镜像；REST 由 `ts/src/server/api/*` handler 定义并在边界解析；IPC 契约在 `ts/desktop/electron/ipc/channels.ts`。改契约先改事实源再同步镜像端。
 - 功能修改与结构重构分开。默认直接在 `main` 分支开发；每完成一个边界清晰且聚焦验证通过的主责模块修复，就单独 commit 一次。跨模块任务按主责模块拆成连续小提交，不把无关模块捆成一个大提交；除非用户明确要求，不新建或切换功能分支。
 - 新增、删除、改名、拆分或合并模块，或改变连接、部署、验证流程时，同次执行 `.agents/skills/maintain-project-skills/SKILL.md`。
 - 涉及凭据、本地命令、远程服务或扩展边界时执行 `audit-security-boundaries`；制作安装包时执行 `release-desktop-safely`。

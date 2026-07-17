@@ -8,7 +8,7 @@
 | 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、装机公平调度(X-QF-Client-ID)、`/v1/models` 目录与三模型路由、`qwenChat.ts` Qwen、`mimoChat.ts` MiMo(视觉桥接上游)、`deepseekChat.ts` DeepSeek V4 Flash(产品默认,注入 opaque user_id)、`visionBridge.ts` 图片→MiMo 视觉桥接(非原生多模态模型带图时先读图成结构化文本,有界+TTL 内存缓存,失败关闭)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search`、`transcription.ts` Fun-ASR 转录） | 国内服务器独立发布；承载 Qwen/MiMo/DeepSeek 三模型代理(绝不跨供应商回退)、装机公平调度、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
 | 生图中转 | `relay/`(SQLite 持久化 + 幂等 + 归属绑定 + 队列上限 + 重启恢复) | 美国服务器独立发布;仅大陆 qfgw 出口 IP 经 nginx 可达,客户端不得直连 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
-| 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发；启动只加载清单，所有本地组件由功能门按需准备，客户端校验后本地执行 |
+| 数据看板边缘分发 | `dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发（dataeye 静态看板）。当前桌面静态资源随安装包内置（`ts/desktop/public`、`ts/desktop/src-tauri/resources`）；旧"启动只加载清单、本地组件由功能门按需准备"的按需下发能力属产品业务层重建目标，尚未在内核之上重建 |
 
 ## 桌面产品责任模块
 
@@ -42,7 +42,7 @@
 ## 依赖规则
 
 - UI 依赖功能 API/store；功能 API 依赖共享契约；不得反向依赖。
-- renderer 和后端共用 `ts/shared/contracts` 的 Zod Schema/推导类型；禁止新增两端手写镜像。
+- 跨层契约没有独立 `shared` 目录，靠三条手写镜像缝：WS 事件以 `ts/src/server/ws/events.ts`（`ServerMessage`/`ClientMessage`）为单一事实源，renderer 侧 `ts/desktop/src/types/chat.ts` 镜像并注明来源；REST 契约由 `ts/src/server/api/*` handler 定义、`ts/desktop/src/api/*` 消费；IPC 契约在 `ts/desktop/electron/ipc/channels.ts` + `ts/desktop/src/lib/desktopHost/types.ts`。改契约先改事实源再同步镜像端，不得只改一侧。
 - route 依赖应用服务；应用服务依赖领域接口；adapter 实现接口。
 - 跨模块不得导入对方内部文件。
 - 主责模块只有一个；共享模块只放稳定且确实被多个域共同拥有的概念。
