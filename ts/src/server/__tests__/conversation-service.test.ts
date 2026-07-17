@@ -390,8 +390,8 @@ describe('ConversationService', () => {
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { bbOAuthService } = await import('../services/bbOAuthService.js')
+    await bbOAuthService.saveTokens({
       accessToken: 'haha-fresh-token',
       refreshToken: 'haha-refresh-xxx',
       expiresAt: Date.now() + 30 * 60_000,
@@ -407,8 +407,8 @@ describe('ConversationService', () => {
   })
 
   test('sendMessage updates a running official OAuth CLI token before the user turn', async () => {
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { bbOAuthService } = await import('../services/bbOAuthService.js')
+    await bbOAuthService.saveTokens({
       accessToken: 'fresh-after-wake-token',
       refreshToken: 'refresh-xxx',
       expiresAt: Date.now() + 30 * 60_000,
@@ -460,8 +460,8 @@ describe('ConversationService', () => {
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { bbOAuthService } = await import('../services/bbOAuthService.js')
+    await bbOAuthService.saveTokens({
       accessToken: 'haha-token-should-not-be-used',
       refreshToken: null,
       expiresAt: null,
@@ -706,8 +706,8 @@ describe('ConversationService', () => {
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { bbOAuthService } = await import('../services/bbOAuthService.js')
+    await bbOAuthService.saveTokens({
       accessToken: 'forced-official-token',
       refreshToken: 'forced-official-refresh',
       expiresAt: Date.now() + 30 * 60_000,
@@ -729,8 +729,8 @@ describe('ConversationService', () => {
     const providerService = new ProviderService()
     await providerService.activateProvider('openai-official')
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { bbOAuthService } = await import('../services/bbOAuthService.js')
+    await bbOAuthService.saveTokens({
       accessToken: 'claude-oauth-token-that-must-not-be-used',
       refreshToken: 'claude-refresh-token',
       expiresAt: Date.now() + 30 * 60_000,

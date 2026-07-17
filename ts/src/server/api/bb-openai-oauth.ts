@@ -1,15 +1,15 @@
 /**
  * Haha OpenAI OAuth REST API
  *
- * POST   /api/haha-openai-oauth/start    — 生成 PKCE+state,返回 authorize URL
+ * POST   /api/bb-openai-oauth/start    — 生成 PKCE+state,返回 authorize URL
  * GET    /auth/callback                  — 用户浏览器 redirect 到此,完成 token 交换
  * GET    /callback/openai                — 兼容旧路径
- * GET    /api/haha-openai-oauth          — 查询当前登录状态(不回传 token 本体)
- * DELETE /api/haha-openai-oauth          — 登出,删除 token 文件
+ * GET    /api/bb-openai-oauth          — 查询当前登录状态(不回传 token 本体)
+ * DELETE /api/bb-openai-oauth          — 登出,删除 token 文件
  */
 
 import { z } from 'zod'
-import { hahaOpenAIOAuthService } from '../services/hahaOpenAIOAuthService.js'
+import { bbOpenAIOAuthService } from '../services/bbOpenAIOAuthService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 const StartRequestSchema = z.object({
@@ -23,13 +23,13 @@ function html(body: string): Response {
   })
 }
 
-export async function handleHahaOpenAIOAuthApi(
+export async function handleBbOpenAIOAuthApi(
   req: Request,
   url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
-    const action = segments[2] // segments: ['api', 'haha-openai-oauth', <action?>]
+    const action = segments[2] // segments: ['api', 'bb-openai-oauth', <action?>]
 
     if (action === 'start' && req.method === 'POST') {
       let body: unknown
@@ -42,7 +42,7 @@ export async function handleHahaOpenAIOAuthApi(
       if (!parsed.success) {
         throw ApiError.badRequest('serverPort (positive integer) required')
       }
-      const session = await hahaOpenAIOAuthService.startSession({
+      const session = await bbOpenAIOAuthService.startSession({
         serverPort: parsed.data.serverPort,
       })
       return Response.json({
@@ -52,7 +52,7 @@ export async function handleHahaOpenAIOAuthApi(
     }
 
     if (action === undefined && req.method === 'GET') {
-      const tokens = await hahaOpenAIOAuthService.ensureFreshTokens()
+      const tokens = await bbOpenAIOAuthService.ensureFreshTokens()
       if (!tokens) {
         return Response.json({ loggedIn: false })
       }
@@ -65,7 +65,7 @@ export async function handleHahaOpenAIOAuthApi(
     }
 
     if (action === undefined && req.method === 'DELETE') {
-      await hahaOpenAIOAuthService.deleteTokens()
+      await bbOpenAIOAuthService.deleteTokens()
       return Response.json({ ok: true })
     }
 
@@ -75,7 +75,7 @@ export async function handleHahaOpenAIOAuthApi(
   }
 }
 
-export async function handleHahaOpenAIOAuthCallback(url: URL): Promise<Response> {
+export async function handleBbOpenAIOAuthCallback(url: URL): Promise<Response> {
   const code = url.searchParams.get('code')
   const state = url.searchParams.get('state')
   const error = url.searchParams.get('error')
@@ -88,7 +88,7 @@ export async function handleHahaOpenAIOAuthCallback(url: URL): Promise<Response>
   }
 
   try {
-    await hahaOpenAIOAuthService.completeSession(code, state)
+    await bbOpenAIOAuthService.completeSession(code, state)
     return html(renderCallbackPage(true, null))
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

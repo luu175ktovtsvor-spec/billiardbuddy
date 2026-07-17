@@ -30,7 +30,7 @@ import {
   qfGatewayConfigured,
   resolveQfGatewayProxyTarget,
 } from './qfGatewayProvider.js'
-import { hahaOpenAIOAuthService } from './hahaOpenAIOAuthService.js'
+import { bbOpenAIOAuthService } from './bbOpenAIOAuthService.js'
 import {
   CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
   ensurePersistentStorageUpgraded,
@@ -452,7 +452,7 @@ export class ProviderService {
     const index = await this.readIndex()
     if (index.activeId) {
       if (isOpenAIOfficialProviderId(index.activeId)) {
-        const tokens = await hahaOpenAIOAuthService.ensureFreshTokens()
+        const tokens = await bbOpenAIOAuthService.ensureFreshTokens()
         if (tokens?.accessToken && tokens.refreshToken) {
           return {
             hasAuth: true,

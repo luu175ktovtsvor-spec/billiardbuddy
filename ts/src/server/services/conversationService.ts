@@ -1237,8 +1237,8 @@ export class ConversationService {
     try {
       // deferred import: avoids instantiating the OAuth singleton on every
       // ConversationService construction — only loaded when official mode hits.
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      const token = await hahaOAuthService.ensureFreshAccessToken()
+      const { bbOAuthService } = await import('./bbOAuthService.js')
+      const token = await bbOAuthService.ensureFreshAccessToken()
       if (token) {
         env.CLAUDE_CODE_OAUTH_TOKEN = token
       }
@@ -1259,8 +1259,8 @@ export class ConversationService {
 
     let token: string | null = null
     try {
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      token = await hahaOAuthService.ensureFreshAccessToken()
+      const { bbOAuthService } = await import('./bbOAuthService.js')
+      token = await bbOAuthService.ensureFreshAccessToken()
     } catch (err) {
       console.error(
         '[conversationService] refresh official OAuth token before turn failed:',

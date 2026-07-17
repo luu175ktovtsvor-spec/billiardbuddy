@@ -804,8 +804,8 @@ export class CronScheduler {
       CLAUDE_CODE_ENTRYPOINT: 'claude-desktop',
     }
     try {
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      const token = await hahaOAuthService.ensureFreshAccessToken()
+      const { bbOAuthService } = await import('./bbOAuthService.js')
+      const token = await bbOAuthService.ensureFreshAccessToken()
       if (token) {
         env.CLAUDE_CODE_OAUTH_TOKEN = token
       }

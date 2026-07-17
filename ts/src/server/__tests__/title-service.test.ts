@@ -12,7 +12,7 @@ import {
   saveAiTitle,
 } from '../services/titleService.js'
 import { sessionService } from '../services/sessionService.js'
-import { hahaOpenAIOAuthService } from '../services/hahaOpenAIOAuthService.js'
+import { bbOpenAIOAuthService } from '../services/bbOpenAIOAuthService.js'
 
 describe('titleService', () => {
   let tmpDir: string
@@ -28,7 +28,7 @@ describe('titleService', () => {
 
   afterEach(async () => {
     globalThis.fetch = originalFetch
-    hahaOpenAIOAuthService.dispose()
+    bbOpenAIOAuthService.dispose()
     restoreEnv('CLAUDE_CONFIG_DIR', originalConfigDir)
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
@@ -330,7 +330,7 @@ describe('titleService', () => {
   test('generates titles when ChatGPT Official OAuth is active', async () => {
     const providerService = new ProviderService()
     await providerService.activateProvider('openai-official')
-    await hahaOpenAIOAuthService.saveTokens({
+    await bbOpenAIOAuthService.saveTokens({
       accessToken: 'access-for-title',
       refreshToken: 'refresh-for-title',
       expiresAt: Date.now() + 60 * 60_000,

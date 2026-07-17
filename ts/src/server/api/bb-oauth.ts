@@ -1,16 +1,16 @@
 /**
  * Haha OAuth REST API
  *
- * POST   /api/haha-oauth/start    — 生成 PKCE+state,返回 authorize URL
+ * POST   /api/bb-oauth/start    — 生成 PKCE+state,返回 authorize URL
  * GET    /callback                — 用户浏览器 redirect 到此,完成 token 交换
- * GET    /api/haha-oauth/callback — 兼容旧路径
- * GET    /api/haha-oauth          — 查询当前登录状态(不回传 token 本体)
- * GET    /api/haha-oauth/status   — 同上(legacy path)
- * DELETE /api/haha-oauth          — 登出,删除 token 文件
+ * GET    /api/bb-oauth/callback — 兼容旧路径
+ * GET    /api/bb-oauth          — 查询当前登录状态(不回传 token 本体)
+ * GET    /api/bb-oauth/status   — 同上(legacy path)
+ * DELETE /api/bb-oauth          — 登出,删除 token 文件
  */
 
 import { z } from 'zod'
-import { hahaOAuthService } from '../services/hahaOAuthService.js'
+import { bbOAuthService } from '../services/bbOAuthService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 const StartRequestSchema = z.object({
@@ -24,13 +24,13 @@ function html(body: string): Response {
   })
 }
 
-export async function handleHahaOAuthApi(
+export async function handleBbOAuthApi(
   req: Request,
   url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
-    const action = segments[2] // segments: ['api', 'haha-oauth', <action?>]
+    const action = segments[2] // segments: ['api', 'bb-oauth', <action?>]
 
     if (action === 'start' && req.method === 'POST') {
       let body: unknown
@@ -43,7 +43,7 @@ export async function handleHahaOAuthApi(
       if (!parsed.success) {
         throw ApiError.badRequest('serverPort (positive integer) required')
       }
-      const session = hahaOAuthService.startSession({
+      const session = bbOAuthService.startSession({
         serverPort: parsed.data.serverPort,
       })
       return Response.json({
@@ -53,11 +53,11 @@ export async function handleHahaOAuthApi(
     }
 
     if (action === 'callback' && req.method === 'GET') {
-      return handleHahaOAuthCallback(url)
+      return handleBbOAuthCallback(url)
     }
 
     if ((action === undefined || action === 'status') && req.method === 'GET') {
-      const tokens = await hahaOAuthService.ensureFreshTokens()
+      const tokens = await bbOAuthService.ensureFreshTokens()
       if (!tokens) {
         return Response.json({ loggedIn: false })
       }
@@ -70,7 +70,7 @@ export async function handleHahaOAuthApi(
     }
 
     if (action === undefined && req.method === 'DELETE') {
-      await hahaOAuthService.deleteTokens()
+      await bbOAuthService.deleteTokens()
       return Response.json({ ok: true })
     }
 
@@ -80,7 +80,7 @@ export async function handleHahaOAuthApi(
   }
 }
 
-export async function handleHahaOAuthCallback(url: URL): Promise<Response> {
+export async function handleBbOAuthCallback(url: URL): Promise<Response> {
   const code = url.searchParams.get('code')
   const state = url.searchParams.get('state')
   const error = url.searchParams.get('error')
@@ -93,7 +93,7 @@ export async function handleHahaOAuthCallback(url: URL): Promise<Response> {
   }
 
   try {
-    await hahaOAuthService.completeSession(code, state)
+    await bbOAuthService.completeSession(code, state)
     return html(renderCallbackPage(true, null))
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
