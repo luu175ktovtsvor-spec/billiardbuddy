@@ -275,6 +275,53 @@ describe('anthropicToOpenaiChat', () => {
     expect(result.messages[0].content).toBe('Sunny, 72°F')
   })
 
+  test('tool_result image (e.g. Read) is preserved as an image_url user message in vision mode', () => {
+    // Read 读图返回 tool_result{content:[{type:image}]};OpenAI 的 tool 角色只能装字符串,所以图片
+    // 在 vision 模式下必须补成一条 user 消息 image_url,否则会被静默丢弃(Read 看图链路整条断掉)。
+    const req: AnthropicRequest = {
+      model: 'deepseek-v4-flash',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tc_read', content: [
+            { type: 'text', text: 'Read image /a.png' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'IMGDATA' } },
+          ] },
+        ],
+      }],
+    }
+    const result = anthropicToOpenaiChat(req, { imageContentMode: 'vision' })
+    const toolMsg = result.messages.find((m) => m.role === 'tool')!
+    expect(toolMsg.tool_call_id).toBe('tc_read')
+    expect(toolMsg.content).toBe('Read image /a.png')
+    const userMsg = result.messages.find((m) => m.role === 'user')!
+    const parts = userMsg.content as Array<{ type: string; image_url?: { url: string } }>
+    expect(parts.some((p) => p.type === 'image_url' && p.image_url!.url === 'data:image/png;base64,IMGDATA')).toBe(true)
+    // 最终发给上游的 body 里绝不能残留 anthropic 的 image 块(只应是 image_url)。
+    expect(JSON.stringify(result)).not.toContain('"type":"image"')
+  })
+
+  test('tool_result image is dropped (text only) in text_only mode — user-configured text-only DeepSeek unaffected', () => {
+    const req: AnthropicRequest = {
+      model: 'deepseek-v4-flash',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tc_read', content: [
+            { type: 'text', text: 'Read image /a.png' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'IMGDATA' } },
+          ] },
+        ],
+      }],
+    }
+    const result = anthropicToOpenaiChat(req, { imageContentMode: 'text_only' })
+    expect(result.messages.some((m) => m.role === 'user')).toBe(false)
+    expect(JSON.stringify(result)).not.toContain('image_url')
+    expect(JSON.stringify(result)).not.toContain('IMGDATA')
+  })
+
   test('image content conversion', () => {
     const req: AnthropicRequest = {
       model: 'gpt-4',
