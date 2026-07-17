@@ -7,7 +7,7 @@ describe('resolveSidecarInvocation', () => {
     expect(
       resolveSidecarInvocation(
         ['server', '--host', '127.0.0.1'],
-        '/tmp/claude-sidecar',
+        '/tmp/billiardbuddy-sidecar',
         null,
       ),
     ).toEqual({

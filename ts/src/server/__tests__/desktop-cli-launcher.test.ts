@@ -75,7 +75,7 @@ describe('ensureDesktopCliLauncherInstalled', () => {
   })
 
   unixOnly('installs a launcher wrapper in the user bin dir and configures PATH', async () => {
-    const sourcePath = join(tempSourceDir, 'claude-sidecar')
+    const sourcePath = join(tempSourceDir, 'billiardbuddy-sidecar')
     await writeFile(sourcePath, '#!/bin/sh\necho desktop-sidecar\n', 'utf8')
     await chmod(sourcePath, 0o755)
     process.env.CLAUDE_CLI_PATH = sourcePath
@@ -102,7 +102,7 @@ describe('ensureDesktopCliLauncherInstalled', () => {
   })
 
   unixOnly('pins portable config dir in the installed launcher wrapper', async () => {
-    const sourcePath = join(tempSourceDir, 'claude-sidecar')
+    const sourcePath = join(tempSourceDir, 'billiardbuddy-sidecar')
     const portableDir = join(tempHome, 'portable-config')
     await writeFile(sourcePath, '#!/bin/sh\necho desktop-sidecar\n', 'utf8')
     await chmod(sourcePath, 0o755)
@@ -119,7 +119,7 @@ describe('ensureDesktopCliLauncherInstalled', () => {
     expect(getDesktopCliCommandName('win32')).toBe('claude-haha.cmd')
 
     process.env.CLAUDE_CONFIG_DIR = 'C:\\Portable\\ClaudeConfig'
-    const wrapper = buildWindowsLauncherWrapper('C:\\Apps\\cc-haha\\claude-sidecar.exe')
+    const wrapper = buildWindowsLauncherWrapper('C:\\Apps\\cc-haha\\billiardbuddy-sidecar.exe')
 
     expect(wrapper).toContain('set "CLAUDE_CONFIG_DIR=C:\\Portable\\ClaudeConfig"')
     expect(wrapper).toContain(

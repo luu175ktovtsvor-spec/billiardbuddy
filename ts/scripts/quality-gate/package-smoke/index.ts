@@ -528,7 +528,7 @@ function inspectMacosArtifacts(rootDir: string, report: PackageSmokeReport, opti
     report,
     rootDir,
     'macOS unpacked sidecar binary',
-    findMatches(join(unpackedDir, 'src-tauri', 'binaries'), (candidate) => normalizePath(candidate).includes('/claude-sidecar-')),
+    findMatches(join(unpackedDir, 'src-tauri', 'binaries'), (candidate) => normalizePath(candidate).includes('/billiardbuddy-sidecar-')),
     join(unpackedDir, 'src-tauri', 'binaries'),
   )
   addMatchCheck(
@@ -604,10 +604,10 @@ function inspectWindowsArtifacts(rootDir: string, report: PackageSmokeReport) {
     const nodePtyDir = join(unpackedResourcesDir, 'node_modules', 'node-pty')
     const sidecarDir = join(unpackedResourcesDir, 'src-tauri', 'binaries')
     const sidecarNeedle = report.arch === 'arm64'
-      ? '/claude-sidecar-aarch64-pc-windows-msvc.exe'
+      ? '/billiardbuddy-sidecar-aarch64-pc-windows-msvc.exe'
       : report.arch === 'x64'
-        ? '/claude-sidecar-x86_64-pc-windows-msvc.exe'
-        : '/claude-sidecar-'
+        ? '/billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe'
+        : '/billiardbuddy-sidecar-'
     const nodePtyNeedle = report.arch === 'arm64'
       ? '/win32-arm64/'
       : report.arch === 'x64'
@@ -739,7 +739,7 @@ function inspectLinuxArtifacts(rootDir: string, report: PackageSmokeReport) {
       report,
       rootDir,
       'Linux unpacked sidecar binary',
-      findMatches(join(unpackedResourcesDir, 'src-tauri', 'binaries'), (candidate) => normalizePath(candidate).includes('/claude-sidecar-')),
+      findMatches(join(unpackedResourcesDir, 'src-tauri', 'binaries'), (candidate) => normalizePath(candidate).includes('/billiardbuddy-sidecar-')),
       join(unpackedResourcesDir, 'src-tauri', 'binaries'),
     )
     addMatchCheck(

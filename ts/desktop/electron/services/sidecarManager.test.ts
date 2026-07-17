@@ -87,7 +87,7 @@ describe('Electron sidecar manager', () => {
       env: {},
     })
 
-    expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-')
+    expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries/billiardbuddy-sidecar-')
     expect(plan.args).toContain('/Applications/App.app/Contents/Resources/app.asar')
     expect(plan.env.CLAUDE_H5_DIST_DIR).toBe('/Applications/App.app/Contents/Resources/app.asar.unpacked/dist')
   })
@@ -178,7 +178,7 @@ describe('Electron sidecar manager', () => {
     const spawnFn = vi.fn(() => spawned)
     const existsSyncFn = vi.fn(() => true)
     const plan = {
-      command: '/app/desktop/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe',
+      command: '/app/desktop/src-tauri/binaries/billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe',
       args: ['server', '--port', '49321'],
       env: { CLAUDE_H5_AUTO_PUBLIC_URL: '1' },
     }
