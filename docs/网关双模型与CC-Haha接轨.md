@@ -30,23 +30,25 @@ CC-Haha Desktop/Server
 ## 网关模型路由(`gateway/`)
 
 - 三个独立上游 provider,各自 key/base/allowlist/并发/单装机并发/单 token 二级并发/限流/重试/用量标签,**绝不静默跨供应商回退**:
-  - **MiMo v2.5(产品默认)**:`GW_MIMO_KEY` / `GW_MIMO_BASE`(默认 `api.xiaomimimo.com/v1`)/ `GW_MIMO_MODEL`(默认 `mimo-v2.5`)/ `GW_MIMO_MODELS`。全局 16、单装机 2、RPM 90(官方 100/账户,留余量)。
-  - **Qwen3-Coder-Plus(可选)**:`GW_QWEN_KEY` / `GW_QWEN_BASE`(默认百炼 OpenAI 兼容端点)/ `GW_QWEN_MODEL` / `GW_QWEN_MODELS`。全局 16、单装机 2、RPM 90。
-  - **DeepSeek V4 Flash(可选)**:`GW_DEEPSEEK_KEY` / `GW_DEEPSEEK_BASE`(默认 `https://api.deepseek.com`)/ `GW_DEEPSEEK_MODEL`(默认 `deepseek-v4-flash`)/ `GW_DEEPSEEK_MODELS`。全局 32、单装机 2、RPM 60(保守,不因官方并发 2500 就放开)。注入受信 opaque `user_id`(`bb_<hash>`,官方字段名,不含隐私、不提权)。
+  - **MiMo v2.5(视觉唯一上游,非默认文本模型)**:`GW_MIMO_KEY` / `GW_MIMO_BASE`(默认 `api.xiaomimimo.com/v1`)/ `GW_MIMO_MODEL`(默认 `mimo-v2.5`)/ `GW_MIMO_MODELS`。全局 16(高水位紧急总并发闸)、单装机默认=全局(私测放开,`GW_MIMO_USER_CONC` 可收紧)、RPM 默认放开不节流(`GW_MIMO_RPM`,曾 90;靠上游 429 原样透传兜底)。
+  - **Qwen3-Coder-Plus(可选)**:`GW_QWEN_KEY` / `GW_QWEN_BASE`(默认百炼 OpenAI 兼容端点)/ `GW_QWEN_MODEL` / `GW_QWEN_MODELS`。全局 16(高水位紧急总并发闸)、单装机默认=全局(私测放开)、RPM 默认放开不节流(`GW_QWEN_RPM`,曾 90)。
+  - **DeepSeek V4 Flash(产品默认)**:`GW_DEEPSEEK_KEY` / `GW_DEEPSEEK_BASE`(默认 `https://api.deepseek.com`)/ `GW_DEEPSEEK_MODEL`(默认 `deepseek-v4-flash`)/ `GW_DEEPSEEK_MODELS`。全局 32(高水位紧急总并发闸)、单装机默认=全局(私测放开)、RPM 默认放开不节流(`GW_DEEPSEEK_RPM`,曾 60;不因官方并发 2500 就设无限,靠全局闸+429 兜底)。注入受信 opaque `user_id`(`bb_<hash>`,官方字段名,不含隐私、不提权)。
 - 三池容量互不共享(key/RPM/并发/队列/重试/二级 token 闸独立);一池打满不阻塞另两池。每池三层闸:全局并发、单 token 二级并发(`GW_*_TOKEN_CONC`,默认=全局,防单 token 伪造多装机独占)、单装机并发。
+- **文字容量私测放开**:应用级低 RPM、单装机并发、长时间公平排队默认已放开为不节流正常文字流量(避免本地令牌桶再现"高并发 p95 十几秒"),机制保留、可经各自 env 再收紧;`GW_*_CONC` 全局并发高水位闸不动,始终兜底保护上游。
+- **视觉桥接容量**:默认模型 DeepSeek 带图时,网关内部另用一个有界信号量(`GW_VISION_CONC`,默认 12)调 MiMo v2.5 视觉,与 MiMo 原生聊天池(`mimoCapacity`,默认 16)相互独立、同打一个 MiMo 账号——峰值合计约 28 路,远低于 MiMo 账号 ~100 上限;视觉信号量按全局有界,满则短暂排队后 429 失败关闭(私测规模下未做单用户公平调度,`GW_VISION_CONC` 可调)。视觉结果按 `sha256(图片字节)` 有界+TTL 内存缓存,同图跨轮不重复调 MiMo,绝不落盘、绝不入日志。
 - 路由:`model` 命中 DeepSeek allowlist→DeepSeek;命中 MiMo allowlist→MiMo;否则默认 Qwen(未知 model 归一为 `GW_QWEN_MODEL`,供应商内归一非跨供应商回退)。命中的上游 handler 为 null → `503`,绝不改投另一家。DeepSeek/MiMo allowlist 独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。**一次会话/Agent 工具循环模型固定**(model 随请求体透传、命中白名单不改写),不在输出开始后或 tool_use 循环中静默换。
 - `GET /v1/models`:鉴权后返回三家显式目录(`owned_by`),只列当前真正可路由的上游,供前端显式选择 + 会话级切换(复用 `set_runtime_config → CLI --model`,不改 Agent 循环)。
 - **重试**:429 一律不重试直接回传;连接错误/可重试 5xx 最多额外一次(`GW_*_MAX_RETRIES` 硬夹 [0,1],与 CC CLI 重试不相乘)。SSE 正常结束、上游中途断流、客户端断开三条路径都释放并发许可(active/queued 必回落)。
-- 保留 app token 鉴权、公平轮转(无饿死)、单装机并发、RPM、取消、超时、OpenAI Chat Completions + SSE + tool_call 逐字节透传、上游错误与 key 脱敏。healthz 只对鉴权请求暴露三池 active/queued/capacity。
+- 保留 app token 鉴权、公平轮转(无饿死)、单装机并发与 RPM(私测默认放开为不节流,保留 env 可再收紧)、全局并发高水位闸、取消、超时、OpenAI Chat Completions + SSE + tool_call 逐字节透传、上游错误与 key 脱敏。healthz 只对鉴权请求暴露三池 active/queued/capacity。
 - 转录只保留 **Fun-ASR-Flash**;`GW_TRANSCRIBE_PROVIDER=whisper|upstream` fail closed;Whisper 不运行/下载/部署/回退。
 
 ## 厂商能力矩阵与图片/思考路由(本地 Proxy,按 model 判定;已按官方文档核实)
 
 | 上游模型 | 图片输入(多模态) | 思考模式 / reasoning_content | 工具调用 | 官方限流 |
 |---|---|---|---|---|
-| **mimo-v2.5**(默认) | ✅ 唯一多模态(image_url,官方) | ✅ `thinking:{type:enabled\|disabled}`,有 reasoning_content;**官方提醒 thinking+工具不稳定** | ✅ | 100 RPM/账户 |
+| **mimo-v2.5**(视觉唯一上游) | ✅ 唯一多模态(image_url,官方) | ✅ `thinking:{type:enabled\|disabled}`,有 reasoning_content;**官方提醒 thinking+工具不稳定** | ✅ | 100 RPM/账户 |
 | mimo-v2.5-pro | ❌ 纯文本推理 | ✅ | ✅ | 100 RPM/账户 |
-| deepseek-v4-flash | ❌ | ✅ `thinking:{type}`,多轮有 tool_call 时**必须 verbatim 回传 reasoning_content**否则 400 | ✅ | 2500 并发/账户(本产品保守放开) |
+| **deepseek-v4-flash**(产品默认) | ❌ | ✅ `thinking:{type}`,多轮有 tool_call 时**必须 verbatim 回传 reasoning_content**否则 400 | ✅ | 2500 并发/账户(本产品保守放开) |
 | qwen3-coder-plus | ❌ | ❌(coder,无思考) | ✅ | — |
 | Fun-ASR-Flash | —(ASR 转录,非对话) | ❌ N/A | — | — |
 | Whisper | 已退役,不运行/下载/回退 | — | — | — |

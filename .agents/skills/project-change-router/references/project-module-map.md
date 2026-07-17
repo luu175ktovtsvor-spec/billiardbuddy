@@ -5,7 +5,7 @@
 | 系统 | 路径 | 发布边界 |
 |---|---|---|
 | 桌面产品 | `ts/` | Electron renderer、main、Bun sidecar 同一安装包 |
-| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、装机公平调度(X-QF-Client-ID)、`/v1/models` 目录与三模型路由、`qwenChat.ts` 默认 Qwen、`mimoChat.ts` MiMo、`deepseekChat.ts` DeepSeek V4 Flash(注入 opaque user_id)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search`、`transcription.ts` Fun-ASR 转录） | 国内服务器独立发布；承载 Qwen/MiMo/DeepSeek 三模型代理(绝不跨供应商回退)、装机公平调度、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
+| 模型、搜索与转录网关 | `gateway/`（`app.ts` 装配、装机公平调度(X-QF-Client-ID)、`/v1/models` 目录与三模型路由、`qwenChat.ts` Qwen、`mimoChat.ts` MiMo(视觉桥接上游)、`deepseekChat.ts` DeepSeek V4 Flash(产品默认,注入 opaque user_id)、`visionBridge.ts` 图片→MiMo 视觉桥接(非原生多模态模型带图时先读图成结构化文本,有界+TTL 内存缓存,失败关闭)、`modelCapacity.ts` 容量调度、`webSearch.ts` 独立 `/v1/web_search`、`transcription.ts` Fun-ASR 转录） | 国内服务器独立发布；承载 Qwen/MiMo/DeepSeek 三模型代理(绝不跨供应商回退)、装机公平调度、独立联网搜索、容量池调度与 Fun-ASR 语音转录 |
 | 生图中转 | `relay/`(SQLite 持久化 + 幂等 + 归属绑定 + 队列上限 + 重启恢复) | 美国服务器独立发布;仅大陆 qfgw 出口 IP 经 nginx 可达,客户端不得直连 |
 | 数据服务 | `dataeye/` | receiver 与 board 独立进程 |
 | 桌面组件资产 | `ts/src/assets`、`dataeye/deploy/nginx-dataeye.conf` | `zzyppz.cn` HTTPS 主入口与大陆机 HTTPS 镜像分发；启动只加载清单，所有本地组件由功能门按需准备，客户端校验后本地执行 |
