@@ -348,6 +348,10 @@
   --color-primary-fixed: var(--bb-blue-50);
   --color-primary-fixed-dim: var(--bb-blue-100);
 
+  /* 品牌蓝笑脸标识渐变 */
+  --color-smiley-a: var(--bb-blue-300);
+  --color-smiley-b: var(--bb-blue-400);
+
   --color-on-primary: #FFFFFF;
   --color-on-surface: #1B1C1A;
   --color-on-surface-variant: #54433E;
