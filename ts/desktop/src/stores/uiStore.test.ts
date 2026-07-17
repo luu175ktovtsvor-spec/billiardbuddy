@@ -6,41 +6,74 @@ describe('uiStore theme handling', () => {
     window.localStorage.clear()
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.style.colorScheme = ''
+    // jsdom 默认无 matchMedia → system 兜底浅色;需要深色系统的用例自行 mock。
+    ;(window as unknown as { matchMedia?: unknown }).matchMedia = undefined
   })
 
-  it('defaults new installs to the pure white theme', async () => {
+  function mockSystemDark(dark: boolean) {
+    ;(window as unknown as { matchMedia: (q: string) => MediaQueryList }).matchMedia = (query: string) =>
+      ({
+        matches: dark && query.includes('dark'),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList
+  }
+
+  it('defaults new installs to follow-system (light when the OS is not dark)', async () => {
     const { initializeTheme, useUIStore } = await import('./uiStore')
 
-    expect(useUIStore.getState().theme).toBe('white')
+    expect(useUIStore.getState().theme).toBe('system')
     initializeTheme()
-    expect(document.documentElement.getAttribute('data-theme')).toBe('white')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
     expect(document.documentElement.style.colorScheme).toBe('light')
   })
 
-  it('hydrates and applies the pure white theme as a light color scheme', async () => {
+  it('resolves system mode to dark when the OS prefers dark', async () => {
+    mockSystemDark(true)
+    const { initializeTheme, useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().theme).toBe('system')
+    initializeTheme()
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+  })
+
+  it('hydrates and applies an explicit dark theme', async () => {
+    window.localStorage.setItem('billiardbuddy-theme', 'dark')
+
+    const { initializeTheme, useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().theme).toBe('dark')
+    initializeTheme()
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+  })
+
+  it('falls back to follow-system when the persisted value is a retired theme', async () => {
     window.localStorage.setItem('billiardbuddy-theme', 'white')
 
-    const { initializeTheme, useUIStore } = await import('./uiStore')
-
-    expect(useUIStore.getState().theme).toBe('white')
-    initializeTheme()
-    expect(document.documentElement.getAttribute('data-theme')).toBe('white')
-    expect(document.documentElement.style.colorScheme).toBe('light')
-  })
-
-  it('cycles through pure white, warm classic, and dark themes', async () => {
     const { useUIStore } = await import('./uiStore')
 
-    useUIStore.getState().toggleTheme()
+    expect(useUIStore.getState().theme).toBe('system')
+  })
+
+  it('cycles light -> dark -> system', async () => {
+    window.localStorage.setItem('billiardbuddy-theme', 'light')
+
+    const { useUIStore } = await import('./uiStore')
     expect(useUIStore.getState().theme).toBe('light')
-    expect(document.documentElement.style.colorScheme).toBe('light')
 
     useUIStore.getState().toggleTheme()
     expect(useUIStore.getState().theme).toBe('dark')
     expect(document.documentElement.style.colorScheme).toBe('dark')
 
     useUIStore.getState().toggleTheme()
-    expect(useUIStore.getState().theme).toBe('white')
+    expect(useUIStore.getState().theme).toBe('system')
+
+    useUIStore.getState().toggleTheme()
+    expect(useUIStore.getState().theme).toBe('light')
     expect(document.documentElement.style.colorScheme).toBe('light')
   })
 })

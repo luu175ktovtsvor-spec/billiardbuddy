@@ -960,10 +960,11 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings > General
   'settings.general.appearanceTitle': '配色主题',
-  'settings.general.appearanceDescription': '在经典暖色、暗色与纯白工作区之间切换。',
-  'settings.general.appearance.light': '经典暖色',
-  'settings.general.appearance.dark': '暗色',
+  'settings.general.appearanceDescription': '在浅色、深色与跟随系统之间切换。',
+  'settings.general.appearance.light': '浅色',
+  'settings.general.appearance.dark': '深色',
   'settings.general.appearance.white': '纯白',
+  'settings.general.appearance.system': '跟随系统',
   'settings.general.languageTitle': '语言',
   'settings.general.languageDescription': '选择应用程序的显示语言。',
   'settings.general.responseLangTitle': '回复语言',

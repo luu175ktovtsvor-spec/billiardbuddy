@@ -2166,9 +2166,9 @@ export function GeneralSettings() {
     : t('settings.general.outputStyleScopeUserHint')
 
   const THEMES: Array<{ value: ThemeMode; label: string }> = [
-    { value: 'white', label: t('settings.general.appearance.white') },
     { value: 'light', label: t('settings.general.appearance.light') },
     { value: 'dark', label: t('settings.general.appearance.dark') },
+    { value: 'system', label: t('settings.general.appearance.system') },
   ]
 
   const WEB_SEARCH_MODES: Array<{ value: WebSearchMode; label: string }> = [
