@@ -4,6 +4,8 @@ import { FileTreeColumn } from './components/filetree/FileTreeColumn'
 import { WorkspaceColumn } from './components/workspace3/WorkspaceColumn'
 import { ConversationColumn } from './components/conversation/ConversationColumn'
 import { RailNav } from './components/shell/RailNav'
+import { BottomTerminalDock } from './components/shell/BottomTerminalDock'
+import { useSessionStore } from './stores/sessionStore'
 import { useScheduledTaskDesktopNotifications } from './hooks/useScheduledTaskDesktopNotifications'
 import { installDesktopNotificationNavigation } from './lib/desktopNotificationNavigation'
 import { useEffect, useState } from 'react'
@@ -28,13 +30,14 @@ function PlaceholderColumn({ label }: { label: string }) {
 // 临时四栏预览：栏1 RailNav 选会话 → 驱动栏2/3/4（Phase C 接真壳后移除）。
 function WorkspaceLayoutPreview({ initialSession }: { initialSession: string }) {
   const [session, setSession] = useState(initialSession)
+  const workDir = useSessionStore((s) => s.sessions.find((x) => x.id === session)?.workDir ?? undefined)
   return (
     <WorkspaceLayout
       rail={<RailNav activeSessionId={session || null} onSelectSession={setSession} />}
       conversation={session ? <ConversationColumn sessionId={session} /> : <PlaceholderColumn label="栏2 · 选个会话" />}
       workspace={session ? <WorkspaceColumn sessionId={session} /> : <PlaceholderColumn label="栏3 · 审阅/Diff/预览" />}
       fileTree={session ? <FileTreeColumn sessionId={session} /> : <PlaceholderColumn label="栏4 · 文件树" />}
-      terminal={<PlaceholderColumn label="底部 · 终端(横跨栏2–4)" />}
+      terminal={session ? <BottomTerminalDock sessionId={session} cwd={workDir ?? undefined} /> : undefined}
     />
   )
 }
