@@ -10,8 +10,15 @@
 #     仍可在 gw.env 按需收紧,不是硬编码上限。
 #   - 视觉桥接:带图请求经网关 MiMo 视觉桥接读成文本后再交默认模型 DeepSeek;可选 env(默认见 app.ts loadConfig):
 #     GW_VISION_MAX_IMAGES(8) / GW_VISION_MAX_IMAGE_BYTES(8MB) / GW_VISION_MAX_TOTAL_BYTES(24MB,兼作聊天请求体大小闸) /
-#     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(12) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
+#     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(12,全局在途上限) / GW_VISION_QUEUE_MAX(64,排队硬上限,满则立即 429) /
+#     GW_VISION_PER_REQUEST_CONC(2,单请求最多占几个全局槽,防多图请求独占) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
 #     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
+#
+# 回滚(本脚本不做备份/回滚,需运维在部署前手工执行):
+#   部署前备份代码 `cp -a /opt/qfgw /opt/qfgw.bak-<ts>`、gw.env 单独备份 `cp -a /opt/qfgw/gw.env /root/gw.env.bak-<ts>`。
+#   部署失败回滚**不能** `cp -a /opt/qfgw.bak-<ts> /opt/qfgw`(/opt/qfgw 已存在,cp -a 会把备份复制成子目录、不覆盖、回滚不生效),
+#   正确做法: `rsync -a --delete /opt/qfgw.bak-<ts>/ /opt/qfgw/ && systemctl restart qfgw`(源路径带结尾 `/`)。
+#   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。详见 docs/网关双模型与CC-Haha接轨.md。
 set -euo pipefail
 APPDIR=/opt/qfgw
 for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts webSearch.ts; do
