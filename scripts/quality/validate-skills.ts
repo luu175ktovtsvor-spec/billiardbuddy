@@ -198,9 +198,28 @@ for (const skill of canonical.values()) {
 }
 
 const moduleMap = await requiredText(path.join(canonicalRoot, 'project-change-router/references/project-module-map.md'))
-for (const match of moduleMap.matchAll(/`(server\/routes\/[^`*<>]+\.ts)`/g)) {
-  const reference = match[1]!
-  if (!await exists(path.join(root, 'ts/src', reference))) errors.push(`project-module-map.md: 路由文件不存在 ${reference}`)
+
+// Retired structures must not reappear in engineering skills or the module map.
+// (renderer-react tree, ts/shared contracts dir, and ts/src/assets are gone from the cc-haha base.)
+const retiredMarkers = ['renderer-react', 'ts/shared/', 'ts/src/assets']
+const deadScanTargets: Array<[string, string]> = [
+  ...[...canonical.values()].map(skill => [`.agents/skills/${skill.folder}/SKILL.md`, skill.body] as [string, string]),
+  ['project-module-map.md', moduleMap],
+]
+for (const [label, text] of deadScanTargets) {
+  for (const marker of retiredMarkers) {
+    if (text.includes(marker)) errors.push(`${label}: 引用了已退役结构 ${marker}（当前 cc-haha 底座已无此路径）`)
+  }
+}
+
+// Every concrete project path the module map names must resolve on disk
+// (globs, placeholders and bare identifiers are skipped). Keeps the map honest with the tree.
+const mapPathPrefixes = ['ts/', 'gateway/', 'relay/', 'dataeye/', 'scripts/', '.github/', '.agents/', '.claude/', 'docs/']
+for (const match of moduleMap.matchAll(/`([^`\n]+)`/g)) {
+  const reference = match[1]!.replace(/\/$/, '')
+  if (!mapPathPrefixes.some(prefix => reference.startsWith(prefix))) continue
+  if (/[\s*<>{}|]/.test(reference)) continue
+  if (!await exists(path.join(root, reference))) errors.push(`project-module-map.md: 引用了不存在的路径 ${reference}`)
 }
 
 if (errors.length > 0) {

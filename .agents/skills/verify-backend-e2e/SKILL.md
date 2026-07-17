@@ -16,8 +16,8 @@ description: Verify the real Bun sidecar end to end with deterministic scripted 
 ## 默认覆盖
 
 1. `write_file`：tool_call/final 事件、真实文件副作用和 transcript 记录。
-2. `billiards` 领域包：系统上下文注入和白标输出。
-3. 视频共享 Brief：Agent `plan_video` 与工作台编译器产生同源 Brief，不注入不存在的业务事实。
+2. REST 全链路（`full-flow.test.ts`）：健康/状态/诊断、会话 CRUD、设置读写、权限模式切换与非法拒绝、模型列表/切换/effort、定时任务 CRUD、工作区搜索、Agent 管理、未知 API/会话 404。
+3. 传输与事件（`full-flow.test.ts`）：WebSocket 连接与 chat 状态；H5 关闭时 loopback 浏览器 CORS 放行、远端 CORS 预检拒绝。
 4. 双会话：不同工作目录、default/bypass 权限、审批前后副作用和会话隔离。
 
 ## 运行

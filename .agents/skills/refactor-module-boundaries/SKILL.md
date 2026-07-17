@@ -26,7 +26,7 @@ description: Refactor oversized files and misplaced responsibilities into explic
 ## 当前优先对象
 
 - `ts/src/server/index.ts`：只保留依赖组装、路由注册、生命周期。
-- `renderer-react/src/stores/chatStore.ts`：拆 transport、纯事件 reducer、commands/actions、view state。
+- `ts/desktop/src/stores/chatStore.ts`：拆 transport、纯事件 reducer、commands/actions、view state。
 - `gateway/app.ts`：拆 config/auth、quota/rate-limit、provider adapters、usage store、routes。
 
 若重构中发现必须改契约，暂停结构批次，另开共享契约变更处理。
