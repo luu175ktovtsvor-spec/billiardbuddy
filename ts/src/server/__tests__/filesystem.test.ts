@@ -7,6 +7,12 @@ import * as path from 'path'
 import { handleFilesystemRoute } from '../api/filesystem.js'
 import { clearFilesystemAccessRootsForTests } from '../services/filesystemAccessRoots.js'
 import { getRepositoryContext } from '../services/repositoryLaunchService.js'
+import { getRipgrepStatus } from '../../utils/ripgrep.js'
+
+// The ripgrep-fallback case below has no native code path (filesystem search is git-or-rg),
+// so it is skipped where the product resolves no usable ripgrep binary (e.g. a dev machine
+// without system/vendored rg). It still runs wherever rg is available, including CI.
+const RIPGREP_UNAVAILABLE = getRipgrepStatus().mode === 'unavailable'
 
 const cleanupDirs = new Set<string>()
 
@@ -189,7 +195,7 @@ describe('filesystem API', () => {
     expect(srcPaths.indexOf('src/hooks')).toBeLessThan(srcPaths.indexOf('scripts/quality-gate/baseline/fixtures/cross-module-refactor/src'))
   })
 
-  it('falls back to ripgrep search outside git and still respects ignore files', async () => {
+  it.skipIf(RIPGREP_UNAVAILABLE)('falls back to ripgrep search outside git and still respects ignore files', async () => {
     const homeFixtureDir = await fsp.mkdtemp(path.join(os.homedir(), 'claude-filesystem-test-'))
     cleanupDirs.add(homeFixtureDir)
     await fsp.mkdir(path.join(homeFixtureDir, 'app'), { recursive: true })

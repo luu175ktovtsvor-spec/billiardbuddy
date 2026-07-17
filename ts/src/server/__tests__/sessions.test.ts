@@ -34,6 +34,9 @@ async function setupTmpConfigDir(): Promise<string> {
   tmpDir = path.join(os.tmpdir(), `claude-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   process.env.CLAUDE_CONFIG_DIR = tmpDir
+  // Legacy custom slash-commands are discovered via loadMarkdownFiles; force the native fs
+  // walk so command discovery is deterministic on hosts without a system/vendored ripgrep.
+  process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = '1'
   return tmpDir
 }
 
@@ -42,6 +45,7 @@ async function cleanupTmpDir(): Promise<void> {
     await fs.rm(tmpDir, { recursive: true, force: true })
   }
   delete process.env.CLAUDE_CONFIG_DIR
+  delete process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
 }
 
 function git(cwd: string, ...args: string[]): string {

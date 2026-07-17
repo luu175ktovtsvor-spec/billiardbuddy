@@ -72,6 +72,16 @@ function resolvePrivateLanBaseUrl(port: number): string | null {
   return null
 }
 
+async function lanAddressReachable(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) })
+    await res.body?.cancel()
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function startRemoteServer(options: { authRequired?: boolean } = {}): Promise<void> {
   if (options.authRequired) {
     process.env.SERVER_AUTH_REQUIRED = '1'
@@ -86,6 +96,15 @@ async function startRemoteServer(options: { authRequired?: boolean } = {}): Prom
   lanBaseUrl = resolvePrivateLanBaseUrl(port) ?? ''
   lanWsBaseUrl = lanBaseUrl.replace(/^http/, 'ws')
   await waitForServer(`${baseUrl}/health`)
+  // The LAN-facing assertions need this test process to actually reach the server via its
+  // private LAN IP. Some environments (network-restricted sandboxes) refuse connections to
+  // the machine's own LAN address even though the server binds 0.0.0.0. Treat an unreachable
+  // LAN address like "no LAN interface" so those tests skip deterministically instead of
+  // failing on a raw connection error — they still run wherever the LAN IP is reachable (CI).
+  if (lanBaseUrl && !(await lanAddressReachable(lanBaseUrl))) {
+    lanBaseUrl = ''
+    lanWsBaseUrl = ''
+  }
 }
 
 async function restartRemoteServer(options: { authRequired?: boolean } = {}): Promise<void> {
