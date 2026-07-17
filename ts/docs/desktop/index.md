@@ -28,18 +28,6 @@
 
 面向个人和团队的可选浏览器访问：开启 H5、生成 Token、配置允许来源、通过局域网或反向代理在手机上访问聊天界面。
 
-### [Tauri 迁移 Electron 调研索引](./07-electron-migration-research.md)
-
-桌面端从 Tauri 2 迁移到 Electron 的系统能力盘点、React 复用边界、目标架构、安全要求和迁移路径。
-
-### [Electron 迁移任务清单](./08-electron-migration-tasks.md)
-
-逐阶段执行清单：host adapter、Electron main/preload、系统能力、build/release、跨平台 smoke 和 Computer Use 验收。
-
-### [Electron 迁移验证清单](./09-electron-migration-validation-checklist.md)
-
-迁移收口验证：自动化证据、Review 收口项、macOS Computer Use smoke、Windows/Linux 实机验收边界。
-
 ### [Electron 发布与自动更新](./10-release-auto-update.md)
 
 维护者发版 runbook：Developer ID 签名、GitHub Release metadata、`v0.4.3 -> v0.4.4` 自动更新验证路径。
