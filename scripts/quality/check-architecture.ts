@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import ts from '../../ts/desktop/node_modules/typescript/lib/typescript.js'
 
-// Boundary checker for the imported cc-haha desktop product.
+// Boundary checker for the imported billiardbuddy desktop product.
 //
 // Facts this checker is written against (verified in the current tree, not the
 // retired BilliardBuddy renderer-react/ts/shared layout):
