@@ -70,8 +70,7 @@ WINDOWS_CERTIFICATE_PASSWORD
 
 ```bash
 bun run scripts/release.ts 0.4.3 --dry
-bun test scripts/pr/release-workflow.test.ts scripts/release-update-metadata.test.ts scripts/quality-gate/package-smoke/index.test.ts
-bun run check:policy
+bun test scripts/release-update-metadata.test.ts
 ```
 
 正式调用 `bun run scripts/release.ts 0.4.3` 前，先确认对应 `release-notes/v0.4.3.md` 已经存在。

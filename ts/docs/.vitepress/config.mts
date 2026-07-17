@@ -24,7 +24,6 @@ const zhSidebar = [
       { text: '第三方模型', link: '/guide/third-party-models' },
       { text: '全局使用', link: '/guide/global-usage' },
       { text: '常见问题', link: '/guide/faq' },
-      { text: '贡献与质量门禁', link: '/guide/contributing' },
     ],
   },
   {
@@ -114,7 +113,6 @@ const enSidebar = [
       { text: 'Third-Party Models', link: '/en/guide/third-party-models' },
       { text: 'Global Usage', link: '/en/guide/global-usage' },
       { text: 'FAQ', link: '/en/guide/faq' },
-      { text: 'Contributing', link: '/en/guide/contributing' },
     ],
   },
   {

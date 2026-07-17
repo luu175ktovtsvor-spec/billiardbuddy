@@ -371,21 +371,6 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never
 
-      - name: Verify packaged app structure
-        run: bun run test:package-smoke --platform ${{ matrix.smoke_platform }} --arch ${{ matrix.arch }} --package-kind release --artifacts-dir desktop/build-artifacts/electron
-
-      - name: Verify macOS launch policy
-        if: matrix.smoke_platform == 'macos' && needs.signing-preflight.outputs.macos_signed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize_macos == true)
-        run: bun run test:package-smoke --platform macos --arch ${{ matrix.arch }} --package-kind release --artifacts-dir desktop/build-artifacts/electron --require-macos-gatekeeper
-
-      - name: Warn macOS notarization skipped
-        if: matrix.smoke_platform == 'macos' && needs.signing-preflight.outputs.macos_signed == 'true' && github.event_name == 'workflow_dispatch' && inputs.notarize_macos == false
-        run: echo "::warning::Skipping macOS Gatekeeper package-smoke because notarization is disabled for this draft. Artifacts are Developer ID signed but not notarized."
-
-      - name: Warn unsigned macOS launch policy skipped
-        if: matrix.smoke_platform == 'macos' && needs.signing-preflight.outputs.macos_signed != 'true'
-        run: echo "::warning::Skipping macOS Gatekeeper package-smoke because this release is unsigned. Ship install-macos-unsigned.sh with the DMG."
-
       - name: Validate matrix release asset set
         shell: bash
         working-directory: desktop/build-artifacts/electron

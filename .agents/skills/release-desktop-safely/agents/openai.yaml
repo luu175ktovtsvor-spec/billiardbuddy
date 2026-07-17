@@ -1,4 +1,0 @@
-interface:
-  display_name: "桌面发布与回滚"
-  short_description: "验证桌面安装包、兼容性、发布顺序、冒烟检查和回滚准备"
-  default_prompt: "使用 $release-desktop-safely 准备并验证这次桌面版本发布。"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "模块化验证收尾"
-  short_description: "按声明范围验证契约、后端、前端、跨服务、运行行为和文档"
-  default_prompt: "使用 $verify-modular-change 对这次模块化改动做完整收尾验证。"

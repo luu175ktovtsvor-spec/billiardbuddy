@@ -2,11 +2,9 @@
 
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { loadQuarantineManifest, quarantinedPathSet } from '../quality-gate/quarantine'
 
 const root = process.cwd()
 const roots = ['src/server', 'src/tools', 'src/utils']
-const excludedFiles = quarantinedPathSet(loadQuarantineManifest())
 
 function normalize(path: string) {
   return relative(root, path).split(sep).join('/')
@@ -27,7 +25,7 @@ function walk(path: string, files: string[]) {
   }
 
   const normalized = normalize(path)
-  if (normalized.endsWith('.test.ts') && !excludedFiles.has(normalized)) {
+  if (normalized.endsWith('.test.ts')) {
     files.push(normalized)
   }
 }
