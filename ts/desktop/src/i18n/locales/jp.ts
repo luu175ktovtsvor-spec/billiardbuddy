@@ -1021,7 +1021,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.general.notificationsStatusUnsupported': 'この環境では利用できません',
   'settings.general.notificationsAuthorize': '許可する',
   'settings.general.notificationsOpenSettings': '設定を開く',
-  'settings.general.notificationsTestTitle': 'Claude Code Haha の通知が有効になりました',
+  'settings.general.notificationsTestTitle': 'BilliardBuddy の通知が有効になりました',
   'settings.general.notificationsTestBody': '権限の確認と完了したエージェントの応答に、これからシステム通知が使用されます。',
   'settings.general.traceTitle': 'Agent Trace',
   'settings.general.traceDescription': '停止、失敗、予期しない待機を調査するために、ローカルセッションのモデル要求トレースを収集します。',

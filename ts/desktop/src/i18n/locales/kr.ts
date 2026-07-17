@@ -1021,7 +1021,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.general.notificationsStatusUnsupported': '이 환경에서는 사용할 수 없습니다',
   'settings.general.notificationsAuthorize': '허용',
   'settings.general.notificationsOpenSettings': '설정 열기',
-  'settings.general.notificationsTestTitle': 'Claude Code Haha 알림이 사용 설정되었습니다',
+  'settings.general.notificationsTestTitle': 'BilliardBuddy 알림이 사용 설정되었습니다',
   'settings.general.notificationsTestBody': '이제 권한 확인과 완료된 에이전트 응답에 시스템 알림이 사용됩니다.',
   'settings.general.traceTitle': 'Agent Trace',
   'settings.general.traceDescription': '멈춤, 실패, 예상치 못한 대기를 조사하기 위해 로컬 세션의 모델 요청 트레이스를 수집합니다.',
