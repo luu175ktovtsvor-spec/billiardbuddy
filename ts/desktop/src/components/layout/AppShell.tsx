@@ -14,7 +14,8 @@ import {
   isH5ConnectionRequiredError,
 } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
-import { TabBar } from './TabBar'
+import { DesktopSidebar } from './DesktopSidebar'
+import { TopBar } from './TopBar'
 import { StartupErrorView } from './StartupErrorView'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -239,9 +240,15 @@ export function AppShell() {
         className={`sidebar-shell${isMobileShell ? ' sidebar-shell--mobile' : ''}`}
         {...sidebarHiddenProps}
       >
-        {!isMobileShell || effectiveSidebarOpen ? (
-          <Sidebar isMobile={isMobileShell} onRequestClose={() => setEffectiveSidebarOpen(false)} />
-        ) : null}
+        {isMobileShell ? (
+          effectiveSidebarOpen ? (
+            <Sidebar isMobile onRequestClose={() => setEffectiveSidebarOpen(false)} />
+          ) : null
+        ) : (
+          // 桌面端 = 旧 renderer-react 风格的项目/会话栏（迁入的 DesktopSidebar，接当前 store）。
+          // 移动端保留当前 Sidebar 的稳定路径不动。
+          <DesktopSidebar />
+        )}
       </div>
       <main
         id="content-area"
@@ -295,7 +302,9 @@ export function AppShell() {
             ) : null}
           </div>
         ) : null}
-        {!isMobileShell ? <TabBar /> : null}
+        {/* 桌面端 = 旧版单一 TopBar（会话标题 + 任务菜单 + 搜索/工作区面板开关），
+            替代原多标签 TabBar，去掉会话态全局重复标签条。移动端保留原移动头。 */}
+        {!isMobileShell ? <TopBar /> : null}
         <ContentRouter />
       </main>
       <ToastContainer />

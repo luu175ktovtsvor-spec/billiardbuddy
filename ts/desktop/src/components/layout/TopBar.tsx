@@ -1,0 +1,267 @@
+// TopBar：主区顶栏——左侧是当前会话标题按钮（点开下拉“任务操作”菜单），侧栏折叠时额外露出展开按钮；
+// 右侧（仅会话视图）是 搜索 / 历史 / 工作区面板 三个图标按钮。
+//
+// 视觉、布局、交互忠实移植自旧 renderer-react 的
+// src/components/layout/TopBar.tsx（只读参考，未 import 任何旧仓库代码）；
+// 数据全部改接当前仓库的 store（tabStore / uiStore / sessionStore / chatStore / workspacePanelStore）。
+//
+// 与旧版的差异（当前仓库没有对应能力，明确隐藏而不是假按钮）：
+//   - “分享”按钮：当前仓库没有 ShareModal 等价组件，整个按钮隐藏。
+//   - “归档此任务”菜单项：当前仓库 sessionStore 没有 isArchived/setArchived 等价字段与 action，菜单项整个隐藏。
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { ChevronDown, Clock, Copy, Folder, PanelLeft, PanelRight, Search } from 'lucide-react'
+import { useTabStore } from '../../stores/tabStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useSessionStore } from '../../stores/sessionStore'
+import { useChatStore } from '../../stores/chatStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useTranslation } from '../../i18n'
+import { copyTextToClipboard } from '../chat/clipboard'
+import { getDesktopHost } from '../../lib/desktopHost'
+
+const isWindowsPlatform = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
+
+function IconBtn({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string
+  active?: boolean
+  onClick?: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      onClick={onClick}
+      className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-[var(--color-surface-hover)]"
+      style={{
+        color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+        background: active ? 'var(--color-surface-selected)' : undefined,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * 把当前会话里“我 / 助手”的正文文字拼成纯文本，供“复制整段对话”使用。
+ * 思考过程、工具调用、系统提示等一律不进复制稿——只取 user_text / assistant_text。
+ */
+function composeConversationText(
+  sessionId: string,
+  title: string,
+  roleUser: string,
+  roleAssistant: string,
+): string {
+  const messages = useChatStore.getState().getSession(sessionId).messages
+  const lines: string[] = []
+  if (title) lines.push(`【${title}】`, '')
+  for (const message of messages) {
+    if (message.type === 'user_text' && message.content.trim()) {
+      lines.push(`${roleUser}：${message.content.trim()}`, '')
+    } else if (message.type === 'assistant_text' && message.content.trim()) {
+      lines.push(`${roleAssistant}：${message.content.trim()}`, '')
+    }
+  }
+  return lines.join('\n').trim()
+}
+
+export function TopBar() {
+  const t = useTranslation()
+
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const activeTab = tabs.find((tab) => tab.sessionId === activeTabId) ?? null
+  const isChat = activeTab?.type === 'session'
+
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen)
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
+  const openModal = useUIStore((s) => s.openModal)
+  const addToast = useUIStore((s) => s.addToast)
+  const collapsed = !sidebarOpen
+
+  // 工作目录来自 sessionStore 里当前活动会话的真实记录，不是凭空拼的路径。
+  const sessionWorkDir = useSessionStore((s) =>
+    activeTabId ? (s.sessions.find((session) => session.id === activeTabId)?.workDir ?? null) : null,
+  )
+
+  // 面板开关按会话维度存储（workspacePanelStore 内部就是这么设计的），用 activeTabId 取。
+  const panelOpen = useWorkspacePanelStore((s) =>
+    activeTabId && isChat ? s.isPanelOpen(activeTabId) : false,
+  )
+
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuAt) return
+    const close = () => setMenuAt(null)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) close()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [menuAt])
+
+  // 标题：会话视图显示 tab 标题；其余已知 tab 类型显示对应的现成翻译；兜底显示 tab 自带标题。
+  const title = isChat
+    ? activeTab?.title || t('sidebar.newSession')
+    : activeTab?.type === 'settings'
+      ? t('sidebar.settings')
+      : activeTab?.type === 'scheduled'
+        ? t('sidebar.scheduled')
+        : activeTab?.type === 'terminal'
+          ? t('sidebar.terminal')
+          : activeTab?.title || t('sidebar.newSession')
+
+  function handleTogglePanel() {
+    if (!activeTabId) return
+    const workspace = useWorkspacePanelStore.getState()
+    // 与 TabBar 里既有的工作区面板开关逻辑保持一致：只有「已打开且处于 workspace 模式」才当作关闭。
+    if (workspace.isPanelOpen(activeTabId) && workspace.getMode(activeTabId) === 'workspace') {
+      workspace.closePanel(activeTabId)
+    } else {
+      workspace.setMode(activeTabId, 'workspace')
+      workspace.openPanel(activeTabId)
+    }
+  }
+
+  async function handleCopy(text: string) {
+    const copied = await copyTextToClipboard(text)
+    addToast({ type: copied ? 'success' : 'error', message: copied ? t('common.copied') : t('common.copyFailed') })
+  }
+
+  const desktopHost = getDesktopHost()
+  // 侧栏折叠时顶栏最左侧会紧贴窗口左边缘，macOS 桌面端要给红绿灯让出位置（对齐 Sidebar.tsx 里同样的
+  // isDesktopRuntime && !isWindows 判断）；Windows/网页端没有左侧红绿灯，不需要额外让位。
+  const leftPad = collapsed && desktopHost.isDesktop && !isWindowsPlatform ? 'pl-[78px]' : 'pl-3'
+
+  return (
+    <>
+      <header
+        data-desktop-drag-region
+        data-testid="topbar"
+        className={`flex h-[46px] shrink-0 items-center justify-between pr-3 ${leftPad}`}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          {collapsed && (
+            <IconBtn label={t('sidebar.expand')} onClick={toggleSidebar}>
+              <PanelLeft size={18} />
+            </IconBtn>
+          )}
+          {isChat ? (
+            <button
+              type="button"
+              title="任务操作"
+              aria-label={`任务操作：${title}`}
+              onClick={(event) => {
+                const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+                setMenuAt({ x: rect.left, y: rect.bottom + 4 })
+              }}
+              className="group/history -ml-1 flex h-8 min-w-0 max-w-full items-center gap-1 rounded-lg px-2 text-left text-base font-medium transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-secondary)' }}
+              data-testid="thread-more"
+            >
+              <span className="truncate">{title}</span>
+              <ChevronDown
+                size={12}
+                className="shrink-0 opacity-0 transition-opacity group-hover/history:opacity-60 group-focus-visible/history:opacity-60"
+              />
+            </button>
+          ) : (
+            <span className="px-2 text-base font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+              {title}
+            </span>
+          )}
+        </div>
+
+        {/* 会话专属操作只在会话视图显示；设置/定时任务/终端等页面不挂这一排按钮。
+            “分享”按钮已下架：当前仓库没有 ShareModal 等价实现，不做假按钮。 */}
+        {isChat && (
+          <div className="flex items-center gap-0.5">
+            <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
+              <Search size={18} />
+            </IconBtn>
+            {/* 当前仓库没有独立的“历史”入口，复用同一个全局搜索/近期会话面板（GlobalSearchModal 本身就带
+                “近期会话”列表），和旧版两个按钮共用一个 setPaletteOpen 的写法是同一个思路。 */}
+            <IconBtn label="历史" onClick={() => openModal('globalSearch')}>
+              <Clock size={18} />
+            </IconBtn>
+            <IconBtn
+              label={panelOpen ? t('tabs.hideWorkspace') : t('tabs.showWorkspace')}
+              active={panelOpen}
+              onClick={handleTogglePanel}
+            >
+              <PanelRight size={18} />
+            </IconBtn>
+          </div>
+        )}
+      </header>
+
+      {menuAt && activeTabId && (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-50 min-w-[200px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1.5"
+          style={{ left: menuAt.x, top: menuAt.y, boxShadow: 'var(--shadow-dropdown)' }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuAt(null)
+              void handleCopy(
+                composeConversationText(activeTabId, title, t('search.global.roleUser'), t('search.global.roleAssistant')),
+              )
+            }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{ color: 'var(--color-text-primary)' }}
+          >
+            <Copy size={15} /> 复制整段对话
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuAt(null)
+              void handleCopy(activeTabId)
+            }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{ color: 'var(--color-text-primary)' }}
+          >
+            <Copy size={15} /> 复制会话 ID
+          </button>
+          {sessionWorkDir && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenuAt(null)
+                void handleCopy(sessionWorkDir)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
+              style={{ color: 'var(--color-text-primary)' }}
+            >
+              <Folder size={15} /> 复制工作目录
+            </button>
+          )}
+          {/* “归档此任务”已下架：当前仓库 sessionStore 没有 isArchived/setArchived 等价能力。 */}
+        </div>
+      )}
+    </>
+  )
+}

@@ -84,6 +84,16 @@ vi.mock('./Sidebar', () => ({
   Sidebar: () => <aside>sidebar loaded</aside>,
 }))
 
+// 桌面壳现在渲染旧风格 DesktopSidebar + 单一 TopBar（替代 Sidebar + TabBar）。
+// DesktopSidebar 复用 "sidebar loaded" 信号（桌面/移动互斥渲染，只出现一次），TopBar 用 "topbar loaded"。
+vi.mock('./DesktopSidebar', () => ({
+  DesktopSidebar: () => <aside>sidebar loaded</aside>,
+}))
+
+vi.mock('./TopBar', () => ({
+  TopBar: () => <nav>topbar loaded</nav>,
+}))
+
 vi.mock('./ContentRouter', () => ({
   ContentRouter: () => <section>content loaded</section>,
 }))
@@ -147,7 +157,7 @@ describe('AppShell boot flow', () => {
     expect(screen.getByText('app.launching')).toBeInTheDocument()
 
     expect(await screen.findByText('sidebar loaded')).toBeInTheDocument()
-    expect(screen.getByText('tabs loaded')).toBeInTheDocument()
+    expect(screen.getByText('topbar loaded')).toBeInTheDocument()
     expect(screen.getByText('content loaded')).toBeInTheDocument()
     expect(screen.getByText('updates loaded')).toBeInTheDocument()
   })
@@ -386,7 +396,7 @@ describe('AppShell boot flow', () => {
     render(<AppShell />)
 
     await screen.findByText('content loaded')
-    expect(screen.queryByText('tabs loaded')).not.toBeInTheDocument()
+    expect(screen.queryByText('topbar loaded')).not.toBeInTheDocument()
     await waitFor(() => {
       expect(mocks.setActiveTab).toHaveBeenCalledWith('session-1')
     })
