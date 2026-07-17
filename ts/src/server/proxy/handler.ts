@@ -36,30 +36,6 @@ import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
 
 const providerService = new ProviderService()
 
-/** Any image content block in the Anthropic request? (multimodal input detection) */
-function requestHasImageInput(body: AnthropicRequest): boolean {
-  for (const m of body.messages ?? []) {
-    const c = m.content
-    if (Array.isArray(c)) {
-      for (const block of c) {
-        if (block && (block as { type?: string }).type === 'image') return true
-      }
-    }
-  }
-  return false
-}
-
-/**
- * Which qf-gateway models are real multimodal (image-input) upstreams. Per MiMo's official
- * docs ONLY `mimo-v2.5` understands images — `mimo-v2.5-pro` is a text-only reasoning model,
- * and Qwen/DeepSeek here are text-only too. So image input is allowed ONLY for exactly
- * `mimo-v2.5`; everything else on the gateway path is rejected (never silently stripped or
- * rerouted). Match the exact id (not a loose `mimo` prefix) so `-pro` never slips through.
- */
-function isMultimodalGatewayModel(model: string | undefined): boolean {
-  return typeof model === 'string' && /^mimo-v2\.5$/i.test(model.trim())
-}
-
 type ProxyFetchOptions = ReturnType<typeof getProxyFetchOptions>
 type UpstreamRequestInit = RequestInit & ProxyFetchOptions
 type ProxyTraceContext = {
@@ -244,21 +220,10 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
     model: normalizeModelStringForAPI(body.model),
   }
 
-  // 产品策略:图片输入只允许进入真实多模态的 MiMo 链路。qf-gateway 上选中 Qwen/DeepSeek 却带图片时
-  // 显式拒绝(明确 4xx),绝不静默丢图或改投别家。仅约束网关路径 —— 用户自建 provider(可能是
-  // gpt-4o 等多模态)不受此限,由其自身能力决定。
-  if (isQfGatewayProviderId(config.id) && requestHasImageInput(body) && !isMultimodalGatewayModel(body.model)) {
-    return Response.json(
-      {
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: '当前模型不支持图片输入,请切换到支持图片的模型后重试。',
-        },
-      },
-      { status: 400 },
-    )
-  }
+  // 托管 qf-gateway 上的图片输入一律放行:mimo-v2.5 原生看图,其余模型由服务端网关的视觉桥接
+  // (先用 MiMo 把图读成结构化文本再交给原文本模型)处理。本地绝不 400、绝不静默丢图或改投别家 ——
+  // 是否能看图、怎么看图完全由网关决定。
+  const isManagedGateway = isQfGatewayProviderId(config.id)
 
   const isStream = body.stream === true
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
@@ -268,7 +233,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
 
   try {
     if (config.apiFormat === 'openai_chat') {
-      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, config.clientId)
+      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, isManagedGateway, config.clientId)
     } else {
       return await handleOpenaiResponses(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, promptCacheKey)
     }
@@ -305,9 +270,10 @@ async function handleOpenaiChat(
   isStream: boolean,
   networkSettings: NetworkSettings,
   traceContext: ProxyTraceContext | null,
+  isManagedGateway: boolean,
   clientId?: string,
 ): Promise<Response> {
-  const transformed = anthropicToOpenaiChat(body, resolveOpenaiChatCompatOptions(baseUrl, body.model))
+  const transformed = anthropicToOpenaiChat(body, resolveOpenaiChatCompatOptions(baseUrl, body.model, isManagedGateway))
   const url = `${baseUrl}/v1/chat/completions`
   const upstreamRequestHeaders = {
     'Content-Type': 'application/json',
@@ -480,14 +446,25 @@ function shouldUseTextOnlyOpenAIChatContent(baseUrl: string, model?: string): bo
 }
 
 /**
- * Resolve the openai_chat transform options from BOTH the base URL and the selected
- * model. This is exported so it can be unit-tested: under the qf-gateway the base URL is
- * our own gateway domain (never contains "deepseek"), so DeepSeek compat MUST be driven
- * by the model id. Enabling it turns on unconditional reasoning_content round-trip — the
- * safe DeepSeek multi-turn strategy (a prior tool-call turn REQUIRES the reasoning_content
- * back or DeepSeek 400s; a no-tool-call turn tolerates it) — plus the thinking toggle.
+ * Resolve the openai_chat transform options from the base URL, the selected model, and
+ * whether this request is going through our own managed qf-gateway. This is exported so
+ * it can be unit-tested: under the qf-gateway the base URL is our own gateway domain
+ * (never contains "deepseek"), so DeepSeek reasoning compat MUST be driven by the model
+ * id. Enabling it turns on unconditional reasoning_content round-trip — the safe DeepSeek
+ * multi-turn strategy (a prior tool-call turn REQUIRES the reasoning_content back or
+ * DeepSeek 400s; a no-tool-call turn tolerates it) — plus the thinking toggle.
+ *
+ * `imageContentMode` is decoupled from the DeepSeek reasoning compat: on the managed
+ * gateway, image content is ALWAYS kept as vision (`image_url`) parts and forwarded as-is —
+ * the gateway itself decides how to read it (mimo-v2.5 natively, other models via a
+ * server-side vision bridge). Only a user's own directly-connected DeepSeek-compatible
+ * provider (not the managed gateway) falls back to text_only, since it has no such bridge.
  */
-export function resolveOpenaiChatCompatOptions(baseUrl: string, model: string | undefined): {
+export function resolveOpenaiChatCompatOptions(
+  baseUrl: string,
+  model: string | undefined,
+  isManagedGateway: boolean = false,
+): {
   roundTripReasoningContent: boolean
   passThinkingToggle: boolean
   imageContentMode: 'text_only' | 'vision'
@@ -496,7 +473,9 @@ export function resolveOpenaiChatCompatOptions(baseUrl: string, model: string | 
   return {
     roundTripReasoningContent: deepSeekCompatible,
     passThinkingToggle: deepSeekCompatible,
-    imageContentMode: shouldUseTextOnlyOpenAIChatContent(baseUrl, model) ? 'text_only' : 'vision',
+    imageContentMode: isManagedGateway
+      ? 'vision'
+      : shouldUseTextOnlyOpenAIChatContent(baseUrl, model) ? 'text_only' : 'vision',
   }
 }
 

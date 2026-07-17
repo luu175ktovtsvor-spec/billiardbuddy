@@ -348,7 +348,7 @@ describe('qf-gateway credential boundary', () => {
     expect(env.ANTHROPIC_BASE_URL).toBe(
       `http://127.0.0.1:${TEST_SERVER_PORT}/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
     )
-    expect(env.ANTHROPIC_MODEL).toBe('mimo-v2.5') // BilliardBuddy product default = MiMo v2.5
+    expect(env.ANTHROPIC_MODEL).toBe('deepseek-v4-flash') // BilliardBuddy product default = DeepSeek V4 Flash
     // The real app token must appear nowhere in the subprocess env.
     expect(JSON.stringify(env)).not.toContain(GATEWAY_TOKEN)
   })
@@ -460,10 +460,20 @@ describe('qf-gateway proxy round-trip', () => {
     expect(stripped.PATH).toBe('/x')
   })
 
-  test('rejects an image request for a non-multimodal gateway model (Qwen) with 400 and no upstream call', async () => {
+  test('allows an image request for a non-multimodal gateway model (Qwen) — reaches the gateway as image_url', async () => {
+    // The gateway now owns the vision decision: Qwen is text-only itself, but the server-side
+    // MiMo vision bridge reads the image first, so the local proxy must never 400 or drop it.
     const originalFetch = globalThis.fetch
-    let called = 0
-    globalThis.fetch = mock(async () => { called++; return new Response('{}', { status: 200 }) }) as typeof fetch
+    const calls: Array<{ body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return new Response(
+        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'qwen3-coder-plus',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
     try {
       const req = new Request(
         `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
@@ -480,18 +490,28 @@ describe('qf-gateway proxy round-trip', () => {
         },
       )
       const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(400)
-      expect(JSON.stringify(await res.json())).toContain('图片')
-      expect(called).toBe(0) // explicit reject — never silently reroutes to another provider
+      expect(res.status).toBe(200)
+      expect(calls).toHaveLength(1) // reached the gateway (not rejected)
+      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url') // image preserved, gateway decides how to read it
     } finally {
       globalThis.fetch = originalFetch
     }
   })
 
-  test('rejects an image request for mimo-v2.5-pro (text-only reasoning model) with 400', async () => {
+  test('allows an image request for mimo-v2.5-pro (text-only reasoning model) — reaches the gateway as image_url', async () => {
+    // Same reasoning as the Qwen case above: mimo-v2.5-pro can't read images itself, but the
+    // gateway's vision bridge can, so the local proxy still forwards the image untouched.
     const originalFetch = globalThis.fetch
-    let called = 0
-    globalThis.fetch = mock(async () => { called++; return new Response('{}', { status: 200 }) }) as typeof fetch
+    const calls: Array<{ body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return new Response(
+        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'mimo-v2.5-pro',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof fetch
     try {
       const req = new Request(
         `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
@@ -508,8 +528,9 @@ describe('qf-gateway proxy round-trip', () => {
         },
       )
       const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(400)
-      expect(called).toBe(0)
+      expect(res.status).toBe(200)
+      expect(calls).toHaveLength(1)
+      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url')
     } finally {
       globalThis.fetch = originalFetch
     }

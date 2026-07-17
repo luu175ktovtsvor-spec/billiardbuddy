@@ -1002,6 +1002,21 @@ describe('resolveOpenaiChatCompatOptions — DeepSeek detection by model', () =>
   test('base-URL detection still works (direct api.deepseek.com, any model)', () => {
     expect(resolveOpenaiChatCompatOptions('https://api.deepseek.com', 'whatever').roundTripReasoningContent).toBe(true)
   })
+
+  test('managed qf-gateway forces vision even for DeepSeek, without touching reasoning compat', () => {
+    // Vision bridging is a server-side gateway concern: the local proxy's job is only to let
+    // the image_url content part through so the gateway can hand it to MiMo first. Reasoning
+    // round-trip / thinking toggle stay driven by DeepSeek detection, independent of this.
+    const opts = resolveOpenaiChatCompatOptions(GATEWAY, 'deepseek-v4-flash', /* isManagedGateway */ true)
+    expect(opts.imageContentMode).toBe('vision')
+    expect(opts.roundTripReasoningContent).toBe(true)
+    expect(opts.passThinkingToggle).toBe(true)
+  })
+
+  test('a directly-connected (non-managed) DeepSeek provider still gets text_only — no local vision claim', () => {
+    expect(resolveOpenaiChatCompatOptions('https://api.deepseek.com', 'deepseek-v4-flash', false).imageContentMode).toBe('text_only')
+    expect(resolveOpenaiChatCompatOptions('https://api.deepseek.com', 'deepseek-v4-flash').imageContentMode).toBe('text_only')
+  })
 })
 
 // ─── DeepSeek multi-turn: reasoning_content MUST ride back with tool_calls ───
