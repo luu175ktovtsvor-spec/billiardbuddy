@@ -42,6 +42,11 @@ export interface VisionBridgeCaps {
   visionTimeoutMs: number
   /** 全局在途 MiMo 视觉调用并发上限(跨所有请求共享，保护 MiMo 账号)。 */
   maxConcurrent: number
+  /** 全局视觉排队队列上限(不含正在执行的 maxConcurrent 个)；排满后新等待者立即 429，不再入队。 */
+  queueMax: number
+  /** 单个聊天请求最多同时占用几个全局视觉并发槽(应 ≤ maxConcurrent)；防止一个多图请求独占
+   *  全局槽、饿死同时到达的其它请求。请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。 */
+  perRequestConc: number
   /** 视觉理解文本缓存的最大条目数，超出按写入顺序(FIFO)淘汰。 */
   cacheMax: number
   /** 视觉理解文本缓存的存活时间(毫秒)。 */
@@ -109,11 +114,13 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
     maxTotalBytes: Math.max(1, Math.floor(deps.caps.maxTotalBytes)),
     visionTimeoutMs: Math.max(1, Math.floor(deps.caps.visionTimeoutMs)),
     maxConcurrent: Math.max(1, Math.floor(deps.caps.maxConcurrent)),
+    queueMax: Math.max(1, Math.floor(deps.caps.queueMax)),
+    perRequestConc: Math.max(1, Math.floor(deps.caps.perRequestConc)),
     cacheMax: Math.max(1, Math.floor(deps.caps.cacheMax)),
     cacheTtlMs: Math.max(1, Math.floor(deps.caps.cacheTtlMs)),
   }
   const cache = deps.cache ?? new DefaultVisionCache(caps.cacheMax, caps.cacheTtlMs)
-  const semaphore = new VisionSemaphore(caps.maxConcurrent, VISION_QUEUE_MAX_WAIT_MS)
+  const semaphore = new VisionSemaphore(caps.maxConcurrent, VISION_QUEUE_MAX_WAIT_MS, caps.queueMax)
 
   return {
     async transform(rawBody, opts) {
@@ -159,7 +166,11 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 
       let cacheHits = 0
       const pendingByKey = new Map<string, Promise<string>>()
-      const texts = await Promise.all(images.map(async ({ url }, index) => {
+      // 不再用 Promise.all 把一个请求的所有图同时扔给全局视觉信号量抢槽——8 图请求会瞬间抢占
+      // 8 个全局并发槽，饿死同时到达的其它请求。改用有界并发 map：单个请求最多同时发起
+      // caps.perRequestConc 张图的 MiMo 调用(每张仍受全局 semaphore 约束)，请求内相同图片
+      // 仍按哈希去重(pendingByKey)只调一次，不受此限流放大延迟。
+      const texts = await mapWithConcurrency(images, caps.perRequestConc, async ({ url }, index) => {
         const cacheKey = `${decoded[index]!.hash}:${VISION_PROMPT_VERSION}`
         const cached = cache.get(cacheKey)
         if (cached !== undefined) {
@@ -169,14 +180,14 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
         // 同一请求内的重复图片只发起一次 MiMo 调用(按哈希去重共享同一个 in-flight promise)。
         let pending = pendingByKey.get(cacheKey)
         if (!pending) {
-          pending = semaphore.run(() => callMimoVision(deps, url, opts.signal)).then(text => {
+          pending = semaphore.run(() => callMimoVision(deps, url, opts.signal), opts.signal).then(text => {
             cache.set(cacheKey, text)
             return text
           })
           pendingByKey.set(cacheKey, pending)
         }
         return pending
-      }))
+      })
 
       images.forEach(({ part }, index) => {
         delete part.image_url
@@ -211,6 +222,29 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 }
 
 // ── 内部实现 ──────────────────────────────────────────────────────────
+
+/** 简单有界并发 map：同时最多 limit 个 fn 在执行。用于让单个请求不再用 Promise.all 一次性把
+ *  所有图片都扔给全局视觉信号量抢槽(会让一个多图请求独占全局并发、饿死同时到达的其它请求)。
+ *  结果按原始下标写回，顺序与输入一致；某一项失败时不取消其它 worker，行为与原先的 Promise.all
+ *  语义一致(第一个失败即让整体 reject，其它已发起的调用仍在各自的 worker 里跑完/失败)。 */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  const workerCount = Math.max(1, Math.min(limit, items.length))
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++
+      if (index >= items.length) return
+      results[index] = await fn(items[index]!, index)
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
 
 const DATA_URI_PATTERN = /^data:([^;,]*)(;charset=[^;,]+)?(;base64)?,(.*)$/s
 
@@ -364,16 +398,31 @@ export class DefaultVisionCache implements VisionCache {
   }
 }
 
-/** 小信号量：约束全局在途 MiMo 视觉调用数，防图片请求打爆 MiMo 账号。满了短暂排队(见
- *  VISION_QUEUE_MAX_WAIT_MS)后失败关闭，不引入长排队。 */
+export interface VisionSemaphoreSnapshot {
+  active: number
+  queued: number
+  limit: number
+  queueMax: number
+}
+
+/** 小信号量：约束全局在途 MiMo 视觉调用数，防图片请求打爆 MiMo 账号。
+ *  队列本身也有硬上限(queueMax，默认不限——生产环境由调用方显式传入一个有限值)：排满后
+ *  新来的等待者不入队、不占位，立即 429。已入队的等待者仍按 queueMaxWaitMs 短暂排队后超时
+ *  失败关闭(不引入长排队)，也会响应调用方传入的 AbortSignal：客户端取消时立即出队+拒绝，
+ *  不用等到超时。grant / timeout / abort 三条结算路径通过每个等待者自己的 settled 标志互斥，
+ *  只会有一条真正生效，避免重复 resolve/reject 或 active 计数被重复增减。 */
 export class VisionSemaphore {
   private active = 0
-  private readonly queue: Array<{ grant: () => void; reject: (error: Error) => void }> = []
+  private readonly queue: Array<{ grant: () => void }> = []
 
-  constructor(private readonly limit: number, private readonly queueMaxWaitMs: number) {}
+  constructor(
+    private readonly limit: number,
+    private readonly queueMaxWaitMs: number,
+    private readonly queueMax: number = Infinity,
+  ) {}
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire()
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal)
     try {
       return await fn()
     } finally {
@@ -381,24 +430,57 @@ export class VisionSemaphore {
     }
   }
 
-  private acquire(): Promise<void> {
+  /** 供测试/可观测性用：当前在途数、排队数、并发上限、队列上限。 */
+  snapshot(): VisionSemaphoreSnapshot {
+    return { active: this.active, queued: this.queue.length, limit: this.limit, queueMax: this.queueMax }
+  }
+
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(new VisionBridgeError(499, '请求已取消'))
+    }
     if (this.active < this.limit) {
       this.active += 1
       return Promise.resolve()
     }
+    if (this.queue.length >= this.queueMax) {
+      // 队列已满：不入队、不占位，立即拒绝，不让等待队伍无界增长。
+      return Promise.reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
+    }
     return new Promise<void>((resolve, reject) => {
-      const entry = {
-        grant: () => { this.active += 1; resolve() },
-        reject,
-      }
-      const timer = setTimeout(() => {
+      let settled = false
+      let timer: ReturnType<typeof setTimeout>
+      const entry: { grant: () => void } = { grant: () => {} }
+      const removeFromQueue = () => {
         const index = this.queue.indexOf(entry)
         if (index >= 0) this.queue.splice(index, 1)
+      }
+      const cleanup = () => {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+      }
+      const onAbort = () => {
+        if (settled) return
+        settled = true
+        removeFromQueue()
+        cleanup()
+        reject(new VisionBridgeError(499, '请求已取消'))
+      }
+      entry.grant = () => {
+        if (settled) return
+        settled = true
+        cleanup()
+        this.active += 1
+        resolve()
+      }
+      timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        removeFromQueue()
+        cleanup()
         reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
       }, this.queueMaxWaitMs)
-      // 包一层，成功授予时清掉排队超时计时器。
-      const original = entry.grant
-      entry.grant = () => { clearTimeout(timer); original() }
+      signal?.addEventListener('abort', onAbort, { once: true })
       this.queue.push(entry)
     })
   }

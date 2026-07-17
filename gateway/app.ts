@@ -142,6 +142,8 @@ type GatewayConfig = {
   visionMaxTotalBytes: number
   visionTimeoutMs: number
   visionConc: number
+  visionQueueMax: number
+  visionPerRequestConc: number
   visionCacheMax: number
   visionCacheTtlMs: number
   imgIpm: number
@@ -352,6 +354,63 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/**
+ * 受限流式读取请求体：逐 chunk 从 request.body 读取并累计真实字节数，一旦超过 maxBytes 立即
+ * cancel reader 并 413 失败关闭——不等读完整个超大 body（旧实现 `request.text()` 会先把整个
+ * body 囫囵吞进内存，再检查长度，防不住超大/chunked/伪造 Content-Length 的请求先占满内存）。
+ * 以逐 chunk 累计的真实字节数为准，不信任可能被伪造的 Content-Length 头或依赖 chunked 编码；
+ * 调用方应在此之前先用声明的 Content-Length 做一次读 body 之前的快速预检（常规场景零额外开销），
+ * 这里是无法被伪造绕过的兜底硬上限。
+ * 三条失败路径互斥：读到的真实字节超限 → 413；客户端取消(request.signal abort) → 499；
+ * reader.read() 本身抛错(网络/协议异常) → 400。
+ */
+async function readRequestBodyBounded(request: Request, maxBytes: number): Promise<string> {
+  if (!request.body) return ''
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let aborted = request.signal?.aborted ?? false
+  const onAbort = () => {
+    aborted = true
+    reader.cancel().catch(() => {})
+  }
+  if (!aborted) request.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    while (true) {
+      if (aborted) throw new HttpError(499, '请求已取消')
+      let result: ReadableStreamReadResult<Uint8Array>
+      try {
+        result = await reader.read()
+      } catch {
+        if (aborted) throw new HttpError(499, '请求已取消')
+        throw new HttpError(400, '请求体读取失败')
+      }
+      // cancel() 触发的 abort 可能让挂起的 read() 以 {done:true} 而非抛错的方式结算，
+      // 这里再判一次，不让已取消的请求被当成"正常读完"放行。
+      if (aborted) throw new HttpError(499, '请求已取消')
+      if (result.done) break
+      const value = result.value
+      if (value && value.byteLength > 0) {
+        total += value.byteLength
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {})
+          throw new HttpError(413, '请求体过大')
+        }
+        chunks.push(value)
+      }
+    }
+  } finally {
+    request.signal?.removeEventListener('abort', onAbort)
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder('utf-8').decode(merged)
+}
+
 function intEnv(env: Env, name: string, fallback: number): number {
   const raw = env[name]
   if (raw === undefined || raw.trim() === '') return fallback
@@ -446,6 +505,14 @@ function loadConfig(env: Env): GatewayConfig {
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
     visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
     visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
+    // 视觉排队队列的硬上限(不含正在执行的 GW_VISION_CONC 个)：50~100 装机私测阶段，按
+    // "全局在途并发(12)的约 5 倍"给一个保守值——既防队列无界增长打爆内存，又不至于让正常的
+    // 突发（多个装机同时贴图）过早被 429；真实生产量上来后按压测结果再收紧或放宽。
+    visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 64)),
+    // 单个聊天请求最多同时占用几个全局视觉并发槽：默认 2——一个最多 GW_VISION_MAX_IMAGES(8)张图
+    // 的请求最多同时占 2 个全局槽，给同一时刻到达的其它请求留出至少 (GW_VISION_CONC-2) 个槽位，
+    // 不被单个大请求饿死；请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。
+    visionPerRequestConc: Math.max(1, intEnv(env, 'GW_VISION_PER_REQUEST_CONC', 2)),
     visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
@@ -770,6 +837,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         maxTotalBytes: config.visionMaxTotalBytes,
         visionTimeoutMs: config.visionTimeoutMs,
         maxConcurrent: config.visionConc,
+        queueMax: config.visionQueueMax,
+        perRequestConc: config.visionPerRequestConc,
         cacheMax: config.visionCacheMax,
         cacheTtlMs: config.visionCacheTtlMs,
       },
@@ -851,24 +920,36 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const user = auth(config, request)
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
-        const rawBody = await request.text()
-        // 请求体大小闸,在任何路由/解析/许可之前:防超大 body(典型是图片 base64)打爆内存/上游。
-        // 复用视觉桥接的 maxTotalBytes 上限,对所有聊天请求生效(不止带图请求)。
-        if (Buffer.byteLength(rawBody, 'utf8') > config.visionMaxTotalBytes) {
+        // 请求体大小闸,在任何路由/解析/许可之前:防超大/伪造 Content-Length/chunked body(典型是
+        // 图片 base64)打爆内存/上游。先用声明的 Content-Length 做一次读 body 之前的快速拒绝
+        // (常规场景零额外开销);真正兜底的上限由 readRequestBodyBounded 按流式真实字节数强制,
+        // 不信任可被伪造的头或 chunked 编码。复用视觉桥接的 maxTotalBytes 上限,对所有聊天请求
+        // 生效(不止带图请求)。
+        const declaredLength = Number(request.headers.get('content-length') ?? '')
+        if (Number.isFinite(declaredLength) && declaredLength > config.visionMaxTotalBytes) {
           throw new HttpError(413, '请求体过大')
         }
+        const rawBody = await readRequestBodyBounded(request, config.visionMaxTotalBytes)
         // 路由规则(按 model 显式分流,绝不自动跨供应商回退):
         //   命中 DeepSeek 白名单 → 只能走 DeepSeek;命中 MiMo 白名单 → 只能走 MiMo;
         //   两者未配置对应 key 时各自显式 503,绝不改投千问。未命中任何白名单(未知或千问模型)
         //   → 默认千问,千问把白名单外 model 改写为 GW_QWEN_MODEL(供应商内归一,非跨供应商回退)。
         //   DeepSeek/MiMo 白名单都独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。
         const client = readClientId(request)
-        const requestedModel = parseChatModel(rawBody)
+        // 一次权威路由决策:model 只 trim 一次,native 多模态判定与三家 allowlist 路由共用同一个
+        // trim 后的字符串、同一套精确匹配规则,不再各自判断——修复旧 bug(isNativeMultimodal 曾用
+        // /i + trim,路由 allowlist 精确匹配、不 trim,"MIMO-V2.5"这类大小写不同的输入会被误判为
+        // 原生多模态从而跳过桥接,但 allowlist 又不认,最终落到 Qwen 时带着原始 image_url 发给
+        // 纯文本模型)。
+        const requestedModel = parseChatModel(rawBody).trim()
+        const routesToDeepseek = config.deepseekAllowedModels.has(requestedModel)
+        const routesToMimo = !routesToDeepseek && config.mimoAllowedModels.has(requestedModel)
+        // mimo-v2.5-pro 等其它 MiMo 白名单模型不算原生多模态,仍需先桥接去图。
+        const isNativeMultimodal = routesToMimo && requestedModel === 'mimo-v2.5'
         // 视觉桥接:请求带图且路由到的不是原生多模态(精确的 mimo-v2.5)时,先用 MiMo v2.5 把每张图
-        // 读成结构化文本、替换掉 image_url,再把去图后的请求体交给下面按 model 路由到的文本模型。
-        // 桥接跑在路由/许可之前,调 MiMo 视觉时不占目标文本模型的聊天许可名额。MiMo 失败/超时/429
-        // 一律失败关闭(不丢图给文本模型猜、不改投 Qwen);缺 GW_MIMO_KEY 时同样失败关闭为 503。
-        const isNativeMultimodal = /^mimo-v2\.5$/i.test(requestedModel.trim())
+        // 读成结构化文本、替换掉 image_url,再把去图后的请求体交给下面按 routesToDeepseek/routesToMimo
+        // 路由到的模型。桥接跑在路由/许可之前,调 MiMo 视觉时不占目标文本模型的聊天许可名额。MiMo
+        // 失败/超时/429 一律失败关闭(不丢图给文本模型猜、不改投 Qwen);缺 GW_MIMO_KEY 时同样失败关闭为 503。
         let effectiveBody = rawBody
         if (!isNativeMultimodal && containsImageContent(rawBody)) {
           if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
@@ -892,11 +973,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             throw new HttpError(status, detail)
           }
         }
-        if (config.deepseekAllowedModels.has(requestedModel)) {
+        if (routesToDeepseek) {
           if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
           return await deepseekChat(request, effectiveBody, user, client)
         }
-        if (config.mimoAllowedModels.has(requestedModel)) {
+        if (routesToMimo) {
           if (!mimoChat) throw new HttpError(503, 'MiMo 模型服务未配置（缺 GW_MIMO_KEY）')
           return await mimoChat(request, effectiveBody, user, client)
         }
