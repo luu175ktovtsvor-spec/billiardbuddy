@@ -1,4 +1,0 @@
-interface:
-  display_name: "项目改动总路由"
-  short_description: "先分类改动、定位责任模块，再选择正确的单项工程流程"
-  default_prompt: "使用 $project-change-router 先判断这次改动属于哪个模块和哪类变更。"

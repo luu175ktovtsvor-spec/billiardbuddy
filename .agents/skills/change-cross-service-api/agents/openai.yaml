@@ -1,4 +1,0 @@
-interface:
-  display_name: "跨服务接口变更"
-  short_description: "处理桌面端、网关、中转和数据服务之间的兼容发布与回滚"
-  default_prompt: "使用 $change-cross-service-api 安全修改这项远程服务接口。"

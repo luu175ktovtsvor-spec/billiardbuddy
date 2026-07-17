@@ -18,13 +18,10 @@
 | `gateway/` | 大陆模型网关、鉴权、容量调度、用量记录和供应商密钥隔离 |
 | `relay/` | 美国生图异步任务中转 |
 | `docs/` | 稳定架构、部署和设计边界 |
-| `.agents/skills/` | Codex 工程工作流的权威实现 |
 
 ## 开发命令
 
 ```bash
-bash scripts/quality_gate.sh        # 完整质量门
-bash scripts/quality_gate.sh --quick # 开发中快速检查
 cd ts && bun install
 cd ts && bun test
 cd ts && bun run typecheck
@@ -35,12 +32,9 @@ cd ts && bun run desktop:dist
 
 ## 文档入口
 
-- [CLAUDE.md](./CLAUDE.md)：产品边界、架构原则和开发规则。
-- [AGENTS.md](./AGENTS.md)：AI 开发流程硬规则。
 - [docs/当前架构与状态-总览.md](./docs/当前架构与状态-总览.md)：当前系统结构和数据流。
 - [docs/服务器与部署-当前拓扑.md](./docs/服务器与部署-当前拓扑.md)：服务器、发布和资产托管。
 - [docs/README.md](./docs/README.md)：文档导航。
-- `ts/CLAUDE.md` 与 `ts/AGENTS.md`：`ts/` 目录工程规则。
 
 ## 产品边界
 

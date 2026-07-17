@@ -27,10 +27,6 @@ jobs:
         working-directory: ts/desktop
         run: bun install --frozen-lockfile
 
-      - name: 发布前质量门（离线快速）
-        shell: bash
-        run: bash scripts/quality_gate.sh --quick
-
       - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
         working-directory: ts/desktop
         run: bun run electron:package

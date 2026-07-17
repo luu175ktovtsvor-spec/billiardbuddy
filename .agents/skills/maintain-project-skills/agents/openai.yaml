@@ -1,4 +1,0 @@
-interface:
-  display_name: "维护工程 Skill"
-  short_description: "在模块、契约、发布边界或工程流程变化时同步更新项目技能体系"
-  default_prompt: "使用 $maintain-project-skills 根据最新代码维护模块地图和工程 Skill。"

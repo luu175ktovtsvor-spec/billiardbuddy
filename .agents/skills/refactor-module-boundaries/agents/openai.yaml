@@ -1,4 +1,0 @@
-interface:
-  display_name: "模块边界重构"
-  short_description: "拆分巨型文件、修正依赖方向并用特征测试保持行为不变"
-  default_prompt: "使用 $refactor-module-boundaries 重构这个模块并保持现有行为。"

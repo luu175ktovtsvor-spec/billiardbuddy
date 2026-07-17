@@ -190,9 +190,7 @@ describe('filesystem API', () => {
     expect(srcPaths[0]).toBe('src')
     expect(srcPaths.indexOf('src/hooks')).toBeGreaterThan(-1)
     expect(srcPaths.indexOf('desktop/src')).toBeGreaterThan(-1)
-    expect(srcPaths.indexOf('scripts/quality-gate/baseline/fixtures/cross-module-refactor/src')).toBeGreaterThan(-1)
     expect(srcPaths.indexOf('src/hooks')).toBeLessThan(srcPaths.indexOf('desktop/src'))
-    expect(srcPaths.indexOf('src/hooks')).toBeLessThan(srcPaths.indexOf('scripts/quality-gate/baseline/fixtures/cross-module-refactor/src'))
   })
 
   it.skipIf(RIPGREP_UNAVAILABLE)('falls back to ripgrep search outside git and still respects ignore files', async () => {

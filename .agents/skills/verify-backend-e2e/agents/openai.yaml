@@ -1,4 +1,0 @@
-interface:
-  display_name: "后端端到端验证"
-  short_description: "验证 sidecar 的 Agent 循环、权限、工具、事件流和落盘"
-  default_prompt: "使用 $verify-backend-e2e 验证这项后端改动的真实端到端路径。"
