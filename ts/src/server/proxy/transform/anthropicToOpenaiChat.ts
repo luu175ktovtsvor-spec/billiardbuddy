@@ -172,17 +172,30 @@ function convertUserMessage(
         contentParts.push({ type: 'image_url', image_url: { url } })
       }
     } else if (block.type === 'tool_result') {
-      // tool_result → separate tool message
-      const resultContent = typeof block.content === 'string'
-        ? block.content
+      // tool_result → separate tool message. OpenAI 的 tool 角色只接受字符串内容,工具结果里的图片
+      // (如 Read 读图产生的 image 块)放不进 tool 消息;在 vision 模式(托管网关)下,把这些图片作为
+      // image_url 收进本轮 user 内容(在所有 tool 消息之后单独成一条 user 消息),让服务端网关的视觉
+      // 桥接能检测到并交 MiMo 看图。text_only 模式维持原行为:只保留文本、丢弃图片。
+      const toolResultBlocks = typeof block.content === 'string'
+        ? [{ type: 'text' as const, text: block.content }]
         : Array.isArray(block.content)
-          ? block.content.filter((b): b is Extract<AnthropicContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('\n')
-          : ''
+          ? block.content
+          : []
       output.push({
         role: 'tool',
         tool_call_id: block.tool_use_id,
-        content: resultContent,
+        content: toolResultBlocks
+          .filter((b): b is Extract<AnthropicContentBlock, { type: 'text' }> => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n'),
       })
+      if (imageContentMode === 'vision') {
+        for (const b of toolResultBlocks) {
+          if (b.type === 'image') {
+            contentParts.push({ type: 'image_url', image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } })
+          }
+        }
+      }
     }
   }
 
