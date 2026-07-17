@@ -33,7 +33,7 @@ await mkdir(binariesDir, { recursive: true })
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/billiardbuddy-sidecar.ts'),
   outfileBase: path.join(binariesDir, `billiardbuddy-sidecar-${targetTriple}`),
-  productName: 'Claude Code Sidecar',
+  productName: 'BilliardBuddy Sidecar',
   bunTarget,
 })
 
