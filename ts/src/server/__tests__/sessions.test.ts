@@ -2699,43 +2699,6 @@ describe('Sessions API', () => {
     expect(secondRecent.projects.some((project) => project.realPath === realWorkDir)).toBe(false)
   })
 
-  it('DELETE /api/sessions/:id should remove matching IM adapter session mappings', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const otherSessionId = 'ffffffff-1111-2222-3333-ffffffffffff'
-    await writeSessionFile('-tmp-api-test', sessionId, [makeSnapshotEntry()])
-    await fs.writeFile(
-      path.join(tmpDir, 'adapter-sessions.json'),
-      JSON.stringify({
-        'wechat-chat': {
-          sessionId,
-          workDir: '/tmp/project-a',
-          updatedAt: 1,
-        },
-        'wechat-chat-2': {
-          sessionId,
-          workDir: '/tmp/project-b',
-          updatedAt: 2,
-        },
-        'other-chat': {
-          sessionId: otherSessionId,
-          workDir: '/tmp/project-c',
-          updatedAt: 3,
-        },
-      }, null, 2),
-      'utf-8',
-    )
-
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}`, { method: 'DELETE' })
-    expect(res.status).toBe(200)
-
-    const persisted = JSON.parse(
-      await fs.readFile(path.join(tmpDir, 'adapter-sessions.json'), 'utf-8'),
-    )
-    expect(persisted['wechat-chat']).toBeUndefined()
-    expect(persisted['wechat-chat-2']).toBeUndefined()
-    expect(persisted['other-chat'].sessionId).toBe(otherSessionId)
-  })
-
   it('DELETE /api/sessions/:id should roll back the deleted marker when file deletion fails', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-api-test', sessionId, [makeSnapshotEntry()])
@@ -2759,57 +2722,6 @@ describe('Sessions API', () => {
       sessionService.deleteSession = originalDeleteSession as typeof sessionService.deleteSession
       conversationService.unmarkSessionDeleted(sessionId)
     }
-  })
-
-  it('POST /api/sessions/batch-delete should delete sessions and clean adapter mappings', async () => {
-    const sessionIdA = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const sessionIdB = 'ffffffff-1111-2222-3333-ffffffffffff'
-    const otherSessionId = '99999999-1111-2222-3333-999999999999'
-    await writeSessionFile('-tmp-api-test', sessionIdA, [makeSnapshotEntry()])
-    await writeSessionFile('-tmp-api-test', sessionIdB, [makeSnapshotEntry()])
-    await fs.writeFile(
-      path.join(tmpDir, 'adapter-sessions.json'),
-      JSON.stringify({
-        'wechat-chat-a': {
-          sessionId: sessionIdA,
-          workDir: '/tmp/project-a',
-          updatedAt: 1,
-        },
-        'wechat-chat-b': {
-          sessionId: sessionIdB,
-          workDir: '/tmp/project-b',
-          updatedAt: 2,
-        },
-        'other-chat': {
-          sessionId: otherSessionId,
-          workDir: '/tmp/project-c',
-          updatedAt: 3,
-        },
-      }, null, 2),
-      'utf-8',
-    )
-
-    const res = await fetch(`${baseUrl}/api/sessions/batch-delete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionIds: [sessionIdA, sessionIdB] }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({
-      ok: true,
-      successes: [sessionIdA, sessionIdB],
-      failures: [],
-    })
-
-    expect((await fetch(`${baseUrl}/api/sessions/${sessionIdA}`)).status).toBe(404)
-    expect((await fetch(`${baseUrl}/api/sessions/${sessionIdB}`)).status).toBe(404)
-    const persisted = JSON.parse(
-      await fs.readFile(path.join(tmpDir, 'adapter-sessions.json'), 'utf-8'),
-    )
-    expect(persisted['wechat-chat-a']).toBeUndefined()
-    expect(persisted['wechat-chat-b']).toBeUndefined()
-    expect(persisted['other-chat'].sessionId).toBe(otherSessionId)
   })
 
   it('POST /api/sessions/batch-delete should report partial failures and roll back failed delete markers', async () => {

@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useTaskStore } from '../../stores/taskStore'
 import { useSessionStore } from '../../stores/sessionStore'
-import { useAdapterStore } from '../../stores/adapterStore'
 import { Modal } from '../shared/Modal'
 import { Input } from '../shared/Input'
 import { Button } from '../shared/Button'
@@ -11,7 +10,7 @@ import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron, parseCron, type FrequencyKey } from '../../lib/cronDescribe'
 import type { CronTask } from '../../types/task'
 
-type NotificationChannel = 'desktop' | 'telegram' | 'feishu'
+type NotificationChannel = 'desktop'
 
 type Props = {
   open: boolean
@@ -61,17 +60,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const activeSession = sessions.find((s) => s.id === activeSessionId)
   const defaultWorkDir = activeSession?.workDir || ''
-  const adapterConfig = useAdapterStore((s) => s.config)
-  const fetchAdapterConfig = useAdapterStore((s) => s.fetchConfig)
-
-  useEffect(() => {
-    if (open) fetchAdapterConfig()
-  }, [open])
-
-  const isFeishuConfigured = !!(adapterConfig.feishu?.appId && adapterConfig.feishu?.appSecret
-    && ((adapterConfig.feishu?.pairedUsers?.length ?? 0) > 0 || (adapterConfig.feishu?.allowedUsers?.length ?? 0) > 0))
-  const isTelegramConfigured = !!(adapterConfig.telegram?.botToken
-    && ((adapterConfig.telegram?.pairedUsers?.length ?? 0) > 0 || (adapterConfig.telegram?.allowedUsers?.length ?? 0) > 0))
 
   const isEdit = !!editTask
   const parsed = editTask ? parseCron(editTask.cron) : null
@@ -362,40 +350,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
                     className="w-3.5 h-3.5 rounded border-[var(--color-border)] accent-[var(--color-brand)]"
                   />
                   <span className="text-sm text-[var(--color-text-primary)]">{t('newTask.notifyDesktop')}</span>
-                </label>
-                <label className={`flex items-center gap-2 ${isFeishuConfigured ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
-                  <input
-                    type="checkbox"
-                    checked={notifyChannels.includes('feishu')}
-                    disabled={!isFeishuConfigured}
-                    onChange={(e) => {
-                      setNotifyChannels((prev) =>
-                        e.target.checked ? [...prev, 'feishu'] : prev.filter((c) => c !== 'feishu'),
-                      )
-                    }}
-                    className="w-3.5 h-3.5 rounded border-[var(--color-border)] accent-[var(--color-brand)]"
-                  />
-                  <span className="text-sm text-[var(--color-text-primary)]">{t('settings.adapters.feishu')}</span>
-                  {!isFeishuConfigured && (
-                    <span className="text-[10px] text-[var(--color-warning)]">{t('newTask.notConfigured')}</span>
-                  )}
-                </label>
-                <label className={`flex items-center gap-2 ${isTelegramConfigured ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
-                  <input
-                    type="checkbox"
-                    checked={notifyChannels.includes('telegram')}
-                    disabled={!isTelegramConfigured}
-                    onChange={(e) => {
-                      setNotifyChannels((prev) =>
-                        e.target.checked ? [...prev, 'telegram'] : prev.filter((c) => c !== 'telegram'),
-                      )
-                    }}
-                    className="w-3.5 h-3.5 rounded border-[var(--color-border)] accent-[var(--color-brand)]"
-                  />
-                  <span className="text-sm text-[var(--color-text-primary)]">{t('settings.adapters.telegram')}</span>
-                  {!isTelegramConfigured && (
-                    <span className="text-[10px] text-[var(--color-warning)]">{t('newTask.notConfigured')}</span>
-                  )}
                 </label>
               </div>
               {notifyChannels.length === 0 && (

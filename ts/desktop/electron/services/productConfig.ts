@@ -73,24 +73,6 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
 }
 
 /**
- * Keys that only the SERVER sidecar may hold: the gateway credential/config AND the
- * per-install id. Adapters never call the gateway, so they must not carry either.
- */
-const GATEWAY_ENV_KEYS = ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_URL', 'QF_GATEWAY_MODEL', 'BB_INSTALLATION_ID'] as const
-
-/**
- * Remove the server-only keys from an adapter sidecar env. Adapters talk to the local
- * server over WS and never call the gateway, so they must not carry the token or the
- * install id — this closes the dev/ops env-override path where these are set in the
- * Electron process env and would otherwise be inherited by every adapter sidecar.
- */
-export function stripGatewayEnvForAdapters(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env }
-  for (const key of GATEWAY_ENV_KEYS) delete out[key]
-  return out
-}
-
-/**
  * Overlay resolved gateway config onto a SERVER sidecar env. A value already present
  * (shell/ops override) always wins over the injected default. Returns a new object;
  * pass `undefined` gateway (e.g. for adapter sidecars) to get the base env untouched.

@@ -1,6 +1,5 @@
 import path from 'node:path'
 import {
-  createAdapterPlan,
   createServerPlan,
   formatStartupError,
   killSidecar,
@@ -20,7 +19,7 @@ import {
   type SidecarChild,
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
-import { applyGatewayConfigToEnv, stripGatewayEnvForAdapters, type ProductGatewayConfig } from './productConfig'
+import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
 import { applyInstallationIdToEnv } from './installationId'
 
 type ServerRuntimeOptions = {
@@ -43,7 +42,6 @@ export class ElectronServerRuntime {
   private readonly resolveInstallationId?: () => string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
-  private adapters: SidecarChild[] = []
   private startupError: string | null = null
   private startPromise: Promise<string> | null = null
 
@@ -85,14 +83,7 @@ export class ElectronServerRuntime {
     return await this.startServer()
   }
 
-  async restartAdaptersSidecars(): Promise<void> {
-    this.stopAdaptersSidecars()
-    const serverUrl = await this.getServerUrl()
-    await this.startAdaptersSidecars(serverUrl)
-  }
-
   stopAll(sync = false) {
-    this.stopAdaptersSidecars(sync)
     if (this.server) {
       killSidecar(this.server.child, sync)
       this.server = null
@@ -121,46 +112,11 @@ export class ElectronServerRuntime {
       writeLastServerPort(port)
       this.server = { url, child }
       this.startupError = null
-      await this.startAdaptersSidecars(url)
       return url
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.startupError = formatStartupError(message, logs)
       throw new Error(this.startupError)
-    }
-  }
-
-  private async startAdaptersSidecars(serverUrl: string): Promise<void> {
-    // Adapters never call the gateway; strip the token so the dev/ops env-override
-    // path (QF_GATEWAY_TOKEN in the Electron process env) can't leak into adapters.
-    const env = stripGatewayEnvForAdapters(await this.resolveSidecarBaseEnv())
-    for (const [label, flag] of [
-      ['feishu', '--feishu'],
-      ['telegram', '--telegram'],
-      ['wechat', '--wechat'],
-      ['dingtalk', '--dingtalk'],
-      ['whatsapp', '--whatsapp'],
-    ] as const) {
-      try {
-        const child = spawnSidecar(createAdapterPlan({
-          desktopRoot: this.desktopRoot,
-          appRoot: this.appRoot,
-          h5DistDir: this.h5DistDir,
-          serverUrl,
-          flag,
-          env,
-        }))
-        this.captureLogs(child, `claude-adapters:${label}`)
-        this.adapters.push(child)
-      } catch (error) {
-        console.error(`[desktop] failed to start ${label} adapter sidecar`, error)
-      }
-    }
-  }
-
-  private stopAdaptersSidecars(sync = false) {
-    for (const child of this.adapters.splice(0)) {
-      killSidecar(child, sync)
     }
   }
 

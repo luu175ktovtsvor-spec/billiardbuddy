@@ -250,11 +250,6 @@ export const browserHost: DesktopHost = {
       unsupported('Desktop app restart')
     },
   },
-  adapters: {
-    async restartSidecar() {
-      unsupported('Adapter sidecar restart')
-    },
-  },
   zoom: {
     async set() {
       unsupported('Native app zoom')

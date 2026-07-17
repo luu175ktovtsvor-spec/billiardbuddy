@@ -13,7 +13,6 @@ import { handleConversationsApi } from './api/conversations.js'
 import { handleTeamsApi } from './api/teams.js'
 import { handleFilesystemRoute } from './api/filesystem.js'
 import { handleProvidersApi } from './api/providers.js'
-import { handleAdaptersApi } from './api/adapters.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
@@ -83,9 +82,6 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     case 'haha-openai-oauth':
       return handleHahaOpenAIOAuthApi(req, url, segments)
-
-    case 'adapters':
-      return handleAdaptersApi(req, url, segments)
 
     case 'skills':
       return handleSkillsApi(req, url, segments)

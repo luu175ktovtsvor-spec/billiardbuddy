@@ -55,9 +55,6 @@ vi.mock('../components/settings/ClaudeOfficialLogin', () => ({
   ClaudeOfficialLogin: () => <div />,
 }))
 
-vi.mock('../pages/AdapterSettings', () => ({
-  AdapterSettings: () => <div />,
-}))
 
 vi.mock('../stores/agentStore', () => ({
   useAgentStore: () => ({

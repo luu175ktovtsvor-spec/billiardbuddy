@@ -6,7 +6,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   buildSidecarEnv,
-  createAdapterPlan,
   createServerPlan,
   httpToWebSocketUrl,
   killSidecar,
@@ -93,31 +92,12 @@ describe('Electron sidecar manager', () => {
     expect(plan.env.CLAUDE_H5_DIST_DIR).toBe('/Applications/App.app/Contents/Resources/app.asar.unpacked/dist')
   })
 
-  it('passes portable config and adapter server URL through the sidecar env', () => {
-    const configDir = mkdtempSync(path.join(tmpdir(), 'cc-haha-config-'))
+  it('passes portable config through the sidecar env', () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), 'bb-config-'))
     try {
       const env = buildSidecarEnv({ CLAUDE_CONFIG_DIR: configDir }, '/app/dist')
       expect(env.CLAUDE_CONFIG_DIR).toBe(configDir)
       expect(env.XDG_CACHE_HOME).toBe(path.join(configDir, 'Cache'))
-
-      const adapter = createAdapterPlan({
-        desktopRoot: '/app/desktop',
-        appRoot: '/app',
-        serverUrl: 'http://127.0.0.1:4567',
-        flag: '--telegram',
-        env: { CLAUDE_CONFIG_DIR: configDir },
-      })
-      expect(adapter.env.ADAPTER_SERVER_URL).toBe('ws://127.0.0.1:4567')
-      expect(adapter.args).toEqual(['adapters', '--app-root', '/app', '--telegram'])
-
-      const whatsappAdapter = createAdapterPlan({
-        desktopRoot: '/app/desktop',
-        appRoot: '/app',
-        serverUrl: 'http://127.0.0.1:4567',
-        flag: '--whatsapp',
-        env: { CLAUDE_CONFIG_DIR: configDir },
-      })
-      expect(whatsappAdapter.args).toEqual(['adapters', '--app-root', '/app', '--whatsapp'])
     } finally {
       rmSync(configDir, { recursive: true, force: true })
     }

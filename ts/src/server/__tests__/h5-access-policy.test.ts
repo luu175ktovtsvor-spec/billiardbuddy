@@ -56,16 +56,9 @@ describe('h5AccessPolicy', () => {
     expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: remoteContext })).toBe(false)
   })
 
-  test('keeps adapter API routes tokenless for local integrations', () => {
-    const request = req('http://127.0.0.1:3456/api/adapters')
-    expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('local-trusted')
-    expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(false)
-  })
-
   test('keeps loopback browser origins tokenless for local dev capability routes', () => {
     for (const pathname of [
       '/api/status',
-      '/api/adapters',
       '/proxy/openai/v1/chat/completions',
       '/ws/session-1',
       '/local-file/Users/alice/report.html',
@@ -93,8 +86,8 @@ describe('h5AccessPolicy', () => {
     }
   })
 
-  test('does not trust adapter requests from non-loopback browser origins', () => {
-    const request = req('http://127.0.0.1:3456/api/adapters', {
+  test('does not trust settings requests from non-loopback browser origins', () => {
+    const request = req('http://127.0.0.1:3456/api/settings', {
       headers: { Origin: 'https://phone.example' },
     })
     expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('h5-browser')
