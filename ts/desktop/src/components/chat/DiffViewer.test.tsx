@@ -22,7 +22,7 @@ import { DiffViewer } from './DiffViewer'
 describe('DiffViewer', () => {
   beforeEach(() => {
     diffViewerMock.mockReset()
-    useUIStore.setState({ theme: 'white' })
+    useUIStore.setState({ theme: 'light' })
   })
 
   it('passes the current app theme to the underlying diff renderer', () => {

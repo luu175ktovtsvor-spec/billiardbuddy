@@ -960,10 +960,11 @@ export const jp: Record<TranslationKey, string> = {
 
   // Settings > General
   'settings.general.appearanceTitle': '外観',
-  'settings.general.appearanceDescription': '暖かみのあるクラシックワークスペース、ダークワークスペース、純白ワークスペースを切り替えます。',
-  'settings.general.appearance.light': '暖色クラシック',
+  'settings.general.appearanceDescription': 'ライト、ダーク、システムに従うを切り替えます。',
+  'settings.general.appearance.light': 'ライト',
   'settings.general.appearance.dark': 'ダーク',
   'settings.general.appearance.white': '純白',
+  'settings.general.appearance.system': 'システムに従う',
   'settings.general.languageTitle': '言語',
   'settings.general.languageDescription': 'アプリケーションの表示言語を選択します。',
   'settings.general.responseLangTitle': '応答言語',

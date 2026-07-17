@@ -56,13 +56,18 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
   })
 
-  test('preserves the pure white theme as a valid persisted theme', () => {
+  test('preserves a valid persisted theme and drops the retired pure white theme', () => {
+    // 有效主题(light/dark/system)原样保留。
+    window.localStorage.setItem('billiardbuddy-theme', 'dark')
+    const validReport = runDesktopPersistenceMigrations()
+    expect(validReport.migratedKeys).not.toContain('billiardbuddy-theme')
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('dark')
+
+    // 已退役的 'white' 不再是合法主题 → 迁移清除,由默认（跟随系统）接管。
     window.localStorage.setItem('billiardbuddy-theme', 'white')
-
-    const report = runDesktopPersistenceMigrations()
-
-    expect(report.migratedKeys).not.toContain('billiardbuddy-theme')
-    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('white')
+    const retiredReport = runDesktopPersistenceMigrations()
+    expect(retiredReport.migratedKeys).toContain('billiardbuddy-theme')
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
   })
 
   test('preserves valid app zoom and removes invalid app zoom values', () => {

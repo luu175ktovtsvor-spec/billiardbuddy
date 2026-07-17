@@ -19,7 +19,7 @@ import { useUIStore } from '../../stores/uiStore'
 
 describe('MermaidRenderer', () => {
   beforeEach(() => {
-    useUIStore.setState({ theme: 'white' })
+    useUIStore.setState({ theme: 'light' })
     initializeMock.mockReset()
     renderMock.mockReset()
     renderMock.mockResolvedValue({

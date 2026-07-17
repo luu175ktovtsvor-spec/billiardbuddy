@@ -26,7 +26,19 @@ function getStoredTheme(): ThemeMode {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
     if (isThemeMode(stored)) return stored
   } catch { /* localStorage unavailable */ }
-  return 'white'
+  return 'system'
+}
+
+/** 系统是否处于深色。matchMedia 不可用时按浅色兜底。 */
+function systemPrefersDark(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-color-scheme: dark)').matches
+}
+
+/** 把主题模式解析成实际生效的明暗:system → 跟随系统偏好。 */
+export function resolveEffectiveTheme(theme: ThemeMode): 'light' | 'dark' {
+  if (theme === 'dark') return 'dark'
+  if (theme === 'light') return 'light'
+  return systemPrefersDark() ? 'dark' : 'light'
 }
 
 function isSettingsTab(value: unknown): value is SettingsTab {
@@ -43,12 +55,26 @@ function getStoredSettingsTab(): SettingsTab {
 
 export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
-  document.documentElement.setAttribute('data-theme', theme)
-  document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light'
+  // data-theme 写实际生效的明暗(system 解析后 = light/dark),CSS 只需 [data-theme="light"|"dark"] 两套。
+  const effective = resolveEffectiveTheme(theme)
+  document.documentElement.setAttribute('data-theme', effective)
+  document.documentElement.style.colorScheme = effective
+}
+
+let systemThemeBound = false
+/** 绑定系统主题变化监听:当前是「跟随系统」时,OS 明暗切换即时重刷生效主题。全局只绑一次。 */
+function bindSystemThemeListener() {
+  if (systemThemeBound || typeof window === 'undefined' || !window.matchMedia) return
+  systemThemeBound = true
+  const mq = window.matchMedia('(prefers-color-scheme: dark)')
+  mq.addEventListener('change', () => {
+    if (useUIStore.getState().theme === 'system') applyTheme('system')
+  })
 }
 
 export function initializeTheme() {
   applyTheme(getStoredTheme())
+  bindSystemThemeListener()
 }
 
 export type Toast = {
@@ -121,7 +147,7 @@ export const useUIStore = create<UIStore>((set) => ({
   toggleTheme: () => {
     set((state) => {
       const currentIndex = THEME_MODES.indexOf(state.theme)
-      const next = THEME_MODES[(currentIndex + 1) % THEME_MODES.length] ?? 'white'
+      const next = THEME_MODES[(currentIndex + 1) % THEME_MODES.length] ?? 'system'
       applyTheme(next)
       try { localStorage.setItem(THEME_STORAGE_KEY, next) } catch { /* noop */ }
       return { theme: next }

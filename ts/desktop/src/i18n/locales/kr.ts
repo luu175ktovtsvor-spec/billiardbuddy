@@ -960,10 +960,11 @@ export const kr: Record<TranslationKey, string> = {
 
   // Settings > General
   'settings.general.appearanceTitle': '모양',
-  'settings.general.appearanceDescription': '따뜻한 클래식 작업 공간, 어두운 작업 공간, 순백색 작업 공간 사이를 전환합니다.',
-  'settings.general.appearance.light': '따뜻한 클래식',
-  'settings.general.appearance.dark': '어둡게',
+  'settings.general.appearanceDescription': '라이트, 다크 또는 시스템 설정을 따릅니다.',
+  'settings.general.appearance.light': '라이트',
+  'settings.general.appearance.dark': '다크',
   'settings.general.appearance.white': '순백색',
+  'settings.general.appearance.system': '시스템 설정',
   'settings.general.languageTitle': '언어',
   'settings.general.languageDescription': '애플리케이션의 표시 언어를 선택합니다.',
   'settings.general.responseLangTitle': '응답 언어',

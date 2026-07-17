@@ -958,10 +958,11 @@ export const en = {
 
   // Settings > General
   'settings.general.appearanceTitle': 'Appearance',
-  'settings.general.appearanceDescription': 'Switch between the warm classic workspace, dark workspace, and a pure white workspace.',
-  'settings.general.appearance.light': 'Warm Classic',
+  'settings.general.appearanceDescription': 'Switch between light, dark, or follow your system appearance.',
+  'settings.general.appearance.light': 'Light',
   'settings.general.appearance.dark': 'Dark',
   'settings.general.appearance.white': 'Pure White',
+  'settings.general.appearance.system': 'System',
   'settings.general.languageTitle': 'Language',
   'settings.general.languageDescription': 'Choose the display language for the application.',
   'settings.general.responseLangTitle': 'Response Language',

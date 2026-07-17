@@ -382,29 +382,29 @@ describe('Settings > General tab', () => {
     expect(screen.getByLabelText('Skip WebFetch domain preflight')).toBeInTheDocument()
   })
 
-  it('offers the pure white appearance theme', () => {
+  it('offers the light, dark, and follow-system appearance themes', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    const pureWhite = screen.getByRole('button', { name: 'Pure White' })
-    const warmClassic = screen.getByRole('button', { name: 'Warm Classic' })
+    const light = screen.getByRole('button', { name: 'Light' })
     const dark = screen.getByRole('button', { name: 'Dark' })
+    const system = screen.getByRole('button', { name: 'System' })
 
-    expect((pureWhite.compareDocumentPosition(warmClassic) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect((warmClassic.compareDocumentPosition(dark) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Pure White' }))
+    expect((light.compareDocumentPosition(dark) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect((dark.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'System' }))
 
-    expect(useSettingsStore.getState().setTheme).toHaveBeenCalledWith('white')
+    expect(useSettingsStore.getState().setTheme).toHaveBeenCalledWith('system')
   })
 
-  it('marks the pure white appearance theme as selected', () => {
-    useSettingsStore.setState({ theme: 'white' })
+  it('marks the active appearance theme as selected', () => {
+    useSettingsStore.setState({ theme: 'dark' })
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    expect(screen.getByRole('button', { name: 'Pure White' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'Warm Classic' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('keeps UI zoom below system notifications because it is a secondary setting', () => {

@@ -12,7 +12,7 @@ type SvgMeasurementPrototype = SVGElement & {
 
 describe('MermaidRenderer Mermaid integration', () => {
   beforeEach(() => {
-    useUIStore.setState({ theme: 'white' })
+    useUIStore.setState({ theme: 'light' })
 
     const svgPrototype = SVGElement.prototype as SvgMeasurementPrototype
 

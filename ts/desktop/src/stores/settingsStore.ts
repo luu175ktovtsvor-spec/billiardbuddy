@@ -230,7 +230,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         loadH5AccessSettings(previousH5Access),
         loadTraceCaptureSettings(),
       ])
-      const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'white'
+      // 旧数据可能存的是已下线的 'white'（isThemeMode 现在只认 light/dark/system）→ 回退跟随系统。
+      const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
       useUIStore.getState().setTheme(theme)
       set({
         permissionMode: mode,
