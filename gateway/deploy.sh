@@ -4,9 +4,17 @@
 # gw.env(600)除现有 Qwen/MiMo/Fun-ASR/Relay 变量外,DeepSeek V4 Flash 需要:
 #   GW_DEEPSEEK_KEY   (真 key,只在本机 gw.env) / GW_DEEPSEEK_BASE(默认 https://api.deepseek.com)
 #   GW_DEEPSEEK_MODEL(默认 deepseek-v4-flash) / 可选 GW_DEEPSEEK_MODELS / GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_RPM
+#
+# 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
+#   - 文字容量放开:GW_*_RPM / GW_*_USER_CONC(Qwen/MiMo/DeepSeek 各自)默认已放开为不节流正常文字流量,
+#     仍可在 gw.env 按需收紧,不是硬编码上限。
+#   - 视觉桥接:带图请求经网关 MiMo 视觉桥接读成文本后再交默认模型 DeepSeek;可选 env(默认见 app.ts loadConfig):
+#     GW_VISION_MAX_IMAGES(8) / GW_VISION_MAX_IMAGE_BYTES(8MB) / GW_VISION_MAX_TOTAL_BYTES(24MB,兼作聊天请求体大小闸) /
+#     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(12) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
+#     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts transcription.ts webSearch.ts; do
+for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts webSearch.ts; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -15,6 +23,7 @@ install -m 644 /tmp/qwenChat.ts "$APPDIR/qwenChat.ts"
 install -m 644 /tmp/mimoChat.ts "$APPDIR/mimoChat.ts"  # 显式可路由的 MiMo 上游
 install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由的 DeepSeek V4 Flash 上游
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
+install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
 install -m 644 /tmp/webSearch.ts "$APPDIR/webSearch.ts"
 if [ -f /tmp/gw.env ]; then

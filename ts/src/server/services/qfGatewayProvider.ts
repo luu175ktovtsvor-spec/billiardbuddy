@@ -26,9 +26,12 @@ import type { ProviderService } from './providerService.js'
 export { QF_GATEWAY_PROVIDER_ID }
 export const QF_GATEWAY_PROVIDER_NAME = 'QF Gateway'
 
-// BilliardBuddy 产品默认模型 = MiMo v2.5(唯一真实多模态上游,图片输入只走它)。显式请求
-// qwen3-coder-plus / deepseek-v4-flash 时由网关按 model 固定路由到对应家,不跨供应商回退。
-const QF_GATEWAY_DEFAULT_MODEL = 'mimo-v2.5'
+// BilliardBuddy 产品默认模型 = DeepSeek V4 Flash(Agent 推理 / 工具选择 / 完整工具循环主模型,
+// 扛并发)。MiMo v2.5 仍是唯一真实多模态上游,但图片理解改由服务端网关的视觉桥接按需调用
+// (默认模型带图时,网关先用 MiMo 读图成结构化文本再交 DeepSeek 续工具循环),MiMo 不再作为
+// 产品默认文本模型。显式请求 qwen3-coder-plus / mimo-v2.5 时由网关按 model 固定路由到对应家,
+// 不跨供应商回退。
+const QF_GATEWAY_DEFAULT_MODEL = 'deepseek-v4-flash'
 
 /** The provider-scoped local proxy path the gateway routes through. */
 export const QF_GATEWAY_PROXY_PATH = `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`
@@ -51,7 +54,7 @@ export function getQfGatewayToken(): string {
   return readEnv('QF_GATEWAY_TOKEN')
 }
 
-/** Model the gateway forwards to (Qwen/MiMo/DeepSeek). Defaults to qwen3-coder-plus. */
+/** Model the gateway forwards to (Qwen/MiMo/DeepSeek). Defaults to deepseek-v4-flash. */
 export function getQfGatewayModel(): string {
   return readEnv('QF_GATEWAY_MODEL') || QF_GATEWAY_DEFAULT_MODEL
 }
