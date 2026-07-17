@@ -567,7 +567,7 @@ describe('Settings API', () => {
 
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.command).toBe('claude-haha')
+    expect(body.command).toBe('billiardbuddy')
     expect(body.installed).toBe(true)
     expect(body.availableInNewTerminals).toBe(true)
   })

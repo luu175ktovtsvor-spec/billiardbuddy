@@ -64,7 +64,7 @@ Claude Code Haha 的桌面端把会话、多项目、分支 / Worktree、右侧�
 ```bash
 bun install
 cp .env.example .env
-./bin/claude-haha
+./bin/billiardbuddy
 ```
 
 更多配置见 [环境变量](docs/guide/env-vars.md) 和 [全局使用](docs/guide/global-usage.md)。
@@ -99,7 +99,7 @@ cp .env.example .env
 | [IM 接入](docs/im/) | 通过 Telegram / 飞书 / 微信 / 钉钉远程对话、切换项目和审批权限 |
 | [Computer Use](docs/features/computer-use.md) | 桌面控制功能（截屏、鼠标、键盘）— [架构解析](docs/features/computer-use-architecture.md) |
 | [桌面端](docs/desktop/) | Electron + React 图形化客户端 — [快速上手](docs/desktop/01-quick-start.md) \| [架构设计](docs/desktop/02-architecture.md) \| [安装指南](docs/desktop/04-installation.md) |
-| [全局使用](docs/guide/global-usage.md) | 在任意目录启动 claude-haha |
+| [全局使用](docs/guide/global-usage.md) | 在任意目录启动 billiardbuddy |
 | [常见问题](docs/guide/faq.md) | 常见错误排查 |
 | [兼容修复记录](docs/reference/fixes.md) | 本地运行与兼容性修复内容 |
 | [项目结构](docs/reference/project-structure.md) | 代码目录结构说明 |

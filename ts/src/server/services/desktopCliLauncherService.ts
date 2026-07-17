@@ -15,7 +15,7 @@ import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { getShellConfigPaths } from '../../utils/shellConfig.js'
 import { getUserBinDir } from '../../utils/xdg.js'
 
-const DESKTOP_CLI_NAME = 'claude-haha'
+const DESKTOP_CLI_NAME = 'billiardbuddy'
 const DESKTOP_CLI_WINDOWS_LEGACY_EXE = `${DESKTOP_CLI_NAME}.exe`
 const PATH_BLOCK_START = '# >>> BilliardBuddy PATH >>>'
 const PATH_BLOCK_END = '# <<< BilliardBuddy PATH <<<'
@@ -282,7 +282,7 @@ APP_ROOT=${quotedAppRoot}
 ${configExport}
 
 if [[ ! -x "$SIDECAR" ]]; then
-  echo "claude-haha launcher could not find bundled sidecar: $SIDECAR" >&2
+  echo "billiardbuddy launcher could not find bundled sidecar: $SIDECAR" >&2
   exit 127
 fi
 
@@ -330,7 +330,7 @@ export function buildWindowsLauncherWrapper(sourcePath: string) {
     `set "APP_ROOT=${appRoot}"`,
     configLine.trimEnd(),
     'if not exist "%SIDECAR%" (',
-    '  echo claude-haha launcher could not find bundled sidecar: %SIDECAR% 1>&2',
+    '  echo billiardbuddy launcher could not find bundled sidecar: %SIDECAR% 1>&2',
     '  exit /b 127',
     ')',
     '"%SIDECAR%" cli --app-root "%APP_ROOT%" %*',

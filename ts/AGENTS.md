@@ -25,7 +25,7 @@ These rules are adapted from Karpathy-style coding-agent guidelines. They bias t
 ## Project Structure & Module Organization
 This is a Bun-based Coding Agent product with a CLI, local server, desktop app, IM adapters, docs, and release automation.
 
-- `bin/claude-haha` is the executable entrypoint; `bun run start` and `./bin/claude-haha` run the CLI locally.
+- `bin/billiardbuddy` is the executable entrypoint; `bun run start` and `./bin/billiardbuddy` run the CLI locally.
 - `src/` contains the CLI/runtime surface: `entrypoints/` for startup paths, `screens/` and `components/` for the Ink TUI, `commands/` for slash commands, `services/` for API/MCP/OAuth logic, `tools/` for agent tools, `utils/` for shared runtime helpers, and `server/` for the local API/WebSocket service.
 - `desktop/` contains the desktop product: React UI in `desktop/src/`, API clients in `desktop/src/api/`, shared UI in `desktop/src/components/`, Electron host code in `desktop/electron/`, legacy Tauri resources/sidecar assets in `desktop/src-tauri/`, and desktop build scripts in `desktop/scripts/`.
 - `adapters/` contains IM adapter sidecars for Telegram, Feishu, WeChat, DingTalk, and shared adapter utilities.
@@ -35,7 +35,7 @@ This is a Bun-based Coding Agent product with a CLI, local server, desktop app, 
 ## Build, Test, and Development Commands
 Install root dependencies with `bun install`. Install desktop dependencies in `desktop/` when touching desktop UI/native code, and adapter dependencies in `adapters/` when touching IM adapters.
 
-- `./bin/claude-haha` or `bun run start`: run the CLI locally.
+- `./bin/billiardbuddy` or `bun run start`: run the CLI locally.
 - `SERVER_PORT=3456 bun run src/server/index.ts`: start the local API/WebSocket server used by `desktop/`.
 - `cd desktop && bun run dev`: run the desktop frontend in Vite.
 - `cd desktop && bun run build`: type-check and produce a production web build.
