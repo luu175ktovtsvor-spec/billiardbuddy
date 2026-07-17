@@ -8,13 +8,17 @@ import { TerminalSettings } from '../../pages/TerminalSettings'
 import { TraceList } from '../../pages/TraceList'
 import { TraceSession } from '../../pages/TraceSession'
 import { WorkbenchTab } from '../workbench/WorkbenchTab'
+import { SessionWorkspace } from '../shell/SessionWorkspace'
 import { previewBridge } from '../../lib/previewBridge'
+import { useMobileViewport } from '../../hooks/useMobileViewport'
+import { isDesktopRuntime } from '../../lib/desktopRuntime'
 
 export function ContentRouter() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
   const activeTabType = tabs.find((t) => t.sessionId === activeTabId)?.type
   const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
+  const isMobileShell = useMobileViewport() && !isDesktopRuntime()
 
   useEffect(() => {
     if (activeTabType === 'session' || activeTabType === 'workbench') return
@@ -39,7 +43,13 @@ export function ContentRouter() {
       ? <WorkbenchTab tabId={activeTabId} sessionId={workbenchTab.workbenchSessionId} />
       : <EmptySession />
   } else if (activeTabType !== 'terminal') {
-    page = <ActiveSession />
+    // 会话页：桌面 = Codex 四栏（栏2/3/4 + 底部终端；栏1 由外壳 Sidebar 承担）；
+    // 移动端保留原单窗 ActiveSession（H5 路径不动）。
+    page = isMobileShell
+      ? <ActiveSession />
+      : activeTabId
+        ? <SessionWorkspace sessionId={activeTabId} />
+        : <EmptySession />
   }
 
   return (

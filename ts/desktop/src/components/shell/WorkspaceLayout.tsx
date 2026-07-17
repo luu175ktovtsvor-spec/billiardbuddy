@@ -41,7 +41,8 @@ function writeNum(key: string, value: number): void {
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export interface WorkspaceLayoutProps {
-  rail: ReactNode
+  /** 栏1 导航 rail。省略时该列宽归 0、不渲染（railless）——用于外壳已自带 Sidebar 当栏1 的场景。 */
+  rail?: ReactNode
   conversation: ReactNode
   /** 栏3 工作区（审阅/Diff/预览/Browser）。为 null 时该列不占位（宽度归 0）。 */
   workspace?: ReactNode
@@ -65,11 +66,13 @@ export function WorkspaceLayout({
   const [treeW, setTreeW] = useState(() => clamp(readNum(LS.treeW, TREE_DEFAULT), TREE_MIN, TREE_MAX))
   const startRef = useRef(0)
 
+  const hasRail = rail != null
   const hasWorkspace = workspace != null
   const hasTree = fileTree != null
   const hasTerminal = terminal != null
 
-  const railW = railCollapsed ? 'var(--rail-w-collapsed)' : 'var(--rail-w-expanded)'
+  // 无 rail（外壳自带 Sidebar 当栏1）→ 栏1 列宽归 0、不渲染，栏2/3/4 与终端网格位置不变。
+  const railW = hasRail ? (railCollapsed ? 'var(--rail-w-collapsed)' : 'var(--rail-w-expanded)') : '0px'
   // 栏3 只在有内容时占宽；栏4 同理。会话列(栏2)吃剩余(1fr)。
   const wsCol = hasWorkspace ? `${wsW}px` : '0px'
   const treeCol = hasTree ? `${treeW}px` : '0px'
@@ -97,14 +100,16 @@ export function WorkspaceLayout({
       className="grid h-full min-h-0 w-full overflow-hidden bg-[var(--color-background)] text-[var(--color-text-primary)]"
       style={{ gridTemplateColumns, gridTemplateRows }}
     >
-      {/* 栏1 · 导航 rail（不被底部终端压，跨两行） */}
-      <div
-        data-testid="col-rail"
-        className="relative min-h-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface-sidebar)]"
-        style={{ gridColumn: 1, gridRow: hasTerminal ? '1 / 3' : 1 }}
-      >
-        {rail}
-      </div>
+      {/* 栏1 · 导航 rail（不被底部终端压，跨两行）。railless 时不渲染。 */}
+      {hasRail && (
+        <div
+          data-testid="col-rail"
+          className="relative min-h-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface-sidebar)]"
+          style={{ gridColumn: 1, gridRow: hasTerminal ? '1 / 3' : 1 }}
+        >
+          {rail}
+        </div>
+      )}
 
       {/* 栏2 · 会话 */}
       <div data-testid="col-conversation" className="relative flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ gridColumn: 2, gridRow: 1 }}>
