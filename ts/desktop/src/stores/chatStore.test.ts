@@ -173,7 +173,7 @@ describe('stripGeneratedImageMetadataLines', () => {
     const text = [
       'first line of the prompt',
       'second line',
-      '[Image source: C:\\Users\\Relakkes\\.claude\\uploads\\sid\\a.png]',
+      '[Image source: C:\\Users\\user\\.claude\\uploads\\sid\\a.png]',
       '[Image: source: /Users/me/.claude/uploads/sid/b.png, original 1024x768, displayed at 512x384. Multiply coordinates by 2 to map to original image.]',
       '[Image: original 800x600, displayed at 400x300. Multiply coordinates by 2 to map to original image.]',
     ].join('\n')
@@ -2413,7 +2413,7 @@ describe('chatStore history mapping', () => {
       dedupeKey: 'permission:perm-ask-1',
       cooldownScope: 'permission-prompt',
       requestAttention: true,
-      title: 'Claude Code Haha 需要你的确认',
+      title: 'BilliardBuddy 需要你的确认',
       body: 'AskUserQuestion 请求执行，正在等待允许。',
       target: { type: 'session', sessionId: TEST_SESSION_ID },
     })
@@ -4128,7 +4128,7 @@ describe('chatStore history mapping', () => {
       dedupeKey: 'computer-use-permission:cu-1',
       cooldownScope: 'permission-prompt',
       requestAttention: true,
-      title: 'Claude Code Haha 需要你的确认',
+      title: 'BilliardBuddy 需要你的确认',
       body: 'Open Finder and inspect a file',
       target: { type: 'session', sessionId: TEST_SESSION_ID },
     })
@@ -4349,7 +4349,7 @@ describe('chatStore history mapping', () => {
 
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'user_message_replay',
-      content: `${prompt}\n[Image source: C:\\Users\\Relakkes\\.claude\\uploads\\sid\\82017405-_button_.png]`,
+      content: `${prompt}\n[Image source: C:\\Users\\user\\.claude\\uploads\\sid\\82017405-_button_.png]`,
     })
 
     const userMessages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
@@ -4668,7 +4668,7 @@ describe('chatStore history mapping', () => {
 
     expect(notifyDesktopMock).toHaveBeenCalledWith(expect.objectContaining({
       cooldownScope: 'agent-completion',
-      title: 'Claude Code Haha 已完成回复',
+      title: 'BilliardBuddy 已完成回复',
       body: '结果 修复完成 bun test 已通过',
       target: { type: 'session', sessionId: TEST_SESSION_ID },
     }))

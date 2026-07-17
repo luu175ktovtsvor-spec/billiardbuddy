@@ -4315,16 +4315,6 @@ function PluginSettings() {
 
 // ─── About Settings ──────────────────────────────────────
 
-const GITHUB_REPO = 'https://github.com/NanmiCoder/cc-haha'
-const GITHUB_ISSUES = `${GITHUB_REPO}/issues`
-const GITHUB_RELEASES = `${GITHUB_REPO}/releases`
-const AUTHOR_GITHUB = 'https://github.com/NanmiCoder'
-const SOCIAL_LINKS = [
-  { name: 'Bilibili', icon: '/icons/bilibili.svg', url: 'https://space.bilibili.com/434377496', label: '程序员阿江-Relakkes' },
-  { name: 'Douyin', icon: '/icons/douyin.svg', url: 'https://www.douyin.com/user/MS4wLjABAAAATJPY7LAlaa5X-c8uNdWkvz0jUGgpw4eeXIwu_8BhvqE', label: '程序员阿江-Relakkes' },
-  { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
-] as const
-
 function isValidHttpProxyUrl(value: string) {
   try {
     const url = new URL(value)
@@ -4379,10 +4369,6 @@ function AboutSettings() {
     setUpdateProxyDraft(updateProxy)
     setUpdateProxySaveError(null)
   }, [updateProxy])
-
-  const openUrl = (url: string) => {
-    void getDesktopHost().shell.open(url).catch(() => window.open(url, '_blank'))
-  }
 
   const checkedAtText =
     checkedAt
@@ -4457,34 +4443,13 @@ function AboutSettings() {
   return (
     <div className="w-full min-w-0 max-w-lg mx-auto flex flex-col items-center py-6">
       {/* Logo + App Name + Version */}
-      <img src={publicAssetPath('app-icon.png')} alt="Claude Code Haha" className="w-20 h-20 mb-4" />
-      <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Claude Code Haha</h1>
+      <img src={publicAssetPath('app-icon.png')} alt="BilliardBuddy" className="w-20 h-20 mb-4" />
+      <h1 className="text-xl font-bold text-[var(--color-text-primary)]">BilliardBuddy</h1>
       {version && (
         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
           <span>{t('settings.about.version')} {version}</span>
-          <span className="text-[var(--color-border)]">·</span>
-          <button
-            onClick={() => openUrl(GITHUB_RELEASES)}
-            className="rounded-[var(--radius-sm)] text-[var(--color-text-accent)] transition-colors hover:text-[var(--color-brand)] focus:outline-none focus:shadow-[var(--shadow-focus-ring)]"
-          >
-            {t('settings.about.changelog')}
-          </button>
         </div>
       )}
-
-      {/* GitHub Repo */}
-      <div className="mt-6 w-full">
-        <button
-          onClick={() => openUrl(GITHUB_REPO)}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <img src={publicAssetPath('icons/github.svg')} alt="GitHub" className="w-5 h-5 opacity-70" />
-          <div className="flex-1 text-left">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">NanmiCoder/cc-haha</div>
-            <div className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.starHint')}</div>
-          </div>
-        </button>
-      </div>
 
       <div className="mt-4 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4">
         <div className="flex items-start justify-between gap-3">
@@ -4674,52 +4639,6 @@ function AboutSettings() {
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="w-full border-t border-[var(--color-border)]/40 my-6" />
-
-      {/* Author */}
-      <div className="w-full">
-        <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.author')}</h3>
-        <button
-          onClick={() => openUrl(AUTHOR_GITHUB)}
-          className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <img src={publicAssetPath('icons/github.svg')} alt="GitHub" className="w-4 h-4 opacity-60" />
-          <span className="text-sm text-[var(--color-text-primary)]">程序员阿江-Relakkes</span>
-          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">GitHub</span>
-        </button>
-      </div>
-
-      {/* Social Media */}
-      <div className="w-full mt-4">
-        <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.socialMedia')}</h3>
-        <div className="flex flex-col gap-0.5">
-          {SOCIAL_LINKS.map((link) => (
-            <button
-              key={link.name}
-              onClick={() => openUrl(link.url)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-            >
-              <img src={publicAssetPath(link.icon)} alt={link.name} className="w-4 h-4 opacity-60" />
-              <span className="text-sm text-[var(--color-text-primary)]">{link.label}</span>
-              <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">{link.name}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="mt-6 w-full">
-        <button
-          onClick={() => openUrl(GITHUB_ISSUES)}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[20px] text-[var(--color-text-tertiary)]">feedback</span>
-          <div className="flex-1 text-left">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">{t('settings.about.feedback')}</div>
-            <div className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.feedbackDesc')}</div>
-          </div>
-        </button>
-      </div>
     </div>
   )
 }

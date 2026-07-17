@@ -69,8 +69,8 @@ const DATE_LOCALES: Record<Locale, string> = {
   kr: 'ko-KR',
 }
 const DEFAULT_PROFILE: DesktopProfilePreferences = {
-  displayName: 'cc-haha',
-  subtitle: 'github.com/NanmiCoder/cc-haha',
+  displayName: 'BilliardBuddy',
+  subtitle: '',
   avatarFile: null,
   avatarUpdatedAt: null,
 }
