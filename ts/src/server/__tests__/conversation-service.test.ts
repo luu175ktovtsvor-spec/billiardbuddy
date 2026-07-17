@@ -258,7 +258,7 @@ describe('ConversationService', () => {
 
   test('buildChildEnv pins desktop memory to the current sanitized project directory', async () => {
     const service = new ConversationService() as any
-    const workDir = path.join(tmpDir, 'workspace', 'myself_code', 'claude-code-haha')
+    const workDir = path.join(tmpDir, 'workspace', 'myself_code', 'billiardbuddy')
     await fs.mkdir(workDir, { recursive: true })
 
     const env = (await service.buildChildEnv(workDir)) as Record<string, string>
