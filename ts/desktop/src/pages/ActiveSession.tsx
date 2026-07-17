@@ -418,7 +418,7 @@ export function ActiveSession() {
   if (!activeTabId) return null
 
   return (
-    <div className="flex-1 flex relative overflow-hidden bg-background text-on-surface">
+    <div className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
       <div data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
         <div
           data-testid="active-session-chat-column"
@@ -619,33 +619,6 @@ export function ActiveSession() {
             variant={isEmpty && !isMemberSession && !showRightPanel ? 'hero' : 'default'}
             compact={showRightPanel}
           />
-
-          {terminalPanelRuntimeId && activeTabId ? (
-            <div
-              data-testid="session-terminal-panel"
-              className={[
-                'flex min-h-0 shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
-                showTerminalPanel ? '' : 'hidden',
-              ].join(' ')}
-              style={{ height: showTerminalPanel ? terminalPanelHeight : 0 }}
-            >
-              {showTerminalPanel && <TerminalResizeHandle />}
-              <TerminalSettings
-                active={showTerminalPanel}
-                docked
-                cwd={getSessionTerminalCwd(session)}
-                runtimeId={terminalPanelRuntimeId}
-                preserveOnUnmount
-                testId={`session-terminal-host-${activeTabId}`}
-                onOpenInTab={() => {
-                  useTerminalPanelStore.getState().closePanel(activeTabId)
-                  useTabStore.getState().openTerminalTab(getSessionTerminalCwd(session), terminalPanelRuntimeId)
-                  useTerminalPanelStore.getState().detachRuntime(activeTabId)
-                }}
-                onClose={() => useTerminalPanelStore.getState().closePanel(activeTabId)}
-              />
-            </div>
-          ) : null}
         </div>
 
         {showWorkbench ? (
@@ -662,6 +635,33 @@ export function ActiveSession() {
           </>
         ) : null}
       </div>
+
+      {terminalPanelRuntimeId && activeTabId ? (
+        <div
+          data-testid="session-terminal-panel"
+          className={[
+            'flex min-h-0 shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
+            showTerminalPanel ? '' : 'hidden',
+          ].join(' ')}
+          style={{ height: showTerminalPanel ? terminalPanelHeight : 0 }}
+        >
+          {showTerminalPanel && <TerminalResizeHandle />}
+          <TerminalSettings
+            active={showTerminalPanel}
+            docked
+            cwd={getSessionTerminalCwd(session)}
+            runtimeId={terminalPanelRuntimeId}
+            preserveOnUnmount
+            testId={`session-terminal-host-${activeTabId}`}
+            onOpenInTab={() => {
+              useTerminalPanelStore.getState().closePanel(activeTabId)
+              useTabStore.getState().openTerminalTab(getSessionTerminalCwd(session), terminalPanelRuntimeId)
+              useTerminalPanelStore.getState().detachRuntime(activeTabId)
+            }}
+            onClose={() => useTerminalPanelStore.getState().closePanel(activeTabId)}
+          />
+        </div>
+      ) : null}
 
       {!isMemberSession && activeTabId ? (
         <ComputerUsePermissionModal
