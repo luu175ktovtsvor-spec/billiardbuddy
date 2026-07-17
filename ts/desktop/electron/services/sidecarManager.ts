@@ -48,7 +48,7 @@ export function resolveHostTriple(platform = process.platform, arch = process.ar
 }
 
 export function resolveSidecarExecutable(desktopRoot: string, triple = resolveHostTriple()): string {
-  const base = path.join(desktopRoot, 'src-tauri', 'binaries', `claude-sidecar-${triple}`)
+  const base = path.join(desktopRoot, 'src-tauri', 'binaries', `billiardbuddy-sidecar-${triple}`)
   return process.platform === 'win32' ? `${base}.exe` : base
 }
 

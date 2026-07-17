@@ -179,7 +179,7 @@
 **执行记录（2026-05-31）：**
 
 - 新增 `desktop/electron/services/sidecarManager.ts` 和 `serverRuntime.ts`；Electron main 在 ready 阶段启动 server sidecar，`runtime.getServerUrl()` 通过 IPC 返回动态 loopback URL。
-- `sidecarManager` 复用现有 `desktop/src-tauri/binaries/claude-sidecar-<triple>`，server 参数保持 `server --app-root <path> --host 0.0.0.0 --port <dynamic>`，adapter 参数保持 `adapters --app-root <path> --feishu/--telegram/--wechat/--dingtalk`。
+- `sidecarManager` 复用现有 `desktop/src-tauri/binaries/billiardbuddy-sidecar-<triple>`，server 参数保持 `server --app-root <path> --host 0.0.0.0 --port <dynamic>`，adapter 参数保持 `adapters --app-root <path> --feishu/--telegram/--wechat/--dingtalk`。
 - 环境变量保留 `CLAUDE_CONFIG_DIR`、`XDG_CACHE_HOME`、`CLAUDE_H5_AUTO_PUBLIC_URL`、`CLAUDE_H5_DIST_DIR`；adapter 注入 `ADAPTER_SERVER_URL=ws://<dynamic>`。
 - headless smoke 通过：`bun run build:sidecars` 后用 `ElectronServerRuntime` 启动 server，`GET /health` 返回 200，随后 `stopAll()` 停止 server/adapters 子进程。
 - 2026-06-01 Electron dev 壳已由 Computer Use 多轮复测：renderer 加载 `localhost:1420/`，main process 自动启动 local server/sidecar，首页、设置页和会话页均可通过 server API/WebSocket 工作。
@@ -475,7 +475,7 @@
 - `node-pty` 原生模块验证：`bunx electron ./tmp-electron-node-pty-smoke.cjs` 在 Electron 42.3.0 runtime 下成功输出 `node-pty spawn type: function`。
 - `electron-builder install-app-deps` 在本机 `@electron/rebuild` node-gyp worker 上空转无输出；由于 `node-pty` Electron runtime smoke 已通过，默认配置设为 `npmRebuild=false`，脚本保留 `REBUILD_NATIVE=1` 作为 runner/调试开关。
 - packaged `.app` 首轮 smoke 暴露两个打包差异：Vite 默认绝对 `/assets/...` 在 `file://` 下加载失败，已通过 `vite.config.ts base: './'`、`publicAssetPath()` 和字体 URL 改造修复；`asar=false` 的全量 unpacked resources 会触发 macOS assessment `Too many open files`，已切换为 `asar=true` + `asarUnpack`。
-- `CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir` 通过并产出 `desktop/build-artifacts/electron/mac-arm64/Claude Code Haha.app`；`codesign --verify --deep --strict --verbose=2` 通过；packaged app 启动后 sidecar 从 `app.asar.unpacked/src-tauri/binaries/claude-sidecar-aarch64-apple-darwin` 运行，renderer 从 `app.asar/dist/index.html` 加载。
+- `CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir` 通过并产出 `desktop/build-artifacts/electron/mac-arm64/Claude Code Haha.app`；`codesign --verify --deep --strict --verbose=2` 通过；packaged app 启动后 sidecar 从 `app.asar.unpacked/src-tauri/binaries/billiardbuddy-sidecar-aarch64-apple-darwin` 运行，renderer 从 `app.asar/dist/index.html` 加载。
 - `bun run check:native` 通过：sidecar build 成功，Electron host 56 tests passed，main/preload/preview-preload 构建成功。
 - 2026-06-01 已把 `check:native` 扩展为 `build:sidecars + check:electron + electron:package:dir + test:package-smoke:current`；最新复跑通过：Electron 77 tests passed，Electron `--dir` 产出 `desktop/build-artifacts/electron/mac-arm64/Claude Code Haha.app`，当前平台 macOS package-smoke PASS。
 - `bun run check:desktop` 通过：desktop `tsc --noEmit`、Vitest 全量 146 test files / 1127 tests passed，production build 成功。

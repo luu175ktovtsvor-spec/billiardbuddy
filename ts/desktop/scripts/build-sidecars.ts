@@ -29,10 +29,10 @@ await mkdir(binariesDir, { recursive: true })
 
 // 单一合并 sidecar：server / cli 共享一份 bun runtime + 共享依赖代码。
 // 调用方（Electron sidecar manager / legacy Tauri host / conversationService）
-// 通过第一个 positional 参数选择 'server' 或 'cli' 模式，详见 desktop/sidecars/claude-sidecar.ts。
+// 通过第一个 positional 参数选择 'server' 或 'cli' 模式，详见 desktop/sidecars/billiardbuddy-sidecar.ts。
 await compileExecutable({
-  entrypoint: path.join(desktopRoot, 'sidecars/claude-sidecar.ts'),
-  outfileBase: path.join(binariesDir, `claude-sidecar-${targetTriple}`),
+  entrypoint: path.join(desktopRoot, 'sidecars/billiardbuddy-sidecar.ts'),
+  outfileBase: path.join(binariesDir, `billiardbuddy-sidecar-${targetTriple}`),
   productName: 'Claude Code Sidecar',
   bunTarget,
 })

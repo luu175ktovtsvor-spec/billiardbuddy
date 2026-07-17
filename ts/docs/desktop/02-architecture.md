@@ -99,9 +99,9 @@
 
 1. 应用启动时解析便携模式，必要时设置 `CLAUDE_CONFIG_DIR`。
 2. 创建 `BrowserWindow` 并注入 preload host；dev 模式只允许 localhost renderer，packaged 模式加载 `app.asar/dist/index.html`。
-3. renderer 调用 `runtime.getServerUrl()`，Electron host 启动 `claude-sidecar server --app-root ... --host 0.0.0.0 --port {dynamic}`。
+3. renderer 调用 `runtime.getServerUrl()`，Electron host 启动 `billiardbuddy-sidecar server --app-root ... --host 0.0.0.0 --port {dynamic}`。
 4. server 健康检查通过后，React 继续加载设置、会话和 WebSocket。
-5. 修改 IM adapter 配置后，renderer 调用 `adapters.restartSidecar()`，host 重启 `claude-sidecar adapters` 并注入 `ADAPTER_SERVER_URL`。
+5. 修改 IM adapter 配置后，renderer 调用 `adapters.restartSidecar()`，host 重启 `billiardbuddy-sidecar adapters` 并注入 `ADAPTER_SERVER_URL`。
 
 **退出处理**：窗口默认 close-to-hide；明确退出、更新安装或 app mode restart 前会停止 server/adapters sidecar。
 
@@ -139,7 +139,7 @@ Server 为每个 Session spawn 一个 CLI 子进程，通过 stdin/stdout JSON �
 
 使用 Bun 编译为独立二进制（`desktop/scripts/build-sidecars.ts`）：
 
-三种模式共用一个入口 `desktop/sidecars/claude-sidecar.ts`：
+三种模式共用一个入口 `desktop/sidecars/billiardbuddy-sidecar.ts`：
 - `server` — 启动 HTTP/WS 服务
 - `cli` — 启动 CLI 子进程
 - `adapters` — 启动 IM 适配器（解析 `--feishu`/`--telegram` 参数，检查凭据后按需加载）
@@ -373,7 +373,7 @@ desktop/
 │   ├── ipc/                         #   channel registry + payload validators
 │   └── services/                    #   dialogs, shell, updater, terminal, preview ...
 ├── sidecars/
-│   └── claude-sidecar.ts            #   统一入口 (server/cli/adapters)
+│   └── billiardbuddy-sidecar.ts            #   统一入口 (server/cli/adapters)
 └── scripts/
     ├── build-sidecars.ts
     ├── build-macos-arm64.sh

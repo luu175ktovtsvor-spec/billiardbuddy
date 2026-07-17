@@ -94,7 +94,7 @@ rm -rf "${DESKTOP_DIR}/electron-dist"
 rm -rf "${ELECTRON_OUTPUT_DIR}"
 rm -rf "${CANONICAL_OUTPUT_DIR}"
 rm -f "${DESKTOP_DIR}/tsconfig.tsbuildinfo"
-rm -rf "${DESKTOP_DIR}/src-tauri/binaries/claude-sidecar-"*
+rm -rf "${DESKTOP_DIR}/src-tauri/binaries/billiardbuddy-sidecar-"*
 
 echo "[build-macos-arm64] Building sidecars for ${TARGET_TRIPLE}..."
 (cd "${DESKTOP_DIR}" && SIDECAR_TARGET_TRIPLE="${TARGET_TRIPLE}" bun run build:sidecars)

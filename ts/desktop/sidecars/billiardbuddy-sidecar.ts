@@ -5,8 +5,8 @@
  * 一份（否则每个二进制都要各带一份 ~55MB 的 bun runtime）；调用方通过第一个
  * positional 参数选择模式：
  *
- *   claude-sidecar server --app-root <path> --host 127.0.0.1 --port 12345
- *   claude-sidecar cli    --app-root <path> [其它 CLI 参数...]
+ *   billiardbuddy-sidecar server --app-root <path> --host 127.0.0.1 --port 12345
+ *   billiardbuddy-sidecar cli    --app-root <path> [其它 CLI 参数...]
  *
  * 任何模式都必须先做 process.env / process.argv 设置，再 await 进入相应的
  * 子模块树。原因：src/server/index.ts、src/entrypoints/cli.tsx 顶层都会立即
@@ -19,7 +19,7 @@ import { parseLauncherArgs, resolveSidecarInvocation } from './launcherRouting'
 const rawArgs = process.argv.slice(2)
 const invocation = resolveSidecarInvocation(rawArgs)
 if (!invocation.mode) {
-  console.error('claude-sidecar: missing mode argument (expected "server" or "cli")')
+  console.error('billiardbuddy-sidecar: missing mode argument (expected "server" or "cli")')
   process.exit(2)
 }
 const mode = invocation.mode
@@ -34,12 +34,12 @@ process.argv = [process.argv[0]!, process.argv[1]!, ...args]
 await import('../../preload.ts')
 
 if (mode === 'server') {
-  console.log(`[claude-sidecar] starting server mode (${process.platform}/${process.arch})`)
+  console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
   const { startServer } = await import('../../src/server/index.ts')
   startServer()
 } else if (mode === 'cli') {
   await import('../../src/entrypoints/cli.tsx')
 } else {
-  console.error(`claude-sidecar: unknown mode "${mode}" (expected "server" or "cli")`)
+  console.error(`billiardbuddy-sidecar: unknown mode "${mode}" (expected "server" or "cli")`)
   process.exit(2)
 }

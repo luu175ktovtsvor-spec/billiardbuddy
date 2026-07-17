@@ -45,7 +45,7 @@ desktop/src React renderer
 
 - React/Vite renderer：`desktop/src`。
 - Tauri host：`desktop/src-tauri`。
-- 本地 server/CLI sidecar：`desktop/sidecars/claude-sidecar.ts` 打包成 `desktop/src-tauri/binaries/claude-sidecar-*`，再由 Tauri host 启动。
+- 本地 server/CLI sidecar：`desktop/sidecars/billiardbuddy-sidecar.ts` 打包成 `desktop/src-tauri/binaries/billiardbuddy-sidecar-*`，再由 Tauri host 启动。
 
 迁移后仍应保留这个三层关系，只把中间 host 从 Tauri 改成 Electron：
 
