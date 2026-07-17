@@ -6,11 +6,6 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import {
-  createGatewayWebSearch,
-  GatewayWebSearchError,
-  type GatewayWebSearch,
-} from './webSearch'
 import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
 import {
   fetchQwenWithRetry,
@@ -97,10 +92,6 @@ type GatewayConfig = {
   relayTasksBase: string
   adminToken: string
   db: string
-  arkKey: string
-  arkBase: string
-  amapKey: string
-  amapBase: string
   appTokens: Map<string, string>
   qwenRpm: number
   qwenConc: number
@@ -149,13 +140,9 @@ type GatewayConfig = {
   imgIpm: number
   imgConc: number
   queueMaxWait: number
-  arkChatRpm: number
-  arkImgIpm: number
-  arkImgConc: number
   transcribeRpm: number
   transcribeConc: number
   transcribeMaxBytes: number
-  webSearchRpm: number
 }
 
 type UsageEntry = {
@@ -178,7 +165,6 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
-  webSearchImpl?: GatewayWebSearch | null
   qwenRetrySleep?: (ms: number) => Promise<void>
   qwenRetryRandom?: () => number
   mimoRetrySleep?: (ms: number) => Promise<void>
@@ -449,10 +435,6 @@ function loadConfig(env: Env): GatewayConfig {
     relayTasksBase: (env.GW_RELAY_TASKS_BASE ?? '').replace(/\/+$/, ''),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
-    arkKey: env.GW_ARK_KEY ?? '',
-    arkBase: (env.GW_ARK_BASE ?? 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/+$/, ''),
-    amapKey: env.GW_AMAP_KEY ?? '',
-    amapBase: (env.GW_AMAP_BASE ?? 'https://restapi.amap.com').replace(/\/+$/, ''),
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
     // RPM 默认值抬到不再卡正常文字流量(本地令牌桶曾是"80 并发 p95 17s"的元凶);GW_*_CONC 仍是
     // 保护上游的高水位紧急总闸,真正收紧限速请调小对应 env,不靠这个默认值节流。
@@ -518,13 +500,9 @@ function loadConfig(env: Env): GatewayConfig {
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
-    arkChatRpm: intEnv(env, 'GW_ARK_CHAT_RPM', 30),
-    arkImgIpm: intEnv(env, 'GW_ARK_IMG_IPM', 20),
-    arkImgConc: intEnv(env, 'GW_ARK_IMG_CONC', 6),
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
     transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
-    webSearchRpm: intEnv(env, 'GW_WEBSEARCH_RPM', 30),
   }
 }
 
@@ -846,14 +824,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
-  const arkChatBucket = new TokenBucket(config.arkChatRpm)
-  const arkImgBucket = new TokenBucket(config.arkImgIpm)
-  const arkImgSem = new AsyncSemaphore(config.arkImgConc)
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
-  const webSearchBucket = new TokenBucket(config.webSearchRpm)
-  const webSearch = deps.webSearchImpl === undefined ? createGatewayWebSearch(env, fetchImpl) : deps.webSearchImpl
 
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
@@ -874,19 +847,14 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             deepseek_user_conc: config.deepseekUserConc,
             img_ipm: config.imgIpm,
             img_conc: config.imgConc,
-            ark_chat_rpm: config.arkChatRpm,
-            ark_img_ipm: config.arkImgIpm,
-            ark_img_conc: config.arkImgConc,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
-            web_search_rpm: config.webSearchRpm,
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
           capacity: { qwen: qwenCapacity.snapshot(), mimo: mimoCapacity.snapshot(), deepseek: deepseekCapacity.snapshot() },
           features: {
             transcription: transcribe !== null,
-            web_search: webSearch !== null,
             chat_qwen: qwenChat !== null,
             chat_mimo: mimoChat !== null,
             chat_deepseek: deepseekChat !== null,
@@ -1030,26 +998,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
-      if (request.method === 'POST' && url.pathname === '/v1/web_search') {
-        const user = auth(config, request)
-        if (!webSearch) throw new HttpError(503, '联网搜索服务暂不可用')
-        await webSearchBucket.acquire(config.queueMaxWait)
-        const contentType = request.headers.get('content-type') ?? ''
-        if (!isJsonContentType(contentType)) throw new HttpError(415, '联网搜索需要 JSON 请求')
-        const body = await request.json().catch(() => null)
-        const started = performance.now()
-        try {
-          const result = await webSearch(body, { signal: request.signal })
-          await logUsage(store, { user, model: 'web_search', ok: true, status: 200, ms: elapsedMs(started) })
-          return jsonResponse(result)
-        } catch (error) {
-          const status = error instanceof GatewayWebSearchError ? error.status : 502
-          const detail = error instanceof GatewayWebSearchError ? error.publicMessage : '联网搜索暂时不可用，请稍后重试'
-          await logUsage(store, { user, model: 'web_search', ok: false, status, ms: elapsedMs(started) })
-          throw new HttpError(status, detail)
-        }
-      }
-
       if (request.method === 'POST' && url.pathname === '/v1/images/generations') {
         const user = auth(config, request)
         await imgBucket.acquire(config.queueMaxWait)
@@ -1137,63 +1085,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           },
         })
         return await proxyJsonOrRaw(upstream)
-      }
-
-      if (request.method === 'POST' && url.pathname === '/v1/ark/chat/completions') {
-        const user = auth(config, request)
-        if (!config.arkKey) throw new HttpError(503, '视觉/文案功能未配置(缺 GW_ARK_KEY)')
-        await arkChatBucket.acquire(config.queueMaxWait)
-        const started = performance.now()
-        try {
-          const upstream = await fetchImpl(`${config.arkBase}/chat/completions`, {
-            method: 'POST',
-            body: await request.arrayBuffer(),
-            headers: { Authorization: `Bearer ${config.arkKey}`, 'Content-Type': 'application/json' },
-          })
-          await logUsage(store, { user, model: 'ark_chat', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-          return await proxyJsonOrRaw(upstream)
-        } catch (err) {
-          await logUsage(store, { user, model: 'ark_chat', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-          throw new HttpError(502, `视觉/文案上游出错:${String(err).slice(0, 120)}`)
-        }
-      }
-
-      if (request.method === 'POST' && url.pathname === '/v1/ark/images/generations') {
-        const user = auth(config, request)
-        if (!config.arkKey) throw new HttpError(503, '生图功能未配置(缺 GW_ARK_KEY)')
-        await arkImgBucket.acquire(config.queueMaxWait)
-        return await arkImgSem.run(async () => {
-          const started = performance.now()
-          try {
-            const upstream = await fetchImpl(`${config.arkBase}/images/generations`, {
-              method: 'POST',
-              body: await request.arrayBuffer(),
-              headers: { Authorization: `Bearer ${config.arkKey}`, 'Content-Type': 'application/json' },
-            })
-            await logUsage(store, { user, model: 'ark_img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-            return await proxyJsonOrRaw(upstream)
-          } catch (err) {
-            await logUsage(store, { user, model: 'ark_img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-            throw new HttpError(502, `生图上游出错:${String(err).slice(0, 120)}`)
-          }
-        })
-      }
-
-      const amap = url.pathname.match(/^\/v1\/amap\/(.+)$/)
-      if (request.method === 'GET' && amap) {
-        const user = auth(config, request)
-        if (!config.amapKey) throw new HttpError(503, '地图功能未配置(缺 GW_AMAP_KEY)')
-        const params = new URLSearchParams(url.searchParams)
-        params.set('key', config.amapKey)
-        const started = performance.now()
-        try {
-          const upstream = await fetchImpl(`${config.amapBase}/${amap[1]}?${params.toString()}`)
-          await logUsage(store, { user, model: 'amap', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-          return await proxyJsonOrRaw(upstream)
-        } catch (err) {
-          await logUsage(store, { user, model: 'amap', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-          throw new HttpError(502, `地图上游出错:${String(err).slice(0, 120)}`)
-        }
       }
 
       return jsonError(404, 'not found')

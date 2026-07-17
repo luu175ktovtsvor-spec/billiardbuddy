@@ -56,7 +56,7 @@ function poolUpstream() {
 }
 
 function makeGateway(fetchImpl: (input: RequestInfo | URL) => Promise<Response>, overrides: Record<string, string | undefined> = {}) {
-  return createGatewayFetch({ env: env(overrides), usageStore: new MemoryUsageStore(), transcribeImpl: null, webSearchImpl: null, fetchImpl })
+  return createGatewayFetch({ env: env(overrides), usageStore: new MemoryUsageStore(), transcribeImpl: null, fetchImpl })
 }
 
 function chatReq(model: string, client: string | null, token = 'app-token', signal?: AbortSignal): Request {

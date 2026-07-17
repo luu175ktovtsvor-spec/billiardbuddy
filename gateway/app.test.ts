@@ -1,7 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
 import type { GatewayTranscriber } from './transcription'
-import { createGatewayWebSearch, GatewayWebSearchError } from './webSearch'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -16,20 +15,10 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_RELAY_BASE: 'https://relay.example/relay/openai/v1',
     GW_RELAY_TOKEN: 'relay-secret',
-    GW_ARK_KEY: 'ark-secret',
-    GW_ARK_BASE: 'https://ark.example/api/v3',
-    GW_AMAP_KEY: 'amap-secret',
-    GW_AMAP_BASE: 'https://amap.example',
-    GW_WEBSEARCH_PROVIDER: 'brave',
-    GW_WEBSEARCH_KEY: 'search-secret',
-    GW_WEBSEARCH_BASE: 'https://search.example/res/v1/web/search',
     GW_APP_TOKENS: JSON.stringify({ 'app-token': 'owner-a' }),
     GW_ADMIN_TOKEN: 'admin-secret',
     GW_Q_CHAT: '2',
     GW_Q_IMG: '1',
-    GW_Q_ARK_CHAT: '1',
-    GW_Q_ARK_IMG: '1',
-    GW_Q_AMAP: '1',
     GW_QUEUE_MAX_WAIT: '0.01',
     GW_QWEN_QUEUE_MAX_WAIT: '0.2',
     ...overrides,
@@ -73,19 +62,6 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, transcr
         }
         return new Response('data: hello\n\n', { headers: { 'content-type': 'text/event-stream' } })
       }
-      if (url.startsWith('https://amap.example/')) {
-        return Response.json({ status: '1', key_seen: new URL(url).searchParams.get('key') })
-      }
-      if (url.startsWith('https://search.example/')) {
-        return Response.json({
-          web: {
-            results: [
-              { title: 'Bun Docs', url: 'https://bun.sh/docs/runtime', description: '<b>Fast</b> JavaScript runtime' },
-              { title: 'Blocked', url: 'https://noise.example/post', description: 'noise' },
-            ],
-          },
-        })
-      }
       return Response.json({ ok: true, url })
     },
   })
@@ -110,93 +86,10 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.mimo_user_conc).toBe(16)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
-  expect(body.features.web_search).toBe(true)
-  // 两家上游都配了 dummy 密钥,healthz 各自报告可用性;web_search / transcription 字段保持不变。
   expect(body.features.chat_qwen).toBe(true)
   expect(body.features.chat_mimo).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
   expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
-})
-
-test('web search authenticates, keeps provider key server-side and normalizes filtered results', async () => {
-  const { fetch, calls, usage } = makeGateway()
-  const response = await fetch(new Request('http://local/v1/web_search', authed({
-    method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'Bun runtime', allowed_domains: ['bun.sh'] }),
-  })))
-
-  expect(response.status).toBe(200)
-  expect(await response.json()).toEqual({
-    results: [{ title: 'Bun Docs', url: 'https://bun.sh/docs/runtime', snippet: 'Fast JavaScript runtime' }],
-  })
-  const upstream = calls[0]!
-  expect(upstream.url).toContain('https://search.example/res/v1/web/search?q=Bun+runtime')
-  expect((upstream.init?.headers as Record<string, string>)['X-Subscription-Token']).toBe('search-secret')
-  expect(upstream.body).not.toContain('search-secret')
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'web_search', ok: true, status: 200 }])
-})
-
-test('web search rejects malformed requests and fails closed when provider is unavailable', async () => {
-  const enabled = makeGateway()
-  const malformed = await enabled.fetch(new Request('http://local/v1/web_search', authed({
-    method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: '', allowed_domains: ['https://bad.example/path'] }),
-  })))
-  expect(malformed.status).toBe(400)
-  expect(enabled.calls).toEqual([])
-
-  const disabled = makeGateway({ GW_WEBSEARCH_PROVIDER: '', GW_WEBSEARCH_KEY: '' })
-  const unavailable = await disabled.fetch(new Request('http://local/v1/web_search', authed({
-    method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'test' }),
-  })))
-  expect(unavailable.status).toBe(503)
-  expect(disabled.calls).toEqual([])
-})
-
-test('legacy web search has rate limiting but no separate daily quota', async () => {
-  const { fetch, calls } = makeGateway({ GW_Q_WEBSEARCH: '1' })
-  const request = () => new Request('http://local/v1/web_search', authed({
-    method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'Bun runtime' }),
-  }))
-  expect((await fetch(request())).status).toBe(200)
-  expect((await fetch(request())).status).toBe(200)
-  expect(calls).toHaveLength(2)
-})
-
-test('web search adapter hides upstream failures and fails closed on timeout', async () => {
-  const baseEnv = {
-    GW_WEBSEARCH_PROVIDER: 'brave',
-    GW_WEBSEARCH_KEY: 'server-only-secret',
-    GW_WEBSEARCH_BASE: 'https://search.example/res/v1/web/search',
-  }
-  const rateLimited = createGatewayWebSearch(baseEnv, async () => new Response('provider detail', { status: 429 }))!
-  try {
-    await rateLimited({ query: 'test' })
-    throw new Error('expected rate limit')
-  } catch (error) {
-    expect(error).toBeInstanceOf(GatewayWebSearchError)
-    expect(error).toMatchObject({ status: 429, publicMessage: '联网搜索暂时不可用，请稍后重试' })
-    expect(String(error)).not.toContain('provider detail')
-    expect(String(error)).not.toContain('server-only-secret')
-  }
-
-  const timedOut = createGatewayWebSearch({ ...baseEnv, GW_WEBSEARCH_TIMEOUT_MS: '100' }, async (_input, init) => {
-    return await new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-    })
-  })!
-  try {
-    await timedOut({ query: 'test' })
-    throw new Error('expected timeout')
-  } catch (error) {
-    expect(error).toMatchObject({ status: 504, publicMessage: '联网搜索超时，请稍后重试' })
-  }
 })
 
 test('audio transcription authenticates, validates uploads and records successful usage', async () => {
@@ -339,7 +232,7 @@ test('chat completions routes an allowlisted MiMo model to the MiMo upstream wit
   expect(calls[0]?.url).toBe('https://mimo.example/v1/chat/completions')
   expect(calls.every(c => !c.url.includes('qwen.example'))).toBe(true)
   expect((calls[0]?.init?.headers as Record<string, string>).Authorization).toBe('Bearer mimo-secret')
-  // tools/tool_choice 原样透传,网关不注入隐藏搜索通道(联网搜索走独立 /v1/web_search)。
+  // tools/tool_choice 原样透传,网关既不注入隐藏搜索通道也不改写客户端工具。
   const upstreamBody = JSON.parse(calls[0]!.body!)
   expect(upstreamBody.model).toBe('mimo-v2.5')
   expect(upstreamBody.tool_choice).toBe('auto')
@@ -360,7 +253,6 @@ test('a MiMo upstream 5xx failure never falls back to the Qwen upstream', async 
     env: env({ GW_MIMO_MAX_RETRIES: '0' }),
     usageStore: usage,
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async input => {
       const url = String(input)
       calls.push(url)
@@ -391,7 +283,6 @@ test('MiMo does not retry a 429 even when retries are configured — it surfaces
     env: env({ GW_MIMO_MAX_RETRIES: '1' }),
     usageStore: usage,
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async (_input, init) => {
       bodies.push(String(init?.body))
       return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
@@ -417,7 +308,6 @@ test('MiMo retries a transient 5xx at most once then succeeds, logging the attem
     env: env({ GW_MIMO_MAX_RETRIES: '2' }), // clamps to 1 → exactly one extra attempt
     usageStore: usage,
     transcribeImpl: null,
-    webSearchImpl: null,
     mimoRetrySleep: async ms => { sleeps.push(ms) },
     mimoRetryRandom: () => 0,
     fetchImpl: async (_input, init) => {
@@ -445,7 +335,6 @@ test('MiMo distinguishes upstream account exhaustion from concurrency limits and
     env: env({ GW_MIMO_MAX_RETRIES: '0' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async () => Response.json({
       error: { code: 'insufficient_quota', message: 'provider balance and account details' },
     }, { status: 429 }),
@@ -514,7 +403,6 @@ test('non-stream JSON responses are proxied through unchanged', async () => {
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async () => Response.json({
       id: 'chatcmpl-1', model: 'qwen3-coder-plus',
       choices: [{ index: 0, message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }],
@@ -540,7 +428,6 @@ test('SSE tool_call deltas are streamed through byte-for-byte (tool call increme
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async () => new Response(chunk, { headers: { 'content-type': 'text/event-stream' } }),
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
@@ -568,7 +455,7 @@ test('function tools and tool_choice pass through to Qwen unchanged — no hidde
   })))
   await response.text()
   const upstreamBody = JSON.parse(calls[0]!.body!)
-  // 客户端传什么工具就原样透传,网关既不追加也不改写(联网搜索走独立 /v1/web_search)。
+  // 客户端传什么工具就原样透传,网关既不追加也不改写。
   expect(upstreamBody.tool_choice).toBe('auto')
   expect(upstreamBody.tools).toEqual([
     { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
@@ -702,7 +589,6 @@ test('Qwen retries a transient 5xx at most once and records the attempt count wi
     env: env({ GW_Q_CHAT: '10', GW_QWEN_MAX_RETRIES: '2' }), // clamps to 1
     usageStore: usage,
     transcribeImpl: null,
-    webSearchImpl: null,
     qwenRetrySleep: async ms => { sleeps.push(ms) },
     qwenRetryRandom: () => 0,
     fetchImpl: async (_input, init) => {
@@ -731,7 +617,6 @@ test('Qwen does not retry a 429 even with a retry budget — surfaces it in one 
     env: env({ GW_QWEN_MAX_RETRIES: '1' }),
     usageStore: usage,
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async (_input, init) => {
       calls.push(String(init?.body))
       return new Response('provider detail', { status: 429, headers: { 'retry-after': '0' } })
@@ -752,7 +637,6 @@ test('Qwen distinguishes upstream account exhaustion from temporary concurrency 
     env: env({ GW_QWEN_MAX_RETRIES: '0' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async () => Response.json({
       error: { code: 'insufficient_quota', message: 'provider balance and account details' },
     }, { status: 429 }),
@@ -782,7 +666,6 @@ test('Qwen concurrency permit is held until the proxied stream completes', async
     }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async () => {
       upstreamCalls += 1
       if (upstreamCalls === 1) {
@@ -821,7 +704,6 @@ test('client cancellation aborts the upstream request and fails closed (no hung 
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    webSearchImpl: null,
     fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
       const abort = () => {
         const err = new Error('aborted')
@@ -878,44 +760,14 @@ test('image edits preserves multipart content-type boundary', async () => {
   expect((calls[0]?.init?.headers as Record<string, string>)['Content-Type']).toBe('multipart/form-data; boundary=abc123')
 })
 
-test('ark chat and seedream image routes use ark key and log usage separately', async () => {
-  const { fetch, calls, usage } = makeGateway()
-  const chat = await fetch(new Request('http://local/v1/ark/chat/completions', authed({
-    method: 'POST',
-    body: '{}',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-  })))
-  const image = await fetch(new Request('http://local/v1/ark/images/generations', authed({
-    method: 'POST',
-    body: '{}',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-  })))
-  expect(chat.status).toBe(200)
-  expect(image.status).toBe(200)
-  expect(calls.map(c => c.url)).toEqual([
-    'https://ark.example/api/v3/chat/completions',
-    'https://ark.example/api/v3/images/generations',
-  ])
-  expect(usage.rows.map(row => row.model)).toEqual(['ark_chat', 'ark_img'])
-})
-
-test('amap route injects key into query and records usage', async () => {
-  const { fetch, calls, usage } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/amap/v3/weather/weatherInfo?city=310000', authed()))
-  expect(res.status).toBe(200)
-  expect(await res.json()).toMatchObject({ key_seen: 'amap-secret' })
-  expect(calls[0]?.url).toBe('https://amap.example/v3/weather/weatherInfo?city=310000&key=amap-secret')
-  expect(usage.rows).toMatchObject([{ model: 'amap', ok: true }])
-})
-
-test('missing optional Ark and AMap keys return 503 without upstream fetch', async () => {
-  const { fetch, calls } = makeGateway({ GW_ARK_KEY: '', GW_AMAP_KEY: '' })
+test('missing optional key routes are gone (ark/amap/web_search removed)', async () => {
+  const { fetch, calls } = makeGateway()
   const arkChat = await fetch(new Request('http://local/v1/ark/chat/completions', authed({ method: 'POST', body: '{}' })))
-  const arkImage = await fetch(new Request('http://local/v1/ark/images/generations', authed({ method: 'POST', body: '{}' })))
   const amap = await fetch(new Request('http://local/v1/amap/v3/weather/weatherInfo?city=310000', authed()))
-  expect(arkChat.status).toBe(503)
-  expect(arkImage.status).toBe(503)
-  expect(amap.status).toBe(503)
+  const webSearch = await fetch(new Request('http://local/v1/web_search', authed({ method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } })))
+  expect(arkChat.status).toBe(404)
+  expect(amap.status).toBe(404)
+  expect(webSearch.status).toBe(404)
   expect(calls).toEqual([])
 })
 

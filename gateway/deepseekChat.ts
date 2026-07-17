@@ -54,7 +54,7 @@ export type DeepSeekChatContext = { userId?: string }
  * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
  * - 注入受信 opaque `user_id`(DeepSeek 官方字段名,非 OpenAI 的 `user`;覆盖客户端自带的任何值,
  *   防止伪造),供 DeepSeek 调度/KVCache/内容安全隔离。id 形如 bb_<hex>,匹配官方正则 [a-zA-Z0-9-_]+。
- * - 不做任何原生 web_search 注入 —— Agent 联网搜索走独立、受管的 `/v1/web_search` 工具。
+ * - 不做任何原生 web_search 注入 —— Agent 联网搜索走自身 WebSearchTool(用户自有 key)。
  * 其余字段(messages / tools / tool_choice / stream / thinking / reasoning_effort …)原样透传,
  * 保持 OpenAI Chat Completions 请求契约与 DeepSeek 思考模式开关。
  */
