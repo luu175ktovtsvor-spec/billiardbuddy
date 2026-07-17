@@ -178,7 +178,6 @@ const projectPathPrefixes = [
   '.agents/',
   '.claude/',
   '.github/',
-  'dataeye/',
   'docs/',
   'gateway/',
   'relay/',
@@ -214,7 +213,7 @@ for (const [label, text] of deadScanTargets) {
 
 // Every concrete project path the module map names must resolve on disk
 // (globs, placeholders and bare identifiers are skipped). Keeps the map honest with the tree.
-const mapPathPrefixes = ['ts/', 'gateway/', 'relay/', 'dataeye/', 'scripts/', '.github/', '.agents/', '.claude/', 'docs/']
+const mapPathPrefixes = ['ts/', 'gateway/', 'relay/', 'scripts/', '.github/', '.agents/', '.claude/', 'docs/']
 for (const match of moduleMap.matchAll(/`([^`\n]+)`/g)) {
   const reference = match[1]!.replace(/\/$/, '')
   if (!mapPathPrefixes.some(prefix => reference.startsWith(prefix))) continue

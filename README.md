@@ -17,7 +17,6 @@
 | `ts/` | Bun/TypeScript Agent 内核、共享契约、本地服务、React 前端和 Electron 桌面壳 |
 | `gateway/` | 大陆模型网关、鉴权、容量调度、用量记录和供应商密钥隔离 |
 | `relay/` | 美国生图异步任务中转 |
-| `dataeye/` | 诊断数据接收端和运营看板 |
 | `docs/` | 稳定架构、部署和设计边界 |
 | `.agents/skills/` | Codex 工程工作流的权威实现 |
 
