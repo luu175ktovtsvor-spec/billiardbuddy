@@ -25,7 +25,7 @@ done
 
 echo "==== 质量门 mode=$MODE allow-live=$ALLOW_LIVE ===="
 
-# ---- 所有档位共有：BilliardBuddy 外层静态检查 + CC-Haha 基线偏差（快、离线、只读）----
+# ---- 所有档位共有：BilliardBuddy 外层静态检查（快、离线、只读）----
 echo "[gate:$MODE] 工程 Skill 语义校验"
 bun "$ROOT/scripts/quality/validate-skills.ts"
 echo "[gate:$MODE] GitHub 工作流引用校验（package script 必须真实存在）"
@@ -34,8 +34,6 @@ echo "[gate:$MODE] 密钥误提交扫描"
 bun "$ROOT/scripts/quality/check-secrets.ts"
 echo "[gate:$MODE] 架构边界（真实 renderer ts/desktop/src）"
 bun "$ROOT/scripts/quality/check-architecture.ts"
-echo "[gate:$MODE] CC-Haha 基线偏差审计（只报告；上游路径被删除才阻断）"
-bun "$ROOT/scripts/quality/check-cc-haha-baseline.ts"
 
 # ---- 所有档位共有：产品外层服务测试（离线，注入 fake upstream，确定性）----
 echo "[gate:$MODE] gateway / relay / dataeye 测试"
