@@ -414,6 +414,15 @@
   --color-surface-sidebar: var(--color-surface-container-low);
   --color-surface-hover: var(--color-surface-container-high);
   --color-surface-selected: var(--color-surface-container);
+  /* 旧 renderer-react 外壳/气泡/阴影 token（迁移事实源 workbuddy-tokens.css，值随当前调色板 + 品牌蓝）。
+     main/sidebar/bubble-user 引用主题变量 → 用 var() 晚绑定自动跟随明暗，只需在浅色块定义一次；
+     shadow 明暗各给字面值（深色覆盖见 [data-theme="dark"] 块）。 */
+  --color-app-main: var(--color-background);
+  --color-app-sidebar: var(--color-surface-sidebar);
+  --color-bubble-user: var(--color-surface-container-high);
+  --shadow-input: 0 0 0 .5px var(--color-border), 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #00000012;
+  --shadow-popover: 0 8px 16px -4px #0000001f, 0 0 0 .5px #0000001a;
   --color-memory-accent: #3B7068;
   --color-memory-surface: #F6FAF8;
   --color-memory-border: #BCCDC8;
@@ -790,6 +799,11 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
+
+  /* 旧 renderer-react 阴影 token 深色覆盖(main/sidebar/bubble-user 走 var() 晚绑定,无需重定义) */
+  --shadow-input: 0 0 0 .5px var(--color-border), 0 3px 7.5px #0003, 0 0 20px #0003;
+  --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
+  --shadow-popover: 0 8px 20px -6px rgba(0, 0, 0, 0.6), 0 0 0 .5px rgba(255, 255, 255, 0.08);
 
   /* Codex 四栏 diff 底色/符号 — dark 覆盖(布局令牌走 :root 继承) */
   --diff-added-bg: rgba(64, 201, 119, 0.23);

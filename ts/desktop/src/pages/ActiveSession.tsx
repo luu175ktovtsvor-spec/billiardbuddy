@@ -515,17 +515,8 @@ export function ActiveSession() {
                   }
                 >
                   <div className={showRightPanel ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[860px] min-w-0'}>
-                    <div className="flex min-w-0 items-center gap-3">
-                      <h1
-                        className={
-                          showRightPanel
-                            ? 'min-w-0 flex-1 truncate text-[15px] font-bold font-headline leading-tight text-on-surface'
-                            : 'min-w-0 flex-1 text-lg font-bold font-headline text-on-surface leading-tight'
-                        }
-                      >
-                        {session?.title || t('session.untitled')}
-                      </h1>
-                    </div>
+                    {/* 会话标题已由外壳单一 TopBar 承担，此处不再重复渲染标题（去重复标题）。
+                        下方仅保留运行状态/用量/更新时间/目标等 meta。 */}
                     <div
                       className={
                         showRightPanel
