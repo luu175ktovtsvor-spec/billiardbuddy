@@ -622,21 +622,103 @@ function redactSensitiveValue(value: unknown, key = ''): unknown {
   if (SENSITIVE_KEY_RE.test(key)) return '[redacted]'
   if (Array.isArray(value)) return value.map((entry) => redactSensitiveValue(entry))
   if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([entryKey, entryValue]) => [
-        entryKey,
-        redactSensitiveValue(entryValue, entryKey),
-      ]),
+    const record = value as Record<string, unknown>
+    // Image blocks carry recoverable raw bytes (base64) that must never reach
+    // disk, regardless of trace preview size limits. Checked before generic
+    // recursion so the base64 payload itself is replaced, not merely the key
+    // it happens to sit under.
+    return (
+      tryRedactAnthropicImageBlock(record)
+      ?? tryRedactOpenAiImageUrlBlock(record)
+      ?? Object.fromEntries(
+        Object.entries(record).map(([entryKey, entryValue]) => [
+          entryKey,
+          redactSensitiveValue(entryValue, entryKey),
+        ]),
+      )
     )
   }
   if (typeof value === 'string') return redactSecretsInText(value)
   return value
 }
 
+const IMAGE_BASE64_PLACEHOLDER = '[redacted:image-base64]'
+// Matches a `data:<media>;base64,<payload>` URI wherever it appears as a
+// plain string (SSE text, unparsed bodies, stray fields) so image bytes
+// can't leak through a path the structured block redaction doesn't reach.
+const DATA_URI_IMAGE_RE = /data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)/g
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Redacts an Anthropic `{ type: 'image', source: { type: 'base64', media_type, data } }` block. */
+function tryRedactAnthropicImageBlock(record: Record<string, unknown>): Record<string, unknown> | null {
+  if (record.type !== 'image') return null
+  const source = record.source
+  if (!isPlainRecord(source) || source.type !== 'base64' || typeof source.data !== 'string') return null
+
+  const stats = safeBase64Stats(source.data)
+  const redactedSource: Record<string, unknown> = {
+    ...redactEntriesExcept(source, 'data'),
+    data: IMAGE_BASE64_PLACEHOLDER,
+    redacted: 'image-base64',
+    bytes: stats.bytes,
+    sha256: stats.sha256,
+  }
+  return { ...redactEntriesExcept(record, 'source'), source: redactedSource }
+}
+
+/** Redacts an OpenAI `{ type: 'image_url', image_url: { url: 'data:<media>;base64,<payload>' } }` block. */
+function tryRedactOpenAiImageUrlBlock(record: Record<string, unknown>): Record<string, unknown> | null {
+  if (record.type !== 'image_url') return null
+  const imageUrl = record.image_url
+  if (!isPlainRecord(imageUrl) || typeof imageUrl.url !== 'string') return null
+  const parsed = parseImageDataUri(imageUrl.url)
+  if (!parsed) return null
+
+  const stats = safeBase64Stats(parsed.payload)
+  const redactedImageUrl: Record<string, unknown> = {
+    ...redactEntriesExcept(imageUrl, 'url'),
+    url: `data:${parsed.mediaType};base64,${IMAGE_BASE64_PLACEHOLDER}`,
+    media_type: parsed.mediaType,
+    redacted: 'image-base64',
+    bytes: stats.bytes,
+    sha256: stats.sha256,
+  }
+  return { ...redactEntriesExcept(record, 'image_url'), image_url: redactedImageUrl }
+}
+
+/** Recursively redacts every entry of `record` except `skipKey`, whose raw value is kept for the caller to replace. */
+function redactEntriesExcept(record: Record<string, unknown>, skipKey: string): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record)
+      .filter(([entryKey]) => entryKey !== skipKey)
+      .map(([entryKey, entryValue]) => [entryKey, redactSensitiveValue(entryValue, entryKey)]),
+  )
+}
+
+function parseImageDataUri(url: string): { mediaType: string; payload: string } | null {
+  const match = /^data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(url)
+  if (!match) return null
+  return { mediaType: match[1], payload: match[2] }
+}
+
+/** Decodes base64 payload for size/hash diagnostics only (never keeps the bytes). `Buffer.from(..,
+ *  'base64')` never throws (it silently drops invalid chars), so no try/catch is needed. */
+function safeBase64Stats(payload: string): { bytes: number; sha256: string } {
+  const buffer = Buffer.from(payload, 'base64')
+  return { bytes: buffer.length, sha256: createHash('sha256').update(buffer).digest('hex') }
+}
+
 function redactSecretsInText(value: string): string {
   return value
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\bsk-[A-Za-z0-9._-]{8,}\b/g, 'sk-[redacted]')
+    .replace(DATA_URI_IMAGE_RE, (_match, mediaType: string, payload: string) => {
+      const stats = safeBase64Stats(payload)
+      return `data:${mediaType};base64,[base64 redacted media=${mediaType} bytes=${stats.bytes}]`
+    })
 }
 
 function sanitizeHeaders(headers: Headers | Record<string, string> | null | undefined): Record<string, string> {
