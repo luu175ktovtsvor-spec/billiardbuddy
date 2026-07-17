@@ -157,9 +157,6 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       prepareRestart: () => invoke(ELECTRON_IPC_CHANNELS.appModePrepareRestart),
       restart: () => invoke(ELECTRON_IPC_CHANNELS.appModeRestart),
     },
-    adapters: {
-      restartSidecar: () => invoke(ELECTRON_IPC_CHANNELS.adaptersRestartSidecar),
-    },
     zoom: {
       set: level => invoke(ELECTRON_IPC_CHANNELS.zoomSet, level),
     },

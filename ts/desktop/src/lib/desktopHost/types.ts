@@ -226,9 +226,6 @@ export type DesktopHost = {
     prepareRestart(): Promise<void>
     restart(): Promise<void>
   }
-  adapters: {
-    restartSidecar(): Promise<void>
-  }
   zoom: {
     set(level: number): Promise<void>
   }

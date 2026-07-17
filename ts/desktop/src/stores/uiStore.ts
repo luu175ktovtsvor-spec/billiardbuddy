@@ -9,7 +9,6 @@ const SETTINGS_TABS = [
   'activity',
   'general',
   'h5Access',
-  'adapters',
   'terminal',
   'mcp',
   'agents',
@@ -64,7 +63,6 @@ export type SettingsTab =
   | 'activity'
   | 'general'
   | 'h5Access'
-  | 'adapters'
   | 'terminal'
   | 'mcp'
   | 'agents'

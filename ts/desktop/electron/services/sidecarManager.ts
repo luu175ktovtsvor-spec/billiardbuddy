@@ -342,31 +342,6 @@ export function createServerPlan({
   }
 }
 
-export function createAdapterPlan({
-  desktopRoot,
-  appRoot,
-  serverUrl,
-  flag,
-  h5DistDir = path.join(desktopRoot, 'dist'),
-  env = process.env,
-}: {
-  desktopRoot: string
-  appRoot: string
-  serverUrl: string
-  flag: '--feishu' | '--telegram' | '--wechat' | '--dingtalk' | '--whatsapp'
-  h5DistDir?: string
-  env?: NodeJS.ProcessEnv
-}): SidecarPlan {
-  return {
-    command: resolveSidecarExecutable(desktopRoot),
-    args: ['adapters', '--app-root', appRoot, flag],
-    env: {
-      ...buildSidecarEnv(env, h5DistDir),
-      ADAPTER_SERVER_URL: httpToWebSocketUrl(serverUrl),
-    },
-  }
-}
-
 export function spawnSidecar(plan: SidecarPlan, deps: SpawnSidecarDeps = {}): SidecarChild {
   const exists = deps.existsSyncFn ?? existsSync
   if (!exists(plan.command)) {

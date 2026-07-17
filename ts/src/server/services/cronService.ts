@@ -13,7 +13,7 @@ import { ApiError } from '../middleware/errorHandler.js'
 
 export type TaskNotificationConfig = {
   enabled: boolean
-  channels: ('desktop' | 'telegram' | 'feishu')[]
+  channels: ('desktop')[]
 }
 
 export type CronTask = {

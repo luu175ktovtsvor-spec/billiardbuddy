@@ -13,7 +13,6 @@ import path from 'node:path'
  *
  * Boundary: it must NEVER reach the renderer, the CLI subprocess, providers.json, or logs.
  *  - CLI subprocess: stripped at every spawn chokepoint (HOST_ONLY_GATEWAY_ENV_KEYS).
- *  - adapters: stripped by stripGatewayEnvForAdapters.
  *  - renderer / providers.json: never written there (it is a request-time header from env).
  * It is used ONLY for scheduling and usage attribution — it grants no permission and cannot
  * bypass the gateway's global caps.
@@ -54,8 +53,8 @@ export function ensureInstallationId(configDir: string, generate: () => string =
 
 /**
  * Overlay the installationId onto a SERVER sidecar env as BB_INSTALLATION_ID. A value already
- * present (dev/ops override) always wins. Returns a new object; pass an empty id (e.g. for the
- * adapter path) to leave the env untouched.
+ * present (dev/ops override) always wins. Returns a new object; pass an empty id to leave the
+ * env untouched.
  */
 export function applyInstallationIdToEnv(baseEnv: NodeJS.ProcessEnv, id: string | undefined): NodeJS.ProcessEnv {
   if (!id || baseEnv.BB_INSTALLATION_ID) return baseEnv

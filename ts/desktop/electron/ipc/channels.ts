@@ -44,7 +44,6 @@ export const ELECTRON_IPC_CHANNELS = {
   appModeDetectPortableDir: 'desktop:app-mode:detect-portable-dir',
   appModePrepareRestart: 'desktop:app-mode:prepare-restart',
   appModeRestart: 'desktop:app-mode:restart',
-  adaptersRestartSidecar: 'desktop:adapters:restart-sidecar',
   zoomSet: 'desktop:zoom:set',
 } as const
 
