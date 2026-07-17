@@ -268,7 +268,7 @@ export const jp: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': 'ターミナル',
-  'settings.terminal.description': 'プラグイン、スキル、MCP のセットアップ用にホストマシンのコマンドを実行します。デスクトップアプリには claude-haha が含まれています。ドキュメントの claude <args> を claude-haha <args> に置き換えてください。例: claude-haha plugin install ... や claude-haha mcp add ...',
+  'settings.terminal.description': 'プラグイン、スキル、MCP のセットアップ用にホストマシンのコマンドを実行します。デスクトップアプリには billiardbuddy が含まれています。ドキュメントの claude <args> を billiardbuddy <args> に置き換えてください。例: billiardbuddy plugin install ... や billiardbuddy mcp add ...',
   'settings.terminal.infoLabel': 'ターミナルセットアップのヘルプ',
   'settings.terminal.clear': 'クリア',
   'settings.terminal.restart': '再起動',

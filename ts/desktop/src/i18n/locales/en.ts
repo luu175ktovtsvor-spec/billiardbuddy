@@ -266,7 +266,7 @@ export const en = {
 
   // Settings > Terminal
   'settings.terminal.title': 'Terminal',
-  'settings.terminal.description': 'Run host-machine commands for plugin, skill, and MCP setup. The desktop app includes claude-haha; replace documented claude <args> with claude-haha <args>, for example: claude-haha plugin install ... or claude-haha mcp add ...',
+  'settings.terminal.description': 'Run host-machine commands for plugin, skill, and MCP setup. The desktop app includes billiardbuddy; replace documented claude <args> with billiardbuddy <args>, for example: billiardbuddy plugin install ... or billiardbuddy mcp add ...',
   'settings.terminal.infoLabel': 'Terminal setup help',
   'settings.terminal.clear': 'Clear',
   'settings.terminal.restart': 'Restart',

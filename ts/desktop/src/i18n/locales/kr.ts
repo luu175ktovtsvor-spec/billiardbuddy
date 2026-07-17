@@ -268,7 +268,7 @@ export const kr: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': '터미널',
-  'settings.terminal.description': '플러그인, 스킬, MCP 설정을 위해 호스트 컴퓨터의 명령을 실행합니다. 데스크톱 앱에는 claude-haha가 포함되어 있습니다. 문서의 claude <args>를 claude-haha <args>로 바꾸세요. 예: claude-haha plugin install ... 또는 claude-haha mcp add ...',
+  'settings.terminal.description': '플러그인, 스킬, MCP 설정을 위해 호스트 컴퓨터의 명령을 실행합니다. 데스크톱 앱에는 billiardbuddy가 포함되어 있습니다. 문서의 claude <args>를 billiardbuddy <args>로 바꾸세요. 예: billiardbuddy plugin install ... 또는 billiardbuddy mcp add ...',
   'settings.terminal.infoLabel': '터미널 설정 도움말',
   'settings.terminal.clear': '지우기',
   'settings.terminal.restart': '다시 시작',

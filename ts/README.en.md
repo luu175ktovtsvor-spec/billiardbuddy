@@ -64,7 +64,7 @@ For users who want to debug the underlying CLI, server, or local development flo
 ```bash
 bun install
 cp .env.example .env
-./bin/claude-haha
+./bin/billiardbuddy
 ```
 
 See [environment variables](docs/en/guide/env-vars.md) and [global usage](docs/en/guide/global-usage.md) for more configuration options.
@@ -99,7 +99,7 @@ See [environment variables](docs/en/guide/env-vars.md) and [global usage](docs/e
 | [IM Integration](docs/im/) | Remote chat, project switching, and permission approval via Telegram / Feishu / WeChat / DingTalk |
 | [Computer Use](docs/en/features/computer-use.md) | Desktop control (screenshots, mouse, keyboard) — [Architecture](docs/en/features/computer-use-architecture.md) |
 | [Desktop App](docs/desktop/) | Electron + React GUI client — [Quick Start](docs/desktop/01-quick-start.md) \| [Architecture](docs/desktop/02-architecture.md) \| [Installation](docs/desktop/04-installation.md) |
-| [Global Usage](docs/en/guide/global-usage.md) | Run claude-haha from any directory |
+| [Global Usage](docs/en/guide/global-usage.md) | Run billiardbuddy from any directory |
 | [FAQ](docs/en/guide/faq.md) | Common error troubleshooting |
 | [Compatibility Fixes](docs/en/reference/fixes.md) | Local runtime and compatibility fixes |
 | [Project Structure](docs/en/reference/project-structure.md) | Code directory structure |

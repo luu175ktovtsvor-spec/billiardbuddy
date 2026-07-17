@@ -1,7 +1,7 @@
 # 全局使用（任意目录启动）
 
 
-如果你希望在任意项目目录直接运行 `claude-haha`，可以通过以下方式配置。配置完成后，`claude-haha` 会自动识别你当前所在的工作目录。
+如果你希望在任意项目目录直接运行 `billiardbuddy`，可以通过以下方式配置。配置完成后，`billiardbuddy` 会自动识别你当前所在的工作目录。
 
 ## macOS / Linux
 
@@ -12,7 +12,7 @@
 export PATH="$HOME/path/to/claude-code-haha/bin:$PATH"
 
 # 方式二：alias
-alias claude-haha="$HOME/path/to/claude-code-haha/bin/claude-haha"
+alias billiardbuddy="$HOME/path/to/claude-code-haha/bin/billiardbuddy"
 ```
 
 然后重新加载配置：
@@ -31,7 +31,7 @@ export PATH="$HOME/path/to/claude-code-haha/bin:$PATH"
 
 ### Windows + WSL 工具链
 
-如果 `claude-haha` 运行在 Windows / Git Bash，但 Node、Python、uv、bun 等工具主要安装在 WSL 里，可以显式通过 WSL 调用：
+如果 `billiardbuddy` 运行在 Windows / Git Bash，但 Node、Python、uv、bun 等工具主要安装在 WSL 里，可以显式通过 WSL 调用：
 
 ```bash
 wsl -e bash -lc 'node --version && python3 --version'
@@ -53,6 +53,6 @@ Computer Use 仍然控制 Windows 桌面应用，WSL 内的 CLI 工具不需要�
 
 ```bash
 cd ~/your-other-project
-claude-haha
+billiardbuddy
 # 启动后询问「当前目录是什么？」，应显示 ~/your-other-project
 ```

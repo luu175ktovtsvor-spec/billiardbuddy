@@ -3,7 +3,7 @@ import path from 'node:path'
 export type SidecarMode = 'server' | 'cli'
 
 const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'cli'])
-const DESKTOP_CLI_NAMES = new Set(['claude-haha', 'claude-haha.exe'])
+const DESKTOP_CLI_NAMES = new Set(['billiardbuddy', 'billiardbuddy.exe'])
 
 export function resolveSidecarInvocation(
   rawArgs: string[],
