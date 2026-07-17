@@ -18,13 +18,6 @@ vi.mock('../../pages/ActiveSession', () => ({
   ActiveSession: () => <div data-testid="active-session" />,
 }))
 
-// 桌面会话页现在渲染 Codex 四栏 SessionWorkspace（移动端才回落 ActiveSession）。
-vi.mock('../shell/SessionWorkspace', () => ({
-  SessionWorkspace: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="session-workspace">session:{sessionId}</div>
-  ),
-}))
-
 vi.mock('../../pages/ScheduledTasks', () => ({
   ScheduledTasks: () => <div data-testid="scheduled-tasks" />,
 }))
@@ -109,7 +102,7 @@ describe('ContentRouter tab surfaces', () => {
     render(<ContentRouter />)
 
     expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-active', 'false')
-    expect(screen.getByTestId('session-workspace')).toHaveTextContent('session:session-1')
+    expect(screen.getByTestId('active-session')).toBeInTheDocument()
   })
 
   it('can open another terminal tab from a terminal page', () => {
@@ -189,7 +182,7 @@ describe('ContentRouter tab surfaces', () => {
     })
 
     render(<ContentRouter />)
-    expect(screen.getByTestId('session-workspace')).toBeInTheDocument()
+    expect(screen.getByTestId('active-session')).toBeInTheDocument()
     previewBridgeMock.close.mockClear()
 
     act(() => {

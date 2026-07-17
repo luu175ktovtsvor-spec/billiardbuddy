@@ -8,17 +8,13 @@ import { TerminalSettings } from '../../pages/TerminalSettings'
 import { TraceList } from '../../pages/TraceList'
 import { TraceSession } from '../../pages/TraceSession'
 import { WorkbenchTab } from '../workbench/WorkbenchTab'
-import { SessionWorkspace } from '../shell/SessionWorkspace'
 import { previewBridge } from '../../lib/previewBridge'
-import { useMobileViewport } from '../../hooks/useMobileViewport'
-import { isDesktopRuntime } from '../../lib/desktopRuntime'
 
 export function ContentRouter() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
   const activeTabType = tabs.find((t) => t.sessionId === activeTabId)?.type
   const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
-  const isMobileShell = useMobileViewport() && !isDesktopRuntime()
 
   useEffect(() => {
     if (activeTabType === 'session' || activeTabType === 'workbench') return
@@ -43,13 +39,10 @@ export function ContentRouter() {
       ? <WorkbenchTab tabId={activeTabId} sessionId={workbenchTab.workbenchSessionId} />
       : <EmptySession />
   } else if (activeTabType !== 'terminal') {
-    // 会话页：桌面 = Codex 四栏（栏2/3/4 + 底部终端；栏1 由外壳 Sidebar 承担）；
-    // 移动端保留原单窗 ActiveSession（H5 路径不动）。
-    page = isMobileShell
-      ? <ActiveSession />
-      : activeTabId
-        ? <SessionWorkspace sessionId={activeTabId} />
-        : <EmptySession />
+    // 会话页 = 宽聊天主区（Sidebar + ActiveSession）。审阅/Diff/文件预览/Browser/终端
+    // 由 ActiveSession 内部按需挂载（workspacePanelStore / terminalPanelStore），
+    // 不常驻挤压聊天。移动端 ActiveSession 自身按 isMobileLayout 收敛。
+    page = <ActiveSession />
   }
 
   return (
