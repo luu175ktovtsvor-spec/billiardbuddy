@@ -158,6 +158,119 @@ describe('trace capture service', () => {
     expect(trace.calls[0].usage).toEqual({ inputTokens: 12, outputTokens: 34 })
   })
 
+  test('redacts raw base64 out of anthropic image blocks while keeping size metadata', () => {
+    const base64Payload = Buffer.from('identifiable-anthropic-image-fixture').toString('base64')
+    const snapshot = createTraceBodySnapshot({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: base64Payload },
+    })
+
+    expect(snapshot.preview).not.toContain(base64Payload)
+    const parsed = JSON.parse(snapshot.preview) as {
+      type: string
+      source: { media_type: string; data: string; bytes: number; sha256: string; redacted: string }
+    }
+    expect(parsed.source.media_type).toBe('image/png')
+    expect(parsed.source.bytes).toBe(Buffer.from(base64Payload, 'base64').length)
+    expect(parsed.source.redacted).toBe('image-base64')
+    expect(parsed.source.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(parsed.source.data).not.toContain(base64Payload)
+  })
+
+  test('redacts nested image blocks inside tool_result content while preserving sibling text', () => {
+    const base64Payload = Buffer.from('identifiable-tool-result-image-fixture').toString('base64')
+    const snapshot = createTraceBodySnapshot({
+      type: 'tool_result',
+      tool_use_id: 'toolu_read_1',
+      content: [
+        { type: 'text', text: 'screenshot.png (image/png)' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Payload } },
+      ],
+    })
+
+    expect(snapshot.preview).toContain('screenshot.png (image/png)')
+    expect(snapshot.preview).not.toContain(base64Payload)
+    const parsed = JSON.parse(snapshot.preview) as {
+      content: Array<{ type: string; text?: string; source?: { media_type: string; data: string } }>
+    }
+    expect(parsed.content[0].text).toBe('screenshot.png (image/png)')
+    expect(parsed.content[1].source?.media_type).toBe('image/png')
+    expect(parsed.content[1].source?.data).not.toContain(base64Payload)
+  })
+
+  test('redacts base64 payloads out of openai image_url data URIs while keeping media type', () => {
+    const base64Payload = Buffer.from('identifiable-openai-image-fixture').toString('base64')
+    const snapshot = createTraceBodySnapshot({
+      type: 'image_url',
+      image_url: { url: `data:image/jpeg;base64,${base64Payload}` },
+    })
+
+    expect(snapshot.preview).not.toContain(base64Payload)
+    const parsed = JSON.parse(snapshot.preview) as {
+      image_url: { url: string; media_type: string; bytes: number; redacted: string }
+    }
+    expect(parsed.image_url.media_type).toBe('image/jpeg')
+    expect(parsed.image_url.redacted).toBe('image-base64')
+    expect(parsed.image_url.url).not.toContain(base64Payload)
+  })
+
+  test('redacts small image payloads that sit far below the preview truncation threshold', () => {
+    const base64Payload = Buffer.from('tiny').toString('base64')
+    const snapshot = createTraceBodySnapshot({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: base64Payload },
+    })
+
+    expect(snapshot.truncated).toBe(false)
+    expect(snapshot.preview).not.toContain(base64Payload)
+    expect(snapshot.preview).toContain('"redacted": "image-base64"')
+  })
+
+  test('redacts image data URIs embedded in plain-text (non-JSON) trace bodies', () => {
+    const base64Payload = Buffer.from('identifiable-plain-text-image-fixture').toString('base64')
+    const rawText = `event: content_block_delta\ndata: inline image data:image/png;base64,${base64Payload} end`
+    const snapshot = createTraceBodySnapshot(rawText)
+
+    expect(snapshot.contentType).toBe('text')
+    expect(snapshot.preview).not.toContain(base64Payload)
+    expect(snapshot.preview).toContain('base64 redacted media=image/png')
+  })
+
+  test('leaves plain text, tool_call, and reasoning fields unchanged by image redaction', () => {
+    const snapshot = createTraceBodySnapshot({
+      messages: [
+        { role: 'user', content: 'hello there, no images here' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'plain answer text' },
+            { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
+            { type: 'thinking', thinking: 'reasoning about the answer' },
+          ],
+        },
+      ],
+    })
+
+    expect(snapshot.preview).toContain('hello there, no images here')
+    expect(snapshot.preview).toContain('plain answer text')
+    expect(snapshot.preview).toContain('"command": "ls"')
+    expect(snapshot.preview).toContain('reasoning about the answer')
+    expect(snapshot.preview).not.toContain('redacted')
+  })
+
+  test('still redacts bearer tokens alongside image blocks in the same body (no regression)', () => {
+    const base64Payload = Buffer.from('identifiable-bearer-combo-fixture').toString('base64')
+    const snapshot = createTraceBodySnapshot({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: base64Payload },
+      note: 'Authorization: Bearer sk-super-secret-token-value',
+    })
+
+    expect(snapshot.preview).not.toContain(base64Payload)
+    expect(snapshot.preview).not.toContain('sk-super-secret-token-value')
+    expect(snapshot.preview).toContain('Bearer [redacted]')
+  })
+
   test('captures streamed response bodies up to 1MB before truncating', async () => {
     const chunk = 'a'.repeat(64 * 1024)
     const makeResponse = (chunkCount: number) => new Response(
