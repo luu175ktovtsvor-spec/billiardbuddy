@@ -10,6 +10,12 @@ import * as path from 'path'
 import * as os from 'os'
 import { ProviderService } from '../services/providerService.js'
 
+// The connectivity assertion below performs a real upstream request. It is gated behind
+// an explicit env flag so the default check:server lane stays offline and deterministic
+// (the rest of this suite is pure ProviderService config logic). Enable it only in the
+// live provider-smoke lane: RUN_LIVE_PROVIDER_CONNECTIVITY=1.
+const RUN_LIVE_PROVIDER_CONNECTIVITY = process.env.RUN_LIVE_PROVIDER_CONNECTIVITY === '1'
+
 const MODEL_MAPPING = {
   main: 'MiniMax-M3',
   haiku: 'MiniMax-M3',
@@ -202,7 +208,7 @@ describe('Real Provider Configs', () => {
     console.log('✅ activateOfficial 正确清除了 provider env')
   })
 
-  test('连通性测试 — 返回结构正确', async () => {
+  test.skipIf(!RUN_LIVE_PROVIDER_CONNECTIVITY)('连通性测试 — 返回结构正确（live，需显式开启）', async () => {
     const result = await service.testProviderConfig({
       baseUrl: 'https://api.minimaxi.com/anthropic',
       apiKey: 'sk-fake-test-key',

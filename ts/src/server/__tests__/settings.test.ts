@@ -45,6 +45,7 @@ let originalAnthropicModel: string | undefined
 let originalAnthropicDefaultHaikuModel: string | undefined
 let originalAnthropicDefaultSonnetModel: string | undefined
 let originalAnthropicDefaultOpusModel: string | undefined
+let originalNativeFileSearch: string | undefined
 
 async function setup() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-test-'))
@@ -63,11 +64,15 @@ async function setup() {
   originalAnthropicDefaultHaikuModel = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   originalAnthropicDefaultSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   originalAnthropicDefaultOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  originalNativeFileSearch = process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.HOME = tmpDir
   process.env.USERPROFILE = tmpDir
   process.env.SHELL = '/bin/zsh'
   process.env.PATH = ''
+  // Output styles are discovered via loadMarkdownFiles; with PATH emptied above there is no
+  // system ripgrep, so force the native fs walk to keep style discovery deterministic here.
+  process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = '1'
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_BASE_URL
   delete process.env.ANTHROPIC_MODEL
@@ -91,6 +96,12 @@ async function teardown() {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   } else {
     delete process.env.CLAUDE_CONFIG_DIR
+  }
+
+  if (originalNativeFileSearch !== undefined) {
+    process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = originalNativeFileSearch
+  } else {
+    delete process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
   }
 
   if (originalHome !== undefined) {
