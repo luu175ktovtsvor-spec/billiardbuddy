@@ -34,7 +34,7 @@ function makeContext(): ToolUseContext {
 const goalHook = {
   type: 'prompt',
   prompt: [
-    '<cc-haha-goal-hook>',
+    '<bb-goal-hook>',
     '<goal-objective>',
     'ship the goal',
     '</goal-objective>',
@@ -70,7 +70,7 @@ describe('execPromptHook goal failures', () => {
 
     expect(result.outcome).toBe('blocking')
     expect(result.preventContinuation).toBe(true)
-    expect(result.blockingError?.command).toContain('<cc-haha-goal-hook>')
+    expect(result.blockingError?.command).toContain('<bb-goal-hook>')
     expect(result.blockingError?.blockingError).toContain('response was not valid JSON')
     expect(result.blockingError?.blockingError).toContain('continue working toward it')
   })
