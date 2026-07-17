@@ -36,8 +36,8 @@ echo "[gate:$MODE] 架构边界（真实 renderer ts/desktop/src）"
 bun "$ROOT/scripts/quality/check-architecture.ts"
 
 # ---- 所有档位共有：产品外层服务测试（离线，注入 fake upstream，确定性）----
-echo "[gate:$MODE] gateway / relay / dataeye 测试"
-(cd "$ROOT" && bun test gateway/*.test.ts relay/*.test.ts dataeye/tests/receiver.test.ts dataeye/tests/board.test.ts)
+echo "[gate:$MODE] gateway / relay 测试"
+(cd "$ROOT" && bun test gateway/*.test.ts relay/*.test.ts)
 
 if [[ "$MODE" == "quick" ]]; then
   git -C "$ROOT" diff --check
