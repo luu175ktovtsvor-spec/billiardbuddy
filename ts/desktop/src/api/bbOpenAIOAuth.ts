@@ -1,14 +1,14 @@
-// desktop/src/api/hahaOAuth.ts
+// desktop/src/api/bbOpenAIOAuth.ts
 
 import { api, getBaseUrl } from './client'
 
-export type HahaOAuthStatus =
+export type BbOpenAIOAuthStatus =
   | { loggedIn: false }
   | {
       loggedIn: true
       expiresAt: number | null
-      scopes: string[]
-      subscriptionType: 'pro' | 'max' | 'team' | 'enterprise' | null
+      email: string | null
+      accountId: string | null
     }
 
 function currentServerPort(): number {
@@ -20,19 +20,19 @@ function currentServerPort(): number {
   return parsed
 }
 
-export const hahaOAuthApi = {
+export const bbOpenAIOAuthApi = {
   start() {
     return api.post<{ authorizeUrl: string; state: string }>(
-      '/api/haha-oauth/start',
+      '/api/bb-openai-oauth/start',
       { serverPort: currentServerPort() },
     )
   },
 
   status() {
-    return api.get<HahaOAuthStatus>('/api/haha-oauth')
+    return api.get<BbOpenAIOAuthStatus>('/api/bb-openai-oauth')
   },
 
   logout() {
-    return api.delete<{ ok: true }>('/api/haha-oauth')
+    return api.delete<{ ok: true }>('/api/bb-openai-oauth')
   },
 }

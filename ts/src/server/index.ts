@@ -14,8 +14,8 @@ import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
 import { ensureQfGatewayRegistration } from './services/qfGatewayProvider.js'
-import { handleHahaOAuthCallback } from './api/haha-oauth.js'
-import { handleHahaOpenAIOAuthCallback } from './api/haha-openai-oauth.js'
+import { handleBbOAuthCallback } from './api/bb-oauth.js'
+import { handleBbOpenAIOAuthCallback } from './api/bb-openai-oauth.js'
 import { handlePreviewFs } from './api/previewFs.js'
 import { handleLocalFile } from './api/localFile.js'
 import { sessionService } from './services/sessionService.js'
@@ -279,14 +279,14 @@ export function startServer(port = PORT, host = HOST) {
         }
 
         if (url.pathname === '/callback') {
-          return handleHahaOAuthCallback(url)
+          return handleBbOAuthCallback(url)
         }
 
         if (
           url.pathname === OPENAI_CODEX_REDIRECT_PATH ||
           url.pathname === '/callback/openai'
         ) {
-          return handleHahaOpenAIOAuthCallback(url)
+          return handleBbOpenAIOAuthCallback(url)
         }
 
         // Preview filesystem — serve sandboxed workspace files for a session.

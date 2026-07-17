@@ -5,7 +5,7 @@
 // 到 haha server 后,store 的 polling 自动刷新 UI 展示"已登录"。
 
 import { useEffect } from 'react'
-import { useHahaOAuthStore } from '../../stores/hahaOAuthStore'
+import { useBbOAuthStore } from '../../stores/bbOAuthStore'
 import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 
@@ -20,7 +20,7 @@ export function ClaudeOfficialLogin() {
     logout,
     startPolling,
     stopPolling,
-  } = useHahaOAuthStore()
+  } = useBbOAuthStore()
 
   useEffect(() => {
     fetchStatus()
@@ -35,7 +35,7 @@ export function ClaudeOfficialLogin() {
         startPolling()
       } catch (err) {
         console.error('[ClaudeOfficialLogin] shellOpen failed:', err)
-        useHahaOAuthStore.setState({
+        useBbOAuthStore.setState({
           error: t('settings.claudeOfficialLogin.openBrowserFailed'),
         })
       }

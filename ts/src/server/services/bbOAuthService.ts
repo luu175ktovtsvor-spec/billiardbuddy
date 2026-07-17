@@ -1,5 +1,5 @@
 /**
- * HahaOAuthService — 桌面端自管 Claude OAuth token
+ * BbOAuthService — 桌面端自管 Claude OAuth token
  *
  * 为什么存在: macOS Keychain ACL 在 .app 被打上 quarantine 属性后
  * 对无 UI sidecar 静默拒绝,导致 CLI 读不到 OAuth token → 403。
@@ -56,7 +56,7 @@ type FetchProfileFn = (
 const SESSION_TTL_MS = 5 * 60 * 1000
 const OAUTH_CALLBACK_PATH = '/callback'
 
-export class HahaOAuthService {
+export class BbOAuthService {
   private sessions = new Map<string, OAuthSession>()
   private refreshFn: RefreshFn = refreshOAuthToken
   private fetchProfileFn: FetchProfileFn = fetchProfileInfo
@@ -240,7 +240,7 @@ export class HahaOAuthService {
       await this.saveTokens(updated)
       return updated
     } catch (err) {
-      logTokenRefreshFailure('[HahaOAuthService]', err)
+      logTokenRefreshFailure('[BbOAuthService]', err)
       return null
     }
   }
@@ -251,4 +251,4 @@ export class HahaOAuthService {
   }
 }
 
-export const hahaOAuthService = new HahaOAuthService()
+export const bbOAuthService = new BbOAuthService()

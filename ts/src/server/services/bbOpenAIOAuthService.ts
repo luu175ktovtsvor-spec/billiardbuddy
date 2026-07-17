@@ -1,5 +1,5 @@
 /**
- * HahaOpenAIOAuthService — 桌面端自管 OpenAI OAuth token
+ * BbOpenAIOAuthService — 桌面端自管 OpenAI OAuth token
  *
  * 为什么存在: macOS Keychain ACL 在 .app 被打上 quarantine 属性后
  * 对无 UI sidecar 静默拒绝,导致 CLI 读不到 OAuth token → 403。
@@ -84,13 +84,13 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
-export function getHahaOpenAIOAuthFilePath(): string {
+export function getBbOpenAIOAuthFilePath(): string {
   const configDir =
     process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   return path.join(configDir, 'cc-haha', 'openai-oauth.json')
 }
 
-export class HahaOpenAIOAuthService {
+export class BbOpenAIOAuthService {
   private sessions = new Map<string, OpenAIOAuthSession>()
   private refreshFn: OpenAIRefreshFn = refreshOpenAITokens
   private callbackPort: number
@@ -114,7 +114,7 @@ export class HahaOpenAIOAuthService {
   }
 
   getOAuthFilePath(): string {
-    return getHahaOpenAIOAuthFilePath()
+    return getBbOpenAIOAuthFilePath()
   }
 
   async loadTokens(): Promise<StoredOpenAIOAuthTokens | null> {
@@ -257,7 +257,7 @@ export class HahaOpenAIOAuthService {
           this.sessions.delete(session.state)
         }
         console.error(
-          '[HahaOpenAIOAuthService] OAuth callback listener failed:',
+          '[BbOpenAIOAuthService] OAuth callback listener failed:',
           err instanceof Error ? err.message : err,
         )
       })
@@ -352,7 +352,7 @@ export class HahaOpenAIOAuthService {
       await this.saveTokens(updated)
       return updated
     } catch (err) {
-      logTokenRefreshFailure('[HahaOpenAIOAuthService]', err)
+      logTokenRefreshFailure('[BbOpenAIOAuthService]', err)
       return null
     }
   }
@@ -371,4 +371,4 @@ export class HahaOpenAIOAuthService {
   }
 }
 
-export const hahaOpenAIOAuthService = new HahaOpenAIOAuthService()
+export const bbOpenAIOAuthService = new BbOpenAIOAuthService()
