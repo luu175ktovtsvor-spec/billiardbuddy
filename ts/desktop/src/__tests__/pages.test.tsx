@@ -77,7 +77,6 @@ import { EmptySession } from '../pages/EmptySession'
 import { ActiveSession } from '../pages/ActiveSession'
 import { AgentTeams } from '../pages/AgentTeams'
 import { ScheduledTasks } from '../pages/ScheduledTasks'
-import { ToolInspection } from '../pages/ToolInspection'
 
 // Layout components (chrome is now here, not in pages)
 import { Sidebar } from '../components/layout/Sidebar'
@@ -1256,12 +1255,6 @@ describe('Content-only pages render without errors', () => {
     expect(container.innerHTML).toContain('Scheduled tasks')
   })
 
-  it('ToolInspection renders diff viewer', () => {
-    const { container } = render(<ToolInspection />)
-    expect(container.innerHTML).toContain('edit_file')
-    expect(container.innerHTML).toContain('Split')
-    expect(container.innerHTML).toContain('Unified')
-  })
 })
 
 describe('Chat attachments', () => {
@@ -1301,7 +1294,7 @@ describe('AppShell layout renders chrome', () => {
 
 describe('Design system compliance', () => {
   it('Pages use Material Symbols Outlined icons', () => {
-    const pages = [EmptySession, AgentTeams, ToolInspection]
+    const pages = [EmptySession, AgentTeams]
     for (const Page of pages) {
       const { container, unmount } = render(<Page />)
       const icons = container.querySelectorAll('.material-symbols-outlined')
