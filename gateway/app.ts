@@ -31,6 +31,12 @@ import {
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
+import {
+  containsImageContent,
+  createVisionBridge,
+  VisionBridgeError,
+  type VisionBridge,
+} from './visionBridge'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -129,6 +135,15 @@ type GatewayConfig = {
   deepseekRetryBaseMs: number
   deepseekRetryMaxMs: number
   deepseekAllowedModels: ReadonlySet<string>
+  // 视觉桥接(非原生多模态文本模型 + 带图请求时,先用 MiMo v2.5 把图读成结构化文本再转给文本模型)。
+  visionMaxImages: number
+  visionMaxImageBytes: number
+  // 同时也是 /v1/chat/completions 的整体请求体大小闸(在任何路由/解析/许可之前生效)。
+  visionMaxTotalBytes: number
+  visionTimeoutMs: number
+  visionConc: number
+  visionCacheMax: number
+  visionCacheTtlMs: number
   imgIpm: number
   imgConc: number
   queueMaxWait: number
@@ -380,9 +395,12 @@ function loadConfig(env: Env): GatewayConfig {
     amapKey: env.GW_AMAP_KEY ?? '',
     amapBase: (env.GW_AMAP_BASE ?? 'https://restapi.amap.com').replace(/\/+$/, ''),
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
-    qwenRpm: intEnv(env, 'GW_QWEN_RPM', 90),
+    // RPM 默认值抬到不再卡正常文字流量(本地令牌桶曾是"80 并发 p95 17s"的元凶);GW_*_CONC 仍是
+    // 保护上游的高水位紧急总闸,真正收紧限速请调小对应 env,不靠这个默认值节流。
+    qwenRpm: intEnv(env, 'GW_QWEN_RPM', 100_000),
     qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
-    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', 2)),
+    // 单装机并发默认 = 全局并发(不再单独节流单装机);GW_*_CONC 全局闸继续兜底。
+    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
     // 单 token 名下所有装机合计在途上限:默认=全局并发(共享私测 token 需用满整池)。发独立用户
     // token 后设为低于全局以在 token 间预留 headroom;是防"单 token 伪造多装机独占池"的二级闸。
     qwenTokenConc: Math.max(1, intEnv(env, 'GW_QWEN_TOKEN_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
@@ -396,9 +414,9 @@ function loadConfig(env: Env): GatewayConfig {
     mimoKey: env.GW_MIMO_KEY ?? '',
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
-    mimoRpm: intEnv(env, 'GW_MIMO_RPM', 90),
+    mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
-    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 2)),
+    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
     // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
@@ -406,14 +424,14 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。首版保守放开——全局 32、单装机 2、RPM 保守值,
-    // 靠真实压测再调,不因官方账号并发(~2500)就直接放开。缺 key 时路由到它会 503,绝不改投千问/MiMo。
+    // DeepSeek V4 Flash:真 key 只在服务器。全局并发 32、RPM 放开到不限流,靠真实压测再收紧;
+    // 不因官方账号并发(~2500)就直接放到无限。缺 key 时路由到它会 503,绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
-    deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 60),
+    deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
     deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 32)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', 2)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 32))),
     deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 32))),
     deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
@@ -421,6 +439,15 @@ function loadConfig(env: Env): GatewayConfig {
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
     deepseekRetryMaxMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_MAX_MS', 8000)),
     deepseekAllowedModels: loadDeepSeekAllowedModels(env),
+    // 视觉桥接上限:超限在调用 MiMo 之前就失败关闭。visionMaxTotalBytes 同时也是整个聊天请求体
+    // (含非图片请求)的大小闸,在任何路由/许可之前生效——图片 base64 是拖垮请求体积的主因。
+    visionMaxImages: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGES', 8)),
+    visionMaxImageBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGE_BYTES', 8 * 1024 * 1024)),
+    visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
+    visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
+    visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
+    visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
+    visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
     imgConc: intEnv(env, 'GW_IMG_CONC', 12),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
@@ -730,6 +757,24 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       deriveUserId: deepseekOpaqueUserId,
     }, fetchImpl, store)
     : null
+  // 视觉桥接:唯一视觉上游是 MiMo v2.5(config.mimoBase/config.mimoKey),绝不用 ARK。只在
+  // mimoKey 存在时可用;缺 key 时带图且非原生多模态的请求在路由处显式 503,不把图丢给文本模型猜。
+  const visionBridge: VisionBridge | null = config.mimoKey
+    ? createVisionBridge({
+      mimoBase: config.mimoBase,
+      mimoKey: config.mimoKey,
+      fetchImpl,
+      caps: {
+        maxImages: config.visionMaxImages,
+        maxImageBytes: config.visionMaxImageBytes,
+        maxTotalBytes: config.visionMaxTotalBytes,
+        visionTimeoutMs: config.visionTimeoutMs,
+        maxConcurrent: config.visionConc,
+        cacheMax: config.visionCacheMax,
+        cacheTtlMs: config.visionCacheTtlMs,
+      },
+    })
+    : null
   const imgBucket = new TokenBucket(config.imgIpm)
   const imgSem = new AsyncSemaphore(config.imgConc)
   const arkChatBucket = new TokenBucket(config.arkChatRpm)
@@ -807,6 +852,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         const rawBody = await request.text()
+        // 请求体大小闸,在任何路由/解析/许可之前:防超大 body(典型是图片 base64)打爆内存/上游。
+        // 复用视觉桥接的 maxTotalBytes 上限,对所有聊天请求生效(不止带图请求)。
+        if (Buffer.byteLength(rawBody, 'utf8') > config.visionMaxTotalBytes) {
+          throw new HttpError(413, '请求体过大')
+        }
         // 路由规则(按 model 显式分流,绝不自动跨供应商回退):
         //   命中 DeepSeek 白名单 → 只能走 DeepSeek;命中 MiMo 白名单 → 只能走 MiMo;
         //   两者未配置对应 key 时各自显式 503,绝不改投千问。未命中任何白名单(未知或千问模型)
@@ -814,16 +864,44 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         //   DeepSeek/MiMo 白名单都独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。
         const client = readClientId(request)
         const requestedModel = parseChatModel(rawBody)
+        // 视觉桥接:请求带图且路由到的不是原生多模态(精确的 mimo-v2.5)时,先用 MiMo v2.5 把每张图
+        // 读成结构化文本、替换掉 image_url,再把去图后的请求体交给下面按 model 路由到的文本模型。
+        // 桥接跑在路由/许可之前,调 MiMo 视觉时不占目标文本模型的聊天许可名额。MiMo 失败/超时/429
+        // 一律失败关闭(不丢图给文本模型猜、不改投 Qwen);缺 GW_MIMO_KEY 时同样失败关闭为 503。
+        const isNativeMultimodal = /^mimo-v2\.5$/i.test(requestedModel.trim())
+        let effectiveBody = rawBody
+        if (!isNativeMultimodal && containsImageContent(rawBody)) {
+          if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
+          const bridgeStarted = performance.now()
+          try {
+            const { body, metrics } = await visionBridge.transform(rawBody, { signal: request.signal })
+            effectiveBody = body
+            await logUsage(store, {
+              user,
+              model: 'vision',
+              ok: true,
+              status: 200,
+              ms: elapsedMs(bridgeStarted),
+              note: `cache_hit=${metrics.cacheHits > 0 ? 1 : 0};img=${metrics.imageCount}`,
+            })
+          } catch (error) {
+            const known = error instanceof VisionBridgeError
+            const status = known ? error.status : 502
+            const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
+            await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
+            throw new HttpError(status, detail)
+          }
+        }
         if (config.deepseekAllowedModels.has(requestedModel)) {
           if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
-          return await deepseekChat(request, rawBody, user, client)
+          return await deepseekChat(request, effectiveBody, user, client)
         }
         if (config.mimoAllowedModels.has(requestedModel)) {
           if (!mimoChat) throw new HttpError(503, 'MiMo 模型服务未配置（缺 GW_MIMO_KEY）')
-          return await mimoChat(request, rawBody, user, client)
+          return await mimoChat(request, effectiveBody, user, client)
         }
         if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
-        return await qwenChat(request, rawBody, user, client)
+        return await qwenChat(request, effectiveBody, user, client)
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
