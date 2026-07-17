@@ -2596,7 +2596,7 @@ async function getDefaultRuntimeSettings(): Promise<RuntimeSettings> {
 
   let model: string | undefined
   if (resolvedActiveId) {
-    // Provider is active — only consult provider-managed cc-haha settings.
+    // Provider is active — only consult provider-managed billiardbuddy settings.
     // Global ~/.claude/settings.json model values must not bleed into provider mode.
     const baseModel =
       typeof modelSettings.model === 'string' && modelSettings.model.trim()

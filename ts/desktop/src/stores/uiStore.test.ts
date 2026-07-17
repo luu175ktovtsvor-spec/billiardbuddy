@@ -18,7 +18,7 @@ describe('uiStore theme handling', () => {
   })
 
   it('hydrates and applies the pure white theme as a light color scheme', async () => {
-    window.localStorage.setItem('cc-haha-theme', 'white')
+    window.localStorage.setItem('billiardbuddy-theme', 'white')
 
     const { initializeTheme, useUIStore } = await import('./uiStore')
 
@@ -56,7 +56,7 @@ describe('uiStore settings tab persistence', () => {
 
     first.useUIStore.getState().setActiveSettingsTab('general')
 
-    expect(window.localStorage.getItem('cc-haha-active-settings-tab')).toBe('general')
+    expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBe('general')
 
     vi.resetModules()
     const recreated = await import('./uiStore')
@@ -65,7 +65,7 @@ describe('uiStore settings tab persistence', () => {
   })
 
   it('ignores an invalid persisted Settings tab', async () => {
-    window.localStorage.setItem('cc-haha-active-settings-tab', 'not-a-settings-tab')
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'not-a-settings-tab')
 
     const { useUIStore } = await import('./uiStore')
 

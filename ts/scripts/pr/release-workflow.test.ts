@@ -95,7 +95,7 @@ describe('release desktop workflow', () => {
     }
 
     expect(desktopPackage.description).toBeTruthy()
-    expect(desktopPackage.homepage).toBe('https://github.com/NanmiCoder/cc-haha')
+    expect(desktopPackage.homepage).toBe('https://github.com/NanmiCoder/billiardbuddy')
     expect(desktopPackage.author?.name).toBe('NanmiCoder')
     expect(desktopPackage.author?.email).toBe('relakkes@gmail.com')
     expect(desktopPackage.build?.linux?.maintainer).toBe('NanmiCoder <relakkes@gmail.com>')
@@ -406,7 +406,7 @@ describe('release desktop workflow', () => {
       {
         provider: 'github',
         owner: 'NanmiCoder',
-        repo: 'cc-haha',
+        repo: 'billiardbuddy',
       },
     ])
     expect(desktopPackage.build.mac?.publish).toBeUndefined()

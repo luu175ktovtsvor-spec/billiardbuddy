@@ -87,7 +87,7 @@ function escapeHtml(s: string): string {
 export function getBbOpenAIOAuthFilePath(): string {
   const configDir =
     process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  return path.join(configDir, 'cc-haha', 'openai-oauth.json')
+  return path.join(configDir, 'billiardbuddy', 'openai-oauth.json')
 }
 
 export class BbOpenAIOAuthService {

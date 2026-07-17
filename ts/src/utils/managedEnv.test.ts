@@ -54,7 +54,7 @@ describe('managedEnv', () => {
   })
 
   test('starts a standalone provider proxy for CLI-only OpenAI-compatible providers', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'agnes-provider',
       providers: [
         {

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { isThemeMode, THEME_MODES, type ThemeMode } from '../types/settings'
 
-const THEME_STORAGE_KEY = 'cc-haha-theme'
-const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'cc-haha-active-settings-tab'
+const THEME_STORAGE_KEY = 'billiardbuddy-theme'
+const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
 
 const SETTINGS_TABS = [
   'providers',

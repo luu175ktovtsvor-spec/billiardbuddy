@@ -106,7 +106,7 @@ export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
 }
 
-/** Parse h5Access.fixedPort out of cc-haha/settings.json contents. */
+/** Parse h5Access.fixedPort out of billiardbuddy/settings.json contents. */
 export function parseH5FixedPort(contents: string): number | null {
   let value: unknown
   try {
@@ -124,7 +124,7 @@ export function parseH5FixedPort(contents: string): number | null {
 
 export function readH5FixedPort(env: NodeJS.ProcessEnv = process.env): number | null {
   try {
-    const settingsPath = path.join(claudeConfigDir(env), 'cc-haha', 'settings.json')
+    const settingsPath = path.join(claudeConfigDir(env), 'billiardbuddy', 'settings.json')
     return parseH5FixedPort(readFileSync(settingsPath, 'utf-8'))
   } catch {
     return null

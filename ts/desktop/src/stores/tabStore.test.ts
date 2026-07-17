@@ -60,7 +60,7 @@ describe('tabStore', () => {
       },
     ])
     expect(useTabStore.getState().activeTabId).toBe('__workbench__session-1')
-    expect(localStorage.getItem('cc-haha-open-tabs')).toBe(JSON.stringify({
+    expect(localStorage.getItem('billiardbuddy-open-tabs')).toBe(JSON.stringify({
       openTabs: [],
       activeTabId: null,
     }))
@@ -71,7 +71,7 @@ describe('tabStore', () => {
     vi.mocked(sessionsApi.list).mockReturnValueOnce(new Promise((resolve) => {
       resolveSessions = resolve
     }) as never)
-    localStorage.setItem('cc-haha-open-tabs', JSON.stringify({
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [{ sessionId: 'session-1', title: 'Old Session', type: 'session' }],
       activeTabId: 'session-1',
     }))

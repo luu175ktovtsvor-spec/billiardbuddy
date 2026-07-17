@@ -750,13 +750,13 @@ export class CronScheduler {
       return true
     }
 
-    const ccHahaDir = path.join(this.getConfigDir(), 'cc-haha')
-    if (existsSync(path.join(ccHahaDir, 'providers.json'))) {
+    const billiardBuddyDir = path.join(this.getConfigDir(), 'billiardbuddy')
+    if (existsSync(path.join(billiardBuddyDir, 'providers.json'))) {
       return true
     }
 
     try {
-      const raw = readFileSync(path.join(ccHahaDir, 'settings.json'), 'utf-8')
+      const raw = readFileSync(path.join(billiardBuddyDir, 'settings.json'), 'utf-8')
       const parsed = JSON.parse(raw) as { env?: Record<string, string> }
       const env = parsed.env ?? {}
       return Object.entries(env).some(
@@ -780,7 +780,7 @@ export class CronScheduler {
 
     try {
       const raw = readFileSync(
-        path.join(this.getConfigDir(), 'cc-haha', 'settings.json'),
+        path.join(this.getConfigDir(), 'billiardbuddy', 'settings.json'),
         'utf-8',
       )
       const parsed = JSON.parse(raw) as { env?: Record<string, string> }

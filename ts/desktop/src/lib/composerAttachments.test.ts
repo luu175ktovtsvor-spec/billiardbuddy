@@ -8,7 +8,7 @@ describe('composer attachment payloads', () => {
   })
 
   it('keeps many selected desktop project files as paths instead of request-body data', () => {
-    const projectRoot = '/tmp/cc-haha-issue-444-regression'
+    const projectRoot = '/tmp/billiardbuddy-issue-444-regression'
     const files = Array.from({ length: 12 }, (_, index) => (
       `${projectRoot}/assets/large-${index + 1}.bin`
     ))

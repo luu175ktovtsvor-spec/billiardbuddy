@@ -229,9 +229,9 @@ describe('Electron sidecar manager', () => {
       expect(preferredServerPorts(env)).toEqual([50123])
 
       // An explicit fixed port wins over the sticky port.
-      mkdirSync(path.join(configDir, 'cc-haha'), { recursive: true })
+      mkdirSync(path.join(configDir, 'billiardbuddy'), { recursive: true })
       writeFileSync(
-        path.join(configDir, 'cc-haha', 'settings.json'),
+        path.join(configDir, 'billiardbuddy', 'settings.json'),
         JSON.stringify({ h5Access: { fixedPort: 28670 } }),
         'utf-8',
       )

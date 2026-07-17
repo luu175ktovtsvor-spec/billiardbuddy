@@ -152,7 +152,7 @@ describe('Electron notification smoke hook', () => {
   })
 
   it('writes JSONL smoke events when a log path is configured', () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), 'cc-haha-notification-smoke-'))
+    const tmp = mkdtempSync(path.join(tmpdir(), 'billiardbuddy-notification-smoke-'))
     const logPath = path.join(tmp, 'nested', 'notification.jsonl')
 
     appendNotificationSmokeLog(logPath, {
@@ -168,7 +168,7 @@ describe('Electron notification smoke hook', () => {
   })
 
   it('writes renderer acknowledgements to the notification smoke log only when configured', () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), 'cc-haha-notification-smoke-'))
+    const tmp = mkdtempSync(path.join(tmpdir(), 'billiardbuddy-notification-smoke-'))
     const logPath = path.join(tmp, 'nested', 'notification.jsonl')
 
     expect(logNotificationSmokeRendererAck({}, { target: { type: 'session', sessionId: 'session-smoke' } })).toBe(false)

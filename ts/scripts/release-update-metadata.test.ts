@@ -6,7 +6,7 @@ import { parse } from 'yaml'
 import { mergeUpdateMetadataArtifacts } from './release-update-metadata'
 
 function tempDir() {
-  return mkdtempSync(join(tmpdir(), 'cc-haha-release-metadata-'))
+  return mkdtempSync(join(tmpdir(), 'billiardbuddy-release-metadata-'))
 }
 
 function writeYaml(path: string, content: string) {
