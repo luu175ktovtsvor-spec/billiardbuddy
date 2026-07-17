@@ -3,9 +3,10 @@ import { WorkspaceLayout } from './components/shell/WorkspaceLayout'
 import { FileTreeColumn } from './components/filetree/FileTreeColumn'
 import { WorkspaceColumn } from './components/workspace3/WorkspaceColumn'
 import { ConversationColumn } from './components/conversation/ConversationColumn'
+import { RailNav } from './components/shell/RailNav'
 import { useScheduledTaskDesktopNotifications } from './hooks/useScheduledTaskDesktopNotifications'
 import { installDesktopNotificationNavigation } from './lib/desktopNotificationNavigation'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 // 临时开发预览：?preview=layout 渲染四栏骨架占位（Phase A2 验证 grid，Phase C 接真栏后移除）。
 function isLayoutPreview(): boolean {
@@ -21,6 +22,20 @@ function PlaceholderColumn({ label }: { label: string }) {
     <div className="flex h-full items-center justify-center p-4 text-sm font-medium text-[var(--color-text-tertiary)]">
       {label}
     </div>
+  )
+}
+
+// 临时四栏预览：栏1 RailNav 选会话 → 驱动栏2/3/4（Phase C 接真壳后移除）。
+function WorkspaceLayoutPreview({ initialSession }: { initialSession: string }) {
+  const [session, setSession] = useState(initialSession)
+  return (
+    <WorkspaceLayout
+      rail={<RailNav activeSessionId={session || null} onSelectSession={setSession} />}
+      conversation={session ? <ConversationColumn sessionId={session} /> : <PlaceholderColumn label="栏2 · 选个会话" />}
+      workspace={session ? <WorkspaceColumn sessionId={session} /> : <PlaceholderColumn label="栏3 · 审阅/Diff/预览" />}
+      fileTree={session ? <FileTreeColumn sessionId={session} /> : <PlaceholderColumn label="栏4 · 文件树" />}
+      terminal={<PlaceholderColumn label="底部 · 终端(横跨栏2–4)" />}
+    />
   )
 }
 
@@ -45,15 +60,7 @@ export function App() {
   }, [])
   if (isLayoutPreview()) {
     const previewSession = new URLSearchParams(window.location.search).get('session') ?? ''
-    return (
-      <WorkspaceLayout
-        rail={<PlaceholderColumn label="栏1 · 导航 rail" />}
-        conversation={previewSession ? <ConversationColumn sessionId={previewSession} /> : <PlaceholderColumn label="栏2 · 会话流 + Composer" />}
-        workspace={previewSession ? <WorkspaceColumn sessionId={previewSession} /> : <PlaceholderColumn label="栏3 · 审阅/Diff/预览" />}
-        fileTree={previewSession ? <FileTreeColumn sessionId={previewSession} /> : <PlaceholderColumn label="栏4 · 文件树(缺 ?session=)" />}
-        terminal={<PlaceholderColumn label="底部 · 终端(横跨栏2–4)" />}
-      />
-    )
+    return <WorkspaceLayoutPreview initialSession={previewSession} />
   }
   return <AppShell />
 }
