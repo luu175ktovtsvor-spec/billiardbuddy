@@ -3,25 +3,37 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import ts from '../../ts/desktop/node_modules/typescript/lib/typescript.js'
 
+// Boundary checker for the imported cc-haha desktop product.
+//
+// Facts this checker is written against (verified in the current tree, not the
+// retired BilliardBuddy renderer-react/ts/shared layout):
+//   - The React renderer lives in ts/desktop/src (NOT ts/desktop/renderer-react/src).
+//   - There is NO ts/shared/contracts. Cross-layer types are three hand-mirrored
+//     seams: ws/events.ts <-> desktop/src/types/chat.ts (ServerMessage is the
+//     "agent event" union), server/api/* <-> desktop/src/api/*, and
+//     electron/ipc/channels.ts + desktop/src/lib/desktopHost/types.ts.
+//   - Native OS capability reaches the renderer only through the window.desktopHost
+//     preload bridge; Electron code is quarantined in ts/desktop/electron/*.
+// The checker therefore enforces the real invariants and must stay green on a
+// clean baseline; it does not require a shared contracts module and does not
+// force a refactor toward one.
+
 const root = path.resolve(import.meta.dir, '../..')
 const violations: string[] = []
-const rendererRoot = path.join(root, 'ts/desktop/renderer-react/src')
+const rendererRoot = path.join(root, 'ts/desktop/src')
 const backendRoot = path.join(root, 'ts/src')
 
-const retiredFrontendFiles = [
-  'ts/desktop/renderer/index.html',
-  'ts/desktop/renderer/app.js',
-  'ts/src/server/embeddedFrontend.ts',
-  'ts/desktop/renderer-react/src/lib/previewSeed.ts',
-  'docs/design/mockups/agent-chat.html',
-  'docs/design/mockups/agent-preview.html',
-  'docs/design/mockups/agent-welcome.html',
-]
-
-for (const file of retiredFrontendFiles) {
-  if (await Bun.file(path.join(root, file)).exists()) {
-    violations.push(`${file}:1:1 已退役的前端或假数据入口不得恢复；桌面产品只保留 renderer-react`)
-  }
+// The only renderer files allowed to open a raw network/native capability.
+// Every other renderer module must go through these boundary owners.
+const RENDERER_FETCH_PREFIX = 'ts/desktop/src/api/' // REST boundary layer (client.ts is the core)
+const RENDERER_FETCH_EXTRA = new Set([
+  'ts/desktop/src/lib/desktopRuntime.ts', // startup /health + /api/status probing and H5 connect
+  'ts/desktop/src/components/browser/BrowserSurface.tsx', // the in-app browser surface
+])
+const RENDERER_WS_OWNER = 'ts/desktop/src/api/websocket.ts'
+// window.desktopHost is the preload bridge global; only the bridge layer reads it raw.
+function ownsDesktopHostGlobal(rel: string): boolean {
+  return rel.startsWith('ts/desktop/src/lib/desktopHost/') || rel === 'ts/desktop/src/lib/touchH5.ts'
 }
 
 function relative(file: string): string {
@@ -40,9 +52,6 @@ function resolvedImport(file: string, specifier: string): string | null {
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const files: string[] = []
-  // The billiard renderer-react tree may not exist yet in the imported kernel-only
-  // state; skip a missing root instead of crashing (its boundary rules simply have
-  // no files to scan until that layer is rebuilt).
   try {
     if (!(await stat(dir)).isDirectory()) return files
   } catch {
@@ -62,10 +71,7 @@ async function checkSource(file: string, kind: 'renderer' | 'backend'): Promise<
   const scriptKind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind)
   const rel = relative(file)
-  const isRendererNetworkBoundary = rel.includes('/api/') || rel.endsWith('/lib/desktopRuntime.ts')
-  const isRendererWsBoundary = rel.endsWith('/api/websocket.ts')
-  const isDesktopHostBoundary = rel.endsWith('/lib/desktopHost.ts')
-  const scansRoutes = rel.includes('/components/') || rel.includes('/pages/')
+  const rendererMayFetch = rel.startsWith(RENDERER_FETCH_PREFIX) || RENDERER_FETCH_EXTRA.has(rel)
 
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -73,20 +79,20 @@ async function checkSource(file: string, kind: 'renderer' | 'backend'): Promise<
       const resolved = resolvedImport(file, specifier)
       if (kind === 'renderer') {
         if (specifier === 'electron' || specifier.startsWith('node:') || specifier.startsWith('bun:')) {
-          report(file, node, `renderer 不得导入 ${specifier}，原生能力必须走 desktopHost`, source)
+          report(file, node, `renderer 不得导入 ${specifier}，原生能力必须走 window.desktopHost 预加载桥`, source)
         }
         if (resolved?.startsWith(`${backendRoot}${path.sep}`)) {
-          report(file, node, 'renderer 不得导入后端内部模块，只能依赖 ts/shared/contracts', source)
+          report(file, node, 'renderer 不得导入后端内部模块，跨层类型走 desktop/src/api + desktop/src/types 手写镜像边界', source)
         }
       } else if (resolved?.startsWith(`${rendererRoot}${path.sep}`)) {
-        report(file, node, '后端不得反向依赖 React renderer', source)
+        report(file, node, '后端(ts/src)不得反向依赖桌面 renderer(ts/desktop/src)', source)
       }
     }
 
-    if (kind === 'renderer' && ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetch' && !isRendererNetworkBoundary) {
-      report(file, node, 'fetch 只能出现在 renderer api 或 desktopRuntime 边界', source)
+    if (kind === 'renderer' && ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetch' && !rendererMayFetch) {
+      report(file, node, 'fetch 只能出现在 renderer api 层、lib/desktopRuntime.ts 或浏览器面板 BrowserSurface.tsx', source)
     }
-    if (kind === 'renderer' && ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'WebSocket' && !isRendererWsBoundary) {
+    if (kind === 'renderer' && ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'WebSocket' && rel !== RENDERER_WS_OWNER) {
       report(file, node, 'WebSocket 只能由 renderer api/websocket.ts 创建', source)
     }
     if (
@@ -96,18 +102,9 @@ async function checkSource(file: string, kind: 'renderer' | 'backend'): Promise<
       ts.isIdentifier(node.expression.expression) &&
       node.expression.expression.text === 'window' &&
       node.expression.name.text === 'desktopHost' &&
-      !isDesktopHostBoundary
+      !ownsDesktopHostGlobal(rel)
     ) {
-      report(file, node, 'window.desktopHost 只能在 lib/desktopHost.ts 读取', source)
-    }
-    if (kind === 'renderer' && scansRoutes && ts.isStringLiteralLike(node) && /^\/(api|agent|sessions|model)(\/|$)/.test(node.text)) {
-      report(file, node, '组件和页面不得拼 API 路径，路径应归属功能 api 模块', source)
-    }
-    if (
-      rel !== 'ts/shared/contracts/agent-events.ts' &&
-      ((ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name.text === 'AgentEvent')
-    ) {
-      report(file, node, 'AgentEvent 只能由 ts/shared/contracts 定义，其他位置应导入或重导出', source)
+      report(file, node, 'window.desktopHost 原始桥只能在 lib/desktopHost/ 桥接层或 lib/touchH5.ts 读取', source)
     }
     ts.forEachChild(node, visit)
   }

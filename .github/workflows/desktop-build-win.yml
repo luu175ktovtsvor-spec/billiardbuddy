@@ -19,34 +19,26 @@ jobs:
         with:
           bun-version: '1.3.14'
 
-      - name: 安装锁定依赖
+      - name: 安装内核依赖
         working-directory: ts
         run: bun install --frozen-lockfile
 
-      - name: 发布前质量门
+      - name: 安装桌面依赖
+        working-directory: ts/desktop
+        run: bun install --frozen-lockfile
+
+      - name: 发布前质量门（离线快速）
         shell: bash
         run: bash scripts/quality_gate.sh --quick
 
-      - name: 构建 React renderer
-        working-directory: ts
-        run: bun run ui:build
-
-      - name: 构建 Electron main 和 preload
-        working-directory: ts
-        run: bun run desktop:build
-
-      - name: 构建 Windows Bun sidecar
-        working-directory: ts
-        run: bun run build:sidecar
-
-      - name: 生成 Windows 安装包
-        working-directory: ts
-        run: bunx electron-builder --config electron-builder.yml --win --publish never
+      - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
+        working-directory: ts/desktop
+        run: bun run electron:package
 
       - name: 校验安装包产物
         shell: pwsh
         run: |
-          $installers = Get-ChildItem ts/desktop/dist/*.exe -ErrorAction SilentlyContinue
+          $installers = Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction SilentlyContinue
           if ($installers.Count -eq 0) { throw '未生成 Windows 安装包' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
@@ -55,9 +47,9 @@ jobs:
         with:
           name: 球房管家-Windows安装包-${{ github.ref_name }}
           path: |
-            ts/desktop/dist/*.exe
-            ts/desktop/dist/*.yml
+            ts/desktop/build-artifacts/electron/*.exe
+            ts/desktop/build-artifacts/electron/*.yml
           if-no-files-found: error
           retention-days: 7
 
-# 当前只构建和上传 CI artifact。自动更新渠道、签名、版本策略和回滚验证完成前，不自动发布给用户。
+# 当前只构建并上传 CI artifact。自动更新渠道、签名、版本策略与回滚验证完成前，不自动发布给用户（electron:package 内置 --publish never）。
