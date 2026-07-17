@@ -1,5 +1,6 @@
 import { AppShell } from './components/layout/AppShell'
 import { WorkspaceLayout } from './components/shell/WorkspaceLayout'
+import { FileTreeColumn } from './components/filetree/FileTreeColumn'
 import { useScheduledTaskDesktopNotifications } from './hooks/useScheduledTaskDesktopNotifications'
 import { installDesktopNotificationNavigation } from './lib/desktopNotificationNavigation'
 import { useEffect } from 'react'
@@ -41,12 +42,13 @@ export function App() {
     }
   }, [])
   if (isLayoutPreview()) {
+    const previewSession = new URLSearchParams(window.location.search).get('session') ?? ''
     return (
       <WorkspaceLayout
         rail={<PlaceholderColumn label="栏1 · 导航 rail" />}
         conversation={<PlaceholderColumn label="栏2 · 会话流 + Composer" />}
         workspace={<PlaceholderColumn label="栏3 · 审阅/Diff/预览" />}
-        fileTree={<PlaceholderColumn label="栏4 · 文件树" />}
+        fileTree={previewSession ? <FileTreeColumn sessionId={previewSession} /> : <PlaceholderColumn label="栏4 · 文件树(缺 ?session=)" />}
         terminal={<PlaceholderColumn label="底部 · 终端(横跨栏2–4)" />}
       />
     )
