@@ -60,6 +60,17 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, transcr
       else if (typeof init?.body === 'string') body = init.body
       calls.push({ url, init, body })
       if (url.includes('/chat/completions')) {
+        // 视觉桥接调 MiMo 时用 stream:false + 数组 content(文本+图片)发起非流式请求;
+        // 其它一切 /chat/completions 调用(含普通 mimo-v2.5 多模态直连)仍走原来的 SSE 假响应。
+        if (url.includes('mimo.example')) {
+          let parsedBody: Record<string, unknown> | null = null
+          try { parsedBody = JSON.parse(body) } catch { /* ignore */ }
+          const messages = Array.isArray(parsedBody?.messages) ? parsedBody!.messages as Array<Record<string, unknown>> : []
+          const looksLikeVisionCall = parsedBody?.stream === false && Array.isArray(messages[0]?.content)
+          if (looksLikeVisionCall) {
+            return Response.json({ choices: [{ message: { content: '图片理解结果：一张测试占位截图，包含一个按钮。' } }] })
+          }
+        }
         return new Response('data: hello\n\n', { headers: { 'content-type': 'text/event-stream' } })
       }
       if (url.startsWith('https://amap.example/')) {
@@ -89,12 +100,14 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(res.status).toBe(200)
   const body = await res.json()
   expect(body.ok).toBe(true)
-  expect(body.limits.qwen_rpm).toBe(90)
+  // RPM 默认值已放开到不再节流正常文字流量;USER_CONC 默认 = CONC(不再单独节流单装机)。
+  // GW_*_CONC 全局并发闸不变,仍是保护上游的高水位紧急上限。
+  expect(body.limits.qwen_rpm).toBe(100_000)
   expect(body.limits.qwen_conc).toBe(16)
-  expect(body.limits.qwen_user_conc).toBe(2)
-  expect(body.limits.mimo_rpm).toBe(90)
+  expect(body.limits.qwen_user_conc).toBe(16)
+  expect(body.limits.mimo_rpm).toBe(100_000)
   expect(body.limits.mimo_conc).toBe(16)
-  expect(body.limits.mimo_user_conc).toBe(2)
+  expect(body.limits.mimo_user_conc).toBe(16)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
   expect(body.features.web_search).toBe(true)
@@ -886,7 +899,52 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
   expect(body.limits.deepseek_conc).toBe(32)
-  expect(body.limits.deepseek_user_conc).toBe(2)
+  // USER_CONC 默认 = CONC(不再单独节流单装机)。
+  expect(body.limits.deepseek_user_conc).toBe(32)
+})
+
+test('after relaxing default RPM/concurrency, plain-text chat completions still route to the correct upstream', async () => {
+  const { fetch, calls, usage } = makeGateway()
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: '普通文字请求，不带图片' }] }),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  expect(calls[0]?.url).toBe('https://deepseek.example/chat/completions')
+  // 没有图片,不触发视觉桥接,一次都不碰 MiMo。
+  expect(calls.every(c => !c.url.includes('mimo.example'))).toBe(true)
+  expect(usage.rows.some(row => row.model === 'vision')).toBe(false)
+})
+
+test('a DeepSeek request carrying an image is bridged through MiMo before reaching DeepSeek', async () => {
+  const { fetch, calls, usage } = makeGateway()
+  const rawBody = JSON.stringify({
+    model: 'deepseek-v4-flash',
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '这张截图里是什么' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } },
+      ],
+    }],
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    body: rawBody,
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
+  const deepseekCalls = calls.filter(c => c.url.includes('deepseek.example'))
+  expect(mimoCalls).toHaveLength(1)
+  expect(deepseekCalls).toHaveLength(1)
+  // DeepSeek 收到的是去图后的请求体:无 image_url,含 MiMo 生成的视觉文本。
+  expect(deepseekCalls[0]?.body).not.toContain('image_url')
+  expect(deepseekCalls[0]?.body).toContain('图片理解结果')
+  expect(usage.rows.some(row => row.model === 'vision' && row.ok === true)).toBe(true)
 })
 
 test('image task submit/poll proxies to relay tasks base with relay token when configured', async () => {
