@@ -3,8 +3,10 @@
  * → MiMo (mimo-v2.5, the only multimodal upstream) → answer that references the image.
  *
  * Proves the full Desktop/Proxy/Gateway → MiMo image path (the proxy converts the Anthropic
- * `image` block to OpenAI `image_url`, and MiMo actually sees the pixels). Also asserts the
- * gateway REJECTS the same image for a non-multimodal model (Qwen) with an explicit error.
+ * `image` block to OpenAI `image_url`). mimo-v2.5 sees the pixels natively; a non-multimodal
+ * model (Qwen) gets the SAME image via the server-side MiMo vision bridge (image read into
+ * structured text, never raw image_url), so it can still answer — no rejection, no silent
+ * drop, no cross-vendor reroute.
  *
  * Run (env-gated; skips if QF_GATEWAY_URL/TOKEN unset — safe to leave in the tree):
  *   RED_B64_PATH=/path/to/red.b64 QF_GATEWAY_URL=... QF_GATEWAY_TOKEN=... \
@@ -45,13 +47,19 @@ async function main(): Promise<void> {
   console.log(`MiMo status=${res.status} answer="${answer}"`)
   console.log(sawRed ? '✅ MiMo 看到并识别了图片(答含"红")' : `❌ 答案不含红:${answer}`)
 
-  // 2) Same image to Qwen must be rejected (no silent reroute).
+  // 2) Same image to a non-multimodal model (Qwen) is now BRIDGED via MiMo, not rejected and not
+  //    silently dropped: the gateway reads the image with MiMo and hands Qwen the structured text,
+  //    so Qwen still names the colour. Non-multimodal upstreams never receive a raw image_url.
   const qreq = post(imageMessage('qwen3-coder-plus'))
   const qres = await handleProxyRequest(qreq, new URL(qreq.url))
-  console.log(`Qwen+image status=${qres.status} ${qres.status === 400 ? '✅ 明确拒绝(不改投)' : '❌ 未拒绝'}`)
+  const qbody = await qres.json().catch(() => ({})) as { content?: Array<{ type: string; text?: string }> }
+  const qanswer = (qbody.content ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join(' ').trim()
+  const qSawRed = /红|red/i.test(qanswer)
+  console.log(`Qwen+image(bridged) status=${qres.status} answer="${qanswer}"`)
+  console.log(qres.status === 200 && qSawRed ? '✅ Qwen 经网关 MiMo 视觉桥接看懂同一张图(答含"红")' : `❌ 桥接未生效:status=${qres.status} answer="${qanswer}"`)
 
-  if (!sawRed || qres.status !== 400) process.exit(1)
-  console.log('\n✅ LIVE IMAGE E2E PASSED: 图片经 Proxy→Gateway→MiMo 被理解;Qwen 图片被明确拒绝。')
+  if (!sawRed || qres.status !== 200 || !qSawRed) process.exit(1)
+  console.log('\n✅ LIVE IMAGE E2E PASSED: mimo-v2.5 原生看图;Qwen 经网关 MiMo 视觉桥接看懂同一张图(非原生上游不收 image_url、不改投、不丢图)。')
 }
 
 main().catch(err => { console.error('❌ LIVE IMAGE E2E ERROR:', err); process.exit(1) })

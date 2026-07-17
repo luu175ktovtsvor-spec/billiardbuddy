@@ -587,6 +587,101 @@ test('malformed chat JSON fails closed before capacity or upstream work', async 
   expect(calls).toEqual([])
 })
 
+// ── 请求体真正有界(readRequestBodyBounded):不再先把整个 body 读进内存再检查长度 ──────────
+
+test('a declared Content-Length over the limit is rejected with 413 before the body stream is ever read', async () => {
+  const { fetch, calls } = makeGateway({ GW_VISION_MAX_TOTAL_BYTES: '100' })
+  // 一个"挂起"的 body 流:pull() 什么都不做,既不 enqueue 也不 close。若实现在 Content-Length
+  // 预检之后才去读它,这个测试会挂起到超时失败;正确实现应在读 body 之前就基于声明的
+  // Content-Length 立即拒绝,拿到 413 且从不触碰这个流。
+  const hangingStream = new ReadableStream<Uint8Array>({ pull() { /* 永不 enqueue/close */ } })
+  const req = new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: hangingStream,
+    duplex: 'half',
+    headers: { 'Content-Type': 'application/json', 'content-length': '999999' },
+  } as RequestInit))
+  const res = await fetch(req)
+  expect(res.status).toBe(413)
+  expect(calls).toEqual([])
+})
+
+test('real streamed body bytes exceeding the limit are rejected with 413 even without a Content-Length header (chunked-style body)', async () => {
+  const { fetch, calls } = makeGateway({ GW_VISION_MAX_TOTAL_BYTES: '50' })
+  const chunk = new TextEncoder().encode('x'.repeat(40))
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(chunk) // 40 字节
+      controller.enqueue(chunk) // 累计 80 字节,超过 50 字节上限,且没有 Content-Length 头可依赖
+      controller.close()
+    },
+  })
+  const req = new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: stream,
+    duplex: 'half',
+    headers: { 'Content-Type': 'application/json' },
+  } as RequestInit))
+  const res = await fetch(req)
+  expect(res.status).toBe(413)
+  expect(calls).toEqual([])
+})
+
+test('a lying (understated) Content-Length does not bypass the real streamed byte-count limit', async () => {
+  const { fetch, calls } = makeGateway({ GW_VISION_MAX_TOTAL_BYTES: '50' })
+  const chunk = new TextEncoder().encode('y'.repeat(40))
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(chunk)
+      controller.enqueue(chunk) // 实际 80 字节,远超声明的 Content-Length(10)和上限(50)
+      controller.close()
+    },
+  })
+  const req = new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: stream,
+    duplex: 'half',
+    headers: { 'Content-Type': 'application/json', 'content-length': '10' },
+  } as RequestInit))
+  const res = await fetch(req)
+  expect(res.status).toBe(413)
+  expect(calls).toEqual([])
+})
+
+test('client abort mid body-read fails closed with 499 (never silently treated as a valid/empty body)', async () => {
+  const { fetch, calls } = makeGateway()
+  const hangingStream = new ReadableStream<Uint8Array>({ pull() { /* 永不 enqueue/close */ } })
+  const ac = new AbortController()
+  const req = new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: hangingStream,
+    duplex: 'half',
+    signal: ac.signal,
+    headers: { 'Content-Type': 'application/json' },
+  } as RequestInit))
+  const pending = fetch(req)
+  setTimeout(() => ac.abort(), 20)
+  const res = await pending
+  expect(res.status).toBe(499)
+  expect(calls).toEqual([])
+})
+
+test('a body stream read error fails closed with 400 (never silently treated as done)', async () => {
+  const { fetch, calls } = makeGateway()
+  const erroringStream = new ReadableStream<Uint8Array>({
+    pull() { throw new Error('simulated read failure') },
+  })
+  const req = new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: erroringStream,
+    duplex: 'half',
+    headers: { 'Content-Type': 'application/json' },
+  } as RequestInit))
+  const res = await fetch(req)
+  expect(res.status).toBe(400)
+  expect(calls).toEqual([])
+})
+
 test('client cannot bypass the model whitelist: an out-of-list model is coerced to the server model', async () => {
   const { fetch, calls } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
