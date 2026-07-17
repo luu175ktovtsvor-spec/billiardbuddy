@@ -49,15 +49,15 @@ describe('ConversationService', () => {
     originalAttributionHeader = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     originalDisableExperimentalBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
     originalResumeInterruptedTurn = process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
-    originalTraceApiCalls = process.env.CC_HAHA_TRACE_API_CALLS
-    originalTraceProviderId = process.env.CC_HAHA_TRACE_PROVIDER_ID
-    originalTraceProviderName = process.env.CC_HAHA_TRACE_PROVIDER_NAME
-    originalTraceProviderFormat = process.env.CC_HAHA_TRACE_PROVIDER_FORMAT
+    originalTraceApiCalls = process.env.BB_TRACE_API_CALLS
+    originalTraceProviderId = process.env.BB_TRACE_PROVIDER_ID
+    originalTraceProviderName = process.env.BB_TRACE_PROVIDER_NAME
+    originalTraceProviderFormat = process.env.BB_TRACE_PROVIDER_FORMAT
     originalHome = process.env.HOME
     originalPath = process.env.PATH
     originalShell = process.env.SHELL
     originalZdotdir = process.env.ZDOTDIR
-    originalDisableTerminalShellEnv = process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+    originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 
     process.env.CLAUDE_CONFIG_DIR = tmpDir
     process.env.ANTHROPIC_API_KEY = 'stale-parent-api-key'
@@ -73,11 +73,11 @@ describe('ConversationService', () => {
     delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
     delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
-    delete process.env.CC_HAHA_TRACE_API_CALLS
-    delete process.env.CC_HAHA_TRACE_PROVIDER_ID
-    delete process.env.CC_HAHA_TRACE_PROVIDER_NAME
-    delete process.env.CC_HAHA_TRACE_PROVIDER_FORMAT
-    process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+    delete process.env.BB_TRACE_API_CALLS
+    delete process.env.BB_TRACE_PROVIDER_ID
+    delete process.env.BB_TRACE_PROVIDER_NAME
+    delete process.env.BB_TRACE_PROVIDER_FORMAT
+    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     resetTerminalShellEnvironmentCacheForTests()
   })
 
@@ -118,17 +118,17 @@ describe('ConversationService', () => {
     if (originalResumeInterruptedTurn === undefined) delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
     else process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = originalResumeInterruptedTurn
 
-    if (originalTraceApiCalls === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-    else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceApiCalls
+    if (originalTraceApiCalls === undefined) delete process.env.BB_TRACE_API_CALLS
+    else process.env.BB_TRACE_API_CALLS = originalTraceApiCalls
 
-    if (originalTraceProviderId === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_ID
-    else process.env.CC_HAHA_TRACE_PROVIDER_ID = originalTraceProviderId
+    if (originalTraceProviderId === undefined) delete process.env.BB_TRACE_PROVIDER_ID
+    else process.env.BB_TRACE_PROVIDER_ID = originalTraceProviderId
 
-    if (originalTraceProviderName === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_NAME
-    else process.env.CC_HAHA_TRACE_PROVIDER_NAME = originalTraceProviderName
+    if (originalTraceProviderName === undefined) delete process.env.BB_TRACE_PROVIDER_NAME
+    else process.env.BB_TRACE_PROVIDER_NAME = originalTraceProviderName
 
-    if (originalTraceProviderFormat === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_FORMAT
-    else process.env.CC_HAHA_TRACE_PROVIDER_FORMAT = originalTraceProviderFormat
+    if (originalTraceProviderFormat === undefined) delete process.env.BB_TRACE_PROVIDER_FORMAT
+    else process.env.BB_TRACE_PROVIDER_FORMAT = originalTraceProviderFormat
 
     if (originalHome === undefined) delete process.env.HOME
     else process.env.HOME = originalHome
@@ -142,8 +142,8 @@ describe('ConversationService', () => {
     if (originalZdotdir === undefined) delete process.env.ZDOTDIR
     else process.env.ZDOTDIR = originalZdotdir
 
-    if (originalDisableTerminalShellEnv === undefined) delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
-    else process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
+    if (originalDisableTerminalShellEnv === undefined) delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
+    else process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
 
     resetTerminalShellEnvironmentCacheForTests()
     await fs.rm(tmpDir, { recursive: true, force: true })
@@ -286,7 +286,7 @@ describe('ConversationService', () => {
       ].join('\n'),
     )
 
-    delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+    delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     process.env.HOME = tmpDir
     process.env.SHELL = shellPath
     process.env.PATH = '/usr/bin:/bin'
@@ -506,9 +506,9 @@ describe('ConversationService', () => {
     expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe('1')
     expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_ID).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_NAME).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_FORMAT).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_ID).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_NAME).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_FORMAT).toBeUndefined()
   })
 
   test('buildChildEnv isolates experimental beta kill switch for session-scoped providers', async () => {
@@ -566,10 +566,10 @@ describe('ConversationService', () => {
       { providerId: provider.id },
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_TRACE_API_CALLS).toBe('1')
-    expect(env.CC_HAHA_TRACE_PROVIDER_ID).toBe(provider.id)
-    expect(env.CC_HAHA_TRACE_PROVIDER_NAME).toBe('Traceable Provider')
-    expect(env.CC_HAHA_TRACE_PROVIDER_FORMAT).toBe('anthropic')
+    expect(env.BB_TRACE_API_CALLS).toBe('1')
+    expect(env.BB_TRACE_PROVIDER_ID).toBe(provider.id)
+    expect(env.BB_TRACE_PROVIDER_NAME).toBe('Traceable Provider')
+    expect(env.BB_TRACE_PROVIDER_FORMAT).toBe('anthropic')
   })
 
   test('buildChildEnv does not inject trace env when managed trace capture is disabled', async () => {
@@ -596,10 +596,10 @@ describe('ConversationService', () => {
       { providerId: provider.id },
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_TRACE_API_CALLS).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_ID).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_NAME).toBeUndefined()
-    expect(env.CC_HAHA_TRACE_PROVIDER_FORMAT).toBeUndefined()
+    expect(env.BB_TRACE_API_CALLS).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_ID).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_NAME).toBeUndefined()
+    expect(env.BB_TRACE_PROVIDER_FORMAT).toBeUndefined()
   })
 
   test('buildChildEnv uses the session-selected model for session-scoped providers', async () => {
@@ -754,7 +754,7 @@ describe('ConversationService', () => {
       providerId: 'openai-official',
     })) as Record<string, string>
 
-    expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+    expect(env.BB_OPENAI_OAUTH_PROVIDER).toBe('1')
     expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
       path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
     )
@@ -791,11 +791,11 @@ describe('ConversationService', () => {
       'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_COMPUTER_USE_HOST_BUNDLE_ID).toBe(
+    expect(env.BB_COMPUTER_USE_HOST_BUNDLE_ID).toBe(
       'com.billiardbuddy.desktop',
     )
-    expect(env.CC_HAHA_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
-    expect(env.CC_HAHA_TRACE_API_CALLS).toBe('1')
+    expect(env.BB_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
+    expect(env.BB_TRACE_API_CALLS).toBe('1')
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
   })
 
@@ -834,8 +834,8 @@ describe('ConversationService', () => {
       'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_DESKTOP_AWAIT_MCP).toBe('1')
-    expect(env.CC_HAHA_DESKTOP_AWAIT_MCP_TIMEOUT_MS).toBe('5000')
+    expect(env.BB_DESKTOP_AWAIT_MCP).toBe('1')
+    expect(env.BB_DESKTOP_AWAIT_MCP_TIMEOUT_MS).toBe('5000')
   })
 
   test('buildChildEnv disables inherited interrupted-turn resume for prewarm launches', async () => {

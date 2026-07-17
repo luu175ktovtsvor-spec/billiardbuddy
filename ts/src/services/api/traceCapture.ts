@@ -199,15 +199,15 @@ const traceWriteQueues = new Map<string, Promise<void>>()
 const traceReadCache = new Map<string, TraceReadCacheEntry>()
 
 export function shouldCaptureApiTrace(): boolean {
-  if (isEnvDefinedFalsy(process.env.CC_HAHA_TRACE_API_CALLS)) return false
-  if (isEnvTruthy(process.env.CC_HAHA_TRACE_API_CALLS)) return true
+  if (isEnvDefinedFalsy(process.env.BB_TRACE_API_CALLS)) return false
+  if (isEnvTruthy(process.env.BB_TRACE_API_CALLS)) return true
   return readTraceCaptureSettingsSync().enabled &&
     process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
 }
 
 export function isTraceCaptureEnabled(): boolean {
-  if (isEnvDefinedFalsy(process.env.CC_HAHA_TRACE_API_CALLS)) return false
-  if (isEnvTruthy(process.env.CC_HAHA_TRACE_API_CALLS)) return true
+  if (isEnvDefinedFalsy(process.env.BB_TRACE_API_CALLS)) return false
+  if (isEnvTruthy(process.env.BB_TRACE_API_CALLS)) return true
   return readTraceCaptureSettingsSync().enabled
 }
 

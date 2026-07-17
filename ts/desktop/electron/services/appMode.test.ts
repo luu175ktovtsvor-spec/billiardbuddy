@@ -75,7 +75,7 @@ describe('Electron app mode service', () => {
 
     expect(applyStartupPortableMode(fakeApp, env)).toBe(defaultDir)
     expect(env.CLAUDE_CONFIG_DIR).toBe(defaultDir)
-    expect(env.CC_HAHA_APP_PORTABLE_DIR).toBe('1')
+    expect(env.BB_APP_PORTABLE_DIR).toBe('1')
     expect(env.WEBVIEW2_USER_DATA_FOLDER).toBe(path.join(defaultDir, 'EBWebView'))
   })
 
@@ -89,7 +89,7 @@ describe('Electron app mode service', () => {
       activeConfigDir: fakeApp.getPath('userData'),
       configDirSource: 'system',
     })
-    expect(getAppMode(fakeApp, { CLAUDE_CONFIG_DIR: '/portable', CC_HAHA_APP_PORTABLE_DIR: '1' })).toMatchObject({
+    expect(getAppMode(fakeApp, { CLAUDE_CONFIG_DIR: '/portable', BB_APP_PORTABLE_DIR: '1' })).toMatchObject({
       mode: 'portable',
       portableDir: '/portable',
       activeConfigDir: '/portable',

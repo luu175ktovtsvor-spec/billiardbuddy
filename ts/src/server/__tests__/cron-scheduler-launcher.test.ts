@@ -24,8 +24,8 @@ const originalClaudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
 const originalHome = process.env.HOME
 const originalShell = process.env.SHELL
 const originalZdotdir = process.env.ZDOTDIR
-const originalDisableTerminalShellEnv = process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
-const originalTaskTimeout = process.env.CC_HAHA_TASK_TIMEOUT_MS
+const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
+const originalTaskTimeout = process.env.BB_TASK_TIMEOUT_MS
 
 const isWindows = process.platform === 'win32'
 const unixOnly = isWindows ? it.skip : it
@@ -105,14 +105,14 @@ function restoreEnv(): void {
     delete process.env.ZDOTDIR
   }
   if (originalDisableTerminalShellEnv) {
-    process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
+    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
   } else {
-    delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+    delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
   }
   if (originalTaskTimeout) {
-    process.env.CC_HAHA_TASK_TIMEOUT_MS = originalTaskTimeout
+    process.env.BB_TASK_TIMEOUT_MS = originalTaskTimeout
   } else {
-    delete process.env.CC_HAHA_TASK_TIMEOUT_MS
+    delete process.env.BB_TASK_TIMEOUT_MS
   }
   resetTerminalShellEnvironmentCacheForTests()
 }
@@ -123,7 +123,7 @@ describe('cron scheduler launcher resolution', () => {
   beforeEach(async () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = path.join(tmpDir, 'config')
-    process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     resetTerminalShellEnvironmentCacheForTests()
   })
 
@@ -134,12 +134,12 @@ describe('cron scheduler launcher resolution', () => {
 
   it('uses a configurable scheduled task timeout with the default unchanged', () => {
     expect(resolveCronTaskTimeoutMs({})).toBe(10 * 60 * 1000)
-    expect(resolveCronTaskTimeoutMs({ CC_HAHA_TASK_TIMEOUT_MS: '1800000' })).toBe(1_800_000)
-    expect(resolveCronTaskTimeoutMs({ CC_HAHA_TASK_TIMEOUT_MS: 'not-a-number' })).toBe(10 * 60 * 1000)
-    expect(resolveCronTaskTimeoutMs({ CC_HAHA_TASK_TIMEOUT_MS: '0' })).toBe(10 * 60 * 1000)
+    expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: '1800000' })).toBe(1_800_000)
+    expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: 'not-a-number' })).toBe(10 * 60 * 1000)
+    expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: '0' })).toBe(10 * 60 * 1000)
   })
 
-  unixOnly('executeTask arms the subprocess timeout from CC_HAHA_TASK_TIMEOUT_MS', async () => {
+  unixOnly('executeTask arms the subprocess timeout from BB_TASK_TIMEOUT_MS', async () => {
     const binDir = path.join(tmpDir, 'bin')
     const sidecarPath = path.join(tmpDir, 'claude-sidecar')
     const appRoot = path.join(tmpDir, 'app-root')
@@ -168,7 +168,7 @@ describe('cron scheduler launcher resolution', () => {
     process.env.PATH = binDir
     process.env.CLAUDE_CLI_PATH = sidecarPath
     process.env.CLAUDE_APP_ROOT = appRoot
-    process.env.CC_HAHA_TASK_TIMEOUT_MS = '12345'
+    process.env.BB_TASK_TIMEOUT_MS = '12345'
 
     try {
       const cronService = new CronService()
@@ -245,7 +245,7 @@ describe('cron scheduler launcher resolution', () => {
     expect(env.QF_GATEWAY_TOKEN).toBe('app-token-SECRET')
   })
 
-  it('prefers an explicit CC_HAHA_ROOT when it points at a source checkout', async () => {
+  it('prefers an explicit BB_ROOT when it points at a source checkout', async () => {
     const sourceRoot = path.join(tmpDir, 'source')
     await createSourceRoot(sourceRoot)
 
@@ -253,7 +253,7 @@ describe('cron scheduler launcher resolution', () => {
       resolveCronProjectRoot({
         cwd: path.join(tmpDir, 'other'),
         moduleDir: path.join(tmpDir, 'broken', 'src', 'server', 'services'),
-        env: { CC_HAHA_ROOT: sourceRoot },
+        env: { BB_ROOT: sourceRoot },
       }),
     ).toBe(sourceRoot)
   })
@@ -555,7 +555,7 @@ describe('cron scheduler launcher resolution', () => {
     )
     await fs.chmod(sidecarPath, 0o755)
 
-    delete process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
+    delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     process.env.HOME = tmpDir
     process.env.SHELL = shellPath
     process.env.PATH = '/usr/bin:/bin'

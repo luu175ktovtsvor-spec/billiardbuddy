@@ -120,7 +120,7 @@ export function applyStartupPortableMode(
   const portableDir = determineStartupPortableDir(app, env)
   if (!portableDir) return null
   env.CLAUDE_CONFIG_DIR = portableDir
-  env.CC_HAHA_APP_PORTABLE_DIR = '1'
+  env.BB_APP_PORTABLE_DIR = '1'
   env.WEBVIEW2_USER_DATA_FOLDER = path.join(portableDir, 'EBWebView')
   fs.mkdirSync(env.WEBVIEW2_USER_DATA_FOLDER, { recursive: true })
   return portableDir
@@ -141,7 +141,7 @@ export function getAppMode(
     defaultPortableDir: defaultPortableDir(app),
     activeConfigDir,
     configDirSource: userOverride
-      ? env.CC_HAHA_APP_PORTABLE_DIR ? 'portable' : 'environment'
+      ? env.BB_APP_PORTABLE_DIR ? 'portable' : 'environment'
       : 'system',
   }
 }

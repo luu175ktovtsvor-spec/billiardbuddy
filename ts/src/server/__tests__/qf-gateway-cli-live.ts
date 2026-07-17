@@ -89,7 +89,7 @@ async function main() {
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   // Force the real CLI (not the mock fixture) and a deterministic-ish harness.
   delete process.env.CLAUDE_CLI_PATH
-  process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+  process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
 
   const { startServer } = await import('../index.js')
   const server = startServer(SERVER_PORT, '127.0.0.1')

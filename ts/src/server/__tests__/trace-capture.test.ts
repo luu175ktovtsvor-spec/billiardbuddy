@@ -621,14 +621,14 @@ describe('trace capture service', () => {
 
   test('captures direct Anthropic-compatible provider calls from desktop fetch override', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    const originalProviderId = process.env.CC_HAHA_TRACE_PROVIDER_ID
-    const originalProviderName = process.env.CC_HAHA_TRACE_PROVIDER_NAME
-    const originalProviderFormat = process.env.CC_HAHA_TRACE_PROVIDER_FORMAT
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
-    process.env.CC_HAHA_TRACE_PROVIDER_ID = 'provider-sub2api'
-    process.env.CC_HAHA_TRACE_PROVIDER_NAME = 'Sub2API-ChatGPT'
-    process.env.CC_HAHA_TRACE_PROVIDER_FORMAT = 'anthropic'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    const originalProviderId = process.env.BB_TRACE_PROVIDER_ID
+    const originalProviderName = process.env.BB_TRACE_PROVIDER_NAME
+    const originalProviderFormat = process.env.BB_TRACE_PROVIDER_FORMAT
+    process.env.BB_TRACE_API_CALLS = '1'
+    process.env.BB_TRACE_PROVIDER_ID = 'provider-sub2api'
+    process.env.BB_TRACE_PROVIDER_NAME = 'Sub2API-ChatGPT'
+    process.env.BB_TRACE_PROVIDER_FORMAT = 'anthropic'
     try {
       globalThis.fetch = (async () => new Response(
         JSON.stringify({ id: 'msg-direct-trace', content: [{ type: 'text', text: 'ok' }] }),
@@ -667,21 +667,21 @@ describe('trace capture service', () => {
       expect(trace.events.map((event) => event.phase)).toEqual(['api_call_started', 'api_call_completed'])
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
-      if (originalProviderId === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_ID
-      else process.env.CC_HAHA_TRACE_PROVIDER_ID = originalProviderId
-      if (originalProviderName === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_NAME
-      else process.env.CC_HAHA_TRACE_PROVIDER_NAME = originalProviderName
-      if (originalProviderFormat === undefined) delete process.env.CC_HAHA_TRACE_PROVIDER_FORMAT
-      else process.env.CC_HAHA_TRACE_PROVIDER_FORMAT = originalProviderFormat
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
+      if (originalProviderId === undefined) delete process.env.BB_TRACE_PROVIDER_ID
+      else process.env.BB_TRACE_PROVIDER_ID = originalProviderId
+      if (originalProviderName === undefined) delete process.env.BB_TRACE_PROVIDER_NAME
+      else process.env.BB_TRACE_PROVIDER_NAME = originalProviderName
+      if (originalProviderFormat === undefined) delete process.env.BB_TRACE_PROVIDER_FORMAT
+      else process.env.BB_TRACE_PROVIDER_FORMAT = originalProviderFormat
     }
   })
 
   test('captures direct provider headers when fetch input is a Request', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       globalThis.fetch = (async () => new Response(
         JSON.stringify({ id: 'msg-request-input', content: [{ type: 'text', text: 'ok' }] }),
@@ -719,15 +719,15 @@ describe('trace capture service', () => {
       expect(trace.calls[0].response.body.preview).toContain('msg-request-input')
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('captures direct provider fetch failures without changing thrown behavior', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       globalThis.fetch = (async () => {
         throw new Error('network down for trace')
@@ -761,16 +761,16 @@ describe('trace capture service', () => {
       expect(trace.events.map((event) => event.phase)).toEqual(['api_call_started', 'api_call_failed'])
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('passes session id to local provider proxy without duplicating client-side trace', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
     let seenHeader: string | null = null
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
         seenHeader = new Headers(init?.headers).get('x-claude-code-session-id')
@@ -794,15 +794,15 @@ describe('trace capture service', () => {
       expect(trace.summary.apiCalls).toBe(0)
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('records an aborted error call when the request is aborted mid-stream', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       // A stream that sends one chunk then goes silent forever, like the
       // wedged upstream in #766. The mock ignores the abort signal, so the
@@ -857,15 +857,15 @@ describe('trace capture service', () => {
       expect(trace.events.at(-1)?.severity).toBe('error')
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('synthesizes an AbortError when the abort signal carries no reason', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       globalThis.fetch = (async () => {
         const stream = new ReadableStream<Uint8Array>({
@@ -901,15 +901,15 @@ describe('trace capture service', () => {
       expect(trace.calls[0].metadata).toMatchObject({ phase: 'api_call_aborted', aborted: true })
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('keeps a completed call ok when the signal aborts after the response finished', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       globalThis.fetch = (async () => new Response(
         JSON.stringify({ id: 'msg-late-abort', content: [{ type: 'text', text: 'ok' }] }),
@@ -948,15 +948,15 @@ describe('trace capture service', () => {
       expect(trace.events.map((event) => event.phase)).toEqual(['api_call_started', 'api_call_completed'])
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 
   test('marks fetch rejections from an aborted signal with abort metadata', async () => {
     const originalFetch = globalThis.fetch
-    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
-    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    const originalTraceEnv = process.env.BB_TRACE_API_CALLS
+    process.env.BB_TRACE_API_CALLS = '1'
     try {
       const abortController = new AbortController()
       globalThis.fetch = (async () => {
@@ -991,8 +991,8 @@ describe('trace capture service', () => {
       expect(trace.events.map((event) => event.phase)).toEqual(['api_call_started', 'api_call_failed'])
     } finally {
       globalThis.fetch = originalFetch
-      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
-      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+      if (originalTraceEnv === undefined) delete process.env.BB_TRACE_API_CALLS
+      else process.env.BB_TRACE_API_CALLS = originalTraceEnv
     }
   })
 })

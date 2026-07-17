@@ -83,7 +83,7 @@ describe('provider presets API', () => {
     expect(deepseek?.defaultModels.haiku).toBe('deepseek-v4-flash')
     expect(deepseek?.defaultModels.sonnet).toBe('deepseek-v4-pro[1m]')
     expect(deepseek?.defaultModels.opus).toBe('deepseek-v4-pro[1m]')
-    expect(deepseek?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(deepseek?.defaultEnv?.BB_SEND_DISABLED_THINKING).toBeUndefined()
     expect(deepseek?.defaultEnv?.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
       'thinking,effort,adaptive_thinking,max_effort',
     )
@@ -96,7 +96,7 @@ describe('provider presets API', () => {
     expect(kimi?.baseUrl).toBe('https://api.moonshot.cn/anthropic')
     expect(kimi?.authStrategy).toBe('auth_token')
     expect(kimi?.defaultModels.main).toBe('kimi-k2.7-code')
-    expect(kimi?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(kimi?.defaultEnv?.BB_SEND_DISABLED_THINKING).toBeUndefined()
     expect(kimi?.defaultEnv?.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe('thinking')
     expect(minimax?.authStrategy).toBe('auth_token')
     expect(minimax?.defaultModels.main).toBe('MiniMax-M3[1m]')
@@ -144,7 +144,7 @@ describe('provider presets API', () => {
     expect(deepseek?.modelContextWindows?.['deepseek-v4-flash']).toBe(1000000)
     expect(zhipu?.apiKeyUrl).toBe('https://www.bigmodel.cn/invite?icode=d41B2qi8Z5xNwTGLNPPF3OZLO2QH3C0EBTSr%2BArzMw4%3D')
     expect(zhipu?.promoText).toContain('cc-haha')
-    expect(zhipu?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(zhipu?.defaultEnv?.BB_SEND_DISABLED_THINKING).toBeUndefined()
     expect(zhipu?.modelContextWindows?.['glm-5.2']).toBe(1000000)
     expect(zhipu?.modelContextWindows?.['glm-5.1']).toBe(200000)
     expect(zhipu?.modelContextWindows?.['glm-4.7']).toBe(200000)
