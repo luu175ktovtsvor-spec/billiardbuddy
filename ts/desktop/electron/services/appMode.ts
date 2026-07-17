@@ -25,9 +25,9 @@ export function defaultPortableDir(app: AppModeAppLike): string {
 
 /**
  * BilliardBuddy's OWN product data root. Lives under the (rebranded) userData so
- * the kernel never falls back to the shared ~/.claude / ~/.claude/cc-haha that an
+ * the kernel never falls back to the shared ~/.claude / ~/.claude/billiardbuddy that an
  * installed CC-Haha or Claude Code would own. Host-layer isolation only — the
- * kernel's internal <configDir>/cc-haha/* layout is unchanged.
+ * kernel's internal <configDir>/billiardbuddy/* layout is unchanged.
  */
 export function defaultProductDataDir(app: AppModeAppLike): string {
   return path.join(app.getPath('userData'), 'config')
@@ -68,7 +68,7 @@ export function dirHasPortableData(dir: string): boolean {
       'skills',
       'plugins',
       'cowork_plugins',
-      'cc-haha',
+      'billiardbuddy',
     ].some(file => fs.existsSync(path.join(dir, file)) && fs.statSync(path.join(dir, file)).isDirectory())
 }
 

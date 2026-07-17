@@ -119,7 +119,7 @@ describe('ensureDesktopCliLauncherInstalled', () => {
     expect(getDesktopCliCommandName('win32')).toBe('billiardbuddy.cmd')
 
     process.env.CLAUDE_CONFIG_DIR = 'C:\\Portable\\ClaudeConfig'
-    const wrapper = buildWindowsLauncherWrapper('C:\\Apps\\cc-haha\\billiardbuddy-sidecar.exe')
+    const wrapper = buildWindowsLauncherWrapper('C:\\Apps\\billiardbuddy\\billiardbuddy-sidecar.exe')
 
     expect(wrapper).toContain('set "CLAUDE_CONFIG_DIR=C:\\Portable\\ClaudeConfig"')
     expect(wrapper).toContain(

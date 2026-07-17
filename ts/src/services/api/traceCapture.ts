@@ -212,7 +212,7 @@ export function isTraceCaptureEnabled(): boolean {
 }
 
 export function getTraceStorageDir(): string {
-  return join(getClaudeConfigHomeDir(), 'cc-haha', 'traces')
+  return join(getClaudeConfigHomeDir(), 'billiardbuddy', 'traces')
 }
 
 export function readTraceCaptureSettingsSync(): TraceCaptureSettings {
@@ -1088,7 +1088,7 @@ function sanitizeTraceFileName(sessionId: string): string {
 }
 
 function getManagedSettingsPath(): string {
-  return join(getClaudeConfigHomeDir(), 'cc-haha', 'settings.json')
+  return join(getClaudeConfigHomeDir(), 'billiardbuddy', 'settings.json')
 }
 
 function defaultTraceCaptureSettings(): TraceCaptureSettings {

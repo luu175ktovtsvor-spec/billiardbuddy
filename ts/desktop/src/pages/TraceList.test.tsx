@@ -31,10 +31,10 @@ vi.mock('../lib/desktopHost', async (importOriginal) => {
 
 const traceList: TraceSessionList = {
   total: 1,
-  storageDir: '/tmp/cc-haha/traces',
+  storageDir: '/tmp/billiardbuddy/traces',
   settings: {
     enabled: true,
-    storageDir: '/tmp/cc-haha/traces',
+    storageDir: '/tmp/billiardbuddy/traces',
   },
   traces: [{
     sessionId: 'session-trace-list',
@@ -108,7 +108,7 @@ describe('TraceList', () => {
     expect(tracesApi.list).toHaveBeenCalledWith({ limit: 50, offset: 0, query: '' })
 
     // header: storage dir + collection badge + aggregate chips
-    expect(screen.getByText('/tmp/cc-haha/traces')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/billiardbuddy/traces')).toBeInTheDocument()
     expect(screen.getByText('Collecting')).toBeInTheDocument()
     expect(screen.getByText('Sessions')).toBeInTheDocument()
 
@@ -229,7 +229,7 @@ describe('TraceList', () => {
   it('shows the paused badge when capture is disabled', async () => {
     vi.mocked(tracesApi.list).mockResolvedValue({
       ...traceList,
-      settings: { enabled: false, storageDir: '/tmp/cc-haha/traces' },
+      settings: { enabled: false, storageDir: '/tmp/billiardbuddy/traces' },
     })
 
     render(<TraceList />)

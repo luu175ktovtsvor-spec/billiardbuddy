@@ -12,7 +12,7 @@ describe('Electron update smoke updater', () => {
   })
 
   it('drives the real Electron updater service contract and logs the install signal', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'cc-haha-update-smoke-'))
+    const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-update-smoke-'))
     const logPath = join(tempDir, 'update-smoke.jsonl')
     try {
       const updater = createUpdateSmokeUpdaterFromEnv({

@@ -36,7 +36,7 @@ describe('ConversationService', () => {
   let originalDisableTerminalShellEnv: string | undefined
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-haha-conversation-service-'))
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'billiardbuddy-conversation-service-'))
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
     originalApiKey = process.env.ANTHROPIC_API_KEY
     originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
@@ -175,15 +175,15 @@ describe('ConversationService', () => {
 
   test('keeps inherited provider env when no desktop provider config exists', async () => {
     const service = new ConversationService() as any
-    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\cc-haha')) as Record<string, string>
+    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\billiardbuddy')) as Record<string, string>
 
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('test-token')
     expect(env.ANTHROPIC_BASE_URL).toBe('https://example.invalid/anthropic')
     expect(env.ANTHROPIC_MODEL).toBe('test-model')
     expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
-    expect(env.CLAUDE_CODE_DIAGNOSTICS_FILE).toBe(path.join(tmpDir, 'cc-haha', 'diagnostics', 'cli-diagnostics.jsonl'))
+    expect(env.CLAUDE_CODE_DIAGNOSTICS_FILE).toBe(path.join(tmpDir, 'billiardbuddy', 'diagnostics', 'cli-diagnostics.jsonl'))
     expect(env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE).toBe(
-      `${path.join(tmpDir, 'projects', 'D--workspace-code-myself-code-cc-haha', 'memory')}${path.sep}`,
+      `${path.join(tmpDir, 'projects', 'D--workspace-code-myself-code-billiardbuddy', 'memory')}${path.sep}`,
     )
     await expect(fs.stat(path.dirname(env.CLAUDE_CODE_DIAGNOSTICS_FILE))).resolves.toBeTruthy()
   })
@@ -302,16 +302,16 @@ describe('ConversationService', () => {
   })
 
   test('strips inherited provider env when desktop provider config exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const billiardBuddyDir = path.join(tmpDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'providers.json'),
+      path.join(billiardBuddyDir, 'providers.json'),
       JSON.stringify({ activeId: null, providers: [] }),
       'utf-8',
     )
 
     const service = new ConversationService() as any
-    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\cc-haha')) as Record<string, string>
+    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\billiardbuddy')) as Record<string, string>
 
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
@@ -382,10 +382,10 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv injects CLAUDE_CODE_OAUTH_TOKEN when official mode + haha oauth token exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const billiardBuddyDir = path.join(tmpDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(billiardBuddyDir, 'settings.json'),
       JSON.stringify({ env: {} }),
       'utf-8',
     )
@@ -452,10 +452,10 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv does NOT inject CLAUDE_CODE_OAUTH_TOKEN when not official mode', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const billiardBuddyDir = path.join(tmpDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(billiardBuddyDir, 'settings.json'),
       JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'custom-provider-token' } }),
       'utf-8',
     )
@@ -698,10 +698,10 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv can force official auth even when a custom default provider exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const billiardBuddyDir = path.join(tmpDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(billiardBuddyDir, 'settings.json'),
       JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'custom-provider-token' } }),
       'utf-8',
     )
@@ -756,7 +756,7 @@ describe('ConversationService', () => {
 
     expect(env.BB_OPENAI_OAUTH_PROVIDER).toBe('1')
     expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
-      path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
+      path.join(tmpDir, 'billiardbuddy', 'openai-oauth.json'),
     )
     expect(env.ANTHROPIC_MODEL).toBe('gpt-5.3-codex')
     expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gpt-5.4')
@@ -769,10 +769,10 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv does not leak inherited CLAUDE_CODE_OAUTH_TOKEN when official token is unavailable', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const billiardBuddyDir = path.join(tmpDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(billiardBuddyDir, 'settings.json'),
       JSON.stringify({ env: {} }),
       'utf-8',
     )

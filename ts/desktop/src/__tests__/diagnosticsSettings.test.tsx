@@ -89,11 +89,11 @@ describe('Settings > Diagnostics tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     diagnosticsApiMock.getStatus.mockResolvedValue({
-      logDir: '/tmp/claude/cc-haha/diagnostics',
-      diagnosticsPath: '/tmp/claude/cc-haha/diagnostics/diagnostics.jsonl',
-      cliDiagnosticsPath: '/tmp/claude/cc-haha/diagnostics/cli-diagnostics.jsonl',
-      runtimeErrorsPath: '/tmp/claude/cc-haha/diagnostics/runtime-errors.log',
-      exportDir: '/tmp/claude/cc-haha/diagnostics/exports',
+      logDir: '/tmp/claude/billiardbuddy/diagnostics',
+      diagnosticsPath: '/tmp/claude/billiardbuddy/diagnostics/diagnostics.jsonl',
+      cliDiagnosticsPath: '/tmp/claude/billiardbuddy/diagnostics/cli-diagnostics.jsonl',
+      runtimeErrorsPath: '/tmp/claude/billiardbuddy/diagnostics/runtime-errors.log',
+      exportDir: '/tmp/claude/billiardbuddy/diagnostics/exports',
       retentionDays: 7,
       maxBytes: 50 * 1024 * 1024,
       totalBytes: 4096,
@@ -117,8 +117,8 @@ describe('Settings > Diagnostics tab', () => {
     })
     diagnosticsApiMock.exportBundle.mockResolvedValue({
       bundle: {
-        path: '/tmp/claude/cc-haha/diagnostics/exports/cc-haha-diagnostics.tar.gz',
-        fileName: 'cc-haha-diagnostics.tar.gz',
+        path: '/tmp/claude/billiardbuddy/diagnostics/exports/billiardbuddy-diagnostics.tar.gz',
+        fileName: 'billiardbuddy-diagnostics.tar.gz',
         bytes: 1024,
       },
     })
@@ -126,8 +126,8 @@ describe('Settings > Diagnostics tab', () => {
     diagnosticsApiMock.clear.mockResolvedValue({ ok: true })
     doctorRepairMock.runDoctorRepair.mockResolvedValue({
       local: {
-        removedKeys: ['cc-haha-open-tabs', 'cc-haha-session-runtime'],
-        missingKeys: ['cc-haha-theme', 'cc-haha-locale', 'cc-haha.persistence.schemaVersion'],
+        removedKeys: ['billiardbuddy-open-tabs', 'billiardbuddy-session-runtime'],
+        missingKeys: ['billiardbuddy-theme', 'billiardbuddy-locale', 'billiardbuddy.persistence.schemaVersion'],
         failedKeys: [],
       },
       server: {
@@ -146,7 +146,7 @@ describe('Settings > Diagnostics tab', () => {
     fireEvent.click(screen.getByText('Diagnostics'))
 
     expect(await screen.findByText('Log directory')).toBeInTheDocument()
-    expect(screen.getByText('/tmp/claude/cc-haha/diagnostics')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/claude/billiardbuddy/diagnostics')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Export Bundle/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Copy Error Summary/i })).toBeInTheDocument()
     expect(screen.getByText('cli_start_failed')).toBeInTheDocument()
@@ -163,7 +163,7 @@ describe('Settings > Diagnostics tab', () => {
     await waitFor(() => {
       expect(diagnosticsApiMock.exportBundle).toHaveBeenCalled()
     })
-    expect(await screen.findByText('/tmp/claude/cc-haha/diagnostics/exports/cc-haha-diagnostics.tar.gz')).toBeInTheDocument()
+    expect(await screen.findByText('/tmp/claude/billiardbuddy/diagnostics/exports/billiardbuddy-diagnostics.tar.gz')).toBeInTheDocument()
   })
 
   it('asks with the shared confirm dialog before clearing diagnostics', async () => {
@@ -237,9 +237,9 @@ describe('Settings > Diagnostics tab', () => {
   })
 
   it('runs Doctor from Diagnostics without clearing unrelated desktop state', async () => {
-    window.localStorage.setItem('cc-haha-open-tabs', '{"activeTabId":"__settings__"}')
-    window.localStorage.setItem('cc-haha-theme', 'dark')
-    window.localStorage.setItem('cc-haha-chat-history', 'keep')
+    window.localStorage.setItem('billiardbuddy-open-tabs', '{"activeTabId":"__settings__"}')
+    window.localStorage.setItem('billiardbuddy-theme', 'dark')
+    window.localStorage.setItem('billiardbuddy-chat-history', 'keep')
 
     render(<Settings />)
 
@@ -252,6 +252,6 @@ describe('Settings > Diagnostics tab', () => {
 
     const toasts = useUIStore.getState().toasts
     expect(toasts[toasts.length - 1]?.message).toContain('Doctor')
-    expect(window.localStorage.getItem('cc-haha-chat-history')).toBe('keep')
+    expect(window.localStorage.getItem('billiardbuddy-chat-history')).toBe('keep')
   })
 })

@@ -70,12 +70,12 @@ async function teardown(): Promise<void> {
 }
 
 async function readProvidersRaw(): Promise<string> {
-  return fs.readFile(path.join(tmpDir, 'cc-haha', 'providers.json'), 'utf-8')
+  return fs.readFile(path.join(tmpDir, 'billiardbuddy', 'providers.json'), 'utf-8')
 }
 
 async function readSettingsRaw(): Promise<string> {
   try {
-    return await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')
+    return await fs.readFile(path.join(tmpDir, 'billiardbuddy', 'settings.json'), 'utf-8')
   } catch {
     return ''
   }
@@ -715,6 +715,6 @@ describe('qf-gateway consumer recognition (must not be treated as stale)', () =>
     await ensureQfGatewayProviderRegistered(svc)
     const status = await svc.checkAuthStatus()
     expect(status.hasAuth).toBe(true)
-    expect(status.source).toBe('cc-haha-provider')
+    expect(status.source).toBe('billiardbuddy-provider')
   })
 })

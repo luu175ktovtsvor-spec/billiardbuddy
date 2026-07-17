@@ -72,7 +72,7 @@ export class BbOAuthService {
   private getOAuthFilePath(): string {
     const configDir =
       process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-    return path.join(configDir, 'cc-haha', 'oauth.json')
+    return path.join(configDir, 'billiardbuddy', 'oauth.json')
   }
 
   async loadTokens(): Promise<StoredOAuthTokens | null> {

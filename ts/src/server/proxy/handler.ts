@@ -44,7 +44,7 @@ type ProxyTraceContext = {
   anthropicRequest: AnthropicRequest
 }
 
-const TRACE_RECORDED_ERROR_MARKER = Symbol('cc-haha-trace-recorded-error')
+const TRACE_RECORDED_ERROR_MARKER = Symbol('billiardbuddy-trace-recorded-error')
 
 function markTraceErrorRecorded(error: unknown): void {
   if (error && typeof error === 'object') {

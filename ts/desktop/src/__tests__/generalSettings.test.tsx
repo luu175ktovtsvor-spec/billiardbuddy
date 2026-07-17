@@ -178,7 +178,7 @@ describe('Settings > General tab', () => {
     tauriCoreMock.invoke.mockReset()
     tauriCoreMock.invoke.mockResolvedValue(undefined)
     tauriDialogMock.open.mockReset()
-    tauriDialogMock.open.mockResolvedValue('/Users/test/cc-haha-data')
+    tauriDialogMock.open.mockResolvedValue('/Users/test/billiardbuddy-data')
     tauriProcessMock.relaunch.mockReset()
     tauriProcessMock.relaunch.mockResolvedValue(undefined)
     delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
@@ -210,7 +210,7 @@ describe('Settings > General tab', () => {
       autoDreamEnabled: false,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
-      traceCapture: { enabled: true, storageDir: '/Users/test/.claude/cc-haha/traces' },
+      traceCapture: { enabled: true, storageDir: '/Users/test/.claude/billiardbuddy/traces' },
       chatSendBehavior: 'enter',
       responseLanguage: '',
       uiZoom: 1,
@@ -517,7 +517,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Choose Folder' }))
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Portable data directory')).toHaveValue('/Users/test/cc-haha-data')
+      expect(screen.getByLabelText('Portable data directory')).toHaveValue('/Users/test/billiardbuddy-data')
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
@@ -525,7 +525,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
 
     await waitFor(() => {
-      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('portable', '/Users/test/cc-haha-data')
+      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('portable', '/Users/test/billiardbuddy-data')
       expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
       expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
     })
@@ -535,9 +535,9 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       appMode: {
         mode: 'portable',
-        portableDir: '/Users/test/cc-haha-data',
+        portableDir: '/Users/test/billiardbuddy-data',
         defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
-        activeConfigDir: '/Users/test/cc-haha-data',
+        activeConfigDir: '/Users/test/billiardbuddy-data',
         configDirSource: 'portable',
       },
     })

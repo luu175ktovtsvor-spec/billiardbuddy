@@ -10,7 +10,7 @@ describe('Electron window smoke diagnostics', () => {
   })
 
   it('writes a focused visible window snapshot for packaged UI diagnostics', () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'cc-haha-window-smoke-'))
+    const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-window-smoke-'))
     const logPath = join(tempDir, 'window-smoke.jsonl')
     try {
       writeWindowSmokeSnapshot({

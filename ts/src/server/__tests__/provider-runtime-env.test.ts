@@ -25,7 +25,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('derives native Anthropic provider env from the active provider index', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -61,7 +61,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('active provider env overrides stale proxy settings while preserving unrelated env', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -108,7 +108,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('honors disabled tool search for native Anthropic providers', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -136,7 +136,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('honors disabled experimental betas for active providers', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -164,7 +164,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('keeps providers readable when stored tool search values are stringly typed', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -193,7 +193,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('does not write tool search env for OpenAI proxy providers', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-1',
       providers: [
         {
@@ -221,7 +221,7 @@ describe('providerRuntimeEnv', () => {
   })
 
   test('applies updated docs-backed preset env for domestic Anthropic-compatible providers', async () => {
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-kimi',
       providers: [
         {
@@ -254,7 +254,7 @@ describe('providerRuntimeEnv', () => {
       'kimi-k2.7-code-highspeed': 262144,
     })
 
-    await writeJson(path.join(tmpDir, 'cc-haha', 'providers.json'), {
+    await writeJson(path.join(tmpDir, 'billiardbuddy', 'providers.json'), {
       activeId: 'provider-zhipu',
       providers: [
         {

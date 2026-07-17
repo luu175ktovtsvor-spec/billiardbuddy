@@ -23,19 +23,19 @@ function getDesktopTokenFilePath(): string | null {
   return filePath ? filePath : null
 }
 
-function getCcHahaDir(): string {
+function getBilliardBuddyDir(): string {
   const configDir =
     process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  return path.join(configDir, 'cc-haha')
+  return path.join(configDir, 'billiardbuddy')
 }
 
 function getFileBackedStorageMarkerPath(): string {
-  return path.join(getCcHahaDir(), FILE_BACKED_STORAGE_MARKER_FILE)
+  return path.join(getBilliardBuddyDir(), FILE_BACKED_STORAGE_MARKER_FILE)
 }
 
 function markFileBackedStorageUsed(): void {
   try {
-    fs.mkdirSync(getCcHahaDir(), { recursive: true })
+    fs.mkdirSync(getBilliardBuddyDir(), { recursive: true })
     fs.writeFileSync(getFileBackedStorageMarkerPath(), '1\n', { mode: 0o600 })
   } catch (error) {
     logError(error)

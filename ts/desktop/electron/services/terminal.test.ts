@@ -58,7 +58,7 @@ const tempDirs: string[] = []
 const itOnDarwin = process.platform === 'darwin' ? it : it.skip
 
 function tempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-haha-terminal-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'billiardbuddy-terminal-'))
   tempDirs.push(dir)
   return dir
 }

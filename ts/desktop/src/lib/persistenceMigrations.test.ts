@@ -11,7 +11,7 @@ describe('desktop persistence migrations', () => {
   })
 
   test('migrates legacy open-tab arrays into the current tab persistence shape', () => {
-    window.localStorage.setItem('cc-haha-open-tabs', JSON.stringify([
+    window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify([
       { sessionId: 'session-1', title: 'Old tab' },
       { sessionId: '__terminal__legacy', title: 'Terminal 1', type: 'terminal' },
       { sessionId: 123, title: 'bad' },
@@ -19,8 +19,8 @@ describe('desktop persistence migrations', () => {
 
     const report = runDesktopPersistenceMigrations()
 
-    expect(report.migratedKeys).toContain('cc-haha-open-tabs')
-    expect(JSON.parse(window.localStorage.getItem('cc-haha-open-tabs') || '{}')).toEqual({
+    expect(report.migratedKeys).toContain('billiardbuddy-open-tabs')
+    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
       openTabs: [{ sessionId: 'session-1', title: 'Old tab', type: 'session' }],
       activeTabId: 'session-1',
     })
@@ -29,7 +29,7 @@ describe('desktop persistence migrations', () => {
 
   test('filters stale session runtime selections without clearing unrelated keys', () => {
     window.localStorage.setItem('unrelated-user-key', 'keep')
-    window.localStorage.setItem('cc-haha-session-runtime', JSON.stringify({
+    window.localStorage.setItem('billiardbuddy-session-runtime', JSON.stringify({
       good: { providerId: null, modelId: 'claude-sonnet' },
       alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
       bad: { providerId: 'provider-2' },
@@ -37,7 +37,7 @@ describe('desktop persistence migrations', () => {
 
     runDesktopPersistenceMigrations()
 
-    expect(JSON.parse(window.localStorage.getItem('cc-haha-session-runtime') || '{}')).toEqual({
+    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-session-runtime') || '{}')).toEqual({
       alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
       good: { providerId: null, modelId: 'claude-sonnet' },
     })
@@ -45,53 +45,53 @@ describe('desktop persistence migrations', () => {
   })
 
   test('removes malformed known keys without throwing during startup', () => {
-    window.localStorage.setItem('cc-haha-open-tabs', '{"openTabs":')
-    window.localStorage.setItem('cc-haha-theme', 'sepia')
+    window.localStorage.setItem('billiardbuddy-open-tabs', '{"openTabs":')
+    window.localStorage.setItem('billiardbuddy-theme', 'sepia')
 
     const report = runDesktopPersistenceMigrations()
 
-    expect(report.migratedKeys).toContain('cc-haha-open-tabs')
-    expect(report.migratedKeys).toContain('cc-haha-theme')
-    expect(window.localStorage.getItem('cc-haha-open-tabs')).toBeNull()
-    expect(window.localStorage.getItem('cc-haha-theme')).toBeNull()
+    expect(report.migratedKeys).toContain('billiardbuddy-open-tabs')
+    expect(report.migratedKeys).toContain('billiardbuddy-theme')
+    expect(window.localStorage.getItem('billiardbuddy-open-tabs')).toBeNull()
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
   })
 
   test('preserves the pure white theme as a valid persisted theme', () => {
-    window.localStorage.setItem('cc-haha-theme', 'white')
+    window.localStorage.setItem('billiardbuddy-theme', 'white')
 
     const report = runDesktopPersistenceMigrations()
 
-    expect(report.migratedKeys).not.toContain('cc-haha-theme')
-    expect(window.localStorage.getItem('cc-haha-theme')).toBe('white')
+    expect(report.migratedKeys).not.toContain('billiardbuddy-theme')
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('white')
   })
 
   test('preserves valid app zoom and removes invalid app zoom values', () => {
-    window.localStorage.setItem('cc-haha-app-zoom', '1.2')
+    window.localStorage.setItem('billiardbuddy-app-zoom', '1.2')
 
     const validReport = runDesktopPersistenceMigrations()
 
-    expect(validReport.migratedKeys).not.toContain('cc-haha-app-zoom')
-    expect(window.localStorage.getItem('cc-haha-app-zoom')).toBe('1.2')
+    expect(validReport.migratedKeys).not.toContain('billiardbuddy-app-zoom')
+    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBe('1.2')
 
-    window.localStorage.setItem('cc-haha-app-zoom', '4')
+    window.localStorage.setItem('billiardbuddy-app-zoom', '4')
 
     const invalidReport = runDesktopPersistenceMigrations()
 
-    expect(invalidReport.migratedKeys).toContain('cc-haha-app-zoom')
-    expect(window.localStorage.getItem('cc-haha-app-zoom')).toBeNull()
+    expect(invalidReport.migratedKeys).toContain('billiardbuddy-app-zoom')
+    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBeNull()
   })
 
   test('migrates the legacy UI zoom key into app zoom storage', () => {
-    window.localStorage.setItem('cc-haha-ui-zoom', '1.25')
+    window.localStorage.setItem('billiardbuddy-ui-zoom', '1.25')
 
     const report = runDesktopPersistenceMigrations()
 
     expect(report.migratedKeys).toEqual(expect.arrayContaining([
-      'cc-haha-app-zoom',
-      'cc-haha-ui-zoom',
+      'billiardbuddy-app-zoom',
+      'billiardbuddy-ui-zoom',
     ]))
-    expect(window.localStorage.getItem('cc-haha-app-zoom')).toBe('1.25')
-    expect(window.localStorage.getItem('cc-haha-ui-zoom')).toBeNull()
+    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBe('1.25')
+    expect(window.localStorage.getItem('billiardbuddy-ui-zoom')).toBeNull()
   })
 
   test('does not throw if schema version persistence is blocked', () => {
@@ -126,11 +126,11 @@ describe('desktop persistence migrations', () => {
     const report = runDesktopPersistenceMigrations(storage)
 
     expect(report.migratedKeys).toEqual(expect.arrayContaining([
-      'cc-haha-open-tabs',
-      'cc-haha-session-runtime',
-      'cc-haha-theme',
-      'cc-haha-locale',
-      'cc-haha-app-zoom',
+      'billiardbuddy-open-tabs',
+      'billiardbuddy-session-runtime',
+      'billiardbuddy-theme',
+      'billiardbuddy-locale',
+      'billiardbuddy-app-zoom',
       DESKTOP_PERSISTENCE_VERSION_KEY,
     ]))
   })

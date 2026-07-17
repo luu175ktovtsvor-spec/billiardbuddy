@@ -493,7 +493,7 @@ describe('trace capture service', () => {
   })
 
   test('skips malformed trace jsonl entries when reading a session', async () => {
-    const traceDir = path.join(tmpDir, 'cc-haha', 'traces')
+    const traceDir = path.join(tmpDir, 'billiardbuddy', 'traces')
     await fs.mkdir(traceDir, { recursive: true })
     await fs.writeFile(path.join(traceDir, 'session-corrupt.jsonl'), [
       'not-json',
@@ -610,7 +610,7 @@ describe('trace capture service', () => {
       },
     })
     const trace = await traceCaptureService.getSessionTrace('session-trace-disabled')
-    const settingsFile = JSON.parse(await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')) as {
+    const settingsFile = JSON.parse(await fs.readFile(path.join(tmpDir, 'billiardbuddy', 'settings.json'), 'utf-8')) as {
       traceCapture?: { enabled?: boolean }
     }
 
@@ -1254,10 +1254,10 @@ describe('session trace API', () => {
     expect(body.traces[0].sessionId).toBe('session-list-trace')
     expect(body.traces[0].summary.apiCalls).toBe(1)
     expect(body.traces[0].fileSize).toBeGreaterThan(0)
-    expect(body.storageDir).toBe(path.join(tmpDir, 'cc-haha', 'traces'))
+    expect(body.storageDir).toBe(path.join(tmpDir, 'billiardbuddy', 'traces'))
     expect(body.settings).toEqual({
       enabled: true,
-      storageDir: path.join(tmpDir, 'cc-haha', 'traces'),
+      storageDir: path.join(tmpDir, 'billiardbuddy', 'traces'),
     })
   })
 
@@ -1324,7 +1324,7 @@ describe('session trace API', () => {
 
     expect(res.status).toBe(200)
     expect(body).toEqual({ sessionId: 'session-delete-trace', deleted: true })
-    await expect(fs.stat(path.join(tmpDir, 'cc-haha', 'traces', 'session-delete-trace.jsonl'))).rejects.toThrow()
+    await expect(fs.stat(path.join(tmpDir, 'billiardbuddy', 'traces', 'session-delete-trace.jsonl'))).rejects.toThrow()
 
     const afterDelete = await traceCaptureService.getSessionTrace('session-delete-trace')
     expect(afterDelete.calls).toEqual([])
@@ -1449,7 +1449,7 @@ describe('trace read cache', () => {
   }
 
   test('serves cached entries while file mtime and size are unchanged', async () => {
-    const traceDir = path.join(tmpDir, 'cc-haha', 'traces')
+    const traceDir = path.join(tmpDir, 'billiardbuddy', 'traces')
     const filePath = path.join(traceDir, 'session-cache-hit.jsonl')
     await fs.mkdir(traceDir, { recursive: true })
 
@@ -1479,7 +1479,7 @@ describe('trace read cache', () => {
   })
 
   test('stores trimmed records in the list cache and keeps full records for detail reads', async () => {
-    const traceDir = path.join(tmpDir, 'cc-haha', 'traces')
+    const traceDir = path.join(tmpDir, 'billiardbuddy', 'traces')
     const filePath = path.join(traceDir, 'session-cache-list.jsonl')
     await fs.mkdir(traceDir, { recursive: true })
     await fs.writeFile(filePath, buildTraceCallLine('call-list-cache', 'session-cache-list', 'x'.repeat(10_000)))

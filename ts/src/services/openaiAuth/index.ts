@@ -24,7 +24,7 @@ const HTML_SUCCESS = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
-    <title>cc-haha OpenAI Authorization Successful</title>
+    <title>billiardbuddy OpenAI Authorization Successful</title>
     <style>
       body { font-family: system-ui, -apple-system, sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; background:#131010; color:#f1ecec; }
       .container { text-align:center; padding:2rem; }
@@ -44,7 +44,7 @@ const HTML_ERROR = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
-    <title>cc-haha OpenAI Authorization Failed</title>
+    <title>billiardbuddy OpenAI Authorization Failed</title>
   </head>
   <body>
     <h1>Authorization Failed</h1>

@@ -18,7 +18,7 @@ import {
 const tempDirs: string[] = []
 
 function tempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-haha-app-mode-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'billiardbuddy-app-mode-'))
   tempDirs.push(dir)
   return dir
 }

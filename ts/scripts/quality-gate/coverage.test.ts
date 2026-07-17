@@ -208,7 +208,7 @@ describe('coverage gate helpers', () => {
   })
 
   test('collects non-quarantined server tests when review windows have expired', () => {
-    const root = mkdtempSync(join(tmpdir(), 'cc-haha-coverage-'))
+    const root = mkdtempSync(join(tmpdir(), 'billiardbuddy-coverage-'))
     try {
       mkdirSync(join(root, 'src/server/__tests__'), { recursive: true })
       mkdirSync(join(root, 'src/tools'), { recursive: true })

@@ -169,11 +169,11 @@ export class DesktopUiPreferencesService {
   }
 
   private getPreferencesPath(): string {
-    return path.join(this.getConfigDir(), 'cc-haha', 'desktop-ui.json')
+    return path.join(this.getConfigDir(), 'billiardbuddy', 'desktop-ui.json')
   }
 
   private getProfileDir(): string {
-    return path.join(this.getConfigDir(), 'cc-haha', 'profile')
+    return path.join(this.getConfigDir(), 'billiardbuddy', 'profile')
   }
 
   private getProfileAvatarPath(avatarFile: string): string {
@@ -181,7 +181,7 @@ export class DesktopUiPreferencesService {
     if (!normalized) {
       throw ApiError.badRequest('Invalid avatar file path')
     }
-    return path.join(this.getConfigDir(), 'cc-haha', normalized)
+    return path.join(this.getConfigDir(), 'billiardbuddy', normalized)
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
@@ -236,7 +236,7 @@ export class DesktopUiPreferencesService {
     const existedBeforeRead = await this.fileExists(filePath)
     const preferences = await readRecoverableJsonFile({
       filePath,
-      label: 'cc-haha desktop UI preferences',
+      label: 'billiardbuddy desktop UI preferences',
       defaultValue: defaultPreferences(),
       normalize: normalizeDesktopUiPreferences,
     })

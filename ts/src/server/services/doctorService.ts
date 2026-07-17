@@ -161,16 +161,16 @@ export class DoctorService {
     const targets: DoctorTarget[] = [
       this.jsonTarget('user-settings', 'User settings', 'user', path.join(this.configDir, 'settings.json')),
       this.jsonTarget(
-        'cc-haha-providers',
+        'billiardbuddy-providers',
         'Managed providers',
         'user',
-        path.join(this.configDir, 'cc-haha', 'providers.json'),
+        path.join(this.configDir, 'billiardbuddy', 'providers.json'),
       ),
       this.jsonTarget(
-        'cc-haha-settings',
+        'billiardbuddy-settings',
         'Managed provider settings',
         'user',
-        path.join(this.configDir, 'cc-haha', 'settings.json'),
+        path.join(this.configDir, 'billiardbuddy', 'settings.json'),
       ),
       this.directoryTarget('user-skills', 'User skills', 'user', path.join(this.configDir, 'skills')),
       this.directoryTarget('teams', 'Teams', 'user', path.join(this.configDir, 'teams')),
@@ -182,12 +182,12 @@ export class DoctorService {
         path.join(this.configDir, 'cowork_plugins'),
       ),
       this.jsonTarget('user-mcp', 'User MCP config', 'user', this.getUserMcpConfigPath()),
-      this.jsonTarget('oauth', 'OAuth tokens', 'user', path.join(this.configDir, 'cc-haha', 'oauth.json')),
+      this.jsonTarget('oauth', 'OAuth tokens', 'user', path.join(this.configDir, 'billiardbuddy', 'oauth.json')),
       this.jsonTarget(
         'openai-oauth',
         'OpenAI OAuth tokens',
         'user',
-        path.join(this.configDir, 'cc-haha', 'openai-oauth.json'),
+        path.join(this.configDir, 'billiardbuddy', 'openai-oauth.json'),
       ),
     ]
 
