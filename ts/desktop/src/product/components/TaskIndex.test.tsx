@@ -4,6 +4,7 @@ import '@testing-library/jest-dom'
 
 const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
+  listAgents: vi.fn(),
   openDirectory: vi.fn(),
   isDesktop: false,
   copyText: vi.fn(),
@@ -12,6 +13,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/skills', () => ({
   skillsApi: {
     list: mocks.listSkills,
+  },
+}))
+
+vi.mock('../../api/agents', () => ({
+  agentsApi: {
+    list: mocks.listAgents,
   },
 }))
 
@@ -105,6 +112,7 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
 beforeEach(() => {
   mocks.isDesktop = false
   mocks.listSkills.mockResolvedValue({ skills: [] })
+  mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
   mocks.copyText.mockResolvedValue(true)
 })
 
@@ -371,6 +379,57 @@ describe('TaskIndex', () => {
       text: '/venue-daily-review',
       attachments: [],
     }))
+  })
+
+  it('offers discovered agents in the initial task composer and sends their runtime command', async () => {
+    mocks.listAgents.mockResolvedValue({
+      activeAgents: [{
+        agentType: 'venue-analyst',
+        description: '分析球房运营数据。',
+        source: 'projectSettings',
+        isActive: true,
+      }],
+      allAgents: [],
+    })
+    const props = renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
+
+    await waitFor(() => expect(mocks.listAgents).toHaveBeenCalledWith('/workspace/new-table'))
+    fireEvent.click(await screen.findByRole('button', { name: /\/agent venue-analyst/ }))
+
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/agent venue-analyst ')
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, {
+      text: '/agent venue-analyst',
+      attachments: [],
+    }))
+  })
+
+  it('keeps Agent discovery usable when Skill discovery is unavailable', async () => {
+    mocks.listSkills.mockRejectedValue(new Error('Skill 服务不可用'))
+    mocks.listAgents.mockResolvedValue({
+      activeAgents: [{
+        agentType: 'venue-analyst',
+        description: '分析球房运营数据。',
+        source: 'projectSettings',
+        isActive: true,
+      }],
+      allAgents: [],
+    })
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
+
+    expect(await screen.findByRole('button', { name: /\/agent venue-analyst/ })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('does not show a command choice while discovery is loading or unavailable', async () => {

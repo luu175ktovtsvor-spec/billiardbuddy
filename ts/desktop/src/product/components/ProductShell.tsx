@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { TaskIndex } from './TaskIndex'
 import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -14,12 +14,13 @@ import {
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeState } from '../taskRuntime'
 
-export function ProductShell() {
+export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: boolean }) {
   const index = useProductTaskStore((state) => state.index)
   const isLoading = useProductTaskStore((state) => state.isLoading)
   const error = useProductTaskStore((state) => state.error)
   const mutations = useProductTaskStore((state) => state.mutations)
   const composerRequest = useProductTaskStore((state) => state.composerRequest)
+  const requestTaskComposer = useProductTaskStore((state) => state.requestTaskComposer)
   const refresh = useProductTaskStore((state) => state.refresh)
   const consumeTaskComposerRequest = useProductTaskStore((state) => state.consumeTaskComposerRequest)
   const createTask = useProductTaskStore((state) => state.createTask)
@@ -86,6 +87,14 @@ export function ProductShell() {
     openTask: openTaskTab,
     connectToSession: connectToTaskSession,
   }, ...args)
+
+  const didRequestAutoComposer = useRef(false)
+
+  useEffect(() => {
+    if (!autoOpenComposer || didRequestAutoComposer.current) return
+    didRequestAutoComposer.current = true
+    requestTaskComposer()
+  }, [autoOpenComposer, requestTaskComposer])
 
   useEffect(() => {
     void refresh()

@@ -10,7 +10,13 @@ import type {
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
+import { agentsApi, type AgentDefinition } from '../../api/agents'
 import { skillsApi } from '../../api/skills'
+import {
+  buildAgentSlashCommands,
+  resolveSlashCommandRuntimeValue,
+  type SlashCommandOption,
+} from '../../components/chat/composerUtils'
 import {
   filesToComposerAttachments,
   selectNativeFileAttachments,
@@ -107,6 +113,10 @@ function insertSlashCommand(value: string, commandName: string): string {
   const firstWhitespace = value.search(/\s/)
   const suffix = firstWhitespace === -1 ? '' : value.slice(firstWhitespace)
   return `/${commandName}${suffix || ' '}`
+}
+
+type TaskComposerSlashCommand = SlashCommandOption & {
+  key: string
 }
 
 export function TaskIndex({
@@ -287,8 +297,10 @@ function TaskComposer({
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [useWorktree, setUseWorktree] = useState(false)
   const [discoverableSkills, setDiscoverableSkills] = useState<SkillMeta[] | null>(null)
+  const [discoverableAgents, setDiscoverableAgents] = useState<AgentDefinition[] | null>(null)
   const [skillDiscoveryWorkDir, setSkillDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
+  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -301,15 +313,19 @@ function TaskComposer({
   useEffect(() => {
     if (!isSlashInput || !normalizedWorkDir) {
       setDiscoverableSkills(null)
+      setDiscoverableAgents(null)
       setSkillDiscoveryWorkDir(null)
       setSkillDiscoveryError(null)
+      setAgentDiscoveryError(null)
       return
     }
 
     let cancelled = false
     setDiscoverableSkills(null)
+    setDiscoverableAgents(null)
     setSkillDiscoveryWorkDir(normalizedWorkDir)
     setSkillDiscoveryError(null)
+    setAgentDiscoveryError(null)
 
     skillsApi.list(normalizedWorkDir)
       .then(({ skills }) => {
@@ -318,7 +334,19 @@ function TaskComposer({
       })
       .catch((error: unknown) => {
         if (cancelled) return
+        setDiscoverableSkills([])
         setSkillDiscoveryError(error instanceof Error && error.message ? error.message : '服务不可用')
+      })
+
+    agentsApi.list(normalizedWorkDir)
+      .then(({ activeAgents }) => {
+        if (cancelled) return
+        setDiscoverableAgents(activeAgents)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setDiscoverableAgents([])
+        setAgentDiscoveryError(error instanceof Error && error.message ? error.message : '服务不可用')
       })
 
     return () => {
@@ -326,16 +354,38 @@ function TaskComposer({
     }
   }, [isSlashInput, normalizedWorkDir])
 
-  const matchingSkills = useMemo(() => {
-    if (query === null || discoverableSkills === null) return []
-    return discoverableSkills.filter((skill) => skill.name.toLocaleLowerCase().startsWith(query))
-  }, [discoverableSkills, query])
-  const hasSkillsForCurrentWorkDir = skillDiscoveryWorkDir === normalizedWorkDir
-  const visibleSkills = hasSkillsForCurrentWorkDir ? matchingSkills : []
-  const visibleSkillDiscoveryError = hasSkillsForCurrentWorkDir ? skillDiscoveryError : null
-  const isSkillDiscoveryLoading = Boolean(normalizedWorkDir) && (
-    !hasSkillsForCurrentWorkDir || (
-      discoverableSkills === null && visibleSkillDiscoveryError === null
+  const agentSlashCommands = useMemo(
+    () => buildAgentSlashCommands(discoverableAgents ?? []),
+    [discoverableAgents],
+  )
+  const matchingCommands = useMemo<TaskComposerSlashCommand[]>(() => {
+    if (query === null) return []
+    const skills: TaskComposerSlashCommand[] = (discoverableSkills ?? [])
+      .filter((skill) => skill.userInvocable)
+      .map((skill) => ({
+        key: `skill:${skill.source}:${skill.name}`,
+        name: skill.name,
+        description: skill.displayName ?? skill.description,
+      }))
+    const agents: TaskComposerSlashCommand[] = agentSlashCommands.map((agent) => ({
+      ...agent,
+      key: `agent:${agent.runtimeName ?? agent.name}`,
+    }))
+    return [...skills, ...agents].filter((command) => (
+      command.name.toLocaleLowerCase().startsWith(query)
+    ))
+  }, [agentSlashCommands, discoverableAgents, discoverableSkills, query])
+  const hasCommandDiscoveryForCurrentWorkDir = skillDiscoveryWorkDir === normalizedWorkDir
+  const visibleCommands = hasCommandDiscoveryForCurrentWorkDir ? matchingCommands : []
+  const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
+  const visibleDiscoveryError = hasCommandDiscoveryForCurrentWorkDir
+    ? visibleCommands.length === 0
+      ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
+      : null
+    : null
+  const isCommandDiscoveryLoading = Boolean(normalizedWorkDir) && (
+    !hasCommandDiscoveryForCurrentWorkDir || (
+      hasPendingCommandDiscovery && visibleCommands.length === 0 && visibleDiscoveryError === null
     )
   )
 
@@ -426,7 +476,7 @@ function TaskComposer({
         }
         const initialAttachments = attachmentRefs()
         const initialMessage: ProductTaskInitialMessage = {
-          text: initialText.trim(),
+          text: resolveSlashCommandRuntimeValue(initialText.trim(), agentSlashCommands),
           attachments: initialAttachments,
         }
         void (initialMessage.text || initialAttachments.length > 0
@@ -490,12 +540,12 @@ function TaskComposer({
           </button>
         </div>
         {query !== null ? (
-          <SkillSlashPicker
+          <TaskComposerSlashPicker
             workDir={normalizedWorkDir}
-            skills={visibleSkills}
-            isLoading={isSkillDiscoveryLoading}
-            error={visibleSkillDiscoveryError}
-            onSelect={(skill) => setInitialText((value) => insertSlashCommand(value, skill.name))}
+            commands={visibleCommands}
+            isLoading={isCommandDiscoveryLoading}
+            error={visibleDiscoveryError}
+            onSelect={(command) => setInitialText((value) => insertSlashCommand(value, command.name))}
           />
         ) : null}
       </div>
@@ -520,18 +570,18 @@ function TaskComposer({
   )
 }
 
-function SkillSlashPicker({
+function TaskComposerSlashPicker({
   workDir,
-  skills,
+  commands,
   isLoading,
   error,
   onSelect,
 }: {
   workDir: string
-  skills: SkillMeta[]
+  commands: TaskComposerSlashCommand[]
   isLoading: boolean
   error: string | null
-  onSelect: (skill: SkillMeta) => void
+  onSelect: (command: TaskComposerSlashCommand) => void
 }) {
   if (!workDir) {
     return <p className="text-xs text-[var(--color-text-tertiary)]">填写工作目录后，才能读取当前可用命令。</p>
@@ -545,21 +595,21 @@ function SkillSlashPicker({
     return <p role="alert" className="text-xs text-[var(--color-error)]">无法读取可用命令：{error}</p>
   }
 
-  if (skills.length === 0) {
+  if (commands.length === 0) {
     return <p className="text-xs text-[var(--color-text-tertiary)]">当前工作目录没有匹配的可用命令。</p>
   }
 
   return (
     <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]" aria-label="可用命令">
-      {skills.map((skill) => (
+      {commands.map((command) => (
         <button
-          key={`${skill.source}:${skill.name}`}
+          key={command.key}
           type="button"
-          onClick={() => onSelect(skill)}
+          onClick={() => onSelect(command)}
           className="flex w-full items-start gap-3 border-t border-[var(--color-border)] px-3 py-2 text-left first:border-t-0 hover:bg-[var(--color-surface-hover)]"
         >
-          <span className="shrink-0 text-sm font-medium text-[var(--color-text-primary)]">/{skill.name}</span>
-          <span className="min-w-0 text-xs leading-5 text-[var(--color-text-secondary)]">{skill.displayName ?? skill.description}</span>
+          <span className="shrink-0 text-sm font-medium text-[var(--color-text-primary)]">/{command.name}</span>
+          <span className="min-w-0 text-xs leading-5 text-[var(--color-text-secondary)]">{command.description}</span>
         </button>
       ))}
     </div>

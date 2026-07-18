@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { APP_ZOOM_STORAGE_KEY } from '../lib/appZoom'
 import { useSettingsStore } from '../stores/settingsStore'
+import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
+import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
 function ShortcutHost() {
@@ -24,6 +26,8 @@ describe('useKeyboardShortcuts app zoom', () => {
     document.documentElement.style.removeProperty('--app-zoom')
     document.body.style.removeProperty('zoom')
     useSettingsStore.setState({ uiZoom: 1 })
+    useTabStore.setState({ tabs: [], activeTabId: null })
+    useProductTaskStore.setState({ composerRequest: null })
     setNavigatorPlatform('Win32')
   })
 
@@ -99,5 +103,19 @@ describe('useKeyboardShortcuts app zoom', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(window.localStorage.getItem(APP_ZOOM_STORAGE_KEY)).toBe('0.9')
+  })
+
+  it('opens the product-owned task composer with Ctrl or Cmd N', () => {
+    render(<ShortcutHost />)
+
+    fireEvent.keyDown(document, {
+      key: 'n',
+      ctrlKey: true,
+    })
+
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
+    expect(useProductTaskStore.getState().composerRequest).toEqual(expect.objectContaining({
+      id: expect.any(Number),
+    }))
   })
 })

@@ -10,10 +10,6 @@ const { previewBridgeMock } = vi.hoisted(() => ({
 
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: previewBridgeMock }))
 
-vi.mock('../../pages/EmptySession', () => ({
-  EmptySession: () => <div data-testid="empty-session" />,
-}))
-
 vi.mock('../../pages/ActiveSession', () => ({
   ActiveSession: () => <div data-testid="active-session" />,
 }))
@@ -57,7 +53,9 @@ vi.mock('../media/VideoStudio', () => ({
 }))
 
 vi.mock('../../product/components/ProductShell', () => ({
-  ProductShell: () => <div data-testid="product-shell" />,
+  ProductShell: ({ autoOpenComposer = false }: { autoOpenComposer?: boolean }) => (
+    <div data-auto-open-composer={autoOpenComposer ? 'true' : 'false'} data-testid="product-shell" />
+  ),
 }))
 
 import { ContentRouter } from './ContentRouter'
@@ -68,6 +66,13 @@ describe('ContentRouter tab surfaces', () => {
     cleanup()
     previewBridgeMock.close.mockClear()
     useTabStore.setState({ tabs: [], activeTabId: null })
+  })
+
+  it('routes an empty desktop surface to the product task composer', () => {
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-auto-open-composer', 'true')
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 
   it('renders the active terminal tab as main content', () => {
