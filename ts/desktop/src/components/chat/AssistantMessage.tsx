@@ -17,6 +17,7 @@ type Props = {
   content: string
   isStreaming?: boolean
   branchAction?: MessageBranchAction
+  sideTaskAction?: MessageBranchAction
   sessionId?: string
   timestamp?: number
   /** This turn's real changed files (absolute), used to anchor output chips onto
@@ -26,7 +27,7 @@ type Props = {
 
 const MAX_CARDS = 3
 
-export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sessionId, timestamp, turnChangedFiles }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sideTaskAction, sessionId, timestamp, turnChangedFiles }: Props) {
   const t = useTranslation()
   const workDir = useWorkspacePanelStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
 
@@ -104,6 +105,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
           copyText={isStreaming ? undefined : content}
           copyLabel="Copy reply"
           branchAction={branchAction}
+          sideTaskAction={sideTaskAction}
           align="start"
           timestamp={timestamp}
         />

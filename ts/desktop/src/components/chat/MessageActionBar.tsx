@@ -1,4 +1,4 @@
-import { Check, Copy, GitFork } from 'lucide-react'
+import { Check, Copy, GitFork, PanelRightOpen } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { formatExactMessageTimestamp, formatMessageHoverTime } from '../../lib/formatMessageTimestamp'
 import { CopyButton } from '../shared/CopyButton'
@@ -13,6 +13,7 @@ type Props = {
   copyText?: string
   copyLabel: string
   branchAction?: MessageBranchAction
+  sideTaskAction?: MessageBranchAction
   align?: 'start' | 'end'
   timestamp?: number
 }
@@ -21,6 +22,7 @@ export function MessageActionBar({
   copyText,
   copyLabel,
   branchAction,
+  sideTaskAction,
   align = 'start',
   timestamp,
 }: Props) {
@@ -33,7 +35,7 @@ export function MessageActionBar({
     ? formatExactMessageTimestamp(timestamp, locale)
     : ''
 
-  if (!hasCopy && !branchAction) return null
+  if (!hasCopy && !branchAction && !sideTaskAction) return null
 
   return (
     <div
@@ -65,6 +67,19 @@ export function MessageActionBar({
             className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 disabled:cursor-wait disabled:opacity-60"
           >
             <GitFork size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        ) : null}
+        {sideTaskAction ? (
+          <button
+            type="button"
+            onClick={sideTaskAction.onBranch}
+            disabled={sideTaskAction.loading}
+            aria-label={sideTaskAction.label}
+            title={sideTaskAction.label}
+            onPointerUp={(event) => event.currentTarget.blur()}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-brand)]/30 hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 disabled:cursor-wait disabled:opacity-60"
+          >
+            <PanelRightOpen size={13} strokeWidth={2.2} aria-hidden="true" />
           </button>
         ) : null}
         {hoverTimeLabel ? (

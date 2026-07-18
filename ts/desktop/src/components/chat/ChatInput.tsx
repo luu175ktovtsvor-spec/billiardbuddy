@@ -44,6 +44,8 @@ import { shouldSubmitOnEnter } from './sendShortcut'
 type Attachment = ComposerAttachment
 
 type ChatInputProps = {
+  sessionId?: string
+  workDir?: string
   variant?: 'default' | 'hero'
   compact?: boolean
 }
@@ -79,7 +81,7 @@ function insertComposerTokenAtRange(value: string, start: number, end: number, t
   }
 }
 
-export function ChatInput({ variant = 'default', compact = false }: ChatInputProps) {
+export function ChatInput({ sessionId, workDir, variant = 'default', compact = false }: ChatInputProps) {
   const t = useTranslation()
   const isMobileComposer = useMobileViewport() && !isDesktopRuntime()
   const [input, setInput] = useState('')
@@ -103,7 +105,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const slashMenuRef = useRef<HTMLDivElement>(null)
   const fileSearchRef = useRef<FileSearchMenuHandle>(null)
   const slashItemRefs = useRef<(HTMLButtonElement | null)[]>([])
-  const previousActiveTabIdRef = useRef<string | null>(null)
+  const previousSessionIdRef = useRef<string | null>(null)
+  const resolvedSessionIdRef = useRef<string | null>(null)
   const inputRef = useRef(input)
   const attachmentsRef = useRef(attachments)
   const pasteGenerationRef = useRef(0)
@@ -137,17 +140,19 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     sendQueuedUserMessage,
   } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
+  const resolvedSessionId = sessionId ?? activeTabId
+  resolvedSessionIdRef.current = resolvedSessionId
+  const sessionState = useChatStore((s) => resolvedSessionId ? s.sessions[resolvedSessionId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
   const slashCommands = sessionState?.slashCommands ?? []
   const composerPrefill = sessionState?.composerPrefill ?? null
   const composerInsertion = sessionState?.composerInsertion ?? null
   const queuedUserMessages = sessionState?.queuedUserMessages ?? []
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
-  const activeSession = useSessionStore((state) => activeTabId ? state.sessions.find((session) => session.id === activeTabId) ?? null : null)
-  const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
+  const activeSession = useSessionStore((state) => resolvedSessionId ? state.sessions.find((session) => session.id === resolvedSessionId) ?? null : null)
+  const memberInfo = useTeamStore((s) => resolvedSessionId ? s.getMemberBySessionId(resolvedSessionId) : null)
   const workspaceReferences = useWorkspaceChatContextStore(
-    (s) => activeTabId ? s.referencesBySession[activeTabId] ?? EMPTY_WORKSPACE_REFERENCES : EMPTY_WORKSPACE_REFERENCES,
+    (s) => resolvedSessionId ? s.referencesBySession[resolvedSessionId] ?? EMPTY_WORKSPACE_REFERENCES : EMPTY_WORKSPACE_REFERENCES,
   )
   const addWorkspaceReference = useWorkspaceChatContextStore((s) => s.addReference)
   const removeWorkspaceReference = useWorkspaceChatContextStore((s) => s.removeReference)
@@ -173,7 +178,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const isWorkspaceMissing = activeSession?.workDirExists === false
   const hasWorkspaceReferences = !isMemberSession && workspaceReferences.length > 0
   const isHeroComposer = variant === 'hero' && !isMemberSession && !compact
-  const resolvedWorkDir = activeSession?.workDir || undefined
+  const resolvedWorkDir = activeSession?.workDir || workDir || undefined
   const useCompactControls = compact || isMobileComposer
   const iconOnlyAction = compact || isMobileComposer
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
@@ -197,15 +202,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [attachments])
 
   useEffect(() => {
-    const previousActiveTabId = previousActiveTabIdRef.current
+    const previousSessionId = previousSessionIdRef.current
 
-    if (previousActiveTabId === activeTabId) return
+    if (previousSessionId === resolvedSessionId) return
 
-    if (previousActiveTabId) {
-      saveComposerDraft(previousActiveTabId)
+    if (previousSessionId) {
+      saveComposerDraft(previousSessionId)
     }
 
-    const nextDraft = activeTabId ? useChatStore.getState().sessions[activeTabId]?.composerDraft : undefined
+    const nextDraft = resolvedSessionId ? useChatStore.getState().sessions[resolvedSessionId]?.composerDraft : undefined
     invalidatePendingPastes()
     setComposerInput(nextDraft?.input ?? '')
     setComposerAttachments(nextDraft?.attachments ?? [])
@@ -218,13 +223,13 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     setAtCursorPos(-1)
     setEditingQueuedMessageId(null)
     setEditingQueuedMessageText('')
-    previousActiveTabIdRef.current = activeTabId
-  }, [activeTabId, invalidatePendingPastes, saveComposerDraft, setComposerAttachments, setComposerInput])
+    previousSessionIdRef.current = resolvedSessionId
+  }, [invalidatePendingPastes, resolvedSessionId, saveComposerDraft, setComposerAttachments, setComposerInput])
 
   useEffect(() => {
     return () => {
-      const currentActiveTabId = previousActiveTabIdRef.current
-      if (currentActiveTabId) saveComposerDraft(currentActiveTabId)
+      const currentSessionId = previousSessionIdRef.current
+      if (currentSessionId) saveComposerDraft(currentSessionId)
     }
   }, [saveComposerDraft])
 
@@ -233,7 +238,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [isActive])
 
   useEffect(() => {
-    if (!composerPrefill || !activeTabId) return
+    if (!composerPrefill || !resolvedSessionId) return
 
     const nextAttachments = (composerPrefill.attachments ?? [])
       .filter((attachment) => attachment.type === 'image' || attachment.data)
@@ -267,17 +272,17 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
         el?.setSelectionRange(cursor, cursor)
       }
     })
-    clearComposerPrefill(activeTabId, composerPrefill.nonce)
+    clearComposerPrefill(resolvedSessionId, composerPrefill.nonce)
   }, [
-    activeTabId,
     clearComposerPrefill,
     composerPrefill,
+    resolvedSessionId,
     setComposerAttachments,
     setComposerInput,
   ])
 
   useEffect(() => {
-    if (!composerInsertion || !activeTabId || isMemberSession) return
+    if (!composerInsertion || !resolvedSessionId || isMemberSession) return
 
     const el = textareaRef.current
     const currentInput = inputRef.current
@@ -286,25 +291,25 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     const next = insertComposerTokenAtRange(currentInput, start, end, composerInsertion.text)
 
     if (composerInsertion.reference) {
-      addWorkspaceReference(activeTabId, composerInsertion.reference)
+      addWorkspaceReference(resolvedSessionId, composerInsertion.reference)
     }
     setComposerInput(next.value)
     setFileSearchOpen(false)
     setSlashMenuOpen(false)
     setAtFilter('')
     setAtCursorPos(-1)
-    clearComposerInsertion(activeTabId, composerInsertion.nonce)
+    clearComposerInsertion(resolvedSessionId, composerInsertion.nonce)
 
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(next.cursorPos, next.cursorPos)
     })
   }, [
-    activeTabId,
     addWorkspaceReference,
     clearComposerInsertion,
     composerInsertion,
     isMemberSession,
+    resolvedSessionId,
     setComposerInput,
   ])
 
@@ -314,7 +319,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     setPlusMenuOpen(false)
     setSlashMenuOpen(false)
     setFileSearchOpen(false)
-  }, [isMemberSession, activeTabId])
+  }, [isMemberSession, resolvedSessionId])
 
   useEffect(() => {
     if (isMemberSession) {
@@ -506,7 +511,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
 
   const handleSubmit = async () => {
     const text = input.trim()
-    if ((!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
+    if (!resolvedSessionId || (!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
 
     if (pendingSlashUiAction?.type === 'panel') {
       setLocalSlashPanel(pendingSlashUiAction.command as LocalSlashCommandName)
@@ -581,7 +586,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       })),
     ]
 
-    const targetSessionId = activeTabId!
+    const targetSessionId = resolvedSessionId
 
     const targetChatState = useChatStore.getState().sessions[targetSessionId]?.chatState ?? 'idle'
     if (!isMemberSession && targetChatState !== 'idle') {
@@ -600,9 +605,9 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     invalidatePendingPastes()
     setComposerInput('')
     setComposerAttachments([])
-    useChatStore.getState().clearComposerDraft(activeTabId!)
+    useChatStore.getState().clearComposerDraft(targetSessionId)
     if (!isMemberSession) {
-      clearWorkspaceReferences(activeTabId!)
+      clearWorkspaceReferences(targetSessionId)
     }
     setPlusMenuOpen(false)
     setSlashMenuOpen(false)
@@ -703,11 +708,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
 
       const id = `att-${Date.now()}-${Math.random().toString(36).slice(2)}`
       const pasteGeneration = pasteGenerationRef.current
-      const pastedSessionId = activeTabId
+      const pastedSessionId = resolvedSessionId
       const reader = new FileReader()
       reader.onload = () => {
         if (pasteGeneration !== pasteGenerationRef.current) return
-        if (pastedSessionId !== useTabStore.getState().activeTabId) return
+        if (pastedSessionId !== resolvedSessionIdRef.current) return
         setComposerAttachments((prev) => [
           ...prev,
           {
@@ -781,7 +786,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
 
   const removeAttachment = (id: string) => {
     setComposerAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
-    if (activeTabId) removeWorkspaceReference(activeTabId, id)
+    if (resolvedSessionId) removeWorkspaceReference(resolvedSessionId, id)
   }
 
   const startEditingQueuedMessage = (messageId: string, content: string) => {
@@ -790,10 +795,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }
 
   const saveQueuedMessageEdit = () => {
-    if (!activeTabId || !editingQueuedMessageId) return
+    if (!resolvedSessionId || !editingQueuedMessageId) return
     const nextContent = editingQueuedMessageText.trim()
     if (!nextContent) return
-    updateQueuedUserMessage(activeTabId, editingQueuedMessageId, nextContent)
+    updateQueuedUserMessage(resolvedSessionId, editingQueuedMessageId, nextContent)
     setEditingQueuedMessageId(null)
     setEditingQueuedMessageText('')
   }
@@ -884,8 +889,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   const spacer = beforeToken && afterToken && !/\s$/.test(beforeToken) && !/^\s/.test(afterToken) ? ' ' : ''
                   const newValue = `${beforeToken}${spacer}${afterToken}`
                   const newCursorPos = atCursorPos + spacer.length
-                  if (activeTabId) {
-                    addWorkspaceReference(activeTabId, {
+                  if (resolvedSessionId) {
+                    addWorkspaceReference(resolvedSessionId, {
                       kind: 'file',
                       path,
                       absolutePath: path,
@@ -910,7 +915,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             <div ref={slashMenuRef}>
               <LocalSlashCommandPanel
                 command={localSlashPanel}
-                sessionId={activeTabId ?? undefined}
+                sessionId={resolvedSessionId ?? undefined}
                 cwd={resolvedWorkDir}
                 commands={allSlashCommands}
                 onClose={() => setLocalSlashPanel(null)}
@@ -965,7 +970,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             </div>
           )}
 
-          {!isMemberSession && activeTabId && queuedUserMessages.length > 0 && (
+          {!isMemberSession && resolvedSessionId && queuedUserMessages.length > 0 && (
             <div
               data-testid="pending-user-message-list"
               className={[
@@ -1030,7 +1035,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                         </span>
                         <button
                           type="button"
-                          onClick={() => sendQueuedUserMessage(activeTabId, message.id)}
+                          onClick={() => sendQueuedUserMessage(resolvedSessionId, message.id)}
                           aria-label={t('chat.pendingMessageGuideNow')}
                           title={t('chat.pendingMessageGuideNow')}
                           className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[6px] px-2 font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
@@ -1049,7 +1054,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                         </button>
                         <button
                           type="button"
-                          onClick={() => removeQueuedUserMessage(activeTabId, message.id)}
+                          onClick={() => removeQueuedUserMessage(resolvedSessionId, message.id)}
                           aria-label={t('chat.pendingMessageDelete')}
                           title={t('chat.pendingMessageDelete')}
                           className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-error)]"
@@ -1140,7 +1145,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 />
               ) : null}
               <button
-                onClick={!isMemberSession && isActive ? () => stopGeneration(activeTabId!) : handleSubmit}
+                onClick={!isMemberSession && isActive && resolvedSessionId ? () => stopGeneration(resolvedSessionId) : handleSubmit}
                 disabled={!isMemberSession && isActive ? false : !canSubmit}
                 aria-label={!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}
                 title={

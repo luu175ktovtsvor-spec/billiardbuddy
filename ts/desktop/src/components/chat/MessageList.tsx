@@ -6,6 +6,7 @@ import { sessionsApi, type SessionTurnCheckpoint } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useProductTaskStore } from '../../product/stores/productTaskStore'
+import { useProductSideTaskStore } from '../../product/stores/productSideTaskStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { useTeamStore } from '../../stores/teamStore'
@@ -14,6 +15,7 @@ import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n/locales/en'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
+import type { MessageBranchAction } from './MessageActionBar'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallGroup } from './ToolCallGroup'
@@ -927,6 +929,7 @@ function MemoryEventCard({ message }: { message: MemoryEvent }) {
 type MessageListProps = {
   sessionId?: string | null
   compact?: boolean
+  enableProductActions?: boolean
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
@@ -1358,7 +1361,7 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
   )
 })
 
-export function MessageList({ sessionId, compact = false }: MessageListProps = {}) {
+export function MessageList({ sessionId, compact = false, enableProductActions = true }: MessageListProps = {}) {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const resolvedSessionId = sessionId ?? activeTabId
   const sessionState = useChatStore((s) =>
@@ -1366,6 +1369,13 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   )
   const refreshSessions = useSessionStore((s) => s.fetchSessions)
   const continueTask = useProductTaskStore((s) => s.continueTask)
+  const activeProductTask = useProductTaskStore((s) =>
+    resolvedSessionId
+      ? s.index.tasks.find((task) => task.coreSessionId === resolvedSessionId) ?? null
+      : null,
+  )
+  const createSideTask = useProductSideTaskStore((s) => s.createSideTask)
+  const openSideTaskPanel = useProductSideTaskStore((s) => s.openSideTaskPanel)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
   const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
@@ -1415,6 +1425,8 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
   const continuationInFlightRef = useRef(false)
+  const [creatingSideTaskMessageId, setCreatingSideTaskMessageId] = useState<string | null>(null)
+  const sideTaskInFlightRef = useRef(false)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
@@ -1424,6 +1436,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   })
   const [measuredItemsVersion, setMeasuredItemsVersion] = useState(0)
   const branchActionsDisabled =
+    !enableProductActions ||
     isMemberSession ||
     chatState !== 'idle' ||
     hasRunningBackgroundTasks ||
@@ -1937,13 +1950,41 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
     }
   }, [addToast, continueTask, refreshSessions, resolvedSessionId, t])
 
+  const handleStartSideTask = useCallback(async (target: BranchableMessageTarget) => {
+    if (!resolvedSessionId || !activeProductTask || sideTaskInFlightRef.current) return
+
+    sideTaskInFlightRef.current = true
+    setCreatingSideTaskMessageId(target.uiMessageId)
+    try {
+      const sideTask = await createSideTask(activeProductTask.id, {
+        sourceTurnId: target.transcriptMessageId,
+      })
+      await refreshSessions()
+      openSideTaskPanel(activeProductTask.id, sideTask.id)
+      useChatStore.getState().connectToSession(sideTask.coreSessionId)
+      const title = sideTask.title.trim() || t('sideTask.untitled')
+      addToast({
+        type: 'success',
+        message: t('chat.sideTaskSuccess', { title }),
+      })
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: t('chat.sideTaskError', { detail: getApiErrorMessage(error) }),
+      })
+    } finally {
+      sideTaskInFlightRef.current = false
+      setCreatingSideTaskMessageId(null)
+    }
+  }, [activeProductTask, addToast, createSideTask, openSideTaskPanel, refreshSessions, resolvedSessionId, t])
+
   // Pre-compute per-message branchAction + toolResult lookups so MessageBlock's
   // memo barrier is not broken by inline object literals on every render.
   const branchActionByMessageId = useMemo(() => {
     if (branchableMessageTargets.size === 0) {
-      return new Map<string, { label: string; loading: boolean; onBranch: () => void }>()
+      return new Map<string, MessageBranchAction>()
     }
-    const result = new Map<string, { label: string; loading: boolean; onBranch: () => void }>()
+    const result = new Map<string, MessageBranchAction>()
     const label = t('chat.branchFromHere')
     for (const [uiMessageId, target] of branchableMessageTargets) {
       result.set(uiMessageId, {
@@ -1954,6 +1995,22 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
     }
     return result
   }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
+
+  const sideTaskActionByMessageId = useMemo(() => {
+    if (!activeProductTask || branchableMessageTargets.size === 0) {
+      return new Map<string, MessageBranchAction>()
+    }
+    const result = new Map<string, MessageBranchAction>()
+    const label = t('chat.sideTaskFromHere')
+    for (const [uiMessageId, target] of branchableMessageTargets) {
+      result.set(uiMessageId, {
+        label,
+        loading: creatingSideTaskMessageId === uiMessageId,
+        onBranch: () => { void handleStartSideTask(target) },
+      })
+    }
+    return result
+  }, [activeProductTask, branchableMessageTargets, creatingSideTaskMessageId, handleStartSideTask, t])
 
   const toolResultByToolUseId = useMemo(() => {
     if (toolResultMap.size === 0) return new Map<string, { content: unknown; isError: boolean }>()
@@ -1992,6 +2049,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
                 : null
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
+            sideTaskAction={sideTaskActionByMessageId.get(item.message.id)}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
           />
         )}
@@ -2123,6 +2181,7 @@ export const MessageBlock = memo(function MessageBlock({
   agentTaskNotifications,
   toolResult,
   branchAction,
+  sideTaskAction,
   turnChangedFiles,
 }: {
   sessionId?: string | null
@@ -2130,11 +2189,8 @@ export const MessageBlock = memo(function MessageBlock({
   activeThinkingId: string | null
   agentTaskNotifications: Record<string, AgentTaskNotification>
   toolResult?: { content: unknown; isError: boolean } | null
-  branchAction?: {
-    label: string
-    loading?: boolean
-    onBranch: () => void
-  }
+  branchAction?: MessageBranchAction
+  sideTaskAction?: MessageBranchAction
   turnChangedFiles?: string[]
 }) {
   const t = useTranslation()
@@ -2152,6 +2208,7 @@ export const MessageBlock = memo(function MessageBlock({
             content={message.content}
             attachments={message.attachments}
             branchAction={branchAction}
+            sideTaskAction={sideTaskAction}
             timestamp={message.timestamp}
           />
         </SelectableChatMessage>
@@ -2167,6 +2224,7 @@ export const MessageBlock = memo(function MessageBlock({
           <AssistantMessage
             content={message.content}
             branchAction={branchAction}
+            sideTaskAction={sideTaskAction}
             sessionId={sessionId ?? undefined}
             timestamp={message.timestamp}
             turnChangedFiles={turnChangedFiles}

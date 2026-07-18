@@ -15,6 +15,7 @@ import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useProductTaskStore } from '../../product/stores/productTaskStore'
+import { useProductSideTaskStore } from '../../product/stores/productSideTaskStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { formatExactMessageTimestamp, formatMessageHoverTime } from '../../lib/formatMessageTimestamp'
@@ -229,6 +230,7 @@ describe('MessageList nested tool calls', () => {
     useTabStore.setState({ activeTabId: ACTIVE_TAB, tabs: [{ sessionId: ACTIVE_TAB, title: 'Test', type: 'session' as const, status: 'idle' }] })
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
     useProductTaskStore.setState(useProductTaskStore.getInitialState(), true)
+    useProductSideTaskStore.setState(useProductSideTaskStore.getInitialState(), true)
     useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState() } })
     useWorkspaceChatContextStore.setState(useWorkspaceChatContextStore.getInitialState(), true)
     // The workspace panel store is a shared singleton; reset it so preview tabs opened by
@@ -3624,6 +3626,91 @@ describe('MessageList nested tool calls', () => {
     expect(connectToSession).not.toHaveBeenCalled()
     expect(useTabStore.getState().activeTabId).toBe(ACTIVE_TAB)
     expect(continuationButton.getAttribute('disabled')).toBeNull()
+  })
+
+  it('creates a temporary side task from a transcript message without opening a normal task tab', async () => {
+    const createSideTask = vi.fn().mockResolvedValue({
+      id: 'side-task-1',
+      parentTaskId: ACTIVE_TAB,
+      sourceTurnId: 'transcript-assistant-1',
+      coreSessionId: 'side-session-1',
+      title: 'Separate verification',
+      status: 'open',
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const connectToSession = vi.fn()
+    useSessionStore.setState({ fetchSessions: refreshSessions as never })
+    useProductTaskStore.setState({
+      index: {
+        schemaVersion: 1,
+        projects: [],
+        tasks: [{
+          id: ACTIVE_TAB,
+          projectId: 'project-1',
+          coreSessionId: ACTIVE_TAB,
+          title: 'Source task',
+          workDir: '/tmp/source-project',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-05-19T00:00:00.000Z',
+          updatedAt: '2026-05-19T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['archive', 'continue'],
+        }],
+        total: 1,
+        capabilities: { createTask: true },
+      },
+    })
+    useProductSideTaskStore.setState({ createSideTask: createSideTask as never })
+    useChatStore.setState({
+      connectToSession: connectToSession as never,
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'local-user-1',
+              transcriptMessageId: 'transcript-user-1',
+              type: 'user_text',
+              content: '从这里开始',
+              timestamp: 1,
+            },
+            {
+              id: 'local-assistant-1',
+              transcriptMessageId: 'transcript-assistant-1',
+              type: 'assistant_text',
+              content: '这是完成的答复。',
+              timestamp: 2,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const sideTaskButtons = await screen.findAllByRole('button', { name: 'Start a side task' })
+    expect(sideTaskButtons).toHaveLength(2)
+    fireEvent.click(sideTaskButtons[1]!)
+
+    await waitFor(() => {
+      expect(createSideTask).toHaveBeenCalledWith(ACTIVE_TAB, {
+        sourceTurnId: 'transcript-assistant-1',
+      })
+    })
+    expect(refreshSessions).toHaveBeenCalledOnce()
+    expect(connectToSession).toHaveBeenCalledWith('side-session-1')
+    expect(useProductSideTaskStore.getState().panelByParentTaskId[ACTIVE_TAB]).toEqual({
+      isOpen: true,
+      selectedSideTaskId: 'side-task-1',
+    })
+    expect(useTabStore.getState().activeTabId).toBe(ACTIVE_TAB)
+    expect(useTabStore.getState().tabs).toHaveLength(1)
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+      type: 'success',
+      message: 'Opened side task "Separate verification".',
+    })
   })
 
   it('hides branch actions while the current session is still running', () => {

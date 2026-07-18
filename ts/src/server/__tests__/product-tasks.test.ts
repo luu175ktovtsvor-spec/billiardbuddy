@@ -23,6 +23,7 @@ type TestCore = AgentCoreAdapter & {
   setSessionWorkDir: (sessionId: string, workDir: string) => void
   getWorktreeLaunchCallCount: () => number
   getLastBranchInput: () => { sessionId: string; title?: string; sourceTurnId?: string } | null
+  hasSession: (sessionId: string) => boolean
 }
 
 function makeCore(): TestCore {
@@ -93,6 +94,7 @@ function makeCore(): TestCore {
     },
     getWorktreeLaunchCallCount: () => worktreeLaunchCallCount,
     getLastBranchInput: () => lastBranchInput,
+    hasSession: (sessionId) => sessions.has(sessionId),
   }
 }
 
@@ -166,6 +168,82 @@ describe('ProductTaskService', () => {
       sourceTurnId: 'turn-42',
     })
     expect(core.getWorktreeLaunchCallCount()).toBe(0)
+  })
+
+  it('keeps temporary side forks out of the regular task index and retains their Core transcript when closed', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const task = await service.createTask({
+      workDir: '/workspace/hall-operations',
+      title: '整理本周球房活动',
+    })
+
+    const sideTask = await service.createSideTask(task.id, {
+      title: '单独核对优惠规则',
+      sourceTurnId: 'turn-42',
+    })
+
+    const sideSessionId = sideTask.coreSessionId
+    expect(sideTask.parentTaskId).toBe(task.id)
+    expect(sideTask.sourceTurnId).toBe('turn-42')
+    expect(sideSessionId).toEqual(expect.any(String))
+    expect(sideTask.title).toBe('单独核对优惠规则 (Branch)')
+    expect(sideTask.status).toBe('open')
+    expect(sideTask.createdAt).toEqual(expect.any(String))
+    expect(sideTask.updatedAt).toEqual(expect.any(String))
+    expect(core.getLastBranchInput()).toEqual({
+      sessionId: task.coreSessionId,
+      title: '单独核对优惠规则',
+      sourceTurnId: 'turn-42',
+    })
+    expect(core.hasSession(sideSessionId)).toBe(true)
+    expect(await service.listSideTasks(task.id)).toEqual([sideTask])
+
+    const beforeClose = await service.listTasks()
+    expect(beforeClose.tasks.map((candidate) => candidate.id)).toEqual([task.id])
+    expect(beforeClose.total).toBe(1)
+    expect(beforeClose.projects[0]?.taskCount).toBe(1)
+
+    const closed = await service.closeSideTask(task.id, sideTask.id)
+    expect(closed.parentTaskId).toBe(sideTask.parentTaskId)
+    expect(closed.sourceTurnId).toBe(sideTask.sourceTurnId)
+    expect(closed.coreSessionId).toBe(sideSessionId)
+    expect(closed.status).toBe('closed')
+    expect(closed.closedAt).toEqual(expect.any(String))
+    expect(closed.updatedAt).toEqual(expect.any(String))
+    expect(core.hasSession(sideSessionId)).toBe(true)
+    expect(await service.listSideTasks(task.id)).toEqual([closed])
+
+    const afterClose = await service.listTasks()
+    expect(afterClose.tasks.map((candidate) => candidate.id)).toEqual([task.id])
+    expect(afterClose.total).toBe(1)
+    expect(afterClose.projects[0]?.taskCount).toBe(1)
+
+    const continuation = await service.continueTask(task.id, { sourceTurnId: 'turn-43' })
+    const afterContinuation = await service.listTasks()
+    expect(continuation.kind).toBe('continuation')
+    expect(afterContinuation.tasks.map((candidate) => candidate.id)).toEqual(
+      expect.arrayContaining([task.id, continuation.id]),
+    )
+    expect(afterContinuation.total).toBe(2)
+    expect(afterContinuation.projects[0]?.taskCount).toBe(2)
+  })
+
+  it('requires a source turn for a temporary side fork', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core: makeCore(),
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+
+    await expect(service.createSideTask(task.id, {} as never)).rejects.toThrow(
+      'sourceTurnId 必须是字符串',
+    )
   })
 
   it('keeps a requested worktree planned when the core status cannot be read', async () => {

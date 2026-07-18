@@ -6,7 +6,9 @@ import {
   PRODUCT_DOMAIN_VERSION,
   type ContinueProductTaskInput,
   type CreateProductTaskInput,
+  type CreateProductSideTaskInput,
   type ProductProject,
+  type ProductSideTask,
   type ProductTask,
   type ProductTaskIndex,
   type UpdateProductTaskInput,
@@ -59,6 +61,7 @@ type ProductTaskMetadata = {
 type ProductTaskStore = {
   version: typeof PRODUCT_DOMAIN_VERSION
   tasks: Record<string, ProductTaskMetadata>
+  sideTasks: Record<string, ProductSideTask>
 }
 
 export type AgentCoreSession = Pick<
@@ -157,6 +160,13 @@ function validTitle(value: string | undefined): string | undefined {
   return title
 }
 
+function requiredSourceTurnId(value: unknown): string {
+  if (typeof value !== 'string') throw ApiError.badRequest('sourceTurnId 必须是字符串')
+  const sourceTurnId = value.trim()
+  if (!sourceTurnId) throw ApiError.badRequest('sourceTurnId 不能为空')
+  return sourceTurnId
+}
+
 function defaultMetadata(session: AgentCoreSession): ProductTaskMetadata {
   return {
     id: session.id,
@@ -189,8 +199,12 @@ export class ProductTaskService {
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
     const [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    const sideTaskSessionIds = new Set(
+      Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
+    )
     const records: ProductTaskRecord[] = []
     for (const session of sessions) {
+      if (sideTaskSessionIds.has(session.id)) continue
       records.push(await this.toRecord(session, store.tasks[session.id]))
     }
     records.sort((left, right) => {
@@ -307,6 +321,70 @@ export class ProductTaskService {
     return this.requireTask(created.sessionId)
   }
 
+  async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
+    await this.requireTask(taskId)
+    const store = await this.readStore()
+    return Object.values(store.sideTasks)
+      .filter((sideTask) => sideTask.parentTaskId === taskId)
+      .sort((left, right) => {
+        if (left.status !== right.status) return left.status === 'open' ? -1 : 1
+        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+      })
+  }
+
+  async createSideTask(
+    taskId: string,
+    input: CreateProductSideTaskInput,
+  ): Promise<ProductSideTask> {
+    if (!input || typeof input !== 'object') {
+      throw ApiError.badRequest('侧边任务参数必须是对象')
+    }
+    const source = await this.requireTask(taskId)
+    const sourceTurnId = requiredSourceTurnId(input.sourceTurnId)
+    const requestedTitle = validTitle(input.title) ?? `侧边任务：${source.title}`
+    const created = await this.core.branchSession(
+      source.coreSessionId,
+      requestedTitle,
+      sourceTurnId,
+    )
+    const now = new Date().toISOString()
+    const sideTask: ProductSideTask = {
+      id: resourceId('side_task', created.sessionId),
+      parentTaskId: source.id,
+      sourceTurnId,
+      coreSessionId: created.sessionId,
+      title: created.title,
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+    }
+    const store = await this.readStore()
+    store.sideTasks[sideTask.id] = sideTask
+    await this.writeStore(store)
+    return sideTask
+  }
+
+  async closeSideTask(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
+    await this.requireTask(taskId)
+    const store = await this.readStore()
+    const sideTask = store.sideTasks[sideTaskId]
+    if (!sideTask || sideTask.parentTaskId !== taskId) {
+      throw ApiError.notFound(`侧边任务不存在：${sideTaskId}`)
+    }
+    if (sideTask.status === 'closed') return sideTask
+
+    const now = new Date().toISOString()
+    const closed: ProductSideTask = {
+      ...sideTask,
+      status: 'closed',
+      closedAt: now,
+      updatedAt: now,
+    }
+    store.sideTasks[sideTaskId] = closed
+    await this.writeStore(store)
+    return closed
+  }
+
   private async requireTask(taskId: string): Promise<ProductTaskRecord> {
     const index = await this.listTasks()
     const task = index.tasks.find((candidate) => candidate.id === taskId)
@@ -362,10 +440,16 @@ export class ProductTaskService {
       if (parsed.version !== PRODUCT_DOMAIN_VERSION || !parsed.tasks || typeof parsed.tasks !== 'object') {
         throw new Error('invalid product task store')
       }
-      return { version: PRODUCT_DOMAIN_VERSION, tasks: parsed.tasks }
+      return {
+        version: PRODUCT_DOMAIN_VERSION,
+        tasks: parsed.tasks,
+        sideTasks: parsed.sideTasks && typeof parsed.sideTasks === 'object' && !Array.isArray(parsed.sideTasks)
+          ? parsed.sideTasks
+          : {},
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { version: PRODUCT_DOMAIN_VERSION, tasks: {} }
+        return { version: PRODUCT_DOMAIN_VERSION, tasks: {}, sideTasks: {} }
       }
       throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
     }
@@ -380,6 +464,10 @@ export class ProductTaskService {
     const session = sessions.find((candidate) => candidate.id === taskId)
     if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
     store.tasks[taskId] = update(store.tasks[taskId] ?? defaultMetadata(session))
+    await this.writeStore(store)
+  }
+
+  private async writeStore(store: ProductTaskStore): Promise<void> {
     await fs.mkdir(path.dirname(this.storagePath), { recursive: true })
     const temporaryPath = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`
     await fs.writeFile(temporaryPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8')

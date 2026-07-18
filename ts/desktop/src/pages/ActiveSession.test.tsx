@@ -23,6 +23,12 @@ vi.mock('../components/chat/ChatInput', () => ({
   ),
 }))
 
+vi.mock('../product/components/SideTaskPanel', () => ({
+  SideTaskPanel: ({ parentTask }: { parentTask: { id: string; title: string } }) => (
+    <div data-testid="side-task-panel" data-parent-task-id={parentTask.id}>{parentTask.title}</div>
+  ),
+}))
+
 vi.mock('../components/teams/TeamStatusBar', () => ({
   TeamStatusBar: () => <div data-testid="team-status-bar" />,
 }))
@@ -75,6 +81,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useTabStore } from '../stores/tabStore'
 import { useTeamStore } from '../stores/teamStore'
+import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
 import { WORKSPACE_PANEL_DEFAULT_WIDTH } from '../stores/workspacePanelStore'
 import { useTerminalPanelStore } from '../stores/terminalPanelStore'
@@ -93,6 +100,7 @@ afterEach(() => {
   useChatStore.setState({ sessions: {} })
   useSettingsStore.setState({ locale: 'en' })
   useTeamStore.setState({ teams: [], activeTeam: null, memberColors: new Map(), error: null })
+  useProductTaskStore.setState(useProductTaskStore.getInitialState(), true)
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useTerminalPanelStore.setState(useTerminalPanelStore.getInitialState(), true)
 })
@@ -177,6 +185,54 @@ function renderBackgroundTaskDrawerForLocale(locale: 'jp' | 'kr', sessionId: str
 }
 
 describe('ActiveSession task polling', () => {
+  it('mounts the embedded side-task panel only for the active product task', () => {
+    const sessionId = 'product-task-session'
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Product task',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/product',
+        workDir: '/workspace/product',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Product task', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useProductTaskStore.setState({
+      index: {
+        schemaVersion: 1,
+        projects: [],
+        tasks: [{
+          id: 'task-1',
+          projectId: 'project-1',
+          workDir: '/workspace/product',
+          title: 'Product task',
+          coreSessionId: sessionId,
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-05-07T00:00:00.000Z',
+          updatedAt: '2026-05-07T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['continue'],
+        }],
+        total: 1,
+        capabilities: { createTask: true },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByTestId('side-task-panel')).toHaveAttribute('data-parent-task-id', 'task-1')
+  })
+
   it('treats a persisted historical session as non-empty before messages finish loading', () => {
     const sessionId = 'history-loading-session'
 

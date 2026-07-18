@@ -1,6 +1,7 @@
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
+  CreateProductSideTaskInput,
   UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
@@ -12,7 +13,15 @@ export async function handleProductApi(
   segments: string[],
   tasks: Pick<
     ProductTaskService,
-    'listTasks' | 'createTask' | 'updateTask' | 'setPinned' | 'setArchived' | 'continueTask'
+    | 'listTasks'
+    | 'createTask'
+    | 'updateTask'
+    | 'setPinned'
+    | 'setArchived'
+    | 'continueTask'
+    | 'listSideTasks'
+    | 'createSideTask'
+    | 'closeSideTask'
   > = productTaskService,
 ): Promise<Response> {
   try {
@@ -30,6 +39,36 @@ export async function handleProductApi(
         return Response.json({ task: await tasks.createTask(input) }, { status: 201 })
       }
       return methodNotAllowed(req.method)
+    }
+
+    if (action === 'side-tasks') {
+      const sideTaskId = segments[5]
+      const sideTaskAction = segments[6]
+
+      if (!sideTaskId) {
+        if (req.method === 'GET') {
+          return Response.json({ sideTasks: await tasks.listSideTasks(taskId) })
+        }
+        if (req.method === 'POST') {
+          const input = await readJson<CreateProductSideTaskInput>(req)
+          return Response.json(
+            { sideTask: await tasks.createSideTask(taskId, input) },
+            { status: 201 },
+          )
+        }
+        return methodNotAllowed(req.method)
+      }
+
+      if (sideTaskAction === 'close') {
+        if (req.method !== 'POST') return methodNotAllowed(req.method)
+        return Response.json({ sideTask: await tasks.closeSideTask(taskId, sideTaskId) })
+      }
+
+      throw ApiError.notFound(
+        sideTaskAction
+          ? `未知侧边任务操作：${sideTaskAction}`
+          : `未知侧边任务资源：${sideTaskId}`,
+      )
     }
 
     if (!action) {
