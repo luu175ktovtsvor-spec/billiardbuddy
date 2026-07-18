@@ -71,4 +71,28 @@ describe('launchProductTask', () => {
     expect(connectToSession).toHaveBeenCalledWith('session-1')
     expect(sendMessage).not.toHaveBeenCalled()
   })
+
+  it('forwards a selected slash command as the initial Agent message, not as product task data', async () => {
+    const task = makeTask()
+    const createTask = vi.fn(async () => task)
+    const sendMessage = vi.fn()
+    const input = {
+      workDir: '/workspace/billiard',
+      title: '复盘今天经营',
+    }
+
+    await launchProductTask({
+      createTask,
+      refreshSessions: vi.fn(async () => undefined),
+      openTask: vi.fn(),
+      connectToSession: vi.fn(),
+      sendMessage,
+    }, input, ' /venue-daily-review 今天营业额和昨天对比 ')
+
+    expect(createTask).toHaveBeenCalledWith(input)
+    expect(sendMessage).toHaveBeenCalledWith(
+      'session-1',
+      '/venue-daily-review 今天营业额和昨天对比',
+    )
+  })
 })

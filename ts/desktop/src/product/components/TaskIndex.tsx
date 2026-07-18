@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -8,7 +8,9 @@ import type {
   ProductTaskRecord,
 } from '../domain/types'
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
+import { skillsApi } from '../../api/skills'
 import type { PermissionMode } from '../../types/settings'
+import type { SkillMeta } from '../../types/skill'
 import { useSettingsStore } from '../../stores/settingsStore'
 
 export type TaskIndexProps = {
@@ -52,6 +54,19 @@ function taskKindLabel(task: ProductTaskRecord): string {
 
 function projectTasks(index: ProductTaskIndexResponse, projectId: string): ProductTaskRecord[] {
   return index.tasks.filter((task) => task.projectId === projectId)
+}
+
+function slashQuery(value: string): string | null {
+  if (!value.startsWith('/')) return null
+  const command = value.slice(1)
+  if (/\s/.test(command)) return null
+  return command.toLocaleLowerCase()
+}
+
+function insertSlashCommand(value: string, commandName: string): string {
+  const firstWhitespace = value.search(/\s/)
+  const suffix = firstWhitespace === -1 ? '' : value.slice(firstWhitespace)
+  return `/${commandName}${suffix || ' '}`
 }
 
 export function TaskIndex({
@@ -203,8 +218,55 @@ function TaskComposer({
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
   const [useWorktree, setUseWorktree] = useState(false)
+  const [discoverableSkills, setDiscoverableSkills] = useState<SkillMeta[] | null>(null)
+  const [skillDiscoveryWorkDir, setSkillDiscoveryWorkDir] = useState<string | null>(null)
+  const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
+  const normalizedWorkDir = workDir.trim()
+  const isSlashInput = initialText.startsWith('/')
+  const query = slashQuery(initialText)
+
+  useEffect(() => {
+    if (!isSlashInput || !normalizedWorkDir) {
+      setDiscoverableSkills(null)
+      setSkillDiscoveryWorkDir(null)
+      setSkillDiscoveryError(null)
+      return
+    }
+
+    let cancelled = false
+    setDiscoverableSkills(null)
+    setSkillDiscoveryWorkDir(normalizedWorkDir)
+    setSkillDiscoveryError(null)
+
+    skillsApi.list(normalizedWorkDir)
+      .then(({ skills }) => {
+        if (cancelled) return
+        setDiscoverableSkills(skills.filter((skill) => skill.userInvocable))
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setSkillDiscoveryError(error instanceof Error && error.message ? error.message : '服务不可用')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isSlashInput, normalizedWorkDir])
+
+  const matchingSkills = useMemo(() => {
+    if (query === null || discoverableSkills === null) return []
+    return discoverableSkills.filter((skill) => skill.name.toLocaleLowerCase().startsWith(query))
+  }, [discoverableSkills, query])
+  const hasSkillsForCurrentWorkDir = skillDiscoveryWorkDir === normalizedWorkDir
+  const visibleSkills = hasSkillsForCurrentWorkDir ? matchingSkills : []
+  const visibleSkillDiscoveryError = hasSkillsForCurrentWorkDir ? skillDiscoveryError : null
+  const isSkillDiscoveryLoading = Boolean(normalizedWorkDir) && (
+    !hasSkillsForCurrentWorkDir || (
+      discoverableSkills === null && visibleSkillDiscoveryError === null
+    )
+  )
 
   const selectProject = (nextProjectId: string) => {
     setProjectId(nextProjectId)
@@ -217,7 +279,6 @@ function TaskComposer({
       className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
       onSubmit={(event) => {
         event.preventDefault()
-        const normalizedWorkDir = workDir.trim()
         if (!normalizedWorkDir) return
         const taskInput: CreateProductTaskInput = {
           workDir: normalizedWorkDir,
@@ -248,17 +309,28 @@ function TaskComposer({
         任务标题（可选）
         <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
       </label>
-      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
-        初始目标（可选）
-        <textarea
-          aria-label="初始目标（可选）"
-          value={initialText}
-          onChange={(event) => setInitialText(event.target.value)}
-          placeholder="描述这项任务希望完成什么…"
-          rows={3}
-          className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
-        />
-      </label>
+      <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
+        <label className="flex flex-col gap-1">
+          初始目标（可选）
+          <textarea
+            aria-label="初始目标（可选）"
+            value={initialText}
+            onChange={(event) => setInitialText(event.target.value)}
+            placeholder="描述这项任务希望完成什么…"
+            rows={3}
+            className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
+          />
+        </label>
+        {query !== null ? (
+          <SkillSlashPicker
+            workDir={normalizedWorkDir}
+            skills={visibleSkills}
+            isLoading={isSkillDiscoveryLoading}
+            error={visibleSkillDiscoveryError}
+            onSelect={(skill) => setInitialText((value) => insertSlashCommand(value, skill.name))}
+          />
+        ) : null}
+      </div>
       <label className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
         <input type="checkbox" checked={useWorktree} onChange={(event) => setUseWorktree(event.target.checked)} />
         在新工作树中开始
@@ -277,6 +349,52 @@ function TaskComposer({
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
       </div>
     </form>
+  )
+}
+
+function SkillSlashPicker({
+  workDir,
+  skills,
+  isLoading,
+  error,
+  onSelect,
+}: {
+  workDir: string
+  skills: SkillMeta[]
+  isLoading: boolean
+  error: string | null
+  onSelect: (skill: SkillMeta) => void
+}) {
+  if (!workDir) {
+    return <p className="text-xs text-[var(--color-text-tertiary)]">填写工作目录后，才能读取当前可用命令。</p>
+  }
+
+  if (isLoading) {
+    return <p role="status" className="text-xs text-[var(--color-text-tertiary)]">正在读取可用命令…</p>
+  }
+
+  if (error) {
+    return <p role="alert" className="text-xs text-[var(--color-error)]">无法读取可用命令：{error}</p>
+  }
+
+  if (skills.length === 0) {
+    return <p className="text-xs text-[var(--color-text-tertiary)]">当前工作目录没有匹配的可用命令。</p>
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]" aria-label="可用命令">
+      {skills.map((skill) => (
+        <button
+          key={`${skill.source}:${skill.name}`}
+          type="button"
+          onClick={() => onSelect(skill)}
+          className="flex w-full items-start gap-3 border-t border-[var(--color-border)] px-3 py-2 text-left first:border-t-0 hover:bg-[var(--color-surface-hover)]"
+        >
+          <span className="shrink-0 text-sm font-medium text-[var(--color-text-primary)]">/{skill.name}</span>
+          <span className="min-w-0 text-xs leading-5 text-[var(--color-text-secondary)]">{skill.displayName ?? skill.description}</span>
+        </button>
+      ))}
+    </div>
   )
 }
 

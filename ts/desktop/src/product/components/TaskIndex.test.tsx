@@ -1,9 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
+
+const mocks = vi.hoisted(() => ({
+  listSkills: vi.fn(),
+}))
+
+vi.mock('../../api/skills', () => ({
+  skillsApi: {
+    list: mocks.listSkills,
+  },
+}))
+
 import { TaskIndex } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { useSettingsStore } from '../../stores/settingsStore'
+import type { SkillMeta } from '../../types/skill'
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
   return {
@@ -39,6 +51,19 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
   }
 }
 
+function makeSkill(overrides: Partial<SkillMeta> = {}): SkillMeta {
+  return {
+    name: 'venue-daily-review',
+    displayName: '复盘今天经营',
+    description: '整理球房当天经营数据。',
+    source: 'bundled',
+    userInvocable: true,
+    contentLength: 120,
+    hasDirectory: true,
+    ...overrides,
+  }
+}
+
 function renderIndex(index = makeIndex()) {
   const props = {
     index,
@@ -59,8 +84,13 @@ function renderIndex(index = makeIndex()) {
   return props
 }
 
+beforeEach(() => {
+  mocks.listSkills.mockResolvedValue({ skills: [] })
+})
+
 afterEach(() => {
   cleanup()
+  vi.clearAllMocks()
   useSettingsStore.setState({ permissionMode: 'default' })
 })
 
@@ -122,6 +152,56 @@ describe('TaskIndex', () => {
       workDir: '/workspace/new-table',
       title: '整理球台配置',
     }, '请列出本周的训练安排'))
+  })
+
+  it('inserts a real discoverable slash command and keeps it outside the product task payload', async () => {
+    mocks.listSkills.mockResolvedValue({
+      skills: [
+        makeSkill(),
+        makeSkill({
+          name: 'internal-only',
+          displayName: '内部命令',
+          userInvocable: false,
+        }),
+      ],
+    })
+    const props = renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/venue' } })
+
+    await waitFor(() => expect(mocks.listSkills).toHaveBeenCalledWith('/workspace/new-table'))
+    fireEvent.click(await screen.findByRole('button', { name: /\/venue-daily-review/ }))
+
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/venue-daily-review ')
+    expect(screen.queryByRole('button', { name: /\/internal-only/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, '/venue-daily-review'))
+  })
+
+  it('does not show a command choice while discovery is loading or unavailable', async () => {
+    let rejectSkills: (error: Error) => void = () => undefined
+    mocks.listSkills.mockImplementation(() => new Promise((_, reject) => {
+      rejectSkills = reject
+    }))
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/' } })
+
+    expect(await screen.findByRole('status')).toHaveTextContent('正在读取可用命令')
+    expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
+
+    rejectSkills(new Error('服务不可用'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('无法读取可用命令：服务不可用')
+    expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
   })
 
   it('uses the configured default permission mode for the new core session', async () => {
