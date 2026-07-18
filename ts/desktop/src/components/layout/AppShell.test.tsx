@@ -120,6 +120,14 @@ vi.mock('../../pages/TraceSession', () => ({
   ),
 }))
 
+vi.mock('../../pages/Settings', () => ({
+  Settings: () => <section data-testid="settings-page">settings loaded</section>,
+}))
+
+vi.mock('./WindowControls', () => ({
+  WindowControls: () => <div data-testid="window-controls" />,
+}))
+
 vi.mock('../shared/Toast', () => ({
   ToastContainer: () => null,
 }))
@@ -160,6 +168,26 @@ describe('AppShell boot flow', () => {
     expect(screen.getByText('topbar loaded')).toBeInTheDocument()
     expect(screen.getByText('content loaded')).toBeInTheDocument()
     expect(screen.getByText('updates loaded')).toBeInTheDocument()
+  })
+
+  it('lets settings take over the full desktop window like the legacy renderer shell', async () => {
+    mocks.tabState.activeTabId = '__settings__'
+    mocks.tabState.tabs = [
+      {
+        sessionId: '__settings__',
+        title: 'Settings',
+        type: 'settings',
+        status: 'idle',
+      },
+    ]
+
+    render(<AppShell />)
+
+    expect(await screen.findByTestId('settings-page')).toHaveTextContent('settings loaded')
+    expect(screen.queryByText('sidebar loaded')).not.toBeInTheDocument()
+    expect(screen.queryByText('topbar loaded')).not.toBeInTheDocument()
+    expect(screen.queryByText('content loaded')).not.toBeInTheDocument()
+    expect(screen.getByTestId('window-controls')).toBeInTheDocument()
   })
 
   it('shows startup diagnostics instead of a blank shell when bootstrap fails', async () => {

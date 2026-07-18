@@ -57,12 +57,12 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-[var(--color-surface)]">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2.5">
+    <div className="flex h-full min-h-0 w-full flex-col bg-[var(--color-app-main)]">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-app-main)] px-2">
         <div
           role="tablist"
           aria-label={t('workbench.modeSwitch')}
-          className="inline-flex items-center gap-0.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5"
+          className="inline-flex items-center gap-0.5"
         >
           {MODE_ITEMS.map(({ mode: itemMode, labelKey, Icon }) => {
             const isActive = mode === itemMode
@@ -75,7 +75,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
                 onClick={() => handleModeSelect(itemMode)}
                 className={`inline-flex h-7 items-center gap-1.5 rounded-[6px] px-2.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/35 ${
                   isActive
-                    ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-[inset_0_0_0_1px_var(--color-border-focus)]'
+                    ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'
                 }`}
               >

@@ -17,26 +17,26 @@ describe('ThinkingBlock', () => {
 
   it('shows the in-progress label while thinking is active', () => {
     render(<ThinkingBlock content="reasoning..." isActive />)
-    expect(screen.getByRole('button')).toHaveTextContent('思考中')
-    expect(screen.getByRole('button')).not.toHaveTextContent('已思考')
+    expect(screen.getByText('思考中')).toBeInTheDocument()
+    expect(screen.queryByText('reasoning...')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
-  it('shows the done label once thinking has completed', () => {
-    render(<ThinkingBlock content="reasoning..." isActive={false} />)
-    expect(screen.getByRole('button')).toHaveTextContent('已思考')
-    expect(screen.getByRole('button')).not.toHaveTextContent('思考中')
+  it('removes the thinking row once thinking has completed', () => {
+    const { container } = render(<ThinkingBlock content="reasoning..." isActive={false} />)
+    expect(container).toBeEmptyDOMElement()
   })
 
-  it('defaults to the done label when isActive is omitted', () => {
-    render(<ThinkingBlock content="reasoning..." />)
-    expect(screen.getByRole('button')).toHaveTextContent('已思考')
+  it('defaults to not exposing completed thinking', () => {
+    const { container } = render(<ThinkingBlock content="reasoning..." />)
+    expect(container).toBeEmptyDOMElement()
   })
 
-  it('localizes both labels in English', () => {
+  it('localizes the active label in English without retaining completed reasoning', () => {
     useSettingsStore.setState({ locale: 'en' })
-    const { rerender } = render(<ThinkingBlock content="reasoning..." isActive />)
-    expect(screen.getByRole('button')).toHaveTextContent('Thinking')
+    const { container, rerender } = render(<ThinkingBlock content="reasoning..." isActive />)
+    expect(screen.getByText('Thinking')).toBeInTheDocument()
     rerender(<ThinkingBlock content="reasoning..." isActive={false} />)
-    expect(screen.getByRole('button')).toHaveTextContent('Thought')
+    expect(container).toBeEmptyDOMElement()
   })
 })

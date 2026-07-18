@@ -31,7 +31,10 @@ export async function subscribePreviewEvents(sessionId: string): Promise<() => v
       })
     }
     else if (msg.type === 'selection') {
-      // 选区事件意味着页面侧已结束一次性拾取——同步关闭宿主侧 picker 态，避免按钮卡在按下态
+      // A page can call APIs exposed in its own main world. Only consume a
+      // selection while the renderer is also expecting the user's picker gesture.
+      const session = store.bySession[sessionId]
+      if (!session?.pickerActive) return
       store.setPicker(sessionId, false)
       const p = msg.payload as (SelectionPayload & { screenshot?: { dataUrl?: string; kind?: string } }) | undefined
       if (!p || typeof p !== 'object' || !p.element) return
@@ -46,10 +49,10 @@ export async function subscribePreviewEvents(sessionId: string): Promise<() => v
             quote: p.element.selector,
           }]
         : []
-      useChatStore.getState().sendMessage(sessionId, selection.modelText, attachments, {
-        displayContent: selection.displayName,
-        displayAttachments: attachments,
-        hideDisplayContent: attachments.length > 0,
+      useChatStore.getState().queueComposerPrefill(sessionId, {
+        text: selection.modelText,
+        attachments,
+        mode: 'replace',
       })
     }
     else if (msg.type === 'picker-exited') {

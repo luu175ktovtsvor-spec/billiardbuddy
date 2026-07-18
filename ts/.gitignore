@@ -29,6 +29,12 @@ artifacts/
 # Desktop build output
 desktop/dist/
 desktop/electron-dist/
+desktop/renderer-dist/
+desktop/binaries/
+desktop/bundled.env
+desktop/bundled.env.bak*
+desktop/electron/main.mjs
+desktop/electron/preload.cjs
 desktop/build-artifacts/
 desktop/src-tauri/binaries/
 desktop/src-tauri/target/

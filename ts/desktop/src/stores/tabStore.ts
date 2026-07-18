@@ -11,8 +11,19 @@ export const TRACE_LIST_TAB_ID = '__traces__'
 export const TERMINAL_TAB_PREFIX = '__terminal__'
 export const TRACE_TAB_PREFIX = '__trace__'
 export const WORKBENCH_TAB_PREFIX = '__workbench__'
+export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
+export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 
-export type TabType = 'session' | 'settings' | 'scheduled' | 'terminal' | 'trace' | 'traces' | 'workbench'
+export type TabType =
+  | 'session'
+  | 'settings'
+  | 'scheduled'
+  | 'terminal'
+  | 'trace'
+  | 'traces'
+  | 'workbench'
+  | 'image-workbench'
+  | 'video-studio'
 
 export type Tab = {
   sessionId: string
@@ -283,14 +294,26 @@ export const useTabStore = create<TabStore>((set, get) => ({
       const validTabs: Tab[] = data.openTabs
         .filter((t) => {
           // Special tabs are always valid
-          if (t.type === 'settings' || t.type === 'scheduled' || t.type === 'traces') return true
+          if (
+            t.type === 'settings' ||
+            t.type === 'scheduled' ||
+            t.type === 'traces' ||
+            t.type === 'image-workbench' ||
+            t.type === 'video-studio'
+          ) return true
           if (t.type === 'trace') return !!t.traceSessionId && existingIds.has(t.traceSessionId)
           if (t.type === 'terminal') return false
           // Session tabs must exist on server
           return existingIds.has(t.sessionId)
         })
         .map((t) => {
-          if (t.type === 'settings' || t.type === 'scheduled' || t.type === 'traces') {
+          if (
+            t.type === 'settings' ||
+            t.type === 'scheduled' ||
+            t.type === 'traces' ||
+            t.type === 'image-workbench' ||
+            t.type === 'video-studio'
+          ) {
             return { sessionId: t.sessionId, title: t.title, type: t.type, status: 'idle' as const }
           }
           if (t.type === 'trace' && t.traceSessionId) {

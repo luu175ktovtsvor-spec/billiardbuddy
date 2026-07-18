@@ -142,9 +142,10 @@ export class SettingsService {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tmpFile = `${filePath}.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}`
       try {
-        await fs.mkdir(dir, { recursive: true })
-        await fs.writeFile(tmpFile, contents, 'utf-8')
+        await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+        await fs.writeFile(tmpFile, contents, { encoding: 'utf-8', mode: 0o600 })
         await fs.rename(tmpFile, filePath)
+        await fs.chmod(filePath, 0o600).catch(() => undefined)
         resetSettingsCache()
         return
       } catch (err) {

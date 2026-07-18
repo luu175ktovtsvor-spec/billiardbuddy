@@ -153,7 +153,7 @@ describe('qf-gateway startup auto-enable', () => {
     expect(providers).toHaveLength(0)
   })
 
-  test('does NOT overwrite a user-chosen active provider', async () => {
+  test('replaces a stale manual provider because the product runtime is gateway-managed', async () => {
     const svc = new ProviderService()
     const manual = await svc.addProvider(sampleManualInput)
     await svc.activateProvider(manual.id)
@@ -164,8 +164,9 @@ describe('qf-gateway startup auto-enable', () => {
     await ensureQfGatewayProviderRegistered(svc)
 
     const { activeId, providers } = await svc.listProviders()
-    expect(activeId).toBe(manual.id)
+    expect(activeId).toBe(QF_GATEWAY_PROVIDER_ID)
     expect(providers).toHaveLength(1)
+    expect(providers[0]?.id).toBe(manual.id)
   })
 
   test('is a no-op when the gateway is not configured', async () => {
@@ -452,10 +453,17 @@ describe('qf-gateway proxy round-trip', () => {
     }
   })
 
-  test('the install id is a host-only key stripped from the CLI subprocess env', () => {
+  test('the install id and media UI capability are host-only keys stripped from CLI subprocesses', () => {
     expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain('BB_INSTALLATION_ID')
-    const stripped = stripHostOnlyGatewayEnv({ PATH: '/x', BB_INSTALLATION_ID: 'bb-1', QF_GATEWAY_TOKEN: 't' })
+    expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain('BB_MEDIA_UI_CAPABILITY')
+    const stripped = stripHostOnlyGatewayEnv({
+      PATH: '/x',
+      BB_INSTALLATION_ID: 'bb-1',
+      BB_MEDIA_UI_CAPABILITY: 'media-secret',
+      QF_GATEWAY_TOKEN: 't',
+    })
     expect(stripped.BB_INSTALLATION_ID).toBeUndefined()
+    expect(stripped.BB_MEDIA_UI_CAPABILITY).toBeUndefined()
     expect(stripped.QF_GATEWAY_TOKEN).toBeUndefined()
     expect(stripped.PATH).toBe('/x')
   })
