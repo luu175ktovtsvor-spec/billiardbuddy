@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-local",
+  "name": "billiardbuddy-agent-core",
   "version": "999.0.0-local",
   "private": true,
   "type": "module",
@@ -13,11 +13,7 @@
     "check:desktop": "cd desktop && bun run lint && bun run test -- --run && bun run build",
     "check:electron": "cd desktop && bun run check:electron",
     "check:adapters": "cd adapters && bun test",
-    "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
-    "check:docs": "npm ci --loglevel=error && npm run --loglevel=error docs:build",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",
@@ -88,10 +84,5 @@
   "overrides": {
     "follow-redirects": "^1.16.0"
   },
-  "devDependencies": {
-    "mermaid": "^11.14.0",
-    "vitepress": "^1.6.3",
-    "vitepress-plugin-mermaid": "^2.0.17",
-    "vue": "^3.5.13"
-  }
+  "devDependencies": {}
 }
