@@ -8,9 +8,6 @@ const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
   mcp: 'slashCmd.mcp.description',
   skills: 'slashCmd.skills.description',
   help: 'slashCmd.help.description',
-  status: 'slashCmd.status.description',
-  cost: 'slashCmd.cost.description',
-  context: 'slashCmd.context.description',
   plugin: 'slashCmd.plugin.description',
   memory: 'slashCmd.memory.description',
   doctor: 'slashCmd.doctor.description',
@@ -34,9 +31,6 @@ export const PANEL_SLASH_COMMANDS = [
   { name: 'mcp' },
   { name: 'skills' },
   { name: 'help' },
-  { name: 'status' },
-  { name: 'cost' },
-  { name: 'context' },
 ] as const
 
 export const SETTINGS_SLASH_COMMANDS = [
@@ -51,15 +45,28 @@ export const SLASH_COMMAND_ALIASES = [
   { name: 'settings', target: 'config' },
 ] as const
 
+const RETIRED_SESSION_INSPECTOR_COMMAND_NAMES = new Set(['status', 'cost', 'context'])
+
+export function isRetiredSessionInspectorCommandName(name: string): boolean {
+  return RETIRED_SESSION_INSPECTOR_COMMAND_NAMES.has(name.trim().toLowerCase())
+}
+
+export function getLeadingSlashCommandName(value: string): string | null {
+  const match = /^\/([^\s/]+)/.exec(value.trim())
+  return match?.[1]?.toLowerCase() ?? null
+}
+
+export function isRetiredSessionInspectorCommandInput(value: string): boolean {
+  const commandName = getLeadingSlashCommandName(value)
+  return commandName ? isRetiredSessionInspectorCommandName(commandName) : false
+}
+
 /** Static fallback with English descriptions (for non-React contexts) */
 export const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: 'agent', description: 'Run a prompt with a selected Agent', argumentHint: '<agent> <prompt>' },
   { name: 'mcp', description: 'Open available MCP tools for the current chat context' },
   { name: 'skills', description: 'Browse user-invocable skills for the current chat context' },
   { name: 'help', description: 'Show available desktop and agent commands' },
-  { name: 'status', description: 'Show session status, usage, and context' },
-  { name: 'cost', description: 'Show session usage and costs' },
-  { name: 'context', description: 'Show current context usage' },
   { name: 'plugin', description: 'Open desktop plugin controls in Settings' },
   { name: 'memory', description: 'Open project memory files in Settings' },
   { name: 'doctor', description: 'Open Doctor in Diagnostics' },
@@ -252,7 +259,7 @@ export function mergeSlashCommands(
   const merged = new Map<string, SlashCommandOption>()
 
   for (const command of preferred) {
-    if (!command?.name) continue
+    if (!command?.name || isRetiredSessionInspectorCommandName(command.name)) continue
     const localized = fallbackByName.get(command.name)
     // For commands the desktop owns the copy for, prefer the localized fallback
     // description so users see translated text instead of the CLI's English.
@@ -270,7 +277,7 @@ export function mergeSlashCommands(
   }
 
   for (const command of fallback) {
-    if (!command?.name) continue
+    if (!command?.name || isRetiredSessionInspectorCommandName(command.name)) continue
     if (merged.has(command.name)) continue
     merged.set(command.name, command)
   }

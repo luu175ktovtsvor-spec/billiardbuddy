@@ -5,6 +5,7 @@ import {
   filterSlashCommands,
   findSlashToken,
   getLocalizedFallbackCommands,
+  isRetiredSessionInspectorCommandInput,
   insertSlashTrigger,
   mergeSlashCommands,
   replaceSlashCommand,
@@ -49,9 +50,22 @@ describe('composerUtils', () => {
       expect.arrayContaining([
         { name: 'help', description: 'Show available desktop and agent commands' },
         { name: 'clear', description: 'Clear conversation history' },
-        { name: 'context', description: 'Show current context usage' },
       ]),
     )
+  })
+
+  it('filters retired session inspection commands returned by the runtime', () => {
+    const names = mergeSlashCommands([
+      { name: 'status', description: 'Inspect status' },
+      { name: 'cost', description: 'Inspect costs' },
+      { name: 'context', description: 'Inspect context' },
+      { name: 'help', description: 'Show commands' },
+    ]).map((command) => command.name)
+
+    expect(names).not.toContain('status')
+    expect(names).not.toContain('cost')
+    expect(names).not.toContain('context')
+    expect(names).toContain('help')
   })
 
   it('keeps server-provided descriptions for non-built-in commands', () => {
@@ -244,10 +258,18 @@ describe('composerUtils', () => {
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('settings')
   })
 
-  it('routes session inspection commands to the desktop panel', () => {
-    expect(resolveSlashUiAction('cost')).toEqual({ type: 'panel', command: 'cost' })
-    expect(resolveSlashUiAction('context')).toEqual({ type: 'panel', command: 'context' })
-    expect(resolveSlashUiAction('status')).toEqual({ type: 'panel', command: 'status' })
+  it('does not route retired session inspection commands to desktop panels', () => {
+    expect(resolveSlashUiAction('cost')).toBeNull()
+    expect(resolveSlashUiAction('context')).toBeNull()
+    expect(resolveSlashUiAction('status')).toBeNull()
+  })
+
+  it('recognizes retired inspection commands by their first slash token', () => {
+    expect(isRetiredSessionInspectorCommandInput('/status')).toBe(true)
+    expect(isRetiredSessionInspectorCommandInput('/status anything')).toBe(true)
+    expect(isRetiredSessionInspectorCommandInput('/cost last turn')).toBe(true)
+    expect(isRetiredSessionInspectorCommandInput('/context\nnow')).toBe(true)
+    expect(isRetiredSessionInspectorCommandInput('/status-report')).toBe(false)
   })
 
   it('routes retired login and model commands to the product-managed notice', () => {
