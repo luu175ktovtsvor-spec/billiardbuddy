@@ -27,7 +27,7 @@ vi.mock('../../components/chat/clipboard', () => ({
   copyTextToClipboard: mocks.copyText,
 }))
 
-import { TaskIndex } from './TaskIndex'
+import { TaskIndex, type TaskIndexProps } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 import type { SkillMeta } from '../../types/skill'
@@ -79,8 +79,8 @@ function makeSkill(overrides: Partial<SkillMeta> = {}): SkillMeta {
   }
 }
 
-function renderIndex(index = makeIndex()) {
-  const props = {
+function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {}) {
+  const props: TaskIndexProps = {
     index,
     isLoading: false,
     error: null,
@@ -94,6 +94,7 @@ function renderIndex(index = makeIndex()) {
     onRestoreTask: vi.fn(async () => undefined),
     onContinueTask: vi.fn(async () => undefined),
     onOpenTask: vi.fn(),
+    ...overrides,
   }
   render(<TaskIndex {...props} />)
   return props
@@ -210,6 +211,17 @@ describe('TaskIndex', () => {
       title: '选择任务工作目录',
     }))
     await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/selected-project'))
+  })
+
+  it('opens the real new-task composer with the directory requested by desktop navigation', async () => {
+    const onConsumeComposerRequest = vi.fn()
+    renderIndex(makeIndex(), {
+      composerRequest: { id: 17, workDir: '/workspace/billiard' },
+      onConsumeComposerRequest,
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard'))
+    expect(onConsumeComposerRequest).toHaveBeenCalledWith(17)
   })
 
   it('keeps the optional initial goal out of the product task fields', async () => {

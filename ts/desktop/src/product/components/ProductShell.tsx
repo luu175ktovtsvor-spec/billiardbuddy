@@ -12,7 +12,9 @@ export function ProductShell() {
   const isLoading = useProductTaskStore((state) => state.isLoading)
   const error = useProductTaskStore((state) => state.error)
   const mutations = useProductTaskStore((state) => state.mutations)
+  const composerRequest = useProductTaskStore((state) => state.composerRequest)
   const refresh = useProductTaskStore((state) => state.refresh)
+  const consumeTaskComposerRequest = useProductTaskStore((state) => state.consumeTaskComposerRequest)
   const createTask = useProductTaskStore((state) => state.createTask)
   const renameTask = useProductTaskStore((state) => state.renameTask)
   const pinTask = useProductTaskStore((state) => state.pinTask)
@@ -73,6 +75,8 @@ export function ProductShell() {
         onRestoreTask={restoreTask}
         onContinueTask={continueAndOpenTask}
         onOpenTask={openExistingTask}
+        composerRequest={composerRequest}
+        onConsumeComposerRequest={consumeTaskComposerRequest}
       />
     </main>
   )
