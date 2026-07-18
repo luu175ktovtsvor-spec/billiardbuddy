@@ -1111,7 +1111,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.general.uiZoomDescription': '인터페이스 전체의 크기를 조정합니다.',
   'settings.general.uiZoomShortcutHint': '단축키가 더 빠릅니다:',
   'settings.general.uiZoomShortcutMac': 'macOS',
-  'settings.general.uiZoomShortcutWindows': 'Windows / Linux',
+  'settings.general.uiZoomShortcutWindows': 'Windows',
   'settings.general.uiZoomShortcutResetHint': '0으로 확대/축소를 100%로 재설정합니다.',
   'settings.general.uiZoomReset': 'UI 확대/축소를 100%로 재설정',
 

@@ -1111,7 +1111,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.general.uiZoomDescription': 'インターフェース全体のサイズを調整します。',
   'settings.general.uiZoomShortcutHint': 'ショートカットの方が速いです:',
   'settings.general.uiZoomShortcutMac': 'macOS',
-  'settings.general.uiZoomShortcutWindows': 'Windows / Linux',
+  'settings.general.uiZoomShortcutWindows': 'Windows',
   'settings.general.uiZoomShortcutResetHint': '0 でズームを 100% にリセットします。',
   'settings.general.uiZoomReset': 'UI ズームを 100% にリセット',
 

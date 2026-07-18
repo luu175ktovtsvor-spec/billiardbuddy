@@ -105,67 +105,31 @@ describe('release update metadata merge', () => {
     expect(merged.sha512).toBe('x64-zip-checksum')
   })
 
-  test('restores standard linux channel names for x64 and arm64 metadata', () => {
+  test('ignores unsupported update metadata channels', () => {
     const inputDir = tempDir()
     const outputDir = tempDir()
 
     writeYaml(join(inputDir, 'latest-linux-Linux-x64.yml'), `
       version: 0.3.2
       files:
-        - url: BilliardBuddy-0.3.2-x64.AppImage
-          sha512: linux-x64-checksum
-          size: 111
-      path: BilliardBuddy-0.3.2-x64.AppImage
-      sha512: linux-x64-checksum
-    `)
-    writeYaml(join(inputDir, 'latest-linux-Linux-ARM64.yml'), `
-      version: 0.3.2
-      files:
-        - url: BilliardBuddy-0.3.2-arm64.AppImage
-          sha512: linux-arm64-checksum
-          size: 222
-      path: BilliardBuddy-0.3.2-arm64.AppImage
-      sha512: linux-arm64-checksum
-    `)
-
-    mergeUpdateMetadataArtifacts({ metadataDir: inputDir, outDir: outputDir })
-
-    const x64 = parse(readFileSync(join(outputDir, 'latest-linux.yml'), 'utf8')) as { path: string }
-    const arm64 = parse(readFileSync(join(outputDir, 'latest-linux-arm64.yml'), 'utf8')) as { path: string }
-    expect(x64.path).toBe('BilliardBuddy-0.3.2-x64.AppImage')
-    expect(arm64.path).toBe('BilliardBuddy-0.3.2-arm64.AppImage')
-  })
-
-  test('keeps Linux AppImage as primary update artifact when deb is also published', () => {
-    const inputDir = tempDir()
-    const outputDir = tempDir()
-
-    writeYaml(join(inputDir, 'latest-linux-Linux-x64.yml'), `
-      version: 0.3.2
-      files:
-        - url: BilliardBuddy-0.3.2-linux-amd64.deb
-          sha512: linux-deb-checksum
-          size: 222
         - url: BilliardBuddy-0.3.2-linux-x86_64.AppImage
-          sha512: linux-appimage-checksum
+          sha512: linux-checksum
           size: 111
-      path: BilliardBuddy-0.3.2-linux-amd64.deb
-      sha512: linux-deb-checksum
+      path: BilliardBuddy-0.3.2-linux-x86_64.AppImage
+      sha512: linux-checksum
+    `)
+    writeYaml(join(inputDir, 'latest-Windows-x64.yml'), `
+      version: 0.3.2
+      files:
+        - url: BilliardBuddy-0.3.2-win-x64.exe
+          sha512: windows-checksum
+          size: 222
+      path: BilliardBuddy-0.3.2-win-x64.exe
+      sha512: windows-checksum
     `)
 
-    mergeUpdateMetadataArtifacts({ metadataDir: inputDir, outDir: outputDir })
-
-    const x64 = parse(readFileSync(join(outputDir, 'latest-linux.yml'), 'utf8')) as {
-      files: Array<{ url: string, sha512: string }>
-      path: string
-      sha512: string
-    }
-    expect(x64.files.map(file => file.url)).toEqual([
-      'BilliardBuddy-0.3.2-linux-x86_64.AppImage',
-      'BilliardBuddy-0.3.2-linux-amd64.deb',
-    ])
-    expect(x64.path).toBe('BilliardBuddy-0.3.2-linux-x86_64.AppImage')
-    expect(x64.sha512).toBe('linux-appimage-checksum')
+    const result = mergeUpdateMetadataArtifacts({ metadataDir: inputDir, outDir: outputDir })
+    expect(result.writtenFiles.map(file => file.endsWith('latest.yml'))).toEqual([true])
   })
 
   test('restores standard Windows channel metadata after matrix namespacing', () => {

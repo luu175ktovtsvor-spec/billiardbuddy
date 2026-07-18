@@ -42,8 +42,6 @@ export function resolveHostTriple(platform = process.platform, arch = process.ar
   if (platform === 'darwin' && arch === 'x64') return 'x86_64-apple-darwin'
   if (platform === 'win32' && arch === 'arm64') return 'aarch64-pc-windows-msvc'
   if (platform === 'win32') return 'x86_64-pc-windows-msvc'
-  if (platform === 'linux' && arch === 'arm64') return 'aarch64-unknown-linux-gnu'
-  if (platform === 'linux') return 'x86_64-unknown-linux-gnu'
   throw new Error(`Unsupported Electron sidecar platform: ${platform}/${arch}`)
 }
 

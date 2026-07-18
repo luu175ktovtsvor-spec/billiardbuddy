@@ -54,7 +54,12 @@ describe('Electron sidecar manager', () => {
     expect(resolveHostTriple('darwin', 'x64')).toBe('x86_64-apple-darwin')
     expect(resolveHostTriple('win32', 'x64')).toBe('x86_64-pc-windows-msvc')
     expect(resolveHostTriple('win32', 'arm64')).toBe('aarch64-pc-windows-msvc')
-    expect(resolveHostTriple('linux', 'arm64')).toBe('aarch64-unknown-linux-gnu')
+  })
+
+  it('rejects unsupported host platforms', () => {
+    expect(() => resolveHostTriple('linux', 'arm64')).toThrow(
+      'Unsupported Electron sidecar platform: linux/arm64',
+    )
   })
 
   it('builds server sidecar args without changing the REST/WebSocket boundary', () => {
@@ -202,7 +207,7 @@ describe('Electron sidecar manager', () => {
     expect(windowsPowerShellOverride(null, 'win32')).toBeNull()
     // never applies off Windows
     expect(windowsPowerShellOverride('pwsh', 'darwin')).toBeNull()
-    expect(windowsPowerShellOverride('powershell.exe', 'linux')).toBeNull()
+    expect(windowsPowerShellOverride('powershell.exe', 'darwin')).toBeNull()
   })
 
   it('parses only in-range integer h5Access.fixedPort values', () => {

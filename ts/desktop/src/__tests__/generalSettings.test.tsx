@@ -589,7 +589,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByText('General'))
     expect(screen.getByText('Shortcuts are faster:')).toBeInTheDocument()
     expect(screen.getByText('macOS')).toBeInTheDocument()
-    expect(screen.getByText('Windows / Linux')).toBeInTheDocument()
+    expect(screen.getByText('Windows')).toBeInTheDocument()
     expect(screen.getByText('0 resets zoom to 100%.')).toBeInTheDocument()
 
     const slider = screen.getByLabelText('UI Zoom')
