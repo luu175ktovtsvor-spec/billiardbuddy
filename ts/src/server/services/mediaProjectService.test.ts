@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { link, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MediaProjectService, MediaServiceError, type MediaProcessRunner } from './mediaProjectService.js'
@@ -79,6 +79,55 @@ describe('MediaProjectService image projects', () => {
       output_path: savedPath,
     })).toEqual({ path: savedPath })
     expect(await readFile(savedPath, 'utf8')).toBe('png-bytes')
+  })
+
+  test('rejects a project asset directory symlink that points outside the media asset root', async () => {
+    const mediaRoot = await root()
+    const service = new MediaProjectService({ root: mediaRoot })
+    const project = await service.createImageProject({ prompt: '安全测试图片' })
+    const outsideDir = join(mediaRoot, 'outside-assets')
+    await Promise.all([
+      mkdir(join(mediaRoot, 'assets'), { recursive: true }),
+      mkdir(outsideDir, { recursive: true }),
+    ])
+    await writeFile(join(outsideDir, 'image.png'), 'private-image')
+    await symlink(
+      outsideDir,
+      join(mediaRoot, 'assets', project.id),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+
+    await expect(service.assetResponse(project.id, 'image.png')).rejects.toMatchObject({
+      code: 'ASSET_OUTSIDE_PROJECT',
+      status: 403,
+    })
+  })
+
+  test('rejects an image output asset symlink that points outside its project directory', async () => {
+    const mediaRoot = await root()
+    const service = new MediaProjectService({ root: mediaRoot })
+    const project = await service.createImageProject({ prompt: '保存安全测试图片' })
+    const projectAssetDir = join(mediaRoot, 'assets', project.id)
+    const outsidePath = join(mediaRoot, 'outside.png')
+    await mkdir(projectAssetDir, { recursive: true })
+    await writeFile(outsidePath, 'private-image')
+    await symlink(outsidePath, join(projectAssetDir, 'output.png'))
+    await writeFile(join(mediaRoot, 'projects', `${project.id}.json`), `${JSON.stringify({
+      ...project,
+      outputs: [{
+        id: 'out_12345678',
+        mime_type: 'image/png',
+        asset_path: `/api/media/assets/${project.id}/output.png`,
+      }],
+    }, null, 2)}\n`)
+
+    await expect(service.saveImageOutput(project.id, {
+      output_id: 'out_12345678',
+      output_path: join(mediaRoot, 'saved.png'),
+    })).rejects.toMatchObject({
+      code: 'ASSET_OUTSIDE_PROJECT',
+      status: 403,
+    })
   })
 
   test('does not submit without a configured gateway', async () => {

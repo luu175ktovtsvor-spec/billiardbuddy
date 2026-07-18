@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   addVideoSourceInputSchema,
   createImageProjectInputSchema,
@@ -292,6 +292,57 @@ export class MediaProjectService {
     return join(this.tasksDir, `${taskId}.json`)
   }
 
+  private pathForComparison(path: string): string {
+    return process.platform === 'win32' ? path.toLowerCase() : path
+  }
+
+  private pathsEqual(left: string, right: string): boolean {
+    return this.pathForComparison(left) === this.pathForComparison(right)
+  }
+
+  private pathIsInside(directory: string, candidate: string): boolean {
+    const fromDirectory = relative(this.pathForComparison(directory), this.pathForComparison(candidate))
+    return fromDirectory === ''
+      || (!fromDirectory.startsWith('..') && !isAbsolute(fromDirectory))
+  }
+
+  private async resolveOwnedAsset(
+    projectId: string,
+    fileName: string,
+    missing: { message: string, code: string },
+  ): Promise<{ path: string, size: number }> {
+    this.projectPath(projectId)
+    const projectAssetDir = join(this.assetsDir, projectId)
+    const requestedPath = join(projectAssetDir, fileName)
+
+    let canonicalAssetsDir: string
+    let canonicalProjectDir: string
+    let canonicalAssetPath: string
+    let info: Awaited<ReturnType<typeof stat>>
+    try {
+      [canonicalAssetsDir, canonicalProjectDir, canonicalAssetPath, info] = await Promise.all([
+        realpath(this.assetsDir),
+        realpath(projectAssetDir),
+        realpath(requestedPath),
+        stat(requestedPath),
+      ])
+    } catch {
+      throw new MediaServiceError(missing.message, 404, missing.code)
+    }
+
+    const expectedProjectDir = join(canonicalAssetsDir, projectId)
+    if (
+      !info.isFile()
+      || !this.pathsEqual(canonicalProjectDir, expectedProjectDir)
+      || !this.pathIsInside(canonicalProjectDir, canonicalAssetPath)
+    ) {
+      if (!info.isFile()) throw new MediaServiceError(missing.message, 404, missing.code)
+      throw new MediaServiceError('媒体资产不在当前项目目录内', 403, 'ASSET_OUTSIDE_PROJECT')
+    }
+
+    return { path: canonicalAssetPath, size: info.size }
+  }
+
   private async saveProject(project: MediaProject): Promise<MediaProject> {
     const parsed = mediaProjectSchema.parse(project)
     await this.writeJson(this.projectPath(parsed.id), parsed)
@@ -564,19 +615,20 @@ export class MediaProjectService {
     if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
       throw new MediaServiceError('无效的媒体资产名', 400, 'INVALID_ASSET_NAME')
     }
-    const path = join(this.assetsDir, projectId, fileName)
-    const info = await stat(path).catch(() => null)
-    if (!info?.isFile()) throw new MediaServiceError('找不到媒体资产', 404, 'ASSET_NOT_FOUND')
+    const asset = await this.resolveOwnedAsset(projectId, fileName, {
+      message: '找不到媒体资产',
+      code: 'ASSET_NOT_FOUND',
+    })
     const extension = extname(fileName).toLowerCase()
     const contentType = extension === '.jpg' || extension === '.jpeg'
       ? 'image/jpeg'
       : extension === '.webp'
         ? 'image/webp'
         : 'image/png'
-    return new Response(Bun.file(path), {
+    return new Response(Bun.file(asset.path), {
       headers: {
         'Content-Type': contentType,
-        'Content-Length': String(info.size),
+        'Content-Length': String(asset.size),
         'Cache-Control': 'private, max-age=31536000, immutable',
       },
     })
@@ -604,11 +656,10 @@ export class MediaProjectService {
       if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
         throw new MediaServiceError('图片资产地址损坏', 500, 'IMAGE_OUTPUT_CORRUPT')
       }
-      sourcePath = join(this.assetsDir, project.id, fileName)
-      const sourceInfo = await stat(sourcePath).catch(() => null)
-      if (!sourceInfo?.isFile()) {
-        throw new MediaServiceError('图片结果文件已经丢失', 404, 'IMAGE_OUTPUT_MISSING')
-      }
+      sourcePath = (await this.resolveOwnedAsset(project.id, fileName, {
+        message: '图片结果文件已经丢失',
+        code: 'IMAGE_OUTPUT_MISSING',
+      })).path
     } else if (output.data_url) {
       bytes = dataUrlBytes(output.data_url)
     } else {
