@@ -53,11 +53,6 @@ async function detectHostTriple() {
     if (arch === 'arm64') return 'aarch64-pc-windows-msvc'
   }
 
-  if (platform === 'linux') {
-    if (arch === 'x64') return 'x86_64-unknown-linux-gnu'
-    if (arch === 'arm64') return 'aarch64-unknown-linux-gnu'
-  }
-
   throw new Error(`[build-sidecars] Unsupported host platform/arch: ${platform}/${arch}`)
 }
 
@@ -73,14 +68,6 @@ function mapTargetTripleToBun(triple: string) {
       return 'bun-windows-x64-baseline'
     case 'aarch64-pc-windows-msvc':
       return 'bun-windows-arm64'
-    case 'x86_64-unknown-linux-gnu':
-      return 'bun-linux-x64-baseline'
-    case 'aarch64-unknown-linux-gnu':
-      return 'bun-linux-arm64'
-    case 'x86_64-unknown-linux-musl':
-      return 'bun-linux-x64-musl'
-    case 'aarch64-unknown-linux-musl':
-      return 'bun-linux-arm64-musl'
     default:
       throw new Error(`[build-sidecars] Unsupported target triple: ${triple}`)
   }

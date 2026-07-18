@@ -4,7 +4,7 @@ import { chmodSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-type SupportedPlatform = 'darwin' | 'win32' | 'linux'
+type SupportedPlatform = 'darwin' | 'win32'
 
 type SourceManifest = {
   schemaVersion: 1
@@ -145,6 +145,9 @@ function verifyHashes(directory: string, manifest: SourceManifest, names: string
 }
 
 export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
+  if (options.platform !== 'darwin' && options.platform !== 'win32') {
+    throw new Error(`不支持的媒体工具链平台: ${options.platform}`)
+  }
   const names = binaryNames(options.platform)
   const destination = resolve(options.destinationDir)
   if (options.verifyOnly) {
@@ -197,7 +200,7 @@ export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
 if (import.meta.main) {
   const desktopRoot = resolve(import.meta.dir, '..')
   const platform = (process.env.BB_MEDIA_TOOLCHAIN_PLATFORM ?? process.platform) as SupportedPlatform
-  if (!['darwin', 'win32', 'linux'].includes(platform)) throw new Error(`不支持的媒体工具链平台: ${platform}`)
+  if (!['darwin', 'win32'].includes(platform)) throw new Error(`不支持的媒体工具链平台: ${platform}`)
   stageMediaToolchain({
     sourceDir: process.env.BB_MEDIA_TOOLCHAIN_SOURCE_DIR,
     destinationDir: join(desktopRoot, 'src-tauri', 'binaries'),

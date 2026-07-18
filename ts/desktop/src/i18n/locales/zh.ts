@@ -1111,7 +1111,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.uiZoomDescription': '调整整个界面的显示大小。',
   'settings.general.uiZoomShortcutHint': '快捷键更直接：',
   'settings.general.uiZoomShortcutMac': 'macOS',
-  'settings.general.uiZoomShortcutWindows': 'Windows / Linux',
+  'settings.general.uiZoomShortcutWindows': 'Windows',
   'settings.general.uiZoomShortcutResetHint': '0 表示恢复到 100%。',
   'settings.general.uiZoomReset': '重置界面缩放到 100%',
 

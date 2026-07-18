@@ -1109,7 +1109,7 @@ export const en = {
   'settings.general.uiZoomDescription': 'Adjust the size of the entire interface.',
   'settings.general.uiZoomShortcutHint': 'Shortcuts are faster:',
   'settings.general.uiZoomShortcutMac': 'macOS',
-  'settings.general.uiZoomShortcutWindows': 'Windows / Linux',
+  'settings.general.uiZoomShortcutWindows': 'Windows',
   'settings.general.uiZoomShortcutResetHint': '0 resets zoom to 100%.',
   'settings.general.uiZoomReset': 'Reset UI zoom to 100%',
 

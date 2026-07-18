@@ -62,6 +62,14 @@ afterEach(() => {
 })
 
 describe('media toolchain staging', () => {
+  test('rejects unsupported platform selections', () => {
+    expect(() => stageMediaToolchain({
+      sourceDir: fixture(),
+      destinationDir: temp(),
+      platform: 'linux' as never,
+    })).toThrow('不支持的媒体工具链平台: linux')
+  })
+
   test('stages and verifies an audited LGPL toolchain', () => {
     const source = fixture()
     const destination = temp()

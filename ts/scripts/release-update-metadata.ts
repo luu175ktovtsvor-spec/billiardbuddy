@@ -106,25 +106,13 @@ function readMetadata(filePath: string): UpdateMetadata {
   return parsed as UpdateMetadata
 }
 
-function metadataHaystack(fileName: string, metadata: UpdateMetadata) {
-  const fileUrls = Array.isArray(metadata.files)
-    ? metadata.files.map(file => file.url ?? '').join(' ')
-    : ''
-  return `${fileName} ${metadata.path ?? ''} ${fileUrls}`.toLowerCase()
-}
-
-function canonicalChannelName(filePath: string, metadata: UpdateMetadata) {
+function canonicalChannelName(filePath: string) {
   const fileName = basename(filePath).replace(/\.ya?ml$/i, '')
-  if (fileName.startsWith('latest-mac')) {
+  const normalizedFileName = fileName.toLowerCase()
+  if (normalizedFileName.startsWith('latest-mac')) {
     return 'latest-mac.yml'
   }
-  if (fileName.startsWith('latest-linux')) {
-    const haystack = metadataHaystack(fileName, metadata)
-    return /(?:^|[-_])(?:arm64|aarch64)(?:$|[-_.])/.test(haystack)
-      ? 'latest-linux-arm64.yml'
-      : 'latest-linux.yml'
-  }
-  if (fileName.startsWith('latest')) {
+  if (normalizedFileName === 'latest' || normalizedFileName.startsWith('latest-windows')) {
     return 'latest.yml'
   }
   return null
@@ -165,11 +153,6 @@ function artifactRank(canonicalName: string, url: string) {
   if (canonicalName === 'latest-mac.yml') {
     if (lowerUrl.endsWith('.zip')) return 0
     if (lowerUrl.endsWith('.dmg')) return 1
-    return 2
-  }
-  if (canonicalName.startsWith('latest-linux')) {
-    if (lowerUrl.endsWith('.appimage')) return 0
-    if (lowerUrl.endsWith('.deb')) return 1
     return 2
   }
   return 2
@@ -252,7 +235,7 @@ export function mergeUpdateMetadataArtifacts(options: MergeUpdateMetadataOptions
   const groups = new Map<string, MetadataEntry[]>()
   for (const sourcePath of metadataFiles) {
     const metadata = readMetadata(sourcePath)
-    const canonicalName = canonicalChannelName(sourcePath, metadata)
+    const canonicalName = canonicalChannelName(sourcePath)
     if (!canonicalName) continue
 
     const entries = groups.get(canonicalName) ?? []
