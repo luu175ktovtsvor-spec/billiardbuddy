@@ -23,16 +23,25 @@ export function ProductShell() {
   const refreshSessions = useSessionStore((state) => state.fetchSessions)
   const openTab = useTabStore((state) => state.openTab)
 
-  const openTask = (task: ProductTaskRecord) => {
+  const openTaskTab = (task: ProductTaskRecord) => {
     openTab(task.coreSessionId, task.title, 'session')
+  }
+
+  const connectToTaskSession = (sessionId: string) => {
+    useChatStore.getState().connectToSession(sessionId)
+  }
+
+  const openExistingTask = (task: ProductTaskRecord) => {
+    openTaskTab(task)
+    connectToTaskSession(task.coreSessionId)
   }
 
   const createAndOpenTask = async (input: CreateProductTaskInput, initialText?: string) => (
     launchProductTask({
       createTask,
       refreshSessions,
-      openTask,
-      connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
+      openTask: openTaskTab,
+      connectToSession: connectToTaskSession,
       sendMessage: (sessionId, content) => useChatStore.getState().sendMessage(sessionId, content),
     }, input, initialText)
   )
@@ -40,7 +49,7 @@ export function ProductShell() {
   const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => {
     const task = await continueTask(...args)
     await refreshSessions()
-    openTask(task)
+    openExistingTask(task)
     return task
   }
 
@@ -63,7 +72,7 @@ export function ProductShell() {
         onArchiveTask={archiveTask}
         onRestoreTask={restoreTask}
         onContinueTask={continueAndOpenTask}
-        onOpenTask={openTask}
+        onOpenTask={openExistingTask}
       />
     </main>
   )
