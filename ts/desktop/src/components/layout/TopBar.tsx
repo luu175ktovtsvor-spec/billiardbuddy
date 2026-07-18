@@ -126,7 +126,7 @@ export function TopBar() {
   function handleTogglePanel() {
     if (!activeTabId) return
     const workspace = useWorkspacePanelStore.getState()
-    // 与 TabBar 里既有的工作区面板开关逻辑保持一致：只有「已打开且处于 workspace 模式」才当作关闭。
+    // 已打开且处于 workspace 模式时关闭；其他状态统一切到 workspace 并展开。
     if (workspace.isPanelOpen(activeTabId) && workspace.getMode(activeTabId) === 'workspace') {
       workspace.closePanel(activeTabId)
     } else {
@@ -141,8 +141,7 @@ export function TopBar() {
   }
 
   const desktopHost = getDesktopHost()
-  // 侧栏折叠时顶栏最左侧会紧贴窗口左边缘，macOS 桌面端要给红绿灯让出位置（对齐 Sidebar.tsx 里同样的
-  // isDesktopRuntime && !isWindows 判断）；Windows/网页端没有左侧红绿灯，不需要额外让位。
+  // 侧栏折叠后，macOS 顶栏需为左侧红绿灯预留空间；Windows 不需要。
   const leftPad = collapsed && desktopHost.isDesktop && !isWindowsPlatform ? 'pl-[78px]' : 'pl-3'
 
   return (
