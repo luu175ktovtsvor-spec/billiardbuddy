@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { APP_ZOOM_STORAGE_KEY } from '../lib/appZoom'
 import { useSettingsStore } from '../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
+import { useUIStore } from '../stores/uiStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
@@ -28,6 +29,7 @@ describe('useKeyboardShortcuts app zoom', () => {
     useSettingsStore.setState({ uiZoom: 1 })
     useTabStore.setState({ tabs: [], activeTabId: null })
     useProductTaskStore.setState({ composerRequest: null })
+    useUIStore.setState({ activeModal: null })
     setNavigatorPlatform('Win32')
   })
 
@@ -117,5 +119,16 @@ describe('useKeyboardShortcuts app zoom', () => {
     expect(useProductTaskStore.getState().composerRequest).toEqual(expect.objectContaining({
       id: expect.any(Number),
     }))
+  })
+
+  it('keeps Cmd or Ctrl K on the globalSearch modal contract', () => {
+    render(<ShortcutHost />)
+
+    fireEvent.keyDown(document, {
+      key: 'k',
+      ctrlKey: true,
+    })
+
+    expect(useUIStore.getState().activeModal).toBe('globalSearch')
   })
 })

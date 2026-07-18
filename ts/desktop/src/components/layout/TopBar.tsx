@@ -218,7 +218,7 @@ export function TopBar() {
               <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
                 <Search size={18} />
               </IconBtn>
-              <IconBtn label="历史" onClick={() => openModal('globalSearch')}>
+              <IconBtn label={t('search.global.recentTitle')} onClick={() => openModal('globalSearch')}>
                 <Clock size={18} />
               </IconBtn>
               <IconBtn

@@ -47,7 +47,7 @@ export function useKeyboardShortcuts() {
         openProductTaskComposer()
       }
 
-      // Cmd+K — Open global session search
+      // Cmd+K — Open product task search.
       if (meta && e.key === 'k') {
         e.preventDefault()
         openModal('globalSearch')
