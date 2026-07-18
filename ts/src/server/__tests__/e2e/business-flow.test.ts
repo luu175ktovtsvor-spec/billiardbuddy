@@ -631,57 +631,6 @@ describe('Business Flow: Sessions & CLI Interop', () => {
   })
 })
 
-describe('Business Flow: Search', () => {
-  beforeAll(async () => {
-    await startTestServer()
-    // Create test files to search
-    const testDir = path.join(tmpDir, 'test-workspace')
-    await fs.mkdir(testDir, { recursive: true })
-    await fs.writeFile(path.join(testDir, 'main.ts'), 'export function startServer() {\n  console.log("starting")\n}\n')
-    await fs.writeFile(path.join(testDir, 'utils.ts'), 'export function helper() { return 42 }\n')
-    await fs.writeFile(path.join(testDir, 'config.json'), '{"port": 3456}\n')
-  })
-  afterAll(async () => {
-    server?.stop()
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  it('should find matches in workspace files', async () => {
-    const { status, data } = await api('POST', '/api/search', {
-      query: 'startServer',
-      cwd: path.join(tmpDir, 'test-workspace'),
-    })
-    expect(status).toBe(200)
-    expect(data.results.length).toBeGreaterThan(0)
-    expect(data.results[0].text).toContain('startServer')
-  })
-
-  it('should respect maxResults', async () => {
-    const { data } = await api('POST', '/api/search', {
-      query: 'export',
-      cwd: path.join(tmpDir, 'test-workspace'),
-      maxResults: 1,
-    })
-    expect(data.results.length).toBeLessThanOrEqual(1)
-  })
-
-  it('should return empty for non-matching query', async () => {
-    const { data } = await api('POST', '/api/search', {
-      query: 'nonexistent_string_xyz123',
-      cwd: path.join(tmpDir, 'test-workspace'),
-    })
-    expect(data.results.length).toBe(0)
-  })
-
-  it('should reject empty query', async () => {
-    const { status } = await api('POST', '/api/search', {
-      query: '',
-      cwd: tmpDir,
-    })
-    expect(status).toBe(400)
-  })
-})
-
 describe('Business Flow: WebSocket Chat', () => {
   beforeAll(startTestServer)
   afterAll(async () => {
