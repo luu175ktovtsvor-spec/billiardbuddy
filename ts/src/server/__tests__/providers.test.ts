@@ -9,7 +9,7 @@ import * as os from 'os'
 import { ProviderService } from '../services/providerService.js'
 import { handleProvidersApi } from '../api/providers.js'
 import { handleProxyRequest } from '../proxy/handler.js'
-import { clearTraceCaptureStateForTests, traceCaptureService } from '../services/traceCaptureService.js'
+import { clearTraceCaptureStateForTests, traceCaptureService, updateTraceCaptureSettings } from '../services/traceCaptureService.js'
 import type { CreateProviderInput } from '../types/provider.js'
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -1151,6 +1151,7 @@ describe('ProviderService', () => {
 
   describe('handleProxyRequest', () => {
     test('records a session trace for proxied OpenAI Chat calls', async () => {
+      await updateTraceCaptureSettings({ enabled: true })
       const originalFetch = globalThis.fetch
       globalThis.fetch = mock(async () => {
         return new Response(JSON.stringify({

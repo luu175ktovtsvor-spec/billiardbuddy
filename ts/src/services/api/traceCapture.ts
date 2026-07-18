@@ -1093,7 +1093,7 @@ function getManagedSettingsPath(): string {
 
 function defaultTraceCaptureSettings(): TraceCaptureSettings {
   return {
-    enabled: true,
+    enabled: false,
     storageDir: getTraceStorageDir(),
   }
 }
@@ -1107,7 +1107,7 @@ function normalizeTraceCaptureSettings(settings: Record<string, unknown>): Trace
 
   return {
     ...defaultSettings,
-    enabled: (traceCapture as Record<string, unknown>).enabled !== false,
+    enabled: (traceCapture as Record<string, unknown>).enabled === true,
   }
 }
 

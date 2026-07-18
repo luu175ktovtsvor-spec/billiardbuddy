@@ -7,6 +7,7 @@ import { ProviderService } from '../services/providerService.js'
 import {
   clearTraceCaptureStateForTests,
   traceCaptureService,
+  updateTraceCaptureSettings,
 } from '../services/traceCaptureService.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 
@@ -360,6 +361,7 @@ describe('proxy network settings', () => {
   })
 
   test('records redacted OpenAI proxy request headers in trace capture', async () => {
+    await updateTraceCaptureSettings({ enabled: true })
     const svc = new ProviderService()
     const provider = await svc.addProvider({
       presetId: 'custom',

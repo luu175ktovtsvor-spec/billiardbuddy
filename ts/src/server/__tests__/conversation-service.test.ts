@@ -547,6 +547,7 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv injects trace provider metadata for desktop sdk session-scoped providers', async () => {
+    await updateTraceCaptureSettings({ enabled: true })
     const providerService = new ProviderService()
     const provider = await providerService.addProvider({
       presetId: 'custom',
@@ -798,8 +799,19 @@ describe('ConversationService', () => {
       'com.billiardbuddy.desktop',
     )
     expect(env.BB_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
-    expect(env.BB_TRACE_API_CALLS).toBe('1')
+    expect(env.BB_TRACE_API_CALLS).toBeUndefined()
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
+  })
+
+  test('buildChildEnv preserves an explicit trace diagnostic override', async () => {
+    process.env.BB_TRACE_API_CALLS = '1'
+    const service = new ConversationService() as any
+    const env = (await service.buildChildEnv(
+      '/tmp',
+      'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
+    )) as Record<string, string>
+
+    expect(env.BB_TRACE_API_CALLS).toBe('1')
   })
 
   test('uses the internal agent entrypoint when no sidecar launcher is configured', () => {

@@ -9,7 +9,10 @@ import {
   clearTraceCaptureStateForTests,
   createTraceCallId,
   createTraceBodySnapshot,
+  isTraceCaptureEnabled,
+  readTraceCaptureSettings,
   readResponseTraceSnapshot,
+  shouldCaptureApiTrace,
   traceCaptureService,
   updateTraceCaptureSettings,
 } from '../services/traceCaptureService.js'
@@ -18,6 +21,8 @@ import { createDumpPromptsFetch } from '../../services/api/dumpPrompts.js'
 
 let tmpDir: string
 let originalConfigDir: string | undefined
+let originalTraceApiCalls: string | undefined
+let originalEntrypoint: string | undefined
 
 async function waitForTrace(
   sessionId: string,
@@ -34,8 +39,13 @@ async function waitForTrace(
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'trace-capture-'))
   originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+  originalTraceApiCalls = process.env.BB_TRACE_API_CALLS
+  originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
   process.env.CLAUDE_CONFIG_DIR = tmpDir
+  delete process.env.BB_TRACE_API_CALLS
+  delete process.env.CLAUDE_CODE_ENTRYPOINT
   clearTraceCaptureStateForTests()
+  await updateTraceCaptureSettings({ enabled: true })
 })
 
 afterEach(async () => {
@@ -45,10 +55,69 @@ afterEach(async () => {
   } else {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   }
+  if (originalTraceApiCalls === undefined) {
+    delete process.env.BB_TRACE_API_CALLS
+  } else {
+    process.env.BB_TRACE_API_CALLS = originalTraceApiCalls
+  }
+  if (originalEntrypoint === undefined) {
+    delete process.env.CLAUDE_CODE_ENTRYPOINT
+  } else {
+    process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
+  }
   await fs.rm(tmpDir, { recursive: true, force: true })
 })
 
 describe('trace capture service', () => {
+  test('defaults to disabled for missing, malformed, and incomplete managed settings', async () => {
+    const settingsPath = path.join(tmpDir, 'billiardbuddy', 'settings.json')
+    await fs.rm(settingsPath, { force: true })
+
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+    expect(isTraceCaptureEnabled()).toBe(false)
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'claude-desktop'
+    expect(shouldCaptureApiTrace()).toBe(false)
+
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true })
+    await fs.writeFile(settingsPath, '{ malformed json', 'utf-8')
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+    expect(isTraceCaptureEnabled()).toBe(false)
+
+    await fs.writeFile(settingsPath, JSON.stringify({ unrelatedSetting: true }), 'utf-8')
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+    expect(isTraceCaptureEnabled()).toBe(false)
+
+    await fs.writeFile(settingsPath, JSON.stringify({ traceCapture: {} }), 'utf-8')
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+
+    await fs.writeFile(settingsPath, JSON.stringify({ traceCapture: { enabled: 'true' } }), 'utf-8')
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+  })
+
+  test('honors explicit managed trace capture settings', async () => {
+    await updateTraceCaptureSettings({ enabled: false })
+    expect((await readTraceCaptureSettings()).enabled).toBe(false)
+    expect(isTraceCaptureEnabled()).toBe(false)
+
+    await updateTraceCaptureSettings({ enabled: true })
+    expect((await readTraceCaptureSettings()).enabled).toBe(true)
+    expect(isTraceCaptureEnabled()).toBe(true)
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'claude-desktop'
+    expect(shouldCaptureApiTrace()).toBe(true)
+  })
+
+  test('lets BB_TRACE_API_CALLS override managed trace capture settings', async () => {
+    await updateTraceCaptureSettings({ enabled: false })
+    process.env.BB_TRACE_API_CALLS = '1'
+    expect(isTraceCaptureEnabled()).toBe(true)
+    expect(shouldCaptureApiTrace()).toBe(true)
+
+    await updateTraceCaptureSettings({ enabled: true })
+    process.env.BB_TRACE_API_CALLS = 'false'
+    expect(isTraceCaptureEnabled()).toBe(false)
+    expect(shouldCaptureApiTrace()).toBe(false)
+  })
+
   test('stores session scoped API calls with redacted headers and capped bodies', async () => {
     const body = {
       model: 'deepseek-v4-pro',
