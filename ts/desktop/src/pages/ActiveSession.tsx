@@ -15,6 +15,7 @@ import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useTeamStore } from '../stores/teamStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
+import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import {
   TERMINAL_PANEL_DEFAULT_HEIGHT,
   TERMINAL_PANEL_MAX_HEIGHT,
@@ -322,12 +323,17 @@ export function ActiveSession() {
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const activeTeam = useTeamStore((s) => s.activeTeam)
   const isMemberSession = !!memberInfo
-  const showWorkbench = useWorkspacePanelStore((state) =>
+  const showWorkspacePanel = useWorkspacePanelStore((state) =>
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
       ? state.isPanelOpen(activeTabId)
       : false,
   )
-  const showRightPanel = showWorkbench
+  const showBrowserPanel = useBrowserPanelStore((state) =>
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+      ? state.bySession[activeTabId]?.isOpen ?? false
+      : false,
+  )
+  const showRightPanel = showWorkspacePanel || showBrowserPanel
   const rightPanelWidth = useWorkspacePanelStore((state) => state.width)
   const showTerminalPanel = useTerminalPanelStore((state) =>
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
@@ -616,7 +622,7 @@ export function ActiveSession() {
           ) : null}
         </div>
 
-        {showWorkbench ? (
+        {showRightPanel ? (
           <>
             <WorkspaceResizeHandle panelRef={workbenchPanelRef} />
             <aside

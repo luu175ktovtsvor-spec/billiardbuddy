@@ -56,6 +56,7 @@ describe('WorkbenchPanel', () => {
   })
 
   it('renders the native BrowserSurface in browser mode', () => {
+    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
     useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
@@ -64,6 +65,7 @@ describe('WorkbenchPanel', () => {
   })
 
   it('reflects the active mode on the segmented control tabs', () => {
+    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
     useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
@@ -71,13 +73,14 @@ describe('WorkbenchPanel', () => {
     expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'false')
   })
 
-  it('switching to the browser tab calls setMode("browser")', () => {
+  it('switching to the browser tab opens only the browser and selects it', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
     expect(useWorkspacePanelStore.getState().getMode(SESSION_ID)).toBe('workspace')
 
     fireEvent.click(screen.getByRole('tab', { name: 'Browser' }))
 
     expect(useWorkspacePanelStore.getState().getMode(SESSION_ID)).toBe('browser')
+    expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(true)
     expect(useBrowserPanelStore.getState().bySession[SESSION_ID]).toMatchObject({
       isOpen: true,
       url: '',
@@ -87,16 +90,19 @@ describe('WorkbenchPanel', () => {
     })
   })
 
-  it('switching to the files tab calls setMode("workspace")', () => {
+  it('switching to the files tab selects an independently open workspace', () => {
+    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
     useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
 
     expect(useWorkspacePanelStore.getState().getMode(SESSION_ID)).toBe('workspace')
+    expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(true)
+    expect(useBrowserPanelStore.getState().bySession[SESSION_ID]?.isOpen).toBe(true)
   })
 
-  it('the close button closes the unified panel', () => {
+  it('the close button closes the active file workspace', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
     expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(true)
 
@@ -105,7 +111,21 @@ describe('WorkbenchPanel', () => {
     expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(false)
   })
 
+  it('closing the active browser keeps the file workspace open', () => {
+    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
+    useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
+    render(<WorkbenchPanel sessionId={SESSION_ID} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+    expect(useBrowserPanelStore.getState().bySession[SESSION_ID]?.isOpen).toBe(false)
+    expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(true)
+    expect(useWorkspacePanelStore.getState().getMode(SESSION_ID)).toBe('workspace')
+    expect(screen.getByTestId('workspace-panel')).toBeInTheDocument()
+  })
+
   it('the expand button promotes the current workbench into a main content tab', () => {
+    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
     useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 

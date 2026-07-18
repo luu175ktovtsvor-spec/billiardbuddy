@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, Clock, Copy, Folder, PanelLeft, PanelRight, Search, SquareTerminal } from 'lucide-react'
+import { ChevronDown, Clock, Copy, Folder, Globe2, PanelLeft, PanelRight, Search, SquareTerminal } from 'lucide-react'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 import { useTranslation } from '../../i18n'
 import { copyTextToClipboard } from '../chat/clipboard'
@@ -87,10 +88,18 @@ export function TopBar() {
     activeTabId ? (s.sessions.find((session) => session.id === activeTabId)?.workDir ?? null) : null,
   )
 
-  // 面板开关按会话维度存储（workspacePanelStore 内部就是这么设计的），用 activeTabId 取。
-  const panelOpen = useWorkspacePanelStore((s) =>
+  // 文件、浏览器和终端的展开状态都按会话保存；右侧停靠位只记录当前展示哪一个面板。
+  const workspacePanelOpen = useWorkspacePanelStore((s) =>
     activeTabId && isChat ? s.isPanelOpen(activeTabId) : false,
   )
+  const activeRightPanel = useWorkspacePanelStore((s) =>
+    activeTabId && isChat ? s.getMode(activeTabId) : 'workspace',
+  )
+  const browserPanelOpen = useBrowserPanelStore((s) =>
+    activeTabId && isChat ? s.bySession[activeTabId]?.isOpen ?? false : false,
+  )
+  const workspacePanelVisible = workspacePanelOpen && activeRightPanel === 'workspace'
+  const browserPanelVisible = browserPanelOpen && activeRightPanel === 'browser'
 
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -129,10 +138,25 @@ export function TopBar() {
     // 已打开且处于 workspace 模式时关闭；其他状态统一切到 workspace 并展开。
     if (workspace.isPanelOpen(activeTabId) && workspace.getMode(activeTabId) === 'workspace') {
       workspace.closePanel(activeTabId)
+      if (useBrowserPanelStore.getState().bySession[activeTabId]?.isOpen) {
+        workspace.setMode(activeTabId, 'browser')
+      }
     } else {
       workspace.setMode(activeTabId, 'workspace')
       workspace.openPanel(activeTabId)
     }
+  }
+
+  function handleToggleBrowser() {
+    if (!activeTabId) return
+    const browser = useBrowserPanelStore.getState()
+    const workspace = useWorkspacePanelStore.getState()
+    if (browser.bySession[activeTabId]?.isOpen && workspace.getMode(activeTabId) === 'browser') {
+      browser.close(activeTabId)
+      return
+    }
+    browser.ensureBlank(activeTabId)
+    workspace.setMode(activeTabId, 'browser')
   }
 
   async function handleCopy(text: string) {
@@ -205,8 +229,15 @@ export function TopBar() {
                 <SquareTerminal size={18} />
               </IconBtn>
               <IconBtn
-                label={panelOpen ? t('tabs.hideWorkspace') : t('tabs.showWorkspace')}
-                active={panelOpen}
+                label={browserPanelVisible ? t('tabs.hideBrowser') : t('tabs.showBrowser')}
+                active={browserPanelOpen}
+                onClick={handleToggleBrowser}
+              >
+                <Globe2 size={18} />
+              </IconBtn>
+              <IconBtn
+                label={workspacePanelVisible ? t('tabs.hideWorkspace') : t('tabs.showWorkspace')}
+                active={workspacePanelOpen}
                 onClick={handleTogglePanel}
               >
                 <PanelRight size={18} />

@@ -34,7 +34,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   Object.values(bridge).forEach((f) => f.mockReset())
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
-  // browserPanelStore.open() now also opens the unified workbench; keep it isolated.
+  // Reset the independently owned browser and file-panel state between cases.
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useOverlayStore.setState(useOverlayStore.getInitialState(), true)
   setBaseUrl(getDefaultBaseUrl())
