@@ -25,32 +25,11 @@ import type {
   McpStdioServerConfig,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
-import { describeMcpConfigFilePath, ensureConfigScope } from '../../services/mcp/utils.js'
-import { enableConfigs, getGlobalConfig } from '../../utils/config.js'
+import { ensureConfigScope } from '../../services/mcp/utils.js'
+import { enableConfigs } from '../../utils/config.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
-import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { ApiError } from '../middleware/errorHandler.js'
 import { conversationService } from '../services/conversationService.js'
-
-type McpEditableConfigDto =
-  | {
-      type: 'stdio'
-      command: string
-      args: string[]
-      env: Record<string, string>
-    }
-  | {
-      type: 'http' | 'sse'
-      url: string
-      headers: Record<string, string>
-      headersHelper?: string
-      oauth?: {
-        clientId?: string
-        callbackPort?: number
-      }
-    }
-  | {
-      type: string
-    }
 
 type McpServerDto = {
   name: string
@@ -58,15 +37,10 @@ type McpServerDto = {
   transport: string
   enabled: boolean
   status: 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'checking'
-  statusLabel: string
-  statusDetail?: string
-  configLocation: string
-  summary: string
   canEdit: boolean
   canRemove: boolean
   canReconnect: boolean
   canToggle: boolean
-  config: McpEditableConfigDto
 }
 
 type McpMutationBody = {
@@ -80,7 +54,6 @@ type McpMutationBody = {
 type McpSessionSyncDto = {
   applied: boolean
   reason?: 'not_running' | 'failed'
-  error?: string
 }
 
 const EDITABLE_SCOPES = new Set<ConfigScope>(['local', 'project', 'user'])
@@ -115,11 +88,10 @@ async function syncMcpToggleToSession(
       120_000,
     )
     return { applied: true }
-  } catch (error) {
+  } catch {
     return {
       applied: false,
       reason: 'failed',
-      error: error instanceof Error ? error.message : String(error),
     }
   }
 }
@@ -140,87 +112,20 @@ function isVisibleServer(name: string, config: ScopedMcpServerConfig): boolean {
   return true
 }
 
-function serializeEditableConfig(config: ScopedMcpServerConfig): McpEditableConfigDto {
-  if (!config.type || config.type === 'stdio') {
-    const stdioConfig = config as McpStdioServerConfig
-    return {
-      type: 'stdio',
-      command: stdioConfig.command,
-      args: Array.isArray(stdioConfig.args) ? stdioConfig.args : [],
-      env: stdioConfig.env ?? {},
-    }
-  }
-
-  if (config.type === 'http' || config.type === 'sse') {
-    const remoteConfig = config as McpHTTPServerConfig | McpSSEServerConfig
-    return {
-      type: config.type,
-      url: remoteConfig.url,
-      headers: remoteConfig.headers ?? {},
-      headersHelper: remoteConfig.headersHelper,
-      oauth: remoteConfig.oauth
-        ? {
-            clientId: remoteConfig.oauth.clientId,
-            callbackPort: remoteConfig.oauth.callbackPort,
-          }
-        : undefined,
-    }
-  }
-
-  return { type: config.type }
-}
-
-function getSummary(config: ScopedMcpServerConfig): string {
-  if (!config.type || config.type === 'stdio') {
-    const stdioConfig = config as McpStdioServerConfig
-    return [stdioConfig.command, ...(stdioConfig.args ?? [])].join(' ').trim()
-  }
-
-  if ('url' in config && typeof config.url === 'string') {
-    return config.url
-  }
-
-  return config.type
-}
-
-function getStatusLabel(status: McpServerDto['status']): string {
-  switch (status) {
-    case 'connected':
-      return 'Connected'
-    case 'needs-auth':
-      return 'Needs auth'
-    case 'failed':
-      return 'Unavailable'
-    case 'disabled':
-      return 'Disabled'
-    case 'checking':
-      return 'Checking'
-    default:
-      return status
-  }
-}
-
 function getInitialStatus(
   enabled: boolean,
-): Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'> {
+): Pick<McpServerDto, 'status'> {
   if (!enabled) {
-    return {
-      status: 'disabled',
-      statusLabel: getStatusLabel('disabled'),
-      statusDetail: 'Server disabled for the current project',
-    }
+    return { status: 'disabled' }
   }
 
-  return {
-    status: 'checking',
-    statusLabel: getStatusLabel('checking'),
-  }
+  return { status: 'checking' }
 }
 
 async function getHostPreflightStatus(
   config: ScopedMcpServerConfig | McpServerConfig,
   enabled: boolean,
-): Promise<Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'> | null> {
+): Promise<Pick<McpServerDto, 'status'> | null> {
   if (!enabled) {
     return null
   }
@@ -239,24 +144,16 @@ async function getHostPreflightStatus(
     return null
   }
 
-  return {
-    status: 'failed',
-    statusLabel: getStatusLabel('failed'),
-    statusDetail: result.message,
-  }
+  return { status: 'failed' }
 }
 
 async function inspectServerStatus(
   name: string,
   config: ScopedMcpServerConfig,
   enabled: boolean,
-): Promise<Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'>> {
+): Promise<Pick<McpServerDto, 'status'>> {
   if (!enabled) {
-    return {
-      status: 'disabled',
-      statusLabel: getStatusLabel('disabled'),
-      statusDetail: 'Server disabled for the current project',
-    }
+    return { status: 'disabled' }
   }
 
   const hostPreflightStatus = await getHostPreflightStatus(config, enabled)
@@ -275,25 +172,17 @@ async function inspectServerStatus(
           ? 'needs-auth'
           : 'failed'
 
-    return {
-      status,
-      statusLabel: getStatusLabel(status),
-      statusDetail: 'error' in client ? client.error : undefined,
-    }
-  } catch (error) {
+    return { status }
+  } catch {
     await clearServerCache(name, config).catch(() => {})
-    return {
-      status: 'failed',
-      statusLabel: getStatusLabel('failed'),
-      statusDetail: error instanceof Error ? error.message : String(error),
-    }
+    return { status: 'failed' }
   }
 }
 
 function buildServerDto(
   name: string,
   config: ScopedMcpServerConfig,
-  status: Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'>,
+  status: Pick<McpServerDto, 'status'>,
 ): McpServerDto {
   const enabled = !isMcpServerDisabled(name)
   const transport = config.type ?? 'stdio'
@@ -305,15 +194,10 @@ function buildServerDto(
     transport,
     enabled: !isMcpServerDisabled(name),
     status: status.status,
-    statusLabel: status.statusLabel,
-    statusDetail: status.statusDetail,
-    configLocation: describeMcpConfigFilePath(config.scope),
-    summary: getSummary(config),
     canEdit,
     canRemove: EDITABLE_SCOPES.has(config.scope),
     canReconnect: enabled,
     canToggle: true,
-    config: serializeEditableConfig(config),
   }
 }
 
@@ -435,20 +319,10 @@ async function listServers(): Promise<Response> {
   })
 }
 
-function listProjectPathsWithPrivateMcp(): Response {
-  const projects = getGlobalConfig().projects ?? {}
-  const projectPaths = Object.entries(projects)
-    .filter(([, projectConfig]) => Object.keys(projectConfig.mcpServers ?? {}).length > 0)
-    .map(([projectPath]) => projectPath)
-    .sort((a, b) => a.localeCompare(b))
-
-  return Response.json({ projectPaths })
-}
-
 async function getServerStatus(name: string): Promise<Response> {
   const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
-    throw ApiError.notFound(`MCP server not found: ${name}`)
+    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
   return Response.json({
@@ -458,8 +332,8 @@ async function getServerStatus(name: string): Promise<Response> {
 
 async function assertHostPrerequisites(config: McpServerConfig) {
   const hostPreflightStatus = await getHostPreflightStatus(config, true)
-  if (hostPreflightStatus?.statusDetail) {
-    throw ApiError.badRequest(hostPreflightStatus.statusDetail)
+  if (hostPreflightStatus) {
+    throw new ApiError(400, 'MCP host is unavailable', 'MCP_HOST_UNAVAILABLE')
   }
 }
 
@@ -478,14 +352,14 @@ async function createServer(body: Record<string, unknown>): Promise<Response> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes('already exists')) {
-      throw ApiError.conflict(message)
+      throw new ApiError(409, 'MCP server already exists', 'MCP_NAME_CONFLICT')
     }
-    throw ApiError.badRequest(message)
+    throw new ApiError(400, 'MCP configuration is invalid', 'MCP_CONFIGURATION_INVALID')
   }
 
   const created = getMcpConfigByName(name)
   if (!created) {
-    throw ApiError.internal(`Created MCP server "${name}" could not be reloaded`)
+    throw new ApiError(500, 'MCP server could not be reloaded', 'MCP_MUTATION_FAILED')
   }
 
   return Response.json({ server: serializeServerSnapshot(name, created) }, { status: 201 })
@@ -497,11 +371,11 @@ async function updateServer(name: string, body: Record<string, unknown>): Promis
   const previousLookupCwd = previousCwd ?? targetCwd
   const existing = runWithCwdOverride(previousLookupCwd, () => getMcpConfigByName(name))
   if (!existing) {
-    throw ApiError.notFound(`MCP server not found: ${name}`)
+    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
   if (!EDITABLE_SCOPES.has(existing.scope)) {
-    throw ApiError.badRequest(`MCP server "${name}" cannot be edited from scope "${existing.scope}"`)
+    throw new ApiError(400, 'MCP server cannot be changed here', 'MCP_CONFIGURATION_LOCKED')
   }
 
   const nextScope = ensureConfigScope(typeof body.scope === 'string' ? body.scope : existing.scope)
@@ -525,14 +399,14 @@ async function updateServer(name: string, body: Record<string, unknown>): Promis
 
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes('already exists')) {
-      throw ApiError.conflict(message)
+      throw new ApiError(409, 'MCP server already exists', 'MCP_NAME_CONFLICT')
     }
-    throw ApiError.badRequest(message)
+    throw new ApiError(400, 'MCP configuration is invalid', 'MCP_CONFIGURATION_INVALID')
   }
 
   const updated = getMcpConfigByName(name)
   if (!updated) {
-    throw ApiError.internal(`Updated MCP server "${name}" could not be reloaded`)
+    throw new ApiError(500, 'MCP server could not be reloaded', 'MCP_MUTATION_FAILED')
   }
 
   return Response.json({ server: serializeServerSnapshot(name, updated) })
@@ -542,7 +416,7 @@ async function deleteServer(name: string, url: URL): Promise<Response> {
   const scope = ensureConfigScope(url.searchParams.get('scope') || undefined)
   const existing = getMcpConfigByName(name)
   if (!existing) {
-    throw ApiError.notFound(`MCP server not found: ${name}`)
+    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
   await removeMcpConfig(name, scope)
@@ -555,7 +429,7 @@ async function deleteServer(name: string, url: URL): Promise<Response> {
 async function toggleServer(name: string, sessionId?: string): Promise<Response> {
   const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
-    throw ApiError.notFound(`MCP server not found: ${name}`)
+    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
   const enabled = isMcpServerDisabled(name)
@@ -576,18 +450,12 @@ async function toggleServer(name: string, sessionId?: string): Promise<Response>
     })
   }
 
-  const result = await reconnectMcpServerImpl(name, existing)
+  await reconnectMcpServerImpl(name, existing)
   await clearServerCache(name, existing).catch(() => {})
 
   const updated = await serializeServerWithLiveStatus(name, existing)
-  const statusDetail =
-    result.client.type === 'failed' && 'error' in result.client ? result.client.error : undefined
-
   return Response.json({
-    server: {
-      ...updated,
-      ...(statusDetail ? { statusDetail } : {}),
-    },
+    server: updated,
     ...(sessionSync ? { sessionSync } : {}),
   })
 }
@@ -595,7 +463,7 @@ async function toggleServer(name: string, sessionId?: string): Promise<Response>
 async function reconnectServer(name: string): Promise<Response> {
   const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
-    throw ApiError.notFound(`MCP server not found: ${name}`)
+    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
   const hostPreflightStatus = await getHostPreflightStatus(existing, !isMcpServerDisabled(name))
@@ -606,19 +474,28 @@ async function reconnectServer(name: string): Promise<Response> {
     })
   }
 
-  const result = await reconnectMcpServerImpl(name, existing)
+  await reconnectMcpServerImpl(name, existing)
   await clearServerCache(name, existing).catch(() => {})
 
   const server = await serializeServerWithLiveStatus(name, existing)
-  const statusDetail =
-    result.client.type === 'failed' && 'error' in result.client ? result.client.error : undefined
+  return Response.json({ server })
+}
 
-  return Response.json({
-    server: {
-      ...server,
-      ...(statusDetail ? { statusDetail } : {}),
-    },
-  })
+function mcpErrorResponse(error: unknown): Response {
+  const status = error instanceof ApiError ? error.statusCode : 500
+  const requestedCode = error instanceof ApiError ? error.code : undefined
+  const code =
+    requestedCode === 'MCP_NOT_AVAILABLE' || requestedCode === 'MCP_NAME_CONFLICT'
+      ? requestedCode
+      : requestedCode === 'MCP_HOST_UNAVAILABLE' || requestedCode === 'MCP_CONFIGURATION_LOCKED'
+        ? requestedCode
+        : requestedCode === 'MCP_REQUEST_INVALID' || status === 405
+          ? 'MCP_REQUEST_INVALID'
+          : requestedCode === 'MCP_CONFIGURATION_INVALID' || status === 400
+            ? 'MCP_CONFIGURATION_INVALID'
+            : 'MCP_UNAVAILABLE'
+
+  return Response.json({ error: code }, { status })
 }
 
 export async function handleMcpApi(
@@ -637,10 +514,6 @@ export async function handleMcpApi(
         : undefined
 
     return await runWithCwdOverride(resolveRequestCwd(url, body), async () => {
-      if (req.method === 'GET' && serverName === 'project-paths' && !action) {
-        return listProjectPathsWithPrivateMcp()
-      }
-
       if (req.method === 'GET' && !serverName) {
         return listServers()
       }
@@ -669,9 +542,9 @@ export async function handleMcpApi(
         return reconnectServer(serverName)
       }
 
-      throw new ApiError(405, `Method ${req.method} not allowed`, 'METHOD_NOT_ALLOWED')
+      throw new ApiError(405, 'Unsupported MCP request', 'MCP_REQUEST_INVALID')
     })
   } catch (error) {
-    return errorResponse(error)
+    return mcpErrorResponse(error)
   }
 }

@@ -193,7 +193,21 @@ describe('MCP API', () => {
     expect(listBody.servers).toHaveLength(1)
     expect(listBody.servers[0].name).toBe('chrome-devtools')
     expect(listBody.servers[0].status).toBe('checking')
-    expect(listBody.servers[0].config.command).toBe('npx')
+    expect(Object.keys(listBody.servers[0]).sort()).toEqual([
+      'canEdit',
+      'canReconnect',
+      'canRemove',
+      'canToggle',
+      'enabled',
+      'name',
+      'scope',
+      'status',
+      'transport',
+    ])
+    const serialized = JSON.stringify({ created: createdBody.server, listed: listBody.servers[0] })
+    for (const privateValue of ['npx', 'chrome-devtools-mcp@latest', 'DEBUG', '1', 'command', 'args', 'env']) {
+      expect(serialized).not.toContain(privateValue)
+    }
     expect(connectSpy).not.toHaveBeenCalled()
   })
 
@@ -232,13 +246,73 @@ describe('MCP API', () => {
 
       const createRes = await handleMcpApi(create.req, create.url, create.segments)
       expect(createRes.status).toBe(400)
-      await expect(createRes.json()).resolves.toMatchObject({
-        message: expect.stringContaining(`Invalid name ${name}`),
-      })
+      await expect(createRes.json()).resolves.toEqual({ error: 'MCP_CONFIGURATION_INVALID' })
     }
   })
 
-  it('lists project paths that contain user-private MCP servers', async () => {
+  it('never serializes remote connection settings, credentials, or helper paths', async () => {
+    const privateUrl = 'https://private.example.com/mcp?token=MCP_URL_SECRET'
+    const privateHeader = 'MCP_HEADER_SECRET'
+    const privateHelper = '/private/MCP_HELPER_SECRET.sh'
+    const privateClientId = 'MCP_OAUTH_SECRET'
+    const create = makeRequest('POST', '/api/mcp', {
+      cwd: projectRoot,
+      name: 'private-remote',
+      scope: 'user',
+      config: {
+        type: 'http',
+        url: privateUrl,
+        headers: { Authorization: `Bearer ${privateHeader}` },
+        headersHelper: privateHelper,
+        oauth: { clientId: privateClientId, callbackPort: 4455 },
+      },
+    })
+
+    const createRes = await handleMcpApi(create.req, create.url, create.segments)
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+
+    const list = makeRequest('GET', `/api/mcp?cwd=${encodeURIComponent(projectRoot)}`)
+    const listRes = await handleMcpApi(list.req, list.url, list.segments)
+    expect(listRes.status).toBe(200)
+    const listBody = await listRes.json()
+
+    const serialized = JSON.stringify({ createBody, listBody })
+    for (const privateValue of [
+      privateUrl,
+      privateHeader,
+      privateHelper,
+      privateClientId,
+      'headers',
+      'oauth',
+      'headersHelper',
+    ]) {
+      expect(serialized).not.toContain(privateValue)
+    }
+  })
+
+  it('returns generic configuration errors without echoing submitted connection details', async () => {
+    const privateUrl = 'https://private.example.com/mcp?token=MCP_INVALID_URL_SECRET'
+    const create = makeRequest('POST', '/api/mcp', {
+      cwd: projectRoot,
+      name: 'invalid-transport',
+      scope: 'user',
+      config: {
+        type: 'unsupported-transport',
+        url: privateUrl,
+      },
+    })
+
+    const response = await handleMcpApi(create.req, create.url, create.segments)
+    expect(response.status).toBe(400)
+    const body = await response.json()
+
+    expect(body).toEqual({ error: 'MCP_CONFIGURATION_INVALID' })
+    expect(JSON.stringify(body)).not.toContain(privateUrl)
+    expect(JSON.stringify(body)).not.toContain('Unsupported MCP transport')
+  })
+
+  it('does not expose configured project paths through the MCP API', async () => {
     const previousNodeEnv = process.env.NODE_ENV
     const projectB = path.join(tmpDir, 'project-b')
     await fs.mkdir(projectB, { recursive: true })
@@ -262,10 +336,11 @@ describe('MCP API', () => {
 
       const projectPaths = makeRequest('GET', '/api/mcp/project-paths')
       const projectPathsRes = await handleMcpApi(projectPaths.req, projectPaths.url, projectPaths.segments)
-      expect(projectPathsRes.status).toBe(200)
+      expect(projectPathsRes.status).toBe(405)
       const body = await projectPathsRes.json()
 
-      expect(body.projectPaths).toEqual([projectB])
+      expect(body).toEqual({ error: 'MCP_REQUEST_INVALID' })
+      expect(JSON.stringify(body)).not.toContain(projectB)
     } finally {
       if (previousNodeEnv === undefined) {
         delete process.env.NODE_ENV
@@ -396,9 +471,7 @@ describe('MCP API', () => {
     const createRes = await handleMcpApi(create.req, create.url, create.segments)
 
     expect(createRes.status).toBe(400)
-    await expect(createRes.json()).resolves.toMatchObject({
-      message: 'Host command "npx" is not available in PATH.',
-    })
+    await expect(createRes.json()).resolves.toEqual({ error: 'MCP_HOST_UNAVAILABLE' })
   })
 
   it('surfaces host preflight failures in live status checks without connecting', async () => {
@@ -424,13 +497,14 @@ describe('MCP API', () => {
     const statusRes = await handleMcpApi(status.req, status.url, status.segments)
 
     expect(statusRes.status).toBe(200)
-    await expect(statusRes.json()).resolves.toMatchObject({
+    const body = await statusRes.json()
+    expect(body).toMatchObject({
       server: {
         name: 'chrome-devtools',
         status: 'failed',
-        statusDetail: 'Host command "npx" is not available in PATH.',
       },
     })
+    expect(JSON.stringify(body)).not.toContain('Host command "npx" is not available in PATH.')
     expect(connectSpy).not.toHaveBeenCalled()
   })
 
@@ -607,12 +681,13 @@ describe('MCP API', () => {
 
     expect(reconnectRes.status).toBe(200)
     expect(reconnectSpy).not.toHaveBeenCalled()
-    await expect(reconnectRes.json()).resolves.toMatchObject({
+    const body = await reconnectRes.json()
+    expect(body).toMatchObject({
       server: {
         name: pluginServerName,
         status: 'failed',
-        statusDetail: 'Host command "npx" is not available in PATH.',
       },
     })
+    expect(JSON.stringify(body)).not.toContain('Host command "npx" is not available in PATH.')
   })
 })

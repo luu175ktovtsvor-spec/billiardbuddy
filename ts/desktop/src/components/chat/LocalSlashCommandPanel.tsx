@@ -43,14 +43,23 @@ function scopeLabel(scope: string, t: ReturnType<typeof useTranslation>) {
     case 'project':
       return t('settings.mcp.scope.project')
     default:
-      return scope
+      return t('settings.mcp.scope.dynamic')
   }
 }
 
-function projectBadge(path?: string, t?: ReturnType<typeof useTranslation>) {
-  if (!path || !t) return null
-  const label = path.replace(/\/$/, '').split('/').pop() || path
-  return t('slash.mcp.projectBadge', { name: label })
+function statusLabel(status: McpServerRecord['status'], t: ReturnType<typeof useTranslation>) {
+  switch (status) {
+    case 'connected':
+      return t('status.connected')
+    case 'checking':
+      return t('status.connecting')
+    case 'needs-auth':
+      return t('settings.mcp.status.needsAuth')
+    case 'disabled':
+      return t('settings.mcp.status.disabled')
+    case 'failed':
+      return t('settings.mcp.status.unavailable')
+  }
 }
 
 function PanelShell({
@@ -142,14 +151,14 @@ function McpPanel({ cwd, onClose }: { cwd?: string; onClose: () => void }) {
           )
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(t('settings.mcp.loadFailed'))
       })
     return () => {
       cancelled = true
     }
-  }, [cwd])
+  }, [cwd, t])
 
   const grouped = useMemo(() => {
     const groups = new Map<string, McpServerRecord[]>()
@@ -198,18 +207,10 @@ function McpPanel({ cwd, onClose }: { cwd?: string; onClose: () => void }) {
                     <div className="flex items-center gap-3">
                       <div className="text-sm font-semibold text-[var(--color-text-primary)]">{server.name}</div>
                       <span className={`inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold ${toneForStatus(server.status)}`}>
-                        {server.statusLabel}
+                        {statusLabel(server.status, t)}
                       </span>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
-                      <span className="rounded-full bg-[var(--color-surface-hover)] px-2 py-1">{server.transport}</span>
-                      {server.projectPath && (
-                        <span className="rounded-full bg-[var(--color-surface-hover)] px-2 py-1" title={server.projectPath}>
-                          {projectBadge(server.projectPath, t)}
-                        </span>
-                      )}
-                      <span className="truncate">{server.summary}</span>
-                    </div>
+                    <div className="mt-2 text-xs text-[var(--color-text-tertiary)]">{scopeLabel(server.scope, t)}</div>
                   </button>
                 ))}
               </div>

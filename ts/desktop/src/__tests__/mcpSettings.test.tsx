@@ -4,10 +4,10 @@ import '@testing-library/jest-dom'
 
 import { McpSettings } from '../pages/McpSettings'
 import { sessionsApi } from '../api/sessions'
-import { mcpApi } from '../api/mcp'
 import { useMcpStore } from '../stores/mcpStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import type { McpServerRecord } from '../types/mcp'
 
 vi.mock('../api/sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/sessions')>()
@@ -20,16 +20,21 @@ vi.mock('../api/sessions', async (importOriginal) => {
   }
 })
 
-vi.mock('../api/mcp', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api/mcp')>()
+function makeServer(overrides: Partial<McpServerRecord> = {}): McpServerRecord {
   return {
-    ...actual,
-    mcpApi: {
-      ...actual.mcpApi,
-      projectPaths: vi.fn(),
-    },
+    name: 'context7',
+    scope: 'local',
+    transport: 'stdio',
+    enabled: true,
+    status: 'connected',
+    canEdit: true,
+    canRemove: true,
+    canReconnect: true,
+    canToggle: true,
+    projectPath: '/workspace/project',
+    ...overrides,
   }
-})
+}
 
 async function renderLoadedMcpSettings() {
   const result = render(<McpSettings />)
@@ -53,23 +58,18 @@ describe('McpSettings', () => {
         sessionCount: 1,
       }],
     })
-    vi.mocked(mcpApi.projectPaths).mockResolvedValue({
-      projectPaths: ['/workspace/config-project'],
-    })
     useSettingsStore.setState({ locale: 'en' })
     useSessionStore.setState({
-      sessions: [
-        {
-          id: 'session-1',
-          title: 'Test Session',
-          createdAt: '',
-          modifiedAt: '',
-          messageCount: 0,
-          projectPath: '/workspace/project',
-          workDir: '/workspace/project',
-          workDirExists: true,
-        },
-      ],
+      sessions: [{
+        id: 'session-1',
+        title: 'Test Session',
+        createdAt: '',
+        modifiedAt: '',
+        messageCount: 0,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
       activeSessionId: 'session-1',
       isLoading: false,
       error: null,
@@ -96,7 +96,7 @@ describe('McpSettings', () => {
     })
   })
 
-  it('loads MCP servers for the active and recent projects on mount', async () => {
+  it('loads only the active and recent project contexts', async () => {
     const fetchServers = vi.fn().mockResolvedValue(undefined)
     useMcpStore.setState({ fetchServers })
 
@@ -104,200 +104,56 @@ describe('McpSettings', () => {
 
     await waitFor(() => {
       expect(fetchServers).toHaveBeenCalledWith(
-        ['/workspace/project', '/workspace/selected-project', '/workspace/config-project'],
+        ['/workspace/project', '/workspace/selected-project'],
         '/workspace/project',
       )
     })
   })
 
-  it('shows a loading state before project MCP paths and servers finish loading', async () => {
-    let resolveRecentProjects!: (value: Awaited<ReturnType<typeof sessionsApi.getRecentProjects>>) => void
-    const fetchServers = vi.fn().mockResolvedValue(undefined)
-    vi.mocked(sessionsApi.getRecentProjects).mockImplementation(() => new Promise((resolve) => {
-      resolveRecentProjects = resolve
-    }))
-    useMcpStore.setState({ fetchServers })
-
-    render(<McpSettings />)
-
-    expect(screen.getByRole('status')).toHaveTextContent('Loading...')
-    expect(screen.queryByText('No MCP servers configured yet')).not.toBeInTheDocument()
-    expect(screen.queryByText('Total servers')).not.toBeInTheDocument()
-
-    await act(async () => {
-      resolveRecentProjects({ projects: [] })
-    })
-
-    await waitFor(() => {
-      expect(fetchServers).toHaveBeenCalledWith(['/workspace/project', '/workspace/config-project'], '/workspace/project')
-    })
-    await waitFor(() => {
-      expect(screen.queryByRole('status')).not.toBeInTheDocument()
-    })
-  })
-
-  it('keeps cached MCP servers visible while a remount refresh is pending', async () => {
-    vi.mocked(sessionsApi.getRecentProjects).mockImplementation(() => new Promise(() => {}))
-    useMcpStore.setState({
-      servers: [{
-        name: 'cached-user',
-        scope: 'user',
-        transport: 'http',
-        enabled: true,
-        status: 'connected',
-        statusLabel: 'Connected',
-        configLocation: '/tmp/config',
-        summary: 'https://example.com/mcp',
-        canEdit: true,
-        canRemove: true,
-        canReconnect: true,
-        canToggle: true,
-        config: { type: 'http', url: 'https://example.com/mcp', headers: {} },
-      }],
-    })
-
-    render(<McpSettings />)
-
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
-    expect(screen.getByText('cached-user')).toBeInTheDocument()
-  })
-
-  it('renders the empty state and add button', async () => {
-    await renderLoadedMcpSettings()
-
-    expect(screen.getByText('MCP servers')).toBeInTheDocument()
-    expect(screen.getByText('No MCP servers configured yet')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /add server/i })).toBeInTheDocument()
-  })
-
-  it('shows plugin and user MCP servers in grouped sections', async () => {
-    useMcpStore.setState({
-      servers: [
-        {
-          name: 'plugin:telegram:telegram',
-          scope: 'dynamic',
-          transport: 'stdio',
-          enabled: true,
-          status: 'connected',
-          statusLabel: 'Connected',
-          configLocation: '/tmp/config',
-          summary: 'npx @telegram/mcp',
-          canEdit: false,
-          canRemove: false,
-          canReconnect: true,
-          canToggle: true,
-          config: { type: 'stdio', command: 'npx', args: ['@telegram/mcp'], env: {} },
-        },
-        {
-          name: 'global-user',
-          scope: 'user',
-          transport: 'http',
-          enabled: true,
-          status: 'connected',
-          statusLabel: 'Connected',
-          configLocation: '/tmp/config',
-          summary: 'https://example.com/mcp',
-          canEdit: true,
-          canRemove: true,
-          canReconnect: true,
-          canToggle: true,
-          config: { type: 'http', url: 'https://example.com/mcp', headers: {} },
-        },
-      ],
-    })
-
-    await renderLoadedMcpSettings()
-
-    expect(screen.getAllByText('Plugin').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('User').length).toBeGreaterThan(0)
-    expect(screen.getByText('plugin:telegram:telegram')).toBeInTheDocument()
-    expect(screen.getByText('global-user')).toBeInTheDocument()
-  })
-
-  it('redacts sensitive MCP command details from the list and details views', async () => {
-    const server = {
-      name: 'context7',
-      scope: 'local',
-      transport: 'stdio',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/workspace/project/.mcp.json',
-      summary: 'npx context7 --api-key sk-summary-secret',
-      canEdit: false,
-      canRemove: false,
-      canReconnect: true,
-      canToggle: true,
-      projectPath: '/workspace/project',
+  it('shows safe names and states without rendering forged legacy configuration fields', async () => {
+    const legacyServer = {
+      ...makeServer(),
+      summary: 'npx context7 --api-key MCP_SUMMARY_SECRET',
+      statusDetail: 'MCP_STATUS_SECRET',
+      configLocation: '/private/MCP_CONFIG_PATH_SECRET',
       config: {
         type: 'stdio',
         command: 'npx',
-        args: ['context7', '--api-key', 'sk-argument-secret'],
-        env: { CONTEXT7_API_KEY: 'sk-env-secret' },
+        args: ['--api-key', 'MCP_ARGUMENT_SECRET'],
+        env: { TOKEN: 'MCP_ENV_SECRET' },
       },
-    } as const
-
-    useMcpStore.setState({ servers: [server] })
+    } as unknown as McpServerRecord
+    useMcpStore.setState({ servers: [legacyServer] })
 
     await renderLoadedMcpSettings()
 
-    expect(document.body.textContent).not.toContain('sk-summary-secret')
-    expect(document.body.textContent).not.toContain('sk-argument-secret')
-    expect(document.body.textContent).not.toContain('sk-env-secret')
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open context7' }))
-    })
-
-    expect(document.body.textContent).not.toContain('sk-summary-secret')
-    expect(document.body.textContent).not.toContain('sk-argument-secret')
-    expect(document.body.textContent).not.toContain('sk-env-secret')
+    expect(screen.getByText('context7')).toBeInTheDocument()
+    expect(screen.getByText('Connected')).toBeInTheDocument()
+    for (const privateValue of [
+      'MCP_SUMMARY_SECRET',
+      'MCP_STATUS_SECRET',
+      'MCP_CONFIG_PATH_SECRET',
+      'MCP_ARGUMENT_SECRET',
+      'MCP_ENV_SECRET',
+    ]) {
+      expect(document.body.textContent).not.toContain(privateValue)
+    }
   })
 
-  it('redacts editable MCP secrets without replacing unchanged values on save', async () => {
-    const server = {
-      name: 'context7',
-      scope: 'local',
-      transport: 'stdio',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/workspace/project/.mcp.json',
-      summary: 'npx context7 --api-key sk-summary-edit-secret',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      projectPath: '/workspace/project',
-      config: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['context7', '--api-key', 'sk-argument-edit-secret'],
-        env: {
-          CONTEXT7_API_KEY: 'sk-env-edit-secret',
-          LOG_LEVEL: 'debug',
-        },
-      },
-    } as const
+  it('replaces an editable connection without pre-filling its saved configuration', async () => {
+    const server = makeServer()
     const updateServer = vi.fn().mockResolvedValue(server)
-
     useMcpStore.setState({ servers: [server], updateServer })
 
     await renderLoadedMcpSettings()
-
-    expect(document.body.textContent).not.toContain('sk-summary-edit-secret')
-
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open context7' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Manage context7' }))
     })
 
-    expect(document.body.textContent).not.toContain('sk-summary-edit-secret')
-    expect(document.body.textContent).not.toContain('sk-argument-edit-secret')
-    expect(document.body.textContent).not.toContain('sk-env-edit-secret')
-    expect(screen.queryByDisplayValue('sk-argument-edit-secret')).not.toBeInTheDocument()
-    expect(screen.queryByDisplayValue('sk-env-edit-secret')).not.toBeInTheDocument()
-    expect(screen.getByDisplayValue('debug')).toBeInTheDocument()
+    expect(screen.getByText('Existing connection settings are not displayed. Saving this form replaces the connection with the values you provide.')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('npx')).not.toBeInTheDocument()
 
+    fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'npx' } })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     })
@@ -306,230 +162,42 @@ describe('McpSettings', () => {
       server,
       {
         scope: 'local',
-        config: {
-          type: 'stdio',
-          command: 'npx',
-          args: ['context7', '--api-key', 'sk-argument-edit-secret'],
-          env: {
-            CONTEXT7_API_KEY: 'sk-env-edit-secret',
-            LOG_LEVEL: 'debug',
-          },
-        },
+        config: { type: 'stdio', command: 'npx', args: [], env: {} },
       },
       '/workspace/project',
     )
   })
 
-  it('uses the server MCP name rules before enabling Save', async () => {
-    await renderLoadedMcpSettings()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /add server/i }))
-    })
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /^User/i }))
-    })
-
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'bad name' } })
-    fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'echo' } })
-
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'bad/name' } })
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'bad.name' } })
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: '某某服务器' } })
-    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
-  })
-
-  it('keeps same-name project MCP servers distinct by project path', async () => {
-    useMcpStore.setState({
-      servers: [
-        {
-          name: 'context7',
-          scope: 'local',
-          transport: 'stdio',
-          enabled: true,
-          status: 'connected',
-          statusLabel: 'Connected',
-          configLocation: '/workspace/project-a/.claude.json',
-          summary: 'npx @upstash/context7-mcp',
-          canEdit: true,
-          canRemove: true,
-          canReconnect: true,
-          canToggle: true,
-          projectPath: '/workspace/project-a',
-          config: { type: 'stdio', command: 'npx', args: ['@upstash/context7-mcp'], env: {} },
-        },
-        {
-          name: 'context7',
-          scope: 'local',
-          transport: 'stdio',
-          enabled: true,
-          status: 'connected',
-          statusLabel: 'Connected',
-          configLocation: '/workspace/project-b/.claude.json',
-          summary: 'npx @upstash/context7-mcp',
-          canEdit: true,
-          canRemove: true,
-          canReconnect: true,
-          canToggle: true,
-          projectPath: '/workspace/project-b',
-          config: { type: 'stdio', command: 'npx', args: ['@upstash/context7-mcp'], env: {} },
-        },
-      ],
-    })
-
-    await renderLoadedMcpSettings()
-
-    expect(screen.getAllByText('context7')).toHaveLength(2)
-    expect(screen.getByText('/workspace/project-a')).toBeInTheDocument()
-    expect(screen.getByText('/workspace/project-b')).toBeInTheDocument()
-  })
-
-  it('starts background status refresh after the fast list render', async () => {
-    const server = {
-      name: 'deepwiki',
-      scope: 'user',
-      transport: 'http',
-      enabled: true,
-      status: 'checking' as const,
-      statusLabel: 'Checking',
-      configLocation: '/tmp/config',
-      summary: 'https://example.com/mcp',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      config: { type: 'http' as const, url: 'https://example.com/mcp', headers: {} },
-    }
-    const refreshServerStatus = vi.fn().mockResolvedValue({
-      ...server,
-      status: 'connected' as const,
-      statusLabel: 'Connected',
-    })
-
-    useMcpStore.setState({
-      servers: [server],
-      refreshServerStatus,
-    })
-
-    await renderLoadedMcpSettings()
-
-    expect(screen.getByText('Checking')).toBeInTheDocument()
-
-    await waitFor(() => {
-      expect(refreshServerStatus).toHaveBeenCalledWith(server, '/workspace/project')
-    })
-  })
-
-  it('opens the delete confirmation modal from the edit view and deletes with the active cwd', async () => {
-    const deleteServer = vi.fn().mockResolvedValue(undefined)
-    const server = {
-      name: 'global-user',
-      scope: 'user',
-      transport: 'http',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/tmp/config',
-      summary: 'https://example.com/mcp',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      config: { type: 'http', url: 'https://example.com/mcp', headers: {} },
-    } as const
-
-    useMcpStore.setState({
-      servers: [server],
-      deleteServer,
-    })
-
-    await renderLoadedMcpSettings()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open global-user' }))
-    })
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /uninstall/i }))
-    })
-
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText('Delete MCP server')).toBeInTheDocument()
-    expect(screen.getByText('Delete MCP server "global-user"? This action cannot be undone.')).toBeInTheDocument()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    })
-
-    expect(deleteServer).toHaveBeenCalledWith(server, '/workspace/project')
-  })
-
-  it('uses a neutral title when configuring an editable MCP server', async () => {
-    const server = {
-      name: 'filesystem',
-      scope: 'user',
+  it('keeps provider-managed connections inspectable and reconnectable without implementation details', async () => {
+    const server = makeServer({
+      name: 'provider-managed',
+      scope: 'dynamic',
       transport: 'stdio',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/tmp/config',
-      summary: 'npx @modelcontextprotocol/server-filesystem',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      config: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['@modelcontextprotocol/server-filesystem'],
-        env: {},
-      },
-    } as const
-
-    useMcpStore.setState({ servers: [server] })
+      canEdit: false,
+      canRemove: false,
+      projectPath: undefined,
+    })
+    const reconnectServer = vi.fn().mockResolvedValue({ ...server, status: 'connected' as const })
+    useMcpStore.setState({ servers: [server], reconnectServer })
 
     await renderLoadedMcpSettings()
-
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open filesystem' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Manage provider-managed' }))
     })
 
-    expect(screen.getByRole('heading', { name: 'Configure filesystem MCP' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Update filesystem MCP' })).not.toBeInTheDocument()
+    expect(screen.getByText('This connection is managed by its provider. Its implementation details are not shown here.')).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Reconnect/ }))
+    })
+    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
   })
 
-  it('uses the active cwd when toggling a server', async () => {
-    const toggleServer = vi.fn().mockResolvedValue(undefined)
-    const server = {
-      name: 'global-user',
-      scope: 'user',
-      transport: 'http',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/tmp/config',
-      summary: 'https://example.com/mcp',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      config: { type: 'http', url: 'https://example.com/mcp', headers: {} },
-    } as const
-
-    useMcpStore.setState({
-      servers: [server],
-      toggleServer,
-    })
+  it('uses the active session when toggling a connection', async () => {
+    const server = makeServer()
+    const toggleServer = vi.fn().mockResolvedValue({ ...server, enabled: false })
+    useMcpStore.setState({ servers: [server], toggleServer })
 
     await renderLoadedMcpSettings()
-
     await act(async () => {
       fireEvent.click(screen.getByRole('switch'))
     })
@@ -537,239 +205,40 @@ describe('McpSettings', () => {
     expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
   })
 
-  it('clears the selected MCP server when returning to the list', async () => {
-    const selectServer = vi.fn()
-    const server = {
-      name: 'global-user',
-      scope: 'user',
-      transport: 'http',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/tmp/config',
-      summary: 'https://example.com/mcp',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      config: { type: 'http', url: 'https://example.com/mcp', headers: {} },
-    } as const
-
-    useMcpStore.setState({
-      servers: [server],
-      selectServer,
-    })
-
-    await renderLoadedMcpSettings()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open global-user' }))
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /back/i }))
-    })
-
-    expect(selectServer).toHaveBeenLastCalledWith(null)
-  })
-
-  it('requires an explicitly selected project before creating local MCP servers', async () => {
-    const createdServer = {
-      name: 'context7',
-      scope: 'local',
-      transport: 'stdio',
-      enabled: true,
-      status: 'checking' as const,
-      statusLabel: 'Checking',
-      configLocation: '/workspace/project/.claude.json',
-      summary: 'npx @upstash/context7-mcp',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      projectPath: '/workspace/project',
-      config: { type: 'stdio' as const, command: 'npx', args: ['@upstash/context7-mcp'], env: {} },
-    }
-    const createServer = vi.fn().mockResolvedValue(createdServer)
-
+  it('creates a connection only after the user supplies the required advanced fields', async () => {
+    const created = makeServer({ name: 'new-connection' })
+    const createServer = vi.fn().mockResolvedValue(created)
     useMcpStore.setState({ createServer })
 
     await renderLoadedMcpSettings()
-
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+      fireEvent.click(screen.getByRole('button', { name: /Add connection/ }))
     })
 
-    expect(screen.getByText('Select a project...')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'context7' } })
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'new-connection' } })
     fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'npx' } })
-    fireEvent.change(screen.getByPlaceholderText('chrome-devtools-mcp@latest'), {
-      target: { value: '@upstash/context7-mcp' },
-    })
-
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Select a project/i }))
-    })
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('org/selected-project'))
-    })
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     })
 
     expect(createServer).toHaveBeenCalledWith(
-      'context7',
+      'new-connection',
       {
         scope: 'local',
-        config: {
-          type: 'stdio',
-          command: 'npx',
-          args: ['@upstash/context7-mcp'],
-          env: {},
-        },
+        config: { type: 'stdio', command: 'npx', args: [], env: {} },
       },
-      '/workspace/selected-project',
+      '/workspace/project',
     )
   })
 
-  it('updates project MCP servers using the explicitly selected target project', async () => {
-    vi.mocked(sessionsApi.getRecentProjects).mockResolvedValue({
-      projects: [{
-        projectPath: '/workspace/moved-project',
-        realPath: '/workspace/moved-project',
-        projectName: 'moved-project',
-        repoName: 'org/moved-project',
-        branch: 'main',
-        isGit: true,
-        modifiedAt: '2026-05-25T00:00:00.000Z',
-        sessionCount: 1,
-      }],
-    })
-    const updateServer = vi.fn().mockResolvedValue({
-      name: 'shared-tools',
-      scope: 'project',
-      transport: 'stdio',
-      enabled: true,
-      status: 'checking' as const,
-      statusLabel: 'Checking',
-      configLocation: '/workspace/moved-project/.mcp.json',
-      summary: 'npx shared-tools',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      projectPath: '/workspace/moved-project',
-      config: { type: 'stdio' as const, command: 'npx', args: ['shared-tools'], env: {} },
-    })
-    const server = {
-      name: 'shared-tools',
-      scope: 'project',
-      transport: 'stdio',
-      enabled: true,
-      status: 'connected',
-      statusLabel: 'Connected',
-      configLocation: '/workspace/project/.mcp.json',
-      summary: 'npx shared-tools',
-      canEdit: true,
-      canRemove: true,
-      canReconnect: true,
-      canToggle: true,
-      projectPath: '/workspace/project',
-      config: { type: 'stdio' as const, command: 'npx', args: ['shared-tools'], env: {} },
-    } as const
-
-    useMcpStore.setState({
-      servers: [server],
-      updateServer,
-    })
+  it('uses a generic load error instead of a transport error message', async () => {
+    useMcpStore.setState({ error: 'https://private.example/MCP_ERROR_SECRET' })
 
     await renderLoadedMcpSettings()
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open shared-tools' }))
-    })
-
-    expect(screen.getByText('project')).toBeInTheDocument()
-
-    await act(async () => {
-      fireEvent.click(screen.getByTitle('/workspace/project'))
-    })
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('org/moved-project'))
-    })
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    })
-
-    expect(updateServer).toHaveBeenCalledWith(
-      server,
-      {
-        scope: 'project',
-        config: {
-          type: 'stdio',
-          command: 'npx',
-          args: ['shared-tools'],
-          env: {},
-        },
-      },
-      '/workspace/moved-project',
-    )
-  })
-
-  it('shows reconnecting status immediately in the detail view', async () => {
-    let resolveReconnect: ((value: typeof server) => void) | null = null
-    const server = {
-      name: 'plugin:telegram:telegram',
-      scope: 'dynamic',
-      transport: 'stdio',
-      enabled: true,
-      status: 'failed' as 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'checking',
-      statusLabel: 'Unavailable',
-      statusDetail: 'Timed out' as string | undefined,
-      configLocation: '/tmp/config',
-      summary: 'bun run start',
-      canEdit: false,
-      canRemove: false,
-      canReconnect: true,
-      canToggle: true,
-      config: { type: 'stdio' as const, command: 'bun', args: ['run', 'start'], env: {} },
-    }
-    const reconnectServer = vi.fn().mockImplementation(() => new Promise<typeof server>((resolve) => {
-      resolveReconnect = resolve
-    }))
-
-    useMcpStore.setState({
-      servers: [server],
-      reconnectServer,
-    })
-
-    await renderLoadedMcpSettings()
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open plugin:telegram:telegram' }))
-    })
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /reconnect/i }))
-    })
-
-    expect(screen.getAllByText('Reconnecting...').length).toBeGreaterThan(0)
-    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
-
-    await act(async () => {
-      resolveReconnect?.({
-        ...server,
-        status: 'connected',
-        statusLabel: 'Connected',
-        statusDetail: undefined,
-      })
-    })
+    expect(screen.getByText('Connections could not be loaded right now.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('MCP_ERROR_SECRET')
   })
 })
