@@ -1,8 +1,9 @@
 (()=>{var X7=Object.create;var{getPrototypeOf:V7,defineProperty:AQ,getOwnPropertyNames:$7}=Object;var H7=Object.prototype.hasOwnProperty;function G7(U){return this[U]}var K7,U7,F7=(U,F,z)=>{var D=U!=null&&typeof U==="object";if(D){var B=F?K7??=new WeakMap:U7??=new WeakMap,T=B.get(U);if(T)return T}z=U!=null?X7(V7(U)):{};let S=F||!U||!U.__esModule?AQ(z,"default",{value:U,enumerable:!0}):z;for(let c of $7(U))if(!H7.call(S,c))AQ(S,c,{get:G7.bind(U,c),enumerable:!0});if(D)B.set(U,S);return S};var z7=(U,F)=>()=>(F||U((F={exports:{}}).exports,F),F.exports);var TQ=z7((W6,O6)=>{/*!
  * html2canvas 1.4.1 <https://html2canvas.hertzen.com>
- * Bundled preview helper
+ * Copyright (c) 2022 Niklas von Hertzen <https://hertzen.com>
+ * Released under MIT License
  */(function(U,F){typeof W6==="object"&&typeof O6<"u"?O6.exports=F():typeof define==="function"&&define.amd?define(F):(U=typeof globalThis<"u"?globalThis:U||self,U.html2canvas=F())})(W6,function(){/*! *****************************************************************************
-    Runtime helper.
+    Copyright (c) Microsoft Corporation.
 
     Permission to use, copy, modify, and/or distribute this software for any
     purpose with or without fee is hereby granted.

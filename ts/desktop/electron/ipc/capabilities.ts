@@ -69,6 +69,56 @@ const updateCheckOptions: Validator = value => {
   return value.proxy === undefined || (typeof value.proxy === 'string' && value.proxy.trim().length > 0)
 }
 
+const mediaProjectId = (value: unknown): value is string =>
+  typeof value === 'string'
+  && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
+
+const mediaSubmitImage: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
+  && mediaProjectId(value.projectId)
+  && typeof value.confirmUnknownRetry === 'boolean'
+
+const mediaUpdateUnknownImage: Validator = value => {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
+  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
+  const input = value.input
+  return hasOnlyKeys(input, ['revision', 'prompt', 'size', 'count', 'confirm_unknown_retry'])
+    && typeof input.revision === 'number'
+    && Number.isInteger(input.revision)
+    && input.revision >= 0
+    && typeof input.prompt === 'string'
+    && input.prompt.trim().length > 0
+    && input.prompt.length <= 8000
+    && ['1024x1024', '1536x1024', '1024x1536'].includes(String(input.size))
+    && typeof input.count === 'number'
+    && Number.isInteger(input.count)
+    && input.count >= 1
+    && input.count <= 4
+    && input.confirm_unknown_retry === true
+}
+
+const mediaRenderVideo: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['projectId', 'revision', 'outputPath'])
+  && mediaProjectId(value.projectId)
+  && typeof value.revision === 'number'
+  && Number.isInteger(value.revision)
+  && value.revision >= 0
+  && typeof value.outputPath === 'string'
+  && value.outputPath.length > 0
+  && value.outputPath.length <= 4096
+
+const mediaSaveImageOutput: Validator = value => {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
+  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
+  return hasOnlyKeys(value.input, ['output_id', 'output_path'])
+    && mediaProjectId(value.input.output_id)
+    && typeof value.input.output_path === 'string'
+    && value.input.output_path.length > 0
+    && value.input.output_path.length <= 4096
+}
+
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
@@ -80,6 +130,10 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.traceOpenWindow]: sessionIdPayload,
   [ELECTRON_IPC_CHANNELS.dialogOpen]: optionalRecord,
   [ELECTRON_IPC_CHANNELS.dialogSave]: optionalRecord,
+  [ELECTRON_IPC_CHANNELS.mediaSubmitImage]: mediaSubmitImage,
+  [ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage]: mediaUpdateUnknownImage,
+  [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
+  [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
   [ELECTRON_IPC_CHANNELS.updateCheck]: updateCheckOptions,
   [ELECTRON_IPC_CHANNELS.updateDownload]: noPayload,
   [ELECTRON_IPC_CHANNELS.updateInstall]: noPayload,
