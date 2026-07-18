@@ -133,30 +133,29 @@ describe('composerUtils', () => {
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('goal --tokens')
   })
 
-  it('builds agent slash entries under the /agent namespace', () => {
+  it('builds name-only agent slash entries under the /agent namespace', () => {
     expect(
       buildAgentSlashCommands([
         {
-          agentType: 'debugger',
-          description: 'Debug failures',
-          source: 'userSettings',
+          displayName: 'assistant-1',
+          runtimeName: 'debugger',
         },
       ]),
     ).toEqual([
       {
-        name: 'agent debugger',
-        description: 'Debug failures (userSettings)',
+        name: 'agent assistant-1',
+        runtimeName: 'agent debugger',
+        description: '',
         argumentHint: '<prompt>',
       },
     ])
   })
 
-  it('uses a product alias for built-in guide metadata and restores the runtime id on submit', () => {
+  it('uses a product display name and restores the runtime id on submit', () => {
     const commands = buildAgentSlashCommands([
       {
-        agentType: 'claude-code-guide',
-        description: 'Use Claude Code and the Anthropic API.',
-        source: 'built-in',
+        displayName: 'agent-guide',
+        runtimeName: 'claude-code-guide',
       },
     ])
 
@@ -164,7 +163,7 @@ describe('composerUtils', () => {
       {
         name: 'agent agent-guide',
         runtimeName: 'agent claude-code-guide',
-        description: 'Answers questions about the Agent workbench, CLI, hooks, skills, MCP services, settings, and supported model APIs. (built-in)',
+        description: '',
         argumentHint: '<prompt>',
       },
     ])
@@ -173,52 +172,53 @@ describe('composerUtils', () => {
     )
   })
 
-  it('keeps a custom agent-guide selectable when it conflicts with the built-in guide alias', () => {
+  it('keeps two commands selectable when their safe display names collide', () => {
     const commands = buildAgentSlashCommands([
       {
-        agentType: 'claude-code-guide',
-        description: 'Built-in guide',
-        source: 'built-in',
+        displayName: 'agent-guide',
+        runtimeName: 'claude-code-guide',
       },
       {
-        agentType: 'agent-guide',
-        description: 'Project-specific guide',
-        source: 'projectSettings',
+        displayName: 'agent-guide',
+        runtimeName: 'project-guide',
       },
     ])
 
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: 'agent billiardbuddy-guide',
+        name: 'agent agent-guide',
         runtimeName: 'agent claude-code-guide',
       }),
       expect.objectContaining({
-        name: 'agent agent-guide',
-        description: 'Project-specific guide (projectSettings)',
+        name: 'agent agent-guide-assistant',
+        runtimeName: 'agent project-guide',
+        description: '',
       }),
     ]))
-    expect(resolveSlashCommandRuntimeValue('/agent billiardbuddy-guide explain hooks', commands)).toBe(
+    expect(resolveSlashCommandRuntimeValue('/agent agent-guide explain hooks', commands)).toBe(
       '/agent claude-code-guide explain hooks',
     )
-    expect(resolveSlashCommandRuntimeValue('/agent agent-guide explain this project', commands)).toBe(
-      '/agent agent-guide explain this project',
+    expect(resolveSlashCommandRuntimeValue('/agent agent-guide-assistant explain this project', commands)).toBe(
+      '/agent project-guide explain this project',
     )
   })
 
-  it('keeps project Agent names and descriptions unchanged', () => {
+  it('does not render raw Agent runtime names or implementation metadata', () => {
     const commands = buildAgentSlashCommands([
       {
-        agentType: 'claude-domain-expert',
-        description: 'Research Claude APIs for this project.',
-        source: 'projectSettings',
+        displayName: 'assistant-1',
+        runtimeName: 'claude-domain-expert',
       },
     ])
+    const [command] = commands
 
-    expect(commands[0]).toMatchObject({
-      name: 'agent claude-domain-expert',
-      description: 'Research Claude APIs for this project. (projectSettings)',
+    expect(command).toMatchObject({
+      name: 'agent assistant-1',
+      runtimeName: 'agent claude-domain-expert',
+      description: '',
     })
-    expect(commands[0]).not.toHaveProperty('runtimeName')
+    expect(command!.name).not.toContain('claude-domain-expert')
+    expect(command!.description).not.toContain('projectSettings')
   })
 
   it('appends agent entries after normal slash commands without replacing them', () => {

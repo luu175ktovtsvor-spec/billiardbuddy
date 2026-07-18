@@ -291,12 +291,19 @@ describe('E2E: Full Flow', () => {
   // 7. Agents
   // =============================================
 
-  it('should start with shared active/all agent payload', async () => {
+  it('should start with safe Agent command descriptors', async () => {
     const { data } = await api('GET', '/api/agents')
-    expect(Array.isArray(data.activeAgents)).toBe(true)
-    expect(Array.isArray(data.allAgents)).toBe(true)
-    expect(data.activeAgents.length).toBeGreaterThan(0)
-    expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
+    expect(Array.isArray(data.agents)).toBe(true)
+    expect(data.agents.length).toBeGreaterThan(0)
+    expect(data.agents).toContainEqual({
+      displayName: 'agent-guide',
+      runtimeName: 'claude-code-guide',
+    })
+    expect(data).not.toHaveProperty('activeAgents')
+    expect(data).not.toHaveProperty('allAgents')
+    for (const agent of data.agents) {
+      expect(Object.keys(agent).sort()).toEqual(['displayName', 'runtimeName'])
+    }
   })
 
   it('should create an agent', async () => {
@@ -308,13 +315,12 @@ describe('E2E: Full Flow', () => {
     expect(status).toBe(201)
   })
 
-  it('should expose shared active/all agent payload independent of CRUD storage', async () => {
+  it('should keep CRUD storage out of the safe command catalog', async () => {
     const { data } = await api('GET', '/api/agents')
-    expect(Array.isArray(data.activeAgents)).toBe(true)
-    expect(Array.isArray(data.allAgents)).toBe(true)
-    expect(data.activeAgents.length).toBeGreaterThan(0)
-    expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-agent')).toBe(false)
+    expect(Array.isArray(data.agents)).toBe(true)
+    expect(data.agents.length).toBeGreaterThan(0)
+    expect(data.agents.some((agent: any) => agent.runtimeName === 'test-agent')).toBe(false)
+    expect(data).not.toHaveProperty('allAgents')
   })
 
   it('should delete an agent', async () => {

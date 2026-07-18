@@ -316,16 +316,18 @@ describe('Business Flow: Agent Management', () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  it('should start with shared active/all agent payload', async () => {
+  it('should start with safe Agent command descriptors', async () => {
     const { data } = await api('GET', '/api/agents')
-    expect(Array.isArray(data.activeAgents)).toBe(true)
-    expect(Array.isArray(data.allAgents)).toBe(true)
-    expect(data.activeAgents.length).toBeGreaterThan(0)
-    expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    for (const agent of [...data.activeAgents, ...data.allAgents]) {
-      expect(agent).not.toHaveProperty('model')
-      expect(agent).not.toHaveProperty('modelDisplay')
-      expect(agent).not.toHaveProperty('systemPrompt')
+    expect(Array.isArray(data.agents)).toBe(true)
+    expect(data.agents.length).toBeGreaterThan(0)
+    expect(data.agents).toContainEqual({
+      displayName: 'agent-guide',
+      runtimeName: 'claude-code-guide',
+    })
+    expect(data).not.toHaveProperty('activeAgents')
+    expect(data).not.toHaveProperty('allAgents')
+    for (const agent of data.agents) {
+      expect(Object.keys(agent).sort()).toEqual(['displayName', 'runtimeName'])
     }
   })
 
@@ -351,25 +353,23 @@ describe('Business Flow: Agent Management', () => {
     expect(status).toBe(201)
   })
 
-  it('should list both created agents in CRUD detail endpoint while shared list stays source-based', async () => {
+  it('should keep created Agent configuration out of the safe command catalog', async () => {
     const { data } = await api('GET', '/api/agents')
-    expect(data.activeAgents.length).toBeGreaterThan(0)
-    expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'security-auditor')).toBe(false)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer')).toBe(false)
+    expect(data.agents.length).toBeGreaterThan(0)
+    expect(data.agents.some((agent: any) => agent.runtimeName === 'security-auditor')).toBe(false)
+    expect(data.agents.some((agent: any) => agent.runtimeName === 'test-writer')).toBe(false)
 
     const securityAuditor = await api('GET', '/api/agents/security-auditor')
     const testWriter = await api('GET', '/api/agents/test-writer')
-    expect(securityAuditor.data.agent.name).toBe('security-auditor')
-    expect(testWriter.data.agent.name).toBe('test-writer')
+    expect(securityAuditor.data).toEqual({ available: true })
+    expect(testWriter.data).toEqual({ available: true })
   })
 
-  it('should get agent details', async () => {
+  it('should only acknowledge saved Agent availability', async () => {
     const { data } = await api('GET', '/api/agents/security-auditor')
-    expect(data.agent.name).toBe('security-auditor')
-    expect(data.agent.description).toContain('security')
-    expect(data.agent.model).toBe('claude-opus-4-7')
-    expect(data.agent.systemPrompt).toContain('OWASP')
+    expect(data).toEqual({ available: true })
+    expect(JSON.stringify(data)).not.toContain('OWASP')
+    expect(JSON.stringify(data)).not.toContain('claude-opus-4-7')
   })
 
   it('should update agent tools', async () => {
@@ -378,9 +378,7 @@ describe('Business Flow: Agent Management', () => {
       description: 'Updated: now with web access',
     })
     expect(status).toBe(200)
-    expect(data.agent).toBeDefined()
-    expect(data.agent.name).toBe('security-auditor')
-    expect(data.agent.description).toBe('Updated: now with web access')
+    expect(data).toEqual({ ok: true })
   })
 
   it('should reject creating duplicate agent', async () => {
@@ -389,24 +387,29 @@ describe('Business Flow: Agent Management', () => {
       description: 'duplicate',
     })
     expect(status).toBe(409)
-    expect(data.error).toBe('CONFLICT')
+    expect(data).toEqual({ error: 'AGENT_NAME_CONFLICT' })
   })
 
   it('should reject getting non-existent agent', async () => {
-    const { status } = await api('GET', '/api/agents/nonexistent')
+    const { status, data } = await api('GET', '/api/agents/nonexistent')
     expect(status).toBe(404)
+    expect(data).toEqual({ error: 'AGENT_NOT_FOUND' })
   })
 
-  it('should keep deleted agent out of shared active list while built-ins remain', async () => {
+  it('should keep deleted Agent out of the safe command catalog', async () => {
     const { status } = await api('DELETE', '/api/agents/test-writer')
     expect([200, 204]).toContain(status)
 
     const { data } = await api('GET', '/api/agents')
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer')).toBe(false)
-    expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
+    expect(data.agents.some((agent: any) => agent.runtimeName === 'test-writer')).toBe(false)
+    expect(data.agents).toContainEqual({
+      displayName: 'agent-guide',
+      runtimeName: 'claude-code-guide',
+    })
 
     const deleted = await api('GET', '/api/agents/test-writer')
     expect(deleted.status).toBe(404)
+    expect(deleted.data).toEqual({ error: 'AGENT_NOT_FOUND' })
   })
 
   it('should persist agent to YAML file on disk', async () => {
@@ -417,8 +420,9 @@ describe('Business Flow: Agent Management', () => {
   })
 
   it('should reject deleting non-existent agent', async () => {
-    const { status } = await api('DELETE', '/api/agents/nonexistent')
+    const { status, data } = await api('DELETE', '/api/agents/nonexistent')
     expect(status).toBe(404)
+    expect(data).toEqual({ error: 'AGENT_NOT_FOUND' })
   })
 })
 

@@ -1,6 +1,5 @@
 import type { SettingsTab } from '../../stores/uiStore'
 import type { TranslationKey } from '../../i18n'
-import { getProductAgentDescription, getProductAgentType } from '../../lib/productAgentDisplay'
 
 /** Map from slash command name to its i18n description key */
 const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
@@ -124,56 +123,32 @@ type SlashCommandCatalogEntry = {
 }
 
 export type AgentSlashCommandSource = {
-  agentType: string
-  description?: string
-  modelDisplay?: string
-  source?: string
+  displayName: string
+  runtimeName: string
 }
 
 export function buildAgentSlashCommands(
   agents: ReadonlyArray<AgentSlashCommandSource>,
 ): SlashCommandOption[] {
-  const seen = new Set<string>()
+  const seenRuntimeNames = new Set<string>()
+  const displayNames = new Set<string>()
   const commands: SlashCommandOption[] = []
-  const reservedDisplayNames = new Set(
-    agents
-      .filter((agent) => agent.source !== 'built-in')
-      .map((agent) => agent.agentType.trim())
-      .filter(Boolean),
-  )
 
   for (const agent of agents) {
-    const runtimeAgentType = agent.agentType.trim()
-    if (!runtimeAgentType || seen.has(runtimeAgentType)) continue
-    seen.add(runtimeAgentType)
+    const runtimeAgentType = agent.runtimeName.trim()
+    const preferredDisplayAgentType = agent.displayName.trim()
+    if (!runtimeAgentType || !preferredDisplayAgentType || seenRuntimeNames.has(runtimeAgentType)) continue
+    seenRuntimeNames.add(runtimeAgentType)
 
-    const preferredDisplayAgentType = getProductAgentType({
-      agentType: runtimeAgentType,
-      description: agent.description,
-      source: agent.source ?? '',
-    })
-    const displayAgentType = agent.source === 'built-in'
-      ? reserveBuiltInAgentDisplayName(preferredDisplayAgentType, reservedDisplayNames)
-      : runtimeAgentType
-    reservedDisplayNames.add(displayAgentType)
-    const displayDescription = getProductAgentDescription({
-      agentType: runtimeAgentType,
-      description: agent.description,
-      source: agent.source ?? '',
-    }, `Run with the ${displayAgentType} Agent`)
-
-    const details = [agent.source].filter(Boolean).join(' - ')
-    const description = [
-      displayDescription.trim(),
-      details ? `(${details})` : '',
-    ].filter(Boolean).join(' ')
+    const displayAgentType = reserveDisplayName(preferredDisplayAgentType, displayNames)
+    displayNames.add(displayAgentType)
     const name = `agent ${displayAgentType}`
     const runtimeName = `agent ${runtimeAgentType}`
 
     commands.push({
       name,
       ...(runtimeName !== name ? { runtimeName } : {}),
-      description,
+      description: '',
       argumentHint: '<prompt>',
     })
   }
@@ -181,10 +156,10 @@ export function buildAgentSlashCommands(
   return commands
 }
 
-function reserveBuiltInAgentDisplayName(preferred: string, reserved: Set<string>): string {
+function reserveDisplayName(preferred: string, reserved: Set<string>): string {
   if (!reserved.has(preferred)) return preferred
 
-  const base = preferred === 'agent-guide' ? 'billiardbuddy-guide' : `${preferred}-built-in`
+  const base = `${preferred}-assistant`
   let candidate = base
   let suffix = 2
   while (reserved.has(candidate)) {

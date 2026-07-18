@@ -106,7 +106,7 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
 beforeEach(() => {
   mocks.isDesktop = false
   mocks.listSkillCommands.mockResolvedValue({ commands: [] })
-  mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
+  mocks.listAgents.mockResolvedValue({ agents: [] })
   mocks.copyText.mockResolvedValue(true)
 })
 
@@ -375,13 +375,12 @@ describe('TaskIndex', () => {
 
   it('offers discovered agents in the initial task composer and sends their runtime command', async () => {
     mocks.listAgents.mockResolvedValue({
-      activeAgents: [{
-        agentType: 'venue-analyst',
+      agents: [{
+        displayName: 'assistant-1',
+        runtimeName: 'venue-analyst',
         description: '分析球房运营数据。',
         source: 'projectSettings',
-        isActive: true,
       }],
-      allAgents: [],
     })
     const props = renderIndex()
 
@@ -390,9 +389,11 @@ describe('TaskIndex', () => {
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
 
     await waitFor(() => expect(mocks.listAgents).toHaveBeenCalledWith('/workspace/new-table'))
-    fireEvent.click(await screen.findByRole('button', { name: /\/agent venue-analyst/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /\/agent assistant-1/ }))
 
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/agent venue-analyst ')
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/agent assistant-1 ')
+    expect(screen.queryByText('分析球房运营数据。')).not.toBeInTheDocument()
+    expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
@@ -406,13 +407,10 @@ describe('TaskIndex', () => {
   it('keeps Agent discovery usable when Skill command discovery is unavailable', async () => {
     mocks.listSkillCommands.mockRejectedValue(new Error('Skill discovery unavailable'))
     mocks.listAgents.mockResolvedValue({
-      activeAgents: [{
-        agentType: 'venue-analyst',
-        description: '分析球房运营数据。',
-        source: 'projectSettings',
-        isActive: true,
+      agents: [{
+        displayName: 'assistant-1',
+        runtimeName: 'venue-analyst',
       }],
-      allAgents: [],
     })
     renderIndex()
 
@@ -420,7 +418,7 @@ describe('TaskIndex', () => {
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
 
-    expect(await screen.findByRole('button', { name: /\/agent venue-analyst/ })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /\/agent assistant-1/ })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

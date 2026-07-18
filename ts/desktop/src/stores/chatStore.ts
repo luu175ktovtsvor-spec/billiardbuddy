@@ -3009,20 +3009,29 @@ function extractLeadingFileReferences(text: string): {
 
 const BUILT_IN_GUIDE_RUNTIME_ID = 'claude-code-guide'
 const BUILT_IN_GUIDE_DISPLAY_ID = 'agent-guide'
+const GENERIC_AGENT_DISPLAY_ID = 'assistant'
 const WORKSPACE_REFERENCE_PROMPT_PREFIX = 'Referenced workspace context:'
 
-function productizeBuiltInAgentCommand(value: string): string {
-  const leadingCommandDisplay = value.replace(
-    /^([ \t]*\/agent[ \t]+)claude-code-guide(?=[ \t\n]|$)/,
-    `$1${BUILT_IN_GUIDE_DISPLAY_ID}`,
-  )
-  if (leadingCommandDisplay !== value) return leadingCommandDisplay
+function productizeAgentCommand(value: string): string {
+  const leadingCommand = value.match(/^([ \t]*\/agent[ \t]+)([^\s]+)(?=[ \t\n]|$)/)
+  if (leadingCommand?.[1] && leadingCommand[2]) {
+    const [, prefix, runtimeAgentType] = leadingCommand
+    const displayAgentType = getProductAgentDisplayId(runtimeAgentType)
+    if (displayAgentType === runtimeAgentType) return value
+    return `${prefix}${displayAgentType}${value.slice(prefix.length + runtimeAgentType.length)}`
+  }
   if (!value.startsWith(WORKSPACE_REFERENCE_PROMPT_PREFIX)) return value
 
   const runtimeCommand = findTrailingAgentCommand(value)
-  return runtimeCommand?.agentType === BUILT_IN_GUIDE_RUNTIME_ID
-    ? formatAgentCommand(BUILT_IN_GUIDE_DISPLAY_ID, runtimeCommand.prompt)
+  return runtimeCommand
+    ? formatAgentCommand(getProductAgentDisplayId(runtimeCommand.agentType), runtimeCommand.prompt)
     : value
+}
+
+function getProductAgentDisplayId(agentType: string): string {
+  if (agentType === BUILT_IN_GUIDE_RUNTIME_ID) return BUILT_IN_GUIDE_DISPLAY_ID
+  if (agentType === BUILT_IN_GUIDE_DISPLAY_ID || agentType === GENERIC_AGENT_DISPLAY_ID) return agentType
+  return GENERIC_AGENT_DISPLAY_ID
 }
 
 export function appendReplayedUserMessage(
@@ -3037,7 +3046,7 @@ export function appendReplayedUserMessage(
   const sanitized = stripGeneratedImageMetadataLines(content) || content.trim()
   const parsed = extractLeadingFileReferences(sanitized)
   const runtimeDisplayContent = parsed.content.trim() || sanitized
-  const displayContent = productizeBuiltInAgentCommand(runtimeDisplayContent)
+  const displayContent = productizeAgentCommand(runtimeDisplayContent)
   if (!displayContent) return messages
 
   const modelContent = parsed.modelContent ?? sanitized
@@ -3299,7 +3308,7 @@ export function mapHistoryMessagesToUiMessages(
     if (msg.type === 'user') {
       const commandRuntimeText = getCommandMetadataDisplayText(msg.content)
       if (commandRuntimeText) {
-        const commandDisplayText = productizeBuiltInAgentCommand(commandRuntimeText)
+        const commandDisplayText = productizeAgentCommand(commandRuntimeText)
         uiMessages.push({
           id: msg.id || nextId(),
           type: 'user_text',
@@ -3397,7 +3406,7 @@ export function mapHistoryMessagesToUiMessages(
         continue
       }
       const parsed = extractLeadingFileReferences(msg.content)
-      const displayContent = productizeBuiltInAgentCommand(parsed.content)
+      const displayContent = productizeAgentCommand(parsed.content)
       const modelContent = parsed.modelContent
         ?? (displayContent !== parsed.content ? msg.content : undefined)
       uiMessages.push({
@@ -3479,7 +3488,7 @@ export function mapHistoryMessagesToUiMessages(
         }
         const parsed = extractLeadingFileReferences(visibleText)
         const runtimeUserContent = visualSelectionDisplay ? '' : parsed.content
-        const userContent = productizeBuiltInAgentCommand(runtimeUserContent)
+        const userContent = productizeAgentCommand(runtimeUserContent)
         const modelContent = visualSelectionDisplay || modelText !== visibleText
           ? modelText
           : parsed.modelContent ?? (userContent !== runtimeUserContent ? modelText : undefined)

@@ -332,9 +332,9 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
 
     let cancelled = false
     agentsApi.list(resolvedWorkDir)
-      .then(({ activeAgents }) => {
+      .then(({ agents }) => {
         if (cancelled) return
-        setAgentSlashCommands(buildAgentSlashCommands(activeAgents))
+        setAgentSlashCommands(buildAgentSlashCommands(agents))
       })
       .catch(() => {
         if (!cancelled) setAgentSlashCommands([])

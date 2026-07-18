@@ -1,263 +1,57 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
-import { Settings } from '../pages/Settings'
-import { useAgentStore } from '../stores/agentStore'
-import { useSettingsStore } from '../stores/settingsStore'
-import { useSessionStore } from '../stores/sessionStore'
-import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
-import { useUIStore } from '../stores/uiStore'
+const mocks = vi.hoisted(() => ({
+  list: vi.fn(),
+}))
 
 vi.mock('../api/agents', () => ({
   agentsApi: {
-    list: vi.fn().mockResolvedValue({ activeAgents: [], allAgents: [] }),
+    list: mocks.list,
   },
 }))
 
-const noopFetch = vi.fn()
-
-const MOCK_AGENTS = [
-  {
-    agentType: 'code-reviewer',
-    description: 'Reviews code for quality and security',
-    model: 'claude-sonnet-4-6',
-    modelDisplay: 'claude-sonnet-4-6',
-    tools: ['Read', 'Grep', 'Glob'],
-    systemPrompt: '# Code Reviewer\n\nYou are an expert code reviewer.',
-    color: 'blue',
-    source: 'userSettings' as const,
-    baseDir: '~/.claude/agents',
-    isActive: true,
-  },
-  {
-    agentType: 'doc-writer',
-    description: 'Writes technical documentation',
-    model: 'claude-haiku-4-5',
-    modelDisplay: 'claude-haiku-4-5',
-    tools: ['Read'],
-    systemPrompt: 'You write clear and concise docs.',
-    color: 'green',
-    source: 'built-in' as const,
-    baseDir: 'built-in',
-    isActive: true,
-  },
-  {
-    agentType: 'plain-agent',
-    description: undefined,
-    model: undefined,
-    modelDisplay: 'inherit',
-    tools: undefined,
-    systemPrompt: undefined,
-    color: undefined,
-    source: 'projectSettings' as const,
-    baseDir: '/workspace/project/.claude/agents',
-    isActive: false,
-    overriddenBy: 'userSettings' as const,
-  },
-  {
-    agentType: 'telegram:pairing',
-    description: 'Plugin agent for Telegram pairing flows',
-    model: 'inherit',
-    modelDisplay: 'inherit',
-    tools: ['Read'],
-    systemPrompt: 'Pair Telegram access for the current workspace.',
-    color: 'cyan',
-    source: 'plugin' as const,
-    baseDir: '/Users/test/.claude/plugins/cache/telegram',
-    isActive: true,
-  },
-]
-
-function switchToAgentsTab() {
-  fireEvent.click(screen.getByText('Agents'))
-}
+import { Settings } from '../pages/Settings'
+import { useSettingsStore } from '../stores/settingsStore'
+import { useUIStore } from '../stores/uiStore'
 
 describe('Settings > Agents tab', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
-    useTabStore.setState({
-      activeTabId: 'session-1',
-      tabs: [{ sessionId: 'session-1', title: 'Test', type: 'session', status: 'idle' }],
-    })
     useUIStore.setState({ activeSettingsTab: 'agents', pendingSettingsTab: null })
-    useSessionStore.setState({
-      sessions: [
-        {
-          id: 'session-1',
-          title: 'Test Session',
-          createdAt: '',
-          modifiedAt: '',
-          messageCount: 0,
-          projectPath: '/workspace/project',
-          workDir: '/workspace/project',
-          workDirExists: true,
-        },
-      ],
-      activeSessionId: 'session-1',
-      isLoading: false,
-      error: null,
-      fetchSessions: noopFetch,
-      createSession: vi.fn(),
-      deleteSession: vi.fn(),
-      renameSession: vi.fn(),
-      updateSessionTitle: vi.fn(),
-      setActiveSession: vi.fn(),
-    })
-    useAgentStore.setState({
-      activeAgents: [],
-      allAgents: [],
-      isLoading: false,
-      error: null,
-      selectedAgent: null,
-      selectedAgentReturnTab: 'agents',
-      fetchAgents: noopFetch,
-      selectAgent: (agent) => useAgentStore.setState({ selectedAgent: agent }),
-    })
   })
 
-  it('renders the Agents tab button in sidebar', () => {
-    render(<Settings />)
-    expect(screen.getByText('Agents')).toBeInTheDocument()
-  })
-
-  it('shows loading spinner when fetching agents', () => {
-    useAgentStore.setState({ isLoading: true, allAgents: [], activeAgents: [], fetchAgents: noopFetch })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    const spinner = document.querySelector('.animate-spin')
-    expect(spinner).toBeInTheDocument()
-  })
-
-  it('uses the active session workDir even when settings tab is focused', async () => {
-    const fetchAgents = vi.fn()
-    useAgentStore.setState({
-      allAgents: [],
-      activeAgents: [],
-      isLoading: false,
-      fetchAgents,
-    })
-    useTabStore.setState({
-      activeTabId: SETTINGS_TAB_ID,
-      tabs: [{ sessionId: SETTINGS_TAB_ID, title: 'Settings', type: 'settings', status: 'idle' }],
+  it('keeps assistant settings as a generic usage guide without loading Agent definitions', () => {
+    mocks.list.mockResolvedValue({
+      agents: [{
+        displayName: 'assistant-1',
+        runtimeName: 'private-runtime-name',
+        description: 'PRIVATE_AGENT_DESCRIPTION',
+        source: 'projectSettings',
+        baseDir: '/private/project/.claude/agents',
+        tools: ['Read'],
+      }],
     })
 
     render(<Settings />)
-    switchToAgentsTab()
 
-    expect(fetchAgents).toHaveBeenCalledWith('/workspace/project')
+    expect(screen.getByText('Collaborative assistants')).toBeInTheDocument()
+    expect(screen.getByText('How to use it')).toBeInTheDocument()
+    expect(screen.getByText(/Type \/agent in the message box/)).toBeInTheDocument()
+    expect(mocks.list).not.toHaveBeenCalled()
+    expect(screen.queryByText('PRIVATE_AGENT_DESCRIPTION')).not.toBeInTheDocument()
+    expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
+    expect(screen.queryByText('/private/project/.claude/agents')).not.toBeInTheDocument()
+    expect(screen.queryByText('Read')).not.toBeInTheDocument()
   })
 
-  it('shows error state with retry button when API fails', () => {
-    useAgentStore.setState({ allAgents: [], activeAgents: [], isLoading: false, error: 'Network error', fetchAgents: noopFetch })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    expect(screen.getByText('Network error')).toBeInTheDocument()
-    expect(screen.getByText('Retry')).toBeInTheDocument()
-  })
-
-  it('renders grouped agent browser with source sections', () => {
-    useAgentStore.setState({
-      allAgents: MOCK_AGENTS,
-      activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
-      isLoading: false,
-      fetchAgents: noopFetch,
-    })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    expect(screen.getByText('Browse installed agents')).toBeInTheDocument()
-    expect(screen.getByText('Agent Browser')).toBeInTheDocument()
-    expect(screen.getAllByText('User').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Built-in').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Project').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Plugin').length).toBeGreaterThan(0)
-    expect(screen.getByText('code-reviewer')).toBeInTheDocument()
-    expect(screen.getByText('Writes technical documentation')).toBeInTheDocument()
-    expect(screen.getByText('telegram:pairing')).toBeInTheDocument()
-    expect(screen.getByText('Overridden by User')).toBeInTheDocument()
-  })
-
-  it('opens agent detail with a plain-language profile', () => {
-    useAgentStore.setState({
-      allAgents: MOCK_AGENTS,
-      activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
-      isLoading: false,
-      fetchAgents: noopFetch,
-    })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    fireEvent.click(screen.getByText('code-reviewer'))
-
-    expect(screen.getByText('Back to list')).toBeInTheDocument()
-    expect(screen.getByText('Agent Profile')).toBeInTheDocument()
-    expect(screen.getByText('Reviews code for quality and security')).toBeInTheDocument()
-    expect(screen.getByText('Read')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'code-reviewer' })).toBeInTheDocument()
-    expect(screen.queryByText('claude-sonnet-4-6')).not.toBeInTheDocument()
-  })
-
-  it('shows a plain description fallback without exposing prompt internals', () => {
-    useAgentStore.setState({
-      allAgents: MOCK_AGENTS,
-      activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
-      isLoading: false,
-      fetchAgents: noopFetch,
-    })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    fireEvent.click(screen.getByText('plain-agent'))
-
-    expect(screen.getByText('No description')).toBeInTheDocument()
-    expect(screen.getByText('shadowed by User')).toBeInTheDocument()
-    expect(screen.queryByText('No system prompt defined.')).not.toBeInTheDocument()
-  })
-
-  it('navigates back to list from detail view', () => {
-    useAgentStore.setState({
-      allAgents: MOCK_AGENTS,
-      activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
-      isLoading: false,
-      fetchAgents: noopFetch,
-    })
-    render(<Settings />)
-    switchToAgentsTab()
-
-    fireEvent.click(screen.getByText('code-reviewer'))
-    fireEvent.click(screen.getByText('Back to list'))
-
-    expect(screen.getByText('code-reviewer')).toBeInTheDocument()
-    expect(screen.getByText('doc-writer')).toBeInTheDocument()
-    expect(screen.getByText('plain-agent')).toBeInTheDocument()
-  })
-
-  it('returns to plugins tab when agent detail was opened from plugins', async () => {
-    useAgentStore.setState({
-      allAgents: MOCK_AGENTS,
-      activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
-      isLoading: false,
-      selectedAgent: MOCK_AGENTS[0],
-      selectedAgentReturnTab: 'plugins',
-      fetchAgents: noopFetch,
-      selectAgent: (agent) =>
-        useAgentStore.setState({
-          selectedAgent: agent,
-          selectedAgentReturnTab: agent ? 'plugins' : 'agents',
-        }),
-    })
+  it('uses the product label for the Simplified Chinese navigation item', () => {
+    useSettingsStore.setState({ locale: 'zh' })
 
     render(<Settings />)
-    switchToAgentsTab()
 
-    await act(async () => {
-      fireEvent.click(screen.getByText('Back to list'))
-      await Promise.resolve()
-    })
-
-    expect(screen.getByText('Installed Plugins')).toBeInTheDocument()
+    expect(screen.getAllByText('协作助手').length).toBeGreaterThan(0)
   })
 })
