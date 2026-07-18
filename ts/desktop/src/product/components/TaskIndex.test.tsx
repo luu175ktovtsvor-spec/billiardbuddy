@@ -122,6 +122,7 @@ describe('TaskIndex', () => {
     expect(project).toHaveTextContent('修复开球规则')
     expect(project).toHaveTextContent('工作目录：/workspace/billiard')
     expect(project).toHaveTextContent('工作树计划中')
+    expect(project).toHaveTextContent('未连接')
   })
 
   it('only presents actions enabled by the backend task record', () => {
@@ -152,7 +153,8 @@ describe('TaskIndex', () => {
       '# 任务：修复开球规则',
       '',
       '- 任务 ID：`task-1`',
-      '- 状态：进行中',
+      '- 任务生命周期：进行中',
+      '- 运行状态：未连接',
       '- 工作目录：`/workspace/billiard`',
       '- 工作树：独立工作树已启用',
       '- 类型：继续任务',
@@ -165,6 +167,29 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith(markdown))
     expect(markdown).not.toMatch(/https?:\/\//)
     expect(screen.getByRole('button', { name: '已复制 Markdown' })).toBeInTheDocument()
+  })
+
+  it('keeps the Agent run state separate from the task lifecycle and worktree', () => {
+    renderIndex(makeIndex(makeTask({ worktreeState: 'planned' })), {
+      runtimeStatesBySessionId: { 'session-1': 'awaiting_approval' },
+    })
+
+    const task = screen.getByTestId('product-task-task-1')
+    expect(task).toHaveTextContent('等待确认')
+    expect(task).toHaveTextContent('工作树计划中')
+    expect(screen.getByLabelText('运行状态：等待确认')).toBeInTheDocument()
+  })
+
+  it('does not let an archived task lifecycle hide a live Agent run state', () => {
+    renderIndex(makeIndex(makeTask({ lifecycle: 'archived', actions: ['restore'] })), {
+      runtimeStatesBySessionId: { 'session-1': 'running' },
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档任务' }))
+
+    const task = screen.getByTestId('product-task-task-1')
+    expect(task).toHaveTextContent('已归档')
+    expect(task).toHaveTextContent('运行中')
   })
 
   it('creates a task, opens its core session, and continues the selected task', async () => {
