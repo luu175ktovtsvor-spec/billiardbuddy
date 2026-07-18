@@ -7,27 +7,12 @@ describe('resolveSidecarInvocation', () => {
     expect(
       resolveSidecarInvocation(
         ['server', '--host', '127.0.0.1'],
-        '/tmp/billiardbuddy-sidecar',
         null,
       ),
     ).toEqual({
       mode: 'server',
       restArgs: ['--host', '127.0.0.1'],
       defaultAppRoot: null,
-    })
-  })
-
-  it('defaults billiardbuddy invocations to cli mode', () => {
-    expect(
-      resolveSidecarInvocation(
-        ['plugin', 'install', 'demo'],
-        '/Users/demo/.local/bin/billiardbuddy',
-        null,
-      ),
-    ).toEqual({
-      mode: 'cli',
-      restArgs: ['plugin', 'install', 'demo'],
-      defaultAppRoot: '/Users/demo/.local/bin',
     })
   })
 })

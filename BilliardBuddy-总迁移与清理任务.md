@@ -43,7 +43,7 @@ branch: dev
 | Codex 前端本地逆向参考 | `codex-frontend-reference/26.715.31925/`；`raw/webview` 4,909 个文件，`reverse-readable` 24 个可读文件 | 前端信息架构、任务生命周期、中文表达、组件职责和交互行为 | 不复制品牌、图标、账号体系、云端协议或混淆 bundle；不进入构建和安装包 |
 | 旧 BilliardBuddy 前端 | `main@2d6c88dc2639eca9fe5efbcb39136e1ef21991c1` 的 `ts/desktop/renderer-react/src`，共 128 个文件 | 用户认可的品牌、深浅主题、输入框感受、旧生图/视频工作台视觉和交互证据 | 不恢复为第二套 renderer，不搬回旧 Agent loop、旧 store 或旧接口 |
 | 旧产品能力快照 | `legacy/dev-before-cc-haha@1bcaafb594c99e042343f7e9a9d067a197ee35ca`；相关 Skill、知识、媒体和旧前端约 174 个文件 | 选择性核对旧 Skill、媒体工作台、品牌资产和业务能力是否遗漏 | 只迁移仍有产品价值的能力，不机械恢复旧流程、强制 RAG、旧权限、旧 API 或旧 Agent 架构 |
-| Coding Agent 内核参考 | `/Users/swl/Desktop/cc-haha-ref@d318b1b49213b9a0445f82681876003580e41263` | 核对 Agent 循环、工具、子代理、Skill、Plugin、MCP、Hook、权限、上下文、CLI 和会话机制 | 不使用其 renderer 或产品状态模型，不整树覆盖当前 `ts/`，不机械同步后续提交 |
+| Coding Agent 内核参考 | `/Users/swl/Desktop/cc-haha-ref@d318b1b49213b9a0445f82681876003580e41263` | 核对 Agent 循环、工具、子代理、Skill、Plugin、MCP、Hook、权限、上下文和会话机制 | 不使用其 renderer 或产品状态模型，不整树覆盖当前 `ts/`，不机械同步后续提交 |
 | 当前 Agent 与产品接线 | `ts/src`、`ts/shared`、`ts/desktop/electron`、`ts/desktop/src` | 识别当前生产者、传输、消费者、IPC、REST/WS 和桌面宿主的真实调用链 | 当前能跑不等于目标架构必须保留；过渡产品层允许重构和删除 |
 | 网关与服务器部署入口 | `gateway/*.ts`、`gateway/deploy.sh`、`relay/*.ts`、`relay/deploy.sh` | 模型、视觉、语音、容量、凭据、图片 relay 和部署事实 | 不根据旧报告猜服务器状态；部署或真机测试前重新读取代码并核验真实服务器 |
 | 当前媒体链 | `ts/desktop/src/components/media/`、`ts/src/server/services/mediaProjectService.ts`、`ts/src/tools/MediaWorkbenchTool/`、`relay/` | 生图/视频工作台、任务状态、素材、预览、导出与 Agent Tool 的现有证据 | 不因文件存在就宣称可用，不把媒体字节塞进 LLM 网关 |
@@ -104,8 +104,8 @@ Codex 前端真实信息架构、状态与交互
 - Agent 循环、工具执行、子代理、Task/后台任务、团队协作和 worktree。
 - 文件、命令、编辑、搜索、网页、Browser/Preview、Terminal 和 Computer Use 能力。
 - Skills、Plugins、MCP、Hooks、权限、Plan Mode、上下文管理和会话恢复。
-- CLI 和 GUI 两种运行方式。当前先完成桌面端，但 CLI/sidecar 能力不降级。
-- Electron 宿主安全边界、sidecar/CLI 启动、终端、Browser/Preview、Workspace/Diff 和 Computer Use 的真实能力。preload/IPC 和应用侧调用形状可以随新产品层重构。
+- 只交付 macOS 与 Windows 图形桌面应用；不提供外部 CLI 或 Linux 安装包。内部 sidecar 仅作为桌面 Agent 运行器保留。
+- Electron 宿主安全边界、sidecar 启动、终端、Browser/Preview、Workspace/Diff 和 Computer Use 的真实能力。preload/IPC 和应用侧调用形状可以随新产品层重构。
 - Provider Proxy、Anthropic/OpenAI/MCP 等上游通用协议、产品网关和 Agent 内核必须依赖的语义。现有 Server/ConversationService、REST/WS/SSE 的产品外壳可以拆分或重写。
 - Agent 自动发现项目指令的能力。`CLAUDE.md`、`.claude/rules`、`AGENTS.md` 和 `BilliardBuddy.md` 的兼容应在会话/启动边界处理，不破坏通用协议。
 
@@ -290,7 +290,7 @@ Skill 是 Agent 按需读取的业务经验、任务目标、风险边界和完�
 
 - 项目级说明只保留根 `README.md`、这份唯一总迁移指令和源码中真正需要的部署入口；不再维护重复的子目录 README、旧开发规范或多套架构说明。
 - 运行时 Skill 自带的 `SKILL.md`、按需 references、协议参考，以及真实分发依赖要求保留的 LICENSE/NOTICE，不属于旧项目文档，不能为了清目录误删。
-- 清理对象只限会误导开发方向的项目级旧文档、旧规范、旧质量门和外部开发脚本。产品自身的 Agent、子代理、Task/计划任务、工具、Skill、Plugin、MCP、Hook、提示机制、权限、上下文、CLI、协议参考及其有效测试，默认属于产品能力，不能因为名称中出现 Claude、Codex、Agent 或旧兼容字段就删除。
+- 清理对象只限会误导开发方向的项目级旧文档、旧规范、旧质量门和外部开发脚本。产品自身的 Agent、子代理、Task/计划任务、工具、Skill、Plugin、MCP、Hook、提示机制、权限、上下文、协议参考及其有效测试，默认属于产品能力，不能因为名称中出现 Claude、Codex、Agent 或旧兼容字段就删除。
 - Claude Code 和 Codex 本身也是 Agent 产品与能力参照。判断一个文件是否删除，必须先确认它是“开发过程规则”还是“产品运行能力”；存在真实运行消费者或承担 Agent 语义的内容先保留并接入目标架构，只有被新链路替代且确认无消费者后才能删除。
 - 不新建 Phase 2E/2F、开工报告、执行日志、质量门说明等成批中间文档。
 - 旧任务、阶段完成度、过期架构契约和会引导其他窗口改错位置的文档直接删除。

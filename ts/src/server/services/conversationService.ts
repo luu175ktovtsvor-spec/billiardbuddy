@@ -1376,16 +1376,14 @@ export class ConversationService {
     })
 
     if (!launcher) {
-      if (process.platform === 'win32') {
-        return [
-          process.execPath,
-          '--preload',
-          path.resolve(import.meta.dir, '../../../preload.ts'),
-          path.resolve(import.meta.dir, '../../entrypoints/cli.tsx'),
-          ...baseArgs,
-        ]
-      }
-      return [path.resolve(import.meta.dir, '../../../bin/billiardbuddy'), ...baseArgs]
+      return [
+        process.execPath,
+        '--no-env-file',
+        '--preload',
+        path.resolve(import.meta.dir, '../../../preload.ts'),
+        path.resolve(import.meta.dir, '../../entrypoints/cli.tsx'),
+        ...baseArgs,
+      ]
     }
 
     return buildClaudeCliArgs(launcher, baseArgs, process.env.CLAUDE_APP_ROOT)
@@ -1437,14 +1435,14 @@ export class ConversationService {
       )
     ) {
       return new ConversationStartupError(
-        'Desktop chat could not start because Claude CLI is not authenticated. Run `./bin/billiardbuddy /login` or provide valid API credentials, then retry.',
+        'Desktop chat could not start because the task engine is not authenticated. Configure an account or valid API credentials in Settings, then retry.',
         'CLI_AUTH_REQUIRED',
       )
     }
 
     if (/session id .*already in use/i.test(detail)) {
       return new ConversationStartupError(
-        `Session ${sessionId} is already in use by another CLI process or transcript.`,
+        `Session ${sessionId} is already in use by another active task or transcript.`,
         'CLI_SESSION_CONFLICT',
         true,
       )
@@ -1453,8 +1451,8 @@ export class ConversationService {
     const normalizedDetail = detail.trim()
     return new ConversationStartupError(
       normalizedDetail
-        ? `CLI exited during startup (code ${exitCode}): ${normalizedDetail}`
-        : `CLI exited during startup with code ${exitCode}; no CLI stderr/stdout or SDK error payload was captured before exit.`,
+        ? `Task engine exited during startup (code ${exitCode}): ${normalizedDetail}`
+        : `Task engine exited during startup with code ${exitCode}; no task engine stderr/stdout or SDK error payload was captured before exit.`,
       'CLI_START_FAILED',
       true,
     )
@@ -1480,8 +1478,8 @@ export class ConversationService {
       capturedOutput
 
     return detail
-      ? `CLI process exited unexpectedly (code ${exitCode}): ${detail}`
-      : `CLI process exited unexpectedly with code ${exitCode}; no CLI stderr/stdout or SDK error payload was captured before exit.`
+      ? `Task engine exited unexpectedly (code ${exitCode}): ${detail}`
+      : `Task engine exited unexpectedly with code ${exitCode}; no task engine stderr/stdout or SDK error payload was captured before exit.`
   }
 
   private buildCapturedProcessOutputDetail(

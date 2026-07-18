@@ -2071,7 +2071,7 @@ describe('WebSocket Chat Integration', () => {
           m.type === 'error' &&
           m.code === 'CLI_ERROR' &&
           typeof m.message === 'string' &&
-          m.message.includes('CLI process exited unexpectedly'),
+          m.message.includes('Task engine exited unexpectedly'),
       ),
     ).toBe(true)
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
@@ -2365,7 +2365,7 @@ describe('WebSocket Chat Integration', () => {
       code: 'CLI_START_FAILED',
     })
     expect(error?.message).toContain(
-      'CLI exited during startup (code 1): provider rejected request: invalid model id',
+      'Task engine exited during startup (code 1): provider rejected request: invalid model id',
     )
     expect(error?.message).toContain('Desktop service diagnostics:')
   }, 10_000)

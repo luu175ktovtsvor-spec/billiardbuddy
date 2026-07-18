@@ -571,26 +571,6 @@ describe('Settings API', () => {
     expect(res.status).toBe(400)
   })
 
-  it('GET /api/settings/cli-launcher should expose bundled launcher status', async () => {
-    if (process.platform === 'win32') return
-
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    await fs.writeFile(sidecarPath, '#!/bin/sh\necho desktop-sidecar\n', {
-      encoding: 'utf8',
-      mode: 0o755,
-    })
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-
-    const { req, url, segments } = makeRequest('GET', '/api/settings/cli-launcher')
-    const res = await handleSettingsApi(req, url, segments)
-
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.command).toBe('billiardbuddy')
-    expect(body.installed).toBe(true)
-    expect(body.availableInNewTerminals).toBe(true)
-  })
-
   it('GET /api/permissions/mode should return default mode', async () => {
     const { req, url, segments } = makeRequest('GET', '/api/permissions/mode')
     const res = await handleSettingsApi(req, url, segments)

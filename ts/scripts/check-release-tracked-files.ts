@@ -7,7 +7,6 @@ const repositoryRoot = path.resolve(root, '..')
 
 export const RELEASE_SOURCE_PATHS = [
   '.github/workflows/desktop-build-win.yml',
-  'ts/bin',
   'ts/desktop',
   'ts/shared',
   'ts/src',

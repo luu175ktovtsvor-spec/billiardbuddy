@@ -620,8 +620,8 @@ async function getSessionInspection(sessionId: string, url: URL): Promise<Respon
       response.usage = transcriptUsage
     }
     response.errors = {
-      ...(transcriptUsage ? {} : { usage: 'CLI session is not running' }),
-      ...(includeContext ? { context: 'CLI session is not running' } : {}),
+      ...(transcriptUsage ? {} : { usage: 'Task session is not running' }),
+      ...(includeContext ? { context: 'Task session is not running' } : {}),
     }
     return Response.json(response)
   }

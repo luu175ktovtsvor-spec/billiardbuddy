@@ -13,6 +13,7 @@ describe('release source tracking audit', () => {
     expect(RELEASE_SOURCE_PATHS).toContain('ts/desktop')
     expect(RELEASE_SOURCE_PATHS).toContain('ts/src')
     expect(RELEASE_SOURCE_PATHS).toContain('ts/bun.lock')
+    expect(RELEASE_SOURCE_PATHS).not.toContain('ts/bin')
   })
 
   test('parses git null-delimited output without losing spaces', () => {

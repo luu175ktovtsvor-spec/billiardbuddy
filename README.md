@@ -8,7 +8,7 @@ BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度
 
 | 路径 | 职责 |
 |---|---|
-| `ts/src` | Agent 内核、CLI、本地服务、工具与扩展机制 |
+| `ts/src` | Agent 内核、桌面本地服务、工具与扩展机制 |
 | `ts/desktop` | React renderer、Electron 桌面宿主和本地 sidecar 打包 |
 | `ts/shared` | 桌面与本地服务共享契约 |
 | `gateway` | 模型、视觉和 Fun-ASR 网关 |
@@ -19,20 +19,7 @@ BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度
 ```bash
 cd ts
 bun install
-bun run start
-```
-
-桌面 renderer：
-
-```bash
-cd ts/desktop
+cd desktop
 bun install
-bun run dev
-```
-
-Electron 桌面运行：
-
-```bash
-cd ts/desktop
 bun run electron:dev
 ```

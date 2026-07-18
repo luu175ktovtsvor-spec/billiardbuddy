@@ -12,7 +12,6 @@
 
 import { SettingsService } from '../services/settingsService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import { ensureDesktopCliLauncherInstalled } from '../services/desktopCliLauncherService.js'
 import { conversationService } from '../services/conversationService.js'
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
@@ -79,10 +78,6 @@ export async function handleSettingsApi(
 
       case 'output-style':
         return await handleOutputStyle(req)
-
-      case 'cli-launcher':
-        if (method !== 'GET') throw methodNotAllowed(method)
-        return Response.json(await ensureDesktopCliLauncherInstalled())
 
       default:
         throw ApiError.notFound(`Unknown settings endpoint: ${sub}`)

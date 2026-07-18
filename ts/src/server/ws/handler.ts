@@ -449,7 +449,7 @@ async function handleUserMessage(
     discardActiveTitleTurn(sessionId, titleTurnNumber)
     sendMessage(ws, {
       type: 'error',
-      message: 'CLI process is not running. The session may have ended or the process crashed.',
+      message: 'Task engine is not running. The session may have ended or the process crashed.',
       code: 'CLI_NOT_RUNNING',
     })
     sendMessage(ws, { type: 'status', state: 'idle' })

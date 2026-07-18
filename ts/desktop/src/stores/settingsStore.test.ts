@@ -78,7 +78,6 @@ describe('settingsStore update proxy persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -125,7 +124,6 @@ describe('settingsStore update proxy persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -181,7 +179,6 @@ describe('settingsStore network persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -231,7 +228,6 @@ describe('settingsStore network persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -289,7 +285,6 @@ describe('settingsStore network persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -349,7 +344,6 @@ describe('settingsStore network persistence', () => {
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -583,7 +577,6 @@ describe('settingsStore desktop notification persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -624,7 +617,6 @@ describe('settingsStore desktop notification persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -675,7 +667,6 @@ describe('settingsStore desktop notification persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -742,7 +733,6 @@ describe('settingsStore thinking persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -781,7 +771,6 @@ describe('settingsStore thinking persistence', () => {
         updateUser: vi.fn().mockRejectedValue(new Error('save failed')),
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -825,7 +814,6 @@ describe('settingsStore Auto-dream persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -870,7 +858,6 @@ describe('settingsStore Auto-dream persistence', () => {
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -930,7 +917,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -983,7 +969,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -1048,7 +1033,6 @@ describe('settingsStore theme persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -1095,7 +1079,6 @@ describe('settingsStore theme persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -1150,7 +1133,6 @@ describe('settingsStore H5 access behavior', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -1206,7 +1188,6 @@ describe('settingsStore H5 access behavior', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({
@@ -1265,7 +1246,6 @@ describe('settingsStore H5 access behavior', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-        getCliLauncherStatus: vi.fn(),
       },
     }))
     vi.doMock('../api/models', () => ({

@@ -354,6 +354,7 @@ export function buildCronCliArgs(
   const projectRoot = resolveCronProjectRoot(options)
   return [
     'bun',
+    '--no-env-file',
     '--preload',
     path.join(projectRoot, 'preload.ts'),
     path.join(projectRoot, 'src', 'entrypoints', 'cli.tsx'),

@@ -212,6 +212,26 @@ describe('cron scheduler launcher resolution', () => {
     ])
   })
 
+  it('disables dotenv loading when scheduled tasks use the source fallback', async () => {
+    const sourceRoot = path.join(tmpDir, 'source')
+    await createSourceRoot(sourceRoot)
+
+    expect(buildCronCliArgs(['--print'], {
+      cliPath: '',
+      execPath: path.join(tmpDir, 'bun'),
+      cwd: sourceRoot,
+      moduleDir: path.join(tmpDir, 'missing-module'),
+      env: {},
+    })).toEqual([
+      'bun',
+      '--no-env-file',
+      '--preload',
+      path.join(sourceRoot, 'preload.ts'),
+      path.join(sourceRoot, 'src', 'entrypoints', 'cli.tsx'),
+      '--print',
+    ])
+  })
+
   it('builds hidden CLI spawn options for scheduled task subprocesses', () => {
     const env = { CLAUDECODE: '1' }
 
