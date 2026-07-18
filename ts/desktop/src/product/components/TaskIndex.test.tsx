@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom'
 import { TaskIndex } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
   return {
@@ -58,7 +59,10 @@ function renderIndex(index = makeIndex()) {
   return props
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  useSettingsStore.setState({ permissionMode: 'default' })
+})
 
 describe('TaskIndex', () => {
   it('shows a task under its project with its real work directory and planned worktree state', () => {
@@ -103,5 +107,34 @@ describe('TaskIndex', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
     await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {}))
+  })
+
+  it('keeps the optional initial goal out of the product task fields', async () => {
+    const props = renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '整理球台配置' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '  请列出本周的训练安排  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+      title: '整理球台配置',
+    }, '请列出本周的训练安排'))
+  })
+
+  it('uses the configured default permission mode for the new core session', async () => {
+    useSettingsStore.setState({ permissionMode: 'plan' })
+    const props = renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+      permissionMode: 'plan',
+    }))
   })
 })

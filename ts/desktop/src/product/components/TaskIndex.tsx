@@ -7,6 +7,9 @@ import type {
   ProductTaskIndexResponse,
   ProductTaskRecord,
 } from '../domain/types'
+import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
+import type { PermissionMode } from '../../types/settings'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 export type TaskIndexProps = {
   index: ProductTaskIndexResponse
@@ -14,7 +17,7 @@ export type TaskIndexProps = {
   error: string | null
   mutations: Record<string, boolean | undefined>
   onRefresh: () => Promise<void>
-  onCreateTask: (input: CreateProductTaskInput) => Promise<unknown>
+  onCreateTask: (input: CreateProductTaskInput, initialText?: string) => Promise<unknown>
   onRenameTask: (taskId: string, title: string) => Promise<unknown>
   onPinTask: (taskId: string) => Promise<unknown>
   onUnpinTask: (taskId: string) => Promise<unknown>
@@ -111,9 +114,10 @@ export function TaskIndex({
           projects={index.projects}
           isSubmitting={mutations.create === true}
           onCancel={() => setComposerOpen(false)}
-          onSubmit={async (input) => {
+          onSubmit={async (input, initialText) => {
             try {
-              await onCreateTask(input)
+              if (initialText) await onCreateTask(input, initialText)
+              else await onCreateTask(input)
               setComposerOpen(false)
             } catch {
               // The product store exposes the server error in the index surface.
@@ -192,12 +196,15 @@ function TaskComposer({
   projects: ProductProject[]
   isSubmitting: boolean
   onCancel: () => void
-  onSubmit: (input: CreateProductTaskInput) => Promise<void>
+  onSubmit: (input: CreateProductTaskInput, initialText?: string) => Promise<void>
 }) {
   const [projectId, setProjectId] = useState('')
   const [workDir, setWorkDir] = useState('')
   const [title, setTitle] = useState('')
+  const [initialText, setInitialText] = useState('')
   const [useWorktree, setUseWorktree] = useState(false)
+  const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
 
   const selectProject = (nextProjectId: string) => {
     setProjectId(nextProjectId)
@@ -212,11 +219,16 @@ function TaskComposer({
         event.preventDefault()
         const normalizedWorkDir = workDir.trim()
         if (!normalizedWorkDir) return
-        void onSubmit({
+        const taskInput: CreateProductTaskInput = {
           workDir: normalizedWorkDir,
           ...(title.trim() ? { title: title.trim() } : {}),
           ...(useWorktree ? { useWorktree: true } : {}),
-        })
+          ...(permissionMode !== 'default' ? { permissionMode } : {}),
+        }
+        const normalizedInitialText = initialText.trim()
+        void (normalizedInitialText
+          ? onSubmit(taskInput, normalizedInitialText)
+          : onSubmit(taskInput))
       }}
     >
       {projects.length > 0 ? (
@@ -236,10 +248,30 @@ function TaskComposer({
         任务标题（可选）
         <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
       </label>
+      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
+        初始目标（可选）
+        <textarea
+          aria-label="初始目标（可选）"
+          value={initialText}
+          onChange={(event) => setInitialText(event.target.value)}
+          placeholder="描述这项任务希望完成什么…"
+          rows={3}
+          className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
+        />
+      </label>
       <label className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
         <input type="checkbox" checked={useWorktree} onChange={(event) => setUseWorktree(event.target.checked)} />
         在新工作树中开始
       </label>
+      <div className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
+        <span>执行权限</span>
+        <PermissionModeSelector
+          value={permissionMode}
+          onChange={setPermissionMode}
+          workDir={workDir || undefined}
+          menuPlacement="bottom"
+        />
+      </div>
       <div className="flex gap-2 md:col-span-2">
         <button type="submit" disabled={isSubmitting || !workDir.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在创建…' : '创建任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
