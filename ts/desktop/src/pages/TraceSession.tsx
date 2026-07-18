@@ -302,7 +302,7 @@ function TraceHeader({
             {summary.models.length > 0 ? (
               <MetaChip
                 label={t('trace.models')}
-                value={String(summary.models.length)}
+                value={summary.models.map((model) => `${model.model} x${model.calls}`).join(', ')}
               />
             ) : null}
           </div>

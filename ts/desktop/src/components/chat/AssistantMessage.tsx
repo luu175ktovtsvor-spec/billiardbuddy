@@ -67,13 +67,19 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
   const documentLayout = shouldUseDocumentLayout(content)
 
   return (
-    <div className="mb-4 flex justify-start">
+    <div className="mb-5 flex justify-start">
       <div
         data-message-shell="assistant"
         data-layout={documentLayout ? 'document' : 'bubble'}
-        className="group flex w-full min-w-0 flex-col items-start"
+        className={`group flex min-w-0 flex-col items-start ${
+          documentLayout
+            ? 'w-full max-w-full'
+            : 'max-w-[88%] sm:max-w-[80%] lg:max-w-[72%]'
+        }`}
       >
-        <div className="w-full max-w-full text-sm leading-relaxed text-[var(--color-text-primary)]">
+        <div className={`rounded-[20px] rounded-tl-[8px] border border-[var(--color-border)]/60 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-primary)] shadow-sm ${
+          documentLayout ? 'w-full' : 'max-w-full'
+        }`}>
           <MarkdownRenderer
             content={content}
             variant={documentLayout ? 'document' : 'default'}

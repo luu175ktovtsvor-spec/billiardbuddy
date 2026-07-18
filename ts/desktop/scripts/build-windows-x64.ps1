@@ -7,7 +7,7 @@ param(
 # Environment:
 #   SKIP_INSTALL=1        Skip root/desktop dependency installation.
 #   REBUILD_NATIVE=1      Rebuild Electron native dependencies before packaging.
-#   BB_MEDIA_TOOLCHAIN_SOURCE_DIR  Audited LGPL FFmpeg toolchain input directory.
+#   SKIP_PACKAGE_SMOKE=1  Skip static package-smoke verification after copying artifacts.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -110,18 +110,6 @@ if ($env:SKIP_INSTALL -ne '1') {
   }
 }
 
-Write-Step 'Staging audited media toolchain...'
-Push-Location $desktopDir
-try {
-  $env:BB_MEDIA_TOOLCHAIN_PLATFORM = 'win32'
-  & bun run stage:media-toolchain
-  if ($LASTEXITCODE -ne 0) {
-    throw "[build-windows-x64] stage:media-toolchain failed (exit $LASTEXITCODE)"
-  }
-} finally {
-  Pop-Location
-}
-
 Write-Step 'Cleaning stale Electron outputs...'
 Remove-Item -LiteralPath (Join-Path $desktopDir 'dist') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $desktopDir 'electron-dist') -Recurse -Force -ErrorAction SilentlyContinue
@@ -184,6 +172,8 @@ Get-ChildItem -Path $electronOutputDir -File -ErrorAction SilentlyContinue |
 $winUnpackedDir = Join-Path $electronOutputDir 'win-unpacked'
 if (Test-Path $winUnpackedDir) {
   Copy-Item -LiteralPath $winUnpackedDir -Destination (Join-Path $canonicalOutputDir 'win-unpacked') -Recurse -Force
+} else {
+  Write-Step "Warning: win-unpacked was not found under $electronOutputDir; package-smoke will fail if it is required."
 }
 
 Set-Content -Path (Join-Path $canonicalOutputDir 'BUILD_INFO.txt') -Value @"
@@ -192,6 +182,21 @@ Builder output: $electronOutputDir
 Canonical output: $canonicalOutputDir
 Built at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
 "@ -Encoding UTF8
+
+if ($env:SKIP_PACKAGE_SMOKE -eq '1') {
+  Write-Step 'Skipping package-smoke because SKIP_PACKAGE_SMOKE=1.'
+} else {
+  Write-Step 'Running package-smoke against canonical Windows artifacts...'
+  Push-Location $repoRoot
+  try {
+    & bun run test:package-smoke --platform windows --package-kind release --artifacts-dir desktop/build-artifacts/windows-x64
+    if ($LASTEXITCODE -ne 0) {
+      throw "[build-windows-x64] package-smoke failed (exit $LASTEXITCODE)"
+    }
+  } finally {
+    Pop-Location
+  }
+}
 
 Write-Step 'Build finished.'
 Write-Step "Canonical output: $canonicalOutputDir"

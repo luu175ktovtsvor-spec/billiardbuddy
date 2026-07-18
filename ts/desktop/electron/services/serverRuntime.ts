@@ -1,5 +1,4 @@
 import path from 'node:path'
-import { existsSync } from 'node:fs'
 import {
   createServerPlan,
   formatStartupError,
@@ -32,8 +31,6 @@ type ServerRuntimeOptions = {
   resolveGatewayConfig?: () => ProductGatewayConfig
   /** Per-install id injected into the SERVER sidecar only (X-QF-Client-ID upstream). */
   resolveInstallationId?: () => string
-  /** Electron-owned capability for paid/final media actions. Never inherited by Agent CLI processes. */
-  mediaUiCapability?: string
 }
 
 export class ElectronServerRuntime {
@@ -43,7 +40,6 @@ export class ElectronServerRuntime {
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private readonly resolveInstallationId?: () => string
-  private readonly mediaUiCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private startupError: string | null = null
@@ -56,7 +52,6 @@ export class ElectronServerRuntime {
     this.resolveSystemProxy = options.resolveSystemProxy
     this.resolveGatewayConfig = options.resolveGatewayConfig
     this.resolveInstallationId = options.resolveInstallationId
-    this.mediaUiCapability = options.mediaUiCapability
   }
 
   /**
@@ -66,24 +61,8 @@ export class ElectronServerRuntime {
    * always wins over the injected default.
    */
   private buildServerEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const withGateway = applyGatewayConfigToEnv({
-      ...baseEnv,
-      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-    }, this.resolveGatewayConfig?.())
-    const withInstallation = applyInstallationIdToEnv(withGateway, this.resolveInstallationId?.())
-    const withMediaCapability = this.mediaUiCapability
-      ? { ...withInstallation, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
-      : withInstallation
-    if (withMediaCapability.BB_MEDIA_BIN_DIR) return withMediaCapability
-
-    const mediaBinDir = path.join(this.desktopRoot, 'src-tauri', 'binaries')
-    const executableSuffix = process.platform === 'win32' ? '.exe' : ''
-    const hasMediaToolchain = ['ffmpeg', 'ffprobe'].every(name => (
-      existsSync(path.join(mediaBinDir, `${name}${executableSuffix}`))
-    ))
-    return hasMediaToolchain
-      ? { ...withMediaCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
-      : withMediaCapability
+    const withGateway = applyGatewayConfigToEnv(baseEnv, this.resolveGatewayConfig?.())
+    return applyInstallationIdToEnv(withGateway, this.resolveInstallationId?.())
   }
 
   async startServer(): Promise<string> {

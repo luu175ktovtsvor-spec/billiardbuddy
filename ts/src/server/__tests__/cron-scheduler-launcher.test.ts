@@ -234,18 +234,15 @@ describe('cron scheduler launcher resolution', () => {
       QF_GATEWAY_TOKEN: 'app-token-SECRET',
       QF_GATEWAY_URL: 'https://gateway.example',
       QF_GATEWAY_MODEL: 'qwen3-coder-plus',
-      BB_MEDIA_UI_CAPABILITY: 'media-ui-secret',
     }
     const opts = buildCronTaskSpawnOptions('/workspace/project', env)
     expect(opts.env.QF_GATEWAY_TOKEN).toBeUndefined()
     expect(opts.env.QF_GATEWAY_URL).toBeUndefined()
     expect(opts.env.QF_GATEWAY_MODEL).toBeUndefined()
-    expect(opts.env.BB_MEDIA_UI_CAPABILITY).toBeUndefined()
     // The local proxy base URL the CLI actually needs is preserved.
     expect(opts.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3456/proxy/providers/qf-gateway')
     // Caller's env object is not mutated.
     expect(env.QF_GATEWAY_TOKEN).toBe('app-token-SECRET')
-    expect(env.BB_MEDIA_UI_CAPABILITY).toBe('media-ui-secret')
   })
 
   it('prefers an explicit BB_ROOT when it points at a source checkout', async () => {

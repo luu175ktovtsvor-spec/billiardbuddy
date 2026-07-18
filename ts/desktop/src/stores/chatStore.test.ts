@@ -131,7 +131,6 @@ vi.mock('./cliTaskStore', () => ({
 import { sessionsApi } from '../api/sessions'
 import { useSettingsStore } from './settingsStore'
 import {
-  appendReplayedUserMessage,
   mapHistoryMessagesToUiMessages,
   reconstructAgentNotifications,
   stripGeneratedImageMetadataLines,
@@ -633,102 +632,6 @@ describe('chatStore history mapping', () => {
         id: 'transcript-user-1',
         type: 'user_text',
         content: '继续处理这个问题',
-      },
-    ])
-  })
-
-  it('shows the built-in guide alias while retaining runtime commands in restored history', () => {
-    const workspaceCommand = [
-      'Referenced workspace context:',
-      '@"src/App.tsx:L4":',
-      '```tsx',
-      'const value = 1',
-      '```',
-      '',
-      '/agent claude-code-guide explain this file',
-    ].join('\n')
-    const messages: MessageEntry[] = [
-      {
-        id: 'guide-string',
-        type: 'user',
-        timestamp: '2026-07-18T00:00:00.000Z',
-        content: '/agent claude-code-guide explain hooks',
-      },
-      {
-        id: 'guide-array',
-        type: 'user',
-        timestamp: '2026-07-18T00:00:01.000Z',
-        content: [{ type: 'text', text: '/agent claude-code-guide explain skills' }],
-      },
-      {
-        id: 'guide-with-workspace-context',
-        type: 'user',
-        timestamp: '2026-07-18T00:00:02.000Z',
-        content: workspaceCommand,
-      },
-    ]
-
-    expect(mapHistoryMessagesToUiMessages(messages)).toMatchObject([
-      {
-        id: 'guide-string',
-        content: '/agent agent-guide explain hooks',
-        modelContent: '/agent claude-code-guide explain hooks',
-      },
-      {
-        id: 'guide-array',
-        content: '/agent agent-guide explain skills',
-        modelContent: '/agent claude-code-guide explain skills',
-      },
-      {
-        id: 'guide-with-workspace-context',
-        content: '/agent agent-guide explain this file',
-        modelContent: workspaceCommand,
-      },
-    ])
-  })
-
-  it('does not rewrite a built-in Agent command shown only as a normal text example', () => {
-    const content = 'Example:\n/agent claude-code-guide explain hooks'
-
-    expect(mapHistoryMessagesToUiMessages([{
-      id: 'guide-example',
-      type: 'user',
-      timestamp: '2026-07-18T00:00:00.000Z',
-      content,
-    }])).toMatchObject([{
-      content,
-    }])
-  })
-
-  it('productizes built-in guide command metadata without changing its runtime value', () => {
-    const metadata = (prompt: string) => [
-      '<command-message>agent</command-message>',
-      '<command-name>/agent</command-name>',
-      `<command-args>claude-code-guide ${prompt}</command-args>`,
-    ].join('\n')
-    const messages: MessageEntry[] = [
-      {
-        id: 'guide-metadata-string',
-        type: 'user',
-        timestamp: '2026-07-18T00:00:00.000Z',
-        content: metadata('explain hooks'),
-      },
-      {
-        id: 'guide-metadata-array',
-        type: 'user',
-        timestamp: '2026-07-18T00:00:01.000Z',
-        content: [{ type: 'text', text: metadata('explain skills') }],
-      },
-    ]
-
-    expect(mapHistoryMessagesToUiMessages(messages)).toMatchObject([
-      {
-        content: '/agent agent-guide explain hooks',
-        modelContent: '/agent claude-code-guide explain hooks',
-      },
-      {
-        content: '/agent agent-guide explain skills',
-        modelContent: '/agent claude-code-guide explain skills',
       },
     ])
   })
@@ -1794,50 +1697,6 @@ describe('chatStore history mapping', () => {
         lineStart: 4,
         lineEnd: 4,
       }],
-    })
-  })
-
-  it('edits a queued built-in Agent prompt without duplicating or changing its runtime command', () => {
-    const workspacePrefix = 'Referenced workspace context:\n@"src/App.tsx:L4":\n```tsx\nconst value = 1\n```\n\n'
-    useChatStore.setState({
-      sessions: {
-        [TEST_SESSION_ID]: makeSession({ chatState: 'streaming' }),
-      },
-    })
-
-    const id = useChatStore.getState().queueUserMessage(TEST_SESSION_ID, {
-      content: `${workspacePrefix}/agent claude-code-guide old prompt`,
-      displayContent: '/agent agent-guide old prompt',
-    })
-
-    useChatStore.getState().updateQueuedUserMessage(
-      TEST_SESSION_ID,
-      id,
-      '/agent agent-guide new prompt',
-    )
-
-    const updated = useChatStore.getState().sessions[TEST_SESSION_ID]?.queuedUserMessages?.[0]
-    expect(updated).toMatchObject({
-      content: `${workspacePrefix}/agent claude-code-guide new prompt`,
-      displayContent: '/agent agent-guide new prompt',
-    })
-    expect(updated?.content.match(/\/agent/g)).toHaveLength(1)
-
-    useChatStore.setState((state) => ({
-      sessions: {
-        ...state.sessions,
-        [TEST_SESSION_ID]: {
-          ...state.sessions[TEST_SESSION_ID]!,
-          chatState: 'idle',
-        },
-      },
-    }))
-    useChatStore.getState().sendQueuedUserMessage(TEST_SESSION_ID, id)
-
-    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'user_message',
-      content: `${workspacePrefix}/agent claude-code-guide new prompt`,
-      attachments: undefined,
     })
   })
 
@@ -4462,40 +4321,6 @@ describe('chatStore history mapping', () => {
       { type: 'user_text', content: prompt },
       { type: 'thinking', content: 'I need to plan the implementation.' },
     ])
-  })
-
-  it('shows the built-in guide alias when the runtime replays a user command', () => {
-    const runtimeCommand = '/agent claude-code-guide explain hooks'
-
-    expect(appendReplayedUserMessage([], runtimeCommand, 1)).toMatchObject([
-      {
-        type: 'user_text',
-        content: '/agent agent-guide explain hooks',
-        modelContent: runtimeCommand,
-      },
-    ])
-  })
-
-  it('dedupes a built-in guide replay against its optimistic product alias', () => {
-    const runtimeCommand = '/agent claude-code-guide explain hooks'
-    const messages = appendReplayedUserMessage([
-      {
-        id: 'optimistic-guide',
-        type: 'user_text',
-        content: '/agent agent-guide explain hooks',
-        modelContent: runtimeCommand,
-        timestamp: 1,
-        optimisticQueued: true,
-      },
-    ], runtimeCommand, 2)
-
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toMatchObject({
-      id: 'optimistic-guide',
-      content: '/agent agent-guide explain hooks',
-      modelContent: runtimeCommand,
-    })
-    expect(messages[0]).not.toHaveProperty('optimisticQueued')
   })
 
   it('does not leak an image-bearing prompt when the replay appends [Image source] metadata (Windows path)', () => {

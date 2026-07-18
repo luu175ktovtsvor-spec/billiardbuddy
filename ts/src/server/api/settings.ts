@@ -20,10 +20,6 @@ import {
   type OutputStyleConfig,
 } from '../../constants/outputStyles.js'
 import { getCwd } from '../../utils/cwd.js'
-import {
-  readWebSearchSecretsSync,
-  updateWebSearchSecrets,
-} from '../../utils/settings/webSearchSecrets.js'
 
 const settingsService = new SettingsService()
 
@@ -66,7 +62,7 @@ export async function handleSettingsApi(
       case undefined:
         // GET /api/settings
         if (method !== 'GET') throw methodNotAllowed(method)
-        return Response.json(await publicSettings(await settingsService.getSettings()))
+        return Response.json(await settingsService.getSettings())
 
       case 'user':
         return await handleUserSettings(req)
@@ -96,12 +92,11 @@ export async function handleSettingsApi(
 
 async function handleUserSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
-    const settings = await settingsService.getUserSettings()
-    return Response.json(await migrateAndPublicizeUserSettings(settings))
+    return Response.json(await settingsService.getUserSettings())
   }
 
   if (req.method === 'PUT') {
-    const body = await extractWebSearchSecrets(await parseJsonBody(req))
+    const body = await parseJsonBody(req)
     await settingsService.updateUserSettings(body)
     syncThinkingSettingToActiveSessions(body)
     return Response.json({ ok: true })
@@ -114,7 +109,7 @@ async function handleProjectSettings(req: Request, url: URL): Promise<Response> 
   const projectRoot = url.searchParams.get('projectRoot') || undefined
 
   if (req.method === 'GET') {
-    return Response.json(await publicSettings(await settingsService.getProjectSettings(projectRoot)))
+    return Response.json(await settingsService.getProjectSettings(projectRoot))
   }
 
   if (req.method === 'PUT') {
@@ -124,56 +119,6 @@ async function handleProjectSettings(req: Request, url: URL): Promise<Response> 
   }
 
   throw methodNotAllowed(req.method)
-}
-
-async function extractWebSearchSecrets(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const raw = body.webSearch
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return body
-  const webSearch = { ...(raw as Record<string, unknown>) }
-  const updates: { tavilyApiKey?: string | null; braveApiKey?: string | null } = {}
-  for (const key of ['tavilyApiKey', 'braveApiKey'] as const) {
-    const value = webSearch[key]
-    if (value === null || (typeof value === 'string' && value.trim())) updates[key] = value as string | null
-    delete webSearch[key]
-    delete webSearch[key === 'tavilyApiKey' ? 'tavilyConfigured' : 'braveConfigured']
-  }
-  if (Object.keys(updates).length > 0) await updateWebSearchSecrets(updates)
-  return { ...body, webSearch }
-}
-
-async function migrateAndPublicizeUserSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const raw = settings.webSearch
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const record = raw as Record<string, unknown>
-    const hasLegacyKeys = typeof record.tavilyApiKey === 'string' || typeof record.braveApiKey === 'string'
-    if (hasLegacyKeys) {
-      const sanitized = await extractWebSearchSecrets(settings)
-      await settingsService.updateUserSettings({ webSearch: sanitized.webSearch })
-      return await publicSettings(sanitized)
-    }
-  }
-  return await publicSettings(settings)
-}
-
-async function publicSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const raw = settings.webSearch
-  const secrets = readWebSearchSecretsSync()
-  if ((!raw || typeof raw !== 'object' || Array.isArray(raw)) && !secrets.tavilyApiKey && !secrets.braveApiKey) {
-    return settings
-  }
-  const webSearch = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? { ...(raw as Record<string, unknown>) }
-    : {}
-  delete webSearch.tavilyApiKey
-  delete webSearch.braveApiKey
-  return {
-    ...settings,
-    webSearch: {
-      ...webSearch,
-      tavilyConfigured: Boolean(secrets.tavilyApiKey),
-      braveConfigured: Boolean(secrets.braveApiKey),
-    },
-  }
 }
 
 async function handleOutputStyles(req: Request, url: URL): Promise<Response> {

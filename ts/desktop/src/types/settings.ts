@@ -40,8 +40,6 @@ export type WebSearchSettings = {
   mode?: WebSearchMode
   tavilyApiKey?: string
   braveApiKey?: string
-  tavilyConfigured?: boolean
-  braveConfigured?: boolean
 }
 
 export type UpdateProxyMode = 'system' | 'manual'

@@ -82,7 +82,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
   it('clears an invalid token but preserves the remembered remote server URL', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
     clientMocks.postVerify.mockRejectedValueOnce(
       Object.assign(new Error('Invalid or missing H5 access token'), { status: 401 }),
     )
@@ -104,7 +104,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.localStorage.setItem(H5_TOKEN_STORAGE_KEY, 'remote-token')
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).resolves.toBe('http://[::1]:3456')
 
@@ -116,7 +116,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
   it('uses the current browser origin when the H5 shell is served by the desktop server', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).resolves.toBe(window.location.origin)
 
@@ -142,7 +142,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     }
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).resolves.toBe(serverUrl)
 
@@ -200,7 +200,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
         }))
       }
       return Promise.resolve(healthOkResponse())
-    }) as unknown as typeof fetch
+    }) as typeof fetch
 
     const startup = expect(initializeDesktopServerUrl()).resolves.toBe('http://127.0.0.1:3456')
     await vi.runAllTimersAsync()
@@ -225,7 +225,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
         status: 200,
         headers: { 'content-type': 'text/html' },
       }),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     const startup = expect(initializeDesktopServerUrl()).rejects.toThrow(
       'Server healthcheck failed: healthcheck returned non-JSON response from http://127.0.0.1:55189/health',
@@ -244,7 +244,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
         status: 200,
         headers: { 'content-type': 'text/html' },
       }),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     const startup = expect(initializeDesktopServerUrl()).rejects.toThrow(
       `Server healthcheck failed: healthcheck returned non-JSON response from ${window.location.origin}/health`,
@@ -263,7 +263,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
         status: 200,
         headers: { 'content-type': 'text/html' },
       }),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     const startup = expect(initializeDesktopServerUrl()).rejects.toThrow(
       `Server healthcheck failed: healthcheck returned non-JSON response from ${window.location.origin}/health`,
@@ -280,7 +280,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.history.pushState({}, '', '/')
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).resolves.toBe('http://127.0.0.1:55189')
 
@@ -302,7 +302,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.localStorage.setItem(H5_TOKEN_STORAGE_KEY, 'stale-h5-token')
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).resolves.toBe('http://127.0.0.1:55189')
 
@@ -316,7 +316,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
 
   it('normalizes unreachable remote browser startup into a recoverable H5 error', async () => {
     vi.useFakeTimers()
-    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) as unknown as typeof fetch
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) as typeof fetch
 
     const startup = expect(saveAndVerifyH5Connection('https://unreachable.example.com', 'h5_token')).rejects.toMatchObject({
       name: 'H5ConnectionRequiredError',
@@ -335,7 +335,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
   it('normalizes remote verify failures like disabled H5 or CORS into recoverable H5 errors', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
     clientMocks.postVerify.mockRejectedValueOnce(new TypeError('Failed to fetch'))
 
     await expect(saveAndVerifyH5Connection('https://public.example.com', 'h5_token')).rejects.toMatchObject({
@@ -354,7 +354,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.history.pushState({}, '', '/?serverUrl=http%3A%2F%2F192.168.0.102%3A28670')
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).rejects.toMatchObject({
       name: 'H5ConnectionRequiredError',
@@ -372,7 +372,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.history.pushState({}, '', '/?serverUrl=https%3A%2F%2Fpublic.example.com%2Fapp&h5Token=qr-token')
     globalThis.fetch = vi.fn().mockResolvedValue(
       healthOkResponse(),
-    ) as unknown as typeof fetch
+    ) as typeof fetch
     clientMocks.postVerify.mockResolvedValueOnce({ ok: true })
 
     await expect(initializeDesktopServerUrl()).resolves.toBe('https://public.example.com/app')
@@ -387,7 +387,7 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     window.history.pushState({}, '', '/?serverUrl=http%3A%2F%2F192.168.0.102%3A28670')
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(healthOkResponse())
-      .mockResolvedValueOnce(new Response(null, { status: 401 })) as unknown as typeof fetch
+      .mockResolvedValueOnce(new Response(null, { status: 401 })) as typeof fetch
 
     await expect(initializeDesktopServerUrl()).rejects.toMatchObject({
       name: 'H5ConnectionRequiredError',

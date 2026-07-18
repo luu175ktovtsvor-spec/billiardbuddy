@@ -46,11 +46,6 @@ type PreviewHostCaptureMessage = {
   kind: 'full' | 'viewport' | 'element'
 }
 
-type PreviewHostPickerMessage = {
-  v: 1
-  type: 'enter-picker' | 'exit-picker'
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -60,12 +55,6 @@ function isHostCaptureMessage(payload: unknown): payload is PreviewHostCaptureMe
     payload.v === 1 &&
     payload.type === 'capture' &&
     (payload.kind === 'full' || payload.kind === 'viewport' || payload.kind === 'element')
-}
-
-function isHostPickerMessage(payload: unknown): payload is PreviewHostPickerMessage {
-  return isPlainRecord(payload) &&
-    payload.v === 1 &&
-    (payload.type === 'enter-picker' || payload.type === 'exit-picker')
 }
 
 export function normalizePreviewUrl(input: string): string {
@@ -103,7 +92,6 @@ export class ElectronPreviewService {
   private view: PreviewViewLike | null = null
   private parent: PreviewParentWindowLike | null = null
   private zoomFactor = 1
-  private pickerArmed = false
 
   constructor(options: ElectronPreviewServiceOptions) {
     this.createView = options.createView
@@ -111,7 +99,6 @@ export class ElectronPreviewService {
   }
 
   async open(parent: PreviewParentWindowLike, url: string, bounds: PreviewBounds): Promise<void> {
-    this.pickerArmed = false
     const normalizedUrl = normalizePreviewUrl(url)
     const normalizedBounds = normalizePreviewBounds(bounds)
     const view = this.ensureView(parent)
@@ -120,7 +107,6 @@ export class ElectronPreviewService {
   }
 
   async navigate(url: string): Promise<void> {
-    this.pickerArmed = false
     const view = this.requireView()
     await view.webContents.loadURL(normalizePreviewUrl(url))
   }
@@ -139,7 +125,6 @@ export class ElectronPreviewService {
   }
 
   close(): void {
-    this.pickerArmed = false
     if (!this.view) return
     this.parent?.contentView.removeChildView(this.view)
     if (!this.view.webContents.isDestroyed?.()) {
@@ -155,19 +140,9 @@ export class ElectronPreviewService {
       return
     }
 
-    const webContents = this.requireView().webContents
-    const pickerMessage = isHostPickerMessage(payload) ? payload : null
-    if (pickerMessage?.type === 'enter-picker') this.pickerArmed = true
-    else if (pickerMessage?.type === 'exit-picker') this.pickerArmed = false
-
     const raw = JSON.stringify(payload)
     const script = `globalThis.__PREVIEW_BRIDGE__?.handleHostRaw(${JSON.stringify(raw)})`
-    try {
-      await webContents.executeJavaScript(script)
-    } catch (error) {
-      if (pickerMessage?.type === 'enter-picker') this.pickerArmed = false
-      throw error
-    }
+    await this.requireView().webContents.executeJavaScript(script)
   }
 
   async sendMessageToRenderer(sender: PreviewWebContentsLike, raw: unknown, renderer: PreviewWebContentsLike | null | undefined): Promise<void> {
@@ -175,14 +150,6 @@ export class ElectronPreviewService {
     if (typeof raw !== 'string') return
     const message = parsePreviewAgentMessage(raw)
     if (!message) return
-    if (message.type === 'selection') {
-      if (!this.pickerArmed) return
-      // Consume the authorization before awaiting capture so concurrent or
-      // page-forged duplicates cannot reuse the same user gesture.
-      this.pickerArmed = false
-    } else if (message.type === 'picker-exited' || message.type === 'navigated') {
-      this.pickerArmed = false
-    }
     const event = message.type === 'selection'
       ? await this.withNativeSelectionScreenshot(message)
       : message
@@ -194,7 +161,6 @@ export class ElectronPreviewService {
     const view = this.createView()
     parent.contentView.addChildView(view)
     view.webContents.on('did-finish-load', () => {
-      this.pickerArmed = false
       void this.injectPreviewAgent(view)
     })
     this.applyZoomFactor(view)

@@ -37,36 +37,5 @@ describe('Electron IPC capabilities', () => {
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.updateCheck, { proxy: 'http://127.0.0.1:7890' })).toBe(true)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.updateCheck, { proxy: '' })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.updateCheck, { proxy: 'http://127.0.0.1:7890', extra: true })).toBe(false)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
-      projectId: 'img_project01',
-      confirmUnknownRetry: true,
-    })).toBe(true)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
-      projectId: '../escape',
-      confirmUnknownRetry: false,
-    })).toBe(false)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
-      projectId: 'img_project01',
-      confirmUnknownRetry: false,
-      capability: 'must-not-cross-ipc',
-    })).toBe(false)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
-      projectId: 'vid_project01',
-      revision: 3,
-      outputPath: '/tmp/export.mp4',
-    })).toBe(true)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
-      projectId: 'vid_project01',
-      revision: -1,
-      outputPath: '/tmp/export.mp4',
-    })).toBe(false)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, {
-      projectId: 'img_project01',
-      input: { output_id: 'out_result001', output_path: '/tmp/final.png' },
-    })).toBe(true)
-    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, {
-      projectId: 'img_project01',
-      input: { output_id: '../escape', output_path: '/tmp/final.png' },
-    })).toBe(false)
   })
 })

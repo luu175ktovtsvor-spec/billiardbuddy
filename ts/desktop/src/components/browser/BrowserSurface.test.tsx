@@ -157,7 +157,7 @@ describe('BrowserSurface', () => {
     useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
     render(<BrowserSurface sessionId="s1" />)
     fireEvent.click(screen.getByLabelText('截图'))
-    expect(bridge.message).toHaveBeenCalledWith({ v: 1, type: 'capture', kind: 'viewport' })
+    expect(bridge.message).toHaveBeenCalledWith({ v: 1, type: 'capture', kind: 'full' })
   })
 
   it('places preview action buttons on the right side of the address toolbar', () => {

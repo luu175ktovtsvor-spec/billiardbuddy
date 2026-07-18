@@ -1,7 +1,6 @@
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { Input, Output, SearchResult } from './WebSearchTool.js'
-import { readWebSearchSecretsSync } from '../../utils/settings/webSearchSecrets.js'
 
 export type WebSearchMode =
   | 'auto'
@@ -28,8 +27,6 @@ type ExternalSearchHit = {
   url: string
 }
 
-type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
-
 const WEB_SEARCH_MODES = new Set<WebSearchMode>([
   'auto',
   'anthropic',
@@ -51,17 +48,17 @@ export function isLikelyClaudeModel(model: string | undefined): boolean {
 export function getConfiguredWebSearchSettings(
   settings: Pick<SettingsJson, 'webSearch'> = getSettings_DEPRECATED(),
 ): WebSearchSettings {
-  const raw = settings.webSearch && typeof settings.webSearch === 'object'
-    ? settings.webSearch
-    : {}
+  const raw = settings.webSearch
+  if (!raw || typeof raw !== 'object') {
+    return {}
+  }
 
   const modeCandidate = raw.mode ?? 'auto'
 
-  const secrets = readWebSearchSecretsSync()
   return {
     mode: WEB_SEARCH_MODES.has(modeCandidate) ? modeCandidate : 'auto',
-    tavilyApiKey: secrets.tavilyApiKey ?? normalizeApiKey(raw.tavilyApiKey),
-    braveApiKey: secrets.braveApiKey ?? normalizeApiKey(raw.braveApiKey),
+    tavilyApiKey: normalizeApiKey(raw.tavilyApiKey),
+    braveApiKey: normalizeApiKey(raw.braveApiKey),
   }
 }
 
@@ -134,13 +131,12 @@ export async function searchWithExternalProvider(
   input: Input,
   apiKey: string,
   signal: AbortSignal,
-  fetchImpl: FetchLike = fetch,
 ): Promise<Output> {
   const startTime = performance.now()
   const hits =
     provider === 'tavily'
-      ? await searchWithTavily(input, apiKey, signal, fetchImpl)
-      : await searchWithBrave(input, apiKey, signal, fetchImpl)
+      ? await searchWithTavily(input, apiKey, signal)
+      : await searchWithBrave(input, apiKey, signal)
   const durationSeconds = (performance.now() - startTime) / 1000
 
   return makeExternalSearchOutput(provider, input.query, hits, durationSeconds)
@@ -201,9 +197,8 @@ async function searchWithTavily(
   input: Input,
   apiKey: string,
   signal: AbortSignal,
-  fetchImpl: FetchLike,
 ): Promise<ExternalSearchHit[]> {
-  const response = await fetchImpl('https://api.tavily.com/search', {
+  const response = await fetch('https://api.tavily.com/search', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -214,8 +209,8 @@ async function searchWithTavily(
       max_results: 8,
       search_depth: 'basic',
       include_answer: false,
-      include_domains: normalizeDomains(input.allowed_domains),
-      exclude_domains: normalizeDomains(input.blocked_domains),
+      include_domains: input.allowed_domains,
+      exclude_domains: input.blocked_domains,
     }),
     signal,
   })
@@ -237,13 +232,12 @@ async function searchWithBrave(
   input: Input,
   apiKey: string,
   signal: AbortSignal,
-  fetchImpl: FetchLike,
 ): Promise<ExternalSearchHit[]> {
   const url = new URL('https://api.search.brave.com/res/v1/web/search')
   url.searchParams.set('q', applyDomainFiltersToQuery(input))
   url.searchParams.set('count', '8')
 
-  const response = await fetchImpl(url, {
+  const response = await fetch(url, {
     headers: {
       Accept: 'application/json',
       'X-Subscription-Token': apiKey,
@@ -265,8 +259,8 @@ async function searchWithBrave(
 }
 
 function applyDomainFiltersToQuery(input: Input): string {
-  const allowed = normalizeDomains(input.allowed_domains) ?? []
-  const blocked = normalizeDomains(input.blocked_domains) ?? []
+  const allowed = input.allowed_domains?.filter(Boolean) ?? []
+  const blocked = input.blocked_domains?.filter(Boolean) ?? []
   const allowedClause = allowed.length
     ? `(${allowed.map(domain => `site:${domain}`).join(' OR ')}) `
     : ''
@@ -281,27 +275,8 @@ function normalizeHit(title: unknown, url: unknown): ExternalSearchHit | null {
   if (typeof title !== 'string' || typeof url !== 'string') {
     return null
   }
-  const normalizedTitle = title.trim()
-  if (!normalizedTitle) return null
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
-    return { title: normalizedTitle, url: parsed.toString() }
-  } catch {
-    return null
-  }
-}
 
-function normalizeDomains(values: string[] | undefined): string[] | undefined {
-  if (!values) return undefined
-  const domains = values.flatMap(value => {
-    const trimmed = value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '')
-    if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(trimmed)) {
-      return []
-    }
-    return [trimmed]
-  })
-  return [...new Set(domains)].slice(0, 32)
+  return { title, url }
 }
 
 function makeExternalSearchOutput(

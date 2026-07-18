@@ -1,6 +1,5 @@
 import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
@@ -15,16 +14,12 @@ import {
 import { installApplicationMenu } from './services/menu'
 import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
-import {
-  requireProductGatewayConfig,
-  resolveProductGatewayConfig,
-} from './services/productConfig'
+import { resolveProductGatewayConfig } from './services/productConfig'
 import { ensureInstallationId } from './services/installationId'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
-import { ElectronMediaActions } from './services/mediaActions'
 import {
   applyDefaultConfigDir,
   applyStartupPortableMode,
@@ -54,18 +49,16 @@ import {
   MIN_WINDOW_WIDTH,
 } from './services/windows'
 
-// Own the product identity before anything resolves app.getPath('userData').
-// This keeps BilliardBuddy state isolated from any other installed coding agent.
+// Own the product identity before anything resolves app.getPath('userData'):
+// this pins userData under "BilliardBuddy" in both dev and packaged builds, so the
+// app never inherits an installed CC-Haha's userData / product state.
 app.setName('BilliardBuddy')
-
-const mediaUiCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
-let mediaActions: ElectronMediaActions | null = null
 const traceWindows = new Map<string, BrowserWindow>()
 let isQuitting = false
 let trayController: TrayController | null = null
@@ -159,29 +152,18 @@ function getServerRuntime() {
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
     // Packaged product gateway config for the server sidecar (env override wins).
     // The app token reaches only the server env here — the CLI subprocess is stripped.
-    resolveGatewayConfig: () => requireProductGatewayConfig(
-      resolveProductGatewayConfig({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        devBuildDir: path.join(unpackedRoot(), 'build'),
-        env: process.env,
-      }),
-    ),
+    resolveGatewayConfig: () => resolveProductGatewayConfig({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      devBuildDir: path.join(unpackedRoot(), 'build'),
+      env: process.env,
+    }),
     // Per-install id persisted in the product data root (active CLAUDE_CONFIG_DIR).
     // Injected into the SERVER sidecar only → attached as X-QF-Client-ID upstream; the CLI
     // subprocess, adapters, renderer and providers.json never see it.
     resolveInstallationId: () => ensureInstallationId(process.env.CLAUDE_CONFIG_DIR || app.getPath('userData')),
-    mediaUiCapability,
   })
   return serverRuntime
-}
-
-function getMediaActions() {
-  mediaActions ??= new ElectronMediaActions({
-    getServerUrl: () => getServerRuntime().getServerUrl(),
-    capability: mediaUiCapability,
-  })
-  return mediaActions
 }
 
 function getUpdaterService() {
@@ -308,31 +290,6 @@ function registerIpcHandlers() {
     openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaSubmitImage, (_event, payload) => {
-    const input = payload as { projectId: string, confirmUnknownRetry: boolean }
-    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, (_event, payload) => {
-    const update = payload as {
-      projectId: string
-      input: Parameters<ElectronMediaActions['updateUnknownImageProject']>[1]
-    }
-    return getMediaActions().updateUnknownImageProject(update.projectId, update.input)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, (_event, payload) => {
-    const request = payload as {
-      projectId: string
-      input: Parameters<ElectronMediaActions['saveImageOutput']>[1]
-    }
-    return getMediaActions().saveImageOutput(request.projectId, request.input)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaRenderVideo, (_event, payload) => {
-    const input = payload as { projectId: string, revision: number, outputPath: string }
-    return getMediaActions().renderVideo(input.projectId, {
-      revision: input.revision,
-      output_path: input.outputPath,
-    })
-  })
   registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
     getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.updateDownload, () => getUpdaterService().downloadUpdate(event => {
@@ -466,7 +423,7 @@ app.whenReady().then(async () => {
   applyWindowsAppUserModelId(app)
   applyStartupPortableMode(app)
   // After portable/ops override is resolved, default the kernel config dir to
-  // BilliardBuddy's own data root keeps the sidecar isolated from other products.
+  // BilliardBuddy's own data root so the sidecar never reads shared CC-Haha state.
   applyDefaultConfigDir(app)
   await getServerRuntime().startServer().catch(error => {
     console.error('[desktop] failed to start Electron server sidecar', error)

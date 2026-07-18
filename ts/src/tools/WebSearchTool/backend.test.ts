@@ -3,7 +3,6 @@ import {
   isLikelyClaudeModel,
   isWebSearchEnabledForModel,
   resolveWebSearchProvider,
-  searchWithExternalProvider,
   shouldFallbackFromNativeError,
 } from './backend.js'
 
@@ -78,57 +77,5 @@ describe('WebSearch backend resolver', () => {
     expect(shouldFallbackFromNativeError(new Error('network timeout'))).toBe(
       false,
     )
-  })
-
-  test('Tavily sends bounded filters and drops unsafe result URLs', async () => {
-    let captured: { url: string; init?: RequestInit } | null = null
-    const output = await searchWithExternalProvider(
-      'tavily',
-      {
-        query: '台球赛事',
-        allowed_domains: ['Example.com', 'bad.example OR site:evil.test'],
-      },
-      'tvly-secret',
-      new AbortController().signal,
-      async (input, init) => {
-        captured = { url: String(input), init }
-        return Response.json({
-          results: [
-            { title: '  正常结果  ', url: 'https://example.com/a' },
-            { title: '危险结果', url: 'javascript:alert(1)' },
-          ],
-        })
-      },
-    )
-    expect(captured?.url).toBe('https://api.tavily.com/search')
-    expect((captured?.init?.headers as Record<string, string>).Authorization).toBe('Bearer tvly-secret')
-    expect(JSON.parse(String(captured?.init?.body))).toMatchObject({ include_domains: ['example.com'] })
-    expect(output.results[1]).toMatchObject({ content: [{ title: '正常结果', url: 'https://example.com/a' }] })
-  })
-
-  test('Brave encodes normalized allow/block filters and surfaces bounded errors', async () => {
-    const calls: string[] = []
-    const signal = new AbortController().signal
-    const output = await searchWithExternalProvider(
-      'brave',
-      { query: '球房经营', blocked_domains: ['spam.example', 'spam.example', 'bad path'] },
-      'brave-secret',
-      signal,
-      async (input, init) => {
-        calls.push(String(input))
-        expect((init?.headers as Record<string, string>)['X-Subscription-Token']).toBe('brave-secret')
-        return Response.json({ web: { results: [{ title: '经营建议', url: 'https://guide.example/post' }] } })
-      },
-    )
-    expect(calls[0]).toContain('q=-site%3Aspam.example+%E7%90%83%E6%88%BF%E7%BB%8F%E8%90%A5')
-    expect(output.results[1]).toMatchObject({ content: [{ title: '经营建议' }] })
-
-    await expect(searchWithExternalProvider(
-      'brave',
-      { query: '失败' },
-      'brave-secret',
-      signal,
-      async () => new Response('x'.repeat(800), { status: 503 }),
-    )).rejects.toThrow(/^Brave search failed: 503 x{500}$/)
   })
 })

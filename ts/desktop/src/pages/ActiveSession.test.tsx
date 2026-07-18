@@ -229,7 +229,7 @@ describe('ActiveSession task polling', () => {
     expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
   })
 
-  it('keeps token totals out of the ordinary session surface', () => {
+  it('shows the session token badge when usage is cache-only', () => {
     const sessionId = 'cache-only-token-session'
 
     useSessionStore.setState({
@@ -282,8 +282,8 @@ describe('ActiveSession task polling', () => {
 
     render(<ActiveSession />)
 
-    expect(screen.queryByTitle(/1,500/)).not.toBeInTheDocument()
-    expect(screen.queryByText('1.5k')).not.toBeInTheDocument()
+    const tokenBadge = screen.getByTitle(/1,500/)
+    expect(tokenBadge).toHaveTextContent('1.5k')
   })
 
   it('shows a loading state for historical sessions while messages are loading', () => {

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Clock, FileText, Folder, Globe2, Sparkles } from 'lucide-react'
 import { ApiError } from '../api/client'
 import { agentsApi } from '../api/agents'
 import { skillsApi } from '../api/skills'
@@ -14,14 +13,15 @@ import { useUIStore } from '../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { RepositoryLaunchControls } from '../components/shared/RepositoryLaunchControls'
 import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
+import { ModelSelector, type ModelSelectorHandle } from '../components/controls/ModelSelector'
 import { AttachmentGallery } from '../components/chat/AttachmentGallery'
 import { ComposerDropOverlay } from '../components/chat/ComposerDropOverlay'
-import { VoiceInputControl } from '../components/chat/VoiceInputControl'
-import { Smiley } from '../components/shared/Smiley'
+import { ContextUsageIndicator } from '../components/chat/ContextUsageIndicator'
 import { FileSearchMenu, type FileSearchMenuHandle } from '../components/chat/FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from '../components/chat/LocalSlashCommandPanel'
 import { useMobileViewport } from '../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
+import { publicAssetPath } from '../lib/publicAsset'
 import { resolveActiveProviderRuntimeSelection } from '../lib/runtimeSelection'
 import {
   filesToComposerAttachments,
@@ -39,7 +39,6 @@ import {
   insertSlashTrigger,
   mergeSlashCommands,
   replaceSlashCommand,
-  resolveSlashCommandRuntimeValue,
   resolveSlashUiAction,
 } from '../components/chat/composerUtils'
 import type { AttachmentRef } from '../types/chat'
@@ -49,23 +48,6 @@ import type { SlashCommandOption } from '../components/chat/composerUtils'
 type Attachment = ComposerAttachment
 
 type Translate = ReturnType<typeof useTranslation>
-
-const EMPTY_SUGGESTIONS = {
-  zh: [
-    { icon: Folder, label: '整理一个文件夹', prompt: '帮我整理一个文件夹。先问我要整理哪个文件夹，看完里面有什么后给我归类方案，我确认了再动手。' },
-    { icon: FileText, label: '写一份文档', prompt: '帮我写一份文档。先问清楚主题、给谁看和大概多长，然后列个提纲给我确认。' },
-    { icon: Globe2, label: '上网查个东西', prompt: '帮我上网查一个问题，把结论用大白话讲给我，并附上来源链接。先问我要查什么。' },
-    { icon: Clock, label: '安排定时任务', prompt: '帮我安排一个定时自动执行的任务。先问我要做什么、多久一次和什么时间执行。' },
-    { icon: Sparkles, label: '做一张图', prompt: '帮我生成一张图片。先问我想要的内容、风格和用途。' },
-  ],
-  en: [
-    { icon: Folder, label: 'Organize a folder', prompt: 'Help me organize a folder. Ask which folder, review it, and propose a plan before changing anything.' },
-    { icon: FileText, label: 'Write a document', prompt: 'Help me write a document. Ask about the topic, audience, and length, then propose an outline first.' },
-    { icon: Globe2, label: 'Research something', prompt: 'Research a question for me, explain the conclusion plainly, and include source links. Ask what I need researched.' },
-    { icon: Clock, label: 'Schedule a task', prompt: 'Help me schedule an automatic task. Ask what it should do, how often, and when it should run.' },
-    { icon: Sparkles, label: 'Create an image', prompt: 'Help me create an image. Ask about the content, style, and intended use first.' },
-  ],
-} as const
 
 function getApiErrorCode(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null
@@ -125,6 +107,7 @@ export function EmptySession() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const modelSelectorRef = useRef<ModelSelectorHandle>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
   const fileSearchRef = useRef<FileSearchMenuHandle>(null)
@@ -135,7 +118,6 @@ export function EmptySession() {
   const setActiveView = useUIStore((state) => state.setActiveView)
   const addToast = useUIStore((state) => state.addToast)
   const currentModel = useSettingsStore((state) => state.currentModel)
-  const locale = useSettingsStore((state) => state.locale)
   const activeProviderName = useSettingsStore((state) => state.activeProviderName)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
@@ -143,6 +125,11 @@ export function EmptySession() {
   const activeProviderId = useProviderStore((state) => state.activeId)
   const [draftPermissionMode, setDraftPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
   const lastPluginReloadSummary = usePluginStore((state) => state.lastReloadSummary)
+  const draftRuntimeSelection = useSessionRuntimeStore((state) => state.selections[DRAFT_RUNTIME_SELECTION_KEY])
+  const draftRuntimeSelectionKey = draftRuntimeSelection
+    ? `${draftRuntimeSelection.providerId ?? 'official'}:${draftRuntimeSelection.modelId}:${draftRuntimeSelection.effortLevel ?? 'auto'}`
+    : undefined
+  const draftModelLabel = draftRuntimeSelection?.modelId ?? currentModel?.name ?? currentModel?.id
   const isMobileComposer = useMobileViewport() && !isDesktopRuntime()
 
   useEffect(() => {
@@ -322,8 +309,8 @@ export function EmptySession() {
       return
     }
 
-    if (slashUiAction?.type === 'product-managed') {
-      addToast({ type: 'info', message: t('chat.runtimeManaged') })
+    if (slashUiAction?.type === 'model') {
+      modelSelectorRef.current?.open()
       setInput('')
       setSlashMenuOpen(false)
       setFileSearchOpen(false)
@@ -333,7 +320,6 @@ export function EmptySession() {
 
     setIsSubmitting(true)
     try {
-      const runtimeText = resolveSlashCommandRuntimeValue(text, agentSlashCommands)
       const runtimeStore = useSessionRuntimeStore.getState()
       const explicitDraftSelection = runtimeStore.selections[DRAFT_RUNTIME_SELECTION_KEY]
       const defaultActiveProviderSelection = explicitDraftSelection
@@ -370,8 +356,8 @@ export function EmptySession() {
         data: attachment.data,
         mimeType: attachment.mimeType,
       }))
-      if (runtimeText || attachmentPayload.length > 0) {
-        sendMessage(sessionId, runtimeText, attachmentPayload, { displayContent: text })
+      if (text || attachmentPayload.length > 0) {
+        sendMessage(sessionId, text, attachmentPayload)
       }
       setInput('')
       setAttachments([])
@@ -519,13 +505,6 @@ export function EmptySession() {
     if (!hasImage) return
   }
 
-  const appendVoiceTranscript = useCallback((transcript: string) => {
-    const nextText = transcript.trim()
-    if (!nextText) return
-    setInput((current) => `${current}${current.length > 0 && !/\s$/.test(current) ? ' ' : ''}${nextText}`)
-    window.requestAnimationFrame(() => textareaRef.current?.focus())
-  }, [])
-
   const appendFiles = useCallback((files: FileList | File[]) => {
     void filesToComposerAttachments(files)
       .then((nextAttachments) => {
@@ -610,42 +589,34 @@ export function EmptySession() {
   }
 
   return (
-    <div className="relative flex flex-1 flex-col overflow-hidden bg-[var(--color-app-main)]">
+    <div className="relative flex flex-1 flex-col overflow-hidden bg-[var(--color-surface)]">
       <div className={`flex flex-1 flex-col items-center justify-center ${
-        isMobileComposer ? 'px-6 pb-[250px] pt-10' : 'px-8 pb-[210px] pt-8'
+        isMobileComposer ? 'px-6 pb-[230px] pt-10' : 'p-8 pb-32'
       }`}>
         <div className={`flex flex-col items-center text-center ${
-          isMobileComposer ? 'max-w-[300px]' : 'w-full max-w-3xl'
+          isMobileComposer ? 'max-w-[300px]' : 'max-w-md'
         }`}>
-          <Smiley size={isMobileComposer ? 32 : 40} className="mb-1" />
+          <img
+            src={publicAssetPath('app-icon.png')}
+            alt="BilliardBuddy"
+            className={isMobileComposer ? 'mb-4 h-16 w-16' : 'mb-6 h-24 w-24'}
+          />
           <h1
-            className={`font-normal text-[var(--color-text-primary)] ${isMobileComposer ? 'text-[22px]' : 'text-[28px]'}`}
+            className={`mb-2 font-extrabold tracking-tight text-[var(--color-text-primary)] ${
+              isMobileComposer ? 'text-2xl' : 'text-3xl'
+            }`}
+            style={{ fontFamily: 'var(--font-headline)' }}
           >
             {t('empty.title')}
           </h1>
-          {!isMobileComposer && (
-            <div className="mt-6 flex w-full max-w-[560px] flex-col py-2 pl-6 text-left" data-testid="empty-suggestion-list">
-              {(locale === 'zh' ? EMPTY_SUGGESTIONS.zh : EMPTY_SUGGESTIONS.en).map((suggestion) => {
-                const SuggestionIcon = suggestion.icon
-                return (
-                  <button
-                    key={suggestion.label}
-                    type="button"
-                    onClick={() => {
-                      setInput(suggestion.prompt)
-                      requestAnimationFrame(() => textareaRef.current?.focus())
-                    }}
-                    className="flex min-h-10 w-full items-center rounded-lg pr-1 text-left text-[14px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] active:scale-[0.99]"
-                  >
-                    <span className="mr-2 flex size-4 shrink-0 items-center justify-center text-[var(--color-text-tertiary)]">
-                      <SuggestionIcon size={14} />
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{suggestion.label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          <p
+            className={`mx-auto text-[var(--color-text-secondary)] ${
+              isMobileComposer ? 'max-w-[280px] text-sm leading-6' : 'max-w-xs'
+            }`}
+            style={{ fontFamily: 'var(--font-body)' }}
+          >
+            {t('empty.subtitle')}
+          </p>
         </div>
       </div>
 
@@ -654,14 +625,16 @@ export function EmptySession() {
         className={`absolute left-0 right-0 z-30 flex justify-center ${
         isMobileComposer
           ? 'bottom-0 px-3 pb-[calc(env(safe-area-inset-bottom)+10px)]'
-          : 'bottom-4 px-4'
+          : 'bottom-4 px-8'
       }`}
       >
-        <div className={`flex w-full flex-col ${isMobileComposer ? 'max-w-none' : 'max-w-[768px]'}`}>
+        <div className={`flex w-full flex-col ${isMobileComposer ? 'max-w-none' : 'max-w-3xl'}`}>
           <div
             ref={panelRef}
             data-testid="empty-session-composer-panel"
-            className={`main-composer-surface relative flex flex-col overflow-visible ${isDragActive ? 'composer-drop-target-active' : ''}`}
+            className={`glass-panel relative flex flex-col gap-3 overflow-visible ${
+              isMobileComposer ? 'rounded-2xl p-3 shadow-[0_-12px_36px_rgba(54,35,28,0.12)]' : 'rounded-xl p-0'
+            } ${isDragActive ? 'composer-drop-target-active' : ''}`}
             {...dragHandlers}
           >
             {isDragActive && (
@@ -672,7 +645,7 @@ export function EmptySession() {
               />
             )}
 
-            <div className="contents">
+            <div className={isMobileComposer ? 'contents' : 'flex flex-col gap-3 p-4'}>
               {fileSearchOpen && (
                 <FileSearchMenu
                   ref={fileSearchRef}
@@ -765,9 +738,7 @@ export function EmptySession() {
               )}
 
               {attachments.length > 0 && (
-                <div className="px-3 pt-3">
-                  <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
-                </div>
+                <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
               )}
 
               <div className="flex items-start gap-3">
@@ -777,8 +748,8 @@ export function EmptySession() {
                   onChange={(event) => handleInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
-                  className={`flex-1 resize-none border-none bg-transparent px-3 leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
-                    isMobileComposer ? 'max-h-[132px] min-h-[72px] pb-1 pt-3 text-base' : 'min-h-[64px] pb-1 pt-3 text-sm'
+                  className={`flex-1 resize-none border-none bg-transparent leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
+                    isMobileComposer ? 'max-h-[132px] min-h-[72px] py-1.5 text-base' : 'py-2'
                   }`}
                   style={{ fontFamily: 'var(--font-body)' }}
                   placeholder={t('empty.placeholder')}
@@ -786,7 +757,7 @@ export function EmptySession() {
                 />
               </div>
 
-              <div className={`mb-2 min-h-8 px-2 ${
+              <div className={`border-t border-[var(--color-border-separator)] pt-3 ${
                 isMobileComposer ? 'flex flex-wrap items-center gap-2' : 'flex items-center justify-between'
               }`}>
                 <div className="flex shrink-0 items-center gap-2">
@@ -794,8 +765,8 @@ export function EmptySession() {
                     <button
                       onClick={() => setPlusMenuOpen((prev) => !prev)}
                       aria-label="Open composer tools"
-                      className={`inline-flex items-center justify-center rounded-full text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${
-                        isMobileComposer ? 'h-11 w-11' : 'h-8 w-8'
+                      className={`text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${
+                        isMobileComposer ? 'inline-flex h-11 w-11 items-center justify-center rounded-xl' : 'rounded-lg p-1.5'
                       }`}
                     >
                       <span className="material-symbols-outlined text-[18px]">add</span>
@@ -832,29 +803,47 @@ export function EmptySession() {
                 </div>
 
                 <div className={`${isMobileComposer ? 'flex min-w-0 flex-1 items-center justify-end gap-2' : 'flex items-center gap-3'}`}>
-                  <VoiceInputControl
-                    onTranscript={appendVoiceTranscript}
-                    disabled={isSubmitting}
-                    className={isMobileComposer ? 'h-11 w-11' : ''}
+                  <ContextUsageIndicator
+                    chatState="idle"
+                    messageCount={0}
+                    runtimeSelectionKey={draftRuntimeSelectionKey}
+                    fallbackModelLabel={draftModelLabel}
+                    draft
+                    compact={isMobileComposer}
                   />
+                  <ModelSelector ref={modelSelectorRef} runtimeKey={DRAFT_RUNTIME_SELECTION_KEY} disabled={isSubmitting} compact={isMobileComposer} />
                   <button
                     onClick={handleSubmit}
                     disabled={!canSubmit}
                     aria-label={t('common.run')}
-                    title={t('common.run')}
-                    className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-[var(--color-on-primary)] transition-opacity hover:opacity-90 disabled:opacity-30 ${
-                      isMobileComposer ? 'h-11 w-11' : 'h-8 w-8'
+                    title={isMobileComposer ? t('common.run') : undefined}
+                    className={`flex shrink-0 items-center justify-center gap-1 rounded-lg bg-[image:var(--gradient-btn-primary)] text-xs font-semibold text-[var(--color-btn-primary-fg)] shadow-[var(--shadow-button-primary)] transition-all hover:brightness-105 disabled:opacity-30 ${
+                      isMobileComposer ? 'h-11 w-11 rounded-xl px-0 py-0' : 'w-[112px] px-3 py-1.5'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-[17px]">arrow_upward</span>
+                    {!isMobileComposer && t('common.run')}
+                    <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
                   </button>
                 </div>
               </div>
             </div>
 
+            {!isMobileComposer && (
+              <RepositoryLaunchControls
+                workDir={workDir}
+                onWorkDirChange={handleWorkDirChange}
+                branch={selectedBranch}
+                onBranchChange={setSelectedBranch}
+                useWorktree={useWorktree}
+                onUseWorktreeChange={setUseWorktree}
+                onLaunchReadyChange={setRepositoryLaunchReady}
+                disabled={isSubmitting}
+                placement="composer"
+              />
+            )}
           </div>
 
-          <div className="mt-2 px-1">
+          {isMobileComposer && (
             <RepositoryLaunchControls
               workDir={workDir}
               onWorkDirChange={handleWorkDirChange}
@@ -865,7 +854,7 @@ export function EmptySession() {
               onLaunchReadyChange={setRepositoryLaunchReady}
               disabled={isSubmitting}
             />
-          </div>
+          )}
         </div>
       </div>
 

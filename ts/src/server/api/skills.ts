@@ -15,8 +15,6 @@ import { getCwd } from '../../utils/cwd.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache, loadAllPlugins, loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
-import { initBundledSkills } from '../../skills/bundled/index.js'
-import { getBundledSkillDescriptors } from '../../skills/bundledSkills.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
@@ -27,7 +25,7 @@ type SkillMeta = {
   name: string
   displayName?: string
   description: string
-  source: 'user' | 'project' | 'plugin' | 'bundled'
+  source: 'user' | 'project' | 'plugin'
   userInvocable: boolean
   version?: string
   contentLength: number
@@ -400,19 +398,7 @@ async function collectAllSkills(cwd?: string): Promise<SkillMeta[]> {
     collectPluginSkills(),
   ])
 
-  initBundledSkills()
-  const bundledSkills: SkillMeta[] = getBundledSkillDescriptors()
-    .filter(skill => skill.enabled)
-    .map(skill => ({
-      name: skill.name,
-      ...(skill.displayName ? { displayName: skill.displayName } : {}),
-      description: skill.description,
-      source: 'bundled',
-      userInvocable: skill.userInvocable,
-      contentLength: skill.content.length,
-      hasDirectory: true,
-    }))
-  const skills = [...bundledSkills, ...userSkills, ...projectSkills, ...pluginSkills]
+  const skills = [...userSkills, ...projectSkills, ...pluginSkills]
   skills.sort((a, b) => a.name.localeCompare(b.name))
   return skills
 }
@@ -489,46 +475,6 @@ async function getSkillDetail(url: URL): Promise<Response> {
   // Prevent path traversal
   if (name.includes('..') || name.includes('/') || name.includes('\\')) {
     throw ApiError.badRequest('Invalid skill name')
-  }
-
-  if (source === 'bundled') {
-    initBundledSkills()
-    const skill = getBundledSkillDescriptors().find(candidate => (
-      candidate.enabled && candidate.name === name
-    ))
-    if (!skill) throw ApiError.notFound(`Skill not found: ${name}`)
-
-    const frontmatter: Record<string, unknown> = {
-      description: skill.description,
-      'user-invocable': skill.userInvocable,
-    }
-    if (skill.allowedTools.length) frontmatter['allowed-tools'] = skill.allowedTools
-    if (skill.whenToUse) frontmatter['when-to-use'] = skill.whenToUse
-
-    const meta: SkillMeta = {
-      name: skill.name,
-      ...(skill.displayName ? { displayName: skill.displayName } : {}),
-      description: skill.description,
-      source: 'bundled',
-      userInvocable: skill.userInvocable,
-      contentLength: skill.content.length,
-      hasDirectory: true,
-    }
-    return Response.json({
-      detail: {
-        meta,
-        tree: [{ name: 'SKILL.md', path: 'SKILL.md', type: 'file' }],
-        files: [{
-          path: 'SKILL.md',
-          content: skill.content,
-          body: skill.content,
-          frontmatter,
-          language: 'markdown',
-          isEntry: true,
-        }],
-        skillRoot: 'bundled',
-      },
-    })
   }
 
   if (source !== 'user' && source !== 'project' && source !== 'plugin') {

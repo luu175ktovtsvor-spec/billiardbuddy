@@ -145,7 +145,7 @@ describe('Settings > Agents tab', () => {
       activeTabId: 'session-1',
       tabs: [{ sessionId: 'session-1', title: 'Test', type: 'session', status: 'idle' }],
     })
-    useUIStore.setState({ activeSettingsTab: 'agents', pendingSettingsTab: null })
+    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: null })
     useSessionStore.setState({
       sessions: [
         {
@@ -255,7 +255,7 @@ describe('Settings > Agents tab', () => {
     expect(screen.getByText('Overridden by User')).toBeInTheDocument()
   })
 
-  it('opens agent detail with a plain-language profile', () => {
+  it('opens agent detail with metadata cards and document prompt', () => {
     useAgentStore.setState({
       allAgents: MOCK_AGENTS,
       activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
@@ -269,13 +269,15 @@ describe('Settings > Agents tab', () => {
 
     expect(screen.getByText('Back to list')).toBeInTheDocument()
     expect(screen.getByText('Agent Profile')).toBeInTheDocument()
-    expect(screen.getByText('Reviews code for quality and security')).toBeInTheDocument()
+    expect(screen.getAllByText('claude-sonnet-4-6')[0]).toBeInTheDocument()
     expect(screen.getByText('Read')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'code-reviewer' })).toBeInTheDocument()
-    expect(screen.queryByText('claude-sonnet-4-6')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Code Reviewer' })).toBeInTheDocument()
+
+    const rendererRoot = screen.getByRole('heading', { name: 'Code Reviewer' }).closest('div[class*="prose"]')
+    expect(rendererRoot?.className).toContain('max-w-[72ch]')
   })
 
-  it('shows a plain description fallback without exposing prompt internals', () => {
+  it('shows no system prompt state when agent has no prompt', () => {
     useAgentStore.setState({
       allAgents: MOCK_AGENTS,
       activeAgents: MOCK_AGENTS.filter((agent) => agent.isActive),
@@ -287,9 +289,8 @@ describe('Settings > Agents tab', () => {
 
     fireEvent.click(screen.getByText('plain-agent'))
 
-    expect(screen.getByText('No description')).toBeInTheDocument()
+    expect(screen.getByText('No system prompt defined.')).toBeInTheDocument()
     expect(screen.getByText('shadowed by User')).toBeInTheDocument()
-    expect(screen.queryByText('No system prompt defined.')).not.toBeInTheDocument()
   })
 
   it('navigates back to list from detail view', () => {
@@ -340,7 +341,6 @@ describe('Settings > Agents tab', () => {
 describe('Settings > Skills tab', () => {
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
-    useUIStore.setState({ activeSettingsTab: 'skills', pendingSettingsTab: null })
     useSkillStore.setState({
       skills: [],
       selectedSkill: null,

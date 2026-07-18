@@ -18,6 +18,7 @@ type TraceListState =
 const POLL_MS = 5_000
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE_MS = 250
+const MAX_MODEL_CHIPS = 2
 
 
 export function TraceList() {
@@ -297,6 +298,8 @@ function TraceRow({
   const title = getTraceTitle(trace, t)
   const updatedAt = trace.summary.updatedAt ?? trace.fileUpdatedAt
   const failedCalls = trace.summary.failedCalls
+  const visibleModels = trace.summary.models.slice(0, MAX_MODEL_CHIPS)
+  const hiddenModels = trace.summary.models.length - visibleModels.length
   const totalTokens = trace.summary.totalInputTokens + trace.summary.totalOutputTokens
 
   const open = () => openTrace(trace.sessionId, title, t)
@@ -321,13 +324,20 @@ function TraceRow({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-[var(--color-text-primary)]">{title}</span>
-            {trace.summary.models.length > 0 ? (
+            {visibleModels.map((model) => (
               <span
+                key={model.model}
+                title={`${model.model} x${model.calls}`}
                 className="shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-brand)]/10 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-[var(--color-brand)]"
               >
-                {t('trace.models')} {trace.summary.models.length}
+                {shortModelName(model.model)}
               </span>
-            ) : null}
+            ))}
+            {hiddenModels > 0 && (
+              <span className="shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-surface-container-high)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-[var(--color-text-tertiary)]">
+                +{hiddenModels}
+              </span>
+            )}
             {failedCalls > 0 && (
               <span title={t('trace.failedCalls')} className="flex shrink-0 items-center gap-1">
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)]" aria-hidden="true" />
@@ -470,6 +480,12 @@ function getTraceTitle(trace: TraceSessionListItem, t: ReturnType<typeof useTran
 function openTraceSettings(t: ReturnType<typeof useTranslation>) {
   useUIStore.getState().setPendingSettingsTab('general')
   useTabStore.getState().openTab(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
+}
+
+/** `claude-sonnet-4-5-20250929` -> `sonnet-4-5`; non-Claude ids pass through. */
+function shortModelName(model: string): string {
+  const short = model.replace(/^claude-/i, '').replace(/-\d{8}$/, '')
+  return short || model
 }
 
 /** Compact count: 847 -> "847", 1234 -> "1.2k", 2345678 -> "2.3m". */

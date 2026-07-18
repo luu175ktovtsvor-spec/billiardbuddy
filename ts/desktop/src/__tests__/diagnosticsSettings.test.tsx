@@ -24,6 +24,38 @@ vi.mock('../api/diagnostics', () => ({
 
 vi.mock('../lib/doctorRepair', () => doctorRepairMock)
 
+vi.mock('../stores/providerStore', () => ({
+  useProviderStore: () => ({
+    providers: [],
+    activeId: null,
+    hasLoadedProviders: true,
+    presets: [],
+    isLoading: false,
+    isPresetsLoading: false,
+    fetchProviders: vi.fn(),
+    fetchPresets: vi.fn(),
+    deleteProvider: vi.fn(),
+    activateProvider: vi.fn(),
+    activateOfficial: vi.fn(),
+    testProvider: vi.fn(),
+    createProvider: vi.fn(),
+    updateProvider: vi.fn(),
+    testConfig: vi.fn(),
+  }),
+}))
+
+vi.mock('../api/providers', () => ({
+  providersApi: {
+    getSettings: vi.fn().mockResolvedValue({}),
+    updateSettings: vi.fn().mockResolvedValue({}),
+  },
+}))
+
+vi.mock('../components/settings/ClaudeOfficialLogin', () => ({
+  ClaudeOfficialLogin: () => <div />,
+}))
+
+
 vi.mock('../stores/agentStore', () => ({
   useAgentStore: () => ({
     activeAgents: [],
@@ -105,11 +137,13 @@ describe('Settings > Diagnostics tab', () => {
     })
 
     useSettingsStore.setState({ locale: 'en' })
-    useUIStore.setState({ activeSettingsTab: 'diagnostics', pendingSettingsTab: null, toasts: [] })
+    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: null, toasts: [] })
   })
 
   it('shows diagnostics status, actions, and recent events', async () => {
     render(<Settings />)
+
+    fireEvent.click(screen.getByText('Diagnostics'))
 
     expect(await screen.findByText('Log directory')).toBeInTheDocument()
     expect(screen.getByText('/tmp/claude/billiardbuddy/diagnostics')).toBeInTheDocument()
@@ -123,6 +157,7 @@ describe('Settings > Diagnostics tab', () => {
   it('exports a diagnostics bundle from the settings page', async () => {
     render(<Settings />)
 
+    fireEvent.click(screen.getByText('Diagnostics'))
     fireEvent.click(await screen.findByRole('button', { name: /Export Bundle/i }))
 
     await waitFor(() => {
@@ -139,6 +174,7 @@ describe('Settings > Diagnostics tab', () => {
     try {
       render(<Settings />)
 
+      fireEvent.click(screen.getByText('Diagnostics'))
       fireEvent.click(await screen.findByRole('button', { name: /Clear Logs/i }))
 
       const dialog = await screen.findByRole('dialog', { name: 'Clear Logs' })
@@ -179,6 +215,7 @@ describe('Settings > Diagnostics tab', () => {
     try {
       render(<Settings />)
 
+      fireEvent.click(screen.getByText('Diagnostics'))
       fireEvent.click(await screen.findByRole('button', { name: /Copy Error Summary/i }))
 
       await waitFor(() => {
@@ -206,6 +243,7 @@ describe('Settings > Diagnostics tab', () => {
 
     render(<Settings />)
 
+    fireEvent.click(screen.getByText('Diagnostics'))
     fireEvent.click(await screen.findByRole('button', { name: /Run Doctor/i }))
 
     await waitFor(() => {

@@ -73,23 +73,6 @@ describe('ContextUsageIndicator request behavior', () => {
     })
   })
 
-  it('keeps provider model identifiers out of the ordinary context UI', async () => {
-    sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
-
-    render(
-      <ContextUsageIndicator
-        sessionId="session-1"
-        chatState="idle"
-        messageCount={1}
-        fallbackModelLabel="fallback-model-id"
-      />,
-    )
-
-    expect(await screen.findByLabelText('Context usage 21%')).toBeInTheDocument()
-    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
-    expect(screen.queryByText('fallback-model-id')).not.toBeInTheDocument()
-  })
-
   it('does not auto-fetch context while the document is hidden', async () => {
     sessionsApiMock.getInspection.mockResolvedValue(baseInspection)
     Object.defineProperty(document, 'visibilityState', {

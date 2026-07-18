@@ -108,8 +108,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
   }
 
   return (
-    <div className={`overflow-visible ${
-      compact ? 'mb-0' : 'mb-1'
+    <div className={`overflow-hidden rounded-lg border border-[var(--color-border)]/50 bg-[var(--color-surface-container-lowest)] ${
+      compact ? 'mb-0' : 'mb-2'
     }`}>
       <button
         type="button"
@@ -118,18 +118,18 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
             setExpanded((value) => !value)
           }
         }}
-        className="flex min-h-8 w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)]/50"
       >
         <span className="material-symbols-outlined text-[14px] text-[var(--color-outline)]">{icon}</span>
-        <span className="text-[13px] font-medium text-[var(--color-text-secondary)]">
+        <span className="text-[11px] font-semibold text-[var(--color-text-secondary)]">
           {toolName}
         </span>
         {filePath ? (
-          <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-text-tertiary)]">
+          <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--color-text-tertiary)]">
             {filePath.split('/').pop()}
           </span>
         ) : summary ? (
-          <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[12px] text-[var(--color-text-tertiary)]">
+          <span className="min-w-0 flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--color-text-tertiary)]">
             {summary}
           </span>
         ) : (
@@ -182,7 +182,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({ toolName, input, resu
       </button>
 
       {expandable && expanded && (
-        <div className="ml-6 mt-0.5 space-y-2.5 overflow-hidden rounded-lg bg-[var(--color-surface-container-low)] px-3 py-3">
+        <div className="space-y-2.5 border-t border-[var(--color-border)]/60 px-3 py-3">
           {preview}
           {details}
         </div>

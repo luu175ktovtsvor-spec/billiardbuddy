@@ -72,7 +72,7 @@ export function BackgroundTasksBar({
     <>
       {runningCount > 0 || visibleFinishedCount > 0 ? (
         <div className={['shrink-0', compact ? 'px-4' : 'px-8'].join(' ')}>
-          <div className={compact ? 'w-full py-2' : 'mx-auto w-full max-w-[768px] py-2'}>
+          <div className={compact ? 'w-full py-2' : 'mx-auto w-full max-w-[860px] py-2'}>
             <button
               type="button"
               data-testid="background-tasks-button"

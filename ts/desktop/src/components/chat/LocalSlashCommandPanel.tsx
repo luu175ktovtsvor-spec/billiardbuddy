@@ -234,6 +234,23 @@ function UsageTab({
   const totalOutputTokens = useContextUsageFallback ? apiUsage.output_tokens : usage.totalOutputTokens
   const totalCacheReadInputTokens = useContextUsageFallback ? apiUsage.cache_read_input_tokens : usage.totalCacheReadInputTokens
   const totalCacheCreationInputTokens = useContextUsageFallback ? apiUsage.cache_creation_input_tokens : usage.totalCacheCreationInputTokens
+  const models = Array.isArray(usage.models) && usage.models.length > 0
+    ? usage.models
+    : useContextUsageFallback
+      ? [{
+          model: context?.model ?? 'current-model',
+          displayName: context?.model ?? t('slash.inspector.status.activeModel'),
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          cacheReadInputTokens: totalCacheReadInputTokens,
+          cacheCreationInputTokens: totalCacheCreationInputTokens,
+          webSearchRequests: 0,
+          costUSD: 0,
+          costDisplay: 'n/a',
+          contextWindow: context?.rawMaxTokens ?? 0,
+          maxOutputTokens: 0,
+        }]
+      : []
   const sourceLabel = useContextUsageFallback
     ? t('slash.inspector.usage.source.contextSnapshot')
     : usage.source === 'transcript'
@@ -271,6 +288,44 @@ function UsageTab({
         <MetricCard label={t('slash.inspector.usage.cacheReadWrite')} value={`${formatNumber(totalCacheReadInputTokens)} / ${formatNumber(totalCacheCreationInputTokens)}`} />
         <MetricCard label={t('slash.inspector.usage.webSearch')} value={formatNumber(usage.totalWebSearchRequests)} />
       </div>
+      <section>
+        <div className="mb-3 text-[22px] font-semibold text-[var(--color-inspector-text)]">{t('slash.inspector.usage.byModel')}</div>
+        {models.length === 0 ? (
+          <EmptyState title={t('slash.inspector.usage.noModelTitle')} body={t('slash.inspector.usage.noModelBody')} />
+        ) : (
+          <div className="overflow-hidden rounded-md border border-[var(--color-inspector-border)] bg-[var(--color-inspector-surface)] font-mono">
+            {models.map((model) => (
+              <div key={model.model} className="border-t border-[var(--color-inspector-border)] first:border-t-0">
+                <div className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-4 border-b border-[var(--color-inspector-border)] px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-semibold text-[var(--color-inspector-text)]">{model.displayName || model.model}</div>
+                    {(model.contextWindow > 0 || context?.rawMaxTokens) && (
+                      <div className="mt-1 truncate text-[11px] text-[var(--color-inspector-muted)]">
+                        {t('slash.inspector.status.contextWindow')}: {formatNumber(model.contextWindow || context?.rawMaxTokens)}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-right text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-inspector-heading)]">{t('slash.inspector.usage.tokens')}</div>
+                </div>
+                <div className="grid grid-cols-[160px_minmax(0,1fr)_120px] items-center gap-4 border-b border-[var(--color-inspector-border)] px-4 py-3 last:border-b-0">
+                  <div className="text-[12px] uppercase tracking-[0.18em] text-[var(--color-inspector-heading)]">{t('slash.inspector.usage.input')}</div>
+                  <div className="h-1 overflow-hidden rounded-full bg-[var(--color-inspector-chip)]">
+                    <div className="h-full rounded-full bg-[var(--color-inspector-accent)]" style={{ width: '95%' }} />
+                  </div>
+                  <div className="text-right text-[13px] text-[var(--color-inspector-text)]">{formatNumber(model.inputTokens)}</div>
+                </div>
+                <div className="grid grid-cols-[160px_minmax(0,1fr)_120px] items-center gap-4 px-4 py-3">
+                  <div className="text-[12px] uppercase tracking-[0.18em] text-[var(--color-inspector-heading)]">{t('slash.inspector.usage.output')}</div>
+                  <div className="h-1 overflow-hidden rounded-full bg-[var(--color-inspector-chip)]">
+                    <div className="h-full rounded-full bg-[var(--color-inspector-accent-secondary)]" style={{ width: `${Math.max(4, Math.min(100, (model.outputTokens / Math.max(1, model.inputTokens)) * 100))}%` }} />
+                  </div>
+                  <div className="text-right text-[13px] text-[var(--color-inspector-text)]">{formatNumber(model.outputTokens)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
@@ -472,8 +527,9 @@ function ContextOverview({ context, categories, t }: { context: SessionContextSn
   const freePercent = context.rawMaxTokens > 0 ? (freeTokens / context.rawMaxTokens) * 100 : 0
   return (
     <div className="rounded-md border border-[var(--color-inspector-border)] bg-[var(--color-inspector-panel)] px-5 py-6">
-      <div className="mb-8 flex items-start gap-4">
+      <div className="mb-8 flex items-start justify-between gap-4">
         <InspectorSectionTitle>{t('slash.inspector.context.windowUsage')}</InspectorSectionTitle>
+        <span className="rounded-sm border border-[var(--color-inspector-border)] bg-[var(--color-inspector-chip)] px-2 py-1 font-mono text-xs text-[var(--color-inspector-muted-strong)]">{context.model}</span>
       </div>
       <div className="font-mono text-[24px] font-semibold text-[var(--color-inspector-text)]">
         {formatNumber(context.totalTokens)}
@@ -541,6 +597,7 @@ function StatusTab({
   const mcpServers = Array.isArray(data.status.mcpServers) ? data.status.mcpServers : []
   const tools = Array.isArray(data.status.tools) ? data.status.tools : []
   const context = data.context ?? data.contextEstimate
+  const model = data.status.model ?? context?.model ?? data.usage?.models?.[0]?.displayName ?? data.usage?.models?.[0]?.model ?? t('slash.inspector.status.unknown')
   const contextWindow = context?.rawMaxTokens ?? data.usage?.models?.find((entry) => entry.contextWindow > 0)?.contextWindow
   const slashCommandCount = (data.status.slashCommandCount ?? 0) > 0
     ? data.status.slashCommandCount
@@ -559,7 +616,11 @@ function StatusTab({
             </span>
           )}
         />
-        <MetricCard label={t('slash.inspector.status.contextWindow')} value={contextWindow ? formatNumber(contextWindow) : t('slash.inspector.status.unknown')} />
+        <MetricCard
+          label={t('slash.inspector.status.activeModel')}
+          value={model}
+          detail={contextWindow ? `${t('slash.inspector.status.contextWindow')}: ${formatNumber(contextWindow)}` : undefined}
+        />
         <MetricCard
           label={t('slash.inspector.status.mcpConnections')}
           value={(

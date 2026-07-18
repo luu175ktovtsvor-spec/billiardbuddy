@@ -13,8 +13,8 @@ const targetTriple =
 
 const bunTarget = mapTargetTripleToBun(targetTriple)
 
-// 编译前验证所有相对 import 都有真实文件或已经审查并跟踪的基线 stub。
-// 新缺口必须停止构建，不能自动生成万能 noop 模块掩盖断链。
+// 编译前先扫一遍 src/ 把所有缺失的 ant-internal 模块在磁盘上 stub 出来。
+// 见 desktop/scripts/scan-missing-imports.ts。
 console.log('[build-sidecars] scanning for missing imports...')
 const scanProc = Bun.spawn(
   ['bun', 'run', path.join(desktopRoot, 'scripts/scan-missing-imports.ts')],
@@ -140,7 +140,7 @@ async function compileExecutable({
       autoloadPackageJson: true,
       windows: {
         title: productName,
-        publisher: 'BilliardBuddy',
+        publisher: 'Claude Code',
         description: productName,
         hideConsole: true,
       },

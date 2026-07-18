@@ -16,7 +16,7 @@ async function pollUntilDone(fetch: (r: Request) => Promise<Response>, id: strin
   for (let i = 0; i < 50; i++) {
     const res = await fetch(new Request(`http://relay/images/tasks/${id}`, { headers: { authorization: 'Bearer relay-secret' } }))
     const body = await res.json()
-    if (body.status === 'succeeded' || body.status === 'failed' || body.status === 'failed_unknown') return body
+    if (body.status === 'succeeded' || body.status === 'failed') return body
     await new Promise(r => setTimeout(r, 2))
   }
   throw new Error('poll timed out')
@@ -132,31 +132,6 @@ test('OpenAI failure is captured as failed task, not thrown', async () => {
   const done = await pollUntilDone(fetch, task_id)
   expect(done.status).toBe('failed')
   expect(done.error).toContain('429')
-})
-
-test('connection loss, timeout and malformed success stay failed_unknown to prevent blind paid retries', async () => {
-  const cases: Array<{ env?: Record<string, string>; fetchImpl: () => Promise<Response> }> = [
-    { fetchImpl: async () => { throw new Error('socket reset') } },
-    { env: { RELAY_UPSTREAM_TIMEOUT_MS: '10' }, fetchImpl: () => new Promise(() => {}) },
-    { fetchImpl: async () => new Response('{broken', { status: 200 }) },
-  ]
-
-  for (const scenario of cases) {
-    const fetch = createRelayFetch({
-      env: env(scenario.env),
-      fetchImpl: scenario.fetchImpl,
-    })
-    const submit = await fetch(new Request('http://relay/images/tasks', {
-      method: 'POST',
-      headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ mode: 'generate', prompt: '海报' }),
-    }))
-    const { task_id } = await submit.json()
-    const done = await pollUntilDone(fetch, task_id)
-    expect(done.status).toBe('failed_unknown')
-    expect(done.error).toMatch(/无法确认|响应内容损坏/)
-    expect((await (await fetch(new Request('http://relay/healthz'))).json()).active).toBe(0)
-  }
 })
 
 test('rejects missing/invalid relay token before any work', async () => {

@@ -1464,7 +1464,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       sessions: updateSessionIn(state.sessions, sessionId, (session) => ({
         queuedUserMessages: (session.queuedUserMessages ?? []).map((message) =>
           message.id === messageId
-            ? { ...message, ...replaceQueuedMessageDisplayContent(message, nextContent) }
+            ? {
+                ...message,
+                content: replaceQueuedMessageDisplayContent(message, nextContent),
+                displayContent: nextContent,
+              }
             : message),
       })),
     }))
@@ -3085,24 +3089,6 @@ function extractLeadingFileReferences(text: string): {
   }
 }
 
-const BUILT_IN_GUIDE_RUNTIME_ID = 'claude-code-guide'
-const BUILT_IN_GUIDE_DISPLAY_ID = 'agent-guide'
-const WORKSPACE_REFERENCE_PROMPT_PREFIX = 'Referenced workspace context:'
-
-function productizeBuiltInAgentCommand(value: string): string {
-  const leadingCommandDisplay = value.replace(
-    /^([ \t]*\/agent[ \t]+)claude-code-guide(?=[ \t\n]|$)/,
-    `$1${BUILT_IN_GUIDE_DISPLAY_ID}`,
-  )
-  if (leadingCommandDisplay !== value) return leadingCommandDisplay
-  if (!value.startsWith(WORKSPACE_REFERENCE_PROMPT_PREFIX)) return value
-
-  const runtimeCommand = findTrailingAgentCommand(value)
-  return runtimeCommand?.agentType === BUILT_IN_GUIDE_RUNTIME_ID
-    ? formatAgentCommand(BUILT_IN_GUIDE_DISPLAY_ID, runtimeCommand.prompt)
-    : value
-}
-
 export function appendReplayedUserMessage(
   messages: UIMessage[],
   content: string,
@@ -3114,8 +3100,7 @@ export function appendReplayedUserMessage(
   // of appending the raw prompt — paths and all — as a duplicate bubble.
   const sanitized = stripGeneratedImageMetadataLines(content) || content.trim()
   const parsed = extractLeadingFileReferences(sanitized)
-  const runtimeDisplayContent = parsed.content.trim() || sanitized
-  const displayContent = productizeBuiltInAgentCommand(runtimeDisplayContent)
+  const displayContent = parsed.content.trim() || sanitized
   if (!displayContent) return messages
 
   const modelContent = parsed.modelContent ?? sanitized
@@ -3139,7 +3124,7 @@ export function appendReplayedUserMessage(
       id: nextId(),
       type: 'user_text',
       content: displayContent,
-      ...(modelContent !== displayContent ? { modelContent } : {}),
+      ...(parsed.modelContent ? { modelContent: parsed.modelContent } : {}),
       ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
       timestamp,
     },
@@ -3203,76 +3188,21 @@ function findCurrentTurnUserMessageIndex(
 function replaceQueuedMessageDisplayContent(
   message: QueuedUserMessage,
   nextDisplayContent: string,
-): Pick<QueuedUserMessage, 'content' | 'displayContent'> {
+): string {
   const currentModelContent = message.content.trim()
   const currentDisplayContent = message.displayContent.trim()
-  if (!currentModelContent) return { content: nextDisplayContent, displayContent: nextDisplayContent }
-
-  const displayAgentCommand = parseAgentCommand(currentDisplayContent)
-  const runtimeAgentCommand = findTrailingAgentCommand(currentModelContent)
-  if (displayAgentCommand && runtimeAgentCommand) {
-    const editedAgentCommand = parseAgentCommand(nextDisplayContent)
-    const nextPrompt = editedAgentCommand?.prompt ?? nextDisplayContent
-    return {
-      content: `${runtimeAgentCommand.prefix}${formatAgentCommand(runtimeAgentCommand.agentType, nextPrompt)}`,
-      displayContent: formatAgentCommand(displayAgentCommand.agentType, nextPrompt),
-    }
-  }
-
-  if (!currentDisplayContent) {
-    return {
-      content: `${currentModelContent}\n\n${nextDisplayContent}`,
-      displayContent: nextDisplayContent,
-    }
-  }
-  if (currentModelContent === currentDisplayContent) {
-    return { content: nextDisplayContent, displayContent: nextDisplayContent }
-  }
+  if (!currentModelContent) return nextDisplayContent
+  if (!currentDisplayContent) return `${currentModelContent}\n\n${nextDisplayContent}`
+  if (currentModelContent === currentDisplayContent) return nextDisplayContent
 
   const displaySuffix = `\n\n${currentDisplayContent}`
   if (currentModelContent.endsWith(displaySuffix)) {
-    return {
-      content: `${currentModelContent.slice(0, -currentDisplayContent.length)}${nextDisplayContent}`,
-      displayContent: nextDisplayContent,
-    }
+    return `${currentModelContent.slice(0, -currentDisplayContent.length)}${nextDisplayContent}`
   }
   if (currentModelContent.endsWith(currentDisplayContent)) {
-    return {
-      content: `${currentModelContent.slice(0, -currentDisplayContent.length)}${nextDisplayContent}`,
-      displayContent: nextDisplayContent,
-    }
+    return `${currentModelContent.slice(0, -currentDisplayContent.length)}${nextDisplayContent}`
   }
-  return {
-    content: `${currentModelContent}\n\n${nextDisplayContent}`,
-    displayContent: nextDisplayContent,
-  }
-}
-
-type ParsedAgentCommand = {
-  agentType: string
-  prompt: string
-}
-
-function parseAgentCommand(value: string): ParsedAgentCommand | null {
-  const match = value.trim().match(/^\/agent[ \t]+([^\s]+)(?:\s+([\s\S]*))?$/)
-  if (!match?.[1]) return null
-  return { agentType: match[1], prompt: match[2]?.trim() ?? '' }
-}
-
-function findTrailingAgentCommand(value: string): (ParsedAgentCommand & { prefix: string }) | null {
-  const direct = parseAgentCommand(value)
-  if (direct) return { ...direct, prefix: '' }
-
-  const marker = '\n\n/agent '
-  const markerIndex = value.lastIndexOf(marker)
-  if (markerIndex < 0) return null
-  const commandStart = markerIndex + 2
-  const parsed = parseAgentCommand(value.slice(commandStart))
-  return parsed ? { ...parsed, prefix: value.slice(0, commandStart) } : null
-}
-
-function formatAgentCommand(agentType: string, prompt: string): string {
-  return `/agent ${agentType}${prompt ? ` ${prompt}` : ''}`
+  return `${currentModelContent}\n\n${nextDisplayContent}`
 }
 
 /**
@@ -3375,14 +3305,12 @@ export function mapHistoryMessagesToUiMessages(
       continue
     }
     if (msg.type === 'user') {
-      const commandRuntimeText = getCommandMetadataDisplayText(msg.content)
-      if (commandRuntimeText) {
-        const commandDisplayText = productizeBuiltInAgentCommand(commandRuntimeText)
+      const commandDisplayText = getCommandMetadataDisplayText(msg.content)
+      if (commandDisplayText) {
         uiMessages.push({
           id: msg.id || nextId(),
           type: 'user_text',
           content: commandDisplayText,
-          ...(commandDisplayText !== commandRuntimeText ? { modelContent: commandRuntimeText } : {}),
           ...(msg.id ? { transcriptMessageId: msg.id } : {}),
           timestamp: new Date(msg.timestamp).getTime(),
         })
@@ -3475,15 +3403,12 @@ export function mapHistoryMessagesToUiMessages(
         continue
       }
       const parsed = extractLeadingFileReferences(msg.content)
-      const displayContent = productizeBuiltInAgentCommand(parsed.content)
-      const modelContent = parsed.modelContent
-        ?? (displayContent !== parsed.content ? msg.content : undefined)
       uiMessages.push({
         id: msg.id || nextId(),
         type: 'user_text',
-        content: displayContent,
+        content: parsed.content,
         ...(msg.id ? { transcriptMessageId: msg.id } : {}),
-        ...(modelContent ? { modelContent } : {}),
+        ...(parsed.modelContent ? { modelContent: parsed.modelContent } : {}),
         ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
         timestamp,
       })
@@ -3556,11 +3481,8 @@ export function mapHistoryMessagesToUiMessages(
           applyVisualSelectionHistoryDisplay(attachments, visualSelectionDisplay)
         }
         const parsed = extractLeadingFileReferences(visibleText)
-        const runtimeUserContent = visualSelectionDisplay ? '' : parsed.content
-        const userContent = productizeBuiltInAgentCommand(runtimeUserContent)
-        const modelContent = visualSelectionDisplay || modelText !== visibleText
-          ? modelText
-          : parsed.modelContent ?? (userContent !== runtimeUserContent ? modelText : undefined)
+        const userContent = visualSelectionDisplay ? '' : parsed.content
+        const modelContent = visualSelectionDisplay || modelText !== visibleText ? modelText : parsed.modelContent
         const allAttachments = [...(parsed.attachments ?? []), ...attachments]
         uiMessages.push({
           id: msg.id || nextId(),
