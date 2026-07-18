@@ -92,27 +92,25 @@ export type SettingsTab =
   | 'diagnostics'
   | 'about'
 
-type ActiveView = 'code' | 'scheduled' | 'terminal' | 'history' | 'settings'
+export type ModalId = 'new-task' | 'task-search'
 
 type UIStore = {
   theme: ThemeMode
   sidebarOpen: boolean
-  activeView: ActiveView
   activeSettingsTab: SettingsTab
   pendingSettingsTab: SettingsTab | null
   pendingMemoryPath: string | null
-  activeModal: string | null
+  activeModal: ModalId | null
   toasts: Toast[]
 
   setTheme: (theme: ThemeMode) => void
   toggleTheme: () => void
   toggleSidebar: () => void
   setSidebarOpen: (open: boolean) => void
-  setActiveView: (view: ActiveView) => void
   setActiveSettingsTab: (tab: SettingsTab) => void
   setPendingSettingsTab: (tab: SettingsTab | null) => void
   setPendingMemoryPath: (path: string | null) => void
-  openModal: (id: string) => void
+  openModal: (id: ModalId) => void
   closeModal: () => void
   addToast: (toast: Omit<Toast, 'id'>) => void
   removeToast: (id: string) => void
@@ -123,7 +121,6 @@ let toastCounter = 0
 export const useUIStore = create<UIStore>((set) => ({
   theme: getStoredTheme(),
   sidebarOpen: true,
-  activeView: 'code',
   activeSettingsTab: getStoredSettingsTab(),
   pendingSettingsTab: null,
   pendingMemoryPath: null,
@@ -148,7 +145,6 @@ export const useUIStore = create<UIStore>((set) => ({
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
-  setActiveView: (view) => set({ activeView: view }),
   setActiveSettingsTab: (tab) => {
     try { localStorage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, tab) } catch { /* noop */ }
     set({ activeSettingsTab: tab })
