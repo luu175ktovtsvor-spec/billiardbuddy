@@ -21,6 +21,7 @@ import { Smiley } from '../shared/Smiley'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import type { ProductProject, ProductTaskRecord } from '../../product/domain/types'
+import { openProductTaskComposer } from '../../product/openTaskComposer'
 
 const EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-projects'
 const PROJECT_TASKS_EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-project-tasks'
@@ -46,7 +47,6 @@ type ProductProjectGroup = ProductProject & { tasks: ProductTaskRecord[] }
 function useSidebarData() {
   const index = useProductTaskStore((s) => s.index)
   const refresh = useProductTaskStore((s) => s.refresh)
-  const requestTaskComposer = useProductTaskStore((s) => s.requestTaskComposer)
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const activeTabType = useTabStore(
@@ -89,8 +89,7 @@ function useSidebarData() {
     openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
   }
   const openNewTask = (workDir?: string) => {
-    requestTaskComposer(workDir)
-    openProductTasks()
+    openProductTaskComposer(workDir)
   }
   const openTabView = (id: string, title: string, type: TabType) => openTab(id, title, type)
 

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   taskIndexProps: null as unknown,
   events: [] as string[],
   refresh: vi.fn(),
+  requestTaskComposer: vi.fn(),
   consumeTaskComposerRequest: vi.fn(),
   createTask: vi.fn(),
   continueTask: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock('../stores/productTaskStore', () => ({
     mutations: {},
     composerRequest: null,
     refresh: mocks.refresh,
+    requestTaskComposer: mocks.requestTaskComposer,
     consumeTaskComposerRequest: mocks.consumeTaskComposerRequest,
     createTask: mocks.createTask,
     renameTask: vi.fn(),
@@ -121,6 +123,7 @@ beforeEach(() => {
   mocks.chatSessions = {}
   mocks.tabs = []
   mocks.refresh.mockResolvedValue(undefined)
+  mocks.requestTaskComposer.mockReset()
   mocks.createTask.mockImplementation(async () => {
     mocks.events.push('create')
     return makeTask()
@@ -158,6 +161,15 @@ afterEach(() => {
 })
 
 describe('ProductShell', () => {
+  it('requests the product composer only once when it is the empty desktop entry point', () => {
+    const { rerender } = render(<ProductShell autoOpenComposer />)
+
+    expect(mocks.requestTaskComposer).toHaveBeenCalledTimes(1)
+
+    rerender(<ProductShell autoOpenComposer />)
+    expect(mocks.requestTaskComposer).toHaveBeenCalledTimes(1)
+  })
+
   it('opens an existing product task and explicitly connects its core session', () => {
     render(<ProductShell />)
     const task = makeTask()

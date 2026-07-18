@@ -1,6 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
 import { useTabStore } from '../../stores/tabStore'
-import { EmptySession } from '../../pages/EmptySession'
 import { ActiveSession } from '../../pages/ActiveSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
@@ -26,21 +25,21 @@ export function ContentRouter() {
 
   let page: ReactNode = null
   if (!activeTabId || !activeTabType) {
-    page = <EmptySession />
+    page = <ProductShell autoOpenComposer />
   } else if (activeTabType === 'settings') {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
     page = <ScheduledTasks />
   } else if (activeTabType === 'trace') {
     const traceSessionId = tabs.find((t) => t.sessionId === activeTabId)?.traceSessionId
-    page = traceSessionId ? <TraceSession sessionId={traceSessionId} /> : <EmptySession />
+    page = traceSessionId ? <TraceSession sessionId={traceSessionId} /> : <ProductShell />
   } else if (activeTabType === 'traces') {
     page = <TraceList />
   } else if (activeTabType === 'workbench') {
     const workbenchTab = tabs.find((t) => t.sessionId === activeTabId)
     page = workbenchTab?.workbenchSessionId
       ? <WorkbenchTab tabId={activeTabId} sessionId={workbenchTab.workbenchSessionId} />
-      : <EmptySession />
+      : <ProductShell />
   } else if (activeTabType === 'image-workbench') {
     page = <ImageWorkbench />
   } else if (activeTabType === 'video-studio') {

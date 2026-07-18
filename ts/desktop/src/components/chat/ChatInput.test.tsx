@@ -10,13 +10,7 @@ const viewportMocks = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   delete: vi.fn(),
-  list: vi.fn(),
-  getMessages: vi.fn(),
-  getGitInfo: vi.fn(),
-  getSlashCommands: vi.fn(),
   listAgents: vi.fn(),
-  getRepositoryContext: vi.fn(),
-  getRecentProjects: vi.fn(),
   search: vi.fn(),
   browse: vi.fn(),
   wsSend: vi.fn(),
@@ -29,12 +23,6 @@ vi.mock('../../api/sessions', () => ({
   sessionsApi: {
     create: mocks.create,
     delete: mocks.delete,
-    list: mocks.list,
-    getMessages: mocks.getMessages,
-    getGitInfo: mocks.getGitInfo,
-    getSlashCommands: mocks.getSlashCommands,
-    getRepositoryContext: mocks.getRepositoryContext,
-    getRecentProjects: mocks.getRecentProjects,
   },
 }))
 
@@ -77,40 +65,6 @@ import { useTabStore } from '../../stores/tabStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { browserHost } from '../../lib/desktopHost/browserHost'
 import { useUIStore } from '../../stores/uiStore'
-
-function okRepositoryContext() {
-  return {
-    state: 'ok' as const,
-    workDir: '/repo',
-    repoRoot: '/repo',
-    repoName: 'repo',
-    currentBranch: 'main',
-    defaultBranch: 'main',
-    dirty: false,
-    branches: [
-      {
-        name: 'main',
-        current: true,
-        local: true,
-        remote: false,
-        checkedOut: true,
-        worktreePath: '/repo',
-      },
-      {
-        name: 'feature/a',
-        current: false,
-        local: true,
-        remote: false,
-        checkedOut: false,
-      },
-    ],
-    worktrees: [{
-      path: '/repo',
-      branch: 'main',
-      current: true,
-    }],
-  }
-}
 
 describe('ChatInput file mentions', () => {
   const sessionId = 'session-file-mention'
@@ -194,14 +148,8 @@ describe('ChatInput file mentions', () => {
         },
       },
     })
-    mocks.getGitInfo.mockResolvedValue({ branch: 'main', repoName: 'repo', workDir: '/repo', changedFiles: 0 })
-    mocks.getRepositoryContext.mockResolvedValue(okRepositoryContext())
-    mocks.getRecentProjects.mockResolvedValue({ projects: [] })
     mocks.create.mockResolvedValue({ sessionId: 'created-session', workDir: '/repo' })
     mocks.delete.mockResolvedValue({ ok: true })
-    mocks.list.mockResolvedValue({ sessions: [], total: 0 })
-    mocks.getMessages.mockResolvedValue({ messages: [] })
-    mocks.getSlashCommands.mockResolvedValue({ commands: [] })
     mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
   })
 
@@ -323,16 +271,7 @@ describe('ChatInput file mentions', () => {
     })
   })
 
-  it('keeps the unsent draft when switching project on an empty active session', async () => {
-    installElectronFileHost()
-    mocks.dialogOpen.mockResolvedValueOnce('/other')
-    mocks.create.mockResolvedValueOnce({ sessionId: 'session-project-switch', workDir: '/other' })
-    mocks.getRepositoryContext.mockImplementation(async (workDir: string) => ({
-      ...okRepositoryContext(),
-      workDir,
-      repoRoot: workDir,
-      repoName: workDir.split('/').filter(Boolean).pop() ?? 'repo',
-    }))
+  it('sends the first prompt in the existing task session without replacing it', () => {
     useSessionStore.setState({
       sessions: [{
         id: sessionId,
@@ -372,22 +311,21 @@ describe('ChatInput file mentions', () => {
 
     render(<ChatInput variant="hero" />)
 
+    expect(screen.queryByRole('button', { name: /Select branch:/ })).not.toBeInTheDocument()
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(input, {
-      target: { value: 'draft before switching project', selectionStart: 30 },
+      target: { value: 'start this task', selectionStart: 15 },
     })
+    fireEvent.keyDown(input, { key: 'Enter' })
 
-    fireEvent.click(screen.getAllByTitle('/repo')[0]!)
-    await screen.findByTestId('directory-picker-menu')
-    fireEvent.click(screen.getByRole('button', { name: /Choose a different folder/ }))
-
-    await waitFor(() => {
-      expect(mocks.create).toHaveBeenCalledWith({ workDir: '/other' })
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
+      type: 'user_message',
+      content: 'start this task',
+      attachments: [],
     })
-    await waitFor(() => {
-      expect(useTabStore.getState().activeTabId).toBe('session-project-switch')
-    })
-    expect(input.value).toBe('draft before switching project')
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.delete).not.toHaveBeenCalled()
+    expect(useTabStore.getState().activeTabId).toBe(sessionId)
   })
 
   it('restores an unsent composer draft after the composer unmounts', async () => {
@@ -647,297 +585,6 @@ describe('ChatInput file mentions', () => {
       { type: 'assistant_text', content: 'workingdone now' },
       { type: 'user_text', content: 'continue after completion' },
     ])
-  })
-
-  it('shows branch and worktree launch controls for an empty active Git session', async () => {
-    useSessionStore.setState({
-      sessions: [{
-        id: sessionId,
-        title: 'Project',
-        createdAt: '2026-05-01T00:00:00.000Z',
-        modifiedAt: '2026-05-01T00:00:00.000Z',
-        messageCount: 0,
-        projectPath: '/repo',
-        workDir: '/repo',
-        workDirExists: true,
-      }],
-      activeSessionId: sessionId,
-    })
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          messages: [],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 0, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ChatInput variant="hero" />)
-
-    const panel = screen.getByTestId('chat-input-panel')
-    expect(panel).toHaveClass('main-composer-surface')
-
-    expect(await screen.findByRole('button', { name: /Select branch: main/ })).toBeInTheDocument()
-    expect(screen.getByText('Current worktree')).toBeInTheDocument()
-    expect(screen.queryByText('Select a project...')).not.toBeInTheDocument()
-    const branchButton = screen.getByRole('button', { name: /Select branch: main/ })
-    expect(panel).toContainElement(branchButton.parentElement)
-    expect(branchButton.parentElement).toHaveClass('bg-transparent')
-  })
-
-  it('uses the persisted message count to keep reopened sessions in context mode while history loads', async () => {
-    useSessionStore.setState({
-      sessions: [{
-        id: sessionId,
-        title: 'Project',
-        createdAt: '2026-05-01T00:00:00.000Z',
-        modifiedAt: '2026-05-01T00:00:00.000Z',
-        messageCount: 2,
-        projectPath: '/repo',
-        workDir: '/repo',
-        workDirExists: true,
-      }],
-      activeSessionId: sessionId,
-    })
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          messages: [],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 0, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ChatInput variant="hero" />)
-
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
-    expect(screen.queryByRole('button', { name: /Select branch:/ })).not.toBeInTheDocument()
-    expect(screen.queryByText('Current worktree')).not.toBeInTheDocument()
-  })
-
-  it('starts an empty active session on the selected branch without an isolated worktree', async () => {
-    mocks.create.mockResolvedValueOnce({ sessionId: 'created-direct', workDir: '/repo' })
-    useSessionStore.setState({
-      sessions: [{
-        id: sessionId,
-        title: 'Project',
-        createdAt: '2026-05-01T00:00:00.000Z',
-        modifiedAt: '2026-05-01T00:00:00.000Z',
-        messageCount: 0,
-        projectPath: '/repo',
-        workDir: '/repo',
-        workDirExists: true,
-      }],
-      activeSessionId: sessionId,
-    })
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          messages: [],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 0, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ChatInput variant="hero" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Select branch: main/ }))
-    fireEvent.click(await screen.findByRole('option', { name: /feature\/a/ }))
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'run on feature branch', selectionStart: 21 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(mocks.create).toHaveBeenCalledWith({
-        workDir: '/repo',
-        repository: { branch: 'feature/a', worktree: false },
-      })
-    })
-    expect(mocks.delete).toHaveBeenCalledWith(sessionId)
-    expect(mocks.wsSend).toHaveBeenCalledWith('created-direct', {
-      type: 'user_message',
-      content: 'run on feature branch',
-      attachments: [],
-    })
-  })
-
-  it('preserves explicit permission mode when replacing an empty session for branch launch', async () => {
-    mocks.create.mockResolvedValueOnce({ sessionId: 'created-permission', workDir: '/repo' })
-    useSessionStore.setState({
-      sessions: [{
-        id: sessionId,
-        title: 'Project',
-        createdAt: '2026-05-01T00:00:00.000Z',
-        modifiedAt: '2026-05-01T00:00:00.000Z',
-        messageCount: 0,
-        projectPath: '/repo',
-        workDir: '/repo',
-        workDirExists: true,
-        permissionMode: 'acceptEdits',
-      }],
-      activeSessionId: sessionId,
-    })
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          messages: [],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 0, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ChatInput variant="hero" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Select branch: main/ }))
-    fireEvent.click(await screen.findByRole('option', { name: /feature\/a/ }))
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'run with preserved permissions', selectionStart: 30 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(mocks.create).toHaveBeenCalledWith({
-        workDir: '/repo',
-        repository: { branch: 'feature/a', worktree: false },
-        permissionMode: 'acceptEdits',
-      })
-    })
-    expect(mocks.wsSend).toHaveBeenCalledWith('created-permission', {
-      type: 'user_message',
-      content: 'run with preserved permissions',
-      attachments: [],
-    })
-  })
-
-  it('starts an empty active session on the selected branch inside an isolated worktree', async () => {
-    mocks.create.mockResolvedValueOnce({
-      sessionId: 'created-worktree',
-      workDir: '/repo/.claude/worktrees/desktop-feature-a-12345678',
-    })
-    mocks.list.mockImplementationOnce(() => new Promise(() => {}))
-    useSessionStore.setState({
-      sessions: [{
-        id: sessionId,
-        title: 'Project',
-        createdAt: '2026-05-01T00:00:00.000Z',
-        modifiedAt: '2026-05-01T00:00:00.000Z',
-        messageCount: 0,
-        projectPath: '/repo',
-        workDir: '/repo',
-        workDirExists: true,
-      }],
-      activeSessionId: sessionId,
-    })
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          messages: [],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 0, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ChatInput variant="hero" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Select branch: main/ }))
-    fireEvent.click(await screen.findByRole('option', { name: /feature\/a/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Select worktree mode: Current worktree/ }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Isolated worktree' }))
-    expect(screen.getByText('Isolated worktree')).toBeInTheDocument()
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'run in a worktree', selectionStart: 17 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(mocks.create).toHaveBeenCalledWith({
-        workDir: '/repo',
-        repository: { branch: 'feature/a', worktree: true },
-      })
-    })
-    expect(mocks.delete).toHaveBeenCalledWith(sessionId)
-    expect(mocks.wsSend).toHaveBeenCalledWith('created-worktree', {
-      type: 'user_message',
-      content: 'run in a worktree',
-      attachments: [],
-    })
-    expect(useSessionStore.getState().sessions[0]?.workDir)
-      .toBe('/repo/.claude/worktrees/desktop-feature-a-12345678')
   })
 
   it('turns a selected @ file into a chip without corrupting the typed path', async () => {
@@ -1321,10 +968,6 @@ describe('ChatInput file mentions', () => {
 
     render(<ChatInput />)
 
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
-
     fireEvent.change(screen.getByRole('textbox'), {
       target: { value: 'ship it', selectionStart: 7 },
     })
@@ -1350,10 +993,6 @@ describe('ChatInput file mentions', () => {
   it('keeps the active-session toolbar in flow so multiline caret cannot render behind controls', async () => {
     render(<ChatInput />)
 
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
-
     const input = screen.getByRole('textbox')
     const toolbar = screen.getByTestId('chat-input-toolbar')
 
@@ -1369,10 +1008,6 @@ describe('ChatInput file mentions', () => {
     })
 
     render(<ChatInput />)
-
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
 
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(input, {
@@ -1399,10 +1034,6 @@ describe('ChatInput file mentions', () => {
     })
 
     render(<ChatInput />)
-
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
 
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(input, {
@@ -1445,10 +1076,6 @@ describe('ChatInput file mentions', () => {
     })
 
     render(<ChatInput />)
-
-    await waitFor(() => {
-      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
-    })
 
     fireEvent.change(screen.getByRole('textbox'), {
       target: { value: '/su', selectionStart: 3 },

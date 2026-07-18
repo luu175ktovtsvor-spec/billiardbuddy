@@ -72,8 +72,6 @@ vi.mock('../api/sessions', async (importOriginal) => {
   }
 })
 
-// Import all pages
-import { EmptySession } from '../pages/EmptySession'
 import { ActiveSession } from '../pages/ActiveSession'
 import { ScheduledTasks } from '../pages/ScheduledTasks'
 
@@ -119,79 +117,6 @@ function resetPageStores() {
  * and contain key structural elements from the prototype.
  */
 describe('Content-only pages render without errors', () => {
-  it('EmptySession slash picker includes dynamic skills before the first session starts', async () => {
-    vi.mocked(skillsApi.list).mockResolvedValueOnce({
-      skills: [
-        {
-          name: 'lark-mail',
-          description: 'Draft, send, and search emails',
-          source: 'user',
-          userInvocable: true,
-          contentLength: 120,
-          hasDirectory: true,
-        },
-        {
-          name: 'internal-only',
-          description: 'Should stay hidden',
-          source: 'user',
-          userInvocable: false,
-          contentLength: 60,
-          hasDirectory: true,
-        },
-      ],
-    })
-
-    render(<EmptySession />)
-
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '/', selectionStart: 1 },
-    })
-
-    expect(await screen.findByText('/lark-mail')).toBeInTheDocument()
-    expect(screen.getByText('/mcp')).toBeInTheDocument()
-    expect(screen.getByText('/skills')).toBeInTheDocument()
-    expect(screen.getByText('/help')).toBeInTheDocument()
-    expect(screen.getByText('/plugin')).toBeInTheDocument()
-    expect(screen.getByText('/context')).toBeInTheDocument()
-    expect(screen.queryByText('/plugins')).not.toBeInTheDocument()
-    expect(screen.queryByText('/internal-only')).not.toBeInTheDocument()
-  })
-
-  it('EmptySession shows /goal as one command with argument hints, not pseudo subcommands', async () => {
-    vi.mocked(skillsApi.list).mockResolvedValueOnce({ skills: [] })
-
-    render(<EmptySession />)
-
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '/goal', selectionStart: 5 },
-    })
-
-    expect(await screen.findAllByText('/goal')).toHaveLength(2)
-    expect(screen.getByText('[<condition> | clear]')).toBeInTheDocument()
-    expect(screen.getByText('Set a completion goal')).toBeInTheDocument()
-    expect(screen.queryByText('/goal status')).not.toBeInTheDocument()
-    expect(screen.queryByText('/goal --tokens')).not.toBeInTheDocument()
-  })
-
-  it('EmptySession renders mascot and composer', async () => {
-    let container!: HTMLElement
-    await act(async () => {
-      container = render(<EmptySession />).container
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(container.querySelector('textarea')).toBeInTheDocument()
-    expect(container.innerHTML).toContain('New session')
-    expect(container.innerHTML).toContain('Ask anything')
-  })
-
-  it('EmptySession keeps context internals out of the first-run composer', async () => {
-    render(<EmptySession />)
-
-    expect(screen.queryByLabelText('Context usage not calculated')).not.toBeInTheDocument()
-    expect(vi.mocked(sessionsApi.getInspection)).not.toHaveBeenCalled()
-  })
-
   it('ContextUsageIndicator does not render a first-paint spinner for draft sessions', () => {
     const html = renderToStaticMarkup(
       <ContextUsageIndicator
@@ -223,20 +148,6 @@ describe('Content-only pages render without errors', () => {
     expect(await screen.findByRole('button', { name: 'Close' })).toBeInTheDocument()
     expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
     expect(screen.getAllByText('Context usage will be calculated after the session starts.')).toHaveLength(2)
-  })
-
-  it('EmptySession plus menu exposes uploads and slash commands before chat starts', async () => {
-    await act(async () => {
-      render(<EmptySession />)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
-      await Promise.resolve()
-    })
-    expect(screen.getByText('Add files or photos')).toBeInTheDocument()
-    expect(screen.getByText('Slash commands')).toBeInTheDocument()
   })
 
   it('ActiveSession renders with chat components', () => {
@@ -272,7 +183,7 @@ describe('Content-only pages render without errors', () => {
     const textarea = container.querySelector('textarea')
     expect(textarea).toBeInTheDocument()
     expect(textarea).toHaveAttribute('placeholder', 'Ask anything...')
-    expect(textarea).toHaveAttribute('rows', '2')
+    expect(textarea).toHaveAttribute('rows', '1')
     expect(container.innerHTML).not.toContain('Preview')
     // Cleanup
     resetPageStores()
@@ -1268,23 +1179,5 @@ describe('AppShell layout renders chrome', () => {
     expect(container.innerHTML).toContain('Scheduled')
     expect(container.innerHTML).toContain('Search chats')
     expect(container.innerHTML).toContain('Settings')
-  })
-})
-
-describe('Design system compliance', () => {
-  it('Current brand color is used in content pages', () => {
-    const pages = [EmptySession]
-    for (const Page of pages) {
-      const { container, unmount } = render(<Page />)
-      const html = container.innerHTML
-      expect(
-        html.includes('C47A5A') ||
-        html.includes('8F482F') ||
-        html.includes('var(--color-brand)') ||
-        html.includes('bg-[var(--color-brand)]') ||
-        html.includes('var(--gradient-btn-primary)'),
-      ).toBe(true)
-      unmount()
-    }
   })
 })
