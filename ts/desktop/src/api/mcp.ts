@@ -7,10 +7,6 @@ export const mcpApi = {
     return api.get<{ servers: McpServerRecord[] }>(`/api/mcp${query}`)
   },
 
-  projectPaths: () => {
-    return api.get<{ projectPaths: string[] }>('/api/mcp/project-paths')
-  },
-
   status: (name: string, cwd?: string) => {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
     return api.get<{ server: McpServerRecord }>(`/api/mcp/${encodeURIComponent(name)}/status${query}`)

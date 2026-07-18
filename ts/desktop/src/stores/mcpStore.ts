@@ -94,11 +94,11 @@ export const useMcpStore = create<McpStore>((set) => ({
 
       if (requestId !== fetchServersRequestId) return
       set({ servers: [...deduped.values()], isLoading: false })
-    } catch (error) {
+    } catch {
       if (requestId !== fetchServersRequestId) return
       set({
         isLoading: false,
-        error: error instanceof Error ? error.message : 'Failed to load MCP servers',
+        error: 'MCP_UNAVAILABLE',
       })
     }
   },
