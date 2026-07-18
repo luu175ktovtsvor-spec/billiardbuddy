@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
   openDirectory: vi.fn(),
   isDesktop: false,
+  copyText: vi.fn(),
 }))
 
 vi.mock('../../api/skills', () => ({
@@ -20,6 +21,10 @@ vi.mock('../../lib/desktopHost', () => ({
     capabilities: { dialogs: mocks.isDesktop },
     dialogs: { open: mocks.openDirectory },
   }),
+}))
+
+vi.mock('../../components/chat/clipboard', () => ({
+  copyTextToClipboard: mocks.copyText,
 }))
 
 import { TaskIndex } from './TaskIndex'
@@ -97,6 +102,7 @@ function renderIndex(index = makeIndex()) {
 beforeEach(() => {
   mocks.isDesktop = false
   mocks.listSkills.mockResolvedValue({ skills: [] })
+  mocks.copyText.mockResolvedValue(true)
 })
 
 afterEach(() => {
@@ -125,6 +131,39 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: '重命名' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '置顶' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '恢复' })).not.toBeInTheDocument()
+  })
+
+  it('copies the real task ID and Markdown details without inventing a link', async () => {
+    renderIndex(makeIndex(makeTask({
+      kind: 'continuation',
+      worktreeState: 'materialized',
+      parentTaskId: 'task-parent',
+      parentThreadId: 'session-parent',
+      sourceTurnId: 'turn-42',
+    })))
+
+    fireEvent.click(screen.getByRole('button', { name: '复制 ID' }))
+    await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith('task-1'))
+    expect(screen.getByRole('button', { name: '已复制 ID' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '复制 Markdown' }))
+    const markdown = [
+      '# 任务：修复开球规则',
+      '',
+      '- 任务 ID：`task-1`',
+      '- 状态：进行中',
+      '- 工作目录：`/workspace/billiard`',
+      '- 工作树：独立工作树已启用',
+      '- 类型：继续任务',
+      '',
+      '## 继续来源',
+      '- 父任务 ID：`task-parent`',
+      '- 父线程 ID：`session-parent`',
+      '- 来源轮次 ID：`turn-42`',
+    ].join('\n')
+    await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith(markdown))
+    expect(markdown).not.toMatch(/https?:\/\//)
+    expect(screen.getByRole('button', { name: '已复制 Markdown' })).toBeInTheDocument()
   })
 
   it('creates a task, opens its core session, and continues the selected task', async () => {
