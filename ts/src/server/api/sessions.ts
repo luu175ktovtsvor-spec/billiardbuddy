@@ -7,8 +7,6 @@
  *   GET    /api/sessions            — 列出会话
  *   GET    /api/sessions/:id        — 获取会话详情
  *   GET    /api/sessions/:id/messages — 获取会话消息
- *   GET    /api/sessions/:id/trace — 获取会话级模型调用 trace（body preview 裁剪后的列表视图）
- *   GET    /api/sessions/:id/trace/calls/:callId — 获取单次调用的完整 trace 记录
  *   GET    /api/sessions/:id/turn-checkpoints — 获取按轮次保留的 checkpoint 预览
  *   GET    /api/sessions/:id/turn-checkpoints/diff — 获取绑定到指定 checkpoint 的 diff
  *   POST   /api/sessions            — 创建新会话
@@ -37,7 +35,6 @@ import {
 } from '../services/sessionRewindService.js'
 import { registerChangedFileAccessRoot, registerFilesystemAccessRoot } from '../services/filesystemAccessRoots.js'
 import { findGitRoot } from '../../utils/git.js'
-import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCaptureService.js'
 import { projectSessionMessagesForProduct } from './productMessageProjection.js'
 
 const DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
@@ -110,18 +107,6 @@ export async function handleSessionsApi(
         )
       }
       return await getSessionMessages(sessionId)
-    }
-
-    if (subResource === 'trace') {
-      if (req.method !== 'GET') {
-        return Response.json(
-          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
-          { status: 405 }
-        )
-      }
-      return segments[4] === 'calls'
-        ? await getSessionTraceCall(sessionId, segments[5])
-        : await getSessionTrace(sessionId)
     }
 
     if (subResource === 'git-info') {
@@ -262,54 +247,6 @@ async function getSessionMessages(sessionId: string): Promise<Response> {
     messages: projectSessionMessagesForProduct(messages),
     taskNotifications,
   })
-}
-
-async function getSessionTrace(sessionId: string): Promise<Response> {
-  const [trace, sessionMeta, messageSignature] = await Promise.all([
-    traceCaptureService.getSessionTrace(sessionId),
-    getSessionTraceMeta(sessionId),
-    sessionService.getSessionMessagesSignature(sessionId),
-  ])
-  return Response.json({
-    ...trace,
-    calls: trace.calls.map((call) => trimTraceCallPreviews(call)),
-    messageSignature,
-    session: sessionMeta
-      ? {
-          id: sessionId,
-          title: sessionMeta.title,
-          projectPath: sessionMeta.projectPath,
-          workDir: sessionMeta.workDir,
-        }
-      : null,
-  })
-}
-
-async function getSessionTraceMeta(sessionId: string): Promise<{
-  title: string
-  projectPath: string
-  workDir: string | null
-} | null> {
-  const found = await sessionService.findSessionFile(sessionId)
-  if (!found) return null
-  const meta = await sessionService.getSessionTitleAndMeta(found.filePath)
-  return {
-    title: meta.title,
-    projectPath: meta.projectPath,
-    workDir: meta.workDir,
-  }
-}
-
-async function getSessionTraceCall(sessionId: string, callId: string | undefined): Promise<Response> {
-  if (!callId || callId.trim().length === 0) {
-    throw ApiError.badRequest('callId is required')
-  }
-
-  const call = await traceCaptureService.getSessionTraceCall(sessionId, callId)
-  if (!call) {
-    throw ApiError.notFound(`Trace call not found: ${callId}`)
-  }
-  return Response.json({ call })
 }
 
 async function handleSessionWorkspaceRoute(
