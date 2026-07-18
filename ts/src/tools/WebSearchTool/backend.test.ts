@@ -86,11 +86,18 @@ describe('WebSearch backend resolver', () => {
     }, { productGatewayUrl: productUrl })
     expect(resolved).toMatchObject({ provider: 'product', productGatewayUrl: productUrl })
 
-    // Explicit user choices remain supported and override the product default.
+    // Legacy local provider choices are ignored in the managed desktop runtime.
+    // A gateway failure is therefore reported rather than silently switching
+    // upstream.
     expect(resolveWebSearchProvider('deepseek-v4-flash', {
       mode: 'brave',
       braveApiKey: 'brave-user-key',
-    }, { productGatewayUrl: productUrl }).provider).toBe('brave')
+    }, { productGatewayUrl: productUrl }).provider).toBe('product')
+
+    expect(resolveWebSearchProvider('deepseek-v4-flash', {
+      mode: 'disabled',
+      braveApiKey: 'brave-user-key',
+    }, { productGatewayUrl: productUrl }).provider).toBe('disabled')
   })
 
   test('falls back on native tool schema/provider mismatch errors', () => {

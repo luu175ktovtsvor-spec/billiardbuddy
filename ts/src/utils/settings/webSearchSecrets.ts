@@ -1,6 +1,4 @@
-import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 
@@ -34,33 +32,4 @@ export function readWebSearchSecretsSync(): WebSearchSecrets {
   } catch {
     return {}
   }
-}
-
-export async function updateWebSearchSecrets(
-  updates: { tavilyApiKey?: string | null; braveApiKey?: string | null },
-): Promise<WebSearchSecrets> {
-  const path = secretPath()
-  let current: WebSearchSecrets = {}
-  try {
-    current = parse(JSON.parse(await readFile(path, 'utf8')))
-  } catch {
-    // Missing or invalid secret files are replaced atomically below.
-  }
-  for (const key of ['tavilyApiKey', 'braveApiKey'] as const) {
-    if (!(key in updates)) continue
-    const value = normalize(updates[key])
-    if (value) current[key] = value
-    else delete current[key]
-  }
-  const directory = join(getClaudeConfigHomeDir(), 'billiardbuddy')
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  const temporary = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
-  try {
-    await writeFile(temporary, `${JSON.stringify(current, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-    await rename(temporary, path)
-  } catch (error) {
-    await unlink(temporary).catch(() => undefined)
-    throw error
-  }
-  return current
 }

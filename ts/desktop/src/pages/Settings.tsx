@@ -21,7 +21,7 @@ import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
 import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
-import type { ThemeMode, NetworkProxyMode, WebSearchMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
+import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
 import type { Locale } from '../i18n'
 import { useSessionStore } from '../stores/sessionStore'
 import { SkillList } from '../components/skills/SkillList'
@@ -336,7 +336,6 @@ export function GeneralSettings() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const sessions = useSessionStore((s) => s.sessions)
   const t = useTranslation()
-  const [webSearchDraft, setWebSearchDraft] = useState(webSearch)
   const [networkDraft, setNetworkDraft] = useState(network)
   const [networkTimeoutInput, setNetworkTimeoutInput] = useState(String(Math.round(network.aiRequestTimeoutMs / 1000)))
   const [networkSaveError, setNetworkSaveError] = useState<string | null>(null)
@@ -355,7 +354,6 @@ export function GeneralSettings() {
   const [isUiZoomDragging, setIsUiZoomDragging] = useState(false)
   const isUiZoomDraggingRef = useRef(false)
   const addToast = useUIStore((s) => s.addToast)
-  const webSearchDirty = JSON.stringify(webSearchDraft) !== JSON.stringify(webSearch)
   const uiZoomPercent = Math.round(uiZoomDraft * 100)
   const uiZoomRangeProgress = `${Math.round(((uiZoomDraft - UI_ZOOM_MIN) / (UI_ZOOM_MAX - UI_ZOOM_MIN)) * 1000) / 10}%`
   const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
@@ -369,10 +367,6 @@ export function GeneralSettings() {
     activeSession?.workDirExists === false
       ? null
       : activeSession?.workDir ?? activeSession?.projectRoot ?? null
-
-  useEffect(() => {
-    setWebSearchDraft(webSearch)
-  }, [webSearch])
 
   useEffect(() => {
     void fetchOutputStyles(outputStyleWorkDir)
@@ -462,14 +456,6 @@ export function GeneralSettings() {
     { value: 'light', label: t('settings.general.appearance.light') },
     { value: 'dark', label: t('settings.general.appearance.dark') },
     { value: 'system', label: t('settings.general.appearance.system') },
-  ]
-
-  const WEB_SEARCH_MODES: Array<{ value: WebSearchMode; label: string }> = [
-    { value: 'auto', label: t('settings.general.webSearch.mode.auto') },
-    { value: 'tavily', label: t('settings.general.webSearch.mode.tavily') },
-    { value: 'brave', label: t('settings.general.webSearch.mode.brave') },
-    { value: 'anthropic', label: t('settings.general.webSearch.mode.anthropic') },
-    { value: 'disabled', label: t('settings.general.webSearch.mode.disabled') },
   ]
 
   const NETWORK_PROXY_MODES: Array<{ value: NetworkProxyMode; label: string; description: string }> = [
@@ -1269,94 +1255,24 @@ export function GeneralSettings() {
       <div className="mt-8">
         <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.webSearchTitle')}</h2>
         <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.webSearchDescription')}</p>
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
-          <div className="grid grid-cols-5 gap-1.5 mb-4">
-            {WEB_SEARCH_MODES.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => setWebSearchDraft({ ...webSearchDraft, mode: value })}
-                className={`h-9 px-2 text-xs font-semibold rounded-lg border transition-all truncate ${
-                  (webSearchDraft.mode ?? 'auto') === value
-                    ? 'bg-[var(--color-brand)] text-white border-[var(--color-brand)]'
-                    : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-                }`}
-                title={label}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            <Input
-              id="web-search-tavily-key"
-              type="password"
-              label={t('settings.general.webSearchTavilyKey')}
-              value={webSearchDraft.tavilyApiKey ?? ''}
-              placeholder={webSearchDraft.tavilyConfigured ? '••••••••' : 'tvly-...'}
-              autoComplete="off"
-              onChange={(event) =>
-                setWebSearchDraft({
-                  ...webSearchDraft,
-                  tavilyApiKey: event.target.value,
-                })
-              }
-            />
-            <div className="-mt-1 flex items-center justify-between gap-3 text-xs text-[var(--color-text-tertiary)]">
-              <span>{t('settings.general.webSearchTavilyFreeHint')}</span>
-              <a
-                href="https://app.tavily.com/home"
-                target="_blank"
-                rel="noreferrer"
-                aria-label={t('settings.general.webSearchTavilyApiKeyLink')}
-                className="font-medium text-[var(--color-brand)] hover:underline whitespace-nowrap"
-              >
-                {t('settings.general.webSearchGetApiKey')}
-              </a>
+        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
+          <input
+            type="checkbox"
+            aria-label={t('settings.general.webSearchEnabled')}
+            checked={webSearch.enabled !== false}
+            onChange={(event) => void setWebSearch({ enabled: event.target.checked })}
+            className={SETTINGS_CHECKBOX_INPUT_CLASS}
+          />
+          <SettingsCheckboxMark checked={webSearch.enabled !== false} />
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[var(--color-text-primary)]">
+              {t('settings.general.webSearchEnabled')}
             </div>
-            <Input
-              id="web-search-brave-key"
-              type="password"
-              label={t('settings.general.webSearchBraveKey')}
-              value={webSearchDraft.braveApiKey ?? ''}
-              placeholder={webSearchDraft.braveConfigured ? '••••••••' : t('settings.general.webSearchBravePlaceholder')}
-              autoComplete="off"
-              onChange={(event) =>
-                setWebSearchDraft({
-                  ...webSearchDraft,
-                  braveApiKey: event.target.value,
-                })
-              }
-            />
-            <div className="-mt-1 flex items-center justify-between gap-3 text-xs text-[var(--color-text-tertiary)]">
-              <span>{t('settings.general.webSearchBraveFreeHint')}</span>
-              <a
-                href="https://api-dashboard.search.brave.com/app/keys"
-                target="_blank"
-                rel="noreferrer"
-                aria-label={t('settings.general.webSearchBraveApiKeyLink')}
-                className="font-medium text-[var(--color-brand)] hover:underline whitespace-nowrap"
-              >
-                {t('settings.general.webSearchGetApiKey')}
-              </a>
-            </div>
-          </div>
-          <div className="mt-4 flex flex-col gap-3">
-            <p className="text-xs text-[var(--color-text-tertiary)] leading-5">
+            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
               {t('settings.general.webSearchHint')}
-            </p>
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                variant="secondary"
-                className="min-w-[72px] px-4 whitespace-nowrap"
-                disabled={!webSearchDirty}
-                onClick={() => void setWebSearch(webSearchDraft)}
-              >
-                {t('settings.general.webSearchSave')}
-              </Button>
             </div>
           </div>
-        </div>
+        </label>
       </div>
 
       {isDesktopRuntime() && (

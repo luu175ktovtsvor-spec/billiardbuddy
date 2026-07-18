@@ -99,7 +99,7 @@ describe('Settings > General tab', () => {
       chatSendBehavior: 'enter',
       responseLanguage: '',
       uiZoom: 1,
-      webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
+      webSearch: { enabled: true },
       network: {
         aiRequestTimeoutMs: 120_000,
         proxy: { mode: 'direct', url: '' },
@@ -337,7 +337,7 @@ describe('Settings > General tab', () => {
 
     fireEvent.click(screen.getByText('General'))
 
-    const webSearchHeading = screen.getByRole('heading', { name: 'WebSearch' })
+    const webSearchHeading = screen.getByRole('heading', { name: 'Online Research' })
     const storageHeading = screen.getByRole('heading', { name: 'Data Storage Location' })
 
     expect((webSearchHeading.compareDocumentPosition(storageHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
@@ -728,38 +728,21 @@ describe('Settings > General tab', () => {
     expect(desktopNotificationsMock.openDesktopNotificationSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('saves WebSearch fallback provider settings', () => {
+  it('keeps online research as a product toggle without provider credentials', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Tavily' }))
-    fireEvent.change(screen.getByLabelText('Tavily API key'), {
-      target: { value: 'tvly-test-key' },
-    })
-    const saveButtons = screen.getAllByRole('button', { name: 'Save' })
-    fireEvent.click(saveButtons[saveButtons.length - 1]!)
+    const toggle = screen.getByLabelText('Enable online research')
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
 
     expect(useSettingsStore.getState().setWebSearch).toHaveBeenCalledWith({
-      mode: 'tavily',
-      tavilyApiKey: 'tvly-test-key',
-      braveApiKey: '',
+      enabled: false,
     })
-  })
-
-  it('links to WebSearch provider API key dashboards', () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-
-    expect(screen.getByRole('link', { name: 'Get Tavily API key' })).toHaveAttribute(
-      'href',
-      'https://app.tavily.com/home',
-    )
-    expect(screen.getByRole('link', { name: 'Get Brave Search API key' })).toHaveAttribute(
-      'href',
-      'https://api-dashboard.search.brave.com/app/keys',
-    )
+    expect(screen.queryByText('Tavily')).not.toBeInTheDocument()
+    expect(screen.queryByText('Brave')).not.toBeInTheDocument()
+    expect(document.querySelector('input[type="password"]')).toBeNull()
   })
 
   it('keeps extension tabs available alongside the terminal tab', () => {

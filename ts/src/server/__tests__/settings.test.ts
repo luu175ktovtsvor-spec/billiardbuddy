@@ -430,23 +430,67 @@ describe('Settings API', () => {
     expect(body2.model).toBe('claude-opus-4-7')
   })
 
-  it('moves web search keys into a 0600 secret file and never returns them from settings APIs', async () => {
+  it('keeps web search settings product-facing without persisting or exposing provider credentials', async () => {
     const update = makeRequest('PUT', '/api/settings/user', {
-      webSearch: { mode: 'tavily', tavilyApiKey: 'tvly-real-secret', braveApiKey: '' },
+      webSearch: {
+        enabled: false,
+        mode: 'tavily',
+        tavilyApiKey: 'tvly-real-secret',
+        braveApiKey: 'brave-real-secret',
+      },
     })
     expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
 
     const settingsRaw = await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')
     expect(settingsRaw).not.toContain('tvly-real-secret')
-    const secretPath = path.join(tmpDir, 'billiardbuddy', 'web-search-secrets.json')
-    expect(await fs.readFile(secretPath, 'utf8')).toContain('tvly-real-secret')
-    expect((await fs.stat(secretPath)).mode & 0o777).toBe(0o600)
+    expect(settingsRaw).not.toContain('brave-real-secret')
+    expect(settingsRaw).not.toContain('tavily')
+    expect(JSON.parse(settingsRaw).webSearch).toEqual({ mode: 'disabled' })
 
     const read = makeRequest('GET', '/api/settings/user')
     const response = await handleSettingsApi(read.req, read.url, read.segments)
     const body = await response.json() as { webSearch: Record<string, unknown> }
-    expect(body.webSearch).toMatchObject({ mode: 'tavily', tavilyConfigured: true, braveConfigured: false })
+    expect(body.webSearch).toEqual({ enabled: false })
     expect(JSON.stringify(body)).not.toContain('tvly-real-secret')
+    expect(JSON.stringify(body)).not.toContain('brave-real-secret')
+    expect(JSON.stringify(body)).not.toContain('tavily')
+
+    const enable = makeRequest('PUT', '/api/settings/user', {
+      webSearch: { enabled: true },
+    })
+    expect((await handleSettingsApi(enable.req, enable.url, enable.segments)).status).toBe(200)
+    expect(JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')).webSearch).toEqual({
+      mode: 'auto',
+    })
+  })
+
+  it('projects project-level web search settings through the same safe contract', async () => {
+    const projectRoot = path.join(tmpDir, 'web-search-project')
+    await fs.mkdir(path.join(projectRoot, '.claude'), { recursive: true })
+
+    const update = makeRequest(
+      'PUT',
+      `/api/settings/project?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        webSearch: {
+          mode: 'brave',
+          braveApiKey: 'project-secret',
+        },
+      },
+    )
+    expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
+
+    const settingsRaw = await fs.readFile(path.join(projectRoot, '.claude', 'settings.json'), 'utf8')
+    expect(settingsRaw).not.toContain('project-secret')
+    expect(settingsRaw).not.toContain('brave')
+    expect(JSON.parse(settingsRaw).webSearch).toEqual({ mode: 'auto' })
+
+    const read = makeRequest(
+      'GET',
+      `/api/settings/project?projectRoot=${encodeURIComponent(projectRoot)}`,
+    )
+    const response = await handleSettingsApi(read.req, read.url, read.segments)
+    expect(await response.json()).toMatchObject({ webSearch: { enabled: true } })
   })
 
   it('PUT /api/settings/user should sync thinking changes to active CLI sessions', async () => {
