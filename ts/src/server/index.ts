@@ -18,7 +18,6 @@ import { handlePreviewFs } from './api/previewFs.js'
 import { handleLocalFile } from './api/localFile.js'
 import { sessionService } from './services/sessionService.js'
 import { conversationService } from './services/conversationService.js'
-import { ensureDesktopCliLauncherInstalled } from './services/desktopCliLauncherService.js'
 import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
@@ -457,13 +456,6 @@ export function startServer(port = PORT, host = HOST) {
 
   // Start the cron scheduler to execute scheduled tasks
   cronScheduler.start()
-
-  void ensureDesktopCliLauncherInstalled().catch((error) => {
-    console.error(
-        '[desktop-cli-launcher] failed to install bundled launcher:',
-        error instanceof Error ? error.message : error,
-    )
-  })
 
   console.log(`[Server] BilliardBuddy Agent service running at http://${host}:${serverPort}`)
   return server

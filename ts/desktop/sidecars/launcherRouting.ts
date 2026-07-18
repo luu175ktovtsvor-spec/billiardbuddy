@@ -1,13 +1,9 @@
-import path from 'node:path'
-
 export type SidecarMode = 'server' | 'cli'
 
 const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'cli'])
-const DESKTOP_CLI_NAMES = new Set(['billiardbuddy', 'billiardbuddy.exe'])
 
 export function resolveSidecarInvocation(
   rawArgs: string[],
-  execPath: string = process.execPath,
   envAppRoot: string | null = process.env.CLAUDE_APP_ROOT ?? null,
 ): {
   mode: SidecarMode | null
@@ -20,15 +16,6 @@ export function resolveSidecarInvocation(
       mode: explicitMode as SidecarMode,
       restArgs: rawArgs.slice(1),
       defaultAppRoot: envAppRoot,
-    }
-  }
-
-  const execName = path.basename(execPath).toLowerCase()
-  if (DESKTOP_CLI_NAMES.has(execName)) {
-    return {
-      mode: 'cli',
-      restArgs: rawArgs,
-      defaultAppRoot: envAppRoot ?? path.dirname(execPath),
     }
   }
 

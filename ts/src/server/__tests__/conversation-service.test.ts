@@ -802,17 +802,25 @@ describe('ConversationService', () => {
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
   })
 
-  test('uses bun entrypoint fallback on Windows dev mode', () => {
-    const service = new ConversationService() as any
-    const args = service.resolveCliArgs(['--print'])
+  test('uses the internal agent entrypoint when no sidecar launcher is configured', () => {
+    const originalCliPath = process.env.CLAUDE_CLI_PATH
+    delete process.env.CLAUDE_CLI_PATH
 
-    if (process.platform === 'win32') {
+    try {
+      const service = new ConversationService() as any
+      const args = service.resolveCliArgs(['--print'])
+
       expect(args[0]).toBe(process.execPath)
-      expect(args[1]).toBe('--preload')
-      expect(args[2]).toContain('preload.ts')
-      expect(args[3]).toContain(path.join('src', 'entrypoints', 'cli.tsx'))
-    } else {
-      expect(args[0]).toContain(path.join('bin', 'billiardbuddy'))
+      expect(args[1]).toBe('--no-env-file')
+      expect(args[2]).toBe('--preload')
+      expect(args[3]).toContain('preload.ts')
+      expect(args[4]).toContain(path.join('src', 'entrypoints', 'cli.tsx'))
+    } finally {
+      if (originalCliPath === undefined) {
+        delete process.env.CLAUDE_CLI_PATH
+      } else {
+        process.env.CLAUDE_CLI_PATH = originalCliPath
+      }
     }
   })
 
