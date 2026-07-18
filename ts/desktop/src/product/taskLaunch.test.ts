@@ -42,10 +42,10 @@ describe('launchProductTask', () => {
       openTask,
       connectToSession,
       sendMessage,
-    }, input, '  请整理本周开球训练计划  ')).resolves.toBe(task)
+    }, input, { text: '  请整理本周开球训练计划  ' })).resolves.toBe(task)
 
     expect(createTask).toHaveBeenCalledWith(input)
-    expect(sendMessage).toHaveBeenCalledWith('session-1', '请整理本周开球训练计划')
+    expect(sendMessage).toHaveBeenCalledWith('session-1', '请整理本周开球训练计划', [])
     expect(events).toEqual([
       `create:${JSON.stringify(input)}`,
       'refresh',
@@ -66,7 +66,7 @@ describe('launchProductTask', () => {
       openTask: vi.fn(),
       connectToSession,
       sendMessage,
-    }, { workDir: '/workspace/billiard' }, '   ')
+    }, { workDir: '/workspace/billiard' }, { text: '   ' })
 
     expect(connectToSession).toHaveBeenCalledWith('session-1')
     expect(sendMessage).not.toHaveBeenCalled()
@@ -87,12 +87,44 @@ describe('launchProductTask', () => {
       openTask: vi.fn(),
       connectToSession: vi.fn(),
       sendMessage,
-    }, input, ' /venue-daily-review 今天营业额和昨天对比 ')
+    }, input, { text: ' /venue-daily-review 今天营业额和昨天对比 ' })
 
     expect(createTask).toHaveBeenCalledWith(input)
     expect(sendMessage).toHaveBeenCalledWith(
       'session-1',
       '/venue-daily-review 今天营业额和昨天对比',
+      [],
     )
+  })
+
+  it('sends attachment refs through the real chat path even when the initial text is blank', async () => {
+    const task = makeTask()
+    const createTask = vi.fn(async () => task)
+    const sendMessage = vi.fn()
+    const attachments = [
+      {
+        type: 'image' as const,
+        name: '开球站位.png',
+        data: 'data:image/png;base64,cG9zaXRpb24=',
+        mimeType: 'image/png',
+      },
+      {
+        type: 'file' as const,
+        name: '训练记录.csv',
+        path: '/workspace/billiard/训练记录.csv',
+      },
+    ]
+    const input = { workDir: '/workspace/billiard', title: '复盘开球' }
+
+    await launchProductTask({
+      createTask,
+      refreshSessions: vi.fn(async () => undefined),
+      openTask: vi.fn(),
+      connectToSession: vi.fn(),
+      sendMessage,
+    }, input, { text: '   ', attachments })
+
+    expect(createTask).toHaveBeenCalledWith(input)
+    expect(sendMessage).toHaveBeenCalledWith('session-1', '', attachments)
   })
 })

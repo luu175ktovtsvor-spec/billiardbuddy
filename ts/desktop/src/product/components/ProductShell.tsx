@@ -4,7 +4,7 @@ import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
-import { launchProductTask } from '../taskLaunch'
+import { launchProductTask, type ProductTaskInitialMessage } from '../taskLaunch'
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 
 export function ProductShell() {
@@ -36,14 +36,14 @@ export function ProductShell() {
     connectToTaskSession(task.coreSessionId)
   }
 
-  const createAndOpenTask = async (input: CreateProductTaskInput, initialText?: string) => (
+  const createAndOpenTask = async (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => (
     launchProductTask({
       createTask,
       refreshSessions,
       openTask: openTaskTab,
       connectToSession: connectToTaskSession,
-      sendMessage: (sessionId, content) => useChatStore.getState().sendMessage(sessionId, content),
-    }, input, initialText)
+      sendMessage: (sessionId, content, attachments) => useChatStore.getState().sendMessage(sessionId, content, attachments),
+    }, input, initialMessage)
   )
 
   const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => {

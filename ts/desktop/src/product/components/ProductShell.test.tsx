@@ -149,12 +149,34 @@ describe('ProductShell', () => {
     }
 
     await act(async () => {
-      await taskIndexProps().onCreateTask(input, '请整理本周开球训练计划')
+      await taskIndexProps().onCreateTask(input, { text: '请整理本周开球训练计划' })
     })
 
     expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
     expect(mocks.connectToSession).toHaveBeenCalledTimes(1)
-    expect(mocks.sendMessage).toHaveBeenCalledWith('session-1', '请整理本周开球训练计划')
+    expect(mocks.sendMessage).toHaveBeenCalledWith('session-1', '请整理本周开球训练计划', [])
+    expect(mocks.events).toEqual(['create', 'refresh-sessions', 'open-tab', 'connect', 'send-message'])
+  })
+
+  it('forwards initial attachment refs to the existing chat store without putting them into task creation', async () => {
+    render(<ProductShell />)
+    const input: CreateProductTaskInput = {
+      workDir: '/workspace/billiard',
+      title: '识别球台照片',
+    }
+    const attachments = [{
+      type: 'image' as const,
+      name: '球台.png',
+      data: 'data:image/png;base64,dGFibGU=',
+      mimeType: 'image/png',
+    }]
+
+    await act(async () => {
+      await taskIndexProps().onCreateTask(input, { attachments })
+    })
+
+    expect(mocks.createTask).toHaveBeenCalledWith(input)
+    expect(mocks.sendMessage).toHaveBeenCalledWith('session-1', '', attachments)
     expect(mocks.events).toEqual(['create', 'refresh-sessions', 'open-tab', 'connect', 'send-message'])
   })
 })

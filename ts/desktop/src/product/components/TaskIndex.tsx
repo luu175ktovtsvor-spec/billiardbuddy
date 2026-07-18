@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -8,12 +8,20 @@ import type {
   ProductTaskRecord,
 } from '../domain/types'
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
+import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
 import { skillsApi } from '../../api/skills'
+import {
+  filesToComposerAttachments,
+  selectNativeFileAttachments,
+  type ComposerAttachment,
+} from '../../lib/composerAttachments'
 import type { PermissionMode } from '../../types/settings'
+import type { AttachmentRef } from '../../types/chat'
 import type { SkillMeta } from '../../types/skill'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
+import type { ProductTaskInitialMessage } from '../taskLaunch'
 
 export type TaskIndexProps = {
   index: ProductTaskIndexResponse
@@ -21,7 +29,7 @@ export type TaskIndexProps = {
   error: string | null
   mutations: Record<string, boolean | undefined>
   onRefresh: () => Promise<void>
-  onCreateTask: (input: CreateProductTaskInput, initialText?: string) => Promise<unknown>
+  onCreateTask: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<unknown>
   onRenameTask: (taskId: string, title: string) => Promise<unknown>
   onPinTask: (taskId: string) => Promise<unknown>
   onUnpinTask: (taskId: string) => Promise<unknown>
@@ -155,9 +163,9 @@ export function TaskIndex({
           projects={index.projects}
           isSubmitting={mutations.create === true}
           onCancel={() => setComposerOpen(false)}
-          onSubmit={async (input, initialText) => {
+          onSubmit={async (input, initialMessage) => {
             try {
-              if (initialText) await onCreateTask(input, initialText)
+              if (initialMessage) await onCreateTask(input, initialMessage)
               else await onCreateTask(input)
               setComposerOpen(false)
             } catch {
@@ -237,18 +245,20 @@ function TaskComposer({
   projects: ProductProject[]
   isSubmitting: boolean
   onCancel: () => void
-  onSubmit: (input: CreateProductTaskInput, initialText?: string) => Promise<void>
+  onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
 }) {
   const [projectId, setProjectId] = useState('')
   const [workDir, setWorkDir] = useState('')
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [useWorktree, setUseWorktree] = useState(false)
   const [discoverableSkills, setDiscoverableSkills] = useState<SkillMeta[] | null>(null)
   const [skillDiscoveryWorkDir, setSkillDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const desktopHost = getDesktopHost()
   const canChooseWorkDir = desktopHost.isDesktop && desktopHost.capabilities.dialogs
   const normalizedWorkDir = workDir.trim()
@@ -321,6 +331,54 @@ function TaskComposer({
     }
   }
 
+  const appendAttachments = (nextAttachments: ComposerAttachment[]) => {
+    if (nextAttachments.length === 0) return
+    setAttachments((current) => [...current, ...nextAttachments])
+  }
+
+  const openAttachmentPicker = () => {
+    void selectNativeFileAttachments()
+      .then((nativeAttachments) => {
+        if (nativeAttachments) {
+          appendAttachments(nativeAttachments)
+          return
+        }
+        fileInputRef.current?.click()
+      })
+      .catch(() => {
+        fileInputRef.current?.click()
+      })
+  }
+
+  const selectBrowserFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files) return
+
+    void filesToComposerAttachments(files)
+      .then(appendAttachments)
+      .catch(() => {
+        // File input remains available for another selection.
+      })
+    event.target.value = ''
+  }
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
+  }
+
+  const attachmentRefs = (): AttachmentRef[] => attachments.map((attachment) => ({
+    type: attachment.type,
+    name: attachment.name,
+    path: attachment.path,
+    data: attachment.data,
+    mimeType: attachment.mimeType,
+    isDirectory: attachment.isDirectory,
+    lineStart: attachment.lineStart,
+    lineEnd: attachment.lineEnd,
+    note: attachment.note,
+    quote: attachment.quote,
+  }))
+
   return (
     <form
       className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
@@ -333,9 +391,13 @@ function TaskComposer({
           ...(useWorktree ? { useWorktree: true } : {}),
           ...(permissionMode !== 'default' ? { permissionMode } : {}),
         }
-        const normalizedInitialText = initialText.trim()
-        void (normalizedInitialText
-          ? onSubmit(taskInput, normalizedInitialText)
+        const initialAttachments = attachmentRefs()
+        const initialMessage: ProductTaskInitialMessage = {
+          text: initialText.trim(),
+          attachments: initialAttachments,
+        }
+        void (initialMessage.text || initialAttachments.length > 0
+          ? onSubmit(taskInput, initialMessage)
           : onSubmit(taskInput))
       }}
     >
@@ -373,6 +435,27 @@ function TaskComposer({
             className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
         </label>
+        {attachments.length > 0 ? (
+          <div className="pt-1">
+            <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
+          </div>
+        ) : null}
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={selectBrowserFiles}
+          />
+          <button
+            type="button"
+            onClick={openAttachmentPicker}
+            className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]"
+          >
+            添加初始附件
+          </button>
+        </div>
         {query !== null ? (
           <SkillSlashPicker
             workDir={normalizedWorkDir}
