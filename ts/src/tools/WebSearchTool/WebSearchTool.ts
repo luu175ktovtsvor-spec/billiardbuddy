@@ -26,6 +26,7 @@ import {
   markAnthropicNativeUnsupported,
   resolveWebSearchProvider,
   searchWithExternalProvider,
+  searchWithProductGateway,
   shouldFallbackFromNativeError,
 } from './backend.js'
 import { getWebSearchPrompt, WEB_SEARCH_TOOL_NAME } from './prompt.js'
@@ -38,13 +39,15 @@ import {
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    query: z.string().min(2).describe('The search query to use'),
+    query: z.string().min(2).max(500).describe('The search query to use'),
     allowed_domains: z
       .array(z.string())
+      .max(20)
       .optional()
       .describe('Only include search results from these domains'),
     blocked_domains: z
       .array(z.string())
+      .max(20)
       .optional()
       .describe('Never include search results from these domains'),
   }),
@@ -232,6 +235,27 @@ export const WebSearchTool = buildTool({
         errorCode: 1,
       }
     }
+    if (query.trim().length < 2 || query.length > 500) {
+      return {
+        result: false,
+        message: 'Error: Search query must be between 2 and 500 characters',
+        errorCode: 3,
+      }
+    }
+    if ((allowed_domains?.length ?? 0) > 20 || (blocked_domains?.length ?? 0) > 20) {
+      return {
+        result: false,
+        message: 'Error: A maximum of 20 domain filters is allowed',
+        errorCode: 4,
+      }
+    }
+    if (![...(allowed_domains ?? []), ...(blocked_domains ?? [])].every(isSafeSearchDomain)) {
+      return {
+        result: false,
+        message: 'Error: Domain filters must contain host names only',
+        errorCode: 5,
+      }
+    }
     if (allowed_domains?.length && blocked_domains?.length) {
       return {
         result: false,
@@ -254,14 +278,39 @@ export const WebSearchTool = buildTool({
         data: makeWebSearchUnavailableOutput(
           query,
           durationSeconds,
-          'Web search is not configured for this model. Use a Claude model for native web search or add a Tavily/Brave API key in Settings.',
+          'Web search is not available for this task.',
         ),
       }
     }
 
+    if (resolved.provider === 'product') {
+      onProgress?.({
+        toolUseID: 'web-search',
+        data: {
+          type: 'query_update',
+          query,
+        },
+      })
+      const data = await searchWithProductGateway(
+        input,
+        context.abortController.signal,
+        resolved.productGatewayUrl ?? null,
+      )
+      onProgress?.({
+        toolUseID: 'web-search',
+        data: {
+          type: 'search_results_received',
+          resultCount:
+            typeof data.results[1] === 'object' ? data.results[1].content.length : 0,
+          query,
+        },
+      })
+      return { data }
+    }
+
     if (resolved.provider === 'tavily' || resolved.provider === 'brave') {
       onProgress?.({
-        toolUseID: `${resolved.provider}-web-search`,
+        toolUseID: 'web-search',
         data: {
           type: 'query_update',
           query,
@@ -274,7 +323,7 @@ export const WebSearchTool = buildTool({
           data: makeWebSearchUnavailableOutput(
             query,
             durationSeconds,
-            `Web search provider ${resolved.provider} is selected but its API key is missing.`,
+            'Web search is not available for this task.',
           ),
         }
       }
@@ -285,7 +334,7 @@ export const WebSearchTool = buildTool({
         context.abortController.signal,
       )
       onProgress?.({
-        toolUseID: `${resolved.provider}-web-search`,
+        toolUseID: 'web-search',
         data: {
           type: 'search_results_received',
           resultCount:
@@ -304,8 +353,19 @@ export const WebSearchTool = buildTool({
         startTime,
       )
     } catch (error) {
-      if (!shouldFallbackFromNativeError(error)) {
-        throw error
+      // Explicit native mode stays native. In legacy auto mode we retain the
+      // pre-existing user-key fallback, but the product gateway never reaches
+      // this branch and can therefore never silently switch provider.
+      if (!shouldFallbackFromNativeError(error) || resolved.settings.mode !== 'auto') {
+        const durationSeconds = (performance.now() - startTime) / 1000
+        logError(error instanceof Error ? error : new Error(String(error)))
+        return {
+          data: makeWebSearchUnavailableOutput(
+            query,
+            durationSeconds,
+            'Web search is temporarily unavailable. Please try again.',
+          ),
+        }
       }
 
       markAnthropicNativeUnsupported(model)
@@ -317,7 +377,7 @@ export const WebSearchTool = buildTool({
           data: makeWebSearchUnavailableOutput(
             query,
             durationSeconds,
-            'Native Anthropic web search failed for this endpoint, and no Tavily/Brave API key is configured for fallback.',
+            'Web search is temporarily unavailable. Please try again.',
           ),
         }
       }
@@ -329,7 +389,7 @@ export const WebSearchTool = buildTool({
           data: makeWebSearchUnavailableOutput(
             query,
             durationSeconds,
-            `Fallback provider ${fallbackProvider} is configured without an API key.`,
+            'Web search is not available for this task.',
           ),
         }
       }
@@ -530,4 +590,20 @@ async function callAnthropicNativeWebSearch(
     durationSeconds,
   )
   return { data }
+}
+
+function isSafeSearchDomain(value: string): boolean {
+  const domain = value.trim().toLowerCase()
+  return (
+    domain.length > 0 &&
+    domain.length <= 253 &&
+    !domain.includes(':') &&
+    !domain.includes('@') &&
+    !domain.includes('/') &&
+    !domain.includes('?') &&
+    !domain.includes('#') &&
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+      domain,
+    )
+  )
 }

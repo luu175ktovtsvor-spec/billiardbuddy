@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  getProductWebSearchProxyUrl,
   isLikelyClaudeModel,
   isWebSearchEnabledForModel,
   resolveWebSearchProvider,
   searchWithExternalProvider,
+  searchWithProductGateway,
   shouldFallbackFromNativeError,
 } from './backend.js'
 
@@ -21,7 +23,7 @@ describe('WebSearch backend resolver', () => {
         mode: 'auto',
         tavilyApiKey: 'tvly-key',
         braveApiKey: 'brave-key',
-      }).provider,
+      }, { productGatewayUrl: null }).provider,
     ).toBe('anthropic')
   })
 
@@ -31,42 +33,64 @@ describe('WebSearch backend resolver', () => {
         mode: 'auto',
         tavilyApiKey: 'tvly-key',
         braveApiKey: 'brave-key',
-      }).provider,
+      }, { productGatewayUrl: null }).provider,
     ).toBe('tavily')
 
     expect(
       resolveWebSearchProvider('gpt-5.4', {
         mode: 'auto',
         braveApiKey: 'brave-key',
-      }).provider,
+      }, { productGatewayUrl: null }).provider,
     ).toBe('brave')
   })
 
   test('explicit provider modes require their API key', () => {
-    expect(resolveWebSearchProvider('gpt-5.4', { mode: 'tavily' }).provider).toBe(
+    expect(resolveWebSearchProvider('gpt-5.4', { mode: 'tavily' }, { productGatewayUrl: null }).provider).toBe(
       'disabled',
     )
     expect(
       resolveWebSearchProvider('gpt-5.4', {
         mode: 'brave',
         braveApiKey: 'brave-key',
-      }).provider,
+      }, { productGatewayUrl: null }).provider,
     ).toBe('brave')
   })
 
   test('isEnabled reflects native Claude or external fallback availability', () => {
-    expect(isWebSearchEnabledForModel('claude-sonnet-4-5', { mode: 'auto' })).toBe(
+    expect(isWebSearchEnabledForModel('claude-sonnet-4-5', { mode: 'auto' }, { productGatewayUrl: null })).toBe(
       true,
     )
     expect(
       isWebSearchEnabledForModel('qwen3-coder', {
         mode: 'auto',
         tavilyApiKey: 'tvly-key',
-      }),
+      }, { productGatewayUrl: null }),
     ).toBe(true)
-    expect(isWebSearchEnabledForModel('qwen3-coder', { mode: 'auto' })).toBe(
+    expect(isWebSearchEnabledForModel('qwen3-coder', { mode: 'auto' }, { productGatewayUrl: null })).toBe(
       false,
     )
+  })
+
+  test('managed runtime resolves only the exact loopback qf route and does not silently use user keys', () => {
+    const productUrl = getProductWebSearchProxyUrl(
+      'http://127.0.0.1:4599/proxy/providers/qf-gateway',
+    )
+    expect(productUrl).toBe('http://127.0.0.1:4599/proxy/providers/qf-gateway/v1/web_search')
+    expect(getProductWebSearchProxyUrl('https://gateway.example/proxy/providers/qf-gateway')).toBeNull()
+    expect(getProductWebSearchProxyUrl('http://127.0.0.1:4599/proxy/providers/other')).toBeNull()
+
+    const resolved = resolveWebSearchProvider('deepseek-v4-flash', {
+      mode: 'auto',
+      tavilyApiKey: 'tvly-user-key',
+      braveApiKey: 'brave-user-key',
+    }, { productGatewayUrl: productUrl })
+    expect(resolved).toMatchObject({ provider: 'product', productGatewayUrl: productUrl })
+
+    // Explicit user choices remain supported and override the product default.
+    expect(resolveWebSearchProvider('deepseek-v4-flash', {
+      mode: 'brave',
+      braveApiKey: 'brave-user-key',
+    }, { productGatewayUrl: productUrl }).provider).toBe('brave')
   })
 
   test('falls back on native tool schema/provider mismatch errors', () => {
@@ -86,7 +110,7 @@ describe('WebSearch backend resolver', () => {
       'tavily',
       {
         query: '台球赛事',
-        allowed_domains: ['Example.com', 'bad.example OR site:evil.test'],
+        allowed_domains: ['Example.com'],
       },
       'tvly-secret',
       new AbortController().signal,
@@ -111,7 +135,7 @@ describe('WebSearch backend resolver', () => {
     const signal = new AbortController().signal
     const output = await searchWithExternalProvider(
       'brave',
-      { query: '球房经营', blocked_domains: ['spam.example', 'spam.example', 'bad path'] },
+      { query: '球房经营', blocked_domains: ['spam.example', 'spam.example'] },
       'brave-secret',
       signal,
       async (input, init) => {
@@ -125,10 +149,60 @@ describe('WebSearch backend resolver', () => {
 
     await expect(searchWithExternalProvider(
       'brave',
+      { query: '球房经营', blocked_domains: ['bad path'] },
+      'brave-secret',
+      signal,
+      async () => Response.json({ web: { results: [] } }),
+    )).rejects.toThrow('Web search domain filters are invalid.')
+
+    await expect(searchWithExternalProvider(
+      'brave',
       { query: '失败' },
       'brave-secret',
       signal,
       async () => new Response('x'.repeat(800), { status: 503 }),
-    )).rejects.toThrow(/^Brave search failed: 503 x{500}$/)
+    )).rejects.toThrow('Web search is temporarily unavailable. Please try again.')
+  })
+
+  test('product gateway search sends no credential, clamps output, and redacts proxy failures', async () => {
+    let captured: { url: string; init?: RequestInit } | null = null
+    const output = await searchWithProductGateway(
+      { query: ' 球房经营 ', allowed_domains: ['example.com'] },
+      new AbortController().signal,
+      'http://127.0.0.1:4599/proxy/providers/qf-gateway/v1/web_search',
+      async (input, init) => {
+        captured = { url: String(input), init }
+        return Response.json({
+          results: [
+            { title: '公开结果', url: 'https://example.com/guide', snippet: 'safe' },
+            { title: '坏协议', url: 'javascript:alert(1)' },
+            ...Array.from({ length: 10 }, (_, index) => ({
+              title: `结果 ${index}`,
+              url: `https://example.com/${index}`,
+            })),
+          ],
+          token: 'must-not-flow-through',
+        })
+      },
+    )
+    expect(captured?.url).toBe('http://127.0.0.1:4599/proxy/providers/qf-gateway/v1/web_search')
+    expect(captured?.init?.headers).toEqual({ Accept: 'application/json', 'Content-Type': 'application/json' })
+    expect(JSON.parse(String(captured?.init?.body))).toEqual({
+      query: '球房经营',
+      allowed_domains: ['example.com'],
+    })
+    const result = output.results[1]
+    expect(typeof result).toBe('object')
+    if (result && typeof result === 'object') {
+      expect(result.content).toHaveLength(8)
+    }
+    expect(JSON.stringify(output)).not.toContain('must-not-flow-through')
+
+    await expect(searchWithProductGateway(
+      { query: '球房经营' },
+      new AbortController().signal,
+      'http://127.0.0.1:4599/proxy/providers/qf-gateway/v1/web_search',
+      async () => new Response('gateway token=qf-secret', { status: 503 }),
+    )).rejects.toThrow('Web search is temporarily unavailable. Please try again.')
   })
 })
