@@ -119,6 +119,11 @@ describe('Skills API', () => {
       displayName: '复盘今天经营',
       source: 'bundled',
     }))
+    expect(body.skills).toContainEqual(expect.objectContaining({
+      name: 'boss-recruiting',
+      displayName: '招聘球房员工',
+      source: 'bundled',
+    }))
     expect(body.skills).not.toContainEqual(expect.objectContaining({ name: 'simplify', source: 'bundled' }))
   })
 
