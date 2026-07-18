@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNod
 import {
   ArrowLeft,
   Bot,
-  Brain,
   ChevronDown,
   CircleHelp,
   Cpu,
@@ -32,7 +31,6 @@ import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
 import { DiagnosticsSettings } from './DiagnosticsSettings'
-import { MemorySettings } from './MemorySettings'
 import { ProfileSettings } from './ProfileSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
@@ -66,7 +64,6 @@ const CAPABILITY_SETTINGS: SettingsNavItem[] = [
   { tab: 'plugins', icon: <Puzzle size={16} /> },
   { tab: 'computerUse', icon: <Cpu size={16} /> },
   { tab: 'skills', icon: <Sparkles size={16} /> },
-  { tab: 'memory', icon: <Brain size={16} /> },
 ]
 
 const ADVANCED_SETTINGS: SettingsNavItem[] = [
@@ -82,7 +79,6 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   mcp: 'settings.tab.mcp',
   agents: 'settings.tab.agents',
   skills: 'settings.tab.skills',
-  memory: 'settings.tab.memory',
   plugins: 'settings.tab.plugins',
   computerUse: 'settings.tab.computerUse',
   diagnostics: 'settings.tab.diagnostics',
@@ -95,7 +91,6 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   mcp: '外部连接',
   agents: '协作助手',
   skills: '工作方法',
-  memory: '记忆',
   plugins: '插件',
   computerUse: '电脑操作',
   diagnostics: '诊断',
@@ -220,7 +215,6 @@ export function Settings() {
     if (activeTab === 'mcp') return <McpSettings />
     if (activeTab === 'agents') return <AgentsSettings />
     if (activeTab === 'skills') return <SkillSettings />
-    if (activeTab === 'memory') return <MemorySettings />
     if (activeTab === 'plugins') return <PluginSettings />
     if (activeTab === 'computerUse') return <ComputerUseSettings />
     if (activeTab === 'diagnostics') return <DiagnosticsSettings />

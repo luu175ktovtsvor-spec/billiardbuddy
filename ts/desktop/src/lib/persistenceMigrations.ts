@@ -26,7 +26,6 @@ const SETTINGS_TABS = [
   'mcp',
   'agents',
   'skills',
-  'memory',
   'plugins',
   'computerUse',
   'diagnostics',

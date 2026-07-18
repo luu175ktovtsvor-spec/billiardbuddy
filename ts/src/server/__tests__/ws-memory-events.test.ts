@@ -73,17 +73,20 @@ describe('WebSocket memory events', () => {
     }, 'session-1')).toEqual([])
   })
 
-  it('forwards CLI memory_saved system messages to the desktop client', () => {
+  it('forwards only a safe memory count to the desktop client', () => {
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_MEMORY_WS_MESSAGE'
     const messages = translateCliMessage(
       {
         type: 'system',
         subtype: 'memory_saved',
         writtenPaths: [
-          '/Users/test/.claude/projects/example/memory/preferences.md',
+          privatePath,
           '/Users/test/.claude/projects/example/memory/team/MEMORY.md',
         ],
         teamCount: 1,
         verb: 'Saved',
+        message: privateMessage,
       },
       'session-1',
     )
@@ -92,17 +95,13 @@ describe('WebSocket memory events', () => {
       {
         type: 'system_notification',
         subtype: 'memory_saved',
-        message: undefined,
         data: {
-          writtenPaths: [
-            '/Users/test/.claude/projects/example/memory/preferences.md',
-            '/Users/test/.claude/projects/example/memory/team/MEMORY.md',
-          ],
-          teamCount: 1,
-          verb: 'Saved',
+          writtenCount: 2,
         },
       },
     ])
+    expect(JSON.stringify(messages)).not.toContain(privatePath)
+    expect(JSON.stringify(messages)).not.toContain(privateMessage)
   })
 })
 
@@ -586,6 +585,58 @@ describe('WebSocket goal command events', () => {
     })).toBe(false)
   })
 
+})
+
+describe('WebSocket memory command events', () => {
+  it('keeps /memory completion visible without forwarding a local memory path', () => {
+    const sessionId = `memory-command-${crypto.randomUUID()}`
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+
+    expect(translateCliMessage({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/memory</command-name>',
+    }, sessionId)).toEqual([])
+
+    const messages = translateCliMessage({
+      type: 'system',
+      subtype: 'local_command_output',
+      content: `<local-command-stdout>Opened memory file at ${privatePath}\n\n> Using $EDITOR="code".</local-command-stdout>`,
+    }, sessionId)
+
+    expect(messages).toEqual([
+      { type: 'content_start', blockType: 'text' },
+      { type: 'content_delta', text: 'Memory editor opened.' },
+    ])
+    expect(JSON.stringify(messages)).not.toContain(privatePath)
+  })
+
+  it('sanitizes /memory output when the CLI reports it in a user message', () => {
+    const sessionId = `memory-command-user-${crypto.randomUUID()}`
+    const privatePath = '/Users/test/.claude/projects/example/memory/team/MEMORY.md'
+
+    expect(translateCliMessage({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/memory</command-name>',
+    }, sessionId)).toEqual([])
+
+    const messages = translateCliMessage({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'text',
+          text: `<local-command-stdout>Opened memory file at ${privatePath}</local-command-stdout>`,
+        }],
+      },
+    }, sessionId)
+
+    expect(messages).toEqual([
+      { type: 'content_start', blockType: 'text' },
+      { type: 'content_delta', text: 'Memory editor opened.' },
+    ])
+    expect(JSON.stringify(messages)).not.toContain(privatePath)
+  })
 })
 
 describe('WebSocket stream event translation', () => {

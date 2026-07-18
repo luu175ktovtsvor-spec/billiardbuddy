@@ -235,12 +235,6 @@ export type BackgroundAgentTask = {
   updatedAt: number
 }
 
-export type MemoryEventFile = {
-  path: string
-  action?: 'saved' | 'updated' | 'created' | 'deleted' | 'loaded' | 'failed'
-  summary?: string
-}
-
 export type GoalEventAction = 'created' | 'replaced' | 'status' | 'paused' | 'resumed' | 'completed' | 'cleared' | 'message'
 
 export type ActiveGoalState = {
@@ -309,9 +303,7 @@ export type UIMessage =
       id: string
       type: 'memory_event'
       event: 'saved' | 'updated' | 'loaded' | 'failed'
-      files: MemoryEventFile[]
-      message?: string
-      teamCount?: number
+      count: number
       timestamp: number
     }
   | {

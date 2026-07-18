@@ -10,6 +10,7 @@
 
 import { teamService } from '../services/teamService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { projectSessionMessagesForProduct } from './productMessageProjection.js'
 
 export async function handleTeamsApi(
   req: Request,
@@ -36,7 +37,7 @@ export async function handleTeamsApi(
     ) {
       const agentId = decodeURIComponent(segments[4])
       const messages = await teamService.getMemberTranscript(teamName, agentId)
-      return Response.json({ messages })
+      return Response.json({ messages: projectSessionMessagesForProduct(messages) })
     }
 
     // ── POST /api/teams/:name/members/:id/messages ─────────────────────────

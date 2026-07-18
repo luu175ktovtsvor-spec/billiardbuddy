@@ -2559,6 +2559,54 @@ describe('Sessions API', () => {
     expect(body.messages).toHaveLength(2)
   })
 
+  it('projects saved-memory transcript data before returning session history', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeee9999'
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_MEMORY_REST_MESSAGE'
+    await writeSessionFile('-tmp-api-memory-projection', sessionId, [
+      makeSnapshotEntry(),
+      {
+        parentUuid: null,
+        isSidechain: false,
+        type: 'system',
+        message: {
+          role: 'system',
+          content: {
+            subtype: 'memory_saved',
+            writtenPaths: [
+              privatePath,
+              '/Users/test/.claude/projects/example/memory/team/MEMORY.md',
+            ],
+            message: privateMessage,
+            teamCount: 1,
+            verb: 'Saved',
+          },
+        },
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-01-01T00:03:00.000Z',
+      },
+    ])
+
+    const expectSafeMemoryHistory = (body: { messages: Array<{ type: string; content: unknown }> }) => {
+      const memory = body.messages.find((message) => message.type === 'system')
+      expect(memory).toBeDefined()
+      expect(memory?.content).toEqual({
+        subtype: 'memory_saved',
+        writtenCount: 2,
+      })
+      expect(JSON.stringify(body)).not.toContain(privatePath)
+      expect(JSON.stringify(body)).not.toContain(privateMessage)
+    }
+
+    const detailResponse = await fetch(`${baseUrl}/api/sessions/${sessionId}`)
+    expect(detailResponse.status).toBe(200)
+    expectSafeMemoryHistory(await detailResponse.json() as { messages: Array<{ type: string; content: unknown }> })
+
+    const messagesResponse = await fetch(`${baseUrl}/api/sessions/${sessionId}/messages`)
+    expect(messagesResponse.status).toBe(200)
+    expectSafeMemoryHistory(await messagesResponse.json() as { messages: Array<{ type: string; content: unknown }> })
+  })
+
   it('GET /api/sessions/:id should 404 for unknown session', async () => {
     const res = await fetch(`${baseUrl}/api/sessions/00000000-0000-0000-0000-000000000000`)
     expect(res.status).toBe(404)

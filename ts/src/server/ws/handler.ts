@@ -20,6 +20,7 @@ import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
+import { projectMemorySavedData } from '../api/productMessageProjection.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
@@ -1533,9 +1534,13 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
       if (localCommandOutput) {
         const pendingLocalCommand = streamState.pendingLocalCommand
         streamState.pendingLocalCommand = undefined
-        if (!isCompactLocalCommandOutput(localCommandOutput)) {
+        const productOutput = projectLocalCommandOutput(
+          localCommandOutput,
+          pendingLocalCommand,
+        )
+        if (!isCompactLocalCommandOutput(productOutput)) {
           const goalEvent = extractGoalEvent(
-            localCommandOutput,
+            productOutput,
             pendingLocalCommand,
           )
           if (goalEvent) {
@@ -1547,7 +1552,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
             })
           } else {
             messages.push({ type: 'content_start', blockType: 'text' })
-            messages.push({ type: 'content_delta', text: localCommandOutput })
+            messages.push({ type: 'content_delta', text: productOutput })
           }
         }
       }
@@ -1786,15 +1791,12 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         return messages
       }
       if (subtype === 'memory_saved') {
+        const data = projectMemorySavedData(cliMsg)
+        if (data.writtenCount === 0) return []
         return [{
           type: 'system_notification',
           subtype: 'memory_saved',
-          message: cliMsg.message,
-          data: {
-            writtenPaths: Array.isArray(cliMsg.writtenPaths) ? cliMsg.writtenPaths : [],
-            teamCount: typeof cliMsg.teamCount === 'number' ? cliMsg.teamCount : undefined,
-            verb: typeof cliMsg.verb === 'string' ? cliMsg.verb : undefined,
-          },
+          data,
         }]
       }
       if (subtype === 'status') {
@@ -1834,9 +1836,14 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           { allowUntagged: subtype === 'local_command_output' },
         )
         if (!localCommandOutput) return []
-        const goalEvent = extractGoalEvent(
+        const pendingLocalCommand = streamState.pendingLocalCommand
+        const productOutput = projectLocalCommandOutput(
           localCommandOutput,
-          streamState.pendingLocalCommand,
+          pendingLocalCommand,
+        )
+        const goalEvent = extractGoalEvent(
+          productOutput,
+          pendingLocalCommand,
         )
         streamState.pendingLocalCommand = undefined
         if (goalEvent) {
@@ -1849,7 +1856,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         }
         return [
           { type: 'content_start', blockType: 'text' },
-          { type: 'content_delta', text: localCommandOutput },
+          { type: 'content_delta', text: productOutput },
         ]
       }
       // Bug #7: 处理 task/team system 消息
@@ -2235,6 +2242,21 @@ function extractLocalCommandOutput(
   }
 
   return null
+}
+
+function projectLocalCommandOutput(
+  output: string,
+  command: { name: string; args: string } | undefined,
+): string {
+  if (command?.name !== 'memory') return output
+
+  if (/^error opening memory file:/i.test(output.trim())) {
+    return 'Unable to open memory editor.'
+  }
+  if (/^cancelled memory editing/i.test(output.trim())) {
+    return 'Memory editing cancelled.'
+  }
+  return 'Memory editor opened.'
 }
 
 function isCompactLocalCommandOutput(output: string): boolean {

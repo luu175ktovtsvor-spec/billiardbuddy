@@ -33,7 +33,6 @@ export const PANEL_SLASH_COMMANDS = [
 export const SETTINGS_SLASH_COMMANDS = [
   { name: 'config', tab: 'general' as const },
   { name: 'plugin', tab: 'plugins' as const },
-  { name: 'memory', tab: 'memory' as const },
   { name: 'doctor', tab: 'diagnostics' as const },
 ] as const
 
@@ -64,7 +63,7 @@ export const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: 'mcp', description: 'Open available MCP tools for the current chat context' },
   { name: 'help', description: 'Show available desktop and agent commands' },
   { name: 'plugin', description: 'Open desktop plugin controls in Settings' },
-  { name: 'memory', description: 'Open project memory files in Settings' },
+  { name: 'memory', description: 'Manage task memory' },
   { name: 'doctor', description: 'Open Doctor in Diagnostics' },
   { name: 'compact', description: 'Compact conversation context' },
   { name: 'clear', description: 'Clear conversation history' },

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, memo, useState, useCallback, useDeferredValue, useLayoutEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Settings, Target, XCircle } from 'lucide-react'
+import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleStop, FileStack, LoaderCircle, MessageCircle, Target, XCircle } from 'lucide-react'
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionTurnCheckpoint } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
@@ -8,7 +8,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import { useProductSideTaskStore } from '../../product/stores/productSideTaskStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
-import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
+import { useTabStore } from '../../stores/tabStore'
 import { useTeamStore } from '../../stores/teamStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
@@ -861,22 +861,8 @@ function normalizeTurnCheckpoints(response: unknown): SessionTurnCheckpoint[] {
   return checkpoints.filter(isSessionTurnCheckpoint)
 }
 
-function memoryFileLabel(path: string) {
-  const normalized = path.replace(/\\/g, '/')
-  return normalized.split('/').pop() || normalized
-}
-
-function openMemorySettings(path?: string) {
-  const ui = useUIStore.getState()
-  if (path) ui.setPendingMemoryPath(path)
-  ui.setPendingSettingsTab('memory')
-  useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
-}
-
 function MemoryEventCard({ message }: { message: MemoryEvent }) {
   const t = useTranslation()
-  const visibleFiles = message.files.slice(0, 3)
-  const hiddenCount = Math.max(0, message.files.length - visibleFiles.length)
 
   return (
     <div className="mb-3 flex justify-center px-3">
@@ -888,35 +874,8 @@ function MemoryEventCard({ message }: { message: MemoryEvent }) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-medium text-[var(--color-text-primary)]">
-                {t('chat.memorySavedTitle', { count: message.files.length })}
+                {t('chat.memorySavedTitle', { count: message.count })}
               </div>
-              <button
-                type="button"
-                onClick={() => openMemorySettings(message.files[0]?.path)}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-text-primary)]"
-              >
-                <Settings size={13} aria-hidden="true" />
-                {t('chat.memoryOpenSettings')}
-              </button>
-            </div>
-            {message.message ? (
-              <div className="mt-1 text-[var(--color-text-tertiary)]">{message.message}</div>
-            ) : null}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {visibleFiles.map((file) => (
-                <span
-                  key={file.path}
-                  title={file.path}
-                  className="max-w-full truncate rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-mono text-[10px] text-[var(--color-text-secondary)]"
-                >
-                  {memoryFileLabel(file.path)}
-                </span>
-              ))}
-              {hiddenCount > 0 ? (
-                <span className="rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-mono text-[10px] text-[var(--color-text-tertiary)]">
-                  {t('chat.memoryMoreFiles', { count: hiddenCount })}
-                </span>
-              ) : null}
             </div>
           </div>
         </div>
@@ -1082,7 +1041,7 @@ function getMessageContentWeight(message: UIMessage): number {
     case 'goal_event':
       return (message.objective?.length ?? 0) + (message.message?.length ?? 0)
     case 'memory_event':
-      return (message.message?.length ?? 0) + message.files.reduce((total, file) => total + file.path.length + (file.summary?.length ?? 0), 0)
+      return message.count
     case 'background_task':
       return getShallowStringWeight(message.task)
     case 'task_summary':
@@ -1177,7 +1136,7 @@ function getMessageMetricSignature(message: UIMessage): string {
     case 'goal_event':
       return `${message.type}:${message.action}:${message.status ?? ''}:${message.objective?.length ?? 0}:${message.message?.length ?? 0}`
     case 'memory_event':
-      return `${message.type}:${message.event}:${message.files.length}:${message.message?.length ?? 0}`
+      return `${message.type}:${message.event}:${message.count}`
     case 'background_task':
       return `${message.type}:${message.task.taskId}:${message.task.status}:${message.task.updatedAt}`
     case 'permission_request':

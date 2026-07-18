@@ -1181,7 +1181,9 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByText('Generating content')).toBeNull()
   })
 
-  it('renders saved memory events with an entrypoint to memory settings', () => {
+  it('renders saved memory events without exposing a memory path or editor entrypoint', () => {
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_MEMORY_CARD_MESSAGE'
     useChatStore.setState({
       sessions: {
         [ACTIVE_TAB]: makeSessionState({
@@ -1190,11 +1192,12 @@ describe('MessageList nested tool calls', () => {
               id: 'memory-1',
               type: 'memory_event',
               event: 'saved',
-              files: [
-                { path: '/Users/test/.claude/projects/example/memory/preferences.md', action: 'saved' },
-              ],
+              count: 1,
+              // Guard against stale in-memory event shapes being rendered.
+              files: [{ path: privatePath }],
+              message: privateMessage,
               timestamp: 1,
-            },
+            } as unknown as UIMessage,
           ],
         }),
       },
@@ -1203,15 +1206,10 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList sessionId={ACTIVE_TAB} />)
 
     expect(screen.getByText('Saved 1 memory file(s)')).toBeTruthy()
-    expect(screen.getByText('preferences.md')).toBeTruthy()
-
-    const openButton = screen.getByText('Open Memory').closest('button')
-    expect(openButton).toBeTruthy()
-    fireEvent.click(openButton!)
-
-    expect(useUIStore.getState().pendingSettingsTab).toBe('memory')
-    expect(useUIStore.getState().pendingMemoryPath).toBe('/Users/test/.claude/projects/example/memory/preferences.md')
-    expect(useTabStore.getState().activeTabId).toBe('__settings__')
+    expect(screen.queryByText('preferences.md')).toBeNull()
+    expect(screen.queryByText(privatePath)).toBeNull()
+    expect(screen.queryByText(privateMessage)).toBeNull()
+    expect(screen.queryByText('Open Memory')).toBeNull()
   })
 
   it('promotes memory file writes from tool calls into a dedicated memory card', () => {
@@ -1246,14 +1244,15 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList sessionId={ACTIVE_TAB} />)
 
     expect(screen.getByText('Saved 1 memory item(s)')).toBeTruthy()
-    expect(screen.getByText('preferences.md')).toBeTruthy()
-    expect(screen.getByText('Tool details')).toBeTruthy()
+    expect(screen.queryByText('preferences.md')).toBeNull()
+    expect(screen.queryByText('# Preferences')).toBeNull()
+    expect(screen.queryByText('Tool details')).toBeNull()
     const memoryCardClassName = screen.getByTestId('memory-tool-activity-card').className
     expect(memoryCardClassName).toContain('border-[var(--color-memory-border)]')
     expect(memoryCardClassName).toContain('bg-[var(--color-memory-surface)]')
   })
 
-  it('promotes memory file reads into collapsible memory references', () => {
+  it('promotes memory file reads into a path-free memory reference summary', () => {
     useChatStore.setState({
       sessions: {
         [ACTIVE_TAB]: makeSessionState({
@@ -1290,9 +1289,8 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList sessionId={ACTIVE_TAB} />)
 
     expect(screen.getByText('2 memory reference(s)')).toBeTruthy()
-    fireEvent.click(screen.getByText('2 memory reference(s)'))
-    expect(screen.getByText('MEMORY.md')).toBeTruthy()
-    expect(screen.getByText('workflow.md')).toBeTruthy()
+    expect(screen.queryByText('MEMORY.md')).toBeNull()
+    expect(screen.queryByText('workflow.md')).toBeNull()
   })
 
   it('keeps non-memory tools visible when a tool group also touches memory files', () => {
