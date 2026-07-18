@@ -221,7 +221,7 @@ describe('Settings > General tab', () => {
       }),
     })
 
-    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: null, toasts: [] })
+    useUIStore.setState({ activeSettingsTab: 'general', pendingSettingsTab: null, toasts: [] })
     useUpdateStore.setState({
       status: 'idle',
       availableVersion: null,
@@ -859,7 +859,7 @@ describe('Settings > General tab', () => {
 
 describe('Settings > About tab', () => {
   beforeEach(() => {
-    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: 'about' })
+    useUIStore.setState({ activeSettingsTab: 'general', pendingSettingsTab: 'about' })
     useSettingsStore.setState({ locale: 'en' })
   })
 

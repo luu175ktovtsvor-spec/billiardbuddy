@@ -50,7 +50,7 @@ describe('api diagnostics reporting', () => {
         headers: { 'Content-Type': 'application/json' },
       }))
 
-    await expect(api.post('/api/providers/test', { apiKey: 'sk-should-not-report' })).rejects.toThrow('Nope')
+    await expect(api.post('/api/example/test', { apiKey: 'sk-should-not-report' })).rejects.toThrow('Nope')
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const diagnosticCall = fetchMock.mock.calls[1]
@@ -59,7 +59,7 @@ describe('api diagnostics reporting', () => {
     expect(String(diagnosticUrl)).toContain('/api/diagnostics/events')
     const body = JSON.parse(String((diagnosticInit as RequestInit).body))
     expect(body.type).toBe('client_api_request_failed')
-    expect(body.details.path).toBe('/api/providers/test')
+    expect(body.details.path).toBe('/api/example/test')
     expect(JSON.stringify(body)).not.toContain('sk-should-not-report')
   })
 

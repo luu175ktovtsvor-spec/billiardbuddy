@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { settingsApi } from '../api/settings'
-import { modelsApi } from '../api/models'
 import { tracesApi } from '../api/traces'
 import {
   isThemeMode,
@@ -13,8 +12,6 @@ import {
   type OutputStyleOption,
   type OutputStylesResponse,
   type PermissionMode,
-  type EffortLevel,
-  type ModelInfo,
   type ThemeMode,
   type UpdateProxyMode,
   type UpdateProxySettings,
@@ -53,12 +50,8 @@ function getStoredLocale(): Locale {
 
 type SettingsStore = {
   permissionMode: PermissionMode
-  currentModel: ModelInfo | null
-  effortLevel: EffortLevel
   thinkingEnabled: boolean
   autoDreamEnabled: boolean
-  availableModels: ModelInfo[]
-  activeProviderName: string | null
   locale: Locale
   theme: ThemeMode
   chatSendBehavior: ChatSendBehavior
@@ -85,8 +78,6 @@ type SettingsStore = {
 
   fetchAll: () => Promise<void>
   setPermissionMode: (mode: PermissionMode) => Promise<void>
-  setModel: (modelId: string) => Promise<void>
-  setEffort: (level: EffortLevel) => Promise<void>
   setThinkingEnabled: (enabled: boolean) => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
@@ -146,12 +137,8 @@ const DEFAULT_TRACE_CAPTURE_SETTINGS: TraceCaptureSettings = {
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   permissionMode: 'default',
-  currentModel: null,
-  effortLevel: 'max',
   thinkingEnabled: true,
   autoDreamEnabled: false,
-  availableModels: [],
-  activeProviderName: null,
   locale: getStoredLocale(),
   theme: useUIStore.getState().theme,
   chatSendBehavior: 'enter',
@@ -190,11 +177,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   fetchAll: async () => {
     set({ isLoading: true, error: null })
     try {
-      const [{ mode }, modelsRes, { model }, { level }, userSettings, traceCapture] = await Promise.all([
+      const [{ mode }, userSettings, traceCapture] = await Promise.all([
         settingsApi.getPermissionMode(),
-        modelsApi.list(),
-        modelsApi.getCurrent(),
-        modelsApi.getEffort(),
         settingsApi.getUser(),
         loadTraceCaptureSettings(),
       ])
@@ -203,10 +187,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       useUIStore.getState().setTheme(theme)
       set({
         permissionMode: mode,
-        availableModels: modelsRes.models,
-        activeProviderName: modelsRes.provider?.name ?? null,
-        currentModel: model,
-        effortLevel: level,
         thinkingEnabled: userSettings.alwaysThinkingEnabled !== false,
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         theme,
@@ -238,22 +218,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await settingsApi.setPermissionMode(mode)
     } catch {
       set({ permissionMode: prev })
-    }
-  },
-
-  setModel: async (modelId) => {
-    await modelsApi.setCurrent(modelId)
-    const { model } = await modelsApi.getCurrent()
-    set({ currentModel: model })
-  },
-
-  setEffort: async (level) => {
-    const prev = get().effortLevel
-    set({ effortLevel: level })
-    try {
-      await modelsApi.setEffort(level)
-    } catch {
-      set({ effortLevel: prev })
     }
   },
 

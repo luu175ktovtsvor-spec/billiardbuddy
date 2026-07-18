@@ -4,7 +4,6 @@ import {
   type BatchDeleteSessionsResponse,
   type CreateSessionRepositoryOptions,
 } from '../api/sessions'
-import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSettingsStore } from './settingsStore'
 import { useTabStore } from './tabStore'
 import type { SessionListItem } from '../types/session'
@@ -109,7 +108,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   deleteSession: async (id: string) => {
     await sessionsApi.delete(id)
     invalidateRecentProjectsCache()
-    useSessionRuntimeStore.getState().clearSelection(id)
     set((s) => ({
       sessions: s.sessions.filter((session) => session.id !== id),
       activeSessionId: s.activeSessionId === id ? null : s.activeSessionId,
@@ -122,9 +120,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const result = await sessionsApi.batchDelete(sessionIds)
     if (result.successes.length > 0) {
       invalidateRecentProjectsCache()
-    }
-    for (const id of result.successes) {
-      useSessionRuntimeStore.getState().clearSelection(id)
     }
     set((s) => ({
       sessions: s.sessions.filter((session) => !result.successes.includes(session.id)),

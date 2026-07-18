@@ -4,7 +4,6 @@ import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
 import { useSessionStore } from './sessionStore'
 import { useCLITaskStore } from './cliTaskStore'
-import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useTabStore } from './tabStore'
 import { randomSpinnerVerb } from '../config/spinnerVerbs'
 import { notifyDesktop } from '../lib/desktopNotifications'
@@ -14,7 +13,6 @@ import { AGENT_LIFECYCLE_TYPES } from '../types/team'
 import type { ComposerAttachment } from '../lib/composerAttachments'
 import type { MessageEntry } from '../types/session'
 import type { PermissionMode } from '../types/settings'
-import type { RuntimeSelection } from '../types/runtime'
 import type {
   ActiveGoalState,
   AgentTaskNotification,
@@ -194,7 +192,6 @@ type ChatStore = {
     requestId: string,
     response: ComputerUsePermissionResponse,
   ) => void
-  setSessionRuntime: (sessionId: string, selection: RuntimeSelection) => void
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
   loadHistory: (sessionId: string) => Promise<void>
@@ -979,10 +976,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       get().handleServerMessage(sessionId, msg)
     })
 
-    const runtimeSelection = useSessionRuntimeStore.getState().selections[sessionId]
-    if (runtimeSelection) {
-      wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
-    }
     if (
       !sessionId.startsWith('__') &&
       !useTeamStore.getState().getMemberBySessionId(sessionId) &&
@@ -1167,13 +1160,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         chatState: response.userConsented === false ? 'idle' : 'tool_executing',
       })),
     }))
-  },
-
-  setSessionRuntime: (sessionId, selection) => {
-    wsManager.send(sessionId, {
-      type: 'set_runtime_config',
-      ...selection,
-    })
   },
 
   setSessionPermissionMode: (sessionId, mode) => {

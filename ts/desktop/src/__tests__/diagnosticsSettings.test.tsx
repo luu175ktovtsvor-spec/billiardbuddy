@@ -94,7 +94,7 @@ describe('Settings > Diagnostics tab', () => {
     diagnosticsApiMock.clear.mockResolvedValue({ ok: true })
     doctorRepairMock.runDoctorRepair.mockResolvedValue({
       local: {
-        removedKeys: ['billiardbuddy-open-tabs', 'billiardbuddy-session-runtime'],
+        removedKeys: ['billiardbuddy-open-tabs'],
         missingKeys: ['billiardbuddy-theme', 'billiardbuddy-locale', 'billiardbuddy.persistence.schemaVersion'],
         failedKeys: [],
       },

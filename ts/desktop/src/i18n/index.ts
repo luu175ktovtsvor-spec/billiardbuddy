@@ -21,7 +21,7 @@ const translations: Record<Locale, Record<string, string>> = {
  * Falls back to the key itself if no translation is found.
  *
  * @example
- * translate('en', 'settings.providers.connected', { latency: '42' })
+ * translate('en', 'settings.general.networkSaved')
  * // => "Connected (42ms)"
  */
 export function translate(

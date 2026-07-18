@@ -27,21 +27,23 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
-  test('filters stale session runtime selections without clearing unrelated keys', () => {
+  test('removes retired session runtime selections without clearing unrelated keys', () => {
     window.localStorage.setItem('unrelated-user-key', 'keep')
-    window.localStorage.setItem('billiardbuddy-session-runtime', JSON.stringify({
-      good: { providerId: null, modelId: 'claude-sonnet' },
-      alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
-      bad: { providerId: 'provider-2' },
-    }))
+    window.localStorage.setItem('billiardbuddy-session-runtime', 'legacy-override')
 
     runDesktopPersistenceMigrations()
 
-    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-session-runtime') || '{}')).toEqual({
-      alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
-      good: { providerId: null, modelId: 'claude-sonnet' },
-    })
+    expect(window.localStorage.getItem('billiardbuddy-session-runtime')).toBeNull()
     expect(window.localStorage.getItem('unrelated-user-key')).toBe('keep')
+  })
+
+  test('drops the retired provider settings tab selection', () => {
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'providers')
+
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys).toContain('billiardbuddy-active-settings-tab')
+    expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBeNull()
   })
 
   test('removes malformed known keys without throwing during startup', () => {
@@ -135,6 +137,7 @@ describe('desktop persistence migrations', () => {
       'billiardbuddy-session-runtime',
       'billiardbuddy-theme',
       'billiardbuddy-locale',
+      'billiardbuddy-active-settings-tab',
       'billiardbuddy-app-zoom',
       DESKTOP_PERSISTENCE_VERSION_KEY,
     ]))

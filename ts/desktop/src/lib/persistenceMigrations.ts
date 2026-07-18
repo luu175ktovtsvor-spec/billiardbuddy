@@ -6,7 +6,7 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 1
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 2
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
 
 type DesktopMigrationReport = {
@@ -16,10 +16,24 @@ type DesktopMigrationReport = {
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
-const SESSION_RUNTIME_STORAGE_KEY = 'billiardbuddy-session-runtime'
+const RETIRED_SESSION_RUNTIME_STORAGE_KEY = 'billiardbuddy-session-runtime'
 const THEME_STORAGE_KEY = 'billiardbuddy-theme'
 const LOCALE_STORAGE_KEY = 'billiardbuddy-locale'
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'max']
+const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
+const SETTINGS_TABS = [
+  'activity',
+  'general',
+  'terminal',
+  'mcp',
+  'agents',
+  'skills',
+  'memory',
+  'plugins',
+  'computerUse',
+  'trace',
+  'diagnostics',
+  'about',
+]
 
 function readJson(storage: StorageLike, key: string): unknown {
   const raw = storage.getItem(key)
@@ -73,46 +87,10 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
   report.migratedKeys.push(TAB_STORAGE_KEY)
 }
 
-function migrateSessionRuntime(storage: StorageLike, report: DesktopMigrationReport): void {
-  const raw = storage.getItem(SESSION_RUNTIME_STORAGE_KEY)
-  if (!raw) return
-
-  try {
-    const parsed = readJson(storage, SESSION_RUNTIME_STORAGE_KEY)
-    if (!isRecord(parsed)) {
-      storage.removeItem(SESSION_RUNTIME_STORAGE_KEY)
-      report.migratedKeys.push(SESSION_RUNTIME_STORAGE_KEY)
-      return
-    }
-
-    const next = Object.fromEntries(
-      Object.entries(parsed).filter(([, selection]) => (
-        isRecord(selection) &&
-        typeof selection.modelId === 'string' &&
-        (selection.providerId === null || typeof selection.providerId === 'string') &&
-        (
-          selection.effortLevel === undefined ||
-          (
-            typeof selection.effortLevel === 'string' &&
-            EFFORT_LEVELS.includes(selection.effortLevel)
-          )
-        )
-      )),
-    )
-
-    if (Object.keys(next).length === 0) {
-      storage.removeItem(SESSION_RUNTIME_STORAGE_KEY)
-    } else {
-      writeJson(storage, SESSION_RUNTIME_STORAGE_KEY, next)
-    }
-
-    if (JSON.stringify(next) !== JSON.stringify(parsed)) {
-      report.migratedKeys.push(SESSION_RUNTIME_STORAGE_KEY)
-    }
-  } catch {
-    storage.removeItem(SESSION_RUNTIME_STORAGE_KEY)
-    report.migratedKeys.push(SESSION_RUNTIME_STORAGE_KEY)
-  }
+function removeRetiredSessionRuntime(storage: StorageLike, report: DesktopMigrationReport): void {
+  if (storage.getItem(RETIRED_SESSION_RUNTIME_STORAGE_KEY) === null) return
+  storage.removeItem(RETIRED_SESSION_RUNTIME_STORAGE_KEY)
+  report.migratedKeys.push(RETIRED_SESSION_RUNTIME_STORAGE_KEY)
 }
 
 function normalizeEnumKey(
@@ -172,9 +150,10 @@ export function runDesktopPersistenceMigrations(storage: StorageLike | null = ge
   if (!storage) return report
 
   runMigrationStep(report, TAB_STORAGE_KEY, () => migrateTabs(storage, report))
-  runMigrationStep(report, SESSION_RUNTIME_STORAGE_KEY, () => migrateSessionRuntime(storage, report))
+  runMigrationStep(report, RETIRED_SESSION_RUNTIME_STORAGE_KEY, () => removeRetiredSessionRuntime(storage, report))
   runMigrationStep(report, THEME_STORAGE_KEY, () => normalizeEnumKey(storage, THEME_STORAGE_KEY, [...THEME_MODES], report))
   runMigrationStep(report, LOCALE_STORAGE_KEY, () => normalizeEnumKey(storage, LOCALE_STORAGE_KEY, ['zh', 'en'], report))
+  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => normalizeEnumKey(storage, ACTIVE_SETTINGS_TAB_STORAGE_KEY, SETTINGS_TABS, report))
   runMigrationStep(report, APP_ZOOM_STORAGE_KEY, () => normalizeAppZoomKey(storage, report))
   try {
     storage.setItem(DESKTOP_PERSISTENCE_VERSION_KEY, String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
