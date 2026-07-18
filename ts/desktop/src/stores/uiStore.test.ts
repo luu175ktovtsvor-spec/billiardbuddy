@@ -112,4 +112,12 @@ describe('uiStore settings tab persistence', () => {
 
     expect(useUIStore.getState().activeSettingsTab).toBe('general')
   })
+
+  it('falls back to General when the retired Diagnostics tab is persisted', async () => {
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'diagnostics')
+
+    const { useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().activeSettingsTab).toBe('general')
+  })
 })

@@ -1,12 +1,9 @@
 /**
- * Diagnostics REST API
+ * Diagnostics incident intake API.
  *
- * GET    /api/diagnostics/status       — log directory, retention and counters
- * GET    /api/diagnostics/events       — recent sanitized diagnostic events
- * POST   /api/diagnostics/events       — append a sanitized client diagnostic event
- * POST   /api/diagnostics/export       — write a sanitized tar.gz bundle
- * POST   /api/diagnostics/open-log-dir — open the diagnostics directory
- * DELETE /api/diagnostics              — clear diagnostics files
+ * The ordinary product never exposes captured diagnostics, raw logs, or
+ * export/cleanup controls. The renderer may only record a bounded incident
+ * category for automatic recovery diagnostics.
  */
 
 import { diagnosticsService } from '../services/diagnosticsService.js'
@@ -14,54 +11,21 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 export async function handleDiagnosticsApi(
   req: Request,
-  url: URL,
+  _url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
     const action = segments[2]
 
-    if (!action && req.method === 'DELETE') {
-      await diagnosticsService.clear()
-      return Response.json({ ok: true })
-    }
-
-    if (action === 'status' && req.method === 'GET') {
-      return Response.json(await diagnosticsService.getStatus())
-    }
-
-    if (action === 'events' && req.method === 'GET') {
-      const limit = Number.parseInt(url.searchParams.get('limit') || '100', 10)
-      const events = await diagnosticsService.readRecentEvents(Number.isFinite(limit) ? limit : 100)
-      return Response.json({ events })
-    }
-
     if (action === 'events' && req.method === 'POST') {
       const body = await parseJsonBody(req)
-      const type = typeof body.type === 'string' && body.type.trim()
-        ? body.type.trim().slice(0, 128)
-        : 'client_diagnostic_event'
-      // A client event that omits/garbles severity is not, by default, an error.
-      const severity = isDiagnosticSeverity(body.severity) ? body.severity : 'info'
-      const summary = typeof body.summary === 'string' && body.summary.trim()
-        ? body.summary
-        : type
-      const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined
-      await diagnosticsService.recordEvent({
-        type,
-        severity,
-        summary,
-        sessionId,
-        details: body.details,
+      // Never accept renderer-controlled summaries, request data, session ids,
+      // or exception details. The client may report only a bounded incident type
+      // and severity; the service derives the safe stored summary/category.
+      await diagnosticsService.recordClientEvent({
+        type: body.type,
+        severity: body.severity,
       })
-      return Response.json({ ok: true })
-    }
-
-    if (action === 'export' && req.method === 'POST') {
-      return Response.json({ bundle: await diagnosticsService.exportBundle() })
-    }
-
-    if (action === 'open-log-dir' && req.method === 'POST') {
-      await diagnosticsService.openLogDir()
       return Response.json({ ok: true })
     }
 
@@ -78,8 +42,4 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
-}
-
-function isDiagnosticSeverity(value: unknown): value is 'debug' | 'info' | 'warn' | 'error' {
-  return value === 'debug' || value === 'info' || value === 'warn' || value === 'error'
 }

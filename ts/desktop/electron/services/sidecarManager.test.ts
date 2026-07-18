@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os'
 import {
   buildSidecarEnv,
   createServerPlan,
+  formatStartupDiagnostic,
+  formatStartupError,
   httpToWebSocketUrl,
   killSidecar,
   mergeProxyEnv,
@@ -137,6 +139,16 @@ describe('Electron sidecar manager', () => {
     }
     expect(logs).toHaveLength(80)
     expect(logs[0]).toBe('line 5')
+  })
+
+  it('keeps raw startup output in the main-process diagnostic but returns only a safe renderer code', () => {
+    const rawMessage = 'failed to bind /Users/test/.claude/runtime'
+    const rawLog = '[stderr] provider rejected token'
+
+    expect(formatStartupDiagnostic(rawMessage, [rawLog])).toContain(rawMessage)
+    expect(formatStartupDiagnostic(rawMessage, [rawLog])).toContain(rawLog)
+    expect(formatStartupError(rawMessage, [rawLog])).toBe('BB_STARTUP_FAILED')
+    expect(formatStartupError(rawMessage, [rawLog])).not.toContain('/Users/test/.claude')
   })
 
   it('maps http urls to adapter websocket urls', () => {

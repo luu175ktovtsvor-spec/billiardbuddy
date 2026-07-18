@@ -25,9 +25,10 @@ export function DoctorPanel({ compact = false }: DoctorPanelProps) {
         message: getDoctorToastMessage(t, nextResult),
       })
     } catch (error) {
+      void error
       addToast({
         type: 'error',
-        message: error instanceof Error ? error.message : t('settings.diagnostics.doctorFailed'),
+        message: t('doctor.failed'),
       })
     } finally {
       setIsRunning(false)
@@ -40,12 +41,12 @@ export function DoctorPanel({ compact = false }: DoctorPanelProps) {
     <section className={`rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] ${compact ? 'p-3' : 'p-4'} `}>
       <div className={`flex ${compact ? 'flex-col gap-3' : 'items-start justify-between gap-4'}`}>
         <div className="min-w-0">
-          <div className="text-sm font-medium text-[var(--color-text-primary)]">{t('settings.diagnostics.doctorTitle')}</div>
+          <div className="text-sm font-medium text-[var(--color-text-primary)]">{t('doctor.title')}</div>
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            {t('settings.diagnostics.doctorDescription')}
+            {t('doctor.description')}
           </p>
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            {t('settings.diagnostics.doctorProtectedData')}
+            {t('doctor.protectedData')}
           </p>
         </div>
         <div className={`flex ${compact ? 'justify-start' : 'justify-end'} shrink-0`}>
@@ -55,13 +56,13 @@ export function DoctorPanel({ compact = false }: DoctorPanelProps) {
             loading={isRunning}
             icon={<Stethoscope className="h-4 w-4" aria-hidden="true" />}
           >
-            {t('settings.diagnostics.runDoctor')}
+            {t('doctor.run')}
           </Button>
         </div>
       </div>
 
       <div className="mt-2 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
-        {t('settings.diagnostics.doctorSafeKeys')}
+        {t('doctor.safeKeys')}
       </div>
 
       {statusText ? (
@@ -78,9 +79,9 @@ function getDoctorToastMessage(
   result: DoctorRepairResult,
 ): string {
   if (result.local.failedKeys.length > 0) {
-    return t('settings.diagnostics.doctorPartial', { count: String(result.local.failedKeys.length) })
+    return t('doctor.partial', { count: String(result.local.failedKeys.length) })
   }
-  return t('settings.diagnostics.doctorCompleted')
+  return t('doctor.completed')
 }
 
 function getDoctorStatusMessage(
@@ -88,18 +89,18 @@ function getDoctorStatusMessage(
   result: DoctorRepairResult,
 ): string {
   const clearedCount = result.local.removedKeys.length
-  const base = t('settings.diagnostics.doctorResultLocal', { count: String(clearedCount) })
+  const base = t('doctor.resultLocal', { count: String(clearedCount) })
 
   if (result.local.failedKeys.length > 0) {
-    return `${base} ${t('settings.diagnostics.doctorResultFailedKeys', { count: String(result.local.failedKeys.length) })}`
+    return `${base} ${t('doctor.resultFailedKeys', { count: String(result.local.failedKeys.length) })}`
   }
 
   if (result.server) {
-    return `${base} ${t('settings.diagnostics.doctorServerRan')}`
+    return `${base} ${t('doctor.serverRan')}`
   }
 
   if (result.serverError) {
-    return `${base} ${t('settings.diagnostics.doctorServerUnavailable')}`
+    return `${base} ${t('doctor.serverUnavailable')}`
   }
 
   return base

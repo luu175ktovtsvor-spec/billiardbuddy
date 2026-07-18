@@ -12,7 +12,6 @@ const SETTINGS_TABS = [
   'skills',
   'plugins',
   'computerUse',
-  'diagnostics',
   'about',
 ] as const
 
@@ -87,7 +86,6 @@ export type SettingsTab =
   | 'skills'
   | 'plugins'
   | 'computerUse'
-  | 'diagnostics'
   | 'about'
 
 export type ModalId = 'new-task' | 'task-search'

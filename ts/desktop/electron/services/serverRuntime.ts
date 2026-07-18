@@ -2,6 +2,7 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import {
   createServerPlan,
+  formatStartupDiagnostic,
   formatStartupError,
   killSidecar,
   mergeProxyEnv,
@@ -132,6 +133,7 @@ export class ElectronServerRuntime {
       return url
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      console.error('[desktop] local server startup failed', formatStartupDiagnostic(message, logs))
       this.startupError = formatStartupError(message, logs)
       throw new Error(this.startupError)
     }

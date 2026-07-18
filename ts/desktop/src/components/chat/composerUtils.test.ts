@@ -54,17 +54,19 @@ describe('composerUtils', () => {
     )
   })
 
-  it('filters retired session inspection commands returned by the runtime', () => {
+  it('filters retired inspection and recovery commands returned by the runtime', () => {
     const names = mergeSlashCommands([
       { name: 'status' },
       { name: 'cost' },
       { name: 'context' },
+      { name: 'doctor' },
       { name: 'help' },
     ]).map((command) => command.name)
 
     expect(names).not.toContain('status')
     expect(names).not.toContain('cost')
     expect(names).not.toContain('context')
+    expect(names).not.toContain('doctor')
     expect(names).toContain('help')
   })
 
@@ -249,15 +251,16 @@ describe('composerUtils', () => {
     ])
   })
 
-  it('keeps the core memory command separate from the retired settings alias', () => {
+  it('keeps the core memory command separate from retired Settings and recovery aliases', () => {
     expect(resolveSlashUiAction('plugins')).toEqual({ type: 'settings', tab: 'plugins' })
     expect(resolveSlashUiAction('memory')).toBeNull()
-    expect(resolveSlashUiAction('doctor')).toEqual({ type: 'settings', tab: 'diagnostics' })
+    expect(resolveSlashUiAction('doctor')).toBeNull()
     expect(resolveSlashUiAction('config')).toEqual({ type: 'settings', tab: 'general' })
     expect(resolveSlashUiAction('settings')).toEqual({ type: 'settings', tab: 'general' })
     expect(mergeSlashCommands([]).map((command) => command.name)).toContain('plugin')
     expect(mergeSlashCommands([])).toContainEqual({ name: 'memory', description: 'Manage task memory' })
     expect(mergeSlashCommands([]).map((command) => command.name)).toContain('config')
+    expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('doctor')
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('plugins')
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('settings')
   })
