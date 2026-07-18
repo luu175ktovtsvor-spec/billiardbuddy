@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   openTab: vi.fn(),
   connectToSession: vi.fn(),
   sendMessage: vi.fn(),
+  setWorkspaceMode: vi.fn(),
+  openWorkspace: vi.fn(),
+  openTerminal: vi.fn(),
   index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
   chatSessions: {} as Record<string, unknown>,
   tabs: [] as Array<Record<string, unknown>>,
@@ -70,6 +73,23 @@ vi.mock('../../stores/chatStore', () => ({
   ),
 }))
 
+vi.mock('../../stores/workspacePanelStore', () => ({
+  useWorkspacePanelStore: {
+    getState: () => ({
+      setMode: mocks.setWorkspaceMode,
+      openPanel: mocks.openWorkspace,
+    }),
+  },
+}))
+
+vi.mock('../../stores/terminalPanelStore', () => ({
+  useTerminalPanelStore: {
+    getState: () => ({
+      openPanel: mocks.openTerminal,
+    }),
+  },
+}))
+
 import { ProductShell } from './ProductShell'
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
@@ -121,6 +141,15 @@ beforeEach(() => {
   mocks.sendMessage.mockImplementation(() => {
     mocks.events.push('send-message')
   })
+  mocks.setWorkspaceMode.mockImplementation(() => {
+    mocks.events.push('set-workspace-mode')
+  })
+  mocks.openWorkspace.mockImplementation(() => {
+    mocks.events.push('open-workspace')
+  })
+  mocks.openTerminal.mockImplementation(() => {
+    mocks.events.push('open-terminal')
+  })
 })
 
 afterEach(() => {
@@ -138,6 +167,31 @@ describe('ProductShell', () => {
     expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
     expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
     expect(mocks.events).toEqual(['open-tab', 'connect'])
+  })
+
+  it('opens the real task session before exposing its file workbench', () => {
+    render(<ProductShell />)
+    const task = makeTask()
+
+    taskIndexProps().onOpenTaskWorkbench(task)
+
+    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
+    expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
+    expect(mocks.setWorkspaceMode).toHaveBeenCalledWith('session-1', 'workspace')
+    expect(mocks.openWorkspace).toHaveBeenCalledWith('session-1')
+    expect(mocks.events).toEqual(['open-tab', 'connect', 'set-workspace-mode', 'open-workspace'])
+  })
+
+  it('opens the real task session before exposing its terminal', () => {
+    render(<ProductShell />)
+    const task = makeTask()
+
+    taskIndexProps().onOpenTaskTerminal(task)
+
+    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
+    expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
+    expect(mocks.openTerminal).toHaveBeenCalledWith('session-1')
+    expect(mocks.events).toEqual(['open-tab', 'connect', 'open-terminal'])
   })
 
   it('projects the real Agent Core session state into the task index', () => {
