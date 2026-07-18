@@ -775,7 +775,20 @@ function TaskRow({
           {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
           {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
           {hasAction(task, 'unpin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'unpin')] === true} label="取消置顶" onClick={() => run(() => onUnpinTask(task.id))} /> : null}
-          {hasAction(task, 'continue') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'continue')] === true} label="继续" onClick={() => run(() => onContinueTask(task.id, {}))} /> : null}
+          {hasAction(task, 'continue') ? (
+            <>
+              <TaskActionButton
+                pending={mutations[taskActionKey(task.id, 'continue')] === true}
+                label="继续"
+                onClick={() => run(() => onContinueTask(task.id, { target: 'current_workspace' }))}
+              />
+              <TaskActionButton
+                pending={mutations[taskActionKey(task.id, 'continue')] === true}
+                label="新工作树继续"
+                onClick={() => run(() => onContinueTask(task.id, { target: 'new_worktree' }))}
+              />
+            </>
+          ) : null}
           {hasAction(task, 'archive') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'archive')] === true} label="归档" onClick={() => run(() => onArchiveTask(task.id))} /> : null}
           {hasAction(task, 'restore') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'restore')] === true} label="恢复" onClick={() => run(() => onRestoreTask(task.id))} /> : null}
         </div>

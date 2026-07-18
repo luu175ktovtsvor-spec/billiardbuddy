@@ -1920,7 +1920,10 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
     t,
   ])
 
-  const handleBranchMessage = useCallback(async (target: BranchableMessageTarget) => {
+  const handleBranchMessage = useCallback(async (
+    target: BranchableMessageTarget,
+    continuationTarget: 'current_workspace' | 'new_worktree' = 'current_workspace',
+  ) => {
     if (!resolvedSessionId || continuationInFlightRef.current) return
 
     continuationInFlightRef.current = true
@@ -1933,6 +1936,7 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
         connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
       }, resolvedSessionId, {
         sourceTurnId: target.transcriptMessageId,
+        target: continuationTarget,
       })
       const title = task.title.trim() || t('sidebar.newSession')
       addToast({
@@ -1996,6 +2000,22 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
     return result
   }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
 
+  const worktreeBranchActionByMessageId = useMemo(() => {
+    if (branchableMessageTargets.size === 0) {
+      return new Map<string, MessageBranchAction>()
+    }
+    const result = new Map<string, MessageBranchAction>()
+    const label = t('chat.branchInNewWorktree')
+    for (const [uiMessageId, target] of branchableMessageTargets) {
+      result.set(uiMessageId, {
+        label,
+        loading: Boolean(branchingMessageId),
+        onBranch: () => { void handleBranchMessage(target, 'new_worktree') },
+      })
+    }
+    return result
+  }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
+
   const sideTaskActionByMessageId = useMemo(() => {
     if (!activeProductTask || branchableMessageTargets.size === 0) {
       return new Map<string, MessageBranchAction>()
@@ -2049,6 +2069,7 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
                 : null
             }
             branchAction={branchActionByMessageId.get(item.message.id)}
+            worktreeBranchAction={worktreeBranchActionByMessageId.get(item.message.id)}
             sideTaskAction={sideTaskActionByMessageId.get(item.message.id)}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
           />
@@ -2181,6 +2202,7 @@ export const MessageBlock = memo(function MessageBlock({
   agentTaskNotifications,
   toolResult,
   branchAction,
+  worktreeBranchAction,
   sideTaskAction,
   turnChangedFiles,
 }: {
@@ -2190,6 +2212,7 @@ export const MessageBlock = memo(function MessageBlock({
   agentTaskNotifications: Record<string, AgentTaskNotification>
   toolResult?: { content: unknown; isError: boolean } | null
   branchAction?: MessageBranchAction
+  worktreeBranchAction?: MessageBranchAction
   sideTaskAction?: MessageBranchAction
   turnChangedFiles?: string[]
 }) {
@@ -2208,6 +2231,7 @@ export const MessageBlock = memo(function MessageBlock({
             content={message.content}
             attachments={message.attachments}
             branchAction={branchAction}
+            worktreeBranchAction={worktreeBranchAction}
             sideTaskAction={sideTaskAction}
             timestamp={message.timestamp}
           />
@@ -2224,6 +2248,7 @@ export const MessageBlock = memo(function MessageBlock({
           <AssistantMessage
             content={message.content}
             branchAction={branchAction}
+            worktreeBranchAction={worktreeBranchAction}
             sideTaskAction={sideTaskAction}
             sessionId={sessionId ?? undefined}
             timestamp={message.timestamp}

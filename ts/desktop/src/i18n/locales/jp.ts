@@ -1158,6 +1158,7 @@ export const jp: Record<TranslationKey, string> = {
   'chat.contextReferencesOnly': '参照を {count} 件追加しました',
   'chat.addSelectionToChat': 'チャットに追加',
   'chat.branchFromHere': '新しいタスクで続ける',
+  'chat.branchInNewWorktree': '新しい worktree で続ける',
   'chat.branchSuccess': '継続タスク「{title}」を作成しました。',
   'chat.branchError': '継続タスクを作成できませんでした。詳細: {detail}',
   'chat.sideTaskFromHere': 'サイドタスクを開始',

@@ -7,11 +7,12 @@ type Props = {
   content: string
   attachments?: UIAttachment[]
   branchAction?: MessageBranchAction
+  worktreeBranchAction?: MessageBranchAction
   sideTaskAction?: MessageBranchAction
   timestamp?: number
 }
 
-export const UserMessage = memo(function UserMessage({ content, attachments, branchAction, sideTaskAction, timestamp }: Props) {
+export const UserMessage = memo(function UserMessage({ content, attachments, branchAction, worktreeBranchAction, sideTaskAction, timestamp }: Props) {
   const hasText = content.trim().length > 0
 
   return (
@@ -43,6 +44,7 @@ export const UserMessage = memo(function UserMessage({ content, attachments, bra
             copyText={content}
             copyLabel="Copy prompt"
             branchAction={branchAction}
+            worktreeBranchAction={worktreeBranchAction}
             sideTaskAction={sideTaskAction}
             align="end"
             timestamp={timestamp}

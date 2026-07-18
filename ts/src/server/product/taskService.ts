@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID, type UUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -7,6 +7,7 @@ import {
   type ContinueProductTaskInput,
   type CreateProductTaskInput,
   type CreateProductSideTaskInput,
+  type ProductContinuationTarget,
   type ProductProject,
   type ProductSideTask,
   type ProductTask,
@@ -22,7 +23,11 @@ import {
   createSessionBranch,
   SessionBranchingError,
 } from '../../utils/sessionBranching.js'
-import { isMaterializedWorktreeLaunch } from '../services/repositoryLaunchService.js'
+import {
+  cleanupPreparedSessionWorkspace,
+  isMaterializedWorktreeLaunch,
+  prepareSessionWorkspace,
+} from '../services/repositoryLaunchService.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -77,7 +82,12 @@ export type AgentCoreAdapter = {
     useWorktree?: boolean
   }) => Promise<{ sessionId: string; workDir: string }>
   renameSession: (sessionId: string, title: string) => Promise<void>
-  branchSession: (sessionId: string, title?: string, sourceTurnId?: string) => Promise<{
+  branchSession: (
+    sessionId: string,
+    title?: string,
+    sourceTurnId?: string,
+    target?: ProductContinuationTarget,
+  ) => Promise<{
     sessionId: string
     workDir: string
     title: string
@@ -103,9 +113,23 @@ export const agentCoreAdapter: AgentCoreAdapter = {
     await sessionService.renameSession(sessionId, title)
   },
 
-  async branchSession(sessionId, title, sourceTurnId) {
+  async branchSession(sessionId, title, sourceTurnId, target = 'current_workspace') {
     const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
     if (!launchInfo) throw ApiError.notFound(`任务不存在：${sessionId}`)
+
+    const targetSessionId = target === 'new_worktree'
+      ? randomUUID() as UUID
+      : undefined
+    const preparedWorkspace = targetSessionId
+      ? await prepareSessionWorkspace(
+          launchInfo.repository?.requestedWorkDir ?? launchInfo.workDir,
+          {
+            branch: launchInfo.repository?.branch,
+            worktree: true,
+          },
+          targetSessionId,
+        )
+      : undefined
 
     try {
       const result = await createSessionBranch({
@@ -116,13 +140,24 @@ export const agentCoreAdapter: AgentCoreAdapter = {
         sourceWorkDir: launchInfo.workDir,
         sourceRepository: launchInfo.repository,
         sourceWorktreeSession: launchInfo.worktreeSession,
+        ...(targetSessionId ? { targetSessionId } : {}),
+        ...(preparedWorkspace
+          ? {
+              targetWorkDir: preparedWorkspace.workDir,
+              targetRepository: preparedWorkspace.repository,
+            }
+          : {}),
       })
+      sessionService.invalidateSessionList()
       return {
         sessionId: result.sessionId,
         workDir: result.workDir ?? launchInfo.workDir,
         title: result.title,
       }
     } catch (error) {
+      if (preparedWorkspace) {
+        await cleanupPreparedSessionWorkspace(preparedWorkspace).catch(() => false)
+      }
       if (error instanceof SessionBranchingError) {
         throw ApiError.badRequest(error.message)
       }
@@ -158,6 +193,12 @@ function validTitle(value: string | undefined): string | undefined {
   if (!title) throw ApiError.badRequest('任务标题不能为空')
   if (title.length > 200) throw ApiError.badRequest('任务标题不能超过 200 个字符')
   return title
+}
+
+function continuationTarget(value: unknown): ProductContinuationTarget {
+  if (value === undefined) return 'current_workspace'
+  if (value === 'current_workspace' || value === 'new_worktree') return value
+  throw ApiError.badRequest('target 必须是 current_workspace 或 new_worktree')
 }
 
 function requiredSourceTurnId(value: unknown): string {
@@ -302,9 +343,18 @@ export class ProductTaskService {
   }
 
   async continueTask(taskId: string, input: ContinueProductTaskInput): Promise<ProductTaskRecord> {
+    if (!input || typeof input !== 'object') {
+      throw ApiError.badRequest('继续任务参数必须是对象')
+    }
     const source = await this.requireTask(taskId)
     const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
-    const created = await this.core.branchSession(source.coreSessionId, requestedTitle, input.sourceTurnId)
+    const target = continuationTarget(input.target)
+    const created = await this.core.branchSession(
+      source.coreSessionId,
+      requestedTitle,
+      input.sourceTurnId,
+      target,
+    )
     const now = new Date().toISOString()
     await this.updateMetadata(created.sessionId, () => ({
       id: created.sessionId,
@@ -316,7 +366,9 @@ export class ProductTaskService {
       ...(input.sourceTurnId ? { sourceTurnId: input.sourceTurnId } : {}),
       createdAt: now,
       updatedAt: now,
-      worktreeState: source.worktreeState === 'not_requested' ? 'not_requested' : 'planned',
+      worktreeState: target === 'new_worktree'
+        ? 'materialized'
+        : source.worktreeState,
     }))
     return this.requireTask(created.sessionId)
   }

@@ -1158,6 +1158,7 @@ export const zh: Record<TranslationKey, string> = {
   'chat.contextReferencesOnly': '已添加 {count} 个引用',
   'chat.addSelectionToChat': '添加到对话',
   'chat.branchFromHere': '在新任务中继续',
+  'chat.branchInNewWorktree': '在新工作树中继续',
   'chat.branchSuccess': '已创建继续任务“{title}”。',
   'chat.branchError': '创建继续任务失败：{detail}',
   'chat.sideTaskFromHere': '开始侧边任务',

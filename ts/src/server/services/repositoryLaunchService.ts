@@ -613,6 +613,38 @@ export async function prepareSessionWorkspace(
     : switchExistingCheckout(context, branch)
 }
 
+/**
+ * Remove an isolated workspace which was just created for a session that
+ * could not be persisted afterwards. Callers only pass the value returned by
+ * prepareSessionWorkspace, so this never cleans up an existing checkout.
+ */
+export async function cleanupPreparedSessionWorkspace(
+  preparedWorkspace: PreparedSessionWorkspace,
+): Promise<boolean> {
+  const repository = preparedWorkspace.repository
+  if (
+    !repository?.worktree ||
+    !repository.worktreePath ||
+    !repository.worktreeBranch ||
+    !repository.repoRoot
+  ) {
+    return false
+  }
+
+  const removeResult = await runGit(
+    repository.repoRoot,
+    ['worktree', 'remove', '--force', repository.worktreePath],
+    WORKTREE_TIMEOUT_MS,
+  )
+  if (removeResult.code !== 0) return false
+
+  const deleteBranchResult = await runGit(
+    repository.repoRoot,
+    ['branch', '-D', repository.worktreeBranch],
+  )
+  return deleteBranchResult.code === 0
+}
+
 export async function resolveSessionWorkspaceLaunch(
   workDir: string,
   options: CreateSessionRepositoryOptions | undefined,

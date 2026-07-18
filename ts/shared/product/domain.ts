@@ -4,6 +4,7 @@ export type ProductTaskLifecycle = 'active' | 'archived'
 export type ProductTaskKind = 'main' | 'continuation'
 export type ProductWorktreeState = 'not_requested' | 'planned' | 'materialized'
 export type ProductSideTaskStatus = 'open' | 'closed'
+export type ProductContinuationTarget = 'current_workspace' | 'new_worktree'
 
 export type ProductProject = {
   id: string
@@ -76,6 +77,11 @@ export type UpdateProductTaskInput = {
 export type ContinueProductTaskInput = {
   title?: string
   sourceTurnId?: string
+  /**
+   * Continue in the source task's workspace by default. A new worktree is
+   * materialized before the branched transcript is created.
+   */
+  target?: ProductContinuationTarget
 }
 
 export type CreateProductSideTaskInput = {

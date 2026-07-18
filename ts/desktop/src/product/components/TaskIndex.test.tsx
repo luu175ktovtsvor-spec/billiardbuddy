@@ -234,7 +234,14 @@ describe('TaskIndex', () => {
     }))
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
-    await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {}))
+    await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {
+      target: 'current_workspace',
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: '新工作树继续' }))
+    await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {
+      target: 'new_worktree',
+    }))
   })
 
   it('does not offer file-dependent task tools when there is no working directory', () => {

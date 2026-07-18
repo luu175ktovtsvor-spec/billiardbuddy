@@ -22,7 +22,12 @@ type TestCore = AgentCoreAdapter & {
   ) => void
   setSessionWorkDir: (sessionId: string, workDir: string) => void
   getWorktreeLaunchCallCount: () => number
-  getLastBranchInput: () => { sessionId: string; title?: string; sourceTurnId?: string } | null
+  getLastBranchInput: () => {
+    sessionId: string
+    title?: string
+    sourceTurnId?: string
+    target?: Parameters<AgentCoreAdapter['branchSession']>[3]
+  } | null
   hasSession: (sessionId: string) => boolean
 }
 
@@ -34,7 +39,12 @@ function makeCore(): TestCore {
   >()
   let nextId = 0
   let worktreeLaunchCallCount = 0
-  let lastBranchInput: { sessionId: string; title?: string; sourceTurnId?: string } | null = null
+  let lastBranchInput: {
+    sessionId: string
+    title?: string
+    sourceTurnId?: string
+    target?: Parameters<AgentCoreAdapter['branchSession']>[3]
+  } | null = null
 
   const add = (workDir: string, title: string, projectRoot = workDir): AgentCoreSession => {
     const now = new Date(1_700_000_000_000 + nextId * 1_000).toISOString()
@@ -67,17 +77,30 @@ function makeCore(): TestCore {
         modifiedAt: new Date(Date.parse(session.modifiedAt) + 1_000).toISOString(),
       })
     },
-    branchSession: async (sessionId, title, sourceTurnId) => {
+    branchSession: async (sessionId, title, sourceTurnId, target) => {
       const source = sessions.get(sessionId)
       if (!source) throw new Error('missing core session')
-      lastBranchInput = { sessionId, title, sourceTurnId }
+      lastBranchInput = {
+        sessionId,
+        title,
+        sourceTurnId,
+        ...(target === undefined ? {} : { target }),
+      }
+      const useNewWorktree = target === 'new_worktree'
+      const branchWorkDir = useNewWorktree
+        ? `${source.projectRoot ?? source.workDir ?? ''}/.claude/worktrees/desktop-continuation-${nextId + 1}`
+        : source.workDir ?? ''
       const session = add(
-        source.workDir ?? '',
+        branchWorkDir,
         `${title ?? `继续：${source.title}`} (Branch)`,
         source.projectRoot ?? source.workDir ?? '',
       )
-      const worktreeState = worktreeLaunchStates.get(sessionId)
-      if (worktreeState) worktreeLaunchStates.set(session.id, worktreeState)
+      if (useNewWorktree) {
+        worktreeLaunchStates.set(session.id, 'materialized')
+      } else {
+        const worktreeState = worktreeLaunchStates.get(sessionId)
+        if (worktreeState) worktreeLaunchStates.set(session.id, worktreeState)
+      }
       return { sessionId: session.id, workDir: session.workDir ?? '', title: session.title }
     },
     getWorktreeLaunchState: async (sessionId) => {
@@ -166,8 +189,46 @@ describe('ProductTaskService', () => {
       sessionId: task.coreSessionId,
       title: '继续整理',
       sourceTurnId: 'turn-42',
+      target: 'current_workspace',
     })
     expect(core.getWorktreeLaunchCallCount()).toBe(0)
+  })
+
+  it('materializes a separate worktree before recording a continuation target', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+
+    const continuation = await service.continueTask(task.id, {
+      sourceTurnId: 'turn-43',
+      target: 'new_worktree',
+    })
+
+    expect(core.getLastBranchInput()).toEqual({
+      sessionId: task.coreSessionId,
+      title: `继续：${task.title}`,
+      sourceTurnId: 'turn-43',
+      target: 'new_worktree',
+    })
+    expect(continuation.worktreeState).toBe('materialized')
+    expect(continuation.workDir).toContain('/.claude/worktrees/desktop-continuation-')
+  })
+
+  it('rejects unsupported continuation targets', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core: makeCore(),
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+
+    await expect(service.continueTask(task.id, {
+      target: 'elsewhere' as never,
+    })).rejects.toThrow('target 必须是 current_workspace 或 new_worktree')
   })
 
   it('keeps temporary side forks out of the regular task index and retains their Core transcript when closed', async () => {
