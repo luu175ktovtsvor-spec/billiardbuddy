@@ -4,6 +4,8 @@ import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { launchProductTask, type ProductTaskInitialMessage } from '../taskLaunch'
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeState } from '../taskRuntime'
@@ -52,6 +54,18 @@ export function ProductShell() {
     connectToTaskSession(task.coreSessionId)
   }
 
+  const openTaskWorkbench = (task: ProductTaskRecord) => {
+    openExistingTask(task)
+    const workspace = useWorkspacePanelStore.getState()
+    workspace.setMode(task.coreSessionId, 'workspace')
+    workspace.openPanel(task.coreSessionId)
+  }
+
+  const openTaskTerminal = (task: ProductTaskRecord) => {
+    openExistingTask(task)
+    useTerminalPanelStore.getState().openPanel(task.coreSessionId)
+  }
+
   const createAndOpenTask = async (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => (
     launchProductTask({
       createTask,
@@ -89,6 +103,8 @@ export function ProductShell() {
         onRestoreTask={restoreTask}
         onContinueTask={continueAndOpenTask}
         onOpenTask={openExistingTask}
+        onOpenTaskWorkbench={openTaskWorkbench}
+        onOpenTaskTerminal={openTaskTerminal}
         runtimeStatesBySessionId={runtimeStatesBySessionId}
         composerRequest={composerRequest}
         onConsumeComposerRequest={consumeTaskComposerRequest}

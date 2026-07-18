@@ -42,6 +42,8 @@ export type TaskIndexProps = {
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
+  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeStatesBySessionId?: Record<string, ProductTaskRuntimeState>
   composerRequest?: ProductTaskComposerRequest | null
   onConsumeComposerRequest?: (requestId: number) => void
@@ -121,6 +123,8 @@ export function TaskIndex({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  onOpenTaskWorkbench,
+  onOpenTaskTerminal,
   runtimeStatesBySessionId = {},
   composerRequest = null,
   onConsumeComposerRequest,
@@ -234,6 +238,8 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
+              onOpenTaskWorkbench={onOpenTaskWorkbench}
+              onOpenTaskTerminal={onOpenTaskTerminal}
               runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ))}
@@ -250,6 +256,8 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
+              onOpenTaskWorkbench={onOpenTaskWorkbench}
+              onOpenTaskTerminal={onOpenTaskTerminal}
               runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ) : null}
@@ -570,6 +578,8 @@ function ProjectTaskGroup({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  onOpenTaskWorkbench,
+  onOpenTaskTerminal,
   runtimeStatesBySessionId,
 }: {
   project: ProductProject | null
@@ -583,6 +593,8 @@ function ProjectTaskGroup({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
+  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeStatesBySessionId: Record<string, ProductTaskRuntimeState>
 }) {
   const visibleTasks = tasks.filter((task) => showArchived || task.lifecycle !== 'archived')
@@ -607,6 +619,8 @@ function ProjectTaskGroup({
             onRestoreTask={onRestoreTask}
             onContinueTask={onContinueTask}
             onOpenTask={onOpenTask}
+            onOpenTaskWorkbench={onOpenTaskWorkbench}
+            onOpenTaskTerminal={onOpenTaskTerminal}
             runtimeState={runtimeStatesBySessionId[task.coreSessionId] ?? 'not_connected'}
           />
         ))}
@@ -625,6 +639,8 @@ function TaskRow({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  onOpenTaskWorkbench,
+  onOpenTaskTerminal,
   runtimeState,
 }: {
   task: ProductTaskRecord
@@ -636,6 +652,8 @@ function TaskRow({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
+  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeState: ProductTaskRuntimeState
 }) {
   const [editing, setEditing] = useState(false)
@@ -698,6 +716,12 @@ function TaskRow({
             className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
           />
           <button type="button" onClick={() => onOpenTask(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开</button>
+          {task.lifecycle !== 'archived' && task.workDir ? (
+            <button type="button" onClick={() => onOpenTaskWorkbench(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开工作台</button>
+          ) : null}
+          {task.lifecycle !== 'archived' && task.workDir ? (
+            <button type="button" onClick={() => onOpenTaskTerminal(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开终端</button>
+          ) : null}
           {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
           {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
           {hasAction(task, 'unpin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'unpin')] === true} label="取消置顶" onClick={() => run(() => onUnpinTask(task.id))} /> : null}

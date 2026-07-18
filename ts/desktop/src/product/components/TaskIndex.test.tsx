@@ -94,6 +94,8 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
     onRestoreTask: vi.fn(async () => undefined),
     onContinueTask: vi.fn(async () => undefined),
     onOpenTask: vi.fn(),
+    onOpenTaskWorkbench: vi.fn(),
+    onOpenTaskTerminal: vi.fn(),
     ...overrides,
   }
   render(<TaskIndex {...props} />)
@@ -211,8 +213,27 @@ describe('TaskIndex', () => {
       coreSessionId: 'session-1',
     }))
 
+    fireEvent.click(screen.getByRole('button', { name: '打开工作台' }))
+    expect(props.onOpenTaskWorkbench).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-1',
+      coreSessionId: 'session-1',
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: '打开终端' }))
+    expect(props.onOpenTaskTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-1',
+      coreSessionId: 'session-1',
+    }))
+
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
     await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {}))
+  })
+
+  it('does not offer file-dependent task tools when there is no working directory', () => {
+    renderIndex(makeIndex(makeTask({ workDir: '' })))
+
+    expect(screen.queryByRole('button', { name: '打开工作台' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '打开终端' })).not.toBeInTheDocument()
   })
 
   it('does not show the native folder chooser outside the desktop app', () => {
