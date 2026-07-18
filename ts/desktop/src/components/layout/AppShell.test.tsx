@@ -190,8 +190,8 @@ describe('AppShell desktop boot flow', () => {
     expect(screen.getByText('topbar loaded')).toBeInTheDocument()
   })
 
-  it('mounts product task search from the existing globalSearch modal contract', async () => {
-    useUIStore.setState({ activeModal: 'globalSearch' })
+  it('mounts product task search from the dedicated task-search modal state', async () => {
+    useUIStore.setState({ activeModal: 'task-search' })
 
     render(<AppShell />)
 

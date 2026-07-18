@@ -117,7 +117,7 @@ export function AppShell() {
       </main>
       <ToastContainer />
       <UpdateChecker />
-      <TaskSearchModal open={activeModal === 'globalSearch'} onClose={closeModal} />
+      <TaskSearchModal open={activeModal === 'task-search'} onClose={closeModal} />
     </div>
   )
 }

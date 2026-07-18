@@ -55,15 +55,15 @@ afterEach(() => {
 })
 
 describe('TopBar panel controls', () => {
-  it('keeps search and recent-task controls on the globalSearch modal contract', () => {
+  it('opens the dedicated task-search modal from search and recent-task controls', () => {
     render(<TopBar />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Search tasks' }))
-    expect(useUIStore.getState().activeModal).toBe('globalSearch')
+    expect(useUIStore.getState().activeModal).toBe('task-search')
 
     useUIStore.getState().closeModal()
     fireEvent.click(screen.getByRole('button', { name: 'Recent tasks' }))
-    expect(useUIStore.getState().activeModal).toBe('globalSearch')
+    expect(useUIStore.getState().activeModal).toBe('task-search')
   })
 
   it('opens, selects, and closes browser and file panels independently', () => {

@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 
 const mocks = vi.hoisted(() => ({
@@ -147,7 +147,7 @@ describe('TaskSearchModal', () => {
   it('filters by product project and working-directory metadata without querying transcripts', () => {
     render(<TaskSearchModal open onClose={vi.fn()} />)
 
-    const input = screen.getByRole('textbox', { name: '搜索项目、任务或工作目录…' })
+    const input = screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' })
     fireEvent.change(input, { target: { value: '乙店' } })
 
     expect(screen.getByText('归档的球台维护计划')).toBeInTheDocument()
@@ -170,7 +170,7 @@ describe('TaskSearchModal', () => {
     render(<TaskSearchModal open onClose={vi.fn()} />)
     expect(screen.queryByText('共同任务 0')).not.toBeInTheDocument()
 
-    fireEvent.change(screen.getByRole('textbox', { name: '搜索项目、任务或工作目录…' }), {
+    fireEvent.change(screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' }), {
       target: { value: '共同任务' },
     })
 
@@ -187,5 +187,85 @@ describe('TaskSearchModal', () => {
     expect(mocks.openTab).toHaveBeenCalledWith('session-2', '归档的球台维护计划', 'session')
     expect(mocks.connectToSession).toHaveBeenCalledWith('session-2')
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('navigates task results with the keyboard and opens the active task', () => {
+    const onClose = vi.fn()
+    render(<TaskSearchModal open onClose={onClose} />)
+
+    const input = screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+
+    expect(screen.getByRole('option', { name: /整理开球训练/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
+    expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('clamps the active task when a refresh shortens the result list', async () => {
+    const onClose = vi.fn()
+    const view = render(<TaskSearchModal open onClose={onClose} />)
+    const input = screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' })
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    mocks.index = makeIndex([makeTask()])
+    view.rerender(<TaskSearchModal open onClose={onClose} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /整理开球训练/ })).toHaveAttribute('aria-selected', 'true')
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('closes from Escape and a non-focusable backdrop', () => {
+    const onClose = vi.fn()
+    render(<TaskSearchModal open onClose={onClose} />)
+
+    const input = screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
+
+    const backdrop = screen.getByTestId('task-search-backdrop')
+    expect(backdrop.tagName).toBe('DIV')
+    expect(backdrop).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(backdrop)
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps keyboard focus inside the dialog', () => {
+    render(<TaskSearchModal open onClose={vi.fn()} />)
+
+    const input = screen.getByRole('combobox', { name: '搜索项目、任务或工作目录…' })
+    const options = screen.getAllByRole('option')
+    const lastOption = options.at(-1)
+    expect(lastOption).toBeDefined()
+
+    act(() => {
+      lastOption!.focus()
+    })
+    fireEvent.keyDown(lastOption!, { key: 'Tab' })
+    expect(input).toHaveFocus()
+
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })
+    expect(lastOption).toHaveFocus()
+  })
+
+  it('shows product loading and error states without falling back to transcript search', () => {
+    mocks.index = makeIndex([])
+    mocks.isLoading = true
+    const { rerender } = render(<TaskSearchModal open onClose={vi.fn()} />)
+
+    expect(screen.getByText('正在读取任务…')).toBeInTheDocument()
+
+    mocks.isLoading = false
+    mocks.error = 'private backend failure'
+    rerender(<TaskSearchModal open onClose={vi.fn()} />)
+    expect(screen.getByText('无法读取任务')).toBeInTheDocument()
+    expect(screen.queryByText('private backend failure')).not.toBeInTheDocument()
   })
 })
