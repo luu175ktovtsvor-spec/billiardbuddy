@@ -86,10 +86,108 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.mimo_user_conc).toBe(16)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
+  expect(body.features.web_search).toBe(false)
   expect(body.features.chat_qwen).toBe(true)
   expect(body.features.chat_mimo).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
   expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
+})
+
+test('product web search authenticates, keeps the Brave key server-side, and returns only safe bounded results', async () => {
+  const usage = new MemoryUsageStore()
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_WEBSEARCH_PROVIDER: 'brave',
+      GW_WEBSEARCH_KEY: 'brave-secret-value',
+      GW_WEBSEARCH_BASE: 'https://search.example/res/v1/web/search',
+    }),
+    usageStore: usage,
+    transcribeImpl: null,
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), init })
+      return Response.json({
+        web: {
+          results: [
+            { title: ' Bun 文档 ', url: 'https://bun.sh/docs', description: 'Fast runtime' },
+            { title: '危险', url: 'javascript:alert(1)', description: 'bad' },
+            { title: '凭据 URL', url: 'https://user:password@example.com/private', description: 'bad' },
+            ...Array.from({ length: 10 }, (_, index) => ({
+              title: `结果 ${index}`,
+              url: `https://bun.sh/docs/${index}`,
+            })),
+          ],
+        },
+      })
+    },
+  })
+
+  const response = await fetch(new Request('http://local/v1/web_search', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-QF-Client-ID': 'desktop-install-1234' },
+    body: JSON.stringify({ query: ' Bun runtime ', allowed_domains: ['bun.sh'] }),
+  })))
+
+  expect(response.status).toBe(200)
+  const body = await response.json() as { results: Array<{ title: string; url: string }> }
+  expect(body.results).toHaveLength(8)
+  expect(body.results[0]).toEqual({
+    title: 'Bun 文档',
+    url: 'https://bun.sh/docs',
+    snippet: 'Fast runtime',
+  })
+  expect(body.results.every((result) => result.url.startsWith('https://bun.sh/'))).toBe(true)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.url).toContain('https://search.example/res/v1/web/search?q=Bun+runtime')
+  expect((calls[0]?.init?.headers as Record<string, string>)['X-Subscription-Token']).toBe('brave-secret-value')
+  expect(JSON.stringify(body)).not.toContain('brave-secret-value')
+  expect(JSON.stringify(usage.rows)).not.toContain('brave-secret-value')
+  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'web_search', ok: true, status: 200 }])
+  expect(usage.rows[0]?.note).toBe('results=8;client=desktop-install-1234')
+})
+
+test('product web search rejects invalid input, fails closed when absent, and redacts upstream errors', async () => {
+  const invalid = makeGateway({
+    GW_WEBSEARCH_PROVIDER: 'brave',
+    GW_WEBSEARCH_KEY: 'brave-secret-value',
+  })
+  const invalidResponse = await invalid.fetch(new Request('http://local/v1/web_search', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'valid search', ignored: 'must not pass' }),
+  })))
+  expect(invalidResponse.status).toBe(400)
+  expect(invalid.calls).toEqual([])
+
+  const unavailable = makeGateway()
+  const unavailableResponse = await unavailable.fetch(new Request('http://local/v1/web_search', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'valid search' }),
+  })))
+  expect(unavailableResponse.status).toBe(503)
+  expect(unavailable.calls).toEqual([])
+
+  const usage = new MemoryUsageStore()
+  const redacted = createGatewayFetch({
+    env: env({
+      GW_WEBSEARCH_PROVIDER: 'brave',
+      GW_WEBSEARCH_KEY: 'brave-secret-value',
+    }),
+    usageStore: usage,
+    transcribeImpl: null,
+    fetchImpl: async () => new Response('provider internal key=brave-secret-value', { status: 503 }),
+  })
+  const errorResponse = await redacted(new Request('http://local/v1/web_search', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'valid search' }),
+  })))
+  const errorBody = await errorResponse.json() as { detail: string }
+  expect(errorResponse.status).toBe(502)
+  expect(errorBody.detail).toBe('联网搜索暂时不可用，请稍后重试')
+  expect(JSON.stringify(errorBody)).not.toContain('brave-secret-value')
+  expect(JSON.stringify(usage.rows)).not.toContain('brave-secret-value')
 })
 
 test('audio transcription authenticates, validates uploads and records successful usage', async () => {
@@ -738,14 +836,18 @@ test('legacy synchronous image endpoints are retired in favor of owned idempoten
   expect(calls).toEqual([])
 })
 
-test('missing optional key routes are gone (ark/amap/web_search removed)', async () => {
+test('retired ark/amap routes stay gone while unconfigured product web search fails closed', async () => {
   const { fetch, calls } = makeGateway()
   const arkChat = await fetch(new Request('http://local/v1/ark/chat/completions', authed({ method: 'POST', body: '{}' })))
   const amap = await fetch(new Request('http://local/v1/amap/v3/weather/weatherInfo?city=310000', authed()))
-  const webSearch = await fetch(new Request('http://local/v1/web_search', authed({ method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } })))
+  const webSearch = await fetch(new Request('http://local/v1/web_search', authed({
+    method: 'POST',
+    body: JSON.stringify({ query: 'product search' }),
+    headers: { 'Content-Type': 'application/json' },
+  })))
   expect(arkChat.status).toBe(404)
   expect(amap.status).toBe(404)
-  expect(webSearch.status).toBe(404)
+  expect(webSearch.status).toBe(503)
   expect(calls).toEqual([])
 })
 

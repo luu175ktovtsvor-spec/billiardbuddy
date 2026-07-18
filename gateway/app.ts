@@ -6,6 +6,14 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
+import {
+  createGatewayWebSearch,
+  GatewayWebSearchError,
+  GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES,
+  parseGatewayWebSearchInput,
+  type GatewayWebSearch,
+  type GatewayWebSearchInput,
+} from './webSearch'
 import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
 import {
   fetchQwenWithRetry,
@@ -143,6 +151,12 @@ type GatewayConfig = {
   transcribeRpm: number
   transcribeConc: number
   transcribeMaxBytes: number
+  webSearchRpm: number
+  webSearchConc: number
+  webSearchUserConc: number
+  webSearchTokenConc: number
+  webSearchQueueMaxWait: number
+  webSearchMaxBodyBytes: number
 }
 
 type UsageEntry = {
@@ -165,6 +179,7 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
+  webSearchImpl?: GatewayWebSearch | null
   qwenRetrySleep?: (ms: number) => Promise<void>
   qwenRetryRandom?: () => number
   mimoRetrySleep?: (ms: number) => Promise<void>
@@ -504,6 +519,23 @@ function loadConfig(env: Env): GatewayConfig {
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
     transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
+    // 联网搜索是单独的受保护产品能力：Brave key 只在 gw.env。RPM、全局并发、单装机
+    // 并发和单 token 并发均独立于模型池，避免搜索突发挤占推理，也防同一 token 伪造装机 ID
+    // 独占所有搜索名额。所有值均有安全上限，配置缺失时仍以保守默认值运行。
+    webSearchRpm: Math.max(1, intEnv(env, 'GW_WEBSEARCH_RPM', 60)),
+    webSearchConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_CONC', 4)),
+    webSearchUserConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_USER_CONC', intEnv(env, 'GW_WEBSEARCH_CONC', 4))),
+    webSearchTokenConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_TOKEN_CONC', intEnv(env, 'GW_WEBSEARCH_CONC', 4))),
+    webSearchQueueMaxWait: Math.max(0, floatEnv(env, 'GW_WEBSEARCH_QUEUE_MAX_WAIT', 30)),
+    // This public endpoint accepts only a tiny JSON query contract. Deployment config may
+    // lower the limit for incident response but cannot raise it beyond the code hard cap.
+    webSearchMaxBodyBytes: Math.max(
+      256,
+      Math.min(
+        GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES,
+        intEnv(env, 'GW_WEBSEARCH_MAX_BODY_BYTES', GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES),
+      ),
+    ),
   }
 }
 
@@ -827,6 +859,15 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
+  const webSearchBucket = new TokenBucket(config.webSearchRpm)
+  const webSearchCapacity = new FairCapacityScheduler(
+    config.webSearchConc,
+    config.webSearchUserConc,
+    config.webSearchTokenConc,
+  )
+  const webSearch = deps.webSearchImpl === undefined
+    ? createGatewayWebSearch(env, fetchImpl)
+    : deps.webSearchImpl
 
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
@@ -848,12 +889,21 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             img_ipm: config.imgIpm,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
+            web_search_rpm: config.webSearchRpm,
+            web_search_conc: config.webSearchConc,
+            web_search_user_conc: config.webSearchUserConc,
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
-          capacity: { qwen: qwenCapacity.snapshot(), mimo: mimoCapacity.snapshot(), deepseek: deepseekCapacity.snapshot() },
+          capacity: {
+            qwen: qwenCapacity.snapshot(),
+            mimo: mimoCapacity.snapshot(),
+            deepseek: deepseekCapacity.snapshot(),
+            web_search: webSearchCapacity.snapshot(),
+          },
           features: {
             transcription: transcribe !== null,
+            web_search: webSearch !== null,
             chat_qwen: qwenChat !== null,
             chat_mimo: mimoChat !== null,
             chat_deepseek: deepseekChat !== null,
@@ -961,6 +1011,80 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
         if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
         return await qwenChat(request, effectiveBody, user, client)
+      }
+
+      // Product web search is intentionally a standalone route rather than a hidden chat
+      // provider feature. Only this route reads the Brave credential, and it never falls
+      // back to another search provider when Brave is absent or errors.
+      if (request.method === 'POST' && url.pathname === '/v1/web_search') {
+        const user = auth(config, request)
+        if (!webSearch) throw new HttpError(503, '联网搜索服务暂不可用')
+        const contentType = request.headers.get('content-type') ?? ''
+        if (!isJsonContentType(contentType)) throw new HttpError(415, '联网搜索需要 JSON 请求')
+        const declaredLength = Number(request.headers.get('content-length') ?? '')
+        if (Number.isFinite(declaredLength) && declaredLength > config.webSearchMaxBodyBytes) {
+          throw new HttpError(413, '联网搜索请求体过大')
+        }
+        const rawBody = await readRequestBodyBounded(request, config.webSearchMaxBodyBytes)
+        let parsedBody: unknown
+        try {
+          parsedBody = JSON.parse(rawBody)
+        } catch {
+          throw new HttpError(400, '联网搜索请求格式不正确')
+        }
+        // Validate before taking a scarce permit. Invalid requests neither consume Brave
+        // capacity nor write a query-bearing usage record.
+        let input: GatewayWebSearchInput
+        try {
+          input = parseGatewayWebSearchInput(parsedBody)
+        } catch (error) {
+          if (error instanceof GatewayWebSearchError) {
+            throw new HttpError(error.status, error.publicMessage)
+          }
+          throw new HttpError(400, '联网搜索请求格式不正确')
+        }
+        const client = readClientId(request)
+        const schedulerUser = client ? `${user}#${client}` : user
+        const permit = await webSearchCapacity.acquire(schedulerUser, {
+          maxWaitMs: config.webSearchQueueMaxWait * 1000,
+          signal: request.signal,
+          tokenId: user,
+        })
+        const started = performance.now()
+        try {
+          await webSearchBucket.acquire(config.webSearchQueueMaxWait, request.signal)
+          const result = await webSearch(input, { signal: request.signal })
+          await logUsage(store, {
+            user,
+            model: 'web_search',
+            ok: true,
+            status: 200,
+            ms: elapsedMs(started),
+            note: `results=${result.results.length}${client ? `;client=${client}` : ''}`,
+          })
+          return jsonResponse(result)
+        } catch (error) {
+          let status = 502
+          let detail = '联网搜索暂时不可用，请稍后重试'
+          if (error instanceof GatewayWebSearchError || error instanceof CapacityQueueError) {
+            status = error.status
+            detail = error.publicMessage
+          } else if (error instanceof HttpError) {
+            status = error.status
+            detail = error.detail
+          }
+          await logUsage(store, {
+            user,
+            model: 'web_search',
+            ok: false,
+            status,
+            ms: elapsedMs(started),
+            note: `failed${client ? `;client=${client}` : ''}`,
+          })
+          throw new HttpError(status, detail)
+        } finally {
+          permit.release()
+        }
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {

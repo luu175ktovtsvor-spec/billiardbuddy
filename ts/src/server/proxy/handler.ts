@@ -32,7 +32,11 @@ import {
   type TraceBodySnapshot,
   type TraceProviderInfo,
 } from '../services/traceCaptureService.js'
-import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
+import {
+  isQfGatewayProviderId,
+  QF_GATEWAY_PROXY_PATH,
+} from '../services/qfGatewayProvider.js'
+import { handleProductWebSearchProxyRequest } from './productWebSearch.js'
 
 const providerService = new ProviderService()
 
@@ -157,6 +161,13 @@ export function withStreamIdleTimeout(
 }
 
 export async function handleProxyRequest(req: Request, url: URL): Promise<Response> {
+  // Product web search is a deliberately narrow local sidecar route. It is not
+  // a generic provider endpoint: only the managed qf-gateway path may inject
+  // the host-only gateway token, and all other providers fall through to 404.
+  if (url.pathname === `${QF_GATEWAY_PROXY_PATH}/v1/web_search`) {
+    return handleProductWebSearchProxyRequest(req, url, providerService)
+  }
+
   const providerMatch = url.pathname.match(/^\/proxy\/providers\/([^/]+)\/v1\/messages$/)
   const providerId = providerMatch ? decodeURIComponent(providerMatch[1]!) : undefined
   const isActiveProxyPath = url.pathname === '/proxy/v1/messages'
