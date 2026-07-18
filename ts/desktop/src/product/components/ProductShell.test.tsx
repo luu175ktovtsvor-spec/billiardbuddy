@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   openTab: vi.fn(),
   connectToSession: vi.fn(),
   sendMessage: vi.fn(),
+  index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
+  chatSessions: {} as Record<string, unknown>,
+  tabs: [] as Array<Record<string, unknown>>,
 }))
 
 vi.mock('./TaskIndex', () => ({
@@ -25,7 +28,7 @@ vi.mock('./TaskIndex', () => ({
 
 vi.mock('../stores/productTaskStore', () => ({
   useProductTaskStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } },
+    index: mocks.index,
     isLoading: false,
     error: null,
     mutations: {},
@@ -51,16 +54,20 @@ vi.mock('../../stores/sessionStore', () => ({
 vi.mock('../../stores/tabStore', () => ({
   useTabStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     openTab: mocks.openTab,
+    tabs: mocks.tabs,
   }),
 }))
 
 vi.mock('../../stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({
+  useChatStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({ sessions: mocks.chatSessions }),
+    {
+      getState: () => ({
       connectToSession: mocks.connectToSession,
       sendMessage: mocks.sendMessage,
-    }),
-  },
+      }),
+    },
+  ),
 }))
 
 import { ProductShell } from './ProductShell'
@@ -90,6 +97,9 @@ function taskIndexProps(): TaskIndexProps {
 beforeEach(() => {
   mocks.taskIndexProps = null
   mocks.events.length = 0
+  mocks.index = { projects: [], tasks: [], total: 0, capabilities: { createTask: true } }
+  mocks.chatSessions = {}
+  mocks.tabs = []
   mocks.refresh.mockResolvedValue(undefined)
   mocks.createTask.mockImplementation(async () => {
     mocks.events.push('create')
@@ -128,6 +138,55 @@ describe('ProductShell', () => {
     expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
     expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
     expect(mocks.events).toEqual(['open-tab', 'connect'])
+  })
+
+  it('projects the real Agent Core session state into the task index', () => {
+    mocks.index = {
+      projects: [],
+      tasks: [makeTask()],
+      total: 1,
+      capabilities: { createTask: true },
+    }
+    mocks.chatSessions = {
+      'session-1': {
+        chatState: 'permission_pending',
+        connectionState: 'connected',
+        pendingPermission: null,
+        pendingComputerUsePermission: null,
+        backgroundAgentTasks: {},
+      },
+    }
+
+    render(<ProductShell />)
+
+    expect(taskIndexProps().runtimeStatesBySessionId).toEqual({
+      'session-1': 'awaiting_approval',
+    })
+  })
+
+  it('surfaces the real session tab error through the task index', () => {
+    mocks.index = {
+      projects: [],
+      tasks: [makeTask()],
+      total: 1,
+      capabilities: { createTask: true },
+    }
+    mocks.chatSessions = {
+      'session-1': {
+        chatState: 'idle',
+        connectionState: 'connected',
+        pendingPermission: null,
+        pendingComputerUsePermission: null,
+        backgroundAgentTasks: {},
+      },
+    }
+    mocks.tabs = [{ sessionId: 'session-1', title: '整理开球训练', type: 'session', status: 'error' }]
+
+    render(<ProductShell />)
+
+    expect(taskIndexProps().runtimeStatesBySessionId).toEqual({
+      'session-1': 'needs_attention',
+    })
   })
 
   it('refreshes and connects the real continuation session after continuing a task', async () => {

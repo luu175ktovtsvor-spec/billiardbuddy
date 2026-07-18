@@ -23,6 +23,10 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
 import type { ProductTaskComposerRequest } from '../stores/productTaskStore'
+import {
+  PRODUCT_TASK_RUNTIME_LABEL,
+  type ProductTaskRuntimeState,
+} from '../taskRuntime'
 
 export type TaskIndexProps = {
   index: ProductTaskIndexResponse
@@ -38,6 +42,7 @@ export type TaskIndexProps = {
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  runtimeStatesBySessionId?: Record<string, ProductTaskRuntimeState>
   composerRequest?: ProductTaskComposerRequest | null
   onConsumeComposerRequest?: (requestId: number) => void
 }
@@ -56,11 +61,6 @@ function hasAction(task: ProductTaskRecord, action: ProductTaskAction): boolean 
   return task.actions.includes(action)
 }
 
-function taskStatus(task: ProductTaskRecord): string {
-  if (task.lifecycle === 'archived') return '已归档'
-  return WORKTREE_STATE_LABEL[task.worktreeState] ?? '待开始'
-}
-
 function taskKindLabel(task: ProductTaskRecord): string {
   if (task.kind === 'continuation') return '继续任务'
   return '任务'
@@ -70,7 +70,7 @@ function taskLifecycleLabel(task: ProductTaskRecord): string {
   return task.lifecycle === 'archived' ? '已归档' : '进行中'
 }
 
-function taskMarkdown(task: ProductTaskRecord): string {
+function taskMarkdown(task: ProductTaskRecord, runtimeState: ProductTaskRuntimeState): string {
   const continuationSource = [
     task.parentTaskId ? `- 父任务 ID：\`${task.parentTaskId}\`` : null,
     task.parentThreadId ? `- 父线程 ID：\`${task.parentThreadId}\`` : null,
@@ -81,7 +81,8 @@ function taskMarkdown(task: ProductTaskRecord): string {
     `# 任务：${task.title}`,
     '',
     `- 任务 ID：\`${task.id}\``,
-    `- 状态：${taskLifecycleLabel(task)}`,
+    `- 任务生命周期：${taskLifecycleLabel(task)}`,
+    `- 运行状态：${PRODUCT_TASK_RUNTIME_LABEL[runtimeState]}`,
     `- 工作目录：\`${task.workDir || '未提供'}\``,
     `- 工作树：${WORKTREE_STATE_LABEL[task.worktreeState] ?? '未使用工作树'}`,
     `- 类型：${taskKindLabel(task)}`,
@@ -120,6 +121,7 @@ export function TaskIndex({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  runtimeStatesBySessionId = {},
   composerRequest = null,
   onConsumeComposerRequest,
 }: TaskIndexProps) {
@@ -232,6 +234,7 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
+              runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ))}
           {looseTasks.length > 0 ? (
@@ -247,6 +250,7 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
+              runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ) : null}
         </div>
@@ -566,6 +570,7 @@ function ProjectTaskGroup({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  runtimeStatesBySessionId,
 }: {
   project: ProductProject | null
   tasks: ProductTaskRecord[]
@@ -578,6 +583,7 @@ function ProjectTaskGroup({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  runtimeStatesBySessionId: Record<string, ProductTaskRuntimeState>
 }) {
   const visibleTasks = tasks.filter((task) => showArchived || task.lifecycle !== 'archived')
   if (visibleTasks.length === 0) return null
@@ -601,6 +607,7 @@ function ProjectTaskGroup({
             onRestoreTask={onRestoreTask}
             onContinueTask={onContinueTask}
             onOpenTask={onOpenTask}
+            runtimeState={runtimeStatesBySessionId[task.coreSessionId] ?? 'not_connected'}
           />
         ))}
       </div>
@@ -618,6 +625,7 @@ function TaskRow({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  runtimeState,
 }: {
   task: ProductTaskRecord
   mutations: Record<string, boolean | undefined>
@@ -628,6 +636,7 @@ function TaskRow({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  runtimeState: ProductTaskRuntimeState
 }) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(task.title)
@@ -665,8 +674,9 @@ function TaskRow({
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="font-medium text-[var(--color-text-primary)]">{task.title}</h3>
               {task.pinnedAt ? <span className="rounded-full bg-[var(--color-surface-selected)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">已置顶</span> : null}
+              {task.lifecycle === 'archived' ? <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">已归档</span> : null}
               <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{taskKindLabel(task)}</span>
-              <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{taskStatus(task)}</span>
+              <span aria-label={`运行状态：${PRODUCT_TASK_RUNTIME_LABEL[runtimeState]}`} className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{PRODUCT_TASK_RUNTIME_LABEL[runtimeState]}</span>
             </div>
           )}
           <dl className="mt-2 grid gap-1 text-xs text-[var(--color-text-secondary)]">
@@ -682,7 +692,7 @@ function TaskRow({
             className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
           />
           <CopyButton
-            text={taskMarkdown(task)}
+            text={taskMarkdown(task, runtimeState)}
             label="复制 Markdown"
             copiedLabel="已复制 Markdown"
             className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"

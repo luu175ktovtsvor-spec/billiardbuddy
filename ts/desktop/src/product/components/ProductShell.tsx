@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { TaskIndex } from './TaskIndex'
 import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -6,6 +6,7 @@ import { useTabStore } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { launchProductTask, type ProductTaskInitialMessage } from '../taskLaunch'
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
+import { getProductTaskRuntimeState } from '../taskRuntime'
 
 export function ProductShell() {
   const index = useProductTaskStore((state) => state.index)
@@ -24,6 +25,19 @@ export function ProductShell() {
   const continueTask = useProductTaskStore((state) => state.continueTask)
   const refreshSessions = useSessionStore((state) => state.fetchSessions)
   const openTab = useTabStore((state) => state.openTab)
+  const tabs = useTabStore((state) => state.tabs)
+  const chatSessions = useChatStore((state) => state.sessions)
+  const sessionTabStatuses = useMemo(() => new Map(
+    tabs
+      .filter((tab) => tab.type === 'session')
+      .map((tab) => [tab.sessionId, tab.status]),
+  ), [tabs])
+  const runtimeStatesBySessionId = useMemo(() => Object.fromEntries(
+    index.tasks.map((task) => [
+      task.coreSessionId,
+      getProductTaskRuntimeState(chatSessions[task.coreSessionId], sessionTabStatuses.get(task.coreSessionId)),
+    ]),
+  ), [chatSessions, index.tasks, sessionTabStatuses])
 
   const openTaskTab = (task: ProductTaskRecord) => {
     openTab(task.coreSessionId, task.title, 'session')
@@ -75,6 +89,7 @@ export function ProductShell() {
         onRestoreTask={restoreTask}
         onContinueTask={continueAndOpenTask}
         onOpenTask={openExistingTask}
+        runtimeStatesBySessionId={runtimeStatesBySessionId}
         composerRequest={composerRequest}
         onConsumeComposerRequest={consumeTaskComposerRequest}
       />
