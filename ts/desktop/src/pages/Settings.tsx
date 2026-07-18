@@ -299,8 +299,6 @@ export function Settings() {
 
 export function GeneralSettings() {
   const {
-    thinkingEnabled,
-    setThinkingEnabled,
     permissionMode,
     setPermissionMode,
     autoDreamEnabled,
@@ -988,28 +986,6 @@ export function GeneralSettings() {
         </div>
       </div>
 
-      <div className="mt-8">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.thinkingTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.thinkingDescription')}</p>
-        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
-          <input
-            type="checkbox"
-            aria-label={t('settings.general.thinkingEnabled')}
-            checked={thinkingEnabled}
-            onChange={(e) => void setThinkingEnabled(e.target.checked)}
-            className={SETTINGS_CHECKBOX_INPUT_CLASS}
-          />
-          <SettingsCheckboxMark checked={thinkingEnabled} />
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">
-              {t('settings.general.thinkingEnabled')}
-            </div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
-              {t('settings.general.thinkingHint')}
-            </div>
-          </div>
-        </label>
-      </div>
         </div>
       </details>
 
