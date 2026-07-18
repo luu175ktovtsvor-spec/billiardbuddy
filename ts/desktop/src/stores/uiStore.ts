@@ -10,7 +10,6 @@ const SETTINGS_TABS = [
   'mcp',
   'agents',
   'skills',
-  'memory',
   'plugins',
   'computerUse',
   'diagnostics',
@@ -86,7 +85,6 @@ export type SettingsTab =
   | 'mcp'
   | 'agents'
   | 'skills'
-  | 'memory'
   | 'plugins'
   | 'computerUse'
   | 'diagnostics'
@@ -99,7 +97,6 @@ type UIStore = {
   sidebarOpen: boolean
   activeSettingsTab: SettingsTab
   pendingSettingsTab: SettingsTab | null
-  pendingMemoryPath: string | null
   activeModal: ModalId | null
   toasts: Toast[]
 
@@ -109,7 +106,6 @@ type UIStore = {
   setSidebarOpen: (open: boolean) => void
   setActiveSettingsTab: (tab: SettingsTab) => void
   setPendingSettingsTab: (tab: SettingsTab | null) => void
-  setPendingMemoryPath: (path: string | null) => void
   openModal: (id: ModalId) => void
   closeModal: () => void
   addToast: (toast: Omit<Toast, 'id'>) => void
@@ -123,7 +119,6 @@ export const useUIStore = create<UIStore>((set) => ({
   sidebarOpen: true,
   activeSettingsTab: getStoredSettingsTab(),
   pendingSettingsTab: null,
-  pendingMemoryPath: null,
   activeModal: null,
   toasts: [],
 
@@ -150,7 +145,6 @@ export const useUIStore = create<UIStore>((set) => ({
     set({ activeSettingsTab: tab })
   },
   setPendingSettingsTab: (tab) => set({ pendingSettingsTab: tab }),
-  setPendingMemoryPath: (path) => set({ pendingMemoryPath: path }),
   openModal: (id) => set({ activeModal: id }),
   closeModal: () => set({ activeModal: null }),
 

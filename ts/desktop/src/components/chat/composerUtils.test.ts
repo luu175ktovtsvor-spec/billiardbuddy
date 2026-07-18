@@ -249,14 +249,14 @@ describe('composerUtils', () => {
     ])
   })
 
-  it('resolves hidden settings aliases without displaying duplicate fallback rows', () => {
+  it('keeps the core memory command separate from the retired settings alias', () => {
     expect(resolveSlashUiAction('plugins')).toEqual({ type: 'settings', tab: 'plugins' })
-    expect(resolveSlashUiAction('memory')).toEqual({ type: 'settings', tab: 'memory' })
+    expect(resolveSlashUiAction('memory')).toBeNull()
     expect(resolveSlashUiAction('doctor')).toEqual({ type: 'settings', tab: 'diagnostics' })
     expect(resolveSlashUiAction('config')).toEqual({ type: 'settings', tab: 'general' })
     expect(resolveSlashUiAction('settings')).toEqual({ type: 'settings', tab: 'general' })
     expect(mergeSlashCommands([]).map((command) => command.name)).toContain('plugin')
-    expect(mergeSlashCommands([]).map((command) => command.name)).toContain('memory')
+    expect(mergeSlashCommands([])).toContainEqual({ name: 'memory', description: 'Manage task memory' })
     expect(mergeSlashCommands([]).map((command) => command.name)).toContain('config')
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('plugins')
     expect(mergeSlashCommands([]).map((command) => command.name)).not.toContain('settings')

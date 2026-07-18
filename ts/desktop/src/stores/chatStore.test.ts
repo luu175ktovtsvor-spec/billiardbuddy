@@ -511,6 +511,8 @@ describe('chatStore history mapping', () => {
   })
 
   it('restores saved memory system events from transcript history', () => {
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_MEMORY_TRANSCRIPT_MESSAGE'
     const messages: MessageEntry[] = [
       {
         id: 'memory-1',
@@ -518,8 +520,9 @@ describe('chatStore history mapping', () => {
         timestamp: '2026-04-06T00:00:00.000Z',
         content: {
           subtype: 'memory_saved',
-          writtenPaths: ['/Users/test/.claude/projects/example/memory/preferences.md'],
-          teamCount: 0,
+          writtenCount: 1,
+          writtenPaths: [privatePath],
+          message: privateMessage,
         },
       },
     ]
@@ -531,14 +534,11 @@ describe('chatStore history mapping', () => {
         id: 'memory-1',
         type: 'memory_event',
         event: 'saved',
-        files: [
-          {
-            path: '/Users/test/.claude/projects/example/memory/preferences.md',
-            action: 'saved',
-          },
-        ],
+        count: 1,
       },
     ])
+    expect(JSON.stringify(mapped)).not.toContain(privatePath)
+    expect(JSON.stringify(mapped)).not.toContain(privateMessage)
   })
 
   it('preserves transcript message ids on natural-language history messages', () => {
@@ -3873,6 +3873,8 @@ describe('chatStore history mapping', () => {
   })
 
   it('renders memory saved notifications as chat memory events', () => {
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_MEMORY_NOTIFICATION_MESSAGE'
     useChatStore.setState({
       sessions: {
         [TEST_SESSION_ID]: makeSession({
@@ -3885,28 +3887,23 @@ describe('chatStore history mapping', () => {
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'system_notification',
       subtype: 'memory_saved',
-      message: 'Saved 2 memories',
       data: {
-        writtenPaths: [
-          '/Users/test/.claude/projects/example/memory/preferences.md',
-          '/Users/test/.claude/projects/example/memory/team/MEMORY.md',
-        ],
-        teamCount: 1,
+        writtenCount: 2,
+        writtenPaths: [privatePath],
+        message: privateMessage,
       },
     })
 
-    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages).toMatchObject([
+    const storedMessages = useChatStore.getState().sessions[TEST_SESSION_ID]?.messages
+    expect(storedMessages).toMatchObject([
       {
         type: 'memory_event',
         event: 'saved',
-        message: 'Saved 2 memories',
-        teamCount: 1,
-        files: [
-          { path: '/Users/test/.claude/projects/example/memory/preferences.md', action: 'saved' },
-          { path: '/Users/test/.claude/projects/example/memory/team/MEMORY.md', action: 'saved' },
-        ],
+        count: 2,
       },
     ])
+    expect(JSON.stringify(storedMessages)).not.toContain(privatePath)
+    expect(JSON.stringify(storedMessages)).not.toContain(privateMessage)
   })
 
   it('renders live goal notifications as visible goal events', () => {

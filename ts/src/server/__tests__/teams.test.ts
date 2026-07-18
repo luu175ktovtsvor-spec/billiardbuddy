@@ -556,6 +556,50 @@ describe('Teams API', () => {
     expect(body.messages[0]!.type).toBe('user')
   })
 
+  it('GET member transcript projects saved-memory paths and text to a count', async () => {
+    const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
+    const privateMessage = 'PRIVATE_TEAM_MEMORY_REST_MESSAGE'
+    await writeTeamConfig('memory-team', makeTeamConfig({ name: 'memory-team' }))
+
+    await writeTranscriptFile('-tmp-project', 'session-lead-001', [
+      {
+        type: 'system',
+        uuid: 'team-memory-1',
+        message: {
+          role: 'system',
+          content: {
+            subtype: 'memory_saved',
+            writtenPaths: [privatePath],
+            message: privateMessage,
+          },
+        },
+        timestamp: '2026-01-01T00:01:00.000Z',
+      },
+    ])
+
+    const res = await fetch(
+      `${baseUrl}/api/teams/memory-team/members/agent-lead/transcript`,
+    )
+    expect(res.status).toBe(200)
+
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; type: string; content: unknown }>
+    }
+    expect(body.messages).toEqual([
+      {
+        id: 'team-memory-1',
+        type: 'system',
+        content: {
+          subtype: 'memory_saved',
+          writtenCount: 1,
+        },
+        timestamp: '2026-01-01T00:01:00.000Z',
+      },
+    ])
+    expect(JSON.stringify(body)).not.toContain(privatePath)
+    expect(JSON.stringify(body)).not.toContain(privateMessage)
+  })
+
   it('GET /api/teams/:name/members/:id/transcript should 404 for unknown member', async () => {
     await writeTeamConfig('t2-team', makeTeamConfig({ name: 't2-team' }))
 

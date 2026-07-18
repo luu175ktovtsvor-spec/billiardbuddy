@@ -38,6 +38,7 @@ import {
 import { registerChangedFileAccessRoot, registerFilesystemAccessRoot } from '../services/filesystemAccessRoots.js'
 import { findGitRoot } from '../../utils/git.js'
 import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCaptureService.js'
+import { projectSessionMessagesForProduct } from './productMessageProjection.js'
 
 const DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 
@@ -246,7 +247,10 @@ async function getSession(sessionId: string): Promise<Response> {
   if (!detail) {
     throw ApiError.notFound(`Session not found: ${sessionId}`)
   }
-  return Response.json(detail)
+  return Response.json({
+    ...detail,
+    messages: projectSessionMessagesForProduct(detail.messages),
+  })
 }
 
 async function getSessionMessages(sessionId: string): Promise<Response> {
@@ -254,7 +258,10 @@ async function getSessionMessages(sessionId: string): Promise<Response> {
     sessionService.getSessionMessages(sessionId),
     sessionService.getSessionTaskNotifications(sessionId),
   ])
-  return Response.json({ messages, taskNotifications })
+  return Response.json({
+    messages: projectSessionMessagesForProduct(messages),
+    taskNotifications,
+  })
 }
 
 async function getSessionTrace(sessionId: string): Promise<Response> {
