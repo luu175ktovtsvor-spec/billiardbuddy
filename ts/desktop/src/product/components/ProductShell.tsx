@@ -6,7 +6,11 @@ import { useTabStore } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
-import { launchProductTask, type ProductTaskInitialMessage } from '../taskLaunch'
+import {
+  continueProductTask,
+  launchProductTask,
+  type ProductTaskInitialMessage,
+} from '../taskLaunch'
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeState } from '../taskRuntime'
 
@@ -76,12 +80,12 @@ export function ProductShell() {
     }, input, initialMessage)
   )
 
-  const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => {
-    const task = await continueTask(...args)
-    await refreshSessions()
-    openExistingTask(task)
-    return task
-  }
+  const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => continueProductTask({
+    continueTask,
+    refreshSessions,
+    openTask: openTaskTab,
+    connectToSession: connectToTaskSession,
+  }, ...args)
 
   useEffect(() => {
     void refresh()

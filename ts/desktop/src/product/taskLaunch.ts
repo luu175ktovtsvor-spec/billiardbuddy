@@ -1,4 +1,4 @@
-import type { CreateProductTaskInput } from './domain/types'
+import type { ContinueProductTaskInput, CreateProductTaskInput } from './domain/types'
 import type { ProductTaskRecord } from './domain/types'
 import type { AttachmentRef } from '../types/chat'
 
@@ -13,6 +13,13 @@ export type ProductTaskLaunchDependencies = {
   openTask: (task: ProductTaskRecord) => void
   connectToSession: (sessionId: string) => void
   sendMessage: (sessionId: string, content: string, attachments?: AttachmentRef[]) => void
+}
+
+export type ProductTaskContinuationDependencies = Pick<
+  ProductTaskLaunchDependencies,
+  'refreshSessions' | 'openTask' | 'connectToSession'
+> & {
+  continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
 
 export async function launchProductTask(
@@ -31,5 +38,17 @@ export async function launchProductTask(
     dependencies.sendMessage(task.coreSessionId, message, attachments)
   }
 
+  return task
+}
+
+export async function continueProductTask(
+  dependencies: ProductTaskContinuationDependencies,
+  taskId: string,
+  input: ContinueProductTaskInput,
+): Promise<ProductTaskRecord> {
+  const task = await dependencies.continueTask(taskId, input)
+  await dependencies.refreshSessions()
+  dependencies.openTask(task)
+  dependencies.connectToSession(task.coreSessionId)
   return task
 }

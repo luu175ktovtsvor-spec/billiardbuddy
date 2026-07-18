@@ -2386,6 +2386,19 @@ describe('Sessions API', () => {
     expect(res.status).toBe(404)
   })
 
+  it('GET /api/sessions/:id/:resource should 404 for unknown sub-resources', async () => {
+    const sessionId = '8a8a8a8a-bbbb-cccc-dddd-eeeeeeeeeeee'
+    await writeSessionFile('-tmp-api-unknown-resource', sessionId, [
+      makeSnapshotEntry(),
+      makeUserEntry('Known session'),
+    ])
+
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/not-supported`)
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toMatchObject({ error: 'NOT_FOUND' })
+  })
+
   it('GET /api/sessions/:id/messages should return messages', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-api-test', sessionId, [
@@ -3385,147 +3398,6 @@ describe('Sessions API', () => {
     expect(await res.json()).toMatchObject({
       error: 'METHOD_NOT_ALLOWED',
     })
-  })
-
-  it('POST /api/sessions/:id/branch should create a branched session up to the target message', async () => {
-    const sessionId = '11111111-1111-4111-8111-111111111111'
-    const workDir = path.join(tmpDir, 'branch-api-workdir')
-    const firstUserId = crypto.randomUUID()
-    const firstAssistantId = crypto.randomUUID()
-    const secondUserId = crypto.randomUUID()
-    const secondAssistantId = crypto.randomUUID()
-
-    await writeSessionFile(sanitizePath(workDir), sessionId, [
-      {
-        type: 'session-meta',
-        isMeta: true,
-        workDir,
-        timestamp: '2026-01-01T00:00:00.000Z',
-      },
-      {
-        ...makeUserEntry('first prompt', firstUserId),
-        cwd: workDir,
-        sessionId,
-      },
-      {
-        ...makeAssistantEntry('first reply', firstUserId),
-        uuid: firstAssistantId,
-        cwd: workDir,
-        sessionId,
-      },
-      {
-        ...makeUserEntry('second prompt', secondUserId),
-        parentUuid: firstAssistantId,
-        cwd: workDir,
-        sessionId,
-      },
-      {
-        ...makeAssistantEntry('second reply', secondUserId),
-        uuid: secondAssistantId,
-        cwd: workDir,
-        sessionId,
-      },
-    ])
-
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        targetMessageId: firstAssistantId,
-        title: 'API branch',
-      }),
-    })
-    expect(res.status).toBe(201)
-
-    const body = await res.json() as {
-      sessionId: string
-      title: string
-      workDir: string
-      sourceSessionId: string
-      targetMessageId: string
-    }
-    expect(body).toMatchObject({
-      title: 'API branch (Branch)',
-      workDir,
-      sourceSessionId: sessionId,
-      targetMessageId: firstAssistantId,
-    })
-
-    const branchMessages = await service.getSessionMessages(body.sessionId)
-    expect(branchMessages.map((message) => message.id)).toEqual([
-      firstUserId,
-      firstAssistantId,
-    ])
-  })
-
-  it('POST /api/sessions/:id/branch should reject sidechain targets', async () => {
-    const sessionId = '22222222-2222-4222-8222-222222222222'
-    const rootUserId = crypto.randomUUID()
-    const rootAssistantId = crypto.randomUUID()
-    const sidechainId = crypto.randomUUID()
-
-    await writeSessionFile('-tmp-api-branch-sidechain', sessionId, [
-      makeSnapshotEntry(),
-      {
-        ...makeUserEntry('root prompt', rootUserId),
-        sessionId,
-      },
-      {
-        ...makeAssistantEntry('root reply', rootUserId),
-        uuid: rootAssistantId,
-        sessionId,
-      },
-      {
-        ...makeUserEntry('side question', sidechainId),
-        parentUuid: rootAssistantId,
-        isSidechain: true,
-        sessionId,
-      },
-    ])
-
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetMessageId: sidechainId }),
-    })
-
-    expect(res.status).toBe(400)
-    expect(await res.json()).toMatchObject({
-      error: 'BAD_REQUEST',
-    })
-  })
-
-  it('POST /api/sessions/:id/branch should validate request bodies and missing sessions', async () => {
-    const methodNotAllowedRes = await fetch(`${baseUrl}/api/sessions/33333333-3333-4333-8333-333333333333/branch`)
-    expect(methodNotAllowedRes.status).toBe(405)
-
-    const missingTargetRes = await fetch(`${baseUrl}/api/sessions/branch-missing-target/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })
-    expect(missingTargetRes.status).toBe(400)
-
-    const invalidJsonRes = await fetch(`${baseUrl}/api/sessions/branch-invalid-json/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{',
-    })
-    expect(invalidJsonRes.status).toBe(400)
-
-    const invalidTitleRes = await fetch(`${baseUrl}/api/sessions/44444444-4444-4444-8444-444444444444/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetMessageId: 'message-1', title: 123 }),
-    })
-    expect(invalidTitleRes.status).toBe(400)
-
-    const missingSessionRes = await fetch(`${baseUrl}/api/sessions/00000000-0000-0000-0000-000000000000/branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetMessageId: 'missing-target' }),
-    })
-    expect(missingSessionRes.status).toBe(404)
   })
 
   it('POST /api/sessions/:id/rewind should preview and trim the active conversation chain', async () => {

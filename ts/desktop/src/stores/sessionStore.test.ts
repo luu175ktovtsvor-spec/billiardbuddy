@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { branchMock, createMock, deleteMock, batchDeleteMock, listMock, invalidateRecentProjectsCacheMock } = vi.hoisted(() => ({
-  branchMock: vi.fn(),
+const { createMock, deleteMock, batchDeleteMock, listMock, invalidateRecentProjectsCacheMock } = vi.hoisted(() => ({
   createMock: vi.fn(),
   deleteMock: vi.fn(),
   batchDeleteMock: vi.fn(),
@@ -11,7 +10,6 @@ const { branchMock, createMock, deleteMock, batchDeleteMock, listMock, invalidat
 
 vi.mock('../api/sessions', () => ({
   sessionsApi: {
-    branch: branchMock,
     create: createMock,
     list: listMock,
     delete: deleteMock,
@@ -58,7 +56,6 @@ function createDeferred<T>() {
 
 describe('sessionStore', () => {
   beforeEach(() => {
-    branchMock.mockReset()
     createMock.mockReset()
     deleteMock.mockReset()
     batchDeleteMock.mockReset()
@@ -381,100 +378,4 @@ describe('sessionStore', () => {
     expect(useSessionStore.getState().sessions.map((session) => session.id)).toEqual(['session-delete-b'])
   })
 
-  it('returns the branched session before the background refresh completes', async () => {
-    branchMock.mockResolvedValue({
-      sessionId: 'session-branch-1',
-      title: 'Branch from here',
-      workDir: '/workspace/repo/branches/session-branch-1',
-      sourceSessionId: 'session-source-1',
-      targetMessageId: 'transcript-message-1',
-    })
-    listMock.mockImplementation(() => new Promise(() => {}))
-    useSessionStore.setState({
-      sessions: [{
-        id: 'session-source-1',
-        title: 'Source session',
-        createdAt: '2026-05-19T00:00:00.000Z',
-        modifiedAt: '2026-05-19T00:00:00.000Z',
-        messageCount: 4,
-        projectPath: '/workspace/repo',
-        projectRoot: '/workspace/repo',
-        workDir: '/workspace/repo',
-        workDirExists: true,
-      }],
-    })
-
-    const result = await Promise.race([
-      useSessionStore.getState().branchSession('session-source-1', 'transcript-message-1'),
-      delay(100).then(() => 'timed-out'),
-    ])
-
-    expect(result).toMatchObject({
-      sessionId: 'session-branch-1',
-      title: 'Branch from here',
-      workDir: '/workspace/repo/branches/session-branch-1',
-    })
-    expect(branchMock).toHaveBeenCalledWith('session-source-1', {
-      targetMessageId: 'transcript-message-1',
-    })
-    expect(invalidateRecentProjectsCacheMock).toHaveBeenCalledOnce()
-    expect(useSessionStore.getState().activeSessionId).toBe('session-branch-1')
-    expect(useSessionStore.getState().sessions[0]).toMatchObject({
-      id: 'session-branch-1',
-      title: 'Branch from here',
-      projectPath: '/workspace/repo',
-      workDir: '/workspace/repo/branches/session-branch-1',
-      projectRoot: '/workspace/repo',
-      workDirExists: true,
-    })
-    expect(listMock).toHaveBeenCalledOnce()
-  })
-
-  it('updates an existing optimistic branch row when the branch session id is already present', async () => {
-    branchMock.mockResolvedValue({
-      sessionId: 'session-branch-existing',
-      title: 'Updated branch',
-      workDir: '/workspace/repo/branches/session-branch-existing',
-      sourceSessionId: 'session-source-1',
-      targetMessageId: 'transcript-message-2',
-    })
-    listMock.mockImplementation(() => new Promise(() => {}))
-    useSessionStore.setState({
-      sessions: [
-        {
-          id: 'session-branch-existing',
-          title: 'Old branch title',
-          createdAt: '2026-05-18T00:00:00.000Z',
-          modifiedAt: '2026-05-18T00:00:00.000Z',
-          messageCount: 3,
-          projectPath: '/workspace/old',
-          projectRoot: '/workspace/old',
-          workDir: '/workspace/old',
-          workDirExists: true,
-        },
-        {
-          id: 'session-source-1',
-          title: 'Source session',
-          createdAt: '2026-05-19T00:00:00.000Z',
-          modifiedAt: '2026-05-19T00:00:00.000Z',
-          messageCount: 4,
-          projectPath: '/workspace/repo',
-          projectRoot: '/workspace/repo',
-          workDir: '/workspace/repo',
-          workDirExists: true,
-        },
-      ],
-    })
-
-    await useSessionStore.getState().branchSession('session-source-1', 'transcript-message-2')
-
-    expect(useSessionStore.getState().sessions).toHaveLength(2)
-    expect(useSessionStore.getState().sessions[0]).toMatchObject({
-      id: 'session-branch-existing',
-      title: 'Updated branch',
-      projectPath: '/workspace/repo',
-      projectRoot: '/workspace/repo',
-      workDir: '/workspace/repo/branches/session-branch-existing',
-    })
-  })
 })

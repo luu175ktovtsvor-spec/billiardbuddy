@@ -35,10 +35,6 @@ import {
   previewSessionRewind,
   type RewindTargetSelector,
 } from '../services/sessionRewindService.js'
-import {
-  createSessionBranch,
-  SessionBranchingError,
-} from '../../utils/sessionBranching.js'
 import { registerChangedFileAccessRoot, registerFilesystemAccessRoot } from '../services/filesystemAccessRoots.js'
 import { findGitRoot } from '../../utils/git.js'
 import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCaptureService.js'
@@ -147,16 +143,6 @@ export async function handleSessionsApi(
       return await rewindSession(req, sessionId)
     }
 
-    if (subResource === 'branch') {
-      if (req.method !== 'POST') {
-        return Response.json(
-          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
-          { status: 405 }
-        )
-      }
-      return await branchSession(req, sessionId)
-    }
-
     if (subResource === 'turn-checkpoints') {
       if (req.method !== 'GET') {
         return Response.json(
@@ -208,6 +194,10 @@ export async function handleSessionsApi(
         { error: 'NOT_FOUND', message: 'Use /api/sessions/:id/chat via conversations API' },
         { status: 404 }
       )
+    }
+
+    if (subResource) {
+      throw ApiError.notFound(`Unknown session resource: ${subResource}`)
     }
 
     // -----------------------------------------------------------------------
@@ -882,58 +872,6 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
     : await executeSessionRewind(sessionId, body)
 
   return Response.json(result)
-}
-
-async function branchSession(req: Request, sessionId: string): Promise<Response> {
-  let body: { targetMessageId?: unknown; title?: unknown }
-  try {
-    body = (await req.json()) as { targetMessageId?: unknown; title?: unknown }
-  } catch {
-    throw ApiError.badRequest('Invalid JSON body')
-  }
-
-  if (typeof body.targetMessageId !== 'string' || body.targetMessageId.trim().length === 0) {
-    throw ApiError.badRequest('targetMessageId (string) is required in request body')
-  }
-
-  if (body.title !== undefined && typeof body.title !== 'string') {
-    throw ApiError.badRequest('title must be a string')
-  }
-
-  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
-  if (!launchInfo) {
-    throw ApiError.notFound(`Session not found: ${sessionId}`)
-  }
-
-  try {
-    const result = await createSessionBranch({
-      sourceSessionId: sessionId,
-      sourceTranscriptPath: launchInfo.filePath,
-      targetMessageId: body.targetMessageId.trim(),
-      title: body.title?.trim() || undefined,
-      sourceWorkDir: launchInfo.workDir,
-      sourceRepository: launchInfo.repository,
-      sourceWorktreeSession: launchInfo.worktreeSession,
-    })
-
-    recentProjectsCache = null
-
-    return Response.json({
-      sessionId: result.sessionId,
-      title: result.title,
-      workDir: result.workDir ?? launchInfo.workDir,
-      sourceSessionId: sessionId,
-      targetMessageId: body.targetMessageId.trim(),
-    }, { status: 201 })
-  } catch (error) {
-    if (error instanceof SessionBranchingError) {
-      if (error.code === 'SOURCE_NOT_FOUND') {
-        throw ApiError.notFound(error.message)
-      }
-      throw ApiError.badRequest(error.message)
-    }
-    throw error
-  }
 }
 
 async function getTurnCheckpoints(sessionId: string): Promise<Response> {
