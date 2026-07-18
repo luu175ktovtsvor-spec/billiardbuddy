@@ -84,6 +84,7 @@ import { useTeamStore } from '../stores/teamStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
 import { WORKSPACE_PANEL_DEFAULT_WIDTH } from '../stores/workspacePanelStore'
+import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import { useTerminalPanelStore } from '../stores/terminalPanelStore'
 import {
   TERMINAL_PANEL_DEFAULT_HEIGHT,
@@ -102,6 +103,7 @@ afterEach(() => {
   useTeamStore.setState({ teams: [], activeTeam: null, memberColors: new Map(), error: null })
   useProductTaskStore.setState(useProductTaskStore.getInitialState(), true)
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
+  useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
   useTerminalPanelStore.setState(useTerminalPanelStore.getInitialState(), true)
 })
 
@@ -1527,7 +1529,7 @@ describe('ActiveSession task polling', () => {
     expect(useWorkspacePanelStore.getState().width).toBe(526)
   })
 
-  it('does not render the workspace panel when closed or for member sessions', () => {
+  it('keeps the right dock closed until a file or browser panel is opened, and hides it for member sessions', () => {
     const regularSessionId = 'regular-session'
 
     useSessionStore.setState({
@@ -1574,6 +1576,20 @@ describe('ActiveSession task polling', () => {
     })
 
     const { rerender } = render(<ActiveSession />)
+    expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
+
+    act(() => {
+      useBrowserPanelStore.getState().ensureBlank(regularSessionId)
+      useWorkspacePanelStore.getState().setMode(regularSessionId, 'browser')
+    })
+
+    expect(useWorkspacePanelStore.getState().isPanelOpen(regularSessionId)).toBe(false)
+    expect(screen.getByTestId('workspace-panel')).toHaveTextContent(`workspace:${regularSessionId}`)
+
+    act(() => {
+      useBrowserPanelStore.getState().close(regularSessionId)
+    })
+
     expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
 
     const memberSessionId = 'team-member:security-reviewer@test-team'
@@ -1629,6 +1645,8 @@ describe('ActiveSession task polling', () => {
         },
       })
       useWorkspacePanelStore.getState().openPanel(memberSessionId)
+      useBrowserPanelStore.getState().ensureBlank(memberSessionId)
+      useWorkspacePanelStore.getState().setMode(memberSessionId, 'browser')
       rerender(<ActiveSession />)
     })
 

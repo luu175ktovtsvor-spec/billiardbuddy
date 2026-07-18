@@ -447,10 +447,9 @@ export const useWorkspacePanelStore = create<WorkspacePanelStore>((set, get) => 
   },
 
   openPreview: async (sessionId, path, kind) => {
-    // Ensure the workspace panel is visible — openPreview is now triggered from places
-    // where the panel may be closed (e.g. the chat "打开方式" menu / turn-changes card),
-    // not only from inside the already-open file tree. Opening a file always switches the
-    // unified workbench into file ("workspace") mode.
+    // Ensure the file panel is visible — previews can originate outside the
+    // navigator (for example from an “open with” action). Opening a file selects
+    // the file panel in the shared dock without closing the browser panel.
     get().openPanel(sessionId)
     get().setMode(sessionId, 'workspace')
     const tabId = getWorkspacePreviewTabId(path, kind)

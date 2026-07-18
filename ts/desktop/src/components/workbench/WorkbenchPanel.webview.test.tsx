@@ -1,5 +1,5 @@
 // Integration test: proves the native child webview is torn down when
-// the unified workbench switches from browser mode to file mode. Uses the REAL
+// the right-side task dock switches from browser to file view. Uses the REAL
 // BrowserSurface so the unmount-cleanup path that closes the webview is exercised.
 import '@testing-library/jest-dom'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -45,7 +45,7 @@ beforeEach(() => {
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
   useSettingsStore.setState({ locale: 'en' })
-  // open() opens the workbench in browser mode (and records the url for BrowserSurface).
+  // open() records an independently open browser and brings it to the front of the dock.
   useBrowserPanelStore.getState().open(SESSION_ID, 'http://localhost:5173/')
 })
 

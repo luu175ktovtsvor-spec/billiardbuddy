@@ -70,11 +70,10 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
         bySession: { ...st.bySession, [sessionId]: { ...empty(url), zoom, loading: true } },
       }
     })
-    // The browser is one mode of the unified workbench: opening a previewable
-    // link / localhost url surfaces the workbench in BROWSER mode. Import is
-    // one-directional (workspacePanelStore never imports this store), so no cycle.
+    // Browser visibility belongs to this store. Opening a preview only brings
+    // the browser forward in the shared right-side dock; it must not open the
+    // file workspace or overwrite that panel's visibility state.
     const workspacePanel = useWorkspacePanelStore.getState()
-    workspacePanel.openPanel(sessionId)
     workspacePanel.setMode(sessionId, 'browser')
   },
   ensureBlank: (sessionId) => set((st) => {
@@ -109,10 +108,17 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
     const cur = st.bySession[sessionId]; if (!cur) return st
     return { bySession: { ...st.bySession, [sessionId]: { ...cur, zoom: normalizeBrowserZoom(zoom) } } }
   }),
-  close: (sessionId) => set((st) => {
-    const cur = st.bySession[sessionId]; if (!cur) return st
-    return { bySession: { ...st.bySession, [sessionId]: { ...cur, isOpen: false, pickerActive: false } } }
-  }),
+  close: (sessionId) => {
+    set((st) => {
+      const cur = st.bySession[sessionId]; if (!cur) return st
+      return { bySession: { ...st.bySession, [sessionId]: { ...cur, isOpen: false, pickerActive: false } } }
+    })
+
+    const workspacePanel = useWorkspacePanelStore.getState()
+    if (workspacePanel.getMode(sessionId) === 'browser') {
+      workspacePanel.setMode(sessionId, 'workspace')
+    }
+  },
   setNavigated: (sessionId, url, title) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st
     const currentHistoryUrl = cur.history[cur.historyIndex]

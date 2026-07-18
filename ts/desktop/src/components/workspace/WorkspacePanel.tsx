@@ -33,14 +33,14 @@ import { WorkspaceFileOpenWith } from './WorkspaceFileOpenWith'
 type WorkspacePanelProps = {
   sessionId: string
   /**
-   * When hosted inside the unified WorkbenchPanel, the close action lives in the
-   * shared workbench mode strip. Set this to drop WorkspacePanel's own close
-   * button so the panel header doesn't render a duplicate close control.
+   * When hosted inside the right-side task dock, the dock owns the close
+   * action. Set this to drop WorkspacePanel's own close button so the panel
+   * header doesn't render a duplicate control.
    */
   embedded?: boolean
   /**
-   * Main-content workbench tabs reuse the same workspace preview UI without
-   * depending on the right-side panel's open bit.
+   * Main-content task tabs reuse the same workspace preview UI without
+   * depending on the right-side panel's open state.
    */
   forceVisible?: boolean
 }

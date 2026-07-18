@@ -25,21 +25,35 @@ const MODE_ITEMS: ReadonlyArray<{
 ]
 
 /**
- * Unified right-side "Workbench" panel. Hosts the file workspace and the native
- * browser surface behind a single per-session mode switch (file ↔ browser),
- * sharing the panel's open state and width via {@link useWorkspacePanelStore}.
+ * Right-side task dock. The file workspace and browser each retain their own
+ * open state; the mode switch merely selects which open panel occupies the
+ * shared dock, so they never squeeze the task thread side-by-side.
  */
 export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: WorkbenchPanelProps) {
   const t = useTranslation()
   const mode = useWorkspacePanelStore((state) => state.getMode(sessionId))
   const setMode = useWorkspacePanelStore((state) => state.setMode)
+  const workspaceOpen = useWorkspacePanelStore((state) => state.isPanelOpen(sessionId))
   const closePanel = useWorkspacePanelStore((state) => state.closePanel)
   const ensureBlankBrowser = useBrowserPanelStore((state) => state.ensureBlank)
+  const browserOpen = useBrowserPanelStore((state) => state.bySession[sessionId]?.isOpen ?? false)
+  const closeBrowser = useBrowserPanelStore((state) => state.close)
   const isTabVariant = variant === 'tab'
+  const activeMode: WorkbenchMode = isTabVariant
+    ? mode
+    : mode === 'browser' && browserOpen
+      ? 'browser'
+      : mode === 'workspace' && workspaceOpen
+        ? 'workspace'
+        : browserOpen
+          ? 'browser'
+          : 'workspace'
 
   const handleModeSelect = (nextMode: WorkbenchMode) => {
     if (nextMode === 'browser') {
       ensureBlankBrowser(sessionId)
+    } else if (!isTabVariant) {
+      useWorkspacePanelStore.getState().openPanel(sessionId)
     }
     setMode(sessionId, nextMode)
   }
@@ -53,7 +67,14 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
       onClose()
       return
     }
+    if (activeMode === 'browser') {
+      closeBrowser(sessionId)
+      return
+    }
     closePanel(sessionId)
+    if (browserOpen) {
+      setMode(sessionId, 'browser')
+    }
   }
 
   return (
@@ -65,7 +86,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
           className="inline-flex items-center gap-0.5"
         >
           {MODE_ITEMS.map(({ mode: itemMode, labelKey, Icon }) => {
-            const isActive = mode === itemMode
+            const isActive = activeMode === itemMode
             return (
               <button
                 key={itemMode}
@@ -110,7 +131,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {mode === 'browser' ? (
+        {activeMode === 'browser' ? (
           <BrowserSurface sessionId={sessionId} />
         ) : (
           <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant} />
