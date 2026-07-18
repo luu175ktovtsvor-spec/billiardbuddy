@@ -4,12 +4,22 @@ import '@testing-library/jest-dom'
 
 const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
+  openDirectory: vi.fn(),
+  isDesktop: false,
 }))
 
 vi.mock('../../api/skills', () => ({
   skillsApi: {
     list: mocks.listSkills,
   },
+}))
+
+vi.mock('../../lib/desktopHost', () => ({
+  getDesktopHost: () => ({
+    isDesktop: mocks.isDesktop,
+    capabilities: { dialogs: mocks.isDesktop },
+    dialogs: { open: mocks.openDirectory },
+  }),
 }))
 
 import { TaskIndex } from './TaskIndex'
@@ -85,6 +95,7 @@ function renderIndex(index = makeIndex()) {
 }
 
 beforeEach(() => {
+  mocks.isDesktop = false
   mocks.listSkills.mockResolvedValue({ skills: [] })
 })
 
@@ -137,6 +148,29 @@ describe('TaskIndex', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
     await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {}))
+  })
+
+  it('does not show the native folder chooser outside the desktop app', () => {
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    expect(screen.queryByRole('button', { name: '选择文件夹' })).not.toBeInTheDocument()
+  })
+
+  it('writes the desktop native folder selection back to the work directory', async () => {
+    mocks.isDesktop = true
+    mocks.openDirectory.mockResolvedValue('/workspace/selected-project')
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
+
+    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: '选择任务工作目录',
+    }))
+    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/selected-project'))
   })
 
   it('keeps the optional initial goal out of the product task fields', async () => {

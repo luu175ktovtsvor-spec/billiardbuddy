@@ -19,6 +19,7 @@ import type { AttachmentRef } from '../../types/chat'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ComposerDropOverlay } from './ComposerDropOverlay'
 import { VoiceInputControl } from './VoiceInputControl'
+import { ComposerFrame, ComposerSurface, ComposerToolbar } from './ComposerSurface'
 import { RepositoryLaunchControls } from '../shared/RepositoryLaunchControls'
 import { FileSearchMenu, type FileSearchMenuHandle } from './FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from './LocalSlashCommandPanel'
@@ -191,7 +192,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const useCompactControls = compact || isMobileComposer
   const iconOnlyAction = compact || isMobileComposer
   const activeLaunchWorkDir = showLaunchControls ? (launchWorkDir || resolvedWorkDir || '') : (resolvedWorkDir || '')
-  const embedLaunchControlsInHero = isHeroComposer && !useCompactControls && showLaunchControls
+  const embedLaunchControlsInComposer = !isMobileComposer && showLaunchControls
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
     ? resolveSlashUiAction(input.trim().slice(1))
     : null
@@ -979,23 +980,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             : `bg-[var(--color-app-main)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-4 pb-2 pt-1'}`
       }
     >
-      <div
-        className={
-          isHeroComposer
-            ? 'mx-auto flex w-full max-w-[768px] flex-col'
-          : compact
-              ? 'mx-auto max-w-full'
-              : `${isMobileComposer ? 'mx-0 max-w-none' : 'mx-auto max-w-[768px]'}`
-        }
-      >
-        <div
+      <ComposerFrame mobile={isMobileComposer}>
+        <ComposerSurface
           ref={panelRef}
           data-testid="chat-input-panel"
-          className={isHeroComposer
-            ? `main-composer-surface relative flex flex-col overflow-visible transition-colors ${isDragActive ? 'composer-drop-target-active' : ''}`
-            : compact
-              ? `main-composer-surface relative overflow-visible transition-colors ${isDragActive ? 'composer-drop-target-active' : ''}`
-              : `main-composer-surface relative overflow-visible transition-colors ${isDragActive ? 'composer-drop-target-active' : ''}`}
+          className={`transition-colors ${isDragActive ? 'composer-drop-target-active' : ''}`}
           {...dragHandlers}
         >
           {isDragActive && (
@@ -1226,47 +1215,27 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             )
           )}
 
-          {isHeroComposer ? (
-            <div className="flex items-start gap-3">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                onCompositionStart={() => { composingRef.current = true }}
-                onCompositionEnd={() => { composingRef.current = false }}
-                onPaste={handlePaste}
-                placeholder={composerPlaceholder}
-                disabled={isWorkspaceMissing}
-                rows={2}
-                className="min-h-[64px] flex-1 resize-none border-none bg-transparent px-3 pb-1 pt-3 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50"
-              />
-            </div>
-          ) : (
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              onCompositionStart={() => { composingRef.current = true }}
-              onCompositionEnd={() => { composingRef.current = false }}
-              onPaste={handlePaste}
-              placeholder={composerPlaceholder}
-              disabled={isWorkspaceMissing}
-              rows={1}
-              className={`w-full resize-none bg-transparent px-3 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50 ${
-                useCompactControls ? 'min-h-[44px] pb-1 pt-3' : 'min-h-[58px] pb-1 pt-3'
-              }`}
-            />
-          )}
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            onCompositionStart={() => { composingRef.current = true }}
+            onCompositionEnd={() => { composingRef.current = false }}
+            onPaste={handlePaste}
+            placeholder={composerPlaceholder}
+            disabled={isWorkspaceMissing}
+            rows={1}
+            className={`mb-1 w-full resize-none border-none bg-transparent px-3 pt-3 leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50 ${
+              isMobileComposer ? 'min-h-[44px] max-h-[132px] text-base' : 'max-h-[200px] text-sm'
+            }`}
+            style={{ maxHeight: 200 }}
+          />
 
-          <div data-testid="chat-input-toolbar" className={isHeroComposer
-            ? 'mb-2 flex min-h-8 items-center justify-between px-2'
-            : 'mb-2 flex min-h-8 items-center justify-between px-2'}>
-            <div className="flex min-w-0 items-center gap-2">
-              {!isMemberSession && (
-                <>
-                  <div ref={plusMenuRef} className="relative">
+          <ComposerToolbar
+            testId="chat-input-toolbar"
+            start={!isMemberSession ? (
+                <div ref={plusMenuRef} className="relative">
                     <button
                       onClick={() => setPlusMenuOpen((value) => !value)}
                       aria-label="Open composer tools"
@@ -1293,14 +1262,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                         </button>
                       </div>
                     )}
-                  </div>
-
+                </div>
+              ) : null}
+            middle={(
+              !isMemberSession ? (
                   <PermissionModeSelector compact={useCompactControls} />
-                </>
-              )}
-            </div>
-
-            <div className="flex min-w-0 items-center gap-2">
+              ) : null
+            )}
+            end={(
+              <>
               {!isMemberSession ? (
                 <VoiceInputControl
                   onTranscript={appendVoiceTranscript}
@@ -1329,10 +1299,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   {!isMemberSession && isActive ? 'stop' : 'arrow_upward'}
                 </span>
               </button>
-            </div>
-          </div>
+              </>
+            )}
+          />
 
-          {embedLaunchControlsInHero && (
+          {embedLaunchControlsInComposer && (
             <div className="-mx-4 -mb-4 mt-3">
               <RepositoryLaunchControls
                 workDir={activeLaunchWorkDir}
@@ -1347,11 +1318,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               />
             </div>
           )}
-        </div>
+        </ComposerSurface>
 
         <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
 
-        {!isMemberSession && !embedLaunchControlsInHero && messageCount === 0 && (
+        {!isMemberSession && !embedLaunchControlsInComposer && messageCount === 0 && (
           <div className={useCompactControls ? 'mt-2 flex min-w-0 px-1' : 'mt-3 px-1'}>
             <RepositoryLaunchControls
               workDir={activeLaunchWorkDir}
@@ -1365,7 +1336,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             />
           </div>
         )}
-      </div>
+      </ComposerFrame>
     </div>
   )
 }

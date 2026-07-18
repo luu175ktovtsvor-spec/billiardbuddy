@@ -410,7 +410,7 @@ describe('EmptySession', () => {
     expect(mocks.wsSend).not.toHaveBeenCalled()
   })
 
-  it('places repository launch controls directly beneath the desktop composer', async () => {
+  it('embeds repository launch controls inside the desktop composer', async () => {
     render(<EmptySession />)
 
     const shell = screen.getByTestId('empty-session-composer-shell')
@@ -422,10 +422,11 @@ describe('EmptySession', () => {
     const branchButton = await screen.findByRole('button', { name: 'Select branch: main' })
     const launchBar = branchButton.parentElement
     expect(launchBar).toBeTruthy()
-    expect(launchBar).toHaveClass('border-t', 'rounded-b-xl')
+    expect(launchBar).toHaveClass('border-t', 'bg-transparent')
+    expect(launchBar).not.toHaveClass('rounded-b-xl')
     expect(shell).toContainElement(panel)
     expect(shell).toContainElement(launchBar)
-    expect(panel).not.toContainElement(launchBar)
+    expect(panel).toContainElement(launchBar)
   })
 
   it('creates a session with the selected project and branch when submitted', async () => {

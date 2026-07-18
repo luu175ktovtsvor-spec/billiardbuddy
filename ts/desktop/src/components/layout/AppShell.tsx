@@ -68,7 +68,7 @@ export function AppShell() {
     return t('session.timeDays', { n: Math.floor(diff / 86400000) })
   })()
   const sidebarHiddenProps: HTMLAttributes<HTMLDivElement> & { inert?: '' } =
-    isMobileShell && !effectiveSidebarOpen
+    !effectiveSidebarOpen
       ? { 'aria-hidden': true, inert: '' }
       : {}
 
@@ -265,11 +265,9 @@ export function AppShell() {
           effectiveSidebarOpen ? (
             <Sidebar isMobile onRequestClose={() => setEffectiveSidebarOpen(false)} />
           ) : null
-        ) : (
-          // 桌面端 = 旧 renderer-react 风格的项目/会话栏（迁入的 DesktopSidebar，接当前 store）。
-          // 移动端保留当前 Sidebar 的稳定路径不动。
+        ) : effectiveSidebarOpen ? (
           <DesktopSidebar />
-        )}
+        ) : null}
       </div>
       <main
         id="content-area"
@@ -323,8 +321,6 @@ export function AppShell() {
             ) : null}
           </div>
         ) : null}
-        {/* 桌面端 = 旧版单一 TopBar（会话标题 + 任务菜单 + 搜索/工作区面板开关），
-            替代原多标签 TabBar，去掉会话态全局重复标签条。移动端保留原移动头。 */}
         {!isMobileShell ? <TopBar /> : null}
         <ContentRouter />
       </main>
