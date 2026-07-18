@@ -2,19 +2,6 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
-const viewportMocks = vi.hoisted(() => ({
-  isMobile: false,
-}))
-
-vi.mock('../../hooks/useMobileViewport', () => ({
-  useMobileViewport: () => viewportMocks.isMobile,
-}))
-
-vi.mock('../../lib/desktopRuntime', () => ({
-  isTauriRuntime: () => false,
-  isDesktopRuntime: () => false,
-}))
-
 vi.mock('../../i18n', () => ({
   useTranslation: () => (key: string) => ({
     'permMode.askPermissions': 'Ask permissions',
@@ -51,7 +38,6 @@ import { useTabStore } from '../../stores/tabStore'
 
 describe('PermissionModeSelector', () => {
   beforeEach(() => {
-    viewportMocks.isMobile = false
     useSettingsStore.setState({ permissionMode: 'default' })
     useSessionStore.setState({ sessions: [], activeSessionId: null })
     useTabStore.setState({ activeTabId: null, tabs: [] })
@@ -96,25 +82,6 @@ describe('PermissionModeSelector', () => {
 
     expect(setGlobalPermissionMode).not.toHaveBeenCalled()
     expect(setSessionPermissionMode).toHaveBeenCalledWith('current-tab', 'acceptEdits')
-  })
-
-  it('labels the compact mobile trigger and opens a phone-sized menu sheet', () => {
-    viewportMocks.isMobile = true
-
-    render(<PermissionModeSelector compact workDir="/repo" />)
-
-    const trigger = screen.getByRole('button', { name: 'Ask permissions' })
-    expect(trigger).toHaveClass('h-11', 'w-11')
-    expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
-    expect(trigger).toHaveAttribute('aria-expanded', 'false')
-
-    fireEvent.click(trigger)
-
-    expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    expect(trigger).toHaveAttribute('aria-controls', 'permission-mode-menu')
-    expect(screen.getByRole('dialog', { name: 'Execution Permissions' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /Auto accept edits/ })).toBeInTheDocument()
   })
 
   it('uses the active tab workspace when showing the bypass confirmation path', () => {

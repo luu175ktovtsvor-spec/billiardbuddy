@@ -8,15 +8,8 @@ vi.mock('../../api/sessions', () => ({
   },
 }))
 
-vi.mock('../../api/filesystem', () => ({
-  filesystemApi: {
-    browse: vi.fn(),
-  },
-}))
-
 import { DirectoryPicker } from './DirectoryPicker'
 import { sessionsApi } from '../../api/sessions'
-import { filesystemApi } from '../../api/filesystem'
 import { browserHost } from '../../lib/desktopHost/browserHost'
 
 describe('DirectoryPicker', () => {
@@ -152,24 +145,15 @@ describe('DirectoryPicker', () => {
     expect(menu).toHaveStyle({ left: '612px', width: '400px' })
   })
 
-  it('renders browse entries without nesting interactive buttons', async () => {
+  it('does not expose a browser-only directory fallback outside the desktop host', async () => {
     vi.mocked(sessionsApi.getRecentProjects).mockResolvedValue({ projects: [] })
-    vi.mocked(filesystemApi.browse).mockResolvedValue({
-      currentPath: '/workspace',
-      parentPath: '/Users/nanmi',
-      entries: [{ name: 'project', path: '/workspace/project', isDirectory: true }],
-    })
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     render(<DirectoryPicker value="" onChange={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: /选择项目|Select a project/ }))
-    fireEvent.click(await screen.findByText(/选择其他文件夹|Choose a different folder/))
 
-    expect(await screen.findByRole('button', { name: /project/ })).toBeInTheDocument()
-    expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('validateDOMNesting'))
-
-    errorSpy.mockRestore()
+    await screen.findByTestId('directory-picker-menu')
+    expect(screen.queryByText(/选择其他文件夹|Choose a different folder/)).not.toBeInTheDocument()
   })
 
   it('uses the injected desktop host for native folder selection', async () => {
@@ -201,6 +185,5 @@ describe('DirectoryPicker', () => {
       multiple: false,
       title: expect.any(String),
     })
-    expect(filesystemApi.browse).not.toHaveBeenCalled()
   })
 })

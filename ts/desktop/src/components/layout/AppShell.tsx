@@ -20,8 +20,7 @@ import { TraceSession } from '../../pages/TraceSession'
 
 /**
  * The only delivered application frame: BilliardBuddy's desktop task shell.
- * Mobile/H5 navigation and the retired CC-HH sidebar do not participate in
- * this desktop product tree.
+ * The retired CC-HH sidebar does not participate in this desktop product tree.
  */
 export function AppShell() {
   const fetchSettings = useSettingsStore((state) => state.fetchAll)

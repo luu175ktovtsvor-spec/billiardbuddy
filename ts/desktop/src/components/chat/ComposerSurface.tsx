@@ -7,14 +7,13 @@ import {
 type ComposerFrameProps = {
   children: ReactNode
   className?: string
-  mobile?: boolean
 }
 
-export function ComposerFrame({ children, className = '', mobile = false }: ComposerFrameProps) {
+export function ComposerFrame({ children, className = '' }: ComposerFrameProps) {
   return (
     <div
-      className={`relative flex w-full flex-col ${mobile ? 'max-w-none' : 'mx-auto'} ${className}`}
-      style={mobile ? undefined : { maxWidth: 768 }}
+      className={`relative mx-auto flex w-full flex-col ${className}`}
+      style={{ maxWidth: 768 }}
     >
       {children}
     </div>

@@ -4679,28 +4679,9 @@ describe('shouldVirtualizeRenderItems', () => {
   })
 
   it('virtualizes at the desktop thresholds (120 items / 120k chars)', () => {
-    expect(shouldVirtualizeRenderItems(Array.from({ length: 119 }, () => metric(10)), false)).toBe(false)
-    expect(shouldVirtualizeRenderItems(Array.from({ length: 120 }, () => metric(10)), false)).toBe(true)
-    expect(shouldVirtualizeRenderItems([metric(119_999)], false)).toBe(false)
-    expect(shouldVirtualizeRenderItems([metric(120_000)], false)).toBe(true)
-  })
-
-  it('virtualizes at half the thresholds on touch-H5, where content-visibility is disabled', () => {
-    expect(shouldVirtualizeRenderItems(Array.from({ length: 59 }, () => metric(10)), true)).toBe(false)
-    expect(shouldVirtualizeRenderItems(Array.from({ length: 60 }, () => metric(10)), true)).toBe(true)
-    expect(shouldVirtualizeRenderItems([metric(59_999)], true)).toBe(false)
-    expect(shouldVirtualizeRenderItems([metric(60_000)], true)).toBe(true)
-  })
-
-  it('defaults the touch flag from the document marker', () => {
-    const metrics = Array.from({ length: 60 }, () => metric(10))
-    expect(shouldVirtualizeRenderItems(metrics)).toBe(false)
-
-    document.documentElement.setAttribute('data-touch-h5', 'true')
-    try {
-      expect(shouldVirtualizeRenderItems(metrics)).toBe(true)
-    } finally {
-      document.documentElement.removeAttribute('data-touch-h5')
-    }
+    expect(shouldVirtualizeRenderItems(Array.from({ length: 119 }, () => metric(10)))).toBe(false)
+    expect(shouldVirtualizeRenderItems(Array.from({ length: 120 }, () => metric(10)))).toBe(true)
+    expect(shouldVirtualizeRenderItems([metric(119_999)])).toBe(false)
+    expect(shouldVirtualizeRenderItems([metric(120_000)])).toBe(true)
   })
 })

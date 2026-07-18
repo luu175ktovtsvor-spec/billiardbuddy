@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { renderToStaticMarkup } from 'react-dom/server'
 import '@testing-library/jest-dom'
 
 import { skillsApi } from '../api/skills'
@@ -76,7 +75,6 @@ import { ActiveSession } from '../pages/ActiveSession'
 import { ScheduledTasks } from '../pages/ScheduledTasks'
 
 import { UserMessage } from '../components/chat/UserMessage'
-import { ContextUsageIndicator } from '../components/chat/ContextUsageIndicator'
 import { useChatStore } from '../stores/chatStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -115,39 +113,6 @@ function resetPageStores() {
  * and contain key structural elements from the prototype.
  */
 describe('Content-only pages render without errors', () => {
-  it('ContextUsageIndicator does not render a first-paint spinner for draft sessions', () => {
-    const html = renderToStaticMarkup(
-      <ContextUsageIndicator
-        chatState="idle"
-        messageCount={0}
-        fallbackModelLabel="kimi-k2.6"
-        draft
-      />,
-    )
-
-    expect(html).toMatch(/aria-label="(Context usage not calculated|上下文用量待计算)"/)
-    expect(html).toContain('--')
-    expect(html).not.toContain('animate-spin')
-  })
-
-  it('ContextUsageIndicator opens tap details in compact mobile mode', async () => {
-    render(
-      <ContextUsageIndicator
-        chatState="idle"
-        messageCount={0}
-        fallbackModelLabel="kimi-k2.6"
-        draft
-        compact
-      />,
-    )
-
-    fireEvent.click(screen.getByLabelText('Context usage not calculated'))
-
-    expect(await screen.findByRole('button', { name: 'Close' })).toBeInTheDocument()
-    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Context usage will be calculated after the session starts.')).toHaveLength(2)
-  })
-
   it('ActiveSession renders with chat components', () => {
     const SESSION_ID = 'test-active-session'
     useTabStore.setState({ tabs: [{ sessionId: SESSION_ID, title: 'Test', type: 'session' as const, status: 'idle' }], activeTabId: SESSION_ID })

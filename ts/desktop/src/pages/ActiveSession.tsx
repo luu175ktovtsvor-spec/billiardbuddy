@@ -33,8 +33,6 @@ import { TeamStatusBar } from '../components/teams/TeamStatusBar'
 import { TerminalSettings } from './TerminalSettings'
 import type { SessionListItem } from '../types/session'
 import type { ActiveGoalState } from '../types/chat'
-import { useMobileViewport } from '../hooks/useMobileViewport'
-import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { Smiley } from '../components/shared/Smiley'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
@@ -297,7 +295,6 @@ function TerminalResizeHandle() {
 }
 
 export function ActiveSession() {
-  const isMobileLayout = useMobileViewport() && !isDesktopRuntime()
   const locale = useSettingsStore((state) => state.locale)
   const workbenchPanelRef = useRef<HTMLElement>(null)
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -324,24 +321,24 @@ export function ActiveSession() {
   const activeTeam = useTeamStore((s) => s.activeTeam)
   const isMemberSession = !!memberInfo
   const showWorkspacePanel = useWorkspacePanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession
       ? state.isPanelOpen(activeTabId)
       : false,
   )
   const showBrowserPanel = useBrowserPanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession
       ? state.bySession[activeTabId]?.isOpen ?? false
       : false,
   )
   const showRightPanel = showWorkspacePanel || showBrowserPanel
   const rightPanelWidth = useWorkspacePanelStore((state) => state.width)
   const showTerminalPanel = useTerminalPanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession
       ? state.isPanelOpen(activeTabId)
       : false,
   )
   const terminalPanelRuntimeId = useTerminalPanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession
       ? state.panelBySession[activeTabId]?.runtimeId
       : undefined,
   )
@@ -432,7 +429,7 @@ export function ActiveSession() {
       <div data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
         <div
           data-testid="active-session-chat-column"
-          className={`flex min-h-0 flex-col ${showRightPanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : isMobileLayout ? 'min-w-0 flex-1' : 'min-w-[360px] flex-1'}`}
+          className={`flex min-h-0 flex-col ${showRightPanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : 'min-w-[360px] flex-1'}`}
         >
           {isMemberSession && (
             <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)]">
@@ -529,7 +526,7 @@ export function ActiveSession() {
             </div>
           ) : (
             <>
-              {!isMemberSession && !isMobileLayout && showSessionStatus && (
+              {!isMemberSession && showSessionStatus && (
                 <div
                   className={
                     showRightPanel
@@ -615,7 +612,7 @@ export function ActiveSession() {
             variant={isEmpty && !isMemberSession && !showRightPanel ? 'hero' : 'default'}
             compact={showRightPanel}
           />
-          {!isMobileLayout && !isMemberSession ? (
+          {!isMemberSession ? (
             <div className="shrink-0 pb-2 text-center text-[11px] text-[var(--color-text-tertiary)]">
               {locale === 'zh' ? '内容由 AI 生成，请核实重要信息' : 'AI-generated content may contain mistakes. Check important information.'}
             </div>
