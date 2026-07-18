@@ -43,17 +43,6 @@ export type CreateSessionRequest = {
   repository?: CreateSessionRepositoryOptions
   permissionMode?: PermissionMode
 }
-export type BranchSessionRequest = {
-  targetMessageId: string
-  title?: string
-}
-export type BranchSessionResponse = {
-  sessionId: string
-  title: string
-  workDir: string | null
-  sourceSessionId: string
-  targetMessageId: string
-}
 export type RepositoryBranchInfo = {
   name: string
   current: boolean
@@ -334,10 +323,6 @@ export const sessionsApi = {
       ? (input ? { workDir: input } : {})
       : (input ?? {})
     return api.post<CreateSessionResponse>('/api/sessions', body)
-  },
-
-  branch(sessionId: string, body: BranchSessionRequest) {
-    return api.post<BranchSessionResponse>(`/api/sessions/${sessionId}/branch`, body)
   },
 
   delete(sessionId: string) {

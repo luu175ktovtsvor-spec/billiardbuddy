@@ -14,6 +14,7 @@ import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextS
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { formatExactMessageTimestamp, formatMessageHoverTime } from '../../lib/formatMessageTimestamp'
@@ -227,6 +228,7 @@ describe('MessageList nested tool calls', () => {
     useUIStore.setState({ pendingSettingsTab: null })
     useTabStore.setState({ activeTabId: ACTIVE_TAB, tabs: [{ sessionId: ACTIVE_TAB, title: 'Test', type: 'session' as const, status: 'idle' }] })
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+    useProductTaskStore.setState(useProductTaskStore.getInitialState(), true)
     useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState() } })
     useWorkspaceChatContextStore.setState(useWorkspaceChatContextStore.getInitialState(), true)
     // The workspace panel store is a shared singleton; reset it so preview tabs opened by
@@ -3483,12 +3485,21 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByRole('button', { name: 'Rewind to here' })).toBeNull()
   })
 
-  it('branches from completed transcript-backed chat messages using the original transcript id', async () => {
-    const branchSession = vi.fn().mockResolvedValue({
-      sessionId: 'branched-session-1',
+  it('continues from completed transcript-backed chat messages through the product task contract', async () => {
+    const continueTask = vi.fn().mockResolvedValue({
+      id: 'task-branched-1',
+      projectId: 'project-1',
+      coreSessionId: 'branched-session-1',
       title: 'Branched session',
       workDir: '/tmp/branched-session-1',
+      lifecycle: 'active',
+      kind: 'continuation',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      worktreeState: 'not_requested',
+      actions: ['archive', 'continue'],
     })
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
     const connectToSession = vi.fn()
     useSessionStore.setState({
       sessions: [{
@@ -3502,8 +3513,9 @@ describe('MessageList nested tool calls', () => {
         workDir: '/tmp/source-project',
         workDirExists: true,
       }],
-      branchSession: branchSession as never,
+      fetchSessions: refreshSessions as never,
     })
+    useProductTaskStore.setState({ continueTask: continueTask as never })
     useChatStore.setState({
       connectToSession: connectToSession as never,
       sessions: {
@@ -3530,7 +3542,7 @@ describe('MessageList nested tool calls', () => {
 
     render(<MessageList />)
 
-    const branchButtons = screen.getAllByRole('button', { name: 'Fork a new conversation' })
+    const branchButtons = screen.getAllByRole('button', { name: 'Continue in a new task' })
     expect(branchButtons).toHaveLength(2)
     expect(branchButtons[0]!.closest('[data-message-actions]')).toBe(
       screen.getByRole('button', { name: 'Copy prompt' }).closest('[data-message-actions]')
@@ -3538,13 +3550,16 @@ describe('MessageList nested tool calls', () => {
     expect(branchButtons[1]!.closest('[data-message-actions]')).toBe(
       screen.getByRole('button', { name: 'Copy reply' }).closest('[data-message-actions]')
     )
-    expect(branchButtons[1]?.getAttribute('title')).toBe('Fork a new conversation')
+    expect(branchButtons[1]?.getAttribute('title')).toBe('Continue in a new task')
 
     fireEvent.click(branchButtons[1]!)
 
     await waitFor(() => {
-      expect(branchSession).toHaveBeenCalledWith(ACTIVE_TAB, 'transcript-assistant-1')
+      expect(continueTask).toHaveBeenCalledWith(ACTIVE_TAB, {
+        sourceTurnId: 'transcript-assistant-1',
+      })
     })
+    expect(refreshSessions).toHaveBeenCalledOnce()
     expect(connectToSession).toHaveBeenCalledWith('branched-session-1')
     expect(useTabStore.getState().activeTabId).toBe('branched-session-1')
     const tabs = useTabStore.getState().tabs
@@ -3556,8 +3571,59 @@ describe('MessageList nested tool calls', () => {
     const toasts = useUIStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({
       type: 'success',
-      message: 'Created forked conversation "Branched session".',
+      message: 'Created continuation task "Branched session".',
     })
+  })
+
+  it('keeps the source task open and reports an error when continuation creation fails', async () => {
+    const continueTask = vi.fn().mockRejectedValue(new Error('network unavailable'))
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const connectToSession = vi.fn()
+    useSessionStore.setState({ fetchSessions: refreshSessions as never })
+    useProductTaskStore.setState({ continueTask: continueTask as never })
+    useChatStore.setState({
+      connectToSession: connectToSession as never,
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'local-user-1',
+              transcriptMessageId: 'transcript-user-1',
+              type: 'user_text',
+              content: '从这里开始',
+              timestamp: 1,
+            },
+            {
+              id: 'local-assistant-1',
+              transcriptMessageId: 'transcript-assistant-1',
+              type: 'assistant_text',
+              content: '这是完成的答复。',
+              timestamp: 2,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const continuationButton = screen.getAllByRole('button', { name: 'Continue in a new task' })[1]!
+    fireEvent.click(continuationButton)
+
+    await waitFor(() => {
+      expect(continueTask).toHaveBeenCalledWith(ACTIVE_TAB, {
+        sourceTurnId: 'transcript-assistant-1',
+      })
+      const toasts = useUIStore.getState().toasts
+      expect(toasts[toasts.length - 1]).toMatchObject({
+        type: 'error',
+        message: 'Could not create continuation task. Detail: network unavailable',
+      })
+    })
+    expect(refreshSessions).not.toHaveBeenCalled()
+    expect(connectToSession).not.toHaveBeenCalled()
+    expect(useTabStore.getState().activeTabId).toBe(ACTIVE_TAB)
+    expect(continuationButton.getAttribute('disabled')).toBeNull()
   })
 
   it('hides branch actions while the current session is still running', () => {
@@ -3588,7 +3654,7 @@ describe('MessageList nested tool calls', () => {
 
     render(<MessageList />)
 
-    expect(screen.queryByRole('button', { name: 'Fork a new conversation' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Continue in a new task' })).toBeNull()
   })
 
   it('keeps historical sessions readable when turn checkpoint payloads are missing', async () => {

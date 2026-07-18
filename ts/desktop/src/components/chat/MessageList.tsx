@@ -5,6 +5,7 @@ import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionTurnCheckpoint } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { useTeamStore } from '../../stores/teamStore'
@@ -33,6 +34,7 @@ import {
   getMetricsForSession,
   type VirtualRenderItemMetric,
 } from './virtualHeightCache'
+import { continueProductTask } from '../../product/taskLaunch'
 
 type ToolCall = Extract<UIMessage, { type: 'tool_use' }>
 type ToolResult = Extract<UIMessage, { type: 'tool_result' }>
@@ -1362,7 +1364,8 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   const sessionState = useChatStore((s) =>
     resolvedSessionId ? s.sessions[resolvedSessionId] : undefined,
   )
-  const branchSession = useSessionStore((s) => s.branchSession)
+  const refreshSessions = useSessionStore((s) => s.fetchSessions)
+  const continueTask = useProductTaskStore((s) => s.continueTask)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
   const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
@@ -1411,6 +1414,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   const [turnActionErrors, setTurnActionErrors] = useState<Record<string, string>>({})
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
+  const continuationInFlightRef = useRef(false)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
@@ -1904,14 +1908,20 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
   ])
 
   const handleBranchMessage = useCallback(async (target: BranchableMessageTarget) => {
-    if (!resolvedSessionId || branchingMessageId) return
+    if (!resolvedSessionId || continuationInFlightRef.current) return
 
+    continuationInFlightRef.current = true
     setBranchingMessageId(target.uiMessageId)
     try {
-      const result = await branchSession(resolvedSessionId, target.transcriptMessageId)
-      const title = result.title.trim() || t('sidebar.newSession')
-      useTabStore.getState().openTab(result.sessionId, title)
-      useChatStore.getState().connectToSession(result.sessionId)
+      const task = await continueProductTask({
+        continueTask,
+        refreshSessions,
+        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.coreSessionId, nextTask.title, 'session'),
+        connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
+      }, resolvedSessionId, {
+        sourceTurnId: target.transcriptMessageId,
+      })
+      const title = task.title.trim() || t('sidebar.newSession')
       addToast({
         type: 'success',
         message: t('chat.branchSuccess', { title }),
@@ -1922,9 +1932,10 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
         message: t('chat.branchError', { detail: getApiErrorMessage(error) }),
       })
     } finally {
+      continuationInFlightRef.current = false
       setBranchingMessageId(null)
     }
-  }, [addToast, branchSession, branchingMessageId, resolvedSessionId, t])
+  }, [addToast, continueTask, refreshSessions, resolvedSessionId, t])
 
   // Pre-compute per-message branchAction + toolResult lookups so MessageBlock's
   // memo barrier is not broken by inline object literals on every render.
@@ -1937,7 +1948,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
     for (const [uiMessageId, target] of branchableMessageTargets) {
       result.set(uiMessageId, {
         label,
-        loading: branchingMessageId === target.uiMessageId,
+        loading: Boolean(branchingMessageId),
         onBranch: () => { void handleBranchMessage(target) },
       })
     }

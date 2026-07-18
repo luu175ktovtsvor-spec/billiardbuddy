@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { launchProductTask } from './taskLaunch'
+import { continueProductTask, launchProductTask } from './taskLaunch'
 import type { ProductTaskRecord } from './domain/types'
 
 function makeTask(): ProductTaskRecord {
@@ -126,5 +126,29 @@ describe('launchProductTask', () => {
 
     expect(createTask).toHaveBeenCalledWith(input)
     expect(sendMessage).toHaveBeenCalledWith('session-1', '', attachments)
+  })
+
+  it('continues through the product task contract before refreshing and opening the real core session', async () => {
+    const task = makeTask()
+    const events: string[] = []
+    const continueTask = vi.fn(async () => {
+      events.push('continue')
+      return task
+    })
+    const refreshSessions = vi.fn(async () => { events.push('refresh') })
+    const openTask = vi.fn(() => { events.push('open') })
+    const connectToSession = vi.fn(() => { events.push('connect') })
+
+    await expect(continueProductTask({
+      continueTask,
+      refreshSessions,
+      openTask,
+      connectToSession,
+    }, 'task-1', { sourceTurnId: 'turn-42' })).resolves.toBe(task)
+
+    expect(continueTask).toHaveBeenCalledWith('task-1', { sourceTurnId: 'turn-42' })
+    expect(openTask).toHaveBeenCalledWith(task)
+    expect(connectToSession).toHaveBeenCalledWith('session-1')
+    expect(events).toEqual(['continue', 'refresh', 'open', 'connect'])
   })
 })

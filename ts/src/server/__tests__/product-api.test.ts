@@ -77,6 +77,26 @@ describe('Product tasks API', () => {
     ])
   })
 
+  it('routes message continuations to the product task service', async () => {
+    const { service, calls } = createService()
+
+    const response = await request(service, 'POST', '/api/product/tasks/task-1/continue', {
+      title: '继续整理本周活动',
+      sourceTurnId: 'transcript-turn-42',
+    })
+
+    expect(response.status).toBe(201)
+    expect(calls).toEqual([
+      {
+        name: 'continueTask',
+        args: ['task-1', {
+          title: '继续整理本周活动',
+          sourceTurnId: 'transcript-turn-42',
+        }],
+      },
+    ])
+  })
+
   it('does not expose an unconsumed side-task endpoint', async () => {
     const { service, calls } = createService()
 
