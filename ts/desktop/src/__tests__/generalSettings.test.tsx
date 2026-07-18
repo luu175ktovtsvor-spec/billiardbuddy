@@ -556,16 +556,15 @@ describe('Settings > General tab', () => {
     expect(useSettingsStore.getState().setSkipWebFetchPreflight).toHaveBeenCalledWith(false)
   })
 
-  it('lets the user disable thinking mode for new sessions', () => {
+  it('keeps runtime thinking controls out of general user settings', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    const toggle = screen.getByLabelText('Enable thinking mode')
-    expect(toggle).toBeChecked()
-    fireEvent.click(toggle)
-
-    expect(useSettingsStore.getState().setThinkingEnabled).toHaveBeenCalledWith(false)
+    expect(screen.queryByText('Thinking Mode')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Enable thinking mode')).not.toBeInTheDocument()
+    expect(screen.queryByText(/DeepSeek/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/--thinking/)).not.toBeInTheDocument()
   })
 
   it('lets the user choose a default permission mode for new sessions', async () => {
@@ -628,7 +627,6 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByText('General'))
 
     for (const label of [
-      'Enable thinking mode',
       'Enable Auto-dream',
       'Enable system notifications',
       'Skip WebFetch domain preflight',
