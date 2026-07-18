@@ -27,9 +27,7 @@ import { useAgentStore } from '../stores/agentStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { AgentDefinition, AgentSource } from '../api/agents'
 import { MarkdownRenderer } from '../components/markdown/MarkdownRenderer'
-import { useSkillStore } from '../stores/skillStore'
 import { SkillList } from '../components/skills/SkillList'
-import { SkillDetail } from '../components/skills/SkillDetail'
 import { usePluginStore } from '../stores/pluginStore'
 import { PluginList } from '../components/plugins/PluginList'
 import { PluginDetail } from '../components/plugins/PluginDetail'
@@ -2039,16 +2037,7 @@ function DetailStat({
 // ─── Skill Settings ──────────────────────────────────────
 
 function SkillSettings() {
-  const selectedSkill = useSkillStore((s) => s.selectedSkill)
   const t = useTranslation()
-
-  if (selectedSkill) {
-    return (
-      <div className="w-full min-w-0">
-        <SkillDetail />
-      </div>
-    )
-  }
 
   return (
     <div className="w-full min-w-0">

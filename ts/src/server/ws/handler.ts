@@ -48,8 +48,6 @@ const providerService = new ProviderService()
  */
 export type SessionSlashCommand = {
   name: string
-  description: string
-  argumentHint?: string
 }
 
 const sessionSlashCommands = new Map<string, SessionSlashCommand[]>()
@@ -1782,15 +1780,9 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           // Send model info as a system notification, not a status change
           { type: 'system_notification', subtype: 'init', message: `Model: ${cliMsg.model || 'unknown'}`, data: { model: cliMsg.model } },
         ]
-        // Send slash commands to frontend
-        const cmds = sessionSlashCommands.get(sessionId)
-        if (cmds && cmds.length > 0) {
-          messages.push({
-            type: 'system_notification',
-            subtype: 'slash_commands',
-            data: cmds,
-          })
-        }
+        // Slash command discovery is intentionally pull-only: the active
+        // Composer asks for name-only commands after a user types '/'. Do not
+        // push a catalog while opening or initializing a normal session.
         return messages
       }
       if (subtype === 'memory_saved') {
@@ -2758,7 +2750,7 @@ export function sendToSession(sessionId: string, message: ServerMessage): boolea
 export function updateSessionSlashCommands(
   sessionId: string,
   commands: unknown[],
-  options: { notifyClient?: boolean } = {},
+  _options: { notifyClient?: boolean } = {},
 ): SessionSlashCommand[] {
   const normalized = commands
     .map(normalizeSessionSlashCommand)
@@ -2766,28 +2758,19 @@ export function updateSessionSlashCommands(
 
   sessionSlashCommands.set(sessionId, normalized)
 
-  if (options.notifyClient !== false) {
-    sendToSession(sessionId, {
-      type: 'system_notification',
-      subtype: 'slash_commands',
-      data: normalized,
-    })
-  }
-
   return normalized
 }
 
 function normalizeSessionSlashCommand(command: unknown): SessionSlashCommand | null {
   if (typeof command === 'string') {
-    return command.trim() ? { name: command, description: '' } : null
+    const name = command.trim()
+    return name ? { name } : null
   }
   if (!command || typeof command !== 'object') return null
 
   const record = command as {
     name?: unknown
     command?: unknown
-    description?: unknown
-    argumentHint?: unknown
   }
   const name =
     typeof record.name === 'string'
@@ -2797,11 +2780,7 @@ function normalizeSessionSlashCommand(command: unknown): SessionSlashCommand | n
         : ''
   if (!name.trim()) return null
 
-  return {
-    name,
-    description: typeof record.description === 'string' ? record.description : '',
-    ...(typeof record.argumentHint === 'string' ? { argumentHint: record.argumentHint } : {}),
-  }
+  return { name: name.trim() }
 }
 
 export function closeSessionConnection(sessionId: string, reason = 'session closed'): boolean {

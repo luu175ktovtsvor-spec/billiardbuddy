@@ -6,7 +6,6 @@ import { getProductAgentDescription, getProductAgentType } from '../../lib/produ
 const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
   agent: 'slashCmd.agent.description',
   mcp: 'slashCmd.mcp.description',
-  skills: 'slashCmd.skills.description',
   help: 'slashCmd.help.description',
   plugin: 'slashCmd.plugin.description',
   memory: 'slashCmd.memory.description',
@@ -29,7 +28,6 @@ const BUILT_IN_COMMAND_NAMES = new Set(Object.keys(SLASH_CMD_DESCRIPTION_KEYS))
 
 export const PANEL_SLASH_COMMANDS = [
   { name: 'mcp' },
-  { name: 'skills' },
   { name: 'help' },
 ] as const
 
@@ -65,7 +63,6 @@ export function isRetiredSessionInspectorCommandInput(value: string): boolean {
 export const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: 'agent', description: 'Run a prompt with a selected Agent', argumentHint: '<agent> <prompt>' },
   { name: 'mcp', description: 'Open available MCP tools for the current chat context' },
-  { name: 'skills', description: 'Browse user-invocable skills for the current chat context' },
   { name: 'help', description: 'Show available desktop and agent commands' },
   { name: 'plugin', description: 'Open desktop plugin controls in Settings' },
   { name: 'memory', description: 'Open project memory files in Settings' },
@@ -117,6 +114,12 @@ export type SlashCommandOption = {
   name: string
   runtimeName?: string
   description: string
+  argumentHint?: string
+}
+
+type SlashCommandCatalogEntry = {
+  name: string
+  description?: string
   argumentHint?: string
 }
 
@@ -248,7 +251,7 @@ export function resolveSlashUiAction(value: string): SlashUiAction | null {
 }
 
 export function mergeSlashCommands(
-  preferred: ReadonlyArray<SlashCommandOption>,
+  preferred: ReadonlyArray<SlashCommandCatalogEntry>,
   fallback: ReadonlyArray<SlashCommandOption> = FALLBACK_SLASH_COMMANDS,
 ): SlashCommandOption[] {
   const fallbackByName = new Map<string, SlashCommandOption>()
@@ -265,10 +268,11 @@ export function mergeSlashCommands(
     // description so users see translated text instead of the CLI's English.
     const useLocalDescription =
       BUILT_IN_COMMAND_NAMES.has(command.name) && Boolean(localized?.description)
-    const description = useLocalDescription
-      ? localized!.description
-      : command.description?.trim() || localized?.description || ''
-    const argumentHint = command.argumentHint?.trim() || localized?.argumentHint
+    // Session and Skills APIs intentionally provide only a command name. Do
+    // not rehydrate descriptions or argument hints from a remote payload here:
+    // custom Skill frontmatter is private implementation data.
+    const description = useLocalDescription ? localized!.description : ''
+    const argumentHint = useLocalDescription ? localized?.argumentHint : undefined
     merged.set(command.name, {
       name: command.name,
       description,

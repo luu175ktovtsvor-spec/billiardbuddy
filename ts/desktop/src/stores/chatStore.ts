@@ -106,7 +106,7 @@ export type PerSessionState = {
   apiRetry?: ApiRetryState | null
   // 流式→非流式降级提示（活动回合状态，与 apiRetry 同清除时机）。
   streamingFallback?: StreamingFallbackState | null
-  slashCommands: Array<{ name: string; description: string; argumentHint?: string }>
+  slashCommands: Array<{ name: string }>
   agentTaskNotifications: Record<string, AgentTaskNotification>
   backgroundAgentTasks?: Record<string, BackgroundAgentTask>
   suppressNextTaskNotificationResponse?: boolean
@@ -842,41 +842,6 @@ function updateSessionIn(
   return { ...sessions, [sessionId]: { ...session, ...updater(session) } }
 }
 
-type SlashCommandState = PerSessionState['slashCommands'][number]
-
-function normalizeSlashCommand(command: unknown): SlashCommandState | null {
-  if (!command || typeof command !== 'object') return null
-  const candidate = command as { name?: unknown; description?: unknown; argumentHint?: unknown }
-  if (typeof candidate.name !== 'string' || !candidate.name) return null
-  return {
-    name: candidate.name,
-    description: typeof candidate.description === 'string' ? candidate.description : '',
-    ...(typeof candidate.argumentHint === 'string' && candidate.argumentHint
-      ? { argumentHint: candidate.argumentHint }
-      : {}),
-  }
-}
-
-function normalizeSlashCommandList(commands: ReadonlyArray<unknown>): SlashCommandState[] {
-  return commands
-    .map(normalizeSlashCommand)
-    .filter((command): command is SlashCommandState => command !== null)
-}
-
-function mergeSlashCommandUpdates(
-  current: ReadonlyArray<SlashCommandState>,
-  incoming: ReadonlyArray<SlashCommandState>,
-): SlashCommandState[] {
-  const merged = new Map<string, SlashCommandState>()
-  for (const command of current) {
-    if (command.name) merged.set(command.name, command)
-  }
-  for (const command of incoming) {
-    if (command.name) merged.set(command.name, command)
-  }
-  return [...merged.values()]
-}
-
 function readUsageToken(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -985,17 +950,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     get().loadHistory(sessionId)
-    sessionsApi.getSlashCommands(sessionId)
-      .then(({ commands }) => {
-        if (get().sessions[sessionId]) {
-          set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({ slashCommands: commands })) }))
-        }
-      })
-      .catch(() => {
-        if (get().sessions[sessionId]) {
-          set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({ slashCommands: [] })) }))
-        }
-      })
   },
 
   disconnectSession: (sessionId) => {
@@ -2105,24 +2059,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         useTabStore.getState().updateTabTitle(msg.sessionId, msg.title)
         break
       case 'system_notification':
-        if (msg.subtype === 'slash_commands' && Array.isArray(msg.data)) {
-          const incomingCommands = normalizeSlashCommandList(msg.data)
-          update((session) => ({
-            slashCommands: mergeSlashCommandUpdates(session.slashCommands, incomingCommands),
-          }))
-          void sessionsApi.getSlashCommands(sessionId)
-            .then(({ commands }) => {
-              if (!get().sessions[sessionId]) return
-              set((s) => ({
-                sessions: updateSessionIn(s.sessions, sessionId, () => ({
-                  slashCommands: normalizeSlashCommandList(commands),
-                })),
-              }))
-            })
-            .catch(() => {
-              // Keep the last known local + CLI union when the authoritative refresh is unavailable.
-            })
-        }
         if (msg.subtype === 'session_cleared') {
           const session = get().sessions[sessionId]
           if (session?.elapsedTimer) clearInterval(session.elapsedTimer)

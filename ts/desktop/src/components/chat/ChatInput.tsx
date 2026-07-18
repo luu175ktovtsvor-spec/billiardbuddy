@@ -12,6 +12,7 @@ import {
   type WorkspaceChatReference,
 } from '../../stores/workspaceChatContextStore'
 import { agentsApi } from '../../api/agents'
+import { sessionsApi } from '../../api/sessions'
 import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 import type { AttachmentRef } from '../../types/chat'
 import { AttachmentGallery } from './AttachmentGallery'
@@ -93,6 +94,8 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
   const [atCursorPos, setAtCursorPos] = useState(-1)
   const [slashFilter, setSlashFilter] = useState('')
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
+  const [slashDiscoverySessionId, setSlashDiscoverySessionId] = useState<string | null>(null)
+  const [discoveredSlashCommands, setDiscoveredSlashCommands] = useState<Array<{ name: string }>>([])
   const [agentSlashCommands, setAgentSlashCommands] = useState<ReturnType<typeof buildAgentSlashCommands>>([])
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null)
   const [editingQueuedMessageText, setEditingQueuedMessageText] = useState('')
@@ -143,7 +146,6 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
   resolvedSessionIdRef.current = resolvedSessionId
   const sessionState = useChatStore((s) => resolvedSessionId ? s.sessions[resolvedSessionId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
-  const slashCommands = sessionState?.slashCommands ?? []
   const composerPrefill = sessionState?.composerPrefill ?? null
   const composerInsertion = sessionState?.composerInsertion ?? null
   const queuedUserMessages = sessionState?.queuedUserMessages ?? []
@@ -218,6 +220,8 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
     setFileSearchOpen(false)
     setLocalSlashPanel(null)
     setSlashFilter('')
+    setSlashDiscoverySessionId(null)
+    setDiscoveredSlashCommands([])
     setAtFilter('')
     setAtCursorPos(-1)
     setEditingQueuedMessageId(null)
@@ -375,6 +379,44 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
     return () => document.removeEventListener('mousedown', handleClick)
   }, [slashMenuOpen])
 
+  // Skill command names are discovered only after the user explicitly opens
+  // slash completion for this active session. The REST response is reduced to
+  // names again here so a malformed or older server cannot leak metadata into
+  // the Composer UI.
+  useEffect(() => {
+    if (
+      !slashMenuOpen ||
+      isMemberSession ||
+      !resolvedSessionId ||
+      slashDiscoverySessionId !== resolvedSessionId
+    ) {
+      if (!slashMenuOpen || slashDiscoverySessionId !== resolvedSessionId) {
+        setDiscoveredSlashCommands((current) => current.length === 0 ? current : [])
+      }
+      return
+    }
+
+    let cancelled = false
+    void sessionsApi.getSlashCommands(resolvedSessionId)
+      .then(({ commands }) => {
+        if (cancelled) return
+        const names = new Set<string>()
+        for (const command of commands) {
+          if (!command || typeof command.name !== 'string') continue
+          const name = command.name.trim()
+          if (name) names.add(name)
+        }
+        setDiscoveredSlashCommands([...names].map((name) => ({ name })))
+      })
+      .catch(() => {
+        if (!cancelled) setDiscoveredSlashCommands([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isMemberSession, resolvedSessionId, slashDiscoverySessionId, slashMenuOpen])
+
   useEffect(() => {
     if (!localSlashPanel) return
     const handleClick = (event: MouseEvent) => {
@@ -410,10 +452,10 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
 
   const allSlashCommands = useMemo(
     () => appendAgentSlashCommands(
-      mergeSlashCommands(slashCommands, getLocalizedFallbackCommands(t)),
+      mergeSlashCommands(discoveredSlashCommands, getLocalizedFallbackCommands(t)),
       agentSlashCommands,
     ),
-    [agentSlashCommands, slashCommands, t],
+    [agentSlashCommands, discoveredSlashCommands, t],
   )
 
   const filteredCommands = useMemo(() => {
@@ -441,13 +483,15 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
     const token = findSlashTrigger(value, cursorPos)
     if (!token) {
       setSlashMenuOpen(false)
+      setSlashDiscoverySessionId(null)
       return
     }
 
     setFileSearchOpen(false)
     setSlashFilter(token.filter)
+    setSlashDiscoverySessionId(resolvedSessionId ?? null)
     setSlashMenuOpen(true)
-  }, [])
+  }, [resolvedSessionId])
 
   // Detect @ trigger (file search)
   const detectAtTrigger = useCallback((value: string, cursorPos: number) => {
@@ -824,6 +868,7 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
     setComposerInput(replacement.value)
     setPlusMenuOpen(false)
     setSlashFilter('')
+    setSlashDiscoverySessionId(resolvedSessionId ?? null)
     setSlashMenuOpen(true)
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
@@ -958,9 +1003,11 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
                         </span>
                       ) : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-tertiary)]">
-                      {command.description}
-                    </span>
+                    {command.description ? (
+                      <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-tertiary)]">
+                        {command.description}
+                      </span>
+                    ) : null}
                   </button>
                 ))}
               </div>

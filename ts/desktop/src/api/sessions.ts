@@ -238,7 +238,7 @@ export const sessionsApi = {
   },
 
   getSlashCommands(sessionId: string) {
-    return api.get<{ commands: Array<{ name: string; description: string; argumentHint?: string }> }>(`/api/sessions/${sessionId}/slash-commands`)
+    return api.get<{ commands: Array<{ name: string }> }>(`/api/sessions/${sessionId}/slash-commands`)
   },
 
   getWorkspaceStatus(sessionId: string) {
