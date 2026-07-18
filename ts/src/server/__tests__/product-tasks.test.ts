@@ -15,11 +15,25 @@ afterEach(async () => {
   tempDir = undefined
 })
 
-function makeCore(): AgentCoreAdapter {
-  const sessions = new Map<string, AgentCoreSession>()
-  let nextId = 0
+type TestCore = AgentCoreAdapter & {
+  setWorktreeLaunchState: (
+    sessionId: string,
+    state: Awaited<ReturnType<AgentCoreAdapter['getWorktreeLaunchState']>>,
+  ) => void
+  setSessionWorkDir: (sessionId: string, workDir: string) => void
+  getWorktreeLaunchCallCount: () => number
+}
 
-  const add = (workDir: string, title: string): AgentCoreSession => {
+function makeCore(): TestCore {
+  const sessions = new Map<string, AgentCoreSession>()
+  const worktreeLaunchStates = new Map<
+    string,
+    Awaited<ReturnType<AgentCoreAdapter['getWorktreeLaunchState']>>
+  >()
+  let nextId = 0
+  let worktreeLaunchCallCount = 0
+
+  const add = (workDir: string, title: string, projectRoot = workDir): AgentCoreSession => {
     const now = new Date(1_700_000_000_000 + nextId * 1_000).toISOString()
     const id = `session-${++nextId}`
     const session: AgentCoreSession = {
@@ -27,7 +41,7 @@ function makeCore(): AgentCoreAdapter {
       title,
       createdAt: now,
       modifiedAt: now,
-      projectRoot: workDir,
+      projectRoot,
       workDir,
     }
     sessions.set(id, session)
@@ -36,8 +50,9 @@ function makeCore(): AgentCoreAdapter {
 
   return {
     listSessions: async () => [...sessions.values()],
-    createSession: async ({ workDir }) => {
+    createSession: async ({ workDir, useWorktree }) => {
       const session = add(workDir, '新任务')
+      if (useWorktree) worktreeLaunchStates.set(session.id, 'planned')
       return { sessionId: session.id, workDir }
     },
     renameSession: async (sessionId, title) => {
@@ -52,18 +67,38 @@ function makeCore(): AgentCoreAdapter {
     branchSession: async (sessionId, title) => {
       const source = sessions.get(sessionId)
       if (!source) throw new Error('missing core session')
-      const session = add(source.workDir ?? '', title ?? `继续：${source.title}`)
+      const session = add(
+        source.workDir ?? '',
+        title ?? `继续：${source.title}`,
+        source.projectRoot ?? source.workDir ?? '',
+      )
+      const worktreeState = worktreeLaunchStates.get(sessionId)
+      if (worktreeState) worktreeLaunchStates.set(session.id, worktreeState)
       return { sessionId: session.id, workDir: session.workDir ?? '' }
     },
+    getWorktreeLaunchState: async (sessionId) => {
+      worktreeLaunchCallCount += 1
+      return worktreeLaunchStates.get(sessionId) ?? 'not_requested'
+    },
+    setWorktreeLaunchState: (sessionId, state) => {
+      worktreeLaunchStates.set(sessionId, state)
+    },
+    setSessionWorkDir: (sessionId, workDir) => {
+      const session = sessions.get(sessionId)
+      if (!session) throw new Error('missing core session')
+      sessions.set(sessionId, { ...session, workDir })
+    },
+    getWorktreeLaunchCallCount: () => worktreeLaunchCallCount,
   }
 }
 
 describe('ProductTaskService', () => {
   it('keeps BilliardBuddy task lifecycle metadata outside the Agent core sessions', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
     const service = new ProductTaskService({
       storagePath: path.join(tempDir, 'product-tasks.json'),
-      core: makeCore(),
+      core,
     })
 
     const task = await service.createTask({
@@ -77,6 +112,12 @@ describe('ProductTaskService', () => {
     expect(task.actions).toContain('archive')
     expect(task.worktreeState).toBe('planned')
 
+    core.setWorktreeLaunchState(task.id, 'materialized')
+    core.setSessionWorkDir(task.id, '/workspace/hall-operations/.claude/worktrees/desktop-task')
+    const materialized = (await service.listTasks()).tasks.find((candidate) => candidate.id === task.id)
+    expect(materialized?.worktreeState).toBe('materialized')
+    expect(materialized?.workDir).toBe('/workspace/hall-operations/.claude/worktrees/desktop-task')
+
     await service.setPinned(task.id, true)
     await service.setArchived(task.id, true)
     const archived = (await service.listTasks()).tasks.find((candidate) => candidate.id === task.id)
@@ -88,9 +129,11 @@ describe('ProductTaskService', () => {
     const continuation = await service.continueTask(task.id, {})
     expect(continuation.parentTaskId).toBe(task.id)
     expect(continuation.kind).toBe('continuation')
+    expect(continuation.worktreeState).toBe('materialized')
 
     const index = await service.listTasks()
     expect(index.projects).toHaveLength(1)
+    expect(index.projects[0]?.workDir).toBe('/workspace/hall-operations')
     expect(index.projects[0]?.taskCount).toBe(2)
     expect(index.tasks).toHaveLength(2)
     expect(index.total).toBe(2)
@@ -98,9 +141,10 @@ describe('ProductTaskService', () => {
 
   it('keeps the continuation target fixed to the source session workspace', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
     const service = new ProductTaskService({
       storagePath: path.join(tempDir, 'product-tasks.json'),
-      core: makeCore(),
+      core,
     })
     const task = await service.createTask({ workDir: '/workspace/hall-operations' })
 
@@ -108,5 +152,25 @@ describe('ProductTaskService', () => {
 
     expect(continuation.title).toBe('继续整理')
     expect(continuation.workDir).toBe('/workspace/hall-operations')
+    expect(core.getWorktreeLaunchCallCount()).toBe(0)
+  })
+
+  it('keeps a requested worktree planned when the core status cannot be read', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    core.getWorktreeLaunchState = async () => {
+      throw new Error('core metadata unavailable')
+    }
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    const task = await service.createTask({
+      workDir: '/workspace/hall-operations',
+      useWorktree: true,
+    })
+
+    expect(task.worktreeState).toBe('planned')
   })
 })

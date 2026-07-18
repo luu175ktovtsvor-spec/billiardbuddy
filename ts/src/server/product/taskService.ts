@@ -20,6 +20,7 @@ import {
   createSessionBranch,
   SessionBranchingError,
 } from '../../utils/sessionBranching.js'
+import { isMaterializedWorktreeLaunch } from '../services/repositoryLaunchService.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -77,6 +78,7 @@ export type AgentCoreAdapter = {
     sessionId: string
     workDir: string
   }>
+  getWorktreeLaunchState: (sessionId: string) => Promise<ProductTask['worktreeState']>
 }
 
 export const agentCoreAdapter: AgentCoreAdapter = {
@@ -121,6 +123,12 @@ export const agentCoreAdapter: AgentCoreAdapter = {
       }
       throw error
     }
+  },
+
+  async getWorktreeLaunchState(sessionId) {
+    const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
+    if (!launchInfo?.repository?.worktree) return 'not_requested'
+    return isMaterializedWorktreeLaunch(launchInfo) ? 'materialized' : 'planned'
   },
 }
 
@@ -179,19 +187,22 @@ export class ProductTaskService {
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
     const [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
-    const records = sessions.map((session) => this.toRecord(session, store.tasks[session.id]))
-      .sort((left, right) => {
-        if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
-        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-      })
+    const records: ProductTaskRecord[] = []
+    for (const session of sessions) {
+      records.push(await this.toRecord(session, store.tasks[session.id]))
+    }
+    records.sort((left, right) => {
+      if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    })
 
     const projects = new Map<string, ProductProject>()
     const sessionById = new Map(sessions.map((session) => [session.id, session]))
 
     for (const task of records) {
       const session = sessionById.get(task.id)
-      const workDir = session?.workDir
-        ?? session?.projectRoot
+      const workDir = session?.projectRoot
+        ?? session?.workDir
         ?? ''
       if (!workDir) continue
 
@@ -289,7 +300,7 @@ export class ProductTaskService {
       ...(input.sourceTurnId ? { sourceTurnId: input.sourceTurnId } : {}),
       createdAt: now,
       updatedAt: now,
-      worktreeState: 'not_requested',
+      worktreeState: source.worktreeState === 'not_requested' ? 'not_requested' : 'planned',
     }))
     return this.requireTask(created.sessionId)
   }
@@ -301,13 +312,20 @@ export class ProductTaskService {
     return task
   }
 
-  private toRecord(session: AgentCoreSession, saved: ProductTaskMetadata | undefined): ProductTaskRecord {
+  private async toRecord(
+    session: AgentCoreSession,
+    saved: ProductTaskMetadata | undefined,
+  ): Promise<ProductTaskRecord> {
     const metadata = saved ?? defaultMetadata(session)
     const workDir = session.workDir ?? session.projectRoot ?? ''
-    const projectId = resourceId('project', workDir || session.id)
+    const projectRoot = session.projectRoot ?? workDir
+    const requestedWorktree = metadata.worktreeState !== 'not_requested'
+    const worktreeState = requestedWorktree
+      ? await this.resolveWorktreeState(session.id)
+      : 'not_requested'
     const task: ProductTask = {
       id: session.id,
-      projectId,
+      projectId: resourceId('project', projectRoot || session.id),
       workDir,
       title: metadata.title ?? session.title,
       coreSessionId: session.id,
@@ -320,9 +338,19 @@ export class ProductTaskService {
       ...(metadata.sourceTurnId ? { sourceTurnId: metadata.sourceTurnId } : {}),
       createdAt: metadata.createdAt || session.createdAt,
       updatedAt: metadata.updatedAt || session.modifiedAt,
-      worktreeState: metadata.worktreeState === 'planned' ? 'planned' : 'not_requested',
+      worktreeState,
     }
     return { ...task, actions: actionsFor(task) }
+  }
+
+  private async resolveWorktreeState(sessionId: string): Promise<ProductTask['worktreeState']> {
+    try {
+      return (await this.core.getWorktreeLaunchState(sessionId)) === 'materialized'
+        ? 'materialized'
+        : 'planned'
+    } catch {
+      return 'planned'
+    }
   }
 
   private async readStore(): Promise<ProductTaskStore> {

@@ -32,6 +32,7 @@ export type TaskIndexProps = {
 const WORKTREE_STATE_LABEL: Record<string, string> = {
   not_requested: '未使用工作树',
   planned: '工作树计划中',
+  materialized: '独立工作树已启用',
 }
 
 function taskActionKey(taskId: string, action: string): string {

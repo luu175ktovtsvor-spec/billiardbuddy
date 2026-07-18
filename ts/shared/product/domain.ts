@@ -2,8 +2,7 @@ export const PRODUCT_DOMAIN_VERSION = 1 as const
 
 export type ProductTaskLifecycle = 'active' | 'archived'
 export type ProductTaskKind = 'main' | 'continuation'
-/** A worktree is planned by the Agent core and materialized when its session starts. */
-export type ProductWorktreeState = 'not_requested' | 'planned'
+export type ProductWorktreeState = 'not_requested' | 'planned' | 'materialized'
 
 export type ProductProject = {
   id: string
