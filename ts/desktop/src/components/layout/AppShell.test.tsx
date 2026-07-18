@@ -80,6 +80,12 @@ vi.mock('../shared/UpdateChecker', () => ({
   UpdateChecker: () => <div>updates loaded</div>,
 }))
 
+vi.mock('../../product/components/TaskSearchModal', () => ({
+  TaskSearchModal: ({ open }: { open: boolean }) => (
+    open ? <div data-testid="task-search-modal">task search loaded</div> : null
+  ),
+}))
+
 import { AppShell } from './AppShell'
 
 describe('AppShell desktop boot flow', () => {
@@ -90,7 +96,7 @@ describe('AppShell desktop boot flow', () => {
     mocks.restoreTabs.mockResolvedValue(undefined)
     mocks.tabState.activeTabId = null
     mocks.tabState.tabs = []
-    useUIStore.setState({ sidebarOpen: true, pendingSettingsTab: null })
+    useUIStore.setState({ sidebarOpen: true, pendingSettingsTab: null, activeModal: null })
     Reflect.deleteProperty(window, 'desktopHost')
     window.history.pushState({}, '', '/')
   })
@@ -182,5 +188,13 @@ describe('AppShell desktop boot flow', () => {
     expect(screen.getByTestId('sidebar-shell')).toHaveAttribute('data-state', 'closed')
     expect(screen.queryByText('sidebar loaded')).not.toBeInTheDocument()
     expect(screen.getByText('topbar loaded')).toBeInTheDocument()
+  })
+
+  it('mounts product task search from the existing globalSearch modal contract', async () => {
+    useUIStore.setState({ activeModal: 'globalSearch' })
+
+    render(<AppShell />)
+
+    expect(await screen.findByTestId('task-search-modal')).toHaveTextContent('task search loaded')
   })
 })

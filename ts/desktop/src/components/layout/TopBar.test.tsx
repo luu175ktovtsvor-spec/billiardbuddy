@@ -42,7 +42,7 @@ beforeEach(() => {
     error: null,
   })
   useSettingsStore.setState({ locale: 'en' })
-  useUIStore.setState({ sidebarOpen: true })
+  useUIStore.setState({ sidebarOpen: true, activeModal: null })
 })
 
 afterEach(() => {
@@ -55,6 +55,17 @@ afterEach(() => {
 })
 
 describe('TopBar panel controls', () => {
+  it('keeps search and recent-task controls on the globalSearch modal contract', () => {
+    render(<TopBar />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search tasks' }))
+    expect(useUIStore.getState().activeModal).toBe('globalSearch')
+
+    useUIStore.getState().closeModal()
+    fireEvent.click(screen.getByRole('button', { name: 'Recent tasks' }))
+    expect(useUIStore.getState().activeModal).toBe('globalSearch')
+  })
+
   it('opens, selects, and closes browser and file panels independently', () => {
     render(<TopBar />)
 

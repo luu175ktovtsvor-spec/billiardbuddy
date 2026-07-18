@@ -1,5 +1,5 @@
 /**
- * Unit tests for CronService, SearchService, and Scheduled Tasks API
+ * Unit tests for CronService, workspace search, and Scheduled Tasks API
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
@@ -240,10 +240,6 @@ describe('SearchService', () => {
     await expect(service.searchWorkspace('')).rejects.toThrow()
   })
 
-  it('should return empty session results when no projects dir exists', async () => {
-    const { results } = await service.searchSessions('test')
-    expect(results).toEqual([])
-  })
 })
 
 // ─── Scheduled Tasks API integration ────────────────────────────────────────

@@ -1,8 +1,7 @@
 /**
  * Search REST API
  *
- * POST /api/search          — 全局工作区搜索
- * POST /api/search/sessions — 搜索会话历史
+ * POST /api/search — 全局工作区搜索
  */
 
 import { SearchService } from '../services/searchService.js'
@@ -17,7 +16,7 @@ export async function handleSearchApi(
 ): Promise<Response> {
   try {
     const method = req.method
-    const sub = segments[2] // 'sessions' | undefined
+    const sub = segments[2]
 
     if (method !== 'POST') {
       throw new ApiError(
@@ -27,34 +26,24 @@ export async function handleSearchApi(
       )
     }
 
+    if (sub) {
+      throw ApiError.notFound(`Unknown search endpoint: ${sub}`)
+    }
+
     const body = await parseJsonBody(req)
     const query = body.query as string
     if (!query || typeof query !== 'string') {
       throw ApiError.badRequest('Missing or invalid "query" in request body')
     }
 
-    // ── POST /api/search/sessions ──────────────────────────────────────────
-    if (sub === 'sessions') {
-      const { results, truncated } = await searchService.searchSessions(query, {
-        limit: body.limit as number | undefined,
-        matchesPerSession: body.matchesPerSession as number | undefined,
-        caseSensitive: body.caseSensitive as boolean | undefined,
-      })
-      return Response.json({ results, total: results.length, truncated })
-    }
-
     // ── POST /api/search ───────────────────────────────────────────────────
-    if (!sub) {
-      const results = await searchService.searchWorkspace(query, {
-        cwd: body.cwd as string | undefined,
-        maxResults: body.maxResults as number | undefined,
-        glob: body.glob as string | undefined,
-        caseSensitive: body.caseSensitive as boolean | undefined,
-      })
-      return Response.json({ results, total: results.length })
-    }
-
-    throw ApiError.notFound(`Unknown search endpoint: ${sub}`)
+    const results = await searchService.searchWorkspace(query, {
+      cwd: body.cwd as string | undefined,
+      maxResults: body.maxResults as number | undefined,
+      glob: body.glob as string | undefined,
+      caseSensitive: body.caseSensitive as boolean | undefined,
+    })
+    return Response.json({ results, total: results.length })
   } catch (error) {
     return errorResponse(error)
   }

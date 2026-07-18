@@ -14,6 +14,7 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useTranslation } from '../../i18n'
+import { TaskSearchModal } from '../../product/components/TaskSearchModal'
 
 /**
  * The only delivered application frame: BilliardBuddy's desktop task shell.
@@ -22,6 +23,8 @@ import { useTranslation } from '../../i18n'
 export function AppShell() {
   const fetchSettings = useSettingsStore((state) => state.fetchAll)
   const sidebarOpen = useUIStore((state) => state.sidebarOpen)
+  const activeModal = useUIStore((state) => state.activeModal)
+  const closeModal = useUIStore((state) => state.closeModal)
   const [ready, setReady] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
   const t = useTranslation()
@@ -114,6 +117,7 @@ export function AppShell() {
       </main>
       <ToastContainer />
       <UpdateChecker />
+      <TaskSearchModal open={activeModal === 'globalSearch'} onClose={closeModal} />
     </div>
   )
 }
