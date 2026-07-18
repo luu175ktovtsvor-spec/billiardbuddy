@@ -77,6 +77,7 @@ export type AgentCoreAdapter = {
   branchSession: (sessionId: string, title?: string, sourceTurnId?: string) => Promise<{
     sessionId: string
     workDir: string
+    title: string
   }>
   getWorktreeLaunchState: (sessionId: string) => Promise<ProductTask['worktreeState']>
 }
@@ -116,6 +117,7 @@ export const agentCoreAdapter: AgentCoreAdapter = {
       return {
         sessionId: result.sessionId,
         workDir: result.workDir ?? launchInfo.workDir,
+        title: result.title,
       }
     } catch (error) {
       if (error instanceof SessionBranchingError) {
@@ -287,12 +289,12 @@ export class ProductTaskService {
 
   async continueTask(taskId: string, input: ContinueProductTaskInput): Promise<ProductTaskRecord> {
     const source = await this.requireTask(taskId)
-    const title = validTitle(input.title) ?? `继续：${source.title}`
-    const created = await this.core.branchSession(source.coreSessionId, title, input.sourceTurnId)
+    const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
+    const created = await this.core.branchSession(source.coreSessionId, requestedTitle, input.sourceTurnId)
     const now = new Date().toISOString()
     await this.updateMetadata(created.sessionId, () => ({
       id: created.sessionId,
-      title,
+      title: created.title,
       lifecycle: 'active',
       kind: 'continuation',
       parentTaskId: source.id,

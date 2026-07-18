@@ -22,6 +22,7 @@ type TestCore = AgentCoreAdapter & {
   ) => void
   setSessionWorkDir: (sessionId: string, workDir: string) => void
   getWorktreeLaunchCallCount: () => number
+  getLastBranchInput: () => { sessionId: string; title?: string; sourceTurnId?: string } | null
 }
 
 function makeCore(): TestCore {
@@ -32,6 +33,7 @@ function makeCore(): TestCore {
   >()
   let nextId = 0
   let worktreeLaunchCallCount = 0
+  let lastBranchInput: { sessionId: string; title?: string; sourceTurnId?: string } | null = null
 
   const add = (workDir: string, title: string, projectRoot = workDir): AgentCoreSession => {
     const now = new Date(1_700_000_000_000 + nextId * 1_000).toISOString()
@@ -64,17 +66,18 @@ function makeCore(): TestCore {
         modifiedAt: new Date(Date.parse(session.modifiedAt) + 1_000).toISOString(),
       })
     },
-    branchSession: async (sessionId, title) => {
+    branchSession: async (sessionId, title, sourceTurnId) => {
       const source = sessions.get(sessionId)
       if (!source) throw new Error('missing core session')
+      lastBranchInput = { sessionId, title, sourceTurnId }
       const session = add(
         source.workDir ?? '',
-        title ?? `继续：${source.title}`,
+        `${title ?? `继续：${source.title}`} (Branch)`,
         source.projectRoot ?? source.workDir ?? '',
       )
       const worktreeState = worktreeLaunchStates.get(sessionId)
       if (worktreeState) worktreeLaunchStates.set(session.id, worktreeState)
-      return { sessionId: session.id, workDir: session.workDir ?? '' }
+      return { sessionId: session.id, workDir: session.workDir ?? '', title: session.title }
     },
     getWorktreeLaunchState: async (sessionId) => {
       worktreeLaunchCallCount += 1
@@ -89,6 +92,7 @@ function makeCore(): TestCore {
       sessions.set(sessionId, { ...session, workDir })
     },
     getWorktreeLaunchCallCount: () => worktreeLaunchCallCount,
+    getLastBranchInput: () => lastBranchInput,
   }
 }
 
@@ -148,10 +152,19 @@ describe('ProductTaskService', () => {
     })
     const task = await service.createTask({ workDir: '/workspace/hall-operations' })
 
-    const continuation = await service.continueTask(task.id, { title: '继续整理' })
+    const continuation = await service.continueTask(task.id, {
+      title: '继续整理',
+      sourceTurnId: 'turn-42',
+    })
 
-    expect(continuation.title).toBe('继续整理')
+    expect(continuation.title).toBe('继续整理 (Branch)')
+    expect(continuation.sourceTurnId).toBe('turn-42')
     expect(continuation.workDir).toBe('/workspace/hall-operations')
+    expect(core.getLastBranchInput()).toEqual({
+      sessionId: task.coreSessionId,
+      title: '继续整理',
+      sourceTurnId: 'turn-42',
+    })
     expect(core.getWorktreeLaunchCallCount()).toBe(0)
   })
 
