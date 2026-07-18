@@ -1043,6 +1043,34 @@ describe('ChatInput file mentions', () => {
     expect(input).toHaveValue('')
   })
 
+  it.each([
+    '/status anything',
+    '/cost previous task',
+    '/context now',
+  ])('keeps retired inspection command %s out of the task runtime', (command) => {
+    useSettingsStore.setState({
+      chatSendBehavior: 'enter',
+    })
+
+    render(<ChatInput />)
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, {
+      target: {
+        value: command,
+        selectionStart: command.length,
+      },
+    })
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(mocks.wsSend).not.toHaveBeenCalled()
+    expect(useUIStore.getState().toasts.at(-1)?.message).toBe(
+      'Task progress appears automatically in the conversation.',
+    )
+    expect(input).toHaveValue('')
+  })
+
   it('prioritizes active-session slash commands by command name when filtering', async () => {
     useChatStore.setState({
       sessions: {

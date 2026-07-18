@@ -26,6 +26,7 @@ import {
   getLocalizedFallbackCommands,
   filterSlashCommands,
   findSlashTrigger,
+  isRetiredSessionInspectorCommandInput,
   mergeSlashCommands,
   replaceSlashToken,
   resolveSlashCommandRuntimeValue,
@@ -511,6 +512,15 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
     const text = input.trim()
     if (!resolvedSessionId || (!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
 
+    if (isRetiredSessionInspectorCommandInput(text)) {
+      useUIStore.getState().addToast({ type: 'info', message: t('chat.taskProgressAutoShown') })
+      setComposerInput('')
+      setSlashMenuOpen(false)
+      setFileSearchOpen(false)
+      setPlusMenuOpen(false)
+      return
+    }
+
     if (pendingSlashUiAction?.type === 'panel') {
       setLocalSlashPanel(pendingSlashUiAction.command as LocalSlashCommandName)
       setComposerInput('')
@@ -913,7 +923,6 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
             <div ref={slashMenuRef}>
               <LocalSlashCommandPanel
                 command={localSlashPanel}
-                sessionId={resolvedSessionId ?? undefined}
                 cwd={resolvedWorkDir}
                 commands={allSlashCommands}
                 onClose={() => setLocalSlashPanel(null)}
