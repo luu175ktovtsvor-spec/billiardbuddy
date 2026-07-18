@@ -38,6 +38,10 @@ function getUserSkillsDir(): string {
   return path.join(getClaudeConfigHomeDir(), 'skills')
 }
 
+function getRequestedCwd(url: URL): string {
+  return url.searchParams.get('cwd') || getCwd()
+}
+
 async function loadSkill(skillDir: string, name: string): Promise<LoadedSkill | null> {
   const skillFile = path.join(skillDir, 'SKILL.md')
   try {
@@ -203,7 +207,7 @@ export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCo
 
 export async function handleSkillsApi(
   req: Request,
-  _url: URL,
+  url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
@@ -213,6 +217,12 @@ export async function handleSkillsApi(
 
     // Normal desktop entry points never enumerate implementation Skills.
     if (segments[2] === undefined) return Response.json({ skills: [] })
+
+    // A Composer explicitly requesting slash completion may discover command
+    // names, but never implementation text, paths, frontmatter, or metadata.
+    if (segments[2] === 'slash-commands') {
+      return Response.json({ commands: await listSkillSlashCommands(getRequestedCwd(url)) })
+    }
 
     throw new ApiError(404, 'Skill not available', 'SKILL_NOT_AVAILABLE')
   } catch (error) {

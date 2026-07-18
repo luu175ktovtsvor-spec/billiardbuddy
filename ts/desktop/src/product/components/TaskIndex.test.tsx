@@ -3,10 +3,17 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom'
 
 const mocks = vi.hoisted(() => ({
+  listSkillCommands: vi.fn(),
   listAgents: vi.fn(),
   openDirectory: vi.fn(),
   isDesktop: false,
   copyText: vi.fn(),
+}))
+
+vi.mock('../../api/commandDiscovery', () => ({
+  commandDiscoveryApi: {
+    listSkillCommands: mocks.listSkillCommands,
+  },
 }))
 
 vi.mock('../../api/agents', () => ({
@@ -30,6 +37,7 @@ vi.mock('../../components/chat/clipboard', () => ({
 import { TaskIndex, type TaskIndexProps } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { useSettingsStore } from '../../stores/settingsStore'
+import type { DiscoveredSlashCommand } from '../../api/commandDiscovery'
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
   return {
@@ -65,6 +73,13 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
   }
 }
 
+function makeSkill(overrides: Partial<DiscoveredSlashCommand> = {}): DiscoveredSlashCommand {
+  return {
+    name: 'venue-daily-review',
+    ...overrides,
+  }
+}
+
 function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {}) {
   const props: TaskIndexProps = {
     index,
@@ -90,6 +105,7 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
 
 beforeEach(() => {
   mocks.isDesktop = false
+  mocks.listSkillCommands.mockResolvedValue({ commands: [] })
   mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
   mocks.copyText.mockResolvedValue(true)
 })
@@ -333,6 +349,30 @@ describe('TaskIndex', () => {
     expect(await screen.findByRole('button', { name: 'Remove 训练记录.csv' })).toBeInTheDocument()
   })
 
+  it('discovers and inserts name-only Skill commands in the new-task composer', async () => {
+    mocks.listSkillCommands.mockResolvedValue({
+      commands: [makeSkill()],
+    })
+    const props = renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/venue' } })
+
+    await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/new-table'))
+    fireEvent.click(await screen.findByRole('button', { name: /\/venue-daily-review/ }))
+
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/venue-daily-review ')
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, {
+      text: '/venue-daily-review',
+      attachments: [],
+    }))
+  })
+
   it('offers discovered agents in the initial task composer and sends their runtime command', async () => {
     mocks.listAgents.mockResolvedValue({
       activeAgents: [{
@@ -363,10 +403,31 @@ describe('TaskIndex', () => {
     }))
   })
 
-  it('does not show a command choice while Agent discovery is loading or unavailable', async () => {
-    let rejectAgents: (error: Error) => void = () => undefined
-    mocks.listAgents.mockImplementation(() => new Promise((_, reject) => {
-      rejectAgents = reject
+  it('keeps Agent discovery usable when Skill command discovery is unavailable', async () => {
+    mocks.listSkillCommands.mockRejectedValue(new Error('Skill discovery unavailable'))
+    mocks.listAgents.mockResolvedValue({
+      activeAgents: [{
+        agentType: 'venue-analyst',
+        description: '分析球房运营数据。',
+        source: 'projectSettings',
+        isActive: true,
+      }],
+      allAgents: [],
+    })
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
+
+    expect(await screen.findByRole('button', { name: /\/agent venue-analyst/ })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not show a command choice while Skill command discovery is loading or unavailable', async () => {
+    let rejectSkillCommands: (error: Error) => void = () => undefined
+    mocks.listSkillCommands.mockImplementation(() => new Promise((_, reject) => {
+      rejectSkillCommands = reject
     }))
     renderIndex()
 
@@ -377,7 +438,7 @@ describe('TaskIndex', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('正在读取可用命令')
     expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
 
-    rejectAgents(new Error('服务不可用'))
+    rejectSkillCommands(new Error('服务不可用'))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('无法读取可用命令：暂时无法读取可用命令')
     expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
