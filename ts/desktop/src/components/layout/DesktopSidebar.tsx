@@ -1,11 +1,10 @@
-// Desktop product navigation backed by the current session and workbench stores.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+// Desktop product navigation backed by the BilliardBuddy task model and Agent Core session adapter.
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   PanelLeft, Search, SquarePen, Clock, Puzzle,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
-  Sparkles, Zap, Plus, Loader2, Trash2, Pencil, ListTodo,
+  Sparkles, Zap, Plus, Loader2, ListTodo,
 } from 'lucide-react'
-import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useUIStore, resolveEffectiveTheme } from '../../stores/uiStore'
 import {
@@ -20,7 +19,8 @@ import {
 import { useTranslation } from '../../i18n'
 import { Smiley } from '../shared/Smiley'
 import { getDesktopHost } from '../../lib/desktopHost'
-import type { SessionListItem } from '../../types/session'
+import { useProductTaskStore } from '../../product/stores/productTaskStore'
+import type { ProductProject, ProductTaskRecord } from '../../product/domain/types'
 
 const EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-projects'
 const PROJECT_TASKS_EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-project-tasks'
@@ -38,22 +38,15 @@ function writeJson(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* 满/禁用忽略 */ }
 }
 
-function baseName(root: string): string {
-  return root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || root
-}
-
-type ProjectGroup = { root: string; name: string; sessions: SessionListItem[] }
+type ProductProjectGroup = ProductProject & { tasks: ProductTaskRecord[] }
 
 /**
- * 薄 adapter：把当前仓库 store 映射成旧 Sidebar 消费的数据/动作形状。
- * 唯一职责是数据接线，不含任何视觉/布局；旧结构只依赖这里返回的字段。
+ * 仅负责将产品任务映射为桌面导航；会话仍由 Agent Core 负责打开和连接。
  */
 function useSidebarData() {
-  const sessions = useSessionStore((s) => s.sessions)
-  const fetchSessions = useSessionStore((s) => s.fetchSessions)
-  const renameSession = useSessionStore((s) => s.renameSession)
-  const deleteSession = useSessionStore((s) => s.deleteSession)
-  const createSession = useSessionStore((s) => s.createSession)
+  const index = useProductTaskStore((s) => s.index)
+  const refresh = useProductTaskStore((s) => s.refresh)
+  const requestTaskComposer = useProductTaskStore((s) => s.requestTaskComposer)
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const activeTabType = useTabStore(
@@ -68,39 +61,36 @@ function useSidebarData() {
 
   const theme = useUIStore((s) => s.theme)
   const toggleTheme = useUIStore((s) => s.toggleTheme)
-  const sidebarOpen = useUIStore((s) => s.sidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const setActiveSettingsTab = useUIStore((s) => s.setActiveSettingsTab)
 
   const t = useTranslation()
 
-  // 项目分组：项目 = 会话的 projectRoot/workDir；无 root 的会话落「任务」组。
   const { projects, ungrouped } = useMemo(() => {
-    const map = new Map<string, SessionListItem[]>()
-    const loose: SessionListItem[] = []
-    for (const s of sessions) {
-      const root = (s.projectRoot ?? s.workDir ?? '').trim()
-      if (!root) { loose.push(s); continue }
-      const list = map.get(root) ?? []
-      list.push(s)
-      map.set(root, list)
+    const activeTasks = index.tasks.filter((task) => task.lifecycle !== 'archived')
+    const projectIds = new Set(index.projects.map((project) => project.id))
+    const groups: ProductProjectGroup[] = index.projects
+      .map((project) => ({
+        ...project,
+        tasks: activeTasks.filter((task) => task.projectId === project.id),
+      }))
+      .filter((project) => project.tasks.length > 0)
+    return {
+      projects: groups,
+      ungrouped: activeTasks.filter((task) => !projectIds.has(task.projectId)),
     }
-    const groups: ProjectGroup[] = [...map.entries()].map(([root, list]) => ({
-      root,
-      name: baseName(root),
-      sessions: list,
-    }))
-    return { projects: groups, ungrouped: loose }
-  }, [sessions])
+  }, [index])
 
-  const openSession = (id: string, title: string) => {
-    openTab(id, title || t('session.untitled'), 'session')
-    connectToSession(id)
+  const openTask = (task: ProductTaskRecord) => {
+    openTab(task.coreSessionId, task.title || t('session.untitled'), 'session')
+    connectToSession(task.coreSessionId)
   }
-  const openNewSession = async (workDir?: string) => {
-    const id = await createSession(workDir)
-    openTab(id, t('sidebar.newSession'), 'session')
-    connectToSession(id)
+  const openProductTasks = () => {
+    openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
+  }
+  const openNewTask = (workDir?: string) => {
+    requestTaskComposer(workDir)
+    openProductTasks()
   }
   const openTabView = (id: string, title: string, type: TabType) => openTab(id, title, type)
 
@@ -109,28 +99,25 @@ function useSidebarData() {
     if (!host.isDesktop || !host.dialogs?.open) return
     const picked = await host.dialogs.open({ directory: true })
     const dir = Array.isArray(picked) ? picked[0] : picked
-    if (dir) void openNewSession(dir)
+    if (dir) openNewTask(dir)
   }
 
   return {
     t,
-    sessions,
+    tasks: index.tasks,
     activeId: activeTabId,
     activeTabType,
     runningActive,
     projects,
     ungrouped,
     effectiveTheme: resolveEffectiveTheme(theme),
-    sidebarOpen,
     toggleTheme,
     toggleSidebar,
-    refresh: fetchSessions,
-    renameSession,
-    deleteSession,
-    openSession,
-    openNewSession,
+    refresh,
+    openTask,
+    openNewTask,
     openScheduled: () => openTabView(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled'),
-    openProductTasks: () => openTabView(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks'),
+    openProductTasks,
     openImageWorkbench: () => openTabView(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench'),
     openVideoStudio: () => openTabView(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio'),
     openSettings: () => {
@@ -201,40 +188,6 @@ function SectionHeader({
   )
 }
 
-type CtxMenuItem = { label: string; icon: ReactNode; danger?: boolean; onClick: () => void }
-function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: CtxMenuItem[]; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose() }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
-  }, [onClose])
-  return (
-    <div
-      ref={ref}
-      role="menu"
-      className="fixed z-50 min-w-[176px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1.5"
-      style={{ left: x, top: y, boxShadow: 'var(--shadow-popover)' }}
-    >
-      {items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          role="menuitem"
-          onClick={() => { onClose(); item.onClick() }}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-          style={{ color: item.danger ? 'var(--color-error)' : 'var(--color-text-primary)' }}
-        >
-          <span className="shrink-0">{item.icon}</span>
-          {item.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 export interface DesktopSidebarProps {
   /** 移动抽屉里复用时传入；桌面默认无参渲染。 */
   isMobile?: boolean
@@ -252,69 +205,43 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>(() => readJson(EXPANDED_KEY, {}))
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>(() => readJson(PROJECT_TASKS_EXPANDED_KEY, {}))
   const [showAllProjects, setShowAllProjects] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editValue, setEditValue] = useState('')
-  const [ctx, setCtx] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
 
   useEffect(() => { void d.refresh() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const setProjectOpen = (root: string, open: boolean) => {
-    setExpandedProjects((m) => { const next = { ...m, [root]: open }; writeJson(EXPANDED_KEY, next); return next })
+  const setProjectOpen = (projectId: string, open: boolean) => {
+    setExpandedProjects((m) => { const next = { ...m, [projectId]: open }; writeJson(EXPANDED_KEY, next); return next })
   }
-  const setTasksExpanded = (root: string, open: boolean) => {
-    setExpandedTasks((m) => { const next = { ...m, [root]: open }; writeJson(PROJECT_TASKS_EXPANDED_KEY, next); return next })
+  const setTasksExpanded = (projectId: string, open: boolean) => {
+    setExpandedTasks((m) => { const next = { ...m, [projectId]: open }; writeJson(PROJECT_TASKS_EXPANDED_KEY, next); return next })
   }
 
   const q = query.trim().toLowerCase()
-  const match = (s: SessionListItem) => !q || (s.title || '').toLowerCase().includes(q)
+  const match = (task: ProductTaskRecord) => !q || [task.title, task.workDir]
+    .some((value) => value.toLowerCase().includes(q))
 
   const projectRows = d.projects
-    .map((p) => ({ ...p, sessions: p.sessions.filter(match) }))
-    .filter((p) => p.sessions.length > 0 || !q)
+    .map((project) => ({ ...project, tasks: project.tasks.filter(match) }))
+    .filter((project) => project.tasks.length > 0 || !q)
   const overflow = projectRows.length > 5
   const visibleProjects = overflow && !showAllProjects ? projectRows.slice(0, 5) : projectRows
   const ungrouped = d.ungrouped.filter(match)
 
-  const commitRename = () => {
-    if (editingId) {
-      const v = editValue.trim()
-      if (v) void d.renameSession(editingId, v)
-    }
-    setEditingId(null)
-  }
-
-  const renderRow = (s: SessionListItem) => {
-    const active = s.id === d.activeId
-    if (editingId === s.id) {
-      return (
-        <div key={s.id} className="mb-0.5 px-1">
-          <input
-            autoFocus
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') setEditingId(null) }}
-            className="w-full rounded-lg px-2.5 py-1.5 text-[13px] outline-none"
-            style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-primary)', border: '1px solid var(--color-brand)' }}
-          />
-        </div>
-      )
-    }
+  const renderRow = (task: ProductTaskRecord) => {
+    const active = task.coreSessionId === d.activeId
     const runningHere = active && d.runningActive
     return (
       <div
-        key={s.id}
+        key={task.id}
         className="group/row relative mb-0.5 flex w-full items-center rounded-lg transition-colors hover:bg-[var(--color-surface-hover)]"
         style={{ background: active ? 'var(--color-surface-selected)' : 'transparent' }}
       >
         <button
           type="button"
-          onClick={() => d.openSession(s.id, s.title)}
-          onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.id, title: s.title || '' }) }}
+          onClick={() => d.openTask(task)}
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-1.5 pl-2.5 pr-7 text-left"
         >
           <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
-            {s.title || t('sidebar.newSession')}
+            {task.title || t('sidebar.newSession')}
           </span>
           {runningHere && <Loader2 size={12} className="shrink-0 animate-spin text-[var(--color-text-tertiary)]" />}
         </button>
@@ -347,14 +274,14 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
         <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">BilliardBuddy</span>
       </div>
 
-      {/* 搜索(点顶部🔍展开，过滤会话) */}
+      {/* 搜索（点顶部放大镜展开，过滤任务） */}
       {searching && (
         <div className="px-3 pb-1.5">
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索对话…"
+            placeholder="搜索任务…"
             className="w-full rounded-md px-2.5 py-1.5 text-[13px] outline-none"
             style={{ background: 'var(--color-surface-container)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }}
           />
@@ -363,7 +290,7 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
 
       {/* 主导航：新建任务 / 任务中心 / 生成图片 / 剪视频 / 已安排 / 插件 */}
       <nav className="px-2 pb-1">
-        <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newSession')} onClick={() => void d.openNewSession()} />
+        <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newSession')} onClick={() => d.openNewTask()} />
         <NavItem icon={<ListTodo size={17} />} label="任务中心" active={d.activeTabType === 'product-tasks'} onClick={d.openProductTasks} />
         <NavItem icon={<Sparkles size={17} />} label="生成图片" active={d.activeTabType === 'image-workbench'} onClick={d.openImageWorkbench} />
         <NavItem icon={<Zap size={17} />} label="剪视频" active={d.activeTabType === 'video-studio'} onClick={d.openVideoStudio} />
@@ -393,44 +320,44 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
         />
         {projectsOpen && (
           <div className="mb-1">
-            {visibleProjects.map((p) => {
-              const open = expandedProjects[p.root] ?? true
-              const tasksExpanded = expandedTasks[p.root] === true
-              const visibleTasks = tasksExpanded ? p.sessions : p.sessions.slice(0, PROJECT_TASK_PAGE_SIZE)
-              const hasMore = p.sessions.length > PROJECT_TASK_PAGE_SIZE
+            {visibleProjects.map((project) => {
+              const open = expandedProjects[project.id] ?? true
+              const tasksExpanded = expandedTasks[project.id] === true
+              const visibleTasks = tasksExpanded ? project.tasks : project.tasks.slice(0, PROJECT_TASK_PAGE_SIZE)
+              const hasMore = project.tasks.length > PROJECT_TASK_PAGE_SIZE
               return (
-                <div key={p.root} className="mb-0.5">
+                <div key={project.id} className="mb-0.5">
                   <div className="group/proj flex h-[34px] w-full items-center rounded-lg pr-1 transition-colors hover:bg-[var(--color-surface-hover)]">
                     <button
                       type="button"
-                      onClick={() => setProjectOpen(p.root, !open)}
+                      onClick={() => setProjectOpen(project.id, !open)}
                       className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-2.5 text-left"
-                      title={p.root}
+                      title={project.workDir}
                       aria-expanded={open}
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--color-text-secondary)]">
                         {open ? <FolderOpen size={15} /> : <Folder size={15} />}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">{p.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">{project.title}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => void d.openNewSession(p.root)}
-                      title={`在 ${p.name} 中新建任务`}
-                      aria-label={`在 ${p.name} 中新建任务`}
+                      onClick={() => d.openNewTask(project.workDir)}
+                      title={`在 ${project.title} 中新建任务`}
+                      aria-label={`在 ${project.title} 中新建任务`}
                       className="shrink-0 rounded p-1 text-[var(--color-text-secondary)] opacity-0 transition-opacity hover:bg-[var(--color-surface-hover)] group-hover/proj:opacity-70"
                     >
                       <Plus size={14} />
                     </button>
                   </div>
                   {open && (
-                    p.sessions.length > 0 ? (
+                    project.tasks.length > 0 ? (
                       <div className="ml-6 mt-1">
                         {visibleTasks.map(renderRow)}
                         {hasMore && (
                           <button
                             type="button"
-                            onClick={() => setTasksExpanded(p.root, !tasksExpanded)}
+                            onClick={() => setTasksExpanded(project.id, !tasksExpanded)}
                             className="mb-0.5 w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface-hover)]"
                           >
                             {tasksExpanded ? '折叠显示' : '展开显示'}
@@ -459,10 +386,10 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
         <SectionHeader label="任务" open={tasksOpen} onToggle={() => setTasksOpen((v) => !v)} />
         {tasksOpen && (
           <div className="mb-2">
-            {d.sessions.length === 0 ? (
+            {d.tasks.length === 0 ? (
               <button
                 type="button"
-                onClick={() => void d.openNewSession()}
+                onClick={() => d.openNewTask()}
                 className="flex w-full items-center rounded-lg px-2.5 py-1.5 text-left"
                 style={{ background: 'var(--color-surface-selected)' }}
               >
@@ -492,27 +419,6 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
         </ToolBtn>
       </div>
 
-      {/* 会话右键菜单：当前后端有真实支撑的 重命名 / 删除（旧的 置顶/归档/fork 无后端字段，暂不挂）。 */}
-      {ctx && (
-        <ContextMenu
-          x={ctx.x}
-          y={ctx.y}
-          onClose={() => setCtx(null)}
-          items={[
-            {
-              label: '重命名',
-              icon: <Pencil size={15} />,
-              onClick: () => { setEditingId(ctx.id); setEditValue(ctx.title) },
-            },
-            {
-              label: '删除',
-              icon: <Trash2 size={15} />,
-              danger: true,
-              onClick: () => { void d.deleteSession(ctx.id) },
-            },
-          ]}
-        />
-      )}
     </aside>
   )
 }

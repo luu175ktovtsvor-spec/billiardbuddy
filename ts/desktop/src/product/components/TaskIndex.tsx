@@ -22,6 +22,7 @@ import type { SkillMeta } from '../../types/skill'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
+import type { ProductTaskComposerRequest } from '../stores/productTaskStore'
 
 export type TaskIndexProps = {
   index: ProductTaskIndexResponse
@@ -37,6 +38,8 @@ export type TaskIndexProps = {
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
+  composerRequest?: ProductTaskComposerRequest | null
+  onConsumeComposerRequest?: (requestId: number) => void
 }
 
 const WORKTREE_STATE_LABEL: Record<string, string> = {
@@ -117,9 +120,19 @@ export function TaskIndex({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
+  composerRequest = null,
+  onConsumeComposerRequest,
 }: TaskIndexProps) {
   const [composerOpen, setComposerOpen] = useState(false)
+  const [composerPrefill, setComposerPrefill] = useState<ProductTaskComposerRequest | null>(null)
   const [showArchived, setShowArchived] = useState(false)
+
+  useEffect(() => {
+    if (!composerRequest) return
+    setComposerPrefill(composerRequest)
+    setComposerOpen(true)
+    onConsumeComposerRequest?.(composerRequest.id)
+  }, [composerRequest, onConsumeComposerRequest])
 
   const visibleProjects = useMemo(
     () => index.projects.filter((project) => projectTasks(index, project.id).some((task) => showArchived || task.lifecycle !== 'archived')),
@@ -160,14 +173,20 @@ export function TaskIndex({
 
       {composerOpen ? (
         <TaskComposer
+          key={composerPrefill?.id ?? 'manual'}
           projects={index.projects}
+          initialWorkDir={composerPrefill?.workDir}
           isSubmitting={mutations.create === true}
-          onCancel={() => setComposerOpen(false)}
+          onCancel={() => {
+            setComposerOpen(false)
+            setComposerPrefill(null)
+          }}
           onSubmit={async (input, initialMessage) => {
             try {
               if (initialMessage) await onCreateTask(input, initialMessage)
               else await onCreateTask(input)
               setComposerOpen(false)
+              setComposerPrefill(null)
             } catch {
               // The product store exposes the server error in the index surface.
             }
@@ -238,17 +257,19 @@ export function TaskIndex({
 
 function TaskComposer({
   projects,
+  initialWorkDir,
   isSubmitting,
   onCancel,
   onSubmit,
 }: {
   projects: ProductProject[]
+  initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
   onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
 }) {
   const [projectId, setProjectId] = useState('')
-  const [workDir, setWorkDir] = useState('')
+  const [workDir, setWorkDir] = useState(() => initialWorkDir ?? '')
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])

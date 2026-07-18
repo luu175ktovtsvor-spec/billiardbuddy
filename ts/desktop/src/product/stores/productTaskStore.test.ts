@@ -56,6 +56,7 @@ function resetStore() {
     isLoading: false,
     error: null,
     mutations: {},
+    composerRequest: null,
   })
 }
 
@@ -117,5 +118,18 @@ describe('productTaskStore', () => {
     expect(productTasksApi.continue).toHaveBeenCalledWith('task-1', {})
     expect(useProductTaskStore.getState().index.tasks).toEqual([continuation, original])
     expect(useProductTaskStore.getState().index.total).toBe(2)
+  })
+
+  it('holds a one-shot new-task composer request until the task page consumes it', () => {
+    const store = useProductTaskStore.getState()
+
+    store.requestTaskComposer('  /workspace/billiard  ')
+
+    const request = useProductTaskStore.getState().composerRequest
+    expect(request).toEqual(expect.objectContaining({ workDir: '/workspace/billiard' }))
+
+    store.consumeTaskComposerRequest(request!.id)
+
+    expect(useProductTaskStore.getState().composerRequest).toBeNull()
   })
 })
