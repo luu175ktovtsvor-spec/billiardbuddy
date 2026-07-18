@@ -1,4 +1,5 @@
 import * as path from 'node:path'
+import * as fs from 'node:fs'
 import { isAllowedFilesystemPath } from './filesystem.js'
 import { serveFileWithRange } from './previewFs.js'
 import { normalizeDriveRootPathForPlatform } from '../services/windowsDrivePath.js'
@@ -62,12 +63,13 @@ export function reconstructAbsolutePath(rest: string): string | null {
  * so relative asset URLs (`./app.css`, `img/logo.png`) inside served HTML
  * resolve against the same `/local-file/...` directory.
  *
- * Security: the resolved path is gated by {@link isAllowedFilesystemPath} — the
- * same `$HOME` / `/tmp` / `/private/tmp` / registered-roots allow-list used by
- * the filesystem image endpoint. Anything outside is rejected with 403, so
- * `/etc/passwd` and friends stay denied. Streaming + byte-range handling is
- * shared with `/preview-fs` via {@link serveFileWithRange}, so HTML, CSS, JS,
- * images, fonts, video, and text all serve with the correct `Content-Type`,
+ * Security: both the resolved request path and its existing real path are
+ * gated by {@link isAllowedFilesystemPath} — the same `$HOME` / `/tmp` /
+ * `/private/tmp` / registered-roots allow-list used by the filesystem image
+ * endpoint. This rejects an allowed-looking path that reaches `/etc/passwd`
+ * through a symbolic link. Streaming + byte-range handling is shared with
+ * `/preview-fs` via {@link serveFileWithRange}, so HTML, CSS, JS, images,
+ * fonts, video, and text all serve with the correct `Content-Type`,
  * `Accept-Ranges`, and 206 partial responses.
  */
 export async function handleLocalFile(
@@ -88,5 +90,16 @@ export async function handleLocalFile(
     return new Response('forbidden', { status: 403 })
   }
 
-  return serveFileWithRange(resolved, reqHeaders)
+  let canonicalTarget: string
+  try {
+    canonicalTarget = fs.realpathSync(resolved)
+  } catch {
+    return new Response('not found', { status: 404 })
+  }
+
+  if (!isAllowedFilesystemPath(canonicalTarget)) {
+    return new Response('forbidden', { status: 403 })
+  }
+
+  return serveFileWithRange(canonicalTarget, reqHeaders)
 }

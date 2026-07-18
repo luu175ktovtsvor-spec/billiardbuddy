@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from 'bun:test'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
-import { tmpdir, homedir } from 'node:os'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
 import * as path from 'node:path'
 import { handleLocalFile, reconstructAbsolutePath } from '../localFile'
 
@@ -79,6 +79,17 @@ describe('handleLocalFile', () => {
     expect(await res.text()).toBe('<h1>spaced</h1>')
   })
 
+  it('serves a symbolic link whose target remains inside an allowed root', async () => {
+    const root = setupFiles()
+    const link = path.join(root, 'page-link.html')
+    symlinkSync(path.join(root, 'page.html'), link, 'file')
+
+    const res = await handleLocalFile(localFileRequestUrl(link))
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<h1>ok</h1>')
+  })
+
   it('honours a closed byte-range with 206 + Content-Range', async () => {
     const root = setupFiles()
     const res = await handleLocalFile(
@@ -110,6 +121,16 @@ describe('handleLocalFile', () => {
 
   it('rejects /etc/passwd with 403 (sandbox escape)', async () => {
     const res = await handleLocalFile(localFileRequestUrl('/etc/passwd'))
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects an allowed-path symbolic link whose target is outside allowed roots', async () => {
+    const root = setupFiles()
+    const link = path.join(root, 'outside-link')
+    symlinkSync('/etc/hosts', link, 'file')
+
+    const res = await handleLocalFile(localFileRequestUrl(link))
+
     expect(res.status).toBe(403)
   })
 
