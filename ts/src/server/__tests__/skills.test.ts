@@ -3,6 +3,10 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { getCwdState, setCwdState } from '../../bootstrap/state.js'
+import {
+  getBundledSkillExtractDir,
+  getBundledSkills,
+} from '../../skills/bundledSkills.js'
 import { clearSkillCaches } from '../../skills/loadSkillsDir.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
@@ -35,6 +39,15 @@ async function writeSkill(root: string, name: string, content: string): Promise<
   const skillDir = path.join(root, name)
   await fs.mkdir(skillDir, { recursive: true })
   await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8')
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function expectNameOnlyCommands(
@@ -151,6 +164,50 @@ describe('Skills API product boundary', () => {
     expect(body.commands).toContainEqual({ name: 'user-skill' })
     expect(body.commands).toContainEqual({ name: 'project-skill' })
     expect(body.commands).toContainEqual({ name: 'image-workbench' })
+  })
+
+  it('writes billiards references only after invoking a discovered command', async () => {
+    const macroTarget = globalThis as typeof globalThis & {
+      MACRO?: { VERSION: string }
+    }
+    const previousMacro = macroTarget.MACRO
+    if (!previousMacro) macroTarget.MACRO = { VERSION: 'skills-api-test' }
+
+    const skillName = 'venue-daily-review'
+    const skillDir = getBundledSkillExtractDir(skillName)
+    await fs.rm(skillDir, { recursive: true, force: true })
+
+    try {
+      const { req, url, segments } = makeRequest('/api/skills/slash-commands')
+      const response = await handleSkillsApi(req, url, segments)
+      const body = await response.json() as SlashCommandsResponse
+
+      expect(response.status).toBe(200)
+      expect(body.commands).toContainEqual({ name: skillName })
+      expect(await pathExists(skillDir)).toBe(false)
+
+      const command = getBundledSkills().find((candidate) => candidate.name === skillName)
+      expect(command?.type).toBe('prompt')
+      if (!command || command.type !== 'prompt') {
+        throw new Error(`Bundled skill ${skillName} was not registered as a prompt command`)
+      }
+
+      const prompt = await command.getPromptForCommand('整理昨天的营业数据', undefined as never)
+      const firstBlock = prompt[0]
+      expect(firstBlock?.type).toBe('text')
+      if (firstBlock?.type !== 'text') {
+        throw new Error(`Bundled skill ${skillName} did not return a text prompt`)
+      }
+
+      expect(firstBlock.text).toStartWith(`Base directory for this skill: ${skillDir}`)
+      expect(await fs.readFile(path.join(skillDir, 'references', 'README.md'), 'utf-8')).toContain(
+        '本资源帮助 Agent 理解球房经营语境',
+      )
+    } finally {
+      await fs.rm(skillDir, { recursive: true, force: true })
+      if (previousMacro === undefined) delete macroTarget.MACRO
+      else macroTarget.MACRO = previousMacro
+    }
   })
 
   it('discovers an enabled plugin command only by name', async () => {
