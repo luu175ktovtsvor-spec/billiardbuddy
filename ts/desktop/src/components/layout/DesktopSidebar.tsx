@@ -187,13 +187,7 @@ function SectionHeader({
   )
 }
 
-export interface DesktopSidebarProps {
-  /** 移动抽屉里复用时传入；桌面默认无参渲染。 */
-  isMobile?: boolean
-  onRequestClose?: () => void
-}
-
-export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
+export function DesktopSidebar() {
   const d = useSidebarData()
   const { t } = d
 

@@ -31,7 +31,6 @@ import {
   resolveSlashCommandRuntimeValue,
   resolveSlashUiAction,
 } from './composerUtils'
-import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../../lib/desktopRuntime'
 import {
   filesToComposerAttachments,
@@ -83,7 +82,6 @@ function insertComposerTokenAtRange(value: string, start: number, end: number, t
 
 export function ChatInput({ sessionId, workDir, variant = 'default', compact = false }: ChatInputProps) {
   const t = useTranslation()
-  const isMobileComposer = useMobileViewport() && !isDesktopRuntime()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
@@ -179,8 +177,8 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
   const hasWorkspaceReferences = !isMemberSession && workspaceReferences.length > 0
   const isHeroComposer = variant === 'hero' && !isMemberSession && !compact
   const resolvedWorkDir = activeSession?.workDir || workDir || undefined
-  const useCompactControls = compact || isMobileComposer
-  const iconOnlyAction = compact || isMobileComposer
+  const useCompactControls = compact
+  const iconOnlyAction = compact
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
     ? resolveSlashUiAction(input.trim().slice(1))
     : null
@@ -840,13 +838,13 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
       data-testid="chat-input-shell"
       className={
         isHeroComposer
-          ? `bg-[var(--color-app-main)] ${isMobileComposer ? 'px-3 pb-3' : 'px-4 pb-2 pt-1'}`
+          ? 'bg-[var(--color-app-main)] px-4 pb-2 pt-1'
           : compact
-            ? `bg-[var(--color-app-main)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-3 pb-2 pt-1'}`
-            : `bg-[var(--color-app-main)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-4 pb-2 pt-1'}`
+            ? 'bg-[var(--color-app-main)] px-3 pb-2 pt-1'
+            : 'bg-[var(--color-app-main)] px-4 pb-2 pt-1'
       }
     >
-      <ComposerFrame mobile={isMobileComposer}>
+      <ComposerFrame>
         <ComposerSurface
           ref={panelRef}
           data-testid="chat-input-panel"
@@ -866,7 +864,7 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
               ref={fileSearchRef}
               cwd={resolvedWorkDir || ''}
               filter={atFilter}
-              compact={isMobileComposer}
+              compact={compact}
               onNavigate={(relativePath) => {
                 if (atCursorPos < 0) return
                 const replacement = `@${relativePath}`
@@ -957,16 +955,14 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
                   </button>
                 ))}
               </div>
-              {!isMobileComposer ? (
-                <div className="flex items-center gap-1.5 border-t border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-text-tertiary)]">
-                  <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Up/Down</kbd>
-                  <span>{t('chat.navigate')}</span>
-                  <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Enter</kbd>
-                  <span>{t('chat.select')}</span>
-                  <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Esc</kbd>
-                  <span>{t('chat.dismiss')}</span>
-                </div>
-              ) : null}
+              <div className="flex items-center gap-1.5 border-t border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-text-tertiary)]">
+                <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Up/Down</kbd>
+                <span>{t('chat.navigate')}</span>
+                <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Enter</kbd>
+                <span>{t('chat.select')}</span>
+                <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Esc</kbd>
+                <span>{t('chat.dismiss')}</span>
+              </div>
             </div>
           )}
 
@@ -1092,9 +1088,7 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
             placeholder={composerPlaceholder}
             disabled={isWorkspaceMissing}
             rows={1}
-            className={`mb-1 w-full resize-none border-none bg-transparent px-3 pt-3 leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50 ${
-              isMobileComposer ? 'min-h-[44px] max-h-[132px] text-base' : 'max-h-[200px] text-sm'
-            }`}
+            className="mb-1 w-full resize-none border-none bg-transparent px-3 pt-3 leading-relaxed text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50"
             style={{ maxHeight: 200 }}
           />
 
@@ -1105,13 +1099,13 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
                     <button
                       onClick={() => setPlusMenuOpen((value) => !value)}
                       aria-label="Open composer tools"
-                      className={`inline-flex items-center justify-center rounded-full text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${isMobileComposer ? 'h-11 w-11' : 'h-8 w-8'}`}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
                     >
                       <span className="material-symbols-outlined text-[18px]">add</span>
                     </button>
 
                     {plusMenuOpen && (
-                      <div className={`absolute bottom-full left-0 z-50 mb-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)] ${isMobileComposer ? 'w-[min(240px,calc(100vw-32px))]' : 'w-[240px]'}`}>
+                      <div className="absolute bottom-full left-0 z-50 mb-2 w-[240px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)]">
                         <button
                           onClick={openAttachmentPicker}
                           className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
@@ -1141,7 +1135,6 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
                 <VoiceInputControl
                   onTranscript={appendVoiceTranscript}
                   disabled={isWorkspaceMissing}
-                  className={isMobileComposer ? 'h-11 w-11' : ''}
                 />
               ) : null}
               <button
@@ -1157,9 +1150,7 @@ export function ChatInput({ sessionId, workDir, variant = 'default', compact = f
                         : t('common.run')
                       : undefined
                 }
-                className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-[var(--color-on-primary)] transition-opacity hover:opacity-90 disabled:opacity-30 ${
-                  isMobileComposer ? 'h-11 w-11' : 'h-8 w-8'
-                }`}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-[var(--color-on-primary)] transition-opacity hover:opacity-90 disabled:opacity-30"
               >
                 <span className="material-symbols-outlined text-[17px]">
                   {!isMemberSession && isActive ? 'stop' : 'arrow_upward'}

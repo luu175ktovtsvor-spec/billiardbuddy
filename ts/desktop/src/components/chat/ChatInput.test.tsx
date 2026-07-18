@@ -3,10 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { act } from 'react'
 
-const viewportMocks = vi.hoisted(() => ({
-  isMobile: false,
-}))
-
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   delete: vi.fn(),
@@ -47,10 +43,6 @@ vi.mock('../../api/websocket', () => ({
     clearHandlers: vi.fn(),
     send: mocks.wsSend,
   },
-}))
-
-vi.mock('../../hooks/useMobileViewport', () => ({
-  useMobileViewport: () => viewportMocks.isMobile,
 }))
 
 vi.mock('../controls/PermissionModeSelector', () => ({
@@ -101,7 +93,6 @@ describe('ChatInput file mentions', () => {
     mocks.webviewDragHandlers.length = 0
     Reflect.deleteProperty(window, 'desktopHost')
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-    viewportMocks.isMobile = false
     useSettingsStore.setState({ locale: 'en' })
     useChatStore.setState(initialChatState, true)
     useSessionStore.setState(initialSessionState, true)
@@ -988,41 +979,6 @@ describe('ChatInput file mentions', () => {
     expect(await screen.findByText('README.md')).toBeInTheDocument()
     expect(panel).toHaveClass('overflow-visible')
     expect(panel).not.toHaveClass('overflow-hidden')
-  })
-
-  it('uses larger icon-only mobile action buttons for browser H5 access', async () => {
-    viewportMocks.isMobile = true
-    mocks.search.mockResolvedValueOnce({
-      currentPath: '/repo',
-      parentPath: null,
-      query: 'cond',
-      entries: [
-        { name: 'conditions.py', path: '/repo/conditions.py', isDirectory: false },
-      ],
-    })
-
-    render(<ChatInput />)
-
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: 'ship it', selectionStart: 7 },
-    })
-
-    expect(screen.getByRole('button', { name: 'Open composer tools' })).toHaveClass('h-11', 'w-11')
-    expect(screen.getByRole('button', { name: 'Run' })).toHaveClass('h-11', 'w-11')
-    expect(screen.queryByText('Run')).not.toBeInTheDocument()
-    expect(screen.getByTestId('chat-input-shell')).toHaveClass('px-3')
-    expect(screen.getByTestId('chat-input-shell').className).toContain('safe-area-inset-bottom')
-    expect(screen.getByTestId('chat-input-panel')).toHaveClass('main-composer-surface')
-
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '@cond', selectionStart: 5 },
-    })
-
-    expect(await screen.findByText('conditions.py')).toBeInTheDocument()
-    const fileSearchMenu = document.getElementById('file-search-menu')
-    expect(fileSearchMenu).toHaveClass('min-w-0')
-    expect(fileSearchMenu).not.toHaveClass('min-w-[480px]')
-    expect(fileSearchMenu).not.toHaveTextContent('Navigate')
   })
 
   it('keeps the active-session toolbar in flow so multiline caret cannot render behind controls', async () => {

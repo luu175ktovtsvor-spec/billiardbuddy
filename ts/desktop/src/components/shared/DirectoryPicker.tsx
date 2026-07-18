@@ -1,16 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { sessionsApi, type RecentProject } from '../../api/sessions'
-import { filesystemApi } from '../../api/filesystem'
 import { useTranslation } from '../../i18n'
-import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { getDesktopHost } from '../../lib/desktopHost'
 import {
   getCachedRecentProjects,
   invalidateRecentProjectsCache,
   setCachedRecentProjects,
 } from '../../lib/recentProjectsCache'
-import { MobileBottomSheet } from './MobileBottomSheet'
 
 type Props = {
   value: string
@@ -19,16 +16,10 @@ type Props = {
   isGitProject?: boolean
 }
 
-type DirEntry = { name: string; path: string; isDirectory: boolean }
-
 const DESKTOP_WORKTREE_MARKER = '/.claude/worktrees/'
 const DROPDOWN_WIDTH = 400
 const DROPDOWN_VIEWPORT_MARGIN = 12
 const DROPDOWN_HEIGHT = 380 // approximate max height
-
-function isDesktopRuntime() {
-  return typeof window !== 'undefined' && getDesktopHost().isDesktop
-}
 
 function projectNameFromPath(filePath: string) {
   const displayRoot = filePath.includes(DESKTOP_WORKTREE_MARKER)
@@ -40,17 +31,11 @@ function projectNameFromPath(filePath: string) {
 export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProject = false }: Props) {
   const t = useTranslation()
   const [isOpen, setIsOpen] = useState(false)
-  const [mode, setMode] = useState<'recent' | 'browse'>('recent')
   const [projects, setProjects] = useState<RecentProject[]>([])
-  const [browseEntries, setBrowseEntries] = useState<DirEntry[]>([])
-  const [browsePath, setBrowsePath] = useState('')
-  const [browseParent, setBrowseParent] = useState('')
   const [loading, setLoading] = useState(false)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; direction: 'up' | 'down' } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const isMobileBrowser = useMobileViewport() && !isDesktopRuntime()
-
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const updateDropdownPos = useCallback(() => {
@@ -97,7 +82,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
 
   // Load recent projects when opened (with client-side cache)
   useEffect(() => {
-    if (!isOpen || mode !== 'recent') return
+    if (!isOpen) return
     // Use cache if fresh
     const cachedProjects = getCachedRecentProjects()
     if (cachedProjects) {
@@ -112,23 +97,11 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       })
       .catch(() => setProjects([]))
       .finally(() => setLoading(false))
-  }, [isOpen, mode])
-
-  const loadBrowseDir = async (path?: string) => {
-    setLoading(true)
-    try {
-      const result = await filesystemApi.browse(path)
-      setBrowsePath(result.currentPath)
-      setBrowseParent(result.parentPath)
-      setBrowseEntries(result.entries)
-    } catch { /* API not available */ }
-    setLoading(false)
-  }
+  }, [isOpen])
 
   const handleSelect = (path: string) => {
     onChange(path)
     setIsOpen(false)
-    setMode('recent')
     // Invalidate cache so next open reflects the new selection
     invalidateRecentProjectsCache()
   }
@@ -148,16 +121,13 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       } catch (err) {
         console.error('[DirectoryPicker] Failed to open folder dialog:', err)
       }
-    } else {
-      // Web browser: directory tree via backend API
-      setMode('browse')
-      loadBrowseDir(value || undefined)
     }
   }
 
   // Find selected project info
   const selectedProject = projects.find((p) => p.realPath === value)
   const isWorkbar = variant === 'workbar'
+  const canChooseFolder = getDesktopHost().isDesktop && getDesktopHost().capabilities.dialogs
   const selectedLabel = selectedProject?.repoName || selectedProject?.projectName || projectNameFromPath(value)
   const showGitIcon = selectedProject?.isGit || isGitProject
   const triggerClassName = isWorkbar
@@ -177,15 +147,12 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       : { bottom: window.innerHeight - (dropdownPos?.top ?? 0) }),
     zIndex: 9999,
   }
-  const dropdownTitle = mode === 'recent' ? t('dirPicker.recent') : t('dirPicker.chooseProjectFolder')
-  const dropdownContent = mode === 'recent' ? (
+  const dropdownContent = (
     <>
-      {!isMobileBrowser && (
-        <div className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-[var(--color-outline)]">
-          {t('dirPicker.recent')}
-        </div>
-      )}
-      <div className={`${isMobileBrowser ? '' : 'max-h-[300px]'} overflow-y-auto`}>
+      <div className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-[var(--color-outline)]">
+        {t('dirPicker.recent')}
+      </div>
+      <div className="max-h-[300px] overflow-y-auto">
         {loading ? (
           <div className="px-4 py-6 text-center text-xs text-[var(--color-text-tertiary)]">{t('common.loading')}</div>
         ) : projects.length === 0 ? (
@@ -197,9 +164,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
               <button
                 key={project.projectPath}
                 onClick={() => handleSelect(project.realPath)}
-                className={`flex w-full items-center gap-3 px-4 text-left transition-colors hover:bg-[var(--color-surface-hover)] ${
-                  isMobileBrowser ? 'min-h-[72px] py-3.5' : 'py-3'
-                } ${
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-surface-hover)] ${
                   isSelected ? 'bg-[var(--color-surface-selected)]' : ''
                 }`}
               >
@@ -229,85 +194,27 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
           })
         )}
       </div>
-      <div className="border-t border-[var(--color-border)]">
-        <button
-          onClick={handleChooseFolder}
-          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
-        >
-          <span className="material-symbols-outlined text-[20px] text-[var(--color-text-tertiary)]">create_new_folder</span>
-          <span className="text-sm text-[var(--color-text-secondary)]">{t('dirPicker.chooseFolder')}</span>
-        </button>
-      </div>
-    </>
-  ) : (
-    <>
-      <div className="flex flex-wrap items-center gap-1 border-b border-[var(--color-border)] px-3 py-2">
-        <button onClick={() => setMode('recent')} className="mr-2 text-xs text-[var(--color-text-accent)] hover:underline">
-          {'← ' + t('dirPicker.recent')}
-        </button>
-        <button onClick={() => loadBrowseDir('/')} className="text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]">/</button>
-        {browsePath.split('/').filter(Boolean).map((seg, i, arr) => (
-          <span key={i} className="flex items-center gap-1">
-            <span className="text-[10px] text-[var(--color-text-tertiary)]">/</span>
-            <button
-              onClick={() => loadBrowseDir('/' + arr.slice(0, i + 1).join('/'))}
-              className="text-[10px] text-[var(--color-text-accent)] hover:underline"
-            >{seg}</button>
-          </span>
-        ))}
-      </div>
-
-      <div className={`${isMobileBrowser ? '' : 'max-h-[240px]'} overflow-y-auto`}>
-        {loading ? (
-          <div className="px-3 py-4 text-center text-xs text-[var(--color-text-tertiary)]">{t('common.loading')}</div>
-        ) : (
-          <>
-            {browseParent && browseParent !== browsePath && (
-              <button onClick={() => loadBrowseDir(browseParent)} className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--color-surface-hover)]">
-                <span className="material-symbols-outlined text-[16px] text-[var(--color-text-tertiary)]">arrow_upward</span>
-                <span className="text-xs text-[var(--color-text-secondary)]">..</span>
-              </button>
-            )}
-            {browseEntries.length === 0 ? (
-              <div className="px-3 py-4 text-center text-xs text-[var(--color-text-tertiary)]">{t('dirPicker.noSubdirs')}</div>
-            ) : browseEntries.map((entry) => (
-              <div
-                key={entry.path}
-                className="flex w-full items-center gap-2 px-3 py-2 hover:bg-[var(--color-surface-hover)]"
-              >
-                <button
-                  type="button"
-                  onClick={() => loadBrowseDir(entry.path)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                >
-                  <span className="material-symbols-outlined text-[16px] text-[var(--color-text-tertiary)]">folder</span>
-                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-primary)]">{entry.name}</span>
-                </button>
-                <button type="button" onClick={() => handleSelect(entry.path)} className="rounded px-2 py-0.5 text-[10px] font-semibold text-[var(--color-brand)] transition-colors hover:bg-[var(--color-primary-fixed)]">
-                  {t('common.select')}
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-
-      <div className="flex items-center justify-between border-t border-[var(--color-border)] px-3 py-2">
-        <span className="truncate font-[var(--font-mono)] text-[10px] text-[var(--color-text-tertiary)]">{browsePath}</span>
-        <button onClick={() => handleSelect(browsePath)} className="rounded-lg bg-[var(--color-brand)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-          {t('dirPicker.useThisFolder')}
-        </button>
-      </div>
+      {canChooseFolder ? (
+        <div className="border-t border-[var(--color-border)]">
+          <button
+            onClick={handleChooseFolder}
+            className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            <span className="material-symbols-outlined text-[20px] text-[var(--color-text-tertiary)]">create_new_folder</span>
+            <span className="text-sm text-[var(--color-text-secondary)]">{t('dirPicker.chooseFolder')}</span>
+          </button>
+        </div>
+      ) : null}
     </>
   )
 
   return (
-    <div ref={ref} className={isWorkbar ? `relative min-w-0 ${isMobileBrowser ? 'flex-1' : 'max-w-[320px] shrink'}` : 'relative'}>
+    <div ref={ref} className={isWorkbar ? 'relative max-w-[320px] shrink min-w-0' : 'relative'}>
       {/* Trigger — shows selected project chip or placeholder */}
       {value ? (
         <button
           ref={triggerRef}
-          onClick={() => { setIsOpen(!isOpen); setMode('recent') }}
+          onClick={() => setIsOpen(!isOpen)}
           className={triggerClassName}
           title={value}
         >
@@ -326,7 +233,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       ) : (
         <button
           ref={triggerRef}
-          onClick={() => { setIsOpen(!isOpen); setMode('recent') }}
+          onClick={() => setIsOpen(!isOpen)}
           className={emptyTriggerClassName}
           title={t('dirPicker.selectProject')}
         >
@@ -335,18 +242,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
         </button>
       )}
 
-      {isOpen && dropdownPos && (
-        isMobileBrowser ? (
-          <MobileBottomSheet
-            open={isOpen}
-            onClose={() => setIsOpen(false)}
-            title={dropdownTitle}
-            closeLabel={t('tabs.close')}
-            panelRef={dropdownRef}
-          >
-            {dropdownContent}
-          </MobileBottomSheet>
-        ) : createPortal(
+      {isOpen && dropdownPos && createPortal(
           <div
             ref={dropdownRef}
             data-testid="directory-picker-menu"
@@ -356,8 +252,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
             {dropdownContent}
           </div>,
           document.body,
-        )
-      )}
+        )}
     </div>
   )
 }

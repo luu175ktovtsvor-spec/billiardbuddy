@@ -6,9 +6,6 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import type { PermissionMode } from '../../types/settings'
-import { useMobileViewport } from '../../hooks/useMobileViewport'
-import { isDesktopRuntime } from '../../lib/desktopRuntime'
-import { MobileBottomSheet } from '../shared/MobileBottomSheet'
 import { ActionDialog } from '../shared/ActionDialog'
 
 const MODE_ICONS: Record<PermissionMode, string> = {
@@ -31,7 +28,6 @@ type Props = {
 
 export function PermissionModeSelector({ workDir: workDirProp, compact = false, menuPlacement = 'top', value, onChange }: Props = {}) {
   const t = useTranslation()
-  const isMobile = useMobileViewport() && !isDesktopRuntime()
   const { permissionMode: storeMode } = useSettingsStore()
   const setSessionPermissionMode = useChatStore((s) => s.setSessionPermissionMode)
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -93,9 +89,7 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
     : (activeSession?.permissionMode as PermissionMode | undefined) || storeMode
   const workDir = workDirProp || activeSession?.workDir || '~'
   const compactButtonClass = compact
-    ? isMobile
-      ? 'h-11 w-11 justify-center rounded-xl p-0'
-      : 'h-8 w-8 justify-center rounded-full p-0'
+    ? 'h-8 w-8 justify-center rounded-full p-0'
     : 'gap-1.5 rounded-full px-2.5 py-1.5 text-xs'
   const menuPlacementClass = menuPlacement === 'bottom'
     ? 'top-full mt-2'
@@ -199,22 +193,9 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
       </button>
 
       {open && (
-        isMobile ? (
-          <MobileBottomSheet
-            open={open}
-            onClose={() => setOpen(false)}
-            title={t('permMode.executionPermissions')}
-            closeLabel={t('tabs.close')}
-            ariaLabel={t('permMode.executionPermissions')}
-            contentClassName="py-2"
-          >
-            {permissionOptions}
-          </MobileBottomSheet>
-        ) : (
-          <div id={menuId} ref={menuRef} role="menu" className={`absolute left-0 ${menuPlacementClass} w-[320px] rounded-xl bg-[var(--color-surface-container-lowest)] border border-[var(--color-border)] shadow-[var(--shadow-dropdown)] z-50 py-2`}>
-            {menuContent}
-          </div>
-        )
+        <div id={menuId} ref={menuRef} role="menu" className={`absolute left-0 ${menuPlacementClass} z-50 w-[320px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]`}>
+          {menuContent}
+        </div>
       )}
 
       <ActionDialog

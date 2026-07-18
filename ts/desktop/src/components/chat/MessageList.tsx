@@ -28,7 +28,6 @@ import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 import type { AgentTaskNotification, UIMessage } from '../../types/chat'
 import { formatTokenCount } from '../../lib/formatTokenCount'
 import { formatDurationMs, hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks } from '../../lib/backgroundTasks'
-import { isTouchH5Document } from '../../lib/touchH5'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 import {
@@ -937,11 +936,6 @@ const SCROLL_BOTTOM_SENTINEL = 1_000_000_000
 const MAX_SCROLL_SNAPSHOTS = 100
 const VIRTUALIZE_MIN_RENDER_ITEMS = 120
 const VIRTUALIZE_MIN_CONTENT_CHARS = 120_000
-// Touch-H5 disables content-visibility paint skipping for selection
-// correctness (globals.css), which makes virtualization the only paint bound
-// for long transcripts there — so it kicks in at half the desktop thresholds.
-const TOUCH_H5_VIRTUALIZE_MIN_RENDER_ITEMS = 60
-const TOUCH_H5_VIRTUALIZE_MIN_CONTENT_CHARS = 60_000
 const VIRTUAL_OVERSCAN_PX = 1200
 const VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720
 const VIRTUAL_MIN_ITEM_HEIGHT = 48
@@ -1101,18 +1095,13 @@ function getRenderItemContentWeight(item: RenderItem): number {
   return item.toolCalls.reduce((total, toolCall) => total + getMessageContentWeight(toolCall), 0)
 }
 
-export function shouldVirtualizeRenderItems(
-  metrics: VirtualRenderItemMetric[],
-  touchH5 = isTouchH5Document(),
-) {
-  const minRenderItems = touchH5 ? TOUCH_H5_VIRTUALIZE_MIN_RENDER_ITEMS : VIRTUALIZE_MIN_RENDER_ITEMS
-  const minContentChars = touchH5 ? TOUCH_H5_VIRTUALIZE_MIN_CONTENT_CHARS : VIRTUALIZE_MIN_CONTENT_CHARS
-  if (metrics.length >= minRenderItems) return true
+export function shouldVirtualizeRenderItems(metrics: VirtualRenderItemMetric[]) {
+  if (metrics.length >= VIRTUALIZE_MIN_RENDER_ITEMS) return true
 
   let totalWeight = 0
   for (const metric of metrics) {
     totalWeight += metric.contentWeight
-    if (totalWeight >= minContentChars) return true
+    if (totalWeight >= VIRTUALIZE_MIN_CONTENT_CHARS) return true
   }
   return false
 }
@@ -1682,24 +1671,6 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
 
     return () => observer.disconnect()
   }, [scrollToBottom, shouldFollowContentResize])
-
-  // Touch-H5 only: the visual-viewport fit (touchH5.ts) shrinks the scroll
-  // container when the soft keyboard opens. If the user was reading the tail,
-  // keep the latest message pinned above the keyboard instead of letting the
-  // shorter container cut it off.
-  useEffect(() => {
-    if (!isTouchH5Document()) return
-    const container = scrollContainerRef.current
-    if (!container || typeof ResizeObserver === 'undefined') return
-
-    const observer = new ResizeObserver(() => {
-      if (!shouldAutoScrollRef.current) return
-      scrollToBottom('auto')
-    })
-    observer.observe(container)
-
-    return () => observer.disconnect()
-  }, [scrollToBottom])
 
   const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
     () => buildRenderModel(messages, activeAskUserQuestionToolUseId),
