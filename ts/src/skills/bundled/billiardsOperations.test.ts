@@ -53,7 +53,7 @@ describe('billiards operations skills', () => {
       '55 个更细的知识主题',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/README.md']).toContain(
-      '已从旧版淘汰的逻辑',
+      '提纯原则',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/operations.md']).toContain(
       '识别 → 创造 → 传播 → 交付',
@@ -71,8 +71,8 @@ describe('billiards operations skills', () => {
 
     const descriptors = getBundledSkillDescriptors()
     for (const skill of descriptors) {
-      expect(skill.content).toContain('不让用户选择模型、工具、Skill、文件格式或技术参数')
-      expect(skill.content).toContain('不把知识资料、行业示例或模型推断说成本店事实')
+      expect(skill.content).toContain('由 Agent 在内部选择模型、工具、Skill、文件格式和技术实现')
+      expect(skill.content).toContain('清楚标注知识资料、行业示例和本次推断')
       expect(skill.content).toContain('references/README.md')
     }
   })
