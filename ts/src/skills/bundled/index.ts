@@ -16,7 +16,6 @@ export function initBundledSkills(): void {
   require('./keybindings.js').registerKeybindingsSkill()
   require('./verify.js').registerVerifySkill()
   require('./debug.js').registerDebugSkill()
-  require('./loremIpsum.js').registerLoremIpsumSkill()
   require('./skillify.js').registerSkillifySkill()
   require('./remember.js').registerRememberSkill()
   require('./simplify.js').registerSimplifySkill()
