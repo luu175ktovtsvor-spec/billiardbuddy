@@ -20,7 +20,6 @@ import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
 import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleDesktopUiApi } from './api/desktop-ui.js'
-import { handleTracesApi } from './api/traces.js'
 import { handleMediaApi } from './api/media.js'
 import { handleVoiceApi } from './api/voice.js'
 import { handleProductApi } from './api/product.js'
@@ -102,9 +101,6 @@ export async function handleApiRequest(
 
     case 'desktop-ui':
       return handleDesktopUiApi(req, url, segments)
-
-    case 'traces':
-      return handleTracesApi(req, url, segments)
 
     case 'media':
       return (handlers.media ?? handleMediaApi)(req, url, segments)
