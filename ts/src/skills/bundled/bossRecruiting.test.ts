@@ -50,7 +50,7 @@ describe('boss recruiting skill', () => {
       'Skill 只规定业务目标、交互流程和完成证据',
     )
     expect(BOSS_RECRUITING_FILES['references/recruiting-worksheet.md']).toContain(
-      '未知不等于不符合',
+      '未知项保持待确认',
     )
   })
 })
