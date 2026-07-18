@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   PanelLeft, Search, SquarePen, Clock, Puzzle,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
-  Sparkles, Zap, Plus, Loader2, Trash2, Pencil,
+  Sparkles, Zap, Plus, Loader2, Trash2, Pencil, ListTodo,
 } from 'lucide-react'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -14,6 +14,7 @@ import {
   SCHEDULED_TAB_ID,
   IMAGE_WORKBENCH_TAB_ID,
   VIDEO_STUDIO_TAB_ID,
+  PRODUCT_TASKS_TAB_ID,
   type TabType,
 } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
@@ -129,6 +130,7 @@ function useSidebarData() {
     openSession,
     openNewSession,
     openScheduled: () => openTabView(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled'),
+    openProductTasks: () => openTabView(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks'),
     openImageWorkbench: () => openTabView(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench'),
     openVideoStudio: () => openTabView(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio'),
     openSettings: () => {
@@ -359,9 +361,10 @@ export function DesktopSidebar(_props: DesktopSidebarProps = {}) {
         </div>
       )}
 
-      {/* 主导航：新建任务 / 生成图片 / 剪视频 / 已安排 / 插件 */}
+      {/* 主导航：新建任务 / 任务中心 / 生成图片 / 剪视频 / 已安排 / 插件 */}
       <nav className="px-2 pb-1">
         <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newSession')} onClick={() => void d.openNewSession()} />
+        <NavItem icon={<ListTodo size={17} />} label="任务中心" active={d.activeTabType === 'product-tasks'} onClick={d.openProductTasks} />
         <NavItem icon={<Sparkles size={17} />} label="生成图片" active={d.activeTabType === 'image-workbench'} onClick={d.openImageWorkbench} />
         <NavItem icon={<Zap size={17} />} label="剪视频" active={d.activeTabType === 'video-studio'} onClick={d.openVideoStudio} />
         <NavItem icon={<Clock size={17} />} label={t('sidebar.scheduled')} active={d.activeTabType === 'scheduled'} onClick={d.openScheduled} />

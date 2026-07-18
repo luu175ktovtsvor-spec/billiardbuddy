@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sessionsApi } from '../api/sessions'
-import { SETTINGS_TAB_ID, useTabStore } from './tabStore'
+import { PRODUCT_TASKS_TAB_ID, SETTINGS_TAB_ID, useTabStore } from './tabStore'
 
 vi.mock('../api/sessions', () => ({
   sessionsApi: {
@@ -90,5 +90,24 @@ describe('tabStore', () => {
         status: 'idle',
       },
     ])
+  })
+
+  it('restores the product task index as a special tab without a core session', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [{ sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' }],
+      activeTabId: PRODUCT_TASKS_TAB_ID,
+    }))
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: PRODUCT_TASKS_TAB_ID,
+      tabs: [{
+        sessionId: PRODUCT_TASKS_TAB_ID,
+        title: '任务中心',
+        type: 'product-tasks',
+        status: 'idle',
+      }],
+    })
   })
 })
