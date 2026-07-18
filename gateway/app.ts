@@ -27,6 +27,7 @@ import {
   DeepSeekRequestError,
 } from './deepseekChat'
 import {
+  containsComputerUseContext,
   containsImageContent,
   createVisionBridge,
   VisionBridgeError,
@@ -87,7 +88,6 @@ type GatewayConfig = {
   qwenKey: string
   qwenBase: string
   qwenModel: string
-  relayBase: string
   relayToken: string
   relayTasksBase: string
   adminToken: string
@@ -138,7 +138,7 @@ type GatewayConfig = {
   visionCacheMax: number
   visionCacheTtlMs: number
   imgIpm: number
-  imgConc: number
+  imgTaskMaxBodyBytes: number
   queueMaxWait: number
   transcribeRpm: number
   transcribeConc: number
@@ -429,7 +429,6 @@ function loadConfig(env: Env): GatewayConfig {
     qwenKey: env.GW_QWEN_KEY ?? '',
     qwenBase: (env.GW_QWEN_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
     qwenModel: env.GW_QWEN_MODEL ?? 'qwen3-coder-plus',
-    relayBase: required(env, 'GW_RELAY_BASE').replace(/\/+$/, ''),
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
     relayTasksBase: (env.GW_RELAY_TASKS_BASE ?? '').replace(/\/+$/, ''),
@@ -498,7 +497,9 @@ function loadConfig(env: Env): GatewayConfig {
     visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
     imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
-    imgConc: intEnv(env, 'GW_IMG_CONC', 12),
+    // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
+    // same 32 MB request ceiling at the public gateway before buffering or forwarding.
+    imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
@@ -823,7 +824,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     })
     : null
   const imgBucket = new TokenBucket(config.imgIpm)
-  const imgSem = new AsyncSemaphore(config.imgConc)
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
@@ -846,7 +846,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             deepseek_conc: config.deepseekConc,
             deepseek_user_conc: config.deepseekUserConc,
             img_ipm: config.imgIpm,
-            img_conc: config.imgConc,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
           },
@@ -874,7 +873,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       // 鉴权后的模型目录:只列出当前真正可路由的上游(缺 key 的上游不出现在目录里),
       // 每项标 owned_by=qwen|mimo 供客户端做"显式 Qwen/MiMo 目录 + 会话级切换"。切换本身复用
-      // CC-Haha 的 set_runtime_config → CLI --model,模型名随请求体 model 到网关按上面的路由分流。
+      // Agent 的 set_runtime_config → CLI --model,模型名随请求体 model 到网关按上面的路由分流。
       if (request.method === 'GET' && url.pathname === '/v1/models') {
         auth(config, request)
         const data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> = []
@@ -918,8 +917,19 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // 读成结构化文本、替换掉 image_url,再把去图后的请求体交给下面按 routesToDeepseek/routesToMimo
         // 路由到的模型。桥接跑在路由/许可之前,调 MiMo 视觉时不占目标文本模型的聊天许可名额。MiMo
         // 失败/超时/429 一律失败关闭(不丢图给文本模型猜、不改投 Qwen);缺 GW_MIMO_KEY 时同样失败关闭为 503。
+        const hasImages = containsImageContent(rawBody)
+        // Computer Use must read pixel coordinates from the original screenshot. The generic
+        // OCR/layout bridge intentionally discards pixels, so screenshot-bearing CU turns are
+        // capability-routed to the native multimodal MiMo model. This is an explicit tool
+        // capability route, not a failure fallback; ordinary image questions keep the normal
+        // MiMo-description -> requested text-model path below.
+        if (hasImages && containsComputerUseContext(rawBody)) {
+          if (!mimoChat) throw new HttpError(503, 'Computer Use 视觉服务未配置（缺 GW_MIMO_KEY）')
+          return await mimoChat(request, rawBody, user, client)
+        }
+
         let effectiveBody = rawBody
-        if (!isNativeMultimodal && containsImageContent(rawBody)) {
+        if (!isNativeMultimodal && hasImages) {
           if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
           const bridgeStarted = performance.now()
           try {
@@ -998,53 +1008,17 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
-      if (request.method === 'POST' && url.pathname === '/v1/images/generations') {
-        const user = auth(config, request)
-        await imgBucket.acquire(config.queueMaxWait)
-        return await imgSem.run(async () => {
-          const started = performance.now()
-          try {
-            const upstream = await fetchImpl(`${config.relayBase}/images/generations`, {
-              method: 'POST',
-              body: await request.arrayBuffer(),
-              headers: { Authorization: `Bearer ${config.relayToken}`, 'Content-Type': 'application/json' },
-            })
-            await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-            return await proxyJsonOrRaw(upstream)
-          } catch (err) {
-            await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-            throw new HttpError(502, `生图上游出错:${String(err).slice(0, 120)}`)
-          }
-        })
-      }
-
-      if (request.method === 'POST' && url.pathname === '/v1/images/edits') {
-        const user = auth(config, request)
-        await imgBucket.acquire(config.queueMaxWait)
-        return await imgSem.run(async () => {
-          const started = performance.now()
-          try {
-            const upstream = await fetchImpl(`${config.relayBase}/images/edits`, {
-              method: 'POST',
-              body: await request.arrayBuffer(),
-              headers: {
-                Authorization: `Bearer ${config.relayToken}`,
-                'Content-Type': request.headers.get('content-type') ?? 'application/octet-stream',
-              },
-            })
-            await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-            return await proxyJsonOrRaw(upstream)
-          } catch (err) {
-            await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-            throw new HttpError(502, `图生图上游出错:${String(err).slice(0, 120)}`)
-          }
-        })
-      }
-
       // GPT 生图异步任务:提交(短请求,转发到美国 relay 任务服务;慢调用在美国本地跑,绕开跨境长连接 60s 被掐)。
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
         const user = auth(config, request)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
+        const declaredLength = Number(request.headers.get('content-length') ?? '')
+        if (Number.isFinite(declaredLength) && declaredLength > config.imgTaskMaxBodyBytes) {
+          throw new HttpError(413, '生图任务请求体过大')
+        }
+        const rawBody = await readRequestBodyBounded(request, config.imgTaskMaxBodyBytes)
         await imgBucket.acquire(config.queueMaxWait) // 提交计入生图 IPM 限速;短请求不占 imgSem 在途并发
         const started = performance.now()
         try {
@@ -1059,7 +1033,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
           const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
             method: 'POST',
-            body: await request.arrayBuffer(),
+            body: rawBody,
             headers: submitHeaders,
           })
           await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
@@ -1068,6 +1042,28 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
           throw new HttpError(502, `生图任务提交出错:${String(err).slice(0, 120)}`)
         }
+      }
+
+      if (
+        request.method === 'POST'
+        && url.pathname.startsWith('/v1/images/tasks/')
+        && url.pathname.endsWith('/cancel')
+      ) {
+        const user = auth(config, request)
+        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/cancel'.length)
+        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
+        const upstream = await fetchImpl(
+          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}/cancel`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${config.relayToken}`,
+              'X-Relay-Owner': relayOwner(user, readClientId(request)),
+            },
+          },
+        )
+        return await proxyJsonOrRaw(upstream)
       }
 
       // GPT 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",

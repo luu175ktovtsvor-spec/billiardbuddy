@@ -156,14 +156,14 @@ test('audio transcription rejects unsupported and oversized files before executi
 
 test('missing or invalid bearer is rejected before upstream fetch', async () => {
   const { fetch, calls } = makeGateway()
-  const missing = await fetch(new Request('http://local/v1/images/generations', {
+  const missing = await fetch(new Request('http://local/v1/chat/completions', {
     method: 'POST',
-    body: '{}',
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
   }))
-  const invalid = await fetch(new Request('http://local/v1/images/generations', {
+  const invalid = await fetch(new Request('http://local/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: 'Bearer nope' },
-    body: '{}',
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
   }))
   expect(missing.status).toBe(401)
   expect(invalid.status).toBe(401)
@@ -725,39 +725,17 @@ test('client cancellation aborts the upstream request and fails closed (no hung 
   expect(res.status).toBeGreaterThanOrEqual(400)
 })
 
-test('image generation ignores legacy daily quota settings and proxies every capacity-admitted request', async () => {
+test('legacy synchronous image endpoints are retired in favor of owned idempotent tasks', async () => {
   const { fetch, calls } = makeGateway()
-  const first = await fetch(new Request('http://local/v1/images/generations', authed({
-    method: 'POST',
-    body: JSON.stringify({ prompt: 'poster' }),
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-  })))
-  const second = await fetch(new Request('http://local/v1/images/generations', authed({
-    method: 'POST',
-    body: JSON.stringify({ prompt: 'poster 2' }),
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
-  })))
-  expect(first.status).toBe(200)
-  expect(second.status).toBe(200)
-  expect(calls.map(c => c.url)).toEqual([
-    'https://relay.example/relay/openai/v1/images/generations',
-    'https://relay.example/relay/openai/v1/images/generations',
-  ])
-})
-
-test('image edits preserves multipart content-type boundary', async () => {
-  const { fetch, calls } = makeGateway({ GW_Q_IMG: '3' })
-  const res = await fetch(new Request('http://local/v1/images/edits', authed({
-    method: 'POST',
-    body: 'multipart-body',
-    headers: {
-      Authorization: 'Bearer app-token',
-      'Content-Type': 'multipart/form-data; boundary=abc123',
-    },
-  })))
-  expect(res.status).toBe(200)
-  expect(calls[0]?.url).toBe('https://relay.example/relay/openai/v1/images/edits')
-  expect((calls[0]?.init?.headers as Record<string, string>)['Content-Type']).toBe('multipart/form-data; boundary=abc123')
+  for (const path of ['/v1/images/generations', '/v1/images/edits']) {
+    const res = await fetch(new Request(`http://local${path}`, authed({
+      method: 'POST',
+      body: '{}',
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    expect(res.status).toBe(404)
+  }
+  expect(calls).toEqual([])
 })
 
 test('missing optional key routes are gone (ark/amap/web_search removed)', async () => {
@@ -772,10 +750,10 @@ test('missing optional key routes are gone (ark/amap/web_search removed)', async
 })
 
 test('admin usage requires admin token and returns recent rows', async () => {
-  const { fetch } = makeGateway()
-  await fetch(new Request('http://local/v1/images/generations', authed({
+  const { fetch } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/tasks' })
+  await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
-    body: '{}',
+    body: JSON.stringify({ prompt: 'poster' }),
     headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
   })))
   expect((await fetch(new Request('http://local/admin/usage?token=bad'))).status).toBe(403)
@@ -894,7 +872,7 @@ test('a DeepSeek request carrying an image is bridged through MiMo before reachi
   expect(usage.rows.some(row => row.model === 'vision' && row.ok === true)).toBe(true)
 })
 
-test('image task submit/poll proxies to relay tasks base with relay token when configured', async () => {
+test('image task submit/poll/cancel proxy to relay tasks base with relay token when configured', async () => {
   const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks', GW_Q_IMG: '5' })
   const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
@@ -904,12 +882,46 @@ test('image task submit/poll proxies to relay tasks base with relay token when c
   expect(submit.status).toBe(200)
   const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })))
   expect(poll.status).toBe(200)
+  const cancel = await fetch(new Request('http://local/v1/images/tasks/task-1/cancel', authed({ method: 'POST' })))
+  expect(cancel.status).toBe(200)
   expect(calls.map(c => c.url)).toEqual([
     'https://relay.example/relay/imgtasks/images/tasks',
     'https://relay.example/relay/imgtasks/images/tasks/task-1',
+    'https://relay.example/relay/imgtasks/images/tasks/task-1/cancel',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
   expect(JSON.parse(calls[0].body ?? '{}')).toMatchObject({ input_fidelity: 'high' })
+})
+
+test('image task submit enforces its body limit before forwarding declared or streamed bytes', async () => {
+  const configured = { GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks', GW_IMG_TASK_MAX_BODY_BYTES: '64' }
+
+  const declared = makeGateway(configured)
+  const declaredRes = await declared.fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': '65' },
+    body: JSON.stringify({ prompt: 'x' }),
+  })))
+  expect(declaredRes.status).toBe(413)
+  expect(declared.calls).toEqual([])
+
+  const streamed = makeGateway(configured)
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"prompt":"'))
+      controller.enqueue(new TextEncoder().encode('x'.repeat(80)))
+      controller.enqueue(new TextEncoder().encode('"}'))
+      controller.close()
+    },
+  })
+  const streamedRes = await streamed.fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' })))
+  expect(streamedRes.status).toBe(413)
+  expect(streamed.calls).toEqual([])
 })
 
 test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () => {
@@ -918,5 +930,7 @@ test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () 
   expect(submit.status).toBe(503)
   const poll = await fetch(new Request('http://local/v1/images/tasks/x', authed({ method: 'GET' })))
   expect(poll.status).toBe(503)
+  const cancel = await fetch(new Request('http://local/v1/images/tasks/x/cancel', authed({ method: 'POST' })))
+  expect(cancel.status).toBe(503)
   expect(calls.length).toBe(0)
 })
