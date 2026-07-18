@@ -1,7 +1,6 @@
 # 环境变量
 **/.env*
 !.env.example
-!server/.env.production.example
 
 # Python
 __pycache__/
@@ -16,7 +15,6 @@ dist/
 node_modules/
 .next/
 out/
-web/tsconfig.tsbuildinfo
 
 # IDE
 .idea/
@@ -24,13 +22,8 @@ web/tsconfig.tsbuildinfo
 *.swp
 *.swo
 
-# 上传文件
-/uploads/
-server/uploads/
-
 # 日志
 *.log
-server/logs/
 
 # 临时脚本
 scripts/tmp_*
@@ -48,9 +41,6 @@ Thumbs.db
 *.key
 *.cert
 
-# 桌面打包：加密知识库块(build_prompts_pack.py 每次构建用新 key 重新生成，含产品 IP，不入库)
-server/prompts.enc
-
 .superpowers/
 
 # Claude Code 受管 worktree(隔离开发用,不入库)
@@ -58,7 +48,6 @@ server/prompts.enc
 
 # 桌面本地试用产物(不进git)
 .dev-byok-key
-server/billiards_local.db
 
 # 真机/手测产物 + 真实门店数据(隐私敏感、绝不入库)
 # 注意：live eval 脚本(server/evals/*_live_test.py)写死了"测试项目的AI Agent功能"目录名当落点，
@@ -70,30 +59,18 @@ server/billiards_local.db
 # Playwright 本地截图/快照产物(验证用,不入库)
 .playwright-mcp/
 .playwright-cli/
-web/.playwright-cli/
 output/
 desktop-*.png
 
-# 打包产物(PyInstaller后端+构建前端+node_modules)——绝不进仓库
-desktop/resources/
 # 根目录参考截图杂物
 codex-*.png
-# 真机验收/打包待改清单:含美国机IP/SSH/中转端点等运营细节,本地工作文档不入 git(其自身亦明示"绝不写进git")
-docs/待改清单-真机验收与打包-2026-06-23.md
 
 # 网关配置(含 MiMo/中转 key)——只在服务器,绝不进 git
 gateway/*.env
 gateway/gw.env
 
-# 桌面 app 内置配置(含 app 令牌+网关地址)——打包时打进包,不进 git;.bak 是含 key 的手工备份,同样绝不进 git
-desktop/bundled.env
-desktop/bundled.env.bak*
 # 装机版可撤销 app token(打包时由构建密钥写入 extraResources,绝不进 git);product-config.json 是公开配置,可入库
 ts/desktop/build/product-secrets.json
-
-# Playwright-Electron 测试输出(可再生,不入库)
-desktop/e2e-pw/test-results/
-desktop/e2e-pw/test-results-studio/
 
 # Bun/MCP 单测在包目录旁创建的临时 fixture(中断时可能来不及清理)
 **/.agent-plugin-wired-*/
@@ -104,9 +81,3 @@ desktop/e2e-pw/test-results-studio/
 
 # 真机验收与 Computer Use 证据保留在仓库内，但不进入 Git
 .artifacts/
-desktop/e2e-pw/test-results-scenarios/
-desktop/.fastembed-model/
-
-# 本地 whisper 模型权重(大·打包时单独打进包,不进git)
-# 注:别用 server/models/(那是 ORM 模型包·源码),用独立 ml_models/
-server/ml_models/
