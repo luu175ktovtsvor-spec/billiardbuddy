@@ -101,7 +101,7 @@ describe('TraceList', () => {
     useSettingsStore.setState({ locale: 'en' })
   })
 
-  it('renders rows with title, model chips, failure count and metrics', async () => {
+  it('renders rows with generic model counts, failure count and metrics', async () => {
     render(<TraceList />)
 
     const row = await findTraceRow(/Debug stuck agent/)
@@ -112,12 +112,11 @@ describe('TraceList', () => {
     expect(screen.getByText('Collecting')).toBeInTheDocument()
     expect(screen.getByText('Sessions')).toBeInTheDocument()
 
-    // row line 1: model chips use short names, capped at 2 with a "+N" overflow chip
-    expect(within(row).getByText('sonnet-4-5')).toBeInTheDocument()
-    expect(within(row).getByText('haiku-4-5')).toBeInTheDocument()
-    expect(within(row).getByText('+1')).toBeInTheDocument()
+    // Ordinary product surfaces show capability counts without provider/model names.
+    expect(within(row).getByText('Models 3')).toBeInTheDocument()
+    expect(within(row).queryByText('sonnet-4-5')).not.toBeInTheDocument()
+    expect(within(row).queryByText('haiku-4-5')).not.toBeInTheDocument()
     expect(within(row).queryByText('gpt-5.5')).not.toBeInTheDocument()
-    expect(within(row).getByText('sonnet-4-5')).toHaveAttribute('title', 'claude-sonnet-4-5-20250929 x2')
 
     // row line 1: failed-call indicator
     expect(within(row).getByTitle('Failed')).toHaveTextContent('1')

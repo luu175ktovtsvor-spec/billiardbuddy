@@ -27,6 +27,8 @@ import type { Tab } from '../../stores/tabStore'
 import { getTraceLaunchRequest } from '../../lib/traceLaunch'
 import { TraceList } from '../../pages/TraceList'
 import { TraceSession } from '../../pages/TraceSession'
+import { Settings } from '../../pages/Settings'
+import { WindowControls } from './WindowControls'
 
 function isChatTab(tab: Tab | undefined) {
   return tab?.type === 'session'
@@ -217,6 +219,25 @@ export function AppShell() {
           <TraceList />
         )}
         <ToastContainer />
+      </div>
+    )
+  }
+
+  if (!isMobileShell && activeTab?.type === 'settings') {
+    return (
+      <div className="app-shell-viewport relative flex overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]">
+        <div
+          data-desktop-drag-region
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 z-40 flex h-11 justify-end"
+        >
+          <div className="pointer-events-auto h-full">
+            <WindowControls />
+          </div>
+        </div>
+        <Settings />
+        <ToastContainer />
+        <UpdateChecker />
       </div>
     )
   }

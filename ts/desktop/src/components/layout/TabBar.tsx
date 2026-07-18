@@ -567,6 +567,12 @@ const TabItem = forwardRef<HTMLDivElement, {
       {tab.type === 'workbench' && (
         <span className="material-symbols-outlined text-[14px] flex-shrink-0 text-[var(--color-text-tertiary)]">view_sidebar</span>
       )}
+      {tab.type === 'image-workbench' && (
+        <span className="material-symbols-outlined text-[14px] flex-shrink-0 text-[var(--color-text-tertiary)]">image</span>
+      )}
+      {tab.type === 'video-studio' && (
+        <span className="material-symbols-outlined text-[14px] flex-shrink-0 text-[var(--color-text-tertiary)]">movie_edit</span>
+      )}
 
       <span className={`flex-1 truncate text-xs ${isActive ? 'text-[var(--color-text-primary)] font-medium' : 'text-[var(--color-text-secondary)]'}`}>
         {tab.title || 'Untitled'}

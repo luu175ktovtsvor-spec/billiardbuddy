@@ -160,23 +160,6 @@ function formatRunCount(value: number, t: ReturnType<typeof useTranslation>) {
   return t(value === 1 ? 'settings.activity.count.runOne' : 'settings.activity.count.runOther', { count: value })
 }
 
-function getModelTokenTotal(usage: ActivityStatsResponse['modelUsage'][string] | undefined) {
-  if (!usage) return 0
-  return (
-    (usage.inputTokens ?? 0) +
-    (usage.outputTokens ?? 0) +
-    (usage.cacheReadInputTokens ?? 0) +
-    (usage.cacheCreationInputTokens ?? 0)
-  )
-}
-
-function formatModelName(model: string) {
-  return model
-    .replace(/^claude-/i, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase())
-}
-
 function getPluginNameFromToolName(toolName: string) {
   if (!toolName.startsWith('mcp__')) return null
   const parts = toolName.split('__').filter(Boolean)
@@ -554,17 +537,6 @@ export function ActivitySettings() {
     return Object.values(stats?.skillUsage ?? {}).reduce((sum, count) => sum + count, 0)
   }, [stats])
   const exploredSkillsCount = Object.keys(stats?.skillUsage ?? {}).length
-  const topModel = useMemo(() => {
-    return Object.entries(stats?.modelUsage ?? {}).reduce<{
-      model: string
-      tokens: number
-    } | null>((top, [model, usage]) => {
-      const tokens = getModelTokenTotal(usage)
-      if (tokens <= 0) return top
-      if (!top || tokens > top.tokens) return { model, tokens }
-      return top
-    }, null)
-  }, [stats])
   const peakTokens = useMemo(() => {
     return (stats?.dailyModelTokens ?? []).reduce((peak, day) => {
       const dayTotal = Object.values(day.tokensByModel).reduce((sum, tokens) => sum + tokens, 0)
@@ -603,11 +575,6 @@ export function ActivitySettings() {
     {
       label: t('settings.activity.activeRate'),
       value: formatPercent(stats?.activeDays ?? 0, stats?.totalDays ?? 0, locale),
-    },
-    {
-      label: t('settings.activity.mostUsedModel'),
-      value: topModel ? formatModelName(topModel.model) : t('settings.activity.none'),
-      detail: topModel ? `${formatTokens(topModel.tokens)} ${t('settings.activity.tokens')}` : undefined,
     },
     {
       label: t('settings.activity.exploredSkills'),

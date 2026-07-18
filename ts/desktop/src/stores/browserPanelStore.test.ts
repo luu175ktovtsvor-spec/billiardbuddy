@@ -117,16 +117,20 @@ describe('browserPanelStore', () => {
     expect(s.canGoBack).toBe(false)
   })
 
-  it('setNavigated clears loading and updates url/title without growing history', () => {
+  it('setNavigated records page navigation but does not duplicate programmatic navigation', () => {
     const st = useBrowserPanelStore.getState()
     st.open('s1', 'http://x/a')
     expect(useBrowserPanelStore.getState().bySession['s1']!.loading).toBe(true)
+    st.setNavigated('s1', 'http://x/a', 'A')
+    expect(useBrowserPanelStore.getState().bySession['s1']!.history).toEqual(['http://x/a'])
     st.setNavigated('s1', 'http://x/b', 'B')
     const s = useBrowserPanelStore.getState().bySession['s1']!
     expect(s.url).toBe('http://x/b')
     expect(s.title).toBe('B')
     expect(s.loading).toBe(false)
-    expect(s.history).toEqual(['http://x/a'])
+    expect(s.history).toEqual(['http://x/a', 'http://x/b'])
+    expect(s.historyIndex).toBe(1)
+    expect(s.canGoBack).toBe(true)
   })
 
   it('setReady clears loading', () => {

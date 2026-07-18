@@ -12,10 +12,7 @@ export type AgentSource =
 export type AgentDefinition = {
   agentType: string
   description?: string
-  model?: string
-  modelDisplay?: string
   tools?: string[]
-  systemPrompt?: string
   color?: string
   source: AgentSource
   baseDir?: string

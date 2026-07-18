@@ -1584,3 +1584,104 @@ html[data-touch-h5] * {
 html[data-touch-h5] body {
   overscroll-behavior-y: none;
 }
+
+/* Desktop product surface follows the original main renderer palette. The
+   imported agent UI keeps its semantic token names, while these final values
+   make every surviving capability render inside the same neutral Codex shell. */
+:root,
+[data-theme="light"] {
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif;
+  --font-headline: var(--font-body);
+  --font-label: var(--font-body);
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-primary: #0a84ff;
+  --color-brand: #0a84ff;
+  --color-on-primary: #ffffff;
+  --color-smiley-a: #0a84ff;
+  --color-smiley-b: #0285ff;
+
+  --color-background: #ffffff;
+  --color-app-main: #ffffff;
+  --color-app-sidebar: #f9f9f9;
+  --color-surface: #ffffff;
+  --color-surface-sidebar: #f9f9f9;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f9f9f9;
+  --color-surface-container: #f3f3f3;
+  --color-surface-container-high: #ededed;
+  --color-surface-container-highest: #e6e6e6;
+  --color-surface-hover: color-mix(in oklab, #1a1c1f 6%, transparent);
+  --color-surface-selected: color-mix(in oklab, #0a84ff 13%, transparent);
+  --color-surface-user-msg: #ededed;
+  --color-bubble-user: #ededed;
+  --color-surface-glass: rgba(255, 255, 255, 0.96);
+  --color-surface-glass-border: color-mix(in oklab, #1a1c1f 8%, transparent);
+
+  --color-on-surface: #1a1c1f;
+  --color-on-surface-variant: color-mix(in oklab, #1a1c1f 70%, transparent);
+  --color-text-primary: #1a1c1f;
+  --color-text-secondary: color-mix(in oklab, #1a1c1f 70%, transparent);
+  --color-text-tertiary: color-mix(in oklab, #1a1c1f 50%, transparent);
+  --color-outline: color-mix(in oklab, #1a1c1f 50%, transparent);
+  --color-outline-variant: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --color-border: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --color-border-separator: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --color-border-strong: color-mix(in oklab, #1a1c1f 12%, transparent);
+  --color-border-focus: #0a84ff;
+  --color-focus-ring: color-mix(in oklab, #0a84ff 70%, transparent);
+
+  --shadow-input: 0 0 0 0.5px var(--color-border-strong), 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --shadow-control: 0 0 0 0.5px var(--color-border), 0 1px 2px #00000012;
+  --shadow-dropdown: 0 8px 16px -4px #0000001f, 0 0 0 0.5px #0000001a;
+}
+
+[data-theme="dark"] {
+  --color-primary: #409cff;
+  --color-brand: #409cff;
+  --color-smiley-a: #409cff;
+  --color-smiley-b: #339cff;
+
+  --color-background: #212121;
+  --color-app-main: #212121;
+  --color-app-sidebar: #181818;
+  --color-surface: #282828;
+  --color-surface-sidebar: #181818;
+  --color-surface-container-lowest: #181818;
+  --color-surface-container-low: #212121;
+  --color-surface-container: #282828;
+  --color-surface-container-high: #303030;
+  --color-surface-container-highest: #414141;
+  --color-surface-hover: color-mix(in oklab, #ffffff 8%, transparent);
+  --color-surface-selected: color-mix(in oklab, #409cff 24%, transparent);
+  --color-surface-user-msg: #303030;
+  --color-bubble-user: #303030;
+  --color-surface-glass: rgba(40, 40, 40, 0.96);
+  --color-surface-glass-border: color-mix(in oklab, #ffffff 12%, transparent);
+
+  --color-on-surface: #ffffff;
+  --color-on-surface-variant: color-mix(in oklab, #ffffff 70%, transparent);
+  --color-text-primary: #ffffff;
+  --color-text-secondary: color-mix(in oklab, #ffffff 70%, transparent);
+  --color-text-tertiary: color-mix(in oklab, #ffffff 50%, transparent);
+  --color-outline: color-mix(in oklab, #ffffff 50%, transparent);
+  --color-outline-variant: color-mix(in oklab, #ffffff 12%, transparent);
+  --color-border: color-mix(in oklab, #ffffff 12%, transparent);
+  --color-border-separator: color-mix(in oklab, #ffffff 12%, transparent);
+  --color-border-strong: color-mix(in oklab, #ffffff 16%, transparent);
+  --color-border-focus: #409cff;
+  --color-focus-ring: color-mix(in oklab, #409cff 70%, transparent);
+
+  --shadow-input: 0 0 0 0.5px var(--color-border-strong), 0 3px 7.5px #0003, 0 0 20px #0003;
+  --shadow-control: 0 0 0 0.5px var(--color-border), 0 1px 2px #0006;
+  --shadow-dropdown: 0 8px 20px -6px rgba(0, 0, 0, 0.6), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+.main-composer-surface {
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 20px;
+  box-shadow: var(--shadow-input);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}

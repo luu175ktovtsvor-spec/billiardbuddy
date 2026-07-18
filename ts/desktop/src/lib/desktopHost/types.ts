@@ -2,6 +2,12 @@ import type {
   AppMode as SettingsAppMode,
   AppModeConfig as SettingsAppModeConfig,
 } from '../../types/settings'
+import type {
+  ImageWorkbenchProject,
+  MediaTask,
+  SaveImageOutputInput,
+  UpdateImageProjectInput,
+} from '../../../../shared/contracts/media'
 
 export type DesktopHostKind = 'browser' | 'electron'
 
@@ -9,6 +15,7 @@ export type DesktopHostCapability =
   | 'appMode'
   | 'clipboard'
   | 'dialogs'
+  | 'mediaActions'
   | 'notifications'
   | 'previewWebview'
   | 'shell'
@@ -119,7 +126,7 @@ export type PreviewEvent = {
 export type PreviewCaptureMessage = {
   v: 1
   type: 'capture'
-  kind: 'full'
+  kind: 'full' | 'viewport' | 'element'
 }
 
 export type PreviewPickerMessage = {
@@ -139,6 +146,12 @@ export type AppModeSetInput = {
 export type PortableDirDetection = {
   defaultPortableDir: string | null
   hasData: boolean
+}
+
+export type MediaRenderRequest = {
+  projectId: string
+  revision: number
+  outputPath: string
 }
 
 export type DesktopHost = {
@@ -174,6 +187,18 @@ export type DesktopHost = {
   dialogs: {
     open(options?: DialogOpenOptions): Promise<string | string[] | null>
     save(options?: DialogSaveOptions): Promise<string | null>
+  }
+  media: {
+    submitImageProject(
+      projectId: string,
+      confirmUnknownRetry?: boolean,
+    ): Promise<{ task: MediaTask }>
+    updateUnknownImageProject(
+      projectId: string,
+      input: UpdateImageProjectInput,
+    ): Promise<{ project: ImageWorkbenchProject }>
+    saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }>
+    renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
   }
   updates: {
     check(options?: DesktopUpdateCheckOptions): Promise<DesktopUpdate | null>
