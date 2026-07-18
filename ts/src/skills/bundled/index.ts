@@ -23,6 +23,7 @@ export function initBundledSkills(): void {
   require('./batch.js').registerBatchSkill()
   require('./stuck.js').registerStuckSkill()
   require('./mediaWorkbenches.js').registerMediaWorkbenchesSkill()
+  require('./billiardsOperations.js').registerBilliardsOperationsSkills()
   if (feature('KAIROS') || feature('KAIROS_DREAM')) {
     const { registerDreamSkill } = require('./dream.js')
     registerDreamSkill()

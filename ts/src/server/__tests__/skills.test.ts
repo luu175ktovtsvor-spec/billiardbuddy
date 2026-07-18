@@ -114,6 +114,11 @@ describe('Skills API', () => {
       hasDirectory: true,
     }))
     expect(body.skills).toContainEqual(expect.objectContaining({ name: 'video-workbench', source: 'bundled' }))
+    expect(body.skills).toContainEqual(expect.objectContaining({
+      name: 'venue-daily-review',
+      displayName: '复盘今天经营',
+      source: 'bundled',
+    }))
     expect(body.skills).not.toContainEqual(expect.objectContaining({ name: 'simplify', source: 'bundled' }))
   })
 
