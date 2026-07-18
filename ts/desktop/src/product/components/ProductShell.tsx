@@ -3,7 +3,9 @@ import { TaskIndex } from './TaskIndex'
 import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
-import type { ProductTaskRecord } from '../domain/types'
+import { useChatStore } from '../../stores/chatStore'
+import { launchProductTask } from '../taskLaunch'
+import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 
 export function ProductShell() {
   const index = useProductTaskStore((state) => state.index)
@@ -25,12 +27,15 @@ export function ProductShell() {
     openTab(task.coreSessionId, task.title, 'session')
   }
 
-  const createAndOpenTask = async (...args: Parameters<typeof createTask>) => {
-    const task = await createTask(...args)
-    await refreshSessions()
-    openTask(task)
-    return task
-  }
+  const createAndOpenTask = async (input: CreateProductTaskInput, initialText?: string) => (
+    launchProductTask({
+      createTask,
+      refreshSessions,
+      openTask,
+      connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
+      sendMessage: (sessionId, content) => useChatStore.getState().sendMessage(sessionId, content),
+    }, input, initialText)
+  )
 
   const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => {
     const task = await continueTask(...args)
