@@ -41,6 +41,7 @@ export type RelayConfig = {
   queueMax: number
   userMax: number
   maxBodyBytes: number
+  upstreamTimeoutMs: number
 }
 
 type Env = Record<string, string | undefined>
@@ -63,7 +64,9 @@ export function loadRelayConfig(env: Env): RelayConfig {
     relayToken: required(env, 'RELAY_TOKEN'),
     openaiKey: required(env, 'RELAY_OPENAI_KEY'),
     openaiBase: (env.RELAY_OPENAI_BASE ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
-    taskTtlMs: Number(env.RELAY_TASK_TTL_MS ?? 600_000), // 结果保留 10 分钟,够客户端轮询取走
+    // Terminal results must survive app restarts and users returning days later.
+    // Active queued/running work is never swept regardless of this value.
+    taskTtlMs: Number(env.RELAY_TASK_TTL_MS ?? 7 * 24 * 60 * 60_000),
     imgConc: Math.max(1, Number(env.RELAY_IMG_CONC ?? 6)), // 本服务对 OpenAI 的在途并发上限
     // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/qfrelay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
@@ -71,13 +74,18 @@ export function loadRelayConfig(env: Env): RelayConfig {
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
     queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 200)), // 全局在途(queued+running)总上限
     userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 8)), // 单 owner 在途上限
-    maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 24 * 1024 * 1024)), // 提交请求体大小上限
+    // 20 MB decoded reference images expand to about 26.7 MB as base64, plus JSON framing.
+    maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024)), // 提交请求体大小上限
+    upstreamTimeoutMs: Math.max(1, intEnv(env, 'RELAY_UPSTREAM_TIMEOUT_MS', 5 * 60_000)),
   }
 }
 
 class HttpError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
+
+class UpstreamResponseError extends Error {}
+class UpstreamOutcomeUnknownError extends Error {}
 
 /** 并发闸:限制同时在跑的 OpenAI 调用数(护住 OpenAI IPM/账号并发)。 */
 class Semaphore {
@@ -96,7 +104,7 @@ class Semaphore {
   }
 }
 
-type TaskState = 'queued' | 'running' | 'succeeded' | 'failed' | 'failed_unknown'
+type TaskState = 'queued' | 'running' | 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled'
 type InputFidelityCapability = {
   requested: string
   status: 'accepted' | 'unsupported'
@@ -119,6 +127,7 @@ type SubmitBody = {
 interface BlobStore {
   put(id: string, kind: 'in' | 'out', value: unknown): void
   get(id: string, kind: 'in' | 'out'): unknown | null
+  delKind(id: string, kind: 'in' | 'out'): void
   del(id: string): void
 }
 
@@ -128,6 +137,7 @@ class MemoryBlobStore implements BlobStore {
   get(id: string, kind: 'in' | 'out'): unknown | null {
     return this.map.has(`${id}.${kind}`) ? this.map.get(`${id}.${kind}`) : null
   }
+  delKind(id: string, kind: 'in' | 'out'): void { this.map.delete(`${id}.${kind}`) }
   del(id: string): void { this.map.delete(`${id}.in`); this.map.delete(`${id}.out`) }
 }
 
@@ -142,6 +152,7 @@ class DiskBlobStore implements BlobStore {
     if (!existsSync(path)) return null
     try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
   }
+  delKind(id: string, kind: 'in' | 'out'): void { rmSync(this.file(id, kind), { force: true }) }
   del(id: string): void {
     for (const kind of ['in', 'out'] as const) rmSync(this.file(id, kind), { force: true })
   }
@@ -209,10 +220,11 @@ class TaskStore {
     return Number(row.c ?? 0)
   }
 
-  /** 删除过期任务,返回被删的 id(用于同步删 blob)。 */
+  /** 只删除过期终态任务,活跃任务永不被 TTL 清理。 */
   sweepExpired(cutoff: number): string[] {
-    const rows = this.db.query('SELECT id FROM tasks WHERE created < ?').all(cutoff) as Array<{ id: string }>
-    if (rows.length) this.db.query('DELETE FROM tasks WHERE created < ?').run(cutoff)
+    const terminal = "status IN ('succeeded','failed','failed_unknown','cancelled')"
+    const rows = this.db.query(`SELECT id FROM tasks WHERE updated < ? AND ${terminal}`).all(cutoff) as Array<{ id: string }>
+    if (rows.length) this.db.query(`DELETE FROM tasks WHERE updated < ? AND ${terminal}`).run(cutoff)
     return rows.map(r => r.id)
   }
 
@@ -220,14 +232,14 @@ class TaskStore {
    * 重启恢复:queued 需要续跑;running 无法确认上游是否已完成/扣费 → 标 failed_unknown 且禁止自动重提。
    * 返回待续跑的 queued id 列表(由调用方读 blob 重新入队跑)。
    */
-  recover(): string[] {
+  recover(): { queued: string[]; unknown: string[] } {
     const running = this.db.query("SELECT id FROM tasks WHERE status='running'").all() as Array<{ id: string }>
     if (running.length) {
       this.db.query("UPDATE tasks SET status='failed_unknown', error='服务重启前任务在跑,无法确认结果(不自动重提,避免重复扣费)', updated=? WHERE status='running'")
         .run(this.now())
     }
     const queued = this.db.query("SELECT id FROM tasks WHERE status='queued'").all() as Array<{ id: string }>
-    return queued.map(r => r.id)
+    return { queued: queued.map(r => r.id), unknown: running.map(r => r.id) }
   }
 }
 
@@ -277,11 +289,34 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     if (!token || token !== config.relayToken) throw new HttpError(401, 'relay: 无效令牌')
   }
 
+  async function fetchUpstream(input: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        reject(new UpstreamOutcomeUnknownError('OpenAI 请求超时，无法确认是否已经生成或扣费'))
+      }, config.upstreamTimeoutMs)
+      ;(timer as unknown as { unref?: () => void }).unref?.()
+    })
+    try {
+      return await Promise.race([
+        fetchImpl(input, { ...init, signal: controller.signal }).catch(error => {
+          throw new UpstreamOutcomeUnknownError(`OpenAI 连接中断，无法确认结果: ${String(error).slice(0, 160)}`)
+        }),
+        timeout,
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   /** 后台真正调 OpenAI(US→US);成功把 data 存 blob,失败/未知存状态。 */
   async function runOpenAi(id: string, body: SubmitBody): Promise<void> {
-    store.markRunning(id)
     try {
       await sem.run(async () => {
+        if (store.get(id)?.status !== 'queued') return
+        store.markRunning(id)
         const model = String(body.model ?? 'gpt-image-2')
         const prompt = String(body.prompt ?? '')
         const n = clampCount(body.n)
@@ -308,7 +343,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
               const mask = dataUriToFile(String(body.mask), 'mask.png')
               if (mask) form.set('mask', mask)
             }
-            return await fetchImpl(`${config.openaiBase}/images/edits`, {
+            return await fetchUpstream(`${config.openaiBase}/images/edits`, {
               method: 'POST',
               headers: { authorization: `Bearer ${config.openaiKey}` },
               body: form,
@@ -318,7 +353,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           if (size) payload.size = size
           if (body.response_format) payload.response_format = body.response_format
           if (includeInputFidelity && requestedFidelity) payload.input_fidelity = requestedFidelity
-          return await fetchImpl(`${config.openaiBase}/images/generations`, {
+          return await fetchUpstream(`${config.openaiBase}/images/generations`, {
             method: 'POST',
             headers: { authorization: `Bearer ${config.openaiKey}`, 'content-type': 'application/json' },
             body: JSON.stringify(payload),
@@ -327,7 +362,14 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
         let inputFidelity: InputFidelityCapability | undefined
         let resp = await requestUpstream(Boolean(requestedFidelity))
-        let text = await resp.text()
+        let text: string
+        try {
+          text = await resp.text()
+        } catch (error) {
+          throw resp.ok
+            ? new UpstreamOutcomeUnknownError(`OpenAI 成功响应读取失败，无法确认结果: ${String(error).slice(0, 160)}`)
+            : new UpstreamResponseError(`OpenAI ${resp.status}:响应读取失败`)
+        }
         if (requestedFidelity && inputFidelityRejected(resp.status, text)) {
           inputFidelity = {
             requested: requestedFidelity,
@@ -335,29 +377,58 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             risk: '当前正式端点不接受手动高保真参数，已自动降级为标准图片输入；请人工确认参考图一致性。',
           }
           resp = await requestUpstream(false)
-          text = await resp.text()
+          try {
+            text = await resp.text()
+          } catch (error) {
+            throw resp.ok
+              ? new UpstreamOutcomeUnknownError(`OpenAI 成功响应读取失败，无法确认结果: ${String(error).slice(0, 160)}`)
+              : new UpstreamResponseError(`OpenAI ${resp.status}:响应读取失败`)
+          }
         } else if (requestedFidelity && resp.ok) {
           inputFidelity = { requested: requestedFidelity, status: 'accepted' }
         }
-        if (!resp.ok) throw new Error(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
+        if (!resp.ok) throw new UpstreamResponseError(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
         let parsed: unknown
-        try { parsed = text ? JSON.parse(text) : {} } catch { parsed = {} }
+        try {
+          parsed = text ? JSON.parse(text) : {}
+        } catch {
+          throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但响应内容损坏，无法确认生成结果')
+        }
         const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
           ? (parsed as { data: unknown[] }).data
           : []
+        if (data.length === 0) {
+          throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可用结果，可能已经产生费用')
+        }
         blobs.put(id, 'out', { data })
         store.setStatus(id, 'succeeded', undefined, inputFidelity)
       })
     } catch (err) {
-      store.setStatus(id, 'failed', err instanceof Error ? err.message : String(err))
+      const status: TaskState = err instanceof UpstreamOutcomeUnknownError ? 'failed_unknown' : 'failed'
+      store.setStatus(id, status, err instanceof Error ? err.message : String(err))
+    } finally {
+      // Reference images and prompts are needed only while queued/running. Terminal tasks retain
+      // result blobs and metadata for polling, but not the sensitive original input body.
+      blobs.delKind(id, 'in')
     }
   }
 
   // 重启恢复:queued 续跑(读 blob 里的原始输入重新入队);running → failed_unknown(store.recover 已改状态)。
-  for (const id of store.recover()) {
+  const recovered = store.recover()
+  for (const id of recovered.unknown) {
+    const output = blobs.get(id, 'out') as { data?: unknown[] } | null
+    if (Array.isArray(output?.data) && output.data.length > 0) {
+      store.setStatus(id, 'succeeded')
+    }
+    blobs.delKind(id, 'in')
+  }
+  for (const id of recovered.queued) {
     const body = blobs.get(id, 'in') as SubmitBody | null
     if (body) void runOpenAi(id, body)
-    else store.setStatus(id, 'failed_unknown', '重启后找不到原始输入,无法续跑')
+    else {
+      store.setStatus(id, 'failed_unknown', '重启后找不到原始输入,无法续跑')
+      blobs.delKind(id, 'in')
+    }
   }
 
   function pollResponse(rec: TaskRow): Response {
@@ -432,6 +503,20 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const requester = readOwner(req)
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         return pollResponse(rec)
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/cancel')) {
+        auth(req)
+        sweep()
+        const id = url.pathname.slice('/images/tasks/'.length, -'/cancel'.length)
+        if (!id || id.includes('/')) throw new HttpError(400, 'relay: 无效任务 ID')
+        const rec = store.get(id)
+        if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
+        const requester = readOwner(req)
+        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
+        if (rec.status !== 'queued') throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
+        store.setStatus(id, 'cancelled', '任务已在请求上游前取消')
+        blobs.delKind(id, 'in')
+        return pollResponse(store.get(id)!)
       }
       return new Response('Not found', { status: 404 })
     } catch (err) {

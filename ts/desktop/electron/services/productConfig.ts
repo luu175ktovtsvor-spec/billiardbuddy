@@ -37,6 +37,13 @@ export type ProductConfigSource = {
   env?: NodeJS.ProcessEnv
 }
 
+export class ProductGatewayConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProductGatewayConfigError'
+  }
+}
+
 function readJsonObject(file: string): Record<string, unknown> | null {
   try {
     if (!existsSync(file)) return null
@@ -70,6 +77,33 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
     token: trimmed(env.QF_GATEWAY_TOKEN) ?? trimmed(secretCfg?.gatewayToken),
     model: trimmed(env.QF_GATEWAY_MODEL) ?? trimmed(publicCfg?.gatewayModel),
   }
+}
+
+/**
+ * The BilliardBuddy desktop is a managed product, so it must never fall through
+ * to an unrelated provider/login path when its packaged gateway config is absent.
+ */
+export function requireProductGatewayConfig(
+  config: ProductGatewayConfig,
+): ProductGatewayConfig & { url: string; token: string } {
+  if (!config.url) {
+    throw new ProductGatewayConfigError('Product gateway is not configured: missing gateway URL.')
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(config.url)
+  } catch {
+    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL is invalid.')
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL must use HTTP or HTTPS.')
+  }
+  if (!config.token) {
+    throw new ProductGatewayConfigError('Product gateway is not configured: missing app token.')
+  }
+
+  return { ...config, url: config.url, token: config.token }
 }
 
 /**

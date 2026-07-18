@@ -101,6 +101,32 @@ export function containsImageContent(rawBody: string): boolean {
 }
 
 /**
+ * Detect the real Computer Use tool bundle in an OpenAI Chat request. Requiring both a
+ * screenshot reader and an input action avoids treating an unrelated project tool named
+ * "screenshot" as desktop control. MCP tool names may be namespaced, so suffix matching is
+ * deliberate (for example mcp__computer-use__screenshot).
+ */
+export function containsComputerUseContext(rawBody: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawBody)
+  } catch {
+    return false
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.tools)) return false
+  const names = parsed.tools.flatMap(tool => {
+    if (!isRecord(tool) || !isRecord(tool.function) || typeof tool.function.name !== 'string') return []
+    return [tool.function.name.toLowerCase()]
+  })
+  const has = (name: string) => names.some(candidate => candidate === name || candidate.endsWith(`__${name}`))
+  return has('screenshot') && (
+    has('left_click') ||
+    has('computer_batch') ||
+    has('request_access')
+  )
+}
+
+/**
  * 视觉桥接：把聊天请求里的每一张图换成 MiMo v2.5 生成的结构化文本描述，供非原生多模态的文本模型
  * (DeepSeek / Qwen / mimo-v2.5-pro)继续处理。任何环节失败都失败关闭(throw VisionBridgeError)，
  * 绝不把带图的原始请求体透传给文本模型，也绝不改投 MiMo 以外的视觉上游。

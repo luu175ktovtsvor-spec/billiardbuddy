@@ -27,6 +27,58 @@ jobs:
         working-directory: ts/desktop
         run: bun install --frozen-lockfile
 
+      - name: 审计发布源码均已纳入 Git
+        working-directory: ts
+        run: bun run scripts/check-release-tracked-files.ts
+
+      - name: 准备经审核的打包凭据与媒体工具链
+        shell: pwsh
+        env:
+          BB_GATEWAY_TOKEN: ${{ secrets.BB_GATEWAY_TOKEN }}
+          BB_WINDOWS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_URL }}
+          BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:BB_GATEWAY_TOKEN)) {
+            throw '缺少 GitHub Secret: BB_GATEWAY_TOKEN'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL)) {
+            throw '缺少 GitHub Secret: BB_WINDOWS_MEDIA_TOOLCHAIN_URL'
+          }
+          if ($env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL -notmatch '^https://') {
+            throw 'BB_WINDOWS_MEDIA_TOOLCHAIN_URL 必须使用 HTTPS'
+          }
+          $expectedHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256.Trim().ToLowerInvariant()
+          if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
+            throw 'BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 必须是 64 位十六进制 SHA-256'
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain.zip'
+          $sourceDir = Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain'
+          Remove-Item $archive, $sourceDir -Recurse -Force -ErrorAction SilentlyContinue
+          Invoke-WebRequest -Uri $env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL -OutFile $archive
+
+          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw '媒体工具链压缩包 SHA-256 不匹配'
+          }
+
+          Expand-Archive -LiteralPath $archive -DestinationPath $sourceDir
+          @('ffmpeg.exe', 'ffprobe.exe', 'LICENSE.txt', 'media-toolchain-source.json') | ForEach-Object {
+            if (-not (Test-Path -LiteralPath (Join-Path $sourceDir $_) -PathType Leaf)) {
+              throw "媒体工具链压缩包根目录缺少必需文件: $_"
+            }
+          }
+
+          $secretFile = 'ts/desktop/build/product-secrets.json'
+          New-Item -ItemType Directory -Force (Split-Path $secretFile) | Out-Null
+          @{ gatewayToken = $env:BB_GATEWAY_TOKEN } |
+            ConvertTo-Json -Compress |
+            Set-Content -LiteralPath $secretFile -Encoding utf8NoBOM
+
+          "BB_MEDIA_TOOLCHAIN_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
         working-directory: ts/desktop
         run: bun run electron:package
@@ -47,5 +99,13 @@ jobs:
             ts/desktop/build-artifacts/electron/*.yml
           if-no-files-found: error
           retention-days: 7
+
+      - name: 清理临时凭据与媒体工具链
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item 'ts/desktop/build/product-secrets.json' -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain.zip') -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain') -Recurse -Force -ErrorAction SilentlyContinue
 
 # 当前只构建并上传 CI artifact。自动更新渠道、签名、版本策略与回滚验证完成前，不自动发布给用户（electron:package 内置 --publish never）。

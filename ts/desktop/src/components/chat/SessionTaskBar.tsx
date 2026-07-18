@@ -42,7 +42,7 @@ export function SessionTaskBar() {
 
   return (
     <div className="shrink-0 px-8">
-      <div className="mx-auto max-w-[860px] rounded-[var(--radius-lg)] border border-[var(--color-outline-variant)]/40 bg-[var(--color-surface-container-lowest)] overflow-hidden mb-2">
+      <div className="mx-auto mb-2 max-w-[768px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-outline-variant)]/40 bg-[var(--color-surface-container-lowest)]">
         {/* Header — always visible, clickable to toggle */}
         <div className="flex items-center gap-2 bg-[var(--color-surface-container)] px-2 py-1.5">
           <button

@@ -1,45 +1,49 @@
-# 球房运营 AI 助手 · 桌面版
+# BilliardBuddy
 
-> 📌 状态:✅现行 · 最后核对 2026-07-13
+BilliardBuddy 是面向球房经营者的桌面 Agent。产品保留完整 Coding Agent 的工具执行、子代理、Skills、Plugins、MCP、权限、工作区和终端，并在其外层提供普通用户可理解的桌面交互、产品网关和球房业务能力。
 
-## 产品定位
-
-这是安装在用户电脑上的通用本机 AI Agent。用户用自然语言交代任务，Agent 可以读取和修改文件、运行命令、搜索资料、生成图片、剪辑真实视频、管理任务并调用扩展能力。
-
-台球房运营通过 `billiards` 领域包按需挂载。默认模式是通用电脑助手；启用领域包后增加台球运营知识、门店资料检索和领域工具。
-
-产品采用本地单用户形态：业务数据保存在用户设备，客户端免登录；内置模型能力通过自有网关调用，客户端只持有可吊销令牌，不展示底层模型和供应商。
+人工 Browser/Preview、Agent 网页执行和 Computer Use 是不同能力。人工 Browser/Preview 属于桌面工作区；Agent 会根据当前真实可用的连接器、浏览器、MCP、脚本、代码和工具选择执行方式，不把 Playwright 或任何固定实现写死成产品逻辑。产品已内置媒体、招聘和五个球房运营 Skill，并让台球知识按任务渐进读取；旧 BOSS 固定评分和机械自动跟进不再迁移。
 
 ## 代码结构
 
 | 路径 | 职责 |
 |---|---|
-| `ts/` | Bun/TypeScript Agent 内核、共享契约、本地服务、React 前端和 Electron 桌面壳 |
-| `gateway/` | 大陆模型网关、鉴权、容量调度、用量记录和供应商密钥隔离 |
-| `relay/` | 美国生图异步任务中转 |
-| `docs/` | 稳定架构、部署和设计边界 |
+| `ts/src` | Agent 内核、CLI、本地服务、工具与扩展机制 |
+| `ts/desktop` | React renderer、Electron 桌面宿主和本地 sidecar 打包 |
+| `ts/shared` | 桌面与本地服务共享契约 |
+| `gateway` | 模型、视觉和 Fun-ASR 网关 |
+| `relay` | 图片生成与编辑异步中转 |
+| `docs` | 当前架构、网关、服务器和设计边界 |
 
-## 开发命令
+## 本地开发
 
 ```bash
-cd ts && bun install
-cd ts && bun test
-cd ts && bun run typecheck
-cd ts && bun run e2e:backend
-cd ts && bun run desktop:dev
-cd ts && bun run desktop:dist
+cd ts
+bun install
+bun run start
 ```
 
-## 文档入口
+桌面 renderer：
 
-- [docs/当前架构与状态-总览.md](./docs/当前架构与状态-总览.md)：当前系统结构和数据流。
-- [docs/服务器与部署-当前拓扑.md](./docs/服务器与部署-当前拓扑.md)：服务器、发布和资产托管。
-- [docs/README.md](./docs/README.md)：文档导航。
+```bash
+cd ts/desktop
+bun install
+bun run dev
+```
 
-## 产品边界
+Electron 桌面运行：
 
-- Agent 对话走模型驱动的工具循环；生图、剪视频、定时任务等工作台走确定性产品链路。
-- 权限内核支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk` 五档；普通用户菜单默认展示默认权限和接受修改，只有在 App 设置允许且发行策略未禁止时才提供完全访问。
-- 本地文件修改前建立可恢复记录；路径、符号链接和危险命令经过边界检查。
-- 权限模式只决定工具是否自动执行或显示确认卡；产品不预设尚未接通的用户流程。
-- 台球运营知识库只提供领域事实和检索入口，不改变通用 Agent 的身份、任务规划或权限规则。
+```bash
+cd ts/desktop
+bun run electron:dev
+```
+
+## 文档
+
+- [当前重构任务](./BilliardBuddy-当前重构任务.md)
+- [当前架构与状态](./docs/当前架构与状态-总览.md)
+- [网关多模型与 Agent 内核接轨](./docs/网关多模型与Agent内核接轨.md)
+- [服务器与部署](./docs/服务器与部署-当前拓扑.md)
+- [文档导航](./docs/README.md)
+
+具体能力、命令和完成度以当前源码、测试及实际运行结果为准。

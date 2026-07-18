@@ -110,24 +110,6 @@ vi.mock('../components/controls/PermissionModeSelector', () => ({
   ),
 }))
 
-vi.mock('../components/controls/ModelSelector', async () => {
-  const React = await vi.importActual<typeof import('react')>('react')
-  return {
-    ModelSelector: React.forwardRef<{ open: () => void }, { compact?: boolean }>(({ compact }, ref) => {
-      const [open, setOpen] = React.useState(false)
-      React.useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [])
-      return (
-        <>
-          <button type="button" data-testid="model-selector" data-compact={compact ? 'true' : 'false'}>
-            Model
-          </button>
-          {open && <div data-testid="model-selector-dropdown">Model selector opened</div>}
-        </>
-      )
-    }),
-  }
-})
-
 import { EmptySession } from './EmptySession'
 import { ApiError } from '../api/client'
 import { useChatStore } from '../stores/chatStore'
@@ -252,10 +234,9 @@ describe('EmptySession', () => {
     await waitFor(() => {
       expect(screen.getByTestId('permission-mode-selector')).toHaveAttribute('data-compact', 'true')
     })
-    expect(screen.getByTestId('model-selector')).toHaveAttribute('data-compact', 'true')
     expect(screen.getByRole('button', { name: 'Run' })).toHaveClass('h-11', 'w-11')
     expect(screen.getByTestId('empty-session-composer-shell')).toHaveClass('px-3')
-    expect(screen.getByTestId('empty-session-composer-panel')).toHaveClass('rounded-2xl')
+    expect(screen.getByTestId('empty-session-composer-panel')).toHaveClass('main-composer-surface')
   })
 
   it('refreshes empty-session slash commands after plugin reloads', async () => {
@@ -367,7 +348,7 @@ describe('EmptySession', () => {
     expect(input).toHaveValue('/agent debugger ')
   })
 
-  it('opens the draft model selector for /model without creating or sending a session', async () => {
+  it('keeps draft /model product-managed without creating or sending a session', async () => {
     useSettingsStore.setState({
       chatSendBehavior: 'enter',
     })
@@ -386,7 +367,9 @@ describe('EmptySession', () => {
 
     expect(mocks.createSession).not.toHaveBeenCalled()
     expect(mocks.wsSend).not.toHaveBeenCalled()
-    expect(await screen.findByTestId('model-selector-dropdown')).toHaveTextContent('Model selector opened')
+    expect(useUIStore.getState().toasts.at(-1)?.message).toBe(
+      'BilliardBuddy manages the assistant connection automatically. No manual sign-in or selection is needed.',
+    )
     expect(input).toHaveValue('')
   })
 
@@ -427,21 +410,22 @@ describe('EmptySession', () => {
     expect(mocks.wsSend).not.toHaveBeenCalled()
   })
 
-  it('integrates repository launch controls into the desktop composer panel', async () => {
+  it('places repository launch controls directly beneath the desktop composer', async () => {
     render(<EmptySession />)
 
+    const shell = screen.getByTestId('empty-session-composer-shell')
     const panel = screen.getByTestId('empty-session-composer-panel')
-    expect(panel).toHaveClass('rounded-xl', 'p-0')
-    expect(panel).not.toHaveClass('rounded-b-none')
+    expect(panel).toHaveClass('main-composer-surface')
 
     fireEvent.click(screen.getByRole('button', { name: 'Pick project' }))
 
     const branchButton = await screen.findByRole('button', { name: 'Select branch: main' })
     const launchBar = branchButton.parentElement
     expect(launchBar).toBeTruthy()
-    expect(launchBar).toHaveClass('bg-transparent')
-    expect(launchBar).not.toHaveClass('rounded-b-xl')
-    expect(panel).toContainElement(launchBar)
+    expect(launchBar).toHaveClass('border-t', 'rounded-b-xl')
+    expect(shell).toContainElement(panel)
+    expect(shell).toContainElement(launchBar)
+    expect(panel).not.toContainElement(launchBar)
   })
 
   it('creates a session with the selected project and branch when submitted', async () => {

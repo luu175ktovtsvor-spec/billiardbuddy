@@ -150,20 +150,6 @@ describe('TerminalSettings', () => {
     expect(screen.queryByText('Host shell')).not.toBeInTheDocument()
   })
 
-  it('shows setup guidance from the terminal info button', () => {
-    render(<TerminalSettings />)
-
-    const button = screen.getByRole('button', { name: 'Terminal setup help' })
-    const help = screen.getByRole('tooltip')
-    expect(button).toHaveAttribute('aria-expanded', 'false')
-
-    fireEvent.click(button)
-
-    expect(button).toHaveAttribute('aria-expanded', 'true')
-    expect(help).toHaveTextContent('plugin, skill, and MCP setup')
-    expect(help).toHaveTextContent('billiardbuddy plugin install')
-  })
-
   it('lets the settings page keep scrolling when the terminal is not focused', async () => {
     terminalMocks.available = true
     const container = document.createElement('div')

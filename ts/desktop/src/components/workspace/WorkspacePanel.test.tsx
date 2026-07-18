@@ -804,7 +804,7 @@ describe('WorkspacePanel', () => {
     expect(view.getAllByText('b.ts').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('keeps the file navigator hidden while previewing until explicitly opened', async () => {
+  it('keeps the file navigator visible beside previews and lets users hide it', async () => {
     await setWorkspaceState((state) => ({
       ...state,
       panelBySession: {
@@ -853,18 +853,18 @@ describe('WorkspacePanel', () => {
     const view = await renderPanel('session-preview-focused')
 
     expect(view.getByTestId('workspace-code').textContent).toContain('+new')
-    expect(view.queryByRole('button', { name: 'Changed files' })).toBeNull()
-    expect(view.queryByPlaceholderText('Filter files...')).toBeNull()
-
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
-
     expect(view.getByRole('button', { name: 'Changed files' })).toBeTruthy()
     expect(view.getByPlaceholderText('Filter files...')).toBeTruthy()
     expect(view.getByText('src/app.ts')).toBeTruthy()
     expect(view.getByRole('button', { name: 'Hide file navigator' })).toBeTruthy()
+
+    await clickElement(view.getByRole('button', { name: 'Hide file navigator' }))
+
+    expect(view.queryByRole('button', { name: 'Changed files' })).toBeNull()
+    expect(view.getByRole('button', { name: 'Show file navigator' })).toBeTruthy()
   })
 
-  it('defers all-files tree loading while the file navigator is hidden behind a preview', async () => {
+  it('loads the all-files tree when the visible navigator opens beside a preview', async () => {
     getMocks().getWorkspaceTreeMock.mockResolvedValue({
       state: 'ok',
       path: '',
@@ -913,10 +913,6 @@ describe('WorkspacePanel', () => {
 
     const view = await renderPanel('session-preview-hidden-tree')
     await flushReactWork()
-
-    expect(getMocks().getWorkspaceTreeMock).not.toHaveBeenCalled()
-
-    await clickElement(view.getByRole('button', { name: 'Show file navigator' }))
 
     await waitFor(() => {
       expect(getMocks().getWorkspaceTreeMock).toHaveBeenCalledWith('session-preview-hidden-tree', '')

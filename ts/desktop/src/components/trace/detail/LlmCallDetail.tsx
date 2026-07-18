@@ -1,22 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useTranslation } from '../../../i18n'
-import type { TraceBodySnapshot, TraceCallRecord } from '../../../types/trace'
+import type { TraceCallRecord } from '../../../types/trace'
 import type { TraceSpan } from '../../../lib/traceViewModel'
-import { formatTraceJson } from '../../../lib/traceViewModel'
 import { fetchTraceCallDetail } from '../../../lib/trace/callCache'
 import { parseTraceRequestBody, parseTraceResponseBody } from '../../../lib/trace/requestParse'
 import type { NormalizedMessage } from '../../../lib/trace/types'
-import { formatBytes } from '../../../lib/formatBytes'
-import { CodeViewer } from '../../chat/CodeViewer'
-import { CopyButton } from '../../shared/CopyButton'
 import { MetaChip } from '../TraceBadges'
 import { Section } from './Section'
 import { MessageBlocks } from './MessageBlocks'
-
-const MESSAGE_FOLD_THRESHOLD = 20
-const MESSAGE_HEAD_COUNT = 2
-const MESSAGE_TAIL_COUNT = 6
 
 export function LlmCallDetail({ sessionId, span }: { sessionId: string; span: TraceSpan }) {
   const t = useTranslation()
@@ -66,7 +58,8 @@ export function LlmCallDetail({ sessionId, span }: { sessionId: string; span: Tr
     (parsed.response === null || parsed.response.message === null)
   const legacyFallback = !loadingDetail && (requestParseFailed || (isTerminal && !call.error && responseParseFailed))
   const params = parsed.request?.params ?? {}
-  const paramEntries = Object.entries(params)
+  const hiddenParams = new Set(['model', 'provider', 'base_url', 'baseUrl'])
+  const paramEntries = Object.entries(params).filter(([key]) => !hiddenParams.has(key))
 
   return (
     <div data-testid="trace-llm-detail">
@@ -89,42 +82,6 @@ export function LlmCallDetail({ sessionId, span }: { sessionId: string; span: Tr
         />
       </Section>
 
-      {parsed.request && parsed.request.messages.length > 0 ? (
-        <Section
-          sectionKey="llm.messages"
-          title={t('trace.section.messages')}
-          badge={parsed.request.messages.length}
-          defaultOpen
-        >
-          <MessageList messages={parsed.request.messages} />
-        </Section>
-      ) : null}
-
-      {parsed.request?.system ? (
-        <Section
-          sectionKey="llm.systemPrompt"
-          title={t('trace.section.systemPrompt')}
-          badge={t('trace.detail.chars', { count: parsed.request.system.length })}
-          actions={
-            <CopyButton
-              text={parsed.request.system}
-              copiedLabel={t('common.copied')}
-              className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
-            />
-          }
-        >
-          <pre className="max-h-[400px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--color-text-secondary)]">
-            {parsed.request.system}
-          </pre>
-        </Section>
-      ) : null}
-
-      {parsed.request && parsed.request.tools.length > 0 ? (
-        <Section sectionKey="llm.tools" title={t('trace.section.tools')} badge={parsed.request.tools.length}>
-          <ToolDefinitions tools={parsed.request.tools} />
-        </Section>
-      ) : null}
-
       {paramEntries.length > 0 ? (
         <Section sectionKey="llm.parameters" title={t('trace.section.parameters')} badge={paramEntries.length}>
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[11px]">
@@ -135,9 +92,6 @@ export function LlmCallDetail({ sessionId, span }: { sessionId: string; span: Tr
         </Section>
       ) : null}
 
-      <Section sectionKey="llm.raw" title={t('trace.section.raw')} defaultOpen={legacyFallback}>
-        <RawBodies call={effectiveCall} />
-      </Section>
     </div>
   )
 }
@@ -224,69 +178,6 @@ function ResponseContent({
   )
 }
 
-function MessageList({ messages }: { messages: NormalizedMessage[] }) {
-  const t = useTranslation()
-  const [showAll, setShowAll] = useState(false)
-  if (showAll || messages.length <= MESSAGE_FOLD_THRESHOLD) {
-    return (
-      <div className="flex flex-col gap-2">
-        {messages.map((message, index) => <MessageBlocks key={index} message={message} />)}
-      </div>
-    )
-  }
-  const head = messages.slice(0, MESSAGE_HEAD_COUNT)
-  const tail = messages.slice(messages.length - MESSAGE_TAIL_COUNT)
-  const hiddenCount = messages.length - head.length - tail.length
-  return (
-    <div className="flex flex-col gap-2">
-      {head.map((message, index) => <MessageBlocks key={`head-${index}`} message={message} />)}
-      <button
-        type="button"
-        onClick={() => setShowAll(true)}
-        className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] active:scale-[0.98]"
-      >
-        {t('trace.detail.earlierMessages', { count: hiddenCount })}
-      </button>
-      {tail.map((message, index) => <MessageBlocks key={`tail-${index}`} message={message} />)}
-    </div>
-  )
-}
-
-function ToolDefinitions({ tools }: { tools: Array<{ name: string; description?: string; schema?: unknown }> }) {
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const active = tools.find((tool) => tool.name === expanded)
-  return (
-    <div>
-      <div className="flex flex-wrap gap-1">
-        {tools.map((tool) => (
-          <button
-            key={tool.name}
-            type="button"
-            onClick={() => setExpanded((current) => current === tool.name ? null : tool.name)}
-            aria-pressed={expanded === tool.name}
-            {...(tool.description ? { title: tool.description } : {})}
-            className={`rounded-[var(--radius-sm)] border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
-              expanded === tool.name
-                ? 'border-[var(--color-border-focus)] text-[var(--color-text-primary)]'
-                : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
-            }`}
-          >
-            {tool.name}
-          </button>
-        ))}
-      </div>
-      {active ? (
-        <div className="mt-2">
-          {active.description ? (
-            <p className="mb-1.5 text-[11px] leading-5 text-[var(--color-text-secondary)]">{active.description}</p>
-          ) : null}
-          <CodeViewer code={formatTraceJson(active.schema ?? null)} language="json" maxLines={24} showLineNumbers />
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function ParamRow({ name, value }: { name: string; value: unknown }) {
   return (
     <>
@@ -305,53 +196,6 @@ function stringifyParam(value: unknown): string {
   } catch {
     return String(value)
   }
-}
-
-function RawBodies({ call }: { call: TraceCallRecord }) {
-  const t = useTranslation()
-  return (
-    <div className="flex flex-col gap-3">
-      <RawBody title={t('trace.requestBody')} body={call.request.body} maxLines={80} />
-      <RawHeaders title={t('trace.requestHeaders')} headers={call.request.headers} />
-      {call.response ? (
-        <>
-          <RawBody title={t('trace.responseBody')} body={call.response.body} maxLines={80} />
-          <RawHeaders title={t('trace.responseHeaders')} headers={call.response.headers} />
-        </>
-      ) : null}
-    </div>
-  )
-}
-
-function RawBody({ title, body, maxLines }: { title: string; body: TraceBodySnapshot; maxLines: number }) {
-  const t = useTranslation()
-  const code = body.contentType === 'json' ? formatTraceJson(body.preview) : body.preview
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">{title}</span>
-        <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
-          {formatBytes(body.bytes)}{body.truncated ? ` · ${t('trace.truncatedShort')}` : ''}
-        </span>
-      </div>
-      {code ? (
-        <CodeViewer code={code} language={body.contentType === 'json' ? 'json' : 'text'} maxLines={maxLines} showLineNumbers={body.contentType === 'json'} />
-      ) : (
-        <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] px-3 py-2 text-[11px] text-[var(--color-text-tertiary)]">
-          {t('trace.noData')}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function RawHeaders({ title, headers }: { title: string; headers: Record<string, string> }) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">{title}</div>
-      <CodeViewer code={formatTraceJson(headers)} language="json" maxLines={20} showLineNumbers />
-    </div>
-  )
 }
 
 function NoticeBar({ text }: { text: string }) {

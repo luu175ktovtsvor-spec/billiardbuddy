@@ -23,6 +23,11 @@ export type BundledSkillDefinition = {
   disableModelInvocation?: boolean
   userInvocable?: boolean
   isEnabled?: () => boolean
+  desktopDiscovery?: {
+    displayName?: string
+    content?: string
+    isEnabled?: () => boolean
+  }
   hooks?: HooksSettings
   context?: 'inline' | 'fork'
   agent?: string
@@ -42,6 +47,34 @@ export type BundledSkillDefinition = {
 
 // Internal registry for bundled skills
 const bundledSkills: Command[] = []
+const bundledSkillDefinitions = new Map<string, BundledSkillDefinition>()
+
+export type BundledSkillDescriptor = {
+  name: string
+  displayName?: string
+  description: string
+  userInvocable: boolean
+  argumentHint?: string
+  whenToUse?: string
+  allowedTools: string[]
+  content: string
+  enabled: boolean
+}
+
+function bundledSkillContent(definition: BundledSkillDefinition): string {
+  if (definition.desktopDiscovery?.content?.trim()) {
+    return definition.desktopDiscovery.content.trim()
+  }
+
+  const sections = [`# ${definition.name}`, definition.description.trim()]
+  if (definition.whenToUse?.trim()) {
+    sections.push(`## When to use\n\n${definition.whenToUse.trim()}`)
+  }
+  if (definition.allowedTools?.length) {
+    sections.push(`## Allowed tools\n\n${definition.allowedTools.map(tool => `- ${tool}`).join('\n')}`)
+  }
+  return sections.join('\n\n')
+}
 
 /**
  * Register a bundled skill that will be available to the model.
@@ -51,13 +84,15 @@ const bundledSkills: Command[] = []
  * They follow the same pattern as registerPostSamplingHook() for internal features.
  */
 export function registerBundledSkill(definition: BundledSkillDefinition): void {
+  if (bundledSkillDefinitions.has(definition.name)) return
+
   const { files } = definition
 
   let skillRoot: string | undefined
   let getPromptForCommand = definition.getPromptForCommand
+  let command: Command
 
   if (files && Object.keys(files).length > 0) {
-    skillRoot = getBundledSkillExtractDir(definition.name)
     // Closure-local memoization: extract once per process.
     // Memoize the promise (not the result) so concurrent callers await
     // the same extraction instead of racing into separate writes.
@@ -68,11 +103,17 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
       const extractedDir = await extractionPromise
       const blocks = await inner(args, ctx)
       if (extractedDir === null) return blocks
+      // Registration and desktop discovery must stay side-effect free. The
+      // extraction root (and its build-time version macro) is resolved only
+      // when the Skill is actually invoked. Set it before hook registration,
+      // which runs after getPromptForCommand resolves.
+      skillRoot = extractedDir
+      command.skillRoot = extractedDir
       return prependBaseDir(blocks, extractedDir)
     }
   }
 
-  const command: Command = {
+  command = {
     type: 'prompt',
     name: definition.name,
     description: definition.description,
@@ -96,6 +137,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     progressMessage: 'running',
     getPromptForCommand,
   }
+  bundledSkillDefinitions.set(definition.name, definition)
   bundledSkills.push(command)
 }
 
@@ -107,11 +149,42 @@ export function getBundledSkills(): Command[] {
   return [...bundledSkills]
 }
 
+export function getBundledSkillDescriptors(): BundledSkillDescriptor[] {
+  return bundledSkills.flatMap(command => {
+    const definition = bundledSkillDefinitions.get(command.name)
+    const desktopDiscovery = definition?.desktopDiscovery
+    if (!definition || !desktopDiscovery) return []
+
+    const isEnabled = desktopDiscovery.isEnabled ?? definition.isEnabled
+    let enabled = true
+    try {
+      enabled = isEnabled?.() ?? true
+    } catch {
+      enabled = false
+    }
+
+    return [{
+      name: definition.name,
+      ...(desktopDiscovery.displayName
+        ? { displayName: desktopDiscovery.displayName }
+        : {}),
+      description: definition.description,
+      userInvocable: definition.userInvocable ?? true,
+      ...(definition.argumentHint ? { argumentHint: definition.argumentHint } : {}),
+      ...(definition.whenToUse ? { whenToUse: definition.whenToUse } : {}),
+      allowedTools: [...(definition.allowedTools ?? [])],
+      content: bundledSkillContent(definition),
+      enabled,
+    }]
+  })
+}
+
 /**
  * Clear bundled skills registry (for testing).
  */
 export function clearBundledSkills(): void {
   bundledSkills.length = 0
+  bundledSkillDefinitions.clear()
 }
 
 /**

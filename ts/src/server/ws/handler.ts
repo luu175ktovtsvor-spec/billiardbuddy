@@ -18,7 +18,7 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
-import { isQfGatewayProviderId, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
+import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import {
   buildConversationTitleInput,
@@ -735,6 +735,11 @@ async function handleSetRuntimeConfig(
   message: Extract<ClientMessage, { type: 'set_runtime_config' }>
 ) {
   const { sessionId } = ws.data
+  // Packaged BilliardBuddy sessions are routed by the product gateway. Ignore
+  // renderer/session overrides left by older builds so hidden provider/model
+  // state cannot bypass that boundary or trigger an invisible runtime restart.
+  if (qfGatewayConfigured()) return
+
   const modelId = typeof message.modelId === 'string' ? message.modelId.trim() : ''
   if (!modelId) {
     sendMessage(ws, {
@@ -2524,9 +2529,11 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
           ...(launchInfo.effortLevel ? { effort: launchInfo.effortLevel } : {}),
         }
       : undefined
-  const runtimeOverride = sessionId
-    ? runtimeOverrides.get(sessionId) ?? persistedRuntimeOverride
-    : undefined
+  const runtimeOverride = qfGatewayConfigured()
+    ? undefined
+    : sessionId
+      ? runtimeOverrides.get(sessionId) ?? persistedRuntimeOverride
+      : undefined
   if (runtimeOverride) {
     if (typeof runtimeOverride.providerId === 'string') {
       const { providers } = await providerService.listProviders()

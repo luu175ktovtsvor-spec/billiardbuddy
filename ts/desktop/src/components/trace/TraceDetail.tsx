@@ -76,8 +76,6 @@ function HeaderChips({ span }: { span: TraceSpan }) {
   if (call) {
     return (
       <>
-        {call.model ? <MetaChip label={t('trace.model')} value={call.model} /> : null}
-        {call.provider?.name ? <MetaChip label={t('trace.provider')} value={call.provider.name} /> : null}
         {span.durationMs !== undefined ? (
           <MetaChip
             label={span.status === 'pending' ? t('trace.elapsed') : t('trace.duration')}

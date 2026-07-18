@@ -10,6 +10,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
+import { prepareProductInstructionsFile } from './productInstructions.js'
 import { ProviderService } from './providerService.js'
 import {
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
@@ -174,6 +175,7 @@ export class ConversationService {
     shouldResume: boolean,
     options?: SessionStartOptions,
     repository?: PreparedSessionWorkspace['repository'],
+    productInstructionsFile?: string | null,
   ): string[] {
     const dangerousMode = process.env.CLAUDE_DANGEROUS_MODE === '1'
     const worktreeArgs =
@@ -201,6 +203,9 @@ export class ConversationService {
       '--include-partial-messages',
       ...(shouldResume ? ['--resume', sessionId] : ['--session-id', sessionId]),
       ...worktreeArgs,
+      ...(productInstructionsFile
+        ? ['--append-system-prompt-file', productInstructionsFile]
+        : []),
       '--replay-user-messages',
       ...this.getRuntimeArgs(options),
       ...this.getPermissionArgs(options?.permissionMode, dangerousMode),
@@ -279,12 +284,14 @@ export class ConversationService {
       )
     }
 
+    const productInstructionsFile = prepareProductInstructionsFile(launchWorkDir)
     const args = this.buildSessionCliArgs(
       sessionId,
       sdkUrl,
       shouldResume,
       options,
       launchRepository,
+      productInstructionsFile,
     )
 
     console.log(

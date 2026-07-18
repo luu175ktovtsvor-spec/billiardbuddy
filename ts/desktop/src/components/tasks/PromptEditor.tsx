@@ -1,4 +1,3 @@
-import { ModelSelector } from '../controls/ModelSelector'
 import { DirectoryPicker } from '../shared/DirectoryPicker'
 import { useTranslation } from '../../i18n'
 
@@ -23,10 +22,10 @@ export function PromptEditor({
   value,
   onChange,
   placeholder,
-  modelId,
-  onModelChange,
-  providerId,
-  onProviderIdChange,
+  modelId: _modelId,
+  onModelChange: _onModelChange,
+  providerId: _providerId,
+  onProviderIdChange: _onProviderIdChange,
   folderPath,
   onFolderPathChange,
   useWorktree: _useWorktree,
@@ -47,19 +46,11 @@ export function PromptEditor({
 
       {/* Bottom toolbar */}
       <div className="border-t border-[var(--color-border)]/40 px-3 py-2 flex flex-col gap-2 bg-[var(--color-surface-container-low)] rounded-b-[var(--radius-lg)]">
-        {/* Row 1: Permission + Model selectors */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center">
           <div className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-error)]/8 px-2.5 py-1.5 text-xs font-medium text-[var(--color-error)]">
             <span className="material-symbols-outlined text-[14px]">gavel</span>
             {t('newTask.fullPermissions')}
           </div>
-          <ModelSelector
-            runtimeSelection={modelId ? { providerId: providerId ?? null, modelId } : undefined}
-            onRuntimeSelectionChange={(selection) => {
-              onProviderIdChange(selection.providerId)
-              onModelChange(selection.modelId)
-            }}
-          />
         </div>
 
         {/* Row 2: Folder picker */}

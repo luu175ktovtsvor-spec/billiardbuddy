@@ -72,7 +72,7 @@ describe('previewBridge', () => {
   it('message forwards structured host messages to the Electron preview host', async () => {
     const { message } = installElectronPreviewHost()
     const { previewBridge } = await import('./previewBridge')
-    const payload = { v: 1, type: 'capture', kind: 'full' } as const
+    const payload = { v: 1, type: 'capture', kind: 'viewport' } as const
     await previewBridge.message(payload)
     expect(message).toHaveBeenCalledWith(payload)
     expect(invoke).not.toHaveBeenCalled()

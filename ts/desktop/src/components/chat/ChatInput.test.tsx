@@ -69,22 +69,6 @@ vi.mock('../controls/PermissionModeSelector', () => ({
   PermissionModeSelector: () => <button type="button">Permissions</button>,
 }))
 
-vi.mock('../controls/ModelSelector', async () => {
-  const React = await vi.importActual<typeof import('react')>('react')
-  return {
-    ModelSelector: React.forwardRef<{ open: () => void }, Record<string, never>>((_props, ref) => {
-      const [open, setOpen] = React.useState(false)
-      React.useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [])
-      return (
-        <>
-          <button type="button">Model</button>
-          {open && <div data-testid="model-selector-dropdown">Model selector opened</div>}
-        </>
-      )
-    }),
-  }
-})
-
 import { ChatInput } from './ChatInput'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -92,6 +76,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { browserHost } from '../../lib/desktopHost/browserHost'
+import { useUIStore } from '../../stores/uiStore'
 
 function okRepositoryContext() {
   return {
@@ -705,8 +690,7 @@ describe('ChatInput file mentions', () => {
     render(<ChatInput variant="hero" />)
 
     const panel = screen.getByTestId('chat-input-panel')
-    expect(panel).toHaveClass('rounded-xl')
-    expect(panel).not.toHaveClass('rounded-b-none')
+    expect(panel).toHaveClass('main-composer-surface')
 
     expect(await screen.findByRole('button', { name: /Select branch: main/ })).toBeInTheDocument()
     expect(screen.getByText('Current worktree')).toBeInTheDocument()
@@ -756,8 +740,9 @@ describe('ChatInput file mentions', () => {
 
     render(<ChatInput variant="hero" />)
 
-    expect(await screen.findByText('repo')).toBeInTheDocument()
-    expect(screen.getByText('main')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(mocks.getGitInfo).toHaveBeenCalledWith(sessionId)
+    })
     expect(screen.queryByRole('button', { name: /Select branch:/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Current worktree')).not.toBeInTheDocument()
   })
@@ -1349,8 +1334,7 @@ describe('ChatInput file mentions', () => {
     expect(screen.queryByText('Run')).not.toBeInTheDocument()
     expect(screen.getByTestId('chat-input-shell')).toHaveClass('px-3')
     expect(screen.getByTestId('chat-input-shell').className).toContain('safe-area-inset-bottom')
-    expect(screen.getByTestId('chat-input-panel')).toHaveClass('rounded-2xl')
-    expect(screen.getByTestId('chat-input-panel')).not.toHaveClass('rounded-b-none')
+    expect(screen.getByTestId('chat-input-panel')).toHaveClass('main-composer-surface')
 
     fireEvent.change(screen.getByRole('textbox'), {
       target: { value: '@cond', selectionStart: 5 },
@@ -1374,7 +1358,7 @@ describe('ChatInput file mentions', () => {
     const toolbar = screen.getByTestId('chat-input-toolbar')
 
     expect(toolbar).not.toHaveClass('absolute')
-    expect(toolbar).toHaveClass('mt-2')
+    expect(toolbar).toHaveClass('mb-2')
     expect(input).not.toHaveClass('pb-12')
     expect(input).not.toHaveClass('pb-14')
   })
@@ -1409,7 +1393,7 @@ describe('ChatInput file mentions', () => {
     })
   })
 
-  it('opens the model selector for /model without sending a user message', async () => {
+  it('keeps /model product-managed without sending a user message', async () => {
     useSettingsStore.setState({
       chatSendBehavior: 'enter',
     })
@@ -1431,7 +1415,9 @@ describe('ChatInput file mentions', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(mocks.wsSend).not.toHaveBeenCalled()
-    expect(await screen.findByTestId('model-selector-dropdown')).toHaveTextContent('Model selector opened')
+    expect(useUIStore.getState().toasts.at(-1)?.message).toBe(
+      'BilliardBuddy manages the assistant connection automatically. No manual sign-in or selection is needed.',
+    )
     expect(input).toHaveValue('')
   })
 

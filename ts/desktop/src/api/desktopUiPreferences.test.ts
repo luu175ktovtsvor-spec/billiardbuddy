@@ -6,7 +6,7 @@ const preferences = {
   schemaVersion: 2,
   profile: {
     displayName: 'billiardbuddy',
-    subtitle: 'github.com/NanmiCoder/billiardbuddy',
+    subtitle: 'github.com/billiardbuddy/app',
     avatarFile: null,
     avatarUpdatedAt: null,
   },
