@@ -1,0 +1,387 @@
+import { useMemo, useState } from 'react'
+import type {
+  ContinueProductTaskInput,
+  CreateProductTaskInput,
+  ProductProject,
+  ProductTaskAction,
+  ProductTaskIndexResponse,
+  ProductTaskRecord,
+} from '../domain/types'
+
+export type TaskIndexProps = {
+  index: ProductTaskIndexResponse
+  isLoading: boolean
+  error: string | null
+  mutations: Record<string, boolean | undefined>
+  onRefresh: () => Promise<void>
+  onCreateTask: (input: CreateProductTaskInput) => Promise<unknown>
+  onRenameTask: (taskId: string, title: string) => Promise<unknown>
+  onPinTask: (taskId: string) => Promise<unknown>
+  onUnpinTask: (taskId: string) => Promise<unknown>
+  onArchiveTask: (taskId: string) => Promise<unknown>
+  onRestoreTask: (taskId: string) => Promise<unknown>
+  onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
+  onOpenTask: (task: ProductTaskRecord) => void
+}
+
+const WORKTREE_STATE_LABEL: Record<string, string> = {
+  not_requested: '未使用工作树',
+  planned: '工作树计划中',
+}
+
+function taskActionKey(taskId: string, action: string): string {
+  return `${taskId}:${action}`
+}
+
+function hasAction(task: ProductTaskRecord, action: ProductTaskAction): boolean {
+  return task.actions.includes(action)
+}
+
+function taskStatus(task: ProductTaskRecord): string {
+  if (task.lifecycle === 'archived') return '已归档'
+  return WORKTREE_STATE_LABEL[task.worktreeState] ?? '待开始'
+}
+
+function taskKindLabel(task: ProductTaskRecord): string {
+  if (task.kind === 'continuation') return '继续任务'
+  return '任务'
+}
+
+function projectTasks(index: ProductTaskIndexResponse, projectId: string): ProductTaskRecord[] {
+  return index.tasks.filter((task) => task.projectId === projectId)
+}
+
+export function TaskIndex({
+  index,
+  isLoading,
+  error,
+  mutations,
+  onRefresh,
+  onCreateTask,
+  onRenameTask,
+  onPinTask,
+  onUnpinTask,
+  onArchiveTask,
+  onRestoreTask,
+  onContinueTask,
+  onOpenTask,
+}: TaskIndexProps) {
+  const [composerOpen, setComposerOpen] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+
+  const visibleProjects = useMemo(
+    () => index.projects.filter((project) => projectTasks(index, project.id).some((task) => showArchived || task.lifecycle !== 'archived')),
+    [index, showArchived],
+  )
+  const looseTasks = useMemo(
+    () => index.tasks.filter((task) => !index.projects.some((project) => project.id === task.projectId)),
+    [index],
+  )
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="product-task-index">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
+        <div>
+          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">任务</h1>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">按项目和工作目录管理正在进行的工作。</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={isLoading}
+            className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50"
+          >
+            刷新
+          </button>
+          {index.capabilities.createTask ? (
+            <button
+              type="button"
+              onClick={() => setComposerOpen(true)}
+              className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white"
+            >
+              新建任务
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {composerOpen ? (
+        <TaskComposer
+          projects={index.projects}
+          isSubmitting={mutations.create === true}
+          onCancel={() => setComposerOpen(false)}
+          onSubmit={async (input) => {
+            try {
+              await onCreateTask(input)
+              setComposerOpen(false)
+            } catch {
+              // The product store exposes the server error in the index surface.
+            }
+          }}
+        />
+      ) : null}
+
+      <div className="flex items-center justify-between gap-3 px-5 py-3">
+        <p className="text-sm text-[var(--color-text-secondary)]">共 {index.total} 个任务</p>
+        <label className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(event) => setShowArchived(event.target.checked)}
+          />
+          显示已归档任务
+        </label>
+      </div>
+
+      {error ? <div role="alert" className="mx-5 mb-3 rounded-lg border border-[var(--color-error)]/30 px-3 py-2 text-sm text-[var(--color-error)]">{error}</div> : null}
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8">
+        {isLoading && index.tasks.length === 0 ? (
+          <p role="status" className="py-12 text-center text-sm text-[var(--color-text-secondary)]">正在读取任务…</p>
+        ) : null}
+
+        {!isLoading && visibleProjects.length === 0 && looseTasks.length === 0 ? (
+          <p className="py-12 text-center text-sm text-[var(--color-text-secondary)]">还没有可显示的任务。</p>
+        ) : null}
+
+        <div className="space-y-5">
+          {visibleProjects.map((project) => (
+            <ProjectTaskGroup
+              key={project.id}
+              project={project}
+              tasks={projectTasks(index, project.id)}
+              showArchived={showArchived}
+              mutations={mutations}
+              onRenameTask={onRenameTask}
+              onPinTask={onPinTask}
+              onUnpinTask={onUnpinTask}
+              onArchiveTask={onArchiveTask}
+              onRestoreTask={onRestoreTask}
+              onContinueTask={onContinueTask}
+              onOpenTask={onOpenTask}
+            />
+          ))}
+          {looseTasks.length > 0 ? (
+            <ProjectTaskGroup
+              project={null}
+              tasks={looseTasks}
+              showArchived={showArchived}
+              mutations={mutations}
+              onRenameTask={onRenameTask}
+              onPinTask={onPinTask}
+              onUnpinTask={onUnpinTask}
+              onArchiveTask={onArchiveTask}
+              onRestoreTask={onRestoreTask}
+              onContinueTask={onContinueTask}
+              onOpenTask={onOpenTask}
+            />
+          ) : null}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function TaskComposer({
+  projects,
+  isSubmitting,
+  onCancel,
+  onSubmit,
+}: {
+  projects: ProductProject[]
+  isSubmitting: boolean
+  onCancel: () => void
+  onSubmit: (input: CreateProductTaskInput) => Promise<void>
+}) {
+  const [projectId, setProjectId] = useState('')
+  const [workDir, setWorkDir] = useState('')
+  const [title, setTitle] = useState('')
+  const [useWorktree, setUseWorktree] = useState(false)
+
+  const selectProject = (nextProjectId: string) => {
+    setProjectId(nextProjectId)
+    const project = projects.find((entry) => entry.id === nextProjectId)
+    if (project) setWorkDir(project.workDir)
+  }
+
+  return (
+    <form
+      className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
+      onSubmit={(event) => {
+        event.preventDefault()
+        const normalizedWorkDir = workDir.trim()
+        if (!normalizedWorkDir) return
+        void onSubmit({
+          workDir: normalizedWorkDir,
+          ...(title.trim() ? { title: title.trim() } : {}),
+          ...(useWorktree ? { useWorktree: true } : {}),
+        })
+      }}
+    >
+      {projects.length > 0 ? (
+        <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+          项目
+          <select aria-label="选择项目" value={projectId} onChange={(event) => selectProject(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]">
+            <option value="">手动填写工作目录</option>
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
+          </select>
+        </label>
+      ) : null}
+      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        工作目录
+        <input aria-label="工作目录" required value={workDir} onChange={(event) => setWorkDir(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+      </label>
+      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        任务标题（可选）
+        <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+      </label>
+      <label className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
+        <input type="checkbox" checked={useWorktree} onChange={(event) => setUseWorktree(event.target.checked)} />
+        在新工作树中开始
+      </label>
+      <div className="flex gap-2 md:col-span-2">
+        <button type="submit" disabled={isSubmitting || !workDir.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在创建…' : '创建任务'}</button>
+        <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
+      </div>
+    </form>
+  )
+}
+
+function ProjectTaskGroup({
+  project,
+  tasks,
+  showArchived,
+  mutations,
+  onRenameTask,
+  onPinTask,
+  onUnpinTask,
+  onArchiveTask,
+  onRestoreTask,
+  onContinueTask,
+  onOpenTask,
+}: {
+  project: ProductProject | null
+  tasks: ProductTaskRecord[]
+  showArchived: boolean
+  mutations: Record<string, boolean | undefined>
+  onRenameTask: (taskId: string, title: string) => Promise<unknown>
+  onPinTask: (taskId: string) => Promise<unknown>
+  onUnpinTask: (taskId: string) => Promise<unknown>
+  onArchiveTask: (taskId: string) => Promise<unknown>
+  onRestoreTask: (taskId: string) => Promise<unknown>
+  onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
+  onOpenTask: (task: ProductTaskRecord) => void
+}) {
+  const visibleTasks = tasks.filter((task) => showArchived || task.lifecycle !== 'archived')
+  if (visibleTasks.length === 0) return null
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-[var(--color-border)]" data-testid={project ? `product-project-${project.id}` : 'product-unassigned-tasks'}>
+      <header className="border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-4 py-3">
+        <h2 className="font-medium text-[var(--color-text-primary)]">{project?.title ?? '未归属项目的任务'}</h2>
+        {project ? <p className="mt-1 break-all text-xs text-[var(--color-text-secondary)]">工作目录：{project.workDir}</p> : null}
+      </header>
+      <div className="divide-y divide-[var(--color-border)]">
+        {visibleTasks.map((task) => (
+          <TaskRow
+            key={task.id}
+            task={task}
+            mutations={mutations}
+            onRenameTask={onRenameTask}
+            onPinTask={onPinTask}
+            onUnpinTask={onUnpinTask}
+            onArchiveTask={onArchiveTask}
+            onRestoreTask={onRestoreTask}
+            onContinueTask={onContinueTask}
+            onOpenTask={onOpenTask}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function TaskRow({
+  task,
+  mutations,
+  onRenameTask,
+  onPinTask,
+  onUnpinTask,
+  onArchiveTask,
+  onRestoreTask,
+  onContinueTask,
+  onOpenTask,
+}: {
+  task: ProductTaskRecord
+  mutations: Record<string, boolean | undefined>
+  onRenameTask: (taskId: string, title: string) => Promise<unknown>
+  onPinTask: (taskId: string) => Promise<unknown>
+  onUnpinTask: (taskId: string) => Promise<unknown>
+  onArchiveTask: (taskId: string) => Promise<unknown>
+  onRestoreTask: (taskId: string) => Promise<unknown>
+  onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
+  onOpenTask: (task: ProductTaskRecord) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(task.title)
+  const renamed = mutations[taskActionKey(task.id, 'rename')] === true
+
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action()
+    } catch {
+      // The product store exposes the server error in the index surface.
+    }
+  }
+
+  return (
+    <article className="px-4 py-3" data-testid={`product-task-${task.id}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {editing ? (
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (!title.trim()) return
+                void run(async () => {
+                  await onRenameTask(task.id, title.trim())
+                  setEditing(false)
+                })
+              }}
+            >
+              <input aria-label="重命名任务" value={title} onChange={(event) => setTitle(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm text-[var(--color-text-primary)]" />
+              <button type="submit" disabled={renamed} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-sm text-[var(--color-text-primary)]">保存</button>
+              <button type="button" onClick={() => { setTitle(task.title); setEditing(false) }} disabled={renamed} className="rounded-lg px-2 py-1 text-sm text-[var(--color-text-secondary)]">取消</button>
+            </form>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-medium text-[var(--color-text-primary)]">{task.title}</h3>
+              {task.pinnedAt ? <span className="rounded-full bg-[var(--color-surface-selected)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">已置顶</span> : null}
+              <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{taskKindLabel(task)}</span>
+              <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{taskStatus(task)}</span>
+            </div>
+          )}
+          <dl className="mt-2 grid gap-1 text-xs text-[var(--color-text-secondary)]">
+            <div><dt className="inline">工作目录：</dt><dd className="inline break-all">{task.workDir || '未提供'}</dd></div>
+            <div><dt className="inline">工作树：</dt><dd className="inline">{WORKTREE_STATE_LABEL[task.worktreeState] ?? '未使用工作树'}</dd></div>
+          </dl>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={() => onOpenTask(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开</button>
+          {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
+          {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
+          {hasAction(task, 'unpin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'unpin')] === true} label="取消置顶" onClick={() => run(() => onUnpinTask(task.id))} /> : null}
+          {hasAction(task, 'continue') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'continue')] === true} label="继续" onClick={() => run(() => onContinueTask(task.id, {}))} /> : null}
+          {hasAction(task, 'archive') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'archive')] === true} label="归档" onClick={() => run(() => onArchiveTask(task.id))} /> : null}
+          {hasAction(task, 'restore') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'restore')] === true} label="恢复" onClick={() => run(() => onRestoreTask(task.id))} /> : null}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function TaskActionButton({ pending, label, onClick }: { pending: boolean; label: string; onClick: () => void }) {
+  return <button type="button" disabled={pending} onClick={onClick} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">{pending ? '处理中…' : label}</button>
+}

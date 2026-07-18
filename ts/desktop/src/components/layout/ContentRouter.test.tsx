@@ -56,6 +56,10 @@ vi.mock('../media/VideoStudio', () => ({
   VideoStudio: () => <div data-testid="video-studio" />,
 }))
 
+vi.mock('../../product/components/ProductShell', () => ({
+  ProductShell: () => <div data-testid="product-shell" />,
+}))
+
 import { ContentRouter } from './ContentRouter'
 import { useTabStore } from '../../stores/tabStore'
 
@@ -201,6 +205,18 @@ describe('ContentRouter tab surfaces', () => {
     render(<ContentRouter />)
 
     expect(screen.getByTestId('video-studio')).toBeInTheDocument()
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('renders the product task index without mounting the chat session surface', () => {
+    useTabStore.setState({
+      tabs: [{ sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks', status: 'idle' }],
+      activeTabId: '__product_tasks__',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-shell')).toBeInTheDocument()
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 

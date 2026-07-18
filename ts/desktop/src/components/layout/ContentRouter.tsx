@@ -10,6 +10,7 @@ import { TraceSession } from '../../pages/TraceSession'
 import { WorkbenchTab } from '../workbench/WorkbenchTab'
 import { ImageWorkbench } from '../media/ImageWorkbench'
 import { VideoStudio } from '../media/VideoStudio'
+import { ProductShell } from '../../product/components/ProductShell'
 import { previewBridge } from '../../lib/previewBridge'
 
 export function ContentRouter() {
@@ -44,6 +45,8 @@ export function ContentRouter() {
     page = <ImageWorkbench />
   } else if (activeTabType === 'video-studio') {
     page = <VideoStudio />
+  } else if (activeTabType === 'product-tasks') {
+    page = <ProductShell />
   } else if (activeTabType !== 'terminal') {
     // 会话页 = 宽聊天主区（Sidebar + ActiveSession）。审阅/Diff/文件预览/Browser/终端
     // 由 ActiveSession 内部按需挂载（workspacePanelStore / terminalPanelStore），

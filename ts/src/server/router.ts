@@ -27,6 +27,7 @@ import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleTracesApi } from './api/traces.js'
 import { handleMediaApi } from './api/media.js'
 import { handleVoiceApi } from './api/voice.js'
+import { handleProductApi } from './api/product.js'
 
 type ApiRequestHandlers = {
   media?: typeof handleMediaApi
@@ -126,6 +127,9 @@ export async function handleApiRequest(
 
     case 'voice':
       return handleVoiceApi(req, segments)
+
+    case 'product':
+      return handleProductApi(req, url, segments)
 
     case 'filesystem':
       return handleFilesystemRoute(url.pathname, url)

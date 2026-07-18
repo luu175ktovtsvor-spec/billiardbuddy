@@ -13,6 +13,7 @@ export const TRACE_TAB_PREFIX = '__trace__'
 export const WORKBENCH_TAB_PREFIX = '__workbench__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
+export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 
 export type TabType =
   | 'session'
@@ -24,6 +25,7 @@ export type TabType =
   | 'workbench'
   | 'image-workbench'
   | 'video-studio'
+  | 'product-tasks'
 
 export type Tab = {
   sessionId: string
@@ -299,7 +301,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
             t.type === 'scheduled' ||
             t.type === 'traces' ||
             t.type === 'image-workbench' ||
-            t.type === 'video-studio'
+            t.type === 'video-studio' ||
+            t.type === 'product-tasks'
           ) return true
           if (t.type === 'trace') return !!t.traceSessionId && existingIds.has(t.traceSessionId)
           if (t.type === 'terminal') return false
@@ -312,7 +315,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
             t.type === 'scheduled' ||
             t.type === 'traces' ||
             t.type === 'image-workbench' ||
-            t.type === 'video-studio'
+            t.type === 'video-studio' ||
+            t.type === 'product-tasks'
           ) {
             return { sessionId: t.sessionId, title: t.title, type: t.type, status: 'idle' as const }
           }
