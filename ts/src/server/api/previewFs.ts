@@ -150,7 +150,20 @@ export async function handlePreviewFs(
     return new Response('forbidden', { status: 403 })
   }
 
-  return servePreviewFsFile(target, url.pathname, reqHeaders)
+  let canonicalRoot: string
+  let canonicalTarget: string
+  try {
+    canonicalRoot = fs.realpathSync(root)
+    canonicalTarget = fs.realpathSync(target)
+  } catch {
+    return new Response('not found', { status: 404 })
+  }
+
+  if (!isSameOrInsidePathForPlatform(canonicalTarget, canonicalRoot)) {
+    return new Response('forbidden', { status: 403 })
+  }
+
+  return servePreviewFsFile(canonicalTarget, url.pathname, reqHeaders)
 }
 
 function previewHtmlBasePath(pathname: string): string {

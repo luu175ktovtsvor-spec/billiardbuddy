@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { contentTypeForPath, handlePreviewFs, parseRange } from '../previewFs'
@@ -94,6 +94,18 @@ describe('handlePreviewFs', () => {
     expect(res.headers.get('content-type')).toBe('text/css; charset=utf-8')
   })
 
+  it('serves a symbolic link whose target remains inside the workspace', async () => {
+    const root = setupWorkspace()
+    const link = path.join(root, 'index-link.html')
+    symlinkSync(path.join(root, 'index.html'), link, 'file')
+    const resolve = async () => root
+
+    const res = await handlePreviewFs(new URL('http://127.0.0.1/preview-fs/s1/index-link.html'), resolve)
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<h1>ok</h1>')
+  })
+
   it('rewrites root-relative HTML assets to stay under the preview-fs file directory', async () => {
     const root = setupWorkspace()
     const resolve = async () => root
@@ -109,6 +121,19 @@ describe('handlePreviewFs', () => {
     const root = setupWorkspace()
     const resolve = async () => root
     const res = await handlePreviewFs(new URL('http://127.0.0.1/preview-fs/s1/../../etc/passwd'), resolve)
+    expect(res.status).toBe(403)
+  })
+
+  it('blocks a workspace symbolic link whose target is outside the workspace', async () => {
+    const root = setupWorkspace()
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), 'pfs-outside-'))
+    const outsideFile = path.join(outsideRoot, 'secret.html')
+    writeFileSync(outsideFile, '<h1>private</h1>')
+    symlinkSync(outsideFile, path.join(root, 'outside-link.html'), 'file')
+    const resolve = async () => root
+
+    const res = await handlePreviewFs(new URL('http://127.0.0.1/preview-fs/s1/outside-link.html'), resolve)
+
     expect(res.status).toBe(403)
   })
 
