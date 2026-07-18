@@ -1,28 +1,13 @@
 import { api } from './client'
 
-export type AgentSource =
-  | 'built-in'
-  | 'plugin'
-  | 'userSettings'
-  | 'projectSettings'
-  | 'localSettings'
-  | 'flagSettings'
-  | 'policySettings'
-
-export type AgentDefinition = {
-  agentType: string
-  description?: string
-  tools?: string[]
-  color?: string
-  source: AgentSource
-  baseDir?: string
-  overriddenBy?: AgentSource
-  isActive: boolean
+/** Safe command descriptor for the product-facing Agent picker. */
+export type AgentCommand = {
+  displayName: string
+  runtimeName: string
 }
 
 export type AgentListResponse = {
-  activeAgents: AgentDefinition[]
-  allAgents: AgentDefinition[]
+  agents: AgentCommand[]
 }
 
 export const agentsApi = {

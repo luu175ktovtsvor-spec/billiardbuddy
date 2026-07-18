@@ -144,7 +144,7 @@ describe('ChatInput file mentions', () => {
     mocks.create.mockResolvedValue({ sessionId: 'created-session', workDir: '/repo' })
     mocks.delete.mockResolvedValue({ ok: true })
     mocks.getSlashCommands.mockResolvedValue({ commands: [] })
-    mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
+    mocks.listAgents.mockResolvedValue({ agents: [] })
   })
 
   afterEach(() => {
@@ -1130,52 +1130,16 @@ describe('ChatInput file mentions', () => {
     })
   })
 
-  it('offers active agents as slash entries that insert /agent with the selected type', async () => {
+  it('offers safe agent aliases without rendering private metadata', async () => {
     mocks.listAgents.mockResolvedValue({
-      activeAgents: [
+      agents: [
         {
-          agentType: 'debugger',
-          description: 'Debug failures',
-          modelDisplay: 'OPUS',
-          source: 'userSettings',
-          isActive: true,
+          displayName: 'assistant-1',
+          runtimeName: 'debugger',
+          description: 'PRIVATE_AGENT_DESCRIPTION',
+          source: 'projectSettings',
         },
       ],
-      allAgents: [],
-    })
-
-    render(<ChatInput />)
-
-    await waitFor(() => {
-      expect(mocks.listAgents).toHaveBeenCalledWith('/repo')
-    })
-
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(input, {
-      target: { value: '/debug', selectionStart: 6 },
-    })
-
-    const agentOption = await screen.findByText('/agent debugger')
-    fireEvent.click(agentOption)
-
-    expect(input).toHaveValue('/agent debugger ')
-  })
-
-  it('selects a highlighted agent entry from /agent without sending until the configured send shortcut is used', async () => {
-    useSettingsStore.setState({
-      chatSendBehavior: 'modifierEnter',
-    })
-    mocks.listAgents.mockResolvedValue({
-      activeAgents: [
-        {
-          agentType: 'debugger',
-          description: 'Debug failures',
-          modelDisplay: 'OPUS',
-          source: 'userSettings',
-          isActive: true,
-        },
-      ],
-      allAgents: [],
     })
 
     render(<ChatInput />)
@@ -1189,14 +1153,46 @@ describe('ChatInput file mentions', () => {
       target: { value: '/agent', selectionStart: 6 },
     })
 
-    await screen.findByText('/agent debugger')
+    const agentOption = await screen.findByText('/agent assistant-1')
+    fireEvent.click(agentOption)
+
+    expect(input).toHaveValue('/agent assistant-1 ')
+    expect(screen.queryByText('PRIVATE_AGENT_DESCRIPTION')).not.toBeInTheDocument()
+    expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
+  })
+
+  it('selects a highlighted agent entry from /agent without sending until the configured send shortcut is used', async () => {
+    useSettingsStore.setState({
+      chatSendBehavior: 'modifierEnter',
+    })
+    mocks.listAgents.mockResolvedValue({
+      agents: [
+        {
+          displayName: 'assistant-1',
+          runtimeName: 'debugger',
+        },
+      ],
+    })
+
+    render(<ChatInput />)
+
+    await waitFor(() => {
+      expect(mocks.listAgents).toHaveBeenCalledWith('/repo')
+    })
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, {
+      target: { value: '/agent', selectionStart: 6 },
+    })
+
+    await screen.findByText('/agent assistant-1')
     fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(input).toHaveValue('/agent debugger ')
+    expect(input).toHaveValue('/agent assistant-1 ')
     expect(mocks.wsSend).not.toHaveBeenCalled()
 
-    const prompt = '/agent debugger investigate this failure'
+    const prompt = '/agent assistant-1 investigate this failure'
     fireEvent.change(input, {
       target: { value: prompt, selectionStart: prompt.length },
     })
@@ -1206,7 +1202,7 @@ describe('ChatInput file mentions', () => {
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
     expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
       type: 'user_message',
-      content: prompt,
+      content: '/agent debugger investigate this failure',
       attachments: [],
     })
   })

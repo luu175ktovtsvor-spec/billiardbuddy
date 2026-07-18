@@ -24,18 +24,6 @@ vi.mock('../api/diagnostics', () => ({
 
 vi.mock('../lib/doctorRepair', () => doctorRepairMock)
 
-vi.mock('../stores/agentStore', () => ({
-  useAgentStore: () => ({
-    activeAgents: [],
-    allAgents: [],
-    isLoading: false,
-    error: null,
-    selectedAgent: null,
-    fetchAgents: vi.fn(),
-    selectAgent: vi.fn(),
-  }),
-}))
-
 describe('Settings > Diagnostics tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()

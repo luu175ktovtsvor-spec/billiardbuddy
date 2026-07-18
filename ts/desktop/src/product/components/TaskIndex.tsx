@@ -10,7 +10,7 @@ import type {
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
-import { agentsApi, type AgentDefinition } from '../../api/agents'
+import { agentsApi, type AgentCommand } from '../../api/agents'
 import { commandDiscoveryApi, type DiscoveredSlashCommand } from '../../api/commandDiscovery'
 import {
   buildAgentSlashCommands,
@@ -296,7 +296,7 @@ function TaskComposer({
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [useWorktree, setUseWorktree] = useState(false)
   const [discoverableSkills, setDiscoverableSkills] = useState<DiscoveredSlashCommand[] | null>(null)
-  const [discoverableAgents, setDiscoverableAgents] = useState<AgentDefinition[] | null>(null)
+  const [discoverableAgents, setDiscoverableAgents] = useState<AgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
@@ -338,9 +338,9 @@ function TaskComposer({
       })
 
     agentsApi.list(normalizedWorkDir)
-      .then(({ activeAgents }) => {
+      .then(({ agents }) => {
         if (cancelled) return
-        setDiscoverableAgents(activeAgents)
+        setDiscoverableAgents(agents)
       })
       .catch(() => {
         if (cancelled) return

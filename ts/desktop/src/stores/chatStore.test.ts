@@ -624,12 +624,12 @@ describe('chatStore history mapping', () => {
       {
         id: 'agent-command-string',
         type: 'user_text',
-        content: '/agent Plan 222',
+        content: '/agent assistant 222',
       },
       {
         id: 'agent-command-array',
         type: 'user_text',
-        content: '/agent Plan 333',
+        content: '/agent assistant 333',
       },
       {
         id: 'transcript-user-1',
@@ -687,6 +687,51 @@ describe('chatStore history mapping', () => {
         modelContent: workspaceCommand,
       },
     ])
+  })
+
+  it('hides custom Agent runtime names while retaining their executable history values', () => {
+    const runtimeCommand = '/agent private-reviewer inspect the table layout'
+    const workspaceCommand = [
+      'Referenced workspace context:',
+      '@"src/App.tsx:L4":',
+      '```tsx',
+      'const value = 1',
+      '```',
+      '',
+      runtimeCommand,
+    ].join('\n')
+
+    const restored = mapHistoryMessagesToUiMessages([
+      {
+        id: 'custom-agent-command',
+        type: 'user',
+        timestamp: '2026-07-18T00:00:00.000Z',
+        content: runtimeCommand,
+      },
+      {
+        id: 'custom-agent-workspace-command',
+        type: 'user',
+        timestamp: '2026-07-18T00:00:01.000Z',
+        content: workspaceCommand,
+      },
+    ])
+
+    expect(restored).toMatchObject([
+      {
+        id: 'custom-agent-command',
+        content: '/agent assistant inspect the table layout',
+        modelContent: runtimeCommand,
+      },
+      {
+        id: 'custom-agent-workspace-command',
+        content: '/agent assistant inspect the table layout',
+        modelContent: workspaceCommand,
+      },
+    ])
+    const displayedContents = restored
+      .filter((message) => message.type === 'user_text')
+      .map((message) => message.content)
+    expect(JSON.stringify(displayedContents)).not.toContain('private-reviewer')
   })
 
   it('does not rewrite a built-in Agent command shown only as a normal text example', () => {
@@ -4402,6 +4447,18 @@ describe('chatStore history mapping', () => {
       {
         type: 'user_text',
         content: '/agent agent-guide explain hooks',
+        modelContent: runtimeCommand,
+      },
+    ])
+  })
+
+  it('shows a generic assistant alias when the runtime replays a custom Agent command', () => {
+    const runtimeCommand = '/agent private-reviewer inspect the table layout'
+
+    expect(appendReplayedUserMessage([], runtimeCommand, 1)).toMatchObject([
+      {
+        type: 'user_text',
+        content: '/agent assistant inspect the table layout',
         modelContent: runtimeCommand,
       },
     ])

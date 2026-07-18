@@ -8,24 +8,6 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { useUIStore } from '../stores/uiStore'
 
-vi.mock('../api/agents', () => ({
-  agentsApi: {
-    list: vi.fn().mockResolvedValue({ activeAgents: [], allAgents: [] }),
-  },
-}))
-
-vi.mock('../stores/agentStore', () => ({
-  useAgentStore: () => ({
-    activeAgents: [],
-    allAgents: [],
-    isLoading: false,
-    error: null,
-    selectedAgent: null,
-    fetchAgents: vi.fn(),
-    selectAgent: vi.fn(),
-  }),
-}))
-
 function switchToSkillsTab() {
   fireEvent.click(screen.getByText('Skills'))
 }

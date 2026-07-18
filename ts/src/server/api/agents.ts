@@ -1,8 +1,8 @@
 /**
  * Agents REST API
  *
- * GET    /api/agents        — 获取 Agent 列表
- * GET    /api/agents/:name  — 获取 Agent 详情
+ * GET    /api/agents        — 获取可执行的协作助手命令
+ * GET    /api/agents/:name  — 检查已保存的 Agent 是否可用
  * POST   /api/agents        — 创建 Agent
  * PUT    /api/agents/:name  — 更新 Agent
  * DELETE /api/agents/:name  — 删除 Agent
@@ -15,10 +15,6 @@ import { AgentService } from '../services/agentService.js'
 import { taskService } from '../services/taskService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { resetTaskList } from '../../utils/tasks.js'
-import {
-  resolveAgentOverrides,
-  type ResolvedAgent,
-} from '../../tools/AgentTool/agentDisplay.js'
 import {
   clearAgentDefinitionsCache,
   getAgentDefinitionsWithOverrides,
@@ -42,6 +38,9 @@ export async function handleAgentsApi(
 
     return await handleAgents(req, url, segments)
   } catch (error) {
+    if (segments[1] === 'agents') {
+      return agentErrorResponse(error)
+    }
     return errorResponse(error)
   }
 }
@@ -59,12 +58,10 @@ async function handleAgents(
   // ── GET /api/agents ──────────────────────────────────────────────────
   if (method === 'GET' && !agentName) {
     const cwd = url.searchParams.get('cwd') || getCwd()
-    const { activeAgents, allAgents } = await getAgentDefinitionsWithOverrides(cwd)
-    const resolvedAgents = resolveAgentOverrides(allAgents, activeAgents)
+    const { activeAgents } = await getAgentDefinitionsWithOverrides(cwd)
 
     return Response.json({
-      activeAgents: activeAgents.map(agent => serializeActiveAgent(agent, true)),
-      allAgents: resolvedAgents.map(serializeResolvedAgent),
+      agents: serializeAgentCommands(activeAgents),
     })
   }
 
@@ -74,7 +71,7 @@ async function handleAgents(
     if (!agent) {
       throw ApiError.notFound(`Agent not found: ${agentName}`)
     }
-    return Response.json({ agent })
+    return Response.json({ available: true })
   }
 
   // ── POST /api/agents ─────────────────────────────────────────────────
@@ -100,8 +97,7 @@ async function handleAgents(
     const body = await parseJsonBody(req)
     await agentService.updateAgent(agentName, body as Record<string, unknown>)
     clearAgentDefinitionsCache()
-    const updated = await agentService.getAgent(agentName)
-    return Response.json({ agent: updated })
+    return Response.json({ ok: true })
   }
 
   // ── DELETE /api/agents/:name ─────────────────────────────────────────
@@ -190,38 +186,65 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
-type ApiAgentDefinition = {
-  agentType: string
-  description?: string
-  tools?: string[]
-  color?: string
-  source: SharedAgentDefinition['source']
-  baseDir?: string
-  isActive: boolean
+function agentErrorResponse(error: unknown): Response {
+  const status = error instanceof ApiError ? error.statusCode : 500
+  const code =
+    status === 400 || status === 405
+      ? 'AGENT_REQUEST_INVALID'
+      : status === 404
+        ? 'AGENT_NOT_FOUND'
+        : status === 409
+          ? 'AGENT_NAME_CONFLICT'
+          : 'AGENT_UNAVAILABLE'
+
+  return Response.json({ error: code }, { status })
 }
 
-type ApiResolvedAgentDefinition = ApiAgentDefinition & {
-  overriddenBy?: SharedAgentDefinition['source']
+export type ProductAgentCommand = {
+  displayName: string
+  runtimeName: string
 }
 
-function serializeActiveAgent(
-  agent: SharedAgentDefinition,
-  isActive: boolean,
-): ApiAgentDefinition {
-  return {
-    agentType: agent.agentType,
-    description: agent.whenToUse,
-    tools: agent.tools,
-    color: agent.color,
-    source: agent.source,
-    baseDir: agent.baseDir,
-    isActive,
+const GUIDE_RUNTIME_NAME = 'claude-code-guide'
+const GUIDE_DISPLAY_NAME = 'agent-guide'
+
+/**
+ * Keep the desktop's Agent discovery surface limited to the two values needed
+ * to insert a working `/agent` command. Runtime definitions carry prompts,
+ * permissions, hooks, MCP references, source precedence, and local paths;
+ * none of those belong in an ordinary product-facing response.
+ */
+function serializeAgentCommands(
+  agents: SharedAgentDefinition[],
+): ProductAgentCommand[] {
+  const runtimeNames = new Set<string>()
+  const displayNames = new Set<string>()
+  const commands: ProductAgentCommand[] = []
+  let nextAssistantNumber = 1
+
+  for (const agent of agents) {
+    const runtimeName = agent.agentType.trim()
+    if (!runtimeName || runtimeNames.has(runtimeName)) continue
+    runtimeNames.add(runtimeName)
+
+    const displayName = agent.source === 'built-in' && runtimeName === GUIDE_RUNTIME_NAME
+      ? GUIDE_DISPLAY_NAME
+      : nextGenericAssistantName(displayNames, () => nextAssistantNumber++)
+    displayNames.add(displayName)
+
+    commands.push({ displayName, runtimeName })
   }
+
+  return commands
 }
 
-function serializeResolvedAgent(agent: ResolvedAgent): ApiResolvedAgentDefinition {
-  return {
-    ...serializeActiveAgent(agent, !agent.overriddenBy),
-    overriddenBy: agent.overriddenBy,
-  }
+function nextGenericAssistantName(
+  usedNames: ReadonlySet<string>,
+  nextNumber: () => number,
+): string {
+  let candidate = ''
+  do {
+    candidate = `assistant-${nextNumber()}`
+  } while (usedNames.has(candidate))
+  return candidate
 }

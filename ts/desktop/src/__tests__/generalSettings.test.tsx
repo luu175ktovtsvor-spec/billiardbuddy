@@ -25,30 +25,12 @@ const tauriDialogMock = vi.hoisted(() => ({
 const tauriProcessMock = vi.hoisted(() => ({
   relaunch: vi.fn(),
 }))
-vi.mock('../api/agents', () => ({
-  agentsApi: {
-    list: vi.fn().mockResolvedValue({ activeAgents: [], allAgents: [] }),
-  },
-}))
-
 vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
 vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
 vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
 vi.mock('../pages/ProfileSettings', () => ({
   ProfileSettings: () => <div>Profile Settings Mock</div>,
-}))
-
-vi.mock('../stores/agentStore', () => ({
-  useAgentStore: () => ({
-    activeAgents: [],
-    allAgents: [],
-    isLoading: false,
-    error: null,
-    selectedAgent: null,
-    fetchAgents: vi.fn(),
-    selectAgent: vi.fn(),
-  }),
 }))
 
 function installElectronDesktopHost() {
@@ -788,7 +770,7 @@ describe('Settings > General tab', () => {
 
     expect(screen.queryByText('Install')).not.toBeInTheDocument()
     expect(screen.getByText('Terminal')).toBeInTheDocument()
-    expect(screen.getByText('MCP')).toBeInTheDocument()
+    expect(screen.getByText('External connections')).toBeInTheDocument()
     expect(screen.getByText('Plugins')).toBeInTheDocument()
   })
 })
