@@ -47,9 +47,8 @@ export function ContentRouter() {
   } else if (activeTabType === 'product-tasks') {
     page = <ProductShell />
   } else if (activeTabType !== 'terminal') {
-    // 会话页 = 宽聊天主区（Sidebar + ActiveSession）。审阅/Diff/文件预览/Browser/终端
-    // 由 ActiveSession 内部按需挂载（workspacePanelStore / terminalPanelStore），
-    // 不常驻挤压聊天。移动端 ActiveSession 自身按 isMobileLayout 收敛。
+    // 会话页由 ActiveSession 承载。审阅、Diff、文件预览、浏览器和终端
+    // 按需挂载，不常驻挤压任务线程。
     page = <ActiveSession />
   }
 

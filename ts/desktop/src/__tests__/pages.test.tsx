@@ -75,8 +75,6 @@ vi.mock('../api/sessions', async (importOriginal) => {
 import { ActiveSession } from '../pages/ActiveSession'
 import { ScheduledTasks } from '../pages/ScheduledTasks'
 
-// Layout components (chrome is now here, not in pages)
-import { Sidebar } from '../components/layout/Sidebar'
 import { UserMessage } from '../components/chat/UserMessage'
 import { ContextUsageIndicator } from '../components/chat/ContextUsageIndicator'
 import { useChatStore } from '../stores/chatStore'
@@ -1164,20 +1162,5 @@ describe('Chat attachments', () => {
 
     fireEvent.click(screen.getByRole('button'))
     expect(screen.getByText('diagram.png')).toBeInTheDocument()
-  })
-})
-
-describe('AppShell layout renders chrome', () => {
-  it('AppShell renders sidebar and session shell', () => {
-    useSessionStore.setState({
-      fetchSessions: vi.fn(async () => {}),
-    } as Partial<ReturnType<typeof useSessionStore.getState>>)
-
-    const { container } = render(<Sidebar />)
-    expect(container.querySelector('aside')).toBeInTheDocument()
-    expect(container.innerHTML).toContain('New session')
-    expect(container.innerHTML).toContain('Scheduled')
-    expect(container.innerHTML).toContain('Search chats')
-    expect(container.innerHTML).toContain('Settings')
   })
 })
