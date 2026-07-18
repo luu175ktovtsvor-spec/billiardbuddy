@@ -50,7 +50,7 @@ export function useKeyboardShortcuts() {
       // Cmd+K — Open product task search.
       if (meta && e.key === 'k') {
         e.preventDefault()
-        openModal('globalSearch')
+        openModal('task-search')
       }
 
       // Escape — Close modal or clear state

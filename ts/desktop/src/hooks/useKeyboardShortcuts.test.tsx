@@ -121,7 +121,7 @@ describe('useKeyboardShortcuts app zoom', () => {
     }))
   })
 
-  it('keeps Cmd or Ctrl K on the globalSearch modal contract', () => {
+  it('opens the dedicated task-search modal with Cmd or Ctrl K', () => {
     render(<ShortcutHost />)
 
     fireEvent.keyDown(document, {
@@ -129,6 +129,6 @@ describe('useKeyboardShortcuts app zoom', () => {
       ctrlKey: true,
     })
 
-    expect(useUIStore.getState().activeModal).toBe('globalSearch')
+    expect(useUIStore.getState().activeModal).toBe('task-search')
   })
 })

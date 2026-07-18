@@ -215,10 +215,10 @@ export function TopBar() {
         <div className="flex h-full shrink-0 items-center">
           {isChat && (
             <div className="flex items-center gap-0.5">
-              <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
+              <IconBtn label={t('search.global.trigger')} onClick={() => openModal('task-search')}>
                 <Search size={18} />
               </IconBtn>
-              <IconBtn label={t('search.global.recentTitle')} onClick={() => openModal('globalSearch')}>
+              <IconBtn label={t('search.global.recentTitle')} onClick={() => openModal('task-search')}>
                 <Clock size={18} />
               </IconBtn>
               <IconBtn

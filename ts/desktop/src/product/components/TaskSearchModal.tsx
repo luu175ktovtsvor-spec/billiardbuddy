@@ -46,6 +46,8 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -69,6 +71,18 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
   }, [index.projects, index.tasks, query])
 
   const isSearching = query.trim().length > 0
+
+  useEffect(() => {
+    setActiveIndex((current) => Math.min(current, Math.max(results.length - 1, 0)))
+  }, [results.length])
+
+  useEffect(() => {
+    if (!open || results.length === 0) return
+    const activeResult = resultsRef.current?.querySelector<HTMLElement>(
+      `[data-task-search-index="${activeIndex}"]`,
+    )
+    activeResult?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeIndex, open, results.length])
 
   const openTask = (result: TaskSearchResult) => {
     useTabStore.getState().openTab(result.task.coreSessionId, result.task.title, 'session')
@@ -95,7 +109,34 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
     }
     if (event.key === 'Escape') {
       event.preventDefault()
+      event.stopPropagation()
       onClose()
+    }
+  }
+
+  const trapDialogFocus = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key !== 'Tab') return
+
+    const focusable = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled])',
+      ) ?? [],
+    )
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (!first || !last) return
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
     }
   }
 
@@ -103,23 +144,29 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]" data-testid="task-search-modal">
-      <button
-        type="button"
-        aria-label={t('search.global.close')}
+      <div
+        aria-hidden="true"
+        data-testid="task-search-backdrop"
         className="absolute inset-0 cursor-default bg-[var(--color-overlay-scrim)]"
         onClick={onClose}
       />
       <section
+        ref={dialogRef}
         className="glass-panel relative z-10 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[var(--radius-xl)]"
         role="dialog"
         aria-modal="true"
         aria-label={t('search.global.trigger')}
+        onKeyDown={trapDialogFocus}
       >
         <div className="flex items-center gap-2.5 border-b border-[var(--color-border)] px-4 py-3">
           <Search className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
           <input
             ref={inputRef}
             type="text"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="task-search-results"
+            aria-activedescendant={results[activeIndex] ? `task-search-option-${results[activeIndex]?.task.id}` : undefined}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value)
@@ -146,7 +193,7 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto py-1.5" role="listbox">
+        <div ref={resultsRef} id="task-search-results" className="min-h-0 flex-1 overflow-y-auto py-1.5" role="listbox">
           {!isSearching && results.length > 0 ? (
             <div className="px-4 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
               {t('search.global.recentTitle')}
@@ -163,6 +210,7 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
             results.map((result, index) => (
               <TaskSearchRow
                 key={result.task.id}
+                index={index}
                 result={result}
                 active={index === activeIndex}
                 onActivate={() => setActiveIndex(index)}
@@ -179,11 +227,13 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
 
 function TaskSearchRow({
   result,
+  index,
   active,
   onActivate,
   onOpen,
 }: {
   result: TaskSearchResult
+  index: number
   active: boolean
   onActivate: () => void
   onOpen: () => void
@@ -198,9 +248,12 @@ function TaskSearchRow({
   return (
     <button
       type="button"
+      id={`task-search-option-${result.task.id}`}
       role="option"
       aria-selected={active}
+      data-task-search-index={index}
       onMouseEnter={onActivate}
+      onFocus={onActivate}
       onClick={onOpen}
       className={`flex w-full flex-col gap-1 px-4 py-2.5 text-left transition-colors focus-visible:outline-none ${
         active ? 'bg-[var(--color-surface-hover)]' : ''
