@@ -35,7 +35,12 @@ import {
 } from './services/appMode'
 import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
-import { installMainWindowNavigationGuards, installPreviewNavigationGuards } from './services/navigationGuards'
+import {
+  installMainWindowNavigationGuards,
+  installPreviewNavigationGuards,
+  isTrustedMainWindowFrame,
+  isTrustedMainWindowSender,
+} from './services/navigationGuards'
 import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
@@ -68,6 +73,7 @@ let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
+let mainWindowRendererEntry: string | null = null
 
 installMacOsChromiumKeychainPromptGuard(app)
 
@@ -100,8 +106,7 @@ function rendererEntry() {
   })
 }
 
-async function loadRendererEntry(window: BrowserWindow) {
-  const entry = rendererEntry()
+async function loadRendererEntry(window: BrowserWindow, entry: string) {
   if (/^https?:\/\//.test(entry)) {
     await window.loadURL(entry)
   } else {
@@ -202,11 +207,20 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
   return window
 }
 
+function isTrustedMainWindowIpcSender(event: Electron.IpcMainInvokeEvent): boolean {
+  return mainWindowRendererEntry !== null
+    && isTrustedMainWindowSender(event.sender, mainWindow?.webContents, mainWindowRendererEntry)
+    && isTrustedMainWindowFrame(event.senderFrame, mainWindowRendererEntry)
+}
+
 function registerHandler<T>(
   channel: ElectronIpcChannel,
   handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => T | Promise<T>,
 ) {
   ipcMain.handle(channel, async (event, payload) => {
+    if (!isTrustedMainWindowIpcSender(event)) {
+      throw new Error('Rejected Electron IPC from an untrusted renderer')
+    }
     if (!isElectronIpcChannel(channel) || !validateElectronIpcPayload(channel, payload)) {
       throw new Error(`Invalid Electron IPC payload for ${channel}`)
     }
@@ -367,6 +381,7 @@ function registerIpcHandlers() {
 async function createMainWindow() {
   const restoredState = readWindowState(app, screen.getAllDisplays())
   const bounds = windowOptionsFromState(restoredState)
+  const entry = rendererEntry()
   mainWindow = new BrowserWindow({
     ...bounds,
     minWidth: MIN_WINDOW_WIDTH,
@@ -377,11 +392,18 @@ async function createMainWindow() {
       preload: preloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
       sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
     },
   })
+  mainWindowRendererEntry = entry
 
-  installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: openExternalUrl })
+  installMainWindowNavigationGuards(mainWindow.webContents, {
+    openExternal: openExternalUrl,
+    rendererEntry: entry,
+  })
   installPreviewCleanupOnRendererNavigation(mainWindow.webContents, () => {
     previewService?.close()
   })
@@ -404,7 +426,7 @@ async function createMainWindow() {
 
   writeWindowSmokeSnapshot(mainWindow, 'after-create')
 
-  await loadRendererEntry(mainWindow)
+  await loadRendererEntry(mainWindow, entry)
 
   restoreWindowMaximized(mainWindow, restoredState)
   showMainWindow(mainWindow, app)

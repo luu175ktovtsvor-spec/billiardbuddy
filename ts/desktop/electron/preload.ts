@@ -19,4 +19,8 @@ const electronHost = createElectronHost({
   },
 })
 
-contextBridge.exposeInMainWorld('desktopHost', electronHost)
+// Do not give an embedded frame access to the desktop IPC bridge. The main
+// process separately validates the top-level sender and renderer origin.
+if (process.isMainFrame) {
+  contextBridge.exposeInMainWorld('desktopHost', electronHost)
+}
