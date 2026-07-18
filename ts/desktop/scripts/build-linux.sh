@@ -29,7 +29,7 @@ ELECTRON_OUTPUT_DIR="${DESKTOP_DIR}/build-artifacts/electron"
 
 usage() {
   cat <<'EOF'
-Build BilliardBuddy desktop for Linux with Electron Builder.
+Build Claude Code Haha desktop for Linux with Electron Builder.
 
 Usage:
   ./desktop/scripts/build-linux.sh [extra electron-builder args...]
@@ -39,8 +39,7 @@ Environment:
   LINUX_TARGETS         Electron Builder Linux targets. Defaults to "AppImage deb".
   SKIP_INSTALL=1        Skip `bun install` in the repo root and desktop app.
   REBUILD_NATIVE=1      Run `electron-builder install-app-deps` before packaging.
-  BB_MEDIA_TOOLCHAIN_SOURCE_DIR
-                        Directory containing an audited LGPL FFmpeg toolchain.
+  SKIP_PACKAGE_SMOKE=1  Skip package-smoke verification after copying artifacts.
   OPEN_OUTPUT=1         Open the canonical artifact output directory after a successful build.
 EOF
 }
@@ -76,9 +75,6 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   (cd "${DESKTOP_DIR}" && bun install)
 fi
 
-echo "[build-linux] Staging audited media toolchain..."
-(cd "${DESKTOP_DIR}" && BB_MEDIA_TOOLCHAIN_PLATFORM=linux bun run stage:media-toolchain)
-
 echo "[build-linux] Cleaning stale Electron outputs..."
 rm -rf "${DESKTOP_DIR}/dist"
 rm -rf "${DESKTOP_DIR}/electron-dist"
@@ -113,7 +109,7 @@ find "${CANONICAL_OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 if [[ -d "${ELECTRON_OUTPUT_DIR}/linux-unpacked" ]]; then
   cp -R "${ELECTRON_OUTPUT_DIR}/linux-unpacked" "${CANONICAL_OUTPUT_DIR}/"
 else
-  echo "[build-linux] Warning: linux-unpacked was not found under ${ELECTRON_OUTPUT_DIR}." >&2
+  echo "[build-linux] Warning: linux-unpacked was not found under ${ELECTRON_OUTPUT_DIR}; package-smoke will only inspect packaged artifacts." >&2
 fi
 
 find "${ELECTRON_OUTPUT_DIR}" -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.blockmap' -o -name 'latest-linux*.yml' \) -exec cp -f {} "${CANONICAL_OUTPUT_DIR}/" \;
@@ -125,6 +121,11 @@ Builder output: ${ELECTRON_OUTPUT_DIR}
 Canonical output: ${CANONICAL_OUTPUT_DIR}
 Built at: $(date '+%Y-%m-%d %H:%M:%S %z')
 EOF
+
+if [[ "${SKIP_PACKAGE_SMOKE:-0}" != "1" ]]; then
+  echo "[build-linux] Running package smoke..."
+  (cd "${REPO_ROOT}" && bun run test:package-smoke --platform linux --package-kind release --artifacts-dir "desktop/build-artifacts/${CANONICAL_ARCH}")
+fi
 
 echo
 echo "[build-linux] Build finished."

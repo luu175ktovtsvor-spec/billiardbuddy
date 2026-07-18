@@ -922,7 +922,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const addToast = useUIStore((state) => state.addToast)
   const [filterQuery, setFilterQuery] = useState('')
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false)
-  const [isNavigatorOpen, setIsNavigatorOpen] = useState(true)
+  const [isNavigatorOpen, setIsNavigatorOpen] = useState(false)
   const [previewTabContextMenu, setPreviewTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null)
   const width = useWorkspacePanelStore((state) => state.width)
@@ -967,7 +967,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
   const activePreviewTab =
     previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[previewTabs.length - 1] ?? null
   const hasPreviewTabs = previewTabs.length > 0
-  const isNavigatorVisible = embedded || !hasPreviewTabs || isNavigatorOpen
+  const isNavigatorVisible = !hasPreviewTabs || isNavigatorOpen
   const activeTreePath = activePreviewTab?.kind === 'file' ? activePreviewTab.path : null
   const filteredChangedFiles = useMemo(
     () => (status?.changedFiles ?? []).filter((file) => changedFileMatchesFilter(file, normalizedFilterQuery)),
@@ -1428,8 +1428,8 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
       }
       style={embedded ? undefined : { width: panelWidth, maxWidth: panelMaxWidth, minWidth: panelMinWidth }}
     >
-      {(hasPreviewTabs || embedded) && (
-        <div className={`flex min-w-0 flex-1 flex-col bg-[var(--color-app-main)] ${isNavigatorVisible ? 'border-r border-[var(--color-border)]' : ''}`}>
+      {hasPreviewTabs && (
+        <div className={`flex min-w-0 flex-1 flex-col bg-[var(--color-surface)] ${isNavigatorVisible ? 'border-r border-[var(--color-border)]' : ''}`}>
           {renderPreviewTabs()}
           {renderPreviewContent()}
         </div>
@@ -1437,7 +1437,7 @@ export function WorkspacePanel({ sessionId, embedded = false, forceVisible = fal
 
       {isNavigatorVisible && (
         <div
-          className={`${hasPreviewTabs || embedded ? 'basis-[32%] min-w-[220px] max-w-[320px]' : 'w-full'} flex h-full shrink-0 flex-col bg-[var(--color-app-main)]`}
+          className={`${hasPreviewTabs ? 'basis-[32%] min-w-[220px] max-w-[320px]' : 'w-full'} flex h-full shrink-0 flex-col bg-[var(--color-surface)]`}
         >
           <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] px-2.5">
             <div className="relative min-w-0">

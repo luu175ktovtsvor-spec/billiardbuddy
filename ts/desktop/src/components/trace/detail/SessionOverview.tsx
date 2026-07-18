@@ -44,7 +44,7 @@ export function SessionOverview({
           label={t('trace.tokens')}
           value={`${formatTokenCount(stats.inputTokens)} → ${formatTokenCount(stats.outputTokens)}`}
         />
-        <Stat label={t('trace.models')} value={String(stats.models.length)} />
+        <Stat label={t('trace.models')} value={stats.models.length > 0 ? stats.models.join(', ') : '--'} />
       </div>
 
       {children.length > 0 ? (

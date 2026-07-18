@@ -322,11 +322,6 @@ describe('Business Flow: Agent Management', () => {
     expect(Array.isArray(data.allAgents)).toBe(true)
     expect(data.activeAgents.length).toBeGreaterThan(0)
     expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    for (const agent of [...data.activeAgents, ...data.allAgents]) {
-      expect(agent).not.toHaveProperty('model')
-      expect(agent).not.toHaveProperty('modelDisplay')
-      expect(agent).not.toHaveProperty('systemPrompt')
-    }
   })
 
   it('should create a new agent with full config', async () => {

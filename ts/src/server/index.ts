@@ -14,10 +14,13 @@ import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
 import { ensureQfGatewayRegistration } from './services/qfGatewayProvider.js'
+import { handleBbOAuthCallback } from './api/bb-oauth.js'
+import { handleBbOpenAIOAuthCallback } from './api/bb-openai-oauth.js'
 import { handlePreviewFs } from './api/previewFs.js'
 import { handleLocalFile } from './api/localFile.js'
 import { sessionService } from './services/sessionService.js'
 import { conversationService } from './services/conversationService.js'
+import { OPENAI_CODEX_REDIRECT_PATH } from '../services/openaiAuth/client.js'
 import { ensureDesktopCliLauncherInstalled } from './services/desktopCliLauncherService.js'
 import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
@@ -26,7 +29,6 @@ import { handleStaticH5Request } from './staticH5.js'
 import { classifyH5Request, shouldBlockDisabledH5Access, shouldRequireH5Token } from './h5AccessPolicy.js'
 import { H5AccessService } from './services/h5AccessService.js'
 import { refreshDisconnectGraceMs } from './ws/disconnectGraceConfig.js'
-import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -124,10 +126,6 @@ function originFromUrl(value: string | null): string | null {
 }
 
 export function startServer(port = PORT, host = HOST) {
-  const mediaApiHandler = createMediaApiHandler(
-    undefined,
-    consumeMediaUiCapability(),
-  )
   enableConfigs()
   // Warm the synchronous disconnect-grace cache from managed settings so the
   // first client disconnect honors the configured value (issue #764).
@@ -280,6 +278,17 @@ export function startServer(port = PORT, host = HOST) {
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
+        if (url.pathname === '/callback') {
+          return handleBbOAuthCallback(url)
+        }
+
+        if (
+          url.pathname === OPENAI_CODEX_REDIRECT_PATH ||
+          url.pathname === '/callback/openai'
+        ) {
+          return handleBbOpenAIOAuthCallback(url)
+        }
+
         // Preview filesystem — serve sandboxed workspace files for a session.
         if (url.pathname.startsWith('/preview-fs/')) {
           if (cors.rejected) {
@@ -353,7 +362,7 @@ export function startServer(port = PORT, host = HOST) {
           }
 
           try {
-            const response = await handleApiRequest(req, url, { media: mediaApiHandler })
+            const response = await handleApiRequest(req, url)
             return withCors(response, cors)
           } catch (error) {
             void diagnosticsService.recordEvent({
@@ -417,10 +426,6 @@ export function startServer(port = PORT, host = HOST) {
           )
         }
 
-        if (url.pathname === '/auth/callback' || url.pathname === '/callback') {
-          return new Response('Not Found', { status: 404 })
-        }
-
         // Static H5 shell/assets are non-secret bootstrap content and must load
         // before the browser can read the QR token; API/proxy/ws stay protected above.
         const staticResponse = await handleStaticH5Request(req, url)
@@ -465,7 +470,7 @@ export function startServer(port = PORT, host = HOST) {
     )
   })
 
-  console.log(`[Server] BilliardBuddy Agent service running at http://${host}:${serverPort}`)
+  console.log(`[Server] Claude Code API server running at http://${host}:${serverPort}`)
   return server
 }
 

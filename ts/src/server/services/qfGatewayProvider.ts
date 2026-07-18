@@ -91,7 +91,6 @@ export const HOST_ONLY_GATEWAY_ENV_KEYS = [
   'QF_GATEWAY_URL',
   'QF_GATEWAY_MODEL',
   'BB_INSTALLATION_ID',
-  'BB_MEDIA_UI_CAPABILITY',
 ] as const
 
 /** Return a copy of `env` with the host-only gateway keys removed (never mutates input). */
@@ -138,19 +137,20 @@ export function buildQfGatewayProvider(): SavedProvider {
 }
 
 /**
- * Idempotent startup hook: route the product through its managed gateway.
+ * Idempotent startup hook: auto-route the agent through the product gateway.
  *
- * When the packaged product supplies a gateway URL and token, that gateway is
- * authoritative. The desktop no longer exposes provider selection, so keeping a
- * stale manual or official provider active would strand upgraded users on a
- * runtime they cannot inspect or change. Saved provider definitions remain on
- * disk for protocol compatibility, but the active runtime is the synthetic
- * gateway provider and the saved list is never mutated here.
+ * Only activates when the gateway is configured AND the user has NOT chosen a
+ * provider of their own. Never overwrites a non-null activeId that points at a
+ * user's manual provider, and never mutates the saved provider list.
  */
 export async function ensureQfGatewayProviderRegistered(
   service: ProviderService,
 ): Promise<void> {
   if (!qfGatewayConfigured()) return
+
+  const { activeId } = await service.listProviders()
+  // Respect a user's explicit choice — only claim a null or already-gateway slot.
+  if (activeId !== null && !isQfGatewayProviderId(activeId)) return
 
   await service.activateProvider(QF_GATEWAY_PROVIDER_ID)
 }

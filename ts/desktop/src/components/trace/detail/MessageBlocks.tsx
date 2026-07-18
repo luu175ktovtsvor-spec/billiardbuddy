@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Wrench } from 'lucide-react'
 import { useTranslation } from '../../../i18n'
 import type { NormalizedBlock, NormalizedMessage } from '../../../lib/trace/types'
@@ -27,7 +28,6 @@ const ROLE_STYLES: Record<NormalizedMessage['role'], { badge: string; container:
 }
 
 export function MessageBlocks({ message }: { message: NormalizedMessage }) {
-  if (message.role === 'system') return null
   const styles = ROLE_STYLES[message.role]
   return (
     <div
@@ -51,7 +51,7 @@ function BlockView({ block }: { block: NormalizedBlock }) {
     case 'text':
       return <TextBlock text={block.text} />
     case 'thinking':
-      return null
+      return <ThinkingBlock thinking={block.thinking} />
     case 'tool_use':
       return <ToolUseBlock id={block.id} name={block.name} input={block.input} />
     case 'tool_result':
@@ -79,6 +79,28 @@ function TextBlock({ text }: { text: string }) {
         copiedLabel={t('common.copied')}
         className="absolute right-1.5 top-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
       />
+    </div>
+  )
+}
+
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const t = useTranslation()
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
+      >
+        {t('trace.detail.thinking')} · {t('trace.detail.chars', { count: thinking.length })}
+      </button>
+      {open ? (
+        <pre className="mt-1.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] italic leading-5 text-[var(--color-text-tertiary)]">
+          {thinking}
+        </pre>
+      ) : null}
     </div>
   )
 }

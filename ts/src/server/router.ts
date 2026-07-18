@@ -16,6 +16,8 @@ import { handleProvidersApi } from './api/providers.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
+import { handleBbOAuthApi } from './api/bb-oauth.js'
+import { handleBbOpenAIOAuthApi } from './api/bb-openai-oauth.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
@@ -25,18 +27,8 @@ import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleMemoryApi } from './api/memory.js'
 import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleTracesApi } from './api/traces.js'
-import { handleMediaApi } from './api/media.js'
-import { handleVoiceApi } from './api/voice.js'
 
-type ApiRequestHandlers = {
-  media?: typeof handleMediaApi
-}
-
-export async function handleApiRequest(
-  req: Request,
-  url: URL,
-  handlers: ApiRequestHandlers = {},
-): Promise<Response> {
+export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
   const path = url.pathname
   const segments = path.split('/').filter(Boolean) // ['api', 'sessions', ...]
 
@@ -85,6 +77,12 @@ export async function handleApiRequest(
     case 'providers':
       return handleProvidersApi(req, url, segments)
 
+    case 'bb-oauth':
+      return handleBbOAuthApi(req, url, segments)
+
+    case 'bb-openai-oauth':
+      return handleBbOpenAIOAuthApi(req, url, segments)
+
     case 'skills':
       return handleSkillsApi(req, url, segments)
 
@@ -120,12 +118,6 @@ export async function handleApiRequest(
 
     case 'traces':
       return handleTracesApi(req, url, segments)
-
-    case 'media':
-      return (handlers.media ?? handleMediaApi)(req, url, segments)
-
-    case 'voice':
-      return handleVoiceApi(req, segments)
 
     case 'filesystem':
       return handleFilesystemRoute(url.pathname, url)

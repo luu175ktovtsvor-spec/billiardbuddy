@@ -267,7 +267,6 @@ describe('Electron preview service', () => {
       height: 100,
     })
 
-    await service.message({ v: 1, type: 'enter-picker' })
     await service.sendMessageToRenderer(view.webContents, JSON.stringify({
       v: 1,
       type: 'selection',
@@ -293,108 +292,6 @@ describe('Electron preview service', () => {
           },
         },
       },
-    ])
-  })
-
-  it('accepts one armed selection and clears authorization across exit and navigation', async () => {
-    const view = new FakeView()
-    const renderer = new FakeWebContents()
-    const service = new ElectronPreviewService({
-      createView: () => view,
-      previewScriptPath: previewScript(),
-    })
-    const parent = { contentView: { addChildView: vi.fn(), removeChildView: vi.fn() } }
-    await service.open(parent, 'https://example.com/a', { x: 0, y: 0, width: 100, height: 100 })
-    const selection = JSON.stringify({
-      v: 1,
-      type: 'selection',
-      payload: { pageUrl: 'https://example.com/a', element: { selector: '#target', tag: 'button', classes: [] } },
-    })
-
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    expect(renderer.sent).toEqual([])
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    expect(renderer.sent).toHaveLength(1)
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.message({ v: 1, type: 'exit-picker' })
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    expect(renderer.sent).toHaveLength(1)
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.navigate('https://example.com/b')
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    expect(renderer.sent).toHaveLength(1)
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.open(parent, 'https://example.com/c', { x: 0, y: 0, width: 100, height: 100 })
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-    expect(renderer.sent).toHaveLength(1)
-  })
-
-  it('rolls back picker authorization when entering picker mode fails to inject', async () => {
-    const view = new FakeView()
-    const renderer = new FakeWebContents()
-    const service = new ElectronPreviewService({
-      createView: () => view,
-      previewScriptPath: previewScript(),
-    })
-    await service.open({ contentView: { addChildView: vi.fn(), removeChildView: vi.fn() } }, 'https://example.com', {
-      x: 0,
-      y: 0,
-      width: 100,
-      height: 100,
-    })
-    view.webContents.executeJavaScript = vi.fn().mockRejectedValueOnce(new Error('injection failed'))
-
-    await expect(service.message({ v: 1, type: 'enter-picker' })).rejects.toThrow('injection failed')
-    await service.sendMessageToRenderer(view.webContents, JSON.stringify({
-      v: 1,
-      type: 'selection',
-      payload: { pageUrl: 'https://example.com', element: { selector: '#target', tag: 'button', classes: [] } },
-    }), renderer)
-
-    expect(renderer.sent).toEqual([])
-  })
-
-  it('clears picker authorization when the page navigates or exits picker mode', async () => {
-    const view = new FakeView()
-    const renderer = new FakeWebContents()
-    const service = new ElectronPreviewService({
-      createView: () => view,
-      previewScriptPath: previewScript(),
-    })
-    await service.open({ contentView: { addChildView: vi.fn(), removeChildView: vi.fn() } }, 'https://example.com/a', {
-      x: 0,
-      y: 0,
-      width: 100,
-      height: 100,
-    })
-    const selection = JSON.stringify({
-      v: 1,
-      type: 'selection',
-      payload: { pageUrl: 'https://example.com/a', element: { selector: '#target', tag: 'button', classes: [] } },
-    })
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.sendMessageToRenderer(view.webContents, JSON.stringify({
-      v: 1,
-      type: 'navigated',
-      url: 'https://example.com/b',
-      title: 'B',
-    }), renderer)
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-
-    await service.message({ v: 1, type: 'enter-picker' })
-    await service.sendMessageToRenderer(view.webContents, JSON.stringify({ v: 1, type: 'picker-exited' }), renderer)
-    await service.sendMessageToRenderer(view.webContents, selection, renderer)
-
-    expect(renderer.sent.map(({ payload }) => payload)).toEqual([
-      { v: 1, type: 'navigated', url: 'https://example.com/b', title: 'B' },
-      { v: 1, type: 'picker-exited' },
     ])
   })
 

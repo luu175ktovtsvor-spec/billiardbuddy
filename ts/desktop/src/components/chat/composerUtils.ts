@@ -1,6 +1,5 @@
 import type { SettingsTab } from '../../stores/uiStore'
 import type { TranslationKey } from '../../i18n'
-import { getProductAgentDescription, getProductAgentType } from '../../lib/productAgentDisplay'
 
 /** Map from slash command name to its i18n description key */
 const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
@@ -21,7 +20,11 @@ const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
   commit: 'slashCmd.commit.description',
   pr: 'slashCmd.pr.description',
   init: 'slashCmd.init.description',
+  bug: 'slashCmd.bug.description',
   config: 'slashCmd.config.description',
+  login: 'slashCmd.login.description',
+  logout: 'slashCmd.logout.description',
+  model: 'slashCmd.model.description',
   permissions: 'slashCmd.permissions.description',
   'terminal-setup': 'slashCmd.terminal-setup.description',
   vim: 'slashCmd.vim.description',
@@ -69,8 +72,12 @@ export const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: 'review', description: 'Review code changes' },
   { name: 'commit', description: 'Create a git commit' },
   { name: 'pr', description: 'Create a pull request' },
-  { name: 'init', description: 'Initialize project instructions' },
+  { name: 'init', description: 'Initialize project CLAUDE.md' },
+  { name: 'bug', description: 'Report a bug' },
   { name: 'config', description: 'Open configuration' },
+  { name: 'login', description: 'Switch Anthropic accounts' },
+  { name: 'logout', description: 'Sign out of current account' },
+  { name: 'model', description: 'Switch AI model' },
   { name: 'permissions', description: 'View or manage tool permissions' },
   { name: 'terminal-setup', description: 'Set up terminal integration' },
   { name: 'vim', description: 'Toggle vim editing mode' },
@@ -108,7 +115,6 @@ export function getLocalizedFallbackCommands(t: (key: TranslationKey) => string)
 
 export type SlashCommandOption = {
   name: string
-  runtimeName?: string
   description: string
   argumentHint?: string
 }
@@ -125,76 +131,26 @@ export function buildAgentSlashCommands(
 ): SlashCommandOption[] {
   const seen = new Set<string>()
   const commands: SlashCommandOption[] = []
-  const reservedDisplayNames = new Set(
-    agents
-      .filter((agent) => agent.source !== 'built-in')
-      .map((agent) => agent.agentType.trim())
-      .filter(Boolean),
-  )
 
   for (const agent of agents) {
-    const runtimeAgentType = agent.agentType.trim()
-    if (!runtimeAgentType || seen.has(runtimeAgentType)) continue
-    seen.add(runtimeAgentType)
+    const agentType = agent.agentType.trim()
+    if (!agentType || seen.has(agentType)) continue
+    seen.add(agentType)
 
-    const preferredDisplayAgentType = getProductAgentType({
-      agentType: runtimeAgentType,
-      description: agent.description,
-      source: agent.source ?? '',
-    })
-    const displayAgentType = agent.source === 'built-in'
-      ? reserveBuiltInAgentDisplayName(preferredDisplayAgentType, reservedDisplayNames)
-      : runtimeAgentType
-    reservedDisplayNames.add(displayAgentType)
-    const displayDescription = getProductAgentDescription({
-      agentType: runtimeAgentType,
-      description: agent.description,
-      source: agent.source ?? '',
-    }, `Run with the ${displayAgentType} Agent`)
-
-    const details = [agent.source].filter(Boolean).join(' - ')
+    const details = [agent.modelDisplay, agent.source].filter(Boolean).join(' - ')
     const description = [
-      displayDescription.trim(),
+      agent.description?.trim() || `Run with the ${agentType} Agent`,
       details ? `(${details})` : '',
     ].filter(Boolean).join(' ')
-    const name = `agent ${displayAgentType}`
-    const runtimeName = `agent ${runtimeAgentType}`
 
     commands.push({
-      name,
-      ...(runtimeName !== name ? { runtimeName } : {}),
+      name: `agent ${agentType}`,
       description,
       argumentHint: '<prompt>',
     })
   }
 
   return commands
-}
-
-function reserveBuiltInAgentDisplayName(preferred: string, reserved: Set<string>): string {
-  if (!reserved.has(preferred)) return preferred
-
-  const base = preferred === 'agent-guide' ? 'billiardbuddy-guide' : `${preferred}-built-in`
-  let candidate = base
-  let suffix = 2
-  while (reserved.has(candidate)) {
-    candidate = `${base}-${suffix}`
-    suffix += 1
-  }
-  return candidate
-}
-
-export function resolveSlashCommandRuntimeValue(
-  value: string,
-  commands: ReadonlyArray<SlashCommandOption>,
-): string {
-  for (const command of commands) {
-    if (!command.runtimeName || command.runtimeName === command.name) continue
-    const displayPrefix = `/${command.name}`
-    if (value !== displayPrefix && !value.startsWith(`${displayPrefix} `)) continue
-    return `/${command.runtimeName}${value.slice(displayPrefix.length)}`
-  }
-  return value
 }
 
 export function appendAgentSlashCommands(
@@ -218,7 +174,7 @@ export type SlashUiAction =
       tab: SettingsTab
     }
   | {
-      type: 'product-managed'
+      type: 'model'
     }
 
 export function resolveSlashUiAction(value: string): SlashUiAction | null {
@@ -233,8 +189,8 @@ export function resolveSlashUiAction(value: string): SlashUiAction | null {
     return { type: 'settings', tab: settingsCommand.tab }
   }
 
-  if (['login', 'logout', 'model'].includes(normalizedValue)) {
-    return { type: 'product-managed' }
+  if (normalizedValue === 'model') {
+    return { type: 'model' }
   }
 
   return null
@@ -275,7 +231,7 @@ export function mergeSlashCommands(
     merged.set(command.name, command)
   }
 
-  return [...merged.values()].filter((command) => !['login', 'logout', 'model'].includes(command.name))
+  return [...merged.values()]
 }
 
 function getSlashCommandMatchRank(command: SlashCommandOption, filter: string): number {

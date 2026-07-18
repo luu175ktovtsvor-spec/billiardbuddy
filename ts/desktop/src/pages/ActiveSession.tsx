@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
-import { Clock, FileText, Folder, Globe2, Sparkles, Target } from 'lucide-react'
+import { Target } from 'lucide-react'
 import {
   SCHEDULED_TAB_ID,
   SETTINGS_TAB_ID,
@@ -31,11 +31,11 @@ import { WorkbenchPanel } from '../components/workbench/WorkbenchPanel'
 import { TeamStatusBar } from '../components/teams/TeamStatusBar'
 import { TerminalSettings } from './TerminalSettings'
 import type { SessionListItem } from '../types/session'
-import type { ActiveGoalState } from '../types/chat'
+import type { ActiveGoalState, TokenUsage } from '../types/chat'
 import { useMobileViewport } from '../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
-import { Smiley } from '../components/shared/Smiley'
-import { useSettingsStore } from '../stores/settingsStore'
+import { formatTokenCount } from '../lib/formatTokenCount'
+import { publicAssetPath } from '../lib/publicAsset'
 import {
   createBackgroundTaskDismissKey,
   hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks,
@@ -48,23 +48,6 @@ const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
   'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
 const EMPTY_DISMISSED_BACKGROUND_TASK_KEYS = new Set<string>()
 
-const MAIN_EMPTY_SUGGESTIONS = {
-  zh: [
-    { icon: Folder, label: '整理一个文件夹', prompt: '帮我整理一个文件夹。先问我要整理哪个文件夹，看完里面有什么后给我归类方案，我确认了再动手。' },
-    { icon: FileText, label: '写一份文档', prompt: '帮我写一份文档。先问清楚主题、给谁看和大概多长，然后列个提纲给我确认。' },
-    { icon: Globe2, label: '上网查个东西', prompt: '帮我上网查一个问题，把结论用大白话讲给我，并附上来源链接。先问我要查什么。' },
-    { icon: Clock, label: '安排定时任务', prompt: '帮我安排一个定时自动执行的任务。先问我要做什么、多久一次和什么时间执行。' },
-    { icon: Sparkles, label: '做一张图', prompt: '帮我生成一张图片。先问我想要的内容、风格和用途。' },
-  ],
-  en: [
-    { icon: Folder, label: 'Organize a folder', prompt: 'Help me organize a folder. Ask which folder, review it, and propose a plan before changing anything.' },
-    { icon: FileText, label: 'Write a document', prompt: 'Help me write a document. Ask about the topic, audience, and length, then propose an outline first.' },
-    { icon: Globe2, label: 'Research something', prompt: 'Research a question for me, explain the conclusion plainly, and include source links. Ask what I need researched.' },
-    { icon: Clock, label: 'Schedule a task', prompt: 'Help me schedule an automatic task. Ask what it should do, how often, and when it should run.' },
-    { icon: Sparkles, label: 'Create an image', prompt: 'Help me create an image. Ask about the content, style, and intended use first.' },
-  ],
-} as const
-
 function isSessionTabState(activeTabId: string | null, activeTabType: TabType | null | undefined) {
   if (!activeTabId) return false
   if (activeTabType === 'session') return true
@@ -74,6 +57,15 @@ function isSessionTabState(activeTabId: string | null, activeTabType: TabType | 
     !activeTabId.startsWith(TERMINAL_TAB_PREFIX) &&
     !activeTabId.startsWith(TRACE_TAB_PREFIX) &&
     !activeTabId.startsWith(WORKBENCH_TAB_PREFIX)
+}
+
+function getTokenUsageTotal(usage: TokenUsage): number {
+  return (
+    usage.input_tokens +
+    usage.output_tokens +
+    (usage.cache_read_tokens ?? 0) +
+    (usage.cache_creation_tokens ?? 0)
+  )
 }
 
 function getSessionTerminalCwd(session: SessionListItem | undefined) {
@@ -295,7 +287,6 @@ function TerminalResizeHandle() {
 
 export function ActiveSession() {
   const isMobileLayout = useMobileViewport() && !isDesktopRuntime()
-  const locale = useSettingsStore((state) => state.locale)
   const workbenchPanelRef = useRef<HTMLElement>(null)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const [dismissedBackgroundTaskKeysBySession, setDismissedBackgroundTaskKeysBySession] = useState<Record<string, Set<string>>>({})
@@ -309,6 +300,7 @@ export function ActiveSession() {
   const hasIncompleteTasks = useCLITaskStore((s) => s.tasks.some((task) => task.status !== 'completed'))
   const hasRunningTasks = useCLITaskStore((s) => s.tasks.some((task) => task.status === 'in_progress'))
   const chatState = sessionState?.chatState ?? 'idle'
+  const tokenUsage = sessionState?.tokenUsage ?? { input_tokens: 0, output_tokens: 0 }
   const hasRunningBackgroundTasks = hasAnyRunningBackgroundTasks(sessionState?.backgroundAgentTasks)
 
   const session = sessions.find((s) => s.id === activeTabId)
@@ -390,10 +382,21 @@ export function ActiveSession() {
     sessionState?.historyStatus === 'error'
       ? sessionState.historyError || t('session.historyLoadFailed')
       : null
+  const visibleMessageCount = messages.length > 0 ? messages.length : session?.messageCount ?? 0
+
   const isActive = chatState !== 'idle' ||
     (trackedTaskSessionId === activeTabId && hasRunningTasks) ||
     hasRunningBackgroundTasks
-  const showSessionStatus = isActive || session?.workDirExists === false || Boolean(activeGoal)
+  const totalTokens = getTokenUsageTotal(tokenUsage)
+
+  const lastUpdated = useMemo(() => {
+    if (!session?.modifiedAt) return ''
+    const diff = Date.now() - new Date(session.modifiedAt).getTime()
+    if (diff < 60000) return t('session.timeJustNow')
+    if (diff < 3600000) return t('session.timeMinutes', { n: Math.floor(diff / 60000) })
+    if (diff < 86400000) return t('session.timeHours', { n: Math.floor(diff / 3600000) })
+    return t('session.timeDays', { n: Math.floor(diff / 86400000) })
+  }, [session?.modifiedAt, t])
 
   useEffect(() => {
     if (!activeTabId || dismissedBackgroundTaskKeys.size === 0) return
@@ -474,7 +477,7 @@ export function ActiveSession() {
                 compactEmptyHero ? 'pb-6' : 'pb-32',
               ].join(' ')}
             >
-              <div className={`flex w-full flex-col items-center text-center ${isMemberSession ? 'max-w-md' : 'max-w-3xl'}`}>
+              <div className="flex max-w-md flex-col items-center text-center">
                 {isMemberSession ? (
                   <>
                     <span className={`material-symbols-outlined mb-4 text-[var(--color-text-tertiary)] ${compactEmptyHero ? 'text-[36px]' : 'text-[48px]'}`}>smart_toy</span>
@@ -486,37 +489,24 @@ export function ActiveSession() {
                   </>
                 ) : (
                   <>
-                    <Smiley size={compactEmptyHero ? 32 : 40} className="mb-1" />
-                    <h1 className={`${compactEmptyHero ? 'text-[22px]' : 'text-[28px]'} font-normal text-[var(--color-text-primary)]`}>
+                    <img
+                      src={publicAssetPath('app-icon.png')}
+                      alt="BilliardBuddy"
+                      className={compactEmptyHero ? 'mb-4 h-16 w-16' : 'mb-6 h-24 w-24'}
+                    />
+                    <h1 className={`${compactEmptyHero ? 'mb-1 text-2xl' : 'mb-2 text-3xl'} font-extrabold tracking-tight text-[var(--color-text-primary)]`} style={{ fontFamily: 'var(--font-headline)' }}>
                       {t('empty.title')}
                     </h1>
-                    {!compactEmptyHero && (
-                      <div className="mt-6 flex w-full max-w-[560px] flex-col py-2 pl-6 text-left" data-testid="empty-suggestion-list">
-                        {(locale === 'zh' ? MAIN_EMPTY_SUGGESTIONS.zh : MAIN_EMPTY_SUGGESTIONS.en).map((suggestion) => {
-                          const SuggestionIcon = suggestion.icon
-                          return (
-                            <button
-                              key={suggestion.label}
-                              type="button"
-                              onClick={() => useChatStore.getState().setComposerDraft(activeTabId, { input: suggestion.prompt, attachments: [] })}
-                              className="flex min-h-10 w-full items-center rounded-lg pr-1 text-left text-[14px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] active:scale-[0.99]"
-                            >
-                              <span className="mr-2 flex size-4 shrink-0 items-center justify-center text-[var(--color-text-tertiary)]">
-                                <SuggestionIcon size={14} />
-                              </span>
-                              <span className="min-w-0 flex-1 truncate">{suggestion.label}</span>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    )}
+                    <p className={`mx-auto max-w-xs text-[var(--color-text-secondary)] ${compactEmptyHero ? 'text-sm' : ''}`} style={{ fontFamily: 'var(--font-body)' }}>
+                      {t('empty.subtitle')}
+                    </p>
                   </>
                 )}
               </div>
             </div>
           ) : (
             <>
-              {!isMemberSession && !isMobileLayout && showSessionStatus && (
+              {!isMemberSession && !isMobileLayout && (
                 <div
                   className={
                     showRightPanel
@@ -524,7 +514,9 @@ export function ActiveSession() {
                       : 'w-full border-b border-outline-variant/10 px-4 py-3'
                   }
                 >
-                  <div className={showRightPanel ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[768px] min-w-0'}>
+                  <div className={showRightPanel ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[860px] min-w-0'}>
+                    {/* 会话标题已由外壳单一 TopBar 承担，此处不再重复渲染标题（去重复标题）。
+                        下方仅保留运行状态/用量/更新时间/目标等 meta。 */}
                     <div
                       className={
                         showRightPanel
@@ -537,6 +529,26 @@ export function ActiveSession() {
                           <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse-dot" />
                           {t('session.active')}
                         </span>
+                      )}
+                      {totalTokens > 0 && (
+                        <>
+                          <span className="text-[var(--color-outline)]">·</span>
+                          <span title={t('common.tokens', { count: totalTokens.toLocaleString() })}>
+                            {t('common.tokens', { count: formatTokenCount(totalTokens) })}
+                          </span>
+                        </>
+                      )}
+                      {lastUpdated && (
+                        <>
+                          <span className="shrink-0 text-[var(--color-outline)]">·</span>
+                          <span className="truncate">{t('session.lastUpdated', { time: lastUpdated })}</span>
+                        </>
+                      )}
+                      {!showRightPanel && visibleMessageCount > 0 && (
+                        <>
+                          <span className="text-[var(--color-outline)]">·</span>
+                          <span>{t('session.messages', { count: visibleMessageCount })}</span>
+                        </>
                       )}
                     </div>
                     {session?.workDirExists === false && (

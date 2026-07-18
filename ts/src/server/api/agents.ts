@@ -16,6 +16,7 @@ import { taskService } from '../services/taskService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { resetTaskList } from '../../utils/tasks.js'
 import {
+  resolveAgentModelDisplay,
   resolveAgentOverrides,
   type ResolvedAgent,
 } from '../../tools/AgentTool/agentDisplay.js'
@@ -193,7 +194,10 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
 type ApiAgentDefinition = {
   agentType: string
   description?: string
+  model?: string
+  modelDisplay?: string
   tools?: string[]
+  systemPrompt?: string
   color?: string
   source: SharedAgentDefinition['source']
   baseDir?: string
@@ -211,7 +215,10 @@ function serializeActiveAgent(
   return {
     agentType: agent.agentType,
     description: agent.whenToUse,
+    model: agent.model,
+    modelDisplay: resolveAgentModelDisplay(agent),
     tools: agent.tools,
+    systemPrompt: agent.getSystemPrompt.length === 0 ? agent.getSystemPrompt() : undefined,
     color: agent.color,
     source: agent.source,
     baseDir: agent.baseDir,

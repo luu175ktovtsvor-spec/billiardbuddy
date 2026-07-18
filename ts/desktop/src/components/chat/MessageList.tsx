@@ -2012,7 +2012,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
       >
         <div
           ref={scrollContentRef}
-          className={compact ? 'mx-auto max-w-full' : 'mx-auto max-w-[768px]'}
+          className={compact ? 'mx-auto max-w-full' : 'mx-auto max-w-[860px]'}
         >
           {virtualTranscriptWindow.enabled ? (
             <VirtualSpacer height={virtualTranscriptWindow.beforeHeight} position="top" />
@@ -2058,7 +2058,7 @@ export function MessageList({ sessionId, compact = false }: MessageListProps = {
           )}
 
           {!isLoadingTurnChangeCards && visibleTurnChangeCards.length === 0 && turnChangeLoadError && (
-            <div className="mx-auto mb-5 w-full max-w-[768px] rounded-[var(--radius-lg)] border border-[var(--color-error)]/25 bg-[var(--color-error-container)]/18 px-4 py-3 text-xs text-[var(--color-error)]">
+            <div className="mx-auto mb-5 w-full max-w-[860px] rounded-[var(--radius-lg)] border border-[var(--color-error)]/25 bg-[var(--color-error-container)]/18 px-4 py-3 text-xs text-[var(--color-error)]">
               {turnChangeLoadError}
             </div>
           )}

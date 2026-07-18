@@ -1,18 +1,18 @@
 # 桌面 Agent 界面规范
 
-> 状态：现行 · 最后核对 2026-07-18
+> 状态：现行 · 最后核对 2026-07-16
 
 ## 1. 唯一界面来源
 
 桌面产品只保留一套 React renderer：
 
-- 源码：`ts/desktop/src/`
-- 构建产物：`ts/desktop/dist/`
+- 源码：`ts/desktop/renderer-react/`
+- 构建产物：`ts/desktop/renderer-dist/`
 - Electron 加载入口：`ts/desktop/electron/main.ts` 的 `loadRenderer()`
 - 页面骨架：`src/components/layout/AppShell.tsx`
-- 设计 token：`src/theme/globals.css`
+- 设计 token：`src/theme/globals.css` 与 `src/theme/workbuddy-tokens.css`
 
-`dist` 是 `src` 的 Vite 构建结果，不是第二套界面。sidecar 不提供另一套静态前端，应用也没有通过查询参数注入假会话或假文件树的预览模式。
+`renderer-dist` 是 `renderer-react` 的 Vite 构建结果，不是第二套界面。sidecar 不提供静态前端，应用也没有通过查询参数注入假会话或假文件树的预览模式。
 
 本规范只描述当前产品事实。
 
@@ -109,6 +109,6 @@
 ## 8. 验证
 
 - 机械行为由单元、契约、集成和后端 E2E 验证。
-- 桌面用户路径用当前 `dev` 构建出的开发版验证；Computer Use 只有在 Python、运行依赖和系统权限成立后才能作为验收手段。
+- 桌面用户路径用当前 `main` 构建出的开发版和 Computer Use 验证。
 - 真机输入使用普通用户自然语言；截图只证明可见状态，文件与媒体产物还要核对真实落盘内容。
-- 每次启动必须确认加载 `ts/desktop/dist/index.html`，并确认不存在旧静态页面或假数据预览入口。
+- 每次启动必须确认 URL 指向 `ts/desktop/renderer-dist/index.html`，并确认不存在旧静态页面或假数据预览入口。

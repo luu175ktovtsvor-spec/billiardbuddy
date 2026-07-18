@@ -48,9 +48,9 @@ function isSettingsTab(value: unknown): value is SettingsTab {
 function getStoredSettingsTab(): SettingsTab {
   try {
     const stored = localStorage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY)
-    if (isSettingsTab(stored) && stored !== 'providers') return stored
+    if (isSettingsTab(stored)) return stored
   } catch { /* localStorage unavailable */ }
-  return 'general'
+  return 'providers'
 }
 
 export function applyTheme(theme: ThemeMode) {

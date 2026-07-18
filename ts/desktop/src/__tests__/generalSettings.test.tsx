@@ -6,9 +6,14 @@ import { Settings } from '../pages/Settings'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
-import type { AppMode, ChatSendBehavior, PermissionMode, ThemeMode } from '../types/settings'
+import type { SavedProvider } from '../types/provider'
+import type { ProviderPreset } from '../types/providerPreset'
+import type { AppMode, ChatSendBehavior, PermissionMode, ThemeMode, UpdateProxySettings } from '../types/settings'
 import { browserHost } from '../lib/desktopHost/browserHost'
 
+const MOCK_DELETE_PROVIDER = vi.fn()
+const MOCK_GET_SETTINGS = vi.fn()
+const MOCK_UPDATE_SETTINGS = vi.fn()
 const desktopNotificationsMock = vi.hoisted(() => ({
   getDesktopNotificationPermission: vi.fn(),
   getDesktopNotificationPlatform: vi.fn(),
@@ -28,9 +33,39 @@ const tauriDialogMock = vi.hoisted(() => ({
 const tauriProcessMock = vi.hoisted(() => ({
   relaunch: vi.fn(),
 }))
+const providerStoreState = {
+  providers: [] as SavedProvider[],
+  providerOrder: [] as string[],
+  activeId: null as string | null,
+  hasLoadedProviders: true,
+  presets: [] as ProviderPreset[],
+  isLoading: false,
+  isPresetsLoading: false,
+  fetchProviders: vi.fn(),
+  fetchPresets: vi.fn(),
+  deleteProvider: MOCK_DELETE_PROVIDER,
+  activateProvider: vi.fn(),
+  activateOfficial: vi.fn(),
+  testProvider: vi.fn(),
+  createProvider: vi.fn(),
+  updateProvider: vi.fn(),
+  testConfig: vi.fn(),
+}
+
 vi.mock('../api/agents', () => ({
   agentsApi: {
     list: vi.fn().mockResolvedValue({ activeAgents: [], allAgents: [] }),
+  },
+}))
+
+vi.mock('../stores/providerStore', () => ({
+  useProviderStore: () => providerStoreState,
+}))
+
+vi.mock('../api/providers', () => ({
+  providersApi: {
+    getSettings: MOCK_GET_SETTINGS,
+    updateSettings: MOCK_UPDATE_SETTINGS,
   },
 }))
 
@@ -44,6 +79,15 @@ vi.mock('qrcode', () => ({
     toDataURL: vi.fn().mockResolvedValue('data:image/png;base64,h5qr'),
   },
 }))
+
+vi.mock('../components/settings/ClaudeOfficialLogin', () => ({
+  ClaudeOfficialLogin: () => <div data-testid="claude-official-login" />,
+}))
+
+vi.mock('../components/settings/ChatGPTOfficialLogin', () => ({
+  ChatGPTOfficialLogin: () => <div data-testid="chatgpt-official-login" />,
+}))
+
 
 vi.mock('../pages/ActivitySettings', () => ({
   ActivitySettings: () => <div>Activity Settings Mock</div>,
@@ -118,6 +162,7 @@ function installElectronDesktopHost() {
 describe('Settings > General tab', () => {
   beforeEach(() => {
     vi.useRealTimers()
+    MOCK_DELETE_PROVIDER.mockReset()
     desktopNotificationsMock.getDesktopNotificationPermission.mockReset()
     desktopNotificationsMock.getDesktopNotificationPlatform.mockReset()
     desktopNotificationsMock.notifyDesktop.mockReset()
@@ -139,6 +184,24 @@ describe('Settings > General tab', () => {
     delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
     delete (window as unknown as { __TAURI__?: object }).__TAURI__
     installElectronDesktopHost()
+    MOCK_GET_SETTINGS.mockResolvedValue({})
+    MOCK_UPDATE_SETTINGS.mockResolvedValue({})
+    providerStoreState.providers = []
+    providerStoreState.providerOrder = []
+    providerStoreState.activeId = null
+    providerStoreState.hasLoadedProviders = true
+    providerStoreState.presets = []
+    providerStoreState.isLoading = false
+    providerStoreState.isPresetsLoading = false
+    providerStoreState.fetchProviders = vi.fn()
+    providerStoreState.fetchPresets = vi.fn()
+    providerStoreState.activateProvider = vi.fn()
+    providerStoreState.activateOfficial = vi.fn()
+    providerStoreState.testProvider = vi.fn()
+    providerStoreState.createProvider = vi.fn()
+    providerStoreState.updateProvider = vi.fn()
+    providerStoreState.testConfig = vi.fn()
+
     useSettingsStore.setState({
       locale: 'en',
       theme: 'light',
@@ -642,7 +705,6 @@ describe('Settings > General tab', () => {
 
   it('opens the Token usage tab from Settings navigation above Diagnostics', () => {
     render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
     const usageTab = screen.getByText('Token usage')
     const diagnosticsTab = screen.getByText('Diagnostics')
@@ -655,7 +717,6 @@ describe('Settings > General tab', () => {
 
   it('opens the Trace tab from Settings navigation between Token usage and Diagnostics', () => {
     render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
     const usageTab = screen.getByText('Token usage')
     const traceTab = screen.getByText('Trace')
@@ -1422,7 +1483,6 @@ describe('Settings > General tab', () => {
 
   it('keeps extension tabs available alongside the terminal tab', () => {
     render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
     expect(screen.queryByText('Install')).not.toBeInTheDocument()
     expect(screen.getByText('Terminal')).toBeInTheDocument()
@@ -1431,19 +1491,783 @@ describe('Settings > General tab', () => {
   })
 })
 
+describe('Settings > Providers tab', () => {
+  beforeEach(() => {
+    MOCK_DELETE_PROVIDER.mockReset()
+    MOCK_GET_SETTINGS.mockResolvedValue({})
+    MOCK_UPDATE_SETTINGS.mockResolvedValue({})
+    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: null, toasts: [] })
+    useSettingsStore.setState({
+      locale: 'en',
+      fetchAll: vi.fn().mockResolvedValue(undefined),
+    })
+    providerStoreState.providers = [
+      {
+        id: 'provider-1',
+        name: 'MiniMax-M2.7-highspeed(openai)',
+        presetId: 'custom',
+        apiKey: '***',
+        baseUrl: 'https://api.minimaxi.com',
+        apiFormat: 'openai_chat',
+        models: {
+          main: 'MiniMax-M2.7-highspeed',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        notes: '',
+      },
+    ]
+    providerStoreState.providerOrder = ['provider-1', 'claude-official', 'openai-official']
+    providerStoreState.activeId = null
+    providerStoreState.hasLoadedProviders = true
+  })
+
+  it('does not query official OAuth status before providers finish loading', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = null
+    providerStoreState.hasLoadedProviders = false
+
+    render(<Settings />)
+
+    expect(screen.queryByTestId('claude-official-login')).not.toBeInTheDocument()
+  })
+
+  it('does not query ChatGPT OAuth status before providers finish loading', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = 'openai-official'
+    providerStoreState.hasLoadedProviders = false
+
+    render(<Settings />)
+
+    expect(screen.queryByTestId('chatgpt-official-login')).not.toBeInTheDocument()
+  })
+
+  it('shows official OAuth status only after official provider is confirmed active', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = null
+    providerStoreState.hasLoadedProviders = true
+
+    render(<Settings />)
+
+    expect(screen.getByTestId('claude-official-login')).toBeInTheDocument()
+  })
+
+  it('shows ChatGPT Official as the active built-in provider', () => {
+    providerStoreState.providers = []
+    providerStoreState.activeId = 'openai-official'
+    providerStoreState.hasLoadedProviders = true
+
+    render(<Settings />)
+
+    const openAIProvider = screen.getByTestId('openai-official-provider')
+    expect(within(openAIProvider).getByText('ChatGPT Official')).toBeInTheDocument()
+    expect(within(openAIProvider).getByText('Default')).toBeInTheDocument()
+    expect(screen.getByTestId('chatgpt-official-login')).toBeInTheDocument()
+    expect(screen.queryByTestId('claude-official-login')).not.toBeInTheDocument()
+  })
+
+  it('renders saved and official providers in the stored sortable order', () => {
+    providerStoreState.providerOrder = ['provider-1', 'openai-official', 'claude-official']
+
+    render(<Settings />)
+
+    const rows = screen.getAllByRole('button', { name: 'Drag to reorder' })
+      .map((handle) => handle.closest('[data-testid]')?.getAttribute('data-testid'))
+    expect(rows).toEqual([
+      'provider-provider-1',
+      'openai-official-provider',
+      'claude-official-provider',
+    ])
+  })
+
+  it('falls back to the default provider order when stored order is missing', () => {
+    providerStoreState.providerOrder = undefined as unknown as string[]
+
+    render(<Settings />)
+
+    const rows = screen.getAllByRole('button', { name: 'Drag to reorder' })
+      .map((handle) => handle.closest('[data-testid]')?.getAttribute('data-testid'))
+    expect(rows).toEqual([
+      'provider-provider-1',
+      'claude-official-provider',
+      'openai-official-provider',
+    ])
+  })
+
+  it('requires confirmation before deleting a provider', async () => {
+    render(<Settings />)
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByText('Delete')[0]!)
+      await Promise.resolve()
+    })
+
+    expect(MOCK_DELETE_PROVIDER).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText('Delete provider "MiniMax-M2.7-highspeed(openai)"? This cannot be undone.')).toBeInTheDocument()
+
+    const dialog = screen.getByRole('dialog')
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
+      await Promise.resolve()
+    })
+
+    expect(MOCK_DELETE_PROVIDER).toHaveBeenCalledWith('provider-1')
+  })
+
+  it('uses the shared dropdown for API format in the provider form', () => {
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'custom-main',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider/i }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /Anthropic Messages \(native\)/i }))
+    fireEvent.click(within(dialog).getByRole('button', { name: /OpenAI Responses API \(proxy\)/i }))
+
+    expect(within(dialog).getByRole('button', { name: /OpenAI Responses API \(proxy\)/i })).toBeInTheDocument()
+    expect(within(dialog).getByText('Requests will be translated via the local proxy')).toBeInTheDocument()
+  })
+
+  it('normalizes blank model mappings to the main model when saving a provider', async () => {
+    providerStoreState.createProvider = vi.fn().mockResolvedValue({
+      id: 'provider-new',
+      presetId: 'custom',
+      name: 'Custom',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.com/anthropic',
+      apiFormat: 'anthropic',
+      models: {
+        main: 'gpt-5.5',
+        haiku: 'gpt-5.5',
+        sonnet: 'gpt-5.5',
+        opus: 'gpt-5.5',
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: '',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider|添加服务商/i }))
+    const dialog = screen.getByRole('dialog')
+    await waitFor(() => {
+      const settingsTextarea = dialog.querySelector('textarea')
+      expect(settingsTextarea?.value).toContain('"ANTHROPIC_MODEL"')
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.change(within(dialog).getByLabelText(/Main Model|主模型/i), { target: { value: 'gpt-5.5' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        models: {
+          main: 'gpt-5.5',
+          haiku: 'gpt-5.5',
+          sonnet: 'gpt-5.5',
+          opus: 'gpt-5.5',
+        },
+      }))
+    })
+  })
+
+  it('uses request model env instead of cc-switch display model names when testing pasted settings JSON', async () => {
+    providerStoreState.testConfig = vi.fn().mockResolvedValue({
+      connectivity: {
+        success: false,
+        latencyMs: 3,
+        error: '未配置供应商',
+        modelUsed: 'claude-sonnet-4-6',
+        httpStatus: 503,
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'deepseek-v4-pro',
+          haiku: 'deepseek-v4-flash',
+          sonnet: 'deepseek-v4-pro',
+          opus: 'deepseek-v4-pro',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: '',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: '',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider|添加服务商/i }))
+    const dialog = screen.getByRole('dialog')
+    const settingsTextarea = await waitFor(() => {
+      const textarea = dialog.querySelector('textarea')
+      expect(textarea?.value).toContain('"ANTHROPIC_MODEL"')
+      return textarea as HTMLTextAreaElement
+    })
+
+    fireEvent.change(settingsTextarea, {
+      target: {
+        value: JSON.stringify({
+          env: {
+            ANTHROPIC_API_KEY: 'PROXY_MANAGED',
+            ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721',
+            ANTHROPIC_DEFAULT_FABLE_MODEL: 'Qwen3Coder',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: 'Qwen3Coder',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-8',
+            ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'Qwen3Coder',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: 'Qwen3Coder',
+          },
+        }, null, 2),
+      },
+    })
+
+    await waitFor(() => {
+      expect(within(dialog).getByLabelText(/Main Model|主模型/i)).toHaveValue('claude-sonnet-4-6')
+      expect(within(dialog).getByLabelText(/Haiku Model/i)).toHaveValue('claude-haiku-4-5')
+      expect(within(dialog).getByLabelText(/Opus Model/i)).toHaveValue('claude-opus-4-8')
+    })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /Test Connection/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.testConfig).toHaveBeenCalledWith(expect.objectContaining({
+        baseUrl: 'http://127.0.0.1:15721',
+        apiKey: 'PROXY_MANAGED',
+        modelId: 'claude-sonnet-4-6',
+        authStrategy: 'api_key',
+        apiFormat: 'anthropic',
+      }))
+    })
+    expect(providerStoreState.testConfig).not.toHaveBeenCalledWith(expect.objectContaining({
+      modelId: 'Qwen3Coder',
+    }))
+    expect(providerStoreState.testConfig).not.toHaveBeenCalledWith(expect.objectContaining({
+      modelId: 'deepseek-v4-pro',
+    }))
+  })
+
+  it('keeps the provider form locked while save is in flight', async () => {
+    let resolveCreate!: (provider: SavedProvider) => void
+    providerStoreState.createProvider = vi.fn().mockImplementation(() => new Promise<SavedProvider>((resolve) => {
+      resolveCreate = resolve
+    }))
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'custom-main',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider|添加服务商/i }))
+    const dialog = screen.getByRole('dialog')
+    await waitFor(() => {
+      const settingsTextarea = dialog.querySelector('textarea')
+      expect(settingsTextarea?.value).toContain('"ANTHROPIC_MODEL"')
+    })
+
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledTimes(1)
+    })
+
+    const cancelButton = within(dialog).getByRole('button', { name: /Cancel|取消/i })
+    expect(cancelButton).toBeDisabled()
+
+    fireEvent.click(cancelButton)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(providerStoreState.createProvider).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveCreate({
+        id: 'provider-new',
+        presetId: 'custom',
+        name: 'Custom',
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        models: {
+          main: 'custom-main',
+          haiku: 'custom-main',
+          sonnet: 'custom-main',
+          opus: 'custom-main',
+        },
+      })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+  })
+
+  it('defaults Tool Search on and persists an explicit disable from the provider form', async () => {
+    MOCK_GET_SETTINGS.mockResolvedValue({ env: { EXISTING_ENV: '1' } })
+    providerStoreState.createProvider = vi.fn().mockResolvedValue({
+      id: 'provider-new',
+      presetId: 'custom',
+      name: 'Custom',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.com/anthropic',
+      apiFormat: 'anthropic',
+      toolSearchEnabled: false,
+      models: {
+        main: 'custom-main',
+        haiku: 'custom-main',
+        sonnet: 'custom-main',
+        opus: 'custom-main',
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'custom-main',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider/i }))
+    const dialog = screen.getByRole('dialog')
+    const toolSearchCheckbox = within(dialog).getByRole('checkbox', { name: 'Enable Tool Search' })
+
+    expect(toolSearchCheckbox).toBeChecked()
+    await waitFor(() => {
+      expect(within(dialog).getByDisplayValue((value) => (
+        typeof value === 'string' && value.includes('"ENABLE_TOOL_SEARCH": "true"')
+      ))).toBeInTheDocument()
+    })
+
+    fireEvent.click(toolSearchCheckbox)
+    expect(toolSearchCheckbox).not.toBeChecked()
+    await waitFor(() => {
+      expect(within(dialog).getByDisplayValue((value) => (
+        typeof value === 'string' && value.includes('"ENABLE_TOOL_SEARCH": "false"')
+      ))).toBeInTheDocument()
+    })
+
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        toolSearchEnabled: false,
+      }))
+    })
+    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({
+        EXISTING_ENV: '1',
+        ENABLE_TOOL_SEARCH: 'false',
+      }),
+    }))
+  })
+
+  it('defaults experimental beta headers on and persists a provider disable', async () => {
+    MOCK_GET_SETTINGS.mockResolvedValue({ env: { EXISTING_ENV: '1' } })
+    providerStoreState.createProvider = vi.fn().mockResolvedValue({
+      id: 'provider-new',
+      presetId: 'custom',
+      name: 'Custom',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.com/anthropic',
+      apiFormat: 'anthropic',
+      disableExperimentalBetas: true,
+      models: {
+        main: 'custom-main',
+        haiku: 'custom-main',
+        sonnet: 'custom-main',
+        opus: 'custom-main',
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'custom-main',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider/i }))
+    const dialog = screen.getByRole('dialog')
+    const disableBetasCheckbox = within(dialog).getByRole('checkbox', { name: 'Disable experimental beta headers' })
+    const settingsTextarea = await waitFor(() => {
+      const textarea = dialog.querySelector('textarea')
+      expect(textarea?.value).toContain('"ANTHROPIC_MODEL"')
+      return textarea as HTMLTextAreaElement
+    })
+
+    expect(disableBetasCheckbox).not.toBeChecked()
+    expect(settingsTextarea.value).not.toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS')
+
+    fireEvent.click(disableBetasCheckbox)
+    expect(disableBetasCheckbox).toBeChecked()
+    await waitFor(() => {
+      expect(settingsTextarea.value).toContain('"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"')
+    })
+
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        disableExperimentalBetas: true,
+      }))
+    })
+    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({
+        EXISTING_ENV: '1',
+        CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+      }),
+    }))
+  })
+
+  it('saves 1M model declarations for the main and role mappings', async () => {
+    providerStoreState.createProvider = vi.fn().mockResolvedValue({
+      id: 'provider-new',
+      presetId: 'custom',
+      name: 'Custom',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.com/anthropic',
+      apiFormat: 'anthropic',
+      models: {
+        main: 'claude-sonnet-4-6',
+        haiku: 'claude-haiku-4-5',
+        sonnet: 'claude-sonnet-4-6',
+        opus: 'claude-opus-4-7',
+      },
+      model1mSupport: {
+        main: true,
+        haiku: false,
+        sonnet: true,
+        opus: false,
+      },
+    })
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'claude-sonnet-4-6',
+          haiku: 'claude-haiku-4-5',
+          sonnet: 'claude-sonnet-4-6',
+          opus: 'claude-opus-4-7',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider|添加服务商/i }))
+    const dialog = screen.getByRole('dialog')
+    await waitFor(() => {
+      const settingsTextarea = dialog.querySelector('textarea')
+      expect(settingsTextarea?.value).toContain('"ANTHROPIC_MODEL"')
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('sk-...'), { target: { value: 'sk-test' } })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /1M support: main/i }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /1M support: sonnet/i }))
+    await waitFor(() => {
+      const settingsTextarea = dialog.querySelector('textarea')
+      expect(settingsTextarea?.value).toContain('"ANTHROPIC_MODEL": "claude-sonnet-4-6[1m]"')
+      expect(settingsTextarea?.value).toContain('"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6[1m]"')
+      expect(settingsTextarea?.value).toContain('"CLAUDE_CODE_MODEL_CONTEXT_WINDOWS"')
+      expect(settingsTextarea?.value).toContain('\\"claude-sonnet-4-6\\":1000000')
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save|Add|保存|添加/i }))
+
+    await waitFor(() => {
+      expect(providerStoreState.createProvider).toHaveBeenCalledWith(expect.objectContaining({
+        model1mSupport: {
+          main: true,
+          haiku: false,
+          sonnet: true,
+          opus: false,
+        },
+        modelContextWindows: {
+          'claude-sonnet-4-6': 1000000,
+        },
+      }))
+    })
+    expect(MOCK_UPDATE_SETTINGS).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({
+        ANTHROPIC_MODEL: 'claude-sonnet-4-6[1m]',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6[1m]',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-7',
+        CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: '{"claude-sonnet-4-6":1000000}',
+      }),
+    }))
+  })
+
+  it('hides the API key by default and reveals it from the eye button', () => {
+    providerStoreState.presets = [
+      {
+        id: 'custom',
+        name: 'Custom',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        defaultModels: {
+          main: 'custom-main',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        needsApiKey: true,
+        websiteUrl: '',
+      },
+    ]
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Add Provider/i }))
+
+    const dialog = screen.getByRole('dialog')
+    const apiKeyInput = within(dialog).getByPlaceholderText('sk-...')
+
+    expect(apiKeyInput).toHaveAttribute('type', 'password')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show API Key' }))
+
+    expect(apiKeyInput).toHaveAttribute('type', 'text')
+    expect(within(dialog).getByRole('button', { name: 'Hide API Key' })).toBeInTheDocument()
+  })
+})
 
 describe('Settings > About tab', () => {
   beforeEach(() => {
     useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: 'about' })
-    useSettingsStore.setState({ locale: 'en' })
+    useSettingsStore.setState({
+      locale: 'en',
+      updateProxy: { mode: 'system', url: '' },
+      setUpdateProxy: vi.fn().mockImplementation(async (next: UpdateProxySettings) => {
+        useSettingsStore.setState({ updateProxy: next })
+      }),
+    })
+    useUpdateStore.setState({
+      status: 'available',
+      availableVersion: '0.1.5',
+      releaseNotes: '# BilliardBuddy v0.1.5\n\n- Fixed updater rendering\n- Added markdown support',
+      progressPercent: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      error: null,
+      checkedAt: null,
+      shouldPrompt: true,
+      initialize: vi.fn().mockResolvedValue(undefined),
+      checkForUpdates: vi.fn().mockResolvedValue(null),
+      installUpdate: vi.fn().mockResolvedValue(undefined),
+      dismissPrompt: vi.fn(),
+    })
   })
 
-  it('shows the product identity without an unconfigured update surface', async () => {
+  it('renders release notes with markdown formatting', async () => {
     render(<Settings />)
 
-    expect(await screen.findByRole('heading', { name: 'BilliardBuddy' })).toBeInTheDocument()
-    expect(screen.queryByText(/release notes/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /check for updates/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /update proxy/i })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'BilliardBuddy v0.1.5' })).toBeInTheDocument()
+    expect(screen.getByText('Fixed updater rendering')).toBeInTheDocument()
+    expect(screen.getByText('Added markdown support')).toBeInTheDocument()
+  })
+
+  it('does not show a fake fallback app version when desktop version IPC fails', async () => {
+    window.desktopHost = {
+      ...browserHost,
+      kind: 'electron',
+      isDesktop: true,
+      capabilities: {
+        ...browserHost.capabilities,
+        updates: true,
+      },
+      app: {
+        getVersion: vi.fn().mockRejectedValue(new Error('version IPC failed')),
+      },
+    }
+    useUpdateStore.setState({
+      status: 'up-to-date',
+      availableVersion: null,
+      releaseNotes: null,
+      progressPercent: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      error: null,
+      checkedAt: Date.now(),
+      shouldPrompt: false,
+      initialize: vi.fn().mockResolvedValue(undefined),
+      checkForUpdates: vi.fn().mockResolvedValue(null),
+      installUpdate: vi.fn().mockResolvedValue(undefined),
+      dismissPrompt: vi.fn(),
+    })
+
+    render(<Settings />)
+
+    expect(await screen.findByText('Unknown')).toBeInTheDocument()
+    expect(screen.queryByText('0.1.0')).not.toBeInTheDocument()
+  })
+
+  it('shows downloaded bytes instead of a fake zero percent when total size is unknown', async () => {
+    useUpdateStore.setState({
+      status: 'downloading',
+      availableVersion: '0.1.5',
+      releaseNotes: '# BilliardBuddy v0.1.5',
+      progressPercent: 0,
+      downloadedBytes: 1536,
+      totalBytes: null,
+      error: null,
+      checkedAt: null,
+      shouldPrompt: true,
+      initialize: vi.fn().mockResolvedValue(undefined),
+      checkForUpdates: vi.fn().mockResolvedValue(null),
+      installUpdate: vi.fn().mockResolvedValue(undefined),
+      dismissPrompt: vi.fn(),
+    })
+
+    render(<Settings />)
+
+    expect(await screen.findByText('Downloading update... 1.5 KB downloaded')).toBeInTheDocument()
+    expect(screen.queryByText('Downloading update... 0%')).not.toBeInTheDocument()
+  })
+
+  it('saves a manual update proxy from the advanced update controls', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /System proxy/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('This only affects app update checks and downloads.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual proxy/i }))
+    const proxyInput = screen.getByLabelText('Proxy URL')
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    expect(screen.getByText('Enter a proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: 'socks5://127.0.0.1:7890' } })
+    expect(screen.getByText('Enter an HTTP or HTTPS proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: '  http://127.0.0.1:7890  ' } })
+    expect(screen.getByText('HTTP and HTTPS proxy URLs are supported, for example http://127.0.0.1:7890.')).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'manual',
+      url: 'http://127.0.0.1:7890',
+    })
+  })
+
+  it('can switch update proxy settings back to system mode', async () => {
+    useSettingsStore.setState({
+      updateProxy: { mode: 'manual', url: 'http://127.0.0.1:7890' },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /Manual proxy/i })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /System proxy/i }))
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'system',
+      url: 'http://127.0.0.1:7890',
+    })
   })
 })

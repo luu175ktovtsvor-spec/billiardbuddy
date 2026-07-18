@@ -26,7 +26,7 @@ export function defaultPortableDir(app: AppModeAppLike): string {
 /**
  * BilliardBuddy's OWN product data root. Lives under the (rebranded) userData so
  * the kernel never falls back to the shared ~/.claude / ~/.claude/billiardbuddy that an
- * another installed coding agent would own. Host-layer isolation only — the
+ * installed CC-Haha or Claude Code would own. Host-layer isolation only — the
  * kernel's internal <configDir>/billiardbuddy/* layout is unchanged.
  */
 export function defaultProductDataDir(app: AppModeAppLike): string {
@@ -36,7 +36,7 @@ export function defaultProductDataDir(app: AppModeAppLike): string {
 /**
  * When neither a shell/ops override nor portable mode set CLAUDE_CONFIG_DIR, point
  * it at BilliardBuddy's own data root so a fresh double-click install does not read
- * shared third-party state. Marks BB_DEFAULT_CONFIG_DIR so getAppMode still reports this
+ * shared CC-Haha state. Marks BB_DEFAULT_CONFIG_DIR so getAppMode still reports this
  * as the normal "default/system" mode rather than a user "environment" override.
  * Must run AFTER applyStartupPortableMode so an explicit portable dir wins.
  */

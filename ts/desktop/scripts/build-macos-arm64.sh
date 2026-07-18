@@ -13,7 +13,7 @@ ELECTRON_BUILDER_CLI="${DESKTOP_DIR}/node_modules/electron-builder/out/cli/cli.j
 
 usage() {
   cat <<'EOF'
-Build BilliardBuddy desktop for macOS Apple Silicon with Electron Builder.
+Build Claude Code Haha desktop for macOS Apple Silicon with Electron Builder.
 
 Usage:
   ./desktop/scripts/build-macos-arm64.sh [extra electron-builder args...]
@@ -23,8 +23,10 @@ Environment:
   SIGN_BUILD=1     Allow electron-builder to auto-discover signing identities.
   REBUILD_NATIVE=1 Run `electron-builder install-app-deps` before packaging.
   MAC_TARGETS      Electron Builder macOS targets. Defaults to "dmg zip".
-  BB_MEDIA_TOOLCHAIN_SOURCE_DIR
-                   Directory containing audited LGPL ffmpeg/ffprobe, LICENSE.txt, and media-toolchain-source.json.
+  SKIP_PACKAGE_SMOKE=1
+                   Skip package-smoke verification after copying artifacts.
+  REQUIRE_MACOS_GATEKEEPER_SMOKE=1
+                   Require Gatekeeper approval during post-build package-smoke.
   OPEN_OUTPUT=1    Open the canonical artifact output directory in Finder after a successful build.
 EOF
 }
@@ -86,9 +88,6 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   (cd "${DESKTOP_DIR}" && bun install)
 fi
 
-echo "[build-macos-arm64] Staging audited media toolchain..."
-(cd "${DESKTOP_DIR}" && BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain)
-
 echo "[build-macos-arm64] Cleaning stale Electron outputs..."
 rm -rf "${DESKTOP_DIR}/dist"
 rm -rf "${DESKTOP_DIR}/electron-dist"
@@ -141,6 +140,15 @@ Builder output: ${ELECTRON_OUTPUT_DIR}
 Canonical output: ${CANONICAL_OUTPUT_DIR}
 Built at: $(date '+%Y-%m-%d %H:%M:%S %z')
 EOF
+
+if [[ "${SKIP_PACKAGE_SMOKE:-0}" != "1" ]]; then
+  PACKAGE_SMOKE_ARGS=(bun run test:package-smoke --platform macos --package-kind release --artifacts-dir desktop/build-artifacts/macos-arm64)
+  if [[ "${REQUIRE_MACOS_GATEKEEPER_SMOKE:-0}" == "1" ]]; then
+    PACKAGE_SMOKE_ARGS+=(--require-macos-gatekeeper)
+  fi
+  echo "[build-macos-arm64] Running package smoke..."
+  (cd "${REPO_ROOT}" && "${PACKAGE_SMOKE_ARGS[@]}")
+fi
 
 echo
 echo "[build-macos-arm64] Build finished."

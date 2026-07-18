@@ -9,17 +9,15 @@
 //   - “分享”按钮：当前仓库没有 ShareModal 等价组件，整个按钮隐藏。
 //   - “归档此任务”菜单项：当前仓库 sessionStore 没有 isArchived/setArchived 等价字段与 action，菜单项整个隐藏。
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, Clock, Copy, Folder, PanelLeft, PanelRight, Search, SquareTerminal } from 'lucide-react'
+import { ChevronDown, Clock, Copy, Folder, PanelLeft, PanelRight, Search } from 'lucide-react'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
-import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 import { useTranslation } from '../../i18n'
 import { copyTextToClipboard } from '../chat/clipboard'
 import { getDesktopHost } from '../../lib/desktopHost'
-import { WindowControls, showWindowControls } from './WindowControls'
 
 const isWindowsPlatform = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
 
@@ -82,9 +80,6 @@ export function TopBar() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const activeTab = tabs.find((tab) => tab.sessionId === activeTabId) ?? null
   const isChat = activeTab?.type === 'session'
-  const terminalOpen = useTerminalPanelStore((state) => (
-    activeTabId ? state.panelBySession[activeTabId]?.isOpen ?? false : false
-  ))
 
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
@@ -160,7 +155,7 @@ export function TopBar() {
       <header
         data-desktop-drag-region
         data-testid="topbar"
-        className={`flex h-[46px] shrink-0 items-center justify-between ${showWindowControls ? 'pr-0' : 'pr-3'} ${leftPad}`}
+        className={`flex h-[46px] shrink-0 items-center justify-between pr-3 ${leftPad}`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {collapsed && (
@@ -196,35 +191,25 @@ export function TopBar() {
 
         {/* 会话专属操作只在会话视图显示；设置/定时任务/终端等页面不挂这一排按钮。
             “分享”按钮已下架：当前仓库没有 ShareModal 等价实现，不做假按钮。 */}
-        <div className="flex h-full shrink-0 items-center">
-          {isChat && (
-            <div className="flex items-center gap-0.5">
-              <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
-                <Search size={18} />
-              </IconBtn>
-              {/* 当前仓库没有独立的“历史”入口，复用同一个全局搜索/近期会话面板（GlobalSearchModal 本身就带
-                  “近期会话”列表），和旧版两个按钮共用一个 setPaletteOpen 的写法是同一个思路。 */}
-              <IconBtn label="历史" onClick={() => openModal('globalSearch')}>
-                <Clock size={18} />
-              </IconBtn>
-              <IconBtn
-                label={t('tabs.openTerminal')}
-                active={terminalOpen}
-                onClick={() => activeTabId && useTerminalPanelStore.getState().togglePanel(activeTabId)}
-              >
-                <SquareTerminal size={18} />
-              </IconBtn>
-              <IconBtn
-                label={panelOpen ? t('tabs.hideWorkspace') : t('tabs.showWorkspace')}
-                active={panelOpen}
-                onClick={handleTogglePanel}
-              >
-                <PanelRight size={18} />
-              </IconBtn>
-            </div>
-          )}
-          <WindowControls />
-        </div>
+        {isChat && (
+          <div className="flex items-center gap-0.5">
+            <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
+              <Search size={18} />
+            </IconBtn>
+            {/* 当前仓库没有独立的“历史”入口，复用同一个全局搜索/近期会话面板（GlobalSearchModal 本身就带
+                “近期会话”列表），和旧版两个按钮共用一个 setPaletteOpen 的写法是同一个思路。 */}
+            <IconBtn label="历史" onClick={() => openModal('globalSearch')}>
+              <Clock size={18} />
+            </IconBtn>
+            <IconBtn
+              label={panelOpen ? t('tabs.hideWorkspace') : t('tabs.showWorkspace')}
+              active={panelOpen}
+              onClick={handleTogglePanel}
+            >
+              <PanelRight size={18} />
+            </IconBtn>
+          </div>
+        )}
       </header>
 
       {menuAt && activeTabId && (

@@ -65,7 +65,6 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       appMode: true,
       clipboard: true,
       dialogs: true,
-      mediaActions: true,
       notifications: true,
       previewWebview: true,
       shell: true,
@@ -103,21 +102,6 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     dialogs: {
       open: options => invoke(ELECTRON_IPC_CHANNELS.dialogOpen, options),
       save: options => invoke(ELECTRON_IPC_CHANNELS.dialogSave, options),
-    },
-    media: {
-      submitImageProject: (projectId, confirmUnknownRetry = false) => invoke(
-        ELECTRON_IPC_CHANNELS.mediaSubmitImage,
-        { projectId, confirmUnknownRetry },
-      ),
-      updateUnknownImageProject: (projectId, input) => invoke(
-        ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage,
-        { projectId, input },
-      ),
-      saveImageOutput: (projectId, input) => invoke(
-        ELECTRON_IPC_CHANNELS.mediaSaveImageOutput,
-        { projectId, input },
-      ),
-      renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
     },
     updates: {
       check: async (options) => {

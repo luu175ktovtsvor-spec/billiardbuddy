@@ -213,7 +213,7 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
           'border-transparent text-[var(--color-text-secondary)] hover:border-[var(--color-border)]',
           'hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)]',
         ].join(' ')}
-        onClick={() => previewBridge.message({ v: 1, type: 'capture', kind: 'viewport' })}
+        onClick={() => previewBridge.message({ v: 1, type: 'capture', kind: 'full' })}
       >
         <Camera size={16} />
       </button>

@@ -1,11 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import {
-  MessageList,
-  buildRenderModel,
-  getCompletedTurnTargets,
-  shouldVirtualizeRenderItems,
-} from './MessageList'
+import { MessageList, buildRenderModel, shouldVirtualizeRenderItems } from './MessageList'
 import type { VirtualRenderItemMetric } from './virtualHeightCache'
 import { relativizeWorkspacePath } from './CurrentTurnChangeCard'
 import { sessionsApi } from '../../api/sessions'
@@ -3389,7 +3384,7 @@ describe('MessageList nested tool calls', () => {
     expect(assistantShell).toBeTruthy()
     expect(assistantShell?.className).toContain('items-start')
     expect(assistantShell?.className).toContain('group')
-    expect(assistantShell?.className).toContain('w-full')
+    expect(assistantShell?.className).not.toContain('w-full')
     expect(assistantShell?.className).not.toContain('ml-10')
     expect(userActions?.getAttribute('data-align')).toBe('end')
     expect(assistantActions?.getAttribute('data-align')).toBe('start')
@@ -3883,8 +3878,8 @@ describe('MessageList nested tool calls', () => {
 
   it('relativizes Windows checkpoint paths against the turn workdir', () => {
     expect(relativizeWorkspacePath(
-      'C:\\Users\\demo\\aacc\\src\\App.tsx',
-      'c:/users/demo/aacc',
+      'C:\\Users\\user\\aacc\\src\\App.tsx',
+      'c:/users/relakkes/aacc',
     )).toBe('src/App.tsx')
   })
 
@@ -4413,33 +4408,6 @@ describe('MessageList nested tool calls', () => {
       ),
     ).toBeTruthy()
     expect(screen.queryByText(/This model does not support images/)).toBeNull()
-  })
-})
-
-describe('getCompletedTurnTargets', () => {
-  it('uses display content for prefill and runtime content for rewind matching', () => {
-    const targets = getCompletedTurnTargets([
-      {
-        id: 'guide-command',
-        type: 'user_text',
-        content: '/agent agent-guide explain hooks',
-        modelContent: '/agent claude-code-guide explain hooks',
-        timestamp: 1,
-      },
-      {
-        id: 'guide-response',
-        type: 'assistant_text',
-        content: 'Here is how hooks work.',
-        timestamp: 2,
-      },
-    ])
-
-    expect(targets).toMatchObject([
-      {
-        content: '/agent agent-guide explain hooks',
-        expectedContent: '/agent claude-code-guide explain hooks',
-      },
-    ])
   })
 })
 

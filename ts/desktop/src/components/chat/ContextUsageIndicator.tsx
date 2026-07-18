@@ -53,6 +53,10 @@ function pickUsedContextCategory(context: SessionContextSnapshot) {
     .slice(0, 4)
 }
 
+function firstNonEmpty(...values: Array<string | undefined | null>) {
+  return values.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim()
+}
+
 function isCliNotRunningError(error: string | null) {
   return error?.toLowerCase().includes('cli session is not running') ?? false
 }
@@ -70,6 +74,7 @@ export function ContextUsageIndicator({
   chatState,
   messageCount,
   runtimeSelectionKey = '',
+  fallbackModelLabel,
   draft = false,
   compact = false,
   refreshNonce = 0,
@@ -80,6 +85,7 @@ export function ContextUsageIndicator({
   const [loading, setLoading] = useState(() => shouldFetchContext(sessionId, draft))
   const [error, setError] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
+  const [inspectionModel, setInspectionModel] = useState<string | null>(null)
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false)
   const requestSeq = useRef(0)
   const contextIdentityRef = useRef('')
@@ -124,8 +130,16 @@ export function ContextUsageIndicator({
         if (seq !== requestSeq.current || activeContextIdentity !== contextIdentityRef.current) return false
         const nextContext = inspection.context ?? inspection.contextEstimate ?? null
         const nextSource = inspection.context ? 'live' : inspection.contextEstimate ? 'estimate' : null
+        const usageModel = inspection.usage?.models.find((model) => firstNonEmpty(model.displayName, model.model)) ?? null
         setContext(nextContext)
         setContextSource(nextSource)
+        setInspectionModel(firstNonEmpty(
+          inspection.context?.model,
+          inspection.contextEstimate?.model,
+          inspection.status?.model,
+          usageModel?.displayName,
+          usageModel?.model,
+        ) ?? null)
         setError(nextContext ? null : inspection.errors?.context ?? null)
         setUpdatedAt(Date.now())
         return nextContext !== null
@@ -180,6 +194,7 @@ export function ContextUsageIndicator({
       setContextSource(null)
       setError(null)
       setUpdatedAt(null)
+      setInspectionModel(null)
     }
     void refresh('auto')
   }, [messageCount, refresh, runtimeSelectionKey, sessionId])
@@ -227,6 +242,7 @@ export function ContextUsageIndicator({
       : 'var(--color-surface-container-high)',
   }
   const displayPercent = displayContext ? formatPercent(percentage) : '--'
+  const displayModel = firstNonEmpty(context?.model, inspectionModel, fallbackModelLabel)
   const ariaLabel = displayContext
     ? t('contextIndicator.ariaLabel', { percent: formatPercent(percentage) })
     : isPendingContext
@@ -277,8 +293,13 @@ export function ContextUsageIndicator({
         compact ? 'hidden' : ''
       }`}>
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
-            {t('contextIndicator.title')}
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
+              {t('contextIndicator.title')}
+            </div>
+            <div className="mt-1 truncate text-sm font-semibold text-[var(--color-text-primary)]">
+              {displayModel ?? t('contextIndicator.modelUnknown')}
+            </div>
           </div>
           <div className="shrink-0 font-mono text-xl font-semibold text-[var(--color-text-primary)]">
             {displayContext ? formatPercent(percentage) : '--'}
@@ -346,6 +367,11 @@ export function ContextUsageIndicator({
           title={t('contextIndicator.title')}
           closeLabel={t('tabs.close')}
           ariaLabel={t('contextIndicator.title')}
+          headerExtra={(
+            <div className="truncate text-base font-semibold text-[var(--color-text-primary)]">
+              {displayModel ?? t('contextIndicator.modelUnknown')}
+            </div>
+          )}
           contentClassName="p-4"
         >
           <div className="flex items-end justify-between gap-4">

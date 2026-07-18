@@ -210,7 +210,7 @@ describe('TraceSession', () => {
     // Timeline rows for messages, the model call, and the tool call.
     const tree = within(screen.getByTestId('trace-tree'))
     expect(tree.getByText('User message')).toBeInTheDocument()
-    expect(tree.getByText('Model call')).toBeInTheDocument()
+    expect(tree.getByText('claude-sonnet-4-5')).toBeInTheDocument()
     expect(tree.getByText('Bash')).toBeInTheDocument()
   })
 
@@ -288,22 +288,25 @@ describe('TraceSession', () => {
   it('loads the full call record on demand and renders semantic sections', async () => {
     await renderReady()
 
-    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('Model call'))
+    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('claude-sonnet-4-5'))
 
     await waitFor(() => expect(sessionsApi.getTraceCall).toHaveBeenCalledWith(SESSION_ID, 'call-1'))
     const detail = within(screen.getByTestId('trace-detail'))
     expect(await detail.findByText('Hi from the full record')).toBeInTheDocument()
 
-    // The diagnostic view keeps the useful result and tuning parameters without
-    // exposing provider, prompt, tool-schema, or raw-request internals.
+    // Section flow: Response (open) / Messages (open) / System prompt / Tools / Parameters / Raw.
     expect(detail.getByRole('button', { name: /^Response/ })).toBeInTheDocument()
+    expect(detail.getByRole('button', { name: /^Messages/ })).toBeInTheDocument()
+    expect(detail.getByText('Hello world')).toBeInTheDocument()
     expect(detail.getByText('end_turn')).toBeInTheDocument()
+    expect(detail.getByRole('button', { name: /^Tools/ })).toBeInTheDocument()
     expect(detail.getByRole('button', { name: /^Parameters/ })).toBeInTheDocument()
-    expect(detail.queryByRole('button', { name: /^Messages/ })).not.toBeInTheDocument()
-    expect(detail.queryByRole('button', { name: /^Tools/ })).not.toBeInTheDocument()
-    expect(detail.queryByRole('button', { name: 'Raw' })).not.toBeInTheDocument()
+    expect(detail.getByRole('button', { name: 'Raw' })).toBeInTheDocument()
+
+    // System prompt is collapsed by default; expanding reveals the text.
     expect(detail.queryByText('You are helpful.')).not.toBeInTheDocument()
-    expect(detail.queryByText('claude-sonnet-4-5')).not.toBeInTheDocument()
+    fireEvent.click(detail.getByRole('button', { name: /^System prompt/ }))
+    expect(detail.getByText('You are helpful.')).toBeInTheDocument()
 
     // Header badge row carries the usage brief.
     expect(detail.getByText('1.2k → 847')).toBeInTheDocument()
@@ -337,7 +340,7 @@ describe('TraceSession', () => {
     vi.mocked(sessionsApi.getTraceCall).mockResolvedValue({ call: abortedCall })
     await renderReady()
 
-    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('Model call'))
+    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('claude-sonnet-4-5'))
 
     const detail = within(screen.getByTestId('trace-detail'))
     expect(await detail.findByTestId('trace-call-error')).toBeInTheDocument()
@@ -371,11 +374,12 @@ describe('TraceSession', () => {
     vi.mocked(sessionsApi.getTraceCall).mockResolvedValue({ call: legacyCall })
     await renderReady()
 
-    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('Model call'))
+    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('claude-sonnet-4-5'))
 
     const detail = within(screen.getByTestId('trace-detail'))
-    expect(await detail.findByText('Legacy truncated record; the semantic view is unavailable.')).toBeInTheDocument()
-    expect(detail.queryByText('Request body')).not.toBeInTheDocument()
+    expect(await detail.findByText('Legacy truncated record; the semantic view is unavailable. See Raw below.')).toBeInTheDocument()
+    // Raw section opens by default in fallback mode; semantic sections are skipped.
+    await waitFor(() => expect(detail.getByText('Request body')).toBeInTheDocument())
     expect(detail.queryByRole('button', { name: /^Messages/ })).not.toBeInTheDocument()
   })
 
@@ -396,16 +400,14 @@ describe('TraceSession', () => {
       })
     await renderReady(20)
 
-    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('Model call'))
+    fireEvent.click(within(screen.getByTestId('trace-tree')).getByText('claude-sonnet-4-5'))
     await waitFor(() => expect(sessionsApi.getTraceCall).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(vi.mocked(sessionsApi.getTrace).mock.calls.length).toBeGreaterThanOrEqual(3))
 
-    await waitFor(() => {
-      expect(within(screen.getByTestId('trace-tree')).getAllByText('Model call')).toHaveLength(2)
-    })
+    await screen.findByText('claude-sonnet-4-5 x2')
     expect(sessionsApi.getTraceCall).toHaveBeenCalledTimes(1)
     const detail = within(screen.getByTestId('trace-detail'))
-    expect(detail.getByRole('heading', { level: 2, name: 'Model call' })).toBeInTheDocument()
+    expect(detail.getByRole('heading', { level: 2, name: 'claude-sonnet-4-5' })).toBeInTheDocument()
   })
 
   it('does not refetch full messages for identical trace polls', async () => {
@@ -430,6 +432,7 @@ describe('TraceSession', () => {
 
     const tree = within(screen.getByTestId('trace-tree'))
     fireEvent.click(tree.getByText('Bash'))
+    expect(within(screen.getByTestId('trace-detail')).queryByText('file.txt')).not.toBeInTheDocument()
 
     await waitFor(() => expect(sessionsApi.getMessages).toHaveBeenCalledTimes(2))
     expect(within(screen.getByTestId('trace-detail')).getByText('file.txt')).toBeInTheDocument()

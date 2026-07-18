@@ -87,7 +87,7 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
   navigate: (sessionId, url) => set((st) => {
     const cur = st.bySession[sessionId] ?? empty(url)
     const history = [...cur.history.slice(0, Math.max(0, cur.historyIndex + 1)), url]
-    return { bySession: { ...st.bySession, [sessionId]: withNav({ ...cur, isOpen: true, loading: true, pickerActive: false, history, historyIndex: history.length - 1 }) } }
+    return { bySession: { ...st.bySession, [sessionId]: withNav({ ...cur, isOpen: true, loading: true, history, historyIndex: history.length - 1 }) } }
   }),
   goBack: (sessionId) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur || cur.historyIndex <= 0) return st
@@ -115,24 +115,7 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
   }),
   setNavigated: (sessionId, url, title) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st
-    const currentHistoryUrl = cur.history[cur.historyIndex]
-    const history = currentHistoryUrl === url
-      ? cur.history
-      : [...cur.history.slice(0, Math.max(0, cur.historyIndex + 1)), url]
-    return {
-      bySession: {
-        ...st.bySession,
-        [sessionId]: withNav({
-          ...cur,
-          url,
-          title,
-          loading: false,
-          pickerActive: false,
-          history,
-          historyIndex: history.length - 1,
-        }),
-      },
-    }
+    return { bySession: { ...st.bySession, [sessionId]: { ...cur, url, title, loading: false } } }
   }),
   setReady: (sessionId) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st

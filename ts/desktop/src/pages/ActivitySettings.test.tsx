@@ -114,7 +114,7 @@ describe('ActivitySettings', () => {
         schemaVersion: 2,
         profile: {
           displayName: 'billiardbuddy',
-          subtitle: 'github.com/billiardbuddy/app',
+          subtitle: 'github.com/NanmiCoder/billiardbuddy',
           avatarFile: null,
           avatarUpdatedAt: null,
         },
@@ -152,7 +152,7 @@ describe('ActivitySettings', () => {
         schemaVersion: 2,
         profile: {
           displayName: 'billiardbuddy',
-          subtitle: 'github.com/billiardbuddy/app',
+          subtitle: 'github.com/NanmiCoder/billiardbuddy',
           avatarFile: 'profile/avatar.png',
           avatarUpdatedAt: '2026-05-09T12:00:00.000Z',
         },
@@ -171,7 +171,7 @@ describe('ActivitySettings', () => {
         schemaVersion: 2,
         profile: {
           displayName: 'billiardbuddy',
-          subtitle: 'github.com/billiardbuddy/app',
+          subtitle: 'github.com/NanmiCoder/billiardbuddy',
           avatarFile: null,
           avatarUpdatedAt: null,
         },
@@ -201,9 +201,9 @@ describe('ActivitySettings', () => {
     expect(screen.getByText('billiardbuddy')).toBeInTheDocument()
     expect(screen.getByAltText('billiardbuddy avatar')).toHaveAttribute('src', '/app-icon.png')
     expect(screen.getByAltText('billiardbuddy avatar')).toHaveClass('scale-[1.28]')
-    expect(screen.getByRole('link', { name: 'github.com/billiardbuddy/app' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'github.com/NanmiCoder/billiardbuddy' })).toHaveAttribute(
       'href',
-      'https://github.com/billiardbuddy/app',
+      'https://github.com/NanmiCoder/billiardbuddy',
     )
     expect(screen.getByText('Token Activity')).toBeInTheDocument()
     expect(screen.getByText('Total tokens')).toBeInTheDocument()
@@ -218,11 +218,13 @@ describe('ActivitySettings', () => {
     expect(screen.getByText('18 days')).toBeInTheDocument()
     expect(screen.getByText('Activity insights')).toBeInTheDocument()
     expect(screen.getByText('Active rate')).toBeInTheDocument()
+    expect(screen.getByText('Most used model')).toBeInTheDocument()
     expect(screen.getByText('Skills explored')).toBeInTheDocument()
     expect(screen.getByText('Skill uses')).toBeInTheDocument()
     expect(screen.getByText('Tool calls')).toBeInTheDocument()
     expect(screen.getByText('Total sessions')).toBeInTheDocument()
     expect(screen.getByText('Most used plugins & skills')).toBeInTheDocument()
+    expect(screen.getByText('Sonnet')).toBeInTheDocument()
     expect(screen.getByText('$frontend-design')).toBeInTheDocument()
     expect(screen.getByText('$git-commit-pr')).toBeInTheDocument()
     expect(screen.getByText('$code-review')).toBeInTheDocument()
@@ -320,17 +322,17 @@ describe('ActivitySettings', () => {
     fireEvent.click(screen.getByRole('button', { name: '编辑个人资料' }))
     const input = screen.getByLabelText('显示名称')
     fireEvent.change(input, { target: { value: '本地舰长' } })
-    fireEvent.change(screen.getByLabelText('第二行'), { target: { value: 'billiardbuddy.example' } })
+    fireEvent.change(screen.getByLabelText('第二行'), { target: { value: 'relakkes.dev' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     await flushActivityLoad()
 
     expect(updateProfilePreferencesMock).toHaveBeenCalledWith({
       displayName: '本地舰长',
-      subtitle: 'billiardbuddy.example',
+      subtitle: 'relakkes.dev',
     })
     expect(screen.getByText('本地舰长')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'billiardbuddy.example' })).toHaveAttribute('href', 'https://billiardbuddy.example')
+    expect(screen.getByRole('link', { name: 'relakkes.dev' })).toHaveAttribute('href', 'https://relakkes.dev')
   })
 
   it('handles avatar upload, fallback, removal, save failure, and cancel reset', async () => {

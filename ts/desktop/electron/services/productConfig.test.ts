@@ -2,12 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  applyGatewayConfigToEnv,
-  ProductGatewayConfigError,
-  requireProductGatewayConfig,
-  resolveProductGatewayConfig,
-} from './productConfig'
+import { applyGatewayConfigToEnv, resolveProductGatewayConfig } from './productConfig'
 
 const tempDirs: string[] = []
 
@@ -122,31 +117,5 @@ describe('applyGatewayConfigToEnv', () => {
     const base = { PATH: '/usr/bin' }
     // Adapter sidecars pass undefined → same object back, so the token never leaks to them.
     expect(applyGatewayConfigToEnv(base, undefined)).toBe(base)
-  })
-})
-
-describe('requireProductGatewayConfig', () => {
-  it('returns a complete managed gateway config', () => {
-    expect(requireProductGatewayConfig({
-      url: 'https://gw.example/gw',
-      token: 'app-token',
-      model: 'deepseek-v4-flash',
-    })).toEqual({
-      url: 'https://gw.example/gw',
-      token: 'app-token',
-      model: 'deepseek-v4-flash',
-    })
-  })
-
-  it('fails closed instead of allowing desktop provider fallback', () => {
-    expect(() => requireProductGatewayConfig({
-      url: 'https://gw.example/gw',
-    })).toThrow(new ProductGatewayConfigError(
-      'Product gateway is not configured: missing app token.',
-    ))
-    expect(() => requireProductGatewayConfig({
-      url: 'file:///tmp/gateway',
-      token: 'app-token',
-    })).toThrow('gateway URL must use HTTP or HTTPS')
   })
 })

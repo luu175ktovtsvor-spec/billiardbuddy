@@ -130,7 +130,7 @@ export function spanDisplayTitle(span: TraceSpan, t: TraceTranslator): string {
     }
   }
   if (span.kind === 'llm') {
-    return t('trace.modelCall')
+    return span.call?.model ?? span.call?.provider?.name ?? t('trace.modelCall')
   }
   if (span.kind === 'tool') {
     return span.toolName ?? span.title

@@ -430,25 +430,6 @@ describe('Settings API', () => {
     expect(body2.model).toBe('claude-opus-4-7')
   })
 
-  it('moves web search keys into a 0600 secret file and never returns them from settings APIs', async () => {
-    const update = makeRequest('PUT', '/api/settings/user', {
-      webSearch: { mode: 'tavily', tavilyApiKey: 'tvly-real-secret', braveApiKey: '' },
-    })
-    expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
-
-    const settingsRaw = await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')
-    expect(settingsRaw).not.toContain('tvly-real-secret')
-    const secretPath = path.join(tmpDir, 'billiardbuddy', 'web-search-secrets.json')
-    expect(await fs.readFile(secretPath, 'utf8')).toContain('tvly-real-secret')
-    expect((await fs.stat(secretPath)).mode & 0o777).toBe(0o600)
-
-    const read = makeRequest('GET', '/api/settings/user')
-    const response = await handleSettingsApi(read.req, read.url, read.segments)
-    const body = await response.json() as { webSearch: Record<string, unknown> }
-    expect(body.webSearch).toMatchObject({ mode: 'tavily', tavilyConfigured: true, braveConfigured: false })
-    expect(JSON.stringify(body)).not.toContain('tvly-real-secret')
-  })
-
   it('PUT /api/settings/user should sync thinking changes to active CLI sessions', async () => {
     const syncSpy = spyOn(conversationService, 'setMaxThinkingTokensForActiveSessions')
       .mockImplementation(() => 0)

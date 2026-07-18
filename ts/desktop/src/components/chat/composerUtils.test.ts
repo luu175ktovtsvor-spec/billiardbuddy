@@ -8,7 +8,6 @@ import {
   insertSlashTrigger,
   mergeSlashCommands,
   replaceSlashCommand,
-  resolveSlashCommandRuntimeValue,
   resolveSlashUiAction,
 } from './composerUtils'
 
@@ -119,86 +118,17 @@ describe('composerUtils', () => {
         {
           agentType: 'debugger',
           description: 'Debug failures',
+          modelDisplay: 'OPUS',
           source: 'userSettings',
         },
       ]),
     ).toEqual([
       {
         name: 'agent debugger',
-        description: 'Debug failures (userSettings)',
+        description: 'Debug failures (OPUS - userSettings)',
         argumentHint: '<prompt>',
       },
     ])
-  })
-
-  it('uses a product alias for built-in guide metadata and restores the runtime id on submit', () => {
-    const commands = buildAgentSlashCommands([
-      {
-        agentType: 'claude-code-guide',
-        description: 'Use Claude Code and the Anthropic API.',
-        source: 'built-in',
-      },
-    ])
-
-    expect(commands).toEqual([
-      {
-        name: 'agent agent-guide',
-        runtimeName: 'agent claude-code-guide',
-        description: 'Answers questions about the Agent workbench, CLI, hooks, skills, MCP services, settings, and supported model APIs. (built-in)',
-        argumentHint: '<prompt>',
-      },
-    ])
-    expect(resolveSlashCommandRuntimeValue('/agent agent-guide explain hooks', commands)).toBe(
-      '/agent claude-code-guide explain hooks',
-    )
-  })
-
-  it('keeps a custom agent-guide selectable when it conflicts with the built-in guide alias', () => {
-    const commands = buildAgentSlashCommands([
-      {
-        agentType: 'claude-code-guide',
-        description: 'Built-in guide',
-        source: 'built-in',
-      },
-      {
-        agentType: 'agent-guide',
-        description: 'Project-specific guide',
-        source: 'projectSettings',
-      },
-    ])
-
-    expect(commands).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        name: 'agent billiardbuddy-guide',
-        runtimeName: 'agent claude-code-guide',
-      }),
-      expect.objectContaining({
-        name: 'agent agent-guide',
-        description: 'Project-specific guide (projectSettings)',
-      }),
-    ]))
-    expect(resolveSlashCommandRuntimeValue('/agent billiardbuddy-guide explain hooks', commands)).toBe(
-      '/agent claude-code-guide explain hooks',
-    )
-    expect(resolveSlashCommandRuntimeValue('/agent agent-guide explain this project', commands)).toBe(
-      '/agent agent-guide explain this project',
-    )
-  })
-
-  it('keeps project Agent names and descriptions unchanged', () => {
-    const commands = buildAgentSlashCommands([
-      {
-        agentType: 'claude-domain-expert',
-        description: 'Research Claude APIs for this project.',
-        source: 'projectSettings',
-      },
-    ])
-
-    expect(commands[0]).toMatchObject({
-      name: 'agent claude-domain-expert',
-      description: 'Research Claude APIs for this project. (projectSettings)',
-    })
-    expect(commands[0]).not.toHaveProperty('runtimeName')
   })
 
   it('appends agent entries after normal slash commands without replacing them', () => {
@@ -250,19 +180,8 @@ describe('composerUtils', () => {
     expect(resolveSlashUiAction('status')).toEqual({ type: 'panel', command: 'status' })
   })
 
-  it('routes retired login and model commands to the product-managed notice', () => {
-    expect(resolveSlashUiAction('model')).toEqual({ type: 'product-managed' })
-    expect(resolveSlashUiAction('login')).toEqual({ type: 'product-managed' })
-    expect(resolveSlashUiAction('logout')).toEqual({ type: 'product-managed' })
-  })
-
-  it('does not advertise unavailable feedback or internal instruction filenames', () => {
-    const commands = mergeSlashCommands([])
-
-    expect(commands.map((command) => command.name)).not.toContain('bug')
-    expect(commands.find((command) => command.name === 'init')?.description).toBe(
-      'Initialize project instructions',
-    )
+  it('routes /model to the local model selector action', () => {
+    expect(resolveSlashUiAction('model')).toEqual({ type: 'model' })
   })
 
   it('falls back to the static English description when a translation key is missing', () => {

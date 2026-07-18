@@ -109,7 +109,7 @@ describe('desktop theme tokens', () => {
   it('keeps the UI zoom slider thumb visible in dark mode', () => {
     expect(css).toContain('[data-theme="dark"] .settings-zoom-control')
     expect(css).toContain('--settings-zoom-thumb-bg: var(--color-surface-bright);')
-    expect(css).toContain('--settings-zoom-thumb-border: rgba(51, 156, 255, 0.78);')
+    expect(css).toContain('--settings-zoom-thumb-border: rgba(255, 181, 159, 0.78);')
     expect(css).toContain('box-shadow: var(--settings-zoom-thumb-shadow);')
   })
 

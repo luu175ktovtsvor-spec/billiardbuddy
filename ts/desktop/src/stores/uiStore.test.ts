@@ -102,6 +102,6 @@ describe('uiStore settings tab persistence', () => {
 
     const { useUIStore } = await import('./uiStore')
 
-    expect(useUIStore.getState().activeSettingsTab).toBe('general')
+    expect(useUIStore.getState().activeSettingsTab).toBe('providers')
   })
 })

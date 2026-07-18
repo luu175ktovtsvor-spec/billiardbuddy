@@ -190,14 +190,15 @@ describe('GET /auth/callback', () => {
   beforeEach(setup)
   afterEach(teardown)
 
-  test('keeps the retired product callback path unavailable', async () => {
+  test('routes the OpenAI Codex redirect path to the desktop callback page', async () => {
     const originalServerPort = ProviderService.getServerPort()
     const server = startServer(0, '127.0.0.1')
     try {
-      for (const path of ['/auth/callback', '/callback']) {
-        const res = await fetch(`http://127.0.0.1:${server.port}${path}`)
-        expect(res.status).toBe(404)
-      }
+      const res = await fetch(`http://127.0.0.1:${server.port}/auth/callback`)
+      expect(res.status).toBe(200)
+      const html = await res.text()
+      expect(html).toContain('OpenAI Login Failed')
+      expect(html).toContain('Missing code or state parameter')
     } finally {
       server.stop(true)
       ProviderService.setServerPort(originalServerPort)

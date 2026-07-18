@@ -161,7 +161,7 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
   {
     value: DEFAULT_OUTPUT_STYLE,
     label: 'Default',
-    description: 'The Agent completes coding tasks efficiently and provides concise responses',
+    description: 'Claude completes coding tasks efficiently and provides concise responses',
     source: 'built-in',
   },
 ]
@@ -451,15 +451,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ webSearch: next })
     try {
       await settingsApi.updateUser({ webSearch: next })
-      set({
-        webSearch: {
-          ...next,
-          tavilyApiKey: '',
-          braveApiKey: '',
-          tavilyConfigured: Boolean(next.tavilyApiKey?.trim()) || next.tavilyConfigured,
-          braveConfigured: Boolean(next.braveApiKey?.trim()) || next.braveConfigured,
-        },
-      })
     } catch {
       set({ webSearch: prev })
     }
@@ -614,8 +605,6 @@ function normalizeWebSearchSettings(settings: WebSearchSettings | undefined): We
     mode: settings?.mode ?? 'auto',
     tavilyApiKey: settings?.tavilyApiKey ?? '',
     braveApiKey: settings?.braveApiKey ?? '',
-    tavilyConfigured: settings?.tavilyConfigured ?? false,
-    braveConfigured: settings?.braveConfigured ?? false,
   }
 }
 
