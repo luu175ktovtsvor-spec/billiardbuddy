@@ -8,6 +8,7 @@ import type {
   ProductTaskRecord,
 } from '../domain/types'
 import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
+import { CopyButton } from '../../components/shared/CopyButton'
 import { skillsApi } from '../../api/skills'
 import type { PermissionMode } from '../../types/settings'
 import type { SkillMeta } from '../../types/skill'
@@ -52,6 +53,29 @@ function taskStatus(task: ProductTaskRecord): string {
 function taskKindLabel(task: ProductTaskRecord): string {
   if (task.kind === 'continuation') return '继续任务'
   return '任务'
+}
+
+function taskLifecycleLabel(task: ProductTaskRecord): string {
+  return task.lifecycle === 'archived' ? '已归档' : '进行中'
+}
+
+function taskMarkdown(task: ProductTaskRecord): string {
+  const continuationSource = [
+    task.parentTaskId ? `- 父任务 ID：\`${task.parentTaskId}\`` : null,
+    task.parentThreadId ? `- 父线程 ID：\`${task.parentThreadId}\`` : null,
+    task.sourceTurnId ? `- 来源轮次 ID：\`${task.sourceTurnId}\`` : null,
+  ].filter((line): line is string => line !== null)
+
+  return [
+    `# 任务：${task.title}`,
+    '',
+    `- 任务 ID：\`${task.id}\``,
+    `- 状态：${taskLifecycleLabel(task)}`,
+    `- 工作目录：\`${task.workDir || '未提供'}\``,
+    `- 工作树：${WORKTREE_STATE_LABEL[task.worktreeState] ?? '未使用工作树'}`,
+    `- 类型：${taskKindLabel(task)}`,
+    ...(continuationSource.length > 0 ? ['', '## 继续来源', ...continuationSource] : []),
+  ].join('\n')
 }
 
 function projectTasks(index: ProductTaskIndexResponse, projectId: string): ProductTaskRecord[] {
@@ -547,6 +571,18 @@ function TaskRow({
           </dl>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
+          <CopyButton
+            text={task.id}
+            label="复制 ID"
+            copiedLabel="已复制 ID"
+            className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
+          />
+          <CopyButton
+            text={taskMarkdown(task)}
+            label="复制 Markdown"
+            copiedLabel="已复制 Markdown"
+            className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
+          />
           <button type="button" onClick={() => onOpenTask(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开</button>
           {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
           {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
