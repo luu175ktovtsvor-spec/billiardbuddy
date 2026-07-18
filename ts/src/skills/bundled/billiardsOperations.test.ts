@@ -47,23 +47,27 @@ describe('billiards operations skills', () => {
       'references/README.md',
       'references/operations.md',
       'references/store-playbooks.md',
-      'references/reference-figures.md',
+      'references/planning-benchmarks.md',
     ])
     expect(BILLIARDS_KNOWLEDGE_FILES['references/README.md']).toContain(
-      '55 个更细的知识主题',
+      '不代表任何一家门店的现状',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/README.md']).toContain(
       '提纯原则',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/operations.md']).toContain(
-      '识别 → 创造 → 传播 → 交付',
+      '明确客户与目标 → 设计真实产品 → 组织触达 → 保证交付',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/store-playbooks.md']).toContain(
       '选址与租赁核对',
     )
-    expect(BILLIARDS_KNOWLEDGE_FILES['references/reference-figures.md']).toContain(
+    expect(BILLIARDS_KNOWLEDGE_FILES['references/planning-benchmarks.md']).toContain(
       '不是 BilliardBuddy 的默认规则',
     )
+    const runtimeKnowledge = Object.values(BILLIARDS_KNOWLEDGE_FILES).join('\n')
+    expect(runtimeKnowledge).not.toContain('本地存档')
+    expect(runtimeKnowledge).not.toContain('文本行号')
+    expect(runtimeKnowledge).not.toMatch(/第\s*\d+\s*页/)
   })
 
   it('tells the Agent to hide technical choices and separate store facts', () => {

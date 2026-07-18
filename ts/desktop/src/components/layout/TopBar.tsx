@@ -1,13 +1,3 @@
-// TopBar：主区顶栏——左侧是当前会话标题按钮（点开下拉“任务操作”菜单），侧栏折叠时额外露出展开按钮；
-// 右侧（仅会话视图）是 搜索 / 历史 / 工作区面板 三个图标按钮。
-//
-// 视觉、布局、交互忠实移植自旧 renderer-react 的
-// src/components/layout/TopBar.tsx（只读参考，未 import 任何旧仓库代码）；
-// 数据全部改接当前仓库的 store（tabStore / uiStore / sessionStore / chatStore / workspacePanelStore）。
-//
-// 与旧版的差异（当前仓库没有对应能力，明确隐藏而不是假按钮）：
-//   - “分享”按钮：当前仓库没有 ShareModal 等价组件，整个按钮隐藏。
-//   - “归档此任务”菜单项：当前仓库 sessionStore 没有 isArchived/setArchived 等价字段与 action，菜单项整个隐藏。
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, Clock, Copy, Folder, PanelLeft, PanelRight, Search, SquareTerminal } from 'lucide-react'
 import { useTabStore } from '../../stores/tabStore'
@@ -160,7 +150,7 @@ export function TopBar() {
       <header
         data-desktop-drag-region
         data-testid="topbar"
-        className={`flex h-[46px] shrink-0 items-center justify-between ${showWindowControls ? 'pr-0' : 'pr-3'} ${leftPad}`}
+        className={`flex h-[46px] shrink-0 items-center justify-between bg-[var(--color-app-main)] ${showWindowControls ? 'pr-0' : 'pr-3'} ${leftPad}`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {collapsed && (
@@ -181,6 +171,9 @@ export function TopBar() {
               style={{ color: 'var(--color-text-secondary)' }}
               data-testid="thread-more"
             >
+              {sessionWorkDir ? (
+                <Folder size={15} className="shrink-0 opacity-70" />
+              ) : null}
               <span className="truncate">{title}</span>
               <ChevronDown
                 size={12}
@@ -202,8 +195,6 @@ export function TopBar() {
               <IconBtn label={t('search.global.trigger')} onClick={() => openModal('globalSearch')}>
                 <Search size={18} />
               </IconBtn>
-              {/* 当前仓库没有独立的“历史”入口，复用同一个全局搜索/近期会话面板（GlobalSearchModal 本身就带
-                  “近期会话”列表），和旧版两个按钮共用一个 setPaletteOpen 的写法是同一个思路。 */}
               <IconBtn label="历史" onClick={() => openModal('globalSearch')}>
                 <Clock size={18} />
               </IconBtn>

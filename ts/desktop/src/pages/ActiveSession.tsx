@@ -598,6 +598,11 @@ export function ActiveSession() {
             variant={isEmpty && !isMemberSession && !showRightPanel ? 'hero' : 'default'}
             compact={showRightPanel}
           />
+          {!isMobileLayout && !isMemberSession ? (
+            <div className="shrink-0 pb-2 text-center text-[11px] text-[var(--color-text-tertiary)]">
+              {locale === 'zh' ? '内容由 AI 生成，请核实重要信息' : 'AI-generated content may contain mistakes. Check important information.'}
+            </div>
+          ) : null}
         </div>
 
         {showWorkbench ? (

@@ -12,6 +12,7 @@ import { skillsApi } from '../../api/skills'
 import type { PermissionMode } from '../../types/settings'
 import type { SkillMeta } from '../../types/skill'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { getDesktopHost } from '../../lib/desktopHost'
 
 export type TaskIndexProps = {
   index: ProductTaskIndexResponse
@@ -224,6 +225,8 @@ function TaskComposer({
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
+  const desktopHost = getDesktopHost()
+  const canChooseWorkDir = desktopHost.isDesktop && desktopHost.capabilities.dialogs
   const normalizedWorkDir = workDir.trim()
   const isSlashInput = initialText.startsWith('/')
   const query = slashQuery(initialText)
@@ -275,6 +278,25 @@ function TaskComposer({
     if (project) setWorkDir(project.workDir)
   }
 
+  const chooseWorkDir = async () => {
+    if (!canChooseWorkDir) return
+
+    try {
+      const selected = await desktopHost.dialogs.open({
+        directory: true,
+        multiple: false,
+        title: '选择任务工作目录',
+      })
+      const nextWorkDir = Array.isArray(selected) ? selected[0] : selected
+      if (!nextWorkDir) return
+
+      setWorkDir(nextWorkDir)
+      setProjectId(projects.find((project) => project.workDir === nextWorkDir)?.id ?? '')
+    } catch {
+      return
+    }
+  }
+
   return (
     <form
       className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
@@ -302,10 +324,15 @@ function TaskComposer({
           </select>
         </label>
       ) : null}
-      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-        工作目录
-        <input aria-label="工作目录" required value={workDir} onChange={(event) => setWorkDir(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
-      </label>
+      <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        <label htmlFor="product-task-work-dir">工作目录</label>
+        <div className="flex gap-2">
+          <input id="product-task-work-dir" aria-label="工作目录" required value={workDir} onChange={(event) => setWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+          {canChooseWorkDir ? (
+            <button type="button" onClick={() => void chooseWorkDir()} className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">选择文件夹</button>
+          ) : null}
+        </div>
+      </div>
       <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         任务标题（可选）
         <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />

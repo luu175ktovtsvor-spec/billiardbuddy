@@ -403,8 +403,8 @@
   color-scheme: light;
 
   /* Layout dimensions */
-  --sidebar-width: 280px;
-  --sidebar-rail-width: 72px;
+  --sidebar-width: 240px;
+  --sidebar-rail-width: 0px;
   --titlebar-height: 40px;
   --statusbar-height: 36px;
   --motion-sidebar-duration: 280ms;
@@ -1112,7 +1112,7 @@ button, input, textarea, select, a, [role="button"] {
 }
 
 .sidebar-shell[data-state="closed"] {
-  width: var(--sidebar-rail-width);
+  width: 0;
 }
 
 .app-shell--mobile .sidebar-shell {
@@ -1148,8 +1148,8 @@ button, input, textarea, select, a, [role="button"] {
 }
 
 .sidebar-panel[data-state="closed"] {
-  width: var(--sidebar-rail-width);
-  min-width: var(--sidebar-rail-width);
+  width: 0;
+  min-width: 0;
 }
 
 .app-shell--mobile .sidebar-panel,

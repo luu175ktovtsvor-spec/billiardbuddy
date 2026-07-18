@@ -17,6 +17,7 @@ import { PermissionModeSelector } from '../components/controls/PermissionModeSel
 import { AttachmentGallery } from '../components/chat/AttachmentGallery'
 import { ComposerDropOverlay } from '../components/chat/ComposerDropOverlay'
 import { VoiceInputControl } from '../components/chat/VoiceInputControl'
+import { ComposerFrame, ComposerSurface, ComposerToolbar } from '../components/chat/ComposerSurface'
 import { Smiley } from '../components/shared/Smiley'
 import { FileSearchMenu, type FileSearchMenuHandle } from '../components/chat/FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from '../components/chat/LocalSlashCommandPanel'
@@ -148,6 +149,13 @@ export function EmptySession() {
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+  }, [input])
 
   useEffect(() => {
     if (!plusMenuOpen) return
@@ -657,11 +665,11 @@ export function EmptySession() {
           : 'bottom-4 px-4'
       }`}
       >
-        <div className={`flex w-full flex-col ${isMobileComposer ? 'max-w-none' : 'max-w-[768px]'}`}>
-          <div
+        <ComposerFrame mobile={isMobileComposer}>
+          <ComposerSurface
             ref={panelRef}
             data-testid="empty-session-composer-panel"
-            className={`main-composer-surface relative flex flex-col overflow-visible ${isDragActive ? 'composer-drop-target-active' : ''}`}
+            className={isDragActive ? 'composer-drop-target-active' : ''}
             {...dragHandlers}
           >
             {isDragActive && (
@@ -777,19 +785,17 @@ export function EmptySession() {
                   onChange={(event) => handleInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
-                  className={`flex-1 resize-none border-none bg-transparent px-3 leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
-                    isMobileComposer ? 'max-h-[132px] min-h-[72px] pb-1 pt-3 text-base' : 'min-h-[64px] pb-1 pt-3 text-sm'
+                  className={`mb-1 w-full resize-none border-none bg-transparent px-3 pt-3 leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
+                    isMobileComposer ? 'min-h-[44px] max-h-[132px] text-base' : 'max-h-[200px] text-sm'
                   }`}
-                  style={{ fontFamily: 'var(--font-body)' }}
+                  style={{ fontFamily: 'var(--font-body)', maxHeight: 200 }}
                   placeholder={t('empty.placeholder')}
-                  rows={2}
+                  rows={1}
                 />
               </div>
 
-              <div className={`mb-2 min-h-8 px-2 ${
-                isMobileComposer ? 'flex flex-wrap items-center gap-2' : 'flex items-center justify-between'
-              }`}>
-                <div className="flex shrink-0 items-center gap-2">
+              <ComposerToolbar
+                start={(
                   <div ref={plusMenuRef} className="relative">
                     <button
                       onClick={() => setPlusMenuOpen((prev) => !prev)}
@@ -822,16 +828,17 @@ export function EmptySession() {
                       </div>
                     )}
                   </div>
-
+                )}
+                middle={(
                   <PermissionModeSelector
                     workDir={workDir}
                     compact={isMobileComposer}
                     value={draftPermissionMode}
                     onChange={setDraftPermissionMode}
                   />
-                </div>
-
-                <div className={`${isMobileComposer ? 'flex min-w-0 flex-1 items-center justify-end gap-2' : 'flex items-center gap-3'}`}>
+                )}
+                end={(
+                  <>
                   <VoiceInputControl
                     onTranscript={appendVoiceTranscript}
                     disabled={isSubmitting}
@@ -848,13 +855,11 @@ export function EmptySession() {
                   >
                     <span className="material-symbols-outlined text-[17px]">arrow_upward</span>
                   </button>
-                </div>
-              </div>
+                  </>
+                )}
+              />
             </div>
 
-          </div>
-
-          <div className="mt-2 px-1">
             <RepositoryLaunchControls
               workDir={workDir}
               onWorkDirChange={handleWorkDirChange}
@@ -864,9 +869,10 @@ export function EmptySession() {
               onUseWorktreeChange={setUseWorktree}
               onLaunchReadyChange={setRepositoryLaunchReady}
               disabled={isSubmitting}
+              placement="composer"
             />
-          </div>
-        </div>
+          </ComposerSurface>
+        </ComposerFrame>
       </div>
 
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
