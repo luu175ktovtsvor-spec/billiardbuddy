@@ -1158,6 +1158,7 @@ export const kr: Record<TranslationKey, string> = {
   'chat.contextReferencesOnly': '참조 {count}개를 추가했습니다',
   'chat.addSelectionToChat': '채팅에 추가',
   'chat.branchFromHere': '새 작업에서 계속',
+  'chat.branchInNewWorktree': '새 worktree에서 계속',
   'chat.branchSuccess': '계속 작업 "{title}"을(를) 만들었습니다.',
   'chat.branchError': '계속 작업을 만들 수 없습니다. 세부 정보: {detail}',
   'chat.sideTaskFromHere': '사이드 작업 시작',

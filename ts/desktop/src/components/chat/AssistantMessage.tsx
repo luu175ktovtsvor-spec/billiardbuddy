@@ -17,6 +17,7 @@ type Props = {
   content: string
   isStreaming?: boolean
   branchAction?: MessageBranchAction
+  worktreeBranchAction?: MessageBranchAction
   sideTaskAction?: MessageBranchAction
   sessionId?: string
   timestamp?: number
@@ -27,7 +28,7 @@ type Props = {
 
 const MAX_CARDS = 3
 
-export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, sideTaskAction, sessionId, timestamp, turnChangedFiles }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, worktreeBranchAction, sideTaskAction, sessionId, timestamp, turnChangedFiles }: Props) {
   const t = useTranslation()
   const workDir = useWorkspacePanelStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
 
@@ -105,6 +106,7 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
           copyText={isStreaming ? undefined : content}
           copyLabel="Copy reply"
           branchAction={branchAction}
+          worktreeBranchAction={worktreeBranchAction}
           sideTaskAction={sideTaskAction}
           align="start"
           timestamp={timestamp}

@@ -1156,6 +1156,7 @@ export const en = {
   'chat.contextReferencesOnly': 'Added {count} references',
   'chat.addSelectionToChat': 'Add to chat',
   'chat.branchFromHere': 'Continue in a new task',
+  'chat.branchInNewWorktree': 'Continue in a new worktree',
   'chat.branchSuccess': 'Created continuation task "{title}".',
   'chat.branchError': 'Could not create continuation task. Detail: {detail}',
   'chat.sideTaskFromHere': 'Start a side task',

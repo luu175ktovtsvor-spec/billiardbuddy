@@ -98,6 +98,17 @@ export type CreateSessionBranchOptions = {
   sourceWorkDir?: string | null
   sourceRepository?: unknown
   sourceWorktreeSession?: PersistedWorktreeSession | null
+  /**
+   * Lets callers reserve a session ID before creating an isolated workspace.
+   * The normal branch command continues to generate the ID itself.
+   */
+  targetSessionId?: UUID
+  /**
+   * Overrides inherited launch metadata for a branch that has moved into a
+   * different, already materialized workspace.
+   */
+  targetWorkDir?: string
+  targetRepository?: unknown
 }
 
 export class SessionBranchingError extends Error {
@@ -376,6 +387,9 @@ export async function createSessionBranch(
     sourceWorkDir,
     sourceRepository,
     sourceWorktreeSession,
+    targetSessionId,
+    targetWorkDir,
+    targetRepository,
   } = options
 
   const projectDirPath = path.dirname(sourceTranscriptPath)
@@ -459,7 +473,7 @@ export async function createSessionBranch(
     transcript.contentReplacements.get(sourceSessionId as UUID) ?? []
   ).filter((record) => copiedToolResultIds.has(record.toolUseId))
 
-  const forkSessionId = randomUUID() as UUID
+  const forkSessionId = targetSessionId ?? randomUUID() as UUID
   const forkPath = path.join(projectDirPath, `${forkSessionId}.jsonl`)
   await mkdir(projectDirPath, { recursive: true, mode: 0o700 })
 
@@ -500,20 +514,44 @@ export async function createSessionBranch(
     copiedMessageIds,
     forkSessionId,
   )
+  const hasTargetWorkspace =
+    targetWorkDir !== undefined || targetRepository !== undefined
+
+  // A new workspace must not retain a source worktree-state record: it would
+  // point this branch at the source session's linked checkout.
+  if (hasTargetWorkspace) {
+    metadataEntries = metadataEntries.filter((entry) => !isWorktreeStateEntry(entry))
+  }
+
   metadataEntries = ensureSyntheticSessionMeta(
     metadataEntries,
     sourceWorkDir ?? null,
     sourceRepository,
   )
-  metadataEntries = ensureSyntheticWorktreeState(
-    metadataEntries,
-    forkSessionId,
-    sourceWorktreeSession,
-  )
+  if (!hasTargetWorkspace) {
+    metadataEntries = ensureSyntheticWorktreeState(
+      metadataEntries,
+      forkSessionId,
+      sourceWorktreeSession,
+    )
+  }
+
+  // Put this after copied messages so it is authoritative even for legacy
+  // transcript entries that happened to contain repository metadata.
+  const targetWorkspaceMetadataEntry: SessionMetaEntry | undefined = hasTargetWorkspace
+    ? {
+        type: 'session-meta',
+        isMeta: true,
+        ...(targetWorkDir !== undefined ? { workDir: targetWorkDir } : {}),
+        ...(targetRepository !== undefined ? { repository: targetRepository } : {}),
+        timestamp: new Date().toISOString(),
+      }
+    : undefined
 
   const lines = [
     ...metadataEntries.map((entry) => jsonStringify(entry)),
     ...messageLines,
+    ...(targetWorkspaceMetadataEntry ? [jsonStringify(targetWorkspaceMetadataEntry)] : []),
   ]
 
   if (contentReplacementRecords.length > 0) {
@@ -536,8 +574,9 @@ export async function createSessionBranch(
   })
 
   const workDirFromMetadata =
+    targetWorkDir ??
     (
-      metadataEntries.find(isSessionMetaEntry)?.workDir as string | undefined
+      metadataEntries.findLast(isSessionMetaEntry)?.workDir as string | undefined
     ) ??
     sourceWorkDir ??
     branchMessageEntries.findLast((entry) => typeof entry.cwd === 'string')?.cwd ??

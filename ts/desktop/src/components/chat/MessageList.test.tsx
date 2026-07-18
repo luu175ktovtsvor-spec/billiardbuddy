@@ -3546,10 +3546,15 @@ describe('MessageList nested tool calls', () => {
 
     const branchButtons = screen.getAllByRole('button', { name: 'Continue in a new task' })
     expect(branchButtons).toHaveLength(2)
+    const worktreeBranchButtons = screen.getAllByRole('button', { name: 'Continue in a new worktree' })
+    expect(worktreeBranchButtons).toHaveLength(2)
     expect(branchButtons[0]!.closest('[data-message-actions]')).toBe(
       screen.getByRole('button', { name: 'Copy prompt' }).closest('[data-message-actions]')
     )
     expect(branchButtons[1]!.closest('[data-message-actions]')).toBe(
+      screen.getByRole('button', { name: 'Copy reply' }).closest('[data-message-actions]')
+    )
+    expect(worktreeBranchButtons[1]!.closest('[data-message-actions]')).toBe(
       screen.getByRole('button', { name: 'Copy reply' }).closest('[data-message-actions]')
     )
     expect(branchButtons[1]?.getAttribute('title')).toBe('Continue in a new task')
@@ -3559,6 +3564,7 @@ describe('MessageList nested tool calls', () => {
     await waitFor(() => {
       expect(continueTask).toHaveBeenCalledWith(ACTIVE_TAB, {
         sourceTurnId: 'transcript-assistant-1',
+        target: 'current_workspace',
       })
     })
     expect(refreshSessions).toHaveBeenCalledOnce()
@@ -3615,6 +3621,7 @@ describe('MessageList nested tool calls', () => {
     await waitFor(() => {
       expect(continueTask).toHaveBeenCalledWith(ACTIVE_TAB, {
         sourceTurnId: 'transcript-assistant-1',
+        target: 'current_workspace',
       })
       const toasts = useUIStore.getState().toasts
       expect(toasts[toasts.length - 1]).toMatchObject({
@@ -3626,6 +3633,74 @@ describe('MessageList nested tool calls', () => {
     expect(connectToSession).not.toHaveBeenCalled()
     expect(useTabStore.getState().activeTabId).toBe(ACTIVE_TAB)
     expect(continuationButton.getAttribute('disabled')).toBeNull()
+  })
+
+  it('continues from a completed message in a real new worktree when selected', async () => {
+    const continueTask = vi.fn().mockResolvedValue({
+      id: 'task-worktree-1',
+      projectId: 'project-1',
+      coreSessionId: 'worktree-session-1',
+      title: 'Worktree branch',
+      workDir: '/tmp/source-project/.billiardbuddy/worktrees/worktree-session-1',
+      lifecycle: 'active',
+      kind: 'continuation',
+      createdAt: '2026-05-19T00:00:00.000Z',
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      worktreeState: 'materialized',
+      actions: ['archive', 'continue'],
+    })
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const connectToSession = vi.fn()
+    useSessionStore.setState({
+      sessions: [{
+        id: ACTIVE_TAB,
+        title: 'Source session',
+        createdAt: '2026-05-19T00:00:00.000Z',
+        modifiedAt: '2026-05-19T00:00:00.000Z',
+        messageCount: 2,
+        projectPath: '/tmp/source-project',
+        projectRoot: '/tmp/source-project',
+        workDir: '/tmp/source-project',
+        workDirExists: true,
+      }],
+      fetchSessions: refreshSessions as never,
+    })
+    useProductTaskStore.setState({ continueTask: continueTask as never })
+    useChatStore.setState({
+      connectToSession: connectToSession as never,
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'local-user-1',
+              transcriptMessageId: 'transcript-user-1',
+              type: 'user_text',
+              content: '从这里开始',
+              timestamp: 1,
+            },
+            {
+              id: 'local-assistant-1',
+              transcriptMessageId: 'transcript-assistant-1',
+              type: 'assistant_text',
+              content: '这是完成的答复。',
+              timestamp: 2,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Continue in a new worktree' })[1]!)
+
+    await waitFor(() => expect(continueTask).toHaveBeenCalledWith(ACTIVE_TAB, {
+      sourceTurnId: 'transcript-assistant-1',
+      target: 'new_worktree',
+    }))
+    expect(refreshSessions).toHaveBeenCalledOnce()
+    expect(connectToSession).toHaveBeenCalledWith('worktree-session-1')
+    expect(useTabStore.getState().activeTabId).toBe('worktree-session-1')
   })
 
   it('creates a temporary side task from a transcript message without opening a normal task tab', async () => {

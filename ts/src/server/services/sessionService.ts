@@ -399,6 +399,13 @@ export class SessionService {
     this.sessionListCache.clear()
   }
 
+  /**
+   * Called by integrations that create a transcript outside SessionService.
+   */
+  invalidateSessionList(): void {
+    this.invalidateSessionListCache()
+  }
+
   private cloneSessionListSummary(summary: SessionListSummary): SessionListSummary {
     return {
       ...summary,

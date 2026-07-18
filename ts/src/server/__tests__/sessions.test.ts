@@ -9,7 +9,9 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { SessionService, sessionService } from '../services/sessionService.js'
 import {
+  cleanupPreparedSessionWorkspace,
   getRepositoryContext,
+  isMaterializedWorktreeLaunch,
   prepareSessionWorkspace,
 } from '../services/repositoryLaunchService.js'
 import { conversationService } from '../services/conversationService.js'
@@ -2203,6 +2205,75 @@ describe('SessionService', () => {
 
     const sourceAfter = await fs.readFile(sourcePath, 'utf-8')
     expect(sourceAfter).toBe(sourceBefore)
+  })
+
+  it('createSessionBranch should write an isolated workspace only after it is materialized', async () => {
+    const sourceSessionId = 'branch-isolated-source'
+    const workDir = await createCleanGitRepo(tmpDir)
+    const sourceWorktreePath = path.join(workDir, '.claude', 'worktrees', 'desktop-source')
+    const sourceProjectDir = sanitizePath(workDir)
+    const userId = crypto.randomUUID()
+    const sourcePath = await writeSessionFile(sourceProjectDir, sourceSessionId, [
+      {
+        type: 'session-meta',
+        isMeta: true,
+        workDir,
+        repository: {
+          requestedWorkDir: workDir,
+          repoRoot: workDir,
+          branch: 'main',
+          worktree: true,
+          baseRef: 'main',
+          worktreePath: sourceWorktreePath,
+          worktreeBranch: 'worktree-desktop-source',
+          worktreeSlug: 'desktop-source',
+        },
+        timestamp: '2026-01-01T00:00:00.000Z',
+      },
+      makeWorktreeStateEntry(sourceSessionId, sourceWorktreePath, {
+        originalCwd: workDir,
+      }),
+      {
+        ...makeUserEntry('continue in a clean worktree', userId),
+        cwd: workDir,
+        sessionId: sourceSessionId,
+      },
+      {
+        ...makeAssistantEntry('ready to continue', userId),
+        cwd: workDir,
+        sessionId: sourceSessionId,
+      },
+    ])
+    const targetSessionId = crypto.randomUUID()
+    const preparedWorkspace = await prepareSessionWorkspace(
+      workDir,
+      { branch: 'main', worktree: true },
+      targetSessionId,
+    )
+
+    try {
+      const branch = await createSessionBranch({
+        sourceSessionId,
+        sourceTranscriptPath: sourcePath,
+        sourceWorkDir: workDir,
+        targetSessionId,
+        targetWorkDir: preparedWorkspace.workDir,
+        targetRepository: preparedWorkspace.repository,
+      })
+
+      expect(branch.sessionId).toBe(targetSessionId)
+      const launchInfo = await service.getSessionLaunchInfo(branch.sessionId)
+      expect(launchInfo?.workDir).toBe(preparedWorkspace.workDir)
+      expect(launchInfo?.repository).toEqual(preparedWorkspace.repository)
+      expect(launchInfo && isMaterializedWorktreeLaunch(launchInfo)).toBe(true)
+
+      const branchEntries = parseJSONL<Record<string, unknown>>(
+        await fs.readFile(branch.forkPath),
+      )
+      expect(branchEntries.some((entry) => entry.type === 'worktree-state')).toBe(false)
+    } finally {
+      await cleanupPreparedSessionWorkspace(preparedWorkspace)
+    }
   })
 })
 
