@@ -48,7 +48,7 @@ branch: dev
 | 网关与服务器部署入口 | `gateway/*.ts`、`gateway/deploy.sh`、`relay/*.ts`、`relay/deploy.sh` | 模型、视觉、语音、容量、凭据、图片 relay 和部署事实 | 不根据旧报告猜服务器状态；部署或真机测试前重新读取代码并核验真实服务器 |
 | 当前媒体链 | `ts/desktop/src/components/media/`、`ts/src/server/services/mediaProjectService.ts`、`ts/src/tools/MediaWorkbenchTool/`、`relay/` | 生图/视频工作台、任务状态、素材、预览、导出与 Agent Tool 的现有证据 | 不因文件存在就宣称可用，不把媒体字节塞进 LLM 网关 |
 | 当前球房能力 | `ts/src/skills/bundled/billiardsKnowledge.ts`、`billiardsOperations.ts`、`bossRecruiting.ts` | 去来源后的经营知识、业务确认框架和 Skill 触发方式 | 不恢复原始资料身份、机械浏览器步骤、固定评分或每轮强制检索 |
-| 当前产品品牌资产 | `ts/desktop/public/app-icon.*`、`ts/desktop/src-tauri/icons/` | BilliardBuddy 图标、品牌和打包资产 | 不从 Codex 或 CC-HH 复制品牌资产 |
+| 当前产品品牌资产 | `ts/desktop/public/app-icon.png`、`ts/desktop/src-tauri/icons/` | BilliardBuddy 图标、品牌和打包资产 | 不从 Codex 或 CC-HH 复制品牌资产 |
 
 原始台球资料不属于后续开发窗口的直接参照物。运行时重新整理后的 `billiardsKnowledge.ts` 是唯一可进入 Agent 上下文的球房知识事实源；原始资料名称、人物、机构、案例身份、页码和整理记录不进入仓库或产品。
 
