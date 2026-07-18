@@ -1,17 +1,10 @@
 /**
- * CORS middleware for desktop and temporary open H5 access.
+ * CORS middleware for the local desktop sidecar.
+ *
+ * The server is loopback-only, and only desktop or loopback browser origins
+ * may read its responses. This deliberately leaves no exception for retired
+ * LAN/H5 clients.
  */
-
-export function corsHeaders(origin?: string | null): Record<string, string> {
-  const allowedOrigin = origin || 'http://localhost:3000'
-  return {
-    'Access-Control-Allow-Origin': allowedOrigin,
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin',
-  }
-}
 
 function baseCorsHeaders(): Record<string, string> {
   return {
@@ -22,24 +15,9 @@ function baseCorsHeaders(): Record<string, string> {
   }
 }
 
-export type CorsResolution = {
-  allowed: boolean
-  rejected: boolean
-  headers: Record<string, string>
-}
-
-export type CorsResolutionOptions = {
-  h5Enabled?: boolean
-  isOriginAllowed?: (origin: string) => Promise<boolean>
-}
-
 const LOCAL_DESKTOP_ORIGINS = new Set(['file://'])
 
-function isLocalOrigin(origin?: string | null): boolean {
-  if (!origin) {
-    return true
-  }
-
+function isLocalOrigin(origin: string): boolean {
   return LOCAL_DESKTOP_ORIGINS.has(origin) || isLoopbackBrowserOrigin(origin)
 }
 
@@ -61,30 +39,33 @@ function isLoopbackBrowserOrigin(origin: string): boolean {
     .replace(/\]$/, '')
     .toLowerCase()
 
-  return hostname === 'localhost' || hostname === '::1' || isLoopbackIPv4(hostname)
-}
-
-function isLoopbackIPv4(hostname: string): boolean {
-  const parts = hostname.split('.')
-  if (parts.length !== 4 || parts[0] !== '127') {
-    return false
+  if (hostname === 'localhost' || hostname === '::1') {
+    return true
   }
 
-  return parts.every((part) => {
-    if (!/^\d+$/.test(part)) {
-      return false
-    }
-
+  const parts = hostname.split('.')
+  return parts.length === 4 && parts[0] === '127' && parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false
     const value = Number(part)
     return value >= 0 && value <= 255
   })
 }
 
-export async function resolveCors(
-  origin?: string | null,
-  _requestOrigin?: string | null,
-  options: CorsResolutionOptions = {},
-): Promise<CorsResolution> {
+export function corsHeaders(origin?: string | null): Record<string, string> {
+  const headers = baseCorsHeaders()
+  if (origin && isLocalOrigin(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin
+  }
+  return headers
+}
+
+export type CorsResolution = {
+  allowed: boolean
+  rejected: boolean
+  headers: Record<string, string>
+}
+
+export async function resolveCors(origin?: string | null): Promise<CorsResolution> {
   if (!origin) {
     return {
       allowed: true,
@@ -93,25 +74,11 @@ export async function resolveCors(
     }
   }
 
-  if (!options.h5Enabled || isLocalOrigin(origin)) {
+  if (isLocalOrigin(origin)) {
     return {
       allowed: true,
       rejected: false,
-      headers: {
-        ...baseCorsHeaders(),
-        'Access-Control-Allow-Origin': origin,
-      },
-    }
-  }
-
-  if (options.isOriginAllowed && await options.isOriginAllowed(origin)) {
-    return {
-      allowed: true,
-      rejected: false,
-      headers: {
-        ...baseCorsHeaders(),
-        'Access-Control-Allow-Origin': origin,
-      },
+      headers: corsHeaders(origin),
     }
   }
 

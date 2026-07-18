@@ -1,4 +1,3 @@
-import { getAuthToken } from '../../api/client'
 import { getServerBaseUrl } from '../../lib/desktopRuntime'
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -32,12 +31,9 @@ function buildProductApiUrl(path: string): string {
 }
 
 function buildProductApiHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
+  return {
     'Content-Type': 'application/json',
   }
-  const token = getAuthToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
 }
 
 async function request<T>(

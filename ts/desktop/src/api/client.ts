@@ -8,7 +8,6 @@ const ENV_BASE_URL =
 const DEFAULT_BASE_URL = ENV_BASE_URL || 'http://127.0.0.1:3456'
 
 let baseUrl = DEFAULT_BASE_URL
-let authToken: string | null = null
 const DIAGNOSTICS_PATH = '/api/diagnostics/events'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 
@@ -41,15 +40,6 @@ export function getApiUrl(pathOrUrl: string) {
   }
 }
 
-export function setAuthToken(token: string | null) {
-  const trimmed = token?.trim() ?? ''
-  authToken = trimmed.length > 0 ? trimmed : null
-}
-
-export function getAuthToken() {
-  return authToken
-}
-
 export function getDefaultBaseUrl() {
   return DEFAULT_BASE_URL
 }
@@ -70,7 +60,7 @@ export class ApiError extends Error {
 
 async function request<T>(method: string, path: string, body?: unknown, options?: { timeout?: number }): Promise<T> {
   const url = `${baseUrl}${path}`
-  const headers = buildHeaders()
+  const headers = { 'Content-Type': 'application/json' }
 
   const controller = new AbortController()
   const timeoutMs = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS
@@ -110,12 +100,12 @@ function reportApiFailure(method: string, path: string, error: unknown) {
     method,
     path,
     errorName: error instanceof Error ? error.name : typeof error,
-    message: sanitizeDiagnosticValue(error instanceof Error ? error.message : String(error)),
+    message: error instanceof Error ? error.message : String(error),
   }
 
   if (error instanceof ApiError) {
     details.status = error.status
-    details.response = sanitizeDiagnosticValue(error.body)
+    details.response = error.body
   }
 
   void rawRecordDiagnosticEvent({
@@ -135,41 +125,9 @@ export function rawRecordDiagnosticEvent(event: {
 }) {
   return fetch(`${baseUrl}${DIAGNOSTICS_PATH}`, {
     method: 'POST',
-    headers: buildHeaders(),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
   }).catch(() => undefined)
-}
-
-function buildHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-
-  if (authToken) {
-    headers.Authorization = `Bearer ${authToken}`
-  }
-
-  return headers
-}
-
-function sanitizeDiagnosticValue(value: unknown): unknown {
-  if (!authToken) return value
-
-  if (typeof value === 'string') {
-    return value.split(authToken).join('[redacted]')
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeDiagnosticValue(entry))
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, sanitizeDiagnosticValue(entry)]),
-    )
-  }
-
-  return value
 }
 
 export const api = {

@@ -39,7 +39,6 @@ import {
   shouldHideCommandMetadataContent,
 } from '../../utils/commandMetadata.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
-import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -60,6 +59,7 @@ const sessionSlashCommands = new Map<string, SessionSlashCommand[]>()
  * If a client reconnects before the timer fires, the timer is cancelled.
  */
 const PENDING_PERMISSION_DISCONNECT_CLEANUP_MS = 30 * 60_000
+const DEFAULT_IDLE_DISCONNECT_CLEANUP_MS = 30_000
 const sessionCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /**
  * Per-session removers for the turn-completion watcher (issue #764). When the
@@ -162,7 +162,7 @@ export type WebSocketData = {
   serverHost: string
 }
 
-// Active WebSocket clients, grouped by session. Desktop, H5, and IM adapters can
+// Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
 const clientOutputCallbacks = new Map<
@@ -2036,13 +2036,13 @@ function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: st
 /**
  * Idle disconnect cleanup delay. A session waiting on a pending permission
  * keeps the long 30-minute window so a transient renderer disconnect does not
- * abort a prompt the user is about to answer. Otherwise we honor the
- * user-configured grace period (issue #764).
+ * abort a prompt the user is about to answer. Otherwise desktop sessions use
+ * the fixed local grace period.
  */
 function getDisconnectCleanupDelayMs(sessionId: string): number {
   return conversationService.getPendingPermissionRequests(sessionId).length > 0
     ? PENDING_PERMISSION_DISCONNECT_CLEANUP_MS
-    : getDisconnectGraceMs()
+    : DEFAULT_IDLE_DISCONNECT_CLEANUP_MS
 }
 
 /**

@@ -193,14 +193,16 @@ function migrateProvidersIndex(value: unknown): JsonObject {
 
 function migrateManagedSettings(value: unknown): JsonObject {
   if (!isRecord(value)) return {}
-  if (value.env !== undefined && !isRecord(value.env)) {
-    return { ...value, env: {} }
+  const { h5Access: _retiredH5Access, ...managedSettings } = value
+
+  if (managedSettings.env !== undefined && !isRecord(managedSettings.env)) {
+    return { ...managedSettings, env: {} }
   }
-  if (isRecord(value.env)) {
-    const { env, changed } = normalizeLegacyDeepSeekManagedEnv(value.env as Record<string, string>)
-    if (changed) return { ...value, env }
+  if (isRecord(managedSettings.env)) {
+    const { env, changed } = normalizeLegacyDeepSeekManagedEnv(managedSettings.env as Record<string, string>)
+    if (changed) return { ...managedSettings, env }
   }
-  return value
+  return managedSettings
 }
 
 async function migrateJsonEntry(

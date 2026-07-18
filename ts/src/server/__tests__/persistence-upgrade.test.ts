@@ -240,6 +240,37 @@ describe('persistent storage upgrade migrations', () => {
     expect(quarantined.length).toBe(1)
   })
 
+  test('removes retired H5 access settings while preserving current managed settings', async () => {
+    const billiardBuddyDir = path.join(tempDir, 'billiardbuddy')
+    await fs.mkdir(billiardBuddyDir, { recursive: true })
+    await fs.writeFile(
+      path.join(billiardBuddyDir, 'settings.json'),
+      JSON.stringify({
+        h5Access: {
+          enabled: true,
+          token: 'retired-secret',
+          fixedPort: 28670,
+        },
+        env: { USER_CUSTOM_ENV: 'keep-me' },
+        userOwnedFutureField: { nested: true },
+      }, null, 2),
+      'utf-8',
+    )
+
+    const report = await ensurePersistentStorageUpgraded()
+
+    expect(report.failures).toEqual([])
+    expect(report.migratedEntries).toContain('billiardbuddy/settings.json')
+    const migrated = JSON.parse(await fs.readFile(path.join(billiardBuddyDir, 'settings.json'), 'utf-8')) as {
+      h5Access?: unknown
+      env?: Record<string, string>
+      userOwnedFutureField?: unknown
+    }
+    expect(migrated.h5Access).toBeUndefined()
+    expect(migrated.env?.USER_CUSTOM_ENV).toBe('keep-me')
+    expect(migrated.userOwnedFutureField).toEqual({ nested: true })
+  })
+
   test('upgrades existing DeepSeek managed env to follow global thinking settings', async () => {
     const billiardBuddyDir = path.join(tempDir, 'billiardbuddy')
     await fs.mkdir(billiardBuddyDir, { recursive: true })
