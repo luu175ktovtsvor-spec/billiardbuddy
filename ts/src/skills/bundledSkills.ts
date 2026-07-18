@@ -90,9 +90,9 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
 
   let skillRoot: string | undefined
   let getPromptForCommand = definition.getPromptForCommand
+  let command: Command
 
   if (files && Object.keys(files).length > 0) {
-    skillRoot = getBundledSkillExtractDir(definition.name)
     // Closure-local memoization: extract once per process.
     // Memoize the promise (not the result) so concurrent callers await
     // the same extraction instead of racing into separate writes.
@@ -103,11 +103,17 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
       const extractedDir = await extractionPromise
       const blocks = await inner(args, ctx)
       if (extractedDir === null) return blocks
+      // Registration and desktop discovery must stay side-effect free. The
+      // extraction root (and its build-time version macro) is resolved only
+      // when the Skill is actually invoked. Set it before hook registration,
+      // which runs after getPromptForCommand resolves.
+      skillRoot = extractedDir
+      command.skillRoot = extractedDir
       return prependBaseDir(blocks, extractedDir)
     }
   }
 
-  const command: Command = {
+  command = {
     type: 'prompt',
     name: definition.name,
     description: definition.description,
