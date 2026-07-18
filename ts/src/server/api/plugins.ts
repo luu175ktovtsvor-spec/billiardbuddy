@@ -1,5 +1,5 @@
 import type { PluginScope } from '../../utils/plugins/schemas.js'
-import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { ApiError } from '../middleware/errorHandler.js'
 import { PluginService } from '../services/pluginService.js'
 import { conversationService } from '../services/conversationService.js'
 import { updateSessionSlashCommands } from '../ws/handler.js'
@@ -14,7 +14,6 @@ type PluginSessionReloadSummary = {
   plugins: number
   mcpServers: number
   errors: number
-  error?: string
 }
 
 export async function handlePluginsApi(
@@ -34,7 +33,7 @@ export async function handlePluginsApi(
     if (method === 'GET' && sub === 'detail') {
       const pluginId = url.searchParams.get('id')
       if (!pluginId) {
-        throw ApiError.badRequest('Missing required "id" query parameter')
+        throw new ApiError(400, 'Invalid plugin request', 'PLUGIN_ACTION_INVALID')
       }
       return Response.json({
         detail: await pluginService.getPluginDetail(pluginId, cwd),
@@ -58,7 +57,7 @@ export async function handlePluginsApi(
       const body = await parseJsonBody(req)
       const pluginId = asString(body.id)
       if (!pluginId) {
-        throw ApiError.badRequest('Missing or invalid "id" in request body')
+        throw new ApiError(400, 'Invalid plugin request', 'PLUGIN_ACTION_INVALID')
       }
 
       const scope = coerceScope(body.scope)
@@ -81,17 +80,13 @@ export async function handlePluginsApi(
             ),
           )
         default:
-          throw ApiError.notFound(`Unknown plugins endpoint: ${sub}`)
+          throw new ApiError(404, 'Plugin endpoint not found', 'PLUGIN_NOT_FOUND')
       }
     }
 
-    throw new ApiError(
-      405,
-      `Method ${method} not allowed on /api/plugins${sub ? `/${sub}` : ''}`,
-      'METHOD_NOT_ALLOWED',
-    )
+    throw new ApiError(405, 'Plugin request is not supported', 'PLUGIN_ACTION_INVALID')
   } catch (error) {
-    return errorResponse(error)
+    return pluginErrorResponse(error)
   }
 }
 
@@ -127,7 +122,7 @@ async function reloadSessionPlugins(
       mcpServers: Array.isArray(response.mcpServers) ? response.mcpServers.length : 0,
       errors: typeof response.error_count === 'number' ? response.error_count : 0,
     }
-  } catch (error) {
+  } catch {
     return {
       applied: false,
       reason: 'failed',
@@ -136,7 +131,6 @@ async function reloadSessionPlugins(
       plugins: 0,
       mcpServers: 0,
       errors: 0,
-      error: error instanceof Error ? error.message : String(error),
     }
   }
 }
@@ -145,7 +139,7 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
   try {
     return (await req.json()) as Record<string, unknown>
   } catch {
-    throw ApiError.badRequest('Invalid JSON body')
+    throw new ApiError(400, 'Invalid plugin request', 'PLUGIN_ACTION_INVALID')
   }
 }
 
@@ -168,7 +162,29 @@ function coerceScope(value: unknown):
   ) {
     return value
   }
-  throw ApiError.badRequest(
-    'Invalid "scope". Expected one of: user, project, local, managed',
-  )
+  throw new ApiError(400, 'Invalid plugin scope', 'PLUGIN_ACTION_INVALID')
+}
+
+function pluginErrorResponse(error: unknown): Response {
+  const status = error instanceof ApiError ? error.statusCode : 500
+  const code = error instanceof ApiError
+    ? pluginErrorCode(error)
+    : 'PLUGIN_REQUEST_FAILED'
+
+  return Response.json({ error: code }, { status })
+}
+
+function pluginErrorCode(error: ApiError):
+  | 'PLUGIN_ACTION_FAILED'
+  | 'PLUGIN_ACTION_INVALID'
+  | 'PLUGIN_NOT_FOUND'
+  | 'PLUGIN_REQUEST_FAILED' {
+  if (error.code === 'PLUGIN_ACTION_FAILED') return 'PLUGIN_ACTION_FAILED'
+  if (error.code === 'PLUGIN_ACTION_INVALID' || error.code === 'BAD_REQUEST') {
+    return 'PLUGIN_ACTION_INVALID'
+  }
+  if (error.code === 'PLUGIN_NOT_FOUND' || error.code === 'NOT_FOUND') {
+    return 'PLUGIN_NOT_FOUND'
+  }
+  return 'PLUGIN_REQUEST_FAILED'
 }

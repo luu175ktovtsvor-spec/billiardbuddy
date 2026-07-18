@@ -8,84 +8,39 @@ export type PluginCapabilityKey =
   | 'mcpServers'
   | 'lspServers'
 
-export type PluginCapabilities = Record<PluginCapabilityKey, string[]>
-
 export type PluginComponentCounts = Record<PluginCapabilityKey, number>
 
-export type PluginSkillEntry = {
-  name: string
-  displayName?: string
-  description: string
-  version?: string
-  pluginName?: string
-}
+export type PluginStatus = 'attention' | 'enabled' | 'disabled'
 
-export type PluginCommandEntry = {
-  name: string
-  description: string
-}
+export type PluginDescriptionKind = 'workspace_extension'
 
-export type PluginAgentEntry = {
-  name: string
-  displayName?: string
-  description: string
-}
+export type PluginAction = 'enabled' | 'disabled' | 'updated' | 'uninstalled'
 
-export type PluginHookEntry = {
-  event: string
-  matcher?: string
-  actions: string[]
-}
-
-export type PluginMcpServerEntry = {
-  name: string
-  displayName?: string
-  transport: string
-  summary: string
-}
+export type PluginRequestErrorCode =
+  | 'PLUGIN_ACTION_FAILED'
+  | 'PLUGIN_ACTION_INVALID'
+  | 'PLUGIN_NOT_FOUND'
+  | 'PLUGIN_REQUEST_FAILED'
 
 export type PluginSummary = {
   id: string
   name: string
-  marketplace: string
   scope: PluginScope
   enabled: boolean
-  hasErrors: boolean
-  isBuiltin: boolean
-  version?: string
-  description?: string
-  authorName?: string
-  installPath?: string
-  projectPath?: string
+  status: PluginStatus
+  canManage: boolean
+  descriptionKind: PluginDescriptionKind
   componentCounts: PluginComponentCounts
-  errors: string[]
 }
 
-export type PluginDetail = PluginSummary & {
-  capabilities: PluginCapabilities
-  commandEntries: PluginCommandEntry[]
-  agentEntries: PluginAgentEntry[]
-  hookEntries: PluginHookEntry[]
-  skillEntries: PluginSkillEntry[]
-  mcpServerEntries: PluginMcpServerEntry[]
-}
-
-export type PluginMarketplaceSummary = {
-  name: string
-  source: string
-  lastUpdated?: string
-  autoUpdate: boolean
-  installedCount: number
-}
+export type PluginDetail = PluginSummary
 
 export type PluginListResponse = {
   plugins: PluginSummary[]
-  marketplaces: PluginMarketplaceSummary[]
   summary: {
     total: number
     enabled: number
-    errorCount: number
-    marketplaceCount: number
+    attention: number
   }
 }
 
@@ -108,5 +63,4 @@ export type PluginSessionReloadSummary = {
   plugins: number
   mcpServers: number
   errors: number
-  error?: string
 }

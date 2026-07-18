@@ -1,19 +1,31 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  getPluginRequestErrorCode,
+  pluginErrorTranslationKey,
+} from '../../api/plugins'
 import { usePluginStore, type PluginActionTarget } from '../../stores/pluginStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../i18n'
+import type { TranslationKey } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
-import type { PluginSummary } from '../../types/plugin'
+import type {
+  PluginDescriptionKind,
+  PluginStatus,
+  PluginSummary,
+} from '../../types/plugin'
 
 type PluginBucket = 'attention' | 'enabled' | 'disabled'
 type BatchAction = 'enable' | 'disable'
 
+const PRODUCT_DESCRIPTION_KEYS: Record<PluginDescriptionKind, TranslationKey> = {
+  workspace_extension: 'settings.plugins.productDescription.workspaceExtension',
+}
+
 export function PluginList() {
   const {
     plugins,
-    marketplaces,
     summary,
     lastReloadSummary,
     isLoading,
@@ -46,7 +58,7 @@ export function PluginList() {
     }
 
     for (const plugin of plugins) {
-      if (plugin.hasErrors) {
+      if (plugin.status === 'attention') {
         buckets.attention.push(plugin)
       } else if (plugin.enabled) {
         buckets.enabled.push(plugin)
@@ -98,7 +110,7 @@ export function PluginList() {
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof Error ? err.message : String(err),
+        message: t(pluginErrorTranslationKey(getPluginRequestErrorCode(err))),
       })
     }
   }
@@ -155,7 +167,7 @@ export function PluginList() {
       setConfirmBatchAction(null)
       addToast({
         type: 'error',
-        message: err instanceof Error ? err.message : String(err),
+        message: t(pluginErrorTranslationKey(getPluginRequestErrorCode(err))),
       })
     }
   }
@@ -169,7 +181,11 @@ export function PluginList() {
   }
 
   if (error) {
-    return <div className="text-sm text-[var(--color-error)] py-4">{error}</div>
+    return (
+      <div className="text-sm text-[var(--color-error)] py-4">
+        {t(pluginErrorTranslationKey(error))}
+      </div>
+    )
   }
 
   if (plugins.length === 0) {
@@ -232,7 +248,7 @@ export function PluginList() {
             </div>
           </div>
 
-          <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-3">
             <SummaryCard
               label={t('settings.plugins.summary.total')}
               value={String(summary?.total ?? plugins.length)}
@@ -245,13 +261,8 @@ export function PluginList() {
             />
             <SummaryCard
               label={t('settings.plugins.summary.attention')}
-              value={String(grouped.attention.length)}
+              value={String(summary?.attention ?? grouped.attention.length)}
               icon="warning"
-            />
-            <SummaryCard
-              label={t('settings.plugins.summary.marketplaces')}
-              value={String(summary?.marketplaceCount ?? marketplaces.length)}
-              icon="storefront"
             />
           </div>
 
@@ -305,51 +316,6 @@ export function PluginList() {
           </div>
         </div>
       </section>
-
-      {marketplaces.length > 0 && (
-        <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-          <div className="px-5 py-4 border-b border-[var(--color-border)] bg-[var(--color-surface-container-low)]">
-            <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
-              {t('settings.plugins.marketplacesTitle')}
-            </h4>
-            <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
-              {t('settings.plugins.marketplacesHint')}
-            </p>
-          </div>
-          <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-            {marketplaces.map((marketplace) => (
-              <div
-                key={marketplace.name}
-                className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">
-                    {marketplace.name}
-                  </span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                    marketplace.autoUpdate
-                      ? 'bg-[var(--color-success-container)] text-[var(--color-success)]'
-                      : 'bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]'
-                  }`}>
-                    {marketplace.autoUpdate
-                      ? t('settings.plugins.marketplaceAutoUpdateOn')
-                      : t('settings.plugins.marketplaceAutoUpdateOff')}
-                  </span>
-                </div>
-                <div className="mt-2 text-xs leading-5 text-[var(--color-text-secondary)] break-words">
-                  {marketplace.source}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
-                  <span>{t('settings.plugins.marketplaceInstalledCount', { count: String(marketplace.installedCount) })}</span>
-                  {marketplace.lastUpdated && (
-                    <span>{t('settings.plugins.marketplaceUpdatedAt', { value: new Date(marketplace.lastUpdated).toLocaleString() })}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       {renderGroup('attention', grouped.attention, {
         fetchPluginDetail,
@@ -466,26 +432,19 @@ function renderGroup(
                 className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
               >
                 <span className="mt-0.5 material-symbols-outlined text-[18px] text-[var(--color-text-tertiary)]">
-                  {plugin.hasErrors ? 'warning' : plugin.enabled ? 'extension' : 'extension_off'}
+                  {plugin.status === 'attention' ? 'warning' : plugin.enabled ? 'extension' : 'extension_off'}
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-[var(--color-text-primary)] break-all">
                       {plugin.name}
                     </span>
-                    <StatusPill plugin={plugin} />
-                    <ScopePill scope={plugin.scope} />
-                    {plugin.version && (
-                      <span className="rounded-full bg-[var(--color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-text-tertiary)]">
-                        v{plugin.version}
-                      </span>
-                    )}
+                    <StatusPill status={plugin.status} />
                   </div>
                   <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)] break-words">
-                    {plugin.description || t('settings.plugins.noDescription')}
+                    {t(PRODUCT_DESCRIPTION_KEYS[plugin.descriptionKind])}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
-                    <span>{plugin.marketplace}</span>
                     {plugin.componentCounts.skills > 0 && (
                       <span>{t('settings.plugins.capability.skills', { count: String(plugin.componentCounts.skills) })}</span>
                     )}
@@ -494,11 +453,6 @@ function renderGroup(
                     )}
                     {plugin.componentCounts.mcpServers > 0 && (
                       <span>{t('settings.plugins.capability.mcpServers', { count: String(plugin.componentCounts.mcpServers) })}</span>
-                    )}
-                    {plugin.errors.length > 0 && (
-                      <span className="text-[var(--color-error)]">
-                        {t('settings.plugins.errorCount', { count: String(plugin.errors.length) })}
-                      </span>
                     )}
                   </div>
                 </div>
@@ -515,7 +469,7 @@ function renderGroup(
 }
 
 function canMutatePlugin(plugin: PluginSummary) {
-  return plugin.scope !== 'managed' && plugin.scope !== 'builtin'
+  return plugin.canManage
 }
 
 function formatPluginNames(plugins: PluginSummary[]) {
@@ -546,35 +500,17 @@ function SummaryCard({
   )
 }
 
-function StatusPill({ plugin }: { plugin: PluginSummary }) {
+function StatusPill({ status }: { status: PluginStatus }) {
   const t = useTranslation()
-
-  if (plugin.hasErrors) {
-    return (
-      <span className="rounded-full bg-[var(--color-error)]/12 px-2 py-0.5 text-[10px] font-medium text-[var(--color-error)]">
-        {t('settings.plugins.status.attention')}
-      </span>
-    )
-  }
+  const className = status === 'attention'
+    ? 'bg-[var(--color-error)]/12 text-[var(--color-error)]'
+    : status === 'enabled'
+      ? 'bg-[var(--color-success-container)] text-[var(--color-success)]'
+      : 'bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]'
 
   return (
-    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-      plugin.enabled
-        ? 'bg-[var(--color-success-container)] text-[var(--color-success)]'
-        : 'bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]'
-    }`}>
-      {plugin.enabled
-        ? t('settings.plugins.status.enabled')
-        : t('settings.plugins.status.disabled')}
-    </span>
-  )
-}
-
-function ScopePill({ scope }: { scope: PluginSummary['scope'] }) {
-  const t = useTranslation()
-  return (
-    <span className="rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-text-tertiary)]">
-      {t(`settings.plugins.scope.${scope}`)}
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${className}`}>
+      {t(`settings.plugins.status.${status}`)}
     </span>
   )
 }

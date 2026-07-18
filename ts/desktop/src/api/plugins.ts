@@ -1,8 +1,10 @@
-import { api } from './client'
+import { ApiError, api } from './client'
 import type {
+  PluginAction,
   PluginDetail,
   PluginListResponse,
   PluginReloadSummary,
+  PluginRequestErrorCode,
   PluginSessionReloadSummary,
   PluginScope,
 } from '../types/plugin'
@@ -11,6 +13,54 @@ type PluginActionPayload = {
   id: string
   scope?: PluginScope
   keepData?: boolean
+}
+
+const PLUGIN_REQUEST_ERROR_CODES = new Set<PluginRequestErrorCode>([
+  'PLUGIN_ACTION_FAILED',
+  'PLUGIN_ACTION_INVALID',
+  'PLUGIN_NOT_FOUND',
+  'PLUGIN_REQUEST_FAILED',
+])
+
+const PLUGIN_ERROR_TRANSLATION_KEYS: Record<PluginRequestErrorCode, string> = {
+  PLUGIN_ACTION_FAILED: 'settings.plugins.error.actionFailed',
+  PLUGIN_ACTION_INVALID: 'settings.plugins.error.actionInvalid',
+  PLUGIN_NOT_FOUND: 'settings.plugins.error.notFound',
+  PLUGIN_REQUEST_FAILED: 'settings.plugins.error.requestFailed',
+}
+
+const PLUGIN_ACTION_TRANSLATION_KEYS: Record<PluginAction, string> = {
+  enabled: 'settings.plugins.action.enabled',
+  disabled: 'settings.plugins.action.disabled',
+  updated: 'settings.plugins.action.updated',
+  uninstalled: 'settings.plugins.action.uninstalled',
+}
+
+export function getPluginRequestErrorCode(error: unknown): PluginRequestErrorCode {
+  if (error instanceof ApiError && error.body && typeof error.body === 'object') {
+    const code = 'error' in error.body ? error.body.error : undefined
+    if (typeof code === 'string' && PLUGIN_REQUEST_ERROR_CODES.has(code as PluginRequestErrorCode)) {
+      return code as PluginRequestErrorCode
+    }
+  }
+
+  return 'PLUGIN_REQUEST_FAILED'
+}
+
+export function pluginErrorTranslationKey(code: PluginRequestErrorCode) {
+  return PLUGIN_ERROR_TRANSLATION_KEYS[code] as
+    | 'settings.plugins.error.actionFailed'
+    | 'settings.plugins.error.actionInvalid'
+    | 'settings.plugins.error.notFound'
+    | 'settings.plugins.error.requestFailed'
+}
+
+export function pluginActionTranslationKey(action: PluginAction) {
+  return PLUGIN_ACTION_TRANSLATION_KEYS[action] as
+    | 'settings.plugins.action.enabled'
+    | 'settings.plugins.action.disabled'
+    | 'settings.plugins.action.updated'
+    | 'settings.plugins.action.uninstalled'
 }
 
 export const pluginsApi = {
@@ -26,16 +76,16 @@ export const pluginsApi = {
   },
 
   enable: (payload: PluginActionPayload) =>
-    api.post<{ ok: true; message: string }>('/api/plugins/enable', payload),
+    api.post<{ ok: true; action: PluginAction }>('/api/plugins/enable', payload),
 
   disable: (payload: PluginActionPayload) =>
-    api.post<{ ok: true; message: string }>('/api/plugins/disable', payload),
+    api.post<{ ok: true; action: PluginAction }>('/api/plugins/disable', payload),
 
   update: (payload: PluginActionPayload) =>
-    api.post<{ ok: true; message: string }>('/api/plugins/update', payload),
+    api.post<{ ok: true; action: PluginAction }>('/api/plugins/update', payload),
 
   uninstall: (payload: PluginActionPayload) =>
-    api.post<{ ok: true; message: string }>('/api/plugins/uninstall', payload),
+    api.post<{ ok: true; action: PluginAction }>('/api/plugins/uninstall', payload),
 
   reload: (cwd?: string, sessionId?: string) => {
     const query = new URLSearchParams()

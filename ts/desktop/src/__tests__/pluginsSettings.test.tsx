@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -7,105 +7,35 @@ import { usePluginStore } from '../stores/pluginStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useUIStore } from '../stores/uiStore'
-
-const MOCK_FETCH_SKILLS = vi.fn()
-const MOCK_FETCH_SKILL_DETAIL = vi.fn()
-const MOCK_FETCH_AGENTS = vi.fn()
-const MOCK_FETCH_SERVERS = vi.fn()
-
-vi.mock('../api/agents', () => ({
-  agentsApi: {
-    list: vi.fn().mockResolvedValue({ activeAgents: [], allAgents: [] }),
-  },
-}))
-
-
-vi.mock('../stores/agentStore', () => ({
-  useAgentStore: Object.assign((selector?: (state: any) => unknown) => {
-    const state = {
-      activeAgents: [],
-      allAgents: [],
-      isLoading: false,
-      error: null,
-      selectedAgent: null,
-      fetchAgents: MOCK_FETCH_AGENTS,
-      selectAgent: vi.fn(),
-    }
-    return selector ? selector(state) : state
-  }, {
-    getState: () => ({
-      activeAgents: [],
-      allAgents: [],
-      isLoading: false,
-      error: null,
-      selectedAgent: null,
-      fetchAgents: MOCK_FETCH_AGENTS,
-      selectAgent: vi.fn(),
-    }),
-  }),
-}))
-
-vi.mock('../stores/skillStore', () => ({
-  useSkillStore: Object.assign((selector?: (state: any) => unknown) => {
-    const state = {
-      skills: [],
-      selectedSkill: null,
-      isLoading: false,
-      isDetailLoading: false,
-      error: null,
-      fetchSkills: MOCK_FETCH_SKILLS,
-      fetchSkillDetail: MOCK_FETCH_SKILL_DETAIL,
-      clearSelection: vi.fn(),
-    }
-    return selector ? selector(state) : state
-  }, {
-    getState: () => ({
-      skills: [],
-      selectedSkill: null,
-      isLoading: false,
-      isDetailLoading: false,
-      error: null,
-      fetchSkills: MOCK_FETCH_SKILLS,
-      fetchSkillDetail: MOCK_FETCH_SKILL_DETAIL,
-      clearSelection: vi.fn(),
-    }),
-  }),
-}))
-
-vi.mock('../stores/mcpStore', () => ({
-  useMcpStore: Object.assign((selector?: (state: any) => unknown) => {
-    const state = {
-      servers: [],
-      selectedServer: null,
-      isLoading: false,
-      error: null,
-      fetchServers: MOCK_FETCH_SERVERS,
-      createServer: vi.fn(),
-      updateServer: vi.fn(),
-      deleteServer: vi.fn(),
-      toggleServer: vi.fn(),
-      reconnectServer: vi.fn(),
-      selectServer: vi.fn(),
-    }
-    return selector ? selector(state) : state
-  }, {
-    getState: () => ({
-      servers: [],
-      selectedServer: null,
-      isLoading: false,
-      error: null,
-      fetchServers: MOCK_FETCH_SERVERS,
-      createServer: vi.fn(),
-      updateServer: vi.fn(),
-      deleteServer: vi.fn(),
-      toggleServer: vi.fn(),
-      reconnectServer: vi.fn(),
-      selectServer: vi.fn(),
-    }),
-  }),
-}))
+import type { PluginDetail, PluginSummary } from '../types/plugin'
 
 const noop = vi.fn()
+
+function makePlugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
+  const {
+    descriptionKind = 'workspace_extension',
+    ...otherOverrides
+  } = overrides
+
+  return {
+    id: 'github@safe-market',
+    name: 'github',
+    scope: 'user',
+    enabled: true,
+    status: 'enabled',
+    canManage: true,
+    descriptionKind,
+    componentCounts: {
+      commands: 1,
+      agents: 1,
+      skills: 2,
+      hooks: 1,
+      mcpServers: 1,
+      lspServers: 0,
+    },
+    ...otherOverrides,
+  }
+}
 
 function switchToPluginsTab() {
   fireEvent.click(screen.getByText('Plugins'))
@@ -135,8 +65,7 @@ describe('Settings > Plugins tab', () => {
     })
     usePluginStore.setState({
       plugins: [],
-      marketplaces: [],
-      summary: { total: 0, enabled: 0, errorCount: 0, marketplaceCount: 0 },
+      summary: { total: 0, enabled: 0, attention: 0 },
       selectedPlugin: null,
       lastReloadSummary: null,
       isLoading: false,
@@ -165,59 +94,33 @@ describe('Settings > Plugins tab', () => {
     })
   })
 
-  it('renders plugin browser summary and grouped cards', () => {
+  it('renders only product-safe plugin summaries in the list', () => {
+    const pluginWithPrivateExtras = {
+      ...makePlugin(),
+      description: 'DO_NOT_RENDER_MANIFEST_DESCRIPTION',
+      installPath: '/Users/test/.claude/plugins/private',
+      projectPath: '/workspace/private-project',
+      errors: ['DO_NOT_RENDER_RAW_ERROR'],
+      marketplace: 'https://private.example.test/marketplace',
+    } as PluginSummary
+    const attentionPlugin = makePlugin({
+      id: 'pyright@safe-market',
+      name: 'pyright',
+      enabled: false,
+      status: 'attention',
+      componentCounts: {
+        commands: 0,
+        agents: 0,
+        skills: 0,
+        hooks: 0,
+        mcpServers: 0,
+        lspServers: 1,
+      },
+    })
+
     usePluginStore.setState({
-      plugins: [
-        {
-          id: 'github@claude-plugins-official',
-          name: 'github',
-          marketplace: 'claude-plugins-official',
-          scope: 'user',
-          enabled: true,
-          hasErrors: false,
-          isBuiltin: false,
-          version: '1.2.3',
-          description: 'GitHub integration',
-          authorName: 'Anthropic',
-          componentCounts: {
-            commands: 1,
-            agents: 1,
-            skills: 2,
-            hooks: 0,
-            mcpServers: 1,
-            lspServers: 0,
-          },
-          errors: [],
-        },
-        {
-          id: 'pyright-lsp@claude-plugins-official',
-          name: 'pyright-lsp',
-          marketplace: 'claude-plugins-official',
-          scope: 'project',
-          enabled: false,
-          hasErrors: true,
-          isBuiltin: false,
-          description: 'Python language tooling',
-          componentCounts: {
-            commands: 0,
-            agents: 0,
-            skills: 0,
-            hooks: 0,
-            mcpServers: 0,
-            lspServers: 1,
-          },
-          errors: ['Executable not found in $PATH'],
-        },
-      ],
-      marketplaces: [
-        {
-          name: 'claude-plugins-official',
-          source: 'github:anthropics/claude-plugins-official',
-          autoUpdate: true,
-          installedCount: 2,
-        },
-      ],
-      summary: { total: 2, enabled: 1, errorCount: 1, marketplaceCount: 1 },
+      plugins: [pluginWithPrivateExtras, attentionPlugin],
+      summary: { total: 2, enabled: 1, attention: 1 },
     })
 
     render(<Settings />)
@@ -227,73 +130,36 @@ describe('Settings > Plugins tab', () => {
     expect(screen.getByText('Plugin Manager')).toBeInTheDocument()
     expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0)
     expect(screen.getByText('github')).toBeInTheDocument()
-    expect(screen.getByText('Python language tooling')).toBeInTheDocument()
-    expect(screen.getByText('Known marketplaces')).toBeInTheDocument()
+    expect(screen.getByText('pyright')).toBeInTheDocument()
+    expect(screen.getAllByText('Adds optional capabilities to the desktop assistant. Configuration details remain private.')).toHaveLength(2)
+    expect(screen.queryByText('DO_NOT_RENDER_MANIFEST_DESCRIPTION')).not.toBeInTheDocument()
+    expect(screen.queryByText('/Users/test/.claude/plugins/private')).not.toBeInTheDocument()
+    expect(screen.queryByText('DO_NOT_RENDER_RAW_ERROR')).not.toBeInTheDocument()
+    expect(screen.queryByText('https://private.example.test/marketplace')).not.toBeInTheDocument()
+    expect(screen.queryByText('Known marketplaces')).not.toBeInTheDocument()
   })
 
-  it('bulk enables selected disabled plugins from the list after confirmation', async () => {
+  it('bulk enables selected editable plugins and preserves real action targets', async () => {
     const bulkEnablePlugins = vi.fn().mockResolvedValue(2)
     usePluginStore.setState({
       plugins: [
-        {
-          id: 'drawing@claude-plugins-official',
+        makePlugin({
+          id: 'drawing@safe-market',
           name: 'drawing',
-          marketplace: 'claude-plugins-official',
-          scope: 'user',
           enabled: false,
-          hasErrors: false,
-          isBuiltin: false,
-          description: 'Render diagrams.',
-          componentCounts: {
-            commands: 0,
-            agents: 0,
-            skills: 1,
-            hooks: 0,
-            mcpServers: 0,
-            lspServers: 0,
-          },
-          errors: [],
-        },
-        {
-          id: 'review@claude-plugins-official',
+          status: 'disabled',
+          componentCounts: { commands: 0, agents: 0, skills: 1, hooks: 0, mcpServers: 0, lspServers: 0 },
+        }),
+        makePlugin({
+          id: 'review@safe-market',
           name: 'review',
-          marketplace: 'claude-plugins-official',
           scope: 'project',
           enabled: false,
-          hasErrors: false,
-          isBuiltin: false,
-          description: 'Review pull requests.',
-          componentCounts: {
-            commands: 0,
-            agents: 1,
-            skills: 0,
-            hooks: 0,
-            mcpServers: 0,
-            lspServers: 0,
-          },
-          errors: [],
-        },
-        {
-          id: 'github@claude-plugins-official',
-          name: 'github',
-          marketplace: 'claude-plugins-official',
-          scope: 'user',
-          enabled: true,
-          hasErrors: false,
-          isBuiltin: false,
-          description: 'GitHub integration',
-          componentCounts: {
-            commands: 1,
-            agents: 0,
-            skills: 0,
-            hooks: 0,
-            mcpServers: 1,
-            lspServers: 0,
-          },
-          errors: [],
-        },
+          status: 'disabled',
+          componentCounts: { commands: 0, agents: 1, skills: 0, hooks: 0, mcpServers: 0, lspServers: 0 },
+        }),
       ],
-      summary: { total: 3, enabled: 1, errorCount: 0, marketplaceCount: 1 },
+      summary: { total: 2, enabled: 0, attention: 0 },
       bulkEnablePlugins,
     })
 
@@ -305,89 +171,13 @@ describe('Settings > Plugins tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable selected' }))
 
     expect(screen.getByText('Enable 2 selected plugins?')).toBeInTheDocument()
-    expect(screen.getByText('This will enable drawing, review and apply plugin changes to the current desktop runtime.')).toBeInTheDocument()
-
     fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
 
     await waitFor(() => {
       expect(bulkEnablePlugins).toHaveBeenCalledWith(
         [
-          { id: 'drawing@claude-plugins-official', scope: 'user' },
-          { id: 'review@claude-plugins-official', scope: 'project' },
-        ],
-        '/workspace/project',
-        'session-1',
-      )
-    })
-
-    await waitFor(() => {
-      expect(screen.getByRole('checkbox', { name: 'Select drawing' })).not.toBeChecked()
-      expect(screen.queryByText('2 selected')).not.toBeInTheDocument()
-    })
-  })
-
-  it('bulk disables selected enabled plugins from the list after confirmation', async () => {
-    const bulkDisablePlugins = vi.fn().mockResolvedValue(1)
-    usePluginStore.setState({
-      plugins: [
-        {
-          id: 'github@claude-plugins-official',
-          name: 'github',
-          marketplace: 'claude-plugins-official',
-          scope: 'user',
-          enabled: true,
-          hasErrors: false,
-          isBuiltin: false,
-          description: 'GitHub integration',
-          componentCounts: {
-            commands: 1,
-            agents: 0,
-            skills: 0,
-            hooks: 0,
-            mcpServers: 1,
-            lspServers: 0,
-          },
-          errors: [],
-        },
-        {
-          id: 'drawing@claude-plugins-official',
-          name: 'drawing',
-          marketplace: 'claude-plugins-official',
-          scope: 'user',
-          enabled: false,
-          hasErrors: false,
-          isBuiltin: false,
-          description: 'Render diagrams.',
-          componentCounts: {
-            commands: 0,
-            agents: 0,
-            skills: 1,
-            hooks: 0,
-            mcpServers: 0,
-            lspServers: 0,
-          },
-          errors: [],
-        },
-      ],
-      summary: { total: 2, enabled: 1, errorCount: 0, marketplaceCount: 1 },
-      bulkDisablePlugins,
-    })
-
-    render(<Settings />)
-    switchToPluginsTab()
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select github' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Disable selected' }))
-
-    expect(screen.getByText('Disable 1 selected plugins?')).toBeInTheDocument()
-    expect(screen.getByText('This will disable github and apply plugin changes to the current desktop runtime.')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
-
-    await waitFor(() => {
-      expect(bulkDisablePlugins).toHaveBeenCalledWith(
-        [
-          { id: 'github@claude-plugins-official', scope: 'user' },
+          { id: 'drawing@safe-market', scope: 'user' },
+          { id: 'review@safe-market', scope: 'project' },
         ],
         '/workspace/project',
         'session-1',
@@ -395,250 +185,43 @@ describe('Settings > Plugins tab', () => {
     })
   })
 
-  it('renders plugin detail with bundled capability sections', () => {
-    usePluginStore.setState({
-      selectedPlugin: {
-        id: 'github@claude-plugins-official',
-        name: 'github',
-        marketplace: 'claude-plugins-official',
-        scope: 'user',
-        enabled: true,
-        hasErrors: false,
-        isBuiltin: false,
-        version: '1.2.3',
-        description: 'GitHub integration',
-        authorName: 'Anthropic',
-        installPath: '/Users/test/.claude/plugins/cache/github',
-        componentCounts: {
-          commands: 1,
-          agents: 1,
-          skills: 2,
-          hooks: 1,
-          mcpServers: 1,
-          lspServers: 0,
-        },
-        capabilities: {
-          commands: ['review-pr'],
-          agents: ['pr-reviewer'],
-          skills: ['commit', 'create-pr'],
-          hooks: ['SessionStart'],
-          mcpServers: ['github-api'],
-          lspServers: [],
-        },
-        commandEntries: [
-          {
-            name: 'review-pr',
-            description: 'Review the current pull request.',
-          },
-        ],
-        agentEntries: [
-          {
-            name: 'pr-reviewer',
-            description: 'Review pull request quality and risk.',
-          },
-        ],
-        hookEntries: [
-          {
-            event: 'SessionStart',
-            matcher: 'Write',
-            actions: ['echo preparing plugin runtime'],
-          },
-        ],
-        skillEntries: [
-          {
-            name: 'create-pr',
-            description: 'Create a pull request from the current branch.',
-          },
-          {
-            name: 'commit',
-            description: 'Commit the current staged changes.',
-            version: '1.0.0',
-          },
-        ],
-        mcpServerEntries: [
-          {
-            name: 'plugin:github:github-api',
-            displayName: 'github-api',
-            transport: 'http',
-            summary: 'https://api.github.com/mcp',
-          },
-        ],
-        errors: [],
-      },
-    })
+  it('shows capability counts and controls without rendering implementation details or cross-page links', () => {
+    const selectedPlugin = {
+      ...makePlugin(),
+      commandEntries: [{ name: 'private-command', description: 'DO_NOT_RENDER_COMMAND' }],
+      hookEntries: [{ event: 'PreToolUse', actions: ['DO_NOT_RENDER_HOOK --secret'] }],
+      mcpServerEntries: [{ name: 'private-server', summary: 'https://private.example.test/mcp?secret=1' }],
+      skillEntries: [{ name: 'private-skill', description: 'DO_NOT_RENDER_SKILL' }],
+      installPath: '/Users/test/.claude/plugins/private',
+      errors: ['DO_NOT_RENDER_RAW_ERROR'],
+    } as PluginDetail
+    usePluginStore.setState({ selectedPlugin })
 
     render(<Settings />)
     switchToPluginsTab()
 
     expect(screen.getByText('Plugin Detail')).toBeInTheDocument()
-    expect(screen.getByText('GitHub integration')).toBeInTheDocument()
-    expect(screen.getByText('Bundled capabilities')).toBeInTheDocument()
-    expect(screen.getByText('/review-pr')).toBeInTheDocument()
-    expect(screen.getByText('Review pull request quality and risk.')).toBeInTheDocument()
-    expect(screen.getByText('echo preparing plugin runtime')).toBeInTheDocument()
-    expect(screen.getByText('Create a pull request from the current branch.')).toBeInTheDocument()
-    expect(screen.getByText('https://api.github.com/mcp')).toBeInTheDocument()
+    expect(screen.getByText('Capability summary')).toBeInTheDocument()
+    expect(screen.getByText('Adds optional capabilities to the desktop assistant. Configuration details remain private.')).toBeInTheDocument()
+    expect(screen.getAllByText('Skills').length).toBeGreaterThan(0)
     expect(screen.getByText('Apply changes')).toBeInTheDocument()
     expect(screen.getByText('Uninstall')).toBeInTheDocument()
+    expect(screen.queryByText('DO_NOT_RENDER_COMMAND')).not.toBeInTheDocument()
+    expect(screen.queryByText('DO_NOT_RENDER_HOOK --secret')).not.toBeInTheDocument()
+    expect(screen.queryByText('https://private.example.test/mcp?secret=1')).not.toBeInTheDocument()
+    expect(screen.queryByText('DO_NOT_RENDER_SKILL')).not.toBeInTheDocument()
+    expect(screen.queryByText('/Users/test/.claude/plugins/private')).not.toBeInTheDocument()
+    expect(screen.queryByText('DO_NOT_RENDER_RAW_ERROR')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /private-command/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /private-skill/i })).not.toBeInTheDocument()
   })
 
-  it('keeps plugin detail hook order stable while the selected plugin reloads', () => {
-    usePluginStore.setState({
-      selectedPlugin: {
-        id: 'github@claude-plugins-official',
-        name: 'github',
-        marketplace: 'claude-plugins-official',
-        scope: 'user',
-        enabled: false,
-        hasErrors: false,
-        isBuiltin: false,
-        description: 'GitHub integration',
-        componentCounts: {
-          commands: 1,
-          agents: 0,
-          skills: 0,
-          hooks: 0,
-          mcpServers: 0,
-          lspServers: 0,
-        },
-        capabilities: {
-          commands: ['review-pr'],
-          agents: [],
-          skills: [],
-          hooks: [],
-          mcpServers: [],
-          lspServers: [],
-        },
-        commandEntries: [
-          {
-            name: 'review-pr',
-            description: 'Review the current pull request.',
-          },
-        ],
-        agentEntries: [],
-        hookEntries: [],
-        skillEntries: [],
-        mcpServerEntries: [],
-        errors: [],
-      },
-    })
-
-    const { container } = render(<Settings />)
-    switchToPluginsTab()
-
-    expect(screen.getByText('GitHub integration')).toBeInTheDocument()
-
-    act(() => {
-      usePluginStore.setState({ isDetailLoading: true })
-    })
-
-    expect(container.querySelector('.animate-spin')).toBeInTheDocument()
-  })
-
-  it('navigates plugin skills into the shared Skills page flow', () => {
-    usePluginStore.setState({
-      selectedPlugin: {
-        id: 'telegram@claude-plugins-official',
-        name: 'telegram',
-        marketplace: 'claude-plugins-official',
-        scope: 'user',
-        enabled: true,
-        hasErrors: false,
-        isBuiltin: false,
-        description: 'Telegram integration',
-        componentCounts: {
-          commands: 0,
-          agents: 0,
-          skills: 1,
-          hooks: 0,
-          mcpServers: 0,
-          lspServers: 0,
-        },
-        capabilities: {
-          commands: [],
-          agents: [],
-          skills: ['telegram:access'],
-          hooks: [],
-          mcpServers: [],
-          lspServers: [],
-        },
-        commandEntries: [],
-        agentEntries: [],
-        hookEntries: [],
-        skillEntries: [
-          {
-            name: 'telegram:access',
-            displayName: 'access',
-            description: 'Manage Telegram access.',
-            pluginName: 'telegram',
-          },
-        ],
-        mcpServerEntries: [],
-        errors: [],
-      },
-    })
+  it('uses a localized generic error message instead of a server error string', () => {
+    usePluginStore.setState({ error: 'PLUGIN_ACTION_FAILED' })
 
     render(<Settings />)
     switchToPluginsTab()
 
-    fireEvent.click(screen.getByText('access'))
-
-    expect(MOCK_FETCH_SKILL_DETAIL).toHaveBeenCalledWith('plugin', 'telegram:access', '/workspace/project', 'plugins')
-  })
-
-  it('disables shared navigation cards for disabled plugins', () => {
-    usePluginStore.setState({
-      selectedPlugin: {
-        id: 'codex@openai-codex',
-        name: 'codex',
-        marketplace: 'openai-codex',
-        scope: 'user',
-        enabled: false,
-        hasErrors: false,
-        isBuiltin: false,
-        description: 'Use Codex from Claude Code',
-        componentCounts: {
-          commands: 0,
-          agents: 1,
-          skills: 1,
-          hooks: 0,
-          mcpServers: 0,
-          lspServers: 0,
-        },
-        capabilities: {
-          commands: [],
-          agents: ['codex:codex-rescue'],
-          skills: ['codex:gpt-5-4-prompting'],
-          hooks: [],
-          mcpServers: [],
-          lspServers: [],
-        },
-        commandEntries: [],
-        agentEntries: [
-          {
-            name: 'codex:codex-rescue',
-            displayName: 'codex-rescue',
-            description: 'Delegate to Codex.',
-          },
-        ],
-        hookEntries: [],
-        skillEntries: [
-          {
-            name: 'codex:gpt-5-4-prompting',
-            displayName: 'gpt-5-4-prompting',
-            description: 'Prompting guide.',
-          },
-        ],
-        mcpServerEntries: [],
-        errors: [],
-      },
-    })
-
-    render(<Settings />)
-    switchToPluginsTab()
-
-    expect(screen.getAllByText('Enable this plugin and apply changes before opening its skills, agents, or MCP entries in the shared management pages.').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: /codex-rescue/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /gpt-5-4-prompting/i })).toBeDisabled()
+    expect(screen.getByText('The plugin action could not be completed. Try again after applying changes.')).toBeInTheDocument()
   })
 })

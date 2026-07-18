@@ -53,63 +53,31 @@ healthcheck() {
 select_plugin_targets() {
   DETAIL_PLUGIN_ID="$(curl -fsS "${API_URL}/api/plugins" | jq -r '
     .plugins
-    | map(select((.componentCounts.commands + .componentCounts.agents + .componentCounts.hooks + .componentCounts.skills) > 0))
-    | sort_by(-(.componentCounts.commands + .componentCounts.agents + .componentCounts.hooks + .componentCounts.skills))
-    | .[0].id // empty
-  ')"
-
-  ENABLED_SKILL_PLUGIN_ID="$(curl -fsS "${API_URL}/api/plugins" | jq -r '
-    .plugins
-    | map(select(.enabled == true and .componentCounts.skills > 0))
-    | sort_by(-.componentCounts.skills)
-    | .[0].id // empty
-  ')"
-
-  MCP_PLUGIN_ID="$(curl -fsS "${API_URL}/api/plugins" | jq -r '
-    .plugins
-    | map(select(.enabled == true and .componentCounts.mcpServers > 0))
-    | sort_by(-.componentCounts.mcpServers)
+    | sort_by(-(.componentCounts.commands + .componentCounts.agents + .componentCounts.hooks + .componentCounts.skills + .componentCounts.mcpServers))
     | .[0].id // empty
   ')"
 
   if [[ -z "${DETAIL_PLUGIN_ID}" ]]; then
-    echo "No plugin with commands/agents/hooks/skills was found in current API data." >&2
+    echo "No plugin was found in current API data." >&2
     exit 1
   fi
 
-  if [[ -z "${ENABLED_SKILL_PLUGIN_ID}" ]]; then
-    echo "No enabled plugin with skills was found in current API data." >&2
+  DETAIL_JSON="$(curl -fsS --get --data-urlencode "id=${DETAIL_PLUGIN_ID}" "${API_URL}/api/plugins/detail")"
+  DETAIL_PLUGIN_NAME="$(jq -r '.detail.name' <<<"${DETAIL_JSON}")"
+
+  if ! jq -e '
+    .detail | (keys | sort) == ["canManage", "componentCounts", "descriptionKind", "enabled", "id", "name", "scope", "status"]
+  ' <<<"${DETAIL_JSON}" >/dev/null; then
+    echo "Plugin detail API returned non-summary fields." >&2
     exit 1
   fi
-
-  if [[ -z "${MCP_PLUGIN_ID}" ]]; then
-    echo "No plugin with MCP servers was found in current API data." >&2
-    exit 1
-  fi
-
-  DETAIL_PLUGIN_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.name')"
-  DETAIL_PLUGIN_ENABLED="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.enabled')"
-  DETAIL_COMMAND="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.commandEntries[0].name // empty')"
-  DETAIL_AGENT="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.agentEntries[0].name // empty')"
-  DETAIL_AGENT_LABEL="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.agentEntries[0].displayName // .detail.agentEntries[0].name // empty')"
-  DETAIL_HOOK_EVENT="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.hookEntries[0].event // empty')"
-  DETAIL_HOOK_ACTION="$(curl -fsS "${API_URL}/api/plugins/detail?id=${DETAIL_PLUGIN_ID}" | jq -r '.detail.hookEntries[0].actions[0] // empty')"
-  DETAIL_SKILL_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${ENABLED_SKILL_PLUGIN_ID}" | jq -r '.detail.skillEntries[0].name // empty')"
-  DETAIL_SKILL_LABEL="$(curl -fsS "${API_URL}/api/plugins/detail?id=${ENABLED_SKILL_PLUGIN_ID}" | jq -r '.detail.skillEntries[0].displayName // .detail.skillEntries[0].name // empty')"
-  DETAIL_SKILL_DESCRIPTION="$(curl -fsS --get --data-urlencode "source=plugin" --data-urlencode "name=${DETAIL_SKILL_NAME}" "${API_URL}/api/skills/detail" | jq -r '.detail.meta.description // empty')"
-  DETAIL_SKILL_PLUGIN_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${ENABLED_SKILL_PLUGIN_ID}" | jq -r '.detail.name')"
-
-  MCP_PLUGIN_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${MCP_PLUGIN_ID}" | jq -r '.detail.name')"
-  MCP_SERVER_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${MCP_PLUGIN_ID}" | jq -r '.detail.mcpServerEntries[0].name // empty')"
-  MCP_SERVER_LABEL="$(curl -fsS "${API_URL}/api/plugins/detail?id=${MCP_PLUGIN_ID}" | jq -r '.detail.mcpServerEntries[0].displayName // .detail.mcpServerEntries[0].name // empty')"
-  MCP_SKILL_NAME="$(curl -fsS "${API_URL}/api/plugins/detail?id=${MCP_PLUGIN_ID}" | jq -r '.detail.skillEntries[0].name // empty')"
 }
 
 open_plugin_detail() {
   local plugin_name="$1"
   local escaped_name="${plugin_name//\"/\\\"}"
   if "${AB[@]}" eval "const target=[...document.querySelectorAll('button')].find((node)=>node.textContent?.includes(\"${escaped_name}\")); if(!target) throw new Error('plugin button not found'); target.click();" >/dev/null 2>&1; then
-    wait_for_text "Bundled capabilities"
+    wait_for_text "Capability summary"
     return 0
   fi
 
@@ -118,28 +86,10 @@ open_plugin_detail() {
   return 1
 }
 
-go_back_to_plugin_list() {
-  "${AB[@]}" eval "const target=[...document.querySelectorAll('button')].find((node)=>node.textContent?.includes('Back to list')); if(!target) throw new Error('back button not found'); target.click();" >/dev/null
-  wait_for_text "Browse installed plugins"
-}
-
-open_settings_sidebar_tab() {
-  local tab_name="$1"
-  "${AB[@]}" eval "const target=[...document.querySelectorAll('button')].find((node)=>node.textContent?.trim()==='${tab_name}'); if(!target) throw new Error('settings tab not found: ${tab_name}'); target.click();" >/dev/null
-}
-
-click_visible_card_text() {
-  local text="$1"
-  local escaped_text="${text//\"/\\\"}"
-  "${AB[@]}" eval "const target=[...document.querySelectorAll('button')].find((node)=>node.textContent?.includes(\"${escaped_text}\")); if(!target) throw new Error('button not found: ${escaped_text}'); target.click();" >/dev/null
-}
-
 healthcheck
 select_plugin_targets
 
 echo "Using detail plugin: ${DETAIL_PLUGIN_NAME} (${DETAIL_PLUGIN_ID})"
-echo "Using enabled skill plugin: ${DETAIL_SKILL_PLUGIN_NAME} (${ENABLED_SKILL_PLUGIN_ID})"
-echo "Using MCP plugin: ${MCP_PLUGIN_NAME} (${MCP_PLUGIN_ID})"
 
 "${AB[@]}" open "${WEB_URL}"
 "${AB[@]}" wait --load networkidle
@@ -172,83 +122,8 @@ wait_for_text "Commands"
 wait_for_text "Agents"
 wait_for_text "Hooks"
 wait_for_text "Skills"
-if [[ -n "${DETAIL_COMMAND}" ]]; then
-  wait_for_text "/${DETAIL_COMMAND}"
-fi
-if [[ -n "${DETAIL_AGENT}" ]]; then
-  wait_for_text "${DETAIL_AGENT}"
-fi
-if [[ -n "${DETAIL_HOOK_EVENT}" ]]; then
-  wait_for_text "${DETAIL_HOOK_EVENT}"
-fi
-if [[ -n "${DETAIL_HOOK_ACTION}" ]]; then
-  wait_for_text "${DETAIL_HOOK_ACTION}"
-fi
-if [[ -n "${DETAIL_SKILL_NAME}" ]]; then
-  wait_for_text "/${DETAIL_SKILL_NAME}"
-fi
+wait_for_text "Configuration details remain private."
 "${AB[@]}" screenshot "${ARTIFACT_DIR}/05-plugin-detail-main.png" >/dev/null
-
-open_settings_sidebar_tab "Plugins"
-wait_for_text "Plugin Detail"
-go_back_to_plugin_list
-open_plugin_detail "${DETAIL_SKILL_PLUGIN_NAME}"
-
-if [[ -n "${DETAIL_SKILL_LABEL}" ]]; then
-  click_visible_card_text "${DETAIL_SKILL_LABEL}"
-  wait_for_text "Skill metadata"
-  wait_for_text "${DETAIL_SKILL_LABEL}"
-  if [[ -n "${DETAIL_SKILL_DESCRIPTION}" ]]; then
-    wait_for_text "${DETAIL_SKILL_DESCRIPTION}"
-  fi
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/06-skill-detail-from-plugin.png" >/dev/null
-
-  open_settings_sidebar_tab "Skills"
-  wait_for_text "Skill Browser"
-  wait_for_text "Plugin"
-  wait_for_text "${DETAIL_SKILL_LABEL}"
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/07-skills-list-with-plugin-group.png" >/dev/null
-fi
-
-open_settings_sidebar_tab "Plugins"
-wait_for_text "Plugin Detail"
-
-if [[ "${DETAIL_PLUGIN_ENABLED}" == "true" && -n "${DETAIL_AGENT_LABEL}" ]]; then
-  click_visible_card_text "${DETAIL_AGENT_LABEL}"
-  wait_for_text "Agent Profile"
-  wait_for_text "${DETAIL_AGENT}"
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/08-agent-detail-from-plugin.png" >/dev/null
-
-  open_settings_sidebar_tab "Agents"
-  wait_for_text "Agent Browser"
-  wait_for_text "Plugin"
-  wait_for_text "${DETAIL_AGENT}"
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/09-agents-list-with-plugin-group.png" >/dev/null
-fi
-
-go_back_to_plugin_list
-open_plugin_detail "${MCP_PLUGIN_NAME}"
-wait_for_text "MCP servers"
-if [[ -n "${MCP_SERVER_NAME}" ]]; then
-  wait_for_text "${MCP_SERVER_LABEL:-$MCP_SERVER_NAME}"
-fi
-if [[ -n "${MCP_SKILL_NAME}" ]]; then
-  wait_for_text "/${MCP_SKILL_NAME}"
-fi
-"${AB[@]}" screenshot "${ARTIFACT_DIR}/10-plugin-detail-mcp.png" >/dev/null
-
-if [[ -n "${MCP_SERVER_LABEL}" ]]; then
-  click_visible_card_text "${MCP_SERVER_LABEL}"
-  wait_for_text "${MCP_SERVER_NAME}"
-  wait_for_text "Plugin"
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/11-mcp-detail-from-plugin.png" >/dev/null
-
-  open_settings_sidebar_tab "MCP"
-  wait_for_text "MCP servers"
-  wait_for_text "Plugin"
-  wait_for_text "${MCP_SERVER_NAME}"
-  "${AB[@]}" screenshot "${ARTIFACT_DIR}/12-mcp-list-with-plugin-group.png" >/dev/null
-fi
 
 echo "agent-browser web UI regression passed"
 echo "Artifacts: ${ARTIFACT_DIR}"
