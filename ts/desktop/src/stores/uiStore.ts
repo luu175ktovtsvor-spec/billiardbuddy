@@ -5,7 +5,6 @@ const THEME_STORAGE_KEY = 'billiardbuddy-theme'
 const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
 
 const SETTINGS_TABS = [
-  'activity',
   'general',
   'terminal',
   'mcp',
@@ -82,7 +81,6 @@ export type Toast = {
 }
 
 export type SettingsTab =
-  | 'activity'
   | 'general'
   | 'terminal'
   | 'mcp'

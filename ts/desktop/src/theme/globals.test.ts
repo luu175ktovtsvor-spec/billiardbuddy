@@ -35,19 +35,6 @@ function getCssBetween(startMarker: string, endMarker: string) {
 describe('desktop theme tokens', () => {
   const themes = [':root,\n[data-theme="light"]', '[data-theme="white"]', '[data-theme="dark"]'] as const
   const requiredTokens = [
-    '--color-activity-heat-0',
-    '--color-activity-heat-1',
-    '--color-activity-heat-2',
-    '--color-activity-heat-3',
-    '--color-activity-heat-4',
-    '--color-activity-cell-border',
-    '--color-activity-cell-border-hover',
-    '--color-activity-cell-border-active',
-    '--shadow-activity-cell-hover',
-    '--color-activity-tooltip-surface',
-    '--color-activity-tooltip-border',
-    '--color-activity-tooltip-text',
-    '--color-activity-tooltip-muted',
     '--color-success-container',
     '--color-info',
     '--color-info-container',
@@ -70,7 +57,7 @@ describe('desktop theme tokens', () => {
     '--color-outline-a92',
   ]
 
-  it('defines activity and status tokens for every supported theme', () => {
+  it('defines status tokens for every supported theme', () => {
     for (const theme of themes) {
       const block = getThemeBlock(theme)
 
@@ -78,26 +65,6 @@ describe('desktop theme tokens', () => {
         expect(block, `${theme} should define ${token}`).toContain(`${token}:`)
       }
     }
-  })
-
-  it('keeps activity heatmap colors on the app theme accent instead of the old blue ramp', () => {
-    expect(css).not.toContain('#DCEEFF')
-    expect(css).not.toContain('#B6D9FF')
-    expect(css).not.toContain('#2387E8')
-    expect(css).toContain('--color-activity-heat-4: var(--color-primary);')
-    expect(css).toContain('.activity-heat-cell:hover')
-    expect(css).toContain('box-shadow: var(--shadow-activity-cell-hover);')
-  })
-
-  it('uses container queries for the compact activity summary strip', () => {
-    const activitySummaryCss = getCssBetween('.activity-summary-panel {', '.activity-heat-cell {')
-
-    expect(activitySummaryCss).toContain('container-type: inline-size;')
-    expect(activitySummaryCss).toContain('@container (min-width: 360px)')
-    expect(activitySummaryCss).toContain('@container (min-width: 560px)')
-    expect(activitySummaryCss).toContain('grid-template-columns: repeat(5, minmax(0, 1fr));')
-    expect(activitySummaryCss).toContain('grid-column: auto;')
-    expect(activitySummaryCss).not.toContain('grid-column: span 2;')
   })
 
   it('avoids color-mix in the startup-critical UI zoom shell chrome for Safari 15 WebView support', () => {

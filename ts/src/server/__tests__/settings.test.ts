@@ -2,7 +2,7 @@
  * Unit tests for Settings, Models, and Status APIs
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, spyOn } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
@@ -963,63 +963,5 @@ describe('Status API', () => {
     const { req, url, segments } = makeRequest('GET', '/api/status/nonexistent')
     const res = await handleStatusApi(req, url, segments)
     expect(res.status).toBe(404)
-  })
-})
-
-// =============================================================================
-// Activity Stats API
-// =============================================================================
-
-describe('Activity Stats API', () => {
-  let handleApiRequest: typeof import('../router.js').handleApiRequest
-
-  beforeAll(async () => {
-    ;({ handleApiRequest } = await import('../router.js'))
-  })
-
-  beforeEach(async () => {
-    await setup()
-  })
-
-  afterEach(teardown)
-
-  it('GET /api/activity-stats should default to the all range', async () => {
-    const { req, url } = makeRequest('GET', '/api/activity-stats')
-    const res = await handleApiRequest(req, url)
-
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect(body.range).toBe('all')
-    expect(body.stats.totalSessions).toBe(0)
-    expect(body.stats.toolUsage).toEqual({})
-    expect(body.stats.skillUsage).toEqual({})
-    expect(new Date(body.generatedAt).toString()).not.toBe('Invalid Date')
-  })
-
-  it('GET /api/activity-stats/:range should return stats for supported ranges', async () => {
-    for (const range of ['7d', '30d', 'all'] as const) {
-      const { req, url } = makeRequest('GET', `/api/activity-stats/${range}`)
-      const res = await handleApiRequest(req, url)
-
-      expect(res.status).toBe(200)
-      const body = await res.json()
-      expect(body.range).toBe(range)
-      expect(body.stats).toBeDefined()
-    }
-  })
-
-  it('should reject non-GET methods', async () => {
-    const { req, url } = makeRequest('POST', '/api/activity-stats')
-    const res = await handleApiRequest(req, url)
-
-    expect(res.status).toBe(405)
-  })
-
-  it('should reject unknown activity stats ranges', async () => {
-    const { req, url } = makeRequest('GET', '/api/activity-stats/90d')
-    const res = await handleApiRequest(req, url)
-
-    expect(res.status).toBe(400)
   })
 })

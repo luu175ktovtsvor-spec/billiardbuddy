@@ -104,4 +104,12 @@ describe('uiStore settings tab persistence', () => {
 
     expect(useUIStore.getState().activeSettingsTab).toBe('general')
   })
+
+  it('falls back to General when the retired Activity tab has not been migrated yet', async () => {
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'activity')
+
+    const { useUIStore } = await import('./uiStore')
+
+    expect(useUIStore.getState().activeSettingsTab).toBe('general')
+  })
 })

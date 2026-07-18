@@ -70,6 +70,15 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBeNull()
   })
 
+  test('falls back from the retired activity tab to General settings', () => {
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'activity')
+
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys).toContain('billiardbuddy-active-settings-tab')
+    expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBe('general')
+  })
+
   test('removes malformed known keys without throwing during startup', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', '{"openTabs":')
     window.localStorage.setItem('billiardbuddy-theme', 'sepia')

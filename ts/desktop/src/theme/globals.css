@@ -435,19 +435,6 @@
   --color-goal-chip-border: var(--color-border);
   --color-model-option-selected-bg: var(--color-primary-fixed);
   --color-model-option-selected-border: rgba(51, 156, 255, 0.24);
-  --color-activity-heat-0: var(--color-surface-container);
-  --color-activity-heat-1: #EAF4FF;
-  --color-activity-heat-2: #BFE0FF;
-  --color-activity-heat-3: #66B2FF;
-  --color-activity-heat-4: var(--color-primary);
-  --color-activity-cell-border: rgba(93, 93, 93, 0.28);
-  --color-activity-cell-border-hover: rgba(51, 156, 255, 0.55);
-  --color-activity-cell-border-active: var(--color-text-primary);
-  --shadow-activity-cell-hover: 0 0 0 2px rgba(51, 156, 255, 0.12), 0 8px 18px rgba(30, 41, 59, 0.14);
-  --color-activity-tooltip-surface: #2F312E;
-  --color-activity-tooltip-border: rgba(255, 255, 255, 0.12);
-  --color-activity-tooltip-text: #F2F1ED;
-  --color-activity-tooltip-muted: var(--bb-blue-100);
   --color-success-container: #E8F5E2;
   --color-info: #2D628F;
   --color-info-container: #E4F1FF;
@@ -673,19 +660,6 @@
   --color-goal-chip-border: var(--color-border);
   --color-model-option-selected-bg: var(--bb-blue-50);
   --color-model-option-selected-border: rgba(51, 156, 255, 0.24);
-  --color-activity-heat-0: #EEF2F6;
-  --color-activity-heat-1: #EAF4FF;
-  --color-activity-heat-2: #BFE0FF;
-  --color-activity-heat-3: #66B2FF;
-  --color-activity-heat-4: var(--color-primary);
-  --color-activity-cell-border: rgba(139, 152, 167, 0.32);
-  --color-activity-cell-border-hover: rgba(51, 156, 255, 0.55);
-  --color-activity-cell-border-active: var(--color-text-primary);
-  --shadow-activity-cell-hover: 0 0 0 2px rgba(51, 156, 255, 0.11), 0 8px 18px rgba(15, 23, 42, 0.14);
-  --color-activity-tooltip-surface: #111827;
-  --color-activity-tooltip-border: rgba(255, 255, 255, 0.14);
-  --color-activity-tooltip-text: #F9FAFB;
-  --color-activity-tooltip-muted: var(--bb-blue-100);
   --color-inspector-surface: #FFFFFF;
   --color-inspector-panel: #F7F9FB;
   --color-inspector-chip: #EEF3F6;
@@ -870,19 +844,6 @@
   --color-goal-chip-border: var(--color-border);
   --color-model-option-selected-bg: rgba(51, 156, 255, 0.13);
   --color-model-option-selected-border: rgba(51, 156, 255, 0.34);
-  --color-activity-heat-0: #242322;
-  --color-activity-heat-1: #10243A;
-  --color-activity-heat-2: #1C4A75;
-  --color-activity-heat-3: #2E77C4;
-  --color-activity-heat-4: var(--color-primary);
-  --color-activity-cell-border: rgba(229, 226, 225, 0.08);
-  --color-activity-cell-border-hover: rgba(51, 156, 255, 0.58);
-  --color-activity-cell-border-active: #E5F3FF;
-  --shadow-activity-cell-hover: 0 0 0 2px rgba(51, 156, 255, 0.16), 0 8px 18px rgba(0, 0, 0, 0.34);
-  --color-activity-tooltip-surface: #F2F1ED;
-  --color-activity-tooltip-border: rgba(51, 156, 255, 0.36);
-  --color-activity-tooltip-text: #1B1C1A;
-  --color-activity-tooltip-muted: var(--bb-blue-300);
   --color-inspector-surface: #131211;
   --color-inspector-panel: #1C1B1B;
   --color-inspector-chip: #252120;
@@ -1320,71 +1281,6 @@ button, input, textarea, select, a, [role="button"] {
   background: var(--color-outline-a92);
 }
 
-.activity-summary-panel {
-  container-type: inline-size;
-}
-
-.activity-summary-grid {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.activity-summary-metric-primary {
-  grid-column: auto;
-}
-
-.activity-summary-value {
-  overflow-wrap: normal;
-  word-break: keep-all;
-}
-
-@container (min-width: 360px) {
-  .activity-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@container (min-width: 560px) {
-  .activity-summary-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
-  .activity-summary-metric-primary {
-    grid-column: auto;
-  }
-}
-
-.activity-heat-cell {
-  position: relative;
-  transform: translateZ(0);
-  transform-origin: center;
-  transition:
-    border-color 150ms ease,
-    box-shadow 180ms ease,
-    filter 180ms ease,
-    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.activity-heat-cell:hover,
-.activity-heat-cell:focus-visible,
-.activity-heat-cell.is-active {
-  z-index: 1;
-  transform: translateZ(0) scale(1.16);
-  box-shadow: var(--shadow-activity-cell-hover);
-  filter: saturate(1.08);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-heat-cell {
-    transition-duration: 0.01ms !important;
-  }
-
-  .activity-heat-cell:hover,
-  .activity-heat-cell:focus-visible,
-  .activity-heat-cell.is-active {
-    transform: translateZ(0);
-  }
-}
-
 /* Animations */
 @keyframes shimmer {
   0%, 100% { opacity: 0.4; }
@@ -1396,10 +1292,6 @@ button, input, textarea, select, a, [role="button"] {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
-}
-@keyframes activity-reveal {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 @keyframes composer-drop-fade {
   from { opacity: 0; transform: scale(0.985); }
