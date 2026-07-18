@@ -110,4 +110,34 @@ describe('tabStore', () => {
       }],
     })
   })
+
+  it('discards retired trace tabs and rewrites persisted tabs to safe task state', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__traces__', title: 'Trace list', type: 'traces' },
+        { sessionId: '__trace__session-1', title: 'Trace', type: 'trace' },
+        { sessionId: 'session-1', title: 'Current task', type: 'session' },
+      ],
+      activeTabId: '__trace__session-1',
+    }))
+    vi.mocked(sessionsApi.list).mockResolvedValue({
+      sessions: [{ id: 'session-1', title: 'Current task' }],
+    } as never)
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: 'session-1',
+      tabs: [{
+        sessionId: 'session-1',
+        title: 'Current task',
+        type: 'session',
+        status: 'idle',
+      }],
+    })
+    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
+      openTabs: [{ sessionId: 'session-1', title: 'Current task', type: 'session' }],
+      activeTabId: 'session-1',
+    })
+  })
 })

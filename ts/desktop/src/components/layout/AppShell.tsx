@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DesktopSidebar } from './DesktopSidebar'
 import { ContentRouter } from './ContentRouter'
 import { TopBar } from './TopBar'
@@ -14,9 +14,6 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useTranslation } from '../../i18n'
-import { getTraceLaunchRequest } from '../../lib/traceLaunch'
-import { TraceList } from '../../pages/TraceList'
-import { TraceSession } from '../../pages/TraceSession'
 
 /**
  * The only delivered application frame: BilliardBuddy's desktop task shell.
@@ -27,7 +24,6 @@ export function AppShell() {
   const sidebarOpen = useUIStore((state) => state.sidebarOpen)
   const [ready, setReady] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
-  const traceLaunch = useMemo(() => getTraceLaunchRequest(), [])
   const t = useTranslation()
 
   useEffect(() => {
@@ -46,18 +42,8 @@ export function AppShell() {
         if (!cancelled) setReady(true)
 
         void (async () => {
-          if (traceLaunch.windowMode) return
-
           await useTabStore.getState().restoreTabs()
           if (cancelled) return
-
-          if (traceLaunch.sessionId) {
-            useTabStore.getState().openTraceTab(
-              traceLaunch.sessionId,
-              `Trace: ${traceLaunch.sessionId.slice(0, 8)}`,
-            )
-            return
-          }
 
           const { activeTabId, tabs } = useTabStore.getState()
           const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
@@ -75,7 +61,7 @@ export function AppShell() {
 
     void bootstrap()
     return () => { cancelled = true }
-  }, [fetchSettings, traceLaunch])
+  }, [fetchSettings])
 
   useEffect(() => {
     const host = getDesktopHost()
@@ -104,19 +90,6 @@ export function AppShell() {
     return (
       <div className="app-shell-viewport flex items-center justify-center bg-[var(--color-surface)] text-[var(--color-text-secondary)]">
         {t('app.launching')}
-      </div>
-    )
-  }
-
-  if (traceLaunch.windowMode) {
-    return (
-      <div className="app-shell-viewport flex overflow-hidden bg-[var(--color-surface)] text-[var(--color-text-primary)]">
-        {traceLaunch.sessionId ? (
-          <TraceSession sessionId={traceLaunch.sessionId} standalone />
-        ) : (
-          <TraceList />
-        )}
-        <ToastContainer />
       </div>
     )
   }

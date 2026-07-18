@@ -14,7 +14,6 @@ const SETTINGS_TABS = [
   'memory',
   'plugins',
   'computerUse',
-  'trace',
   'diagnostics',
   'about',
 ] as const
@@ -92,7 +91,6 @@ export type SettingsTab =
   | 'memory'
   | 'plugins'
   | 'computerUse'
-  | 'trace'
   | 'diagnostics'
   | 'about'
 

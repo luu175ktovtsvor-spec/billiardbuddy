@@ -66,7 +66,6 @@ let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
-const traceWindows = new Map<string, BrowserWindow>()
 let isQuitting = false
 let trayController: TrayController | null = null
 
@@ -101,54 +100,13 @@ function rendererEntry() {
   })
 }
 
-async function loadRendererEntry(
-  window: BrowserWindow,
-  query?: Record<string, string>,
-) {
+async function loadRendererEntry(window: BrowserWindow) {
   const entry = rendererEntry()
   if (/^https?:\/\//.test(entry)) {
-    const url = new URL(entry)
-    for (const [key, value] of Object.entries(query ?? {})) {
-      url.searchParams.set(key, value)
-    }
-    await window.loadURL(url.toString())
+    await window.loadURL(entry)
   } else {
-    await window.loadFile(entry, query ? { query } : undefined)
+    await window.loadFile(entry)
   }
-}
-
-async function openTraceWindow(sessionId: string) {
-  const existing = traceWindows.get(sessionId)
-  if (existing && !existing.isDestroyed()) {
-    showMainWindow(existing, app)
-    return
-  }
-
-  const traceWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 860,
-    minHeight: 560,
-    title: 'Trace',
-    autoHideMenuBar: true,
-    show: false,
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  })
-  traceWindows.set(sessionId, traceWindow)
-  traceWindow.on('closed', () => {
-    traceWindows.delete(sessionId)
-  })
-  installMainWindowNavigationGuards(traceWindow.webContents, { openExternal: openExternalUrl })
-  await loadRendererEntry(traceWindow, {
-    traceWindow: '1',
-    traceSessionId: sessionId,
-  })
-  showMainWindow(traceWindow, app)
 }
 
 function getServerRuntime() {
@@ -302,7 +260,6 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.shellOpen, (_event, payload) => openExternalUrl(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.shellOpenPath, (_event, payload) => openSystemPath(String(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.traceOpenWindow, (_event, payload) => openTraceWindow(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogOpen, (event, payload) =>
     openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>

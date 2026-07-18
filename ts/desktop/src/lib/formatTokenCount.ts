@@ -1,7 +1,6 @@
 /**
  * Compact token-count formatter shared by the chat UI (session header,
- * streaming indicator, compact summary, background agents) and trace views,
- * so every surface renders token usage with one notation.
+ * streaming indicator, compact summary, and background agents).
  * "847" below 1000, "1.2k" up to 1M, "1.2m" beyond — trailing ".0" dropped
  * ("1k", not "1.0k") to match the CLI's formatTokens.
  */

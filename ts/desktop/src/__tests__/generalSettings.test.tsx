@@ -39,10 +39,6 @@ vi.mock('../pages/ActivitySettings', () => ({
   ActivitySettings: () => <div>Activity Settings Mock</div>,
 }))
 
-vi.mock('../pages/TraceList', () => ({
-  TraceList: () => <div>Trace List Mock</div>,
-}))
-
 vi.mock('../stores/agentStore', () => ({
   useAgentStore: () => ({
     activeAgents: [],
@@ -135,7 +131,6 @@ describe('Settings > General tab', () => {
       autoDreamEnabled: false,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
-      traceCapture: { enabled: true, storageDir: '/Users/test/.claude/billiardbuddy/traces' },
       chatSendBehavior: 'enter',
       responseLanguage: '',
       uiZoom: 1,
@@ -178,10 +173,6 @@ describe('Settings > General tab', () => {
       }),
       setDesktopNotificationsEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ desktopNotificationsEnabled: enabled })
-      }),
-      setTraceCaptureEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
-        const current = useSettingsStore.getState().traceCapture
-        useSettingsStore.setState({ traceCapture: { ...current, enabled } })
       }),
       setChatSendBehavior: vi.fn().mockImplementation(async (chatSendBehavior: ChatSendBehavior) => {
         useSettingsStore.setState({ chatSendBehavior })
@@ -594,21 +585,6 @@ describe('Settings > General tab', () => {
     expect(screen.getByText('Activity Settings Mock')).toBeInTheDocument()
   })
 
-  it('opens the Trace tab from Settings navigation between Token usage and Diagnostics', () => {
-    render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-
-    const usageTab = screen.getByText('Token usage')
-    const traceTab = screen.getByText('Trace')
-    const diagnosticsTab = screen.getByText('Diagnostics')
-    expect((usageTab.compareDocumentPosition(traceTab) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect((traceTab.compareDocumentPosition(diagnosticsTab) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-
-    fireEvent.click(traceTab)
-
-    expect(screen.getByText('Trace List Mock')).toBeInTheDocument()
-  })
-
   it('lets the user disable WebFetch preflight skipping', () => {
     render(<Settings />)
 
@@ -694,7 +670,6 @@ describe('Settings > General tab', () => {
     for (const label of [
       'Enable thinking mode',
       'Enable Auto-dream',
-      'Collect agent traces',
       'Enable system notifications',
       'Skip WebFetch domain preflight',
     ]) {
@@ -705,22 +680,6 @@ describe('Settings > General tab', () => {
       expect(row).not.toBeNull()
       expect(row!).toHaveClass('relative')
     }
-  })
-
-  it('lets the user disable Agent Trace collection without leaving General settings', async () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    expect(screen.getByLabelText('Collect agent traces')).toBeChecked()
-
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText('Collect agent traces'))
-    })
-
-    expect(useSettingsStore.getState().setTraceCaptureEnabled).toHaveBeenCalledWith(false)
-    expect(screen.getByLabelText('Collect agent traces')).not.toBeChecked()
-    expect(screen.getByText('Agent trace')).toBeInTheDocument()
-    expect(screen.getByText('Message Sending')).toBeInTheDocument()
   })
 
   it('uses the shared dropdown for response language', () => {

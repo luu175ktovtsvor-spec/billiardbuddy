@@ -27,6 +27,30 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
+  test('drops retired trace tabs instead of restoring their inspection state', () => {
+    window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__traces__', title: 'Trace list', type: 'traces' },
+        { sessionId: '__trace__session-1', title: 'Trace', type: 'trace' },
+        { sessionId: 'session-1', title: 'Current task', type: 'session' },
+      ],
+      activeTabId: '__trace__session-1',
+    }))
+    window.localStorage.setItem('billiardbuddy-active-settings-tab', 'trace')
+
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys).toEqual(expect.arrayContaining([
+      'billiardbuddy-open-tabs',
+      'billiardbuddy-active-settings-tab',
+    ]))
+    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
+      openTabs: [{ sessionId: 'session-1', title: 'Current task', type: 'session' }],
+      activeTabId: 'session-1',
+    })
+    expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBeNull()
+  })
+
   test('removes retired session runtime selections without clearing unrelated keys', () => {
     window.localStorage.setItem('unrelated-user-key', 'keep')
     window.localStorage.setItem('billiardbuddy-session-runtime', 'legacy-override')
@@ -37,7 +61,7 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('unrelated-user-key')).toBe('keep')
   })
 
-  test('drops the retired provider settings tab selection', () => {
+  test('drops retired settings tab selections', () => {
     window.localStorage.setItem('billiardbuddy-active-settings-tab', 'providers')
 
     const report = runDesktopPersistenceMigrations()

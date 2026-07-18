@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { settingsApi } from '../api/settings'
-import { tracesApi } from '../api/traces'
 import {
   isThemeMode,
   type AppMode,
@@ -17,7 +16,6 @@ import {
   type UpdateProxySettings,
   type WebSearchSettings,
 } from '../types/settings'
-import type { TraceCaptureSettings } from '../types/trace'
 import { getDesktopHost } from '../lib/desktopHost'
 import type { Locale } from '../i18n'
 import {
@@ -67,7 +65,6 @@ type SettingsStore = {
   webSearch: WebSearchSettings
   updateProxy: UpdateProxySettings
   network: NetworkSettings
-  traceCapture: TraceCaptureSettings
   responseLanguage: string
   uiZoom: number
   isLoading: boolean
@@ -91,7 +88,6 @@ type SettingsStore = {
   setWebSearch: (settings: WebSearchSettings) => Promise<void>
   setUpdateProxy: (settings: UpdateProxySettings) => Promise<void>
   setNetwork: (settings: NetworkSettings) => Promise<void>
-  setTraceCaptureEnabled: (enabled: boolean) => Promise<void>
   setResponseLanguage: (language: string) => Promise<void>
   fetchAppMode: () => Promise<void>
   setAppMode: (mode: AppMode, portableDir?: string | null) => Promise<void>
@@ -130,11 +126,6 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
   },
 ]
 
-const DEFAULT_TRACE_CAPTURE_SETTINGS: TraceCaptureSettings = {
-  enabled: true,
-  storageDir: '',
-}
-
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   permissionMode: 'default',
   thinkingEnabled: true,
@@ -154,7 +145,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
   updateProxy: DEFAULT_UPDATE_PROXY_SETTINGS,
   network: DEFAULT_NETWORK_SETTINGS,
-  traceCapture: DEFAULT_TRACE_CAPTURE_SETTINGS,
   responseLanguage: '',
   uiZoom: readStoredAppZoomLevel(),
   isLoading: false,
@@ -177,10 +167,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   fetchAll: async () => {
     set({ isLoading: true, error: null })
     try {
-      const [{ mode }, userSettings, traceCapture] = await Promise.all([
+      const [{ mode }, userSettings] = await Promise.all([
         settingsApi.getPermissionMode(),
         settingsApi.getUser(),
-        loadTraceCaptureSettings(),
       ])
       // 旧数据可能存的是已下线的 'white'（isThemeMode 现在只认 light/dark/system）→ 回退跟随系统。
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
@@ -198,7 +187,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         webSearch: normalizeWebSearchSettings(userSettings.webSearch),
         updateProxy: normalizeUpdateProxySettings(userSettings.updateProxy),
         network: normalizeNetworkSettings(userSettings.network),
-        traceCapture,
         responseLanguage: typeof userSettings.language === 'string' ? userSettings.language : '',
         isLoading: false,
         error: null,
@@ -409,18 +397,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  setTraceCaptureEnabled: async (enabled) => {
-    const prev = get().traceCapture
-    set({ traceCapture: { ...prev, enabled } })
-    try {
-      const next = await tracesApi.updateSettings({ enabled })
-      set({ traceCapture: normalizeTraceCaptureSettings(next) })
-    } catch (error) {
-      set({ traceCapture: prev })
-      throw error
-    }
-  },
-
   setResponseLanguage: async (language) => {
     const prev = get().responseLanguage
     set({ responseLanguage: language })
@@ -544,15 +520,6 @@ function normalizeNetworkSettings(
   }
 }
 
-function normalizeTraceCaptureSettings(
-  settings: TraceCaptureSettings | undefined,
-): TraceCaptureSettings {
-  return {
-    enabled: settings?.enabled !== false,
-    storageDir: typeof settings?.storageDir === 'string' ? settings.storageDir : '',
-  }
-}
-
 function normalizeDesktopTerminalSettings(
   settings: Partial<DesktopTerminalSettings> | undefined,
 ): DesktopTerminalSettings {
@@ -565,14 +532,6 @@ function normalizeDesktopTerminalSettings(
     customShellPath: typeof settings?.customShellPath === 'string'
       ? settings.customShellPath
       : DEFAULT_DESKTOP_TERMINAL_SETTINGS.customShellPath,
-  }
-}
-
-async function loadTraceCaptureSettings(): Promise<TraceCaptureSettings> {
-  try {
-    return normalizeTraceCaptureSettings(await tracesApi.getSettings())
-  } catch {
-    return DEFAULT_TRACE_CAPTURE_SETTINGS
   }
 }
 
