@@ -105,6 +105,15 @@ function withImageBody(model: string, url = PNG_DATA_URI) {
   })
 }
 
+function computerUseImageBody(model: string) {
+  const parsed = JSON.parse(withImageBody(model)) as Record<string, unknown>
+  parsed.tools = [
+    { type: 'function', function: { name: 'mcp__computer-use__screenshot', parameters: { type: 'object' } } },
+    { type: 'function', function: { name: 'mcp__computer-use__left_click', parameters: { type: 'object' } } },
+  ]
+  return JSON.stringify(parsed)
+}
+
 async function healthzCapacity(fetch: (r: Request) => Promise<Response>) {
   const res = await fetch(new Request('http://local/healthz', authed({ method: 'GET' })))
   const body = await res.json()
@@ -131,6 +140,22 @@ test('② DeepSeek + image bridges through MiMo exactly once, then DeepSeek exac
   expect(deepseekCalls).toHaveLength(1)
   expect(deepseekCalls[0]!.body).not.toContain('image_url')
   expect(deepseekCalls[0]!.body).toContain('图片理解结果')
+})
+
+test('Computer Use screenshot turns capability-route directly to native MiMo with pixels and tools intact', async () => {
+  const { fetch, calls } = makeGateway()
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: computerUseImageBody('deepseek-v4-flash'),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
+  expect(mimoCalls).toHaveLength(1)
+  expect(calls.filter(c => c.url.includes('deepseek.example'))).toHaveLength(0)
+  expect(mimoCalls[0]!.body).toContain('image_url')
+  expect(mimoCalls[0]!.body).toContain('mcp__computer-use__left_click')
+  expect(JSON.parse(mimoCalls[0]!.body).model).toBe('mimo-v2.5')
 })
 
 test('③ the same image across two requests hits the cache — MiMo is called only once total', async () => {
