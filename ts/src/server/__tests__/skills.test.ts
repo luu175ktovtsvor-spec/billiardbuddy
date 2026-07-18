@@ -8,6 +8,7 @@ import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { handlePluginsApi } from '../api/plugins.js'
 import { handleSkillsApi } from '../api/skills.js'
+import { registerBundledSkill } from '../../skills/bundledSkills.js'
 
 let tmpHome: string
 let originalHome: string | undefined
@@ -104,9 +105,84 @@ describe('Skills API', () => {
     const res = await handleSkillsApi(req, url, segments)
 
     expect(res.status).toBe(200)
-    const body = await res.json() as { skills: Array<{ name: string; source: string }> }
+    const body = await res.json() as { skills: Array<{ name: string; source: string; hasDirectory: boolean }> }
     expect(body.skills).toContainEqual(expect.objectContaining({ name: 'user-skill', source: 'user' }))
     expect(body.skills).toContainEqual(expect.objectContaining({ name: 'project-skill', source: 'project' }))
+    expect(body.skills).toContainEqual(expect.objectContaining({
+      name: 'image-workbench',
+      source: 'bundled',
+      hasDirectory: true,
+    }))
+    expect(body.skills).toContainEqual(expect.objectContaining({ name: 'video-workbench', source: 'bundled' }))
+    expect(body.skills).not.toContainEqual(expect.objectContaining({ name: 'simplify', source: 'bundled' }))
+  })
+
+  it('returns a read-only detail document for enabled bundled skills', async () => {
+    const { req, url, segments } = makeRequest(
+      '/api/skills/detail?source=bundled&name=image-workbench',
+    )
+    const res = await handleSkillsApi(req, url, segments)
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as {
+      detail: {
+        meta: { name: string; displayName?: string; source: string; hasDirectory: boolean }
+        files: Array<{ path: string; body?: string; frontmatter?: Record<string, unknown> }>
+        skillRoot: string
+      }
+    }
+    expect(body.detail.meta).toEqual(expect.objectContaining({
+      name: 'image-workbench',
+      displayName: '做海报和图片',
+      source: 'bundled',
+      hasDirectory: true,
+    }))
+    expect(body.detail.files[0]).toEqual(expect.objectContaining({
+      path: 'SKILL.md',
+      body: expect.stringContaining('# 做海报和图片'),
+      frontmatter: expect.objectContaining({ 'allowed-tools': ['MediaWorkbench'] }),
+    }))
+    expect(body.detail.skillRoot).toBe('bundled')
+  })
+
+  it('does not expose disabled bundled skills in list or detail', async () => {
+    registerBundledSkill({
+      name: 'desktop-disabled-test',
+      description: 'must remain hidden',
+      isEnabled: () => false,
+      desktopDiscovery: { content: '# Hidden desktop skill' },
+      async getPromptForCommand() {
+        return [{ type: 'text', text: 'hidden' }]
+      },
+    })
+
+    const list = makeRequest('/api/skills')
+    const listRes = await handleSkillsApi(list.req, list.url, list.segments)
+    const listBody = await listRes.json() as { skills: Array<{ name: string }> }
+    expect(listBody.skills.some(skill => skill.name === 'desktop-disabled-test')).toBe(false)
+
+    const detail = makeRequest('/api/skills/detail?source=bundled&name=desktop-disabled-test')
+    const detailRes = await handleSkillsApi(detail.req, detail.url, detail.segments)
+    expect(detailRes.status).toBe(404)
+  })
+
+  it('keeps core bundled commands out of desktop discovery unless explicitly opted in', async () => {
+    registerBundledSkill({
+      name: 'core-command-test',
+      description: 'available to the Agent but not a desktop product Skill',
+      async getPromptForCommand() {
+        return [{ type: 'text', text: 'core only' }]
+      },
+    })
+
+    const list = makeRequest('/api/skills')
+    const listRes = await handleSkillsApi(list.req, list.url, list.segments)
+    const listBody = await listRes.json() as { skills: Array<{ name: string }> }
+    expect(listBody.skills.some(skill => skill.name === 'core-command-test')).toBe(false)
+
+    const detail = makeRequest('/api/skills/detail?source=bundled&name=core-command-test')
+    const detailRes = await handleSkillsApi(detail.req, detail.url, detail.segments)
+    expect(detailRes.status).toBe(404)
   })
 
   it('lists user skills installed through a directory symlink or junction', async () => {
