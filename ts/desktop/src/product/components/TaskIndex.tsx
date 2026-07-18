@@ -11,6 +11,7 @@ import { PermissionModeSelector } from '../../components/controls/PermissionMode
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
 import { agentsApi, type AgentDefinition } from '../../api/agents'
+import { commandDiscoveryApi, type DiscoveredSlashCommand } from '../../api/commandDiscovery'
 import {
   buildAgentSlashCommands,
   resolveSlashCommandRuntimeValue,
@@ -294,8 +295,10 @@ function TaskComposer({
   const [initialText, setInitialText] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [useWorktree, setUseWorktree] = useState(false)
+  const [discoverableSkills, setDiscoverableSkills] = useState<DiscoveredSlashCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<AgentDefinition[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
+  const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
@@ -308,16 +311,31 @@ function TaskComposer({
 
   useEffect(() => {
     if (!isSlashInput || !normalizedWorkDir) {
+      setDiscoverableSkills(null)
       setDiscoverableAgents(null)
       setAgentDiscoveryWorkDir(null)
+      setSkillDiscoveryError(null)
       setAgentDiscoveryError(null)
       return
     }
 
     let cancelled = false
+    setDiscoverableSkills(null)
     setDiscoverableAgents(null)
     setAgentDiscoveryWorkDir(normalizedWorkDir)
+    setSkillDiscoveryError(null)
     setAgentDiscoveryError(null)
+
+    commandDiscoveryApi.listSkillCommands(normalizedWorkDir)
+      .then(({ commands }) => {
+        if (cancelled) return
+        setDiscoverableSkills(commands)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDiscoverableSkills([])
+        setSkillDiscoveryError('暂时无法读取可用命令')
+      })
 
     agentsApi.list(normalizedWorkDir)
       .then(({ activeAgents }) => {
@@ -341,25 +359,30 @@ function TaskComposer({
   )
   const matchingCommands = useMemo<TaskComposerSlashCommand[]>(() => {
     if (query === null) return []
+    const skills: TaskComposerSlashCommand[] = (discoverableSkills ?? []).map((skill) => ({
+      key: `skill:${skill.name}`,
+      name: skill.name,
+      description: '',
+    }))
     const agents: TaskComposerSlashCommand[] = agentSlashCommands.map((agent) => ({
       ...agent,
       key: `agent:${agent.runtimeName ?? agent.name}`,
     }))
-    return agents.filter((command) => (
+    return [...skills, ...agents].filter((command) => (
       command.name.toLocaleLowerCase().startsWith(query)
     ))
-  }, [agentSlashCommands, query])
+  }, [agentSlashCommands, discoverableSkills, query])
   const hasAgentDiscoveryForCurrentWorkDir = agentDiscoveryWorkDir === normalizedWorkDir
   const visibleCommands = hasAgentDiscoveryForCurrentWorkDir ? matchingCommands : []
-  const hasPendingAgentDiscovery = discoverableAgents === null
+  const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
   const visibleDiscoveryError = hasAgentDiscoveryForCurrentWorkDir
     ? visibleCommands.length === 0
-      ? agentDiscoveryError
+      ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
       : null
     : null
   const isAgentDiscoveryLoading = Boolean(normalizedWorkDir) && (
     !hasAgentDiscoveryForCurrentWorkDir || (
-      hasPendingAgentDiscovery && visibleCommands.length === 0 && visibleDiscoveryError === null
+      hasPendingCommandDiscovery && visibleCommands.length === 0 && visibleDiscoveryError === null
     )
   )
 
