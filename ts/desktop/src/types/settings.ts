@@ -8,8 +8,6 @@ export function isThemeMode(value: unknown): value is ThemeMode {
   return typeof value === 'string' && (THEME_MODES as readonly string[]).includes(value)
 }
 
-export type WebSearchMode = 'auto' | 'anthropic' | 'tavily' | 'brave' | 'disabled'
-
 export type ChatSendBehavior = 'enter' | 'modifierEnter'
 
 export type OutputStyleSource =
@@ -35,11 +33,11 @@ export type OutputStylesResponse = {
 }
 
 export type WebSearchSettings = {
-  mode?: WebSearchMode
-  tavilyApiKey?: string
-  braveApiKey?: string
-  tavilyConfigured?: boolean
-  braveConfigured?: boolean
+  /**
+   * Product-facing preference only.  Backend selection and credentials stay
+   * inside the managed gateway rather than in the desktop settings surface.
+   */
+  enabled?: boolean
 }
 
 export type UpdateProxyMode = 'system' | 'manual'

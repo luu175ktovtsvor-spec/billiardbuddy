@@ -101,6 +101,13 @@ export function resolveWebSearchProvider(
     return { provider: 'disabled', settings }
   }
 
+  // A managed desktop runtime has one product-owned route. Existing local
+  // provider choices and keys must not override it or become a fallback when
+  // that route reports an error.
+  if (productGatewayUrl) {
+    return { provider: 'product', settings, productGatewayUrl }
+  }
+
   if (mode === 'tavily') {
     return { provider: settings.tavilyApiKey ? 'tavily' : 'disabled', settings }
   }
@@ -114,13 +121,6 @@ export function resolveWebSearchProvider(
       provider: canUseAnthropicNativeWebSearch(model) ? 'anthropic' : 'disabled',
       settings,
     }
-  }
-
-  // Product runtime has one exact local route. When it is present, auto mode
-  // never touches a user-supplied Tavily/Brave key or native model search as a
-  // hidden fallback: the selected product gateway is authoritative.
-  if (productGatewayUrl) {
-    return { provider: 'product', settings, productGatewayUrl }
   }
 
   if (canUseAnthropicNativeWebSearch(model)) {

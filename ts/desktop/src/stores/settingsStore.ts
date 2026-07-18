@@ -142,7 +142,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   skipWebFetchPreflight: true,
   desktopNotificationsEnabled: false,
   desktopTerminal: DEFAULT_DESKTOP_TERMINAL_SETTINGS,
-  webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
+  webSearch: { enabled: true },
   updateProxy: DEFAULT_UPDATE_PROXY_SETTINGS,
   network: DEFAULT_NETWORK_SETTINGS,
   responseLanguage: '',
@@ -359,15 +359,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ webSearch: next })
     try {
       await settingsApi.updateUser({ webSearch: next })
-      set({
-        webSearch: {
-          ...next,
-          tavilyApiKey: '',
-          braveApiKey: '',
-          tavilyConfigured: Boolean(next.tavilyApiKey?.trim()) || next.tavilyConfigured,
-          braveConfigured: Boolean(next.braveApiKey?.trim()) || next.braveConfigured,
-        },
-      })
     } catch {
       set({ webSearch: prev })
     }
@@ -445,11 +436,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
 function normalizeWebSearchSettings(settings: WebSearchSettings | undefined): WebSearchSettings {
   return {
-    mode: settings?.mode ?? 'auto',
-    tavilyApiKey: settings?.tavilyApiKey ?? '',
-    braveApiKey: settings?.braveApiKey ?? '',
-    tavilyConfigured: settings?.tavilyConfigured ?? false,
-    braveConfigured: settings?.braveConfigured ?? false,
+    enabled: settings?.enabled !== false,
   }
 }
 
