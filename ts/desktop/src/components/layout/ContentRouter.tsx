@@ -4,8 +4,6 @@ import { ActiveSession } from '../../pages/ActiveSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
-import { TraceList } from '../../pages/TraceList'
-import { TraceSession } from '../../pages/TraceSession'
 import { WorkbenchTab } from '../workbench/WorkbenchTab'
 import { ImageWorkbench } from '../media/ImageWorkbench'
 import { VideoStudio } from '../media/VideoStudio'
@@ -30,11 +28,6 @@ export function ContentRouter() {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
     page = <ScheduledTasks />
-  } else if (activeTabType === 'trace') {
-    const traceSessionId = tabs.find((t) => t.sessionId === activeTabId)?.traceSessionId
-    page = traceSessionId ? <TraceSession sessionId={traceSessionId} /> : <ProductShell />
-  } else if (activeTabType === 'traces') {
-    page = <TraceList />
   } else if (activeTabType === 'workbench') {
     const workbenchTab = tabs.find((t) => t.sessionId === activeTabId)
     page = workbenchTab?.workbenchSessionId

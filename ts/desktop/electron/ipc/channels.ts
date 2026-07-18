@@ -6,7 +6,6 @@ export const ELECTRON_IPC_CHANNELS = {
   clipboardWriteText: 'desktop:clipboard:write-text',
   shellOpen: 'desktop:shell:open',
   shellOpenPath: 'desktop:shell:open-path',
-  traceOpenWindow: 'desktop:trace:open-window',
   dialogOpen: 'desktop:dialog:open',
   dialogSave: 'desktop:dialog:save',
   mediaSubmitImage: 'desktop:media:submit-image',

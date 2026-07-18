@@ -6,7 +6,7 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 2
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 3
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
 
 type DesktopMigrationReport = {
@@ -30,7 +30,6 @@ const SETTINGS_TABS = [
   'memory',
   'plugins',
   'computerUse',
-  'trace',
   'diagnostics',
   'about',
 ]
@@ -64,6 +63,7 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
       .filter((tab): tab is Record<string, unknown> => isRecord(tab))
       .filter((tab) => typeof tab.sessionId === 'string' && typeof tab.title === 'string')
       .filter((tab) => tab.type !== 'terminal' && !String(tab.sessionId).startsWith('__terminal__'))
+      .filter((tab) => !isRetiredTraceTab(tab))
       .map((tab) => ({
         sessionId: tab.sessionId as string,
         title: tab.title as string,
@@ -85,6 +85,14 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
     storage.removeItem(TAB_STORAGE_KEY)
   }
   report.migratedKeys.push(TAB_STORAGE_KEY)
+}
+
+function isRetiredTraceTab(tab: Record<string, unknown>): boolean {
+  const sessionId = String(tab.sessionId)
+  return tab.type === 'trace'
+    || tab.type === 'traces'
+    || sessionId === '__traces__'
+    || sessionId.startsWith('__trace__')
 }
 
 function removeRetiredSessionRuntime(storage: StorageLike, report: DesktopMigrationReport): void {

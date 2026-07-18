@@ -14,7 +14,6 @@ import {
   Settings2,
   Sparkles,
   Terminal,
-  Wrench,
 } from 'lucide-react'
 import { useSettingsStore, UI_ZOOM_DEFAULT, UI_ZOOM_MIN, UI_ZOOM_MAX, UI_ZOOM_STEP } from '../stores/settingsStore'
 import { useTranslation, type TranslationKey } from '../i18n'
@@ -39,7 +38,6 @@ import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
 import { DiagnosticsSettings } from './DiagnosticsSettings'
-import { TraceList } from './TraceList'
 import { ActivitySettings } from './ActivitySettings'
 import { MemorySettings } from './MemorySettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
@@ -83,7 +81,6 @@ const ADVANCED_SETTINGS: SettingsNavItem[] = [
   { tab: 'mcp', icon: <Plug size={16} /> },
   { tab: 'agents', icon: <Bot size={16} /> },
   { tab: 'activity', icon: <Activity size={16} /> },
-  { tab: 'trace', icon: <Wrench size={16} /> },
   { tab: 'diagnostics', icon: <CircleHelp size={16} /> },
 ]
 
@@ -97,7 +94,6 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   memory: 'settings.tab.memory',
   plugins: 'settings.tab.plugins',
   computerUse: 'settings.tab.computerUse',
-  trace: 'settings.tab.trace',
   diagnostics: 'settings.tab.diagnostics',
   about: 'settings.tab.about',
 }
@@ -112,7 +108,6 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   memory: '记忆',
   plugins: '插件',
   computerUse: '电脑操作',
-  trace: '调试记录',
   diagnostics: '诊断',
   about: '关于',
 }
@@ -239,7 +234,6 @@ export function Settings() {
     if (activeTab === 'memory') return <MemorySettings />
     if (activeTab === 'plugins') return <PluginSettings />
     if (activeTab === 'computerUse') return <ComputerUseSettings />
-    if (activeTab === 'trace') return <TraceList />
     if (activeTab === 'diagnostics') return <DiagnosticsSettings />
     return <AboutSettings />
   })()
@@ -299,12 +293,12 @@ export function Settings() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden" style={{ background: 'var(--color-app-main)' }}>
-        <div className={activeTab === 'trace' ? 'flex h-full min-h-0 flex-col px-8 pb-8 pt-12' : 'h-full overflow-y-auto'}>
-          <div className={activeTab === 'trace' ? 'flex min-h-0 flex-1 flex-col' : 'mx-auto w-full max-w-[920px] px-8 pb-16 pt-12'}>
+        <div className="h-full overflow-y-auto">
+          <div className="mx-auto w-full max-w-[920px] px-8 pb-16 pt-12">
             <h1 className="mb-7 shrink-0 text-[20px] font-semibold text-[var(--color-text-primary)]">
               {settingsContentTitle(activeTab, locale, t)}
             </h1>
-            <div className={activeTab === 'trace' ? 'flex min-h-0 flex-1 flex-col' : ''}>{content}</div>
+            <div>{content}</div>
           </div>
         </div>
       </main>
@@ -343,8 +337,6 @@ export function GeneralSettings() {
     setWebSearch,
     network,
     setNetwork,
-    traceCapture,
-    setTraceCaptureEnabled,
     responseLanguage,
     setResponseLanguage,
     appMode,
@@ -1060,34 +1052,6 @@ export function GeneralSettings() {
           {locale === 'zh' ? '网络、搜索与存储' : 'Network, search and storage'}
         </summary>
         <div className="pl-1">
-      <div className="mt-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.traceTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.traceDescription')}</p>
-        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
-          <input
-            type="checkbox"
-            aria-label={t('settings.general.traceEnabled')}
-            checked={traceCapture.enabled}
-            onChange={(e) => void setTraceCaptureEnabled(e.target.checked)}
-            className={SETTINGS_CHECKBOX_INPUT_CLASS}
-          />
-          <SettingsCheckboxMark checked={traceCapture.enabled} />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">
-              {t('settings.general.traceEnabled')}
-            </div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
-              {traceCapture.enabled ? t('settings.general.traceHintOn') : t('settings.general.traceHintOff')}
-            </div>
-            {traceCapture.storageDir && (
-              <div className="mt-2 truncate rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-mono text-[11px] text-[var(--color-text-secondary)]">
-                {traceCapture.storageDir}
-              </div>
-            )}
-          </div>
-        </label>
-      </div>
-
       <div className="mt-8">
         <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.notificationsTitle')}</h2>
         <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.notificationsDescription')}</p>

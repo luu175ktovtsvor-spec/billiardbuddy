@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
   restoreTabs: vi.fn(),
   connectToSession: vi.fn(),
   openTab: vi.fn(),
-  openTraceTab: vi.fn(),
   tabState: {
     activeTabId: null as string | null,
     tabs: [] as Array<{ sessionId: string; title: string; type: string; status: string }>,
@@ -33,7 +32,6 @@ vi.mock('../../stores/tabStore', () => ({
       activeTabId: mocks.tabState.activeTabId,
       tabs: mocks.tabState.tabs,
       openTab: mocks.openTab,
-      openTraceTab: mocks.openTraceTab,
     }),
   },
 }))
@@ -72,18 +70,6 @@ vi.mock('./ContentRouter', () => ({
 
 vi.mock('./StartupErrorView', () => ({
   StartupErrorView: ({ error }: { error: string }) => <section data-testid="startup-error">{error}</section>,
-}))
-
-vi.mock('../../pages/TraceList', () => ({
-  TraceList: () => <section data-testid="trace-list">trace list</section>,
-}))
-
-vi.mock('../../pages/TraceSession', () => ({
-  TraceSession: ({ sessionId, standalone }: { sessionId: string; standalone?: boolean }) => (
-    <section data-standalone={standalone ? 'true' : 'false'} data-testid="trace-session">
-      trace:{sessionId}
-    </section>
-  ),
 }))
 
 vi.mock('../shared/Toast', () => ({
@@ -162,38 +148,6 @@ describe('AppShell desktop boot flow', () => {
 
     await screen.findByText('sidebar loaded')
     await waitFor(() => expect(mocks.connectToSession).toHaveBeenCalledWith('session-1'))
-  })
-
-  it('opens a trace tab from a session-scoped trace deep link', async () => {
-    window.history.pushState({}, '', '/?traceSessionId=session-deep-link')
-
-    render(<AppShell />)
-
-    await screen.findByText('sidebar loaded')
-    await waitFor(() => {
-      expect(mocks.openTraceTab).toHaveBeenCalledWith('session-deep-link', 'Trace: session-')
-    })
-    expect(mocks.connectToSession).not.toHaveBeenCalled()
-  })
-
-  it('renders a dedicated trace session window from a trace deep link', async () => {
-    window.history.pushState({}, '', '/?traceWindow=1&traceSessionId=session-window')
-
-    render(<AppShell />)
-
-    expect(await screen.findByTestId('trace-session')).toHaveTextContent('trace:session-window')
-    expect(screen.getByTestId('trace-session')).toHaveAttribute('data-standalone', 'true')
-    expect(screen.queryByText('sidebar loaded')).not.toBeInTheDocument()
-    expect(mocks.restoreTabs).not.toHaveBeenCalled()
-  })
-
-  it('renders the trace list in a standalone trace window without a session id', async () => {
-    window.history.pushState({}, '', '/?traceWindow=1')
-
-    render(<AppShell />)
-
-    expect(await screen.findByTestId('trace-list')).toBeInTheDocument()
-    expect(screen.queryByText('sidebar loaded')).not.toBeInTheDocument()
   })
 
   it('routes native settings navigation through the desktop host', async () => {
