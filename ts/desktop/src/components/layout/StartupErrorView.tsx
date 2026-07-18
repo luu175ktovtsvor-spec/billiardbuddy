@@ -1,29 +1,12 @@
-import { Copy, RefreshCw } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import { Button } from '../shared/Button'
 import { DoctorPanel } from '../doctor/DoctorPanel'
-import { copyTextToClipboard } from '../chat/clipboard'
 
-const LOG_MARKER = '\n\nRecent server logs:\n'
+const SAFE_STARTUP_ERROR_CODE = 'BB_STARTUP_FAILED'
 
-export function splitStartupError(error: string) {
-  const markerIndex = error.indexOf(LOG_MARKER)
-  if (markerIndex === -1) {
-    return {
-      message: error,
-      logs: '',
-      diagnostics: error,
-    }
-  }
-
-  const message = error.slice(0, markerIndex).trim()
-  const logs = error.slice(markerIndex + LOG_MARKER.length).trim()
-  return {
-    message,
-    logs,
-    diagnostics: `${message}\n\nRecent server logs:\n${logs}`,
-  }
+export function safeStartupErrorCode(error: string): string {
+  return error === SAFE_STARTUP_ERROR_CODE ? error : SAFE_STARTUP_ERROR_CODE
 }
 
 type StartupErrorViewProps = {
@@ -32,16 +15,7 @@ type StartupErrorViewProps = {
 
 export function StartupErrorView({ error }: StartupErrorViewProps) {
   const t = useTranslation()
-  const { message, logs, diagnostics } = useMemo(() => splitStartupError(error), [error])
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = async () => {
-    const ok = await copyTextToClipboard(diagnostics)
-    if (!ok) return
-
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
-  }
+  const errorCode = safeStartupErrorCode(error)
 
   return (
     <div className="h-screen flex items-center justify-center bg-[var(--color-surface)] px-6">
@@ -60,32 +34,12 @@ export function StartupErrorView({ error }: StartupErrorViewProps) {
             <div className="text-xs font-medium uppercase text-[var(--color-text-tertiary)]">
               {t('app.startupError')}
             </div>
-            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-[var(--color-error)]">
-              {message}
-            </pre>
+            <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
+              {t('app.startupErrorCode', { code: errorCode })}
+            </p>
           </div>
 
-          {logs ? (
-            <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-              <div className="text-xs font-medium uppercase text-[var(--color-text-tertiary)]">
-                {t('app.serverLogs')}
-              </div>
-              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-[var(--color-text-secondary)]">
-                {logs}
-              </pre>
-            </div>
-          ) : null}
-
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              icon={<Copy className="h-4 w-4" aria-hidden="true" />}
-              onClick={handleCopy}
-            >
-              {copied ? t('app.copiedDiagnostics') : t('app.copyDiagnostics')}
-            </Button>
             <Button
               type="button"
               variant="ghost"

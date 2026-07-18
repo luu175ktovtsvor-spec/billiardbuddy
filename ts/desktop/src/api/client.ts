@@ -11,6 +11,17 @@ let baseUrl = DEFAULT_BASE_URL
 const DIAGNOSTICS_PATH = '/api/diagnostics/events'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 
+export type ClientDiagnosticEventType =
+  | 'client_window_error'
+  | 'client_unhandled_rejection'
+  | 'client_react_error_boundary'
+  | 'client_api_request_failed'
+
+export type ClientDiagnosticEvent = {
+  type: ClientDiagnosticEventType
+  severity?: 'debug' | 'info' | 'warn' | 'error'
+}
+
 function getErrorMessage(status: number, body: unknown) {
   if (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string') {
     return body.message
@@ -85,44 +96,24 @@ async function request<T>(method: string, path: string, body?: unknown, options?
     clearTimeout(timeout)
     if (controller.signal.aborted) {
       const timeoutError = new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`)
-      reportApiFailure(method, path, timeoutError)
+      reportApiFailure(path)
       throw timeoutError
     }
-    reportApiFailure(method, path, err)
+    reportApiFailure(path)
     throw err
   }
 }
 
-function reportApiFailure(method: string, path: string, error: unknown) {
+function reportApiFailure(path: string) {
   if (path.startsWith('/api/diagnostics')) return
-
-  const details: Record<string, unknown> = {
-    method,
-    path,
-    errorName: error instanceof Error ? error.name : typeof error,
-    message: error instanceof Error ? error.message : String(error),
-  }
-
-  if (error instanceof ApiError) {
-    details.status = error.status
-    details.response = error.body
-  }
 
   void rawRecordDiagnosticEvent({
     type: 'client_api_request_failed',
     severity: 'warn',
-    summary: `${method} ${path} failed: ${details.message}`,
-    details,
   })
 }
 
-export function rawRecordDiagnosticEvent(event: {
-  type: string
-  severity?: 'debug' | 'info' | 'warn' | 'error'
-  summary: string
-  sessionId?: string
-  details?: unknown
-}) {
+export function rawRecordDiagnosticEvent(event: ClientDiagnosticEvent) {
   return fetch(`${baseUrl}${DIAGNOSTICS_PATH}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

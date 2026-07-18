@@ -8,7 +8,6 @@ const SLASH_CMD_DESCRIPTION_KEYS: Record<string, TranslationKey> = {
   help: 'slashCmd.help.description',
   plugin: 'slashCmd.plugin.description',
   memory: 'slashCmd.memory.description',
-  doctor: 'slashCmd.doctor.description',
   compact: 'slashCmd.compact.description',
   clear: 'slashCmd.clear.description',
   goal: 'slashCmd.goal.description',
@@ -33,7 +32,6 @@ export const PANEL_SLASH_COMMANDS = [
 export const SETTINGS_SLASH_COMMANDS = [
   { name: 'config', tab: 'general' as const },
   { name: 'plugin', tab: 'plugins' as const },
-  { name: 'doctor', tab: 'diagnostics' as const },
 ] as const
 
 export const SLASH_COMMAND_ALIASES = [
@@ -42,6 +40,7 @@ export const SLASH_COMMAND_ALIASES = [
 ] as const
 
 const RETIRED_SESSION_INSPECTOR_COMMAND_NAMES = new Set(['status', 'cost', 'context'])
+const HIDDEN_PRODUCT_COMMAND_NAMES = new Set(['doctor'])
 
 export function isRetiredSessionInspectorCommandName(name: string): boolean {
   return RETIRED_SESSION_INSPECTOR_COMMAND_NAMES.has(name.trim().toLowerCase())
@@ -64,7 +63,6 @@ export const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
   { name: 'help', description: 'Show available desktop and agent commands' },
   { name: 'plugin', description: 'Open desktop plugin controls in Settings' },
   { name: 'memory', description: 'Manage task memory' },
-  { name: 'doctor', description: 'Open Doctor in Diagnostics' },
   { name: 'compact', description: 'Compact conversation context' },
   { name: 'clear', description: 'Clear conversation history' },
   { name: 'goal', description: 'Set a completion goal', argumentHint: '[<condition> | clear]' },
@@ -236,7 +234,11 @@ export function mergeSlashCommands(
   const merged = new Map<string, SlashCommandOption>()
 
   for (const command of preferred) {
-    if (!command?.name || isRetiredSessionInspectorCommandName(command.name)) continue
+    if (
+      !command?.name ||
+      isRetiredSessionInspectorCommandName(command.name) ||
+      HIDDEN_PRODUCT_COMMAND_NAMES.has(command.name)
+    ) continue
     const localized = fallbackByName.get(command.name)
     // For commands the desktop owns the copy for, prefer the localized fallback
     // description so users see translated text instead of the CLI's English.
@@ -255,7 +257,11 @@ export function mergeSlashCommands(
   }
 
   for (const command of fallback) {
-    if (!command?.name || isRetiredSessionInspectorCommandName(command.name)) continue
+    if (
+      !command?.name ||
+      isRetiredSessionInspectorCommandName(command.name) ||
+      HIDDEN_PRODUCT_COMMAND_NAMES.has(command.name)
+    ) continue
     if (merged.has(command.name)) continue
     merged.set(command.name, command)
   }

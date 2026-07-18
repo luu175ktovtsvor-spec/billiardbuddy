@@ -9,6 +9,7 @@ export const SERVER_BIND_HOST = '127.0.0.1'
 export const SERVER_CONTROL_HOST = '127.0.0.1'
 export const SERVER_STARTUP_TIMEOUT_MS = 30_000
 export const SERVER_STARTUP_LOG_LIMIT = 80
+export const STARTUP_ERROR_CODE = 'BB_STARTUP_FAILED'
 // Shared with the Tauri shell (src-tauri/src/lib.rs) so both desktop builds
 // reuse the same sticky port across restarts (issue #767).
 export const SERVER_STATE_FILE = 'desktop-server-state.json'
@@ -184,11 +185,20 @@ export function pushStartupLog(logs: string[], line: string) {
   logs.push(trimmed)
 }
 
-export function formatStartupError(message: string, logs: string[]): string {
+export function formatStartupDiagnostic(message: string, logs: string[]): string {
   const logText = logs.length > 0
     ? logs.join('\n')
     : 'No server stdout/stderr was captured before the timeout.'
   return `${message}\n\nRecent server logs:\n${logText}`
+}
+
+/**
+ * Startup stderr can include filesystem locations, gateway details, and other
+ * implementation data. The renderer only receives this stable product code;
+ * the detailed diagnostic stays in the Electron process log.
+ */
+export function formatStartupError(_message: string, _logs: string[]): string {
+  return STARTUP_ERROR_CODE
 }
 
 export function proxyUrlFromElectronProxyRules(rules: string | undefined): string | undefined {

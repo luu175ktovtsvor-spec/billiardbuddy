@@ -1,7 +1,6 @@
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { gzipSync } from 'node:zlib'
 import type { Dirent } from 'node:fs'
 
 export type DiagnosticSeverity = 'debug' | 'info' | 'warn' | 'error'
@@ -24,34 +23,22 @@ export type DiagnosticEvent = {
   details?: unknown
 }
 
-export type DiagnosticsStatus = {
-  logDir: string
-  diagnosticsPath: string
-  cliDiagnosticsPath: string
-  runtimeErrorsPath: string
-  exportDir: string
-  retentionDays: number
-  maxBytes: number
-  totalBytes: number
-  eventCount: number
-  recentErrorCount: number
-  lastEventAt: string | null
-}
-
-export type DiagnosticsExportResult = {
-  path: string
-  fileName: string
-  bytes: number
-}
-
 const RETENTION_DAYS = 7
 const MAX_BYTES = 50 * 1024 * 1024
 const MAX_STRING_LENGTH = 4096
-const MAX_TEXT_FILE_EXPORT_LENGTH = 256 * 1024
 const MAX_ARRAY_ITEMS = 40
 const MAX_OBJECT_KEYS = 80
-const MAX_EVENTS_IN_EXPORT = 5000
 const SENSITIVE_KEY_RE = /(api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|session[_-]?token|\btoken\b|secret|password|authorization|cookie|oauth)/i
+const CLIENT_EVENT_TYPES = new Set([
+  'client_window_error',
+  'client_unhandled_rejection',
+  'client_react_error_boundary',
+  'client_api_request_failed',
+])
+
+function isDiagnosticSeverity(value: unknown): value is DiagnosticSeverity {
+  return value === 'debug' || value === 'info' || value === 'warn' || value === 'error'
+}
 
 export class DiagnosticsService {
   private consoleCaptureInstalled = false
@@ -59,11 +46,11 @@ export class DiagnosticsService {
   private originalConsoleError: typeof console.error | null = null
   private originalConsoleWarn: typeof console.warn | null = null
 
-  getLogDir(): string {
+  private getLogDir(): string {
     return path.join(this.getConfigDir(), 'billiardbuddy', 'diagnostics')
   }
 
-  getDiagnosticsPath(): string {
+  private getDiagnosticsPath(): string {
     return path.join(this.getLogDir(), 'diagnostics.jsonl')
   }
 
@@ -71,12 +58,8 @@ export class DiagnosticsService {
     return path.join(this.getLogDir(), 'cli-diagnostics.jsonl')
   }
 
-  getRuntimeErrorsPath(): string {
+  private getRuntimeErrorsPath(): string {
     return path.join(this.getLogDir(), 'runtime-errors.log')
-  }
-
-  getExportDir(): string {
-    return path.join(this.getLogDir(), 'exports')
   }
 
   async recordEvent(input: DiagnosticEventInput): Promise<void> {
@@ -112,14 +95,33 @@ export class DiagnosticsService {
   }
 
   /**
+   * Records a client-side incident without accepting renderer-controlled text,
+   * request data, paths, URLs, session ids, or exception details. The raw
+   * diagnostic store remains an internal server concern.
+   */
+  async recordClientEvent(input: { type?: unknown; severity?: unknown }): Promise<void> {
+    const type = typeof input.type === 'string' && CLIENT_EVENT_TYPES.has(input.type)
+      ? input.type
+      : 'client_diagnostic_event'
+    const severity: DiagnosticSeverity = isDiagnosticSeverity(input.severity)
+      ? input.severity
+      : 'info'
+    await this.recordEvent({
+      type,
+      severity,
+      summary: this.getClientIncidentSummary(type),
+    })
+  }
+
+  /**
    * Mirror console.error / console.warn into the diagnostics stream.
    *
    * Contract for callers across the codebase: console.error means "error" and
-   * console.warn means "warn" in the diagnostics panel. An expected, gracefully
+   * console.warn means "warn" in the internal diagnostics stream. An expected, gracefully
    * handled state (token expiry, normal process shutdown, streaming partials,
    * recovered fallbacks) is NOT an error — log those with console.debug /
    * console.info / console.log, which are intentionally not captured here.
-   * Otherwise the panel fills with red noise and real failures get buried.
+   * Otherwise the captured records fill with red noise and real failures get buried.
    */
   installConsoleCapture(): void {
     if (this.consoleCaptureInstalled) return
@@ -181,120 +183,6 @@ export class DiagnosticsService {
     })
   }
 
-  async getStatus(): Promise<DiagnosticsStatus> {
-    await this.ensureLogDir()
-    const events = await this.readRecentEvents(500)
-    const totalBytes = await this.getDirectorySize(this.getLogDir())
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000
-    return {
-      logDir: this.getLogDir(),
-      diagnosticsPath: this.getDiagnosticsPath(),
-      cliDiagnosticsPath: this.getCliDiagnosticsPath(),
-      runtimeErrorsPath: this.getRuntimeErrorsPath(),
-      exportDir: this.getExportDir(),
-      retentionDays: RETENTION_DAYS,
-      maxBytes: MAX_BYTES,
-      totalBytes,
-      eventCount: events.length,
-      recentErrorCount: events.filter((event) =>
-        (event.severity === 'error' || event.severity === 'warn') &&
-        Date.parse(event.timestamp) >= cutoff
-      ).length,
-      lastEventAt: events[0]?.timestamp ?? null,
-    }
-  }
-
-  async readRecentEvents(limit = 100): Promise<DiagnosticEvent[]> {
-    const boundedLimit = Math.max(1, Math.min(limit, 1000))
-    let raw = ''
-    try {
-      raw = await fs.readFile(this.getDiagnosticsPath(), 'utf-8')
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw err
-    }
-
-    return raw
-      .split('\n')
-      .filter(Boolean)
-      .slice(-boundedLimit)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as DiagnosticEvent
-        } catch {
-          return null
-        }
-      })
-      .filter((event): event is DiagnosticEvent => event !== null)
-      .reverse()
-  }
-
-  async exportBundle(): Promise<DiagnosticsExportResult> {
-    await this.ensureLogDir()
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const fileName = `billiardbuddy-diagnostics-${timestamp}.tar.gz`
-    const outPath = path.join(this.getExportDir(), fileName)
-    const events = await this.readRecentEvents(MAX_EVENTS_IN_EXPORT)
-    const files = [
-      {
-        name: 'README.txt',
-        content: this.buildReadme(),
-      },
-      {
-        name: 'app-info.json',
-        content: JSON.stringify(this.buildAppInfo(), null, 2) + '\n',
-      },
-      {
-        name: 'diagnostics.jsonl',
-        content: events.map((event) => JSON.stringify(this.sanitizeValue(event))).join('\n') + (events.length ? '\n' : ''),
-      },
-      {
-        name: 'recent-errors.md',
-        content: this.buildRecentErrorsSummary(events),
-      },
-      {
-        name: 'runtime-errors.log',
-        content: await this.readSanitizedTextFile(this.getRuntimeErrorsPath(), MAX_TEXT_FILE_EXPORT_LENGTH),
-      },
-      {
-        name: 'cli-diagnostics.jsonl',
-        content: await this.readSanitizedTextFile(this.getCliDiagnosticsPath(), MAX_TEXT_FILE_EXPORT_LENGTH),
-      },
-      {
-        name: 'providers-summary.json',
-        content: JSON.stringify(await this.buildProvidersSummary(), null, 2) + '\n',
-      },
-      {
-        name: 'sessions-summary.json',
-        content: JSON.stringify(this.buildSessionsSummary(events), null, 2) + '\n',
-      },
-    ]
-
-    const archive = this.createTarGz(files)
-    await fs.mkdir(this.getExportDir(), { recursive: true })
-    await fs.writeFile(outPath, archive)
-    return { path: outPath, fileName, bytes: archive.byteLength }
-  }
-
-  async openLogDir(): Promise<void> {
-    await this.ensureLogDir()
-    const dir = this.getLogDir()
-    if (process.platform === 'darwin') {
-      Bun.spawn(['open', dir], { stdout: 'ignore', stderr: 'ignore' })
-      return
-    }
-    if (process.platform === 'win32') {
-      Bun.spawn(['cmd', '/c', 'start', '', dir], { stdout: 'ignore', stderr: 'ignore' })
-      return
-    }
-    Bun.spawn(['xdg-open', dir], { stdout: 'ignore', stderr: 'ignore' })
-  }
-
-  async clear(): Promise<void> {
-    await fs.rm(this.getLogDir(), { recursive: true, force: true })
-    await this.ensureLogDir()
-  }
-
   sanitizeValue(value: unknown, depth = 0): unknown {
     if (depth > 6) return '[TRUNCATED_DEPTH]'
     if (value === null || value === undefined) return value
@@ -305,7 +193,6 @@ export class DiagnosticsService {
       return {
         name: value.name,
         message: this.sanitizeString(value.message),
-        stack: value.stack ? this.sanitizeString(value.stack) : undefined,
       }
     }
     if (Array.isArray(value)) {
@@ -349,7 +236,7 @@ export class DiagnosticsService {
   }
 
   private async ensureLogDir(): Promise<void> {
-    await fs.mkdir(this.getExportDir(), { recursive: true })
+    await fs.mkdir(this.getLogDir(), { recursive: true })
   }
 
   private getConfigDir(): string {
@@ -358,7 +245,7 @@ export class DiagnosticsService {
 
   private formatConsoleArgs(args: unknown[]): string {
     return this.sanitizeString(args.map((arg) => {
-      if (arg instanceof Error) return `${arg.name}: ${arg.message}\n${arg.stack ?? ''}`
+      if (arg instanceof Error) return `${arg.name}: ${arg.message}`
       if (typeof arg === 'string') return arg
       try {
         return JSON.stringify(this.sanitizeValue(arg))
@@ -401,148 +288,16 @@ export class DiagnosticsService {
     return `${lines.join('\n')}\n\n`
   }
 
-  private buildReadme(): string {
-    return [
-      'billiardbuddy diagnostics bundle',
-      '',
-      'This bundle is generated by the desktop app for debugging server and CLI startup/runtime failures.',
-      'It intentionally excludes chat prompts, assistant replies, file contents, attachments, full environment variables, API keys, bearer tokens, cookies, and OAuth tokens.',
-      'Paths under the current home directory are normalized to "~". Long fields are truncated.',
-      '',
-      'Files:',
-      '- app-info.json: runtime and platform summary.',
-      '- diagnostics.jsonl: sanitized structured diagnostic events.',
-      '- recent-errors.md: human-readable warning/error timeline for GitHub issues.',
-      '- runtime-errors.log: sanitized warning/error timeline with captured runtime details.',
-      '- cli-diagnostics.jsonl: sanitized no-PII CLI internal diagnostics emitted by the child process.',
-      '- providers-summary.json: provider count, active id, base URL host, model ids, and API format without API keys.',
-      '- sessions-summary.json: session ids observed in diagnostic events, without transcript content.',
-      '',
-    ].join('\n')
-  }
-
-  private buildRecentErrorsSummary(events: DiagnosticEvent[]): string {
-    const errorEvents = events
-      .filter((event) => event.severity === 'error' || event.severity === 'warn')
-      .slice(0, 50)
-
-    const lines = [
-      '# billiardbuddy recent diagnostics',
-      '',
-      `Generated: ${new Date().toISOString()}`,
-      `Events included: ${errorEvents.length}`,
-      '',
-    ]
-
-    if (errorEvents.length === 0) {
-      lines.push('No recent warnings or errors were recorded.')
-      lines.push('')
-      return lines.join('\n')
-    }
-
-    for (const event of errorEvents) {
-      lines.push(`## ${event.timestamp} ${event.severity.toUpperCase()} ${event.type}`)
-      if (event.sessionId) lines.push(`session: ${event.sessionId}`)
-      lines.push('')
-      lines.push(event.summary)
-      if (event.details !== undefined) {
-        lines.push('')
-        lines.push('```json')
-        lines.push(JSON.stringify(event.details, null, 2))
-        lines.push('```')
-      }
-      lines.push('')
-    }
-
-    return lines.join('\n')
-  }
-
-  private buildAppInfo(): Record<string, unknown> {
-    return this.sanitizeValue({
-      appVersion: process.env.APP_VERSION || '999.0.0-local',
-      platform: process.platform,
-      arch: process.arch,
-      node: process.version,
-      bun: typeof Bun !== 'undefined' ? Bun.version : null,
-      cwd: process.cwd(),
-      uptimeSeconds: Math.round(process.uptime()),
-      generatedAt: new Date().toISOString(),
-    }) as Record<string, unknown>
-  }
-
-  private async buildProvidersSummary(): Promise<Record<string, unknown>> {
-    const providerPath = path.join(this.getConfigDir(), 'billiardbuddy', 'providers.json')
-    try {
-      const raw = await fs.readFile(providerPath, 'utf-8')
-      const parsed = JSON.parse(raw) as {
-        activeId?: string | null
-        providers?: Array<Record<string, unknown>>
-      }
-      return {
-        activeId: parsed.activeId ?? null,
-        count: Array.isArray(parsed.providers) ? parsed.providers.length : 0,
-        providers: (parsed.providers ?? []).map((provider) => ({
-          id: provider.id,
-          name: provider.name,
-          presetId: provider.presetId,
-          apiFormat: provider.apiFormat,
-          baseUrl: this.summarizeUrl(typeof provider.baseUrl === 'string' ? provider.baseUrl : ''),
-          models: provider.models,
-        })),
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { activeId: null, count: 0, providers: [] }
-      }
-      return { error: this.sanitizeString(err instanceof Error ? err.message : String(err)) }
-    }
-  }
-
-  private summarizeUrl(value: string): Record<string, string> | null {
-    if (!value.trim()) return null
-    try {
-      const url = new URL(value)
-      return { protocol: url.protocol, host: url.host, pathname: url.pathname }
-    } catch {
-      return { value: this.sanitizeString(value, 512) }
-    }
-  }
-
-  private buildSessionsSummary(events: DiagnosticEvent[]): Record<string, unknown> {
-    const sessions = new Map<string, { eventCount: number; lastEventAt: string; severities: Set<DiagnosticSeverity> }>()
-    for (const event of events) {
-      if (!event.sessionId) continue
-      const current = sessions.get(event.sessionId) ?? {
-        eventCount: 0,
-        lastEventAt: event.timestamp,
-        severities: new Set<DiagnosticSeverity>(),
-      }
-      current.eventCount += 1
-      current.lastEventAt = current.lastEventAt > event.timestamp ? current.lastEventAt : event.timestamp
-      current.severities.add(event.severity)
-      sessions.set(event.sessionId, current)
-    }
-    return {
-      count: sessions.size,
-      sessions: [...sessions.entries()].map(([sessionId, info]) => ({
-        sessionId,
-        eventCount: info.eventCount,
-        lastEventAt: info.lastEventAt,
-        severities: [...info.severities],
-      })),
-      transcriptContentIncluded: false,
-    }
-  }
-
-  private async readSanitizedTextFile(
-    filePath: string,
-    maxLength = 2 * MAX_STRING_LENGTH,
-  ): Promise<string> {
-    try {
-      return this.sanitizeString(await fs.readFile(filePath, 'utf-8'), maxLength)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
-      throw err
+  private getClientIncidentSummary(type: string): string {
+    switch (type) {
+      case 'client_window_error':
+      case 'client_unhandled_rejection':
+      case 'client_react_error_boundary':
+        return 'A desktop application issue was recorded.'
+      case 'client_api_request_failed':
+        return 'A desktop service request issue was recorded.'
+      default:
+        return 'A desktop application issue was recorded.'
     }
   }
 
@@ -564,10 +319,6 @@ export class DiagnosticsService {
       await fs.rm(file.path, { force: true })
       total -= file.size
     }
-  }
-
-  private async getDirectorySize(dir: string): Promise<number> {
-    return (await this.listFiles(dir)).reduce((sum, file) => sum + file.size, 0)
   }
 
   private async listFiles(dir: string): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
@@ -593,51 +344,6 @@ export class DiagnosticsService {
     return results
   }
 
-  private createTarGz(files: Array<{ name: string; content: string }>): Buffer {
-    const chunks: Buffer[] = []
-    const mtime = Math.floor(Date.now() / 1000)
-    for (const file of files) {
-      const body = Buffer.from(file.content, 'utf-8')
-      chunks.push(this.createTarHeader(file.name, body.byteLength, mtime))
-      chunks.push(body)
-      const padding = (512 - (body.byteLength % 512)) % 512
-      if (padding > 0) chunks.push(Buffer.alloc(padding))
-    }
-    chunks.push(Buffer.alloc(1024))
-    return gzipSync(Buffer.concat(chunks))
-  }
-
-  private createTarHeader(name: string, size: number, mtime: number): Buffer {
-    const header = Buffer.alloc(512)
-    this.writeTarString(header, 0, 100, name)
-    this.writeTarString(header, 100, 8, '0000644')
-    this.writeTarString(header, 108, 8, '0000000')
-    this.writeTarString(header, 116, 8, '0000000')
-    this.writeTarOctal(header, 124, 12, size)
-    this.writeTarOctal(header, 136, 12, mtime)
-    header.fill(0x20, 148, 156)
-    header[156] = '0'.charCodeAt(0)
-    this.writeTarString(header, 257, 6, 'ustar')
-    this.writeTarString(header, 263, 2, '00')
-
-    let checksum = 0
-    for (const byte of header) checksum += byte
-    const checksumValue = checksum.toString(8).padStart(6, '0')
-    header.write(checksumValue.slice(-6), 148, 6, 'ascii')
-    header[154] = 0
-    header[155] = 0x20
-    return header
-  }
-
-  private writeTarString(header: Buffer, offset: number, length: number, value: string): void {
-    header.write(value.slice(0, length), offset, length, 'utf-8')
-  }
-
-  private writeTarOctal(header: Buffer, offset: number, length: number, value: number): void {
-    const encoded = value.toString(8).padStart(length - 1, '0')
-    header.write(encoded.slice(-length + 1), offset, length - 1, 'ascii')
-    header[offset + length - 1] = 0
-  }
 }
 
 export const diagnosticsService = new DiagnosticsService()

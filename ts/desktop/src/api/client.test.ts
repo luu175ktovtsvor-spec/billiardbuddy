@@ -38,7 +38,7 @@ describe('api diagnostics reporting', () => {
     expect(getApiUrl('https://example.com/icon.png')).toBe('https://example.com/icon.png')
   })
 
-  it('reports non-diagnostics API failures without request bodies', async () => {
+  it('reports non-diagnostics API failures as a safe category only', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Nope' }), {
@@ -59,18 +59,24 @@ describe('api diagnostics reporting', () => {
     expect(String(diagnosticUrl)).toContain('/api/diagnostics/events')
     const body = JSON.parse(String((diagnosticInit as RequestInit).body))
     expect(body.type).toBe('client_api_request_failed')
-    expect(body.details.path).toBe('/api/example/test')
+    expect(body.severity).toBe('warn')
+    expect(Object.keys(body)).toEqual(['type', 'severity'])
     expect(JSON.stringify(body)).not.toContain('sk-should-not-report')
+    expect(JSON.stringify(body)).not.toContain('/api/example/test')
+    expect(JSON.stringify(body)).not.toContain('Nope')
   })
 
-  it('does not recursively report diagnostics endpoint failures', async () => {
+  it('does not recursively report diagnostics intake failures', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'diagnostics down' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     }))
 
-    await expect(api.get('/api/diagnostics/status')).rejects.toThrow('diagnostics down')
+    await expect(api.post('/api/diagnostics/events', {
+      type: 'client_api_request_failed',
+      severity: 'warn',
+    })).rejects.toThrow('diagnostics down')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -102,10 +108,11 @@ describe('api diagnostics reporting', () => {
     const [, diagnosticInit] = fetchMock.mock.calls[1]!
     const body = JSON.parse(String((diagnosticInit as RequestInit).body))
     expect(body.type).toBe('client_api_request_failed')
-    expect(body.details.message).toBe('Request timed out after 120s')
+    expect(Object.keys(body)).toEqual(['type', 'severity'])
+    expect(JSON.stringify(body)).not.toContain('Request timed out after 120s')
   })
 
-  it('can report raw client exceptions', async () => {
+  it('can report a safe client incident category', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -115,8 +122,6 @@ describe('api diagnostics reporting', () => {
     await rawRecordDiagnosticEvent({
       type: 'client_window_error',
       severity: 'error',
-      summary: 'boom',
-      details: { filename: 'App.tsx' },
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -125,5 +130,6 @@ describe('api diagnostics reporting', () => {
     const [, init] = call!
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.type).toBe('client_window_error')
+    expect(Object.keys(body)).toEqual(['type', 'severity'])
   })
 })

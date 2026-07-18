@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Bot,
   ChevronDown,
-  CircleHelp,
   Cpu,
   Info,
   Plug,
@@ -30,7 +29,6 @@ import { PluginDetail } from '../components/plugins/PluginDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
-import { DiagnosticsSettings } from './DiagnosticsSettings'
 import { ProfileSettings } from './ProfileSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
@@ -70,7 +68,6 @@ const ADVANCED_SETTINGS: SettingsNavItem[] = [
   { tab: 'terminal', icon: <Terminal size={16} /> },
   { tab: 'mcp', icon: <Plug size={16} /> },
   { tab: 'agents', icon: <Bot size={16} /> },
-  { tab: 'diagnostics', icon: <CircleHelp size={16} /> },
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
@@ -81,7 +78,6 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   skills: 'settings.tab.skills',
   plugins: 'settings.tab.plugins',
   computerUse: 'settings.tab.computerUse',
-  diagnostics: 'settings.tab.diagnostics',
   about: 'settings.tab.about',
 }
 
@@ -93,7 +89,6 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   skills: '工作方法',
   plugins: '插件',
   computerUse: '电脑操作',
-  diagnostics: '诊断',
   about: '关于',
 }
 
@@ -217,7 +212,6 @@ export function Settings() {
     if (activeTab === 'skills') return <SkillSettings />
     if (activeTab === 'plugins') return <PluginSettings />
     if (activeTab === 'computerUse') return <ComputerUseSettings />
-    if (activeTab === 'diagnostics') return <DiagnosticsSettings />
     return <AboutSettings />
   })()
 
