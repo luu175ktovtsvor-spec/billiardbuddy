@@ -79,15 +79,6 @@ describe('settingsStore update proxy persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     await useSettingsStore.getState().fetchAll()
@@ -106,15 +97,6 @@ describe('settingsStore update proxy persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -153,15 +135,6 @@ describe('settingsStore network persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     await useSettingsStore.getState().fetchAll()
@@ -183,15 +156,6 @@ describe('settingsStore network persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -232,15 +196,6 @@ describe('settingsStore network persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     await useSettingsStore.getState().setNetwork({
@@ -279,15 +234,6 @@ describe('settingsStore network persistence', () => {
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -497,15 +443,6 @@ describe('settingsStore desktop notification persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     expect(useSettingsStore.getState().desktopNotificationsEnabled).toBe(false)
@@ -518,15 +455,6 @@ describe('settingsStore desktop notification persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -551,15 +479,6 @@ describe('settingsStore desktop notification persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -602,15 +521,6 @@ describe('settingsStore thinking persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     await useSettingsStore.getState().setThinkingEnabled(false)
@@ -628,15 +538,6 @@ describe('settingsStore thinking persistence', () => {
         updateUser: vi.fn().mockRejectedValue(new Error('save failed')),
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -663,15 +564,6 @@ describe('settingsStore Auto-dream persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     expect(useSettingsStore.getState().autoDreamEnabled).toBe(false)
@@ -688,15 +580,6 @@ describe('settingsStore Auto-dream persistence', () => {
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -732,15 +615,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
 
     expect(useSettingsStore.getState().desktopTerminal).toEqual({
@@ -765,15 +639,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
         updateUser,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn(),
-        getCurrent: vi.fn(),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn(),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -814,15 +679,6 @@ describe('settingsStore theme persistence', () => {
         setPermissionMode: vi.fn(),
       },
     }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
-      },
-    }))
     const { useSettingsStore } = await import('./settingsStore')
     const { useUIStore } = await import('./uiStore')
 
@@ -841,15 +697,6 @@ describe('settingsStore theme persistence', () => {
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
-      },
-    }))
-    vi.doMock('../api/models', () => ({
-      modelsApi: {
-        list: vi.fn().mockResolvedValue({ models: [] }),
-        getCurrent: vi.fn().mockResolvedValue({ model: null }),
-        setCurrent: vi.fn(),
-        getEffort: vi.fn().mockResolvedValue({ level: 'medium' }),
-        setEffort: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')

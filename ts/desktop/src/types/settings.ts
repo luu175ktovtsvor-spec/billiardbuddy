@@ -1,8 +1,6 @@
-// Source: src/server/api/models.ts, src/server/api/settings.ts
+// Source: src/server/api/settings.ts
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
-
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
 export const THEME_MODES = ['light', 'dark', 'system'] as const
 export type ThemeMode = (typeof THEME_MODES)[number]
 
@@ -75,17 +73,7 @@ export type DesktopTerminalSettings = {
   customShellPath: string
 }
 
-export type ModelInfo = {
-  id: string
-  name: string
-  description: string
-  context: string
-}
-
 export type UserSettings = {
-  model?: string
-  modelContext?: string
-  effort?: EffortLevel
   alwaysThinkingEnabled?: boolean
   autoDreamEnabled?: boolean
   permissionMode?: PermissionMode

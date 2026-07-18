@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageEntry } from '../types/session'
-import { useSessionRuntimeStore } from './sessionRuntimeStore'
 
 const {
   sendMock,
@@ -286,7 +285,6 @@ describe('chatStore history mapping', () => {
     sessionStoreSnapshot.sessions = []
     cliTaskStoreSnapshot.tasks = []
     cliTaskStoreSnapshot.sessionId = null
-    useSessionRuntimeStore.setState({ selections: {} })
     localStorage.clear()
     useSettingsStore.setState({ locale: 'en' })
     useChatStore.setState({
@@ -2391,35 +2389,6 @@ describe('chatStore history mapping', () => {
     expect(setTasksFromTodosMock).toHaveBeenCalledWith(todos, TEST_SESSION_ID)
   })
 
-  it('replays saved runtime selection when reconnecting a session', () => {
-    useSessionRuntimeStore.getState().setSelection(TEST_SESSION_ID, {
-      providerId: 'provider-1',
-      modelId: 'kimi-k2.6',
-      effortLevel: 'high',
-    })
-
-    useChatStore.getState().connectToSession(TEST_SESSION_ID)
-
-    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'set_runtime_config',
-      providerId: 'provider-1',
-      modelId: 'kimi-k2.6',
-      effortLevel: 'high',
-    })
-    expect(sendMock.mock.calls.slice(0, 2)).toEqual([
-      [
-        TEST_SESSION_ID,
-        {
-          type: 'set_runtime_config',
-          providerId: 'provider-1',
-          modelId: 'kimi-k2.6',
-          effortLevel: 'high',
-        },
-      ],
-      [TEST_SESSION_ID, { type: 'prewarm_session' }],
-    ])
-  })
-
   it('prewarms regular desktop sessions when connecting', () => {
     useChatStore.getState().connectToSession(TEST_SESSION_ID)
 
@@ -2466,21 +2435,6 @@ describe('chatStore history mapping', () => {
 
     expect(sessionsApi.getMessages).toHaveBeenCalledWith(TEST_SESSION_ID)
     expect(sendMock).not.toHaveBeenCalledWith(TEST_SESSION_ID, { type: 'prewarm_session' })
-  })
-
-  it('sends explicit runtime overrides over websocket', () => {
-    useChatStore.getState().setSessionRuntime(TEST_SESSION_ID, {
-      providerId: null,
-      modelId: 'claude-opus-4-7',
-      effortLevel: 'max',
-    })
-
-    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
-      type: 'set_runtime_config',
-      providerId: null,
-      modelId: 'claude-opus-4-7',
-      effortLevel: 'max',
-    })
   })
 
   it('keeps AskUserQuestion permission requests out of the message list while tracking the pending request', () => {

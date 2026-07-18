@@ -15,25 +15,6 @@ vi.mock('../api/agents', () => ({
   },
 }))
 
-vi.mock('../stores/providerStore', () => ({
-  useProviderStore: () => ({
-    providers: [],
-    activeId: null,
-    presets: [],
-    isLoading: false,
-    isPresetsLoading: false,
-    fetchProviders: vi.fn(),
-    fetchPresets: vi.fn(),
-    deleteProvider: vi.fn(),
-    activateProvider: vi.fn(),
-    activateOfficial: vi.fn(),
-    testProvider: vi.fn(),
-    createProvider: vi.fn(),
-    updateProvider: vi.fn(),
-    testConfig: vi.fn(),
-  }),
-}))
-
 
 vi.mock('../stores/agentStore', () => ({
   useAgentStore: () => ({

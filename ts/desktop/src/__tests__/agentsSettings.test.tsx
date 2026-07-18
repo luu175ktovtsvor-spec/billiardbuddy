@@ -18,26 +18,6 @@ vi.mock('../api/agents', () => ({
 
 const noopFetch = vi.fn()
 
-vi.mock('../stores/providerStore', () => ({
-  useProviderStore: () => ({
-    providers: [],
-    activeId: null,
-    presets: [],
-    isLoading: false,
-    isPresetsLoading: false,
-    fetchProviders: vi.fn(),
-    fetchPresets: vi.fn(),
-    deleteProvider: vi.fn(),
-    activateProvider: vi.fn(),
-    activateOfficial: vi.fn(),
-    testProvider: vi.fn(),
-    createProvider: vi.fn(),
-    updateProvider: vi.fn(),
-    testConfig: vi.fn(),
-  }),
-}))
-
-
 vi.mock('../components/chat/CodeViewer', () => ({
   CodeViewer: ({ code }: { code: string }) => <pre data-testid="code-viewer">{code}</pre>,
 }))

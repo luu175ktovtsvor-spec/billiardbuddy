@@ -3,19 +3,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom'
 
 import { NewTaskModal } from './NewTaskModal'
-import { useProviderStore } from '../../stores/providerStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTaskStore } from '../../stores/taskStore'
 
 afterEach(() => {
   cleanup()
-  useProviderStore.setState(useProviderStore.getInitialState(), true)
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
   useTaskStore.setState(useTaskStore.getInitialState(), true)
 })
 
 describe('NewTaskModal', () => {
-  it('creates scheduled tasks without asking ordinary users to select a model', async () => {
+  it('creates scheduled tasks without technical runtime overrides', async () => {
     const createTask = vi.fn(async () => {})
     useTaskStore.setState({ createTask } as Partial<ReturnType<typeof useTaskStore.getState>>)
     useSettingsStore.setState({ locale: 'en' })
@@ -40,8 +38,6 @@ describe('NewTaskModal', () => {
 
     await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1))
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      model: undefined,
-      providerId: undefined,
       permissionMode: 'bypassPermissions',
       enabled: true,
       recurring: true,

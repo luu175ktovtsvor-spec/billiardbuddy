@@ -19,8 +19,6 @@ export type CronTask = {
   lastFiredAt?: string
   nextRunAt?: number
   permissionMode?: string
-  model?: string
-  providerId?: string | null
   folderPath?: string
   useWorktree?: boolean
   notification?: TaskNotificationConfig
@@ -35,8 +33,6 @@ export type CreateTaskInput = {
   recurring?: boolean
   permanent?: boolean
   permissionMode?: string
-  model?: string
-  providerId?: string | null
   folderPath?: string
   useWorktree?: boolean
   notification?: TaskNotificationConfig

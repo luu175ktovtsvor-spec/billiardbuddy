@@ -1,5 +1,4 @@
 import type { PermissionMode } from './settings'
-import type { RuntimeSelection } from './runtime'
 
 // Source: src/server/ws/events.ts
 
@@ -23,7 +22,6 @@ export type ClientMessage =
       response: ComputerUsePermissionResponse
     }
   | { type: 'set_permission_mode'; mode: PermissionMode }
-  | ({ type: 'set_runtime_config' } & RuntimeSelection)
   | { type: 'stop_generation' }
   | { type: 'ping' }
 

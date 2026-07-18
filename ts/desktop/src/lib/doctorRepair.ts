@@ -4,7 +4,6 @@ import { DESKTOP_PERSISTENCE_VERSION_KEY } from './persistenceMigrations'
 
 export const SAFE_DOCTOR_STORAGE_KEYS = [
   'billiardbuddy-open-tabs',
-  'billiardbuddy-session-runtime',
   'billiardbuddy-theme',
   'billiardbuddy-locale',
   APP_ZOOM_STORAGE_KEY,

@@ -13,12 +13,6 @@ vi.mock('../api/skills', () => ({
   },
 }))
 
-vi.mock('../api/providers', () => ({
-  providersApi: {
-    list: vi.fn(async () => ({ providers: [], activeId: null })),
-  },
-}))
-
 vi.mock('../api/mcp', () => ({
   mcpApi: {
     list: vi.fn(async () => ({ servers: [] })),
@@ -78,19 +72,10 @@ import { UserMessage } from '../components/chat/UserMessage'
 import { useChatStore } from '../stores/chatStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
-import { useProviderStore } from '../stores/providerStore'
-import { useSessionRuntimeStore } from '../stores/sessionRuntimeStore'
 import { useTabStore } from '../stores/tabStore'
 
 beforeEach(() => {
   useSettingsStore.setState({ locale: 'en' })
-  useProviderStore.setState({
-    providers: [],
-    activeId: null,
-    hasLoadedProviders: true,
-    isLoading: false,
-  })
-  useSessionRuntimeStore.setState({ selections: {} })
 })
 
 afterEach(async () => {
@@ -927,7 +912,7 @@ describe('Content-only pages render without errors', () => {
     resetPageStores()
   })
 
-  it('ActiveSession keeps runtime and context internals hidden when context is unavailable', async () => {
+  it('ActiveSession keeps context internals hidden when context is unavailable', async () => {
     const SESSION_ID = 'context-unavailable-model-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: false,
@@ -957,10 +942,6 @@ describe('Content-only pages render without errors', () => {
       activeSessionId: SESSION_ID,
       isLoading: false,
       error: null,
-    })
-    useSessionRuntimeStore.getState().setSelection(SESSION_ID, {
-      providerId: 'volcengine-provider',
-      modelId: 'kimi-k2.6',
     })
     useChatStore.setState({
       sessions: {
@@ -993,113 +974,6 @@ describe('Content-only pages render without errors', () => {
     expect(screen.queryByText('Unknown model')).not.toBeInTheDocument()
 
     resetPageStores()
-    useSessionRuntimeStore.setState({ selections: {} })
-  })
-
-  it('ActiveSession keeps context and model internals hidden when runtime selection changes', async () => {
-    const SESSION_ID = 'context-runtime-refresh-session'
-    vi.mocked(sessionsApi.getInspection)
-      .mockResolvedValueOnce({
-        active: true,
-        status: {
-          sessionId: SESSION_ID,
-          workDir: '/workspace/project',
-          cwd: '/workspace/project',
-          permissionMode: 'bypassPermissions',
-          model: 'kimi-k2.6',
-        },
-        context: {
-          categories: [{ name: 'Messages', tokens: 26_000, color: '#2D628F' }],
-          totalTokens: 26_000,
-          maxTokens: 262_144,
-          rawMaxTokens: 262_144,
-          percentage: 10,
-          gridRows: [],
-          model: 'kimi-k2.6',
-          memoryFiles: [],
-          mcpTools: [],
-          agents: [],
-        },
-      })
-      .mockResolvedValueOnce({
-        active: true,
-        status: {
-          sessionId: SESSION_ID,
-          workDir: '/workspace/project',
-          cwd: '/workspace/project',
-          permissionMode: 'bypassPermissions',
-          model: 'glm-4.5-air',
-        },
-        context: {
-          categories: [{ name: 'Messages', tokens: 26_000, color: '#2D628F' }],
-          totalTokens: 26_000,
-          maxTokens: 128_000,
-          rawMaxTokens: 128_000,
-          percentage: 20,
-          gridRows: [],
-          model: 'glm-4.5-air',
-          memoryFiles: [],
-          mcpTools: [],
-          agents: [],
-        },
-      })
-
-    useTabStore.setState({ tabs: [{ sessionId: SESSION_ID, title: 'Test', type: 'session' as const, status: 'idle' }], activeTabId: SESSION_ID })
-    useSessionStore.setState({
-      sessions: [{
-        id: SESSION_ID,
-        title: 'Test',
-        createdAt: '2026-04-10T00:00:00.000Z',
-        modifiedAt: '2026-04-10T00:00:00.000Z',
-        messageCount: 1,
-        projectPath: '/workspace/project',
-        workDir: '/workspace/project',
-        workDirExists: true,
-      }],
-      activeSessionId: SESSION_ID,
-      isLoading: false,
-      error: null,
-    })
-    useChatStore.setState({
-      sessions: {
-        [SESSION_ID]: {
-          messages: [{ id: 'm-1', type: 'assistant_text', content: 'done', timestamp: Date.now() }],
-          chatState: 'idle',
-          connectionState: 'connected',
-          streamingText: '',
-          streamingToolInput: '',
-          activeToolUseId: null,
-          activeToolName: null,
-          activeThinkingId: null,
-          pendingPermission: null,
-          pendingComputerUsePermission: null,
-          tokenUsage: { input_tokens: 26_000, output_tokens: 0 },
-          streamingResponseChars: 0,
-          elapsedSeconds: 0,
-          statusVerb: '',
-          slashCommands: [],
-          agentTaskNotifications: {},
-          elapsedTimer: null,
-        },
-      },
-    })
-
-    render(<ActiveSession />)
-
-    expect(screen.queryByLabelText('Context usage 10%')).not.toBeInTheDocument()
-
-    act(() => {
-      useSessionRuntimeStore.getState().setSelection(SESSION_ID, {
-        providerId: 'zhipu-provider',
-        modelId: 'glm-4.5-air',
-      })
-    })
-
-    expect(screen.queryByLabelText('Context usage 20%')).not.toBeInTheDocument()
-    expect(screen.queryByText('glm-4.5-air')).not.toBeInTheDocument()
-
-    resetPageStores()
-    useSessionRuntimeStore.setState({ selections: {} })
   })
 
   it('ScheduledTasks renders (store-connected)', async () => {

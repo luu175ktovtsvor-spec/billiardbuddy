@@ -79,8 +79,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
   const [prompt, setPrompt] = useState(editTask?.prompt || '')
   const [frequency, setFrequency] = useState<FrequencyKey>(parsed?.frequency || 'daily')
   const [time, setTime] = useState(parsed?.time || '09:00')
-  const [model, setModel] = useState(editTask?.model || '')
-  const [providerId, setProviderId] = useState<string | null | undefined>(editTask?.providerId)
   const [folderPath, setFolderPath] = useState(editTask?.folderPath || defaultWorkDir)
   const [useWorktree, setUseWorktree] = useState(editTask?.useWorktree || false)
   const [notifyEnabled, setNotifyEnabled] = useState(editTask?.notification?.enabled || false)
@@ -118,8 +116,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
         description: description.trim(),
         cron: cronValue,
         prompt: prompt.trim(),
-        model: model || undefined,
-        providerId,
         permissionMode: 'bypassPermissions',
         folderPath: folderPath.trim() || undefined,
         useWorktree: useWorktree || undefined,
@@ -186,10 +182,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
           value={prompt}
           onChange={setPrompt}
           placeholder={t('newTask.promptPlaceholder')}
-          modelId={model}
-          onModelChange={setModel}
-          providerId={providerId}
-          onProviderIdChange={setProviderId}
           folderPath={folderPath}
           onFolderPathChange={setFolderPath}
           useWorktree={useWorktree}

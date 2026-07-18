@@ -6,11 +6,6 @@ type Props = {
   onChange: (value: string) => void
   placeholder?: string
 
-  modelId: string
-  onModelChange: (modelId: string) => void
-  providerId?: string | null
-  onProviderIdChange: (providerId: string | null) => void
-
   folderPath: string
   onFolderPathChange: (path: string) => void
 
@@ -22,10 +17,6 @@ export function PromptEditor({
   value,
   onChange,
   placeholder,
-  modelId: _modelId,
-  onModelChange: _onModelChange,
-  providerId: _providerId,
-  onProviderIdChange: _onProviderIdChange,
   folderPath,
   onFolderPathChange,
   useWorktree: _useWorktree,

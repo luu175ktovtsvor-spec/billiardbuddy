@@ -16,16 +16,6 @@ vi.mock('../api/settings', () => ({
   settingsApi: settingsApiMock,
 }))
 
-vi.mock('../api/models', () => ({
-  modelsApi: {
-    list: vi.fn(),
-    getCurrent: vi.fn(),
-    getEffort: vi.fn(),
-    setCurrent: vi.fn(),
-    setEffort: vi.fn(),
-  },
-}))
-
 vi.mock('../lib/desktopNotifications', () => ({
   getDesktopNotificationPermission: vi.fn().mockResolvedValue('unsupported'),
   notifyDesktop: vi.fn(),

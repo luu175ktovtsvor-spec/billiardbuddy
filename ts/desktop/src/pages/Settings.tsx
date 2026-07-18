@@ -88,7 +88,6 @@ const ADVANCED_SETTINGS: SettingsNavItem[] = [
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
-  providers: 'settings.tab.providers',
   activity: 'settings.tab.activity',
   general: 'settings.tab.general',
   terminal: 'settings.tab.terminal',
@@ -104,7 +103,6 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
 }
 
 const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
-  providers: '模型连接',
   activity: '运行记录',
   general: '常规',
   terminal: '终端',
@@ -204,20 +202,15 @@ function SettingsNavGroup({
 export function Settings() {
   const locale = useSettingsStore((s) => s.locale)
   const t = useTranslation()
-  const storedActiveTab = useUIStore((s) => s.activeSettingsTab)
-  const activeTab = storedActiveTab === 'providers' ? 'general' : storedActiveTab
+  const activeTab = useUIStore((s) => s.activeSettingsTab)
   const setActiveTab = useUIStore((s) => s.setActiveSettingsTab)
   const pendingSettingsTab = useUIStore((s) => s.pendingSettingsTab)
   const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_SETTINGS.some((item) => item.tab === activeTab))
   const shellCopy = SETTINGS_SHELL_COPY[locale]
 
   useEffect(() => {
-    if (storedActiveTab === 'providers') setActiveTab('general')
-  }, [setActiveTab, storedActiveTab])
-
-  useEffect(() => {
     if (!pendingSettingsTab) return
-    setActiveTab(pendingSettingsTab === 'providers' ? 'general' : pendingSettingsTab)
+    setActiveTab(pendingSettingsTab)
     useUIStore.getState().setPendingSettingsTab(null)
   }, [pendingSettingsTab, setActiveTab])
 
