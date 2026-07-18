@@ -328,6 +328,41 @@ describe('ChatInput file mentions', () => {
     expect(useTabStore.getState().activeTabId).toBe(sessionId)
   })
 
+  it('sends through an explicitly supplied side-task session without changing the active task tab', () => {
+    const sideSessionId = 'side-task-session'
+    const primaryState = useChatStore.getState().sessions[sessionId]
+    if (!primaryState) throw new Error('Expected primary chat state')
+
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: primaryState,
+        [sideSessionId]: {
+          ...primaryState,
+          messages: [],
+          composerDraft: undefined,
+        },
+      },
+    })
+
+    render(<ChatInput sessionId={sideSessionId} workDir="/repo" compact />)
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, {
+      target: { value: 'investigate this separately', selectionStart: 27 },
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(mocks.wsSend).toHaveBeenCalledWith(sideSessionId, {
+      type: 'user_message',
+      content: 'investigate this separately',
+      attachments: [],
+    })
+    expect(mocks.wsSend).not.toHaveBeenCalledWith(sessionId, expect.objectContaining({
+      type: 'user_message',
+    }))
+    expect(useTabStore.getState().activeTabId).toBe(sessionId)
+  })
+
   it('restores an unsent composer draft after the composer unmounts', async () => {
     const { unmount } = render(<ChatInput compact />)
 

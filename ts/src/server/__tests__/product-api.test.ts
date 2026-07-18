@@ -8,6 +8,17 @@ const task = {
   actions: ['archive'],
 }
 
+const sideTask = {
+  id: 'side-task-1',
+  parentTaskId: task.id,
+  sourceTurnId: 'transcript-turn-42',
+  coreSessionId: 'session-side-1',
+  title: '单独核对优惠规则',
+  status: 'open',
+  createdAt: '2026-07-19T00:00:00.000Z',
+  updatedAt: '2026-07-19T00:00:00.000Z',
+}
+
 function createService() {
   const calls: Array<{ name: string; args: unknown[] }> = []
   const record = (name: string, value = task) => async (...args: unknown[]) => {
@@ -32,6 +43,9 @@ function createService() {
       setPinned: record('setPinned'),
       setArchived: record('setArchived'),
       continueTask: record('continueTask'),
+      listSideTasks: record('listSideTasks', [sideTask]),
+      createSideTask: record('createSideTask', sideTask),
+      closeSideTask: record('closeSideTask', { ...sideTask, status: 'closed' }),
     },
   }
 }
@@ -97,16 +111,37 @@ describe('Product tasks API', () => {
     ])
   })
 
-  it('does not expose an unconsumed side-task endpoint', async () => {
+  it('routes temporary side-task lifecycle actions separately from normal tasks', async () => {
     const { service, calls } = createService()
 
-    const response = await request(service, 'POST', '/api/product/tasks/task-1/side-tasks', {})
-
-    expect(response.status).toBe(404)
-    expect(response.body).toEqual({
-      error: 'NOT_FOUND',
-      message: '未知任务操作：side-tasks',
+    const listed = await request(service, 'GET', '/api/product/tasks/task-1/side-tasks')
+    const created = await request(service, 'POST', '/api/product/tasks/task-1/side-tasks', {
+      title: '单独核对优惠规则',
+      sourceTurnId: 'transcript-turn-42',
     })
-    expect(calls).toEqual([])
+    const closed = await request(
+      service,
+      'POST',
+      '/api/product/tasks/task-1/side-tasks/side-task-1/close',
+      {},
+    )
+
+    expect(listed).toEqual({ status: 200, body: { sideTasks: [sideTask] } })
+    expect(created).toEqual({ status: 201, body: { sideTask } })
+    expect(closed).toEqual({
+      status: 200,
+      body: { sideTask: { ...sideTask, status: 'closed' } },
+    })
+    expect(calls).toEqual([
+      { name: 'listSideTasks', args: ['task-1'] },
+      {
+        name: 'createSideTask',
+        args: ['task-1', {
+          title: '单独核对优惠规则',
+          sourceTurnId: 'transcript-turn-42',
+        }],
+      },
+      { name: 'closeSideTask', args: ['task-1', 'side-task-1'] },
+    ])
   })
 })

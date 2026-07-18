@@ -1,6 +1,8 @@
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
+  CreateProductSideTaskInput,
+  ProductSideTask,
   ProductTask,
   ProductTaskIndex,
   UpdateProductTaskInput,
@@ -10,7 +12,10 @@ export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
 export type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
+  CreateProductSideTaskInput,
   ProductProject,
+  ProductSideTask,
+  ProductSideTaskStatus,
   ProductTask,
   ProductTaskIndex,
   ProductTaskKind,
@@ -42,6 +47,14 @@ export type ProductTaskActionResponse = {
   task: ProductTaskRecord
 }
 
+export type ProductSideTaskListResponse = {
+  sideTasks: ProductSideTask[]
+}
+
+export type ProductSideTaskActionResponse = {
+  sideTask: ProductSideTask
+}
+
 export type ProductTaskApi = {
   list: () => Promise<ProductTaskIndexResponse>
   create: (input: CreateProductTaskInput) => Promise<ProductTaskActionResponse>
@@ -51,4 +64,10 @@ export type ProductTaskApi = {
   archive: (taskId: string) => Promise<ProductTaskActionResponse>
   restore: (taskId: string) => Promise<ProductTaskActionResponse>
   continue: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskActionResponse>
+}
+
+export type ProductSideTaskApi = {
+  list: (taskId: string) => Promise<ProductSideTaskListResponse>
+  create: (taskId: string, input: CreateProductSideTaskInput) => Promise<ProductSideTaskActionResponse>
+  close: (taskId: string, sideTaskId: string) => Promise<ProductSideTaskActionResponse>
 }
