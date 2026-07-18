@@ -1,5 +1,5 @@
 import type { ClientMessage, ServerMessage } from '../types/chat'
-import { getAuthToken, getBaseUrl } from './client'
+import { getBaseUrl } from './client'
 
 type MessageHandler = (msg: ServerMessage) => void
 
@@ -182,13 +182,6 @@ export function buildSessionWebSocketUrl(sessionId: string) {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '')
   url.pathname = `${basePath}/ws/${encodeURIComponent(sessionId)}`
-
-  const token = getAuthToken()
-  if (token) {
-    url.searchParams.set('token', token)
-  } else {
-    url.searchParams.delete('token')
-  }
 
   return url.toString()
 }

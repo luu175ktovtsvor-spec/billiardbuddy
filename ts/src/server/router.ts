@@ -19,7 +19,6 @@ import { handleComputerUseApi } from './api/computer-use.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDoctorApi } from './api/doctor.js'
-import { handleH5AccessApi } from './api/h5-access.js'
 import { handleActivityStatsApi } from './api/activityStats.js'
 import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleMemoryApi } from './api/memory.js'
@@ -103,9 +102,6 @@ export async function handleApiRequest(
 
     case 'doctor':
       return handleDoctorApi(req, url, segments)
-
-    case 'h5-access':
-      return handleH5AccessApi(req, url, segments)
 
     case 'activity-stats':
       return handleActivityStatsApi(req, url, segments)

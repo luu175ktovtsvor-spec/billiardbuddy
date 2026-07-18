@@ -12,10 +12,6 @@ import {
   translateCliMessage,
   type WebSocketData,
 } from '../ws/handler.js'
-import {
-  __resetDisconnectGraceMsForTests,
-  __setDisconnectGraceMsForTests,
-} from '../ws/disconnectGraceConfig.js'
 import { conversationService } from '../services/conversationService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 
@@ -73,7 +69,6 @@ describe('translateCliMessage usage mapping', () => {
 describe('WebSocket handler session isolation', () => {
   afterEach(() => {
     __resetWebSocketHandlerStateForTests()
-    __resetDisconnectGraceMsForTests()
     mock.restore()
   })
 
@@ -235,10 +230,9 @@ describe('WebSocket handler session isolation', () => {
     expect(stopSession).not.toHaveBeenCalled()
   })
 
-  it('uses the configured disconnect grace period for an idle session', () => {
+  it('uses the fixed desktop disconnect grace period for an idle session', () => {
     const sessionId = `idle-disconnect-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
-    __setDisconnectGraceMsForTests(120_000)
     const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(() => 0 as any)
     spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
 
@@ -248,7 +242,7 @@ describe('WebSocket handler session isolation', () => {
     handleWebSocket.close(ws, 1006, 'tab closed')
 
     expect(setTimeoutSpy).toHaveBeenCalled()
-    expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(120_000)
+    expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(30_000)
   })
 
   it('does not start the idle timer if the client reconnects before the turn finishes', () => {

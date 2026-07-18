@@ -155,7 +155,6 @@ function getServerRuntime() {
   serverRuntime ??= new ElectronServerRuntime({
     desktopRoot: unpackedRoot(),
     appRoot: appRoot(),
-    h5DistDir: path.join(unpackedRoot(), 'dist'),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
     // Packaged product gateway config for the server sidecar (env override wins).
     // The app token reaches only the server env here — the CLI subprocess is stripped.

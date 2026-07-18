@@ -26,7 +26,6 @@ import { applyInstallationIdToEnv } from './installationId'
 type ServerRuntimeOptions = {
   desktopRoot: string
   appRoot?: string
-  h5DistDir?: string
   resolveSystemProxy?: (url: string) => Promise<string>
   /** Product gateway config injected into the SERVER sidecar only (never adapters). */
   resolveGatewayConfig?: () => ProductGatewayConfig
@@ -39,7 +38,6 @@ type ServerRuntimeOptions = {
 export class ElectronServerRuntime {
   private readonly desktopRoot: string
   private readonly appRoot: string
-  private readonly h5DistDir: string
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private readonly resolveInstallationId?: () => string
@@ -52,7 +50,6 @@ export class ElectronServerRuntime {
   constructor(options: ServerRuntimeOptions) {
     this.desktopRoot = options.desktopRoot
     this.appRoot = options.appRoot ?? options.desktopRoot
-    this.h5DistDir = options.h5DistDir ?? path.join(options.desktopRoot, 'dist')
     this.resolveSystemProxy = options.resolveSystemProxy
     this.resolveGatewayConfig = options.resolveGatewayConfig
     this.resolveInstallationId = options.resolveInstallationId
@@ -112,8 +109,8 @@ export class ElectronServerRuntime {
   }
 
   private async startServerOnce(): Promise<string> {
-    // Prefer the configured fixed port, then the previous run's port, so
-    // phone bookmarks / QR codes / reverse proxies survive restarts (#767).
+    // Reuse the previous local port when available; otherwise let the OS choose
+    // one, so renderer and preview URLs remain local to this desktop runtime.
     const port = await reserveServerPort(SERVER_BIND_HOST, preferredServerPorts())
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
@@ -122,7 +119,6 @@ export class ElectronServerRuntime {
       desktopRoot: this.desktopRoot,
       appRoot: this.appRoot,
       port,
-      h5DistDir: this.h5DistDir,
       env,
     })
 

@@ -2,7 +2,7 @@ import {
   voiceErrorResponseSchema,
   voiceTranscriptionResponseSchema,
 } from '../../../shared/contracts/voice'
-import { getAuthToken, getBaseUrl } from './client'
+import { getBaseUrl } from './client'
 
 export type VoiceTranscriptionOptions = {
   language?: string
@@ -30,10 +30,8 @@ export const voiceApi = {
     ))
     if (options.language) form.set('language', options.language)
 
-    const token = getAuthToken()
     const response = await fetch(`${getBaseUrl()}/api/voice/transcribe`, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       body: form,
       signal: options.signal,
     })

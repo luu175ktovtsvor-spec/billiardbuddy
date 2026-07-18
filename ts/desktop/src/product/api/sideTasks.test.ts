@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../../api/client', () => ({
-  getAuthToken: () => 'desktop-token',
-}))
-
 vi.mock('../../lib/desktopRuntime', () => ({
   getServerBaseUrl: () => 'http://127.0.0.1:49237',
 }))
@@ -35,7 +31,7 @@ describe('productSideTasksApi', () => {
       'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks',
       expect.objectContaining({
         method: 'GET',
-        headers: expect.objectContaining({ Authorization: 'Bearer desktop-token' }),
+        headers: { 'Content-Type': 'application/json' },
       }),
     )
     expect(fetchMock).toHaveBeenNthCalledWith(

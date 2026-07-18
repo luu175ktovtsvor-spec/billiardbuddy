@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getDefaultBaseUrl, setAuthToken, setBaseUrl } from './client'
+import { getDefaultBaseUrl, setBaseUrl } from './client'
 import { desktopUiPreferencesApi, getProfileAvatarUrl } from './desktopUiPreferences'
 
 const preferences = {
@@ -21,7 +21,6 @@ const preferences = {
 
 describe('desktopUiPreferencesApi', () => {
   afterEach(() => {
-    setAuthToken(null)
     setBaseUrl(getDefaultBaseUrl())
     vi.restoreAllMocks()
   })
@@ -65,9 +64,8 @@ describe('desktopUiPreferencesApi', () => {
     }))
   })
 
-  it('uploads profile avatars with the file content type and auth token', async () => {
+  it('uploads profile avatars with the file content type', async () => {
     setBaseUrl('http://127.0.0.1:49237')
-    setAuthToken('h5_avatar_token')
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, preferences }), {
       status: 200,
@@ -83,7 +81,6 @@ describe('desktopUiPreferencesApi', () => {
       method: 'PUT',
       headers: {
         'Content-Type': 'image/png',
-        Authorization: 'Bearer h5_avatar_token',
       },
       body: file,
     })

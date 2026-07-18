@@ -2525,7 +2525,7 @@ describe('MessageList nested tool calls', () => {
     expect(readClientHeight).not.toHaveBeenCalled()
   })
 
-  it('keeps mobile H5 streaming output pinned after the transcript height grows', async () => {
+  it('keeps streaming output pinned after the transcript height grows', async () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -2540,7 +2540,7 @@ describe('MessageList nested tool calls', () => {
             {
               id: 'user-1',
               type: 'user_text',
-              content: '移动端长回复',
+              content: '长回复',
               timestamp: 1,
             },
           ],
@@ -2596,7 +2596,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByRole('button', { name: 'Latest' })).toBeNull()
   })
 
-  it('keeps H5 pinned when streaming content resizes after render', async () => {
+  it('keeps streaming output pinned when content resizes after render', async () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -2623,7 +2623,7 @@ describe('MessageList nested tool calls', () => {
             {
               id: 'user-1',
               type: 'user_text',
-              content: '移动端异步重排',
+              content: '异步重排',
               timestamp: 1,
             },
           ],

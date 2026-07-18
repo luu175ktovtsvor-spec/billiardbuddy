@@ -4,19 +4,17 @@ import {
   getApiUrl,
   getDefaultBaseUrl,
   rawRecordDiagnosticEvent,
-  setAuthToken,
   setBaseUrl,
 } from './client'
 
 describe('api diagnostics reporting', () => {
   afterEach(() => {
     vi.useRealTimers()
-    setAuthToken(null)
     setBaseUrl(getDefaultBaseUrl())
     vi.restoreAllMocks()
   })
 
-  it('does not send Authorization for default local requests', async () => {
+  it('sends JSON headers for default local requests', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -29,7 +27,6 @@ describe('api diagnostics reporting', () => {
     expect((init as RequestInit).headers).toMatchObject({
       'Content-Type': 'application/json',
     })
-    expect((init as RequestInit & { headers?: Record<string, string> }).headers?.Authorization).toBeUndefined()
   })
 
   it('resolves relative asset URLs against the configured API base URL', () => {
@@ -39,22 +36,6 @@ describe('api diagnostics reporting', () => {
       'http://127.0.0.1:49237/api/open-targets/icons/finder',
     )
     expect(getApiUrl('https://example.com/icon.png')).toBe('https://example.com/icon.png')
-  })
-
-  it('adds Authorization when an H5 token is configured', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-
-    setAuthToken('h5_x')
-    await api.get('/api/status')
-
-    const [, init] = fetchMock.mock.calls[0]!
-    expect((init as RequestInit & { headers?: Record<string, string> }).headers).toMatchObject({
-      Authorization: 'Bearer h5_x',
-    })
   })
 
   it('reports non-diagnostics API failures without request bodies', async () => {
@@ -80,27 +61,6 @@ describe('api diagnostics reporting', () => {
     expect(body.type).toBe('client_api_request_failed')
     expect(body.details.path).toBe('/api/providers/test')
     expect(JSON.stringify(body)).not.toContain('sk-should-not-report')
-  })
-
-  it('does not leak the H5 token in diagnostics payloads', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-
-    setAuthToken('h5_super_secret')
-
-    await expect(api.get('/api/status')).rejects.toThrow('Unauthorized')
-
-    const [, diagnosticInit] = fetchMock.mock.calls[1]!
-    const body = JSON.parse(String((diagnosticInit as RequestInit).body))
-    expect(JSON.stringify(body)).not.toContain('h5_super_secret')
   })
 
   it('does not recursively report diagnostics endpoint failures', async () => {

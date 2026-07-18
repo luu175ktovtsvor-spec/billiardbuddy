@@ -1,11 +1,9 @@
 /**
  * Authentication middleware
  *
- * 本地桌面应用场景下，使用 Anthropic API Key 做简单鉴权。
+ * 本地桌面应用场景下，使用 Anthropic API Key 做可选鉴权。
  * 验证请求头中的 Authorization: Bearer <key> 与 .env 中的 ANTHROPIC_API_KEY 是否匹配。
  */
-
-import { H5AccessService } from '../services/h5AccessService.js'
 
 type AuthResult = { valid: boolean; error?: string }
 
@@ -29,12 +27,16 @@ export function validateAuth(req: Request): AuthResult {
     return parsedAuth
   }
 
+  return validateApiKey(parsedAuth.token)
+}
+
+function validateApiKey(token: string): AuthResult {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return { valid: false, error: 'Server ANTHROPIC_API_KEY not configured' }
   }
 
-  if (parsedAuth.token !== apiKey) {
+  if (token !== apiKey) {
     return { valid: false, error: 'Invalid API key' }
   }
 
@@ -48,22 +50,11 @@ export async function validateRequestAuth(
   req: Request,
   tokenOverride?: string | null,
 ): Promise<AuthResult> {
-  const anthropicAuth = validateAuth(req)
-  if (anthropicAuth.valid) {
-    return anthropicAuth
+  if (tokenOverride) {
+    return validateApiKey(tokenOverride)
   }
 
-  const parsedAuth = parseBearerToken(req.headers.get('Authorization'))
-  const h5Token = tokenOverride ?? parsedAuth.token
-  if (h5Token) {
-    const h5AccessService = new H5AccessService()
-    if (await h5AccessService.validateToken(h5Token)) {
-      return { valid: true }
-    }
-    return { valid: false, error: 'Invalid H5 access token' }
-  }
-
-  return anthropicAuth
+  return validateAuth(req)
 }
 
 export async function requireAuth(req: Request, tokenOverride?: string | null): Promise<Response | null> {
@@ -71,26 +62,5 @@ export async function requireAuth(req: Request, tokenOverride?: string | null): 
   if (!valid) {
     return Response.json({ error: 'Unauthorized', message: error }, { status: 401 })
   }
-  return null
-}
-
-export async function requireH5Token(req: Request, tokenOverride?: string | null): Promise<Response | null> {
-  const parsedAuth = parseBearerToken(req.headers.get('Authorization'))
-  const h5Token = tokenOverride ?? parsedAuth.token
-  if (!h5Token) {
-    return Response.json(
-      { error: 'Unauthorized', message: 'Missing H5 access token' },
-      { status: 401 },
-    )
-  }
-
-  const h5AccessService = new H5AccessService()
-  if (!await h5AccessService.validateToken(h5Token)) {
-    return Response.json(
-      { error: 'Unauthorized', message: 'Invalid H5 access token' },
-      { status: 401 },
-    )
-  }
-
   return null
 }

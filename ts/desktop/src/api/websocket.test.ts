@@ -2,12 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const clientMocks = vi.hoisted(() => ({
   baseUrl: 'http://127.0.0.1:3456',
-  authToken: null as string | null,
 }))
 
 vi.mock('./client', () => ({
   getBaseUrl: () => clientMocks.baseUrl,
-  getAuthToken: () => clientMocks.authToken,
 }))
 
 import { buildSessionWebSocketUrl, wsManager } from './websocket'
@@ -60,7 +58,6 @@ describe('wsManager reconnect buffering', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     clientMocks.baseUrl = 'http://127.0.0.1:3456'
-    clientMocks.authToken = null
     FakeWebSocket.instances = []
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
     wsManager.disconnectAll()
@@ -98,12 +95,11 @@ describe('wsManager reconnect buffering', () => {
     ])
   })
 
-  it('builds websocket URLs from http and encodes token query params', () => {
+  it('builds websocket URLs from http without external access tokens', () => {
     clientMocks.baseUrl = 'http://10.0.0.2:3456'
-    clientMocks.authToken = 'h5 token/with?chars'
 
     expect(buildSessionWebSocketUrl('session-reconnect')).toBe(
-      'ws://10.0.0.2:3456/ws/session-reconnect?token=h5+token%2Fwith%3Fchars',
+      'ws://10.0.0.2:3456/ws/session-reconnect',
     )
   })
 

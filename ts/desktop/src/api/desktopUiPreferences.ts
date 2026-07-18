@@ -1,4 +1,4 @@
-import { ApiError, api, getApiUrl, getAuthToken } from './client'
+import { ApiError, api, getApiUrl } from './client'
 
 export type SidebarProjectPreferences = {
   projectOrder: string[]
@@ -65,11 +65,6 @@ async function uploadProfileAvatar(file: File): Promise<{ ok: true; preferences:
   const headers: Record<string, string> = {
     'Content-Type': file.type || 'application/octet-stream',
   }
-  const token = getAuthToken()
-  if (token) {
-    headers.Authorization = `Bearer ${token}`
-  }
-
   const res = await fetch(getApiUrl('/api/desktop-ui/preferences/profile/avatar'), {
     method: 'PUT',
     headers,

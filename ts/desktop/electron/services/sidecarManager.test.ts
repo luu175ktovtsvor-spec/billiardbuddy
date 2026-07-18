@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import net from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   buildSidecarEnv,
@@ -10,11 +10,9 @@ import {
   httpToWebSocketUrl,
   killSidecar,
   mergeProxyEnv,
-  parseH5FixedPort,
   preferredServerPorts,
   proxyUrlFromElectronProxyRules,
   pushStartupLog,
-  readH5FixedPort,
   readLastServerPort,
   reserveLocalPort,
   reserveServerPort,
@@ -62,7 +60,7 @@ describe('Electron sidecar manager', () => {
     )
   })
 
-  it('builds server sidecar args without changing the REST/WebSocket boundary', () => {
+  it('builds a loopback-only server sidecar plan without changing the REST/WebSocket boundary', () => {
     const plan = createServerPlan({
       desktopRoot: '/app/desktop',
       appRoot: '/app',
@@ -75,32 +73,29 @@ describe('Electron sidecar manager', () => {
       '--app-root',
       '/app',
       '--host',
-      '0.0.0.0',
+      '127.0.0.1',
       '--port',
       '49321',
     ])
-    expect(plan.env.CLAUDE_H5_AUTO_PUBLIC_URL).toBe('1')
-    expect(plan.env.CLAUDE_H5_DIST_DIR).toBe(path.join('/app/desktop', 'dist'))
+    expect(plan.env).toEqual({})
   })
 
-  it('can keep sidecar binaries and H5 assets unpacked while pointing app-root at app.asar', () => {
+  it('can keep sidecar binaries unpacked while pointing app-root at app.asar', () => {
     const plan = createServerPlan({
       desktopRoot: '/Applications/App.app/Contents/Resources/app.asar.unpacked',
       appRoot: '/Applications/App.app/Contents/Resources/app.asar',
-      h5DistDir: '/Applications/App.app/Contents/Resources/app.asar.unpacked/dist',
       port: 49321,
       env: {},
     })
 
     expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries/billiardbuddy-sidecar-')
     expect(plan.args).toContain('/Applications/App.app/Contents/Resources/app.asar')
-    expect(plan.env.CLAUDE_H5_DIST_DIR).toBe('/Applications/App.app/Contents/Resources/app.asar.unpacked/dist')
   })
 
   it('passes portable config through the sidecar env', () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'bb-config-'))
     try {
-      const env = buildSidecarEnv({ CLAUDE_CONFIG_DIR: configDir }, '/app/dist')
+      const env = buildSidecarEnv({ CLAUDE_CONFIG_DIR: configDir })
       expect(env.CLAUDE_CONFIG_DIR).toBe(configDir)
       expect(env.XDG_CACHE_HOME).toBe(path.join(configDir, 'Cache'))
     } finally {
@@ -185,7 +180,7 @@ describe('Electron sidecar manager', () => {
     const plan = {
       command: '/app/desktop/src-tauri/binaries/billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe',
       args: ['server', '--port', '49321'],
-      env: { CLAUDE_H5_AUTO_PUBLIC_URL: '1' },
+      env: {},
     }
 
     expect(spawnSidecar(plan, { existsSyncFn, spawnFn: spawnFn as never })).toBe(spawned)
@@ -210,18 +205,7 @@ describe('Electron sidecar manager', () => {
     expect(windowsPowerShellOverride('powershell.exe', 'darwin')).toBeNull()
   })
 
-  it('parses only in-range integer h5Access.fixedPort values', () => {
-    expect(parseH5FixedPort('{"h5Access":{"fixedPort":28670}}')).toBe(28670)
-    expect(parseH5FixedPort('{"h5Access":{"fixedPort":80}}')).toBeNull()
-    expect(parseH5FixedPort('{"h5Access":{"fixedPort":70000}}')).toBeNull()
-    expect(parseH5FixedPort('{"h5Access":{"fixedPort":"3456"}}')).toBeNull()
-    expect(parseH5FixedPort('{"h5Access":{"fixedPort":null}}')).toBeNull()
-    expect(parseH5FixedPort('{"h5Access":{}}')).toBeNull()
-    expect(parseH5FixedPort('{}')).toBeNull()
-    expect(parseH5FixedPort('not json')).toBeNull()
-  })
-
-  it('persists and prioritizes preferred server ports from the config dir', () => {
+  it('persists and reuses the last local server port from the config dir', () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'cchh-server-state-'))
     const env = { CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv
     try {
@@ -232,20 +216,6 @@ describe('Electron sidecar manager', () => {
       writeLastServerPort(50123, env)
       expect(readLastServerPort(env)).toBe(50123)
       expect(preferredServerPorts(env)).toEqual([50123])
-
-      // An explicit fixed port wins over the sticky port.
-      mkdirSync(path.join(configDir, 'billiardbuddy'), { recursive: true })
-      writeFileSync(
-        path.join(configDir, 'billiardbuddy', 'settings.json'),
-        JSON.stringify({ h5Access: { fixedPort: 28670 } }),
-        'utf-8',
-      )
-      expect(readH5FixedPort(env)).toBe(28670)
-      expect(preferredServerPorts(env)).toEqual([28670, 50123])
-
-      // Identical fixed and sticky ports are not duplicated.
-      writeLastServerPort(28670, env)
-      expect(preferredServerPorts(env)).toEqual([28670])
     } finally {
       rmSync(configDir, { recursive: true, force: true })
     }

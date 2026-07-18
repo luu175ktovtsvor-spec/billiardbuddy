@@ -5,16 +5,13 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-export const SERVER_BIND_HOST = '0.0.0.0'
+export const SERVER_BIND_HOST = '127.0.0.1'
 export const SERVER_CONTROL_HOST = '127.0.0.1'
 export const SERVER_STARTUP_TIMEOUT_MS = 30_000
 export const SERVER_STARTUP_LOG_LIMIT = 80
 // Shared with the Tauri shell (src-tauri/src/lib.rs) so both desktop builds
 // reuse the same sticky port across restarts (issue #767).
 export const SERVER_STATE_FILE = 'desktop-server-state.json'
-// Mirrors the server-side fixedPort range (h5AccessService MIN/MAX_FIXED_PORT).
-const MIN_FIXED_PORT = 1024
-const MAX_FIXED_PORT = 65535
 
 export type SidecarChild = ChildProcessByStdio<null, Readable, Readable>
 
@@ -84,9 +81,9 @@ function canBindPort(bindHost: string, port: number): Promise<boolean> {
 }
 
 /**
- * Try the preferred ports in order (h5Access.fixedPort first, then the port
- * used by the previous run) and fall back to an OS-assigned random port when
- * all of them are taken, so the app always starts.
+ * Try the ports used by previous runs before falling back to an OS-assigned
+ * local port, so the desktop app starts predictably without exposing a public
+ * listener.
  */
 export async function reserveServerPort(
   bindHost: string,
@@ -102,31 +99,6 @@ export async function reserveServerPort(
 
 export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-}
-
-/** Parse h5Access.fixedPort out of billiardbuddy/settings.json contents. */
-export function parseH5FixedPort(contents: string): number | null {
-  let value: unknown
-  try {
-    value = JSON.parse(contents)
-  } catch {
-    return null
-  }
-  if (!value || typeof value !== 'object') return null
-  const h5Access = (value as Record<string, unknown>).h5Access
-  if (!h5Access || typeof h5Access !== 'object') return null
-  const port = (h5Access as Record<string, unknown>).fixedPort
-  if (typeof port !== 'number' || !Number.isInteger(port)) return null
-  return port >= MIN_FIXED_PORT && port <= MAX_FIXED_PORT ? port : null
-}
-
-export function readH5FixedPort(env: NodeJS.ProcessEnv = process.env): number | null {
-  try {
-    const settingsPath = path.join(claudeConfigDir(env), 'billiardbuddy', 'settings.json')
-    return parseH5FixedPort(readFileSync(settingsPath, 'utf-8'))
-  } catch {
-    return null
-  }
 }
 
 export function readLastServerPort(env: NodeJS.ProcessEnv = process.env): number | null {
@@ -152,14 +124,10 @@ export function writeLastServerPort(port: number, env: NodeJS.ProcessEnv = proce
   }
 }
 
-/** Preferred ports for the next server start: explicit fixed port first, then the sticky last-used port. */
+/** Preferred port for the next local server start: the sticky last-used port. */
 export function preferredServerPorts(env: NodeJS.ProcessEnv = process.env): number[] {
-  const ports: number[] = []
-  const fixedPort = readH5FixedPort(env)
-  if (fixedPort !== null) ports.push(fixedPort)
   const lastPort = readLastServerPort(env)
-  if (lastPort !== null && !ports.includes(lastPort)) ports.push(lastPort)
-  return ports
+  return lastPort === null ? [] : [lastPort]
 }
 
 export async function waitForServer(host: string, port: number, timeoutMs = SERVER_STARTUP_TIMEOUT_MS): Promise<void> {
@@ -302,12 +270,8 @@ export function windowsPowerShellOverride(
   return base === 'pwsh' || base === 'powershell' ? trimmed : null
 }
 
-export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv, h5DistDir: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...baseEnv,
-    CLAUDE_H5_AUTO_PUBLIC_URL: '1',
-    CLAUDE_H5_DIST_DIR: h5DistDir,
-  }
+export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv }
   const configDir = baseEnv.CLAUDE_CONFIG_DIR
   if (configDir) {
     const cacheDir = path.join(configDir, 'Cache')
@@ -323,20 +287,18 @@ export function createServerPlan({
   appRoot,
   port,
   bindHost = SERVER_BIND_HOST,
-  h5DistDir = path.join(desktopRoot, 'dist'),
   env = process.env,
 }: {
   desktopRoot: string
   appRoot: string
   port: number
   bindHost?: string
-  h5DistDir?: string
   env?: NodeJS.ProcessEnv
 }): SidecarPlan {
   return {
     command: resolveSidecarExecutable(desktopRoot),
     args: ['server', '--app-root', appRoot, '--host', bindHost, '--port', String(port)],
-    env: buildSidecarEnv(env, h5DistDir),
+    env: buildSidecarEnv(env),
   }
 }
 

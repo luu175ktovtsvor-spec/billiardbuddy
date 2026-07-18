@@ -1,19 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { setAuthToken, setBaseUrl } from './client'
+import { setBaseUrl } from './client'
 import { voiceApi } from './voice'
 
 describe('voiceApi', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    setAuthToken(null)
     setBaseUrl('http://127.0.0.1:3456')
   })
 
   it('uploads a recording to the local sidecar without exposing gateway auth', async () => {
     setBaseUrl('http://127.0.0.1:4567')
-    setAuthToken('local-h5-token')
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer local-h5-token')
+      expect(init?.headers).toBeUndefined()
       expect(init?.body).toBeInstanceOf(FormData)
       const form = init?.body as FormData
       expect((form.get('file') as File).name).toMatch(/\.webm$/)
