@@ -158,7 +158,7 @@ export async function handleSessionsApi(
     if (subResource === 'slash-commands') {
       if (req.method !== 'GET') {
         return Response.json(
-          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { error: 'METHOD_NOT_ALLOWED' },
           { status: 405 }
         )
       }
@@ -499,46 +499,35 @@ function normalizeSessionIds(value: unknown): string[] {
   return [...new Set(sessionIds)]
 }
 
-function mergeSessionSlashCommands(
-  preferred: Array<{ name: string; description?: string; argumentHint?: string }>,
-  fallback: SkillSlashCommand[],
-): Array<{ name: string; description: string; argumentHint?: string }> {
-  const merged = new Map<string, { name: string; description: string; argumentHint?: string }>()
-
-  for (const command of preferred) {
-    if (!command.name) continue
-    merged.set(command.name, {
-      name: command.name,
-      description: command.description || '',
-      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-    })
-  }
-
-  for (const command of fallback) {
-    if (!command.name || merged.has(command.name)) continue
-    merged.set(command.name, {
-      name: command.name,
-      description: command.description || '',
-      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-    })
-  }
-
-  return [...merged.values()]
-}
-
 async function getSessionSlashCommands(sessionId: string): Promise<Response> {
   const cachedCommands = getSlashCommands(sessionId)
-  const workDir = await sessionService.getSessionWorkDir(sessionId)
+  const workDir = await sessionService.getSessionWorkDir(sessionId).catch(() => null)
   if (!workDir) {
-    throw ApiError.notFound(`Session not found: ${sessionId}`)
+    return Response.json({ error: 'SESSION_NOT_AVAILABLE' }, { status: 404 })
   }
 
-  const skillCommands = await listSkillSlashCommands(workDir)
-  const slashCommands = cachedCommands.length > 0
-    ? mergeSessionSlashCommands(cachedCommands, skillCommands)
-    : skillCommands
+  try {
+    const skillCommands = await listSkillSlashCommands(workDir)
+    return Response.json({ commands: mergeSessionSlashCommands(cachedCommands, skillCommands) })
+  } catch {
+    // Slash completion is optional. Keep a safe cached name list rather than
+    // surface filesystem, plugin, or Skill-loader errors to the Composer.
+    return Response.json({ commands: mergeSessionSlashCommands(cachedCommands, []) })
+  }
+}
 
-  return Response.json({ commands: slashCommands })
+function mergeSessionSlashCommands(
+  preferred: Array<{ name: string }>,
+  fallback: SkillSlashCommand[],
+): Array<{ name: string }> {
+  const names = new Set<string>()
+  for (const command of preferred) {
+    if (command.name) names.add(command.name)
+  }
+  for (const command of fallback) {
+    if (command.name) names.add(command.name)
+  }
+  return [...names].map((name) => ({ name }))
 }
 
 async function getSessionInspection(sessionId: string, url: URL): Promise<Response> {
@@ -572,13 +561,9 @@ async function getSessionInspection(sessionId: string, url: URL): Promise<Respon
     ? (await getTranscriptSnapshot())?.metadata ?? null
     : null
   const cachedSlashCommands = getSlashCommands(sessionId)
-  const skillSlashCommands = await listSkillSlashCommands(workDir)
-  const fallbackSlashCommands = cachedSlashCommands.length > 0
-    ? mergeSessionSlashCommands(cachedSlashCommands, skillSlashCommands)
-    : skillSlashCommands
   const slashCommandCount = Array.isArray(initMessage?.slash_commands)
     ? initMessage.slash_commands.length
-    : fallbackSlashCommands.length
+    : cachedSlashCommands.length
 
   const response: Record<string, unknown> = {
     active,

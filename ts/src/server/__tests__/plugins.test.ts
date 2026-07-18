@@ -419,13 +419,10 @@ describe('Plugins API', () => {
       mcpServers: 1,
       errors: 0,
     })
-    expect(getSlashCommands('session-plugins')).toEqual([
-      {
-        name: 'draw:render',
-        description: 'Render a drawing.',
-        argumentHint: '<prompt>',
-      },
-    ])
+    const slashCommands = getSlashCommands('session-plugins')
+    expect(slashCommands).toEqual([{ name: 'draw:render' }])
+    expect(JSON.stringify(slashCommands)).not.toContain('Render a drawing.')
+    expect(JSON.stringify(slashCommands)).not.toContain('<prompt>')
   })
 
   it('refreshActivePlugins rereads settings after an external enable toggle', async () => {

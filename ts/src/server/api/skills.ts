@@ -1,9 +1,9 @@
 /**
- * Skills REST API
+ * Product-facing Skills API.
  *
- * GET /api/skills              — List all installed skills (metadata only)
- * GET /api/skills/detail       — Full skill data (tree + files)
- *       ?source=user&name=xxx
+ * The Agent keeps full Skill definitions private. The generic desktop route
+ * deliberately exposes no catalog at all. Name-only discovery is reserved for
+ * an explicit slash-command request in a Composer.
  */
 
 import * as path from 'path'
@@ -19,205 +19,41 @@ import { initBundledSkills } from '../../skills/bundled/index.js'
 import { getBundledSkillDescriptors } from '../../skills/bundledSkills.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
-import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { ApiError } from '../middleware/errorHandler.js'
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-type SkillMeta = {
+type LoadedSkill = {
   name: string
-  displayName?: string
-  description: string
-  source: 'user' | 'project' | 'plugin' | 'bundled'
   userInvocable: boolean
-  version?: string
-  contentLength: number
-  hasDirectory: boolean
-  pluginName?: string
 }
 
-type SkillSource = SkillMeta['source']
+type PluginSkillLocation = {
+  skillDir: string
+}
 
-type FileTreeNode = {
+export type SkillSlashCommand = {
   name: string
-  path: string
-  type: 'file' | 'directory'
-  children?: FileTreeNode[]
-}
-
-type SkillFile = {
-  path: string
-  content: string
-  language: string
-  frontmatter?: Record<string, unknown>
-  body?: string
-  isEntry?: boolean
-}
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const MAX_FILES = 50
-const MAX_FILE_SIZE = 100 * 1024 // 100 KB
-const SKIP_ENTRIES = new Set(['node_modules', '.git', '__pycache__', '.DS_Store'])
-
-const LANG_MAP: Record<string, string> = {
-  md: 'markdown', ts: 'typescript', tsx: 'typescript',
-  js: 'javascript', jsx: 'javascript', json: 'json',
-  yaml: 'yaml', yml: 'yaml', sh: 'bash', bash: 'bash',
-  py: 'python', toml: 'toml', css: 'css', html: 'html',
-  txt: 'text', xml: 'xml', sql: 'sql', rs: 'rust', go: 'go',
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function detectLanguage(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || ''
-  return LANG_MAP[ext] || 'text'
-}
-
-function normalizeFrontmatter(content: string, sourcePath?: string): {
-  frontmatter: Record<string, unknown>
-  body: string
-} {
-  const parsed = parseFrontmatter(content, sourcePath)
-  return {
-    frontmatter: parsed.frontmatter as Record<string, unknown>,
-    body: parsed.content,
-  }
 }
 
 function getUserSkillsDir(): string {
   return path.join(getClaudeConfigHomeDir(), 'skills')
 }
 
-function getRequestedCwd(url: URL): string {
-  return url.searchParams.get('cwd') || getCwd()
-}
-
-function getProjectSkillsDirs(cwd: string): string[] {
-  return getProjectDirsUpToHome('skills', cwd)
-}
-
-async function loadSkillMeta(
-  skillDir: string,
-  skillName: string,
-  source: SkillSource,
-  pluginName?: string,
-): Promise<SkillMeta | null> {
+async function loadSkill(skillDir: string, name: string): Promise<LoadedSkill | null> {
   const skillFile = path.join(skillDir, 'SKILL.md')
   try {
     const raw = await fs.readFile(skillFile, 'utf-8')
-    const { frontmatter, body } = normalizeFrontmatter(raw, skillFile)
-
-    const description =
-      (frontmatter.description as string) ||
-      body
-        .split('\n')
-        .find((l) => l.trim().length > 0)
-        ?.trim() ||
-      'No description'
-
+    const { frontmatter } = parseFrontmatter(raw, skillFile)
     return {
-      name: skillName,
-      displayName: (frontmatter.name as string) || undefined,
-      description,
-      source,
+      name,
       userInvocable: frontmatter['user-invocable'] !== false,
-      version: frontmatter.version != null ? String(frontmatter.version) : undefined,
-      contentLength: raw.length,
-      hasDirectory: true,
-      pluginName,
     }
   } catch {
     return null
   }
 }
 
-async function buildFileTree(
-  dirPath: string,
-): Promise<{ tree: FileTreeNode[]; files: SkillFile[] }> {
-  const tree: FileTreeNode[] = []
-  const files: SkillFile[] = []
-  let fileCount = 0
-
-  async function walk(currentPath: string, nodes: FileTreeNode[]) {
-    if (fileCount >= MAX_FILES) return
-
-    let entries: import('fs').Dirent[]
-    try {
-      entries = await fs.readdir(currentPath, { withFileTypes: true })
-    } catch {
-      return
-    }
-
-    // directories first, then alphabetical
-    entries.sort((a, b) => {
-      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
-      return a.name.localeCompare(b.name)
-    })
-
-    for (const entry of entries) {
-      if (fileCount >= MAX_FILES) break
-      if (SKIP_ENTRIES.has(entry.name) || entry.name.startsWith('.')) continue
-
-      const fullPath = path.join(currentPath, entry.name)
-      const relPath = path.relative(dirPath, fullPath)
-
-      if (entry.isDirectory()) {
-        const node: FileTreeNode = {
-          name: entry.name,
-          path: relPath,
-          type: 'directory',
-          children: [],
-        }
-        nodes.push(node)
-        await walk(fullPath, node.children!)
-        if (node.children!.length === 0) delete node.children
-      } else if (entry.isFile()) {
-        nodes.push({ name: entry.name, path: relPath, type: 'file' })
-
-        try {
-          const stat = await fs.stat(fullPath)
-          if (stat.size <= MAX_FILE_SIZE) {
-            const content = await fs.readFile(fullPath, 'utf-8')
-            const language = detectLanguage(entry.name)
-            const isEntry = relPath === 'SKILL.md'
-
-            if (isEntry && language === 'markdown') {
-              const { frontmatter, body } = normalizeFrontmatter(content, fullPath)
-              files.push({
-                path: relPath,
-                content: body,
-                body,
-                frontmatter,
-                language,
-                isEntry: true,
-              })
-            } else {
-              files.push({
-                path: relPath,
-                content,
-                language,
-                isEntry: false,
-              })
-            }
-            fileCount++
-          }
-        } catch {
-          // skip unreadable files
-        }
-      }
-    }
-  }
-
-  await walk(dirPath, tree)
-  return { tree, files }
-}
-
-async function collectSkillsFromRoots(
-  skillRoots: string[],
-  source: SkillSource,
-): Promise<SkillMeta[]> {
-  const skills: SkillMeta[] = []
+async function collectSkillsFromRoots(skillRoots: string[]): Promise<LoadedSkill[]> {
+  const skills: LoadedSkill[] = []
   const seenNames = new Set<string>()
 
   for (const root of skillRoots) {
@@ -237,68 +73,14 @@ async function collectSkillsFromRoots(
         continue
       }
 
-      const meta = await loadSkillMeta(path.join(root, entry.name), entry.name, source)
-      if (!meta) continue
-
+      const skill = await loadSkill(path.join(root, entry.name), entry.name)
+      if (!skill) continue
       seenNames.add(entry.name)
-      skills.push(meta)
+      skills.push(skill)
     }
   }
 
   return skills
-}
-
-async function resolveSkillDir(
-  source: SkillSource,
-  name: string,
-  cwd: string,
-): Promise<string | null> {
-  const skillRoots =
-    source === 'user'
-      ? [getUserSkillsDir()]
-      : source === 'project'
-        ? getProjectSkillsDirs(cwd)
-        : []
-
-  for (const root of skillRoots) {
-    const skillDir = path.join(root, name)
-    try {
-      const stat = await fs.stat(skillDir)
-      if (stat.isDirectory()) {
-        return skillDir
-      }
-    } catch {
-      // Try the next candidate root.
-    }
-  }
-
-  return null
-}
-
-type PluginSkillLocation = {
-  skillDir: string
-  pluginName: string
-}
-
-export type SkillSlashCommand = {
-  name: string
-  description: string
-  argumentHint?: string
-}
-
-async function collectLegacySlashCommands(cwd: string): Promise<SkillSlashCommand[]> {
-  const commands = await getSkillDirCommands(cwd)
-  return commands
-    .filter((command) =>
-      command.type === 'prompt' &&
-      command.loadedFrom === 'commands_DEPRECATED' &&
-      command.userInvocable !== false &&
-      !command.isHidden)
-    .map((command) => ({
-      name: command.name,
-      description: command.description || '',
-      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-    }))
 }
 
 function buildPluginSkillName(pluginName: string, skillDir: string): string {
@@ -313,35 +95,27 @@ async function collectPluginSkillDirectories(): Promise<Map<string, PluginSkillL
     resetSettingsCache()
     clearInstalledPluginsCache()
     clearPluginCache('skills-api-external-plugin-state')
-
     const result = await loadAllPluginsCacheOnly()
-    if (result.errors.some((error) => error.type === 'plugin-cache-miss')) {
-      enabledPlugins = (await loadAllPlugins()).enabled
-    } else {
-      enabledPlugins = result.enabled
-    }
+    enabledPlugins = result.errors.some((error) => error.type === 'plugin-cache-miss')
+      ? (await loadAllPlugins()).enabled
+      : result.enabled
   } catch {
     return locations
   }
 
   for (const plugin of enabledPlugins) {
-    const candidateRoots = [plugin.skillsPath, ...(plugin.skillsPaths ?? [])]
-
-    for (const root of candidateRoots) {
+    const roots = [plugin.skillsPath, ...(plugin.skillsPaths ?? [])]
+    for (const root of roots) {
       if (!root) continue
 
-      const directSkillFile = path.join(root, 'SKILL.md')
       try {
-        const stat = await fs.stat(directSkillFile)
-        if (stat.isFile()) {
+        if ((await fs.stat(path.join(root, 'SKILL.md'))).isFile()) {
           const name = buildPluginSkillName(plugin.name, root)
-          if (!locations.has(name)) {
-            locations.set(name, { skillDir: root, pluginName: plugin.name })
-          }
+          if (!locations.has(name)) locations.set(name, { skillDir: root })
           continue
         }
       } catch {
-        // Fall through and inspect as a skills root.
+        // A plugin can expose either one Skill folder or a root of folders.
       }
 
       let entries: import('fs').Dirent[]
@@ -353,20 +127,15 @@ async function collectPluginSkillDirectories(): Promise<Map<string, PluginSkillL
 
       for (const entry of entries) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-
         const skillDir = path.join(root, entry.name)
-        const skillFile = path.join(skillDir, 'SKILL.md')
         try {
-          const stat = await fs.stat(skillFile)
-          if (!stat.isFile()) continue
+          if (!(await fs.stat(path.join(skillDir, 'SKILL.md'))).isFile()) continue
         } catch {
           continue
         }
 
         const name = buildPluginSkillName(plugin.name, skillDir)
-        if (!locations.has(name)) {
-          locations.set(name, { skillDir, pluginName: plugin.name })
-        }
+        if (!locations.has(name)) locations.set(name, { skillDir })
       }
     }
   }
@@ -374,47 +143,49 @@ async function collectPluginSkillDirectories(): Promise<Map<string, PluginSkillL
   return locations
 }
 
-async function collectPluginSkills(): Promise<SkillMeta[]> {
+async function collectPluginSkills(): Promise<LoadedSkill[]> {
   const locations = await collectPluginSkillDirectories()
-  const skills: SkillMeta[] = []
-
+  const skills: LoadedSkill[] = []
   for (const [name, location] of locations) {
-    const meta = await loadSkillMeta(
-      location.skillDir,
-      name,
-      'plugin',
-      location.pluginName,
-    )
-    if (meta) {
-      skills.push(meta)
-    }
+    const skill = await loadSkill(location.skillDir, name)
+    if (skill) skills.push(skill)
   }
-
   return skills
 }
 
-async function collectAllSkills(cwd?: string): Promise<SkillMeta[]> {
+async function collectAllSkills(cwd = getCwd()): Promise<LoadedSkill[]> {
   const [userSkills, projectSkills, pluginSkills] = await Promise.all([
-    collectSkillsFromRoots([getUserSkillsDir()], 'user'),
-    collectSkillsFromRoots(getProjectSkillsDirs(cwd), 'project'),
+    collectSkillsFromRoots([getUserSkillsDir()]),
+    collectSkillsFromRoots(getProjectDirsUpToHome('skills', cwd)),
     collectPluginSkills(),
   ])
 
   initBundledSkills()
-  const bundledSkills: SkillMeta[] = getBundledSkillDescriptors()
-    .filter(skill => skill.enabled)
-    .map(skill => ({
-      name: skill.name,
-      ...(skill.displayName ? { displayName: skill.displayName } : {}),
-      description: skill.description,
-      source: 'bundled',
-      userInvocable: skill.userInvocable,
-      contentLength: skill.content.length,
-      hasDirectory: true,
-    }))
-  const skills = [...bundledSkills, ...userSkills, ...projectSkills, ...pluginSkills]
-  skills.sort((a, b) => a.name.localeCompare(b.name))
-  return skills
+  const bundledSkills: LoadedSkill[] = getBundledSkillDescriptors()
+    .filter((skill) => skill.enabled)
+    .map((skill) => ({ name: skill.name, userInvocable: skill.userInvocable }))
+
+  return [...bundledSkills, ...userSkills, ...projectSkills, ...pluginSkills]
+}
+
+function listCommandNames(skills: ReadonlyArray<LoadedSkill>): string[] {
+  const names = new Set<string>()
+  for (const skill of skills) {
+    if (skill.userInvocable) names.add(skill.name)
+  }
+  return [...names].sort((a, b) => a.localeCompare(b))
+}
+
+async function collectLegacySlashCommands(cwd: string): Promise<SkillSlashCommand[]> {
+  const commands = await getSkillDirCommands(cwd)
+  return commands
+    .filter((command) => (
+      command.type === 'prompt' &&
+      command.loadedFrom === 'commands_DEPRECATED' &&
+      command.userInvocable !== false &&
+      !command.isHidden
+    ))
+    .map((command) => ({ name: command.name }))
 }
 
 export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCommand[]> {
@@ -423,145 +194,38 @@ export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCo
     collectAllSkills(requestedCwd),
     collectLegacySlashCommands(requestedCwd),
   ])
-
-  const byName = new Map<string, SkillSlashCommand>()
-
-  for (const skill of skills) {
-    if (!skill.userInvocable) continue
-    byName.set(skill.name, {
-      name: skill.name,
-      description: skill.description || '',
-    })
-  }
-
-  for (const command of legacyCommands) {
-    if (!byName.has(command.name)) {
-      byName.set(command.name, command)
-    }
-  }
-
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const names = new Set(listCommandNames(skills))
+  for (const command of legacyCommands) names.add(command.name)
+  return [...names]
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ name }))
 }
-
-// ─── Router ──────────────────────────────────────────────────────────────────
 
 export async function handleSkillsApi(
   req: Request,
-  url: URL,
+  _url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
     if (req.method !== 'GET') {
-      throw new ApiError(405, `Method ${req.method} not allowed`, 'METHOD_NOT_ALLOWED')
+      throw new ApiError(405, 'Unsupported Skills request', 'SKILL_REQUEST_INVALID')
     }
 
-    const sub = segments[2]
+    // Normal desktop entry points never enumerate implementation Skills.
+    if (segments[2] === undefined) return Response.json({ skills: [] })
 
-    switch (sub) {
-      case undefined:
-        return await listSkills(url)
-      case 'detail':
-        return await getSkillDetail(url)
-      default:
-        throw ApiError.notFound(`Unknown skills endpoint: ${sub}`)
-    }
+    throw new ApiError(404, 'Skill not available', 'SKILL_NOT_AVAILABLE')
   } catch (error) {
-    return errorResponse(error)
+    return skillErrorResponse(error)
   }
 }
 
-// ─── Handlers ────────────────────────────────────────────────────────────────
-
-async function listSkills(url: URL): Promise<Response> {
-  const cwd = getRequestedCwd(url)
-  const skills = await collectAllSkills(cwd)
-  return Response.json({ skills })
-}
-
-async function getSkillDetail(url: URL): Promise<Response> {
-  const source = url.searchParams.get('source')
-  const name = url.searchParams.get('name')
-
-  if (!source || !name) {
-    throw ApiError.badRequest('Missing required query parameters: source, name')
-  }
-
-  // Prevent path traversal
-  if (name.includes('..') || name.includes('/') || name.includes('\\')) {
-    throw ApiError.badRequest('Invalid skill name')
-  }
-
-  if (source === 'bundled') {
-    initBundledSkills()
-    const skill = getBundledSkillDescriptors().find(candidate => (
-      candidate.enabled && candidate.name === name
-    ))
-    if (!skill) throw ApiError.notFound(`Skill not found: ${name}`)
-
-    const frontmatter: Record<string, unknown> = {
-      description: skill.description,
-      'user-invocable': skill.userInvocable,
-    }
-    if (skill.allowedTools.length) frontmatter['allowed-tools'] = skill.allowedTools
-    if (skill.whenToUse) frontmatter['when-to-use'] = skill.whenToUse
-
-    const meta: SkillMeta = {
-      name: skill.name,
-      ...(skill.displayName ? { displayName: skill.displayName } : {}),
-      description: skill.description,
-      source: 'bundled',
-      userInvocable: skill.userInvocable,
-      contentLength: skill.content.length,
-      hasDirectory: true,
-    }
-    return Response.json({
-      detail: {
-        meta,
-        tree: [{ name: 'SKILL.md', path: 'SKILL.md', type: 'file' }],
-        files: [{
-          path: 'SKILL.md',
-          content: skill.content,
-          body: skill.content,
-          frontmatter,
-          language: 'markdown',
-          isEntry: true,
-        }],
-        skillRoot: 'bundled',
-      },
-    })
-  }
-
-  if (source !== 'user' && source !== 'project' && source !== 'plugin') {
-    throw ApiError.badRequest(`Unsupported source: ${source}`)
-  }
-
-  const cwd = getRequestedCwd(url)
-  const pluginLocations =
-    source === 'plugin' ? await collectPluginSkillDirectories() : null
-
-  const pluginLocation = pluginLocations?.get(name)
-  const skillDir =
-    source === 'plugin'
-      ? pluginLocation?.skillDir ?? null
-      : await resolveSkillDir(source, name, cwd)
-
-  if (!skillDir) {
-    throw ApiError.notFound(`Skill not found: ${name}`)
-  }
-
-  const meta = await loadSkillMeta(
-    skillDir,
-    name,
-    source,
-    pluginLocation?.pluginName,
-  )
-  if (!meta) {
-    throw ApiError.notFound(`Skill missing SKILL.md: ${name}`)
-  }
-
-  const { tree, files } = await buildFileTree(skillDir)
-
-  return Response.json({
-    detail: { meta, tree, files, skillRoot: skillDir },
-  })
+function skillErrorResponse(error: unknown): Response {
+  const status = error instanceof ApiError ? error.statusCode : 500
+  const code = error instanceof ApiError && error.code === 'SKILL_NOT_AVAILABLE'
+    ? 'SKILL_NOT_AVAILABLE'
+    : error instanceof ApiError && error.code === 'SKILL_REQUEST_INVALID'
+      ? 'SKILL_REQUEST_INVALID'
+      : 'SKILLS_UNAVAILABLE'
+  return Response.json({ error: code }, { status })
 }

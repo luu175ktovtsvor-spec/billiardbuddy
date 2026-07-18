@@ -4,7 +4,6 @@ import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
 import { useAgentStore } from '../stores/agentStore'
-import { useSkillStore } from '../stores/skillStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
@@ -17,10 +16,6 @@ vi.mock('../api/agents', () => ({
 }))
 
 const noopFetch = vi.fn()
-
-vi.mock('../components/chat/CodeViewer', () => ({
-  CodeViewer: ({ code }: { code: string }) => <pre data-testid="code-viewer">{code}</pre>,
-}))
 
 const MOCK_AGENTS = [
   {
@@ -74,48 +69,8 @@ const MOCK_AGENTS = [
   },
 ]
 
-const MOCK_SKILL_DETAIL = {
-  meta: {
-    name: 'skill-docs',
-    displayName: 'Skill Docs',
-    description: 'A rich skill readme',
-    source: 'user' as const,
-    userInvocable: true,
-    contentLength: 200,
-    hasDirectory: true,
-  },
-  tree: [
-    { name: 'SKILL.md', path: 'SKILL.md', type: 'file' as const },
-    { name: 'helper.ts', path: 'helper.ts', type: 'file' as const },
-  ],
-  files: [
-    {
-      path: 'SKILL.md',
-      language: 'markdown',
-      content: '# Heading\n\nParagraph with `inline code`.\n\n## Section\n\n- First item\n- Second item\n\n> Helpful quote',
-      body: '# Heading\n\nParagraph with `inline code`.\n\n## Section\n\n- First item\n- Second item\n\n> Helpful quote',
-      isEntry: true,
-      frontmatter: {
-        description: 'A rich skill readme',
-        model: 'sonnet',
-      },
-    },
-    {
-      path: 'helper.ts',
-      language: 'typescript',
-      content: 'export const helper = true',
-      isEntry: false,
-    },
-  ],
-  skillRoot: '/tmp/skill-docs',
-}
-
 function switchToAgentsTab() {
   fireEvent.click(screen.getByText('Agents'))
-}
-
-function switchToSkillsTab() {
-  fireEvent.click(screen.getByText('Skills'))
 }
 
 describe('Settings > Agents tab', () => {
@@ -158,16 +113,6 @@ describe('Settings > Agents tab', () => {
       selectedAgentReturnTab: 'agents',
       fetchAgents: noopFetch,
       selectAgent: (agent) => useAgentStore.setState({ selectedAgent: agent }),
-    })
-    useSkillStore.setState({
-      skills: [],
-      selectedSkill: null,
-      isLoading: false,
-      isDetailLoading: false,
-      error: null,
-      fetchSkills: noopFetch,
-      fetchSkillDetail: noopFetch,
-      clearSelection: () => useSkillStore.setState({ selectedSkill: null }),
     })
   })
 
@@ -314,56 +259,5 @@ describe('Settings > Agents tab', () => {
     })
 
     expect(screen.getByText('Installed Plugins')).toBeInTheDocument()
-  })
-})
-
-describe('Settings > Skills tab', () => {
-  beforeEach(() => {
-    useSettingsStore.setState({ locale: 'en' })
-    useUIStore.setState({ activeSettingsTab: 'skills', pendingSettingsTab: null })
-    useSkillStore.setState({
-      skills: [],
-      selectedSkill: null,
-      isLoading: false,
-      isDetailLoading: false,
-      error: null,
-      fetchSkills: noopFetch,
-      fetchSkillDetail: noopFetch,
-      clearSelection: () => useSkillStore.setState({ selectedSkill: null }),
-    })
-  })
-
-  it('renders markdown skills with document styling in detail view', () => {
-    useSkillStore.setState({
-      selectedSkill: MOCK_SKILL_DETAIL,
-      clearSelection: () => useSkillStore.setState({ selectedSkill: null }),
-    })
-
-    render(<Settings />)
-    switchToSkillsTab()
-
-    expect(screen.getByText('Skill metadata')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Heading' })).toBeInTheDocument()
-
-    const rendererRoot = screen.getByRole('heading', { name: 'Heading' }).closest('div[class*="prose"]')
-    expect(rendererRoot?.className).toContain('max-w-[72ch]')
-    expect(rendererRoot?.className).toContain('prose-h2:border-b')
-    expect(rendererRoot?.className).toContain('prose-p:text-[15px]')
-    expect(screen.getByText('Helpful quote')).toBeInTheDocument()
-  })
-
-  it('keeps code files rendered in CodeViewer instead of markdown prose', () => {
-    useSkillStore.setState({
-      selectedSkill: MOCK_SKILL_DETAIL,
-      clearSelection: () => useSkillStore.setState({ selectedSkill: null }),
-    })
-
-    render(<Settings />)
-    switchToSkillsTab()
-
-    fireEvent.click(screen.getAllByText('helper.ts')[0]!)
-
-    expect(screen.getByTestId('code-viewer')).toHaveTextContent('export const helper = true')
-    expect(screen.queryByRole('heading', { name: 'Heading' })).not.toBeInTheDocument()
   })
 })

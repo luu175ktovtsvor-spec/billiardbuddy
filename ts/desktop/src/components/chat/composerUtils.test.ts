@@ -44,7 +44,7 @@ describe('composerUtils', () => {
   it('merges fallback commands so built-in entries like /clear remain visible', () => {
     expect(
       mergeSlashCommands([
-        { name: 'help', description: '' },
+        { name: 'help' },
       ]),
     ).toEqual(
       expect.arrayContaining([
@@ -56,10 +56,10 @@ describe('composerUtils', () => {
 
   it('filters retired session inspection commands returned by the runtime', () => {
     const names = mergeSlashCommands([
-      { name: 'status', description: 'Inspect status' },
-      { name: 'cost', description: 'Inspect costs' },
-      { name: 'context', description: 'Inspect context' },
-      { name: 'help', description: 'Show commands' },
+      { name: 'status' },
+      { name: 'cost' },
+      { name: 'context' },
+      { name: 'help' },
     ]).map((command) => command.name)
 
     expect(names).not.toContain('status')
@@ -68,25 +68,28 @@ describe('composerUtils', () => {
     expect(names).toContain('help')
   })
 
-  it('keeps server-provided descriptions for non-built-in commands', () => {
-    expect(
-      mergeSlashCommands([
-        { name: 'team:lark', description: 'Team-provided description' },
-      ]),
-    ).toEqual(
-      expect.arrayContaining([
-        { name: 'team:lark', description: 'Team-provided description' },
-      ]),
-    )
+  it('drops descriptions and argument hints supplied by dynamic runtime commands', () => {
+    const commands = mergeSlashCommands([
+      {
+        name: 'team:lark',
+        description: 'Private plugin workflow description',
+        argumentHint: '<private-argument>',
+      },
+    ])
+
+    expect(commands).toEqual(expect.arrayContaining([
+      { name: 'team:lark', description: '' },
+    ]))
+    expect(commands.find((command) => command.name === 'team:lark')).not.toHaveProperty('argumentHint')
   })
 
-  it('prefers the localized fallback description for built-in commands', () => {
+  it('uses product-owned fallback copy for built-in commands', () => {
     // For commands the desktop owns the copy for (e.g. /clear, /compact, /help),
     // the localized description must win over whatever the CLI broadcasts so the
     // i18n keys actually take effect at runtime.
     expect(
       mergeSlashCommands(
-        [{ name: 'clear', description: 'CLI English description' }],
+        [{ name: 'clear', description: 'Runtime-private description', argumentHint: '<private>' }],
         [{ name: 'clear', description: 'Localized description' }],
       ),
     ).toEqual(
@@ -96,13 +99,13 @@ describe('composerUtils', () => {
     )
   })
 
-  it('keeps slash command argument hints and fills missing fallback hints', () => {
+  it('does not inherit runtime argument hints for product-owned commands', () => {
     expect(
       mergeSlashCommands([
         {
           name: 'compact',
-          description: '',
-          argumentHint: '',
+          description: 'Runtime-private description',
+          argumentHint: '<private>',
         },
       ]),
     ).toEqual(
@@ -113,6 +116,9 @@ describe('composerUtils', () => {
         },
       ]),
     )
+    expect(mergeSlashCommands([
+      { name: 'compact', argumentHint: '<private>' },
+    ]).find((command) => command.name === 'compact')).not.toHaveProperty('argumentHint')
   })
 
   it('keeps /goal as a single command with argument hints instead of pseudo subcommands', () => {
@@ -216,7 +222,7 @@ describe('composerUtils', () => {
   })
 
   it('appends agent entries after normal slash commands without replacing them', () => {
-    const base = mergeSlashCommands([{ name: 'agent', description: 'CLI /agent' }])
+    const base = mergeSlashCommands([{ name: 'agent' }])
     const withAgents = appendAgentSlashCommands(base, [
       { name: 'agent debugger', description: 'Debug failures', argumentHint: '<prompt>' },
     ])
@@ -229,19 +235,17 @@ describe('composerUtils', () => {
     expect(replaceSlashCommand('/goal sta', 9, 'goal status')).toBeNull()
   })
 
-  it('ranks slash command name matches before broad description matches', () => {
+  it('finds dynamic runtime commands by their command names', () => {
     expect(
       filterSlashCommands([
-        { name: 'lark-calendar', description: 'Includes shortcuts and suggestion helpers' },
-        { name: 'agent-team-orchestrator', description: 'Uses Subagent orchestration' },
-        { name: 'superpowers:brainstorming', description: 'Creative work planning' },
-        { name: 'superpowers:systematic-debugging', description: 'Debug unexpected behavior' },
+        { name: 'lark-calendar', description: '' },
+        { name: 'agent-team-orchestrator', description: '' },
+        { name: 'superpowers:brainstorming', description: '' },
+        { name: 'superpowers:systematic-debugging', description: '' },
       ], 'su').map((command) => command.name),
     ).toEqual([
       'superpowers:brainstorming',
       'superpowers:systematic-debugging',
-      'lark-calendar',
-      'agent-team-orchestrator',
     ])
   })
 

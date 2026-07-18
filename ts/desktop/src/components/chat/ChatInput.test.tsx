@@ -6,6 +6,7 @@ import { act } from 'react'
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   delete: vi.fn(),
+  getSlashCommands: vi.fn(),
   listAgents: vi.fn(),
   search: vi.fn(),
   browse: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock('../../api/sessions', () => ({
   sessionsApi: {
     create: mocks.create,
     delete: mocks.delete,
+    getSlashCommands: mocks.getSlashCommands,
   },
 }))
 
@@ -141,6 +143,7 @@ describe('ChatInput file mentions', () => {
     })
     mocks.create.mockResolvedValue({ sessionId: 'created-session', workDir: '/repo' })
     mocks.delete.mockResolvedValue({ ok: true })
+    mocks.getSlashCommands.mockResolvedValue({ commands: [] })
     mocks.listAgents.mockResolvedValue({ activeAgents: [], allAgents: [] })
   })
 
@@ -1071,40 +1074,59 @@ describe('ChatInput file mentions', () => {
     expect(input).toHaveValue('')
   })
 
-  it('prioritizes active-session slash commands by command name when filtering', async () => {
-    useChatStore.setState({
-      sessions: {
-        [sessionId]: {
-          ...useChatStore.getState().sessions[sessionId]!,
-          slashCommands: [
-            {
-              name: 'agent-team-orchestrator',
-              description: 'Agent Teams can use Subagent orchestration.',
-            },
-            {
-              name: 'lark-calendar',
-              description: 'Includes suggestion helpers.',
-            },
-            {
-              name: 'superpowers:brainstorming',
-              description: 'Creative work planning.',
-            },
-          ],
-        },
+  it('discovers active-session slash command names over REST without rendering runtime descriptions or hints', async () => {
+    const runtimeCommands = [
+      {
+        name: 'agent-team-orchestrator',
+        description: 'Private Agent Team implementation details',
+        argumentHint: '<private-agent-argument>',
       },
-    })
+      {
+        name: 'lark-calendar',
+        description: 'Private plugin implementation details',
+        argumentHint: '<private-plugin-argument>',
+      },
+      {
+        name: 'superpowers:brainstorming',
+        description: 'Private workflow implementation details',
+        argumentHint: '<private-workflow-argument>',
+      },
+    ]
+    mocks.getSlashCommands.mockResolvedValue({ commands: runtimeCommands })
 
     render(<ChatInput />)
+    expect(mocks.getSlashCommands).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByRole('textbox'), {
       target: { value: '/su', selectionStart: 3 },
     })
 
     await waitFor(() => {
+      expect(mocks.getSlashCommands).toHaveBeenCalledWith(sessionId)
       const commandButtons = screen
         .getAllByRole('button')
         .filter((button) => button.textContent?.startsWith('/'))
       expect(commandButtons[0]).toHaveTextContent('/superpowers:brainstorming')
+    })
+    expect(screen.queryByText('Private workflow implementation details')).not.toBeInTheDocument()
+    expect(screen.queryByText('<private-workflow-argument>')).not.toBeInTheDocument()
+  })
+
+  it('keeps a manually typed Skill slash command executable without selecting it from a catalog', () => {
+    useSettingsStore.setState({ chatSendBehavior: 'enter' })
+    render(<ChatInput />)
+
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    const command = '/superpowers:brainstorming plan a member welcome campaign'
+    fireEvent.change(input, {
+      target: { value: command, selectionStart: command.length },
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(mocks.wsSend).toHaveBeenCalledWith(sessionId, {
+      type: 'user_message',
+      content: command,
+      attachments: [],
     })
   })
 

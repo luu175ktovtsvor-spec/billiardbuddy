@@ -22,7 +22,10 @@ import { sanitizePath } from '../../utils/sessionStoragePortable.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
-import { updateSessionSlashCommands } from '../ws/handler.js'
+import {
+  __resetWebSocketHandlerStateForTests,
+  updateSessionSlashCommands,
+} from '../ws/handler.js'
 
 // ============================================================================
 // Test helpers
@@ -113,12 +116,20 @@ async function writeSkill(
   rootDir: string,
   skillName: string,
   description: string,
+  options: { frontmatter?: readonly string[]; body?: string } = {},
 ): Promise<void> {
   const skillDir = path.join(rootDir, skillName)
   await fs.mkdir(skillDir, { recursive: true })
   await fs.writeFile(
     path.join(skillDir, 'SKILL.md'),
-    ['---', `description: ${description}`, '---', '', `# ${skillName}`].join('\n'),
+    [
+      '---',
+      `description: ${description}`,
+      ...(options.frontmatter ?? []),
+      '---',
+      '',
+      options.body ?? `# ${skillName}`,
+    ].join('\n'),
     'utf-8',
   )
 }
@@ -134,6 +145,28 @@ async function writeLegacySlashCommand(
     ['---', `description: ${description}`, 'argument-hint: <topic>', '---', '', `Run ${commandName}.`].join('\n'),
     'utf-8',
   )
+}
+
+function expectNameOnlySlashCommands(
+  body: { commands: Array<{ name: string }> },
+  privateValues: readonly string[] = [],
+): void {
+  expect(Object.keys(body).sort()).toEqual(['commands'])
+  for (const command of body.commands) {
+    expect(Object.keys(command).sort()).toEqual(['name'])
+    expect(typeof command.name).toBe('string')
+    expect(command.name).not.toBe('')
+  }
+
+  const serialized = JSON.stringify(body)
+  for (const value of privateValues) {
+    expect(serialized).not.toContain(value)
+  }
+  expect(serialized).not.toContain('"description"')
+  expect(serialized).not.toContain('"argumentHint"')
+  expect(serialized).not.toContain('"frontmatter"')
+  expect(serialized).not.toContain('"path"')
+  expect(serialized).not.toContain('"error"')
 }
 
 function git(cwd: string, ...args: string[]): string {
@@ -2281,6 +2314,80 @@ describe('SessionService', () => {
 // Sessions API integration tests
 // ============================================================================
 
+describe('Session slash command product boundary', () => {
+  beforeEach(async () => {
+    await setupTmpConfigDir()
+    service = new SessionService()
+    __resetWebSocketHandlerStateForTests()
+    clearInstalledPluginsCache()
+    clearPluginCache('session-slash-command-boundary-setup')
+    resetSettingsCache()
+  })
+
+  afterEach(async () => {
+    __resetWebSocketHandlerStateForTests()
+    clearCommandsCache()
+    clearInstalledPluginsCache()
+    clearPluginCache('session-slash-command-boundary-teardown')
+    resetSettingsCache()
+    await cleanupTmpDir()
+  })
+
+  it('returns only names for an explicit active-session slash discovery request', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeee0001'
+    const workDir = path.join(tmpDir, 'workspace', 'app')
+    const userDescription = 'DIRECT_USER_SKILL_DESCRIPTION_SENTINEL'
+    const projectDescription = 'DIRECT_PROJECT_SKILL_DESCRIPTION_SENTINEL'
+    const cachedDescription = 'DIRECT_CACHED_COMMAND_DESCRIPTION_SENTINEL'
+    const frontmatter = 'DIRECT_SKILL_FRONTMATTER_SENTINEL'
+    const body = 'DIRECT_SKILL_BODY_SENTINEL'
+    const privatePath = path.join(tmpDir, 'skills', 'user-skill')
+
+    await fs.mkdir(path.join(workDir, '.claude', 'skills'), { recursive: true })
+    await fs.mkdir(path.join(tmpDir, 'skills'), { recursive: true })
+    await writeSkill(path.join(tmpDir, 'skills'), 'user-skill', userDescription, {
+      frontmatter: [`private-metadata: ${frontmatter}`],
+    })
+    await writeSkill(path.join(workDir, '.claude', 'skills'), 'project-skill', projectDescription, {
+      body,
+    })
+    await writeSessionFile('-tmp-api-test', sessionId, [
+      makeSnapshotEntry(),
+      makeSessionMetaEntry(workDir),
+    ])
+    updateSessionSlashCommands(
+      sessionId,
+      [{ name: 'cached-skill', description: cachedDescription, argumentHint: '<private-argument>' }],
+      { notifyClient: false },
+    )
+    clearCommandsCache()
+
+    const { handleSessionsApi } = await import('../api/sessions.js')
+    const url = new URL(`/api/sessions/${sessionId}/slash-commands`, 'http://localhost:3456')
+    const response = await handleSessionsApi(
+      new Request(url.toString(), { method: 'GET' }),
+      url,
+      url.pathname.split('/').filter(Boolean),
+    )
+
+    expect(response.status).toBe(200)
+    const responseBody = await response.json() as { commands: Array<{ name: string }> }
+    expectNameOnlySlashCommands(responseBody, [
+      userDescription,
+      projectDescription,
+      cachedDescription,
+      frontmatter,
+      body,
+      privatePath,
+      '<private-argument>',
+      'SKILL.md',
+    ])
+    expect(responseBody.commands).toContainEqual({ name: 'user-skill' })
+    expect(responseBody.commands).toContainEqual({ name: 'project-skill' })
+    expect(responseBody.commands).toContainEqual({ name: 'cached-skill' })
+  })
+})
+
 describe('Sessions API', () => {
   let baseUrl: string
   let server: ReturnType<typeof Bun.serve> | null = null
@@ -2868,14 +2975,23 @@ describe('Sessions API', () => {
     expect(detail.title).toBe('New Custom Title')
   })
 
-  it('GET /api/sessions/:id/slash-commands should include user and project skills before CLI init', async () => {
+  it('GET /api/sessions/:id/slash-commands should include user and project skill names without exposing descriptions', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     const workDir = path.join(tmpDir, 'workspace', 'app')
+    const userDescription = 'USER_SKILL_DESCRIPTION_SENTINEL'
+    const projectDescription = 'PROJECT_SKILL_DESCRIPTION_SENTINEL'
+    const userFrontmatter = 'USER_SKILL_FRONTMATTER_SENTINEL'
+    const projectBody = 'PROJECT_SKILL_BODY_SENTINEL'
+    const userSkillPath = path.join(tmpDir, 'skills', 'user-skill')
 
     await fs.mkdir(path.join(workDir, '.claude', 'skills'), { recursive: true })
     await fs.mkdir(path.join(tmpDir, 'skills'), { recursive: true })
-    await writeSkill(path.join(tmpDir, 'skills'), 'user-skill', 'User skill description')
-    await writeSkill(path.join(workDir, '.claude', 'skills'), 'project-skill', 'Project skill description')
+    await writeSkill(path.join(tmpDir, 'skills'), 'user-skill', userDescription, {
+      frontmatter: [`private-metadata: ${userFrontmatter}`],
+    })
+    await writeSkill(path.join(workDir, '.claude', 'skills'), 'project-skill', projectDescription, {
+      body: projectBody,
+    })
 
     await writeSessionFile('-tmp-api-test', sessionId, [
       makeSnapshotEntry(),
@@ -2887,19 +3003,21 @@ describe('Sessions API', () => {
     const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
     expect(res.status).toBe(200)
 
-    const body = (await res.json()) as {
-      commands: Array<{ name: string; description: string }>
-    }
+    const body = (await res.json()) as { commands: Array<{ name: string }> }
 
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({ name: 'user-skill', description: 'User skill description' }),
-    )
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({ name: 'project-skill', description: 'Project skill description' }),
-    )
+    expectNameOnlySlashCommands(body, [
+      userDescription,
+      projectDescription,
+      userFrontmatter,
+      projectBody,
+      userSkillPath,
+      'SKILL.md',
+    ])
+    expect(body.commands).toContainEqual({ name: 'user-skill' })
+    expect(body.commands).toContainEqual({ name: 'project-skill' })
   })
 
-  it('GET /api/sessions/:id/slash-commands should include legacy custom commands before CLI init', async () => {
+  it('GET /api/sessions/:id/slash-commands should include legacy custom command names without exposing metadata', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef'
     const workDir = path.join(tmpDir, 'workspace', 'app')
 
@@ -2924,27 +3042,18 @@ describe('Sessions API', () => {
     const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
     expect(res.status).toBe(200)
 
-    const body = (await res.json()) as {
-      commands: Array<{ name: string; description: string; argumentHint?: string }>
-    }
+    const body = (await res.json()) as { commands: Array<{ name: string }> }
 
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({
-        name: 'user-probe',
-        description: 'User custom slash command',
-        argumentHint: '<topic>',
-      }),
-    )
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({
-        name: 'project-probe',
-        description: 'Project custom slash command',
-        argumentHint: '<topic>',
-      }),
-    )
+    expectNameOnlySlashCommands(body, [
+      'User custom slash command',
+      'Project custom slash command',
+      '<topic>',
+    ])
+    expect(body.commands).toContainEqual({ name: 'user-probe' })
+    expect(body.commands).toContainEqual({ name: 'project-probe' })
   })
 
-  it('GET /api/sessions/:id/slash-commands should preserve cached command argument hints when merging custom commands', async () => {
+  it('GET /api/sessions/:id/slash-commands should retain cached command names without exposing metadata when merging custom commands', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeef001'
     const workDir = path.join(tmpDir, 'workspace', 'app')
 
@@ -2969,21 +3078,15 @@ describe('Sessions API', () => {
     const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
     expect(res.status).toBe(200)
 
-    const body = (await res.json()) as {
-      commands: Array<{ name: string; description: string; argumentHint?: string }>
-    }
+    const body = (await res.json()) as { commands: Array<{ name: string }> }
 
-    expect(body.commands).toContainEqual({
-      name: 'builtin-probe',
-      description: 'Cached CLI command',
-      argumentHint: '<value>',
-    })
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({
-        name: 'project-probe',
-        description: 'Project custom slash command',
-      }),
-    )
+    expectNameOnlySlashCommands(body, [
+      'Cached CLI command',
+      'Project custom slash command',
+      '<value>',
+    ])
+    expect(body.commands).toContainEqual({ name: 'builtin-probe' })
+    expect(body.commands).toContainEqual({ name: 'project-probe' })
   })
 
   it('GET /api/sessions/:id/slash-commands should include enabled plugin skills before CLI init', async () => {
@@ -3063,16 +3166,15 @@ describe('Sessions API', () => {
     const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
     expect(res.status).toBe(200)
 
-    const body = (await res.json()) as {
-      commands: Array<{ name: string; description: string }>
-    }
+    const body = (await res.json()) as { commands: Array<{ name: string }> }
 
-    expect(body.commands).toContainEqual(
-      expect.objectContaining({
-        name: 'superpowers:brainstorming',
-        description: 'Superpowers brainstorming skill',
-      }),
-    )
+    expectNameOnlySlashCommands(body, [
+      'Superpowers brainstorming skill',
+      'Core skills library',
+      pluginRoot,
+      'SKILL.md',
+    ])
+    expect(body.commands).toContainEqual({ name: 'superpowers:brainstorming' })
   })
 
   it('GET /api/sessions/:id/workspace/status|tree|file|diff should return workspace data', async () => {

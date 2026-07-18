@@ -36,23 +36,6 @@ vi.mock('../stores/agentStore', () => ({
   }),
 }))
 
-vi.mock('../stores/skillStore', () => ({
-  useSkillStore: () => ({
-    skills: [],
-    selectedSkill: null,
-    isLoading: false,
-    isDetailLoading: false,
-    error: null,
-    fetchSkills: vi.fn(),
-    fetchSkillDetail: vi.fn(),
-    clearSelection: vi.fn(),
-  }),
-}))
-
-vi.mock('../components/chat/CodeViewer', () => ({
-  CodeViewer: ({ code }: { code: string }) => <pre>{code}</pre>,
-}))
-
 describe('Settings > Diagnostics tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()

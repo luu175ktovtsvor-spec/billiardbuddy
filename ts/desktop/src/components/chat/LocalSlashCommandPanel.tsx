@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { skillsApi } from '../../api/skills'
 import { mcpApi } from '../../api/mcp'
 import { useTranslation, type TranslationKey } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { useMcpStore } from '../../stores/mcpStore'
-import { useSkillStore } from '../../stores/skillStore'
 import type { McpServerRecord } from '../../types/mcp'
-import type { SkillMeta } from '../../types/skill'
 import {
   isRetiredSessionInspectorCommandName,
   type SlashCommandOption,
 } from './composerUtils'
 
-export type LocalSlashCommandName = 'mcp' | 'skills' | 'help'
+export type LocalSlashCommandName = 'mcp' | 'help'
 
 type Props = {
   command: LocalSlashCommandName
@@ -224,70 +221,6 @@ function McpPanel({ cwd, onClose }: { cwd?: string; onClose: () => void }) {
   )
 }
 
-function SkillsPanel({ cwd, onClose }: { cwd?: string; onClose: () => void }) {
-  const t = useTranslation()
-  const setPendingSettingsTab = useUIStore((s) => s.setPendingSettingsTab)
-  const fetchSkillDetail = useSkillStore((s) => s.fetchSkillDetail)
-  const [skills, setSkills] = useState<SkillMeta[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    skillsApi.list(cwd)
-      .then((response) => {
-        if (cancelled) return
-        setSkills(response.skills.filter((skill) => skill.userInvocable))
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : String(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [cwd])
-
-  return (
-    <PanelShell
-      title={t('slash.skills.title')}
-      subtitle={cwd ? t('slash.skills.subtitleWithProject', { path: cwd }) : t('slash.skills.subtitle')}
-      onClose={onClose}
-    >
-      {error ? (
-        <ErrorState message={error} />
-      ) : skills === null ? (
-        <LoadingState label={t('common.loading')} />
-      ) : skills.length === 0 ? (
-        <EmptyState title={t('slash.skills.emptyTitle')} body={t('slash.skills.emptyBody')} />
-      ) : (
-        <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-          {skills.map((skill) => (
-            <button
-              type="button"
-              key={`${skill.source}:${skill.name}`}
-              onClick={async () => {
-                await fetchSkillDetail(skill.source, skill.name, cwd, 'skills')
-                setPendingSettingsTab('skills')
-                useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
-                onClose()
-              }}
-              className="block w-full border-t border-[var(--color-border)] px-4 py-4 text-left first:border-t-0 hover:bg-[var(--color-surface-hover)]"
-            >
-              <div className="flex items-center gap-3">
-                <div className="text-sm font-semibold text-[var(--color-text-primary)]">/{skill.name}</div>
-                <span className="rounded-full bg-[var(--color-surface-hover)] px-2 py-1 text-[11px] text-[var(--color-text-secondary)]">
-                  {skill.source}
-                </span>
-              </div>
-              <div className="mt-2 text-xs leading-6 text-[var(--color-text-tertiary)]">{skill.description}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </PanelShell>
-  )
-}
-
 const COMMAND_GROUPS = [
   {
     titleKey: 'slash.help.group.conversation',
@@ -299,7 +232,7 @@ const COMMAND_GROUPS = [
   },
   {
     titleKey: 'slash.help.group.desktop',
-    names: ['mcp', 'skills', 'plugin', 'help'],
+    names: ['mcp', 'plugin', 'help'],
   },
 ] satisfies Array<{ titleKey: TranslationKey; names: string[] }>
 
@@ -340,7 +273,9 @@ function HelpPanel({
           <span className="text-[11px] leading-5 text-[var(--color-text-tertiary)]">{command.argumentHint}</span>
         ) : null}
       </div>
-      <div className="min-w-0 flex-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{command.description}</div>
+      {command.description ? (
+        <div className="min-w-0 flex-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{command.description}</div>
+      ) : null}
     </div>
   )
 
@@ -386,6 +321,5 @@ function HelpPanel({
 
 export function LocalSlashCommandPanel({ command, cwd, commands, onClose }: Props) {
   if (command === 'mcp') return <McpPanel cwd={cwd} onClose={onClose} />
-  if (command === 'skills') return <SkillsPanel cwd={cwd} onClose={onClose} />
   return <HelpPanel commands={commands} onClose={onClose} />
 }

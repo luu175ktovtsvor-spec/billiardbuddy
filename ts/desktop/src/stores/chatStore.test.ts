@@ -20,6 +20,7 @@ const {
   updateSessionTitleMock,
   updateSessionMessageCountMock,
   updateSessionPermissionModeMock,
+  getSlashCommandsMock,
   sessionStoreSnapshot,
   cliTaskStoreSnapshot,
 } = vi.hoisted(() => ({
@@ -41,6 +42,7 @@ const {
   updateSessionTitleMock: vi.fn(),
   updateSessionMessageCountMock: vi.fn(),
   updateSessionPermissionModeMock: vi.fn(),
+  getSlashCommandsMock: vi.fn(async () => ({ commands: [] })),
   sessionStoreSnapshot: {
     sessions: [] as Array<{
       id: string
@@ -76,7 +78,7 @@ vi.mock('../api/websocket', () => ({
 vi.mock('../api/sessions', () => ({
   sessionsApi: {
     getMessages: vi.fn(async () => ({ messages: [] })),
-    getSlashCommands: vi.fn(async () => ({ commands: [] })),
+    getSlashCommands: getSlashCommandsMock,
   },
 }))
 
@@ -280,6 +282,8 @@ describe('chatStore history mapping', () => {
     updateTabStatusMock.mockReset()
     updateSessionTitleMock.mockReset()
     updateSessionMessageCountMock.mockReset()
+    getSlashCommandsMock.mockReset()
+    getSlashCommandsMock.mockResolvedValue({ commands: [] })
     vi.mocked(sessionsApi.getMessages).mockReset()
     vi.mocked(sessionsApi.getMessages).mockResolvedValue({ messages: [] })
     sessionStoreSnapshot.sessions = []
@@ -2102,7 +2106,7 @@ describe('chatStore history mapping', () => {
           streamingResponseChars: 0,
           elapsedSeconds: 0,
           statusVerb: '',
-          slashCommands: [{ name: 'old-command', description: 'Old command' }],
+          slashCommands: [{ name: 'old-command' }],
           agentTaskNotifications: {},
           elapsedTimer: null,
         },
@@ -2338,39 +2342,6 @@ describe('chatStore history mapping', () => {
     vi.useRealTimers()
   })
 
-  it('refreshes merged slash commands when a live CLI update omits project commands', async () => {
-    const cliCommand = { name: 'builtin-help', description: 'Built-in command' }
-    const projectCommand = { name: 'project-probe', description: 'Project custom command' }
-
-    vi.mocked(sessionsApi.getSlashCommands).mockClear()
-    vi.mocked(sessionsApi.getSlashCommands).mockResolvedValueOnce({
-      commands: [cliCommand, projectCommand],
-    })
-
-    useChatStore.setState({
-      sessions: {
-        [TEST_SESSION_ID]: makeSession({
-          slashCommands: [projectCommand],
-        }),
-      },
-    })
-
-    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
-      type: 'system_notification',
-      subtype: 'slash_commands',
-      data: [cliCommand],
-    })
-
-    await Promise.resolve()
-
-    expect(sessionsApi.getSlashCommands).toHaveBeenCalledTimes(1)
-    expect(sessionsApi.getSlashCommands).toHaveBeenCalledWith(TEST_SESSION_ID)
-    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.slashCommands).toEqual([
-      cliCommand,
-      projectCommand,
-    ])
-  })
-
   it('syncs live TodoWrite tool input into the task store for that session', () => {
     const todos = [{ content: 'Live todo', status: 'in_progress' }]
     useChatStore.setState({
@@ -2395,6 +2366,12 @@ describe('chatStore history mapping', () => {
     expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
       type: 'prewarm_session',
     })
+  })
+
+  it('does not proactively fetch a slash command catalog when connecting', () => {
+    useChatStore.getState().connectToSession(TEST_SESSION_ID)
+
+    expect(getSlashCommandsMock).not.toHaveBeenCalled()
   })
 
   it('does not prewarm team member sessions', () => {
