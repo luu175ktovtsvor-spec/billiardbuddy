@@ -6,7 +6,7 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 3
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 4
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
 
 type DesktopMigrationReport = {
@@ -21,7 +21,6 @@ const THEME_STORAGE_KEY = 'billiardbuddy-theme'
 const LOCALE_STORAGE_KEY = 'billiardbuddy-locale'
 const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
 const SETTINGS_TABS = [
-  'activity',
   'general',
   'terminal',
   'mcp',
@@ -114,6 +113,16 @@ function normalizeEnumKey(
   }
 }
 
+function migrateRetiredActivitySettingsTab(storage: StorageLike, report: DesktopMigrationReport): void {
+  if (storage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY) === 'activity') {
+    storage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, 'general')
+    report.migratedKeys.push(ACTIVE_SETTINGS_TAB_STORAGE_KEY)
+    return
+  }
+
+  normalizeEnumKey(storage, ACTIVE_SETTINGS_TAB_STORAGE_KEY, SETTINGS_TABS, report)
+}
+
 function normalizeAppZoomKey(storage: StorageLike, report: DesktopMigrationReport): void {
   const value = storage.getItem(APP_ZOOM_STORAGE_KEY)
   if (!isValidStoredAppZoomLevel(value)) {
@@ -161,7 +170,7 @@ export function runDesktopPersistenceMigrations(storage: StorageLike | null = ge
   runMigrationStep(report, RETIRED_SESSION_RUNTIME_STORAGE_KEY, () => removeRetiredSessionRuntime(storage, report))
   runMigrationStep(report, THEME_STORAGE_KEY, () => normalizeEnumKey(storage, THEME_STORAGE_KEY, [...THEME_MODES], report))
   runMigrationStep(report, LOCALE_STORAGE_KEY, () => normalizeEnumKey(storage, LOCALE_STORAGE_KEY, ['zh', 'en'], report))
-  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => normalizeEnumKey(storage, ACTIVE_SETTINGS_TAB_STORAGE_KEY, SETTINGS_TABS, report))
+  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => migrateRetiredActivitySettingsTab(storage, report))
   runMigrationStep(report, APP_ZOOM_STORAGE_KEY, () => normalizeAppZoomKey(storage, report))
   try {
     storage.setItem(DESKTOP_PERSISTENCE_VERSION_KEY, String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))

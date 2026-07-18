@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react'
 import {
-  Activity,
   ArrowLeft,
   Bot,
   Brain,
@@ -38,8 +37,8 @@ import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
 import { DiagnosticsSettings } from './DiagnosticsSettings'
-import { ActivitySettings } from './ActivitySettings'
 import { MemorySettings } from './MemorySettings'
+import { ProfileSettings } from './ProfileSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
@@ -80,12 +79,10 @@ const ADVANCED_SETTINGS: SettingsNavItem[] = [
   { tab: 'terminal', icon: <Terminal size={16} /> },
   { tab: 'mcp', icon: <Plug size={16} /> },
   { tab: 'agents', icon: <Bot size={16} /> },
-  { tab: 'activity', icon: <Activity size={16} /> },
   { tab: 'diagnostics', icon: <CircleHelp size={16} /> },
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
-  activity: 'settings.tab.activity',
   general: 'settings.tab.general',
   terminal: 'settings.tab.terminal',
   mcp: 'settings.tab.mcp',
@@ -99,7 +96,6 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
 }
 
 const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
-  activity: '运行记录',
   general: '常规',
   terminal: '终端',
   mcp: '外部连接',
@@ -225,7 +221,6 @@ export function Settings() {
   }
 
   const content = (() => {
-    if (activeTab === 'activity') return <ActivitySettings />
     if (activeTab === 'general') return <GeneralSettings />
     if (activeTab === 'terminal') return <TerminalSettings showPreferences />
     if (activeTab === 'mcp') return <McpSettings />
@@ -852,6 +847,8 @@ export function GeneralSettings() {
 
   return (
     <div className="max-w-xl">
+      <ProfileSettings />
+
       {/* Appearance selector */}
       <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.appearanceTitle')}</h2>
       <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.appearanceDescription')}</p>

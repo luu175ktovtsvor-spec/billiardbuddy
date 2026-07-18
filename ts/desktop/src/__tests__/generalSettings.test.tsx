@@ -35,8 +35,8 @@ vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
 vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
 vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
-vi.mock('../pages/ActivitySettings', () => ({
-  ActivitySettings: () => <div>Activity Settings Mock</div>,
+vi.mock('../pages/ProfileSettings', () => ({
+  ProfileSettings: () => <div>Profile Settings Mock</div>,
 }))
 
 vi.mock('../stores/agentStore', () => ({
@@ -572,17 +572,12 @@ describe('Settings > General tab', () => {
     expect(slider.closest('.settings-zoom-control')).toHaveStyle({ '--settings-zoom-range-progress': '40%' })
   })
 
-  it('opens the Token usage tab from Settings navigation above Diagnostics', () => {
+  it('does not expose the retired Token usage navigation item', () => {
     render(<Settings />)
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
-    const usageTab = screen.getByText('Token usage')
-    const diagnosticsTab = screen.getByText('Diagnostics')
-    expect((usageTab.compareDocumentPosition(diagnosticsTab) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-
-    fireEvent.click(usageTab)
-
-    expect(screen.getByText('Activity Settings Mock')).toBeInTheDocument()
+    expect(screen.queryByText('Token usage')).not.toBeInTheDocument()
+    expect(screen.getByText('Diagnostics')).toBeInTheDocument()
   })
 
   it('lets the user disable WebFetch preflight skipping', () => {
