@@ -1,5 +1,5 @@
 /**
- * Unit tests for CronService, workspace search, and Scheduled Tasks API
+ * Unit tests for CronService and Scheduled Tasks API
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
@@ -7,7 +7,6 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { CronService } from '../services/cronService.js'
-import { SearchService } from '../services/searchService.js'
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
@@ -174,72 +173,6 @@ describe('CronService', () => {
       renameSpy.mockRestore()
     }
   })
-})
-
-// ─── SearchService tests ────────────────────────────────────────────────────
-
-describe('SearchService', () => {
-  let service: SearchService
-  let searchDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
-    service = new SearchService()
-
-    // 创建搜索用的临时文件
-    searchDir = path.join(tmpDir, 'workspace')
-    await fs.mkdir(searchDir, { recursive: true })
-    await fs.writeFile(
-      path.join(searchDir, 'hello.txt'),
-      'Hello World\nThis is a test\nAnother line\n',
-    )
-    await fs.writeFile(
-      path.join(searchDir, 'code.ts'),
-      'function greet() {\n  return "hello"\n}\n',
-    )
-  })
-
-  afterEach(async () => {
-    if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-    } else {
-      delete process.env.CLAUDE_CONFIG_DIR
-    }
-    await cleanupTmpDir(tmpDir)
-  })
-
-  it('should find matches in workspace files', async () => {
-    const results = await service.searchWorkspace('Hello', { cwd: searchDir })
-    expect(results.length).toBeGreaterThan(0)
-    expect(results[0].text).toContain('Hello')
-  })
-
-  it('should return empty results when nothing matches', async () => {
-    const results = await service.searchWorkspace('ZZZZNONEXISTENT', {
-      cwd: searchDir,
-    })
-    expect(results).toHaveLength(0)
-  })
-
-  it('should respect maxResults limit', async () => {
-    // 写入多行匹配
-    const lines = Array.from({ length: 50 }, (_, i) => `match line ${i}`).join(
-      '\n',
-    )
-    await fs.writeFile(path.join(searchDir, 'many.txt'), lines)
-
-    const results = await service.searchWorkspace('match', {
-      cwd: searchDir,
-      maxResults: 5,
-    })
-    expect(results.length).toBeLessThanOrEqual(5)
-  })
-
-  it('should reject empty query', async () => {
-    await expect(service.searchWorkspace('')).rejects.toThrow()
-  })
-
 })
 
 // ─── Scheduled Tasks API integration ────────────────────────────────────────

@@ -271,24 +271,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 6. Search
-  // =============================================
-
-  it('should search workspace', async () => {
-    // Create a test file to search
-    await fs.writeFile(path.join(tmpDir, 'test-search.txt'), 'Hello World\nFoo Bar Baz\n')
-
-    const { status, data } = await api('POST', '/api/search', {
-      query: 'Hello',
-      cwd: tmpDir,
-    })
-    expect(status).toBe(200)
-    expect(data.results.length).toBeGreaterThan(0)
-    expect(data.results[0].text).toContain('Hello')
-  })
-
-  // =============================================
-  // 7. Agents
+  // 6. Agents
   // =============================================
 
   it('should start with safe Agent command descriptors', async () => {
