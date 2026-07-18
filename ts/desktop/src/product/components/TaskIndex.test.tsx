@@ -224,7 +224,62 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
       title: '整理球台配置',
-    }, '请列出本周的训练安排'))
+    }, {
+      text: '请列出本周的训练安排',
+      attachments: [],
+    }))
+  })
+
+  it('uses the existing browser picker for initial image attachments, lets the user remove them, and keeps refs out of the task payload', async () => {
+    const props = renderIndex()
+    const pickerClick = vi.spyOn(HTMLInputElement.prototype, 'click')
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
+
+    await waitFor(() => expect(pickerClick).toHaveBeenCalled())
+    const fileInput = document.querySelector('input[type="file"]')
+    expect(fileInput).not.toBeNull()
+
+    const image = new File(['table-layout'], '球台布局.png', { type: 'image/png' })
+    fireEvent.change(fileInput!, { target: { files: [image] } })
+
+    expect(await screen.findByRole('button', { name: 'Remove 球台布局.png' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove 球台布局.png' }))
+    expect(screen.queryByRole('button', { name: 'Remove 球台布局.png' })).not.toBeInTheDocument()
+
+    fireEvent.change(fileInput!, { target: { files: [image] } })
+    expect(await screen.findByRole('button', { name: 'Remove 球台布局.png' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, {
+      text: '',
+      attachments: [expect.objectContaining({
+        type: 'image',
+        name: '球台布局.png',
+        mimeType: 'image/png',
+        data: expect.stringMatching(/^data:image\/png;base64,/),
+      })],
+    }))
+  })
+
+  it('uses the existing desktop picker for initial file attachments', async () => {
+    mocks.isDesktop = true
+    mocks.openDirectory.mockResolvedValue(['/workspace/billiard/训练记录.csv'])
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
+
+    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
+      multiple: true,
+      directory: false,
+    }))
+    expect(await screen.findByRole('button', { name: 'Remove 训练记录.csv' })).toBeInTheDocument()
   })
 
   it('inserts a real discoverable slash command and keeps it outside the product task payload', async () => {
@@ -254,7 +309,10 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
-    }, '/venue-daily-review'))
+    }, {
+      text: '/venue-daily-review',
+      attachments: [],
+    }))
   })
 
   it('does not show a command choice while discovery is loading or unavailable', async () => {

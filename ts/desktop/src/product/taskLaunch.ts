@@ -1,26 +1,35 @@
 import type { CreateProductTaskInput } from './domain/types'
 import type { ProductTaskRecord } from './domain/types'
+import type { AttachmentRef } from '../types/chat'
+
+export type ProductTaskInitialMessage = {
+  text?: string
+  attachments?: AttachmentRef[]
+}
 
 export type ProductTaskLaunchDependencies = {
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
   refreshSessions: () => Promise<void>
   openTask: (task: ProductTaskRecord) => void
   connectToSession: (sessionId: string) => void
-  sendMessage: (sessionId: string, content: string) => void
+  sendMessage: (sessionId: string, content: string, attachments?: AttachmentRef[]) => void
 }
 
 export async function launchProductTask(
   dependencies: ProductTaskLaunchDependencies,
   input: CreateProductTaskInput,
-  initialText?: string,
+  initialMessage?: ProductTaskInitialMessage,
 ): Promise<ProductTaskRecord> {
   const task = await dependencies.createTask(input)
   await dependencies.refreshSessions()
   dependencies.openTask(task)
   dependencies.connectToSession(task.coreSessionId)
 
-  const message = initialText?.trim()
-  if (message) dependencies.sendMessage(task.coreSessionId, message)
+  const message = initialMessage?.text?.trim() ?? ''
+  const attachments = initialMessage?.attachments ?? []
+  if (message || attachments.length > 0) {
+    dependencies.sendMessage(task.coreSessionId, message, attachments)
+  }
 
   return task
 }
