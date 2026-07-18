@@ -1,6 +1,5 @@
-import { basename, join, sep } from 'node:path'
+import { basename, dirname, sep } from 'node:path'
 import { getBuiltinPluginDefinition } from '../../plugins/builtinPlugins.js'
-import type { McpServerConfig } from '../../services/mcp/types.js'
 import {
   disablePluginOp,
   enablePluginOp,
@@ -10,15 +9,8 @@ import {
 } from '../../services/plugins/pluginOperations.js'
 import { getAgentDefinitionsWithOverrides } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
-import { getPluginErrorMessage } from '../../types/plugin.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
-import {
-  getMarketplaceSourceDisplay,
-} from '../../utils/plugins/marketplaceHelpers.js'
 import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js'
-import {
-  loadKnownMarketplacesConfig,
-} from '../../utils/plugins/marketplaceManager.js'
 import { loadPluginLspServers } from '../../utils/plugins/lspPluginIntegration.js'
 import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
@@ -26,8 +18,6 @@ import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
 import { loadPluginHooks } from '../../utils/plugins/loadPluginHooks.js'
 import { getPluginSkills } from '../../utils/plugins/loadPluginCommands.js'
 import { clearPluginCacheExclusions } from '../../utils/plugins/orphanedPluginFilter.js'
-import { parseFrontmatter } from '../../utils/frontmatterParser.js'
-import { extractDescriptionFromMarkdown } from '../../utils/markdownConfigLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type {
   PluginInstallationEntry,
@@ -35,97 +25,66 @@ import type {
 } from '../../utils/plugins/schemas.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { walkPluginMarkdown } from '../../utils/plugins/walkPluginMarkdown.js'
-import type { HookCommand, HooksSettings } from '../../utils/settings/types.js'
 
-export type ApiPluginCapabilitySet = {
-  commands: string[]
-  agents: string[]
-  skills: string[]
-  hooks: string[]
-  mcpServers: string[]
-  lspServers: string[]
-}
+export type ApiPluginCapabilityKind =
+  | 'commands'
+  | 'agents'
+  | 'skills'
+  | 'hooks'
+  | 'mcpServers'
+  | 'lspServers'
+
+export type ApiPluginStatus = 'attention' | 'enabled' | 'disabled'
+
+/** A product-owned description category; plugin-authored text is never exposed. */
+export type ApiPluginDescriptionKind = 'workspace_extension'
+
+export type ApiPluginComponentCounts = Record<ApiPluginCapabilityKind, number>
 
 export type ApiPluginSummary = {
+  /** Opaque identifier required for enable, disable, update, and uninstall. */
+  id: string
+  /** Product-facing plugin name. */
+  name: string
+  /** Scope is retained only so real plugin operations can target the installation. */
+  scope: PluginScope | 'builtin'
+  enabled: boolean
+  /** A stable, actionable status category. No runtime error text is exposed. */
+  status: ApiPluginStatus
+  /** Whether this installation can be changed from the desktop app. */
+  canManage: boolean
+  /** Selects a product-owned, localized description instead of manifest text. */
+  descriptionKind: ApiPluginDescriptionKind
+  /** Capability categories and counts only; individual configuration is private. */
+  componentCounts: ApiPluginComponentCounts
+}
+
+/** Detail deliberately has the same safe shape as a list item. */
+export type ApiPluginDetail = ApiPluginSummary
+
+type PluginStateDetail = {
   id: string
   name: string
-  marketplace: string
   scope: PluginScope | 'builtin'
   enabled: boolean
   hasErrors: boolean
-  isBuiltin: boolean
-  version?: string
-  description?: string
-  authorName?: string
-  installPath?: string
-  projectPath?: string
-  componentCounts: Record<keyof ApiPluginCapabilitySet, number>
-  errors: string[]
-}
-
-export type ApiPluginSkillEntry = {
-  name: string
-  displayName?: string
-  description: string
-  version?: string
-  pluginName?: string
-}
-
-export type ApiPluginCommandEntry = {
-  name: string
-  description: string
-}
-
-export type ApiPluginAgentEntry = {
-  name: string
-  displayName?: string
-  description: string
-}
-
-export type ApiPluginHookEntry = {
-  event: string
-  matcher?: string
-  actions: string[]
-}
-
-export type ApiPluginMcpServerEntry = {
-  name: string
-  displayName?: string
-  transport: string
-  summary: string
-}
-
-export type ApiPluginDetail = ApiPluginSummary & {
-  capabilities: ApiPluginCapabilitySet
-  commandEntries: ApiPluginCommandEntry[]
-  agentEntries: ApiPluginAgentEntry[]
-  hookEntries: ApiPluginHookEntry[]
-  skillEntries: ApiPluginSkillEntry[]
-  mcpServerEntries: ApiPluginMcpServerEntry[]
-}
-
-export type ApiPluginMarketplaceSummary = {
-  name: string
-  source: string
-  lastUpdated?: string
-  autoUpdate: boolean
-  installedCount: number
+  componentCounts: ApiPluginComponentCounts
 }
 
 export type ApiPluginListResponse = {
   plugins: ApiPluginSummary[]
-  marketplaces: ApiPluginMarketplaceSummary[]
   summary: {
     total: number
     enabled: number
-    errorCount: number
-    marketplaceCount: number
+    attention: number
   }
 }
 
+export type ApiPluginAction = 'enabled' | 'disabled' | 'updated' | 'uninstalled'
+
 export type ApiPluginActionResponse = {
   ok: true
-  message: string
+  action: ApiPluginAction
 }
 
 export type ApiPluginReloadResponse = {
@@ -150,15 +109,13 @@ type HydratedPluginState = {
 
 export class PluginService {
   async listPlugins(cwd?: string): Promise<ApiPluginListResponse> {
-    const { plugins, marketplaces } = await this.collectPluginState(cwd)
+    const { plugins } = await this.collectPluginState(cwd)
     return {
       plugins,
-      marketplaces,
       summary: {
         total: plugins.length,
         enabled: plugins.filter((plugin) => plugin.enabled).length,
-        errorCount: plugins.reduce((sum, plugin) => sum + plugin.errors.length, 0),
-        marketplaceCount: marketplaces.length,
+        attention: plugins.filter((plugin) => plugin.status === 'attention').length,
       },
     }
   }
@@ -167,14 +124,14 @@ export class PluginService {
     pluginId: string,
     cwd?: string,
   ): Promise<ApiPluginDetail> {
-    const { plugins, detailById } = await this.collectPluginState(cwd)
+    const { detailById } = await this.collectPluginState(cwd)
     const detail = detailById.get(pluginId)
 
     if (!detail) {
       throw ApiError.notFound(`Plugin not found: ${pluginId}`)
     }
 
-    return detail
+    return this.toPublicSummary(detail)
   }
 
   async enablePlugin(
@@ -183,9 +140,9 @@ export class PluginService {
   ): Promise<ApiPluginActionResponse> {
     const result = await enablePluginOp(pluginId, scope)
     if (!result.success) {
-      throw ApiError.badRequest(result.message)
+      throw new ApiError(400, 'Plugin action could not be completed', 'PLUGIN_ACTION_FAILED')
     }
-    return { ok: true, message: result.message }
+    return { ok: true, action: 'enabled' }
   }
 
   async disablePlugin(
@@ -194,9 +151,9 @@ export class PluginService {
   ): Promise<ApiPluginActionResponse> {
     const result = await disablePluginOp(pluginId, scope)
     if (!result.success) {
-      throw ApiError.badRequest(result.message)
+      throw new ApiError(400, 'Plugin action could not be completed', 'PLUGIN_ACTION_FAILED')
     }
-    return { ok: true, message: result.message }
+    return { ok: true, action: 'disabled' }
   }
 
   async uninstallPlugin(
@@ -205,14 +162,14 @@ export class PluginService {
     keepData = false,
   ): Promise<ApiPluginActionResponse> {
     if (!scope) {
-      throw ApiError.badRequest('Plugin uninstall requires a scope')
+      throw new ApiError(400, 'Plugin action requires a scope', 'PLUGIN_ACTION_INVALID')
     }
 
     const result = await uninstallPluginOp(pluginId, scope, keepData)
     if (!result.success) {
-      throw ApiError.badRequest(result.message)
+      throw new ApiError(400, 'Plugin action could not be completed', 'PLUGIN_ACTION_FAILED')
     }
-    return { ok: true, message: result.message }
+    return { ok: true, action: 'uninstalled' }
   }
 
   async updatePlugin(
@@ -220,14 +177,14 @@ export class PluginService {
     scope?: PluginScope,
   ): Promise<ApiPluginActionResponse> {
     if (!scope) {
-      throw ApiError.badRequest('Plugin update requires a scope')
+      throw new ApiError(400, 'Plugin action requires a scope', 'PLUGIN_ACTION_INVALID')
     }
 
     const result = await updatePluginOp(pluginId, scope)
     if (!result.success) {
-      throw ApiError.badRequest(result.message)
+      throw new ApiError(400, 'Plugin action could not be completed', 'PLUGIN_ACTION_FAILED')
     }
-    return { ok: true, message: result.message }
+    return { ok: true, action: 'updated' }
   }
 
   async reloadPlugins(cwd?: string): Promise<ApiPluginReloadResponse> {
@@ -274,13 +231,11 @@ export class PluginService {
 
   private async collectPluginState(cwd?: string): Promise<{
     plugins: ApiPluginSummary[]
-    detailById: Map<string, ApiPluginDetail>
-    marketplaces: ApiPluginMarketplaceSummary[]
+    detailById: Map<string, PluginStateDetail>
   }> {
-    const [pluginState, installedData, marketplaceConfig] = await Promise.all([
+    const [pluginState, installedData] = await Promise.all([
       this.loadPluginState(),
       Promise.resolve(loadInstalledPluginsV2()),
-      loadKnownMarketplacesConfig(),
     ])
 
     const allLoaded = [...pluginState.enabled, ...pluginState.disabled]
@@ -297,7 +252,7 @@ export class PluginService {
         .map((plugin) => plugin.source),
     ])
 
-    const detailById = new Map<string, ApiPluginDetail>()
+    const detailById = new Map<string, PluginStateDetail>()
 
     for (const pluginId of [...pluginIds].sort()) {
       const installation = this.pickInstallation(
@@ -315,20 +270,13 @@ export class PluginService {
     }
 
     const plugins = [...detailById.values()].map((detail) =>
-      this.toSummary(detail),
+      this.toPublicSummary(detail),
     )
 
-    const marketplaces = Object.entries(marketplaceConfig.marketplaces ?? {})
-      .map(([name, entry]) => ({
-        name,
-        source: getMarketplaceSourceDisplay(entry.source),
-        lastUpdated: entry.lastUpdated,
-        autoUpdate: entry.autoUpdate !== false,
-        installedCount: plugins.filter((plugin) => plugin.marketplace === name).length,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-
-    return { plugins, detailById, marketplaces }
+    return {
+      plugins,
+      detailById,
+    }
   }
 
   private async loadPluginState(): Promise<HydratedPluginState> {
@@ -347,387 +295,120 @@ export class PluginService {
     installation: PluginInstallationEntry | null,
     loaded: LoadedPlugin | undefined,
     errors: PluginError[],
-  ): Promise<ApiPluginDetail> {
-    const { name, marketplace } = parsePluginIdentifier(pluginId)
-    const pluginErrors = this.getErrorsForPlugin(pluginId, name, errors)
+  ): Promise<PluginStateDetail> {
+    const { name } = parsePluginIdentifier(pluginId)
+    const hasErrors = this.hasErrorsForPlugin(pluginId, name, errors)
 
     if (!loaded) {
       return {
         id: pluginId,
         name,
-        marketplace: marketplace || 'unknown',
         scope: installation?.scope ?? 'user',
         enabled: false,
-        hasErrors: pluginErrors.length > 0,
-        isBuiltin: false,
-        installPath: installation?.installPath,
-        projectPath: installation?.projectPath,
-        errors: pluginErrors,
-        componentCounts: this.countCapabilities(this.emptyCapabilities()),
-        capabilities: this.emptyCapabilities(),
-        commandEntries: [],
-        agentEntries: [],
-        hookEntries: [],
-        skillEntries: [],
-        mcpServerEntries: [],
+        hasErrors,
+        componentCounts: this.emptyComponentCounts(),
       }
     }
 
-    const {
-      capabilities,
-      commandEntries,
-      agentEntries,
-      hookEntries,
-      skillEntries,
-      mcpServerEntries,
-    } = await this.collectCapabilities(loaded)
     return {
       id: pluginId,
       name: loaded.name,
-      marketplace: marketplace || 'unknown',
       scope: installation?.scope ?? 'user',
       enabled: loaded.enabled !== false,
-      hasErrors: pluginErrors.length > 0,
-      isBuiltin: Boolean(loaded.isBuiltin),
-      version: loaded.manifest.version,
-      description: loaded.manifest.description,
-      authorName: loaded.manifest.author?.name,
-      installPath: installation?.installPath,
-      projectPath: installation?.projectPath,
-      errors: pluginErrors,
-      componentCounts: this.countCapabilities(capabilities),
-      capabilities,
-      commandEntries,
-      agentEntries,
-      hookEntries,
-      skillEntries,
-      mcpServerEntries,
+      hasErrors,
+      componentCounts: await this.collectComponentCounts(loaded),
     }
   }
 
-  private async collectCapabilities(
+  private async collectComponentCounts(
     plugin: LoadedPlugin,
-  ): Promise<{
-    capabilities: ApiPluginCapabilitySet
-    commandEntries: ApiPluginCommandEntry[]
-    agentEntries: ApiPluginAgentEntry[]
-    hookEntries: ApiPluginHookEntry[]
-    skillEntries: ApiPluginSkillEntry[]
-    mcpServerEntries: ApiPluginMcpServerEntry[]
-  }> {
+  ): Promise<ApiPluginComponentCounts> {
     if (plugin.isBuiltin) {
       const definition = getBuiltinPluginDefinition(plugin.name)
-      const skillEntries = (definition?.skills ?? []).map((skill) => ({
-        name: skill.name,
-        description: skill.description,
-      }))
-      const mcpServerEntries = Object.entries(definition?.mcpServers ?? {}).map(([serverName, config]) => ({
-        name: `plugin:${plugin.name}:${serverName}`,
-        displayName: serverName,
-        transport: this.getPluginMcpTransport(config),
-        summary: this.getPluginMcpSummary(config),
-      }))
-
       return {
-        capabilities: {
-          commands: [],
-          agents: [],
-          skills: skillEntries.map((skill) => skill.name),
-          hooks: definition?.hooks ? Object.keys(definition.hooks) : [],
-          mcpServers: mcpServerEntries.map((server) => server.name),
-          lspServers: [],
-        },
-        commandEntries: [],
-        agentEntries: [],
-        hookEntries: this.collectHookEntries(definition?.hooks),
-        skillEntries,
-        mcpServerEntries,
+        commands: 0,
+        agents: 0,
+        skills: definition?.skills?.length ?? 0,
+        hooks: Object.keys(definition?.hooks ?? {}).length,
+        mcpServers: Object.keys(definition?.mcpServers ?? {}).length,
+        lspServers: 0,
       }
     }
 
-    const commandEntries = await this.collectCommandEntries(plugin)
-    const agentEntries = await this.collectAgentEntries(plugin)
-    const hookEntries = this.collectHookEntries(plugin.hooksConfig)
-    const skillEntries = await this.collectSkillEntries([
-      plugin.skillsPath,
-      ...(plugin.skillsPaths ?? []),
-    ], plugin.name)
-    const mcpServerEntries = this.collectMcpServerEntries(plugin.name, plugin.mcpServers)
+    const [commands, agents, skills] = await Promise.all([
+      this.countMarkdownFiles(
+        [plugin.commandsPath, ...(plugin.commandsPaths ?? [])],
+        true,
+      ),
+      this.countMarkdownFiles(
+        [plugin.agentsPath, ...(plugin.agentsPaths ?? [])],
+        false,
+      ),
+      this.countSkillDirectories([
+        plugin.skillsPath,
+        ...(plugin.skillsPaths ?? []),
+      ]),
+    ])
 
     return {
-      capabilities: {
-        commands: commandEntries.map((command) => command.name),
-        agents: agentEntries.map((agent) => agent.name),
-        skills: skillEntries.map((skill) => skill.name),
-        hooks: [...new Set(hookEntries.map((hook) => hook.event))],
-        mcpServers: mcpServerEntries.map((server) => server.name),
-        lspServers: plugin.lspServers ? Object.keys(plugin.lspServers) : [],
-      },
-      commandEntries,
-      agentEntries,
-      hookEntries,
-      skillEntries,
-      mcpServerEntries,
+      commands,
+      agents,
+      skills,
+      hooks: Object.keys(plugin.hooksConfig ?? {}).length,
+      mcpServers: Object.keys(plugin.mcpServers ?? {}).length,
+      lspServers: Object.keys(plugin.lspServers ?? {}).length,
     }
   }
 
-  private async collectCommandEntries(
-    plugin: LoadedPlugin,
-  ): Promise<ApiPluginCommandEntry[]> {
-    return this.collectMarkdownEntriesWithDescriptions(
-      plugin.name,
-      [plugin.commandsPath, ...(plugin.commandsPaths ?? [])],
-      { stopAtSkillDir: true, useNamespace: true },
-    )
-  }
-
-  private async collectAgentEntries(
-    plugin: LoadedPlugin,
-  ): Promise<ApiPluginAgentEntry[]> {
-    return this.collectMarkdownEntriesWithDescriptions(
-      plugin.name,
-      [plugin.agentsPath, ...(plugin.agentsPaths ?? [])],
-      { stopAtSkillDir: false, useNamespace: true, preferFrontmatterName: true },
-    )
-  }
-
-  private async collectMarkdownEntries(paths: Array<string | undefined>): Promise<string[]> {
-    const fs = await import('node:fs/promises')
-    const names = new Set<string>()
-
-    for (const dirPath of paths) {
-      if (!dirPath) continue
-
-      try {
-        const dirEntries = await fs.readdir(dirPath, { withFileTypes: true })
-        for (const entry of dirEntries) {
-          if (!entry.isFile() || !entry.name.endsWith('.md')) continue
-          names.add(entry.name.replace(/\.md$/i, ''))
-        }
-      } catch {
-        // Ignore unreadable plugin component directories and keep rendering.
-      }
-    }
-
-    return [...names].sort()
-  }
-
-  private async collectMarkdownEntriesWithDescriptions(
-    pluginName: string,
+  private async countMarkdownFiles(
     paths: Array<string | undefined>,
-    options: {
-      stopAtSkillDir: boolean
-      useNamespace: boolean
-      preferFrontmatterName?: boolean
-    },
-  ): Promise<Array<{ name: string; displayName?: string; description: string }>> {
-    const fs = await import('node:fs/promises')
-    const entries = new Map<string, { name: string; displayName?: string; description: string }>()
-
-    for (const rootPath of paths) {
-      if (!rootPath) continue
-
-      await walkPluginMarkdown(
-        rootPath,
-        async (fullPath, namespace) => {
-          const raw = await fs.readFile(fullPath, 'utf-8')
-          const parsed = parseFrontmatter(raw, fullPath)
-          const baseName = basename(fullPath).replace(/\.md$/i, '')
-          const resolvedLeafName =
-            options.preferFrontmatterName &&
-            typeof parsed.frontmatter.name === 'string' &&
-            parsed.frontmatter.name.trim().length > 0
-              ? parsed.frontmatter.name.trim()
-              : /^skill$/i.test(baseName)
-                ? basename(join(fullPath, '..'))
-                : baseName
-          const leafName = resolvedLeafName
-          const name = options.useNamespace && namespace.length > 0
-            ? `${pluginName}:${namespace.join(':')}:${leafName}`
-            : options.useNamespace
-              ? `${pluginName}:${leafName}`
-              : leafName
-          const description =
-            (typeof parsed.frontmatter.description === 'string' && parsed.frontmatter.description.trim()) ||
-            (typeof parsed.frontmatter['when-to-use'] === 'string' && parsed.frontmatter['when-to-use'].trim()) ||
-            extractDescriptionFromMarkdown(parsed.content, 'No description')
-
-          if (!entries.has(name)) {
-            entries.set(name, {
-              name,
-              displayName: leafName !== name ? leafName : undefined,
-              description,
-            })
-          }
-        },
-        {
-          stopAtSkillDir: options.stopAtSkillDir,
-          logLabel: options.useNamespace ? 'plugin-details' : 'markdown',
-        },
-      )
-    }
-
-    return [...entries.values()].sort((a, b) => a.name.localeCompare(b.name))
+    stopAtSkillDir: boolean,
+  ): Promise<number> {
+    const files = new Set<string>()
+    await Promise.all(
+      paths
+        .filter((path): path is string => Boolean(path))
+        .map((rootPath) => walkPluginMarkdown(
+          rootPath,
+          async (fullPath) => {
+            files.add(fullPath)
+          },
+          { stopAtSkillDir, logLabel: 'plugin-capability-count' },
+        )),
+    )
+    return files.size
   }
 
-  private async collectSkillEntries(
+  private async countSkillDirectories(
     paths: Array<string | undefined>,
-    pluginName: string,
-  ): Promise<ApiPluginSkillEntry[]> {
-    const fs = await import('node:fs/promises')
-    const skillEntriesByName = new Map<string, ApiPluginSkillEntry>()
-
-    for (const dirPath of paths) {
-      if (!dirPath) continue
-
-      try {
-        const directSkill = await this.readPluginSkillEntry(dirPath, pluginName)
-        if (directSkill && !skillEntriesByName.has(directSkill.name)) {
-          skillEntriesByName.set(directSkill.name, directSkill)
-          continue
-        }
-      } catch {
-        // Fall back to scanning as a skill root.
-      }
-
-      try {
-        const dirEntries = await fs.readdir(dirPath, { withFileTypes: true })
-        for (const entry of dirEntries) {
-          if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-
-          try {
-            const skillEntry = await this.readPluginSkillEntry(join(dirPath, entry.name), pluginName)
-            if (skillEntry && !skillEntriesByName.has(skillEntry.name)) {
-              skillEntriesByName.set(skillEntry.name, skillEntry)
+  ): Promise<number> {
+    const directories = new Set<string>()
+    await Promise.all(
+      paths
+        .filter((path): path is string => Boolean(path))
+        .map((rootPath) => walkPluginMarkdown(
+          rootPath,
+          async (fullPath) => {
+            if (basename(fullPath).toLowerCase() === 'skill.md') {
+              directories.add(dirname(fullPath))
             }
-          } catch {
-            // Ignore non-skill directories.
-          }
-        }
-      } catch {
-        // Ignore unreadable plugin component directories and keep rendering.
-      }
-    }
-
-    return [...skillEntriesByName.values()].sort((a, b) => a.name.localeCompare(b.name))
+          },
+          { stopAtSkillDir: true, logLabel: 'plugin-skill-count' },
+        )),
+    )
+    return directories.size
   }
 
-  private async readPluginSkillEntry(
-    skillDir: string,
-    pluginName: string,
-  ): Promise<ApiPluginSkillEntry | null> {
-    const fs = await import('node:fs/promises')
-    const skillFile = join(skillDir, 'SKILL.md')
-    try {
-      const stat = await fs.stat(skillFile)
-      if (!stat.isFile()) return null
-
-      const raw = await fs.readFile(skillFile, 'utf-8')
-      const parsed = parseFrontmatter(raw, skillFile)
-      const body = parsed.content
-      const name = typeof parsed.frontmatter.name === 'string' && parsed.frontmatter.name.trim().length > 0
-        ? parsed.frontmatter.name.trim()
-        : basename(skillDir)
-
-      const description =
-        (typeof parsed.frontmatter.description === 'string' && parsed.frontmatter.description.trim()) ||
-        body
-          .split('\n')
-          .find((line) => line.trim().length > 0)
-          ?.trim() ||
-        'No description'
-
-      return {
-        name: `${pluginName}:${basename(skillDir)}`,
-        displayName: name !== basename(skillDir) ? name : undefined,
-        description,
-        version: parsed.frontmatter.version != null ? String(parsed.frontmatter.version) : undefined,
-        pluginName,
-      }
-    } catch {
-      return null
-    }
-  }
-
-  private collectMcpServerEntries(
-    pluginName: string,
-    servers?: Record<string, McpServerConfig>,
-  ): ApiPluginMcpServerEntry[] {
-    return Object.entries(servers ?? {})
-      .map(([name, config]) => ({
-        name: `plugin:${pluginName}:${name}`,
-        displayName: name,
-        transport: this.getPluginMcpTransport(config),
-        summary: this.getPluginMcpSummary(config),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }
-
-  private collectHookEntries(hooks?: HooksSettings): ApiPluginHookEntry[] {
-    const entries: ApiPluginHookEntry[] = []
-    for (const [event, matchers] of Object.entries(hooks ?? {})) {
-      for (const matcher of matchers ?? []) {
-        entries.push({
-          event,
-          matcher: matcher.matcher,
-          actions: matcher.hooks.map((hook) => this.describeHookAction(hook)),
-        })
-      }
-    }
-
-    return entries.sort((a, b) => {
-      if (a.event !== b.event) return a.event.localeCompare(b.event)
-      return (a.matcher ?? '').localeCompare(b.matcher ?? '')
-    })
-  }
-
-  private describeHookAction(hook: HookCommand): string {
-    switch (hook.type) {
-      case 'command':
-        return hook.command
-      case 'prompt':
-        return hook.prompt
-      case 'agent':
-        return hook.prompt
-      case 'http':
-        return hook.url
-      default:
-        return hook.type
-    }
-  }
-
-  private getPluginMcpTransport(config: McpServerConfig): string {
-    return config.type ?? 'stdio'
-  }
-
-  private getPluginMcpSummary(config: McpServerConfig): string {
-    if (!config.type || config.type === 'stdio') {
-      const stdioConfig = config as McpServerConfig & {
-        command?: string
-        args?: string[]
-      }
-      return [stdioConfig.command, ...(stdioConfig.args ?? [])].filter(Boolean).join(' ').trim()
-    }
-
-    if ('url' in config && typeof config.url === 'string') {
-      return config.url
-    }
-
-    return config.type
-  }
-
-  private getErrorsForPlugin(
+  private hasErrorsForPlugin(
     pluginId: string,
     pluginName: string,
     errors: PluginError[],
-  ): string[] {
-    return errors
-      .filter((error) => {
-        if (error.source === pluginId) return true
-        if ('plugin' in error && error.plugin === pluginName) return true
-        return error.source.startsWith(`${pluginName}@`)
-      })
-      .map(getPluginErrorMessage)
+  ): boolean {
+    return errors.some((error) => {
+      if (error.source === pluginId) return true
+      if ('plugin' in error && error.plugin === pluginName) return true
+      return error.source.startsWith(`${pluginName}@`)
+    })
   }
 
   private pickInstallation(
@@ -758,46 +439,31 @@ export class PluginService {
     return cwd === projectPath || cwd.startsWith(`${projectPath}${sep}`)
   }
 
-  private emptyCapabilities(): ApiPluginCapabilitySet {
+  private emptyComponentCounts(): ApiPluginComponentCounts {
     return {
-      commands: [],
-      agents: [],
-      skills: [],
-      hooks: [],
-      mcpServers: [],
-      lspServers: [],
+      commands: 0,
+      agents: 0,
+      skills: 0,
+      hooks: 0,
+      mcpServers: 0,
+      lspServers: 0,
     }
   }
 
-  private countCapabilities(
-    capabilities: ApiPluginCapabilitySet,
-  ): Record<keyof ApiPluginCapabilitySet, number> {
-    return {
-      commands: capabilities.commands.length,
-      agents: capabilities.agents.length,
-      skills: capabilities.skills.length,
-      hooks: capabilities.hooks.length,
-      mcpServers: capabilities.mcpServers.length,
-      lspServers: capabilities.lspServers.length,
-    }
-  }
-
-  private toSummary(detail: ApiPluginDetail): ApiPluginSummary {
+  private toPublicSummary(detail: PluginStateDetail): ApiPluginSummary {
     return {
       id: detail.id,
       name: detail.name,
-      marketplace: detail.marketplace,
       scope: detail.scope,
       enabled: detail.enabled,
-      hasErrors: detail.hasErrors,
-      isBuiltin: detail.isBuiltin,
-      version: detail.version,
-      description: detail.description,
-      authorName: detail.authorName,
-      installPath: detail.installPath,
-      projectPath: detail.projectPath,
+      status: detail.hasErrors
+        ? 'attention'
+        : detail.enabled
+          ? 'enabled'
+          : 'disabled',
+      canManage: detail.scope !== 'managed' && detail.scope !== 'builtin',
+      descriptionKind: 'workspace_extension',
       componentCounts: detail.componentCounts,
-      errors: detail.errors,
     }
   }
 
