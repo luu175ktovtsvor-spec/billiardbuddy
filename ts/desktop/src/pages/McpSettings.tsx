@@ -62,7 +62,6 @@ const MCP_GROUP_ORDER: McpGroupKey[] = [
   'local',
   'managed',
   'enterprise',
-  'claudeai',
   'dynamic',
 ]
 

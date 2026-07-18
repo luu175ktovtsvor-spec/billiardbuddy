@@ -95,6 +95,33 @@ describe('electron desktop host', () => {
     expect(invoke).toHaveBeenCalledWith(ELECTRON_IPC_CHANNELS.previewSetZoom, 0.8)
   })
 
+  it('sends only user-selected media inputs and never exposes the host capability', async () => {
+    const invoke = vi.fn().mockResolvedValue({ task: { id: 'task_media01' } })
+    const host = createElectronHost({
+      invoke,
+      subscribe: vi.fn(),
+    })
+
+    await host.media.submitImageProject('img_project01', true)
+    await host.media.renderVideo({
+      projectId: 'vid_project01',
+      revision: 4,
+      outputPath: '/tmp/final.mp4',
+    })
+
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      ELECTRON_IPC_CHANNELS.mediaSubmitImage,
+      { projectId: 'img_project01', confirmUnknownRetry: true },
+    )
+    expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
+      projectId: 'vid_project01',
+      revision: 4,
+      outputPath: '/tmp/final.mp4',
+    })
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain('capability')
+  })
+
   it('keeps event subscriptions behind named event channels', async () => {
     const unlisten = vi.fn()
     const subscribe = vi.fn().mockResolvedValue(unlisten)

@@ -48,6 +48,14 @@ vi.mock('../workbench/WorkbenchTab', () => ({
   ),
 }))
 
+vi.mock('../media/ImageWorkbench', () => ({
+  ImageWorkbench: () => <div data-testid="image-workbench" />,
+}))
+
+vi.mock('../media/VideoStudio', () => ({
+  VideoStudio: () => <div data-testid="video-studio" />,
+}))
+
 import { ContentRouter } from './ContentRouter'
 import { useTabStore } from '../../stores/tabStore'
 
@@ -169,6 +177,30 @@ describe('ContentRouter tab surfaces', () => {
     render(<ContentRouter />)
 
     expect(screen.getByTestId('workbench-tab')).toHaveTextContent('workbench:session-1:__workbench__session-1')
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('renders the image workbench as a product surface', () => {
+    useTabStore.setState({
+      tabs: [{ sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench', status: 'idle' }],
+      activeTabId: '__image_workbench__',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('image-workbench')).toBeInTheDocument()
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('renders the video studio as a product surface', () => {
+    useTabStore.setState({
+      tabs: [{ sessionId: '__video_studio__', title: '剪视频', type: 'video-studio', status: 'idle' }],
+      activeTabId: '__video_studio__',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('video-studio')).toBeInTheDocument()
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 

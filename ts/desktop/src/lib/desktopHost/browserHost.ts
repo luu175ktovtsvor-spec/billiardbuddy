@@ -11,6 +11,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   appMode: false,
   clipboard: false,
   dialogs: false,
+  mediaActions: false,
   notifications: false,
   previewWebview: false,
   shell: false,
@@ -107,6 +108,20 @@ export const browserHost: DesktopHost = {
     },
     async save() {
       unsupported('Native save dialogs')
+    },
+  },
+  media: {
+    async submitImageProject() {
+      unsupported('Paid image submission')
+    },
+    async updateUnknownImageProject() {
+      unsupported('Confirming an unknown image task update')
+    },
+    async saveImageOutput() {
+      unsupported('Saving generated images')
+    },
+    async renderVideo() {
+      unsupported('Final video export')
     },
   },
   updates: {

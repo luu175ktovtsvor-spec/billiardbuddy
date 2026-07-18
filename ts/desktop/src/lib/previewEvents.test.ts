@@ -60,25 +60,39 @@ describe('subscribePreviewEvents', () => {
     }))
   })
 
-  it('selection event sends a chat turn directly with hidden prompt text + annotated screenshot', async () => {
+  it('an armed selection prefills the composer and waits for the user to send', async () => {
+    useBrowserPanelStore.getState().open('s1', 'http://x/a')
+    useBrowserPanelStore.getState().setPicker('s1', true)
     await subscribePreviewEvents('s1')
     const payload = { pageUrl: 'http://x/', element: { selector: '#t', tag: 'h1', classes: [] }, change: { description: '改一下' }, screenshot: { dataUrl: 'data:image/png;base64,AAAA', kind: 'element' } }
     previewHandler!(JSON.stringify({ v: 1, type: 'selection', payload }))
-    expect(prefill).not.toHaveBeenCalled()
-    expect(sendMessage).toHaveBeenCalledWith(
+    expect(prefill).toHaveBeenCalledWith(
       's1',
-      expect.stringContaining('改一下'),
-      [expect.objectContaining({
-        type: 'image',
-        name: '<h1>',
-        data: 'data:image/png;base64,AAAA',
-        note: '改一下',
-      })],
       expect.objectContaining({
-        hideDisplayContent: true,
-        displayAttachments: [expect.objectContaining({ name: '<h1>', note: '改一下' })],
+        text: expect.stringContaining('改一下'),
+        mode: 'replace',
+        attachments: [expect.objectContaining({
+          type: 'image',
+          name: '<h1>',
+          data: 'data:image/png;base64,AAAA',
+          note: '改一下',
+        })],
       }),
     )
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(useBrowserPanelStore.getState().bySession['s1']!.pickerActive).toBe(false)
+  })
+
+  it('ignores a page-forged selection when the renderer picker is not active', async () => {
+    useBrowserPanelStore.getState().open('s1', 'http://x/a')
+    await subscribePreviewEvents('s1')
+    previewHandler!(JSON.stringify({
+      v: 1,
+      type: 'selection',
+      payload: { pageUrl: 'http://x/', element: { selector: '#injected', tag: 'div', classes: [] } },
+    }))
+    expect(prefill).not.toHaveBeenCalled()
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 
   it('selection event resets pickerActive on the session', async () => {

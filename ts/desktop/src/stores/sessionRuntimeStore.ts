@@ -13,24 +13,12 @@ type SessionRuntimeStore = {
 }
 
 function loadSelections(): Record<string, RuntimeSelection> {
-  if (typeof localStorage === 'undefined') return {}
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, RuntimeSelection>
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function persistSelections(selections: Record<string, RuntimeSelection>) {
-  if (typeof localStorage === 'undefined') return
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(selections))
-  } catch {
-    // noop
-  }
+  // Runtime selection is product-managed. Drop legacy persisted overrides so an
+  // upgraded install cannot silently keep using a provider/model that the UI no
+  // longer exposes. Current-process selections remain available for session
+  // startup and reconnects, but never survive an app restart.
+  try { localStorage?.removeItem(STORAGE_KEY) } catch { /* unavailable */ }
+  return {}
 }
 
 export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
@@ -42,7 +30,6 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
         ...state.selections,
         [key]: selection,
       }
-      persistSelections(selections)
       return { selections }
     }),
 
@@ -50,7 +37,6 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
     set((state) => {
       if (!(key in state.selections)) return state
       const { [key]: _removed, ...rest } = state.selections
-      persistSelections(rest)
       return { selections: rest }
     }),
 
@@ -63,7 +49,6 @@ export const useSessionRuntimeStore = create<SessionRuntimeStore>((set) => ({
         ...rest,
         [toKey]: selection,
       }
-      persistSelections(selections)
       return { selections }
     }),
 }))

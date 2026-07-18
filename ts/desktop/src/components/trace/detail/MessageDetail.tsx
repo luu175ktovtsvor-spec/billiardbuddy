@@ -2,10 +2,8 @@ import { useMemo } from 'react'
 import { useTranslation } from '../../../i18n'
 import type { MessageEntry } from '../../../types/session'
 import type { TraceSpan } from '../../../lib/traceViewModel'
-import { formatTraceJson } from '../../../lib/traceViewModel'
 import type { NormalizedBlock, NormalizedMessage } from '../../../lib/trace/types'
 import { normalizeContentBlock } from '../../../lib/trace/sse'
-import { CodeViewer } from '../../chat/CodeViewer'
 import { Section } from './Section'
 import { MessageBlocks } from './MessageBlocks'
 
@@ -18,6 +16,7 @@ export function MessageDetail({ span }: { span: TraceSpan }) {
   )
 
   if (!message || !normalized) return null
+  if (normalized.role === 'system') return null
 
   return (
     <div data-testid="trace-message-detail">
@@ -29,9 +28,6 @@ export function MessageDetail({ span }: { span: TraceSpan }) {
             {t('trace.noData')}
           </div>
         )}
-      </Section>
-      <Section sectionKey="message.raw" title={t('trace.section.raw')}>
-        <CodeViewer code={formatTraceJson(message.content)} language="json" maxLines={48} showLineNumbers />
       </Section>
     </div>
   )

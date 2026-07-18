@@ -134,7 +134,7 @@ describe('Settings > Plugins tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
-    useUIStore.setState({ activeSettingsTab: 'providers', pendingSettingsTab: null })
+    useUIStore.setState({ activeSettingsTab: 'plugins', pendingSettingsTab: null })
     useSessionStore.setState({
       sessions: [
         {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import '@testing-library/jest-dom'
 
@@ -75,7 +75,6 @@ vi.mock('../api/sessions', async (importOriginal) => {
 // Import all pages
 import { EmptySession } from '../pages/EmptySession'
 import { ActiveSession } from '../pages/ActiveSession'
-import { AgentTeams } from '../pages/AgentTeams'
 import { ScheduledTasks } from '../pages/ScheduledTasks'
 
 // Layout components (chrome is now here, not in pages)
@@ -186,11 +185,10 @@ describe('Content-only pages render without errors', () => {
     expect(container.innerHTML).toContain('Ask anything')
   })
 
-  it('EmptySession shows draft context usage before a session is created', async () => {
+  it('EmptySession keeps context internals out of the first-run composer', async () => {
     render(<EmptySession />)
 
-    const indicator = await screen.findByLabelText('Context usage not calculated')
-    expect(indicator).toHaveTextContent('--')
+    expect(screen.queryByLabelText('Context usage not calculated')).not.toBeInTheDocument()
     expect(vi.mocked(sessionsApi.getInspection)).not.toHaveBeenCalled()
   })
 
@@ -223,7 +221,7 @@ describe('Content-only pages render without errors', () => {
     fireEvent.click(screen.getByLabelText('Context usage not calculated'))
 
     expect(await screen.findByRole('button', { name: 'Close' })).toBeInTheDocument()
-    expect(screen.getAllByText('kimi-k2.6')).toHaveLength(2)
+    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
     expect(screen.getAllByText('Context usage will be calculated after the session starts.')).toHaveLength(2)
   })
 
@@ -329,7 +327,8 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    const textarea = screen.getByPlaceholderText('Ask Claude to edit, debug or explain...')
+    const textarea = screen.getByRole('textbox')
+    expect(textarea).toHaveAttribute('placeholder', 'What would you like to do next?')
     expect(textarea).toHaveAttribute('rows', '1')
 
     resetPageStores()
@@ -631,7 +630,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getByText('Slash commands')).toBeInTheDocument()
     expect(screen.getByText('/clear')).toBeInTheDocument()
     expect(screen.getByText('/cost')).toBeInTheDocument()
-    expect(screen.getByText('15 more commands available. Type / to search the full command list.')).toBeInTheDocument()
+    expect(screen.getByText(/more commands available\. Type \/ to search the full command list\./)).toBeInTheDocument()
 
     resetPageStores()
   })
@@ -696,7 +695,7 @@ describe('Content-only pages render without errors', () => {
     resetPageStores()
   })
 
-  it('ActiveSession shows live context usage near the composer', async () => {
+  it('ActiveSession keeps live context usage out of the everyday composer', async () => {
     const SESSION_ID = 'context-indicator-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: true,
@@ -767,18 +766,13 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    expect(await screen.findByLabelText('Context usage 42%')).toBeInTheDocument()
-    expect(screen.getByText('120,000')).toBeInTheDocument()
-    expect(vi.mocked(sessionsApi.getInspection)).toHaveBeenCalledWith(SESSION_ID, {
-      includeContext: true,
-      contextOnly: true,
-      timeout: 20_000,
-    })
+    expect(screen.queryByLabelText('Context usage 42%')).not.toBeInTheDocument()
+    expect(screen.queryByText('120,000')).not.toBeInTheDocument()
 
     resetPageStores()
   })
 
-  it('ActiveSession keeps a stable context placeholder while context usage loads', async () => {
+  it('ActiveSession does not reserve space for a context loading indicator', async () => {
     const SESSION_ID = 'context-loading-session'
     vi.mocked(sessionsApi.getInspection).mockImplementationOnce(() => new Promise(() => {}))
 
@@ -824,14 +818,12 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    const indicator = await screen.findByLabelText('Context usage loading')
-    expect(indicator).toHaveTextContent('--')
-    expect(indicator).toHaveClass('h-8')
+    expect(screen.queryByLabelText('Context usage loading')).not.toBeInTheDocument()
 
     resetPageStores()
   })
 
-  it('ActiveSession treats an empty idle session without a running CLI as pending context', async () => {
+  it('ActiveSession hides pending context details for an empty idle session', async () => {
     const SESSION_ID = 'context-empty-idle-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: false,
@@ -889,16 +881,15 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    const indicator = await screen.findByLabelText('Context usage not calculated')
-    expect(indicator).toHaveTextContent('--')
-    expect(screen.getAllByText('kimi-k2.6').length).toBeGreaterThan(0)
-    expect(screen.getByText('Context usage will be calculated after the session starts.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Context usage not calculated')).not.toBeInTheDocument()
+    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
+    expect(screen.queryByText('Context usage will be calculated after the session starts.')).not.toBeInTheDocument()
     expect(screen.queryByText('CLI session is not running')).not.toBeInTheDocument()
 
     resetPageStores()
   })
 
-  it('ActiveSession shows initial context usage for an empty live session', async () => {
+  it('ActiveSession hides initial context usage for an empty live session', async () => {
     const SESSION_ID = 'context-empty-live-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: true,
@@ -970,15 +961,14 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    const indicator = await screen.findByLabelText('Context usage 22%')
-    expect(indicator).toHaveTextContent('22%')
-    expect(screen.getAllByText('kimi-k2.6').length).toBeGreaterThan(0)
+    expect(screen.queryByLabelText('Context usage 22%')).not.toBeInTheDocument()
+    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
     expect(screen.queryByText('Context usage will be calculated after the session starts.')).not.toBeInTheDocument()
 
     resetPageStores()
   })
 
-  it('ActiveSession shows context estimate during compaction or reconnect fallback', async () => {
+  it('ActiveSession hides context estimates during compaction or reconnect', async () => {
     const SESSION_ID = 'context-estimate-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: false,
@@ -1054,16 +1044,16 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    expect(await screen.findByLabelText('Context usage 7%')).toBeInTheDocument()
-    expect(screen.getByText('deepseek-v4-pro')).toBeInTheDocument()
-    expect(screen.getByText('1,000,000')).toBeInTheDocument()
-    expect(screen.getByText('Estimate')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Context usage 7%')).not.toBeInTheDocument()
+    expect(screen.queryByText('deepseek-v4-pro')).not.toBeInTheDocument()
+    expect(screen.queryByText('1,000,000')).not.toBeInTheDocument()
+    expect(screen.queryByText('Estimate')).not.toBeInTheDocument()
     expect(screen.queryByText('Autocompact buffer')).not.toBeInTheDocument()
 
     resetPageStores()
   })
 
-  it('ActiveSession keeps selected runtime model visible when context is unavailable', async () => {
+  it('ActiveSession keeps runtime and context internals hidden when context is unavailable', async () => {
     const SESSION_ID = 'context-unavailable-model-session'
     vi.mocked(sessionsApi.getInspection).mockResolvedValueOnce({
       active: false,
@@ -1124,15 +1114,15 @@ describe('Content-only pages render without errors', () => {
 
     render(<ActiveSession />)
 
-    expect(await screen.findByLabelText('Context usage unavailable')).toBeInTheDocument()
-    expect(screen.getAllByText('kimi-k2.6').length).toBeGreaterThan(0)
+    expect(screen.queryByLabelText('Context usage unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('kimi-k2.6')).not.toBeInTheDocument()
     expect(screen.queryByText('Unknown model')).not.toBeInTheDocument()
 
     resetPageStores()
     useSessionRuntimeStore.setState({ selections: {} })
   })
 
-  it('ActiveSession refreshes context usage when the selected runtime model changes', async () => {
+  it('ActiveSession keeps context and model internals hidden when runtime selection changes', async () => {
     const SESSION_ID = 'context-runtime-refresh-session'
     vi.mocked(sessionsApi.getInspection)
       .mockResolvedValueOnce({
@@ -1220,10 +1210,9 @@ describe('Content-only pages render without errors', () => {
       },
     })
 
-    const inspectionCallsBeforeRender = vi.mocked(sessionsApi.getInspection).mock.calls.length
     render(<ActiveSession />)
 
-    expect(await screen.findByLabelText('Context usage 10%')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Context usage 10%')).not.toBeInTheDocument()
 
     act(() => {
       useSessionRuntimeStore.getState().setSelection(SESSION_ID, {
@@ -1232,21 +1221,11 @@ describe('Content-only pages render without errors', () => {
       })
     })
 
-    expect(await screen.findByLabelText('Context usage 20%')).toBeInTheDocument()
-    await waitFor(() => {
-      expect(vi.mocked(sessionsApi.getInspection).mock.calls.length - inspectionCallsBeforeRender)
-        .toBeGreaterThanOrEqual(2)
-    })
+    expect(screen.queryByLabelText('Context usage 20%')).not.toBeInTheDocument()
+    expect(screen.queryByText('glm-4.5-air')).not.toBeInTheDocument()
 
     resetPageStores()
     useSessionRuntimeStore.setState({ selections: {} })
-  })
-
-  it('AgentTeams renders team strip and members', () => {
-    const { container } = render(<AgentTeams />)
-    expect(container.innerHTML).toContain('Architect')
-    expect(container.innerHTML).toContain('session-dev')
-    expect(container.innerHTML).toContain('groups')
   })
 
   it('ScheduledTasks renders (store-connected)', async () => {
@@ -1293,16 +1272,6 @@ describe('AppShell layout renders chrome', () => {
 })
 
 describe('Design system compliance', () => {
-  it('Pages use Material Symbols Outlined icons', () => {
-    const pages = [EmptySession, AgentTeams]
-    for (const Page of pages) {
-      const { container, unmount } = render(<Page />)
-      const icons = container.querySelectorAll('.material-symbols-outlined')
-      expect(icons.length).toBeGreaterThan(0)
-      unmount()
-    }
-  })
-
   it('Current brand color is used in content pages', () => {
     const pages = [EmptySession]
     for (const Page of pages) {
@@ -1317,15 +1286,5 @@ describe('Design system compliance', () => {
       ).toBe(true)
       unmount()
     }
-  })
-})
-
-describe('Mock data integration', () => {
-  it('AgentTeams shows team members from mock data', () => {
-    const { container } = render(<AgentTeams />)
-    expect(container.innerHTML).toContain('Architect')
-    expect(container.innerHTML).toContain('Frontend Dev')
-    expect(container.innerHTML).toContain('Backend Dev')
-    expect(container.innerHTML).toContain('Tester')
   })
 })
