@@ -167,26 +167,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   fetchAll: async () => {
     set({ isLoading: true, error: null })
     try {
-      const [{ mode }, userSettings] = await Promise.all([
+      const [{ mode }, userSettings, runtimeSettings, desktopSettings] = await Promise.all([
         settingsApi.getPermissionMode(),
         settingsApi.getUser(),
+        settingsApi.getRuntime(),
+        settingsApi.getDesktop(),
       ])
       // 旧数据可能存的是已下线的 'white'（isThemeMode 现在只认 light/dark/system）→ 回退跟随系统。
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
       useUIStore.getState().setTheme(theme)
       set({
         permissionMode: mode,
-        thinkingEnabled: userSettings.alwaysThinkingEnabled !== false,
+        thinkingEnabled: runtimeSettings.alwaysThinkingEnabled !== false,
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         theme,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
-        outputStyle: normalizeOutputStyle(userSettings.outputStyle),
-        skipWebFetchPreflight: userSettings.skipWebFetchPreflight !== false,
+        skipWebFetchPreflight: runtimeSettings.skipWebFetchPreflight !== false,
         desktopNotificationsEnabled: userSettings.desktopNotificationsEnabled === true,
-        desktopTerminal: normalizeDesktopTerminalSettings(userSettings.desktopTerminal),
+        desktopTerminal: normalizeDesktopTerminalSettings(desktopSettings.desktopTerminal),
         webSearch: normalizeWebSearchSettings(userSettings.webSearch),
-        updateProxy: normalizeUpdateProxySettings(userSettings.updateProxy),
-        network: normalizeNetworkSettings(userSettings.network),
+        updateProxy: normalizeUpdateProxySettings(desktopSettings.updateProxy),
+        network: normalizeNetworkSettings(runtimeSettings.network),
         responseLanguage: typeof userSettings.language === 'string' ? userSettings.language : '',
         isLoading: false,
         error: null,
@@ -213,7 +214,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().thinkingEnabled
     set({ thinkingEnabled: enabled })
     try {
-      await settingsApi.updateUser({ alwaysThinkingEnabled: enabled })
+      await settingsApi.updateRuntime({ alwaysThinkingEnabled: enabled })
     } catch {
       set({ thinkingEnabled: prev })
     }
@@ -314,7 +315,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().skipWebFetchPreflight
     set({ skipWebFetchPreflight: enabled })
     try {
-      await settingsApi.updateUser({ skipWebFetchPreflight: enabled })
+      await settingsApi.updateRuntime({ skipWebFetchPreflight: enabled })
     } catch {
       set({ skipWebFetchPreflight: prev })
     }
@@ -346,7 +347,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeDesktopTerminalSettings(settings)
     set({ desktopTerminal: next })
     try {
-      await settingsApi.updateUser({ desktopTerminal: next })
+      await settingsApi.updateDesktop({ desktopTerminal: next })
     } catch (error) {
       set({ desktopTerminal: prev })
       throw error
@@ -369,7 +370,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeUpdateProxySettings(settings)
     set({ updateProxy: next })
     try {
-      await settingsApi.updateUser({ updateProxy: next })
+      await settingsApi.updateDesktop({ updateProxy: next })
     } catch (error) {
       set({ updateProxy: prev })
       throw error
@@ -381,7 +382,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeNetworkSettings(settings)
     set({ network: next })
     try {
-      await settingsApi.updateUser({ network: next })
+      await settingsApi.updateRuntime({ network: next })
     } catch (error) {
       set({ network: prev })
       throw error
@@ -392,7 +393,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().responseLanguage
     set({ responseLanguage: language })
     try {
-      await settingsApi.updateUser({ language: language || undefined })
+      await settingsApi.updateUser({ language: language || null })
     } catch {
       set({ responseLanguage: prev })
     }

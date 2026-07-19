@@ -72,23 +72,31 @@ export type DesktopTerminalSettings = {
 }
 
 export type UserSettings = {
-  alwaysThinkingEnabled?: boolean
   autoDreamEnabled?: boolean
-  permissionMode?: PermissionMode
   theme?: ThemeMode
   chatSendBehavior?: ChatSendBehavior
-  outputStyle?: string
-  skipWebFetchPreflight?: boolean
   desktopNotificationsEnabled?: boolean
   webSearch?: WebSearchSettings
-  updateProxy?: Partial<UpdateProxySettings>
+  language?: string
+}
+
+export type UserSettingsUpdate = Partial<Omit<UserSettings, 'language'>> & {
+  /** Null explicitly clears the persisted language preference. */
+  language?: string | null
+}
+
+export type RuntimeSettings = {
+  alwaysThinkingEnabled?: boolean
+  skipWebFetchPreflight?: boolean
   network?: {
     aiRequestTimeoutMs?: number
     proxy?: Partial<NetworkProxySettings>
   }
-  language?: string
+}
+
+export type DesktopSettings = {
   desktopTerminal?: Partial<DesktopTerminalSettings>
-  [key: string]: unknown
+  updateProxy?: Partial<UpdateProxySettings>
 }
 
 export type AppMode = 'default' | 'portable'

@@ -74,6 +74,8 @@ describe('settingsStore update proxy persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -90,11 +92,11 @@ describe('settingsStore update proxy persistence', () => {
   })
 
   it('persists manual update proxy settings trimmed', async () => {
-    const updateUser = vi.fn().mockResolvedValue({})
+    const updateDesktop = vi.fn().mockResolvedValue({})
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser,
+        updateDesktop,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -110,7 +112,7 @@ describe('settingsStore update proxy persistence', () => {
       mode: 'manual',
       url: 'http://127.0.0.1:7890',
     })
-    expect(updateUser).toHaveBeenCalledWith({
+    expect(updateDesktop).toHaveBeenCalledWith({
       updateProxy: {
         mode: 'manual',
         url: 'http://127.0.0.1:7890',
@@ -130,6 +132,8 @@ describe('settingsStore network persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -149,11 +153,11 @@ describe('settingsStore network persistence', () => {
   })
 
   it('persists direct network proxy mode without keeping stale proxy URLs active', async () => {
-    const updateUser = vi.fn().mockResolvedValue({})
+    const updateRuntime = vi.fn().mockResolvedValue({})
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser,
+        updateRuntime,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -175,7 +179,7 @@ describe('settingsStore network persistence', () => {
         url: '',
       },
     })
-    expect(updateUser).toHaveBeenCalledWith({
+    expect(updateRuntime).toHaveBeenCalledWith({
       network: {
         aiRequestTimeoutMs: 600_000,
         proxy: {
@@ -187,11 +191,11 @@ describe('settingsStore network persistence', () => {
   })
 
   it('persists trimmed manual network proxy and clamps timeout', async () => {
-    const updateUser = vi.fn().mockResolvedValue({})
+    const updateRuntime = vi.fn().mockResolvedValue({})
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser,
+        updateRuntime,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -213,7 +217,7 @@ describe('settingsStore network persistence', () => {
         url: 'http://127.0.0.1:7890',
       },
     })
-    expect(updateUser).toHaveBeenCalledWith({
+    expect(updateRuntime).toHaveBeenCalledWith({
       network: {
         aiRequestTimeoutMs: 1_800_000,
         proxy: {
@@ -231,6 +235,8 @@ describe('settingsStore network persistence', () => {
         getUser: vi.fn().mockResolvedValue({
           chatSendBehavior: 'unexpected',
         }),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -452,6 +458,8 @@ describe('settingsStore desktop notification persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -511,12 +519,12 @@ describe('settingsStore thinking persistence', () => {
   })
 
   it('persists both enabled and disabled thinking states explicitly', async () => {
-    const updateUser = vi.fn().mockResolvedValue({})
+    const updateRuntime = vi.fn().mockResolvedValue({})
 
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser,
+        updateRuntime,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -526,8 +534,8 @@ describe('settingsStore thinking persistence', () => {
     await useSettingsStore.getState().setThinkingEnabled(false)
     await useSettingsStore.getState().setThinkingEnabled(true)
 
-    expect(updateUser).toHaveBeenNthCalledWith(1, { alwaysThinkingEnabled: false })
-    expect(updateUser).toHaveBeenNthCalledWith(2, { alwaysThinkingEnabled: true })
+    expect(updateRuntime).toHaveBeenNthCalledWith(1, { alwaysThinkingEnabled: false })
+    expect(updateRuntime).toHaveBeenNthCalledWith(2, { alwaysThinkingEnabled: true })
     expect(useSettingsStore.getState().thinkingEnabled).toBe(true)
   })
 
@@ -535,7 +543,7 @@ describe('settingsStore thinking persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser: vi.fn().mockRejectedValue(new Error('save failed')),
+        updateRuntime: vi.fn().mockRejectedValue(new Error('save failed')),
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -559,6 +567,8 @@ describe('settingsStore Auto-dream persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -577,6 +587,8 @@ describe('settingsStore Auto-dream persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({ autoDreamEnabled: true }),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser,
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -601,10 +613,12 @@ describe('settingsStore desktop terminal shell persistence', () => {
     window.localStorage.clear()
   })
 
-  it('hydrates desktop terminal settings from user settings and falls back to system defaults', async () => {
+  it('hydrates desktop terminal settings from the desktop endpoint and falls back to system defaults', async () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
-        getUser: vi.fn().mockResolvedValue({
+        getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({
           desktopTerminal: {
             startupShell: 'pwsh',
             customShellPath: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
@@ -631,12 +645,12 @@ describe('settingsStore desktop terminal shell persistence', () => {
   })
 
   it('persists desktop terminal settings explicitly', async () => {
-    const updateUser = vi.fn().mockResolvedValue({ ok: true })
+    const updateDesktop = vi.fn().mockResolvedValue({ ok: true })
 
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
-        updateUser,
+        updateDesktop,
         getPermissionMode: vi.fn(),
         setPermissionMode: vi.fn(),
       },
@@ -648,7 +662,7 @@ describe('settingsStore desktop terminal shell persistence', () => {
       customShellPath: 'C:\\tools\\pwsh.exe',
     })
 
-    expect(updateUser).toHaveBeenCalledWith({
+    expect(updateDesktop).toHaveBeenCalledWith({
       desktopTerminal: {
         startupShell: 'custom',
         customShellPath: 'C:\\tools\\pwsh.exe',
@@ -674,6 +688,8 @@ describe('settingsStore theme persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),
@@ -694,6 +710,8 @@ describe('settingsStore theme persistence', () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn().mockResolvedValue({ theme: 'dark' }),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
         getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
         setPermissionMode: vi.fn(),

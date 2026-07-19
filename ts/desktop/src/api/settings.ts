@@ -1,13 +1,36 @@
 import { api } from './client'
-import type { OutputStylesResponse, PermissionMode, UserSettings } from '../types/settings'
+import type {
+  DesktopSettings,
+  OutputStylesResponse,
+  PermissionMode,
+  RuntimeSettings,
+  UserSettings,
+  UserSettingsUpdate,
+} from '../types/settings'
 
 export const settingsApi = {
   getUser() {
     return api.get<UserSettings>('/api/settings/user')
   },
 
-  updateUser(settings: Partial<UserSettings>) {
+  updateUser(settings: UserSettingsUpdate) {
     return api.put<{ ok: true }>('/api/settings/user', settings)
+  },
+
+  getRuntime() {
+    return api.get<RuntimeSettings>('/api/settings/runtime')
+  },
+
+  updateRuntime(settings: Partial<RuntimeSettings>) {
+    return api.put<{ ok: true }>('/api/settings/runtime', settings)
+  },
+
+  getDesktop() {
+    return api.get<DesktopSettings>('/api/settings/desktop')
+  },
+
+  updateDesktop(settings: Partial<DesktopSettings>) {
+    return api.put<{ ok: true }>('/api/settings/desktop', settings)
   },
 
   getOutputStyles(workDir?: string | null) {
