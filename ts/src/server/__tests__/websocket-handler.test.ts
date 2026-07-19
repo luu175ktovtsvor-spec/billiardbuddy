@@ -821,7 +821,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     }])
   })
 
-  it('allows controlled product attachments, task-local stop, ping, and SDK payload delivery', async () => {
+  it('allows controlled product attachments, task-local stop, and ping', async () => {
     const productSessionId = `product-safe-${crypto.randomUUID()}`
     const productWs = makeClientSocket(productSessionId, 'product')
     const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
@@ -861,10 +861,6 @@ describe('WebSocket handler product task inbound boundary', () => {
       { type: 'status', state: 'idle' },
     ])
 
-    const sdkWs = makeClientSocket(`sdk-safe-${crypto.randomUUID()}`, 'sdk')
-    const handleSdkPayload = spyOn(conversationService, 'handleSdkPayload')
-    handleWebSocket.message(sdkWs, 'raw-sdk-payload')
-    expect(handleSdkPayload).toHaveBeenCalledWith(sdkWs.data.sessionId, 'raw-sdk-payload')
   })
 
   it('blocks /model while preserving ordinary product task text', async () => {
@@ -909,6 +905,42 @@ describe('WebSocket handler product task inbound boundary', () => {
       '整理今天球房的营业数据，并列出待确认问题',
       undefined,
     )
+  })
+})
+
+describe('WebSocket handler SDK boundary', () => {
+  afterEach(() => {
+    __resetWebSocketHandlerStateForTests()
+    mock.restore()
+  })
+
+  it('rejects an SDK socket without a valid session token', () => {
+    const ws = makeClientSocket(`sdk-rejected-${crypto.randomUUID()}`, 'sdk')
+    const authorize = spyOn(conversationService, 'authorizeSdkConnection').mockReturnValue(false)
+    const attach = spyOn(conversationService, 'attachSdkConnection')
+
+    handleWebSocket.open(ws)
+
+    expect(authorize).toHaveBeenCalledWith(ws.data.sessionId, null)
+    expect(attach).not.toHaveBeenCalled()
+    expect(ws.close).toHaveBeenCalledWith(1008, 'Invalid SDK token')
+  })
+
+  it('keeps the authorized SDK transport internal while forwarding raw payloads', () => {
+    const ws = makeClientSocket(`sdk-authorized-${crypto.randomUUID()}`, 'sdk')
+    const authorize = spyOn(conversationService, 'authorizeSdkConnection').mockReturnValue(true)
+    const attach = spyOn(conversationService, 'attachSdkConnection')
+    const handleSdkPayload = spyOn(conversationService, 'handleSdkPayload')
+    const detach = spyOn(conversationService, 'detachSdkConnection')
+
+    handleWebSocket.open(ws)
+    handleWebSocket.message(ws, 'raw-sdk-payload')
+    handleWebSocket.close(ws, 1000, 'completed')
+
+    expect(authorize).toHaveBeenCalledWith(ws.data.sessionId, null)
+    expect(attach).toHaveBeenCalledWith(ws.data.sessionId, ws)
+    expect(handleSdkPayload).toHaveBeenCalledWith(ws.data.sessionId, 'raw-sdk-payload')
+    expect(detach).toHaveBeenCalledWith(ws.data.sessionId)
   })
 })
 
