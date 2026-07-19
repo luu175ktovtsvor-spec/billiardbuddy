@@ -5,6 +5,16 @@ import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
+  productTaskCommandsApi,
+  type ProductTaskAgentCommand,
+  type ProductTaskSkillCommand,
+} from '../api/taskCommands'
+import {
+  buildTaskComposerCommands,
+  resolveTaskComposerRuntimeCommand,
+  type TaskComposerCommand,
+} from '../taskComposerCommands'
+import {
   PRODUCT_TASK_SAFE_ERROR_LABEL,
   canSendProductTaskMessage,
   useProductTaskRuntimeStore,
@@ -101,6 +111,23 @@ function resolveActiveRightDockPanel(
 ): ProductTaskRightDockPanel | null {
   if (requestedPanel && openPanels[requestedPanel]) return requestedPanel
   return firstOpenRightDockPanel(openPanels)
+}
+
+function slashQuery(value: string): string | null {
+  if (!value.startsWith('/')) return null
+  const command = value.slice(1)
+  if (/\s/.test(command)) return null
+  return command.toLocaleLowerCase()
+}
+
+function insertSlashCommand(value: string, commandName: string): string {
+  const firstWhitespace = value.search(/\s/)
+  const suffix = firstWhitespace === -1 ? '' : value.slice(firstWhitespace)
+  return `/${commandName}${suffix || ' '}`
+}
+
+type ProductTaskComposerSlashCommand = TaskComposerCommand & {
+  key: string
 }
 
 type ProductTaskThreadEntryViewProps = {
@@ -427,6 +454,11 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
   const [draft, setDraft] = useState('')
+  const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
+  const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
+  const [commandDiscoveryWorkDir, setCommandDiscoveryWorkDir] = useState<string | null>(null)
+  const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
+  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const [validationMessage, setValidationMessage] = useState<string | null>(null)
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
@@ -462,6 +494,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     () => index.tasks.find((candidate) => candidate.id === taskId) ?? null,
     [index.tasks, taskId],
   )
+  const normalizedWorkDir = task?.workDir.trim() ?? ''
+  const isSlashInput = draft.startsWith('/')
+  const commandQuery = slashQuery(draft)
   const resolvedTaskId = task?.id
 
   useEffect(() => {
@@ -473,6 +508,77 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     void connectTask(resolvedTaskId)
     return () => disconnectTask(resolvedTaskId)
   }, [connectTask, disconnectTask, resolvedTaskId])
+
+  useEffect(() => {
+    if (!isSlashInput || !normalizedWorkDir) {
+      setDiscoverableSkills(null)
+      setDiscoverableAgents(null)
+      setCommandDiscoveryWorkDir(null)
+      setSkillDiscoveryError(null)
+      setAgentDiscoveryError(null)
+      return
+    }
+
+    let cancelled = false
+    setDiscoverableSkills(null)
+    setDiscoverableAgents(null)
+    setCommandDiscoveryWorkDir(normalizedWorkDir)
+    setSkillDiscoveryError(null)
+    setAgentDiscoveryError(null)
+
+    productTaskCommandsApi.listSkills(normalizedWorkDir)
+      .then(({ commands }) => {
+        if (cancelled) return
+        setDiscoverableSkills(commands)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDiscoverableSkills([])
+        setSkillDiscoveryError('暂时无法读取可用命令')
+      })
+
+    productTaskCommandsApi.listAgents(normalizedWorkDir)
+      .then(({ agents }) => {
+        if (cancelled) return
+        setDiscoverableAgents(agents)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDiscoverableAgents([])
+        setAgentDiscoveryError('暂时无法读取可用命令')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isSlashInput, normalizedWorkDir])
+
+  const taskComposerCommands = useMemo(
+    () => buildTaskComposerCommands(discoverableSkills ?? [], discoverableAgents ?? []),
+    [discoverableAgents, discoverableSkills],
+  )
+  const matchingCommands = useMemo<ProductTaskComposerSlashCommand[]>(() => {
+    if (commandQuery === null) return []
+    return taskComposerCommands.map((command) => ({
+      ...command,
+      key: `command:${command.runtimeName ?? command.name}:${command.name}`,
+    })).filter((command) => (
+      command.name.toLocaleLowerCase().startsWith(commandQuery)
+    ))
+  }, [commandQuery, taskComposerCommands])
+  const hasCommandDiscoveryForCurrentWorkDir = commandDiscoveryWorkDir === normalizedWorkDir
+  const visibleCommands = hasCommandDiscoveryForCurrentWorkDir ? matchingCommands : []
+  const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
+  const visibleCommandDiscoveryError = hasCommandDiscoveryForCurrentWorkDir
+    ? visibleCommands.length === 0
+      ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
+      : null
+    : null
+  const isCommandDiscoveryLoading = Boolean(normalizedWorkDir) && (
+    !hasCommandDiscoveryForCurrentWorkDir || (
+      hasPendingCommandDiscovery && visibleCommands.length === 0 && visibleCommandDiscoveryError === null
+    )
+  )
 
   const returnToTaskIndex = () => {
     if (onReturnToTaskIndex) {
@@ -489,9 +595,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
       return
     }
 
+    const message = resolveTaskComposerRuntimeCommand(draft, taskComposerCommands)
     const accepted = attachments.length > 0
-      ? sendMessage(taskId, draft, attachments.map(({ id: _id, ...attachment }) => attachment))
-      : sendText(taskId, draft)
+      ? sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment))
+      : sendText(taskId, message)
     if (!accepted) {
       setValidationMessage('暂时无法发送这条内容，请检查后重试。')
       return
@@ -847,6 +954,18 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   rows={3}
                   className="block w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 py-2.5 text-sm leading-6 text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-primary)]"
                 />
+                {commandQuery !== null ? (
+                  <ProductTaskComposerSlashPicker
+                    workDir={normalizedWorkDir}
+                    commands={visibleCommands}
+                    isLoading={isCommandDiscoveryLoading}
+                    error={visibleCommandDiscoveryError}
+                    onSelect={(command) => {
+                      setDraft((value) => insertSlashCommand(value, command.name))
+                      setValidationMessage(null)
+                    }}
+                  />
+                ) : null}
                 {attachments.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-2" aria-label="待发送附件">
                     {attachments.map((attachment) => (
@@ -942,5 +1061,53 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </section>
       ) : null}
     </main>
+  )
+}
+
+function ProductTaskComposerSlashPicker({
+  workDir,
+  commands,
+  isLoading,
+  error,
+  onSelect,
+}: {
+  workDir: string
+  commands: ProductTaskComposerSlashCommand[]
+  isLoading: boolean
+  error: string | null
+  onSelect: (command: ProductTaskComposerSlashCommand) => void
+}) {
+  if (!workDir) {
+    return <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">当前任务没有可用工作目录，无法读取可用命令。</p>
+  }
+
+  if (isLoading) {
+    return <p role="status" className="mt-2 text-xs text-[var(--color-text-tertiary)]">正在读取可用命令…</p>
+  }
+
+  if (error) {
+    return <p role="alert" className="mt-2 text-xs text-[var(--color-error)]">无法读取可用命令：{error}</p>
+  }
+
+  if (commands.length === 0) {
+    return <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">当前工作目录没有匹配的可用命令。</p>
+  }
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-app-main)]" aria-label="可用命令">
+      {commands.map((command) => (
+        <button
+          key={command.key}
+          type="button"
+          onClick={() => onSelect(command)}
+          className="flex w-full items-start gap-3 border-t border-[var(--color-border)] px-3 py-2 text-left first:border-t-0 hover:bg-[var(--color-surface-hover)]"
+        >
+          <span className="shrink-0 text-sm font-medium text-[var(--color-text-primary)]">/{command.name}</span>
+          {command.description ? (
+            <span className="min-w-0 text-xs leading-5 text-[var(--color-text-secondary)]">{command.description}</span>
+          ) : null}
+        </button>
+      ))}
+    </div>
   )
 }

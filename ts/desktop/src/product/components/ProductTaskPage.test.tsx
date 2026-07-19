@@ -50,6 +50,8 @@ const mocks = vi.hoisted(() => ({
   openProductTaskTab: vi.fn(),
   createSideTask: vi.fn(),
   openSideTaskPanel: vi.fn(),
+  listSkills: vi.fn(),
+  listAgents: vi.fn(),
 }))
 
 vi.mock('../stores/productTaskStore', () => ({
@@ -100,6 +102,13 @@ vi.mock('../../stores/tabStore', () => ({
     openTab: mocks.openTab,
     openProductTaskTab: mocks.openProductTaskTab,
   }),
+}))
+
+vi.mock('../api/taskCommands', () => ({
+  productTaskCommandsApi: {
+    listSkills: mocks.listSkills,
+    listAgents: mocks.listAgents,
+  },
 }))
 
 vi.mock('../stores/productSideTaskStore', () => ({
@@ -236,6 +245,8 @@ beforeEach(() => {
   mocks.refreshThread.mockReset().mockResolvedValue(undefined)
   mocks.openTab.mockReset()
   mocks.openProductTaskTab.mockReset()
+  mocks.listSkills.mockReset().mockResolvedValue({ commands: [] })
+  mocks.listAgents.mockReset().mockResolvedValue({ agents: [] })
   useProductTaskBrowserPreviewStore.setState({ byTaskId: {} })
   mocks.createSideTask.mockReset().mockResolvedValue({
     id: 'side-1',
@@ -303,6 +314,36 @@ describe('ProductTaskPage', () => {
 
     expect(mocks.sendText).toHaveBeenCalledWith('task-1', '  /skill ball-hall-daily-review 整理今天订单  ')
     expect(input.value).toBe('')
+  })
+
+  it('shows bundled Skills in Chinese and sends their runtime command only after selection', async () => {
+    mocks.listSkills.mockResolvedValue({
+      commands: [{
+        runtimeName: 'venue-daily-review',
+        displayName: '复盘今天经营',
+        description: '整理营业、客户和待跟进事项。',
+      }],
+    })
+    mocks.listAgents.mockResolvedValue({ agents: [] })
+    render(<ProductTaskPage taskId="task-1" />)
+    const input = screen.getByLabelText('任务输入') as HTMLTextAreaElement
+
+    fireEvent.change(input, { target: { value: '/' } })
+
+    const command = await screen.findByRole('button', { name: /复盘今天经营/ })
+    expect(mocks.listSkills).toHaveBeenCalledWith('/workspace/billiard')
+    expect(mocks.listAgents).toHaveBeenCalledWith('/workspace/billiard')
+    expect(command.textContent).toContain('/复盘今天经营')
+    expect(command.textContent).toContain('整理营业、客户和待跟进事项。')
+    expect(screen.queryByText('venue-daily-review')).toBeNull()
+
+    fireEvent.click(command)
+    expect(input.value).toBe('/复盘今天经营 ')
+
+    fireEvent.change(input, { target: { value: '/复盘今天经营 整理今天订单' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(mocks.sendText).toHaveBeenCalledWith('task-1', '/venue-daily-review 整理今天订单')
   })
 
   it('appends a voice transcript to the product composer without sending it', () => {
