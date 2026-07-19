@@ -12,6 +12,7 @@ import { handleProductApi } from './api/product.js'
 
 type ApiRequestHandlers = {
   media?: typeof handleMediaApi
+  product?: (req: Request, url: URL, segments: string[]) => Promise<Response>
 }
 
 export async function handleApiRequest(
@@ -45,7 +46,9 @@ export async function handleApiRequest(
       return (handlers.media ?? handleMediaApi)(req, url, segments)
 
     case 'product':
-      return handleProductApi(req, url, segments)
+      return handlers.product
+        ? handlers.product(req, url, segments)
+        : handleProductApi(req, url, segments)
 
     default:
       return Response.json(

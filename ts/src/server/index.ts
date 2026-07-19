@@ -19,7 +19,10 @@ import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
+import { handleProductApi } from './api/product.js'
 import { productTaskService } from './product/taskService.js'
+import { ProductTaskMediaService } from './product/taskMediaService.js'
+import { MediaProjectService } from './services/mediaProjectService.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -95,9 +98,16 @@ export function resolveLocalServerHost(host: string): string {
 
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
+  // All media-facing routes share one process-local service so video exports from
+  // task views and the media workbench use the same FFmpeg admission queue.
+  const mediaService = new MediaProjectService()
   const mediaApiHandler = createMediaApiHandler(
-    undefined,
+    mediaService,
     consumeMediaUiCapability(),
+  )
+  const productMedia = new ProductTaskMediaService(productTaskService, mediaService)
+  const productApiHandler = (req: Request, url: URL, segments: string[]) => (
+    handleProductApi(req, url, segments, productTaskService, undefined, productMedia)
   )
   enableConfigs()
   // Don't hijack the global console / process handlers under `bun test`:
@@ -229,7 +239,10 @@ export function startServer(port = PORT, host = HOST) {
           }
 
           try {
-            const response = await handleApiRequest(req, url, { media: mediaApiHandler })
+            const response = await handleApiRequest(req, url, {
+              media: mediaApiHandler,
+              product: productApiHandler,
+            })
             return withCors(response, cors)
           } catch (error) {
             void diagnosticsService.recordEvent({
