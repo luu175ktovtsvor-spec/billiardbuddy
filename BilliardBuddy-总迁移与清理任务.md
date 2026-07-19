@@ -333,7 +333,7 @@ Skill 是 Agent 按需读取的业务经验、任务目标、风险边界和完�
 - 不得在普通前端显示模型名、Provider、Claude 登录、隐藏提示、hook 注入或原始思考。
 - 不得用假会话、假文件树、假工具活动和假完成状态冒充真实接线。
 - 不得启用 Whisper，不得让客户端持有上游真实 API key，不得静默跨供应商切换。
-- 不得修改 `ts/desktop/src-tauri/resources/preview-agent.js`。
+- 不得手工修改 `ts/desktop/src-tauri/resources/preview-agent.js`；它只能由 `ts/desktop/scripts/build-preview-agent.ts` 再生成，且生成结果必须保留实际依赖要求的许可证声明。
 - 不得为这次迁移重建繁重仓库规则、质量门、阶段报告和文档流程。
 
 ## 什么时候才能声称完成
