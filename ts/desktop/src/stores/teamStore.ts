@@ -4,7 +4,7 @@ import type { TeamSummary, TeamDetail, TeamMember, AgentColor } from '../types/t
 import { AGENT_COLORS } from '../types/team'
 import type { TeamMemberStatus, UIMessage } from '../types/chat'
 import { useChatStore, mapHistoryMessagesToUiMessages } from './chatStore'
-import { useTabStore } from './tabStore'
+import { PRODUCT_TASKS_TAB_ID, useTabStore } from './tabStore'
 
 const MEMBER_POLL_INTERVAL_MS = 1500
 const MEMBER_TRANSCRIPT_MATCH_WINDOW_MS = 120_000
@@ -218,16 +218,11 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
     }
   },
 
-  openMemberSession: (member: TeamMember) => {
-    const team = get().activeTeam
-    if (!team) return
-
+  openMemberSession: (_member: TeamMember) => {
     get().stopMemberPolling()
-
-    const tabId = memberSessionId(member.agentId)
-    useTabStore.getState().openTab(tabId, member.role, 'session')
-    void get().refreshMemberSession(tabId)
-    get().startMemberPolling(tabId)
+    // Team member transcripts are Core-internal state. The renderer no longer
+    // promotes them into raw session tabs; return to the public task index.
+    useTabStore.getState().openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
   },
 
   sendMessageToMember: async (sessionId, content) => {

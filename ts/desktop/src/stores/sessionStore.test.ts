@@ -142,7 +142,17 @@ describe('sessionStore', () => {
   })
 
   it('syncs refreshed session titles into already-open tabs', async () => {
-    useTabStore.getState().openTab('session-title-2', '```json {"title":')
+    // Legacy tabs can only arrive through stale in-memory state; the public
+    // tab opener deliberately refuses to create them.
+    useTabStore.setState({
+      tabs: [{
+        sessionId: 'session-title-2',
+        title: '```json {"title":',
+        type: 'session',
+        status: 'idle',
+      }],
+      activeTabId: 'session-title-2',
+    })
     listMock.mockResolvedValue({
       sessions: [{
         id: 'session-title-2',

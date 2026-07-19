@@ -4,6 +4,7 @@ import { Clock, FileText, Folder, Globe2, Sparkles, Target } from 'lucide-react'
 import {
   SCHEDULED_TAB_ID,
   SETTINGS_TAB_ID,
+  PRODUCT_TASKS_TAB_ID,
   TERMINAL_TAB_PREFIX,
   WORKBENCH_TAB_PREFIX,
   useTabStore,
@@ -619,17 +620,15 @@ export function ActiveSession() {
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={() => {
-                    if (activeTeam?.leadSessionId) {
-                      useTabStore.getState().openTab(
-                        activeTeam.leadSessionId,
-                        t('teams.leader'),
-                        'session',
-                      )
-                    }
+                    useTabStore.getState().openTab(
+                      PRODUCT_TASKS_TAB_ID,
+                      '任务中心',
+                      'product-tasks',
+                    )
                   }}
-                  disabled={!activeTeam?.leadSessionId}
-                  className="flex shrink-0 items-center gap-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50 disabled:hover:text-[var(--color-text-secondary)]"
+                  className="flex shrink-0 items-center gap-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
                 >
                   <span className="material-symbols-outlined text-[14px]">arrow_back</span>
                   {t('teams.backToLeader')}
