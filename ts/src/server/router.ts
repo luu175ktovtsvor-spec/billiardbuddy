@@ -11,7 +11,6 @@ import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleMediaApi } from './api/media.js'
-import { handleVoiceApi } from './api/voice.js'
 import { handleProductApi } from './api/product.js'
 
 type ApiRequestHandlers = {
@@ -56,9 +55,6 @@ export async function handleApiRequest(
 
     case 'media':
       return (handlers.media ?? handleMediaApi)(req, url, segments)
-
-    case 'voice':
-      return handleVoiceApi(req, segments)
 
     case 'product':
       return handleProductApi(req, url, segments)
