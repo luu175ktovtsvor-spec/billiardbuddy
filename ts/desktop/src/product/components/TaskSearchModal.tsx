@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Search, X } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import { useTabStore } from '../../stores/tabStore'
-import type { ProductProject, ProductTaskRecord } from '../domain/types'
+import type { ProductProject, ProductProjectDirectory, ProductTaskRecord } from '../domain/types'
 import { useProductTaskStore } from '../stores/productTaskStore'
 import { orderProductTasks } from '../taskOrdering'
 
@@ -18,6 +18,7 @@ type TaskSearchModalProps = {
 type TaskSearchResult = {
   task: ProductTaskRecord
   project: ProductProject | undefined
+  directory: ProductProjectDirectory | undefined
 }
 
 function matchesTask(result: TaskSearchResult, query: string): boolean {
@@ -28,7 +29,9 @@ function matchesTask(result: TaskSearchResult, query: string): boolean {
     result.task.title,
     result.task.workDir,
     result.project?.title,
-    result.project?.workDir,
+    result.project?.rootDir,
+    result.directory?.label,
+    result.directory?.path,
     result.task.lifecycle,
   ].some((value) => value?.toLocaleLowerCase().includes(normalized))
 }
@@ -58,12 +61,17 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
 
   const results = useMemo<TaskSearchResult[]>(() => {
     const projectsById = new Map(index.projects.map((project) => [project.id, project]))
+    const directoriesById = new Map(index.directories.map((directory) => [directory.id, directory]))
     const limit = query.trim() ? SEARCH_LIMIT : RECENT_LIMIT
     return orderProductTasks(index.tasks)
-      .map((task) => ({ task, project: projectsById.get(task.projectId) }))
+      .map((task) => ({
+        task,
+        project: projectsById.get(task.projectId),
+        directory: directoriesById.get(task.directoryId),
+      }))
       .filter((result) => matchesTask(result, query))
       .slice(0, limit)
-  }, [index.projects, index.tasks, query])
+  }, [index.directories, index.projects, index.tasks, query])
 
   const isSearching = query.trim().length > 0
 
@@ -234,7 +242,7 @@ function TaskSearchRow({
 }) {
   const t = useTranslation()
   const project = result.project?.title || t('search.global.unassignedProject')
-  const workDir = result.task.workDir || result.project?.workDir || '—'
+  const workDir = result.task.workDir || result.directory?.path || result.project?.rootDir || '—'
   const lifecycle = result.task.lifecycle === 'archived'
     ? t('search.global.archived')
     : t('search.global.active')

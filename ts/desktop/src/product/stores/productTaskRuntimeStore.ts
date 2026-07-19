@@ -550,6 +550,10 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           streamingEntryId: null,
         }))
         void refreshThread(taskId, 'turn_complete')
+        // The task index is product-owned. Refresh it from the server only
+        // after a completed turn so task and project ordering follows the
+        // Core transcript timestamp instead of renderer-local activity.
+        void useProductTaskStore.getState().refresh()
         return
       }
 

@@ -23,6 +23,8 @@ type TestCore = AgentCoreAdapter & {
     state: Awaited<ReturnType<AgentCoreAdapter['getWorktreeLaunchState']>>,
   ) => void
   setSessionWorkDir: (sessionId: string, workDir: string) => void
+  setSessionProjectRoot: (sessionId: string, projectRoot: string) => void
+  setSessionModifiedAt: (sessionId: string, modifiedAt: string) => void
   getWorktreeLaunchCallCount: () => number
   getLastBranchInput: () => {
     sessionId: string
@@ -126,6 +128,16 @@ function makeCore(): TestCore {
       if (!session) throw new Error('missing core session')
       sessions.set(sessionId, { ...session, workDir })
     },
+    setSessionProjectRoot: (sessionId, projectRoot) => {
+      const session = sessions.get(sessionId)
+      if (!session) throw new Error('missing core session')
+      sessions.set(sessionId, { ...session, projectRoot })
+    },
+    setSessionModifiedAt: (sessionId, modifiedAt) => {
+      const session = sessions.get(sessionId)
+      if (!session) throw new Error('missing core session')
+      sessions.set(sessionId, { ...session, modifiedAt })
+    },
     getWorktreeLaunchCallCount: () => worktreeLaunchCallCount,
     getLastBranchInput: () => lastBranchInput,
     getLastCreateInput: () => lastCreateInput,
@@ -161,7 +173,143 @@ function legacyProductTaskIdForTest(coreSessionId: string): string {
   return `task_${createHash('sha256').update(coreSessionId).digest('hex').slice(0, 16)}`
 }
 
+async function createNestedGitProject(name: string): Promise<{
+  rootDir: string
+  sourceDir: string
+}> {
+  if (!tempDir) throw new Error('temporary directory has not been created')
+  const rootDir = path.join(tempDir, name)
+  const sourceDir = path.join(rootDir, 'subdir')
+  await fs.mkdir(sourceDir, { recursive: true })
+  // The root resolver recognizes both normal `.git` directories and worktree
+  // `.git` files, so a minimal regular-repository marker is sufficient here.
+  await fs.mkdir(path.join(rootDir, '.git'))
+  return {
+    rootDir: await fs.realpath(rootDir),
+    sourceDir: await fs.realpath(sourceDir),
+  }
+}
+
 describe('ProductTaskService', () => {
+  it('registers a raw nested directory under its git project root with opaque IDs', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const storagePath = path.join(tempDir, 'product-tasks.json')
+    const service = new ProductTaskService({ storagePath, core })
+    const { rootDir, sourceDir } = await createNestedGitProject('hall-operations')
+
+    const task = await service.createTask({ workDir: sourceDir })
+
+    expect(task.projectId).toMatch(/^project_/)
+    expect(task.directoryId).toMatch(/^directory_/)
+    expect(task.workDir).toBe(sourceDir)
+    expect(core.getLastCreateInput()).toMatchObject({ workDir: sourceDir })
+
+    const index = await service.listTasks()
+    expect(index.projects).toEqual([
+      expect.objectContaining({
+        id: task.projectId,
+        rootDir,
+      }),
+    ])
+    expect(index.directories).toEqual([
+      expect.objectContaining({
+        id: task.directoryId,
+        projectId: task.projectId,
+        path: sourceDir,
+      }),
+    ])
+
+    const persisted = JSON.parse(await fs.readFile(storagePath, 'utf8')) as {
+      projects: Record<string, { rootDir: string }>
+      directories: Record<string, { projectId: string; path: string }>
+    }
+    expect(persisted.projects[task.projectId]).toEqual(expect.objectContaining({ rootDir }))
+    expect(persisted.directories[task.directoryId]).toEqual(expect.objectContaining({
+      projectId: task.projectId,
+      path: sourceDir,
+    }))
+  })
+
+  it('uses a registered project and directory pair instead of a conflicting raw workDir', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const { sourceDir } = await createNestedGitProject('hall-operations')
+    const ignoredWorkDir = path.join(tempDir, 'do-not-use-this-directory')
+    await fs.mkdir(ignoredWorkDir)
+    const source = await service.createTask({ workDir: sourceDir })
+
+    const task = await service.createTask({
+      projectId: source.projectId,
+      directoryId: source.directoryId,
+      workDir: ignoredWorkDir,
+    })
+
+    expect(task.projectId).toBe(source.projectId)
+    expect(task.directoryId).toBe(source.directoryId)
+    expect(task.workDir).toBe(sourceDir)
+    expect(core.getLastCreateInput()).toMatchObject({ workDir: sourceDir })
+    const index = await service.listTasks()
+    expect(index.projects).toHaveLength(1)
+    expect(index.directories).toHaveLength(1)
+  })
+
+  it('rejects mismatched and one-sided project-directory identifiers before starting Core', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const hall = await service.createTask({ workDir: '/workspace/hall-operations' })
+    const academy = await service.createTask({ workDir: '/workspace/academy' })
+    const lastCreateInput = core.getLastCreateInput()
+
+    await expect(service.createTask({
+      projectId: hall.projectId,
+      directoryId: academy.directoryId,
+    })).rejects.toThrow('所选目录不属于当前项目')
+    await expect(service.createTask({
+      projectId: hall.projectId,
+    })).rejects.toThrow('projectId 和 directoryId 必须同时提供')
+    await expect(service.createTask({
+      directoryId: hall.directoryId,
+    })).rejects.toThrow('projectId 和 directoryId 必须同时提供')
+    expect(core.getLastCreateInput()).toEqual(lastCreateInput)
+  })
+
+  it('keeps a nested source directory identity when a continuation runs in a new worktree', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const { rootDir, sourceDir } = await createNestedGitProject('hall-operations')
+    const source = await service.createTask({ workDir: sourceDir })
+    const sourceSessionId = await service.resolveCoreSessionId(source.id)
+    core.setSessionProjectRoot(sourceSessionId, rootDir)
+
+    const continuation = await service.continueTask(source.id, { target: 'new_worktree' })
+
+    expect(continuation.projectId).toBe(source.projectId)
+    expect(continuation.directoryId).toBe(source.directoryId)
+    expect(continuation.workDir).toContain(`${rootDir}/.claude/worktrees/desktop-continuation-`)
+    expect(continuation.worktreeState).toBe('materialized')
+
+    const reloaded = (await service.listTasks()).tasks.find((task) => task.id === continuation.id)
+    expect(reloaded).toMatchObject({
+      projectId: source.projectId,
+      directoryId: source.directoryId,
+      worktreeState: 'materialized',
+    })
+    expect(reloaded?.workDir).toContain(`${rootDir}/.claude/worktrees/desktop-continuation-`)
+  })
+
   it('derives recent picker projects from registered product tasks only', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
@@ -182,18 +330,18 @@ describe('ProductTaskService', () => {
 
     const recent = await service.listRecentProjects(20)
 
-    expect(recent).toEqual({
-      projects: [{
-        projectPath: visibleWorkDir,
-        realPath: await fs.realpath(visibleWorkDir),
-        projectName: 'hall-operations',
-        isGit: false,
-        repoName: null,
-        branch: null,
-        modifiedAt: expect.any(String),
-        sessionCount: 1,
-      }],
+    const canonicalVisibleWorkDir = await fs.realpath(visibleWorkDir)
+    expect(recent.projects).toHaveLength(1)
+    expect(recent.projects[0]).toMatchObject({
+      projectPath: canonicalVisibleWorkDir,
+      realPath: canonicalVisibleWorkDir,
+      projectName: 'hall-operations',
+      isGit: false,
+      repoName: null,
+      branch: null,
+      sessionCount: 1,
     })
+    expect(recent.projects[0]?.modifiedAt).toEqual(expect.any(String))
     expect(JSON.stringify(recent)).not.toContain(hiddenCore.sessionId)
     expect(JSON.stringify(recent)).not.toContain(hiddenCoreWorkDir)
   })
@@ -315,8 +463,15 @@ describe('ProductTaskService', () => {
 
     const index = await service.listTasks()
     expect(index.projects).toHaveLength(1)
-    expect(index.projects[0]?.workDir).toBe('/workspace/hall-operations')
+    expect(index.projects[0]?.rootDir).toBe('/workspace/hall-operations')
     expect(index.projects[0]?.taskCount).toBe(2)
+    expect(index.directories).toEqual([
+      expect.objectContaining({
+        id: task.directoryId,
+        projectId: task.projectId,
+        path: '/workspace/hall-operations',
+      }),
+    ])
     expect(index.tasks).toHaveLength(2)
     expect(index.total).toBe(2)
   })
@@ -364,7 +519,7 @@ describe('ProductTaskService', () => {
       legacyCoreSessionsImportedAt?: string
       tasks: Record<string, { coreSessionId?: string }>
     }
-    expect(persistedAfterImport.version).toBe(3)
+    expect(persistedAfterImport.version).toBe(4)
     expect(persistedAfterImport.legacyCoreSessionsImportedAt).toEqual(expect.any(String))
     expect(persistedAfterImport.tasks[firstIndex.tasks[0]!.id]?.coreSessionId).toBe(legacy.sessionId)
 
@@ -374,6 +529,56 @@ describe('ProductTaskService', () => {
     await expect(service.resolveCoreSessionId(
       legacyProductTaskIdForTest(laterCoreSession.sessionId),
     )).rejects.toThrow(`任务不存在：${legacyProductTaskIdForTest(laterCoreSession.sessionId)}`)
+  })
+
+  it('backfills v3 task project and directory bindings without changing its public task id', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const storagePath = path.join(tempDir, 'product-tasks.json')
+    const created = await core.createSession({ workDir: '/workspace/v3-hall' })
+    const taskId = 'task-v3-preserved'
+    const timestamp = '2026-07-19T00:00:00.000Z'
+    await fs.writeFile(storagePath, JSON.stringify({
+      version: 3,
+      legacyCoreSessionsImportedAt: timestamp,
+      tasks: {
+        [taskId]: {
+          coreSessionId: created.sessionId,
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          worktreeState: 'not_requested',
+          visibility: 'main',
+        },
+      },
+      sideTasks: {},
+    }), 'utf8')
+
+    const service = new ProductTaskService({ storagePath, core })
+    const index = await service.listTasks()
+    const task = index.tasks[0]
+    expect(task).toEqual(expect.objectContaining({
+      id: taskId,
+      projectId: expect.stringMatching(/^project_/),
+      directoryId: expect.stringMatching(/^directory_/),
+    }))
+    expect(index.projects).toEqual([
+      expect.objectContaining({ id: task?.projectId, rootDir: '/workspace/v3-hall' }),
+    ])
+    expect(index.directories).toEqual([
+      expect.objectContaining({ id: task?.directoryId, projectId: task?.projectId, path: '/workspace/v3-hall' }),
+    ])
+
+    const persisted = JSON.parse(await fs.readFile(storagePath, 'utf8')) as {
+      version: number
+      tasks: Record<string, { projectId?: string; directoryId?: string }>
+    }
+    expect(persisted.version).toBe(4)
+    expect(persisted.tasks[taskId]).toMatchObject({
+      projectId: task?.projectId,
+      directoryId: task?.directoryId,
+    })
   })
 
   it('keeps a project with an active pinned task ahead of a newer unpinned project', async () => {
@@ -396,6 +601,36 @@ describe('ProductTaskService', () => {
       pinnedTask.projectId,
       newerTask.projectId,
     ])
+  })
+
+  it('uses newer Core transcript activity to order persisted tasks and projects', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    const olderTask = await service.createTask({ workDir: '/workspace/older-hall' })
+    const newerTask = await service.createTask({ workDir: '/workspace/newer-hall' })
+    const olderSessionId = await service.resolveCoreSessionId(olderTask.id)
+    const futureActivity = '2099-01-01T00:00:00.000Z'
+    core.setSessionModifiedAt(olderSessionId, futureActivity)
+
+    const index = await service.listTasks()
+    expect(index.tasks.map((task) => task.id)).toEqual([olderTask.id, newerTask.id])
+    expect(index.projects.map((project) => project.id)).toEqual([
+      olderTask.projectId,
+      newerTask.projectId,
+    ])
+    expect(index.tasks.find((task) => task.id === olderTask.id)?.updatedAt).toBe(futureActivity)
+    expect(index.projects.find((project) => project.id === olderTask.projectId)?.updatedAt).toBe(futureActivity)
+
+    const recent = await service.listRecentProjects(2)
+    expect(recent.projects[0]).toMatchObject({
+      projectPath: '/workspace/older-hall',
+      modifiedAt: futureActivity,
+    })
   })
 
   it('continues the complete task when no product-thread entry is supplied', async () => {
@@ -604,7 +839,7 @@ describe('ProductTaskService', () => {
       version: number
       tasks: Record<string, { coreSessionId?: string }>
     }
-    expect(persisted.version).toBe(3)
+    expect(persisted.version).toBe(4)
     expect(persisted.tasks[task!.id]?.coreSessionId).toBe(created.sessionId)
   })
 

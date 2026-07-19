@@ -60,6 +60,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     worktreeState: 'not_requested',
     actions: ['continue'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-a',
   }
 }
 
@@ -68,6 +69,7 @@ function makeIndex(tasks: ProductTaskRecord[] = [
   makeTask({
     id: 'task-2',
     projectId: 'project-b',
+    directoryId: 'directory-b',
     workDir: '/workspace/beta',
     title: '归档的球台维护计划',
     lifecycle: 'archived',
@@ -80,7 +82,8 @@ function makeIndex(tasks: ProductTaskRecord[] = [
       {
         id: 'project-a',
         title: '甲店项目',
-        workDir: '/workspace/alpha',
+        rootDir: '/workspace/alpha',
+        createdAt: '2026-07-19T00:00:00.000Z',
         taskCount: 1,
         archivedTaskCount: 0,
         updatedAt: '2026-07-19T01:00:00.000Z',
@@ -88,9 +91,28 @@ function makeIndex(tasks: ProductTaskRecord[] = [
       {
         id: 'project-b',
         title: '乙店项目',
-        workDir: '/workspace/beta',
+        rootDir: '/workspace/beta',
+        createdAt: '2026-07-19T00:00:00.000Z',
         taskCount: 0,
         archivedTaskCount: 1,
+        updatedAt: '2026-07-19T02:00:00.000Z',
+      },
+    ],
+    directories: [
+      {
+        id: 'directory-a',
+        projectId: 'project-a',
+        path: '/workspace/alpha',
+        label: '甲店项目',
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt: '2026-07-19T01:00:00.000Z',
+      },
+      {
+        id: 'directory-b',
+        projectId: 'project-b',
+        path: '/workspace/beta',
+        label: '乙店项目',
+        createdAt: '2026-07-19T00:00:00.000Z',
         updatedAt: '2026-07-19T02:00:00.000Z',
       },
     ],
@@ -144,6 +166,7 @@ describe('TaskSearchModal', () => {
     const newerTask = makeTask({
       id: 'task-newer',
       projectId: 'project-b',
+      directoryId: 'directory-b',
       title: '较新任务',
       workDir: '/workspace/beta',
       updatedAt: '2026-07-19T02:00:00.000Z',

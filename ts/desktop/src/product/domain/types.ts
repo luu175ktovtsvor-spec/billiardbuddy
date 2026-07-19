@@ -34,6 +34,7 @@ export type {
   CreateProductSideTaskInput,
   ProductContinuationTarget,
   ProductProject,
+  ProductProjectDirectory,
   ProductRecentProject,
   ProductRecentProjectList,
   ProductSideTask,

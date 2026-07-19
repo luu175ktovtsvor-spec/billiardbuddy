@@ -23,9 +23,29 @@ export type ProductTaskPermissionMode =
 export type ProductProject = {
   id: string
   title: string
-  workDir: string
+  /**
+   * Stable project root owned by the product registry. This is not a task's
+   * current execution directory: a task may run from a nested directory or
+   * a materialized worktree while remaining in this project.
+   */
+  rootDir: string
+  createdAt: string
   taskCount: number
   archivedTaskCount: number
+  updatedAt: string
+}
+
+/**
+ * A directory explicitly associated with a product project. Product tasks
+ * bind to this identity, while their `workDir` continues to reflect the
+ * actual directory currently used by the Agent Core.
+ */
+export type ProductProjectDirectory = {
+  id: string
+  projectId: string
+  path: string
+  label: string
+  createdAt: string
   updatedAt: string
 }
 
@@ -54,6 +74,7 @@ export type ProductRecentProjectList = {
 export type ProductTask = {
   id: string
   projectId: string
+  directoryId: string
   workDir: string
   title: string
   lifecycle: ProductTaskLifecycle
@@ -91,12 +112,24 @@ export type ProductSideTaskList = {
 export type ProductTaskIndex = {
   schemaVersion: typeof PRODUCT_DOMAIN_VERSION
   projects: ProductProject[]
+  directories: ProductProjectDirectory[]
   tasks: ProductTask[]
   total: number
 }
 
 export type CreateProductTaskInput = {
-  workDir: string
+  /**
+   * A previously registered project/directory pair. Both values are required
+   * together and the server resolves the actual path from its own registry.
+   */
+  projectId?: string
+  directoryId?: string
+  /**
+   * Compatibility path for selecting a new directory. The server
+   * canonicalizes it and registers or reuses a product project/directory
+   * before creating the Agent Core session.
+   */
+  workDir?: string
   title?: string
   useWorktree?: boolean
   /**

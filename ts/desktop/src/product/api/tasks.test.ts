@@ -22,6 +22,7 @@ describe('productTasksApi', () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       schemaVersion: 1,
       projects: [],
+      directories: [],
       tasks: [],
       total: 0,
       capabilities: { createTask: true },

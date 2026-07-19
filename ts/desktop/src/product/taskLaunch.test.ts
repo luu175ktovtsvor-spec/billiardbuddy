@@ -6,6 +6,7 @@ function makeTask(): ProductTaskRecord {
   return {
     id: 'task-1',
     projectId: 'project-1',
+    directoryId: 'directory-1',
     workDir: '/workspace/billiard',
     title: '整理开球训练',
     lifecycle: 'active',

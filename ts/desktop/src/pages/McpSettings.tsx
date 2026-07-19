@@ -397,7 +397,7 @@ export function McpSettings() {
     let cancelled = false
     setIsInitialLoading(useMcpStore.getState().servers.length === 0)
 
-    const paths = [currentWorkDir, ...productProjects.map((project) => project.workDir)]
+    const paths = [currentWorkDir, ...productProjects.map((project) => project.rootDir)]
       .filter((path): path is string => Boolean(path))
     projectPathsForFetchRef.current = Array.from(new Set(paths))
 

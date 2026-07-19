@@ -3,6 +3,7 @@ import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
   ProductProject,
+  ProductProjectDirectory,
   ProductTaskAction,
   ProductTaskIndexResponse,
   ProductTaskPermissionMode,
@@ -262,18 +263,21 @@ export function TaskIndex({
 
 export function TaskComposer({
   projects,
+  directories,
   initialWorkDir,
   isSubmitting,
   onCancel,
   onSubmit,
 }: {
   projects: ProductProject[]
+  directories: ProductProjectDirectory[]
   initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
   onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
 }) {
   const [projectId, setProjectId] = useState('')
+  const [directoryId, setDirectoryId] = useState('')
   const [workDir, setWorkDir] = useState(() => initialWorkDir ?? '')
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
@@ -294,6 +298,16 @@ export function TaskComposer({
   const normalizedWorkDir = workDir.trim()
   const isSlashInput = initialText.startsWith('/')
   const query = slashQuery(initialText)
+
+  useEffect(() => {
+    if (directoryId) return
+
+    const matchingDirectory = directories.find((directory) => directory.path === normalizedWorkDir)
+    if (!matchingDirectory) return
+
+    setProjectId(matchingDirectory.projectId)
+    setDirectoryId(matchingDirectory.id)
+  }, [directories, directoryId, normalizedWorkDir])
 
   useEffect(() => {
     if (!isSlashInput || !normalizedWorkDir) {
@@ -372,10 +386,46 @@ export function TaskComposer({
     )
   )
 
+  const setRegisteredWorkDir = (nextWorkDir: string) => {
+    const matchingDirectory = directories.find((directory) => directory.path === nextWorkDir.trim())
+    setWorkDir(nextWorkDir)
+    setProjectId(matchingDirectory?.projectId ?? '')
+    setDirectoryId(matchingDirectory?.id ?? '')
+  }
+
   const selectProject = (nextProjectId: string) => {
-    setProjectId(nextProjectId)
+    if (!nextProjectId) {
+      setProjectId('')
+      setDirectoryId('')
+      return
+    }
+
     const project = projects.find((entry) => entry.id === nextProjectId)
-    if (project) setWorkDir(project.workDir)
+    const projectDirectories = directories.filter((directory) => directory.projectId === nextProjectId)
+    const rootDirectory = projectDirectories.find((directory) => directory.path === project?.rootDir)
+    const directory = rootDirectory ?? projectDirectories[0]
+
+    setProjectId(nextProjectId)
+    setDirectoryId(directory?.id ?? '')
+    if (directory) {
+      setWorkDir(directory.path)
+    } else if (project) {
+      setWorkDir(project.rootDir)
+    }
+  }
+
+  const selectDirectory = (nextDirectoryId: string) => {
+    if (!nextDirectoryId) {
+      setDirectoryId('')
+      return
+    }
+
+    const directory = directories.find((entry) => entry.id === nextDirectoryId)
+    if (!directory) return
+
+    setProjectId(directory.projectId)
+    setDirectoryId(directory.id)
+    setWorkDir(directory.path)
   }
 
   const chooseWorkDir = async () => {
@@ -390,8 +440,7 @@ export function TaskComposer({
       const nextWorkDir = Array.isArray(selected) ? selected[0] : selected
       if (!nextWorkDir) return
 
-      setWorkDir(nextWorkDir)
-      setProjectId(projects.find((project) => project.workDir === nextWorkDir)?.id ?? '')
+      setRegisteredWorkDir(nextWorkDir)
     } catch {
       return
     }
@@ -435,6 +484,7 @@ export function TaskComposer({
 
     const taskInput: CreateProductTaskInput = {
       workDir: normalizedWorkDir,
+      ...(projectId && directoryId ? { projectId, directoryId } : {}),
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(useWorktree ? { useWorktree: true } : {}),
       permissionMode,
@@ -470,14 +520,25 @@ export function TaskComposer({
           项目
           <select aria-label="选择项目" value={projectId} onChange={(event) => selectProject(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]">
             <option value="">手动填写工作目录</option>
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.title} · {project.rootDir}</option>)}
+          </select>
+        </label>
+      ) : null}
+      {projectId ? (
+        <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+          项目目录
+          <select aria-label="选择项目目录" value={directoryId} onChange={(event) => selectDirectory(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]">
+            <option value="">手动填写工作目录</option>
+            {directories.filter((directory) => directory.projectId === projectId).map((directory) => (
+              <option key={directory.id} value={directory.id}>{directory.label} · {directory.path}</option>
+            ))}
           </select>
         </label>
       ) : null}
       <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         <label htmlFor="product-task-work-dir">工作目录</label>
         <div className="flex gap-2">
-          <input id="product-task-work-dir" aria-label="工作目录" required value={workDir} onChange={(event) => setWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+          <input id="product-task-work-dir" aria-label="工作目录" required value={workDir} onChange={(event) => setRegisteredWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
           {canChooseWorkDir ? (
             <button type="button" onClick={() => void chooseWorkDir()} className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">选择文件夹</button>
           ) : null}
@@ -644,7 +705,7 @@ function ProjectTaskGroup({
     <section className="overflow-hidden rounded-xl border border-[var(--color-border)]" data-testid={project ? `product-project-${project.id}` : 'product-unassigned-tasks'}>
       <header className="border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-4 py-3">
         <h2 className="font-medium text-[var(--color-text-primary)]">{project?.title ?? '未归属项目的任务'}</h2>
-        {project ? <p className="mt-1 break-all text-xs text-[var(--color-text-secondary)]">工作目录：{project.workDir}</p> : null}
+        {project ? <p className="mt-1 break-all text-xs text-[var(--color-text-secondary)]">项目根目录：{project.rootDir}</p> : null}
       </header>
       <div className="divide-y divide-[var(--color-border)]">
         {visibleTasks.map((task) => (

@@ -10,6 +10,7 @@ import {
   type CreateProductSideTaskInput,
   type ProductContinuationTarget,
   type ProductProject,
+  type ProductProjectDirectory,
   type ProductRecentProject,
   type ProductRecentProjectList,
   type ProductSideTask,
@@ -38,7 +39,7 @@ import {
   projectSessionTranscriptForProductTask,
   resolveCoreMessageIdForProductThreadEntry,
 } from './taskThreadProjection.js'
-import { findGitRoot } from '../../utils/git.js'
+import { findCanonicalGitRoot, findGitRoot } from '../../utils/git.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -63,6 +64,10 @@ type ProductTaskMetadata = {
   id: string
   /** Private Agent Core binding. Never return this from a product API. */
   coreSessionId: string
+  /** Product-owned project binding; never derived from a Core session again. */
+  projectId?: string
+  /** Product-owned source-directory binding; separate from the live workDir. */
+  directoryId?: string
   title?: string
   lifecycle: ProductTask['lifecycle']
   kind: ProductTask['kind']
@@ -83,12 +88,21 @@ type ProductSideTaskMetadata = ProductSideTask & {
   sourceTurnId: string
 }
 
-const PRODUCT_TASK_STORE_VERSION = 3 as const
+type ProductProjectMetadata = Pick<
+  ProductProject,
+  'id' | 'title' | 'rootDir' | 'createdAt' | 'updatedAt'
+>
+
+type ProductProjectDirectoryMetadata = ProductProjectDirectory
+
+const PRODUCT_TASK_STORE_VERSION = 4 as const
 const DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 const MAX_RECENT_PRODUCT_PROJECTS = 500
 
 type ProductTaskStore = {
   version: typeof PRODUCT_TASK_STORE_VERSION
+  projects: Record<string, ProductProjectMetadata>
+  directories: Record<string, ProductProjectDirectoryMetadata>
   tasks: Record<string, ProductTaskMetadata>
   sideTasks: Record<string, ProductSideTaskMetadata>
   /**
@@ -97,6 +111,15 @@ type ProductTaskStore = {
    * tasks, so the product index has a single durable source of truth.
    */
   legacyCoreSessionsImportedAt?: string
+}
+
+type ProductDirectoryBinding = {
+  project: ProductProjectMetadata
+  directory: ProductProjectDirectoryMetadata
+}
+
+type RegisteredProductDirectory = ProductDirectoryBinding & {
+  changed: boolean
 }
 
 export type AgentCoreSession = Pick<
@@ -230,9 +253,47 @@ function createProductSideTaskId(): string {
   return `side_task_${randomUUID()}`
 }
 
-function projectTitle(workDir: string): string {
-  const base = path.basename(workDir.replace(/[\\/]+$/, ''))
-  return base || workDir || '未命名项目'
+function createProductProjectId(): string {
+  return `project_${randomUUID()}`
+}
+
+function createProductDirectoryId(): string {
+  return `directory_${randomUUID()}`
+}
+
+function legacyProductProjectId(rootDir: string): string {
+  return resourceId('project', rootDir)
+}
+
+function legacyProductDirectoryId(projectId: string, directoryPath: string): string {
+  return resourceId('directory', `${projectId}\u0000${directoryPath}`)
+}
+
+function projectTitle(rootDir: string): string {
+  const base = path.basename(rootDir.replace(/[\\/]+$/, ''))
+  return base || rootDir || '未命名项目'
+}
+
+function directoryLabel(rootDir: string, directoryPath: string): string {
+  const relative = path.relative(rootDir, directoryPath)
+  if (!relative) return '项目根目录'
+  if (!relative.startsWith('..') && !path.isAbsolute(relative)) return relative
+  return path.basename(directoryPath) || directoryPath
+}
+
+function sameProductPath(left: string, right: string): boolean {
+  return path.resolve(left).normalize('NFC') === path.resolve(right).normalize('NFC')
+}
+
+function isSameOrChildPath(rootDir: string, candidate: string): boolean {
+  const relative = path.relative(rootDir, candidate)
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function isDesktopWorktreeDirectory(workDir: string, rootDir: string): boolean {
+  if (!isSameOrChildPath(rootDir, workDir)) return false
+  const marker = `${path.sep}.claude${path.sep}worktrees${path.sep}`
+  return workDir.includes(marker)
 }
 
 function boundedRecentProjectLimit(limit: number): number {
@@ -360,6 +421,14 @@ function rejectCoreSourceTurnId(input: object): void {
   }
 }
 
+function requestedProductResourceId(value: unknown, field: 'projectId' | 'directoryId'): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !value.trim()) {
+    throw ApiError.badRequest(`${field} 必须是非空字符串`)
+  }
+  return value.trim()
+}
+
 function defaultMetadata(session: AgentCoreSession): ProductTaskMetadata {
   return {
     id: legacyProductTaskId(session.id),
@@ -390,6 +459,32 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+/**
+ * Core transcript activity is the authoritative recency signal for a task.
+ * Product metadata can also move independently for lifecycle actions, so keep
+ * whichever valid timestamp is newer instead of letting the first stored
+ * value permanently mask later Core work.
+ */
+function latestProductTimestamp(...values: Array<string | undefined>): string {
+  let latest = ''
+  let latestTime = Number.NEGATIVE_INFINITY
+
+  for (const value of values) {
+    if (!value) continue
+    const timestamp = Date.parse(value)
+    if (!Number.isFinite(timestamp)) {
+      if (!latest) latest = value
+      continue
+    }
+    if (timestamp > latestTime) {
+      latest = value
+      latestTime = timestamp
+    }
+  }
+
+  return latest
+}
+
 function storedLifecycle(value: unknown): ProductTask['lifecycle'] {
   return value === 'archived' ? 'archived' : 'active'
 }
@@ -410,6 +505,8 @@ function normalizeMetadata(
   return {
     id: fallback.id,
     coreSessionId: fallback.coreSessionId,
+    ...(optionalString(record.projectId) ? { projectId: optionalString(record.projectId) } : {}),
+    ...(optionalString(record.directoryId) ? { directoryId: optionalString(record.directoryId) } : {}),
     ...(optionalString(record.title) ? { title: optionalString(record.title) } : {}),
     lifecycle: storedLifecycle(record.lifecycle),
     kind: storedKind(record.kind),
@@ -424,73 +521,171 @@ function normalizeMetadata(
   }
 }
 
+function normalizeSideTasks(value: unknown): Record<string, ProductSideTaskMetadata> {
+  const sideTasks: Record<string, ProductSideTaskMetadata> = {}
+  if (!isRecord(value)) return sideTasks
+
+  for (const [sideTaskId, rawSideTask] of Object.entries(value)) {
+    if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
+      continue
+    }
+    const taskId = typeof rawSideTask.taskId === 'string' && rawSideTask.taskId
+      ? rawSideTask.taskId
+      : legacyProductTaskId(rawSideTask.coreSessionId)
+    const parentTaskId = optionalString(rawSideTask.parentTaskId)
+    const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
+    const title = optionalString(rawSideTask.title)
+    const createdAt = optionalString(rawSideTask.createdAt)
+    const updatedAt = optionalString(rawSideTask.updatedAt)
+    if (!parentTaskId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
+    sideTasks[sideTaskId] = {
+      id: sideTaskId,
+      parentTaskId,
+      taskId,
+      sourceTurnId,
+      coreSessionId: rawSideTask.coreSessionId,
+      title,
+      status: rawSideTask.status === 'closed' ? 'closed' : 'open',
+      createdAt,
+      updatedAt,
+      ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
+    }
+  }
+  return sideTasks
+}
+
+function normalizeLegacyV1SideTasks(value: unknown): Record<string, ProductSideTaskMetadata> {
+  const sideTasks: Record<string, ProductSideTaskMetadata> = {}
+  if (!isRecord(value)) return sideTasks
+
+  for (const [sideTaskId, rawSideTask] of Object.entries(value)) {
+    if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
+      continue
+    }
+    const parentCoreSessionId = optionalString(rawSideTask.parentTaskId)
+    const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
+    const title = optionalString(rawSideTask.title)
+    const createdAt = optionalString(rawSideTask.createdAt)
+    const updatedAt = optionalString(rawSideTask.updatedAt)
+    if (!parentCoreSessionId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
+    sideTasks[sideTaskId] = {
+      id: sideTaskId,
+      parentTaskId: legacyProductTaskId(parentCoreSessionId),
+      taskId: legacyProductTaskId(rawSideTask.coreSessionId),
+      sourceTurnId,
+      coreSessionId: rawSideTask.coreSessionId,
+      title,
+      status: rawSideTask.status === 'closed' ? 'closed' : 'open',
+      createdAt,
+      updatedAt,
+      ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
+    }
+  }
+  return sideTasks
+}
+
+function normalizeProjects(value: unknown): Record<string, ProductProjectMetadata> {
+  if (value === undefined) return {}
+  if (!isRecord(value)) {
+    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+  }
+
+  const projects: Record<string, ProductProjectMetadata> = {}
+  for (const [projectId, rawProject] of Object.entries(value)) {
+    if (!isRecord(rawProject)) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    const rootDir = optionalString(rawProject.rootDir)?.trim()
+    if (!projectId || !rootDir) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    projects[projectId] = {
+      id: projectId,
+      title: optionalString(rawProject.title)?.trim() || projectTitle(rootDir),
+      rootDir,
+      createdAt: optionalString(rawProject.createdAt) ?? new Date(0).toISOString(),
+      updatedAt: optionalString(rawProject.updatedAt) ?? new Date(0).toISOString(),
+    }
+  }
+  return projects
+}
+
+function normalizeDirectories(value: unknown): Record<string, ProductProjectDirectoryMetadata> {
+  if (value === undefined) return {}
+  if (!isRecord(value)) {
+    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+  }
+
+  const directories: Record<string, ProductProjectDirectoryMetadata> = {}
+  for (const [directoryId, rawDirectory] of Object.entries(value)) {
+    if (!isRecord(rawDirectory)) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    const projectId = optionalString(rawDirectory.projectId)?.trim()
+    const directoryPath = optionalString(rawDirectory.path)?.trim()
+    if (!directoryId || !projectId || !directoryPath) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    directories[directoryId] = {
+      id: directoryId,
+      projectId,
+      path: directoryPath,
+      label: optionalString(rawDirectory.label)?.trim() || path.basename(directoryPath) || directoryPath,
+      createdAt: optionalString(rawDirectory.createdAt) ?? new Date(0).toISOString(),
+      updatedAt: optionalString(rawDirectory.updatedAt) ?? new Date(0).toISOString(),
+    }
+  }
+  return directories
+}
+
+function normalizeModernTaskStore(value: Record<string, unknown>): ProductTaskStore {
+  const tasks: Record<string, ProductTaskMetadata> = {}
+  const taskIdByCoreSessionId = new Map<string, string>()
+  const rawTasks = value.tasks
+  if (!isRecord(rawTasks)) {
+    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+  }
+
+  for (const [taskId, rawMetadata] of Object.entries(rawTasks)) {
+    if (!isRecord(rawMetadata) || typeof rawMetadata.coreSessionId !== 'string' || !rawMetadata.coreSessionId) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    const existingTaskId = taskIdByCoreSessionId.get(rawMetadata.coreSessionId)
+    if (existingTaskId && existingTaskId !== taskId) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
+    taskIdByCoreSessionId.set(rawMetadata.coreSessionId, taskId)
+    tasks[taskId] = normalizeMetadata(rawMetadata, {
+      id: taskId,
+      coreSessionId: rawMetadata.coreSessionId,
+    })
+  }
+
+  return {
+    version: PRODUCT_TASK_STORE_VERSION,
+    projects: normalizeProjects(value.projects),
+    directories: normalizeDirectories(value.directories),
+    tasks,
+    sideTasks: normalizeSideTasks(value.sideTasks),
+    ...(optionalString(value.legacyCoreSessionsImportedAt)
+      ? { legacyCoreSessionsImportedAt: optionalString(value.legacyCoreSessionsImportedAt) }
+      : {}),
+  }
+}
+
 function normalizeProductTaskStore(value: unknown): ProductTaskStore {
   if (!isRecord(value) || !isRecord(value.tasks)) {
     throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
   }
 
-  if (value.version === PRODUCT_TASK_STORE_VERSION || value.version === 2) {
-    const tasks: Record<string, ProductTaskMetadata> = {}
-    const taskIdByCoreSessionId = new Map<string, string>()
-    for (const [taskId, rawMetadata] of Object.entries(value.tasks)) {
-      if (!isRecord(rawMetadata) || typeof rawMetadata.coreSessionId !== 'string' || !rawMetadata.coreSessionId) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      const existingTaskId = taskIdByCoreSessionId.get(rawMetadata.coreSessionId)
-      if (existingTaskId && existingTaskId !== taskId) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      taskIdByCoreSessionId.set(rawMetadata.coreSessionId, taskId)
-      tasks[taskId] = normalizeMetadata(rawMetadata, {
-        id: taskId,
-        coreSessionId: rawMetadata.coreSessionId,
-      })
-    }
-
-    const sideTasks: Record<string, ProductSideTaskMetadata> = {}
-    if (isRecord(value.sideTasks)) {
-      for (const [sideTaskId, rawSideTask] of Object.entries(value.sideTasks)) {
-        if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
-          continue
-        }
-        const taskId = typeof rawSideTask.taskId === 'string' && rawSideTask.taskId
-          ? rawSideTask.taskId
-          : legacyProductTaskId(rawSideTask.coreSessionId)
-        const parentTaskId = optionalString(rawSideTask.parentTaskId)
-        const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
-        const title = optionalString(rawSideTask.title)
-        const createdAt = optionalString(rawSideTask.createdAt)
-        const updatedAt = optionalString(rawSideTask.updatedAt)
-        if (!parentTaskId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
-        sideTasks[sideTaskId] = {
-          id: sideTaskId,
-          parentTaskId,
-          taskId,
-          sourceTurnId,
-          coreSessionId: rawSideTask.coreSessionId,
-          title,
-          status: rawSideTask.status === 'closed' ? 'closed' : 'open',
-          createdAt,
-          updatedAt,
-          ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
-        }
-      }
-    }
-    const importedAt = value.version === PRODUCT_TASK_STORE_VERSION
-      ? optionalString(value.legacyCoreSessionsImportedAt)
-      : undefined
-    return {
-      version: PRODUCT_TASK_STORE_VERSION,
-      tasks,
-      sideTasks,
-      ...(importedAt ? { legacyCoreSessionsImportedAt: importedAt } : {}),
-    }
+  if (value.version === PRODUCT_TASK_STORE_VERSION || value.version === 3 || value.version === 2) {
+    return normalizeModernTaskStore(value)
   }
 
   // Version 1 keyed metadata by Core session id and returned that id as the
-  // product id. Convert it in memory to stable opaque identifiers. The next
-  // product-index load imports any remaining legacy sessions and writes the
-  // v3 product registry atomically.
+  // product id. Convert it in memory to stable opaque identifiers. Project
+  // and directory bindings are backfilled from the registered Core sessions
+  // before the v4 store is written.
   if (value.version === PRODUCT_DOMAIN_VERSION) {
     const tasks: Record<string, ProductTaskMetadata> = {}
     for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
@@ -506,51 +701,30 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
       }
     }
 
-    const sideTasks: Record<string, ProductSideTaskMetadata> = {}
-    if (isRecord(value.sideTasks)) {
-      for (const [sideTaskId, rawSideTask] of Object.entries(value.sideTasks)) {
-        if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
-          continue
-        }
-        const parentCoreSessionId = optionalString(rawSideTask.parentTaskId)
-        const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
-        const title = optionalString(rawSideTask.title)
-        const createdAt = optionalString(rawSideTask.createdAt)
-        const updatedAt = optionalString(rawSideTask.updatedAt)
-        if (!parentCoreSessionId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
-
-        const taskId = legacyProductTaskId(rawSideTask.coreSessionId)
-        const parentTaskId = legacyProductTaskId(parentCoreSessionId)
-        sideTasks[sideTaskId] = {
-          id: sideTaskId,
-          parentTaskId,
-          taskId,
-          sourceTurnId,
-          coreSessionId: rawSideTask.coreSessionId,
-          title,
-          status: rawSideTask.status === 'closed' ? 'closed' : 'open',
-          createdAt,
-          updatedAt,
-          ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
-        }
-        if (!tasks[taskId]) {
-          tasks[taskId] = {
-            id: taskId,
-            coreSessionId: rawSideTask.coreSessionId,
-            title,
-            lifecycle: 'active',
-            kind: 'continuation',
-            parentTaskId,
-            sourceTurnId,
-            createdAt,
-            updatedAt,
-            worktreeState: 'not_requested',
-            visibility: 'side_task',
-          }
-        }
+    const sideTasks = normalizeLegacyV1SideTasks(value.sideTasks)
+    for (const sideTask of Object.values(sideTasks)) {
+      if (tasks[sideTask.taskId]) continue
+      tasks[sideTask.taskId] = {
+        id: sideTask.taskId,
+        coreSessionId: sideTask.coreSessionId,
+        title: sideTask.title,
+        lifecycle: 'active',
+        kind: 'continuation',
+        parentTaskId: sideTask.parentTaskId,
+        sourceTurnId: sideTask.sourceTurnId,
+        createdAt: sideTask.createdAt,
+        updatedAt: sideTask.updatedAt,
+        worktreeState: 'not_requested',
+        visibility: 'side_task',
       }
     }
-    return { version: PRODUCT_TASK_STORE_VERSION, tasks, sideTasks }
+    return {
+      version: PRODUCT_TASK_STORE_VERSION,
+      projects: {},
+      directories: {},
+      tasks,
+      sideTasks,
+    }
   }
 
   throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
@@ -581,13 +755,11 @@ export class ProductTaskService {
   }
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
-    let [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
-    store = await this.importLegacyCoreSessionsOnce(store, sessions)
+    const { store, sessions } = await this.loadRegisteredStore()
     const sideTaskSessionIds = new Set(
       Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
     )
     const records: ProductTaskRecord[] = []
-    const coreSessionIdByTaskId = new Map<string, string>()
     const sessionsById = new Map(sessions.map((session) => [session.id, session]))
     for (const metadata of Object.values(store.tasks)) {
       if (sideTaskSessionIds.has(metadata.coreSessionId) || metadata.visibility === 'side_task') continue
@@ -595,7 +767,6 @@ export class ProductTaskService {
       if (!session) continue
       const record = await this.toRecord(session, metadata)
       records.push(record)
-      coreSessionIdByTaskId.set(record.id, metadata.coreSessionId)
     }
     records.sort((left, right) => {
       if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
@@ -609,19 +780,12 @@ export class ProductTaskService {
     )
     const projects = new Map<string, ProductProject>()
     for (const task of records) {
-      const session = sessionsById.get(coreSessionIdByTaskId.get(task.id) ?? '')
-      const workDir = session?.projectRoot
-        ?? session?.workDir
-        ?? ''
-      if (!workDir) continue
-
+      const registered = store.projects[task.projectId]
+      if (!registered) continue
       const project = projects.get(task.projectId) ?? {
-        id: task.projectId,
-        title: projectTitle(workDir),
-        workDir,
+        ...registered,
         taskCount: 0,
         archivedTaskCount: 0,
-        updatedAt: task.updatedAt,
       }
       if (task.lifecycle === 'archived') project.archivedTaskCount += 1
       else project.taskCount += 1
@@ -629,14 +793,21 @@ export class ProductTaskService {
       projects.set(task.projectId, project)
     }
 
+    const publicProjects = [...projects.values()].sort((left, right) => {
+      if (activePinnedProjectIds.has(left.id) !== activePinnedProjectIds.has(right.id)) {
+        return activePinnedProjectIds.has(left.id) ? -1 : 1
+      }
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
+    })
+    const visibleProjectIds = new Set(publicProjects.map((project) => project.id))
+
     return {
       schemaVersion: PRODUCT_DOMAIN_VERSION,
-      projects: [...projects.values()].sort((left, right) => {
-        if (activePinnedProjectIds.has(left.id) !== activePinnedProjectIds.has(right.id)) {
-          return activePinnedProjectIds.has(left.id) ? -1 : 1
-        }
-        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
-      }),
+      projects: publicProjects,
+      directories: Object.values(store.directories)
+        .filter((directory) => visibleProjectIds.has(directory.projectId))
+        .sort((left, right) => left.projectId.localeCompare(right.projectId)
+          || left.label.localeCompare(right.label) || left.path.localeCompare(right.path)),
       tasks: records,
       total: records.length,
       capabilities: { createTask: true },
@@ -656,10 +827,10 @@ export class ProductTaskService {
 
     return {
       projects: await Promise.all(projects.map(async (project) => {
-        const realPath = await fs.realpath(project.workDir).catch(() => project.workDir)
+        const realPath = await fs.realpath(project.rootDir).catch(() => project.rootDir)
         const git = await recentProjectGitInfo(realPath)
         return {
-          projectPath: project.workDir,
+          projectPath: project.rootDir,
           realPath,
           projectName: project.title,
           ...git,
@@ -671,13 +842,12 @@ export class ProductTaskService {
   }
 
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
-    if (!input || typeof input !== 'object' || typeof input.workDir !== 'string' || !input.workDir.trim()) {
-      throw ApiError.badRequest('workDir 必须是非空字符串')
-    }
+    if (!input || typeof input !== 'object') throw ApiError.badRequest('创建任务参数必须是对象')
     const title = validTitle(input.title)
     const permissionMode = productTaskPermissionMode(input.permissionMode)
+    const { store, binding } = await this.resolveCreateTaskBinding(input)
     const created = await this.core.createSession({
-      workDir: input.workDir.trim(),
+      workDir: binding.directory.path,
       // Keep Core-specific values inside this adapter boundary. Product
       // clients only send the safe product-facing choices above.
       permissionMode: CORE_PERMISSION_MODE_BY_PRODUCT_MODE[permissionMode],
@@ -687,6 +857,8 @@ export class ProductTaskService {
     const metadata: ProductTaskMetadata = {
       id: createProductTaskId(),
       coreSessionId: created.sessionId,
+      projectId: binding.project.id,
+      directoryId: binding.directory.id,
       ...(title ? { title } : {}),
       lifecycle: 'active',
       kind: 'main',
@@ -696,7 +868,6 @@ export class ProductTaskService {
       visibility: 'main',
     }
     if (title) await this.core.renameSession(created.sessionId, title)
-    const store = await this.readStore()
     store.tasks[metadata.id] = metadata
     await this.writeStore(store)
     return this.requireTask(metadata.id)
@@ -800,6 +971,8 @@ export class ProductTaskService {
     const metadata: ProductTaskMetadata = {
       id: createProductTaskId(),
       coreSessionId: created.sessionId,
+      projectId: source.projectId,
+      directoryId: source.directoryId,
       title: created.title,
       lifecycle: 'active',
       kind: 'continuation',
@@ -812,7 +985,7 @@ export class ProductTaskService {
         : source.worktreeState,
       visibility: 'main',
     }
-    const store = await this.readStore()
+    const { store } = await this.loadRegisteredStore()
     store.tasks[metadata.id] = metadata
     await this.writeStore(store)
     return this.requireTask(metadata.id)
@@ -820,7 +993,7 @@ export class ProductTaskService {
 
   async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
     await this.requireTask(taskId)
-    const store = await this.readStore()
+    const { store } = await this.loadRegisteredStore()
     return Object.values(store.sideTasks)
       .filter((sideTask) => sideTask.parentTaskId === taskId)
       .sort((left, right) => {
@@ -867,10 +1040,12 @@ export class ProductTaskService {
       createdAt: now,
       updatedAt: now,
     }
-    const store = await this.readStore()
+    const { store } = await this.loadRegisteredStore()
     store.tasks[sideTaskTaskId] = {
       id: sideTaskTaskId,
       coreSessionId: created.sessionId,
+      projectId: source.projectId,
+      directoryId: source.directoryId,
       title: created.title,
       lifecycle: 'active',
       kind: 'continuation',
@@ -888,7 +1063,7 @@ export class ProductTaskService {
 
   async closeSideTask(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
     await this.requireTask(taskId)
-    const store = await this.readStore()
+    const { store } = await this.loadRegisteredStore()
     const sideTask = store.sideTasks[sideTaskId]
     if (!sideTask || sideTask.parentTaskId !== taskId) {
       throw ApiError.notFound(`侧边任务不存在：${sideTaskId}`)
@@ -905,6 +1080,268 @@ export class ProductTaskService {
     store.sideTasks[sideTaskId] = closed
     await this.writeStore(store)
     return publicSideTask(closed)
+  }
+
+  private async resolveCreateTaskBinding(input: CreateProductTaskInput): Promise<{
+    store: ProductTaskStore
+    binding: ProductDirectoryBinding
+  }> {
+    const projectId = requestedProductResourceId(input.projectId, 'projectId')
+    const directoryId = requestedProductResourceId(input.directoryId, 'directoryId')
+    if (Boolean(projectId) !== Boolean(directoryId)) {
+      throw ApiError.badRequest('projectId 和 directoryId 必须同时提供')
+    }
+
+    const { store } = await this.loadRegisteredStore()
+    if (projectId && directoryId) {
+      const project = store.projects[projectId]
+      if (!project) throw ApiError.notFound(`项目不存在：${projectId}`)
+      const directory = store.directories[directoryId]
+      if (!directory || directory.projectId !== project.id) {
+        throw ApiError.badRequest('所选目录不属于当前项目')
+      }
+      if (!isSameOrChildPath(project.rootDir, directory.path)) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      const actualDirectory = await this.canonicalizeExistingDirectory(directory.path)
+      if (!sameProductPath(actualDirectory, directory.path)) {
+        throw ApiError.conflict('所选目录的位置已变化，请重新选择')
+      }
+      return { store, binding: { project, directory } }
+    }
+
+    if (typeof input.workDir !== 'string' || !input.workDir.trim()) {
+      throw ApiError.badRequest('workDir 必须是非空字符串')
+    }
+    const directoryPath = await this.canonicalizeExistingDirectory(input.workDir)
+    const rootDir = this.projectRootForDirectory(directoryPath)
+    const now = new Date().toISOString()
+    const registered = this.registerProductDirectory(store, rootDir, directoryPath, {
+      createdAt: now,
+      updatedAt: now,
+      touch: true,
+    })
+    return { store, binding: registered }
+  }
+
+  private async loadRegisteredStore(): Promise<{
+    store: ProductTaskStore
+    sessions: AgentCoreSession[]
+  }> {
+    let [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    store = await this.importLegacyCoreSessionsOnce(store, sessions)
+    store = await this.ensureProjectStructure(store, sessions)
+    return { store, sessions }
+  }
+
+  /**
+   * v1-v3 stored only a private Core binding per task. Backfill stable product
+   * project/directory identities once the registered Core session is visible;
+   * the Core binding itself remains private and is not returned by listTasks.
+   */
+  private async ensureProjectStructure(
+    store: ProductTaskStore,
+    sessions: readonly AgentCoreSession[],
+  ): Promise<ProductTaskStore> {
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+    let changed = false
+
+    for (const metadata of Object.values(store.tasks)) {
+      // A registered directory is the product's durable source-directory
+      // identity. In particular, a continuation can execute in a materialized
+      // worktree while it must remain bound to the directory selected for its
+      // source task. Only legacy or invalid bindings are derived from Core.
+      if (this.existingProductDirectoryBinding(store, metadata)) continue
+
+      const session = sessionsById.get(metadata.coreSessionId)
+      if (!session) continue
+
+      const rootDir = await this.projectRootForSession(session)
+      if (!rootDir) continue
+      const directoryPath = await this.migrationDirectoryForTask(session, metadata, rootDir)
+      const registered = this.registerProductDirectory(store, rootDir, directoryPath, {
+        preferredProjectId: metadata.projectId,
+        preferredDirectoryId: metadata.directoryId,
+        legacyIds: !metadata.projectId || !metadata.directoryId,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.updatedAt,
+        touch: false,
+      })
+      changed ||= registered.changed
+      if (metadata.projectId !== registered.project.id || metadata.directoryId !== registered.directory.id) {
+        metadata.projectId = registered.project.id
+        metadata.directoryId = registered.directory.id
+        changed = true
+      }
+    }
+
+    for (const directory of Object.values(store.directories)) {
+      const project = store.projects[directory.projectId]
+      if (!project || !isSameOrChildPath(project.rootDir, directory.path)) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+    }
+
+    if (changed) await this.writeStore(store)
+    return store
+  }
+
+  private existingProductDirectoryBinding(
+    store: ProductTaskStore,
+    metadata: ProductTaskMetadata,
+  ): ProductDirectoryBinding | null {
+    if (!metadata.projectId || !metadata.directoryId) return null
+    const project = store.projects[metadata.projectId]
+    const directory = store.directories[metadata.directoryId]
+    if (
+      !project
+      || !directory
+      || directory.projectId !== project.id
+      || !isSameOrChildPath(project.rootDir, directory.path)
+    ) {
+      return null
+    }
+    return { project, directory }
+  }
+
+  private registerProductDirectory(
+    store: ProductTaskStore,
+    rootDir: string,
+    directoryPath: string,
+    options: {
+      preferredProjectId?: string
+      preferredDirectoryId?: string
+      legacyIds?: boolean
+      createdAt: string
+      updatedAt: string
+      touch: boolean
+    },
+  ): RegisteredProductDirectory {
+    if (!isSameOrChildPath(rootDir, directoryPath)) {
+      throw ApiError.badRequest('工作目录必须位于所选项目内')
+    }
+
+    let changed = false
+    let project = Object.values(store.projects).find((candidate) => sameProductPath(candidate.rootDir, rootDir))
+    if (!project) {
+      const preferred = options.preferredProjectId
+      const projectId = preferred && !store.projects[preferred]
+        ? preferred
+        : options.legacyIds
+          ? legacyProductProjectId(rootDir)
+          : createProductProjectId()
+      const existingById = store.projects[projectId]
+      if (existingById && !sameProductPath(existingById.rootDir, rootDir)) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      project = existingById ?? {
+        id: projectId,
+        title: projectTitle(rootDir),
+        rootDir,
+        createdAt: options.createdAt,
+        updatedAt: options.updatedAt,
+      }
+      if (!existingById) {
+        store.projects[project.id] = project
+        changed = true
+      }
+    }
+
+    let directory = Object.values(store.directories).find((candidate) => (
+      candidate.projectId === project.id && sameProductPath(candidate.path, directoryPath)
+    ))
+    if (!directory) {
+      const preferred = options.preferredDirectoryId
+      const directoryId = preferred && !store.directories[preferred]
+        ? preferred
+        : options.legacyIds
+          ? legacyProductDirectoryId(project.id, directoryPath)
+          : createProductDirectoryId()
+      const existingById = store.directories[directoryId]
+      if (
+        existingById
+        && (existingById.projectId !== project.id || !sameProductPath(existingById.path, directoryPath))
+      ) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      directory = existingById ?? {
+        id: directoryId,
+        projectId: project.id,
+        path: directoryPath,
+        label: directoryLabel(project.rootDir, directoryPath),
+        createdAt: options.createdAt,
+        updatedAt: options.updatedAt,
+      }
+      if (!existingById) {
+        store.directories[directory.id] = directory
+        changed = true
+      }
+    }
+
+    if (options.touch) {
+      if (project.updatedAt !== options.updatedAt) {
+        project = { ...project, updatedAt: options.updatedAt }
+        store.projects[project.id] = project
+        changed = true
+      }
+      if (directory.updatedAt !== options.updatedAt) {
+        directory = { ...directory, updatedAt: options.updatedAt }
+        store.directories[directory.id] = directory
+        changed = true
+      }
+    }
+
+    return { project, directory, changed }
+  }
+
+  private async canonicalizeExistingDirectory(value: string): Promise<string> {
+    const resolved = path.resolve(value.trim())
+    let realPath: string
+    try {
+      realPath = (await fs.realpath(resolved)).normalize('NFC')
+    } catch {
+      // Keep the product contract compatible with the Core adapter: the Core
+      // remains the final authority for whether a launch directory is usable.
+      // Do not persist this binding until a session was created successfully.
+      return resolved.normalize('NFC')
+    }
+    const stat = await fs.stat(realPath).catch(() => null)
+    if (!stat?.isDirectory()) {
+      throw ApiError.badRequest(`工作目录不是目录：${realPath}`)
+    }
+    return realPath
+  }
+
+  private async canonicalizeKnownDirectory(value: string): Promise<string> {
+    const resolved = path.resolve(value).normalize('NFC')
+    return (await fs.realpath(resolved).catch(() => resolved)).normalize('NFC')
+  }
+
+  private projectRootForDirectory(directoryPath: string): string {
+    return findCanonicalGitRoot(directoryPath) ?? directoryPath
+  }
+
+  private async projectRootForSession(session: AgentCoreSession): Promise<string | null> {
+    const candidate = session.projectRoot ?? session.workDir
+    if (!candidate) return null
+    return this.projectRootForDirectory(await this.canonicalizeKnownDirectory(candidate))
+  }
+
+  private async migrationDirectoryForTask(
+    session: AgentCoreSession,
+    metadata: ProductTaskMetadata,
+    rootDir: string,
+  ): Promise<string> {
+    const workDir = session.workDir
+      ? await this.canonicalizeKnownDirectory(session.workDir)
+      : rootDir
+    if (
+      metadata.worktreeState !== 'not_requested'
+      && isDesktopWorktreeDirectory(workDir, rootDir)
+    ) {
+      return rootDir
+    }
+    return isSameOrChildPath(rootDir, workDir) ? workDir : rootDir
   }
 
   private async requireTask(taskId: string): Promise<ProductTaskRecord> {
@@ -934,7 +1371,7 @@ export class ProductTaskService {
     task: ProductTaskRecord
     metadata: ProductTaskMetadata
   }> {
-    const [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    const { store, sessions } = await this.loadRegisteredStore()
     const stored = store.tasks[taskId]
     if (stored) {
       const session = sessions.find((candidate) => candidate.id === stored.coreSessionId)
@@ -985,14 +1422,17 @@ export class ProductTaskService {
   ): Promise<ProductTaskRecord> {
     const metadata = saved ?? defaultMetadata(session)
     const workDir = session.workDir ?? session.projectRoot ?? ''
-    const projectRoot = session.projectRoot ?? workDir
+    if (!metadata.projectId || !metadata.directoryId) {
+      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+    }
     const requestedWorktree = metadata.worktreeState !== 'not_requested'
     const worktreeState = requestedWorktree
       ? await this.resolveWorktreeState(session.id)
       : 'not_requested'
     const task: ProductTask = {
       id: metadata.id,
-      projectId: resourceId('project', projectRoot || session.id),
+      projectId: metadata.projectId,
+      directoryId: metadata.directoryId,
       workDir,
       title: metadata.title ?? session.title,
       lifecycle: metadata.lifecycle === 'archived' ? 'archived' : 'active',
@@ -1001,7 +1441,7 @@ export class ProductTaskService {
       ...(metadata.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
       ...(metadata.parentTaskId ? { parentTaskId: metadata.parentTaskId } : {}),
       createdAt: metadata.createdAt || session.createdAt,
-      updatedAt: metadata.updatedAt || session.modifiedAt,
+      updatedAt: latestProductTimestamp(metadata.updatedAt, session.modifiedAt) || session.modifiedAt,
       worktreeState,
     }
     return { ...task, actions: actionsFor(task) }
@@ -1023,7 +1463,13 @@ export class ProductTaskService {
       return normalizeProductTaskStore(JSON.parse(raw) as unknown)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { version: PRODUCT_TASK_STORE_VERSION, tasks: {}, sideTasks: {} }
+        return {
+          version: PRODUCT_TASK_STORE_VERSION,
+          projects: {},
+          directories: {},
+          tasks: {},
+          sideTasks: {},
+        }
       }
       if (error instanceof ApiError) throw error
       throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
@@ -1035,8 +1481,18 @@ export class ProductTaskService {
     update: (current: ProductTaskMetadata) => ProductTaskMetadata,
   ): Promise<void> {
     const binding = await this.requireTaskBinding(taskId)
-    const store = await this.readStore()
-    store.tasks[taskId] = update(store.tasks[taskId] ?? binding.metadata)
+    const { store } = await this.loadRegisteredStore()
+    const next = update(store.tasks[taskId] ?? binding.metadata)
+    store.tasks[taskId] = next
+    if (next.projectId && store.projects[next.projectId]) {
+      store.projects[next.projectId] = {
+        ...store.projects[next.projectId],
+        updatedAt: latestProductTimestamp(
+          store.projects[next.projectId].updatedAt,
+          next.updatedAt,
+        ),
+      }
+    }
     await this.writeStore(store)
   }
 

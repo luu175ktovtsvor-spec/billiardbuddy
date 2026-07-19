@@ -53,6 +53,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     worktreeState: 'planned',
     actions: ['rename', 'pin', 'continue', 'archive'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-1',
   }
 }
 
@@ -62,9 +63,18 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
     projects: [{
       id: 'project-1',
       title: 'BilliardBuddy',
-      workDir: '/workspace/billiard',
+      rootDir: '/workspace/billiard',
+      createdAt: '2026-07-18T00:00:00.000Z',
       taskCount: 1,
       archivedTaskCount: 0,
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }],
+    directories: [{
+      id: 'directory-1',
+      projectId: 'project-1',
+      path: '/workspace/billiard',
+      label: 'BilliardBuddy',
+      createdAt: '2026-07-18T00:00:00.000Z',
       updatedAt: '2026-07-18T00:00:00.000Z',
     }],
     tasks: [task],
@@ -109,6 +119,7 @@ function renderComposer(overrides: Partial<{
   render(
     <TaskComposer
       projects={makeIndex().projects}
+      directories={makeIndex().directories}
       initialWorkDir={overrides.initialWorkDir}
       isSubmitting={false}
       onCancel={onCancel}
@@ -168,6 +179,7 @@ describe('TaskIndex', () => {
     const pinnedTask = makeTask({
       id: 'task-pinned',
       projectId: 'project-pinned',
+      directoryId: 'directory-pinned',
       title: '置顶任务',
       workDir: '/workspace/pinned',
       updatedAt: '2026-07-18T00:00:00.000Z',
@@ -176,6 +188,7 @@ describe('TaskIndex', () => {
     const newerTask = makeTask({
       id: 'task-newer',
       projectId: 'project-newer',
+      directoryId: 'directory-newer',
       title: '较新任务',
       workDir: '/workspace/newer',
       updatedAt: '2026-07-19T00:00:00.000Z',
@@ -186,7 +199,8 @@ describe('TaskIndex', () => {
         {
           id: 'project-newer',
           title: '较新项目',
-          workDir: '/workspace/newer',
+          rootDir: '/workspace/newer',
+          createdAt: '2026-07-19T00:00:00.000Z',
           taskCount: 1,
           archivedTaskCount: 0,
           updatedAt: newerTask.updatedAt,
@@ -194,9 +208,28 @@ describe('TaskIndex', () => {
         {
           id: 'project-pinned',
           title: '置顶项目',
-          workDir: '/workspace/pinned',
+          rootDir: '/workspace/pinned',
+          createdAt: '2026-07-18T00:00:00.000Z',
           taskCount: 1,
           archivedTaskCount: 0,
+          updatedAt: pinnedTask.updatedAt,
+        },
+      ],
+      directories: [
+        {
+          id: 'directory-newer',
+          projectId: 'project-newer',
+          path: '/workspace/newer',
+          label: '较新项目',
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: newerTask.updatedAt,
+        },
+        {
+          id: 'directory-pinned',
+          projectId: 'project-pinned',
+          path: '/workspace/pinned',
+          label: '置顶项目',
+          createdAt: '2026-07-18T00:00:00.000Z',
           updatedAt: pinnedTask.updatedAt,
         },
       ],
@@ -353,6 +386,29 @@ describe('TaskIndex', () => {
     renderComposer({ initialWorkDir: '/workspace/billiard' })
 
     expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard')
+  })
+
+  it('submits stable project and directory identities for registered paths, then drops them for a manual path', async () => {
+    const { onSubmit } = renderComposer()
+
+    fireEvent.change(screen.getByLabelText('选择项目'), { target: { value: 'project-1' } })
+    fireEvent.change(screen.getByLabelText('选择项目目录'), { target: { value: 'directory-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+      workDir: '/workspace/billiard',
+      projectId: 'project-1',
+      directoryId: 'directory-1',
+      permissionMode: 'ask',
+    }))
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/manual-path' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenLastCalledWith({
+      workDir: '/workspace/manual-path',
+      permissionMode: 'ask',
+    }))
   })
 
   it('keeps the optional initial goal out of the product task fields', async () => {
