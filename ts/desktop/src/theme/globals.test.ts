@@ -4,7 +4,7 @@ import css from './globals.css?raw'
 
 const normalizedCss = css.replace(/\r\n/g, '\n')
 
-function getThemeBlock(selector: ':root,\n[data-theme="light"]' | '[data-theme="white"]' | '[data-theme="dark"]') {
+function getThemeBlock(selector: ':root,\n[data-theme="light"]' | '[data-theme="dark"]') {
   const start = normalizedCss.indexOf(`${selector} {`)
   expect(start).toBeGreaterThanOrEqual(0)
 
@@ -33,7 +33,7 @@ function getCssBetween(startMarker: string, endMarker: string) {
 }
 
 describe('desktop theme tokens', () => {
-  const themes = [':root,\n[data-theme="light"]', '[data-theme="white"]', '[data-theme="dark"]'] as const
+  const themes = [':root,\n[data-theme="light"]', '[data-theme="dark"]'] as const
   const requiredTokens = [
     '--color-success-container',
     '--color-info',
@@ -55,6 +55,10 @@ describe('desktop theme tokens', () => {
         expect(block, `${theme} should define ${token}`).toContain(`${token}:`)
       }
     }
+  })
+
+  it('does not retain a retired white theme selector', () => {
+    expect(css).not.toContain('[data-theme="white"]')
   })
 
   it('avoids color-mix in the startup-critical UI zoom shell chrome for Safari 15 WebView support', () => {
