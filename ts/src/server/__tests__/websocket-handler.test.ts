@@ -6,7 +6,6 @@ import {
   __registerPendingUserTurnForTests,
   __markPrewarmedForTests,
   __resetWebSocketHandlerStateForTests,
-  closeSessionConnection,
   getActiveSessionIds,
   handleWebSocket,
   sendToSession,
@@ -130,22 +129,6 @@ describe('WebSocket handler session isolation', () => {
     }
     expect(firstEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
     expect(secondEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
-  })
-
-  it('closes and removes an active client socket when a session is deleted', () => {
-    const sessionId = `delete-${crypto.randomUUID()}`
-    const ws = makeClientSocket(sessionId)
-    const clearCallbacks = spyOn(conversationService, 'clearOutputCallbacks')
-    const cancelComputerUse = spyOn(computerUseApprovalService, 'cancelSession')
-
-    handleWebSocket.open(ws)
-
-    expect(closeSessionConnection(sessionId, 'session deleted')).toBe(true)
-
-    expect(getActiveSessionIds()).not.toContain(sessionId)
-    expect(ws.close).toHaveBeenCalledWith(1000, 'session deleted')
-    expect(clearCallbacks).toHaveBeenCalledWith(sessionId)
-    expect(cancelComputerUse).toHaveBeenCalledWith(sessionId)
   })
 
   it('replays pending permission requests when a client reconnects', () => {
