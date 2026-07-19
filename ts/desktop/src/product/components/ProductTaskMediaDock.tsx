@@ -20,6 +20,7 @@ type ProductTaskMediaDockProps = {
 
 type LoadState = 'loading' | 'ready' | 'error'
 type AttachPickerState = 'idle' | 'loading' | 'ready' | 'error'
+type TaskScope = { taskId: string; version: number }
 
 const PROJECT_STATE_LABEL: Record<ProductTaskMediaProject['state'], string> = {
   draft: '草稿',
@@ -71,8 +72,25 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
   const [attachingProjectId, setAttachingProjectId] = useState<string | null>(null)
   const loadVersionRef = useRef(0)
   const attachableLoadVersionRef = useRef(0)
+  const taskScopeRef = useRef<TaskScope>({ taskId, version: 0 })
+  if (taskScopeRef.current.taskId !== taskId) {
+    taskScopeRef.current = {
+      taskId,
+      version: taskScopeRef.current.version + 1,
+    }
+  }
+  const taskScope = taskScopeRef.current
+  const isCurrentTaskScope = useCallback(
+    (scope: TaskScope) => taskScopeRef.current === scope,
+    [],
+  )
+  const visibleMedia = media?.taskId === taskId ? media : null
+  const visibleLoadState: LoadState = media && !visibleMedia ? 'loading' : loadState
+  const visibleAttachable = attachable?.taskId === taskId ? attachable : null
 
   const load = useCallback(async (background = false) => {
+    const scope = taskScope
+    if (!isCurrentTaskScope(scope)) return
     const version = loadVersionRef.current + 1
     loadVersionRef.current = version
     if (!background) {
@@ -80,17 +98,20 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
       setMedia(null)
     }
     try {
-      const result = await productTasksApi.getMedia(taskId)
-      if (loadVersionRef.current !== version) return
+      const result = await productTasksApi.getMedia(scope.taskId)
+      if (!isCurrentTaskScope(scope) || loadVersionRef.current !== version) return
       setMedia(result)
       setLoadState('ready')
     } catch {
-      if (loadVersionRef.current !== version) return
+      if (!isCurrentTaskScope(scope) || loadVersionRef.current !== version) return
       if (!background) setLoadState('error')
     }
-  }, [taskId])
+  }, [isCurrentTaskScope, taskScope])
 
   useEffect(() => {
+    setAttachPickerState('idle')
+    setAttachable(null)
+    setAttachingProjectId(null)
     void load()
     return () => {
       loadVersionRef.current += 1
@@ -99,28 +120,30 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
   }, [load])
 
   useEffect(() => {
-    if (!hasActiveMediaTask(media)) return
+    if (!hasActiveMediaTask(visibleMedia)) return
     const timer = window.setTimeout(() => {
       void load(true)
     }, MEDIA_POLL_INTERVAL_MS)
     return () => window.clearTimeout(timer)
-  }, [load, media])
+  }, [load, visibleMedia])
 
   const loadAttachable = useCallback(async () => {
+    const scope = taskScope
+    if (!isCurrentTaskScope(scope)) return
     const version = attachableLoadVersionRef.current + 1
     attachableLoadVersionRef.current = version
     setAttachPickerState('loading')
     setAttachable(null)
     try {
-      const result = await productTasksApi.getAttachableMedia(taskId)
-      if (attachableLoadVersionRef.current !== version) return
+      const result = await productTasksApi.getAttachableMedia(scope.taskId)
+      if (!isCurrentTaskScope(scope) || attachableLoadVersionRef.current !== version) return
       setAttachable(result)
       setAttachPickerState('ready')
     } catch {
-      if (attachableLoadVersionRef.current !== version) return
+      if (!isCurrentTaskScope(scope) || attachableLoadVersionRef.current !== version) return
       setAttachPickerState('error')
     }
-  }, [taskId])
+  }, [isCurrentTaskScope, taskScope])
 
   const closeAttachable = () => {
     attachableLoadVersionRef.current += 1
@@ -129,15 +152,18 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
   }
 
   const attachProject = async (projectId: string) => {
+    const scope = taskScope
+    if (!isCurrentTaskScope(scope)) return
     setAttachingProjectId(projectId)
     try {
-      await productTasksApi.attachMediaProject(taskId, projectId)
+      await productTasksApi.attachMediaProject(scope.taskId, projectId)
+      if (!isCurrentTaskScope(scope)) return
       closeAttachable()
       await load(true)
     } catch {
-      setAttachPickerState('error')
+      if (isCurrentTaskScope(scope)) setAttachPickerState('error')
     } finally {
-      setAttachingProjectId(null)
+      if (isCurrentTaskScope(scope)) setAttachingProjectId(null)
     }
   }
 
@@ -195,10 +221,10 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
                 <button type="button" onClick={() => void loadAttachable()} className="mt-2 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]">重新读取</button>
               </div>
             ) : null}
-            {attachPickerState === 'ready' && attachable?.projects.length === 0 ? <p className="mt-3 text-sm text-[var(--color-text-secondary)]">没有可关联的未归属媒体项目。</p> : null}
-            {attachPickerState === 'ready' && attachable?.projects.length ? (
+            {attachPickerState === 'ready' && visibleAttachable?.projects.length === 0 ? <p className="mt-3 text-sm text-[var(--color-text-secondary)]">没有可关联的未归属媒体项目。</p> : null}
+            {attachPickerState === 'ready' && visibleAttachable?.projects.length ? (
               <div className="mt-3 flex flex-col gap-2">
-                {attachable.projects.map((project) => (
+                {visibleAttachable.projects.map((project) => (
                   <div key={project.id} data-testid={`product-task-media-attachable-${project.id}`} className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-2.5 py-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm text-[var(--color-text-primary)]">{project.title}</p>
@@ -219,24 +245,24 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
           </section>
         ) : null}
 
-        {loadState === 'loading' ? (
+        {visibleLoadState === 'loading' ? (
           <p role="status" className="text-sm text-[var(--color-text-secondary)]">正在读取媒体产物…</p>
         ) : null}
 
-        {loadState === 'error' ? (
+        {visibleLoadState === 'error' ? (
           <div className="rounded-xl border border-[var(--color-error)]/30 p-3 text-sm text-[var(--color-text-secondary)]">
             <p>媒体产物暂时无法读取。</p>
             <button type="button" onClick={() => void load()} className="mt-2 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]">重新读取</button>
           </div>
         ) : null}
 
-        {loadState === 'ready' && media?.projects.length === 0 ? (
+        {visibleLoadState === 'ready' && visibleMedia?.projects.length === 0 ? (
           <p className="text-sm leading-6 text-[var(--color-text-secondary)]">当前任务没有已关联的媒体项目。</p>
         ) : null}
 
-        {loadState === 'ready' ? (
+        {visibleLoadState === 'ready' ? (
           <div className="flex flex-col gap-3">
-            {media?.projects.map((project) => (
+            {visibleMedia?.projects.map((project) => (
               <article
                 key={project.id}
                 data-testid={`product-task-media-project-${project.id}`}
