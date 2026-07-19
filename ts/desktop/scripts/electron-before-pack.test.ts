@@ -54,11 +54,19 @@ describe('desktop product package config', () => {
     )
   })
 
-  it('blocks a package that would send the managed app token over HTTP', () => {
+  it('accepts the explicitly allowed direct mainland IPv4 gateway entry', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'http://39.106.214.21/gw' },
       { gatewayToken: 'revocable-app-token' },
     )
-    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS')
+    expect(() => validateProductPackageFiles(desktopDir)).not.toThrow()
+  })
+
+  it('blocks arbitrary clear-text gateway hosts and paths', () => {
+    const desktopDir = createDesktopBuild(
+      { gatewayUrl: 'http://gateway.example/gw' },
+      { gatewayToken: 'revocable-app-token' },
+    )
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS or a verified public IPv4 /gw endpoint')
   })
 })
