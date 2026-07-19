@@ -13,7 +13,7 @@ import type { ProductTaskService } from './taskService.js'
 
 export type ProductTaskMediaApi = Pick<
   ProductTaskMediaService,
-  'listForTask' | 'listAttachableForTask' | 'attachProject'
+  'listForTask' | 'listAttachableForTask' | 'attachProject' | 'assetResponse'
 >
 
 type ProductTaskOwnerApi = Pick<ProductTaskService, 'getTask'>
@@ -24,7 +24,12 @@ type MediaTaskOwnerApi = Pick<
   | 'getTask'
   | 'attachProjectToProductTask'
   | 'availableImageOutputAssetPath'
+  | 'imageOutputResponse'
 >
+
+function assetUrl(taskId: string, projectId: string, assetId: string): string {
+  return `/api/product/tasks/${encodeURIComponent(taskId)}/media/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`
+}
 
 function publicMediaTask(task: MediaTask | null): ProductTaskMediaTask | null {
   if (!task) return null
@@ -60,6 +65,13 @@ function safeAttachmentError(error: unknown): never {
   throw error
 }
 
+function safeAssetError(error: unknown): never {
+  if (error instanceof MediaServiceError && [400, 403, 404, 409].includes(error.status)) {
+    throw ApiError.notFound('找不到任务媒体产物')
+  }
+  throw error
+}
+
 /**
  * Product-task media projection. It validates the public task before looking
  * at media persistence and only returns verified, service-owned image URLs.
@@ -79,7 +91,7 @@ export class ProductTaskMediaService {
       .filter(project => project.product_task_id === taskId)
     return {
       taskId,
-      projects: await Promise.all(projects.map(project => this.publicProject(project))),
+      projects: await Promise.all(projects.map(project => this.publicProject(taskId, project))),
     }
   }
 
@@ -100,13 +112,42 @@ export class ProductTaskMediaService {
     await this.tasks.getTask(taskId)
     try {
       const project = await this.media.attachProjectToProductTask(projectId, taskId)
-      return await this.publicProject(project)
+      return await this.publicProject(taskId, project)
     } catch (error) {
       return safeAttachmentError(error)
     }
   }
 
-  private async publicProject(project: MediaProject): Promise<ProductTaskMediaProject> {
+  async assetResponse(
+    taskId: string,
+    projectId: string,
+    assetId: string,
+    _request: Request,
+  ): Promise<Response> {
+    const project = await this.ownedProject(taskId, projectId)
+    if (project.kind !== 'image') throw ApiError.notFound('找不到任务媒体产物')
+    try {
+      return await this.media.imageOutputResponse(project.id, assetId)
+    } catch (error) {
+      return safeAssetError(error)
+    }
+  }
+
+  private async ownedProject(taskId: string, projectId: string): Promise<MediaProject> {
+    await this.tasks.getTask(taskId)
+    let project: MediaProject
+    try {
+      project = await this.media.getProject(projectId)
+    } catch (error) {
+      return safeAssetError(error)
+    }
+    if (project.product_task_id !== taskId) {
+      throw ApiError.notFound('找不到任务媒体产物')
+    }
+    return project
+  }
+
+  private async publicProject(taskId: string, project: MediaProject): Promise<ProductTaskMediaProject> {
     // Reading with refresh=true reconciles an already-submitted remote image
     // task; it never creates a new paid generation request.
     const mediaTask = project.task_id
@@ -119,7 +160,7 @@ export class ProductTaskMediaService {
       ? await this.media.getProject(project.id).catch(() => project)
       : project
     const assets = currentProject.kind === 'image'
-      ? await this.imageAssets(currentProject)
+      ? await this.imageAssets(taskId, currentProject)
       : this.videoAssets()
 
     return {
@@ -134,6 +175,7 @@ export class ProductTaskMediaService {
   }
 
   private async imageAssets(
+    taskId: string,
     project: Extract<MediaProject, { kind: 'image' }>,
   ): Promise<ProductTaskMediaAsset[]> {
     const assets = await Promise.all(project.outputs.map(async output => {
@@ -144,7 +186,7 @@ export class ProductTaskMediaService {
         id: output.id,
         kind: 'image' as const,
         mimeType: output.mime_type,
-        url: verified,
+        url: assetUrl(taskId, project.id, output.id),
       }
     }))
     return assets.filter((asset): asset is ProductTaskMediaAsset => asset !== null)

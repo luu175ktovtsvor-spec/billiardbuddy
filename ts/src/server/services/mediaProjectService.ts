@@ -698,6 +698,26 @@ export class MediaProjectService {
   }
 
   /**
+   * Read a persisted image result by its opaque output id. Product routes use
+   * this rather than exposing the backing general media-asset URL.
+   */
+  async imageOutputResponse(projectId: string, outputId: string): Promise<Response> {
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    const output = project.outputs.find(candidate => candidate.id === outputId)
+    if (!output?.asset_path) throw new MediaServiceError('找不到图片结果', 404, 'IMAGE_OUTPUT_NOT_FOUND')
+    const prefix = `/api/media/assets/${project.id}/`
+    if (!output.asset_path.startsWith(prefix)) {
+      throw new MediaServiceError('图片结果不可用', 404, 'IMAGE_OUTPUT_NOT_LOCAL')
+    }
+    const fileName = output.asset_path.slice(prefix.length)
+    if (!fileName || !(await this.availableImageOutputAssetPath(project.id, output.asset_path))) {
+      throw new MediaServiceError('图片结果不可用', 404, 'IMAGE_OUTPUT_NOT_LOCAL')
+    }
+    return await this.assetResponse(project.id, fileName)
+  }
+
+  /**
    * Bind an existing project to a public product task exactly once. This is
    * intentionally separate from the standalone create routes so callers
    * cannot smuggle arbitrary owner ids into general media project creation.

@@ -211,6 +211,10 @@ describe('Product tasks API', () => {
           assets: [],
         }
       },
+      assetResponse: async (...args) => {
+        calls.push({ name: 'assetResponse', args })
+        return new Response('image-bytes', { status: 206, headers: { 'Content-Type': 'image/png' } })
+      },
     }
 
     const listed = await request(service, 'GET', '/api/product/tasks/task-1/media', undefined, media)
@@ -228,6 +232,15 @@ describe('Product tasks API', () => {
       undefined,
       media,
     )
+    const assetUrl = new URL('http://localhost/api/product/tasks/task-1/media/projects/img_12345678/assets/out_12345678')
+    const asset = await handleProductApi(
+      new Request(assetUrl),
+      assetUrl,
+      assetUrl.pathname.split('/').filter(Boolean),
+      service,
+      undefined,
+      media,
+    )
     expect(listed).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
     expect(attachable).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
     expect(attached).toEqual({
@@ -236,10 +249,13 @@ describe('Product tasks API', () => {
         project: expect.objectContaining({ id: 'img_12345678', kind: 'image', assets: [] }),
       },
     })
+    expect(asset.status).toBe(206)
+    expect(await asset.text()).toBe('image-bytes')
     expect(calls).toEqual([
       { name: 'listForTask', args: [task.id] },
       { name: 'listAttachableForTask', args: [task.id] },
       { name: 'attachProject', args: [task.id, 'img_12345678'] },
+      { name: 'assetResponse', args: [task.id, 'img_12345678', 'out_12345678', expect.any(Request)] },
     ])
   })
 

@@ -95,6 +95,10 @@ export async function handleProductApi(
         && segments[6]
       ) {
         const projectId = segments[6]
+        if (segments[7] === 'assets' && segments[8] && !segments[9]) {
+          if (req.method !== 'GET') return methodNotAllowed(req.method)
+          return await media.assetResponse(taskId, projectId, segments[8], req)
+        }
         if (segments[7] === 'attach' && !segments[8]) {
           if (req.method !== 'POST') return methodNotAllowed(req.method)
           return Response.json({ project: await media.attachProject(taskId, projectId) })
