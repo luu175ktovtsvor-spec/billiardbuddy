@@ -414,20 +414,12 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       if (
         !hasOnlyKeys(value, ['type', 'kind', 'phase', 'id', 'parentId', 'summary', 'progress']) ||
         !isEnumValue(value.kind, PRODUCT_TASK_ACTIVITY_KINDS) ||
-        !isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES)
+        !isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES) ||
+        !isProductActivityId(value.id) ||
+        !isProductActivitySummary(value.summary)
       ) {
         return null
       }
-
-      // Keep the legacy flat activity envelope readable while migration is in
-      // flight.  The richer activity tree is all-or-nothing, so a malformed
-      // ID cannot smuggle arbitrary auxiliary fields into the renderer.
-      if (!('id' in value)) {
-        return !('parentId' in value) && !('summary' in value) && !('progress' in value)
-          ? { type: 'activity', kind: value.kind, phase: value.phase }
-          : null
-      }
-      if (!isProductActivityId(value.id) || !isProductActivitySummary(value.summary)) return null
       if ('parentId' in value && (!isProductActivityId(value.parentId) || value.parentId === value.id)) {
         return null
       }

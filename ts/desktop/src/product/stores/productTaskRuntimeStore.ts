@@ -35,7 +35,7 @@ export type ProductTaskRuntime = {
   activeActivity: {
     kind: ProductTaskActivityKind
     phase: ProductTaskActivityPhase
-    summary?: string
+    summary: string
   } | null
   runActivities: ProductTaskRunActivity[]
   pendingApproval: {
@@ -220,32 +220,10 @@ function appendOrReplaceStreamingText(
   return { ...runtime, entries, streamingEntryId: entryId }
 }
 
-function appendActivity(
-  runtime: ProductTaskRuntime,
-  taskId: string,
-  kind: ProductTaskActivityKind,
-  phase: Extract<ProductTaskActivityPhase, 'completed' | 'failed'>,
-): ProductTaskRuntime {
-  return {
-    ...runtime,
-    entries: [
-      ...runtime.entries,
-      {
-        id: liveEntryId(taskId, `activity-${kind}`),
-        type: 'activity',
-        kind,
-        phase,
-        createdAt: createdAt(),
-      },
-    ],
-  }
-}
-
 function upsertRunActivity(
   activities: readonly ProductTaskRunActivity[],
   event: Extract<ProductTaskEvent, { type: 'activity' }>,
 ): ProductTaskRunActivity[] {
-  if (!event.id || !event.summary) return [...activities]
   const previousIndex = activities.findIndex((activity) => activity.id === event.id)
   const previous = previousIndex === -1 ? undefined : activities[previousIndex]
   const activity: ProductTaskRunActivity = {
@@ -616,19 +594,16 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             }
 
           case 'activity': {
-            let next: ProductTaskRuntime = {
+            const runActivities = upsertRunActivity(runtime.runActivities, event)
+            return {
               ...runtime,
               activeActivity: {
                 kind: event.kind,
                 phase: event.phase,
-                ...(event.summary ? { summary: event.summary } : {}),
+                summary: event.summary,
               },
-              runActivities: upsertRunActivity(runtime.runActivities, event),
+              runActivities,
             }
-            if (!event.id && (event.phase === 'completed' || event.phase === 'failed')) {
-              next = appendActivity(next, taskId, event.kind, event.phase)
-            }
-            return next
           }
 
           case 'approval_required':

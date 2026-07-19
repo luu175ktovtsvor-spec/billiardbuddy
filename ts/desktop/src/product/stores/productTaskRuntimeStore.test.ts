@@ -95,6 +95,7 @@ describe('product task runtime store', () => {
   })
 
   it('loads a product thread and applies only task-safe live events', async () => {
+    const activityId = `activity_${'a'.repeat(32)}`
     apiMocks.getThread.mockResolvedValue({
       taskId: 'task-1',
       entries: [{
@@ -110,7 +111,13 @@ describe('product task runtime store', () => {
     eventHandler?.({ type: 'connected' })
     eventHandler?.({ type: 'assistant_text_start' })
     eventHandler?.({ type: 'assistant_text_delta', text: '实时回复' })
-    eventHandler?.({ type: 'activity', kind: 'workspace', phase: 'completed' })
+    eventHandler?.({
+      type: 'activity',
+      id: activityId,
+      kind: 'workspace',
+      phase: 'completed',
+      summary: '已整理工作内容',
+    })
 
     const runtime = useProductTaskRuntimeStore.getState().tasks['task-1']!
     expect(runtime.connectionState).toBe('connected')
@@ -118,10 +125,11 @@ describe('product task runtime store', () => {
     expect(runtime.entries.map((entry) => entry.type)).toEqual([
       'assistant_text',
       'assistant_text',
-      'activity',
     ])
     expect(runtime.entries[1]).toEqual(expect.objectContaining({ text: '实时回复' }))
-    expect(runtime.entries[2]).toEqual(expect.objectContaining({ kind: 'workspace', phase: 'completed' }))
+    expect(runtime.runActivities).toEqual([
+      expect.objectContaining({ id: activityId, kind: 'workspace', phase: 'completed' }),
+    ])
   })
 
   it('keeps a bounded opaque run activity tree separate from the message transcript', () => {
@@ -296,7 +304,8 @@ describe('product task runtime store', () => {
     )
   })
 
-  it('replaces completed live entries with the canonical thread snapshot', async () => {
+  it('keeps completed historical activity in the canonical thread snapshot', async () => {
+    const activityId = `activity_${'e'.repeat(32)}`
     apiMocks.list.mockResolvedValue(EMPTY_PRODUCT_TASK_INDEX)
     apiMocks.getThread
       .mockResolvedValueOnce({ taskId: 'task-complete', entries: [] })
@@ -321,7 +330,13 @@ describe('product task runtime store', () => {
     store.sendText('task-complete', '整理今天订单')
     eventHandler?.({ type: 'assistant_text_start' })
     eventHandler?.({ type: 'assistant_text_delta', text: '已整理完成' })
-    eventHandler?.({ type: 'activity', kind: 'workspace', phase: 'completed' })
+    eventHandler?.({
+      type: 'activity',
+      id: activityId,
+      kind: 'workspace',
+      phase: 'completed',
+      summary: '已整理工作内容',
+    })
     eventHandler?.({ type: 'turn_complete' })
     await flushMicrotasks()
 
@@ -579,8 +594,10 @@ describe('product task runtime store', () => {
     const store = useProductTaskRuntimeStore.getState()
     store.handleEvent('task-terminal-error', {
       type: 'activity',
+      id: `activity_${'f'.repeat(32)}`,
       kind: 'workspace',
       phase: 'running',
+      summary: '正在整理工作内容',
     })
     store.handleEvent('task-terminal-error', {
       type: 'approval_required',

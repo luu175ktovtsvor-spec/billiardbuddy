@@ -222,43 +222,6 @@ export function projectAnswerableAskUserQuestions(input: unknown): ProductTaskQu
   return questions
 }
 
-function activity(phase: ProductTaskActivityPhase, toolName?: string): ProductTaskEvent {
-  return {
-    type: 'activity',
-    kind: productTaskActivityKindForTool(toolName),
-    phase,
-  }
-}
-
-function notificationActivityPhase(data: unknown): ProductTaskActivityPhase {
-  if (!isRecord(data)) return 'completed'
-  switch (data.status) {
-    case 'failed':
-      return 'failed'
-    case 'running':
-    case 'in_progress':
-      return 'running'
-    case 'completed':
-    case 'stopped':
-      return 'completed'
-    default:
-      return 'completed'
-  }
-}
-
-function taskUpdateActivityPhase(status: string): ProductTaskActivityPhase {
-  switch (status) {
-    case 'failed':
-    case 'error':
-      return 'failed'
-    case 'running':
-    case 'in_progress':
-      return 'running'
-    default:
-      return 'completed'
-  }
-}
-
 type ProductTaskActivityEvent = Extract<ProductTaskEvent, { type: 'activity' }>
 
 type TrackedToolActivity = {
@@ -391,9 +354,9 @@ function backgroundTaskIdentity(data: unknown): {
 /**
  * Projects Core execution events into activity records suitable for a product
  * run timeline. It intentionally has a separate entry point from
- * `projectServerMessageForProductTask`: the latter preserves the legacy flat
- * activity shape consumed by the current desktop client, while this projector
- * gives a migrated run surface stable opaque identities and parent links.
+ * `projectServerMessageForProductTask`: that generic safe projection omits
+ * activity messages entirely, while this projector gives live activity a
+ * stable opaque identity and product-authored summary.
  *
  * A caller must construct one instance with the persistent product task ID
  * and reuse that ID after reconnect. IDs are deterministic HMAC digests scoped
@@ -712,7 +675,7 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
     case 'content_start':
       return message.blockType === 'text'
         ? [{ type: 'assistant_text_start' }]
-        : [activity('started', message.toolName)]
+        : []
 
     case 'content_delta':
       return typeof message.text === 'string' && message.text.length > 0
@@ -720,10 +683,10 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
         : []
 
     case 'tool_use_complete':
-      return [activity('running', message.toolName)]
-
     case 'tool_result':
-      return [activity(message.isError ? 'failed' : 'completed')]
+      // Live activity must use ProductTaskRunActivityProjector so its opaque
+      // identity and product-authored summary remain mandatory.
+      return []
 
     case 'permission_request': {
       const questions = message.toolName === 'AskUserQuestion'
@@ -775,16 +738,6 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
 
     case 'system_notification':
       switch (message.subtype) {
-        case 'task_started':
-          return [{ type: 'activity', kind: 'subtask', phase: 'started' }]
-        case 'task_progress':
-          return [{ type: 'activity', kind: 'subtask', phase: 'running' }]
-        case 'task_notification':
-          return [{
-            type: 'activity',
-            kind: 'subtask',
-            phase: notificationActivityPhase(message.data),
-          }]
         case 'compact_boundary':
         case 'compact_summary':
           return [{ type: 'status', state: 'working' }]
@@ -793,26 +746,10 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
       }
 
     case 'team_created':
-      return [{ type: 'activity', kind: 'subtask', phase: 'started' }]
-
-    case 'team_update': {
-      const phase = message.members.some((member) => member.status === 'error')
-        ? 'failed'
-        : message.members.some((member) => member.status === 'running')
-          ? 'running'
-          : 'completed'
-      return [{ type: 'activity', kind: 'subtask', phase }]
-    }
-
+    case 'team_update':
     case 'team_deleted':
-      return [{ type: 'activity', kind: 'subtask', phase: 'completed' }]
-
     case 'task_update':
-      return [{
-        type: 'activity',
-        kind: 'subtask',
-        phase: taskUpdateActivityPhase(message.status),
-      }]
+      return []
 
     case 'session_title_updated': {
       const title = visibleString(message.title, MAX_TITLE_LENGTH)
