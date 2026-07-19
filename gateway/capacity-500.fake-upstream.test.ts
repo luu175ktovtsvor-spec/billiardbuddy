@@ -294,10 +294,16 @@ test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 5 窗�
   expect((await health(fetch, sharedToken)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('100 用户 × 5 窗口：默认视觉阀门只接纳 12 在途 + 24 排队，其余 464 立即 429', async () => {
+test('100 用户 × 5 窗口：默认 MiMo 共享64槽下，视觉阀门只接纳 12 在途 + 24 排队，其余 464 立即429', async () => {
   const upstream = createFakeUpstream({ holdVision: true })
   const fetch = createGatewayFetch({
-    env: env({ GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5' }),
+    env: env({
+      GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5',
+      // Explicitly clear the fixture's small test pool: this assertion locks the
+      // production 64/1/64/64/5 MiMo profile rather than a synthetic 16-slot one.
+      GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
+    }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
     fetchImpl: upstream.fetchImpl,
@@ -310,12 +316,14 @@ test('100 用户 × 5 窗口：默认视觉阀门只接纳 12 在途 + 24 排队
   }
 
   await eventually(() => upstream.stats.mimoVision.calls === 12, 'default 12 visual calls')
+  expect((await health(fetch)).mimo).toEqual({ active: 12, queued: 0 })
   upstream.openVision()
   const statuses = await Promise.all(requests)
   expect(statuses.filter(value => value === 200)).toHaveLength(36)
   expect(statuses.filter(value => value === 429)).toHaveLength(464)
   expect(upstream.stats.mimoVision.peak).toBe(12)
   expect(upstream.stats.deepseek.calls).toBe(36)
+  expect((await health(fetch)).mimo).toEqual({ active: 0, queued: 0 })
   expect((await health(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
@@ -353,26 +361,35 @@ test('100 用户 × 5 窗口：显式扩大为 50 个共享 MiMo 槽 + 50/450 �
   expect((await health(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('同一 MiMo 账号的原生文本与视觉桥接共享 16 个总槽：两类请求都可进入、真实上游合计从不超过 16', async () => {
+test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥接共用64个总槽，真实上游合计从不超过64', async () => {
   const upstream = createFakeUpstream({ holdText: true, holdVision: true })
-  const fetch = createGatewayFetch({ env: env(), usageStore: new MemoryUsageStore(), transcribeImpl: null, fetchImpl: upstream.fetchImpl })
-  // Leave exactly eight shared MiMo slots for each call path. Starting 16 text calls
-  // first would intentionally occupy the whole shared account pool and only prove
-  // queueing; this verifies that both paths can make progress without exceeding it.
-  const text = Array.from({ length: 8 }, (_, index) => status(fetch, chatRequest('mimo-v2.5', index, 0)))
-  const image = Array.from({ length: 8 }, (_, index) => status(fetch, chatRequest('deepseek-v4-flash', index + 20, 0, { image: true })))
+  const sharedToken = 'shared-desktop-token'
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_APP_TOKENS: JSON.stringify({ [sharedToken]: 'shared-product-token' }),
+      GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: upstream.fetchImpl,
+  })
+  // Reserve 52 native slots and 12 bridge slots across distinct installations. This
+  // proves the two paths share the same 64-slot account pool even under one app token.
+  const text = Array.from({ length: 52 }, (_, index) => status(fetch, chatRequest('mimo-v2.5', index, 0, { gatewayToken: sharedToken })))
+  const image = Array.from({ length: 12 }, (_, index) => status(fetch, chatRequest('deepseek-v4-flash', index + 52, 0, { image: true, gatewayToken: sharedToken })))
 
-  await eventually(() => upstream.stats.mimoText.calls === 8 && upstream.stats.mimoVision.calls === 8, 'both shared MiMo paths admitted')
-  expect(upstream.stats.mimoText.peak).toBe(8)
-  expect(upstream.stats.mimoVision.peak).toBe(8)
-  expect(upstream.stats.mimoText.inFlight + upstream.stats.mimoVision.inFlight).toBe(16)
-  expect((await health(fetch)).mimo).toMatchObject({ active: 16, queued: 0 })
+  await eventually(() => upstream.stats.mimoText.calls === 52 && upstream.stats.mimoVision.calls === 12, 'both shared MiMo paths admitted')
+  expect(upstream.stats.mimoText.peak).toBe(52)
+  expect(upstream.stats.mimoVision.peak).toBe(12)
+  expect(upstream.stats.mimoText.inFlight + upstream.stats.mimoVision.inFlight).toBe(64)
+  expect((await health(fetch, sharedToken)).mimo).toMatchObject({ active: 64, queued: 0 })
 
   upstream.openText()
   upstream.openVision()
   expect((await Promise.all([...text, ...image])).every(value => value === 200)).toBe(true)
   expect(upstream.stats.mimoText.inFlight + upstream.stats.mimoVision.inFlight).toBe(0)
-  expect((await health(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+  expect((await health(fetch, sharedToken)).mimo).toEqual({ active: 0, queued: 0 })
 })
 
 test('500 路 DeepSeek 峰值中，100 个排队请求取消后不进入上游、其余 400 路完成且许可归零', async () => {

@@ -648,11 +648,16 @@ function loadConfig(env: Env): GatewayConfig {
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
-    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
-    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', Math.min(5, intEnv(env, 'GW_MIMO_CONC', 16)))),
-    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
-    mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 128)),
-    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
+    // MiMo native chat and the image bridge share this exact account-wide pool. A
+    // real-account ramp reached 64 active calls, but its tail latency was already
+    // noticeable, so keep the proven ceiling and admit only one active call per
+    // installation. The 64-entry, five-second queue is deliberately a brief burst
+    // absorber, not a hidden multi-minute backlog for 100 users' extra windows.
+    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64)),
+    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
+    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 64))),
+    mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 64)),
+    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 5)),
     // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
@@ -683,9 +688,9 @@ function loadConfig(env: Env): GatewayConfig {
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
     visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
     visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
-    // MiMo image capacity has not been load-tested at product scale. Keep only a short
-    // 12-active + 24-waiting bridge queue by default and deliberately shed a 500-image
-    // burst rather than turning it into stale work or allocating unbounded request state.
+    // The real MiMo bridge reached 12 active calls but showed a noticeable tail. Keep
+    // only a short 12-active + 24-waiting bridge queue and deliberately shed a
+    // 500-image burst rather than turning it into stale work or unbounded request state.
     visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 24)),
     // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证 MiMo
     // 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
@@ -1199,8 +1204,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       fetchImpl,
       mimoCapacity,
       mimoRateLimiter: mimoBucket,
-      // Keep a vision call's RPM wait inside its own short queue budget instead of
-      // borrowing the ordinary MiMo chat path's potentially much longer 120 s wait.
+      // Keep a vision call's RPM wait inside its stricter three-second queue budget
+      // instead of borrowing the ordinary MiMo chat path's five-second allowance.
       mimoRateLimitMaxWaitSeconds: Math.min(config.mimoQueueMaxWait, config.visionQueueMaxWaitMs / 1000),
       caps: {
         maxImages: config.visionMaxImages,

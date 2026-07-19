@@ -89,6 +89,45 @@ test('capacity scheduler caps its waiting queue and reports the oldest waiter', 
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
+test('100 installations with five windows fill a 64/1/64 pool even when its 64-entry queue fills first', async () => {
+  const scheduler = new FairCapacityScheduler(64, 1, 64, 64)
+  const active: Array<{ release(): void }> = []
+  let releaseSubsequentPermits = false
+  const outcomes = Array.from({ length: 100 }, (_, user) =>
+    Array.from({ length: 5 }, () => scheduler.acquire(`shared-token#install-${String(user).padStart(3, '0')}`, {
+      tokenId: 'shared-token',
+      maxWaitMs: 1_000,
+    }).then(permit => {
+      if (releaseSubsequentPermits) permit.release()
+      else active.push(permit)
+      return 200
+    }).catch((error: unknown) => {
+      expect(error).toBeInstanceOf(CapacityQueueError)
+      return 429
+    })),
+  ).flat()
+
+  // The bounded queue fills with early installations' extra windows. A later
+  // installation that can start must still claim each otherwise-idle global slot.
+  await Promise.resolve()
+  expect(scheduler.snapshot()).toMatchObject({
+    active: 64,
+    queued: 64,
+    maxConcurrent: 64,
+    maxConcurrentPerUser: 1,
+    maxConcurrentPerToken: 64,
+    queueMax: 64,
+  })
+  expect(active).toHaveLength(64)
+
+  releaseSubsequentPermits = true
+  for (const permit of active.splice(0)) permit.release()
+  const statuses = await Promise.all(outcomes)
+  expect(statuses.filter(status => status === 200)).toHaveLength(128)
+  expect(statuses.filter(status => status === 429)).toHaveLength(372)
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
 test('five-window profile caps one installation at five permits before later users arrive', async () => {
   const scheduler = new FairCapacityScheduler(256, 5, 256, 256)
   const firstFive = await Promise.all(

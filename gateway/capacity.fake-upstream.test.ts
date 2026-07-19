@@ -257,7 +257,7 @@ test('默认 DeepSeek profile:超过 256 在途+256 等待的突发会立即 429
   expect((await capacity(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('默认 MiMo profile:500 请求只接受16在途+128等待，剩余立即429而不把未知上游配额当成500', async () => {
+test('默认 MiMo profile:100 用户 × 5 窗口只接受64在途+64个五秒等待，剩余立即429而不隐藏成长队列', async () => {
   const u = poolUpstream()
   const { fetch, usage } = makeGatewayWithUsage(u.fetchImpl, {
     GW_MIMO_CONC: undefined,
@@ -272,22 +272,22 @@ test('默认 MiMo profile:500 请求只接受16在途+128等待，剩余立即42
     for (let window = 0; window < 5; window++) reqs.push(fire(fetch, 'mimo-v2.5', id))
   }
 
-  await waitFor(() => u.stats.mimo.inFlight === 16)
+  await waitFor(() => u.stats.mimo.inFlight === 64)
   const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   const body = await health.json()
-  expect(body.limits).toMatchObject({ mimo_conc: 16, mimo_user_conc: 5, mimo_token_conc: 16, mimo_queue_max: 128 })
-  expect(body.capacity.mimo).toMatchObject({ active: 16, queued: 128, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128 })
+  expect(body.limits).toMatchObject({ mimo_conc: 64, mimo_user_conc: 1, mimo_token_conc: 64, mimo_queue_max: 64, mimo_queue_max_wait_seconds: 5 })
+  expect(body.capacity.mimo).toMatchObject({ active: 64, queued: 64, maxConcurrent: 64, maxConcurrentPerUser: 1, queueMax: 64 })
   expect(body.capacity.mimo.oldestQueueMs).toBeGreaterThanOrEqual(0)
-  expect(u.stats.mimo.peak).toBe(16)
+  expect(u.stats.mimo.peak).toBe(64)
 
   u.open()
   const statuses = await Promise.all(reqs)
-  expect(statuses.filter(status => status === 200)).toHaveLength(144)
-  expect(statuses.filter(status => status === 429)).toHaveLength(356)
-  expect(u.stats.mimo.calls).toBe(144)
-  expect(u.stats.mimo.peak).toBe(16)
-  expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(144)
-  expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(356)
+  expect(statuses.filter(status => status === 200)).toHaveLength(128)
+  expect(statuses.filter(status => status === 429)).toHaveLength(372)
+  expect(u.stats.mimo.calls).toBe(128)
+  expect(u.stats.mimo.peak).toBe(64)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(128)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(372)
   const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   expect((await drained.json()).capacity.mimo).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })

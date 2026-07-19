@@ -16,9 +16,11 @@
 #   - 上线前仍需用真 DeepSeek 账号从小到大验证 100、256、500 路持续 SSE，并同步观察 qfgw 的
 #     CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间；若其中任一项恶化，先在 gw.env
 #     调低 GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，保留 GW_DEEPSEEK_USER_CONC=5 及有限队列。
-#   - Qwen/MiMo 的账户并发未由此脚本假定：保守默认仍为各 16 实际流，均有独立有界队列。
-#     MiMo 原生文本和图片桥接共用 GW_MIMO_CONC(16) 的总上游闸；图片桥接只可占其中至多
-#     GW_VISION_CONC(12) 个槽并另有 GW_VISION_QUEUE_MAX(24) 的短队列，不能据此宣称能承接 500 张图。
+#   - Qwen 仍保守使用 16 实际流。MiMo 的真实账户爬坡已验证 64 个实际在途，但高尾延迟已明显，
+#     所以默认固定为 GW_MIMO_CONC=64 / GW_MIMO_USER_CONC=1 / GW_MIMO_TOKEN_CONC=64，
+#     只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发吸收，不把 100 人多窗口
+#     变成多分钟的隐藏等待。MiMo 原生文本和图片桥接共用这一个 64 槽总闸；图片桥接只可占其中至多
+#     GW_VISION_CONC(12) 个槽并另有 GW_VISION_QUEUE_MAX(24) 的三秒短队列，不能据此宣称能承接 500 张图。
 #   - 生图提交默认 GW_IMG_IPM=600，目的是让 100 人 × 5 次的短提交进入 relay 的幂等任务队列；
 #     它不是 OpenAI/GPT 生图并发，实际生成并发仍由 relay 控制。首个 burst 后最多只保留
 #     GW_IMG_QUEUE_MAX=100 个令牌桶等待者，且单次 relay 提交最多等 GW_RELAY_SUBMIT_TIMEOUT_MS=15000；
