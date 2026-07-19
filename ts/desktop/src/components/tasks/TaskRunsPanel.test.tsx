@@ -24,7 +24,6 @@ describe('TaskRunsPanel', () => {
       prompt: 'Summarize recent commits',
       output: '最近7天有3个commit，主要改动：\n\n**1. 2865d50 - UI无障碍改进**\n- 添加 theme-color meta 标签\n- 修复 select 标签问题',
       durationMs: 12000,
-      sessionId: 'session-1',
     }
     useSettingsStore.setState({ locale: 'en' })
     useTaskStore.setState({

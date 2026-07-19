@@ -128,7 +128,7 @@ describe('useScheduledTaskDesktopNotifications', () => {
     })
   })
 
-  it('targets the run session when a scheduled task run has a session id', async () => {
+  it('always targets the scheduled task page even when an old response carries a session id', async () => {
     listMock.mockResolvedValue({
       tasks: [{
         id: 'task-1',
@@ -152,6 +152,8 @@ describe('useScheduledTaskDesktopNotifications', () => {
           status: 'completed',
           prompt: 'review',
           output: 'done',
+          // A stale older server can include this extra field; it must not
+          // become a raw-session notification target.
           sessionId: 'session-task-run',
         }],
       })
@@ -165,11 +167,7 @@ describe('useScheduledTaskDesktopNotifications', () => {
       dedupeKey: 'scheduled-task:run-new',
       title: '定时任务 Daily review',
       body: '完成: done',
-      target: {
-        type: 'session',
-        sessionId: 'session-task-run',
-        title: 'Daily review',
-      },
+      target: { type: 'scheduled' },
     })
   })
 

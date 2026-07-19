@@ -7,6 +7,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { CronService } from '../services/cronService.js'
+import { cronScheduler } from '../services/cronScheduler.js'
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
@@ -302,5 +303,36 @@ describe('Scheduled Tasks API', () => {
     )
     const list = (await listResp.json()) as { tasks: unknown[] }
     expect(list.tasks).toHaveLength(0)
+  })
+
+  it('runs a scheduled task without creating a legacy Core session', async () => {
+    const task = await new CronService().createTask({
+      cron: '0 9 * * *',
+      prompt: '整理今天的营业数据',
+    })
+    const executeTask = spyOn(cronScheduler, 'executeTask').mockResolvedValue({
+      id: 'run-1',
+      taskId: task.id,
+      taskName: task.name,
+      startedAt: new Date().toISOString(),
+      status: 'completed',
+      prompt: task.prompt,
+    })
+
+    try {
+      const req = new Request(`http://localhost/api/scheduled-tasks/${task.id}/run`, {
+        method: 'POST',
+      })
+      const response = await handleScheduledTasksApi(
+        req,
+        new URL(req.url),
+        ['api', 'scheduled-tasks', task.id, 'run'],
+      )
+
+      expect(response.status).toBe(200)
+      expect(executeTask).toHaveBeenCalledWith(expect.objectContaining({ id: task.id }))
+    } finally {
+      executeTask.mockRestore()
+    }
   })
 })

@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useTaskStore } from '../../stores/taskStore'
-import { useChatStore } from '../../stores/chatStore'
-import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { parseRunOutput } from '../../lib/parseRunOutput'
 import type { TaskRun } from '../../types/task'
@@ -24,7 +22,7 @@ function RunOutput({ run }: { run: TaskRun }) {
   if (!text) {
     return (
       <div className="mt-2 p-2.5 rounded-[var(--radius-sm)] bg-[var(--color-surface-container)] text-xs text-[var(--color-text-tertiary)] italic">
-        {run.sessionId ? t('tasks.outputHintSession') : t('tasks.noOutputText')}
+        {t('tasks.noOutputText')}
       </div>
     )
   }
@@ -56,16 +54,9 @@ const STATUS_CONFIG: Record<string, { icon: string; color: string }> = {
 export function TaskRunsPanel({ taskId, onClose, refreshKey }: Props) {
   const t = useTranslation()
   const { fetchTaskRuns } = useTaskStore()
-  const connectToSession = useChatStore((s) => s.connectToSession)
-  const openTab = useTabStore((s) => s.openTab)
   const [runs, setRuns] = useState<TaskRun[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-
-  const openSession = (sessionId: string, taskName?: string) => {
-    openTab(sessionId, taskName || 'Task Run')
-    connectToSession(sessionId)
-  }
 
   const refresh = () => {
     fetchTaskRuns(taskId).then((r) => {
@@ -161,17 +152,6 @@ export function TaskRunsPanel({ taskId, onClose, refreshKey }: Props) {
                     )}
 
                     <div className="ml-auto flex items-center gap-2">
-                      {/* Open session — only after run completes (session is empty while running) */}
-                      {run.sessionId && run.status !== 'running' && (
-                        <button
-                          onClick={() => openSession(run.sessionId!, run.taskName)}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-[var(--color-brand)] bg-[var(--color-brand)]/8 hover:bg-[var(--color-brand)]/15 rounded-[var(--radius-sm)] transition-colors"
-                        >
-                          <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-                          {t('tasks.openSession')}
-                        </button>
-                      )}
-
                       {/* Summary toggle */}
                       {(run.output || run.error) && (
                         <button

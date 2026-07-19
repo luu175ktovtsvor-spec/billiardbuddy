@@ -95,9 +95,7 @@ export function useScheduledTaskDesktopNotifications(): void {
             dedupeKey: `scheduled-task:${run.id}`,
             title: notification.title,
             body: notification.body,
-            target: run.sessionId
-              ? { type: 'session', sessionId: run.sessionId, title: run.taskName || run.taskId }
-              : { type: 'scheduled' },
+            target: { type: 'scheduled' },
           })
           if (sent) notifiedRunIds.add(run.id)
         }
