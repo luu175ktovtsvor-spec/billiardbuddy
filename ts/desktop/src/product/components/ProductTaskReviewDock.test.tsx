@@ -135,6 +135,39 @@ describe('ProductTaskReviewDock', () => {
     expect(screen.queryByText('stale.ts')).toBeNull()
   })
 
+  it('contains a failed directory request in a retryable task-scoped state', async () => {
+    let reportsAttempts = 0
+    apiMocks.getReviewTree.mockImplementation(async (_taskId: string, path?: string) => {
+      if (path === 'reports') {
+        reportsAttempts += 1
+        if (reportsAttempts === 1) throw new Error('workspace service unavailable')
+        return {
+          taskId: 'task-1',
+          state: 'ok',
+          path,
+          entries: [{ name: 'daily.md', path: 'reports/daily.md', isDirectory: false }],
+        }
+      }
+      return {
+        taskId: 'task-1',
+        state: 'ok',
+        path: path ?? '',
+        entries: path
+          ? []
+          : [{ name: 'reports', path: 'reports', isDirectory: true }],
+      }
+    })
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByText('reports'))
+
+    expect(await screen.findByText('当前目录暂时无法读取。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '重新读取当前目录' }))
+    expect(await screen.findByText('daily.md')).toBeTruthy()
+    expect(reportsAttempts).toBe(2)
+  })
+
   it('keeps the latest file selection when an earlier file and diff request returns late', async () => {
     const firstFile = deferred<Record<string, unknown>>()
     const firstDiff = deferred<Record<string, unknown>>()

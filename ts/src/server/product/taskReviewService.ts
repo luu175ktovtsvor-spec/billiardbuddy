@@ -20,6 +20,7 @@ import { productTaskService, type ProductTaskService } from './taskService.js'
 
 const MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES = 16 * 1024 * 1024
+const VCS_METADATA_PATH_SEGMENTS = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 
 type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId'>
 type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff'> & {
@@ -131,13 +132,15 @@ function projectStatus(taskId: string, status: WorkspaceStatusResult): ProductTa
       branch: status.branch,
       isGitRepository: status.isGitRepo,
     },
-    changedFiles: status.changedFiles.map((file) => ({
-      path: file.path,
-      ...(file.oldPath ? { oldPath: file.oldPath } : {}),
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-    })),
+    changedFiles: status.changedFiles
+      .filter((file) => !isVcsMetadataPath(file.path) && !isVcsMetadataPath(file.oldPath ?? ''))
+      .map((file) => ({
+        path: file.path,
+        ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+      })),
   }
 }
 
@@ -150,11 +153,13 @@ function projectTree(taskId: string, tree: WorkspaceTreeResult): ProductTaskRevi
     taskId,
     state: tree.state,
     path: tree.path,
-    entries: tree.entries.map((entry) => ({
-      name: entry.name,
-      path: entry.path,
-      isDirectory: entry.isDirectory,
-    })),
+    entries: tree.entries
+      .filter((entry) => !isVcsMetadataPath(entry.path) && !isVcsMetadataPath(entry.name))
+      .map((entry) => ({
+        name: entry.name,
+        path: entry.path,
+        isDirectory: entry.isDirectory,
+      })),
   }
 }
 
@@ -227,10 +232,23 @@ function normalizeReviewPath(
     throw new ApiError(403, '路径不在当前任务工作区内', 'FORBIDDEN')
   }
 
-  return normalized
+  const relativePath = normalized
     .split('/')
     .filter((segment) => segment.length > 0 && segment !== '.')
     .join('/')
+
+  if (isVcsMetadataPath(relativePath)) {
+    throw new ApiError(403, '审阅不支持访问版本控制内部文件', 'FORBIDDEN')
+  }
+
+  return relativePath
+}
+
+function isVcsMetadataPath(value: string): boolean {
+  return value
+    .replace(/\\/g, '/')
+    .split('/')
+    .some((segment) => VCS_METADATA_PATH_SEGMENTS.has(segment.toLowerCase()))
 }
 
 function reviewApiError(error: unknown): ApiError {
