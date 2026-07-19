@@ -13,13 +13,6 @@
 #     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(12,全局在途上限) / GW_VISION_QUEUE_MAX(64,排队硬上限,满则立即 429) /
 #     GW_VISION_PER_REQUEST_CONC(2,单请求最多占几个全局槽,防多图请求独占) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
 #     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
-#   - 产品联网搜索（仅 Brave，由 `/v1/web_search` 消费）：
-#     GW_WEBSEARCH_PROVIDER=brave / GW_WEBSEARCH_KEY（真 key，仅 gw.env）/
-#     可选 GW_WEBSEARCH_BASE、GW_WEBSEARCH_TIMEOUT_MS、GW_WEBSEARCH_RPM、GW_WEBSEARCH_CONC、
-#     GW_WEBSEARCH_USER_CONC、GW_WEBSEARCH_TOKEN_CONC、GW_WEBSEARCH_QUEUE_MAX_WAIT。
-#     搜索请求固定受小 JSON 体、查询/域名数量、仅 http(s) 结果与最多 8 条结果限制；缺配置只返回 503，
-#     绝不降级到其它搜索供应商。不要把 GW_WEBSEARCH_KEY 下发到桌面或 CLI。
-#
 # 回滚(本脚本不做备份/回滚,需运维在部署前手工执行):
 #   部署前备份代码 `cp -a /opt/qfgw /opt/qfgw.bak-<ts>`、gw.env 单独备份 `cp -a /opt/qfgw/gw.env /root/gw.env.bak-<ts>`。
 #   部署失败回滚**不能** `cp -a /opt/qfgw.bak-<ts> /opt/qfgw`(/opt/qfgw 已存在,cp -a 会把备份复制成子目录、不覆盖、回滚不生效),
@@ -27,7 +20,7 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts webSearch.ts; do
+for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -38,7 +31,6 @@ install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
-install -m 644 /tmp/webSearch.ts "$APPDIR/webSearch.ts"  # Brave 产品联网搜索（密钥仅 gw.env）
 if [ -f /tmp/gw.env ]; then
   install -m 600 /tmp/gw.env "$APPDIR/gw.env.new"
   mv -f "$APPDIR/gw.env.new" "$APPDIR/gw.env"

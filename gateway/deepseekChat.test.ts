@@ -1,8 +1,12 @@
 import { expect, test } from 'bun:test'
 import {
+  DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE,
+  deepSeekAnthropicMessagesUrl,
   deepseekOpaqueUserId,
   fetchDeepSeekWithRetry,
+  isDeepSeekNativeWebSearchRequest,
   loadDeepSeekAllowedModels,
+  prepareDeepSeekAnthropicWebSearchBody,
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
@@ -50,6 +54,60 @@ test('prepareBody rejects non-JSON and non-object and bad tools', () => {
   expect(() => prepareDeepSeekChatBody('not json', allowed, 'deepseek-v4-flash')).toThrow(DeepSeekRequestError)
   expect(() => prepareDeepSeekChatBody('[]', allowed, 'deepseek-v4-flash')).toThrow(DeepSeekRequestError)
   expect(() => prepareDeepSeekChatBody(JSON.stringify({ model: 'deepseek-v4-flash', tools: {} }), allowed, 'deepseek-v4-flash')).toThrow(DeepSeekRequestError)
+})
+
+test('prepares only the native Anthropic web-search request and injects the trusted metadata user id', () => {
+  const allowed = new Set(['deepseek-v4-flash'])
+  const { body } = prepareDeepSeekAnthropicWebSearchBody(JSON.stringify({
+    model: 'claude-sonnet-4-5',
+    messages: [{ role: 'user', content: 'search current billiards rules' }],
+    tools: [{
+      type: DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE,
+      name: 'web_search',
+      max_uses: 8,
+    }],
+    metadata: { user_id: 'attacker-spoofed', keep: 'safe' },
+  }), allowed, 'deepseek-v4-flash', { userId: 'bb_trusted' })
+
+  expect(JSON.parse(body)).toEqual({
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: 'search current billiards rules' }],
+    tools: [{
+      type: DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE,
+      name: 'web_search',
+      max_uses: 8,
+    }],
+    metadata: { user_id: 'bb_trusted', keep: 'safe' },
+  })
+})
+
+test('rejects non-native or mixed server-tool requests from the narrow Anthropic path', () => {
+  expect(isDeepSeekNativeWebSearchRequest({
+    tools: [{ type: DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE }],
+  })).toBe(true)
+  expect(isDeepSeekNativeWebSearchRequest({
+    tools: [{ type: 'computer_20241022' }],
+  })).toBe(false)
+  expect(isDeepSeekNativeWebSearchRequest({
+    tools: [
+      { type: DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE },
+      { type: 'computer_20241022' },
+    ],
+  })).toBe(false)
+
+  expect(() => prepareDeepSeekAnthropicWebSearchBody(JSON.stringify({
+    model: 'deepseek-v4-flash',
+    tools: [{ type: 'computer_20241022' }],
+  }), new Set(['deepseek-v4-flash']), 'deepseek-v4-flash')).toThrow(DeepSeekRequestError)
+})
+
+test('builds the official DeepSeek Anthropic Messages endpoint without double appending the path', () => {
+  expect(deepSeekAnthropicMessagesUrl('https://api.deepseek.com')).toBe(
+    'https://api.deepseek.com/anthropic/v1/messages',
+  )
+  expect(deepSeekAnthropicMessagesUrl('https://api.deepseek.com/anthropic/')).toBe(
+    'https://api.deepseek.com/anthropic/v1/messages',
+  )
 })
 
 test('opaque user id is stable, prefixed, privacy-free, and differs per install', () => {

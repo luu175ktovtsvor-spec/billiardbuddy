@@ -32,11 +32,7 @@ import {
   type TraceBodySnapshot,
   type TraceProviderInfo,
 } from '../services/traceCaptureService.js'
-import {
-  isQfGatewayProviderId,
-  QF_GATEWAY_PROXY_PATH,
-} from '../services/qfGatewayProvider.js'
-import { handleProductWebSearchProxyRequest } from './productWebSearch.js'
+import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
 
 const providerService = new ProviderService()
 
@@ -161,13 +157,6 @@ export function withStreamIdleTimeout(
 }
 
 export async function handleProxyRequest(req: Request, url: URL): Promise<Response> {
-  // Product web search is a deliberately narrow local sidecar route. It is not
-  // a generic provider endpoint: only the managed qf-gateway path may inject
-  // the host-only gateway token, and all other providers fall through to 404.
-  if (url.pathname === `${QF_GATEWAY_PROXY_PATH}/v1/web_search`) {
-    return handleProductWebSearchProxyRequest(req, url, providerService)
-  }
-
   const providerMatch = url.pathname.match(/^\/proxy\/providers\/([^/]+)\/v1\/messages$/)
   const providerId = providerMatch ? decodeURIComponent(providerMatch[1]!) : undefined
   const isActiveProxyPath = url.pathname === '/proxy/v1/messages'
@@ -239,6 +228,22 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
   const isStream = body.stream === true
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
   const networkSettings = await loadNetworkSettings()
+
+  // Only Claude Code's native server-side WebSearchTool bypasses the normal
+  // Anthropic-to-OpenAI transform. The gateway exchanges the local app token
+  // for its DeepSeek key and forwards this exact protocol to /anthropic; all
+  // ordinary chat, images, and other tools keep the established product path.
+  if (isManagedGateway && isNativeWebSearchToolRequest(body)) {
+    return forwardManagedNativeWebSearch(
+      body,
+      baseUrl,
+      config.apiKey,
+      req,
+      networkSettings,
+      config.clientId,
+    )
+  }
+
   const traceContext = buildProxyTraceContext(req, config, body)
   const promptCacheKey = resolvePromptCacheKey(body, req.headers.get('x-claude-code-session-id'))
 
@@ -272,6 +277,73 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
       { status: 502 },
     )
   }
+}
+
+const NATIVE_WEB_SEARCH_TOOL_TYPE = 'web_search_20250305'
+
+function isNativeWebSearchToolRequest(body: AnthropicRequest): boolean {
+  const tools = (body as Record<string, unknown>).tools
+  return Array.isArray(tools)
+    && tools.length > 0
+    && tools.every(tool => (
+      typeof tool === 'object'
+      && tool !== null
+      && !Array.isArray(tool)
+      && (tool as Record<string, unknown>).type === NATIVE_WEB_SEARCH_TOOL_TYPE
+    ))
+}
+
+async function forwardManagedNativeWebSearch(
+  body: AnthropicRequest,
+  baseUrl: string,
+  apiKey: string,
+  request: Request,
+  networkSettings: NetworkSettings,
+  clientId?: string,
+): Promise<Response> {
+  const url = `${baseUrl}/v1/messages`
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+    'anthropic-version': request.headers.get('anthropic-version')?.trim() || '2023-06-01',
+  }
+  const beta = request.headers.get('anthropic-beta')?.trim()
+  if (beta) headers['anthropic-beta'] = beta
+  const accept = request.headers.get('accept')?.trim()
+  if (accept) headers.Accept = accept
+  if (clientId) headers['X-QF-Client-ID'] = clientId
+
+  const proxyOptions = getNetworkProxyFetchOptions(networkSettings, url)
+  const upstream = await fetchUpstreamWithTimeout(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    ...proxyOptions,
+  }, networkSettings.aiRequestTimeoutMs, body.stream === true)
+
+  if (!upstream.ok) {
+    await upstream.body?.cancel().catch(() => {})
+    return Response.json({
+      type: 'error',
+      error: {
+        type: 'api_error',
+        message: 'Native web search is currently unavailable. Please try again.',
+      },
+    }, { status: upstream.status })
+  }
+
+  const responseHeaders = new Headers()
+  for (const header of ['content-type', 'cache-control', 'request-id']) {
+    const value = upstream.headers.get(header)
+    if (value) responseHeaders.set(header, value)
+  }
+  const responseBody = upstream.body && body.stream === true
+    ? withStreamIdleTimeout(upstream.body, networkSettings.aiRequestTimeoutMs)
+    : upstream.body
+  return new Response(responseBody, {
+    status: upstream.status,
+    headers: responseHeaders,
+  })
 }
 
 async function handleOpenaiChat(

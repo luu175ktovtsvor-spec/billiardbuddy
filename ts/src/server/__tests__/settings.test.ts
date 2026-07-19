@@ -434,7 +434,7 @@ describe('Settings API', () => {
     })
   })
 
-  it('does not expose or overwrite Core-owned fields while updating web search', async () => {
+  it('keeps Core-owned fields while retiring legacy external web-search credentials', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'settings.json'),
       JSON.stringify({
@@ -467,10 +467,9 @@ describe('Settings API', () => {
     const settingsRaw = await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')
     expect(settingsRaw).not.toContain('renderer-must-not-write-this')
     expect(settingsRaw).toContain('private-model')
-    expect(settingsRaw).toContain('existing-private-key')
+    expect(settingsRaw).not.toContain('existing-private-key')
     expect(JSON.parse(settingsRaw).webSearch).toEqual({
-      mode: 'disabled',
-      tavilyApiKey: 'existing-private-key',
+      enabled: false,
     })
 
     const read = makeRequest('GET', '/api/product/settings/user')
@@ -484,7 +483,7 @@ describe('Settings API', () => {
   it('rejects malformed and unknown ordinary preferences', async () => {
     const invalidTheme = makeRequest('PATCH', '/api/product/settings/user', { theme: 'white' })
     const providerInput = makeRequest('PATCH', '/api/product/settings/user', {
-      webSearch: { enabled: true, provider: 'brave' },
+      webSearch: { enabled: true, provider: 'unexpected' },
     })
 
     expect((await handleProductSettingsApi(invalidTheme.req, invalidTheme.url, invalidTheme.segments)).status).toBe(400)
