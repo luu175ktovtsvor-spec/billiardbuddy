@@ -1,4 +1,3 @@
-import { doctorApi, type DoctorReportRepairResponse } from '../api/doctor'
 import { APP_ZOOM_STORAGE_KEY, LEGACY_UI_ZOOM_STORAGE_KEY } from './appZoom'
 import { DESKTOP_PERSISTENCE_VERSION_KEY } from './persistenceMigrations'
 
@@ -19,11 +18,7 @@ export type LocalDoctorRepairResult = {
   failedKeys: string[]
 }
 
-export type DoctorRepairResult = {
-  local: LocalDoctorRepairResult
-  server: DoctorReportRepairResponse | null
-  serverError: string | null
-}
+export type DoctorRepairResult = LocalDoctorRepairResult
 
 function getDefaultDoctorStorage(): DoctorStorage | null {
   try {
@@ -63,22 +58,7 @@ export function runLocalDoctorRepair(storage: DoctorStorage | null = getDefaultD
 }
 
 export async function runDoctorRepair(options?: {
-  includeServer?: boolean
   storage?: DoctorStorage | null
 }): Promise<DoctorRepairResult> {
-  const local = runLocalDoctorRepair(options?.storage)
-  if (options?.includeServer === false) {
-    return { local, server: null, serverError: null }
-  }
-
-  try {
-    const server = await doctorApi.reportAndRepair()
-    return { local, server, serverError: null }
-  } catch (error) {
-    return {
-      local,
-      server: null,
-      serverError: error instanceof Error ? error.message : String(error),
-    }
-  }
+  return runLocalDoctorRepair(options?.storage)
 }

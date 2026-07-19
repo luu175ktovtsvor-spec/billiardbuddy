@@ -21,7 +21,7 @@ export function DoctorPanel({ compact = false }: DoctorPanelProps) {
       const nextResult = await runDoctorRepair()
       setResult(nextResult)
       addToast({
-        type: nextResult.local.failedKeys.length === 0 ? 'success' : 'warning',
+        type: nextResult.failedKeys.length === 0 ? 'success' : 'warning',
         message: getDoctorToastMessage(t, nextResult),
       })
     } catch (error) {
@@ -78,8 +78,8 @@ function getDoctorToastMessage(
   t: ReturnType<typeof useTranslation>,
   result: DoctorRepairResult,
 ): string {
-  if (result.local.failedKeys.length > 0) {
-    return t('doctor.partial', { count: String(result.local.failedKeys.length) })
+  if (result.failedKeys.length > 0) {
+    return t('doctor.partial', { count: String(result.failedKeys.length) })
   }
   return t('doctor.completed')
 }
@@ -88,19 +88,11 @@ function getDoctorStatusMessage(
   t: ReturnType<typeof useTranslation>,
   result: DoctorRepairResult,
 ): string {
-  const clearedCount = result.local.removedKeys.length
+  const clearedCount = result.removedKeys.length
   const base = t('doctor.resultLocal', { count: String(clearedCount) })
 
-  if (result.local.failedKeys.length > 0) {
-    return `${base} ${t('doctor.resultFailedKeys', { count: String(result.local.failedKeys.length) })}`
-  }
-
-  if (result.server) {
-    return `${base} ${t('doctor.serverRan')}`
-  }
-
-  if (result.serverError) {
-    return `${base} ${t('doctor.serverUnavailable')}`
+  if (result.failedKeys.length > 0) {
+    return `${base} ${t('doctor.resultFailedKeys', { count: String(result.failedKeys.length) })}`
   }
 
   return base
