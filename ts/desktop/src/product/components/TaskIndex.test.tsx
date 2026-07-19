@@ -142,6 +142,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
   useSettingsStore.setState({ chatSendBehavior: 'enter' })
 })
 
@@ -432,6 +433,33 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/selected-project'))
   })
 
+  it('keeps form input and offers a retry when native folder selection fails', async () => {
+    mocks.isDesktop = true
+    mocks.openDirectory
+      .mockRejectedValueOnce(new Error('private host dialog failure'))
+      .mockResolvedValueOnce('/workspace/retried-project')
+    renderComposer()
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/keep-manual-input' } })
+    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '保留的任务标题' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '保留的初始目标' } })
+    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('无法打开文件夹选择器，请重试或手动填写工作目录。')
+    expect(alert).not.toHaveTextContent('private host dialog failure')
+    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/keep-manual-input')
+    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留的任务标题')
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('保留的初始目标')
+
+    fireEvent.click(screen.getByRole('button', { name: '重试选择' }))
+
+    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/retried-project'))
+    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留的任务标题')
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('保留的初始目标')
+  })
+
   it('uses the requested work directory in the dedicated new-task composer', async () => {
     renderComposer({ initialWorkDir: '/workspace/billiard' })
 
@@ -600,6 +628,51 @@ describe('TaskIndex', () => {
         data: expect.stringMatching(/^data:text\/csv;base64,/),
       })],
     }))
+  })
+
+  it('keeps task input and retries the same attachment after its browser read fails', async () => {
+    class RetriableFileReader {
+      static reads = 0
+      result: string | null = null
+      error: DOMException | null = null
+      onload: ((event: Event) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      readAsDataURL() {
+        RetriableFileReader.reads += 1
+        if (RetriableFileReader.reads === 1) {
+          this.error = new DOMException('attachment storage denied')
+          this.onerror?.(new Event('error'))
+          return
+        }
+
+        this.result = 'data:text/plain;base64,dHJhaW5pbmc='
+        this.onload?.(new Event('load'))
+      }
+    }
+
+    vi.stubGlobal('FileReader', RetriableFileReader)
+    renderComposer()
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/keep-attachment-input' } })
+    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '保留附件任务' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '读取失败后继续保留' } })
+    const fileInput = document.querySelector('input[type="file"]')
+    const record = new File(['training'], '训练记录.txt', { type: 'text/plain' })
+    fireEvent.change(fileInput!, { target: { files: [record] } })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('无法读取所选附件，请重试或重新选择文件。')
+    expect(alert).not.toHaveTextContent('attachment storage denied')
+    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/keep-attachment-input')
+    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留附件任务')
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('读取失败后继续保留')
+    expect(screen.queryByRole('button', { name: 'Remove 训练记录.txt' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试读取' }))
+
+    expect(await screen.findByRole('button', { name: 'Remove 训练记录.txt' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows a bundled Skill in Chinese and submits only its runtime command', async () => {

@@ -287,6 +287,8 @@ export function TaskComposer({
   const [initialText, setInitialText] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const [attachmentReadRetryFiles, setAttachmentReadRetryFiles] = useState<File[] | null>(null)
+  const [workDirPickerError, setWorkDirPickerError] = useState<string | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
   const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask')
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
@@ -389,9 +391,11 @@ export function TaskComposer({
     setWorkDir(nextWorkDir)
     setProjectId(matchingDirectory?.projectId ?? '')
     setDirectoryId(matchingDirectory?.id ?? '')
+    setWorkDirPickerError(null)
   }
 
   const selectProject = (nextProjectId: string) => {
+    setWorkDirPickerError(null)
     if (!nextProjectId) {
       setProjectId('')
       setDirectoryId('')
@@ -413,6 +417,7 @@ export function TaskComposer({
   }
 
   const selectDirectory = (nextDirectoryId: string) => {
+    setWorkDirPickerError(null)
     if (!nextDirectoryId) {
       setDirectoryId('')
       return
@@ -429,6 +434,7 @@ export function TaskComposer({
   const chooseWorkDir = async () => {
     if (!canChooseWorkDir) return
 
+    setWorkDirPickerError(null)
     try {
       const selected = await desktopHost.dialogs.open({
         directory: true,
@@ -440,7 +446,7 @@ export function TaskComposer({
 
       setRegisteredWorkDir(nextWorkDir)
     } catch {
-      return
+      setWorkDirPickerError('无法打开文件夹选择器，请重试或手动填写工作目录。')
     }
   }
 
@@ -448,27 +454,38 @@ export function TaskComposer({
     if (nextAttachments.length === 0) return
     setAttachments((current) => [...current, ...nextAttachments])
     setAttachmentError(null)
+    setAttachmentReadRetryFiles(null)
   }
 
   const openAttachmentPicker = () => {
     fileInputRef.current?.click()
   }
 
+  const readBrowserFiles = (files: File[]) => {
+    if (files.length === 0) return
+
+    setAttachmentError(null)
+    setAttachmentReadRetryFiles(null)
+    void filesToInlineComposerAttachments(files)
+      .then(appendAttachments)
+      .catch(() => {
+        setAttachmentError('无法读取所选附件，请重试或重新选择文件。')
+        setAttachmentReadRetryFiles(files)
+      })
+  }
+
   const selectBrowserFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (!files) return
 
-    void filesToInlineComposerAttachments(files)
-      .then(appendAttachments)
-      .catch(() => {
-        // File input remains available for another selection.
-      })
+    readBrowserFiles(Array.from(files))
     event.target.value = ''
   }
 
   const removeAttachment = (id: string) => {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id))
     setAttachmentError(null)
+    setAttachmentReadRetryFiles(null)
   }
 
   const submitTask = () => {
@@ -477,6 +494,7 @@ export function TaskComposer({
     const attachmentResult = validateProductTaskAttachments(attachments)
     if (attachmentResult.ok === false) {
       setAttachmentError(attachmentResult.message)
+      setAttachmentReadRetryFiles(null)
       return
     }
 
@@ -541,6 +559,12 @@ export function TaskComposer({
             <button type="button" onClick={() => void chooseWorkDir()} className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">选择文件夹</button>
           ) : null}
         </div>
+        {workDirPickerError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-error)]">
+            <span>{workDirPickerError}</span>
+            <button type="button" onClick={() => void chooseWorkDir()} className="underline underline-offset-2">重试选择</button>
+          </div>
+        ) : null}
       </div>
       <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         任务标题（可选）
@@ -582,7 +606,14 @@ export function TaskComposer({
             <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
           </div>
         ) : null}
-        {attachmentError ? <p role="alert" className="pt-1 text-xs text-[var(--color-error)]">{attachmentError}</p> : null}
+        {attachmentError ? (
+          <div role="alert" className="flex flex-wrap items-center gap-2 pt-1 text-xs text-[var(--color-error)]">
+            <span>{attachmentError}</span>
+            {attachmentReadRetryFiles ? (
+              <button type="button" onClick={() => readBrowserFiles(attachmentReadRetryFiles)} className="underline underline-offset-2">重试读取</button>
+            ) : null}
+          </div>
+        ) : null}
         <div>
           <input
             ref={fileInputRef}
