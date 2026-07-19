@@ -1,4 +1,4 @@
-// 100 用户 × 5 窗口基线及默认 DeepSeek profile 的假 upstream 压测。
+// 100 用户 × 5 窗口基线及 100 用户 × 8 窗口默认 DeepSeek profile 的假 upstream 压测。
 //
 // 本文件刻意不访问真实 DeepSeek / MiMo 账号：用一个可控的假上游把请求挂住，观察网关
 // 实际发出的上游请求峰值、每个可信 token 的额度、取消后的排队回收和 response stream
@@ -11,6 +11,8 @@ import { createGatewayFetch, MemoryUsageStore } from './app'
 const USERS = 100
 const WINDOWS_PER_USER = 5
 const TOTAL = USERS * WINDOWS_PER_USER
+const MAX_WINDOWS_PER_USER = 8
+const MAX_TOTAL = USERS * MAX_WINDOWS_PER_USER
 
 type UpstreamKind = 'deepseek' | 'mimoText' | 'mimoVision'
 type Stat = { calls: number; inFlight: number; peak: number }
@@ -255,7 +257,7 @@ for (const profile of [
   })
 }
 
-test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 5 窗口为 256 实际在途 + 244 有界排队，全部可排空', async () => {
+test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 8 窗口为 800 实际在途、零网关排队，全部可排空', async () => {
   const sharedToken = 'shared-desktop-token'
   const upstream = createFakeUpstream({ holdText: true })
   const fetch = createGatewayFetch({
@@ -275,22 +277,22 @@ test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 5 窗�
   })
   const requests: Array<Promise<number>> = []
   for (let user = 0; user < USERS; user++) {
-    for (let window = 0; window < WINDOWS_PER_USER; window++) {
+    for (let window = 0; window < MAX_WINDOWS_PER_USER; window++) {
       requests.push(status(fetch, chatRequest('deepseek-v4-flash', user, window, { gatewayToken: sharedToken })))
     }
   }
 
   await eventually(async () => {
     const capacity = await health(fetch, sharedToken)
-    return upstream.stats.deepseek.calls === 256 && capacity.deepseek.active === 256 && capacity.deepseek.queued === 244
-  }, 'default 256 active + 244 queued DeepSeek calls', 10_000)
-  expect(upstream.stats.deepseek).toMatchObject({ calls: 256, inFlight: 256, peak: 256 })
+    return upstream.stats.deepseek.calls === MAX_TOTAL && capacity.deepseek.active === MAX_TOTAL && capacity.deepseek.queued === 0
+  }, 'default 800 active + zero queued DeepSeek calls', 10_000)
+  expect(upstream.stats.deepseek).toMatchObject({ calls: MAX_TOTAL, inFlight: MAX_TOTAL, peak: MAX_TOTAL })
 
   upstream.openText()
   expect((await Promise.all(requests)).every(value => value === 200)).toBe(true)
   const identityCounts = countBy(upstream.seenByKind.deepseek)
   expect(identityCounts.size).toBe(USERS)
-  expect([...identityCounts.values()].every(count => count === WINDOWS_PER_USER)).toBe(true)
+  expect([...identityCounts.values()].every(count => count === MAX_WINDOWS_PER_USER)).toBe(true)
   expect((await health(fetch, sharedToken)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 

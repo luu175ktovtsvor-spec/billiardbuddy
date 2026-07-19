@@ -663,19 +663,20 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。产品目标是 100 人 × 每人 5 窗口；先保守地把
-    // 单进程实流限定为 256，并给另 256 个请求有界排队。DeepSeek 账号的 2500 并发额度不等于
-    // 一台 Bun 网关已验证能承受 2500 个 SSE；只有在真机压测后才应从 gw.env 调高。缺 key 时路由
-    // 到它会 503，绝不改投千问/MiMo。
+    // DeepSeek V4 Flash:真 key 只在服务器。真实生产请求已验证 100 人 × 每人 8 窗口时，800 路
+    // 可以直接进入该网关而不发生网关排队（但尾延迟已明显上升），所以默认锁在 800 个实际流、每安装
+    // 最多 8 路、共享 app token 最多 800 路。200 个队列槽只吸收短抖动且最多等 15 秒，避免把持续
+    // 超载伪装成长期“排队中”。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到 2500；缺 key
+    // 时路由到它会 503，绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
-    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 256)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(5, intEnv(env, 'GW_DEEPSEEK_CONC', 256)))),
-    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 256))),
-    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 256)),
-    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
+    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 800)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(8, intEnv(env, 'GW_DEEPSEEK_CONC', 800)))),
+    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 800))),
+    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
+    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),

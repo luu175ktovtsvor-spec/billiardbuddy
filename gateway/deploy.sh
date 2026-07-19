@@ -9,13 +9,14 @@
 #   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
-#   - DeepSeek 默认 256 个实际流、每安装最多 5 路、共享 app token 最多 256 路；100 人 × 5
-#     窗口的 500 个普通聊天会由 256 实际流 + 244 个有界排队位承接。2500 是上游账号额度，不等于
-#     单机 Bun 网关已经验证可直接放到 2500。排队最长等 120 秒；/healthz(带 app token)会返回
-#     active/queued/queueMax/oldestQueueMs 供观察。
-#   - 上线前仍需用真 DeepSeek 账号从小到大验证 100、256、500 路持续 SSE，并同步观察 qfgw 的
-#     CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间；若其中任一项恶化，先在 gw.env
-#     调低 GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，保留 GW_DEEPSEEK_USER_CONC=5 及有限队列。
+#   - 真实生产请求已验证 DeepSeek 100 人 × 8 窗口：800 个实际流可直接进入网关而不排队，但尾延迟
+#     已明显上升。因此默认固定为 GW_DEEPSEEK_CONC=800 / GW_DEEPSEEK_USER_CONC=8 /
+#     GW_DEEPSEEK_TOKEN_CONC=800，只留 GW_DEEPSEEK_QUEUE_MAX=200、GW_DEEPSEEK_QUEUE_MAX_WAIT=15
+#     吸收短暂抖动，不把持续超载变成分钟级隐藏等待。2500 是上游账号额度，不等于单机 Bun 网关
+#     应直接开到 2500；/healthz(带 app token)会返回 active/queued/queueMax/oldestQueueMs 供观察。
+#   - 如需再调高，必须重新以真 DeepSeek 账号从 800 以上阶梯压测，并同时观察 qfgw CPU、内存、
+#     文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
+#     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
 #   - Qwen 仍保守使用 16 实际流。MiMo 的真实账户爬坡已验证 64 个实际在途，但高尾延迟已明显，
 #     所以默认固定为 GW_MIMO_CONC=64 / GW_MIMO_USER_CONC=1 / GW_MIMO_TOKEN_CONC=64，
 #     只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发吸收，不把 100 人多窗口
@@ -87,10 +88,10 @@ WorkingDirectory=/opt/qfgw
 ExecStart=__BUN_BIN__ /opt/qfgw/app.ts --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
-# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 5 窗口时最多约 500 个
-# 入站连接、256 个 DeepSeek 上游流；8192 为日志、健康检查、文件和后续验证预留余量，避免
+# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 8 窗口时最多约 800 个
+# 入站连接、800 个 DeepSeek 上游流；65536 为日志、健康检查、文件、重试和后续压测预留余量，避免
 # 系统默认 soft nofile 在突发时把健康网关误判为上游故障。
-LimitNOFILE=8192
+LimitNOFILE=65536
 UMask=0077
 [Install]
 WantedBy=multi-user.target
