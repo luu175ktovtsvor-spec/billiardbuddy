@@ -22,6 +22,7 @@ test('legacy Core-session REST routes, including special handlers, stay retired'
     ['GET', '/api/sessions/session-1/turn-checkpoints/diff?targetUserMessageId=user-1&path=src%2Findex.ts'],
     ['POST', '/api/sessions/session-1/rewind'],
     ['GET', '/api/sessions/session-1/slash-commands'],
+    ['GET', '/api/sessions/session-1/inspection'],
   ] as const
 
   for (const [method, path] of requests) {
