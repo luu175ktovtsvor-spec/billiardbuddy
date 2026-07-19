@@ -288,11 +288,11 @@ async function runSetup(): Promise<SetupResult> {
   try {
     await ensureRuntimeFiles()
     steps.push({ name: 'runtime_files', ok: true, message: '运行时文件已就绪' })
-  } catch (err) {
+  } catch {
     steps.push({
       name: 'runtime_files',
       ok: false,
-      message: `提取运行时文件失败: ${err}`,
+      message: '准备运行环境失败，请重试',
     })
     return { success: false, steps }
   }
@@ -479,7 +479,7 @@ export async function handleComputerUseApi(
   }
 
   return Response.json(
-    { error: 'NOT_FOUND', message: `Unknown computer-use action: ${action}` },
+    { error: 'NOT_FOUND', message: 'Unknown Computer Use action' },
     { status: 404 },
   )
 }
