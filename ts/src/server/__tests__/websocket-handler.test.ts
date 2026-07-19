@@ -391,17 +391,18 @@ describe('WebSocket handler product error projection', () => {
     })
 
     const events = ws.sent.map((payload) => JSON.parse(payload))
-    expect(events).toHaveLength(4)
+    expect(events).toHaveLength(5)
     expect(events[0]).toEqual({ type: 'connected' })
-    expect(events[1]).toEqual({ type: 'status', state: 'working' })
-    expect(events[2]).toMatchObject({
+    expect(events[1]).toEqual({ type: 'run_snapshot', state: 'idle', activities: [] })
+    expect(events[2]).toEqual({ type: 'status', state: 'working' })
+    expect(events[3]).toMatchObject({
       id: expect.stringMatching(/^activity_[a-f0-9]{32}$/),
       kind: 'command',
       phase: 'running',
       summary: '正在处理任务操作',
     })
-    expect(events[3]).toMatchObject({
-      id: events[2].id,
+    expect(events[4]).toMatchObject({
+      id: events[3].id,
       kind: 'command',
       phase: 'completed',
       summary: '已完成任务操作',
@@ -413,6 +414,74 @@ describe('WebSocket handler product error projection', () => {
     expect(serialized).not.toContain(privateToolResult)
     expect(serialized).not.toContain('Bash')
     expect(serialized).not.toContain('private-tool-id')
+  })
+
+  it('hydrates a reconnected product task from the latest safe run snapshot', () => {
+    const sessionId = `product-run-reconnect-${crypto.randomUUID()}`
+    const first = makeClientSocket(sessionId, 'product')
+    const reconnected = makeClientSocket(sessionId, 'product')
+    const callbacks: Array<(cliMsg: any) => void> = []
+    const privateToolUseId = 'PRIVATE_RECONNECT_TOOL'
+    const privatePath = '/Users/private/reconnect-output.txt'
+
+    spyOn(globalThis, 'setTimeout').mockImplementation(() => 0 as any)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation((_id, callback) => {
+      callbacks.push(callback)
+    })
+    const removeOutputCallback = spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+    handleWebSocket.open(first)
+    sendToSession(sessionId, { type: 'status', state: 'thinking' })
+    handleWebSocket.close(first, 1006, 'renderer reconnecting')
+
+    // The product run is still active, so its one Core-output callback stays
+    // alive and continues to update the safe registry while no window exists.
+    expect(removeOutputCallback).not.toHaveBeenCalled()
+    expect(callbacks).toHaveLength(1)
+    callbacks[0]!({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: privateToolUseId,
+          name: 'Bash',
+          input: { command: `cat ${privatePath}` },
+        }],
+      },
+    })
+    callbacks[0]!({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: privateToolUseId,
+          content: { path: privatePath, stdout: 'PRIVATE_RECONNECT_RESULT' },
+          is_error: false,
+        }],
+      },
+    })
+
+    handleWebSocket.open(reconnected)
+    const events = reconnected.sent.map((payload) => JSON.parse(payload))
+    expect(events.slice(0, 2)).toEqual([
+      { type: 'connected' },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [expect.objectContaining({
+          id: expect.stringMatching(/^activity_[a-f0-9]{32}$/),
+          kind: 'command',
+          phase: 'completed',
+          summary: '已完成任务操作',
+        })],
+      },
+    ])
+    const serialized = JSON.stringify(events)
+    for (const privateValue of [sessionId, privateToolUseId, privatePath, 'PRIVATE_RECONNECT_RESULT', 'Bash']) {
+      expect(serialized).not.toContain(privateValue)
+    }
   })
 
   it('uses the opaque activity tree only for product sockets and keeps Core clients unchanged', () => {
@@ -475,6 +544,7 @@ describe('WebSocket handler product error projection', () => {
 
     const productEvents = productWs.sent.map((payload) => JSON.parse(payload))
     expect(productEvents[0]).toEqual({ type: 'connected' })
+    expect(productEvents[1]).toEqual({ type: 'run_snapshot', state: 'idle', activities: [] })
     const activities = productEvents.filter((event) => event.type === 'activity')
     expect(activities).toHaveLength(5)
     const [started, running, completed, team, backgroundTask] = activities
@@ -580,6 +650,7 @@ describe('WebSocket handler product error projection', () => {
       const events = ws.sent.map((payload) => JSON.parse(payload))
       expect(events).toEqual([
         { type: 'connected' },
+        { type: 'run_snapshot', state: 'idle', activities: [] },
         { type: 'error', code: 'task_failed', retryable: false },
       ])
       expect(JSON.stringify(events)).not.toContain(privateQuestion)

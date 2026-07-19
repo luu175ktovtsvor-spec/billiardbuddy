@@ -11,7 +11,7 @@ import { useProductTaskStore } from './productTaskStore'
 import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
-  ProductTaskActivityProgress,
+  ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApproval,
@@ -26,15 +26,6 @@ export type ProductTaskConnectionState =
   | 'disconnected'
   | 'connecting'
   | 'connected'
-
-export type ProductTaskRunActivity = {
-  id: string
-  parentId?: string
-  kind: ProductTaskActivityKind
-  phase: ProductTaskActivityPhase
-  summary: string
-  progress?: ProductTaskActivityProgress
-}
 
 export type ProductTaskRuntime = {
   connectionState: ProductTaskConnectionState
@@ -279,6 +270,30 @@ function upsertRunActivity(
   return next.length > MAX_TRACKED_RUN_ACTIVITIES
     ? next.slice(-MAX_TRACKED_RUN_ACTIVITIES)
     : next
+}
+
+function snapshotRunActivities(
+  activities: readonly ProductTaskRunActivity[],
+): ProductTaskRunActivity[] {
+  return activities.slice(0, MAX_TRACKED_RUN_ACTIVITIES).map((activity) => ({
+    ...activity,
+    ...(activity.progress ? { progress: { ...activity.progress } } : {}),
+  }))
+}
+
+function activeActivityFromRunActivities(
+  activities: readonly ProductTaskRunActivity[],
+): ProductTaskRuntime['activeActivity'] {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index]!
+    if (activity.phase !== 'started' && activity.phase !== 'running') continue
+    return {
+      kind: activity.kind,
+      phase: activity.phase,
+      summary: activity.summary,
+    }
+  }
+  return null
 }
 
 const socketUnsubscribers = new Map<string, () => void>()
@@ -535,6 +550,22 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           streamingEntryId: null,
         }))
         void refreshThread(taskId, 'turn_complete')
+        return
+      }
+
+      if (event.type === 'run_snapshot') {
+        const runActivities = snapshotRunActivities(event.activities)
+        updateTask(taskId, (runtime) => ({
+          ...runtime,
+          runState: event.state,
+          runActivities,
+          activeActivity: activeActivityFromRunActivities(runActivities),
+          // Permission details are deliberately not part of a run snapshot.
+          // A following approval_required replay is the sole authority for a
+          // new approval card.
+          pendingApproval: null,
+          approvalResponsePending: false,
+        }))
         return
       }
 

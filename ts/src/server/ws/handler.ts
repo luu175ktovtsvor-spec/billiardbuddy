@@ -21,11 +21,9 @@ import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.j
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectMemorySavedData } from '../api/productMessageProjection.js'
-import {
-  ProductTaskRunActivityProjector,
-  projectServerMessageForProductTask,
-} from '../product/taskEventProjection.js'
+import type { ProductTaskEvent } from '../../../shared/product/taskEvents.js'
 import { projectProductTaskUserContent } from '../product/taskAttachmentProjection.js'
+import { productTaskRunProjection } from '../product/taskRunProjection.js'
 import {
   classifyProductTaskCommand,
   resolveProductTaskText,
@@ -179,13 +177,6 @@ export type WebSocketData = {
 // Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
-// One projector per product websocket keeps the short-lived tool-kind cache
-// isolated between observers. Stable IDs themselves are deterministic from
-// the product task key, so reconnecting does not require retaining Core IDs.
-const productRunActivityProjectors = new WeakMap<
-  ServerWebSocket<WebSocketData>,
-  ProductTaskRunActivityProjector
->()
 // A malformed AskUserQuestion must be rejected once at the server boundary.
 // Multiple product renderers can observe the same pending request.
 const rejectedProductAskRequests = new Set<string>()
@@ -223,10 +214,7 @@ export const handleWebSocket = {
         return
       }
       try {
-        productRunActivityProjectors.set(
-          ws,
-          new ProductTaskRunActivityProjector(ws.data.productTaskId),
-        )
+        productTaskRunProjection.register(ws.data.productTaskId, sessionId)
       } catch {
         // This identifier comes from the task-scoped upgrade route. If a
         // malformed in-process caller bypasses that route, fail closed rather
@@ -257,6 +245,10 @@ export const handleWebSocket = {
 
     const msg: ServerMessage = { type: 'connected', sessionId }
     sendMessage(ws, msg)
+    if (channel === 'product' && ws.data.productTaskId) {
+      const snapshot = productTaskRunProjection.getSnapshot(ws.data.productTaskId, sessionId)
+      ws.send(JSON.stringify({ type: 'run_snapshot', ...snapshot }))
+    }
     replayPendingPermissionRequests(ws, sessionId)
   },
 
@@ -378,8 +370,6 @@ export const handleWebSocket = {
       return
     }
 
-    productRunActivityProjectors.delete(ws)
-
     console.log(`[WS] Client disconnected from session: ${sessionId} (${code}: ${reason})`)
     if (!removeActiveClient(sessionId, ws)) {
       console.log(`[WS] Ignoring stale client disconnect for session: ${sessionId}`)
@@ -390,7 +380,13 @@ export const handleWebSocket = {
       return
     }
 
-    removeSessionOutputCallback(sessionId)
+    // A product turn needs to keep translating Core output after the last
+    // renderer closes. The process-local product run projection holds only a
+    // bounded safe tree, and lets a reconnect receive the same real progress
+    // rather than a fabricated loading state.
+    if (!productTaskRunProjection.hasActiveRunForSession(sessionId)) {
+      removeSessionOutputCallback(sessionId)
+    }
 
     // No clients left. A turn that is still running must finish in the
     // background (issue #764) — never kill it just because a phone locked its
@@ -442,6 +438,12 @@ async function handleProductTaskUserMessage(
   ws: ServerWebSocket<WebSocketData>,
   message: Extract<ProductTaskInboundMessage, { type: 'user_message' }>,
 ): Promise<void> {
+  const productTaskId = ws.data.productTaskId
+  if (!productTaskId) {
+    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
+    return
+  }
+
   // Attachment-only product turns have no slash command to validate; their
   // narrow input shape was already validated by taskInboundPolicy.
   if (message.content.trim()) {
@@ -453,11 +455,19 @@ async function handleProductTaskUserMessage(
       sendMessage(ws, { type: 'status', state: 'idle' })
       return
     }
+    if (!isDesktopClearCommand(resolution.content)) {
+      productTaskRunProjection.beginRun(productTaskId, ws.data.sessionId)
+    }
     await handleUserMessage(ws, { ...message, content: resolution.content })
     return
   }
 
+  productTaskRunProjection.beginRun(productTaskId, ws.data.sessionId)
   await handleUserMessage(ws, message)
+}
+
+function isDesktopClearCommand(content: string): boolean {
+  return getDesktopSlashCommand(content)?.commandName.trim().toLowerCase() === 'clear'
 }
 
 async function handleUserMessage(
@@ -683,6 +693,10 @@ async function handleDesktopClearCommand(
     sendMessage(ws, toSafeRuntimeError('SESSION_CLEAR_FAILED', true))
     sendMessage(ws, { type: 'status', state: 'idle' })
     return
+  }
+
+  if (ws.data.productTaskId) {
+    productTaskRunProjection.clearRun(ws.data.productTaskId, sessionId)
   }
 
   sendMessage(ws, {
@@ -1492,6 +1506,7 @@ function cleanupStreamState(sessionId: string) {
 
 function cleanupSessionRuntimeState(sessionId: string) {
   cancelSessionDisconnectWatcher(sessionId)
+  productTaskRunProjection.removeSession(sessionId)
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
@@ -2282,27 +2297,29 @@ function rejectUnanswerableProductAskUserQuestion(
 function productTaskEventsForMessage(
   ws: ServerWebSocket<WebSocketData>,
   message: ServerMessage,
-) {
-  let projector = productRunActivityProjectors.get(ws)
-  if (!projector && ws.data.productTaskId) {
-    try {
-      projector = new ProductTaskRunActivityProjector(ws.data.productTaskId)
-      productRunActivityProjectors.set(ws, projector)
-    } catch {
-      // The normal route creates this projector during open. A malformed
-      // in-process caller still receives only the established safe projection.
-      return projectServerMessageForProductTask(message)
-    }
+): ProductTaskEvent[] {
+  const productTaskId = ws.data.productTaskId
+  if (!productTaskId) return []
+  try {
+    return productTaskRunProjection.projectTaskMessage(
+      productTaskId,
+      ws.data.sessionId,
+      message,
+    )
+  } catch {
+    // Product upgrade validates the task id before opening the socket. A
+    // malformed in-process caller still fails closed instead of receiving a
+    // generic Core-shaped event.
+    return []
   }
-  return projector?.project(message) ?? projectServerMessageForProductTask(message)
 }
 
-function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
-  const events = ws.data.channel === 'product'
-    ? productTaskEventsForMessage(ws, message)
-    : [message]
-
-  if (ws.data.channel === 'product' && isUnanswerableProductAskUserQuestion(message, events)) {
+function sendProductTaskEvents(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+  events: readonly ProductTaskEvent[],
+): void {
+  if (isUnanswerableProductAskUserQuestion(message, events)) {
     // A legacy Core client can still answer its own raw request. Do not reject
     // it just because an additional product observer cannot render it.
     if (!hasCoreClientForSession(ws.data.sessionId)) {
@@ -2312,6 +2329,50 @@ function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage)
   }
   for (const event of events) {
     ws.send(JSON.stringify(event))
+  }
+}
+
+function sendMessage(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+  projectedProductEvents?: readonly ProductTaskEvent[],
+) {
+  const events = ws.data.channel === 'product'
+    ? projectedProductEvents ?? productTaskEventsForMessage(ws, message)
+    : [message]
+
+  if (ws.data.channel === 'product') {
+    sendProductTaskEvents(ws, message, events)
+    return
+  }
+  for (const event of events) {
+    ws.send(JSON.stringify(event))
+  }
+}
+
+/**
+ * Translate a Core message once, project it once per public product task, and
+ * then fan out the already-safe events. This keeps parent/tool-kind context
+ * stable across multiple product windows and still advances an active run
+ * when there are temporarily no windows at all.
+ */
+function sendServerMessagesToSessionClients(
+  sessionId: string,
+  messages: readonly ServerMessage[],
+): void {
+  const clients = activeSessions.get(sessionId)
+  for (const message of messages) {
+    const productEventsByTask = productTaskRunProjection.projectSessionMessage(sessionId, message)
+    if (!clients?.size) continue
+    for (const client of clients) {
+      if (client.data.channel !== 'product') {
+        sendMessage(client, message)
+        continue
+      }
+      const productTaskId = client.data.productTaskId
+      const events = productTaskId ? productEventsByTask.get(productTaskId) : undefined
+      sendMessage(client, message, events)
+    }
   }
 }
 
@@ -2367,6 +2428,7 @@ function scheduleDisconnectCleanup(sessionId: string): void {
     sessionCleanupTimers.delete(sessionId)
     if (!hasActiveClients(sessionId)) {
       console.log(`[WS] Session ${sessionId} not reconnected after ${cleanupDelayMs}ms, stopping CLI subprocess`)
+      removeSessionOutputCallback(sessionId)
       conversationService.stopSession(sessionId)
       cleanupSessionRuntimeState(sessionId)
     }
@@ -2767,13 +2829,7 @@ function bindSessionOutput(
 
     handleCliPermissionModeBroadcast(sessionId, cliMsg)
     const serverMsgs = translateCliMessage(cliMsg, sessionId)
-    const clients = activeSessions.get(sessionId)
-    if (!clients?.size) return
-    for (const client of clients) {
-      for (const msg of serverMsgs) {
-        sendMessage(client, msg)
-      }
-    }
+    sendServerMessagesToSessionClients(sessionId, serverMsgs)
   }
 
   sessionOutputCallbacks.set(sessionId, { callback, shouldForward: options?.shouldForward })
@@ -3014,9 +3070,7 @@ async function waitForRuntimeTransitionBeforeUserTurn(
 export function sendToSession(sessionId: string, message: ServerMessage): boolean {
   const clients = activeSessions.get(sessionId)
   if (!clients || clients.size === 0) return false
-  for (const ws of clients) {
-    sendMessage(ws, message)
-  }
+  sendServerMessagesToSessionClients(sessionId, [message])
   return true
 }
 
@@ -3065,6 +3119,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
   for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
+  productTaskRunProjection.reset()
   rejectedProductAskRequests.clear()
   sessionOutputCallbacks.clear()
   sessionCleanupTimers.clear()

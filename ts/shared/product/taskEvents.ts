@@ -39,6 +39,29 @@ export type ProductTaskActivityProgress = {
   total: number
 }
 
+/**
+ * One safe, opaque item in a product task's active run tree.  It intentionally
+ * contains no Core tool identity, input, output, path, or session metadata.
+ */
+export type ProductTaskRunActivity = {
+  id: string
+  parentId?: string
+  kind: ProductTaskActivityKind
+  phase: ProductTaskActivityPhase
+  summary: string
+  progress?: ProductTaskActivityProgress
+}
+
+/**
+ * The bounded, task-scoped run state replayed when a product task socket
+ * connects. It has no task/session/run identifier because the websocket URL
+ * already scopes it to one public product task.
+ */
+export type ProductTaskRunSnapshot = {
+  state: ProductTaskRunState
+  activities: ProductTaskRunActivity[]
+}
+
 export type ProductTaskApprovalKind =
   | 'action'
   | 'question'
@@ -120,6 +143,7 @@ export type ProductTaskEvent =
   | { type: 'assistant_text_start' }
   | { type: 'assistant_text_delta'; text: string }
   | { type: 'status'; state: ProductTaskRunState }
+  | ({ type: 'run_snapshot' } & ProductTaskRunSnapshot)
   | {
       type: 'activity'
       kind: ProductTaskActivityKind

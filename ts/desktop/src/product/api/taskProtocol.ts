@@ -2,6 +2,7 @@ import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
   ProductTaskActivityProgress,
+  ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
@@ -32,6 +33,7 @@ const MAX_COMPUTER_USE_APP_COUNT = 24
 const MAX_COMPUTER_USE_APP_NAME_LENGTH = 120
 const MAX_ACTIVITY_SUMMARY_LENGTH = 80
 const MAX_ACTIVITY_PROGRESS_TOTAL = 10_000
+const MAX_RUN_ACTIVITY_COUNT = 256
 
 const PRODUCT_TASK_RUN_STATES = new Set<ProductTaskRunState>([
   'idle',
@@ -163,6 +165,32 @@ function parseActivityProgress(value: unknown): ProductTaskActivityProgress | nu
     return null
   }
   return { completed, total }
+}
+
+function parseRunActivity(value: unknown): ProductTaskRunActivity | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['id', 'parentId', 'kind', 'phase', 'summary', 'progress']) ||
+    !isProductActivityId(value.id) ||
+    !isEnumValue(value.kind, PRODUCT_TASK_ACTIVITY_KINDS) ||
+    !isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES) ||
+    !isProductActivitySummary(value.summary)
+  ) {
+    return null
+  }
+  if ('parentId' in value && (!isProductActivityId(value.parentId) || value.parentId === value.id)) {
+    return null
+  }
+  const progress = 'progress' in value ? parseActivityProgress(value.progress) : undefined
+  if ('progress' in value && !progress) return null
+  return {
+    id: value.id,
+    ...(typeof value.parentId === 'string' ? { parentId: value.parentId } : {}),
+    kind: value.kind,
+    phase: value.phase,
+    summary: value.summary,
+    ...(progress ? { progress } : {}),
+  }
 }
 
 function parseQuestionOption(value: unknown): ProductTaskQuestionOption | null {
@@ -359,6 +387,28 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       return hasOnlyKeys(value, ['type', 'state']) && isEnumValue(value.state, PRODUCT_TASK_RUN_STATES)
         ? { type: 'status', state: value.state }
         : null
+
+    case 'run_snapshot': {
+      if (
+        !hasOnlyKeys(value, ['type', 'state', 'activities']) ||
+        !isEnumValue(value.state, PRODUCT_TASK_RUN_STATES) ||
+        !Array.isArray(value.activities) ||
+        value.activities.length > MAX_RUN_ACTIVITY_COUNT
+      ) {
+        return null
+      }
+      const activities = value.activities.map(parseRunActivity)
+      if (activities.some((activity): activity is null => activity === null)) return null
+
+      const parsedActivities = activities as ProductTaskRunActivity[]
+      const activityIds = new Set(parsedActivities.map((activity) => activity.id))
+      if (activityIds.size !== parsedActivities.length) return null
+      return {
+        type: 'run_snapshot',
+        state: value.state,
+        activities: parsedActivities,
+      }
+    }
 
     case 'activity': {
       if (

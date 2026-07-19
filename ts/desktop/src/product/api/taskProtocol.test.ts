@@ -137,6 +137,110 @@ describe('product task protocol run activities', () => {
   })
 })
 
+describe('product task protocol run snapshots', () => {
+  const parentId = `activity_${'a'.repeat(32)}`
+  const childId = `activity_${'b'.repeat(32)}`
+
+  it('accepts a bounded task-scoped snapshot without Core identifiers', () => {
+    expect(parseProductTaskEvent({
+      type: 'run_snapshot',
+      state: 'working',
+      activities: [
+        {
+          id: parentId,
+          kind: 'workspace',
+          phase: 'running',
+          summary: '正在整理任务计划',
+        },
+        {
+          id: childId,
+          parentId,
+          kind: 'subtask',
+          phase: 'running',
+          summary: '正在协同处理事项',
+          progress: { completed: 1, total: 2 },
+        },
+      ],
+    })).toEqual({
+      type: 'run_snapshot',
+      state: 'working',
+      activities: [
+        {
+          id: parentId,
+          kind: 'workspace',
+          phase: 'running',
+          summary: '正在整理任务计划',
+        },
+        {
+          id: childId,
+          parentId,
+          kind: 'subtask',
+          phase: 'running',
+          summary: '正在协同处理事项',
+          progress: { completed: 1, total: 2 },
+        },
+      ],
+    })
+  })
+
+  it('rejects unsafe, malformed, duplicate, and oversized snapshots', () => {
+    const safeActivity = {
+      id: parentId,
+      kind: 'workspace',
+      phase: 'running',
+      summary: '正在整理任务计划',
+    }
+    const tooManyActivities = Array.from({ length: 257 }, (_, index) => ({
+      id: `activity_${index.toString(16).padStart(32, '0')}`,
+      kind: 'workspace',
+      phase: 'completed',
+      summary: '已整理任务计划',
+    }))
+
+    for (const value of [
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [safeActivity],
+        sessionId: 'private-core-session',
+      },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [safeActivity, safeActivity],
+      },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [{ ...safeActivity, summary: '/Users/private/task.json' }],
+      },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [{
+          ...safeActivity,
+          parentId: 'core-parent-id',
+        }],
+      },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: [{
+          ...safeActivity,
+          progress: { completed: 3, total: 2 },
+        }],
+      },
+      {
+        type: 'run_snapshot',
+        state: 'working',
+        activities: tooManyActivities,
+      },
+    ]) {
+      expect(parseProductTaskEvent(value)).toBeNull()
+    }
+  })
+})
+
 describe('product task protocol Computer Use approvals', () => {
   it('accepts only the narrow Computer Use approval projection', () => {
     expect(parseProductTaskEvent({
