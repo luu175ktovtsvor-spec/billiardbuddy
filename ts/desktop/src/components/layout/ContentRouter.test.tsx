@@ -2,10 +2,11 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { previewBridgeMock } = vi.hoisted(() => ({
+const { previewBridgeMock, productTaskProbe } = vi.hoisted(() => ({
   previewBridgeMock: {
     close: vi.fn().mockResolvedValue(undefined),
   },
+  productTaskProbe: { mounts: 0 },
 }))
 
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: previewBridgeMock }))
@@ -32,9 +33,15 @@ vi.mock('../../product/components/ProductShell', () => ({
   ),
 }))
 
-vi.mock('../../product/components/ProductTaskPage', () => ({
-  ProductTaskPage: ({ taskId }: { taskId: string }) => <div data-testid="product-task-page">task:{taskId}</div>,
-}))
+vi.mock('../../product/components/ProductTaskPage', async () => {
+  const { useState } = await import('react')
+  return {
+    ProductTaskPage: ({ taskId }: { taskId: string }) => {
+      const [mount] = useState(() => ++productTaskProbe.mounts)
+      return <div data-mount={mount} data-testid="product-task-page">task:{taskId}</div>
+    },
+  }
+})
 
 import { ContentRouter } from './ContentRouter'
 import { useTabStore } from '../../stores/tabStore'
@@ -43,6 +50,7 @@ describe('ContentRouter tab surfaces', () => {
   afterEach(() => {
     cleanup()
     previewBridgeMock.close.mockClear()
+    productTaskProbe.mounts = 0
     useTabStore.setState({ tabs: [], activeTabId: null })
   })
 
@@ -123,6 +131,36 @@ describe('ContentRouter tab surfaces', () => {
 
     expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('remounts the task page when switching product task tabs', () => {
+    useTabStore.setState({
+      tabs: [
+        {
+          sessionId: '__product_task__task-1',
+          title: '整理开球训练',
+          type: 'product-task',
+          taskId: 'task-1',
+        },
+        {
+          sessionId: '__product_task__task-2',
+          title: '整理排班',
+          type: 'product-task',
+          taskId: 'task-2',
+        },
+      ],
+      activeTabId: '__product_task__task-1',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-task-page')).toHaveAttribute('data-mount', '1')
+    act(() => {
+      useTabStore.setState({ activeTabId: '__product_task__task-2' })
+    })
+
+    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-2')
+    expect(screen.getByTestId('product-task-page')).toHaveAttribute('data-mount', '2')
   })
 
   it('keeps the native preview host available while a product task is active, then closes it after leaving', async () => {

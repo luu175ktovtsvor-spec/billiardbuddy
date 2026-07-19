@@ -42,7 +42,7 @@ export function ContentRouter() {
     )
   } else if (activeTabType === 'product-task') {
     page = activeTab?.taskId
-      ? <ProductTaskPage taskId={activeTab.taskId} />
+      ? <ProductTaskPage key={activeTab.taskId} taskId={activeTab.taskId} />
       : <ProductShell />
   } else {
     // A persisted or plugin-provided unknown tab must not select a task
