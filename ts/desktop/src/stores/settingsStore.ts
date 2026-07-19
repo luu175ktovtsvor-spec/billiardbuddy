@@ -46,6 +46,7 @@ function getStoredLocale(): Locale {
 
 type SettingsStore = {
   autoDreamEnabled: boolean
+  deepThinkingEnabled: boolean
   locale: Locale
   theme: ThemeMode
   chatSendBehavior: ChatSendBehavior
@@ -71,6 +72,7 @@ type SettingsStore = {
 
   fetchAll: () => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
+  setDeepThinkingEnabled: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
   setTheme: (theme: ThemeMode) => Promise<void>
   setChatSendBehavior: (behavior: ChatSendBehavior) => Promise<void>
@@ -122,6 +124,7 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   autoDreamEnabled: false,
+  deepThinkingEnabled: true,
   locale: getStoredLocale(),
   theme: useUIStore.getState().theme,
   chatSendBehavior: 'enter',
@@ -169,6 +172,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       useUIStore.getState().setTheme(theme)
       set({
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
+        deepThinkingEnabled: userSettings.deepThinkingEnabled !== false,
         theme,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
         skipWebFetchPreflight: runtimeSettings.skipWebFetchPreflight !== false,
@@ -196,6 +200,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await productSettingsApi.updateUser({ autoDreamEnabled: enabled })
     } catch (error) {
       set({ autoDreamEnabled: prev })
+      throw error
+    }
+  },
+
+  setDeepThinkingEnabled: async (enabled) => {
+    const prev = get().deepThinkingEnabled
+    set({ deepThinkingEnabled: enabled })
+    try {
+      await productSettingsApi.updateUser({ deepThinkingEnabled: enabled })
+    } catch (error) {
+      set({ deepThinkingEnabled: prev })
       throw error
     }
   },

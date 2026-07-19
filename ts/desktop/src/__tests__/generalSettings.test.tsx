@@ -89,6 +89,7 @@ describe('Settings > General tab', () => {
       locale: 'en',
       theme: 'light',
       autoDreamEnabled: false,
+      deepThinkingEnabled: true,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
       chatSendBehavior: 'enter',
@@ -118,6 +119,9 @@ describe('Settings > General tab', () => {
       }),
       setAutoDreamEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ autoDreamEnabled: enabled })
+      }),
+      setDeepThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
+        useSettingsStore.setState({ deepThinkingEnabled: enabled })
       }),
       setTheme: vi.fn().mockImplementation(async (theme: ThemeMode) => {
         useSettingsStore.setState({ theme })
@@ -591,13 +595,17 @@ describe('Settings > General tab', () => {
     expect(useSettingsStore.getState().setSkipWebFetchPreflight).toHaveBeenCalledWith(false)
   })
 
-  it('keeps runtime thinking controls out of general user settings', () => {
+  it('exposes the product deep-thinking switch without exposing provider internals', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    expect(screen.queryByText('Thinking Mode')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Enable thinking mode')).not.toBeInTheDocument()
+    const toggle = screen.getByLabelText('Enable deep thinking')
+    expect(toggle).toBeVisible()
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+
+    expect(useSettingsStore.getState().setDeepThinkingEnabled).toHaveBeenCalledWith(false)
     expect(screen.queryByText(/DeepSeek/)).not.toBeInTheDocument()
     expect(screen.queryByText(/--thinking/)).not.toBeInTheDocument()
   })

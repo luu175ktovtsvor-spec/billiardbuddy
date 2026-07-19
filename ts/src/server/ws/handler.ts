@@ -18,7 +18,12 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
-import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
+import {
+  getQfGatewayModel,
+  isQfGatewayProviderId,
+  qfGatewayConfigured,
+  whenQfGatewayReady,
+} from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectProductTaskUserContent } from '../product/taskAttachmentProjection.js'
 import {
@@ -2056,7 +2061,7 @@ type RuntimeSettings = {
   permissionMode?: string
   model?: string
   effort?: string
-  thinking?: 'disabled'
+  thinking?: 'enabled' | 'disabled'
   providerId?: string | null
 }
 
@@ -2103,14 +2108,10 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
       }
     }
 
-    const userSettings = await settingsService.getUserSettings()
-    const thinking = resolveDesktopThinkingMode(userSettings)
-
     return {
       permissionMode: sessionPermissionMode ?? await settingsService.getPermissionMode().catch(() => undefined),
       model: persistedRuntimeSettings.modelId,
       effort: persistedRuntimeSettings.effort,
-      thinking,
       providerId: persistedRuntimeSettings.providerId,
     }
   }
@@ -2146,7 +2147,6 @@ async function getDefaultRuntimeSettings(): Promise<RuntimeSettings> {
     typeof userSettings.effort === 'string' && userSettings.effort.trim()
       ? userSettings.effort
       : undefined
-  const thinking = resolveDesktopThinkingMode(userSettings)
 
   let model: string | undefined
   if (resolvedActiveId) {
@@ -2169,6 +2169,12 @@ async function getDefaultRuntimeSettings(): Promise<RuntimeSettings> {
     model = baseModel ? (modelContext ? `${baseModel}:${modelContext}` : baseModel) : undefined
   }
 
+  const thinking = resolveProductThinkingMode(
+    userSettings,
+    resolvedActiveId,
+    model ?? (isQfGatewayProviderId(resolvedActiveId) ? getQfGatewayModel() : undefined),
+  )
+
   return {
     permissionMode: await settingsService.getPermissionMode().catch(() => undefined),
     model,
@@ -2178,10 +2184,26 @@ async function getDefaultRuntimeSettings(): Promise<RuntimeSettings> {
   }
 }
 
-function resolveDesktopThinkingMode(
+/**
+ * The product preference is intentionally separate from Core's
+ * `alwaysThinkingEnabled`: it is read only while a new desktop CLI process is
+ * being started. Existing processes retain their launch argument.
+ *
+ * The managed gateway's non-DeepSeek routes stay explicitly disabled so a
+ * product Deep Thinking toggle can never enable MiMo or its VisionBridge work.
+ */
+export function resolveProductThinkingMode(
   settings: Record<string, unknown>,
-): 'disabled' | undefined {
-  return settings.alwaysThinkingEnabled === false ? 'disabled' : undefined
+  providerId: string | null | undefined,
+  model: string | undefined,
+): 'enabled' | 'disabled' | undefined {
+  if (!isQfGatewayProviderId(providerId)) return undefined
+  if (!isManagedDeepSeekModel(model)) return 'disabled'
+  return settings.deepThinkingEnabled === false ? 'disabled' : 'enabled'
+}
+
+function isManagedDeepSeekModel(model: string | undefined): boolean {
+  return /^deepseek(?:[-_]|$)/i.test(model?.trim() ?? '')
 }
 
 /**

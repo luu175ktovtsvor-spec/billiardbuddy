@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
+import { isQfGatewayProviderId, stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
 import { prepareProductInstructionsFile } from './productInstructions.js'
 import { ProviderService } from './providerService.js'
 import {
@@ -1042,6 +1042,13 @@ export class ConversationService {
       for (const key of PROVIDER_ENV_KEYS) {
         delete cleanEnv[key]
       }
+    }
+
+    // The product gateway owns the thinking setting for each new conversation.
+    // Do not let a parent shell's global kill switch override the explicit
+    // --thinking mode that the server passes to the bundled CLI.
+    if (isQfGatewayProviderId(options?.providerId)) {
+      delete cleanEnv.CLAUDE_CODE_DISABLE_THINKING
     }
 
     let desktopServerUrl: string | undefined

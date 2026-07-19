@@ -539,6 +539,51 @@ describe('settingsStore Auto-dream persistence', () => {
   })
 })
 
+describe('settingsStore deep thinking persistence', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.clearAllMocks()
+    window.localStorage.clear()
+  })
+
+  it('defaults deep thinking on for settings created before the product preference existed', async () => {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
+        getUser: vi.fn().mockResolvedValue({}),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
+        updateUser: vi.fn(),
+      },
+    }))
+    const { useSettingsStore } = await import('./settingsStore')
+
+    await useSettingsStore.getState().fetchAll()
+
+    expect(useSettingsStore.getState().deepThinkingEnabled).toBe(true)
+  })
+
+  it('hydrates and persists the product-owned deep thinking switch', async () => {
+    const updateUser = vi.fn().mockResolvedValue({})
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
+        getUser: vi.fn().mockResolvedValue({ deepThinkingEnabled: false }),
+        getRuntime: vi.fn().mockResolvedValue({}),
+        getDesktop: vi.fn().mockResolvedValue({}),
+        updateUser,
+      },
+    }))
+    const { useSettingsStore } = await import('./settingsStore')
+
+    await useSettingsStore.getState().fetchAll()
+    expect(useSettingsStore.getState().deepThinkingEnabled).toBe(false)
+
+    await useSettingsStore.getState().setDeepThinkingEnabled(true)
+
+    expect(updateUser).toHaveBeenCalledWith({ deepThinkingEnabled: true })
+    expect(useSettingsStore.getState().deepThinkingEnabled).toBe(true)
+  })
+})
+
 describe('settingsStore desktop terminal shell persistence', () => {
   beforeEach(() => {
     vi.resetModules()

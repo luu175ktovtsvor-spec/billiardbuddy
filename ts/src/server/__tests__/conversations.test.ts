@@ -260,6 +260,16 @@ describe('ConversationService', () => {
     ])
   })
 
+  it('should pass enabled thinking to the CLI runtime args', () => {
+    const svc = new ConversationService()
+    expect((svc as any).getRuntimeArgs({
+      thinking: 'enabled',
+    })).toEqual([
+      '--thinking',
+      'enabled',
+    ])
+  })
+
   it('should send thinking token controls to active CLI sessions', () => {
     const svc = new ConversationService() as any
     const sent: string[] = []

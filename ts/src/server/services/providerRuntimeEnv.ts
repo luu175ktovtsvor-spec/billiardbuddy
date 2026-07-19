@@ -284,6 +284,35 @@ function getCustomProviderModelCapabilities(
   return CUSTOM_PROVIDER_MODEL_CAPABILITIES
 }
 
+function isDeepSeekModel(model: string): boolean {
+  return /^deepseek(?:[-_]|$)/i.test(model.trim())
+}
+
+/**
+ * The product gateway can route several model families. Only its DeepSeek
+ * runtime supports the Core thinking/effort compatibility parameters; keeping
+ * the declaration model-specific prevents a selected MiMo route from receiving
+ * an explicit thinking request.
+ */
+function getQfGatewayCapabilityEnv(
+  provider: SavedProvider,
+  models: SavedProvider['models'],
+): Record<string, string> {
+  if (!isQfGatewayProviderId(provider.id)) return {}
+
+  return {
+    ...(isDeepSeekModel(models.haiku) && {
+      ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
+    }),
+    ...(isDeepSeekModel(models.sonnet) && {
+      ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
+    }),
+    ...(isDeepSeekModel(models.opus) && {
+      ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
+    }),
+  }
+}
+
 export function buildProviderAuthEnv(
   provider: SavedProvider,
   presetDefaultEnv: Record<string, string>,
@@ -355,10 +384,12 @@ export function buildProviderManagedEnv(
           ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: customProviderCapabilities,
         }
       : {}
+  const qfGatewayCapabilityEnv = getQfGatewayCapabilityEnv(provider, runtimeModels)
 
   return {
     ...omitAuthEnv(presetDefaultEnv),
     ...customProviderCapabilityEnv,
+    ...qfGatewayCapabilityEnv,
     ...(provider.autoCompactWindow !== undefined && {
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.autoCompactWindow),
     }),
