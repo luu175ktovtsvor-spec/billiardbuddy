@@ -69,26 +69,25 @@ describe('product task runtime store', () => {
     expect(runtime.entries[2]).toEqual(expect.objectContaining({ kind: 'workspace', phase: 'completed' }))
   })
 
-  it('queues real text commands and never treats an empty composer as a send', () => {
+  it('queues real task text and never treats an empty composer as a send', () => {
     const store = useProductTaskRuntimeStore.getState()
 
     expect(store.sendText('task-2', '   ')).toBe(false)
-    expect(store.sendText('task-2', '/clear')).toBe(false)
     expect(socketMocks.send).not.toHaveBeenCalled()
 
-    expect(store.sendText('task-2', '  整理今天订单  ')).toBe(true)
+    expect(store.sendText('task-2', '  /skill ball-hall-daily-review 整理今天订单  ')).toBe(true)
     expect(socketMocks.send).toHaveBeenCalledWith('task-2', {
       type: 'user_message',
-      content: '整理今天订单',
+      content: '/skill ball-hall-daily-review 整理今天订单',
     })
     expect(useProductTaskRuntimeStore.getState().tasks['task-2']?.entries).toEqual([
-      expect.objectContaining({ type: 'user_text', text: '整理今天订单' }),
+      expect.objectContaining({ type: 'user_text', text: '/skill ball-hall-daily-review 整理今天订单' }),
     ])
   })
 
   it('matches the product text boundary before creating optimistic task state', () => {
     expect(canSendProductTaskText('普通任务内容')).toBe(true)
-    expect(canSendProductTaskText('  /内部命令')).toBe(false)
+    expect(canSendProductTaskText('  /Agent 研究下周活动方案')).toBe(true)
     expect(canSendProductTaskText('x'.repeat(32_001))).toBe(false)
   })
 
