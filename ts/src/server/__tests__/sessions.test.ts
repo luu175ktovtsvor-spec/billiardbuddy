@@ -2398,7 +2398,6 @@ describe('Sessions API', () => {
 
     // Import and start a minimal test server
     const { handleSessionsApi } = await import('../api/sessions.js')
-    const { handleConversationsApi } = await import('../api/conversations.js')
 
     server = Bun.serve({
       port: 0,
@@ -2409,10 +2408,6 @@ describe('Sessions API', () => {
         const segments = url.pathname.split('/').filter(Boolean)
 
         if (segments[0] === 'api' && segments[1] === 'sessions') {
-          // Route chat sub-resource to conversations handler
-          if (segments[3] === 'chat') {
-            return handleConversationsApi(req, url, segments)
-          }
           return handleSessionsApi(req, url, segments)
         }
 
@@ -4556,48 +4551,4 @@ describe('Sessions API', () => {
     expect(remainingMessages[1]?.type).toBe('assistant')
   })
 
-  // --------------------------------------------------------------------------
-  // Conversations API via /api/sessions/:id/chat
-  // --------------------------------------------------------------------------
-
-  it('GET /api/sessions/:id/chat/status should return idle by default', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/chat/status`)
-    expect(res.status).toBe(200)
-
-    const body = (await res.json()) as { state: string }
-    expect(body.state).toBe('idle')
-  })
-
-  it('POST /api/sessions/:id/chat should queue a message', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    await writeSessionFile('-tmp-api-test', sessionId, [
-      makeSnapshotEntry(),
-      makeUserEntry('Previous'),
-    ])
-
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: 'New question' }),
-    })
-    expect(res.status).toBe(202)
-
-    const body = (await res.json()) as { messageId: string; status: string }
-    expect(body.status).toBe('queued')
-    expect(body.messageId).toBeTruthy()
-  })
-
-  it('POST /api/sessions/:id/chat/stop should reset state to idle', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/chat/stop`, {
-      method: 'POST',
-    })
-    expect(res.status).toBe(200)
-
-    // Verify state is idle
-    const statusRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/chat/status`)
-    const status = (await statusRes.json()) as { state: string }
-    expect(status.state).toBe('idle')
-  })
 })

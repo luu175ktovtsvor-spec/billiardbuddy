@@ -340,23 +340,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 9. Conversation Status
-  // =============================================
-
-  it('should get chat status', async () => {
-    // Create a session first
-    const { data: created } = await api('POST', '/api/sessions', { workDir: tmpDir })
-
-    const { status, data } = await api('GET', `/api/sessions/${created.sessionId}/chat/status`)
-    expect(status).toBe(200)
-    expect(data.state).toBe('idle')
-
-    // Cleanup
-    await api('DELETE', `/api/sessions/${created.sessionId}`)
-  })
-
-  // =============================================
-  // 10. CORS
+  // 9. CORS
   // =============================================
 
   // Loopback browser origins (local dev servers) are trusted without a token
