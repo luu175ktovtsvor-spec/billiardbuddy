@@ -7,8 +7,10 @@ import type {
   ProductTaskIndex,
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'
+import type { ProductTaskThread } from '../../../../shared/product/taskEvents'
 
 export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
+export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvents'
 export type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -24,6 +26,18 @@ export type {
   ProductWorktreeState,
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'
+export type {
+  ProductTaskActivityKind,
+  ProductTaskActivityPhase,
+  ProductTaskApprovalKind,
+  ProductTaskEvent,
+  ProductTaskQuestion,
+  ProductTaskQuestionOption,
+  ProductTaskRunState,
+  ProductTaskSafeErrorCode,
+  ProductTaskThread,
+  ProductTaskThreadEntry,
+} from '../../../../shared/product/taskEvents'
 
 export type ProductTaskAction =
   | 'pin'
@@ -48,6 +62,8 @@ export type ProductTaskActionResponse = {
   task: ProductTaskRecord
 }
 
+export type ProductTaskThreadResponse = ProductTaskThread
+
 export type ProductSideTaskListResponse = {
   sideTasks: ProductSideTask[]
 }
@@ -65,6 +81,7 @@ export type ProductTaskApi = {
   archive: (taskId: string) => Promise<ProductTaskActionResponse>
   restore: (taskId: string) => Promise<ProductTaskActionResponse>
   continue: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskActionResponse>
+  getThread: (taskId: string) => Promise<ProductTaskThreadResponse>
 }
 
 export type ProductSideTaskApi = {

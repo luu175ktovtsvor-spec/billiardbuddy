@@ -63,4 +63,16 @@ describe('productTasksApi', () => {
       }),
     )
   })
+
+  it('loads thread history through the task-scoped product endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ taskId: 'task 1', entries: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await productTasksApi.getThread('task 1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:49237/api/product/tasks/task%201/thread',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
 })
