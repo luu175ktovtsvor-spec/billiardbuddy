@@ -20,7 +20,7 @@
 #     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
 #   - Qwen 仍保守使用 16 实际流。MiMo 的真实短请求爬坡达到 64 槽但高尾延迟明显，不能承诺
 #     100 人多窗口无等待。因此固定 GW_MIMO_CONC=64 / GW_MIMO_USER_CONC=1 /
-#     GW_MIMO_TOKEN_CONC=64，只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发
+#     GW_MIMO_INFLIGHT_PER_USER=1 / GW_MIMO_TOKEN_CONC=64，只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发
 #     吸收，不把 100 人多窗口变成多分钟的隐藏等待。MiMo 原生文本和图片桥接共用这一个 64 槽总闸；图片桥接只可占其中至多
 #     GW_VISION_CONC(12) 个槽并另有 GW_VISION_QUEUE_MAX(24) 的三秒短队列，不能据此宣称能承接 500 张图。
 #   - 生图提交默认 GW_IMG_IPM=600，目的是让 100 人 × 5 次的短提交进入 relay 的幂等任务队列；
@@ -34,8 +34,9 @@
 #     GW_VISION_MAX_IMAGES(8) / GW_VISION_MAX_IMAGE_BYTES(8MB) / GW_VISION_MAX_TOTAL_BYTES(24MB,兼作聊天请求体大小闸) /
 #     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(12,视觉在途上限) / GW_VISION_QUEUE_MAX(24,排队硬上限,满则立即 429) /
 #     GW_VISION_QUEUE_MAX_WAIT_MS(3000,短等待) / GW_VISION_PER_CLIENT_CONC(1,默认每安装只占 1 个视觉槽，
-#     让突发时最多 12 个不同安装公平进入) / GW_VISION_PER_REQUEST_CONC(2,单请求最多占几个全局槽,
-#     防多图请求独占) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
+#     让突发时最多 12 个不同安装公平进入) / GW_VISION_MAX_INFLIGHT_PER_CLIENT(1,含排队也只留一席) /
+#     GW_VISION_PER_REQUEST_CONC(2,但会自动夹到前述视觉和 MiMo 的单安装额度；默认实际为 1，避免
+#     同一多图请求把自己的后续图片挤成 429) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
 #     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
 #   - 长聊天/relay 请求在 Bun 层关闭 10 秒空闲超时，但公共请求体仍受
 #     GW_INGRESS_BODY_READ_TIMEOUT_MS(30000) 限制，防慢上传长期占住连接和内存。
