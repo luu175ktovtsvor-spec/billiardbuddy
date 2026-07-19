@@ -55,6 +55,8 @@ Options:
   --health-interval-ms=<n>    Health sampling interval (default: 200)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
   --continue-after-failure    Continue after a phase returns any non-2xx response
+  --use-server-app-token      Gateway-host only: read its app token solely for
+                               http://127.0.0.1:8799 (never an external URL)
 
 The runner uses controlled X-QF-Client-ID values so a 100×5 phase models five
 windows per installation, and reads every SSE body to completion. It reports
@@ -101,6 +103,47 @@ function parsePhases(raw: string | undefined, total: number): number[] {
   return phases
 }
 
+function isGatewayLoopback(url: URL): boolean {
+  return url.protocol === 'http:'
+    && ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)
+    && url.port === '8799'
+    && url.pathname === '/'
+}
+
+/**
+ * This is deliberately narrower than a generic token-file option. It is usable only
+ * on the qfgw host and only after `isGatewayLoopback` rejects every external target,
+ * so a production app token cannot accidentally be sent to an arbitrary URL.
+ */
+async function loadLocalGatewayAppToken(): Promise<string> {
+  const raw = await Bun.file('/opt/qfgw/gw.env').text()
+  const line = raw.split(/\r?\n/).find(value => value.startsWith('GW_APP_TOKENS='))
+  if (!line) throw new Error('qfgw app-token map is unavailable')
+  let encoded = line.slice('GW_APP_TOKENS='.length).trim()
+  if (encoded.startsWith("'") && encoded.endsWith("'")) encoded = encoded.slice(1, -1)
+  else if (encoded.startsWith('"') && encoded.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(encoded)
+      if (typeof decoded !== 'string') throw new Error('not a string')
+      encoded = decoded
+    } catch {
+      throw new Error('qfgw app-token map is unavailable')
+    }
+  }
+  let tokens: unknown
+  try {
+    tokens = JSON.parse(encoded)
+  } catch {
+    throw new Error('qfgw app-token map is unavailable')
+  }
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
+    throw new Error('qfgw app-token map is unavailable')
+  }
+  const token = Object.keys(tokens).find(value => value.length > 0)
+  if (!token) throw new Error('qfgw app-token map is unavailable')
+  return token
+}
+
 async function main(): Promise<void> {
   const args = Bun.argv.slice(2)
   if (args.includes('--help') || args.includes('-h')) usage(0)
@@ -110,18 +153,23 @@ async function main(): Promise<void> {
   }
 
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
-  const token = process.env.QF_LOADTEST_TOKEN?.trim()
-  if (!rawBaseUrl || !token) {
-    throw new Error('QF_LOADTEST_URL and QF_LOADTEST_TOKEN are required with --execute')
-  }
+  if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
   let baseUrl: string
+  let base: URL
   try {
-    const url = new URL(rawBaseUrl)
-    if (!/^https?:$/.test(url.protocol)) throw new Error('unsupported protocol')
-    baseUrl = url.toString().replace(/\/+$/, '')
+    base = new URL(rawBaseUrl)
+    if (!/^https?:$/.test(base.protocol)) throw new Error('unsupported protocol')
+    baseUrl = base.toString().replace(/\/+$/, '')
   } catch {
     throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
+  const useServerAppToken = args.includes('--use-server-app-token')
+  if (useServerAppToken && !isGatewayLoopback(base!)) {
+    throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
+  }
+  const token = process.env.QF_LOADTEST_TOKEN?.trim()
+    ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
+  if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
 
   const users = integer(option(args, '--users'), '--users', 100)
   const windows = integer(option(args, '--windows'), '--windows', 5)
