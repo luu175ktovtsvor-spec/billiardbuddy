@@ -10,8 +10,6 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { access, readFile, mkdir, writeFile } from 'fs/promises'
 import { createHash } from 'crypto'
-import path from 'path'
-import { fileURLToPath } from 'url'
 import type { CuPermissionRequest } from '../../vendor/computer-use-mcp/types.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 import { detectPythonRuntime, isPythonVersionAtLeast } from './computer-use-python.js'
@@ -26,9 +24,6 @@ import REQUIREMENTS_DARWIN from '../../../runtime/requirements.txt' with { type:
 // @ts-ignore — Bun text import
 import REQUIREMENTS_WIN32 from '../../../runtime/requirements-win.txt' with { type: 'text' }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const projectRoot = path.resolve(__dirname, '../../..')
-const devRuntimeRoot = join(projectRoot, 'runtime')
 const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const runtimeStateRoot = join(claudeHome, '.runtime')
 const venvRoot = join(runtimeStateRoot, 'venv')
@@ -107,10 +102,8 @@ export async function runPipInstallWithFallback(
 
 /**
  * Ensure runtime source files (requirements.txt, mac_helper.py) exist in
- * ~/.claude/.runtime/. In dev mode they are copied from the project's
- * runtime/ directory; in bundled mode requirements.txt is written from the
- * embedded constant and mac_helper.py is copied from the project dir (if
- * available) or skipped (it will already have been extracted on a prior run).
+ * ~/.claude/.runtime/. The bundled source is authoritative in both development
+ * and packaged builds, so no runtime project path is required.
  */
 async function ensureRuntimeFiles(): Promise<void> {
   await mkdir(runtimeStateRoot, { recursive: true })
