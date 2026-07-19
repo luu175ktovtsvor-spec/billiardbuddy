@@ -545,6 +545,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             form.set('prompt', prompt)
             form.set('n', String(n))
             if (size) form.set('size', size)
+            if (body.response_format) form.set('response_format', body.response_format)
             if (includeInputFidelity && requestedFidelity) form.set('input_fidelity', requestedFidelity)
             const images = Array.isArray(body.images) ? body.images : []
             let attached = 0
