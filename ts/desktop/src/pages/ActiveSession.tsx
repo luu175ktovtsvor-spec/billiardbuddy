@@ -51,6 +51,7 @@ const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
 export const CHAT_COLUMN_MIN_WIDTH = 320
 export const WORKSPACE_RESIZE_HANDLE_WIDTH = 8
+export const SESSION_CONTENT_MIN_HEIGHT = 260
 const RIGHT_DOCK_MAX_CONTENT_SHARE = 0.62
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
   'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
@@ -60,6 +61,12 @@ type RightDockLayout = {
   minWidth: number
   maxWidth: number
   width: number
+}
+
+type TerminalPanelLayout = {
+  minHeight: number
+  maxHeight: number
+  height: number
 }
 
 /**
@@ -93,6 +100,28 @@ export function getRightDockLayout(
   return { minWidth, maxWidth, width }
 }
 
+/**
+ * The docked terminal keeps its preferred height, but cannot consume the
+ * session's last usable content area on a short window. The preference is not
+ * rewritten, so a larger window restores the size the user chose.
+ */
+export function getTerminalPanelLayout(
+  sessionHeight: number,
+  preferredHeight: number,
+): TerminalPanelLayout | null {
+  if (!Number.isFinite(sessionHeight) || sessionHeight <= 0) return null
+
+  const availableAfterContent = Math.max(0, Math.floor(sessionHeight) - SESSION_CONTENT_MIN_HEIGHT)
+  const maxHeight = Math.max(0, Math.min(TERMINAL_PANEL_MAX_HEIGHT, availableAfterContent))
+  const minHeight = Math.min(TERMINAL_PANEL_MIN_HEIGHT, maxHeight)
+  const requestedHeight = Number.isFinite(preferredHeight)
+    ? Math.round(preferredHeight)
+    : TERMINAL_PANEL_DEFAULT_HEIGHT
+  const height = Math.min(maxHeight, Math.max(minHeight, requestedHeight))
+
+  return { minHeight, maxHeight, height }
+}
+
 function useElementWidth<T extends HTMLElement>(ref: RefObject<T>) {
   const [width, setWidth] = useState(0)
 
@@ -120,6 +149,35 @@ function useElementWidth<T extends HTMLElement>(ref: RefObject<T>) {
   }, [ref])
 
   return width
+}
+
+function useElementHeight<T extends HTMLElement>(ref: RefObject<T>) {
+  const [height, setHeight] = useState(0)
+
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const updateHeight = () => {
+      const nextHeight = Math.max(0, Math.floor(element.getBoundingClientRect().height))
+      setHeight((currentHeight) => currentHeight === nextHeight ? currentHeight : nextHeight)
+    }
+
+    updateHeight()
+
+    const observer = typeof ResizeObserver === 'undefined'
+      ? undefined
+      : new ResizeObserver(updateHeight)
+    observer?.observe(element)
+    window.addEventListener('resize', updateHeight)
+
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateHeight)
+    }
+  }, [ref])
+
+  return height
 }
 
 const MAIN_EMPTY_SUGGESTIONS = {
@@ -297,7 +355,24 @@ function WorkspaceResizeHandle({
   )
 }
 
-function TerminalResizeHandle() {
+function getRenderedTerminalPanelHeight(panelRef: RefObject<HTMLElement>, fallbackHeight: number) {
+  const renderedHeight = panelRef.current?.getBoundingClientRect().height ?? 0
+  return Number.isFinite(renderedHeight) && renderedHeight > 0
+    ? renderedHeight
+    : fallbackHeight
+}
+
+function TerminalResizeHandle({
+  panelRef,
+  visibleHeight,
+  minHeight,
+  maxHeight,
+}: {
+  panelRef: RefObject<HTMLElement>
+  visibleHeight: number
+  minHeight: number
+  maxHeight: number
+}) {
   const t = useTranslation()
   const height = useTerminalPanelStore((state) => state.height)
   const setHeight = useTerminalPanelStore((state) => state.setHeight)
@@ -341,24 +416,28 @@ function TerminalResizeHandle() {
       role="separator"
       aria-label={t('terminal.resizePanel')}
       aria-orientation="horizontal"
-      aria-valuemin={TERMINAL_PANEL_MIN_HEIGHT}
-      aria-valuemax={TERMINAL_PANEL_MAX_HEIGHT}
-      aria-valuenow={height}
+      aria-valuemin={minHeight}
+      aria-valuemax={maxHeight}
+      aria-valuenow={visibleHeight}
       tabIndex={0}
       data-testid="terminal-resize-handle"
       onPointerDown={(event) => {
         if (event.button !== 0) return
         event.preventDefault()
-        setDragState({ startY: event.clientY, startHeight: height })
+        setDragState({
+          startY: event.clientY,
+          startHeight: getRenderedTerminalPanelHeight(panelRef, height),
+        })
       }}
       onKeyDown={(event) => {
+        const renderedHeight = getRenderedTerminalPanelHeight(panelRef, height)
         if (event.key === 'ArrowUp') {
           event.preventDefault()
-          setHeight(height + TERMINAL_RESIZE_STEP)
+          setHeight(renderedHeight + TERMINAL_RESIZE_STEP)
         }
         if (event.key === 'ArrowDown') {
           event.preventDefault()
-          setHeight(height - TERMINAL_RESIZE_STEP)
+          setHeight(renderedHeight - TERMINAL_RESIZE_STEP)
         }
         if (event.key === 'Home') {
           event.preventDefault()
@@ -379,8 +458,11 @@ function TerminalResizeHandle() {
 
 export function ActiveSession() {
   const locale = useSettingsStore((state) => state.locale)
+  const activeSessionRef = useRef<HTMLDivElement>(null)
   const contentRowRef = useRef<HTMLDivElement>(null)
   const workbenchPanelRef = useRef<HTMLElement>(null)
+  const terminalPanelRef = useRef<HTMLDivElement>(null)
+  const activeSessionHeight = useElementHeight(activeSessionRef)
   const contentRowWidth = useElementWidth(contentRowRef)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const [dismissedBackgroundTaskKeysBySession, setDismissedBackgroundTaskKeysBySession] = useState<Record<string, Set<string>>>({})
@@ -429,6 +511,7 @@ export function ActiveSession() {
       : undefined,
   )
   const terminalPanelHeight = useTerminalPanelStore((state) => state.height)
+  const terminalPanelLayout = getTerminalPanelLayout(activeSessionHeight, terminalPanelHeight)
 
   useEffect(() => {
     if (activeTabId && !isMemberSession) {
@@ -511,7 +594,7 @@ export function ActiveSession() {
   if (!activeTabId) return null
 
   return (
-    <div className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
+    <div ref={activeSessionRef} data-testid="active-session-root" className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
       <div ref={contentRowRef} data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
         <div
           data-testid="active-session-chat-column"
@@ -737,14 +820,34 @@ export function ActiveSession() {
 
       {terminalPanelRuntimeId && activeTabId ? (
         <div
+          ref={terminalPanelRef}
           data-testid="session-terminal-panel"
           className={[
             'flex min-h-0 shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
             showTerminalPanel ? '' : 'hidden',
           ].join(' ')}
-          style={{ height: showTerminalPanel ? terminalPanelHeight : 0 }}
+          style={showTerminalPanel
+            ? terminalPanelLayout
+              ? {
+                  height: terminalPanelLayout.height,
+                  minHeight: terminalPanelLayout.minHeight,
+                  maxHeight: terminalPanelLayout.maxHeight,
+                }
+              : {
+                  height: terminalPanelHeight,
+                  minHeight: `min(${TERMINAL_PANEL_MIN_HEIGHT}px, max(0px, calc(100% - ${SESSION_CONTENT_MIN_HEIGHT}px)))`,
+                  maxHeight: `max(0px, calc(100% - ${SESSION_CONTENT_MIN_HEIGHT}px))`,
+                }
+            : { height: 0 }}
         >
-          {showTerminalPanel && <TerminalResizeHandle />}
+          {showTerminalPanel && (
+            <TerminalResizeHandle
+              panelRef={terminalPanelRef}
+              visibleHeight={terminalPanelLayout?.height ?? terminalPanelHeight}
+              minHeight={terminalPanelLayout?.minHeight ?? TERMINAL_PANEL_MIN_HEIGHT}
+              maxHeight={terminalPanelLayout?.maxHeight ?? TERMINAL_PANEL_MAX_HEIGHT}
+            />
+          )}
           <TerminalSettings
             active={showTerminalPanel}
             docked

@@ -139,6 +139,42 @@ describe('TerminalSettings', () => {
     expect(terminalMocks.fitInstance.fit).toHaveBeenCalled()
   })
 
+  it('reports terminal startup progress until the native session is ready', async () => {
+    terminalMocks.available = true
+    let resolveSpawn: ((value: { session_id: number; shell: string; cwd: string }) => void) | undefined
+    terminalMocks.spawn.mockImplementation(() => new Promise((resolve) => {
+      resolveSpawn = resolve
+    }))
+
+    render(<TerminalSettings docked cwd="/tmp/current-project" />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Starting')).toBeInTheDocument()
+      expect(terminalMocks.spawn).toHaveBeenCalledWith({
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp/current-project',
+      })
+    })
+
+    act(() => {
+      resolveSpawn?.({ session_id: 7, shell: '/bin/zsh', cwd: '/tmp/current-project' })
+    })
+
+    expect(await screen.findByText('Running')).toBeInTheDocument()
+  })
+
+  it('surfaces a native terminal startup error without hiding the docked terminal controls', async () => {
+    terminalMocks.available = true
+    terminalMocks.spawn.mockRejectedValue(new Error('terminal startup failed'))
+
+    render(<TerminalSettings docked cwd="/tmp/current-project" />)
+
+    expect(await screen.findByText('terminal startup failed')).toBeInTheDocument()
+    expect(screen.getByText('Error')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-terminal-toolbar')).toBeInTheDocument()
+  })
+
   it('uses one compact toolbar instead of a nested terminal title bar', async () => {
     terminalMocks.available = true
 
