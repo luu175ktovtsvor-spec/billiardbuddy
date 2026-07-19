@@ -34,7 +34,6 @@ function makePort(
     getPendingPermission: () => undefined,
     respondToPermission: mock(() => {}),
     resolveComputerUseApproval: () => false,
-    hasDirectCoreClient: () => false,
     isDesktopClearCommand: () => false,
     createSafeError: (code, retryable) => ({
       type: 'error',
@@ -103,7 +102,7 @@ describe('ProductTaskAgentCoreAdapter', () => {
     expect(JSON.stringify(events(reconnected))).not.toContain('private-core-session')
   })
 
-  it('rejects an unrenderable question once when no direct Core client can answer it', () => {
+  it('rejects an unrenderable question once at the product boundary', () => {
     const respondToPermission = mock(() => {})
     const adapter = new ProductTaskAgentCoreAdapter(
       makePort({ respondToPermission }),
@@ -138,26 +137,4 @@ describe('ProductTaskAgentCoreAdapter', () => {
     }
   })
 
-  it('leaves an unrenderable question to an attached direct Core client', () => {
-    const respondToPermission = mock(() => {})
-    const adapter = new ProductTaskAgentCoreAdapter(
-      makePort({
-        respondToPermission,
-        hasDirectCoreClient: () => true,
-      }),
-      new ProductTaskRunProjection(),
-    )
-    const socket = makeSocket()
-
-    expect(adapter.attach(socket)).toBe(true)
-    adapter.sendCoreMessage(socket, {
-      type: 'permission_request',
-      requestId: 'ask-for-direct-client',
-      toolName: 'AskUserQuestion',
-      input: { questions: [{ question: '  private question  ' }] },
-    })
-
-    expect(respondToPermission).not.toHaveBeenCalled()
-    expect(events(socket)).toEqual([])
-  })
 })
