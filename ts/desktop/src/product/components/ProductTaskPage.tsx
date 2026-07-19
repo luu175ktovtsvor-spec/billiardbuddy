@@ -736,6 +736,30 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     setIsTerminalOpen(true)
   }
 
+  const toggleReviewDock = () => {
+    if (isReviewOpen && isReviewActive) {
+      closeReviewDock()
+      return
+    }
+    openReviewDock()
+  }
+
+  const toggleMediaDock = () => {
+    if (isMediaOpen && isMediaActive) {
+      closeMediaDock()
+      return
+    }
+    openMediaDock()
+  }
+
+  const toggleTerminalDock = () => {
+    if (isTerminalOpen) {
+      closeTerminalDock()
+      return
+    }
+    openTerminalDock()
+  }
+
   const closeBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
     closeBrowserPreviewPanel(task.id, mode)
     const remainsOpen = mode === 'browser' ? isPreviewOpen : isBrowserOpen
@@ -752,6 +776,16 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
       openBrowserPreviewPanel(task.id, mode)
     }
     setActiveRightDockPanel('browser-preview')
+  }
+
+  const toggleBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
+    const isOpen = mode === 'browser' ? isBrowserOpen : isPreviewOpen
+    const isActive = isBrowserPreviewActive && browserPreviewPanel?.activeMode === mode
+    if (isOpen && isActive) {
+      closeBrowserPreviewMode(mode)
+      return
+    }
+    openBrowserPreviewMode(mode)
   }
 
   const continueFromEntry = async (
@@ -817,7 +851,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         ) : null}
         <button
           type="button"
-          onClick={openReviewDock}
+          onClick={toggleReviewDock}
           aria-pressed={isReviewActive}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -825,7 +859,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <button
           type="button"
-          onClick={openMediaDock}
+          onClick={toggleMediaDock}
           aria-pressed={isMediaActive}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -833,7 +867,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <button
           type="button"
-          onClick={() => openBrowserPreviewMode('browser')}
+          onClick={() => toggleBrowserPreviewMode('browser')}
           aria-pressed={isBrowserPreviewActive && isBrowserOpen && browserPreviewPanel?.activeMode === 'browser'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -841,7 +875,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <button
           type="button"
-          onClick={() => openBrowserPreviewMode('preview')}
+          onClick={() => toggleBrowserPreviewMode('preview')}
           aria-pressed={isBrowserPreviewActive && isPreviewOpen && browserPreviewPanel?.activeMode === 'preview'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -849,7 +883,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <button
           type="button"
-          onClick={openTerminalDock}
+          onClick={toggleTerminalDock}
           aria-pressed={isTerminalOpen}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >

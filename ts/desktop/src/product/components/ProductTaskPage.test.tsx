@@ -665,6 +665,50 @@ describe('ProductTaskPage', () => {
     expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
   })
 
+  it('toggles each task panel from its matching header control without affecting other panel axes', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    const review = screen.getByRole('button', { name: '审阅' })
+    const media = screen.getByRole('button', { name: '媒体' })
+    const browser = screen.getByRole('button', { name: '浏览器' })
+    const terminal = screen.getByRole('button', { name: '终端' })
+
+    fireEvent.click(review)
+    fireEvent.click(terminal)
+    expect(review.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+
+    fireEvent.click(review)
+    expect(review.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
+    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+
+    fireEvent.click(media)
+    expect(media.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(media)
+    expect(media.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
+    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+
+    fireEvent.click(browser)
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+      browserOpen: true,
+      previewOpen: false,
+      activeMode: 'browser',
+    })
+    fireEvent.click(browser)
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+      browserOpen: false,
+      previewOpen: false,
+      activeMode: null,
+    })
+    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
+    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+
+    fireEvent.click(terminal)
+    expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
+  })
+
   it('opens Browser and Preview only through the product task scoped panel store', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
