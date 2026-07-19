@@ -1,5 +1,16 @@
 import { registerBundledSkill } from '../bundledSkills.js'
 
+// Product command discovery runs in the desktop server process, while the
+// actual MediaWorkbench tool runs later in a CLI child. The child-only
+// BB_DESKTOP_SERVER_URL therefore cannot determine whether this product
+// surface is available. `startServer` sets this process-local fact from the
+// Electron-owned media UI capability and never forwards that capability.
+let mediaWorkbenchDiscoveryEnabled = false
+
+export function configureMediaWorkbenchDiscovery(enabled: boolean): void {
+  mediaWorkbenchDiscoveryEnabled = enabled === true
+}
+
 export const MEDIA_WORKBENCH_SKILL_METADATA = [
   {
     name: 'image-workbench',
@@ -46,7 +57,7 @@ export function registerMediaWorkbenchesSkill(): void {
     desktopDiscovery: {
       displayName: MEDIA_WORKBENCH_SKILL_METADATA[0].displayName,
       content: IMAGE_PROMPT,
-      isEnabled: () => true,
+      isEnabled: () => mediaWorkbenchDiscoveryEnabled,
     },
     async getPromptForCommand() {
       return [{ type: 'text', text: IMAGE_PROMPT }]
@@ -62,7 +73,7 @@ export function registerMediaWorkbenchesSkill(): void {
     desktopDiscovery: {
       displayName: MEDIA_WORKBENCH_SKILL_METADATA[1].displayName,
       content: VIDEO_PROMPT,
-      isEnabled: () => true,
+      isEnabled: () => mediaWorkbenchDiscoveryEnabled,
     },
     async getPromptForCommand() {
       return [{ type: 'text', text: VIDEO_PROMPT }]

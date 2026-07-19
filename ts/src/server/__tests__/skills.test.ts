@@ -8,6 +8,7 @@ import {
   getBundledSkills,
 } from '../../skills/bundledSkills.js'
 import { clearSkillCaches } from '../../skills/loadSkillsDir.js'
+import { configureMediaWorkbenchDiscovery } from '../../skills/bundled/mediaWorkbenches.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
@@ -87,6 +88,7 @@ describe('product task Skill command discovery', () => {
     clearInstalledPluginsCache()
     clearPluginCache('skills-api-test-setup')
     resetSettingsCache()
+    configureMediaWorkbenchDiscovery(false)
   })
 
   afterEach(async () => {
@@ -94,6 +96,7 @@ describe('product task Skill command discovery', () => {
     clearInstalledPluginsCache()
     clearPluginCache('skills-api-test-teardown')
     resetSettingsCache()
+    configureMediaWorkbenchDiscovery(false)
     if (originalHome === undefined) delete process.env.HOME
     else process.env.HOME = originalHome
     if (originalUserProfile === undefined) delete process.env.USERPROFILE
@@ -146,6 +149,7 @@ describe('product task Skill command discovery', () => {
       ['---', `description: ${projectDescription}`, '---', '', projectBody].join('\n'),
     )
 
+    configureMediaWorkbenchDiscovery(true)
     const { req, url } = makeRequest(
       `/api/product/task-commands/skills?cwd=${encodeURIComponent(cwd)}`,
     )
@@ -169,6 +173,16 @@ describe('product task Skill command discovery', () => {
       displayName: '做海报和图片',
       description: '把活动、招聘、朋友圈等自然语言需求整理成可确认的图片草稿。',
     })
+  })
+
+  it('does not advertise desktop media Skills to a bare local server', async () => {
+    const { req, url } = makeRequest('/api/product/task-commands/skills')
+    const response = await handleApiRequest(req, url)
+    const body = await response.json() as SlashCommandsResponse
+
+    expect(response.status).toBe(200)
+    expect(body.commands.map((command) => command.runtimeName)).not.toContain('image-workbench')
+    expect(body.commands.map((command) => command.runtimeName)).not.toContain('video-workbench')
   })
 
   it('writes billiards references only after invoking a discovered command', async () => {
