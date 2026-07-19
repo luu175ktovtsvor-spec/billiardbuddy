@@ -92,6 +92,41 @@ describe('WebSocket handler session isolation', () => {
     expect(cancelComputerUse).not.toHaveBeenCalled()
   })
 
+  it('translates one Core stream once and fans the resulting events to every client', () => {
+    const sessionId = `fanout-${crypto.randomUUID()}`
+    const first = makeClientSocket(sessionId)
+    const second = makeClientSocket(sessionId)
+    const callbacks: Array<(cliMsg: any) => void> = []
+
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    const onOutput = spyOn(conversationService, 'onOutput').mockImplementation((_id, callback) => {
+      callbacks.push(callback)
+    })
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+    handleWebSocket.open(first)
+    handleWebSocket.open(second)
+
+    expect(onOutput).toHaveBeenCalledTimes(1)
+    expect(callbacks).toHaveLength(1)
+
+    callbacks[0]!({
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 1, output_tokens: 2 },
+    })
+
+    const firstEvents = first.sent.map((payload) => JSON.parse(payload))
+    const secondEvents = second.sent.map((payload) => JSON.parse(payload))
+    const completion = {
+      type: 'message_complete',
+      usage: { input_tokens: 1, output_tokens: 2 },
+    }
+    expect(firstEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
+    expect(secondEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
+  })
+
   it('closes and removes an active client socket when a session is deleted', () => {
     const sessionId = `delete-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
