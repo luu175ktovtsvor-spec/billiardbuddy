@@ -63,7 +63,10 @@ const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
 
 export function canSendProductTaskText(value: string): boolean {
   const content = value.trim()
-  return Boolean(content) && content.length <= MAX_PRODUCT_TASK_TEXT_LENGTH && !content.startsWith('/')
+  // Slash commands are still task text at this layer. The product composer
+  // discovers and presents them, while the Agent Core remains the authority
+  // for their semantics (including Skills and Agents).
+  return Boolean(content) && content.length <= MAX_PRODUCT_TASK_TEXT_LENGTH
 }
 
 function createRuntime(): ProductTaskRuntime {
