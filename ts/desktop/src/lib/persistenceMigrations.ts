@@ -6,7 +6,7 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 6
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 7
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
 
 type DesktopMigrationReport = {
@@ -27,7 +27,6 @@ const SETTINGS_TABS = [
   'skills',
   'plugins',
   'computerUse',
-  'diagnostics',
   'about',
 ]
 
