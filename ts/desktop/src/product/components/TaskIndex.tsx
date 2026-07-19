@@ -27,6 +27,7 @@ import type { AttachmentRef } from '../../types/chat'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
+import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import {
   PRODUCT_TASK_RUNTIME_LABEL,
   type ProductTaskRuntimeState,
@@ -94,8 +95,8 @@ function taskMarkdown(task: ProductTaskRecord, runtimeState: ProductTaskRuntimeS
   ].join('\n')
 }
 
-function projectTasks(index: ProductTaskIndexResponse, projectId: string): ProductTaskRecord[] {
-  return index.tasks.filter((task) => task.projectId === projectId)
+function projectTasks(tasks: readonly ProductTaskRecord[], projectId: string): ProductTaskRecord[] {
+  return tasks.filter((task) => task.projectId === projectId)
 }
 
 function slashQuery(value: string): string | null {
@@ -135,13 +136,23 @@ export function TaskIndex({
 }: TaskIndexProps) {
   const [showArchived, setShowArchived] = useState(false)
 
+  const orderedTasks = useMemo(() => orderProductTasks(index.tasks), [index.tasks])
+  const visibleTaskPool = useMemo(
+    () => orderedTasks.filter((task) => showArchived || task.lifecycle !== 'archived'),
+    [orderedTasks, showArchived],
+  )
+  const orderedProjects = useMemo(
+    () => orderProductProjects(index.projects, visibleTaskPool),
+    [index.projects, visibleTaskPool],
+  )
+
   const visibleProjects = useMemo(
-    () => index.projects.filter((project) => projectTasks(index, project.id).some((task) => showArchived || task.lifecycle !== 'archived')),
-    [index, showArchived],
+    () => orderedProjects.filter((project) => projectTasks(visibleTaskPool, project.id).length > 0),
+    [orderedProjects, visibleTaskPool],
   )
   const looseTasks = useMemo(
-    () => index.tasks.filter((task) => !index.projects.some((project) => project.id === task.projectId)),
-    [index],
+    () => visibleTaskPool.filter((task) => !index.projects.some((project) => project.id === task.projectId)),
+    [index.projects, visibleTaskPool],
   )
 
   return (
@@ -200,7 +211,7 @@ export function TaskIndex({
             <ProjectTaskGroup
               key={project.id}
               project={project}
-              tasks={projectTasks(index, project.id)}
+              tasks={projectTasks(orderedTasks, project.id)}
               showArchived={showArchived}
               mutations={mutations}
               onRenameTask={onRenameTask}

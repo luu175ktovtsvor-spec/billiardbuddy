@@ -6,6 +6,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import type { ProductProject, ProductTaskRecord } from '../domain/types'
 import { useProductTaskStore } from '../stores/productTaskStore'
+import { orderProductTasks } from '../taskOrdering'
 
 const RECENT_LIMIT = 8
 const SEARCH_LIMIT = 50
@@ -18,10 +19,6 @@ type TaskSearchModalProps = {
 type TaskSearchResult = {
   task: ProductTaskRecord
   project: ProductProject | undefined
-}
-
-function updatedAtDescending(left: ProductTaskRecord, right: ProductTaskRecord): number {
-  return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
 }
 
 function matchesTask(result: TaskSearchResult, query: string): boolean {
@@ -63,8 +60,7 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
   const results = useMemo<TaskSearchResult[]>(() => {
     const projectsById = new Map(index.projects.map((project) => [project.id, project]))
     const limit = query.trim() ? SEARCH_LIMIT : RECENT_LIMIT
-    return [...index.tasks]
-      .sort(updatedAtDescending)
+    return orderProductTasks(index.tasks)
       .map((task) => ({ task, project: projectsById.get(task.projectId) }))
       .filter((result) => matchesTask(result, query))
       .slice(0, limit)

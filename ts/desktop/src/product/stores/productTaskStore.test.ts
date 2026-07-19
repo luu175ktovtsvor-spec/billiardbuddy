@@ -99,6 +99,68 @@ describe('productTaskStore', () => {
     expect(useProductTaskStore.getState().mutations['task-1:archive']).toBe(false)
   })
 
+  it('reorders pinned tasks and their project group immediately after the pin mutation', async () => {
+    const pinnedTask = makeTask({
+      id: 'task-pinned',
+      projectId: 'project-pinned',
+      title: '置顶任务',
+      workDir: '/workspace/pinned',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+      actions: ['pin'],
+    })
+    const newerTask = makeTask({
+      id: 'task-newer',
+      projectId: 'project-newer',
+      title: '较新任务',
+      workDir: '/workspace/newer',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    })
+    useProductTaskStore.setState({
+      index: {
+        schemaVersion: 1,
+        projects: [
+          {
+            id: 'project-newer',
+            title: '较新项目',
+            workDir: '/workspace/newer',
+            taskCount: 1,
+            archivedTaskCount: 0,
+            updatedAt: newerTask.updatedAt,
+          },
+          {
+            id: 'project-pinned',
+            title: '置顶项目',
+            workDir: '/workspace/pinned',
+            taskCount: 1,
+            archivedTaskCount: 0,
+            updatedAt: pinnedTask.updatedAt,
+          },
+        ],
+        tasks: [newerTask, pinnedTask],
+        total: 2,
+        capabilities: { createTask: true },
+      },
+    })
+    vi.mocked(productTasksApi.pin).mockResolvedValue({
+      task: {
+        ...pinnedTask,
+        pinnedAt: '2026-07-18T00:01:00.000Z',
+        actions: ['unpin'],
+      },
+    })
+
+    await useProductTaskStore.getState().pinTask(pinnedTask.id)
+
+    expect(useProductTaskStore.getState().index.tasks.map((task) => task.id)).toEqual([
+      'task-pinned',
+      'task-newer',
+    ])
+    expect(useProductTaskStore.getState().index.projects.map((project) => project.id)).toEqual([
+      'project-pinned',
+      'project-newer',
+    ])
+  })
+
   it('adds a returned continuation as a separate product task', async () => {
     const original = makeTask()
     const continuation = makeTask({

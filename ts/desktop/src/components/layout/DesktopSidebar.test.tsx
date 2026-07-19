@@ -107,6 +107,68 @@ describe('DesktopSidebar', () => {
     expect(connectToSession).toHaveBeenCalledWith('task-1')
   })
 
+  it('keeps an active pinned project and task first in the sidebar', () => {
+    const index: ProductTaskIndexResponse = {
+      schemaVersion: 1,
+      projects: [
+        {
+          id: 'project-newer',
+          title: '较新项目',
+          workDir: '/workspace/newer',
+          taskCount: 1,
+          archivedTaskCount: 0,
+          updatedAt: '2026-07-19T00:00:00.000Z',
+        },
+        {
+          id: 'project-pinned',
+          title: '置顶项目',
+          workDir: '/workspace/pinned',
+          taskCount: 1,
+          archivedTaskCount: 0,
+          updatedAt: '2026-07-18T00:00:00.000Z',
+        },
+      ],
+      tasks: [
+        {
+          id: 'task-newer',
+          projectId: 'project-newer',
+          workDir: '/workspace/newer',
+          title: '较新任务',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['archive'],
+        },
+        {
+          id: 'task-pinned',
+          projectId: 'project-pinned',
+          workDir: '/workspace/pinned',
+          title: '置顶任务',
+          lifecycle: 'active',
+          kind: 'main',
+          pinnedAt: '2026-07-18T00:01:00.000Z',
+          createdAt: '2026-07-18T00:00:00.000Z',
+          updatedAt: '2026-07-18T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['unpin', 'archive'],
+        },
+      ],
+      total: 2,
+      capabilities: { createTask: true },
+    }
+    useProductTaskStore.setState({ index })
+
+    render(<DesktopSidebar />)
+
+    const pinnedTask = screen.getByRole('button', { name: /置顶任务/ })
+    const newerTask = screen.getByRole('button', { name: /较新任务/ })
+    expect(pinnedTask.compareDocumentPosition(newerTask) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(screen.getByTitle('已置顶')).toBeInTheDocument()
+  })
+
   it('routes a new desktop task through its dedicated product page rather than creating a raw session', () => {
     render(<DesktopSidebar />)
 
