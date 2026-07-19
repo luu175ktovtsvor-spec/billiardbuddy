@@ -132,6 +132,7 @@ describe('DesktopSidebar', () => {
       runState: 'working',
       entries: [],
       activeActivity: null,
+      runActivities: [],
       pendingApproval: null,
       approvalResponsePending: false,
       error: null,

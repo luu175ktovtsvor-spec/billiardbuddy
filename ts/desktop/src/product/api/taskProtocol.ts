@@ -1,6 +1,7 @@
 import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
+  ProductTaskActivityProgress,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
@@ -29,6 +30,8 @@ const MAX_ATTACHMENT_COUNT = 16
 const MAX_ATTACHMENT_NAME_LENGTH = 160
 const MAX_COMPUTER_USE_APP_COUNT = 24
 const MAX_COMPUTER_USE_APP_NAME_LENGTH = 120
+const MAX_ACTIVITY_SUMMARY_LENGTH = 80
+const MAX_ACTIVITY_PROGRESS_TOTAL = 10_000
 
 const PRODUCT_TASK_RUN_STATES = new Set<ProductTaskRunState>([
   'idle',
@@ -49,6 +52,35 @@ const PRODUCT_TASK_ACTIVITY_PHASES = new Set<ProductTaskActivityPhase>([
   'running',
   'completed',
   'failed',
+])
+// Activity summaries are product-authored labels.  Do not allow arbitrary
+// runtime text through this field: even a generic-looking string could carry
+// a Core tool argument, file path, or model message.
+const PRODUCT_TASK_ACTIVITY_SUMMARIES = new Set([
+  '正在整理任务计划',
+  '已整理任务计划',
+  '任务计划整理未完成',
+  '正在整理工作内容',
+  '已整理工作内容',
+  '工作内容整理未完成',
+  '正在处理任务操作',
+  '已完成任务操作',
+  '任务操作未完成',
+  '正在查询资料',
+  '已完成资料查询',
+  '资料查询未完成',
+  '正在查看网页',
+  '已完成网页查看',
+  '网页查看未完成',
+  '正在处理素材',
+  '已完成素材处理',
+  '素材处理未完成',
+  '正在协同处理事项',
+  '已完成协同事项',
+  '协同事项未完成',
+  '正在处理任务',
+  '已完成任务处理',
+  '任务处理未完成',
 ])
 const PRODUCT_TASK_APPROVAL_KINDS = new Set<ProductTaskApprovalKind>([
   'action',
@@ -104,6 +136,33 @@ function isNonEmptyString(value: unknown, maxLength: number): value is string {
 
 function isVisibleString(value: unknown, maxLength: number): value is string {
   return isNonEmptyString(value, maxLength) && value.trim().length > 0
+}
+
+function isProductActivityId(value: unknown): value is string {
+  return typeof value === 'string' && /^activity_[a-f0-9]{32}$/.test(value)
+}
+
+function isProductActivitySummary(value: unknown): value is string {
+  return isVisibleString(value, MAX_ACTIVITY_SUMMARY_LENGTH) && PRODUCT_TASK_ACTIVITY_SUMMARIES.has(value)
+}
+
+function parseActivityProgress(value: unknown): ProductTaskActivityProgress | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['completed', 'total'])) return null
+  const completed = value.completed
+  const total = value.total
+  if (
+    typeof completed !== 'number' ||
+    typeof total !== 'number' ||
+    !Number.isSafeInteger(completed) ||
+    !Number.isSafeInteger(total) ||
+    total < 1 ||
+    total > MAX_ACTIVITY_PROGRESS_TOTAL ||
+    completed < 0 ||
+    completed > total
+  ) {
+    return null
+  }
+  return { completed, total }
 }
 
 function parseQuestionOption(value: unknown): ProductTaskQuestionOption | null {
@@ -301,12 +360,39 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         ? { type: 'status', state: value.state }
         : null
 
-    case 'activity':
-      return hasOnlyKeys(value, ['type', 'kind', 'phase']) &&
-        isEnumValue(value.kind, PRODUCT_TASK_ACTIVITY_KINDS) &&
-        isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES)
-        ? { type: 'activity', kind: value.kind, phase: value.phase }
-        : null
+    case 'activity': {
+      if (
+        !hasOnlyKeys(value, ['type', 'kind', 'phase', 'id', 'parentId', 'summary', 'progress']) ||
+        !isEnumValue(value.kind, PRODUCT_TASK_ACTIVITY_KINDS) ||
+        !isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES)
+      ) {
+        return null
+      }
+
+      // Keep the legacy flat activity envelope readable while migration is in
+      // flight.  The richer activity tree is all-or-nothing, so a malformed
+      // ID cannot smuggle arbitrary auxiliary fields into the renderer.
+      if (!('id' in value)) {
+        return !('parentId' in value) && !('summary' in value) && !('progress' in value)
+          ? { type: 'activity', kind: value.kind, phase: value.phase }
+          : null
+      }
+      if (!isProductActivityId(value.id) || !isProductActivitySummary(value.summary)) return null
+      if ('parentId' in value && (!isProductActivityId(value.parentId) || value.parentId === value.id)) {
+        return null
+      }
+      const progress = 'progress' in value ? parseActivityProgress(value.progress) : undefined
+      if ('progress' in value && !progress) return null
+      return {
+        type: 'activity',
+        id: value.id,
+        ...(typeof value.parentId === 'string' ? { parentId: value.parentId } : {}),
+        kind: value.kind,
+        phase: value.phase,
+        summary: value.summary,
+        ...(progress ? { progress } : {}),
+      }
+    }
 
     case 'approval_required': {
       if (

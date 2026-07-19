@@ -21,7 +21,10 @@ import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.j
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectMemorySavedData } from '../api/productMessageProjection.js'
-import { projectServerMessageForProductTask } from '../product/taskEventProjection.js'
+import {
+  ProductTaskRunActivityProjector,
+  projectServerMessageForProductTask,
+} from '../product/taskEventProjection.js'
 import { projectProductTaskUserContent } from '../product/taskAttachmentProjection.js'
 import {
   classifyProductTaskCommand,
@@ -176,6 +179,13 @@ export type WebSocketData = {
 // Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
+// One projector per product websocket keeps the short-lived tool-kind cache
+// isolated between observers. Stable IDs themselves are deterministic from
+// the product task key, so reconnecting does not require retaining Core IDs.
+const productRunActivityProjectors = new WeakMap<
+  ServerWebSocket<WebSocketData>,
+  ProductTaskRunActivityProjector
+>()
 // A malformed AskUserQuestion must be rejected once at the server boundary.
 // Multiple product renderers can observe the same pending request.
 const rejectedProductAskRequests = new Set<string>()
@@ -205,6 +215,25 @@ export const handleWebSocket = {
       conversationService.attachSdkConnection(sessionId, ws)
       console.log(`[WS] SDK connected for session: ${sessionId}`)
       return
+    }
+
+    if (channel === 'product') {
+      if (!ws.data.productTaskId) {
+        ws.close(1008, 'Invalid product task')
+        return
+      }
+      try {
+        productRunActivityProjectors.set(
+          ws,
+          new ProductTaskRunActivityProjector(ws.data.productTaskId),
+        )
+      } catch {
+        // This identifier comes from the task-scoped upgrade route. If a
+        // malformed in-process caller bypasses that route, fail closed rather
+        // than ever falling back to a Core-session identifier.
+        ws.close(1008, 'Invalid product task')
+        return
+      }
     }
 
     console.log(`[WS] Client connected for session: ${sessionId}`)
@@ -348,6 +377,8 @@ export const handleWebSocket = {
       conversationService.detachSdkConnection(sessionId)
       return
     }
+
+    productRunActivityProjectors.delete(ws)
 
     console.log(`[WS] Client disconnected from session: ${sessionId} (${code}: ${reason})`)
     if (!removeActiveClient(sessionId, ws)) {
@@ -2248,9 +2279,27 @@ function rejectUnanswerableProductAskUserQuestion(
   ws.send(JSON.stringify({ type: 'error', code: 'task_failed', retryable: false }))
 }
 
+function productTaskEventsForMessage(
+  ws: ServerWebSocket<WebSocketData>,
+  message: ServerMessage,
+) {
+  let projector = productRunActivityProjectors.get(ws)
+  if (!projector && ws.data.productTaskId) {
+    try {
+      projector = new ProductTaskRunActivityProjector(ws.data.productTaskId)
+      productRunActivityProjectors.set(ws, projector)
+    } catch {
+      // The normal route creates this projector during open. A malformed
+      // in-process caller still receives only the established safe projection.
+      return projectServerMessageForProductTask(message)
+    }
+  }
+  return projector?.project(message) ?? projectServerMessageForProductTask(message)
+}
+
 function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
   const events = ws.data.channel === 'product'
-    ? projectServerMessageForProductTask(message)
+    ? productTaskEventsForMessage(ws, message)
     : [message]
 
   if (ws.data.channel === 'product' && isUnanswerableProductAskUserQuestion(message, events)) {

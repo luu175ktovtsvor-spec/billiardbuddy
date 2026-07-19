@@ -12,6 +12,7 @@ export const MAX_PRODUCT_TASK_ATTACHMENT_BYTES = PRODUCT_TASK_ATTACHMENT_LIMITS.
 
 export type ProductTaskAttachmentDraft = ProductTaskAttachment & {
   id: string
+  name: string
 }
 
 const PRODUCT_IMAGE_MIME_TYPES = new Set([
@@ -90,6 +91,40 @@ export function validateProductTaskAttachments(
 
 function nextDraftId(): string {
   return `product-attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * Turn a native Browser/Preview capture into the same narrow, inline image
+ * shape used by the task composer. The caller still has to validate its full
+ * draft list, because this helper intentionally knows nothing about a task's
+ * existing attachment count or batch size.
+ */
+export function createProductTaskPreviewImageDraft(
+  data: string,
+  name: string,
+): ProductTaskAttachmentDraft | null {
+  const dataUrlMatch = /^data:([^;,]+);base64,/i.exec(data)
+  const mimeType = dataUrlMatch?.[1]?.trim().toLowerCase()
+  const normalizedName = name.trim()
+  if (!mimeType || !normalizedName || normalizedName.length > 160) return null
+
+  const candidate: ComposerAttachment = {
+    id: nextDraftId(),
+    type: 'image',
+    name: normalizedName,
+    mimeType,
+    data,
+  }
+  const validation = validateProductTaskAttachments([candidate])
+  if (!validation.ok) return null
+
+  return {
+    id: candidate.id,
+    type: 'image',
+    name: normalizedName,
+    mimeType,
+    data,
+  }
 }
 
 function productAttachmentType(mimeType: string): ProductTaskAttachment['type'] | null {

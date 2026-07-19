@@ -4,11 +4,7 @@ import { TerminalSettings } from '../../pages/TerminalSettings'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import type {
-  ProductTaskActivityKind,
-  ProductTaskActivityPhase,
-  ProductTaskThreadEntry,
-} from '../domain/types'
+import type { ProductTaskThreadEntry } from '../domain/types'
 import {
   PRODUCT_TASK_SAFE_ERROR_LABEL,
   canSendProductTaskMessage,
@@ -24,47 +20,27 @@ import {
   useProductTaskBrowserPreviewStore,
   type ProductTaskBrowserPreviewMode,
 } from '../stores/productTaskBrowserPreviewStore'
-import { ProductTaskBrowserPreviewDock } from './ProductTaskBrowserPreviewDock'
+import {
+  ProductTaskBrowserPreviewDock,
+  type ProductTaskBrowserPreviewCapture,
+} from './ProductTaskBrowserPreviewDock'
 import { ProductTaskMediaDock } from './ProductTaskMediaDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
+import {
+  ProductTaskRunPanel,
+  productTaskActivityDisplayLabel,
+  productTaskActivityLabel,
+} from './ProductTaskRunPanel'
 import { SideTaskPanel } from './SideTaskPanel'
 import { VoiceInputControl } from './VoiceInputControl'
 import {
   MAX_PRODUCT_TASK_ATTACHMENT_BYTES,
   MAX_PRODUCT_TASK_ATTACHMENT_COUNT,
+  createProductTaskPreviewImageDraft,
   readProductTaskAttachmentDrafts,
+  validateProductTaskAttachments,
   type ProductTaskAttachmentDraft,
 } from '../taskAttachments'
-
-const ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
-  workspace: '正在处理文件',
-  command: '正在执行命令',
-  research: '正在检索资料',
-  browser: '正在处理浏览器内容',
-  media: '正在处理媒体内容',
-  subtask: '正在协调子任务',
-  tool: '正在处理任务步骤',
-}
-
-const COMPLETED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
-  workspace: '文件处理完成',
-  command: '命令执行完成',
-  research: '资料检索完成',
-  browser: '浏览器步骤完成',
-  media: '媒体处理完成',
-  subtask: '子任务已完成',
-  tool: '任务步骤完成',
-}
-
-const FAILED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
-  workspace: '文件处理未完成',
-  command: '命令未完成',
-  research: '资料检索未完成',
-  browser: '浏览器步骤未完成',
-  media: '媒体处理未完成',
-  subtask: '子任务未完成',
-  tool: '任务步骤未完成',
-}
 
 const COMPUTER_USE_TIER_LABEL = {
   read: '查看',
@@ -77,12 +53,6 @@ const COMPUTER_USE_CAPABILITY_LABEL = {
   clipboard_write: '写入剪贴板',
   system_key_combos: '使用系统快捷键',
 } as const
-
-function activityLabel(kind: ProductTaskActivityKind, phase: ProductTaskActivityPhase): string {
-  if (phase === 'completed') return COMPLETED_ACTIVITY_LABEL[kind]
-  if (phase === 'failed') return FAILED_ACTIVITY_LABEL[kind]
-  return ACTIVITY_LABEL[kind]
-}
 
 function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string {
   switch (state) {
@@ -212,7 +182,7 @@ export function ProductTaskThreadEntryView({
           aria-hidden="true"
           className={`h-1.5 w-1.5 rounded-full ${entry.phase === 'failed' ? 'bg-[var(--color-error)]' : 'bg-[var(--color-primary)]'}`}
         />
-        {activityLabel(entry.kind, entry.phase)}
+        {productTaskActivityLabel(entry.kind, entry.phase)}
       </div>
     )
   }
@@ -547,6 +517,30 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
     }
   }
 
+  const addBrowserPreviewCapture = ({
+    mode,
+    dataUrl,
+  }: ProductTaskBrowserPreviewCapture) => {
+    const attachment = createProductTaskPreviewImageDraft(
+      dataUrl,
+      mode === 'browser' ? '浏览器截图.png' : '预览截图.png',
+    )
+    if (!attachment) {
+      setAttachmentMessage('当前截图无法作为图片附件添加。')
+      return
+    }
+
+    const validation = validateProductTaskAttachments([...attachments, attachment])
+    if (!validation.ok) {
+      setAttachmentMessage(validation.message)
+      return
+    }
+
+    setAttachments([...attachments, attachment])
+    setAttachmentMessage(null)
+    setValidationMessage(null)
+  }
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     submit()
@@ -766,6 +760,8 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
               <p className="py-12 text-center text-sm text-[var(--color-text-secondary)]">任务已创建。描述下一步希望完成的事情。</p>
             ) : null}
 
+            <ProductTaskRunPanel activities={runtime?.runActivities ?? []} />
+
             <div className="mx-auto flex max-w-4xl flex-col gap-4">
               {runtime?.entries.map((entry) => (
                 <ProductTaskThreadEntryView
@@ -785,7 +781,11 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
 
             {runtime?.activeActivity && runtime.activeActivity.phase !== 'completed' && runtime.activeActivity.phase !== 'failed' ? (
               <p role="status" className="mx-auto mt-5 max-w-4xl text-center text-xs text-[var(--color-text-secondary)]">
-                {activityLabel(runtime.activeActivity.kind, runtime.activeActivity.phase)}…
+                {productTaskActivityDisplayLabel(
+                  runtime.activeActivity.kind,
+                  runtime.activeActivity.phase,
+                  runtime.activeActivity.summary,
+                )}…
               </p>
             ) : null}
 
@@ -939,6 +939,7 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
                     setActiveDockPanel('browser-preview')
                   }}
                   onClose={closeBrowserPreviewMode}
+                  onCapture={addBrowserPreviewCapture}
                 />
               </div>
             ) : null}

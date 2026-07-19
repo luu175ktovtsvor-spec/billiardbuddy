@@ -6,6 +6,7 @@ import type { EditDiff } from '../preview-agent/popover'
 export type BrowserPreviewScreenshot = {
   dataUrl: string
   kind?: string
+  captureId?: string
 }
 
 export type BrowserPreviewSelection = {
@@ -41,6 +42,10 @@ function isSelectionPayload(value: unknown): value is BrowserPreviewSelection {
   )
 }
 
+function isPreviewCaptureId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-zA-Z_-]{16,64}$/.test(value)
+}
+
 /**
  * Subscribe the native preview host to a browser-panel key without assuming
  * that key is an Agent Core session. Callers opt into screenshot and selection
@@ -54,7 +59,15 @@ export const subscribePreviewEvents: BrowserPreviewEventSubscriber = async (
   if (!host.capabilities.previewWebview) return () => {}
 
   return host.preview.onEvent((payload) => {
-    let msg: { type?: string; url?: string; title?: string; dataUrl?: string; kind?: string; payload?: unknown }
+    let msg: {
+      type?: string
+      url?: string
+      title?: string
+      dataUrl?: string
+      kind?: string
+      captureId?: unknown
+      payload?: unknown
+    }
     try {
       msg = typeof payload === 'string'
         ? JSON.parse(payload)
@@ -67,7 +80,11 @@ export const subscribePreviewEvents: BrowserPreviewEventSubscriber = async (
     } else if (msg.type === 'ready') {
       store.setReady(browserKey)
     } else if (msg.type === 'screenshot' && msg.dataUrl) {
-      options.onScreenshot?.({ dataUrl: msg.dataUrl, kind: msg.kind })
+      options.onScreenshot?.({
+        dataUrl: msg.dataUrl,
+        kind: msg.kind,
+        ...(isPreviewCaptureId(msg.captureId) ? { captureId: msg.captureId } : {}),
+      })
     } else if (msg.type === 'selection') {
       // A page can forge a preview event. Accept a selection only after a
       // renderer-owned picker gesture armed this specific browser panel.

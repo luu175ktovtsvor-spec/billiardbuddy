@@ -32,6 +32,7 @@ function makeRuntime(runState: ProductTaskRuntime['runState']): ProductTaskRunti
     runState,
     entries: [],
     activeActivity: null,
+    runActivities: [],
     pendingApproval: null,
     approvalResponsePending: false,
     error: null,

@@ -79,6 +79,64 @@ describe('product task protocol attachment summaries', () => {
   })
 })
 
+describe('product task protocol run activities', () => {
+  const activityId = `activity_${'a'.repeat(32)}`
+  const parentId = `activity_${'b'.repeat(32)}`
+
+  it('accepts the bounded opaque activity tree envelope', () => {
+    expect(parseProductTaskEvent({
+      type: 'activity',
+      id: activityId,
+      parentId,
+      kind: 'subtask',
+      phase: 'running',
+      summary: '正在协同处理事项',
+      progress: { completed: 1, total: 3 },
+    })).toEqual({
+      type: 'activity',
+      id: activityId,
+      parentId,
+      kind: 'subtask',
+      phase: 'running',
+      summary: '正在协同处理事项',
+      progress: { completed: 1, total: 3 },
+    })
+
+    // The flat event remains valid while a stored product task is upgraded.
+    expect(parseProductTaskEvent({
+      type: 'activity',
+      kind: 'workspace',
+      phase: 'completed',
+    })).toEqual({ type: 'activity', kind: 'workspace', phase: 'completed' })
+  })
+
+  it('rejects Core details and malformed identifiers before activity state is updated', () => {
+    const privatePath = '/Users/private/.claude/task.json'
+    for (const value of [
+      {
+        type: 'activity', id: activityId, kind: 'command', phase: 'running', summary: privatePath,
+      },
+      {
+        type: 'activity', id: 'core-tool-use-id', kind: 'command', phase: 'running', summary: '正在处理任务操作',
+      },
+      {
+        type: 'activity', id: activityId, parentId: activityId, kind: 'command', phase: 'running', summary: '正在处理任务操作',
+      },
+      {
+        type: 'activity', id: activityId, kind: 'command', phase: 'running', summary: '正在处理任务操作', progress: { completed: 4, total: 3 },
+      },
+      {
+        type: 'activity', id: activityId, kind: 'command', phase: 'running', summary: '正在处理任务操作', toolName: 'Bash',
+      },
+      {
+        type: 'activity', kind: 'command', phase: 'running', summary: '正在处理任务操作',
+      },
+    ]) {
+      expect(parseProductTaskEvent(value)).toBeNull()
+    }
+  })
+})
+
 describe('product task protocol Computer Use approvals', () => {
   it('accepts only the narrow Computer Use approval projection', () => {
     expect(parseProductTaskEvent({

@@ -133,6 +133,32 @@ vi.mock('./ProductTaskMediaDock', () => ({
   ),
 }))
 
+vi.mock('./ProductTaskBrowserPreviewDock', () => ({
+  ProductTaskBrowserPreviewDock: ({
+    activeMode,
+    onClose,
+    onCapture,
+  }: {
+    activeMode: 'browser' | 'preview' | null
+    onClose: (mode: 'browser' | 'preview') => void
+    onCapture: (capture: { mode: 'browser' | 'preview'; dataUrl: string }) => void
+  }) => {
+    const mode = activeMode ?? 'browser'
+    const label = mode === 'browser' ? '浏览器' : '预览'
+    return (
+      <div data-testid="product-task-browser-preview-dock">
+        <button type="button" aria-label={`关闭${label}`} onClick={() => onClose(mode)}>关闭</button>
+        <button
+          type="button"
+          onClick={() => onCapture({ mode, dataUrl: 'data:image/png;base64,TkFUSVZF' })}
+        >
+          模拟原生截图
+        </button>
+      </div>
+    )
+  },
+}))
+
 vi.mock('./SideTaskPanel', () => ({
   SideTaskPanel: () => <div data-testid="side-task-panel-slot" />,
 }))
@@ -313,6 +339,26 @@ describe('ProductTaskPage', () => {
       name: '球台.png',
       mimeType: 'image/png',
       data: expect.stringMatching(/^data:image\/png;base64,/),
+    }])
+  })
+
+  it('keeps a native Browser capture as a pending narrow attachment until the user sends it', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
+    fireEvent.click(screen.getByRole('button', { name: '模拟原生截图' }))
+
+    expect(screen.getByText('浏览器截图.png')).toBeTruthy()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith('task-1', '', [{
+      type: 'image',
+      name: '浏览器截图.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,TkFUSVZF',
     }])
   })
 

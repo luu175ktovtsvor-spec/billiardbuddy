@@ -43,6 +43,7 @@ export type {
 export type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
+  ProductTaskActivityProgress,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
