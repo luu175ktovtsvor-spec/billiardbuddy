@@ -1617,25 +1617,17 @@ async function run(): Promise<CommanderCommand> {
         const computerUseCliEnabled = options.computerUse !== false;
         if (getChicagoEnabled() && computerUseCliEnabled) {
           const {
-            loadStoredComputerUseConfig
-          } = await import('src/utils/computerUse/preauthorizedConfig.js');
-          const computerUseConfig = await loadStoredComputerUseConfig();
-          if (!computerUseConfig.enabled) {
-            logForDebugging('[Computer Use MCP] Skipped: disabled in computer-use-config.json');
-          } else {
-            const {
-              setupComputerUseMCP
-            } = await import('src/utils/computerUse/setup.js');
-            const {
-              mcpConfig,
-              allowedTools: cuTools
-            } = setupComputerUseMCP();
-            dynamicMcpConfig = {
-              ...dynamicMcpConfig,
-              ...mcpConfig
-            };
-            allowedTools.push(...cuTools);
-          }
+            setupComputerUseMCP
+          } = await import('src/utils/computerUse/setup.js');
+          const {
+            mcpConfig,
+            allowedTools: cuTools
+          } = setupComputerUseMCP();
+          dynamicMcpConfig = {
+            ...dynamicMcpConfig,
+            ...mcpConfig
+          };
+          allowedTools.push(...cuTools);
         } else if (!computerUseCliEnabled) {
           logForDebugging('[Computer Use MCP] Skipped: disabled by --no-computer-use');
         }

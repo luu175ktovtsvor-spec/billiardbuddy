@@ -27,7 +27,6 @@ import { registerEscHotkey } from './escHotkey.js';
 import { getChicagoCoordinateMode } from './gates.js';
 import { getComputerUseHostAdapter } from './hostAdapter.js';
 import { getComputerUseMCPRenderingOverrides } from './toolRendering.js';
-import { loadStoredComputerUseConfig } from './preauthorizedConfig.js';
 type CallOverride = Pick<Tool, 'call'>['call'];
 type Binding = {
   ctx: ComputerUseSessionContext;
@@ -260,63 +259,6 @@ async function runDesktopPermissionDialog(
   return await response.json() as CuPermissionResponse
 }
 
-/**
- * Load pre-authorized apps from ~/.claude/billiardbuddy/computer-use-config.json.
- * Called once when the binding is first created. Pre-authorized apps
- * are injected into appState so `getAllowedApps()` returns them
- * immediately — no runtime permission dialog needed.
- */
-async function loadPreAuthorizedApps(): Promise<void> {
-  if (!currentToolUseContext) {
-    return
-  }
-
-  const resolved = await loadStoredComputerUseConfig()
-  const apps = resolved.authorizedApps.map(a => ({
-    bundleId: a.bundleId,
-    displayName: a.displayName,
-    grantedAt: Date.now(),
-    tier: 'full' as const,
-  }))
-  const flags = {
-    ...DEFAULT_GRANT_FLAGS,
-    ...resolved.grantFlags,
-  }
-
-  // Inject into appState so getAllowedApps()/getGrantFlags() return persisted
-  // desktop settings immediately, even when no apps are pre-authorized yet.
-  currentToolUseContext.setAppState(prev => {
-    const existing = prev.computerUseMcpState?.allowedApps ?? []
-    const existingIds = new Set(existing.map(a => a.bundleId))
-    const merged = [...existing, ...apps.filter(a => !existingIds.has(a.bundleId))]
-    const currentFlags = prev.computerUseMcpState?.grantFlags
-    const sameFlags =
-      currentFlags?.clipboardRead === flags.clipboardRead &&
-      currentFlags?.clipboardWrite === flags.clipboardWrite &&
-      currentFlags?.systemKeyCombos === flags.systemKeyCombos
-    const sameApps = existing.length === merged.length
-
-    if (sameFlags && sameApps) {
-      return prev
-    }
-
-    return {
-      ...prev,
-      computerUseMcpState: {
-        ...prev.computerUseMcpState,
-        allowedApps: merged,
-        grantFlags: flags,
-      },
-    }
-  })
-
-  logForDebugging(
-    `[Computer Use] Loaded ${apps.length} pre-authorized apps and grant flags from config`,
-  )
-}
-
-let preAuthLoaded = false
-
 function getOrBind(): Binding {
   if (binding) return binding;
   const ctx = buildSessionContext();
@@ -342,11 +284,6 @@ export function getComputerUseMCPToolOverrides(toolName: string): ComputerUseMCP
       dispatch
     } = getOrBind();
 
-    // Load pre-authorized apps on first tool call
-    if (!preAuthLoaded) {
-      preAuthLoaded = true;
-      await loadPreAuthorizedApps();
-    }
     const {
       telemetry,
       ...result

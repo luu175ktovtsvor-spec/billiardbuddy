@@ -8,7 +8,7 @@
 
 import { homedir } from 'os'
 import { join } from 'path'
-import { access, readFile, mkdir, writeFile, rm } from 'fs/promises'
+import { access, readFile, mkdir, writeFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -16,12 +16,6 @@ import type { CuPermissionRequest } from '../../vendor/computer-use-mcp/types.js
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 import { detectPythonRuntime, isPythonVersionAtLeast } from './computer-use-python.js'
 import { buildPipInstallAttempts } from '../../utils/computerUse/pipInstall.js'
-import {
-  DEFAULT_DESKTOP_GRANT_FLAGS,
-  loadStoredComputerUseConfig,
-  normalizePythonPath,
-  saveStoredComputerUseConfig,
-} from '../../utils/computerUse/preauthorizedConfig.js'
 // Embed helper scripts at compile time so they're available in bundled mode
 // @ts-ignore — Bun text import
 import MAC_HELPER_CONTENT from '../../../runtime/mac_helper.py' with { type: 'text' }
@@ -39,9 +33,6 @@ const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
 const runtimeStateRoot = join(claudeHome, '.runtime')
 const venvRoot = join(runtimeStateRoot, 'venv')
 const installStampPath = join(runtimeStateRoot, 'requirements.sha256')
-// 记录上次创建 venv 时所用的 config.pythonPath 原值。读取该文件来判断当前
-// venv 是否仍与最新的自定义路径配置一致。
-const baseInterpreterMarkerPath = join(runtimeStateRoot, 'venv-base-interpreter.txt')
 const MIN_PYTHON_MAJOR = 3
 const MIN_PYTHON_MINOR = 9
 
@@ -76,32 +67,6 @@ async function pathExists(target: string): Promise<boolean> {
     return true
   } catch {
     return false
-  }
-}
-
-/**
- * 判断现有 venv 是否与当前 config.pythonPath 配置一致。
- *
- * 通过 marker 文件记录上次 setup 时所用的解释器路径——这比解析 pyvenv.cfg
- * 可靠得多：当用户自定义 Python 自身在一个 venv 里时（conda/pyenv/手工 venv
- * 都是这种情况），Python 的 venv 模块会跳过外层 venv 直接指向 base 解释器，
- * 导致 pyvenv.cfg 的 home 字段记录的是 base 而非用户提供的那个路径。
- *
- * 兼容性：marker 缺失时——
- * - 若用户也没设置自定义路径（current === ''），视为老用户的合法 venv，
- *   返回 true 不打扰。
- * - 若用户设置了自定义路径（current !== ''），说明这是 marker 引入前建立
- *   的旧 venv，绝非由当前自定义路径建立，返回 false 触发重建。
- */
-async function venvBaseInterpreterMatches(
-  currentCustomPath: string | null | undefined,
-): Promise<boolean> {
-  const current = (currentCustomPath ?? '').trim()
-  try {
-    const recorded = (await readFile(baseInterpreterMarkerPath, 'utf8')).trim()
-    return recorded === current
-  } catch {
-    return current === ''
   }
 }
 
@@ -164,17 +129,12 @@ type EnvStatus = {
   python: {
     installed: boolean
     version: string | null
-    path: string | null
-    source: 'custom' | 'system' | 'venv' | null
-    error: string | null
   }
   venv: {
     created: boolean
-    path: string
   }
   dependencies: {
     installed: boolean
-    requirementsFound: boolean
   }
   permissions: {
     accessibility: boolean | null
@@ -182,7 +142,25 @@ type EnvStatus = {
   }
 }
 
-async function checkStatus(): Promise<EnvStatus> {
+type StatusDependencies = {
+  pathExists: typeof pathExists
+  readText: (target: string) => Promise<string>
+  ensureRuntimeFiles: typeof ensureRuntimeFiles
+  runCommand: typeof runCommand
+  detectPythonRuntime: typeof detectPythonRuntime
+}
+
+export async function checkComputerUseStatus(
+  overrides: Partial<StatusDependencies> = {},
+): Promise<EnvStatus> {
+  const dependencies: StatusDependencies = {
+    pathExists,
+    readText: target => readFile(target, 'utf8'),
+    ensureRuntimeFiles,
+    runCommand,
+    detectPythonRuntime,
+    ...overrides,
+  }
   const platform = process.platform
   const supported = platform === 'darwin' || platform === 'win32'
 
@@ -190,36 +168,23 @@ async function checkStatus(): Promise<EnvStatus> {
   const venvPython = isWindows
     ? join(venvRoot, 'Scripts', 'python.exe')
     : join(venvRoot, 'bin', 'python3')
-  const venvCreated = await pathExists(venvPython)
-  const config = await loadConfig()
+  const venvCreated = await dependencies.pathExists(venvPython)
 
-  const pythonRuntime = await detectPythonRuntime(
+  const pythonRuntime = await dependencies.detectPythonRuntime(
     platform,
-    runCommand,
+    dependencies.runCommand,
     venvCreated ? venvPython : undefined,
-    config.pythonPath,
   )
-
-  // 校验现有 venv 是否与当前 config.pythonPath 配置一致：
-  // - 老用户从未设过自定义路径 → marker 不存在 + current 为空 → 视为匹配，
-  //   原行为完全不变。
-  // - 配置变更（设置/切换/清空自定义路径）→ marker 与 current 不一致 →
-  //   effectiveVenvCreated 置为 false，UI 提示需要重新 setup。
-  let effectiveVenvCreated = venvCreated
-  if (venvCreated) {
-    const matches = await venvBaseInterpreterMatches(config.pythonPath)
-    if (!matches) effectiveVenvCreated = false
-  }
 
   // Check dependencies — use the state dir copy
   const reqPath = getRequirementsPath()
-  const requirementsFound = await pathExists(reqPath)
+  const requirementsFound = await dependencies.pathExists(reqPath)
   let depsInstalled = false
-  if (requirementsFound && effectiveVenvCreated) {
+  if (requirementsFound && venvCreated) {
     try {
-      const requirements = await readFile(reqPath, 'utf8')
+      const requirements = await dependencies.readText(reqPath)
       const digest = createHash('sha256').update(requirements).digest('hex')
-      const stamp = (await readFile(installStampPath, 'utf8')).trim()
+      const stamp = (await dependencies.readText(installStampPath)).trim()
       depsInstalled = stamp === digest
     } catch {
       depsInstalled = false
@@ -231,11 +196,11 @@ async function checkStatus(): Promise<EnvStatus> {
   // plain preflight can misreport child processes launched by the desktop app.
   let accessibility: boolean | null = null
   let screenRecording: boolean | null = null
-  if (supported && effectiveVenvCreated && depsInstalled) {
-    try { await ensureRuntimeFiles() } catch {}
+  if (supported && venvCreated && depsInstalled) {
+    try { await dependencies.ensureRuntimeFiles() } catch {}
     const helperPath = getHelperPath()
-    if (await pathExists(helperPath)) {
-      const permResult = await runCommand(venvPython, [helperPath, 'check_permissions'])
+    if (await dependencies.pathExists(helperPath)) {
+      const permResult = await dependencies.runCommand(venvPython, [helperPath, 'check_permissions'])
       if (permResult.ok) {
         try {
           const parsed = JSON.parse(permResult.stdout)
@@ -254,12 +219,9 @@ async function checkStatus(): Promise<EnvStatus> {
     python: {
       installed: pythonRuntime.installed,
       version: pythonRuntime.version,
-      path: pythonRuntime.path,
-      source: pythonRuntime.source,
-      error: pythonRuntime.error,
     },
-    venv: { created: effectiveVenvCreated, path: venvRoot },
-    dependencies: { installed: depsInstalled, requirementsFound: requirementsFound || true },
+    venv: { created: venvCreated },
+    dependencies: { installed: depsInstalled },
     permissions: { accessibility, screenRecording },
   }
 }
@@ -296,57 +258,25 @@ async function runSetup(): Promise<SetupResult> {
     ? join(venvRoot, 'Scripts', 'python.exe')
     : join(venvRoot, 'bin', 'python3')
   let venvExists = await pathExists(venvPython)
-  const config = await loadConfig()
-
-  // 校验现有 venv 是否与当前 config.pythonPath 配置一致（marker 机制详见
-  // venvBaseInterpreterMatches 注释）。不一致则删除以便后续步骤重建。
-  // 老用户从未设过自定义路径时此分支不会触发，原行为完全保留。
-  if (venvExists && !(await venvBaseInterpreterMatches(config.pythonPath))) {
-    try {
-      await rm(venvRoot, { recursive: true, force: true })
-      // 同时清除 stamp，否则 Step 5 会因 digest 匹配而跳过依赖安装，
-      // 导致重建出的 venv 没有依赖。
-      await rm(installStampPath, { force: true })
-      await rm(baseInterpreterMarkerPath, { force: true })
-      venvExists = false
-      steps.push({
-        name: 'venv_rebuild',
-        ok: true,
-        message: '检测到自定义解释器变更，已移除旧虚拟环境以便重建',
-      })
-    } catch (err) {
-      steps.push({
-        name: 'venv_rebuild',
-        ok: false,
-        message: `移除旧虚拟环境失败: ${err}`,
-      })
-      return { success: false, steps }
-    }
-  }
 
   // Step 1: Check python
   const pythonRuntime = await detectPythonRuntime(
     process.platform,
     runCommand,
     venvExists ? venvPython : undefined,
-    config.pythonPath,
   )
   if (!pythonRuntime.installed) {
     steps.push({
       name: 'python_check',
       ok: false,
-      message: pythonRuntime.source === 'custom'
-        ? `自定义 Python 路径不可用: ${pythonRuntime.error ?? pythonRuntime.path}`
-        : 'Python 3 未安装，请先安装 Python 3',
+      message: '未找到可用的 Python 3，请安装后重试',
     })
     return { success: false, steps }
   }
   steps.push({
     name: 'python_check',
     ok: true,
-    message: pythonRuntime.source === 'custom'
-      ? `Python ${pythonRuntime.version}（使用自定义解释器）`
-      : pythonRuntime.source === 'venv'
+    message: pythonRuntime.source === 'venv'
         ? `Python ${pythonRuntime.version}（使用现有虚拟环境）`
         : `Python ${pythonRuntime.version}`,
   })
@@ -387,18 +317,7 @@ async function runSetup(): Promise<SetupResult> {
       steps.push({
         name: 'venv',
         ok: false,
-        message: `创建虚拟环境失败: ${venvResult.stderr}`,
-      })
-      return { success: false, steps }
-    }
-    // 记录本次创建 venv 时所用的自定义路径配置，供后续 checkStatus 比对。
-    try {
-      await writeFile(baseInterpreterMarkerPath, config.pythonPath ?? '', 'utf8')
-    } catch (err) {
-      steps.push({
-        name: 'venv',
-        ok: false,
-        message: `写入虚拟环境标记文件失败: ${err}`,
+        message: '创建虚拟环境失败，请检查 Python 安装后重试',
       })
       return { success: false, steps }
     }
@@ -421,7 +340,7 @@ async function runSetup(): Promise<SetupResult> {
       steps.push({
         name: 'pip',
         ok: false,
-        message: `安装 pip 失败: ${pipResult.stderr}`,
+        message: '准备运行环境失败，请重试',
       })
       return { success: false, steps }
     }
@@ -444,7 +363,7 @@ async function runSetup(): Promise<SetupResult> {
       steps.push({
         name: 'deps',
         ok: false,
-        message: `安装依赖失败: ${installResult.stderr.slice(0, 500)}`,
+        message: '安装依赖失败，请检查网络后重试',
       })
       return { success: false, steps }
     }
@@ -457,66 +376,9 @@ async function runSetup(): Promise<SetupResult> {
   return { success: true, steps }
 }
 
-// ============================================================================
-// Authorized Apps configuration — stored in ~/.claude/billiardbuddy/computer-use-config.json
-// ============================================================================
-
-type AuthorizedApp = {
-  bundleId: string
-  displayName: string
-  authorizedAt?: string
-}
-
-type ComputerUseConfig = {
-  enabled: boolean
-  authorizedApps: AuthorizedApp[]
-  grantFlags: {
-    clipboardRead: boolean
-    clipboardWrite: boolean
-    systemKeyCombos: boolean
-  }
-  pythonPath: string | null
-}
-
 type RequestAccessBody = {
   sessionId?: string
   request?: CuPermissionRequest
-}
-
-const DEFAULT_CONFIG: ComputerUseConfig = {
-  enabled: true,
-  authorizedApps: [],
-  grantFlags: DEFAULT_DESKTOP_GRANT_FLAGS,
-  pythonPath: null,
-}
-
-async function loadConfig(): Promise<ComputerUseConfig> {
-  return { ...DEFAULT_CONFIG, ...(await loadStoredComputerUseConfig()) }
-}
-
-async function saveConfig(config: ComputerUseConfig): Promise<void> {
-  await saveStoredComputerUseConfig(config)
-}
-
-async function listInstalledApps(): Promise<{ bundleId: string; displayName: string; path: string }[]> {
-  const helperPath = getHelperPath()
-  const pythonBin = isWindows
-    ? join(venvRoot, 'Scripts', 'python.exe')
-    : join(venvRoot, 'bin', 'python3')
-
-  if (!(await pathExists(pythonBin)) || !(await pathExists(helperPath))) {
-    return []
-  }
-
-  const result = await runCommand(pythonBin, [helperPath, 'list_installed_apps'])
-  if (!result.ok) return []
-
-  try {
-    const parsed = JSON.parse(result.stdout)
-    return parsed.ok ? parsed.result : []
-  } catch {
-    return []
-  }
 }
 
 // ============================================================================
@@ -531,7 +393,7 @@ export async function handleComputerUseApi(
   const action = segments[2]
 
   if (action === 'status' && req.method === 'GET') {
-    const status = await checkStatus()
+    const status = await checkComputerUseStatus()
     return Response.json(status)
   }
 
@@ -540,32 +402,31 @@ export async function handleComputerUseApi(
     return Response.json(result)
   }
 
-  // GET /api/computer-use/apps — list installed macOS apps
-  if (action === 'apps' && req.method === 'GET') {
-    const apps = await listInstalledApps()
-    return Response.json({ apps })
-  }
-
-  // GET /api/computer-use/authorized-apps — current authorized app config
-  if (action === 'authorized-apps' && req.method === 'GET') {
-    const config = await loadConfig()
-    return Response.json(config)
-  }
-
-  // PUT /api/computer-use/authorized-apps — update authorized apps
+  // Persistent allowlists, grant flags, feature switches, and Python paths
+  // are not writable through the loopback API. A local web page can otherwise
+  // grant itself future Computer Use access without a task-bound approval.
+  // The active task receives grants only through the WebSocket approval flow.
   if (action === 'authorized-apps' && req.method === 'PUT') {
-    try {
-      const body = (await req.json()) as Partial<ComputerUseConfig>
-      const config = await loadConfig()
-      if (body.enabled !== undefined) config.enabled = body.enabled
-      if (body.authorizedApps) config.authorizedApps = body.authorizedApps
-      if (body.grantFlags) config.grantFlags = { ...config.grantFlags, ...body.grantFlags }
-      if ('pythonPath' in body) config.pythonPath = normalizePythonPath(body.pythonPath)
-      await saveConfig(config)
-      return Response.json({ ok: true })
-    } catch {
-      return Response.json({ error: 'Invalid JSON' }, { status: 400 })
-    }
+    return Response.json(
+      {
+        error: 'COMPUTER_USE_PERSISTENCE_FORBIDDEN',
+        message: 'Computer Use access is granted only by the active task approval dialog',
+      },
+      { status: 403 },
+    )
+  }
+
+  if (
+    (action === 'authorized-apps' || action === 'apps')
+    && req.method === 'GET'
+  ) {
+    return Response.json(
+      {
+        error: 'COMPUTER_USE_PERSISTENCE_RETIRED',
+        message: 'Computer Use grants are task-scoped and are not exposed as a saved allowlist',
+      },
+      { status: 410 },
+    )
   }
 
   // POST /api/computer-use/open-settings — open system settings pane
@@ -606,10 +467,14 @@ export async function handleComputerUseApi(
       )
       return Response.json(response)
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Computer Use approval failed'
-      const status = message.includes('not connected') ? 409 : 500
-      return Response.json({ error: 'COMPUTER_USE_APPROVAL_FAILED', message }, { status })
+      const status = error instanceof Error && error.message.includes('not connected') ? 409 : 500
+      return Response.json(
+        {
+          error: 'COMPUTER_USE_APPROVAL_FAILED',
+          message: 'Computer Use approval is currently unavailable',
+        },
+        { status },
+      )
     }
   }
 
