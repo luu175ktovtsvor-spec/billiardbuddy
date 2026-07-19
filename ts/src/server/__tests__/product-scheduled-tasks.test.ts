@@ -165,6 +165,37 @@ describe('product scheduled task adapter', () => {
     expect(runCalls).toBe(1)
   })
 
+  it('does not start a task that has been paused since the page was loaded', async () => {
+    let runCalls = 0
+    const scheduler = schedulerWith()
+    const executeTask = scheduler.executeTask
+    scheduler.executeTask = async (task) => {
+      runCalls += 1
+      return executeTask(task)
+    }
+    const service = new ProductScheduledTaskService(new CronService(), scheduler)
+    const task = await service.createTask({
+      title: '暂停后运行',
+      schedule: '0 9 * * *',
+      instruction: '检查营业日报。',
+    })
+    await service.updateTask(task.id, { enabled: false })
+    const request = new Request(`http://localhost/api/product/scheduled-tasks/${task.id}/run`, { method: 'POST' })
+
+    const response = await handleProductScheduledTasksApi(
+      request,
+      new URL(request.url),
+      productSegments(task.id, 'run'),
+      service,
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'PRODUCT_SCHEDULED_TASK_DISABLED',
+    })
+    expect(runCalls).toBe(0)
+  })
+
   it('retires the generic scheduled-task route after the product route is connected', async () => {
     const oldRequest = new Request('http://localhost/api/scheduled-tasks', { method: 'GET' })
     const oldResponse = await handleApiRequest(oldRequest, new URL(oldRequest.url))

@@ -67,6 +67,13 @@ export class ProductScheduledTaskService {
     const normalizedTaskId = requireProductScheduledTaskId(taskId)
     const task = (await this.cronService.listTasks()).find((entry) => entry.id === normalizedTaskId)
     if (!task) throw ApiError.notFound('定时任务不存在')
+    if (task.enabled === false) {
+      throw new ApiError(
+        409,
+        '定时任务已暂停，请先启用后再运行',
+        'PRODUCT_SCHEDULED_TASK_DISABLED',
+      )
+    }
 
     // The scheduler persists a real running record before starting the Core
     // process. Do not make up an optimistic client-side completion state.

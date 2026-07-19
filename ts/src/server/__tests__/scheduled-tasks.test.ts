@@ -110,6 +110,22 @@ describe('CronService', () => {
     expect(tasks[1].prompt).toBe('Task 2')
   })
 
+  it('preserves concurrent mutations from separate CronService instances', async () => {
+    const created = await Promise.all(
+      Array.from({ length: 12 }, (_, index) => new CronService().createTask({
+        cron: '0 9 * * *',
+        prompt: `Concurrent task ${index}`,
+      })),
+    )
+
+    const tasks = await service.listTasks()
+    expect(new Set(created.map((task) => task.id))).toHaveLength(12)
+    expect(tasks).toHaveLength(12)
+    expect(new Set(tasks.map((task) => task.prompt))).toEqual(
+      new Set(created.map((task) => task.prompt)),
+    )
+  })
+
   it('should update an existing task', async () => {
     const created = await service.createTask({
       cron: '0 9 * * *',
