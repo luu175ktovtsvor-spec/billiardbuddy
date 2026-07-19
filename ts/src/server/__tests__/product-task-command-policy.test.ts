@@ -1,6 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test'
 import {
-  allowsProductTaskText,
   classifyProductTaskCommand,
   resolveProductTaskText,
   type ProductTaskCommandPolicyDependencies,
@@ -25,9 +24,9 @@ describe('product task command policy', () => {
     expect(classifyProductTaskCommand('/clear')).toEqual({ kind: 'local_command' })
     expect(classifyProductTaskCommand('/clear 保留这个任务')).toEqual({ kind: 'rejected' })
 
-    expect(await allowsProductTaskText('整理本周球房活动安排', { dependencies })).toBe(true)
-    expect(await allowsProductTaskText('/goal 完成本周经营复盘', { dependencies })).toBe(true)
-    expect(await allowsProductTaskText('/clear', { dependencies })).toBe(true)
+    expect((await resolveProductTaskText('整理本周球房活动安排', { dependencies })).allowed).toBe(true)
+    expect((await resolveProductTaskText('/goal 完成本周经营复盘', { dependencies })).allowed).toBe(true)
+    expect((await resolveProductTaskText('/clear', { dependencies })).allowed).toBe(true)
     await expect(resolveProductTaskText('/GOAL 完成本周经营复盘', { dependencies })).resolves.toEqual({
       allowed: true,
       content: '/goal 完成本周经营复盘',
@@ -39,36 +38,36 @@ describe('product task command policy', () => {
   it('allows only discovered runtime Agents with a complete /agent invocation', async () => {
     const dependencies = discovery()
 
-    expect(await allowsProductTaskText(
+    expect((await resolveProductTaskText(
       '/agent planner 先列出本周复盘计划',
       { cwd: '/workspace/billiards', dependencies },
-    )).toBe(true)
-    expect(await allowsProductTaskText(
+    )).allowed).toBe(true)
+    expect((await resolveProductTaskText(
       '/agent unknown-agent 先列出本周复盘计划',
       { cwd: '/workspace/billiards', dependencies },
-    )).toBe(false)
-    expect(await allowsProductTaskText(
+    )).allowed).toBe(false)
+    expect((await resolveProductTaskText(
       '/agent planner',
       { cwd: '/workspace/billiards', dependencies },
-    )).toBe(false)
-    expect(await allowsProductTaskText(
+    )).allowed).toBe(false)
+    expect((await resolveProductTaskText(
       '/agent planner 先列出本周复盘计划',
       { dependencies },
-    )).toBe(false)
+    )).allowed).toBe(false)
   })
 
   it('allows discovered Skills directly and through the bounded /skill form', async () => {
     const dependencies = discovery()
     const options = { cwd: '/workspace/billiards', dependencies }
 
-    expect(await allowsProductTaskText('/billiards-operations 整理今日营业安排', options)).toBe(true)
-    expect(await allowsProductTaskText('/skill weekly-review 汇总本周数据', options)).toBe(true)
+    expect((await resolveProductTaskText('/billiards-operations 整理今日营业安排', options)).allowed).toBe(true)
+    expect((await resolveProductTaskText('/skill weekly-review 汇总本周数据', options)).allowed).toBe(true)
     await expect(resolveProductTaskText('/skill weekly-review 汇总本周数据', options)).resolves.toEqual({
       allowed: true,
       content: '/weekly-review 汇总本周数据',
     })
-    expect(await allowsProductTaskText('/skill unknown-skill 汇总本周数据', options)).toBe(false)
-    expect(await allowsProductTaskText('/unknown-skill 汇总本周数据', options)).toBe(false)
+    expect((await resolveProductTaskText('/skill unknown-skill 汇总本周数据', options)).allowed).toBe(false)
+    expect((await resolveProductTaskText('/unknown-skill 汇总本周数据', options)).allowed).toBe(false)
   })
 
   it('blocks Core and runtime-management commands without loading a catalog', async () => {
@@ -90,10 +89,10 @@ describe('product task command policy', () => {
       '/context',
       '/mcp:private (MCP) inspect',
     ]) {
-      expect(await allowsProductTaskText(command, {
+      expect((await resolveProductTaskText(command, {
         cwd: '/workspace/billiards',
         dependencies,
-      })).toBe(false)
+      })).allowed).toBe(false)
     }
 
     expect(dependencies.listSkillNames).not.toHaveBeenCalled()
@@ -110,13 +109,13 @@ describe('product task command policy', () => {
       },
     }
 
-    expect(await allowsProductTaskText('/weekly-review 汇总本周数据', {
+    expect((await resolveProductTaskText('/weekly-review 汇总本周数据', {
       cwd: '/workspace/billiards',
       dependencies: unavailable,
-    })).toBe(false)
-    expect(await allowsProductTaskText('/agent planner 汇总本周数据', {
+    })).allowed).toBe(false)
+    expect((await resolveProductTaskText('/agent planner 汇总本周数据', {
       cwd: '/workspace/billiards',
       dependencies: unavailable,
-    })).toBe(false)
+    })).allowed).toBe(false)
   })
 })

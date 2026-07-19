@@ -218,15 +218,3 @@ export async function resolveProductTaskText(
     return { allowed: false }
   }
 }
-
-/**
- * Boolean convenience for callers that only need an allow/deny decision.
- * The product websocket uses resolveProductTaskText so a validated Skill
- * shorthand is forwarded as a real native Core command.
- */
-export async function allowsProductTaskText(
-  content: string,
-  options: ProductTaskCommandPolicyOptions = {},
-): Promise<boolean> {
-  return (await resolveProductTaskText(content, options)).allowed
-}
