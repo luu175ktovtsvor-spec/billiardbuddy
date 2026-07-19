@@ -78,12 +78,18 @@ type ProductSideTaskMetadata = ProductSideTask & {
   sourceTurnId: string
 }
 
-const PRODUCT_TASK_STORE_VERSION = 2 as const
+const PRODUCT_TASK_STORE_VERSION = 3 as const
 
 type ProductTaskStore = {
   version: typeof PRODUCT_TASK_STORE_VERSION
   tasks: Record<string, ProductTaskMetadata>
   sideTasks: Record<string, ProductSideTaskMetadata>
+  /**
+   * The legacy Core-session list was imported once into this product-owned
+   * registry. Future Core sessions are not automatically promoted to product
+   * tasks, so the product index has a single durable source of truth.
+   */
+  legacyCoreSessionsImportedAt?: string
 }
 
 export type AgentCoreSession = Pick<
@@ -325,7 +331,7 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
     throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
   }
 
-  if (value.version === PRODUCT_TASK_STORE_VERSION) {
+  if (value.version === PRODUCT_TASK_STORE_VERSION || value.version === 2) {
     const tasks: Record<string, ProductTaskMetadata> = {}
     const taskIdByCoreSessionId = new Map<string, string>()
     for (const [taskId, rawMetadata] of Object.entries(value.tasks)) {
@@ -372,12 +378,21 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
         }
       }
     }
-    return { version: PRODUCT_TASK_STORE_VERSION, tasks, sideTasks }
+    const importedAt = value.version === PRODUCT_TASK_STORE_VERSION
+      ? optionalString(value.legacyCoreSessionsImportedAt)
+      : undefined
+    return {
+      version: PRODUCT_TASK_STORE_VERSION,
+      tasks,
+      sideTasks,
+      ...(importedAt ? { legacyCoreSessionsImportedAt: importedAt } : {}),
+    }
   }
 
   // Version 1 keyed metadata by Core session id and returned that id as the
   // product id. Convert it in memory to stable opaque identifiers. The next
-  // lifecycle mutation writes this v2 representation atomically.
+  // product-index load imports any remaining legacy sessions and writes the
+  // v3 product registry atomically.
   if (value.version === PRODUCT_DOMAIN_VERSION) {
     const tasks: Record<string, ProductTaskMetadata> = {}
     for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
@@ -463,21 +478,21 @@ export class ProductTaskService {
   }
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
-    const [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    let [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    store = await this.importLegacyCoreSessionsOnce(store, sessions)
     const sideTaskSessionIds = new Set(
       Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
     )
-    const metadataByCoreSessionId = new Map(
-      Object.values(store.tasks).map((metadata) => [metadata.coreSessionId, metadata]),
-    )
     const records: ProductTaskRecord[] = []
     const coreSessionIdByTaskId = new Map<string, string>()
-    for (const session of sessions) {
-      const metadata = metadataByCoreSessionId.get(session.id) ?? defaultMetadata(session)
-      if (sideTaskSessionIds.has(session.id) || metadata.visibility === 'side_task') continue
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+    for (const metadata of Object.values(store.tasks)) {
+      if (sideTaskSessionIds.has(metadata.coreSessionId) || metadata.visibility === 'side_task') continue
+      const session = sessionsById.get(metadata.coreSessionId)
+      if (!session) continue
       const record = await this.toRecord(session, metadata)
       records.push(record)
-      coreSessionIdByTaskId.set(record.id, session.id)
+      coreSessionIdByTaskId.set(record.id, metadata.coreSessionId)
     }
     records.sort((left, right) => {
       if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
@@ -490,10 +505,8 @@ export class ProductTaskService {
         .map((task) => task.projectId),
     )
     const projects = new Map<string, ProductProject>()
-    const sessionById = new Map(sessions.map((session) => [session.id, session]))
-
     for (const task of records) {
-      const session = sessionById.get(coreSessionIdByTaskId.get(task.id) ?? '')
+      const session = sessionsById.get(coreSessionIdByTaskId.get(task.id) ?? '')
       const workDir = session?.projectRoot
         ?? session?.workDir
         ?? ''
@@ -771,14 +784,42 @@ export class ProductTaskService {
       if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
       return { task: await this.toRecord(session, stored), metadata: stored }
     }
+    throw ApiError.notFound(`任务不存在：${taskId}`)
+  }
 
-    // Core sessions created by older builds receive a stable opaque reference
-    // on first product access. Persisting remains lazy until a lifecycle
-    // mutation, so listing old sessions never performs a disk write.
-    const session = sessions.find((candidate) => legacyProductTaskId(candidate.id) === taskId)
-    if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
-    const metadata = defaultMetadata(session)
-    return { task: await this.toRecord(session, metadata), metadata }
+  /**
+   * Move the legacy Core list across the product boundary once.  After this
+   * write, only explicit product metadata participates in the task index or
+   * can resolve a public task id; Core may still execute a registered task,
+   * but it no longer defines the product's task collection.
+   */
+  private async importLegacyCoreSessionsOnce(
+    store: ProductTaskStore,
+    sessions: readonly AgentCoreSession[],
+  ): Promise<ProductTaskStore> {
+    if (store.legacyCoreSessionsImportedAt) return store
+
+    const registeredCoreSessionIds = new Set(
+      Object.values(store.tasks).map((task) => task.coreSessionId),
+    )
+    const sideTaskSessionIds = new Set(
+      Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
+    )
+
+    for (const session of sessions) {
+      if (registeredCoreSessionIds.has(session.id) || sideTaskSessionIds.has(session.id)) continue
+      const taskId = legacyProductTaskId(session.id)
+      const existing = store.tasks[taskId]
+      if (existing && existing.coreSessionId !== session.id) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      store.tasks[taskId] = defaultMetadata(session)
+      registeredCoreSessionIds.add(session.id)
+    }
+
+    store.legacyCoreSessionsImportedAt = new Date().toISOString()
+    await this.writeStore(store)
+    return store
   }
 
   private async toRecord(
