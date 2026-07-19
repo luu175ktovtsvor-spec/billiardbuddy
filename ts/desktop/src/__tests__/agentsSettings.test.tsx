@@ -58,12 +58,11 @@ describe('Settings > Agents tab', () => {
     expect(screen.getAllByText('协作助手').length).toBeGreaterThan(0)
   })
 
-  it('returns to the latest non-session tab instead of reopening a legacy Core session', () => {
+  it('returns to the latest product surface', () => {
     useTabStore.setState({
       tabs: [
-        { sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks', status: 'idle' },
-        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
-        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+        { sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings' },
       ],
       activeTabId: '__settings__',
     })
@@ -74,11 +73,10 @@ describe('Settings > Agents tab', () => {
     expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
   })
 
-  it('opens the product task index when settings is the only non-session surface', () => {
+  it('opens the product task index when settings is the only open surface', () => {
     useTabStore.setState({
       tabs: [
-        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
-        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings' },
       ],
       activeTabId: '__settings__',
     })
@@ -91,7 +89,6 @@ describe('Settings > Agents tab', () => {
       sessionId: PRODUCT_TASKS_TAB_ID,
       title: '任务中心',
       type: 'product-tasks',
-      status: 'idle',
     })
   })
 })

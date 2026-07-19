@@ -194,7 +194,7 @@ export function Settings() {
 
   const returnToApp = () => {
     const tabs = useTabStore.getState()
-    const target = [...tabs.tabs].reverse().find((tab) => tab.type !== 'settings' && tab.type !== 'session')
+    const target = [...tabs.tabs].reverse().find((tab) => tab.type !== 'settings')
     if (target) {
       tabs.setActiveTab(target.sessionId)
       return

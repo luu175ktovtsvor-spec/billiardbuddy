@@ -45,7 +45,6 @@ describe('GeneralSettings output style', () => {
         sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
         title: 'Project task',
         type: 'product-task',
-        status: 'idle',
         taskId: 'task-1',
       }],
     })

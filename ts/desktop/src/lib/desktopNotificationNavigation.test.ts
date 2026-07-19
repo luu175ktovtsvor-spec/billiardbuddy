@@ -13,7 +13,7 @@ describe('desktopNotificationNavigation', () => {
     openDesktopNotificationTarget({ type: 'scheduled' })
 
     expect(useTabStore.getState().tabs).toEqual([
-      { sessionId: SCHEDULED_TAB_ID, title: 'Scheduled Tasks', type: 'scheduled', status: 'idle' },
+      { sessionId: SCHEDULED_TAB_ID, title: 'Scheduled Tasks', type: 'scheduled' },
     ])
     expect(useTabStore.getState().activeTabId).toBe(SCHEDULED_TAB_ID)
   })

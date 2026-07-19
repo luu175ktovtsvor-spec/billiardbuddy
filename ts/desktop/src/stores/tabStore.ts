@@ -7,21 +7,13 @@ let nextNewProductTaskRequestId = 0
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
 export const TERMINAL_TAB_PREFIX = '__terminal__'
-export const WORKBENCH_TAB_PREFIX = '__workbench__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
 export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 
-/**
- * These discriminants remain readable only so stale in-memory state can be
- * evicted safely. New renderer navigation must never create either surface.
- */
-export type LegacyTabType = 'session' | 'workbench'
-
 export type TabType =
-  | LegacyTabType
   | 'settings'
   | 'scheduled'
   | 'terminal'
@@ -47,10 +39,8 @@ export type Tab = {
   sessionId: string
   title: string
   type: TabType
-  status: 'idle' | 'running' | 'error'
   terminalCwd?: string
   terminalRuntimeId?: string
-  workbenchSessionId?: string
   newTaskWorkDir?: string
   newTaskRequestId?: number
   taskId?: string
@@ -77,11 +67,7 @@ type TabStore = {
   openProductTaskTab: (taskId: string, title: string) => string
   closeTab: (sessionId: string) => void
   setActiveTab: (sessionId: string) => void
-  updateTabTitle: (sessionId: string, title: string) => void
   updateProductTaskTitle: (taskId: string, title: string) => void
-  updateTabStatus: (sessionId: string, status: Tab['status']) => void
-  replaceTabSession: (oldSessionId: string, newSessionId: string) => void
-  moveTab: (fromIndex: number, toIndex: number) => void
 
   saveTabs: () => void
   restoreTabs: () => Promise<void>
@@ -144,11 +130,11 @@ export const useTabStore = create<TabStore>((set, get) => ({
           ? {
               ...tab,
               title,
-              ...(!(tab as Partial<Tab>).type ? { type } : {}),
+              type,
             }
           : tab,
       )
-      : [...tabs, { sessionId, title, type, status: 'idle' }]
+      : [...tabs, { sessionId, title, type }]
     if (existing) {
       set({
         tabs: nextTabs,
@@ -186,7 +172,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
     ) + 1
     const sessionId = `${TERMINAL_TAB_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     set({
-      tabs: [...tabs, { sessionId, title: `Terminal ${nextIndex}`, type: 'terminal', status: 'idle', terminalCwd: cwd, terminalRuntimeId }],
+      tabs: [...tabs, { sessionId, title: `Terminal ${nextIndex}`, type: 'terminal', terminalCwd: cwd, terminalRuntimeId }],
       activeTabId: sessionId,
       lastActiveProductTaskId: getOpenProductTaskId(tabs, lastActiveProductTaskId),
     })
@@ -202,7 +188,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
       sessionId: NEW_PRODUCT_TASK_TAB_ID,
       title: '新建任务',
       type: 'new-product-task',
-      status: 'idle',
       ...(normalizedWorkDir ? { newTaskWorkDir: normalizedWorkDir } : {}),
       newTaskRequestId: requestId,
     }
@@ -227,7 +212,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
       sessionId: tabId,
       title,
       type: 'product-task',
-      status: 'idle',
       taskId: normalizedTaskId,
     }
     const existing = tabs.some((current) => current.sessionId === tabId)
@@ -289,13 +273,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
     get().saveTabs()
   },
 
-  updateTabTitle: (sessionId, title) => {
-    set((s) => ({
-      tabs: s.tabs.map((t) => (t.sessionId === sessionId ? { ...t, title } : t)),
-    }))
-    get().saveTabs()
-  },
-
   updateProductTaskTitle: (taskId, title) => {
     const normalizedTaskId = taskId.trim()
     const normalizedTitle = title.trim()
@@ -314,46 +291,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
           ? { ...tab, title: normalizedTitle }
           : tab
       )),
-    }))
-    get().saveTabs()
-  },
-
-  updateTabStatus: (sessionId, status) => {
-    set((s) => ({
-      tabs: s.tabs.map((t) => (t.sessionId === sessionId ? { ...t, status } : t)),
-    }))
-  },
-
-  replaceTabSession: (oldSessionId, newSessionId) => {
-    const { activeTabId, lastActiveProductTaskId } = get()
-    set((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.sessionId === oldSessionId ? { ...t, sessionId: newSessionId } : t,
-      ),
-      activeTabId: activeTabId === oldSessionId ? newSessionId : activeTabId,
-      lastActiveProductTaskId: resolveLastActiveProductTaskId(
-        s.tabs.map((t) => (t.sessionId === oldSessionId ? { ...t, sessionId: newSessionId } : t)),
-        activeTabId === oldSessionId ? newSessionId : activeTabId,
-        lastActiveProductTaskId,
-      ),
-    }))
-    get().saveTabs()
-  },
-
-  moveTab: (fromIndex, toIndex) => {
-    if (fromIndex === toIndex) return
-    const { tabs } = get()
-    if (fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) return
-    const newTabs = [...tabs]
-    const [moved] = newTabs.splice(fromIndex, 1)
-    newTabs.splice(toIndex, 0, moved!)
-    set((state) => ({
-      tabs: newTabs,
-      lastActiveProductTaskId: resolveLastActiveProductTaskId(
-        newTabs,
-        state.activeTabId,
-        state.lastActiveProductTaskId,
-      ),
     }))
     get().saveTabs()
   },
@@ -448,7 +385,7 @@ function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
     || tab.type === 'video-studio'
     || tab.type === 'product-tasks'
   ) {
-    return [{ sessionId: tab.sessionId, title: tab.title, type: tab.type, status: 'idle' }]
+    return [{ sessionId: tab.sessionId, title: tab.title, type: tab.type }]
   }
 
   if (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim()) {
@@ -456,7 +393,6 @@ function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
       sessionId: tab.sessionId,
       title: tab.title,
       type: 'product-task',
-      status: 'idle',
       taskId: tab.taskId.trim(),
     }]
   }

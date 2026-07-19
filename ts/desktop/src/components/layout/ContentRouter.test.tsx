@@ -67,7 +67,6 @@ describe('ContentRouter tab surfaces', () => {
         sessionId: '__new_product_task__',
         title: '新建任务',
         type: 'new-product-task',
-        status: 'idle',
         newTaskWorkDir: '/workspace/billiard',
         newTaskRequestId: 3,
       }],
@@ -83,7 +82,7 @@ describe('ContentRouter tab surfaces', () => {
 
   it('renders the active terminal tab as main content', () => {
     useTabStore.setState({
-      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', status: 'idle', terminalCwd: '/tmp/project' }],
+      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', terminalCwd: '/tmp/project' }],
       activeTabId: '__terminal__1',
     })
 
@@ -101,7 +100,6 @@ describe('ContentRouter tab surfaces', () => {
         sessionId: '__terminal__1',
         title: 'Terminal 1',
         type: 'terminal',
-        status: 'idle',
         terminalCwd: '/tmp/project',
         terminalRuntimeId: '__session_terminal__session-1',
       }],
@@ -116,12 +114,11 @@ describe('ContentRouter tab surfaces', () => {
   it('keeps terminal tabs mounted while a product task is active', () => {
     useTabStore.setState({
       tabs: [
-        { sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', status: 'idle' },
+        { sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal' },
         {
           sessionId: '__product_task__task-1',
           title: '任务',
           type: 'product-task',
-          status: 'idle',
           taskId: 'task-1',
         },
       ],
@@ -136,7 +133,7 @@ describe('ContentRouter tab surfaces', () => {
 
   it('can open another terminal tab from a terminal page', () => {
     useTabStore.setState({
-      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', status: 'idle', terminalCwd: '/tmp/project' }],
+      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', terminalCwd: '/tmp/project' }],
       activeTabId: '__terminal__1',
     })
 
@@ -148,40 +145,9 @@ describe('ContentRouter tab surfaces', () => {
     expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === useTabStore.getState().activeTabId)?.terminalCwd).toBe('/tmp/project')
   })
 
-  it('evicts a legacy workbench tab into the product task index and closes native preview', async () => {
-    useTabStore.setState({
-      tabs: [{
-        sessionId: '__workbench__session-1',
-        title: 'Workbench',
-        type: 'workbench',
-        status: 'idle',
-        workbenchSessionId: 'session-1',
-      }],
-      activeTabId: '__workbench__session-1',
-    })
-
-    render(<ContentRouter />)
-
-    await waitFor(() => {
-      expect(useTabStore.getState()).toMatchObject({
-        activeTabId: '__product_tasks__',
-        tabs: [{
-          sessionId: '__product_tasks__',
-          title: '任务中心',
-          type: 'product-tasks',
-          status: 'idle',
-        }],
-      })
-    })
-
-    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'task-index')
-    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
-    expect(previewBridgeMock.close).toHaveBeenCalled()
-  })
-
   it('renders the image workbench as a product surface', () => {
     useTabStore.setState({
-      tabs: [{ sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench', status: 'idle' }],
+      tabs: [{ sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' }],
       activeTabId: '__image_workbench__',
     })
 
@@ -193,7 +159,7 @@ describe('ContentRouter tab surfaces', () => {
 
   it('renders the video studio as a product surface', () => {
     useTabStore.setState({
-      tabs: [{ sessionId: '__video_studio__', title: '剪视频', type: 'video-studio', status: 'idle' }],
+      tabs: [{ sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' }],
       activeTabId: '__video_studio__',
     })
 
@@ -205,7 +171,7 @@ describe('ContentRouter tab surfaces', () => {
 
   it('renders the product task index without mounting the chat session surface', () => {
     useTabStore.setState({
-      tabs: [{ sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks', status: 'idle' }],
+      tabs: [{ sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' }],
       activeTabId: '__product_tasks__',
     })
 
@@ -221,7 +187,6 @@ describe('ContentRouter tab surfaces', () => {
         sessionId: '__product_task__task-1',
         title: '整理开球训练',
         type: 'product-task',
-        status: 'idle',
         taskId: 'task-1',
       }],
       activeTabId: '__product_task__task-1',
@@ -240,10 +205,9 @@ describe('ContentRouter tab surfaces', () => {
           sessionId: '__product_task__task-1',
           title: '整理开球训练',
           type: 'product-task',
-          status: 'idle',
           taskId: 'task-1',
         },
-        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings' },
       ],
       activeTabId: '__product_task__task-1',
     })
@@ -262,13 +226,12 @@ describe('ContentRouter tab surfaces', () => {
     })
   })
 
-  it('does not route an unknown persisted tab through the legacy chat surface', () => {
+  it('keeps an unknown tab out of task runtime routing', () => {
     useTabStore.setState({
       tabs: [{
         sessionId: '__unknown_tab__',
         title: 'Unknown',
         type: 'unknown' as never,
-        status: 'idle',
       }],
       activeTabId: '__unknown_tab__',
     })
@@ -277,67 +240,7 @@ describe('ContentRouter tab surfaces', () => {
 
     expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
-  })
-
-  it('evicts every legacy session tab into the product task index and closes native preview', async () => {
-    useTabStore.setState({
-      tabs: [
-        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
-        { sessionId: 'session-2', title: '另一个旧会话', type: 'session', status: 'idle' },
-      ],
-      activeTabId: 'session-1',
-    })
-
-    render(<ContentRouter />)
-
-    await waitFor(() => {
-      expect(useTabStore.getState()).toMatchObject({
-        activeTabId: '__product_tasks__',
-        tabs: [{
-          sessionId: '__product_tasks__',
-          title: '任务中心',
-          type: 'product-tasks',
-          status: 'idle',
-        }],
-      })
-    })
-
-    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'task-index')
-    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
-    await waitFor(() => {
-      expect(previewBridgeMock.close).toHaveBeenCalled()
-    })
-  })
-
-  it('evicts a background legacy tab without interrupting the active product task', async () => {
-    useTabStore.setState({
-      tabs: [
-        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
-        {
-          sessionId: '__product_task__task-1',
-          title: '整理开球训练',
-          type: 'product-task',
-          status: 'idle',
-          taskId: 'task-1',
-        },
-      ],
-      activeTabId: '__product_task__task-1',
-    })
-
-    render(<ContentRouter />)
-
-    await waitFor(() => {
-      expect(useTabStore.getState()).toMatchObject({
-        activeTabId: '__product_task__task-1',
-        tabs: [{
-          sessionId: '__product_task__task-1',
-          type: 'product-task',
-          taskId: 'task-1',
-        }],
-      })
-    })
-
-    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
-    expect(previewBridgeMock.close).not.toHaveBeenCalled()
+    expect(useTabStore.getState().activeTabId).toBe('__unknown_tab__')
+    expect(useTabStore.getState().tabs).toHaveLength(1)
   })
 })

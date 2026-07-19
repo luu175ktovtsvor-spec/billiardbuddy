@@ -372,13 +372,12 @@ describe('product task runtime store', () => {
           title: task.title,
           type: 'product-task',
           taskId: task.id,
-          status: 'idle',
         },
         {
-          sessionId: task.id,
-          title: '旧会话标题',
-          type: 'session',
-          status: 'idle',
+          sessionId: '__product_task__task-other',
+          title: '另一个任务标题',
+          type: 'product-task',
+          taskId: 'task-other',
         },
       ],
       activeTabId: '__product_task__task-title',
@@ -392,7 +391,7 @@ describe('product task runtime store', () => {
     expect(useProductTaskStore.getState().index.tasks[0]?.title).toBe('自动整理开球训练')
     expect(useTabStore.getState().tabs).toEqual([
       expect.objectContaining({ type: 'product-task', title: '自动整理开球训练' }),
-      expect.objectContaining({ type: 'session', title: '旧会话标题' }),
+      expect.objectContaining({ taskId: 'task-other', title: '另一个任务标题' }),
     ])
   })
 

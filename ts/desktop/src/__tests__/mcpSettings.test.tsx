@@ -47,14 +47,12 @@ describe('McpSettings', () => {
           sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
           title: 'Test task',
           type: 'product-task',
-          status: 'idle',
           taskId: 'task-1',
         },
         {
           sessionId: '__settings__',
           title: 'Settings',
           type: 'settings',
-          status: 'idle',
         },
       ],
     })

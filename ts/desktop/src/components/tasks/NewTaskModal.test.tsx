@@ -28,7 +28,6 @@ describe('NewTaskModal', () => {
         sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
         title: '运营任务',
         type: 'product-task',
-        status: 'idle',
         taskId: 'task-1',
       }],
     })

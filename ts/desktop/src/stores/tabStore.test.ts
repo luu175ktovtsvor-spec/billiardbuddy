@@ -33,33 +33,31 @@ describe('tabStore', () => {
       type: string,
     ) => void
 
-    unsafeOpenTab('session-1', '旧会话', 'session')
-    unsafeOpenTab('__workbench__session-1', 'Workbench', 'workbench')
+    unsafeOpenTab('__unknown__', 'Unsupported', 'unknown')
+    unsafeOpenTab('__terminal__manual', 'Manual terminal', 'terminal')
 
     expect(useTabStore.getState().tabs).toEqual([{
       sessionId: PRODUCT_TASKS_TAB_ID,
       title: '任务中心',
       type: 'product-tasks',
-      status: 'idle',
     }])
     expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
   })
 
-  it('does not persist raw Core session tabs', () => {
+  it('does not persist ephemeral tab surfaces', () => {
     useTabStore.setState({
       tabs: [
-        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
-        { sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings', status: 'idle' },
+        { sessionId: NEW_PRODUCT_TASK_TAB_ID, title: '新建任务', type: 'new-product-task' },
+        { sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings' },
         {
           sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
           title: '整理开球训练',
           type: 'product-task',
-          status: 'idle',
           taskId: 'task-1',
         },
       ],
-      activeTabId: 'session-1',
-      lastActiveProductTaskId: 'session-1',
+      activeTabId: NEW_PRODUCT_TASK_TAB_ID,
+      lastActiveProductTaskId: null,
     })
 
     useTabStore.getState().saveTabs()
@@ -86,7 +84,6 @@ describe('tabStore', () => {
         sessionId: tabId,
         title: 'Terminal 1',
         type: 'terminal',
-        status: 'idle',
         terminalCwd: '/tmp/project',
         terminalRuntimeId: '__session_terminal__session-1',
       },
@@ -130,7 +127,6 @@ describe('tabStore', () => {
       sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
       title: '整理开球训练',
       type: 'product-task',
-      status: 'idle',
       taskId: 'task-1',
     }])
     expect(useTabStore.getState().activeTabId).toBe(tabId)
@@ -164,22 +160,6 @@ describe('tabStore', () => {
     expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === taskBId)?.taskId).toBe('task-b')
   })
 
-  it('does not let tab order change the explicit product task context', () => {
-    useTabStore.getState().openProductTaskTab('task-a', '任务 A')
-    useTabStore.getState().openProductTaskTab('task-b', '任务 B')
-    useTabStore.getState().setActiveTab(`${PRODUCT_TASK_TAB_PREFIX}task-a`)
-    useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
-
-    useTabStore.getState().moveTab(0, 2)
-
-    expect(useTabStore.getState().tabs.map((tab) => tab.taskId ?? tab.sessionId)).toEqual([
-      'task-b',
-      SETTINGS_TAB_ID,
-      'task-a',
-    ])
-    expect(useTabStore.getState().lastActiveProductTaskId).toBe('task-a')
-  })
-
   it('selects the active product task as a safe close fallback and clears a closed remembered task', () => {
     const taskAId = useTabStore.getState().openProductTaskTab('task-a', '任务 A')
     const taskBId = useTabStore.getState().openProductTaskTab('task-b', '任务 B')
@@ -207,14 +187,13 @@ describe('tabStore', () => {
           sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
           title: '旧任务标题',
           type: 'product-task',
-          status: 'idle',
           taskId: 'task-1',
         },
         {
-          sessionId: 'task-1',
-          title: '旧会话标题',
-          type: 'session',
-          status: 'idle',
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-2`,
+          title: '另一个任务标题',
+          type: 'product-task',
+          taskId: 'task-2',
         },
       ],
       activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
@@ -229,14 +208,14 @@ describe('tabStore', () => {
         title: '实时任务标题',
       }),
       expect.objectContaining({
-        sessionId: 'task-1',
-        type: 'session',
-        title: '旧会话标题',
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-2`,
+        type: 'product-task',
+        title: '另一个任务标题',
       }),
     ])
   })
 
-  it('drops legacy session tabs during restore without calling the Core session API', async () => {
+  it('drops unsupported persisted tabs during restore', async () => {
     localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [
         { sessionId: 'session-1', title: 'Old Session', type: 'session' },
@@ -253,7 +232,6 @@ describe('tabStore', () => {
         sessionId: PRODUCT_TASKS_TAB_ID,
         title: '任务中心',
         type: 'product-tasks',
-        status: 'idle',
       },
     ])
   })
@@ -272,7 +250,6 @@ describe('tabStore', () => {
         sessionId: PRODUCT_TASKS_TAB_ID,
         title: '任务中心',
         type: 'product-tasks',
-        status: 'idle',
       }],
     })
   })
