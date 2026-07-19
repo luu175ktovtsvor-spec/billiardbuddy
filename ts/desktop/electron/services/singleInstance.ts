@@ -5,6 +5,7 @@ export function acquireSingleInstanceLock(
   app: App,
   getMainWindow: () => BrowserWindow | null,
   env: NodeJS.ProcessEnv = process.env,
+  onSecondInstance?: (commandLine: readonly string[]) => void,
 ): boolean {
   if (env.BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK === '1') {
     return true
@@ -16,8 +17,9 @@ export function acquireSingleInstanceLock(
     return false
   }
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine) => {
     showMainWindow(getMainWindow(), app)
+    onSecondInstance?.(commandLine)
   })
 
   return true

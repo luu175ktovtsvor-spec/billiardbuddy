@@ -15,6 +15,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   previewWebview: false,
   shell: false,
   terminal: false,
+  taskWindows: false,
   updates: false,
   windowControls: false,
   zoom: false,
@@ -178,6 +179,9 @@ export const browserHost: DesktopHost = {
     },
     async isMaximized() {
       return false
+    },
+    async openProductTask() {
+      unsupported('Opening product task windows')
     },
     async onResized() {
       return noopUnlisten

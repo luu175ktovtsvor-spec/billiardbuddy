@@ -2,6 +2,11 @@ import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, session, 
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
+import {
+  parseProductTaskLink,
+  PRODUCT_TASK_LINK_SCHEME,
+  PRODUCT_TASK_WINDOW_QUERY_KEY,
+} from '../../shared/product/taskLinks'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
@@ -39,7 +44,7 @@ import {
   installMainWindowNavigationGuards,
   installPreviewNavigationGuards,
   isTrustedMainWindowFrame,
-  isTrustedMainWindowSender,
+  isTrustedMainWindowNavigationUrl,
 } from './services/navigationGuards'
 import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
@@ -73,7 +78,9 @@ let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
-let mainWindowRendererEntry: string | null = null
+const trustedProductWindowEntries = new Map<BrowserWindow, string>()
+const productTaskWindows = new Map<string, BrowserWindow>()
+let pendingProductTaskId: string | null = null
 
 installMacOsChromiumKeychainPromptGuard(app)
 
@@ -106,12 +113,121 @@ function rendererEntry() {
   })
 }
 
-async function loadRendererEntry(window: BrowserWindow, entry: string) {
+async function loadRendererEntry(
+  window: BrowserWindow,
+  entry: string,
+  query: Record<string, string> = {},
+) {
   if (/^https?:\/\//.test(entry)) {
-    await window.loadURL(entry)
+    const url = new URL(entry)
+    for (const [key, value] of Object.entries(query)) {
+      url.searchParams.set(key, value)
+    }
+    await window.loadURL(url.toString())
   } else {
-    await window.loadFile(entry)
+    await window.loadFile(entry, { query })
   }
+}
+
+function registerTrustedProductWindow(window: BrowserWindow, entry: string) {
+  trustedProductWindowEntries.set(window, entry)
+  window.once('closed', () => {
+    trustedProductWindowEntries.delete(window)
+  })
+}
+
+function existingProductTaskWindow(taskId: string): BrowserWindow | null {
+  const window = productTaskWindows.get(taskId)
+  if (!window || window.isDestroyed()) {
+    productTaskWindows.delete(taskId)
+    return null
+  }
+  return window
+}
+
+async function openProductTaskWindow(taskId: string): Promise<void> {
+  const existing = existingProductTaskWindow(taskId)
+  if (existing) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return
+  }
+
+  const entry = rendererEntry()
+  const taskWindow = new BrowserWindow({
+    width: 1080,
+    height: 820,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
+    show: false,
+    ...windowChromeOptionsForPlatform(process.platform),
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+    },
+  })
+  productTaskWindows.set(taskId, taskWindow)
+  registerTrustedProductWindow(taskWindow, entry)
+
+  taskWindow.once('closed', () => {
+    if (productTaskWindows.get(taskId) === taskWindow) {
+      productTaskWindows.delete(taskId)
+    }
+    previewService?.closeForParent(taskWindow)
+  })
+  taskWindow.on('resize', () => {
+    taskWindow.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
+  })
+  installMainWindowNavigationGuards(taskWindow.webContents, {
+    openExternal: openExternalUrl,
+    rendererEntry: entry,
+  })
+  installPreviewCleanupOnRendererNavigation(taskWindow.webContents, () => {
+    previewService?.close()
+  })
+
+  try {
+    await loadRendererEntry(taskWindow, entry, { [PRODUCT_TASK_WINDOW_QUERY_KEY]: taskId })
+    taskWindow.show()
+    taskWindow.focus()
+    refreshWindowsDragHitTest(taskWindow, process.platform)
+  } catch (error) {
+    taskWindow.destroy()
+    throw error
+  }
+}
+
+function queueOrOpenProductTaskLink(value: string) {
+  const taskId = parseProductTaskLink(value)
+  if (!taskId) return
+
+  if (!app.isReady()) {
+    pendingProductTaskId = taskId
+    return
+  }
+
+  void openProductTaskWindow(taskId).catch(error => {
+    console.error('[desktop] failed to open product task link:', error)
+  })
+}
+
+function registerProductTaskProtocol() {
+  const defaultApp = (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp === true
+  if (defaultApp && process.argv[1]) {
+    app.setAsDefaultProtocolClient(
+      PRODUCT_TASK_LINK_SCHEME,
+      process.execPath,
+      [path.resolve(process.argv[1])],
+    )
+    return
+  }
+  app.setAsDefaultProtocolClient(PRODUCT_TASK_LINK_SCHEME)
 }
 
 function getServerRuntime() {
@@ -208,9 +324,11 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
 }
 
 function isTrustedMainWindowIpcSender(event: Electron.IpcMainInvokeEvent): boolean {
-  return mainWindowRendererEntry !== null
-    && isTrustedMainWindowSender(event.sender, mainWindow?.webContents, mainWindowRendererEntry)
-    && isTrustedMainWindowFrame(event.senderFrame, mainWindowRendererEntry)
+  const window = BrowserWindow.fromWebContents(event.sender)
+  const entry = window ? trustedProductWindowEntries.get(window) : undefined
+  return entry !== undefined
+    && isTrustedMainWindowNavigationUrl(event.sender.getURL(), entry)
+    && isTrustedMainWindowFrame(event.senderFrame, entry)
 }
 
 function registerHandler<T>(
@@ -265,7 +383,7 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
 
 function registerIpcHandlers() {
   ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
-    void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
+    void getPreviewService().sendMessageToRenderer(event.sender, raw)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
@@ -340,6 +458,8 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.windowRequestAttention, event => currentWindow(event).flashFrame(true))
   registerHandler(ELECTRON_IPC_CHANNELS.windowFocus, event => currentWindow(event).focus())
   registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowOpenProductTask, (_event, payload) =>
+    openProductTaskWindow(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) =>
     getTerminalService().spawn((payload ?? {}) as TerminalSpawnInput, event.sender))
   registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (_event, payload) => {
@@ -358,7 +478,12 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, (_event, payload) => getTerminalService().setBashPath(payload as string | null))
   registerHandler(ELECTRON_IPC_CHANNELS.previewOpen, (event, payload) => {
     const { url, bounds } = payload as { url: string, bounds?: PreviewBounds }
-    return getPreviewService().open(currentWindow(event), url, bounds ?? { x: 0, y: 0, width: 0, height: 0 })
+    return getPreviewService().open(
+      currentWindow(event),
+      url,
+      bounds ?? { x: 0, y: 0, width: 0, height: 0 },
+      event.sender,
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.previewNavigate, (_event, payload) => getPreviewService().navigate(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.previewSetBounds, (_event, payload) => getPreviewService().setBounds(payload as PreviewBounds))
@@ -398,7 +523,7 @@ async function createMainWindow() {
       webviewTag: false,
     },
   })
-  mainWindowRendererEntry = entry
+  registerTrustedProductWindow(mainWindow, entry)
 
   installMainWindowNavigationGuards(mainWindow.webContents, {
     openExternal: openExternalUrl,
@@ -434,7 +559,20 @@ async function createMainWindow() {
   writeWindowSmokeSnapshot(mainWindow, 'after-final-show')
 }
 
-if (!acquireSingleInstanceLock(app, () => mainWindow)) {
+registerProductTaskProtocol()
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  queueOrOpenProductTaskLink(url)
+})
+
+const launchProductTaskLink = process.argv.find(value => parseProductTaskLink(value) !== null)
+if (launchProductTaskLink) queueOrOpenProductTaskLink(launchProductTaskLink)
+
+if (!acquireSingleInstanceLock(app, () => mainWindow, process.env, commandLine => {
+  const taskLink = commandLine.find(value => parseProductTaskLink(value) !== null)
+  if (taskLink) queueOrOpenProductTaskLink(taskLink)
+})) {
   process.exit(0)
 }
 
@@ -465,6 +603,13 @@ app.whenReady().then(async () => {
     })
   }
   await createMainWindow()
+  if (pendingProductTaskId) {
+    const taskId = pendingProductTaskId
+    pendingProductTaskId = null
+    await openProductTaskWindow(taskId).catch(error => {
+      console.error('[desktop] failed to open initial product task link:', error)
+    })
+  }
   scheduleNotificationSmoke({
     env: process.env,
     NotificationClass: Notification,

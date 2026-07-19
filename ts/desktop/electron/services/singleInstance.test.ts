@@ -30,7 +30,7 @@ describe('Electron single-instance service', () => {
   })
 
   it('registers a second-instance focus handler after acquiring the lock', () => {
-    let secondInstanceHandler: (() => void) | undefined
+    let secondInstanceHandler: ((event: unknown, commandLine: string[]) => void) | undefined
     const window = {
       isVisible: () => false,
       isMinimized: () => false,
@@ -42,7 +42,7 @@ describe('Electron single-instance service', () => {
       requestSingleInstanceLock: vi.fn(() => true),
       quit: vi.fn(),
       show: vi.fn(),
-      on: vi.fn((_event: string, handler: () => void) => {
+      on: vi.fn((_event: string, handler: (event: unknown, commandLine: string[]) => void) => {
         secondInstanceHandler = handler
       }),
     }
@@ -50,9 +50,27 @@ describe('Electron single-instance service', () => {
     expect(acquireSingleInstanceLock(app as never, () => window as never)).toBe(true)
     expect(app.on).toHaveBeenCalledWith('second-instance', expect.any(Function))
 
-    secondInstanceHandler?.()
+    secondInstanceHandler?.({}, [])
     expect(app.show).toHaveBeenCalledTimes(1)
     expect(window.show).toHaveBeenCalledTimes(1)
     expect(window.focus).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards second-instance command-line arguments after focusing the main window', () => {
+    let secondInstanceHandler: ((event: unknown, commandLine: string[]) => void) | undefined
+    const forwarded = vi.fn()
+    const app = {
+      requestSingleInstanceLock: vi.fn(() => true),
+      quit: vi.fn(),
+      show: vi.fn(),
+      on: vi.fn((_event: string, handler: (event: unknown, commandLine: string[]) => void) => {
+        secondInstanceHandler = handler
+      }),
+    }
+
+    acquireSingleInstanceLock(app as never, () => null, {}, forwarded)
+    secondInstanceHandler?.({}, ['BilliardBuddy', 'billiardbuddy://task/task-1'])
+
+    expect(forwarded).toHaveBeenCalledWith(['BilliardBuddy', 'billiardbuddy://task/task-1'])
   })
 })

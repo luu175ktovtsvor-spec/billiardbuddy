@@ -24,6 +24,7 @@ import {
 } from '../../lib/composerAttachments'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
+import { buildProductTaskLink } from '../../../../shared/product/taskLinks'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
 import { validateProductTaskAttachments } from '../taskAttachments'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
@@ -688,7 +689,10 @@ function TaskRow({
 }) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(task.title)
+  const [taskWindowError, setTaskWindowError] = useState<string | null>(null)
   const renamed = mutations[taskActionKey(task.id, 'rename')] === true
+  const desktopHost = getDesktopHost()
+  const taskLink = buildProductTaskLink(task.id)
 
   const run = async (action: () => Promise<unknown>) => {
     try {
@@ -696,6 +700,13 @@ function TaskRow({
     } catch {
       // The product store exposes the server error in the index surface.
     }
+  }
+
+  const openInNewWindow = () => {
+    setTaskWindowError(null)
+    void desktopHost.window.openProductTask(task.id).catch(() => {
+      setTaskWindowError('暂时无法打开独立任务窗口，请稍后重试。')
+    })
   }
 
   return (
@@ -733,6 +744,14 @@ function TaskRow({
           </dl>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
+          {taskLink ? (
+            <CopyButton
+              text={taskLink}
+              label="复制链接"
+              copiedLabel="已复制链接"
+              className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
+            />
+          ) : null}
           <CopyButton
             text={task.id}
             label="复制 ID"
@@ -746,6 +765,9 @@ function TaskRow({
             className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
           />
           <button type="button" onClick={() => onOpenTask(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开</button>
+          {desktopHost.capabilities.taskWindows ? (
+            <button type="button" onClick={openInNewWindow} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">新窗口打开</button>
+          ) : null}
           {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
           {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
           {hasAction(task, 'unpin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'unpin')] === true} label="取消置顶" onClick={() => run(() => onUnpinTask(task.id))} /> : null}
@@ -767,6 +789,7 @@ function TaskRow({
           {hasAction(task, 'restore') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'restore')] === true} label="恢复" onClick={() => run(() => onRestoreTask(task.id))} /> : null}
         </div>
       </div>
+      {taskWindowError ? <p role="alert" className="mt-2 text-xs text-[var(--color-error)]">{taskWindowError}</p> : null}
     </article>
   )
 }
