@@ -466,6 +466,24 @@ describe('ProductTaskService', () => {
     expect(core.getLastCreateInput()).toBeNull()
   })
 
+  it('rejects a malformed worktree choice before creating a Core session', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    await expect(service.createTask({
+      workDir: '/workspace/hall-operations',
+      useWorktree: 'yes',
+    } as unknown as Parameters<ProductTaskService['createTask']>[0])).rejects.toThrow(
+      'useWorktree 必须是布尔值',
+    )
+
+    expect(core.getLastCreateInput()).toBeNull()
+  })
+
   it('keeps BilliardBuddy task lifecycle metadata outside the Agent core sessions', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
@@ -767,6 +785,23 @@ describe('ProductTaskService', () => {
     await expect(service.continueTask(task.id, {
       target: 'elsewhere' as never,
     })).rejects.toThrow('target 必须是 current_workspace 或 new_worktree')
+  })
+
+  it('rejects a malformed continuation payload before branching the task', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+
+    await expect(service.continueTask(
+      task.id,
+      [] as unknown as Parameters<ProductTaskService['continueTask']>[1],
+    )).rejects.toThrow('继续任务参数必须是对象')
+
+    expect(core.getLastBranchInput()).toBeNull()
   })
 
   it('keeps temporary side forks out of the regular task index and retains their Core transcript when closed', async () => {

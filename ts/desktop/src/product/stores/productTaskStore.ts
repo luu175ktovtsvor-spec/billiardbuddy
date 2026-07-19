@@ -98,6 +98,7 @@ function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): P
 }
 
 let latestRefreshRequest = 0
+let taskIndexRevision = 0
 
 export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
   const runMutation = async (
@@ -114,8 +115,10 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
 
     try {
       const { task } = await action()
+      taskIndexRevision += 1
       set((state) => ({
         index: upsertTask(state.index, task),
+        isLoading: false,
       }))
       return task
     } catch (error) {
@@ -139,14 +142,21 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
 
     refresh: async () => {
       const requestId = ++latestRefreshRequest
+      const revisionAtRequestStart = taskIndexRevision
       set({ isLoading: true, error: null })
       try {
         const index = await productTasksApi.list()
-        if (requestId === latestRefreshRequest) {
+        if (
+          requestId === latestRefreshRequest
+          && revisionAtRequestStart === taskIndexRevision
+        ) {
           set({ index, isLoading: false })
         }
       } catch (error) {
-        if (requestId === latestRefreshRequest) {
+        if (
+          requestId === latestRefreshRequest
+          && revisionAtRequestStart === taskIndexRevision
+        ) {
           set({ error: errorMessage(error, '暂时无法读取任务，请稍后重试。'), isLoading: false })
         }
       }
@@ -163,6 +173,8 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
         const current = state.index.tasks.find((task) => task.id === normalizedTaskId)
         if (!current || current.title === normalizedTitle) return state
 
+        taskIndexRevision += 1
+
         return {
           index: {
             ...state.index,
@@ -172,6 +184,7 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
               ? { ...task, title: normalizedTitle }
               : task),
           },
+          isLoading: false,
         }
       })
     },

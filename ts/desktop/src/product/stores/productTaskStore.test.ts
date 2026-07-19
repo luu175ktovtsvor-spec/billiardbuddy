@@ -151,7 +151,7 @@ describe('productTaskStore', () => {
       pinnedAt: '2026-07-19T00:30:00.000Z',
       actions: ['restore'],
     })
-    useProductTaskStore.setState({ index: makeIndex(original) })
+    useProductTaskStore.setState({ index: makeIndex(original), isLoading: true })
 
     useProductTaskStore.getState().applyRuntimeTaskTitle(original.id, '  自动整理开球训练  ')
     useProductTaskStore.getState().applyRuntimeTaskTitle('task-missing', '不应新增')
@@ -161,6 +161,7 @@ describe('productTaskStore', () => {
       title: '自动整理开球训练',
     }])
     expect(useProductTaskStore.getState().index.total).toBe(1)
+    expect(useProductTaskStore.getState().isLoading).toBe(false)
   })
 
   it('reconciles lifecycle mutations with the server task returned by the endpoint', async () => {
@@ -182,6 +183,32 @@ describe('productTaskStore', () => {
       archivedTaskCount: 1,
     }))
     expect(useProductTaskStore.getState().mutations['task-1:archive']).toBe(false)
+  })
+
+  it('keeps a lifecycle mutation when an earlier task-index refresh returns late', async () => {
+    const original = makeTask()
+    const archived = makeTask({
+      lifecycle: 'archived',
+      archivedAt: '2026-07-18T01:00:00.000Z',
+      actions: ['restore'],
+    })
+    let resolveStaleIndex: ((index: ProductTaskIndexResponse) => void) | undefined
+    const staleIndex = new Promise<ProductTaskIndexResponse>((resolve) => {
+      resolveStaleIndex = resolve
+    })
+    useProductTaskStore.setState({ index: makeIndex(original) })
+    vi.mocked(productTasksApi.list).mockReturnValueOnce(staleIndex)
+    vi.mocked(productTasksApi.archive).mockResolvedValue({ task: archived })
+
+    const refreshing = useProductTaskStore.getState().refresh()
+    await useProductTaskStore.getState().archiveTask(original.id)
+    resolveStaleIndex?.(makeIndex(original))
+    await refreshing
+
+    expect(useProductTaskStore.getState()).toMatchObject({
+      index: expect.objectContaining({ tasks: [archived] }),
+      isLoading: false,
+    })
   })
 
   it('reorders pinned tasks and their project group immediately after the pin mutation', async () => {
