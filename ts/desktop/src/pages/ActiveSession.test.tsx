@@ -442,6 +442,7 @@ describe('ActiveSession task polling', () => {
     expect(screen.queryByTestId('active-goal-panel')).not.toBeInTheDocument()
     expect(screen.getByTestId('active-goal-strip')).toBeInTheDocument()
     expect(screen.getByTestId('active-goal-strip')).toHaveTextContent('ship the smoke test')
+    expect(screen.getByTestId('active-goal-strip').textContent).not.toContain('2,000 tokens')
     expect(screen.getByTestId('message-list')).toBeInTheDocument()
   })
 

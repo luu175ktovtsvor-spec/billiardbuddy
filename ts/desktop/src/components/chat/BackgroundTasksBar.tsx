@@ -178,9 +178,6 @@ function BackgroundTaskRow({ task }: { task: BackgroundAgentTask }) {
     task.taskId
   const typeLabel = getTaskTypeLabel(task, t)
   const duration = formatDurationMs(task.usage?.durationMs, t)
-  const tokenLabel = task.usage?.totalTokens
-    ? t('chat.backgroundAgents.tokens', { count: formatCompactNumber(task.usage.totalTokens) })
-    : null
 
   return (
     <div
@@ -205,7 +202,6 @@ function BackgroundTaskRow({ task }: { task: BackgroundAgentTask }) {
             </span>
             <span>{getTaskStatusLabel(task.status, t)}</span>
             {duration ? <span>{duration}</span> : null}
-            {tokenLabel ? <span>{tokenLabel}</span> : null}
           </div>
         </div>
       </div>
@@ -256,10 +252,4 @@ function getTaskStatusLabel(
     case 'stopped':
       return t('chat.backgroundAgents.status.stopped')
   }
-}
-
-function formatCompactNumber(value: number): string {
-  if (value < 1000) return String(value)
-  if (value < 1000000) return `${Math.round(value / 100) / 10}k`
-  return `${Math.round(value / 100000) / 10}m`
 }

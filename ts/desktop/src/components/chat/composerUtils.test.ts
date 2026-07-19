@@ -59,6 +59,7 @@ describe('composerUtils', () => {
       { name: 'status' },
       { name: 'cost' },
       { name: 'context' },
+      { name: 'bug' },
       { name: 'doctor' },
       { name: 'help' },
     ]).map((command) => command.name)
@@ -66,6 +67,7 @@ describe('composerUtils', () => {
     expect(names).not.toContain('status')
     expect(names).not.toContain('cost')
     expect(names).not.toContain('context')
+    expect(names).not.toContain('bug')
     expect(names).not.toContain('doctor')
     expect(names).toContain('help')
   })

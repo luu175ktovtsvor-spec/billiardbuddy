@@ -61,27 +61,11 @@ describe('StreamingIndicator', () => {
     })
   })
 
-  // issue #757: token usage is rendered with the shared compact notation and
-  // an explicit unit instead of a bare number.
-  it('renders the current turn token estimate as "↓ N tokens"', () => {
+  it('keeps current-turn token estimates out of the ordinary progress UI', () => {
     useChatStore.setState({
       sessions: {
-        // 8976 streamed chars ÷ 4 = 2244 tokens → "2.2k tokens"
-        [ACTIVE_TAB]: makeSession({ streamingResponseChars: 8976 }),
-      },
-    })
-
-    render(<StreamingIndicator />)
-
-    expect(screen.getByText(/↓ 2\.2k tokens/)).toBeTruthy()
-  })
-
-  it('hides the token estimate until this turn has streamed output', () => {
-    useChatStore.setState({
-      sessions: {
-        // Previous-turn usage must not leak into the indicator (issue #757
-        // follow-up report: the count showed a stale value from the last turn).
         [ACTIVE_TAB]: makeSession({
+          streamingResponseChars: 8976,
           tokenUsage: { input_tokens: 5000, output_tokens: 6240 },
         }),
       },

@@ -18,7 +18,6 @@ import { TaskSearchModal } from '../../product/components/TaskSearchModal'
 
 /**
  * The only delivered application frame: BilliardBuddy's desktop task shell.
- * The retired CC-HH sidebar does not participate in this desktop product tree.
  */
 export function AppShell() {
   const fetchSettings = useSettingsStore((state) => state.fetchAll)

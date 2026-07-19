@@ -417,7 +417,7 @@ describe('Settings > General tab', () => {
     expect(await screen.findByText('Could not open the folder picker. Paste the folder path manually.')).toBeInTheDocument()
   })
 
-  it('treats external CLAUDE_CONFIG_DIR as the controlling data source', async () => {
+  it('treats a launch-time data-directory override as the controlling data source', async () => {
     useSettingsStore.setState({
       appMode: {
         mode: 'portable',
@@ -431,15 +431,15 @@ describe('Settings > General tab', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    expect(screen.getByText(/The current directory is controlled by the CLAUDE_CONFIG_DIR environment variable/)).toBeInTheDocument()
+    expect(screen.getByText(/The current directory was set when the app launched/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Use system directory/ }))
-    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
+    expect(screen.getByText(/Remove it before switching back to the system directory/)).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Portable data directory'), { target: { value: '/other/data' } })
     fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
     expect(screen.queryByText('Switch data storage location?')).not.toBeInTheDocument()
-    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
+    expect(screen.getByText(/Remove it before switching back to the system directory/)).toBeInTheDocument()
   })
 
   it('keeps mode switch confirmation cancelable before restart starts', async () => {
@@ -537,12 +537,12 @@ describe('Settings > General tab', () => {
     expect(slider.closest('.settings-zoom-control')).toHaveStyle({ '--settings-zoom-range-progress': '40%' })
   })
 
-  it('does not expose the retired Token usage navigation item', () => {
+  it('does not expose retired runtime inspection navigation items', () => {
     render(<Settings />)
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
     expect(screen.queryByText('Token usage')).not.toBeInTheDocument()
-    expect(screen.getByText('Diagnostics')).toBeInTheDocument()
+    expect(screen.queryByText('Diagnostics')).not.toBeInTheDocument()
   })
 
   it('lets the user disable WebFetch preflight skipping', () => {
@@ -598,7 +598,7 @@ describe('Settings > General tab', () => {
     expect(useSettingsStore.getState().setAutoDreamEnabled).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog', { name: 'Enable Auto-dream?' })
     expect(within(dialog).getByText(/Keep the desktop app running/i)).toBeInTheDocument()
-    expect(within(dialog).getByText(/uses additional model tokens/i)).toBeInTheDocument()
+    expect(dialog.textContent).not.toContain('tokens')
 
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Enable Auto-dream' }))

@@ -1428,7 +1428,6 @@ export function GeneralSettings() {
         body={(
           <div className="space-y-2">
             <p>{t('settings.general.autoDreamConfirmKeepRunning')}</p>
-            <p>{t('settings.general.autoDreamConfirmTokenCost')}</p>
           </div>
         )}
         confirmLabel={t('settings.general.autoDreamConfirmEnable')}

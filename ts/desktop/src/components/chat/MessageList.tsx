@@ -26,7 +26,6 @@ import { StreamingIndicator } from './StreamingIndicator'
 import { InlineTaskSummary } from './InlineTaskSummary'
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 import type { AgentTaskNotification, UIMessage } from '../../types/chat'
-import { formatTokenCount } from '../../lib/formatTokenCount'
 import { formatDurationMs, hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks } from '../../lib/backgroundTasks'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
@@ -181,9 +180,6 @@ function CompactStatusDivider({ message, state }: { message?: CompactSummaryEven
   const hasSummary = Boolean(message?.summary?.trim())
   const meta = [
     message?.trigger ? t(`chat.compactSummary.trigger.${message.trigger}` as TranslationKey) : null,
-    typeof message?.preTokens === 'number'
-      ? t('chat.compactSummary.tokens', { count: formatTokenCount(message.preTokens) })
-      : null,
     typeof message?.messagesSummarized === 'number'
       ? t('chat.compactSummary.messages', { count: String(message.messagesSummarized) })
       : null,
@@ -242,7 +238,6 @@ function GoalEventCard({ message }: { message: GoalEvent }) {
   const title = t(titleKey) === titleKey ? t('chat.goalEvent.message') : t(titleKey)
   const metaDetails = [
     message.status ? t('chat.goalEvent.statusValue', { value: message.status }) : null,
-    message.budget ? t('chat.goalEvent.budget', { value: message.budget }) : null,
     message.continuations ? t('chat.goalEvent.continuations', { value: message.continuations }) : null,
   ].filter((detail): detail is string => detail !== null)
 
@@ -368,11 +363,6 @@ function BackgroundTaskEventCard({ message }: { message: BackgroundTaskEvent }) 
             <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">
               {t(`chat.backgroundAgents.status.${task.status}`)}
             </span>
-            {task.usage?.totalTokens ? (
-              <span className="hidden shrink-0 text-[11px] text-[var(--color-text-tertiary)] sm:inline">
-                {t('chat.backgroundAgents.tokens', { count: formatTokenCount(task.usage.totalTokens) })}
-              </span>
-            ) : null}
             {duration ? (
               <span className="hidden shrink-0 text-[11px] text-[var(--color-text-tertiary)] sm:inline">
                 {duration}

@@ -102,7 +102,6 @@ function ActiveGoalStrip({
       ? t('chat.activeGoal.paused')
       : t('chat.activeGoal.active')
   const meta = [
-    goal.budget ? t('chat.activeGoal.budget', { value: goal.budget }) : null,
     goal.elapsed ? t('chat.activeGoal.elapsed', { value: goal.elapsed }) : null,
     goal.continuations ? t('chat.activeGoal.continuations', { value: goal.continuations }) : null,
   ].filter((value): value is string => value !== null)

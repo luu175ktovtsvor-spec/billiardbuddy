@@ -40,7 +40,7 @@ export const SLASH_COMMAND_ALIASES = [
 ] as const
 
 const RETIRED_SESSION_INSPECTOR_COMMAND_NAMES = new Set(['status', 'cost', 'context'])
-const HIDDEN_PRODUCT_COMMAND_NAMES = new Set(['doctor'])
+const HIDDEN_PRODUCT_COMMAND_NAMES = new Set(['bug', 'doctor'])
 
 export function isRetiredSessionInspectorCommandName(name: string): boolean {
   return RETIRED_SESSION_INSPECTOR_COMMAND_NAMES.has(name.trim().toLowerCase())
