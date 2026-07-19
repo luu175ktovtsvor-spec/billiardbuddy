@@ -19,14 +19,11 @@ import { getMainLoopModel, getSmallFastModel } from '../../utils/model/model.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import {
-  getApiKeyForProvider,
   isWebSearchEnabledForModel,
   isNativeWebSearchProtocolMismatch,
   makeWebSearchUnavailableOutput,
   markAnthropicNativeUnsupported,
   resolveWebSearchProvider,
-  searchWithExternalProvider,
-  searchWithProductGateway,
 } from './backend.js'
 import { getWebSearchPrompt, WEB_SEARCH_TOOL_NAME } from './prompt.js'
 import {
@@ -282,68 +279,6 @@ export const WebSearchTool = buildTool({
       }
     }
 
-    if (resolved.provider === 'product') {
-      onProgress?.({
-        toolUseID: 'web-search',
-        data: {
-          type: 'query_update',
-          query,
-        },
-      })
-      const data = await searchWithProductGateway(
-        input,
-        context.abortController.signal,
-        resolved.productGatewayUrl ?? null,
-      )
-      onProgress?.({
-        toolUseID: 'web-search',
-        data: {
-          type: 'search_results_received',
-          resultCount:
-            typeof data.results[1] === 'object' ? data.results[1].content.length : 0,
-          query,
-        },
-      })
-      return { data }
-    }
-
-    if (resolved.provider === 'tavily' || resolved.provider === 'brave') {
-      onProgress?.({
-        toolUseID: 'web-search',
-        data: {
-          type: 'query_update',
-          query,
-        },
-      })
-      const apiKey = getApiKeyForProvider(resolved.provider, resolved.settings)
-      if (!apiKey) {
-        const durationSeconds = (performance.now() - startTime) / 1000
-        return {
-          data: makeWebSearchUnavailableOutput(
-            query,
-            durationSeconds,
-            'Web search is not available for this task.',
-          ),
-        }
-      }
-      const data = await searchWithExternalProvider(
-        resolved.provider,
-        input,
-        apiKey,
-        context.abortController.signal,
-      )
-      onProgress?.({
-        toolUseID: 'web-search',
-        data: {
-          type: 'search_results_received',
-          resultCount:
-            typeof data.results[1] === 'object' ? data.results[1].content.length : 0,
-          query,
-        },
-      })
-      return { data }
-    }
-
     try {
       return await callAnthropicNativeWebSearch(
         input,
@@ -353,9 +288,8 @@ export const WebSearchTool = buildTool({
       )
     } catch (error) {
       // Native responses can explicitly reject server tools. Remember that
-      // capability mismatch for this model, but fail closed: automatic search
-      // must not send the same query to Tavily or Brave without an explicit
-      // advanced provider selection.
+      // capability mismatch for this model, but fail closed: the query must
+      // never be redirected to a second search supplier.
       if (isNativeWebSearchProtocolMismatch(error)) {
         markAnthropicNativeUnsupported(model)
       }

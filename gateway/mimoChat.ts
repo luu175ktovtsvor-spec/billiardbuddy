@@ -42,7 +42,8 @@ export function loadMimoAllowedModels(env: Env): ReadonlySet<string> {
  *   原因(官方核实):MiMo 默认思考开,对普通/Agent 请求会先思考几分钟再答(实测单请求 ~360s),
  *   且官方明确"思考 + 工具调用不稳定,tool_calls 会混进 reasoning_content"。MiMo 是产品默认模型、
  *   Agent 工具循环高频调用,所以默认关思考保证快而稳;需要思考时客户端显式传 `thinking:{type:'enabled'}`。
- * - 不做任何原生 web_search 注入 —— Agent 联网搜索走自身 WebSearchTool(用户自有 key)。
+ * - 不做任何原生 web_search 注入 —— 原生联网检索由受限的 DeepSeek Anthropic 路由处理，
+ *   其它模型不会收到伪造或跨供应商的搜索工具。
  * 其余字段(messages / tools / tool_choice / stream / temperature …)原样透传,保持 OpenAI
  * Chat Completions 请求契约。
  */

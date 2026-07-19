@@ -6,14 +6,6 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import {
-  createGatewayWebSearch,
-  GatewayWebSearchError,
-  GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES,
-  parseGatewayWebSearchInput,
-  type GatewayWebSearch,
-  type GatewayWebSearchInput,
-} from './webSearch'
 import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
 import {
   fetchQwenWithRetry,
@@ -28,9 +20,11 @@ import {
   MimoRequestError,
 } from './mimoChat'
 import {
+  deepSeekAnthropicMessagesUrl,
   deepseekOpaqueUserId,
   fetchDeepSeekWithRetry,
   loadDeepSeekAllowedModels,
+  prepareDeepSeekAnthropicWebSearchBody,
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
@@ -91,6 +85,12 @@ type ChatProvider = {
 // user = token 归属(用量/额度按 token 记账);client = 装机身份(X-QF-Client-ID,格式校验后)。
 // 公平调度身份 = user#client(每个装机各占一份单用户公平额度),缺 client 时退回按 token 调度。
 type ChatHandler = (request: Request, rawBody: string, user: string, client: string) => Promise<Response>
+type NativeAnthropicWebSearchHandler = (
+  request: Request,
+  rawBody: string,
+  user: string,
+  client: string,
+) => Promise<Response>
 
 type GatewayConfig = {
   qwenKey: string
@@ -151,12 +151,6 @@ type GatewayConfig = {
   transcribeRpm: number
   transcribeConc: number
   transcribeMaxBytes: number
-  webSearchRpm: number
-  webSearchConc: number
-  webSearchUserConc: number
-  webSearchTokenConc: number
-  webSearchQueueMaxWait: number
-  webSearchMaxBodyBytes: number
 }
 
 type UsageEntry = {
@@ -179,7 +173,6 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
-  webSearchImpl?: GatewayWebSearch | null
   qwenRetrySleep?: (ms: number) => Promise<void>
   qwenRetryRandom?: () => number
   mimoRetrySleep?: (ms: number) => Promise<void>
@@ -519,23 +512,6 @@ function loadConfig(env: Env): GatewayConfig {
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
     transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
-    // 联网搜索是单独的受保护产品能力：Brave key 只在 gw.env。RPM、全局并发、单装机
-    // 并发和单 token 并发均独立于模型池，避免搜索突发挤占推理，也防同一 token 伪造装机 ID
-    // 独占所有搜索名额。所有值均有安全上限，配置缺失时仍以保守默认值运行。
-    webSearchRpm: Math.max(1, intEnv(env, 'GW_WEBSEARCH_RPM', 60)),
-    webSearchConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_CONC', 4)),
-    webSearchUserConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_USER_CONC', intEnv(env, 'GW_WEBSEARCH_CONC', 4))),
-    webSearchTokenConc: Math.max(1, intEnv(env, 'GW_WEBSEARCH_TOKEN_CONC', intEnv(env, 'GW_WEBSEARCH_CONC', 4))),
-    webSearchQueueMaxWait: Math.max(0, floatEnv(env, 'GW_WEBSEARCH_QUEUE_MAX_WAIT', 30)),
-    // This public endpoint accepts only a tiny JSON query contract. Deployment config may
-    // lower the limit for incident response but cannot raise it beyond the code hard cap.
-    webSearchMaxBodyBytes: Math.max(
-      256,
-      Math.min(
-        GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES,
-        intEnv(env, 'GW_WEBSEARCH_MAX_BODY_BYTES', GATEWAY_WEB_SEARCH_MAX_REQUEST_BYTES),
-      ),
-    ),
   }
 }
 
@@ -764,6 +740,126 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
   }
 }
 
+/**
+ * Narrow native Anthropic route for Claude Code's WebSearchTool. Normal agent
+ * chat deliberately remains on the OpenAI-compatible path so Qwen/MiMo
+ * routing and the server-side image bridge keep their existing contracts.
+ */
+function createNativeAnthropicWebSearchHandler(
+  provider: ChatProvider,
+  fetchImpl: FetchLike,
+  store: UsageStore,
+): NativeAnthropicWebSearchHandler {
+  return async function nativeAnthropicWebSearchHandler(
+    request: Request,
+    rawBody: string,
+    user: string,
+    client: string,
+  ): Promise<Response> {
+    const userId = provider.deriveUserId?.(user, client)
+    const prepared = prepareDeepSeekAnthropicWebSearchBody(
+      rawBody,
+      provider.allowedModels,
+      provider.defaultModel,
+      { userId },
+    )
+    const schedulerId = client ? `${user}#${client}` : user
+    const permit = await provider.capacity.acquire(schedulerId, {
+      maxWaitMs: provider.queueMaxWait * 1000,
+      signal: request.signal,
+      tokenId: user,
+    })
+    const started = performance.now()
+    const usageNote = (attempts: number) => `native_web_search;attempts=${attempts}${client ? `;client=${client}` : ''}`
+
+    try {
+      const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
+        try {
+          await provider.bucket.acquire(provider.queueMaxWait, request.signal)
+        } catch (error) {
+          if (error instanceof HttpError) throw new provider.RequestError(error.status, error.detail)
+          throw error
+        }
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'x-api-key': provider.key,
+          'anthropic-version': request.headers.get('anthropic-version')?.trim() || '2023-06-01',
+          'Accept-Encoding': 'identity',
+        }
+        const beta = request.headers.get('anthropic-beta')?.trim()
+        if (beta) headers['anthropic-beta'] = beta
+        const accept = request.headers.get('accept')?.trim()
+        if (accept) headers.Accept = accept
+
+        return await fetchImpl(deepSeekAnthropicMessagesUrl(provider.base), {
+          method: 'POST',
+          body: prepared.body,
+          signal: request.signal,
+          headers,
+        })
+      }, {
+        maxRetries: provider.retryMax,
+        baseDelayMs: provider.retryBaseMs,
+        maxDelayMs: provider.retryMaxMs,
+        signal: request.signal,
+        sleep: provider.retrySleep,
+        random: provider.retryRandom,
+      })
+
+      if (!upstream.ok) {
+        const detail = await upstream.text().catch(() => '')
+        permit.release()
+        await logUsage(store, {
+          user,
+          model: 'deepseek_web_search',
+          ok: false,
+          status: upstream.status,
+          ms: elapsedMs(started),
+          note: usageNote(attempts),
+        })
+        return Response.json({
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: modelPublicError(upstream.status, detail),
+          },
+        }, { status: upstream.status })
+      }
+
+      let completed = false
+      const complete = async () => {
+        if (completed) return
+        completed = true
+        permit.release()
+        await logUsage(store, {
+          user,
+          model: 'deepseek_web_search',
+          ok: true,
+          status: upstream.status,
+          ms: elapsedMs(started),
+          note: usageNote(attempts),
+        })
+      }
+      return withStreamLogging(upstream, complete)
+    } catch (error) {
+      permit.release()
+      const known = error instanceof provider.RequestError
+      const status = known ? error.status : 502
+      const detail = known ? error.publicMessage : '联网资料检索暂时不可用，请稍后重试'
+      await logUsage(store, {
+        user,
+        model: 'deepseek_web_search',
+        ok: false,
+        status,
+        ms: elapsedMs(started),
+        note: 'native_web_search_failed',
+      })
+      throw new HttpError(status, detail)
+    }
+  }
+}
+
 export function createGatewayFetch(deps: GatewayDeps = {}) {
   const env = deps.env ?? process.env
   const config = loadConfig(env)
@@ -816,8 +912,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   const deepseekBucket = new TokenBucket(config.deepseekRpm)
   const deepseekCapacity = new FairCapacityScheduler(config.deepseekConc, config.deepseekUserConc, config.deepseekTokenConc)
-  const deepseekChat: ChatHandler | null = config.deepseekKey
-    ? createChatHandler({
+  const deepseekProvider: ChatProvider | null = config.deepseekKey
+    ? {
       label: 'deepseek',
       base: config.deepseekBase,
       key: config.deepseekKey,
@@ -833,7 +929,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       fetchWithRetry: fetchDeepSeekWithRetry,
       RequestError: DeepSeekRequestError,
       deriveUserId: deepseekOpaqueUserId,
-    }, fetchImpl, store)
+    }
+    : null
+  const deepseekChat: ChatHandler | null = deepseekProvider
+    ? createChatHandler(deepseekProvider, fetchImpl, store)
+    : null
+  const deepseekNativeWebSearch: NativeAnthropicWebSearchHandler | null = deepseekProvider
+    ? createNativeAnthropicWebSearchHandler(deepseekProvider, fetchImpl, store)
     : null
   // 视觉桥接:唯一视觉上游是 MiMo v2.5(config.mimoBase/config.mimoKey),绝不用 ARK。只在
   // mimoKey 存在时可用;缺 key 时带图且非原生多模态的请求在路由处显式 503,不把图丢给文本模型猜。
@@ -859,16 +961,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
-  const webSearchBucket = new TokenBucket(config.webSearchRpm)
-  const webSearchCapacity = new FairCapacityScheduler(
-    config.webSearchConc,
-    config.webSearchUserConc,
-    config.webSearchTokenConc,
-  )
-  const webSearch = deps.webSearchImpl === undefined
-    ? createGatewayWebSearch(env, fetchImpl)
-    : deps.webSearchImpl
-
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
     try {
@@ -889,9 +981,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             img_ipm: config.imgIpm,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
-            web_search_rpm: config.webSearchRpm,
-            web_search_conc: config.webSearchConc,
-            web_search_user_conc: config.webSearchUserConc,
           },
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
@@ -899,11 +988,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             qwen: qwenCapacity.snapshot(),
             mimo: mimoCapacity.snapshot(),
             deepseek: deepseekCapacity.snapshot(),
-            web_search: webSearchCapacity.snapshot(),
           },
           features: {
             transcription: transcribe !== null,
-            web_search: webSearch !== null,
             chat_qwen: qwenChat !== null,
             chat_mimo: mimoChat !== null,
             chat_deepseek: deepseekChat !== null,
@@ -931,6 +1018,28 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (mimoChat) for (const id of config.mimoAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'mimo' })
         if (deepseekChat) for (const id of config.deepseekAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'deepseek' })
         return jsonResponse({ object: 'list', data })
+      }
+
+      // DeepSeek officially supports Claude Code's native WebSearchTool over
+      // its Anthropic Messages endpoint. This route is intentionally narrow:
+      // it accepts only that server-side tool protocol, while ordinary agent
+      // chat remains on /v1/chat/completions so the existing Qwen/MiMo routing
+      // and image bridge are not bypassed.
+      if (request.method === 'POST' && url.pathname === '/v1/messages') {
+        const user = auth(config, request)
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) {
+          throw new HttpError(415, '联网检索请求需要 JSON')
+        }
+        const declaredLength = Number(request.headers.get('content-length') ?? '')
+        if (Number.isFinite(declaredLength) && declaredLength > config.visionMaxTotalBytes) {
+          throw new HttpError(413, '请求体过大')
+        }
+        const rawBody = await readRequestBodyBounded(request, config.visionMaxTotalBytes)
+        if (!deepseekNativeWebSearch) {
+          throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
+        }
+        return await deepseekNativeWebSearch(request, rawBody, user, readClientId(request))
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
@@ -1011,80 +1120,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
         if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
         return await qwenChat(request, effectiveBody, user, client)
-      }
-
-      // Product web search is intentionally a standalone route rather than a hidden chat
-      // provider feature. Only this route reads the Brave credential, and it never falls
-      // back to another search provider when Brave is absent or errors.
-      if (request.method === 'POST' && url.pathname === '/v1/web_search') {
-        const user = auth(config, request)
-        if (!webSearch) throw new HttpError(503, '联网搜索服务暂不可用')
-        const contentType = request.headers.get('content-type') ?? ''
-        if (!isJsonContentType(contentType)) throw new HttpError(415, '联网搜索需要 JSON 请求')
-        const declaredLength = Number(request.headers.get('content-length') ?? '')
-        if (Number.isFinite(declaredLength) && declaredLength > config.webSearchMaxBodyBytes) {
-          throw new HttpError(413, '联网搜索请求体过大')
-        }
-        const rawBody = await readRequestBodyBounded(request, config.webSearchMaxBodyBytes)
-        let parsedBody: unknown
-        try {
-          parsedBody = JSON.parse(rawBody)
-        } catch {
-          throw new HttpError(400, '联网搜索请求格式不正确')
-        }
-        // Validate before taking a scarce permit. Invalid requests neither consume Brave
-        // capacity nor write a query-bearing usage record.
-        let input: GatewayWebSearchInput
-        try {
-          input = parseGatewayWebSearchInput(parsedBody)
-        } catch (error) {
-          if (error instanceof GatewayWebSearchError) {
-            throw new HttpError(error.status, error.publicMessage)
-          }
-          throw new HttpError(400, '联网搜索请求格式不正确')
-        }
-        const client = readClientId(request)
-        const schedulerUser = client ? `${user}#${client}` : user
-        const permit = await webSearchCapacity.acquire(schedulerUser, {
-          maxWaitMs: config.webSearchQueueMaxWait * 1000,
-          signal: request.signal,
-          tokenId: user,
-        })
-        const started = performance.now()
-        try {
-          await webSearchBucket.acquire(config.webSearchQueueMaxWait, request.signal)
-          const result = await webSearch(input, { signal: request.signal })
-          await logUsage(store, {
-            user,
-            model: 'web_search',
-            ok: true,
-            status: 200,
-            ms: elapsedMs(started),
-            note: `results=${result.results.length}${client ? `;client=${client}` : ''}`,
-          })
-          return jsonResponse(result)
-        } catch (error) {
-          let status = 502
-          let detail = '联网搜索暂时不可用，请稍后重试'
-          if (error instanceof GatewayWebSearchError || error instanceof CapacityQueueError) {
-            status = error.status
-            detail = error.publicMessage
-          } else if (error instanceof HttpError) {
-            status = error.status
-            detail = error.detail
-          }
-          await logUsage(store, {
-            user,
-            model: 'web_search',
-            ok: false,
-            status,
-            ms: elapsedMs(started),
-            note: `failed${client ? `;client=${client}` : ''}`,
-          })
-          throw new HttpError(status, detail)
-        } finally {
-          permit.release()
-        }
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {

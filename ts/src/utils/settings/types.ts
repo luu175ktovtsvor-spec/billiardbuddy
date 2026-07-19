@@ -654,23 +654,13 @@ export const SettingsSchema = lazySchema(() =>
         ),
       webSearch: z
         .object({
-          mode: z
-            .enum(['auto', 'anthropic', 'tavily', 'brave', 'disabled'])
+          enabled: z
+            .boolean()
             .optional()
-            .describe(
-              'WebSearch backend selection. auto uses the native Claude or direct DeepSeek Anthropic transport only; Tavily and Brave require an explicit advanced selection.',
-            ),
-          tavilyApiKey: z
-            .string()
-            .optional()
-            .describe('Tavily API key for an explicitly selected advanced WebSearch backend'),
-          braveApiKey: z
-            .string()
-            .optional()
-            .describe('Brave Search API key for an explicitly selected domain-filtering WebSearch backend'),
+            .describe('Enables DeepSeek native WebSearchTool when the managed runtime supports it'),
         })
         .optional()
-        .describe('Configures native and external WebSearch backends'),
+        .describe('Controls the managed native WebSearchTool'),
       sandbox: SandboxSettingsSchema().optional(),
       feedbackSurveyRate: z
         .number()

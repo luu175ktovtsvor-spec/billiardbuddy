@@ -35,7 +35,8 @@ export function loadQwenAllowedModels(env: Env): ReadonlySet<string> {
 /**
  * 归一化聊天请求体:
  * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
- * - 不做任何原生 web_search 注入 —— Agent 联网搜索走自身 WebSearchTool(用户自有 key)。
+ * - 不做任何原生 web_search 注入 —— 原生联网检索由受限的 DeepSeek Anthropic 路由处理，
+ *   其它模型不会收到伪造或跨供应商的搜索工具。
  * 其余字段(messages / tools / tool_choice / stream / temperature …)原样透传,保持 OpenAI
  * Chat Completions 请求契约。
  */

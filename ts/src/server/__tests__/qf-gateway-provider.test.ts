@@ -361,97 +361,6 @@ describe('qf-gateway proxy round-trip', () => {
   beforeEach(setup)
   afterEach(teardown)
 
-  test('proxies product web search only through the exact qf sidecar route without exposing the app token', async () => {
-    process.env.BB_INSTALLATION_ID = 'bb-install-abcdef12'
-    const originalFetch = globalThis.fetch
-    const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
-    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-      calls.push({
-        url: String(input),
-        headers: (init?.headers ?? {}) as Record<string, string>,
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-      })
-      return Response.json({
-        results: [
-          { title: '公开结果', url: 'https://docs.example.com/guide', snippet: 'safe' },
-          { title: '过滤掉', url: 'https://other.example.net/outside-filter', snippet: 'outside' },
-          { title: '坏协议', url: 'file:///private/token' },
-          { title: '带凭据', url: 'https://user:password@example.com/private' },
-        ],
-        gateway_debug: GATEWAY_TOKEN,
-      })
-    }) as unknown as typeof fetch
-
-    try {
-      const req = new Request(
-        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/web_search`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer forged-cli-token',
-            'X-QF-Client-ID': 'forged-client-id-1234',
-          },
-          body: JSON.stringify({
-            query: ' Product search ',
-            allowed_domains: ['Example.com', 'example.com'],
-          }),
-        },
-      )
-      const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(200)
-      expect(calls).toHaveLength(1)
-      expect(calls[0]?.url).toBe(`${GATEWAY_URL}/v1/web_search`)
-      expect(calls[0]?.headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
-      expect(calls[0]?.headers['X-QF-Client-ID']).toBe('bb-install-abcdef12')
-      expect(calls[0]?.headers.Authorization).not.toBe('Bearer forged-cli-token')
-      expect(calls[0]?.body).toEqual({
-        query: 'Product search',
-        allowed_domains: ['example.com'],
-      })
-
-      const body = await res.json() as { results: Array<{ title: string; url: string; snippet?: string }> }
-      expect(body).toEqual({
-        results: [{ title: '公开结果', url: 'https://docs.example.com/guide', snippet: 'safe' }],
-      })
-      expect(JSON.stringify(body)).not.toContain(GATEWAY_TOKEN)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('product web search refuses arbitrary provider paths and redacts remote failures', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = mock(async () => new Response(`gateway token=${GATEWAY_TOKEN}`, { status: 403 })) as unknown as typeof fetch
-    try {
-      const qfRequest = new Request(
-        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/web_search`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: 'Product search' }),
-        },
-      )
-      const qfResponse = await handleProxyRequest(qfRequest, new URL(qfRequest.url))
-      expect(qfResponse.status).toBe(503)
-      const qfBody = await qfResponse.json()
-      expect(JSON.stringify(qfBody)).not.toContain(GATEWAY_TOKEN)
-
-      const arbitraryRequest = new Request(
-        'http://localhost:3456/proxy/providers/user-provider/v1/web_search',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: 'Product search' }),
-        },
-      )
-      const arbitraryResponse = await handleProxyRequest(arbitraryRequest, new URL(arbitraryRequest.url))
-      expect(arbitraryResponse.status).toBe(404)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
   test('forwards an Anthropic request to the gateway as OpenAI Chat with the app token', async () => {
     const originalFetch = globalThis.fetch
     const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
@@ -506,6 +415,61 @@ describe('qf-gateway proxy round-trip', () => {
       expect(anthropic.type).toBe('message')
       expect(anthropic.role).toBe('assistant')
       expect(Array.isArray(anthropic.content)).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('forwards only QF native WebSearchTool requests as raw Anthropic Messages', async () => {
+    process.env.BB_INSTALLATION_ID = 'bb-install-abcdef12'
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      })
+      return new Response(
+        'event: content_block_start\ndata: {"type":"content_block_start","content_block":{"type":"server_tool_use"}}\n\n'
+          + 'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"web_search_tool_result"}}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream', 'request-id': 'gateway-native-search' } },
+      )
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer forged-cli-token',
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'web-search-2025-03-05',
+            'X-QF-Client-ID': 'forged-client-id-1234',
+          },
+          body: JSON.stringify({
+            model: 'deepseek-v4-flash',
+            stream: true,
+            messages: [{ role: 'user', content: 'search current billiards rules' }],
+            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+          }),
+        },
+      )
+
+      const res = await handleProxyRequest(req, new URL(req.url))
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain('web_search_tool_result')
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.url).toBe(`${GATEWAY_URL}/v1/messages`)
+      expect(calls[0]?.headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
+      expect(calls[0]?.headers.Authorization).not.toBe('Bearer forged-cli-token')
+      expect(calls[0]?.headers['X-QF-Client-ID']).toBe('bb-install-abcdef12')
+      expect(calls[0]?.headers['anthropic-beta']).toBe('web-search-2025-03-05')
+      expect(calls[0]?.body.tools).toEqual([
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 8 },
+      ])
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -86,108 +86,97 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.mimo_user_conc).toBe(16)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
-  expect(body.features.web_search).toBe(false)
   expect(body.features.chat_qwen).toBe(true)
   expect(body.features.chat_mimo).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
   expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
 })
 
-test('product web search authenticates, keeps the Brave key server-side, and returns only safe bounded results', async () => {
+test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only credentials', async () => {
   const usage = new MemoryUsageStore()
-  const calls: Array<{ url: string; init?: RequestInit }> = []
+  const calls: Array<{ url: string; init?: RequestInit; body: Record<string, unknown> }> = []
   const fetch = createGatewayFetch({
-    env: env({
-      GW_WEBSEARCH_PROVIDER: 'brave',
-      GW_WEBSEARCH_KEY: 'brave-secret-value',
-      GW_WEBSEARCH_BASE: 'https://search.example/res/v1/web/search',
-    }),
+    env: env({ GW_DEEPSEEK_BASE: 'https://api.deepseek.com' }),
     usageStore: usage,
     transcribeImpl: null,
     fetchImpl: async (input, init) => {
-      calls.push({ url: String(input), init })
-      return Response.json({
-        web: {
-          results: [
-            { title: ' Bun 文档 ', url: 'https://bun.sh/docs', description: 'Fast runtime' },
-            { title: '危险', url: 'javascript:alert(1)', description: 'bad' },
-            { title: '凭据 URL', url: 'https://user:password@example.com/private', description: 'bad' },
-            ...Array.from({ length: 10 }, (_, index) => ({
-              title: `结果 ${index}`,
-              url: `https://bun.sh/docs/${index}`,
-            })),
-          ],
-        },
+      calls.push({
+        url: String(input),
+        init,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
       })
+      return new Response(
+        'event: message_start\ndata: {"type":"message_start"}\n\n'
+          + 'event: content_block_start\ndata: {"type":"content_block_start","content_block":{"type":"server_tool_use","name":"web_search"}}\n\n'
+          + 'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"web_search_tool_result"}}\n\n',
+        { headers: { 'content-type': 'text/event-stream', 'request-id': 'deepseek-request-id' } },
+      )
     },
   })
 
-  const response = await fetch(new Request('http://local/v1/web_search', authed({
+  const response = await fetch(new Request('http://local/v1/messages', authed({
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-QF-Client-ID': 'desktop-install-1234' },
-    body: JSON.stringify({ query: ' Bun runtime ', allowed_domains: ['bun.sh'] }),
+    headers: {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'web-search-2025-03-05',
+      'X-QF-Client-ID': 'desktop-install-1234',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-5',
+      stream: true,
+      messages: [{ role: 'user', content: '查一下最新台球赛事' }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+      metadata: { user_id: 'forged-user', trace: 'safe' },
+    }),
   })))
 
   expect(response.status).toBe(200)
-  const body = await response.json() as { results: Array<{ title: string; url: string }> }
-  expect(body.results).toHaveLength(8)
-  expect(body.results[0]).toEqual({
-    title: 'Bun 文档',
-    url: 'https://bun.sh/docs',
-    snippet: 'Fast runtime',
-  })
-  expect(body.results.every((result) => result.url.startsWith('https://bun.sh/'))).toBe(true)
+  const streamed = await response.text()
+  expect(streamed).toContain('"type":"server_tool_use"')
+  expect(streamed).toContain('"type":"web_search_tool_result"')
   expect(calls).toHaveLength(1)
-  expect(calls[0]?.url).toContain('https://search.example/res/v1/web/search?q=Bun+runtime')
-  expect((calls[0]?.init?.headers as Record<string, string>)['X-Subscription-Token']).toBe('brave-secret-value')
-  expect(JSON.stringify(body)).not.toContain('brave-secret-value')
-  expect(JSON.stringify(usage.rows)).not.toContain('brave-secret-value')
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'web_search', ok: true, status: 200 }])
-  expect(usage.rows[0]?.note).toBe('results=8;client=desktop-install-1234')
+  expect(calls[0]?.url).toBe('https://api.deepseek.com/anthropic/v1/messages')
+  const headers = calls[0]?.init?.headers as Record<string, string>
+  expect(headers['x-api-key']).toBe('deepseek-secret')
+  expect(headers.Authorization).toBeUndefined()
+  expect(headers['anthropic-version']).toBe('2023-06-01')
+  expect(headers['anthropic-beta']).toBe('web-search-2025-03-05')
+  expect(calls[0]?.body).toMatchObject({
+    model: 'deepseek-v4-flash',
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+    metadata: { trace: 'safe' },
+  })
+  expect((calls[0]?.body.metadata as Record<string, string>).user_id).toMatch(/^bb_[a-f0-9]{32}$/)
+  expect(JSON.stringify(calls[0]?.body)).not.toContain('forged-user')
+  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'deepseek_web_search', ok: true, status: 200 }])
+  expect(JSON.stringify(usage.rows)).not.toContain('deepseek-secret')
 })
 
-test('product web search rejects invalid input, fails closed when absent, and redacts upstream errors', async () => {
-  const invalid = makeGateway({
-    GW_WEBSEARCH_PROVIDER: 'brave',
-    GW_WEBSEARCH_KEY: 'brave-secret-value',
-  })
-  const invalidResponse = await invalid.fetch(new Request('http://local/v1/web_search', authed({
+test('native Anthropic endpoint rejects non-search tools and fails closed without DeepSeek', async () => {
+  const { fetch, calls } = makeGateway()
+  const nonSearch = await fetch(new Request('http://local/v1/messages', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'valid search', ignored: 'must not pass' }),
-  })))
-  expect(invalidResponse.status).toBe(400)
-  expect(invalid.calls).toEqual([])
-
-  const unavailable = makeGateway()
-  const unavailableResponse = await unavailable.fetch(new Request('http://local/v1/web_search', authed({
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'valid search' }),
-  })))
-  expect(unavailableResponse.status).toBe(503)
-  expect(unavailable.calls).toEqual([])
-
-  const usage = new MemoryUsageStore()
-  const redacted = createGatewayFetch({
-    env: env({
-      GW_WEBSEARCH_PROVIDER: 'brave',
-      GW_WEBSEARCH_KEY: 'brave-secret-value',
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      tools: [{ type: 'computer_20241022' }],
     }),
-    usageStore: usage,
-    transcribeImpl: null,
-    fetchImpl: async () => new Response('provider internal key=brave-secret-value', { status: 503 }),
-  })
-  const errorResponse = await redacted(new Request('http://local/v1/web_search', authed({
+  })))
+  expect(nonSearch.status).toBe(400)
+  expect(calls).toEqual([])
+
+  const unavailable = makeGateway({ GW_DEEPSEEK_KEY: '' })
+  const noKey = await unavailable.fetch(new Request('http://local/v1/messages', authed({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: 'valid search' }),
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      tools: [{ type: 'web_search_20250305' }],
+    }),
   })))
-  const errorBody = await errorResponse.json() as { detail: string }
-  expect(errorResponse.status).toBe(502)
-  expect(errorBody.detail).toBe('联网搜索暂时不可用，请稍后重试')
-  expect(JSON.stringify(errorBody)).not.toContain('brave-secret-value')
-  expect(JSON.stringify(usage.rows)).not.toContain('brave-secret-value')
+  expect(noKey.status).toBe(503)
+  expect(unavailable.calls).toEqual([])
 })
 
 test('audio transcription authenticates, validates uploads and records successful usage', async () => {
@@ -836,7 +825,7 @@ test('legacy synchronous image endpoints are retired in favor of owned idempoten
   expect(calls).toEqual([])
 })
 
-test('retired ark/amap routes stay gone while unconfigured product web search fails closed', async () => {
+test('retired ark, amap, and standalone web-search routes stay gone', async () => {
   const { fetch, calls } = makeGateway()
   const arkChat = await fetch(new Request('http://local/v1/ark/chat/completions', authed({ method: 'POST', body: '{}' })))
   const amap = await fetch(new Request('http://local/v1/amap/v3/weather/weatherInfo?city=310000', authed()))
@@ -847,7 +836,7 @@ test('retired ark/amap routes stay gone while unconfigured product web search fa
   })))
   expect(arkChat.status).toBe(404)
   expect(amap.status).toBe(404)
-  expect(webSearch.status).toBe(503)
+  expect(webSearch.status).toBe(404)
   expect(calls).toEqual([])
 })
 

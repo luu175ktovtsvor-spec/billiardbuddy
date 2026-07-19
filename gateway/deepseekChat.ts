@@ -22,6 +22,13 @@ const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash'
 
 /**
+ * Anthropic's native server-side web search schema. The QF gateway handles
+ * this one narrow protocol directly so the normal OpenAI-compatible chat and
+ * vision-bridge path stays unchanged.
+ */
+export const DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE = 'web_search_20250305'
+
+/**
  * 服务器允许的 DeepSeek 模型集合:`GW_DEEPSEEK_MODEL` 为主模型(默认 deepseek-v4-flash),
  * `GW_DEEPSEEK_MODELS`(逗号分隔)可追加更多。与 MiMo 一样,即使没配 `GW_DEEPSEEK_KEY` 也始终
  * 含默认模型 —— 这样网关能识别 DeepSeek 目标模型并在缺 key 时 fail closed(503),而不是静默改投千问。
@@ -54,7 +61,8 @@ export type DeepSeekChatContext = { userId?: string }
  * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
  * - 注入受信 opaque `user_id`(DeepSeek 官方字段名,非 OpenAI 的 `user`;覆盖客户端自带的任何值,
  *   防止伪造),供 DeepSeek 调度/KVCache/内容安全隔离。id 形如 bb_<hex>,匹配官方正则 [a-zA-Z0-9-_]+。
- * - 不做任何原生 web_search 注入 —— Agent 联网搜索走自身 WebSearchTool(用户自有 key)。
+ * - 不做任何原生 web_search 注入 —— 原生检索由单独的 `/v1/messages` 路由处理；本 OpenAI
+ *   Chat 请求路径不会伪造工具或绕过现有视觉桥接。
  * 其余字段(messages / tools / tool_choice / stream / thinking / reasoning_effort …)原样透传,
  * 保持 OpenAI Chat Completions 请求契约与 DeepSeek 思考模式开关。
  */
@@ -90,6 +98,68 @@ export function prepareDeepSeekChatBody(
     next.user_id = userId
   }
   return { body: JSON.stringify(next) }
+}
+
+/**
+ * Checks whether an Anthropic Messages request is exclusively asking for the
+ * native server-side web-search tool. The product gateway intentionally does
+ * not become a general Anthropic passthrough: normal chat continues through
+ * the existing OpenAI-compatible pipeline and its image bridge.
+ */
+export function isDeepSeekNativeWebSearchRequest(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.tools) || value.tools.length === 0) {
+    return false
+  }
+
+  return value.tools.every(tool => (
+    isRecord(tool) && tool.type === DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE
+  ))
+}
+
+/**
+ * Validates and prepares the one native Anthropic request the managed gateway
+ * supports: Claude Code's server-side WebSearchTool. It keeps the official
+ * schema intact, coerces only the server-allowed DeepSeek model, and replaces
+ * any client-provided user id with the trusted opaque installation identity.
+ */
+export function prepareDeepSeekAnthropicWebSearchBody(
+  rawBody: string,
+  allowedModels: ReadonlySet<string>,
+  defaultModel: string,
+  ctx?: DeepSeekChatContext,
+): { body: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawBody)
+  } catch {
+    throw new DeepSeekRequestError(400, '联网检索请求不是合法 JSON')
+  }
+  if (!isRecord(parsed)) {
+    throw new DeepSeekRequestError(400, '联网检索请求必须是 JSON 对象')
+  }
+  if (!isDeepSeekNativeWebSearchRequest(parsed)) {
+    throw new DeepSeekRequestError(400, '仅支持原生联网检索工具请求')
+  }
+
+  const requested = typeof parsed.model === 'string' ? parsed.model : ''
+  const model = allowedModels.has(requested) ? requested : defaultModel
+  if (!MODEL_PATTERN.test(model)) throw new DeepSeekRequestError(503, '模型服务未配置')
+
+  const next: Record<string, unknown> = { ...parsed, model }
+  if (ctx?.userId) {
+    const metadata = isRecord(parsed.metadata) ? { ...parsed.metadata } : {}
+    metadata.user_id = ctx.userId
+    next.metadata = metadata
+  }
+  return { body: JSON.stringify(next) }
+}
+
+/** Build the official Anthropic Messages URL from the configured DeepSeek base. */
+export function deepSeekAnthropicMessagesUrl(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  return base.endsWith('/anthropic')
+    ? `${base}/v1/messages`
+    : `${base}/anthropic/v1/messages`
 }
 
 export async function fetchDeepSeekWithRetry(

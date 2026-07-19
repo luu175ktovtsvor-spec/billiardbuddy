@@ -278,10 +278,12 @@ function mergeUserPreferenceUpdate(
 
   if (hasOwn(update, 'webSearch')) {
     const webSearch = copyRecord(current.webSearch)
-    // `enabled` was a renderer-only legacy field. Its presence would otherwise
-    // take precedence over the product toggle after a mode update.
-    delete webSearch.enabled
-    webSearch.mode = update.webSearch === true ? 'auto' : 'disabled'
+    // Retire external-search configuration on the next ordinary product
+    // update. Only the user-facing native-search toggle remains persisted.
+    delete webSearch.mode
+    delete webSearch.tavilyApiKey
+    delete webSearch.braveApiKey
+    webSearch.enabled = update.webSearch
     next.webSearch = webSearch
   }
 
