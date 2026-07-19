@@ -599,6 +599,29 @@ describe('WorkspaceService', () => {
     })
   })
 
+  it('bounds untracked diff reads and preserves a small binary diff marker', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
+
+    await fs.writeFile(path.join(repoDir, 'small-binary.bin'), Buffer.from([0, 1, 2]))
+    await expect(service.getDiff('session-1', 'small-binary.bin')).resolves.toMatchObject({
+      state: 'ok',
+      path: 'small-binary.bin',
+      diff: expect.stringContaining('Binary files /dev/null and b/small-binary.bin differ'),
+    })
+
+    await fs.writeFile(path.join(repoDir, 'large-text.txt'), Buffer.alloc(ONE_MIB + 1, 'a'))
+    await fs.writeFile(path.join(repoDir, 'large-binary.bin'), Buffer.alloc(ONE_MIB + 1, 0))
+
+    for (const filePath of ['large-text.txt', 'large-binary.bin']) {
+      await expect(service.getDiff('session-1', filePath)).resolves.toMatchObject({
+        state: 'error',
+        path: filePath,
+        error: expect.stringContaining('diff limit'),
+      })
+    }
+  })
+
   it('returns explicit error state when git status fails instead of ok-empty', async () => {
     const repoDir = await createGitWorkspace()
     const service = new WorkspaceService(async () => repoDir) as WorkspaceService & {

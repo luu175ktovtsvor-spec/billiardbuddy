@@ -14,6 +14,7 @@ import {
 
 const MAX_PREVIEW_BYTES = 1024 * 1024
 const MAX_UNTRACKED_STAT_BYTES = 256 * 1024
+const MAX_UNTRACKED_DIFF_BYTES = MAX_PREVIEW_BYTES
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_BUFFER_BYTES = 2_000_000
 const VCS_METADATA_DIRECTORY_NAMES = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
@@ -1751,6 +1752,12 @@ export class WorkspaceService {
     }
     if (stat.kind === 'missing' || !stat.stat.isFile()) {
       return { kind: 'missing' }
+    }
+    if (stat.stat.size > MAX_UNTRACKED_DIFF_BYTES) {
+      return {
+        kind: 'error',
+        message: `Untracked file exceeds the ${MAX_UNTRACKED_DIFF_BYTES}-byte diff limit`,
+      }
     }
 
     let buffer: Buffer
