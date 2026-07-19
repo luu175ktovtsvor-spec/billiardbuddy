@@ -19,4 +19,8 @@ describe('desktop index startup diagnostics', () => {
     expect(html).toContain('Startup resource failed to load:')
     expect(html).toContain('Desktop app did not finish bootstrapping within')
   })
+
+  it('permits bounded task media previews from the desktop server and data URLs', () => {
+    expect(html).toContain("media-src 'self' data: blob: https: http://127.0.0.1:* http://localhost:*")
+  })
 })
