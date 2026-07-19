@@ -48,33 +48,70 @@ export function VoiceInputControl({
   const lastBlobRef = useRef<Blob | null>(null)
   const timerRef = useRef<number | null>(null)
   const requestRef = useRef<AbortController | null>(null)
-  const cancelledRef = useRef(false)
-  const mountedRef = useRef(true)
+  const lifecycleRef = useRef(0)
+  const mountedRef = useRef(false)
+  const disabledRef = useRef(disabled)
 
-  const setState = useCallback((next: VoiceInputState) => {
-    if (!mountedRef.current) return
+  const isCurrentLifecycle = useCallback((lifecycle: number) => (
+    mountedRef.current && lifecycleRef.current === lifecycle
+  ), [])
+
+  const setState = useCallback((next: VoiceInputState, lifecycle?: number) => {
+    if (!mountedRef.current || (lifecycle !== undefined && lifecycleRef.current !== lifecycle)) return
     setStateValue(next)
     onStateChange?.(next)
   }, [onStateChange])
 
-  const releaseRecorder = useCallback(() => {
-    if (timerRef.current != null) window.clearInterval(timerRef.current)
-    timerRef.current = null
-    streamRef.current?.getTracks().forEach((track) => track.stop())
-    streamRef.current = null
-    recorderRef.current = null
+  const setElapsedForLifecycle = useCallback((next: number, lifecycle?: number) => {
+    if (!mountedRef.current || (lifecycle !== undefined && lifecycleRef.current !== lifecycle)) return
+    setElapsed(next)
   }, [])
 
-  useEffect(() => () => {
-    mountedRef.current = false
-    cancelledRef.current = true
+  const releaseRecorder = useCallback(() => {
+    const recorder = recorderRef.current
+    const stream = streamRef.current
+    if (timerRef.current != null) window.clearInterval(timerRef.current)
+    timerRef.current = null
+    streamRef.current = null
+    recorderRef.current = null
+    if (recorder?.state === 'recording') recorder.stop()
+    stream?.getTracks().forEach((track) => track.stop())
+  }, [])
+
+  const beginOperation = useCallback(() => {
+    lifecycleRef.current += 1
     requestRef.current?.abort()
+    requestRef.current = null
     releaseRecorder()
+    return lifecycleRef.current
   }, [releaseRecorder])
 
-  const transcribe = useCallback(async (blob: Blob) => {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      lifecycleRef.current += 1
+      requestRef.current?.abort()
+      requestRef.current = null
+      releaseRecorder()
+    }
+  }, [releaseRecorder])
+
+  useEffect(() => {
+    const becameDisabled = disabled && !disabledRef.current
+    disabledRef.current = disabled
+    if (!becameDisabled || !mountedRef.current) return
+    beginOperation()
+    chunksRef.current = []
+    lastBlobRef.current = null
+    setElapsedForLifecycle(0)
+    setState('idle')
+  }, [beginOperation, disabled, setElapsedForLifecycle, setState])
+
+  const transcribe = useCallback(async (blob: Blob, lifecycle: number) => {
+    if (!isCurrentLifecycle(lifecycle)) return
     if (!blob.size) {
-      setState('error')
+      setState('error', lifecycle)
       addToast({ type: 'error', message: '没有录到声音，请重新录一次' })
       return
     }
@@ -82,24 +119,21 @@ export function VoiceInputControl({
     lastBlobRef.current = blob
     const controller = new AbortController()
     requestRef.current = controller
-    setState('transcribing')
+    setState('transcribing', lifecycle)
     try {
       const text = await productVoiceApi.transcribe(blob, {
         language,
         signal: controller.signal,
       })
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted || !isCurrentLifecycle(lifecycle)) return
       onTranscript(text)
+      if (!isCurrentLifecycle(lifecycle)) return
       lastBlobRef.current = null
-      setElapsed(0)
-      setState('idle')
+      setElapsedForLifecycle(0, lifecycle)
+      setState('idle', lifecycle)
     } catch {
-      if (controller.signal.aborted) {
-        setElapsed(0)
-        setState('idle')
-        return
-      }
-      setState('error')
+      if (controller.signal.aborted || !isCurrentLifecycle(lifecycle)) return
+      setState('error', lifecycle)
       addToast({
         type: 'error',
         message: '语音转写暂时无法完成，请稍后重试。',
@@ -107,24 +141,24 @@ export function VoiceInputControl({
     } finally {
       if (requestRef.current === controller) requestRef.current = null
     }
-  }, [addToast, language, onTranscript, setState])
+  }, [addToast, isCurrentLifecycle, language, onTranscript, setElapsedForLifecycle, setState])
 
   const start = useCallback(async () => {
-    if (disabled) return
+    if (disabled || !mountedRef.current) return
+    const lifecycle = beginOperation()
+    chunksRef.current = []
+    lastBlobRef.current = null
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      setState('error')
+      setState('error', lifecycle)
       addToast({ type: 'error', message: '当前系统不支持麦克风录音' })
       return
     }
 
-    setState('requesting')
-    cancelledRef.current = false
-    chunksRef.current = []
+    setState('requesting', lifecycle)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      if (cancelledRef.current) {
+      if (!isCurrentLifecycle(lifecycle)) {
         stream.getTracks().forEach((track) => track.stop())
-        setState('idle')
         return
       }
       streamRef.current = stream
@@ -132,31 +166,30 @@ export function VoiceInputControl({
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       recorderRef.current = recorder
       recorder.ondataavailable = (event) => {
-        if (event.data.size) chunksRef.current.push(event.data)
+        if (isCurrentLifecycle(lifecycle) && event.data.size) chunksRef.current.push(event.data)
       }
       recorder.onstop = () => {
+        if (!isCurrentLifecycle(lifecycle)) return
         const blob = new Blob(chunksRef.current, {
           type: recorder.mimeType || mimeType || 'audio/webm',
         })
         releaseRecorder()
-        if (cancelledRef.current) {
-          chunksRef.current = []
-          setElapsed(0)
-          setState('idle')
-          return
-        }
-        void transcribe(blob)
+        if (!isCurrentLifecycle(lifecycle)) return
+        void transcribe(blob, lifecycle)
       }
       recorder.start(250)
-      setElapsed(0)
-      setState('recording')
+      setElapsedForLifecycle(0, lifecycle)
+      setState('recording', lifecycle)
       timerRef.current = window.setInterval(
-        () => setElapsed((value) => value + 1),
+        () => {
+          if (isCurrentLifecycle(lifecycle)) setElapsed((value) => value + 1)
+        },
         1_000,
       )
     } catch (error) {
+      if (!isCurrentLifecycle(lifecycle)) return
       releaseRecorder()
-      setState('error')
+      setState('error', lifecycle)
       addToast({
         type: 'error',
         message: error instanceof DOMException && error.name === 'NotAllowedError'
@@ -164,23 +197,28 @@ export function VoiceInputControl({
           : '无法开始录音，请检查麦克风',
       })
     }
-  }, [addToast, disabled, releaseRecorder, setState, transcribe])
+  }, [addToast, beginOperation, disabled, isCurrentLifecycle, releaseRecorder, setElapsedForLifecycle, setState, transcribe])
 
   const stop = () => {
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
   }
 
   const cancel = () => {
-    cancelledRef.current = true
-    requestRef.current?.abort()
-    requestRef.current = null
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.stop()
+    beginOperation()
+    chunksRef.current = []
+    lastBlobRef.current = null
+    setElapsedForLifecycle(0)
+    setState('idle')
+  }
+
+  const retry = () => {
+    const blob = lastBlobRef.current
+    if (blob) {
+      const lifecycle = beginOperation()
+      void transcribe(blob, lifecycle)
       return
     }
-    releaseRecorder()
-    setElapsed(0)
-    setState('idle')
+    void start()
   }
 
   const buttonClass = `flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors ${className}`
@@ -219,7 +257,7 @@ export function VoiceInputControl({
 
   if (state === 'error') {
     return (
-      <button type="button" onClick={() => lastBlobRef.current ? void transcribe(lastBlobRef.current) : void start()} disabled={disabled} title="重试语音输入" aria-label="重试语音输入" className={`${buttonClass} text-[var(--color-warning)] hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-40`} data-testid="voice-retry">
+      <button type="button" onClick={retry} disabled={disabled} title="重试语音输入" aria-label="重试语音输入" className={`${buttonClass} text-[var(--color-warning)] hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-40`} data-testid="voice-retry">
         <RefreshCw size={16} aria-hidden="true" />
       </button>
     )
