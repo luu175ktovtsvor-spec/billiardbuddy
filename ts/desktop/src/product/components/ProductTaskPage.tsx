@@ -27,6 +27,7 @@ import {
 import { ProductTaskBrowserPreviewDock } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
 import { SideTaskPanel } from './SideTaskPanel'
+import { VoiceInputControl } from './VoiceInputControl'
 import {
   MAX_PRODUCT_TASK_ATTACHMENT_BYTES,
   MAX_PRODUCT_TASK_ATTACHMENT_COUNT,
@@ -822,6 +823,13 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
                 <div className="mt-2 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <button type="button" onClick={chooseAttachments} disabled={attachments.length >= MAX_PRODUCT_TASK_ATTACHMENT_COUNT} className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">添加附件</button>
+                    <VoiceInputControl
+                      disabled={isArchived}
+                      onTranscript={(text) => {
+                        setDraft((current) => current ? `${current}\n${text}` : text)
+                        setValidationMessage(null)
+                      }}
+                    />
                     <p className="truncate text-xs text-[var(--color-text-tertiary)]">按当前发送快捷键提交，Shift + Enter 换行。</p>
                   </div>
                   <div className="flex shrink-0 gap-2">

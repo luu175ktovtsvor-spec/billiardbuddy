@@ -31,6 +31,7 @@ function formatElapsed(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+/** Product composer microphone capture. It returns a transcript but never sends it. */
 export function VoiceInputControl({
   onTranscript,
   onStateChange,

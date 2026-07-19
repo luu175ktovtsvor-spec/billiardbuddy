@@ -47,7 +47,7 @@ beforeEach(() => {
 })
 
 describe('VoiceInputControl', () => {
-  it('records, transcribes and returns text to the composer owner', async () => {
+  it('records, transcribes and returns text to the product composer owner', async () => {
     vi.mocked(voiceApi.transcribe).mockResolvedValue('今晚八点开始比赛')
     const onTranscript = vi.fn()
     const states: VoiceInputState[] = []
