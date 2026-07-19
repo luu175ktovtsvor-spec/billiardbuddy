@@ -585,13 +585,6 @@ export class ProductTaskRunActivityProjector {
   }
 }
 
-export function createProductTaskRunActivityProjector(
-  productTaskId: string,
-  options?: ProductTaskRunActivityProjectorOptions,
-): ProductTaskRunActivityProjector {
-  return new ProductTaskRunActivityProjector(productTaskId, options)
-}
-
 function safeErrorCode(message: Extract<ServerMessage, { type: 'error' }>): ProductTaskSafeErrorCode {
   switch (message.businessErrorCode) {
     case 'pdf_too_large':
