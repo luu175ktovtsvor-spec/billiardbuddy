@@ -611,6 +611,18 @@ function parseAppTokens(raw: string | undefined): Map<string, string> {
   return new Map(Object.entries(parsed).map(([token, user]) => [token, String(user)]))
 }
 
+/** Relay submissions carry an internal relay credential and potentially source images. */
+function httpsUrlOrEmpty(value: string | undefined): string {
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return ''
+  try {
+    const url = new URL(trimmed)
+    return url.protocol === 'https:' ? trimmed.replace(/\/+$/, '') : ''
+  } catch {
+    return ''
+  }
+}
+
 function loadConfig(env: Env): GatewayConfig {
   return {
     // 真实上游密钥只在服务端读取,缺失时对应上游 handler 置空(路由到它会 503),绝不回退到另一家。
@@ -619,7 +631,7 @@ function loadConfig(env: Env): GatewayConfig {
     qwenModel: env.GW_QWEN_MODEL ?? 'qwen3-coder-plus',
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
-    relayTasksBase: (env.GW_RELAY_TASKS_BASE ?? '').replace(/\/+$/, ''),
+    relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
     // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
     relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',

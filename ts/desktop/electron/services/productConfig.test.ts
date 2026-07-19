@@ -147,6 +147,10 @@ describe('requireProductGatewayConfig', () => {
     expect(() => requireProductGatewayConfig({
       url: 'file:///tmp/gateway',
       token: 'app-token',
-    })).toThrow('gateway URL must use HTTP or HTTPS')
+    })).toThrow('gateway URL must use HTTPS')
+    expect(() => requireProductGatewayConfig({
+      url: 'http://39.106.214.21/gw',
+      token: 'app-token',
+    })).toThrow('gateway URL must use HTTPS')
   })
 })

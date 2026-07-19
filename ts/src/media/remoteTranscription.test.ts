@@ -19,6 +19,10 @@ test('resolveRemoteTranscriptionConfig targets the product gateway', () => {
     QF_GATEWAY_URL: 'file:///tmp/gateway',
     QF_GATEWAY_TOKEN: 'app-token',
   })).toBeNull()
+  expect(resolveRemoteTranscriptionConfig({
+    QF_GATEWAY_URL: 'http://39.106.214.21/gw',
+    QF_GATEWAY_TOKEN: 'app-token',
+  })).toBeNull()
 })
 
 test('transcribeRemoteFile forwards audio with server-side auth', async () => {

@@ -244,6 +244,18 @@ describe('qf-gateway readiness predicate & startup race', () => {
     expect(await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)).toBeNull()
   })
 
+  test('a public HTTP gateway is never configured or used as a proxy target', async () => {
+    process.env.QF_GATEWAY_URL = 'http://39.106.214.21/gw'
+    const { qfGatewayConfigured, resolveQfGatewayProxyTarget } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    expect(qfGatewayConfigured()).toBe(false)
+    expect(resolveQfGatewayProxyTarget()).toEqual({ baseUrl: '', apiKey: '' })
+
+    const svc = new ProviderService()
+    expect(await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)).toBeNull()
+  })
+
   test('first session waits for registration: whenQfGatewayReady resolves after activation settles', async () => {
     const { ensureQfGatewayRegistration, whenQfGatewayReady } = await import(
       '../services/qfGatewayProvider.js'

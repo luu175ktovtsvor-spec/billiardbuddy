@@ -48,7 +48,9 @@ export function resolveRemoteTranscriptionConfig(
   } catch {
     return null
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  // Audio and the revocable app token must never travel over a public clear-text
+  // gateway connection. The managed desktop validates the same rule at startup.
+  if (url.protocol !== 'https:') return null
 
   const normalized = url.toString().replace(/\/+$/, '')
   const endpoint = /\/audio\/transcriptions$/i.test(normalized)
