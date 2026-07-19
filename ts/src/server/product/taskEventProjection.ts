@@ -630,7 +630,6 @@ function safeErrorCode(message: Extract<ServerMessage, { type: 'error' }>): Prod
   switch (message.code) {
     case 'CLI_NOT_RUNNING':
     case 'CLI_START_FAILED':
-    case 'SESSION_DELETED':
       return 'task_unavailable'
     case 'CLI_RESTART_FAILED':
       return 'temporarily_unavailable'

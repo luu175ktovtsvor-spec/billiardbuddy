@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'bun:test'
-import { ConversationService, ConversationStartupError } from '../services/conversationService.js'
+import { ConversationService } from '../services/conversationService.js'
 
 // ============================================================================
 // ConversationService unit tests
@@ -22,21 +22,6 @@ describe('ConversationService', () => {
   it('should track active sessions as empty initially', () => {
     const svc = new ConversationService()
     expect(svc.getActiveSessions()).toEqual([])
-  })
-
-  it('should block startup after a session is deleted during prewarm', async () => {
-    const svc = new ConversationService()
-    const sid = crypto.randomUUID()
-
-    svc.markSessionDeleted(sid)
-
-    try {
-      await svc.startSession(sid, process.cwd(), 'ws://127.0.0.1:1/sdk/test')
-      throw new Error('expected startSession to reject')
-    } catch (error) {
-      expect(error).toBeInstanceOf(ConversationStartupError)
-      expect((error as ConversationStartupError).code).toBe('SESSION_DELETED')
-    }
   })
 
   it('should return false when sending message to non-existent session', async () => {

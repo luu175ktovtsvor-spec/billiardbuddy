@@ -806,8 +806,7 @@ function projectStartupError(error: unknown): Extract<ServerMessage, { type: 'er
     return toSafeRuntimeError('CLI_START_FAILED', false)
   }
 
-  const code = error.code === 'SESSION_DELETED' ? 'CLI_NOT_RUNNING' : error.code
-  return toSafeRuntimeError(code, error.retryable)
+  return toSafeRuntimeError(error.code, error.retryable)
 }
 
 function safeBusinessErrorCode(value: unknown): string | undefined {

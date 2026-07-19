@@ -154,8 +154,7 @@ export class ConversationStartupError extends Error {
       | 'CLI_AUTH_REQUIRED'
       | 'CLI_SESSION_CONFLICT'
       | 'CLI_START_FAILED'
-      | 'CLI_SPAWN_FAILED'
-      | 'SESSION_DELETED',
+      | 'CLI_SPAWN_FAILED',
     readonly retryable = false,
   ) {
     super(message)
@@ -165,7 +164,6 @@ export class ConversationStartupError extends Error {
 
 export class ConversationService {
   private sessions = new Map<string, SessionProcess>()
-  private deletedSessions = new Set<string>()
   private providerService = new ProviderService()
 
   private buildSessionCliArgs(
@@ -217,12 +215,6 @@ export class ConversationService {
     sdkUrl: string,
     options?: SessionStartOptions,
   ): Promise<void> {
-    if (this.deletedSessions.has(sessionId)) {
-      throw new ConversationStartupError(
-        `Session was deleted before startup completed: ${sessionId}`,
-        'SESSION_DELETED',
-      )
-    }
     if (this.sessions.has(sessionId)) return
 
     const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
@@ -233,13 +225,6 @@ export class ConversationService {
       !!launchInfo && shouldCreateWorktreeForSessionLaunch(launchInfo)
     const hasMaterializedWorktree =
       !!launchInfo && isMaterializedWorktreeLaunch(launchInfo)
-
-    if (this.deletedSessions.has(sessionId)) {
-      throw new ConversationStartupError(
-        `Session was deleted before startup completed: ${sessionId}`,
-        'SESSION_DELETED',
-      )
-    }
 
     if (!fs.existsSync(workDir) || !fs.statSync(workDir).isDirectory()) {
       throw new ConversationStartupError(
@@ -857,27 +842,6 @@ export class ConversationService {
           error instanceof Error ? error.message : String(error)
         }`,
       )
-    }
-  }
-
-  markSessionDeleted(sessionId: string): void {
-    this.deletedSessions.add(sessionId)
-    this.stopSession(sessionId)
-  }
-
-  markSessionsDeleted(sessionIds: string[]): void {
-    for (const sessionId of sessionIds) {
-      this.markSessionDeleted(sessionId)
-    }
-  }
-
-  unmarkSessionDeleted(sessionId: string): void {
-    this.deletedSessions.delete(sessionId)
-  }
-
-  unmarkSessionsDeleted(sessionIds: string[]): void {
-    for (const sessionId of sessionIds) {
-      this.unmarkSessionDeleted(sessionId)
     }
   }
 
