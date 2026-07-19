@@ -28,6 +28,7 @@ type TestCore = AgentCoreAdapter & {
     sourceTurnId?: string
     target?: Parameters<AgentCoreAdapter['branchSession']>[3]
   } | null
+  getLastRenameInput: () => { sessionId: string; title: string } | null
   hasSession: (sessionId: string) => boolean
 }
 
@@ -45,6 +46,7 @@ function makeCore(): TestCore {
     sourceTurnId?: string
     target?: Parameters<AgentCoreAdapter['branchSession']>[3]
   } | null = null
+  let lastRenameInput: { sessionId: string; title: string } | null = null
 
   const add = (workDir: string, title: string, projectRoot = workDir): AgentCoreSession => {
     const now = new Date(1_700_000_000_000 + nextId * 1_000).toISOString()
@@ -71,6 +73,7 @@ function makeCore(): TestCore {
     renameSession: async (sessionId, title) => {
       const session = sessions.get(sessionId)
       if (!session) throw new Error('missing core session')
+      lastRenameInput = { sessionId, title }
       sessions.set(sessionId, {
         ...session,
         title,
@@ -117,11 +120,34 @@ function makeCore(): TestCore {
     },
     getWorktreeLaunchCallCount: () => worktreeLaunchCallCount,
     getLastBranchInput: () => lastBranchInput,
+    getLastRenameInput: () => lastRenameInput,
     hasSession: (sessionId) => sessions.has(sessionId),
   }
 }
 
 describe('ProductTaskService', () => {
+  it('does not expose the Core binding in public task records', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+    expect(task).not.toHaveProperty('coreSessionId')
+
+    await service.updateTask(task.id, { title: '整理本周球房活动' })
+    expect(core.getLastRenameInput()).toEqual({
+      sessionId: task.id,
+      title: '整理本周球房活动',
+    })
+
+    const listed = await service.listTasks()
+    expect(listed.tasks[0]).not.toHaveProperty('coreSessionId')
+    expect(JSON.parse(JSON.stringify(listed))).not.toHaveProperty('tasks.0.coreSessionId')
+  })
+
   it('keeps BilliardBuddy task lifecycle metadata outside the Agent core sessions', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
@@ -186,7 +212,7 @@ describe('ProductTaskService', () => {
     expect(continuation.sourceTurnId).toBe('turn-42')
     expect(continuation.workDir).toBe('/workspace/hall-operations')
     expect(core.getLastBranchInput()).toEqual({
-      sessionId: task.coreSessionId,
+      sessionId: task.id,
       title: '继续整理',
       sourceTurnId: 'turn-42',
       target: 'current_workspace',
@@ -209,7 +235,7 @@ describe('ProductTaskService', () => {
     })
 
     expect(core.getLastBranchInput()).toEqual({
-      sessionId: task.coreSessionId,
+      sessionId: task.id,
       title: `继续：${task.title}`,
       sourceTurnId: 'turn-43',
       target: 'new_worktree',
@@ -257,7 +283,7 @@ describe('ProductTaskService', () => {
     expect(sideTask.createdAt).toEqual(expect.any(String))
     expect(sideTask.updatedAt).toEqual(expect.any(String))
     expect(core.getLastBranchInput()).toEqual({
-      sessionId: task.coreSessionId,
+      sessionId: task.id,
       title: '单独核对优惠规则',
       sourceTurnId: 'turn-42',
     })

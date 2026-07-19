@@ -67,7 +67,6 @@ function makeParentTask(overrides: Partial<ProductTaskRecord> = {}): ProductTask
     projectId: 'project-1',
     workDir: '/workspace/billiard',
     title: '整理开球训练',
-    coreSessionId: 'session-main-1',
     lifecycle: 'active',
     kind: 'main',
     createdAt: '2026-07-19T00:00:00.000Z',

@@ -66,7 +66,7 @@ vi.mock('./TerminalSettings', () => ({
   ),
 }))
 
-import { ActiveSession } from './ActiveSession'
+import { ActiveSession, getRightDockLayout } from './ActiveSession'
 import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -75,7 +75,11 @@ import { useTabStore } from '../stores/tabStore'
 import { useTeamStore } from '../stores/teamStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
-import { WORKSPACE_PANEL_DEFAULT_WIDTH } from '../stores/workspacePanelStore'
+import {
+  WORKSPACE_PANEL_DEFAULT_WIDTH,
+  WORKSPACE_PANEL_MAX_WIDTH,
+  WORKSPACE_PANEL_MIN_WIDTH,
+} from '../stores/workspacePanelStore'
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import { useTerminalPanelStore } from '../stores/terminalPanelStore'
 import {
@@ -178,6 +182,26 @@ function renderBackgroundTaskDrawerForLocale(locale: 'jp' | 'kr', sessionId: str
 }
 
 describe('ActiveSession task polling', () => {
+  it('reserves a usable chat column when the right dock is constrained by the content row', () => {
+    expect(getRightDockLayout(600, WORKSPACE_PANEL_DEFAULT_WIDTH)).toEqual({
+      minWidth: 272,
+      maxWidth: 272,
+      width: 272,
+    })
+    expect(getRightDockLayout(1000, WORKSPACE_PANEL_DEFAULT_WIDTH)).toEqual({
+      minWidth: WORKSPACE_PANEL_MIN_WIDTH,
+      maxWidth: 620,
+      width: 620,
+    })
+    expect(getRightDockLayout(1800, WORKSPACE_PANEL_DEFAULT_WIDTH)).toEqual({
+      minWidth: WORKSPACE_PANEL_MIN_WIDTH,
+      maxWidth: 1116,
+      width: WORKSPACE_PANEL_DEFAULT_WIDTH,
+    })
+    expect(getRightDockLayout(1000, Number.NaN)?.width).toBe(620)
+    expect(getRightDockLayout(0, WORKSPACE_PANEL_DEFAULT_WIDTH)).toBeNull()
+  })
+
   it('mounts the embedded side-task panel only for the active product task', () => {
     const sessionId = 'product-task-session'
     useSessionStore.setState({
@@ -204,11 +228,10 @@ describe('ActiveSession task polling', () => {
         schemaVersion: 1,
         projects: [],
         tasks: [{
-          id: 'task-1',
+          id: sessionId,
           projectId: 'project-1',
           workDir: '/workspace/product',
           title: 'Product task',
-          coreSessionId: sessionId,
           lifecycle: 'active',
           kind: 'main',
           createdAt: '2026-05-07T00:00:00.000Z',
@@ -223,7 +246,7 @@ describe('ActiveSession task polling', () => {
 
     render(<ActiveSession />)
 
-    expect(screen.getByTestId('side-task-panel')).toHaveAttribute('data-parent-task-id', 'task-1')
+    expect(screen.getByTestId('side-task-panel')).toHaveAttribute('data-parent-task-id', sessionId)
   })
 
   it('treats a persisted historical session as non-empty before messages finish loading', () => {
@@ -1485,6 +1508,31 @@ describe('ActiveSession task polling', () => {
     expect(contentRow.children[0]).toBe(chatColumn)
     expect(contentRow.children[1]).toBe(resizeHandle)
     expect(contentRow.children[2]).toBe(workbenchPanel)
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', `${WORKSPACE_PANEL_MIN_WIDTH}`)
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', `${WORKSPACE_PANEL_MAX_WIDTH}`)
+    expect(resizeHandle).toHaveAttribute('aria-valuenow', `${WORKSPACE_PANEL_DEFAULT_WIDTH}`)
+
+    const contentRowRect = vi.spyOn(contentRow, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 600,
+      height: 720,
+      top: 0,
+      right: 600,
+      bottom: 720,
+      left: 0,
+      toJSON: () => ({}),
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(workbenchPanel).toHaveStyle({ width: '272px', minWidth: '272px', maxWidth: '272px' })
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', '272')
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', '272')
+    expect(resizeHandle).toHaveAttribute('aria-valuenow', '272')
+    contentRowRect.mockRestore()
 
     act(() => {
       fireEvent.keyDown(resizeHandle, { key: 'ArrowLeft' })

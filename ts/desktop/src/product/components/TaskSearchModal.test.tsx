@@ -60,7 +60,6 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     projectId: 'project-a',
     workDir: '/workspace/alpha',
     title: '整理开球训练',
-    coreSessionId: 'session-1',
     lifecycle: 'active',
     kind: 'main',
     createdAt: '2026-07-19T00:00:00.000Z',
@@ -78,7 +77,6 @@ function makeIndex(tasks: ProductTaskRecord[] = [
     projectId: 'project-b',
     workDir: '/workspace/beta',
     title: '归档的球台维护计划',
-    coreSessionId: 'session-2',
     lifecycle: 'archived',
     updatedAt: '2026-07-19T02:00:00.000Z',
   }),
@@ -162,7 +160,6 @@ describe('TaskSearchModal', () => {
     const tasks = Array.from({ length: 10 }, (_, index) => makeTask({
       id: `task-${index}`,
       title: `共同任务 ${index}`,
-      coreSessionId: `session-${index}`,
       updatedAt: `2026-07-19T${String(index).padStart(2, '0')}:00:00.000Z`,
     }))
     mocks.index = makeIndex(tasks)
@@ -184,8 +181,8 @@ describe('TaskSearchModal', () => {
 
     fireEvent.click(screen.getByText('归档的球台维护计划'))
 
-    expect(mocks.openTab).toHaveBeenCalledWith('session-2', '归档的球台维护计划', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('session-2')
+    expect(mocks.openTab).toHaveBeenCalledWith('task-2', '归档的球台维护计划', 'session')
+    expect(mocks.connectToSession).toHaveBeenCalledWith('task-2')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -199,8 +196,8 @@ describe('TaskSearchModal', () => {
     expect(screen.getByRole('option', { name: /整理开球训练/ })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
+    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
+    expect(mocks.connectToSession).toHaveBeenCalledWith('task-1')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -218,7 +215,7 @@ describe('TaskSearchModal', () => {
     })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(mocks.openTab).toHaveBeenCalledWith('session-1', '整理开球训练', 'session')
+    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
     expect(onClose).toHaveBeenCalledOnce()
   })
 

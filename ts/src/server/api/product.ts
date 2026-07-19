@@ -33,10 +33,10 @@ export async function handleProductApi(
     const action = segments[4]
 
     if (!taskId) {
-      if (req.method === 'GET') return Response.json(await tasks.listTasks())
+      if (req.method === 'GET') return Response.json(publicTaskIndex(await tasks.listTasks()))
       if (req.method === 'POST') {
         const input = await readJson<CreateProductTaskInput>(req)
-        return Response.json({ task: await tasks.createTask(input) }, { status: 201 })
+        return Response.json({ task: publicTask(await tasks.createTask(input)) }, { status: 201 })
       }
       return methodNotAllowed(req.method)
     }
@@ -74,22 +74,22 @@ export async function handleProductApi(
     if (!action) {
       if (req.method !== 'PATCH') return methodNotAllowed(req.method)
       const input = await readJson<UpdateProductTaskInput>(req)
-      return Response.json({ task: await tasks.updateTask(taskId, input) })
+      return Response.json({ task: publicTask(await tasks.updateTask(taskId, input)) })
     }
 
     if (req.method !== 'POST') return methodNotAllowed(req.method)
     switch (action) {
       case 'pin':
-        return Response.json({ task: await tasks.setPinned(taskId, true) })
+        return Response.json({ task: publicTask(await tasks.setPinned(taskId, true)) })
       case 'unpin':
-        return Response.json({ task: await tasks.setPinned(taskId, false) })
+        return Response.json({ task: publicTask(await tasks.setPinned(taskId, false)) })
       case 'archive':
-        return Response.json({ task: await tasks.setArchived(taskId, true) })
+        return Response.json({ task: publicTask(await tasks.setArchived(taskId, true)) })
       case 'restore':
-        return Response.json({ task: await tasks.setArchived(taskId, false) })
+        return Response.json({ task: publicTask(await tasks.setArchived(taskId, false)) })
       case 'continue': {
         const input = await readJson<ContinueProductTaskInput>(req)
-        return Response.json({ task: await tasks.continueTask(taskId, input) }, { status: 201 })
+        return Response.json({ task: publicTask(await tasks.continueTask(taskId, input)) }, { status: 201 })
       }
       default:
         throw ApiError.notFound(`未知任务操作：${action}`)
@@ -112,4 +112,18 @@ function methodNotAllowed(method: string): Response {
     { error: 'METHOD_NOT_ALLOWED', message: `不支持 ${method} 请求` },
     { status: 405 },
   )
+}
+
+function publicTask<T extends object>(task: T): T {
+  const { coreSessionId: _legacyCoreSessionId, ...publicTask } = task as T & {
+    coreSessionId?: unknown
+  }
+  return publicTask as T
+}
+
+function publicTaskIndex<T extends { tasks: object[] }>(index: T): T {
+  return {
+    ...index,
+    tasks: index.tasks.map(publicTask),
+  }
 }

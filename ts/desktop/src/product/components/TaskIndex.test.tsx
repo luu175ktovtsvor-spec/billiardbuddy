@@ -34,7 +34,7 @@ vi.mock('../../components/chat/clipboard', () => ({
   copyTextToClipboard: mocks.copyText,
 }))
 
-import { TaskIndex, type TaskIndexProps } from './TaskIndex'
+import { TaskComposer, TaskIndex, type TaskIndexProps } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 import type { DiscoveredSlashCommand } from '../../api/commandDiscovery'
@@ -45,7 +45,6 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     projectId: 'project-1',
     workDir: '/workspace/billiard',
     title: '修复开球规则',
-    coreSessionId: 'session-1',
     lifecycle: 'active',
     kind: 'main',
     createdAt: '2026-07-18T00:00:00.000Z',
@@ -87,13 +86,13 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
     error: null,
     mutations: {},
     onRefresh: vi.fn(async () => undefined),
-    onCreateTask: vi.fn(async () => undefined),
     onRenameTask: vi.fn(async () => undefined),
     onPinTask: vi.fn(async () => undefined),
     onUnpinTask: vi.fn(async () => undefined),
     onArchiveTask: vi.fn(async () => undefined),
     onRestoreTask: vi.fn(async () => undefined),
     onContinueTask: vi.fn(async () => undefined),
+    onRequestNewTask: vi.fn(),
     onOpenTask: vi.fn(),
     onOpenTaskWorkbench: vi.fn(),
     onOpenTaskTerminal: vi.fn(),
@@ -101,6 +100,23 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
   }
   render(<TaskIndex {...props} />)
   return props
+}
+
+function renderComposer(overrides: Partial<{
+  initialWorkDir: string
+}> = {}) {
+  const onSubmit = vi.fn(async () => undefined)
+  const onCancel = vi.fn()
+  render(
+    <TaskComposer
+      projects={makeIndex().projects}
+      initialWorkDir={overrides.initialWorkDir}
+      isSubmitting={false}
+      onCancel={onCancel}
+      onSubmit={onSubmit}
+    />,
+  )
+  return { onCancel, onSubmit }
 }
 
 beforeEach(() => {
@@ -175,7 +191,7 @@ describe('TaskIndex', () => {
 
   it('keeps the Agent run state separate from the task lifecycle and worktree', () => {
     renderIndex(makeIndex(makeTask({ worktreeState: 'planned' })), {
-      runtimeStatesBySessionId: { 'session-1': 'awaiting_approval' },
+      runtimeStatesBySessionId: { 'task-1': 'awaiting_approval' },
     })
 
     const task = screen.getByTestId('product-task-task-1')
@@ -186,7 +202,7 @@ describe('TaskIndex', () => {
 
   it('does not let an archived task lifecycle hide a live Agent run state', () => {
     renderIndex(makeIndex(makeTask({ lifecycle: 'archived', actions: ['restore'] })), {
-      runtimeStatesBySessionId: { 'session-1': 'running' },
+      runtimeStatesBySessionId: { 'task-1': 'running' },
     })
 
     fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档任务' }))
@@ -196,35 +212,25 @@ describe('TaskIndex', () => {
     expect(task).toHaveTextContent('运行中')
   })
 
-  it('creates a task, opens its core session, and continues the selected task', async () => {
+  it('routes creation to the dedicated page, then opens and continues the selected task', async () => {
     const props = renderIndex()
 
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '整理球台配置' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      title: '整理球台配置',
-    }))
+    expect(props.onRequestNewTask).toHaveBeenCalledOnce()
 
     fireEvent.click(screen.getByRole('button', { name: '打开' }))
     expect(props.onOpenTask).toHaveBeenCalledWith(expect.objectContaining({
       id: 'task-1',
-      coreSessionId: 'session-1',
     }))
 
     fireEvent.click(screen.getByRole('button', { name: '打开工作台' }))
     expect(props.onOpenTaskWorkbench).toHaveBeenCalledWith(expect.objectContaining({
       id: 'task-1',
-      coreSessionId: 'session-1',
     }))
 
     fireEvent.click(screen.getByRole('button', { name: '打开终端' }))
     expect(props.onOpenTaskTerminal).toHaveBeenCalledWith(expect.objectContaining({
       id: 'task-1',
-      coreSessionId: 'session-1',
     }))
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
@@ -246,18 +252,16 @@ describe('TaskIndex', () => {
   })
 
   it('does not show the native folder chooser outside the desktop app', () => {
-    renderIndex()
+    renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     expect(screen.queryByRole('button', { name: '选择文件夹' })).not.toBeInTheDocument()
   })
 
   it('writes the desktop native folder selection back to the work directory', async () => {
     mocks.isDesktop = true
     mocks.openDirectory.mockResolvedValue('/workspace/selected-project')
-    renderIndex()
+    renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
 
     await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
@@ -268,27 +272,21 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/selected-project'))
   })
 
-  it('opens the real new-task composer with the directory requested by desktop navigation', async () => {
-    const onConsumeComposerRequest = vi.fn()
-    renderIndex(makeIndex(), {
-      composerRequest: { id: 17, workDir: '/workspace/billiard' },
-      onConsumeComposerRequest,
-    })
+  it('uses the requested work directory in the dedicated new-task composer', async () => {
+    renderComposer({ initialWorkDir: '/workspace/billiard' })
 
-    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard'))
-    expect(onConsumeComposerRequest).toHaveBeenCalledWith(17)
+    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard')
   })
 
   it('keeps the optional initial goal out of the product task fields', async () => {
-    const props = renderIndex()
+    const { onSubmit } = renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '整理球台配置' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '  请列出本周的训练安排  ' } })
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
       title: '整理球台配置',
     }, {
@@ -298,10 +296,9 @@ describe('TaskIndex', () => {
   })
 
   it('uses the existing browser picker for initial image attachments, lets the user remove them, and keeps refs out of the task payload', async () => {
-    const props = renderIndex()
+    const { onSubmit } = renderComposer()
     const pickerClick = vi.spyOn(HTMLInputElement.prototype, 'click')
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
 
@@ -321,7 +318,7 @@ describe('TaskIndex', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
     }, {
       text: '',
@@ -337,9 +334,8 @@ describe('TaskIndex', () => {
   it('uses the existing desktop picker for initial file attachments', async () => {
     mocks.isDesktop = true
     mocks.openDirectory.mockResolvedValue(['/workspace/billiard/训练记录.csv'])
-    renderIndex()
+    renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
 
     await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
@@ -353,9 +349,8 @@ describe('TaskIndex', () => {
     mocks.listSkillCommands.mockResolvedValue({
       commands: [makeSkill()],
     })
-    const props = renderIndex()
+    const { onSubmit } = renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/venue' } })
 
@@ -365,7 +360,7 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/venue-daily-review ')
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
     }, {
       text: '/venue-daily-review',
@@ -382,9 +377,8 @@ describe('TaskIndex', () => {
         source: 'projectSettings',
       }],
     })
-    const props = renderIndex()
+    const { onSubmit } = renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
 
@@ -396,7 +390,7 @@ describe('TaskIndex', () => {
     expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
     }, {
       text: '/agent venue-analyst',
@@ -412,9 +406,8 @@ describe('TaskIndex', () => {
         runtimeName: 'venue-analyst',
       }],
     })
-    renderIndex()
+    renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
 
@@ -427,9 +420,8 @@ describe('TaskIndex', () => {
     mocks.listSkillCommands.mockImplementation(() => new Promise((_, reject) => {
       rejectSkillCommands = reject
     }))
-    renderIndex()
+    renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/' } })
 
@@ -444,13 +436,12 @@ describe('TaskIndex', () => {
 
   it('uses the configured default permission mode for the new core session', async () => {
     useSettingsStore.setState({ permissionMode: 'plan' })
-    const props = renderIndex()
+    const { onSubmit } = renderComposer()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }))
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
-    await waitFor(() => expect(props.onCreateTask).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
       permissionMode: 'plan',
     }))

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { Clock, FileText, Folder, Globe2, Sparkles, Target } from 'lucide-react'
 import {
@@ -13,7 +13,12 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useTeamStore } from '../stores/teamStore'
-import { useWorkspacePanelStore } from '../stores/workspacePanelStore'
+import {
+  WORKSPACE_PANEL_DEFAULT_WIDTH,
+  WORKSPACE_PANEL_MAX_WIDTH,
+  WORKSPACE_PANEL_MIN_WIDTH,
+  useWorkspacePanelStore,
+} from '../stores/workspacePanelStore'
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import {
   TERMINAL_PANEL_DEFAULT_HEIGHT,
@@ -44,9 +49,78 @@ import {
 const TASK_POLL_INTERVAL_MS = 1000
 const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
+export const CHAT_COLUMN_MIN_WIDTH = 320
+export const WORKSPACE_RESIZE_HANDLE_WIDTH = 8
+const RIGHT_DOCK_MAX_CONTENT_SHARE = 0.62
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
   'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
 const EMPTY_DISMISSED_BACKGROUND_TASK_KEYS = new Set<string>()
+
+type RightDockLayout = {
+  minWidth: number
+  maxWidth: number
+  width: number
+}
+
+/**
+ * Keep the side workbench from taking space that the chat column needs to
+ * remain usable. The preferred width stays in the store, so it is restored
+ * when the window grows again instead of permanently shrinking the user's
+ * setting.
+ */
+export function getRightDockLayout(
+  contentRowWidth: number,
+  preferredWidth: number,
+): RightDockLayout | null {
+  if (!Number.isFinite(contentRowWidth) || contentRowWidth <= 0) return null
+
+  const roundedContentWidth = Math.floor(contentRowWidth)
+  const availableAfterChat = Math.max(
+    0,
+    roundedContentWidth - CHAT_COLUMN_MIN_WIDTH - WORKSPACE_RESIZE_HANDLE_WIDTH,
+  )
+  const maxWidth = Math.max(0, Math.min(
+    WORKSPACE_PANEL_MAX_WIDTH,
+    Math.floor(roundedContentWidth * RIGHT_DOCK_MAX_CONTENT_SHARE),
+    availableAfterChat,
+  ))
+  const minWidth = Math.min(WORKSPACE_PANEL_MIN_WIDTH, maxWidth)
+  const requestedWidth = Number.isFinite(preferredWidth)
+    ? Math.round(preferredWidth)
+    : WORKSPACE_PANEL_DEFAULT_WIDTH
+  const width = Math.min(maxWidth, Math.max(minWidth, requestedWidth))
+
+  return { minWidth, maxWidth, width }
+}
+
+function useElementWidth<T extends HTMLElement>(ref: RefObject<T>) {
+  const [width, setWidth] = useState(0)
+
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const updateWidth = () => {
+      const nextWidth = Math.max(0, Math.floor(element.getBoundingClientRect().width))
+      setWidth((currentWidth) => currentWidth === nextWidth ? currentWidth : nextWidth)
+    }
+
+    updateWidth()
+
+    const observer = typeof ResizeObserver === 'undefined'
+      ? undefined
+      : new ResizeObserver(updateWidth)
+    observer?.observe(element)
+    window.addEventListener('resize', updateWidth)
+
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateWidth)
+    }
+  }, [ref])
+
+  return width
+}
 
 const MAIN_EMPTY_SUGGESTIONS = {
   zh: [
@@ -141,7 +215,17 @@ function getRenderedWorkspacePanelWidth(panelRef: RefObject<HTMLElement>, fallba
     : fallbackWidth
 }
 
-function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> }) {
+function WorkspaceResizeHandle({
+  panelRef,
+  visibleWidth,
+  minWidth,
+  maxWidth,
+}: {
+  panelRef: RefObject<HTMLElement>
+  visibleWidth: number
+  minWidth: number
+  maxWidth: number
+}) {
   const t = useTranslation()
   const width = useWorkspacePanelStore((state) => state.width)
   const setWidth = useWorkspacePanelStore((state) => state.setWidth)
@@ -185,7 +269,9 @@ function WorkspaceResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement> 
       role="separator"
       aria-label={t('workspace.resizePanel')}
       aria-orientation="vertical"
-      aria-valuenow={width}
+      aria-valuemin={minWidth}
+      aria-valuemax={maxWidth}
+      aria-valuenow={visibleWidth}
       tabIndex={0}
       data-testid="workspace-resize-handle"
       onPointerDown={(event) => {
@@ -293,14 +379,16 @@ function TerminalResizeHandle() {
 
 export function ActiveSession() {
   const locale = useSettingsStore((state) => state.locale)
+  const contentRowRef = useRef<HTMLDivElement>(null)
   const workbenchPanelRef = useRef<HTMLElement>(null)
+  const contentRowWidth = useElementWidth(contentRowRef)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const [dismissedBackgroundTaskKeysBySession, setDismissedBackgroundTaskKeysBySession] = useState<Record<string, Set<string>>>({})
   const activeTabType = useTabStore((s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId)?.type ?? null)
   const sessions = useSessionStore((s) => s.sessions)
   const activeProductTask = useProductTaskStore((state) =>
     activeTabId
-      ? state.index.tasks.find((task) => task.coreSessionId === activeTabId) ?? null
+      ? state.index.tasks.find((task) => task.id === activeTabId) ?? null
       : null,
   )
   const connectToSession = useChatStore((s) => s.connectToSession)
@@ -329,6 +417,7 @@ export function ActiveSession() {
   )
   const showRightPanel = showWorkspacePanel || showBrowserPanel
   const rightPanelWidth = useWorkspacePanelStore((state) => state.width)
+  const rightDockLayout = getRightDockLayout(contentRowWidth, rightPanelWidth)
   const showTerminalPanel = useTerminalPanelStore((state) =>
     activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession
       ? state.isPanelOpen(activeTabId)
@@ -423,7 +512,7 @@ export function ActiveSession() {
 
   return (
     <div className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
-      <div data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
+      <div ref={contentRowRef} data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
         <div
           data-testid="active-session-chat-column"
           className={`flex min-h-0 flex-col ${showRightPanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : 'min-w-[360px] flex-1'}`}
@@ -618,12 +707,27 @@ export function ActiveSession() {
 
         {showRightPanel ? (
           <>
-            <WorkspaceResizeHandle panelRef={workbenchPanelRef} />
+            <WorkspaceResizeHandle
+              panelRef={workbenchPanelRef}
+              visibleWidth={rightDockLayout?.width ?? rightPanelWidth}
+              minWidth={rightDockLayout?.minWidth ?? WORKSPACE_PANEL_MIN_WIDTH}
+              maxWidth={rightDockLayout?.maxWidth ?? WORKSPACE_PANEL_MAX_WIDTH}
+            />
             <aside
               ref={workbenchPanelRef}
               data-testid="workbench-panel"
               className="flex h-full shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-surface)]"
-              style={{ width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
+              style={rightDockLayout
+                ? {
+                    width: rightDockLayout.width,
+                    minWidth: rightDockLayout.minWidth,
+                    maxWidth: rightDockLayout.maxWidth,
+                  }
+                : {
+                    width: rightPanelWidth,
+                    minWidth: `min(${WORKSPACE_PANEL_MIN_WIDTH}px, max(0px, calc(100% - ${CHAT_COLUMN_MIN_WIDTH + WORKSPACE_RESIZE_HANDLE_WIDTH}px)))`,
+                    maxWidth: `min(${RIGHT_DOCK_MAX_CONTENT_SHARE * 100}%, max(0px, calc(100% - ${CHAT_COLUMN_MIN_WIDTH + WORKSPACE_RESIZE_HANDLE_WIDTH}px)))`,
+                  }}
             >
               <WorkbenchPanel sessionId={activeTabId} />
             </aside>

@@ -4,6 +4,7 @@ import { dropSession as dropVirtualHeightSession } from '../components/chat/virt
 import { destroyTerminalRuntime } from '../lib/terminalRuntime'
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
+let nextNewProductTaskRequestId = 0
 
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
@@ -12,6 +13,7 @@ export const WORKBENCH_TAB_PREFIX = '__workbench__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
+export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
 
 export type TabType =
   | 'session'
@@ -22,6 +24,7 @@ export type TabType =
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
+  | 'new-product-task'
 
 export type Tab = {
   sessionId: string
@@ -31,6 +34,8 @@ export type Tab = {
   terminalCwd?: string
   terminalRuntimeId?: string
   workbenchSessionId?: string
+  newTaskWorkDir?: string
+  newTaskRequestId?: number
 }
 
 type TabPersistence = {
@@ -45,6 +50,7 @@ type TabStore = {
   openTab: (sessionId: string, title: string, type?: TabType) => void
   openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
   openWorkbenchTab: (sessionId: string, title?: string) => string
+  openNewProductTask: (workDir?: string) => void
   closeTab: (sessionId: string) => void
   setActiveTab: (sessionId: string) => void
   updateTabTitle: (sessionId: string, title: string) => void
@@ -132,6 +138,28 @@ export const useTabStore = create<TabStore>((set, get) => ({
     return tabId
   },
 
+  openNewProductTask: (workDir) => {
+    const normalizedWorkDir = workDir?.trim() || undefined
+    const requestId = ++nextNewProductTaskRequestId
+    const { tabs } = get()
+    const tab: Tab = {
+      sessionId: NEW_PRODUCT_TASK_TAB_ID,
+      title: '新建任务',
+      type: 'new-product-task',
+      status: 'idle',
+      ...(normalizedWorkDir ? { newTaskWorkDir: normalizedWorkDir } : {}),
+      newTaskRequestId: requestId,
+    }
+    const existing = tabs.some((current) => current.sessionId === NEW_PRODUCT_TASK_TAB_ID)
+    set({
+      tabs: existing
+        ? tabs.map((current) => current.sessionId === NEW_PRODUCT_TASK_TAB_ID ? tab : current)
+        : [...tabs, tab],
+      activeTabId: NEW_PRODUCT_TASK_TAB_ID,
+    })
+    get().saveTabs()
+  },
+
   closeTab: (sessionId) => {
     const { tabs, activeTabId } = get()
     const index = tabs.findIndex((t) => t.sessionId === sessionId)
@@ -201,7 +229,11 @@ export const useTabStore = create<TabStore>((set, get) => ({
 
   saveTabs: () => {
     const { tabs, activeTabId } = get()
-    const persistableTabs = tabs.filter((tab) => tab.type !== 'terminal' && tab.type !== 'workbench')
+    const persistableTabs = tabs.filter((tab) => (
+      tab.type !== 'terminal'
+      && tab.type !== 'workbench'
+      && tab.type !== 'new-product-task'
+    ))
     const data: TabPersistence = {
       openTabs: persistableTabs.map((t) => ({
         sessionId: t.sessionId,

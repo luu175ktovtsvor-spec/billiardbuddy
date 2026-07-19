@@ -1,5 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, Clock, Copy, Folder, Globe2, PanelLeft, PanelRight, Search, SquareTerminal } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronDown,
+  Clock,
+  Copy,
+  Folder,
+  GitFork,
+  Globe2,
+  PanelLeft,
+  PanelRight,
+  Pencil,
+  Pin,
+  PinOff,
+  Search,
+  SquareTerminal,
+} from 'lucide-react'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -7,10 +23,16 @@ import { useChatStore } from '../../stores/chatStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
+import { ActionDialog } from '../shared/ActionDialog'
 import { useTranslation } from '../../i18n'
 import { copyTextToClipboard } from '../chat/clipboard'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { WindowControls, showWindowControls } from './WindowControls'
+import {
+  productTaskMutationKey,
+  useProductTaskStore,
+} from '../../product/stores/productTaskStore'
+import { continueProductTask } from '../../product/taskLaunch'
 
 const isWindowsPlatform = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
 
@@ -41,6 +63,35 @@ function IconBtn({
       {children}
     </button>
   )
+}
+
+function MenuItem({
+  children,
+  disabled = false,
+  onClick,
+}: {
+  children: ReactNode
+  disabled?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-default disabled:opacity-50"
+      style={{ color: 'var(--color-text-primary)' }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function taskActionErrorMessage(): string {
+  // Product-task failures can include backend implementation details. The task
+  // page already retains retryable state, while the top bar stays user-facing.
+  return '操作暂未完成，请稍后重试。'
 }
 
 /**
@@ -83,6 +134,22 @@ export function TopBar() {
   const addToast = useUIStore((s) => s.addToast)
   const collapsed = !sidebarOpen
 
+  const activeProductTask = useProductTaskStore((state) => (
+    activeTabId
+      ? state.index.tasks.find((task) => task.id === activeTabId) ?? null
+      : null
+  ))
+  const productTaskMutations = useProductTaskStore((state) => state.mutations)
+  const renameTask = useProductTaskStore((state) => state.renameTask)
+  const pinTask = useProductTaskStore((state) => state.pinTask)
+  const unpinTask = useProductTaskStore((state) => state.unpinTask)
+  const archiveTask = useProductTaskStore((state) => state.archiveTask)
+  const restoreTask = useProductTaskStore((state) => state.restoreTask)
+  const continueTask = useProductTaskStore((state) => state.continueTask)
+
+  const [taskDialog, setTaskDialog] = useState<'rename' | 'archive' | null>(null)
+  const [taskTitleDraft, setTaskTitleDraft] = useState('')
+
   // 工作目录来自 sessionStore 里当前活动会话的真实记录，不是凭空拼的路径。
   const sessionWorkDir = useSessionStore((s) =>
     activeTabId ? (s.sessions.find((session) => session.id === activeTabId)?.workDir ?? null) : null,
@@ -103,6 +170,13 @@ export function TopBar() {
 
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  const hasTaskAction = (action: 'pin' | 'unpin' | 'rename' | 'archive' | 'restore' | 'continue') => (
+    activeProductTask?.actions.includes(action) ?? false
+  )
+  const isTaskMutationPending = (action: string) => Boolean(
+    activeProductTask && productTaskMutations[productTaskMutationKey(activeProductTask.id, action)],
+  )
 
   useEffect(() => {
     if (!menuAt) return
@@ -162,6 +236,80 @@ export function TopBar() {
   async function handleCopy(text: string) {
     const copied = await copyTextToClipboard(text)
     addToast({ type: copied ? 'success' : 'error', message: copied ? t('common.copied') : t('common.copyFailed') })
+  }
+
+  const openRenameTask = () => {
+    if (!activeProductTask) return
+    setMenuAt(null)
+    setTaskTitleDraft(activeProductTask.title)
+    setTaskDialog('rename')
+  }
+
+  const handleRenameTask = async () => {
+    if (!activeProductTask) return
+    const title = taskTitleDraft.trim()
+    if (!title) return
+
+    try {
+      const task = await renameTask(activeProductTask.id, title)
+      useSessionStore.getState().updateSessionTitle(task.id, task.title)
+      useTabStore.getState().updateTabTitle(task.id, task.title)
+      setTaskDialog(null)
+      addToast({ type: 'success', message: '任务名称已更新。' })
+    } catch {
+      addToast({ type: 'error', message: taskActionErrorMessage() })
+    }
+  }
+
+  const handlePinTask = async () => {
+    if (!activeProductTask) return
+    try {
+      if (hasTaskAction('pin')) {
+        await pinTask(activeProductTask.id)
+        addToast({ type: 'success', message: '任务已置顶。' })
+      } else if (hasTaskAction('unpin')) {
+        await unpinTask(activeProductTask.id)
+        addToast({ type: 'success', message: '已取消置顶。' })
+      }
+    } catch {
+      addToast({ type: 'error', message: taskActionErrorMessage() })
+    }
+  }
+
+  const handleArchiveTask = async () => {
+    if (!activeProductTask) return
+    try {
+      await archiveTask(activeProductTask.id)
+      setTaskDialog(null)
+      addToast({ type: 'success', message: '任务已归档，可随时恢复或继续。' })
+    } catch {
+      addToast({ type: 'error', message: taskActionErrorMessage() })
+    }
+  }
+
+  const handleRestoreTask = async () => {
+    if (!activeProductTask) return
+    try {
+      await restoreTask(activeProductTask.id)
+      addToast({ type: 'success', message: '任务已恢复。' })
+    } catch {
+      addToast({ type: 'error', message: taskActionErrorMessage() })
+    }
+  }
+
+  const handleContinueTask = async (target: 'current_workspace' | 'new_worktree') => {
+    if (!activeProductTask) return
+    try {
+      const task = await continueProductTask({
+        continueTask,
+        refreshSessions: () => useSessionStore.getState().fetchSessions(),
+        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.id, nextTask.title, 'session'),
+        connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
+      }, activeProductTask.id, { target })
+      addToast({ type: 'success', message: `已打开继续任务：${task.title}` })
+    } catch {
+      addToast({ type: 'error', message: taskActionErrorMessage() })
+    }
   }
 
   const desktopHost = getDesktopHost()
@@ -255,49 +403,160 @@ export function TopBar() {
           className="fixed z-50 min-w-[200px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1.5"
           style={{ left: menuAt.x, top: menuAt.y, boxShadow: 'var(--shadow-dropdown)' }}
         >
-          <button
-            type="button"
-            role="menuitem"
+          <MenuItem
             onClick={() => {
               setMenuAt(null)
               void handleCopy(
                 composeConversationText(activeTabId, title, t('search.global.roleUser'), t('search.global.roleAssistant')),
               )
             }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-            style={{ color: 'var(--color-text-primary)' }}
           >
             <Copy size={15} /> 复制整段对话
-          </button>
-          <button
-            type="button"
-            role="menuitem"
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               setMenuAt(null)
               void handleCopy(activeTabId)
             }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-            style={{ color: 'var(--color-text-primary)' }}
           >
             <Copy size={15} /> 复制会话 ID
-          </button>
+          </MenuItem>
           {sessionWorkDir && (
-            <button
-              type="button"
-              role="menuitem"
+            <MenuItem
               onClick={() => {
                 setMenuAt(null)
                 void handleCopy(sessionWorkDir)
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--color-surface-hover)]"
-              style={{ color: 'var(--color-text-primary)' }}
             >
               <Folder size={15} /> 复制工作目录
-            </button>
+            </MenuItem>
           )}
-          {/* “归档此任务”已下架：当前仓库 sessionStore 没有 isArchived/setArchived 等价能力。 */}
+          {activeProductTask ? (
+            <>
+              <div className="my-1 border-t border-[var(--color-border)]" role="separator" />
+              <MenuItem
+                onClick={() => {
+                  setMenuAt(null)
+                  void handleCopy(activeProductTask.id)
+                }}
+              >
+                <Copy size={15} /> 复制任务 ID
+              </MenuItem>
+              {hasTaskAction('rename') ? (
+                <MenuItem onClick={openRenameTask}>
+                  <Pencil size={15} /> 重命名任务
+                </MenuItem>
+              ) : null}
+              {hasTaskAction('pin') || hasTaskAction('unpin') ? (
+                <MenuItem
+                  disabled={isTaskMutationPending(hasTaskAction('pin') ? 'pin' : 'unpin')}
+                  onClick={() => {
+                    setMenuAt(null)
+                    void handlePinTask()
+                  }}
+                >
+                  {hasTaskAction('pin') ? <Pin size={15} /> : <PinOff size={15} />}
+                  {hasTaskAction('pin') ? '置顶任务' : '取消置顶'}
+                </MenuItem>
+              ) : null}
+              {hasTaskAction('continue') ? (
+                <>
+                  <MenuItem
+                    disabled={isTaskMutationPending('continue')}
+                    onClick={() => {
+                      setMenuAt(null)
+                      void handleContinueTask('current_workspace')
+                    }}
+                  >
+                    <GitFork size={15} /> 在当前工作目录继续
+                  </MenuItem>
+                  <MenuItem
+                    disabled={isTaskMutationPending('continue')}
+                    onClick={() => {
+                      setMenuAt(null)
+                      void handleContinueTask('new_worktree')
+                    }}
+                  >
+                    <GitFork size={15} /> 在新工作树中继续
+                  </MenuItem>
+                </>
+              ) : null}
+              {hasTaskAction('archive') ? (
+                <MenuItem
+                  disabled={isTaskMutationPending('archive')}
+                  onClick={() => {
+                    setMenuAt(null)
+                    setTaskDialog('archive')
+                  }}
+                >
+                  <Archive size={15} /> 归档任务
+                </MenuItem>
+              ) : null}
+              {hasTaskAction('restore') ? (
+                <MenuItem
+                  disabled={isTaskMutationPending('restore')}
+                  onClick={() => {
+                    setMenuAt(null)
+                    void handleRestoreTask()
+                  }}
+                >
+                  <ArchiveRestore size={15} /> 恢复任务
+                </MenuItem>
+              ) : null}
+            </>
+          ) : null}
         </div>
       )}
+      <ActionDialog
+        open={taskDialog === 'rename'}
+        onClose={() => setTaskDialog(null)}
+        title="重命名任务"
+        body={(
+          <label className="flex flex-col gap-2 text-sm text-[var(--color-text-secondary)]">
+            任务名称
+            <input
+              autoFocus
+              aria-label="任务名称"
+              value={taskTitleDraft}
+              onChange={(event) => setTaskTitleDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void handleRenameTask()
+                }
+              }}
+              className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
+            />
+          </label>
+        )}
+        loading={isTaskMutationPending('rename')}
+        actions={[
+          { label: '取消', onClick: () => setTaskDialog(null) },
+          {
+            label: '保存',
+            variant: 'primary',
+            loading: isTaskMutationPending('rename'),
+            disabled: !taskTitleDraft.trim(),
+            onClick: handleRenameTask,
+          },
+        ]}
+      />
+      <ActionDialog
+        open={taskDialog === 'archive'}
+        onClose={() => setTaskDialog(null)}
+        title="归档任务"
+        body="归档后任务不会出现在进行中的列表中，但保留原有记录，可随时恢复或继续。"
+        loading={isTaskMutationPending('archive')}
+        actions={[
+          { label: '取消', onClick: () => setTaskDialog(null) },
+          {
+            label: '确认归档',
+            variant: 'danger',
+            loading: isTaskMutationPending('archive'),
+            onClick: handleArchiveTask,
+          },
+        ]}
+      />
     </>
   )
 }

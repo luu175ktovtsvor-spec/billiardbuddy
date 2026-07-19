@@ -85,8 +85,8 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
   }, [activeIndex, open, results.length])
 
   const openTask = (result: TaskSearchResult) => {
-    useTabStore.getState().openTab(result.task.coreSessionId, result.task.title, 'session')
-    useChatStore.getState().connectToSession(result.task.coreSessionId)
+    useTabStore.getState().openTab(result.task.id, result.task.title, 'session')
+    useChatStore.getState().connectToSession(result.task.id)
     onClose()
   }
 

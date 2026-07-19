@@ -2,9 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { APP_ZOOM_STORAGE_KEY } from '../lib/appZoom'
 import { useSettingsStore } from '../stores/settingsStore'
-import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
+import { NEW_PRODUCT_TASK_TAB_ID, useTabStore } from '../stores/tabStore'
 import { useUIStore } from '../stores/uiStore'
-import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
 function ShortcutHost() {
@@ -28,7 +27,6 @@ describe('useKeyboardShortcuts app zoom', () => {
     document.body.style.removeProperty('zoom')
     useSettingsStore.setState({ uiZoom: 1 })
     useTabStore.setState({ tabs: [], activeTabId: null })
-    useProductTaskStore.setState({ composerRequest: null })
     useUIStore.setState({ activeModal: null })
     setNavigatorPlatform('Win32')
   })
@@ -107,7 +105,7 @@ describe('useKeyboardShortcuts app zoom', () => {
     expect(window.localStorage.getItem(APP_ZOOM_STORAGE_KEY)).toBe('0.9')
   })
 
-  it('opens the product-owned task composer with Ctrl or Cmd N', () => {
+  it('opens the dedicated product-owned new-task page with Ctrl or Cmd N', () => {
     render(<ShortcutHost />)
 
     fireEvent.keyDown(document, {
@@ -115,10 +113,13 @@ describe('useKeyboardShortcuts app zoom', () => {
       ctrlKey: true,
     })
 
-    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
-    expect(useProductTaskStore.getState().composerRequest).toEqual(expect.objectContaining({
-      id: expect.any(Number),
-    }))
+    expect(useTabStore.getState().activeTabId).toBe(NEW_PRODUCT_TASK_TAB_ID)
+    expect(useTabStore.getState().tabs).toEqual([
+      expect.objectContaining({
+        sessionId: NEW_PRODUCT_TASK_TAB_ID,
+        type: 'new-product-task',
+      }),
+    ])
   })
 
   it('opens the dedicated task-search modal with Cmd or Ctrl K', () => {

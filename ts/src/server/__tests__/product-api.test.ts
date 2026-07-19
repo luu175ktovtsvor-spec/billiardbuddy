@@ -4,6 +4,7 @@ import { handleProductApi } from '../api/product.js'
 const task = {
   id: 'task-1',
   title: '整理本周球房活动',
+  coreSessionId: 'internal-session-1',
   lifecycle: 'active',
   actions: ['archive'],
 }
@@ -71,6 +72,20 @@ async function request(
 }
 
 describe('Product tasks API', () => {
+  it('does not expose the legacy Core binding in ordinary task JSON', async () => {
+    const { service } = createService()
+
+    const listed = await request(service, 'GET', '/api/product/tasks')
+    const created = await request(service, 'POST', '/api/product/tasks', {
+      workDir: '/workspace/hall-operations',
+    })
+
+    expect(listed.body.tasks[0]).toEqual(expect.objectContaining({ id: task.id }))
+    expect(listed.body.tasks[0]).not.toHaveProperty('coreSessionId')
+    expect(created.body.task).toEqual(expect.objectContaining({ id: task.id }))
+    expect(created.body.task).not.toHaveProperty('coreSessionId')
+  })
+
   it('routes real lifecycle actions to the product task service', async () => {
     const { service, calls } = createService()
 

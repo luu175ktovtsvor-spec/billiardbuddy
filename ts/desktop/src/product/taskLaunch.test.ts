@@ -8,7 +8,6 @@ function makeTask(): ProductTaskRecord {
     projectId: 'project-1',
     workDir: '/workspace/billiard',
     title: '整理开球训练',
-    coreSessionId: 'session-1',
     lifecycle: 'active',
     kind: 'main',
     createdAt: '2026-07-19T00:00:00.000Z',
@@ -45,7 +44,7 @@ describe('launchProductTask', () => {
     }, input, { text: '  请整理本周开球训练计划  ' })).resolves.toBe(task)
 
     expect(createTask).toHaveBeenCalledWith(input)
-    expect(sendMessage).toHaveBeenCalledWith('session-1', '请整理本周开球训练计划', [])
+    expect(sendMessage).toHaveBeenCalledWith('task-1', '请整理本周开球训练计划', [])
     expect(events).toEqual([
       `create:${JSON.stringify(input)}`,
       'refresh',
@@ -68,7 +67,7 @@ describe('launchProductTask', () => {
       sendMessage,
     }, { workDir: '/workspace/billiard' }, { text: '   ' })
 
-    expect(connectToSession).toHaveBeenCalledWith('session-1')
+    expect(connectToSession).toHaveBeenCalledWith('task-1')
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
@@ -91,7 +90,7 @@ describe('launchProductTask', () => {
 
     expect(createTask).toHaveBeenCalledWith(input)
     expect(sendMessage).toHaveBeenCalledWith(
-      'session-1',
+      'task-1',
       '/venue-daily-review 今天营业额和昨天对比',
       [],
     )
@@ -125,7 +124,7 @@ describe('launchProductTask', () => {
     }, input, { text: '   ', attachments })
 
     expect(createTask).toHaveBeenCalledWith(input)
-    expect(sendMessage).toHaveBeenCalledWith('session-1', '', attachments)
+    expect(sendMessage).toHaveBeenCalledWith('task-1', '', attachments)
   })
 
   it('continues through the product task contract before refreshing and opening the real core session', async () => {
@@ -148,7 +147,7 @@ describe('launchProductTask', () => {
 
     expect(continueTask).toHaveBeenCalledWith('task-1', { sourceTurnId: 'turn-42' })
     expect(openTask).toHaveBeenCalledWith(task)
-    expect(connectToSession).toHaveBeenCalledWith('session-1')
+    expect(connectToSession).toHaveBeenCalledWith('task-1')
     expect(events).toEqual(['continue', 'refresh', 'open', 'connect'])
   })
 })

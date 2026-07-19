@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { TaskIndex } from './TaskIndex'
+import { useEffect, useMemo } from 'react'
+import { TaskComposer, TaskIndex } from './TaskIndex'
 import { useProductTaskStore } from '../stores/productTaskStore'
 import { useSessionStore } from '../../stores/sessionStore'
-import { useTabStore } from '../../stores/tabStore'
+import {
+  NEW_PRODUCT_TASK_TAB_ID,
+  PRODUCT_TASKS_TAB_ID,
+  useTabStore,
+} from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
@@ -14,15 +18,17 @@ import {
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeState } from '../taskRuntime'
 
-export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: boolean }) {
+type ProductShellProps = {
+  page?: 'task-index' | 'new-task'
+  initialWorkDir?: string
+}
+
+export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShellProps) {
   const index = useProductTaskStore((state) => state.index)
   const isLoading = useProductTaskStore((state) => state.isLoading)
   const error = useProductTaskStore((state) => state.error)
   const mutations = useProductTaskStore((state) => state.mutations)
-  const composerRequest = useProductTaskStore((state) => state.composerRequest)
-  const requestTaskComposer = useProductTaskStore((state) => state.requestTaskComposer)
   const refresh = useProductTaskStore((state) => state.refresh)
-  const consumeTaskComposerRequest = useProductTaskStore((state) => state.consumeTaskComposerRequest)
   const createTask = useProductTaskStore((state) => state.createTask)
   const renameTask = useProductTaskStore((state) => state.renameTask)
   const pinTask = useProductTaskStore((state) => state.pinTask)
@@ -32,6 +38,8 @@ export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: 
   const continueTask = useProductTaskStore((state) => state.continueTask)
   const refreshSessions = useSessionStore((state) => state.fetchSessions)
   const openTab = useTabStore((state) => state.openTab)
+  const openNewProductTask = useTabStore((state) => state.openNewProductTask)
+  const closeTab = useTabStore((state) => state.closeTab)
   const tabs = useTabStore((state) => state.tabs)
   const chatSessions = useChatStore((state) => state.sessions)
   const sessionTabStatuses = useMemo(() => new Map(
@@ -41,13 +49,13 @@ export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: 
   ), [tabs])
   const runtimeStatesBySessionId = useMemo(() => Object.fromEntries(
     index.tasks.map((task) => [
-      task.coreSessionId,
-      getProductTaskRuntimeState(chatSessions[task.coreSessionId], sessionTabStatuses.get(task.coreSessionId)),
+      task.id,
+      getProductTaskRuntimeState(chatSessions[task.id], sessionTabStatuses.get(task.id)),
     ]),
   ), [chatSessions, index.tasks, sessionTabStatuses])
 
   const openTaskTab = (task: ProductTaskRecord) => {
-    openTab(task.coreSessionId, task.title, 'session')
+    openTab(task.id, task.title, 'session')
   }
 
   const connectToTaskSession = (sessionId: string) => {
@@ -56,19 +64,19 @@ export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: 
 
   const openExistingTask = (task: ProductTaskRecord) => {
     openTaskTab(task)
-    connectToTaskSession(task.coreSessionId)
+    connectToTaskSession(task.id)
   }
 
   const openTaskWorkbench = (task: ProductTaskRecord) => {
     openExistingTask(task)
     const workspace = useWorkspacePanelStore.getState()
-    workspace.setMode(task.coreSessionId, 'workspace')
-    workspace.openPanel(task.coreSessionId)
+    workspace.setMode(task.id, 'workspace')
+    workspace.openPanel(task.id)
   }
 
   const openTaskTerminal = (task: ProductTaskRecord) => {
     openExistingTask(task)
-    useTerminalPanelStore.getState().openPanel(task.coreSessionId)
+    useTerminalPanelStore.getState().openPanel(task.id)
   }
 
   const createAndOpenTask = async (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => (
@@ -88,17 +96,41 @@ export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: 
     connectToSession: connectToTaskSession,
   }, ...args)
 
-  const didRequestAutoComposer = useRef(false)
-
-  useEffect(() => {
-    if (!autoOpenComposer || didRequestAutoComposer.current) return
-    didRequestAutoComposer.current = true
-    requestTaskComposer()
-  }, [autoOpenComposer, requestTaskComposer])
-
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  const cancelNewTask = () => {
+    openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
+    closeTab(NEW_PRODUCT_TASK_TAB_ID)
+  }
+
+  if (page === 'new-task') {
+    return (
+      <main className="flex h-full min-h-0 flex-col overflow-y-auto bg-[var(--color-app-main)]" data-testid="new-product-task-page">
+        <header className="border-b border-[var(--color-border)] px-5 py-4">
+          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">新建任务</h1>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">选择项目或工作目录后，说明希望完成的事情。</p>
+        </header>
+        {error ? <div role="alert" className="mx-5 mt-4 rounded-lg border border-[var(--color-error)]/30 px-3 py-2 text-sm text-[var(--color-error)]">{error}</div> : null}
+        <TaskComposer
+          key={initialWorkDir ?? 'manual'}
+          projects={index.projects}
+          initialWorkDir={initialWorkDir}
+          isSubmitting={mutations.create === true}
+          onCancel={cancelNewTask}
+          onSubmit={async (input, initialMessage) => {
+            try {
+              await createAndOpenTask(input, initialMessage)
+              closeTab(NEW_PRODUCT_TASK_TAB_ID)
+            } catch {
+              // The product store exposes the server error in this page.
+            }
+          }}
+        />
+      </main>
+    )
+  }
 
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-shell">
@@ -108,19 +140,17 @@ export function ProductShell({ autoOpenComposer = false }: { autoOpenComposer?: 
         error={error}
         mutations={mutations}
         onRefresh={refresh}
-        onCreateTask={createAndOpenTask}
         onRenameTask={renameTask}
         onPinTask={pinTask}
         onUnpinTask={unpinTask}
         onArchiveTask={archiveTask}
         onRestoreTask={restoreTask}
         onContinueTask={continueAndOpenTask}
+        onRequestNewTask={() => openNewProductTask()}
         onOpenTask={openExistingTask}
         onOpenTaskWorkbench={openTaskWorkbench}
         onOpenTaskTerminal={openTaskTerminal}
         runtimeStatesBySessionId={runtimeStatesBySessionId}
-        composerRequest={composerRequest}
-        onConsumeComposerRequest={consumeTaskComposerRequest}
       />
     </main>
   )

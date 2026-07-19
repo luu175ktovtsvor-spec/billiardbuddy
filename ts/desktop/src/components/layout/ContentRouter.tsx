@@ -13,7 +13,8 @@ import { previewBridge } from '../../lib/previewBridge'
 export function ContentRouter() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
-  const activeTabType = tabs.find((t) => t.sessionId === activeTabId)?.type
+  const activeTab = tabs.find((t) => t.sessionId === activeTabId)
+  const activeTabType = activeTab?.type
   const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
 
   useEffect(() => {
@@ -23,7 +24,7 @@ export function ContentRouter() {
 
   let page: ReactNode = null
   if (!activeTabId || !activeTabType) {
-    page = <ProductShell autoOpenComposer />
+    page = <ProductShell page="new-task" />
   } else if (activeTabType === 'settings') {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
@@ -39,6 +40,14 @@ export function ContentRouter() {
     page = <VideoStudio />
   } else if (activeTabType === 'product-tasks') {
     page = <ProductShell />
+  } else if (activeTabType === 'new-product-task') {
+    page = (
+      <ProductShell
+        key={activeTab?.newTaskRequestId ?? 'new-product-task'}
+        page="new-task"
+        initialWorkDir={activeTab?.newTaskWorkDir}
+      />
+    )
   } else if (activeTabType !== 'terminal') {
     // 会话页由 ActiveSession 承载。审阅、Diff、文件预览、浏览器和终端
     // 按需挂载，不常驻挤压任务线程。

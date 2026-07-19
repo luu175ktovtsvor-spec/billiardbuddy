@@ -1309,7 +1309,7 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
   const continueTask = useProductTaskStore((s) => s.continueTask)
   const activeProductTask = useProductTaskStore((s) =>
     resolvedSessionId
-      ? s.index.tasks.find((task) => task.coreSessionId === resolvedSessionId) ?? null
+      ? s.index.tasks.find((task) => task.id === resolvedSessionId) ?? null
       : null,
   )
   const createSideTask = useProductSideTaskStore((s) => s.createSideTask)
@@ -1852,7 +1852,7 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
       const task = await continueProductTask({
         continueTask,
         refreshSessions,
-        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.coreSessionId, nextTask.title, 'session'),
+        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.id, nextTask.title, 'session'),
         connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
       }, resolvedSessionId, {
         sourceTurnId: target.transcriptMessageId,
