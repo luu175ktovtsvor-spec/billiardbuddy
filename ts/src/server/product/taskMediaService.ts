@@ -24,7 +24,9 @@ type MediaTaskOwnerApi = Pick<
   | 'getTask'
   | 'attachProjectToProductTask'
   | 'availableImageOutputAssetPath'
+  | 'availableVideoOutputMimeType'
   | 'imageOutputResponse'
+  | 'videoOutputResponse'
 >
 
 function assetUrl(taskId: string, projectId: string, assetId: string): string {
@@ -74,7 +76,7 @@ function safeAssetError(error: unknown): never {
 
 /**
  * Product-task media projection. It validates the public task before looking
- * at media persistence and only returns verified, service-owned image URLs.
+ * at media persistence and only returns verified, service-owned media URLs.
  * The standalone media workbenches remain the sole surface for editing, paid
  * image submission, and final export confirmation.
  */
@@ -125,9 +127,12 @@ export class ProductTaskMediaService {
     _request: Request,
   ): Promise<Response> {
     const project = await this.ownedProject(taskId, projectId)
-    if (project.kind !== 'image') throw ApiError.notFound('找不到任务媒体产物')
     try {
-      return await this.media.imageOutputResponse(project.id, assetId)
+      if (project.kind === 'image') {
+        return await this.media.imageOutputResponse(project.id, assetId)
+      }
+      if (assetId !== 'export') throw ApiError.notFound('找不到任务媒体产物')
+      return await this.media.videoOutputResponse(project.id, _request)
     } catch (error) {
       return safeAssetError(error)
     }
@@ -161,7 +166,7 @@ export class ProductTaskMediaService {
       : project
     const assets = currentProject.kind === 'image'
       ? await this.imageAssets(taskId, currentProject)
-      : this.videoAssets()
+      : await this.videoAssets(taskId, currentProject)
 
     return {
       id: currentProject.id,
@@ -192,9 +197,17 @@ export class ProductTaskMediaService {
     return assets.filter((asset): asset is ProductTaskMediaAsset => asset !== null)
   }
 
-  private videoAssets(): ProductTaskMediaAsset[] {
-    // Video exports may target arbitrary user-selected filesystem paths. They
-    // are never converted into task-media URLs or read by this surface.
-    return []
+  private async videoAssets(
+    taskId: string,
+    project: Extract<MediaProject, { kind: 'video' }>,
+  ): Promise<ProductTaskMediaAsset[]> {
+    const mimeType = await this.media.availableVideoOutputMimeType(project.id)
+    if (!mimeType) return []
+    return [{
+      id: 'export',
+      kind: 'video',
+      mimeType,
+      url: assetUrl(taskId, project.id, 'export'),
+    }]
   }
 }

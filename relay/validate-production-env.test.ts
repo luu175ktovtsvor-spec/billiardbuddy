@@ -11,7 +11,7 @@ const deployScript = new URL('./deploy.sh', import.meta.url).pathname
 function validate(env: string, ...args: string[]) {
   const directory = mkdtempSync(join(tmpdir(), 'billiardbuddy-relay-capacity-'))
   const envFile = join(directory, 'relay.env')
-  writeFileSync(envFile, env, { mode: 0o600 })
+  writeFileSync(envFile, `RELAY_ARK_KEY=test-ark-key\n${env}`, { mode: 0o600 })
   try {
     return spawnSync('bash', [script, ...args, envFile], { encoding: 'utf8' })
   } finally {

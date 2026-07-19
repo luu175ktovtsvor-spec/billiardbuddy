@@ -25,6 +25,10 @@ function isAllowedGatewayUrl(url) {
     && url.pathname.replace(/\/+$/, '') === '/gw'
 }
 
+function isOpaqueGatewayToken(value) {
+  return /^[A-Za-z0-9_-]{16,256}$/.test(value)
+}
+
 function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   const buildDir = path.join(desktopDir, 'build')
   const publicConfig = readJsonObject(path.join(buildDir, 'product-config.json'), 'product-config.json')
@@ -47,6 +51,9 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   }
   if (typeof secrets.gatewayToken !== 'string' || !secrets.gatewayToken.trim()) {
     throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing gatewayToken')
+  }
+  if (!isOpaqueGatewayToken(secrets.gatewayToken.trim())) {
+    throw new Error('Cannot package BilliardBuddy: gatewayToken must be one opaque URL-safe app token')
   }
 }
 

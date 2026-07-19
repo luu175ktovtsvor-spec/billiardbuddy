@@ -44,6 +44,16 @@ describe('desktop product package config', () => {
     expect(() => validateProductPackageFiles(desktopDir)).toThrow('missing product-secrets.json')
   })
 
+  it('blocks a serialized server token map staged as one app token', () => {
+    const desktopDir = createDesktopBuild(
+      { gatewayUrl: 'https://gw.example/gw' },
+      { gatewayToken: JSON.stringify({ 'server-token': 'owner' }) },
+    )
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow(
+      'gatewayToken must be one opaque URL-safe app token',
+    )
+  })
+
   it('blocks accidental placement of the token in the public config', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'https://gw.example/gw', gatewayToken: 'public-leak' },

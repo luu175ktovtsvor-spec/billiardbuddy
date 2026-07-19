@@ -205,6 +205,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       const { project: saved } = await mediaApi.updateImageProject(project.id, {
         revision: project.revision,
         prompt: project.prompt,
+        model: project.model,
         size: project.size,
         count: project.count,
         confirm_unknown_retry: confirmUnknownRetry,

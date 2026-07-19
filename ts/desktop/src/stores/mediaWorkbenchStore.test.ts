@@ -43,6 +43,7 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
     updated_at: '2026-07-18T00:00:00.000Z',
     state: 'draft',
     mode: 'generate',
+    model: 'gpt-image-2',
     prompt,
     size: '1024x1024',
     count: 1,
@@ -144,6 +145,7 @@ describe('mediaWorkbenchStore', () => {
     expect(mediaApiMock.updateImageProject).toHaveBeenCalledWith(first.id, {
       revision: edited.revision,
       prompt: edited.prompt,
+      model: edited.model,
       size: edited.size,
       count: edited.count,
       confirm_unknown_retry: false,

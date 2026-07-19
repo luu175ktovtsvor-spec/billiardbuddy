@@ -129,7 +129,12 @@ type RelayImageTask = {
   task_id?: string
   status?: string
   poll_after_seconds?: number
-  data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+  data?: Array<{
+    b64_json?: string
+    url?: string
+    revised_prompt?: string
+    mime_type?: 'image/png' | 'image/jpeg' | 'image/webp'
+  }>
   error?: string
   reused?: boolean
   input_fidelity_requested?: string
@@ -949,17 +954,52 @@ export class MediaProjectService {
     if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
     const source = project.sources.find(candidate => candidate.id === sourceId)
     if (!source) throw new MediaServiceError('找不到视频素材', 404, 'SOURCE_NOT_FOUND')
-    const info = await stat(source.path).catch(() => null)
-    if (!info?.isFile()) throw new MediaServiceError('视频素材已经移动或删除', 404, 'SOURCE_MISSING')
-    const extension = extname(source.path).toLowerCase()
-    const contentType = extension === '.mov'
-      ? 'video/quicktime'
-      : extension === '.webm'
-        ? 'video/webm'
-        : 'video/mp4'
+    return await this.videoFileResponse(source.path, request, '视频素材已经移动或删除', 'SOURCE_MISSING')
+  }
+
+  async availableVideoOutputMimeType(
+    projectId: string,
+  ): Promise<'video/mp4' | 'video/quicktime' | 'video/webm' | null> {
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'video' || project.state !== 'complete' || !project.output_path) return null
+    const info = await stat(project.output_path).catch(() => null)
+    if (!info?.isFile()) return null
+    return this.videoContentType(project.output_path)
+  }
+
+  async videoOutputResponse(projectId: string, request: Request): Promise<Response> {
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+    if (project.state !== 'complete' || !project.output_path) {
+      throw new MediaServiceError('找不到已导出的视频', 404, 'VIDEO_OUTPUT_NOT_FOUND')
+    }
+    return await this.videoFileResponse(
+      project.output_path,
+      request,
+      '导出视频已经移动或删除',
+      'VIDEO_OUTPUT_MISSING',
+    )
+  }
+
+  private videoContentType(path: string): 'video/mp4' | 'video/quicktime' | 'video/webm' {
+    const extension = extname(path).toLowerCase()
+    if (extension === '.mov') return 'video/quicktime'
+    if (extension === '.webm') return 'video/webm'
+    return 'video/mp4'
+  }
+
+  private async videoFileResponse(
+    path: string,
+    request: Request,
+    missingMessage: string,
+    missingCode: string,
+  ): Promise<Response> {
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) throw new MediaServiceError(missingMessage, 404, missingCode)
+    const contentType = this.videoContentType(path)
     const range = request.headers.get('range')
     if (!range) {
-      return new Response(Bun.file(source.path), {
+      return new Response(Bun.file(path), {
         headers: {
           'Content-Type': contentType,
           'Content-Length': String(info.size),
@@ -977,7 +1017,7 @@ export class MediaProjectService {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= info.size) {
       return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${info.size}` } })
     }
-    return new Response(Bun.file(source.path).slice(start, end + 1), {
+    return new Response(Bun.file(path).slice(start, end + 1), {
       status: 206,
       headers: {
         'Content-Type': contentType,
@@ -1004,6 +1044,7 @@ export class MediaProjectService {
       updated_at: now,
       state: 'draft',
       mode: input.mode,
+      model: input.model,
       prompt: input.prompt,
       size: input.size,
       count: input.count,
@@ -1084,12 +1125,12 @@ export class MediaProjectService {
     const referenceImages = project.mode === 'edit' ? await this.loadReferenceImages(project) : []
     return {
       mode: project.mode,
-      model: 'gpt-image-2',
+      model: project.model,
       prompt: project.prompt,
       n: project.count,
       size: project.size,
-      response_format: 'b64_json',
-      ...(project.mode === 'edit' ? { images: referenceImages, input_fidelity: 'high' } : {}),
+      ...(project.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
+      ...(project.mode === 'edit' ? { images: referenceImages } : {}),
     }
   }
 
@@ -1222,6 +1263,7 @@ export class MediaProjectService {
       task_id: undefined,
       prompt: input.prompt,
       title: defaultTitle(input.prompt, project.title),
+      model: input.model,
       size: input.size,
       count: input.count,
       revision: project.revision + 1,
@@ -1314,13 +1356,15 @@ export class MediaProjectService {
     for (const item of body.data ?? []) {
       const outputId = id('out')
       if (item.b64_json) {
-        const fileName = `${outputId}.png`
+        const mimeType = item.mime_type ?? 'image/png'
+        const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+        const fileName = `${outputId}.${extension}`
         const assetPath = join(projectAssetDir, fileName)
         await writeFile(assetPath, Buffer.from(item.b64_json, 'base64'), { mode: 0o600 })
         createdAssets.push(assetPath)
         outputs.push({
           id: outputId,
-          mime_type: 'image/png',
+          mime_type: mimeType,
           asset_path: `/api/media/assets/${task.project_id}/${fileName}`,
           revised_prompt: item.revised_prompt,
         })

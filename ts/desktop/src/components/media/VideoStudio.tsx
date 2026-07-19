@@ -29,6 +29,11 @@ const OUTPUT_PRESETS = {
 } as const
 
 type OutputPreset = keyof typeof OUTPUT_PRESETS
+type OutputFormat = 'mp4' | 'mov'
+
+function newClipId(): string {
+  return `clip_${crypto.randomUUID().replaceAll('-', '')}`
+}
 
 export function VideoStudio() {
   const projects = useMediaWorkbenchStore(state => state.videoProjects)
@@ -53,6 +58,7 @@ export function VideoStudio() {
   const [creating, setCreating] = useState(false)
   const [projectTitle, setProjectTitle] = useState('')
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('portrait')
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>('mp4')
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const active = useMemo(
@@ -111,8 +117,10 @@ export function VideoStudio() {
     if (!active || !draft || rendering || !toolchain?.ffmpeg.available || !toolchain.ffprobe.available) return
     const outputPath = await getDesktopHost().dialogs.save({
       title: '导出视频',
-      defaultPath: `${active.title}.mp4`,
-      filters: [{ name: 'MP4 视频', extensions: ['mp4'] }],
+      defaultPath: `${active.title}.${outputFormat}`,
+      filters: outputFormat === 'mov'
+        ? [{ name: 'MOV 视频', extensions: ['mov'] }]
+        : [{ name: 'MP4 视频', extensions: ['mp4'] }],
     })
     if (!outputPath) return
     const changed = JSON.stringify(draft.timeline) !== JSON.stringify(active.timeline)
@@ -148,11 +156,46 @@ export function VideoStudio() {
     setDraft({ ...draft, timeline: draft.timeline.filter(clip => clip.id !== clipId) })
   }
 
+  const appendClip = (sourceId: string) => {
+    if (!draft || rendering) return
+    const source = draft.sources.find(item => item.id === sourceId)
+    if (!source) return
+    setDraft({
+      ...draft,
+      timeline: [
+        ...draft.timeline,
+        {
+          id: newClipId(),
+          source_id: source.id,
+          in_ms: 0,
+          out_ms: Math.max(1, source.duration_ms),
+        },
+      ],
+    })
+  }
+
+  const splitClip = (clipId: string) => {
+    if (!draft || rendering) return
+    const index = draft.timeline.findIndex(clip => clip.id === clipId)
+    const clip = draft.timeline[index]
+    if (!clip || clip.out_ms - clip.in_ms < 2) return
+    const midpoint = Math.floor((clip.in_ms + clip.out_ms) / 2)
+    const timeline = [...draft.timeline]
+    timeline.splice(
+      index,
+      1,
+      { ...clip, out_ms: midpoint },
+      { ...clip, id: newClipId(), in_ms: midpoint },
+    )
+    setDraft({ ...draft, timeline })
+  }
+
   const beginNew = () => {
     clearError()
     selectVideo(null)
     setProjectTitle('')
     setOutputPreset('portrait')
+    setOutputFormat('mp4')
     setCreating(true)
   }
 
@@ -254,6 +297,7 @@ export function VideoStudio() {
                       </button>
                       <button type="button" onClick={() => moveClip(index, -1)} disabled={rendering || index === 0} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="前移片段"><ArrowLeft size={12} /></button>
                       <button type="button" onClick={() => moveClip(index, 1)} disabled={rendering || index === draft.timeline.length - 1} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="后移片段"><ArrowRight size={12} /></button>
+                      <button type="button" onClick={() => splitClip(clip.id)} disabled={rendering || clip.out_ms - clip.in_ms < 2} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="拆分片段"><Scissors size={12} /></button>
                       <button type="button" onClick={() => removeClip(clip.id)} disabled={rendering} className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--color-error)] disabled:opacity-25" aria-label="删除片段"><X size={12} /></button>
                     </div>
                     <div className="mt-3 grid grid-cols-[34px_1fr] items-center gap-x-2 gap-y-2 text-[11px] text-[var(--color-text-tertiary)]">
@@ -342,19 +386,33 @@ export function VideoStudio() {
                 </button>
                 <div className="my-3 border-t border-[var(--color-border)]" />
                 {active.sources.map(source => (
-                  <button
+                  <div
                     key={source.id}
-                    type="button"
-                    onClick={() => setSelectedSourceId(source.id)}
-                    className={`mb-1 w-full rounded-[6px] px-2 py-2 text-left ${
+                    className={`mb-1 flex items-center rounded-[6px] ${
                       selectedSource?.id === source.id ? 'bg-[var(--color-surface-selected)]' : 'hover:bg-[var(--color-surface-hover)]'
                     }`}
                   >
-                    <span className="block truncate text-[12px] text-[var(--color-text-primary)]">{source.name}</span>
-                    <span className="mt-0.5 block text-[11px] text-[var(--color-text-tertiary)]">
-                      {seconds(source.duration_ms)} 秒 · {source.width}×{source.height}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSourceId(source.id)}
+                      className="min-w-0 flex-1 px-2 py-2 text-left"
+                    >
+                      <span className="block truncate text-[12px] text-[var(--color-text-primary)]">{source.name}</span>
+                      <span className="mt-0.5 block text-[11px] text-[var(--color-text-tertiary)]">
+                        {seconds(source.duration_ms)} 秒 · {source.width}×{source.height}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => appendClip(source.id)}
+                      disabled={rendering}
+                      className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-[5px] text-[var(--color-brand)] hover:bg-[var(--color-app-main)] disabled:opacity-35"
+                      aria-label={`将 ${source.name} 加入时间线`}
+                      title="再加入一个片段"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </div>
                 ))}
                 <div className="my-3 border-t border-[var(--color-border)]" />
                 <div className="grid grid-cols-2 gap-y-2 text-[12px]">
@@ -362,6 +420,19 @@ export function VideoStudio() {
                   <span className="text-right text-[var(--color-text-secondary)]">{active.output.width}×{active.output.height}</span>
                   <span className="text-[var(--color-text-tertiary)]">帧率</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.output.fps} fps</span>
+                </div>
+                <div className="mt-3 grid grid-cols-[72px_1fr] items-center gap-2 text-[12px]">
+                  <label htmlFor="video-output-format" className="text-[var(--color-text-tertiary)]">导出格式</label>
+                  <select
+                    id="video-output-format"
+                    value={outputFormat}
+                    onChange={event => setOutputFormat(event.target.value as OutputFormat)}
+                    disabled={rendering}
+                    className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
+                  >
+                    <option value="mp4">MP4（推荐）</option>
+                    <option value="mov">MOV</option>
+                  </select>
                 </div>
                 <button
                   type="button"
