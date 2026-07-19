@@ -30,12 +30,12 @@ export async function launchProductTask(
   const task = await dependencies.createTask(input)
   await dependencies.refreshSessions()
   dependencies.openTask(task)
-  dependencies.connectToSession(task.coreSessionId)
+  dependencies.connectToSession(task.id)
 
   const message = initialMessage?.text?.trim() ?? ''
   const attachments = initialMessage?.attachments ?? []
   if (message || attachments.length > 0) {
-    dependencies.sendMessage(task.coreSessionId, message, attachments)
+    dependencies.sendMessage(task.id, message, attachments)
   }
 
   return task
@@ -49,6 +49,6 @@ export async function continueProductTask(
   const task = await dependencies.continueTask(taskId, input)
   await dependencies.refreshSessions()
   dependencies.openTask(task)
-  dependencies.connectToSession(task.coreSessionId)
+  dependencies.connectToSession(task.id)
   return task
 }

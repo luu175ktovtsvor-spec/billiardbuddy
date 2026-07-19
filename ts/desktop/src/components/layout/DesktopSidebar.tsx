@@ -82,8 +82,8 @@ function useSidebarData() {
   }, [index])
 
   const openTask = (task: ProductTaskRecord) => {
-    openTab(task.coreSessionId, task.title || t('session.untitled'), 'session')
-    connectToSession(task.coreSessionId)
+    openTab(task.id, task.title || t('session.untitled'), 'session')
+    connectToSession(task.id)
   }
   const openProductTasks = () => {
     openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
@@ -92,14 +92,6 @@ function useSidebarData() {
     openProductTaskComposer(workDir)
   }
   const openTabView = (id: string, title: string, type: TabType) => openTab(id, title, type)
-
-  const addProject = async () => {
-    const host = getDesktopHost()
-    if (!host.isDesktop || !host.dialogs?.open) return
-    const picked = await host.dialogs.open({ directory: true })
-    const dir = Array.isArray(picked) ? picked[0] : picked
-    if (dir) openNewTask(dir)
-  }
 
   return {
     t,
@@ -124,8 +116,6 @@ function useSidebarData() {
       openTabView(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
     },
     openPlugins: () => { openTabView(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings'); setActiveSettingsTab('plugins') },
-    addProject,
-    canAddProject: getDesktopHost().isDesktop && !!getDesktopHost().dialogs?.open,
   }
 }
 
@@ -168,8 +158,8 @@ function NavItem({
 }
 
 function SectionHeader({
-  label, open, onToggle, action,
-}: { label: string; open: boolean; onToggle: () => void; action?: ReactNode }) {
+  label, open, onToggle,
+}: { label: string; open: boolean; onToggle: () => void }) {
   return (
     <div className="group/sect mt-2 flex w-full items-center gap-1 pr-1">
       <button
@@ -182,7 +172,6 @@ function SectionHeader({
         </span>
         <span>{label}</span>
       </button>
-      {action && <span className="shrink-0 opacity-0 transition-opacity group-hover/sect:opacity-100">{action}</span>}
     </div>
   )
 }
@@ -220,7 +209,7 @@ export function DesktopSidebar() {
   const ungrouped = d.ungrouped.filter(match)
 
   const renderRow = (task: ProductTaskRecord) => {
-    const active = task.coreSessionId === d.activeId
+    const active = task.id === d.activeId
     const runningHere = active && d.runningActive
     return (
       <div
@@ -297,19 +286,6 @@ export function DesktopSidebar() {
           label="项目"
           open={projectsOpen}
           onToggle={() => setProjectsOpen((v) => !v)}
-          action={
-            d.canAddProject ? (
-              <button
-                type="button"
-                onClick={() => void d.addProject()}
-                title="添加新项目：选择一个文件夹"
-                aria-label="添加新项目"
-                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-              >
-                <Plus size={14} />
-              </button>
-            ) : undefined
-          }
         />
         {projectsOpen && (
           <div className="mb-1">

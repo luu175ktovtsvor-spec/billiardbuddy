@@ -314,7 +314,7 @@ export class ProductTaskService {
   async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
     const task = await this.requireTask(taskId)
     const title = validTitle(input.title)
-    if (title) await this.core.renameSession(task.coreSessionId, title)
+    if (title) await this.core.renameSession(task.id, title)
     await this.updateMetadata(taskId, (metadata) => ({
       ...metadata,
       ...(title ? { title } : {}),
@@ -350,7 +350,7 @@ export class ProductTaskService {
     const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
     const target = continuationTarget(input.target)
     const created = await this.core.branchSession(
-      source.coreSessionId,
+      source.id,
       requestedTitle,
       input.sourceTurnId,
       target,
@@ -362,7 +362,7 @@ export class ProductTaskService {
       lifecycle: 'active',
       kind: 'continuation',
       parentTaskId: source.id,
-      parentThreadId: source.coreSessionId,
+      parentThreadId: source.id,
       ...(input.sourceTurnId ? { sourceTurnId: input.sourceTurnId } : {}),
       createdAt: now,
       updatedAt: now,
@@ -395,7 +395,7 @@ export class ProductTaskService {
     const sourceTurnId = requiredSourceTurnId(input.sourceTurnId)
     const requestedTitle = validTitle(input.title) ?? `侧边任务：${source.title}`
     const created = await this.core.branchSession(
-      source.coreSessionId,
+      source.id,
       requestedTitle,
       sourceTurnId,
     )
@@ -460,7 +460,6 @@ export class ProductTaskService {
       projectId: resourceId('project', projectRoot || session.id),
       workDir,
       title: metadata.title ?? session.title,
-      coreSessionId: session.id,
       lifecycle: metadata.lifecycle === 'archived' ? 'archived' : 'active',
       kind: metadata.kind === 'continuation' ? 'continuation' : 'main',
       ...(metadata.pinnedAt ? { pinnedAt: metadata.pinnedAt } : {}),

@@ -3488,7 +3488,6 @@ describe('MessageList nested tool calls', () => {
     const continueTask = vi.fn().mockResolvedValue({
       id: 'task-branched-1',
       projectId: 'project-1',
-      coreSessionId: 'branched-session-1',
       title: 'Branched session',
       workDir: '/tmp/branched-session-1',
       lifecycle: 'active',
@@ -3565,11 +3564,11 @@ describe('MessageList nested tool calls', () => {
       })
     })
     expect(refreshSessions).toHaveBeenCalledOnce()
-    expect(connectToSession).toHaveBeenCalledWith('branched-session-1')
-    expect(useTabStore.getState().activeTabId).toBe('branched-session-1')
+    expect(connectToSession).toHaveBeenCalledWith('task-branched-1')
+    expect(useTabStore.getState().activeTabId).toBe('task-branched-1')
     const tabs = useTabStore.getState().tabs
     expect(tabs[tabs.length - 1]).toMatchObject({
-      sessionId: 'branched-session-1',
+      sessionId: 'task-branched-1',
       title: 'Branched session',
       type: 'session',
     })
@@ -3636,7 +3635,6 @@ describe('MessageList nested tool calls', () => {
     const continueTask = vi.fn().mockResolvedValue({
       id: 'task-worktree-1',
       projectId: 'project-1',
-      coreSessionId: 'worktree-session-1',
       title: 'Worktree branch',
       workDir: '/tmp/source-project/.billiardbuddy/worktrees/worktree-session-1',
       lifecycle: 'active',
@@ -3696,8 +3694,8 @@ describe('MessageList nested tool calls', () => {
       target: 'new_worktree',
     }))
     expect(refreshSessions).toHaveBeenCalledOnce()
-    expect(connectToSession).toHaveBeenCalledWith('worktree-session-1')
-    expect(useTabStore.getState().activeTabId).toBe('worktree-session-1')
+    expect(connectToSession).toHaveBeenCalledWith('task-worktree-1')
+    expect(useTabStore.getState().activeTabId).toBe('task-worktree-1')
   })
 
   it('creates a temporary side task from a transcript message without opening a normal task tab', async () => {
@@ -3721,7 +3719,6 @@ describe('MessageList nested tool calls', () => {
         tasks: [{
           id: ACTIVE_TAB,
           projectId: 'project-1',
-          coreSessionId: ACTIVE_TAB,
           title: 'Source task',
           workDir: '/tmp/source-project',
           lifecycle: 'active',

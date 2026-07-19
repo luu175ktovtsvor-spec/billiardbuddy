@@ -22,7 +22,6 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     projectId: 'project-1',
     workDir: '/workspace/billiard',
     title: '修复开球规则',
-    coreSessionId: 'session-1',
     lifecycle: 'active',
     kind: 'main',
     createdAt: '2026-07-18T00:00:00.000Z',
@@ -56,7 +55,6 @@ function resetStore() {
     isLoading: false,
     error: null,
     mutations: {},
-    composerRequest: null,
   })
 }
 
@@ -108,7 +106,6 @@ describe('productTaskStore', () => {
       title: '继续修复开球规则',
       kind: 'continuation',
       parentTaskId: original.id,
-      coreSessionId: 'session-2',
     })
     useProductTaskStore.setState({ index: makeIndex(original) })
     vi.mocked(productTasksApi.continue).mockResolvedValue({ task: continuation })
@@ -118,18 +115,5 @@ describe('productTaskStore', () => {
     expect(productTasksApi.continue).toHaveBeenCalledWith('task-1', {})
     expect(useProductTaskStore.getState().index.tasks).toEqual([continuation, original])
     expect(useProductTaskStore.getState().index.total).toBe(2)
-  })
-
-  it('holds a one-shot new-task composer request until the task page consumes it', () => {
-    const store = useProductTaskStore.getState()
-
-    store.requestTaskComposer('  /workspace/billiard  ')
-
-    const request = useProductTaskStore.getState().composerRequest
-    expect(request).toEqual(expect.objectContaining({ workDir: '/workspace/billiard' }))
-
-    store.consumeTaskComposerRequest(request!.id)
-
-    expect(useProductTaskStore.getState().composerRequest).toBeNull()
   })
 })

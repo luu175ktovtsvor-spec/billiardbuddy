@@ -27,7 +27,6 @@ import type { AttachmentRef } from '../../types/chat'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
-import type { ProductTaskComposerRequest } from '../stores/productTaskStore'
 import {
   PRODUCT_TASK_RUNTIME_LABEL,
   type ProductTaskRuntimeState,
@@ -39,19 +38,17 @@ export type TaskIndexProps = {
   error: string | null
   mutations: Record<string, boolean | undefined>
   onRefresh: () => Promise<void>
-  onCreateTask: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<unknown>
   onRenameTask: (taskId: string, title: string) => Promise<unknown>
   onPinTask: (taskId: string) => Promise<unknown>
   onUnpinTask: (taskId: string) => Promise<unknown>
   onArchiveTask: (taskId: string) => Promise<unknown>
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
+  onRequestNewTask: () => void
   onOpenTask: (task: ProductTaskRecord) => void
   onOpenTaskWorkbench: (task: ProductTaskRecord) => void
   onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeStatesBySessionId?: Record<string, ProductTaskRuntimeState>
-  composerRequest?: ProductTaskComposerRequest | null
-  onConsumeComposerRequest?: (requestId: number) => void
 }
 
 const WORKTREE_STATE_LABEL: Record<string, string> = {
@@ -124,30 +121,19 @@ export function TaskIndex({
   error,
   mutations,
   onRefresh,
-  onCreateTask,
   onRenameTask,
   onPinTask,
   onUnpinTask,
   onArchiveTask,
   onRestoreTask,
   onContinueTask,
+  onRequestNewTask,
   onOpenTask,
   onOpenTaskWorkbench,
   onOpenTaskTerminal,
   runtimeStatesBySessionId = {},
-  composerRequest = null,
-  onConsumeComposerRequest,
 }: TaskIndexProps) {
-  const [composerOpen, setComposerOpen] = useState(false)
-  const [composerPrefill, setComposerPrefill] = useState<ProductTaskComposerRequest | null>(null)
   const [showArchived, setShowArchived] = useState(false)
-
-  useEffect(() => {
-    if (!composerRequest) return
-    setComposerPrefill(composerRequest)
-    setComposerOpen(true)
-    onConsumeComposerRequest?.(composerRequest.id)
-  }, [composerRequest, onConsumeComposerRequest])
 
   const visibleProjects = useMemo(
     () => index.projects.filter((project) => projectTasks(index, project.id).some((task) => showArchived || task.lifecycle !== 'archived')),
@@ -177,7 +163,7 @@ export function TaskIndex({
           {index.capabilities.createTask ? (
             <button
               type="button"
-              onClick={() => setComposerOpen(true)}
+              onClick={onRequestNewTask}
               className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white"
             >
               新建任务
@@ -185,29 +171,6 @@ export function TaskIndex({
           ) : null}
         </div>
       </header>
-
-      {composerOpen ? (
-        <TaskComposer
-          key={composerPrefill?.id ?? 'manual'}
-          projects={index.projects}
-          initialWorkDir={composerPrefill?.workDir}
-          isSubmitting={mutations.create === true}
-          onCancel={() => {
-            setComposerOpen(false)
-            setComposerPrefill(null)
-          }}
-          onSubmit={async (input, initialMessage) => {
-            try {
-              if (initialMessage) await onCreateTask(input, initialMessage)
-              else await onCreateTask(input)
-              setComposerOpen(false)
-              setComposerPrefill(null)
-            } catch {
-              // The product store exposes the server error in the index surface.
-            }
-          }}
-        />
-      ) : null}
 
       <div className="flex items-center justify-between gap-3 px-5 py-3">
         <p className="text-sm text-[var(--color-text-secondary)]">共 {index.total} 个任务</p>
@@ -276,7 +239,7 @@ export function TaskIndex({
   )
 }
 
-function TaskComposer({
+export function TaskComposer({
   projects,
   initialWorkDir,
   isSubmitting,
@@ -670,7 +633,7 @@ function ProjectTaskGroup({
             onOpenTask={onOpenTask}
             onOpenTaskWorkbench={onOpenTaskWorkbench}
             onOpenTaskTerminal={onOpenTaskTerminal}
-            runtimeState={runtimeStatesBySessionId[task.coreSessionId] ?? 'not_connected'}
+            runtimeState={runtimeStatesBySessionId[task.id] ?? 'not_connected'}
           />
         ))}
       </div>

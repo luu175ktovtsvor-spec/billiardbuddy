@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sessionsApi } from '../api/sessions'
-import { PRODUCT_TASKS_TAB_ID, SETTINGS_TAB_ID, useTabStore } from './tabStore'
+import {
+  NEW_PRODUCT_TASK_TAB_ID,
+  PRODUCT_TASKS_TAB_ID,
+  SETTINGS_TAB_ID,
+  useTabStore,
+} from './tabStore'
 
 vi.mock('../api/sessions', () => ({
   sessionsApi: {
@@ -64,6 +69,34 @@ describe('tabStore', () => {
       openTabs: [],
       activeTabId: null,
     }))
+  })
+
+  it('opens one ephemeral dedicated new-task tab and refreshes its work-directory request', () => {
+    useTabStore.getState().openNewProductTask('  /workspace/billiard  ')
+
+    const first = useTabStore.getState().tabs[0]
+    expect(first).toMatchObject({
+      sessionId: NEW_PRODUCT_TASK_TAB_ID,
+      title: '新建任务',
+      type: 'new-product-task',
+      newTaskWorkDir: '/workspace/billiard',
+    })
+    expect(first?.newTaskRequestId).toEqual(expect.any(Number))
+    expect(useTabStore.getState().activeTabId).toBe(NEW_PRODUCT_TASK_TAB_ID)
+    expect(localStorage.getItem('billiardbuddy-open-tabs')).toBe(JSON.stringify({
+      openTabs: [],
+      activeTabId: null,
+    }))
+
+    useTabStore.getState().openNewProductTask()
+
+    expect(useTabStore.getState().tabs).toHaveLength(1)
+    expect(useTabStore.getState().tabs[0]).toMatchObject({
+      sessionId: NEW_PRODUCT_TASK_TAB_ID,
+      type: 'new-product-task',
+    })
+    expect(useTabStore.getState().tabs[0]?.newTaskWorkDir).toBeUndefined()
+    expect(useTabStore.getState().tabs[0]?.newTaskRequestId).not.toBe(first?.newTaskRequestId)
   })
 
   it('does not let async tab restore overwrite tabs opened while restore is in flight', async () => {

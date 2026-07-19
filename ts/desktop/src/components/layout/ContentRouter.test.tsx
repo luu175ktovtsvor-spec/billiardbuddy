@@ -45,8 +45,8 @@ vi.mock('../media/VideoStudio', () => ({
 }))
 
 vi.mock('../../product/components/ProductShell', () => ({
-  ProductShell: ({ autoOpenComposer = false }: { autoOpenComposer?: boolean }) => (
-    <div data-auto-open-composer={autoOpenComposer ? 'true' : 'false'} data-testid="product-shell" />
+  ProductShell: ({ page = 'task-index', initialWorkDir }: { page?: string; initialWorkDir?: string }) => (
+    <div data-page={page} data-work-dir={initialWorkDir ?? ''} data-testid="product-shell" />
   ),
 }))
 
@@ -60,10 +60,30 @@ describe('ContentRouter tab surfaces', () => {
     useTabStore.setState({ tabs: [], activeTabId: null })
   })
 
-  it('routes an empty desktop surface to the product task composer', () => {
+  it('routes an empty desktop surface to the dedicated new-task page', () => {
     render(<ContentRouter />)
 
-    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-auto-open-composer', 'true')
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('routes a new-task tab with its requested work directory', () => {
+    useTabStore.setState({
+      tabs: [{
+        sessionId: '__new_product_task__',
+        title: '新建任务',
+        type: 'new-product-task',
+        status: 'idle',
+        newTaskWorkDir: '/workspace/billiard',
+        newTaskRequestId: 3,
+      }],
+      activeTabId: '__new_product_task__',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-work-dir', '/workspace/billiard')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 

@@ -22,22 +22,14 @@ export function productTaskMutationKey(taskId: string, action: string): string {
   return `${taskId}:${action}`
 }
 
-export type ProductTaskComposerRequest = {
-  id: number
-  workDir?: string
-}
-
 type ProductTaskStore = {
   index: ProductTaskIndexResponse
   isLoading: boolean
   error: string | null
   mutations: Record<string, boolean | undefined>
-  composerRequest: ProductTaskComposerRequest | null
 
   refresh: () => Promise<void>
   clearError: () => void
-  requestTaskComposer: (workDir?: string) => void
-  consumeTaskComposerRequest: (requestId: number) => void
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
   pinTask: (taskId: string) => Promise<ProductTaskRecord>
@@ -64,7 +56,6 @@ function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): P
 }
 
 let latestRefreshRequest = 0
-let nextComposerRequestId = 0
 
 export const useProductTaskStore = create<ProductTaskStore>((set) => {
   const runMutation = async (
@@ -103,7 +94,6 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
     isLoading: false,
     error: null,
     mutations: {},
-    composerRequest: null,
 
     refresh: async () => {
       const requestId = ++latestRefreshRequest
@@ -121,24 +111,6 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
     },
 
     clearError: () => set({ error: null }),
-
-    requestTaskComposer: (workDir) => {
-      const normalizedWorkDir = workDir?.trim()
-      set({
-        composerRequest: {
-          id: ++nextComposerRequestId,
-          ...(normalizedWorkDir ? { workDir: normalizedWorkDir } : {}),
-        },
-      })
-    },
-
-    consumeTaskComposerRequest: (requestId) => {
-      set((state) => (
-        state.composerRequest?.id === requestId
-          ? { composerRequest: null }
-          : {}
-      ))
-    },
 
     createTask: (input) => runMutation('create', () => productTasksApi.create(input)),
 

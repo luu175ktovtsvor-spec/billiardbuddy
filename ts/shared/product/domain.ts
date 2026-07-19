@@ -20,7 +20,6 @@ export type ProductTask = {
   projectId: string
   workDir: string
   title: string
-  coreSessionId: string
   lifecycle: ProductTaskLifecycle
   kind: ProductTaskKind
   pinnedAt?: string
