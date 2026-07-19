@@ -214,9 +214,9 @@ describe('Business Flow: Settings Persistence', () => {
       webSearch: { enabled: false },
     }
 
-    const { status } = await api('PUT', '/api/settings/user', settings)
+    const { status } = await api('PATCH', '/api/product/settings/user', settings)
     expect(status).toBe(200)
-    const { data } = await api('GET', '/api/settings/user')
+    const { data } = await api('GET', '/api/product/settings/user')
 
     expect(data.theme).toBe('dark')
     expect(data.chatSendBehavior).toBe('modifierEnter')
@@ -226,15 +226,15 @@ describe('Business Flow: Settings Persistence', () => {
 
   it('should merge ordinary preferences without accepting Core settings', async () => {
     // First write
-    await api('PUT', '/api/settings/user', { theme: 'dark' })
+    await api('PATCH', '/api/product/settings/user', { theme: 'dark' })
     // Second write (should merge, not overwrite)
-    await api('PUT', '/api/settings/user', { language: 'chinese' })
+    await api('PATCH', '/api/product/settings/user', { language: 'chinese' })
 
-    const { data } = await api('GET', '/api/settings/user')
+    const { data } = await api('GET', '/api/product/settings/user')
     expect(data.theme).toBe('dark') // Should still be there
     expect(data.language).toBe('chinese')
 
-    const rejected = await api('PUT', '/api/settings/user', { model: 'not-allowed' })
+    const rejected = await api('PATCH', '/api/product/settings/user', { model: 'not-allowed' })
     expect(rejected.status).toBe(400)
   })
 

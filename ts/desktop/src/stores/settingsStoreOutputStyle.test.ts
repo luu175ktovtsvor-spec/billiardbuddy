@@ -9,8 +9,8 @@ const { settingsApiMock } = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('../api/settings', () => ({
-  settingsApi: settingsApiMock,
+vi.mock('../product/api/settings', () => ({
+  productSettingsApi: settingsApiMock,
 }))
 
 import { useSettingsStore } from './settingsStore'

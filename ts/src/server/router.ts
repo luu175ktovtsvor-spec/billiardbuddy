@@ -2,7 +2,6 @@
  * API Router — 将请求路由到对应的 API handler
  */
 
-import { handleSettingsApi } from './api/settings.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
 import { handlePluginsApi } from './api/plugins.js'
@@ -31,9 +30,6 @@ export async function handleApiRequest(
   const resource = segments[1]
 
   switch (resource) {
-    case 'settings':
-      return handleSettingsApi(req, url, segments)
-
     case 'agents':
       return handleAgentsApi(req, url, segments)
 

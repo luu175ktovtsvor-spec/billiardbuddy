@@ -8,7 +8,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { SettingsService } from '../services/settingsService.js'
 import { conversationService } from '../services/conversationService.js'
-import { handleSettingsApi } from '../api/settings.js'
+import { handleProductSettingsApi } from '../api/productSettings.js'
 import { handleStatusApi } from '../api/status.js'
 import {
   clearOpenAIOAuthTokenCache,
@@ -389,25 +389,25 @@ describe('Settings API', () => {
   beforeEach(setup)
   afterEach(teardown)
 
-  it('retires generic and project settings endpoints with no product consumers', async () => {
-    const generic = makeRequest('GET', '/api/settings')
-    const project = makeRequest('PUT', '/api/settings/project', { theme: 'dark' })
+  it('rejects the product settings root and unsupported resources', async () => {
+    const generic = makeRequest('GET', '/api/product/settings')
+    const project = makeRequest('PATCH', '/api/product/settings/project', { theme: 'dark' })
 
-    expect((await handleSettingsApi(generic.req, generic.url, generic.segments)).status).toBe(404)
-    expect((await handleSettingsApi(project.req, project.url, project.segments)).status).toBe(404)
+    expect((await handleProductSettingsApi(generic.req, generic.url, generic.segments)).status).toBe(404)
+    expect((await handleProductSettingsApi(project.req, project.url, project.segments)).status).toBe(404)
   })
 
-  it('GET /api/settings/user should return user settings', async () => {
-    const { req, url, segments } = makeRequest('GET', '/api/settings/user')
-    const res = await handleSettingsApi(req, url, segments)
+  it('GET /api/product/settings/user should return user settings', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/product/settings/user')
+    const res = await handleProductSettingsApi(req, url, segments)
 
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual({})
   })
 
-  it('PUT /api/settings/user accepts only ordinary product preferences', async () => {
-    const { req, url, segments } = makeRequest('PUT', '/api/settings/user', {
+  it('PATCH /api/product/settings/user accepts only ordinary product preferences', async () => {
+    const { req, url, segments } = makeRequest('PATCH', '/api/product/settings/user', {
       theme: 'dark',
       chatSendBehavior: 'modifierEnter',
       language: 'chinese',
@@ -415,15 +415,15 @@ describe('Settings API', () => {
       autoDreamEnabled: true,
       webSearch: { enabled: false },
     })
-    const res = await handleSettingsApi(req, url, segments)
+    const res = await handleProductSettingsApi(req, url, segments)
 
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.ok).toBe(true)
 
     // Verify persisted
-    const { req: r2, url: u2, segments: s2 } = makeRequest('GET', '/api/settings/user')
-    const res2 = await handleSettingsApi(r2, u2, s2)
+    const { req: r2, url: u2, segments: s2 } = makeRequest('GET', '/api/product/settings/user')
+    const res2 = await handleProductSettingsApi(r2, u2, s2)
     const body2 = await res2.json()
     expect(body2).toEqual({
       theme: 'dark',
@@ -453,17 +453,17 @@ describe('Settings API', () => {
       'utf8',
     )
 
-    const rejected = makeRequest('PUT', '/api/settings/user', {
+    const rejected = makeRequest('PATCH', '/api/product/settings/user', {
       model: 'renderer-must-not-write-this',
     })
-    expect((await handleSettingsApi(rejected.req, rejected.url, rejected.segments)).status).toBe(400)
+    expect((await handleProductSettingsApi(rejected.req, rejected.url, rejected.segments)).status).toBe(400)
 
-    const update = makeRequest('PUT', '/api/settings/user', {
+    const update = makeRequest('PATCH', '/api/product/settings/user', {
       webSearch: {
         enabled: false,
       },
     })
-    expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
+    expect((await handleProductSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
 
     const settingsRaw = await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')
     expect(settingsRaw).not.toContain('renderer-must-not-write-this')
@@ -474,8 +474,8 @@ describe('Settings API', () => {
       tavilyApiKey: 'existing-private-key',
     })
 
-    const read = makeRequest('GET', '/api/settings/user')
-    const response = await handleSettingsApi(read.req, read.url, read.segments)
+    const read = makeRequest('GET', '/api/product/settings/user')
+    const response = await handleProductSettingsApi(read.req, read.url, read.segments)
     const body = await response.json() as { webSearch: Record<string, unknown> }
     expect(body).toEqual({ webSearch: { enabled: false } })
     expect(JSON.stringify(body)).not.toContain('existing-private-key')
@@ -483,13 +483,13 @@ describe('Settings API', () => {
   })
 
   it('rejects malformed and unknown ordinary preferences', async () => {
-    const invalidTheme = makeRequest('PUT', '/api/settings/user', { theme: 'white' })
-    const providerInput = makeRequest('PUT', '/api/settings/user', {
+    const invalidTheme = makeRequest('PATCH', '/api/product/settings/user', { theme: 'white' })
+    const providerInput = makeRequest('PATCH', '/api/product/settings/user', {
       webSearch: { enabled: true, provider: 'brave' },
     })
 
-    expect((await handleSettingsApi(invalidTheme.req, invalidTheme.url, invalidTheme.segments)).status).toBe(400)
-    expect((await handleSettingsApi(providerInput.req, providerInput.url, providerInput.segments)).status).toBe(400)
+    expect((await handleProductSettingsApi(invalidTheme.req, invalidTheme.url, invalidTheme.segments)).status).toBe(400)
+    expect((await handleProductSettingsApi(providerInput.req, providerInput.url, providerInput.segments)).status).toBe(400)
   })
 
   it('keeps Agent runtime settings on a dedicated endpoint and syncs thinking changes', async () => {
@@ -497,15 +497,15 @@ describe('Settings API', () => {
       .mockImplementation(() => 0)
 
     try {
-      const disabled = makeRequest('PUT', '/api/settings/runtime', {
+      const disabled = makeRequest('PATCH', '/api/product/settings/runtime', {
         alwaysThinkingEnabled: false,
       })
-      expect((await handleSettingsApi(disabled.req, disabled.url, disabled.segments)).status).toBe(200)
+      expect((await handleProductSettingsApi(disabled.req, disabled.url, disabled.segments)).status).toBe(200)
 
-      const enabled = makeRequest('PUT', '/api/settings/runtime', {
+      const enabled = makeRequest('PATCH', '/api/product/settings/runtime', {
         alwaysThinkingEnabled: true,
       })
-      expect((await handleSettingsApi(enabled.req, enabled.url, enabled.segments)).status).toBe(200)
+      expect((await handleProductSettingsApi(enabled.req, enabled.url, enabled.segments)).status).toBe(200)
 
       expect(syncSpy).toHaveBeenNthCalledWith(1, 0)
       expect(syncSpy).toHaveBeenNthCalledWith(2, null)
@@ -527,13 +527,13 @@ describe('Settings API', () => {
       }),
       'utf8',
     )
-    const update = makeRequest('PUT', '/api/settings/runtime', {
+    const update = makeRequest('PATCH', '/api/product/settings/runtime', {
       network: {
         aiRequestTimeoutMs: 120_000,
         proxy: { mode: 'manual', url: '  http://127.0.0.1:7890  ' },
       },
     })
-    expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
+    expect((await handleProductSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
 
     const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8'))
     expect(raw.network).toMatchObject({
@@ -546,16 +546,16 @@ describe('Settings API', () => {
       },
     })
 
-    const read = makeRequest('GET', '/api/settings/runtime')
-    expect(await (await handleSettingsApi(read.req, read.url, read.segments)).json()).toEqual({
+    const read = makeRequest('GET', '/api/product/settings/runtime')
+    expect(await (await handleProductSettingsApi(read.req, read.url, read.segments)).json()).toEqual({
       network: {
         aiRequestTimeoutMs: 120_000,
         proxy: { mode: 'manual', url: 'http://127.0.0.1:7890' },
       },
     })
 
-    const unknown = makeRequest('PUT', '/api/settings/runtime', { model: 'not-allowed' })
-    expect((await handleSettingsApi(unknown.req, unknown.url, unknown.segments)).status).toBe(400)
+    const unknown = makeRequest('PATCH', '/api/product/settings/runtime', { model: 'not-allowed' })
+    expect((await handleProductSettingsApi(unknown.req, unknown.url, unknown.segments)).status).toBe(400)
   })
 
   it('keeps terminal and update proxy settings behind the desktop endpoint', async () => {
@@ -567,7 +567,7 @@ describe('Settings API', () => {
       }),
       'utf8',
     )
-    const update = makeRequest('PUT', '/api/settings/desktop', {
+    const update = makeRequest('PATCH', '/api/product/settings/desktop', {
       desktopTerminal: {
         startupShell: 'custom',
         customShellPath: ' C:\\tools\\pwsh.exe ',
@@ -577,7 +577,7 @@ describe('Settings API', () => {
         url: ' http://127.0.0.1:7890 ',
       },
     })
-    expect((await handleSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
+    expect((await handleProductSettingsApi(update.req, update.url, update.segments)).status).toBe(200)
 
     const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8'))
     expect(raw.desktopTerminal).toMatchObject({
@@ -591,8 +591,8 @@ describe('Settings API', () => {
       url: 'http://127.0.0.1:7890',
     })
 
-    const read = makeRequest('GET', '/api/settings/desktop')
-    expect(await (await handleSettingsApi(read.req, read.url, read.segments)).json()).toEqual({
+    const read = makeRequest('GET', '/api/product/settings/desktop')
+    expect(await (await handleProductSettingsApi(read.req, read.url, read.segments)).json()).toEqual({
       desktopTerminal: {
         startupShell: 'custom',
         customShellPath: 'C:\\tools\\pwsh.exe',
@@ -600,13 +600,13 @@ describe('Settings API', () => {
       updateProxy: { mode: 'manual', url: 'http://127.0.0.1:7890' },
     })
 
-    const invalid = makeRequest('PUT', '/api/settings/desktop', {
+    const invalid = makeRequest('PATCH', '/api/product/settings/desktop', {
       desktopTerminal: { startupShell: 'custom', customShellPath: '' },
     })
-    expect((await handleSettingsApi(invalid.req, invalid.url, invalid.segments)).status).toBe(400)
+    expect((await handleProductSettingsApi(invalid.req, invalid.url, invalid.segments)).status).toBe(400)
   })
 
-  it('GET /api/settings/output-styles should include built-in, user, and project styles', async () => {
+  it('GET /api/product/settings/output-styles should include built-in, user, and project styles', async () => {
     const projectRoot = path.join(tmpDir, 'myproject')
     await fs.mkdir(path.join(tmpDir, 'output-styles'), { recursive: true })
     await fs.mkdir(path.join(projectRoot, '.claude', 'output-styles'), { recursive: true })
@@ -644,9 +644,9 @@ describe('Settings API', () => {
 
     const { req, url, segments } = makeRequest(
       'GET',
-      `/api/settings/output-styles?workDir=${encodeURIComponent(projectRoot)}`,
+      `/api/product/settings/output-styles?workDir=${encodeURIComponent(projectRoot)}`,
     )
-    const res = await handleSettingsApi(req, url, segments)
+    const res = await handleProductSettingsApi(req, url, segments)
 
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -664,7 +664,7 @@ describe('Settings API', () => {
     )
   })
 
-  it('PUT /api/settings/output-style should save to project-local settings and preserve fields', async () => {
+  it('PATCH /api/product/settings/output-style should save to project-local settings and preserve fields', async () => {
     const projectRoot = path.join(tmpDir, 'myproject')
     await fs.mkdir(path.join(projectRoot, '.claude'), { recursive: true })
     await fs.writeFile(
@@ -673,11 +673,11 @@ describe('Settings API', () => {
       'utf-8',
     )
 
-    const { req, url, segments } = makeRequest('PUT', '/api/settings/output-style', {
+    const { req, url, segments } = makeRequest('PATCH', '/api/product/settings/output-style', {
       outputStyle: 'Learning',
       workDir: projectRoot,
     })
-    const res = await handleSettingsApi(req, url, segments)
+    const res = await handleProductSettingsApi(req, url, segments)
 
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -697,18 +697,18 @@ describe('Settings API', () => {
     expect(settings.preserved).toBe('yes')
   })
 
-  it('PUT /api/settings/output-style should reject unavailable styles', async () => {
-    const { req, url, segments } = makeRequest('PUT', '/api/settings/output-style', {
+  it('PATCH /api/product/settings/output-style should reject unavailable styles', async () => {
+    const { req, url, segments } = makeRequest('PATCH', '/api/product/settings/output-style', {
       outputStyle: 'Missing Style',
     })
-    const res = await handleSettingsApi(req, url, segments)
+    const res = await handleProductSettingsApi(req, url, segments)
 
     expect(res.status).toBe(400)
   })
 
   it('should return 404 for unknown settings endpoint', async () => {
-    const { req, url, segments } = makeRequest('GET', '/api/settings/unknown')
-    const res = await handleSettingsApi(req, url, segments)
+    const { req, url, segments } = makeRequest('GET', '/api/product/settings/unknown')
+    const res = await handleProductSettingsApi(req, url, segments)
     expect(res.status).toBe(404)
   })
 })

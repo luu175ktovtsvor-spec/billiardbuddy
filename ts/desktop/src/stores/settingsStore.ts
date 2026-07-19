@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { settingsApi } from '../api/settings'
+import { productSettingsApi } from '../product/api/settings'
 import {
   DESKTOP_LOCALES,
   isThemeMode,
@@ -163,9 +163,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const [userSettings, runtimeSettings, desktopSettings] = await Promise.all([
-        settingsApi.getUser(),
-        settingsApi.getRuntime(),
-        settingsApi.getDesktop(),
+        productSettingsApi.getUser(),
+        productSettingsApi.getRuntime(),
+        productSettingsApi.getDesktop(),
       ])
       // 旧数据可能存的是已下线的 'white'（isThemeMode 现在只认 light/dark/system）→ 回退跟随系统。
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
@@ -197,7 +197,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().thinkingEnabled
     set({ thinkingEnabled: enabled })
     try {
-      await settingsApi.updateRuntime({ alwaysThinkingEnabled: enabled })
+      await productSettingsApi.updateRuntime({ alwaysThinkingEnabled: enabled })
     } catch {
       set({ thinkingEnabled: prev })
     }
@@ -207,7 +207,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().autoDreamEnabled
     set({ autoDreamEnabled: enabled })
     try {
-      await settingsApi.updateUser({ autoDreamEnabled: enabled })
+      await productSettingsApi.updateUser({ autoDreamEnabled: enabled })
     } catch (error) {
       set({ autoDreamEnabled: prev })
       throw error
@@ -224,7 +224,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ theme })
     useUIStore.getState().setTheme(theme)
     try {
-      await settingsApi.updateUser({ theme })
+      await productSettingsApi.updateUser({ theme })
     } catch {
       set({ theme: prev })
       useUIStore.getState().setTheme(prev)
@@ -236,7 +236,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeChatSendBehavior(behavior)
     set({ chatSendBehavior: next })
     try {
-      await settingsApi.updateUser({ chatSendBehavior: next })
+      await productSettingsApi.updateUser({ chatSendBehavior: next })
     } catch (error) {
       set({ chatSendBehavior: prev })
       throw error
@@ -246,7 +246,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   fetchOutputStyles: async (workDir) => {
     set({ outputStylesLoading: true, outputStyleError: null })
     try {
-      const response = await settingsApi.getOutputStyles(workDir)
+      const response = await productSettingsApi.getOutputStyles(workDir)
       set({
         outputStyle: normalizeOutputStyle(response.outputStyle),
         outputStyles: normalizeOutputStyleOptions(response.styles),
@@ -276,7 +276,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       outputStyleError: null,
     })
     try {
-      const result = await settingsApi.setOutputStyle(outputStyle, workDir)
+      const result = await productSettingsApi.setOutputStyle(outputStyle, workDir)
       set({
         outputStyle: normalizeOutputStyle(result.outputStyle),
         outputStyleScope: result.scope,
@@ -298,7 +298,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().skipWebFetchPreflight
     set({ skipWebFetchPreflight: enabled })
     try {
-      await settingsApi.updateRuntime({ skipWebFetchPreflight: enabled })
+      await productSettingsApi.updateRuntime({ skipWebFetchPreflight: enabled })
     } catch {
       set({ skipWebFetchPreflight: prev })
     }
@@ -311,7 +311,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       .catch(() => undefined)
       .then(async () => {
         if (get().desktopNotificationsEnabled !== enabled) return
-        await settingsApi.updateUser({ desktopNotificationsEnabled: enabled })
+        await productSettingsApi.updateUser({ desktopNotificationsEnabled: enabled })
       })
 
     desktopNotificationsSaveQueue = save
@@ -330,7 +330,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeDesktopTerminalSettings(settings)
     set({ desktopTerminal: next })
     try {
-      await settingsApi.updateDesktop({ desktopTerminal: next })
+      await productSettingsApi.updateDesktop({ desktopTerminal: next })
     } catch (error) {
       set({ desktopTerminal: prev })
       throw error
@@ -342,7 +342,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeWebSearchSettings(webSearch)
     set({ webSearch: next })
     try {
-      await settingsApi.updateUser({ webSearch: next })
+      await productSettingsApi.updateUser({ webSearch: next })
     } catch {
       set({ webSearch: prev })
     }
@@ -353,7 +353,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeUpdateProxySettings(settings)
     set({ updateProxy: next })
     try {
-      await settingsApi.updateDesktop({ updateProxy: next })
+      await productSettingsApi.updateDesktop({ updateProxy: next })
     } catch (error) {
       set({ updateProxy: prev })
       throw error
@@ -365,7 +365,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next = normalizeNetworkSettings(settings)
     set({ network: next })
     try {
-      await settingsApi.updateRuntime({ network: next })
+      await productSettingsApi.updateRuntime({ network: next })
     } catch (error) {
       set({ network: prev })
       throw error
@@ -376,7 +376,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const prev = get().responseLanguage
     set({ responseLanguage: language })
     try {
-      await settingsApi.updateUser({ language: language || null })
+      await productSettingsApi.updateUser({ language: language || null })
     } catch {
       set({ responseLanguage: prev })
     }
