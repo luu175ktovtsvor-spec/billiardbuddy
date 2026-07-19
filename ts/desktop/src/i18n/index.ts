@@ -1,12 +1,13 @@
 import { useCallback } from 'react'
 import { useSettingsStore } from '../stores/settingsStore'
+import type { DesktopLocale } from '../types/settings'
 import { en, type TranslationKey } from './locales/en'
 import { zh } from './locales/zh'
 import { zh as zhTW } from './locales/zh-TW'
 import { jp } from './locales/jp'
 import { kr } from './locales/kr'
 
-export type Locale = 'en' | 'zh' | 'zh-TW' | 'jp' | 'kr'
+export type Locale = DesktopLocale
 
 const translations: Record<Locale, Record<string, string>> = {
   en,

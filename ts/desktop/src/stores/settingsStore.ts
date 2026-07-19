@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { settingsApi } from '../api/settings'
 import {
+  DESKTOP_LOCALES,
   isThemeMode,
   type AppMode,
   type AppModeConfig,
@@ -35,12 +36,10 @@ export const UI_ZOOM_STEP = APP_ZOOM_CONTROL_STEP
 export const UI_ZOOM_DEFAULT = DEFAULT_APP_ZOOM
 let desktopNotificationsSaveQueue: Promise<void> = Promise.resolve()
 
-const VALID_LOCALES: readonly Locale[] = ['en', 'zh', 'zh-TW', 'jp', 'kr']
-
 function getStoredLocale(): Locale {
   try {
     const stored = localStorage.getItem(LOCALE_STORAGE_KEY)
-    if (stored && (VALID_LOCALES as readonly string[]).includes(stored)) return stored as Locale
+    if (stored && (DESKTOP_LOCALES as readonly string[]).includes(stored)) return stored as Locale
   } catch { /* localStorage unavailable */ }
   return 'zh'
 }
