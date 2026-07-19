@@ -41,10 +41,6 @@ export type SessionListItem = {
   permissionMode?: string
 }
 
-export type SessionDetail = SessionListItem & {
-  messages: MessageEntry[]
-}
-
 export type SessionLaunchInfo = {
   filePath: string
   projectDir: string
@@ -607,20 +603,6 @@ export class SessionService {
     return undefined
   }
 
-  private resolveTranscriptModifiedAtFromEntries(entries: RawEntry[]): string | null {
-    let modifiedAt: string | null = null
-    for (const entry of entries) {
-      if (
-        !entry.isMeta &&
-        (entry.type === 'user' || entry.type === 'assistant') &&
-        entry.message?.role
-      ) {
-        modifiedAt = this.latestTimestamp(modifiedAt, entry.timestamp)
-      }
-    }
-    return modifiedAt
-  }
-
   private resolveWorktreeSessionFromEntries(entries: RawEntry[]): PersistedWorktreeSession | null | undefined {
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i]
@@ -638,21 +620,6 @@ export class SessionService {
       }
     }
     return undefined
-  }
-
-  private async resolveProjectRootFromEntries(
-    entries: RawEntry[],
-    workDir: string | null,
-    fallbackProjectDir?: string,
-  ): Promise<string | null> {
-    const worktreeSession = this.resolveWorktreeSessionFromEntries(entries)
-    const repository = this.resolveRepositoryFromEntries(entries)
-    return this.resolveProjectRootFromSessionMetadata({
-      worktreeSession,
-      repository,
-      workDir,
-      fallbackProjectDir,
-    })
   }
 
   private async resolveProjectRootFromSessionMetadata({
@@ -1135,57 +1102,6 @@ export class SessionService {
     return resolved
   }
 
-  // --------------------------------------------------------------------------
-  // Title extraction
-  // --------------------------------------------------------------------------
-
-  private extractTitle(entries: RawEntry[]): string {
-    // 1. Look for custom title entry (appended by renameSession) — highest priority
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i]!
-      if (e.type === 'custom-title' && e.customTitle) {
-        return e.customTitle
-      }
-    }
-
-    // 2. Goal sessions should keep the original objective as the stable title.
-    for (const e of entries) {
-      const goalTitle = this.goalCreationCommandTitle(e)
-      if (goalTitle) return goalTitle
-    }
-
-    // 3. Look for AI-generated title (written by titleService)
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i]!
-      if (e.type === 'ai-title' && e.aiTitle) {
-        const title = cleanSessionTitleSource(String(e.aiTitle))
-        if (title) return title
-      }
-    }
-
-    // 4. Look for first non-meta user message as title
-    for (const e of entries) {
-      if (e.type === 'user' && !e.isMeta && e.message?.role === 'user') {
-        const content = e.message.content
-        let text: string | undefined
-        if (typeof content === 'string') {
-          text = content
-        } else if (Array.isArray(content)) {
-          const textBlock = content.find(
-            (block: Record<string, unknown>) => block.type === 'text' && typeof block.text === 'string'
-          )
-          if (textBlock) text = textBlock.text as string
-        }
-        if (text) {
-          const title = cleanSessionTitleSource(text)
-          if (title) return title.length > 80 ? title.slice(0, 80) + '...' : title
-        }
-      }
-    }
-
-    return 'Untitled Session'
-  }
-
   private extractUserMessageTitle(content: unknown): string | null {
     let text: string | undefined
     if (typeof content === 'string') {
@@ -1434,51 +1350,6 @@ export class SessionService {
       result: this.cloneSessionListResult(result),
     })
     return result
-  }
-
-  /**
-   * Get full session detail including all messages.
-   */
-  async getSession(sessionId: string): Promise<SessionDetail | null> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) return null
-
-    const { filePath, projectDir } = found
-    const stat = await fs.stat(filePath)
-    const entries = await this.readJsonlFile(filePath)
-
-    const messages = await this.appendSubagentToolMessages(
-      projectDir,
-      sessionId,
-      this.entriesToMessages(entries),
-    )
-    const title = this.extractTitle(entries)
-    const workDir = this.resolveWorkDirFromEntries(entries, projectDir)
-    const permissionMode = this.resolvePermissionModeFromEntries(entries)
-    const projectRoot = await this.resolveProjectRootFromEntries(entries, workDir, projectDir)
-    const workDirExists = await this.pathExists(workDir)
-
-    let createdAt = stat.birthtime.toISOString()
-    for (const e of entries) {
-      if (e.timestamp) {
-        createdAt = e.timestamp
-        break
-      }
-    }
-
-    return {
-      id: sessionId,
-      title,
-      createdAt,
-      modifiedAt: this.resolveTranscriptModifiedAtFromEntries(entries) ?? stat.mtime.toISOString(),
-      messageCount: messages.length,
-      projectPath: projectDir,
-      projectRoot,
-      workDir,
-      workDirExists,
-      permissionMode,
-      messages,
-    }
   }
 
   /**

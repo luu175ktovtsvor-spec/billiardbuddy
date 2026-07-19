@@ -575,75 +575,6 @@ describe('SessionService', () => {
   })
 
   // --------------------------------------------------------------------------
-  // getSession
-  // --------------------------------------------------------------------------
-
-  it('should return null for non-existent session', async () => {
-    const result = await service.getSession('00000000-0000-0000-0000-000000000000')
-    expect(result).toBeNull()
-  })
-
-  it('should return session detail with messages', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const userUuid = crypto.randomUUID()
-    await writeSessionFile('-tmp-project', sessionId, [
-      makeSnapshotEntry(),
-      makeUserEntry('Tell me a joke', userUuid),
-      makeAssistantEntry('Why did the chicken cross the road?', userUuid),
-    ])
-
-    const detail = await service.getSession(sessionId)
-    expect(detail).not.toBeNull()
-    expect(detail!.id).toBe(sessionId)
-    expect(detail!.title).toBe('Tell me a joke')
-    expect(detail!.messages).toHaveLength(2)
-    expect(detail!.messages[0]!.type).toBe('user')
-    expect(detail!.messages[1]!.type).toBe('assistant')
-  })
-
-  it('should derive session detail modifiedAt from transcript messages', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const filePath = await writeSessionFile('-tmp-project', sessionId, [
-      {
-        ...makeSessionMetaEntry('/tmp/project'),
-        timestamp: '2026-01-03T00:00:00.000Z',
-      },
-      {
-        ...makeUserEntry('Earlier user work'),
-        timestamp: '2026-01-01T00:01:00.000Z',
-      },
-      {
-        ...makeAssistantEntry('Earlier assistant reply'),
-        timestamp: '2026-01-01T00:02:00.000Z',
-      },
-      {
-        type: 'custom-title',
-        customTitle: 'Later title metadata',
-        timestamp: '2026-01-04T00:00:00.000Z',
-      },
-    ])
-    const mtime = new Date('2026-01-05T00:00:00.000Z')
-    await fs.utimes(filePath, mtime, mtime)
-
-    const detail = await service.getSession(sessionId)
-
-    expect(detail?.modifiedAt).toBe('2026-01-01T00:02:00.000Z')
-  })
-
-  it('should skip meta entries in messages', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    await writeSessionFile('-tmp-project', sessionId, [
-      makeSnapshotEntry(),
-      makeMetaUserEntry(),
-      makeUserEntry('Real message'),
-    ])
-
-    const detail = await service.getSession(sessionId)
-    expect(detail!.messages).toHaveLength(1)
-    expect(detail!.messages[0]!.content).toBe('Real message')
-  })
-
-  // --------------------------------------------------------------------------
   // getSessionMessages
   // --------------------------------------------------------------------------
 
@@ -653,16 +584,35 @@ describe('SessionService', () => {
     ).rejects.toThrow('Session not found')
   })
 
-  it('should return messages only', async () => {
+  it('should return transcript messages in order', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const userUuid = crypto.randomUUID()
     await writeSessionFile('-tmp-project', sessionId, [
       makeSnapshotEntry(),
-      makeUserEntry('Hello'),
-      makeAssistantEntry('World'),
+      makeUserEntry('Hello', userUuid),
+      makeAssistantEntry('World', userUuid),
     ])
 
     const messages = await service.getSessionMessages(sessionId)
     expect(messages).toHaveLength(2)
+    expect(messages[0]).toMatchObject({ type: 'user', content: 'Hello' })
+    expect(messages[1]).toMatchObject({
+      type: 'assistant',
+      content: [{ type: 'text', text: 'World' }],
+    })
+  })
+
+  it('should skip meta entries in session messages', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    await writeSessionFile('-tmp-project', sessionId, [
+      makeSnapshotEntry(),
+      makeMetaUserEntry(),
+      makeUserEntry('Real message'),
+    ])
+
+    const messages = await service.getSessionMessages(sessionId)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]!.content).toBe('Real message')
   })
 
   it('preserves structured toolUseResult metadata for AskUserQuestion answers', async () => {
@@ -1626,9 +1576,9 @@ describe('SessionService', () => {
     expect(lastEntry.type).toBe('custom-title')
     expect(lastEntry.customTitle).toBe('My Custom Title')
 
-    // Verify the title is now returned in list
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('My Custom Title')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title).toBe('My Custom Title')
+    expect(await service.getCustomTitle(sessionId)).toBe('My Custom Title')
   })
 
   it('should throw when renaming non-existent session', async () => {
@@ -1649,8 +1599,9 @@ describe('SessionService', () => {
       makeUserEntry('This is my first real question'),
     ])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('This is my first real question')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title)
+      .toBe('This is my first real question')
   })
 
   it('should derive a clean title from slash command breadcrumb metadata', async () => {
@@ -1664,8 +1615,9 @@ describe('SessionService', () => {
       ].join('\n')),
     ])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('/frontend-design @website 重新设计首页')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title)
+      .toBe('/frontend-design @website 重新设计首页')
   })
 
   it('should keep a goal creation title instead of later goal status titles', async () => {
@@ -1689,8 +1641,9 @@ describe('SessionService', () => {
       },
     ])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('/goal ship the actual objective')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title)
+      .toBe('/goal ship the actual objective')
   })
 
   it('should display stored AI titles without internal XML tags', async () => {
@@ -1709,8 +1662,9 @@ describe('SessionService', () => {
       },
     ])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('/frontend-design @website')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title)
+      .toBe('/frontend-design @website')
   })
 
   it('should truncate long titles to 80 chars', async () => {
@@ -1721,17 +1675,18 @@ describe('SessionService', () => {
       makeUserEntry(longMessage),
     ])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title.length).toBe(83) // 80 + '...'
-    expect(detail!.title.endsWith('...')).toBe(true)
+    const { sessions } = await service.listSessions()
+    const title = sessions.find((session) => session.id === sessionId)?.title
+    expect(title).toHaveLength(83) // 80 + '...'
+    expect(title?.endsWith('...')).toBe(true)
   })
 
   it('should fall back to "Untitled Session" when no user message', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-project', sessionId, [makeSnapshotEntry()])
 
-    const detail = await service.getSession(sessionId)
-    expect(detail!.title).toBe('Untitled Session')
+    const { sessions } = await service.listSessions()
+    expect(sessions.find((session) => session.id === sessionId)?.title).toBe('Untitled Session')
   })
 
   it('should detect placeholder launch info for desktop-created sessions', async () => {
