@@ -1,25 +1,29 @@
-/**
- * Product-facing Skills API.
- *
- * The Agent keeps full Skill definitions private. The generic desktop route
- * deliberately exposes no catalog at all. Name-only discovery is reserved for
- * an explicit slash-command request in a Composer.
- */
-
-import * as path from 'path'
 import * as fs from 'fs/promises'
-import { parseFrontmatter } from '../../utils/frontmatterParser.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { getProjectDirsUpToHome } from '../../utils/markdownConfigLoader.js'
+import * as path from 'path'
+import {
+  getAgentDefinitionsWithOverrides,
+  type AgentDefinition as SharedAgentDefinition,
+} from '../../tools/AgentTool/loadAgentsDir.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { parseFrontmatter } from '../../utils/frontmatterParser.js'
+import { getProjectDirsUpToHome } from '../../utils/markdownConfigLoader.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache, loadAllPlugins, loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
 import { initBundledSkills } from '../../skills/bundled/index.js'
 import { getBundledSkillDescriptors } from '../../skills/bundledSkills.js'
-import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
-import { ApiError } from '../middleware/errorHandler.js'
+
+export type ProductTaskAgentCommand = {
+  displayName: string
+  runtimeName: string
+}
+
+export type ProductTaskSkillCommand = {
+  name: string
+}
 
 type LoadedSkill = {
   name: string
@@ -30,16 +34,65 @@ type PluginSkillLocation = {
   skillDir: string
 }
 
-export type SkillSlashCommand = {
-  name: string
+const GUIDE_RUNTIME_NAME = 'claude-code-guide'
+const GUIDE_DISPLAY_NAME = 'agent-guide'
+
+/**
+ * The task Composer only needs a safe alias and the Core runtime name. Agent
+ * definitions themselves remain inside the Agent Core and are never exposed
+ * through the product API.
+ */
+export async function listProductTaskAgentCommands(
+  cwd = getCwd(),
+): Promise<ProductTaskAgentCommand[]> {
+  const { activeAgents } = await getAgentDefinitionsWithOverrides(cwd)
+  return serializeAgentCommands(activeAgents)
+}
+
+/**
+ * The websocket checks a submitted Agent command against this same product
+ * discovery projection in the task's real workspace.
+ */
+export async function listProductTaskAgentRuntimeNames(cwd: string): Promise<string[]> {
+  return (await listProductTaskAgentCommands(cwd)).map((agent) => agent.runtimeName)
+}
+
+function serializeAgentCommands(
+  agents: SharedAgentDefinition[],
+): ProductTaskAgentCommand[] {
+  const runtimeNames = new Set<string>()
+  const displayNames = new Set<string>()
+  const commands: ProductTaskAgentCommand[] = []
+  let nextAssistantNumber = 1
+
+  for (const agent of agents) {
+    const runtimeName = agent.agentType.trim()
+    if (!runtimeName || runtimeNames.has(runtimeName)) continue
+    runtimeNames.add(runtimeName)
+
+    const displayName = agent.source === 'built-in' && runtimeName === GUIDE_RUNTIME_NAME
+      ? GUIDE_DISPLAY_NAME
+      : nextGenericAssistantName(displayNames, () => nextAssistantNumber++)
+    displayNames.add(displayName)
+    commands.push({ displayName, runtimeName })
+  }
+
+  return commands
+}
+
+function nextGenericAssistantName(
+  usedNames: ReadonlySet<string>,
+  nextNumber: () => number,
+): string {
+  let candidate = ''
+  do {
+    candidate = `assistant-${nextNumber()}`
+  } while (usedNames.has(candidate))
+  return candidate
 }
 
 function getUserSkillsDir(): string {
   return path.join(getClaudeConfigHomeDir(), 'skills')
-}
-
-function getRequestedCwd(url: URL): string {
-  return url.searchParams.get('cwd') || getCwd()
 }
 
 async function loadSkill(skillDir: string, name: string): Promise<LoadedSkill | null> {
@@ -70,9 +123,9 @@ async function collectSkillsFromRoots(skillRoots: string[]): Promise<LoadedSkill
 
     for (const entry of entries) {
       if (
-        (!entry.isDirectory() && !entry.isSymbolicLink()) ||
-        entry.name.startsWith('.') ||
-        seenNames.has(entry.name)
+        (!entry.isDirectory() && !entry.isSymbolicLink())
+        || entry.name.startsWith('.')
+        || seenNames.has(entry.name)
       ) {
         continue
       }
@@ -98,7 +151,7 @@ async function collectPluginSkillDirectories(): Promise<Map<string, PluginSkillL
   try {
     resetSettingsCache()
     clearInstalledPluginsCache()
-    clearPluginCache('skills-api-external-plugin-state')
+    clearPluginCache('task-command-discovery-external-plugin-state')
     const result = await loadAllPluginsCacheOnly()
     enabledPlugins = result.errors.some((error) => error.type === 'plugin-cache-miss')
       ? (await loadAllPlugins()).enabled
@@ -180,23 +233,28 @@ function listCommandNames(skills: ReadonlyArray<LoadedSkill>): string[] {
   return [...names].sort((a, b) => a.localeCompare(b))
 }
 
-async function collectLegacySlashCommands(cwd: string): Promise<SkillSlashCommand[]> {
+async function collectLegacySlashCommands(cwd: string): Promise<ProductTaskSkillCommand[]> {
   const commands = await getSkillDirCommands(cwd)
   return commands
     .filter((command) => (
-      command.type === 'prompt' &&
-      command.loadedFrom === 'commands_DEPRECATED' &&
-      command.userInvocable !== false &&
-      !command.isHidden
+      command.type === 'prompt'
+      && command.loadedFrom === 'commands_DEPRECATED'
+      && command.userInvocable !== false
+      && !command.isHidden
     ))
     .map((command) => ({ name: command.name }))
 }
 
-export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCommand[]> {
-  const requestedCwd = cwd || getCwd()
+/**
+ * Enumerates only user-invocable slash command names. Skill text, paths,
+ * frontmatter and plugin metadata stay private to the Agent Core.
+ */
+export async function listProductTaskSkillCommands(
+  cwd = getCwd(),
+): Promise<ProductTaskSkillCommand[]> {
   const [skills, legacyCommands] = await Promise.all([
-    collectAllSkills(requestedCwd),
-    collectLegacySlashCommands(requestedCwd),
+    collectAllSkills(cwd),
+    collectLegacySlashCommands(cwd),
   ])
   const names = new Set(listCommandNames(skills))
   for (const command of legacyCommands) names.add(command.name)
@@ -205,37 +263,6 @@ export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCo
     .map((name) => ({ name }))
 }
 
-export async function handleSkillsApi(
-  req: Request,
-  url: URL,
-  segments: string[],
-): Promise<Response> {
-  try {
-    if (req.method !== 'GET') {
-      throw new ApiError(405, 'Unsupported Skills request', 'SKILL_REQUEST_INVALID')
-    }
-
-    // Normal desktop entry points never enumerate implementation Skills.
-    if (segments[2] === undefined) return Response.json({ skills: [] })
-
-    // A Composer explicitly requesting slash completion may discover command
-    // names, but never implementation text, paths, frontmatter, or metadata.
-    if (segments[2] === 'slash-commands') {
-      return Response.json({ commands: await listSkillSlashCommands(getRequestedCwd(url)) })
-    }
-
-    throw new ApiError(404, 'Skill not available', 'SKILL_NOT_AVAILABLE')
-  } catch (error) {
-    return skillErrorResponse(error)
-  }
-}
-
-function skillErrorResponse(error: unknown): Response {
-  const status = error instanceof ApiError ? error.statusCode : 500
-  const code = error instanceof ApiError && error.code === 'SKILL_NOT_AVAILABLE'
-    ? 'SKILL_NOT_AVAILABLE'
-    : error instanceof ApiError && error.code === 'SKILL_REQUEST_INVALID'
-      ? 'SKILL_REQUEST_INVALID'
-      : 'SKILLS_UNAVAILABLE'
-  return Response.json({ error: code }, { status })
+export async function listProductTaskSkillNames(cwd: string): Promise<string[]> {
+  return (await listProductTaskSkillCommands(cwd)).map((command) => command.name)
 }

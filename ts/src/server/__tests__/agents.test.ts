@@ -7,7 +7,7 @@ import { clearAgentDefinitionsCache } from '../../tools/AgentTool/loadAgentsDir.
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
-import { handleAgentsApi } from '../api/agents.js'
+import { handleProductTaskCommandsApi } from '../api/productTaskCommands.js'
 import { handleApiRequest } from '../router.js'
 
 let tmpHome: string
@@ -63,7 +63,7 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value
 }
 
-describe('Agents API product boundary', () => {
+describe('product task Agent command discovery', () => {
   beforeEach(async () => {
     tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'billiardbuddy-agents-api-'))
     workspace = path.join(tmpHome, 'workspace')
@@ -101,10 +101,10 @@ describe('Agents API product boundary', () => {
   it('returns only safe display aliases and runtime mappings for discovered Agents', async () => {
     await writePrivateProjectAgent()
     const request = makeRequest(
-      `/api/agents?cwd=${encodeURIComponent(workspace)}`,
+      `/api/product/task-commands/agents?cwd=${encodeURIComponent(workspace)}`,
     )
 
-    const response = await handleAgentsApi(request.req, request.url, request.segments)
+    const response = await handleApiRequest(request.req, request.url)
 
     expect(response.status).toBe(200)
     const body = await response.json() as {
@@ -140,8 +140,33 @@ describe('Agents API product boundary', () => {
     expect(body).not.toHaveProperty('allAgents')
   })
 
-  it('keeps legacy Agent CRUD and background task routes retired', async () => {
+  it('keeps local discovery failures inside the product error boundary', async () => {
+    const privateValue = '/private/workspace/.claude/agents/internal.md'
+    const request = makeRequest('/api/product/task-commands/agents?cwd=/private/workspace')
+    const response = await handleProductTaskCommandsApi(
+      request.req,
+      request.url,
+      request.segments,
+      {
+        listAgents: async () => {
+          throw new Error(`unable to read ${privateValue}`)
+        },
+        listSkills: async () => [],
+      },
+    )
+
+    expect(response.status).toBe(503)
+    const body = await response.json()
+    expect(body).toEqual({
+      error: 'PRODUCT_TASK_COMMANDS_UNAVAILABLE',
+      message: '暂时无法读取可用命令，请稍后重试。',
+    })
+    expect(JSON.stringify(body)).not.toContain(privateValue)
+  })
+
+  it('retires generic Agent and Skill discovery routes alongside legacy Agent CRUD', async () => {
     const requests = [
+      makeRequest('/api/agents'),
       makeRequest('/api/agents', 'POST', {
         name: 'saved-private-agent',
         description: 'PRIVATE_SAVED_AGENT_DESCRIPTION',
@@ -154,6 +179,7 @@ describe('Agents API product boundary', () => {
         description: 'PRIVATE_UPDATED_AGENT_DESCRIPTION',
       }),
       makeRequest('/api/agents/saved-private-agent', 'DELETE'),
+      makeRequest('/api/skills/slash-commands'),
       makeRequest('/api/tasks'),
       makeRequest('/api/tasks/lists/legacy-task-list'),
     ]
