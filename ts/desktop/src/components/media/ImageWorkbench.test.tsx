@@ -27,9 +27,8 @@ vi.mock('../../lib/desktopHost', () => ({
   getDesktopHost: () => ({ dialogs: { save: desktopHostMock.save } }),
 }))
 
-vi.mock('../../api/media', () => ({
-  MAX_REFERENCE_IMAGE_BYTES: 8 * 1024 * 1024,
-  MAX_REFERENCE_IMAGES_TOTAL_BYTES: 20 * 1024 * 1024,
+vi.mock('../../api/media', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../api/media')>()),
   mediaApi: mediaApiMock,
 }))
 
@@ -131,5 +130,21 @@ describe('ImageWorkbench unknown paid result', () => {
         output_path: '/tmp/saved.png',
       })
     })
+  })
+
+  it('renders a stable product error instead of a persisted upstream detail', async () => {
+    const rawDetail = 'gateway provider rejected token=private-token for /private/source.png'
+    mediaApiMock.listProjects.mockResolvedValue({
+      projects: [{
+        ...project,
+        error: rawDetail,
+        error_code: 'MEDIA_IMAGE_UNAVAILABLE',
+      }],
+    })
+    render(<ImageWorkbench />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('图片生成暂时不可用，请稍后重试。')
+    expect(alert).not.toHaveTextContent(rawDetail)
   })
 })

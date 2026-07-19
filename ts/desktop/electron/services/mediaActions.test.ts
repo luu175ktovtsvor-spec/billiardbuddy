@@ -39,4 +39,33 @@ describe('ElectronMediaActions', () => {
       capability: 'short',
     })).toThrow('too short')
   })
+
+  it('never forwards raw media HTTP or transport errors through Electron IPC', async () => {
+    const rawDetail = 'gateway provider rejected token=private-token for /private/ffmpeg.log'
+    const actions = new ElectronMediaActions({
+      getServerUrl: async () => 'http://127.0.0.1:3456',
+      capability: CAPABILITY,
+      fetchImpl: async () => Response.json({
+        error: 'MEDIA_VIDEO_EXPORT_FAILED',
+        message: rawDetail,
+      }, { status: 502 }),
+    })
+
+    const projected = await actions.renderVideo('vid_project01', {
+      revision: 2,
+      output_path: '/tmp/final.mp4',
+    }).catch(error => error)
+    expect(projected).toBeInstanceOf(Error)
+    expect((projected as Error).message).toBe('视频导出失败，请检查素材和导出位置后重试。')
+    expect((projected as Error).message).not.toContain(rawDetail)
+
+    const disconnected = new ElectronMediaActions({
+      getServerUrl: async () => 'http://127.0.0.1:3456',
+      capability: CAPABILITY,
+      fetchImpl: async () => { throw new Error(rawDetail) },
+    })
+    await expect(disconnected.submitImageProject('img_project01')).rejects.toThrow(
+      '媒体服务暂时不可用，请稍后重试。',
+    )
+  })
 })

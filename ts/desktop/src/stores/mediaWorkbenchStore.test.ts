@@ -15,9 +15,13 @@ const mediaApiMock = vi.hoisted(() => ({
   getTask: vi.fn(),
 }))
 
-vi.mock('../api/media', () => ({ mediaApi: mediaApiMock }))
+vi.mock('../api/media', async importOriginal => ({
+  ...(await importOriginal<typeof import('../api/media')>()),
+  mediaApi: mediaApiMock,
+}))
 
 import type { ImageWorkbenchProject, MediaTask } from '../api/media'
+import { ApiError } from '../api/client'
 import { useMediaWorkbenchStore } from './mediaWorkbenchStore'
 
 function deferred<T>() {
@@ -196,14 +200,20 @@ describe('mediaWorkbenchStore', () => {
 
   it('reloads the persisted project revision when image submission has an unknown outcome', async () => {
     const draft = image('img_unknown01')
+    const rawDetail = 'gateway status lost token=private-token'
+    const safeMessage = '暂时无法确认图片任务是否已提交，可能已经产生费用。请确认后再试。'
     const failed = {
       ...draft,
       revision: 1,
       state: 'failed' as const,
       task_id: 'task_unknown1',
-      error: '可能已经产生费用',
+      error: safeMessage,
+      error_code: 'MEDIA_IMAGE_OUTCOME_UNKNOWN' as const,
     }
-    mediaApiMock.submitImageProject.mockRejectedValue(new Error('可能已经产生费用'))
+    mediaApiMock.submitImageProject.mockRejectedValue(new ApiError(502, {
+      error: 'MEDIA_IMAGE_OUTCOME_UNKNOWN',
+      message: rawDetail,
+    }))
     mediaApiMock.listProjects.mockResolvedValue({ projects: [failed] })
     mediaApiMock.getTask.mockResolvedValue({
       task: {
@@ -222,12 +232,12 @@ describe('mediaWorkbenchStore', () => {
     })
     useMediaWorkbenchStore.setState({ imageProjects: [draft], activeImageId: draft.id })
 
-    await expect(useMediaWorkbenchStore.getState().submitImage(draft.id, true)).rejects.toThrow('可能已经产生费用')
+    await expect(useMediaWorkbenchStore.getState().submitImage(draft.id, true)).rejects.toThrow(safeMessage)
     expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(draft.id, true)
     expect(useMediaWorkbenchStore.getState()).toMatchObject({
       imageProjects: [failed],
       activeImageId: failed.id,
-      error: '可能已经产生费用',
+      error: safeMessage,
     })
     expect(useMediaWorkbenchStore.getState().tasks.task_unknown1).toMatchObject({
       outcome_unknown: true,

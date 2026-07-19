@@ -10,16 +10,45 @@ import type {
   UpdateVideoTimelineInput,
   VideoStudioProject,
 } from '../../../shared/contracts/media'
+import { isMediaSafeErrorMessage, mediaSafeError } from '../../../shared/contracts/media'
 export {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
 } from '../../../shared/contracts/media'
-import { api, getApiUrl } from './client'
+import { api, ApiError, getApiUrl } from './client'
 import { getDesktopHost } from '../lib/desktopHost'
 
 export type MediaToolchainStatus = {
   ffmpeg: { available: boolean }
   ffprobe: { available: boolean }
+}
+
+const MEDIA_WORKBENCH_FALLBACK_ERROR = '媒体服务暂时不可用，请稍后重试。'
+
+function mediaErrorCode(error: unknown): unknown {
+  if (error instanceof ApiError) {
+    const body = error.body
+    if (body && typeof body === 'object' && 'error' in body) return body.error
+  }
+  if (error && typeof error === 'object' && 'code' in error) {
+    return error.code
+  }
+  return undefined
+}
+
+/**
+ * API and IPC errors are not renderer copy. Keep only the allow-listed media
+ * error vocabulary; transport errors and malformed payloads receive a stable
+ * recovery message instead of exposing their raw `Error.message`.
+ */
+export function mediaUserFacingError(
+  error: unknown,
+  fallback = MEDIA_WORKBENCH_FALLBACK_ERROR,
+): string {
+  const code = mediaErrorCode(error)
+  if (code !== undefined) return mediaSafeError(code).message
+  const message = error instanceof Error ? error.message : undefined
+  return isMediaSafeErrorMessage(message) ? message : fallback
 }
 
 export const mediaApi = {

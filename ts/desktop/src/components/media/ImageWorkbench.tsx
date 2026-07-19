@@ -4,6 +4,7 @@ import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   mediaApi,
+  mediaUserFacingError,
 } from '../../api/media'
 import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 import { getDesktopHost } from '../../lib/desktopHost'
@@ -33,7 +34,7 @@ function readImage(file: File): Promise<string> {
     reader.onload = () => typeof reader.result === 'string'
       ? resolve(reader.result)
       : reject(new Error('无法读取参考图片'))
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取参考图片'))
+    reader.onerror = () => reject(new Error('无法读取参考图片，请更换后重试。'))
     reader.readAsDataURL(file)
   })
 }
@@ -75,6 +76,13 @@ export function ImageWorkbench() {
     ? mediaApi.assetUrl(output.asset_path)
     : output.url ?? output.data_url ?? '') ?? []
   const outputUrl = outputUrls[selectedOutput] ?? outputUrls[0]
+  const storeError = error ? mediaUserFacingError(new Error(error)) : null
+  const projectError = active?.error
+    ? mediaUserFacingError({ code: active.error_code })
+    : null
+  const taskError = task?.error
+    ? mediaUserFacingError({ code: task.error_code })
+    : null
 
   useEffect(() => {
     void loadProjects('image')
@@ -224,7 +232,7 @@ export function ImageWorkbench() {
       await mediaApi.saveImageOutput(active.id, { output_id: output.id, output_path: outputPath })
       setInputError(null)
     } catch (error) {
-      setInputError(error instanceof Error ? error.message : String(error))
+      setInputError(mediaUserFacingError(error, '暂时无法保存图片，请检查保存位置后重试。'))
     }
   }
 
@@ -499,9 +507,9 @@ export function ImageWorkbench() {
             {fidelityRisk && (
               <p className="mt-3 text-[12px] leading-5 text-[var(--color-warning)]">{fidelityRisk}</p>
             )}
-            {(inputError || error || active?.error || task?.error) && (
+            {(inputError || storeError || projectError || taskError) && (
               <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-error)]">
-                {inputError || error || active?.error || task?.error}
+                {inputError || storeError || projectError || taskError}
               </p>
             )}
           </div>

@@ -13,7 +13,7 @@ import {
   Square,
   X,
 } from 'lucide-react'
-import { mediaApi, type VideoStudioProject } from '../../api/media'
+import { mediaApi, mediaUserFacingError, type VideoStudioProject } from '../../api/media'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 import { MediaProjectRail } from './MediaProjectRail'
@@ -62,6 +62,13 @@ export function VideoStudio() {
   const selectedSource = active?.sources.find(source => source.id === selectedSourceId) ?? active?.sources[0]
   const task = active?.task_id ? tasks[active.task_id] : undefined
   const rendering = active?.state === 'rendering' || task?.status === 'queued' || task?.status === 'running' || task?.status === 'committing'
+  const storeError = error ? mediaUserFacingError(new Error(error)) : null
+  const projectError = active?.error
+    ? mediaUserFacingError({ code: active.error_code })
+    : null
+  const taskError = task?.error
+    ? mediaUserFacingError({ code: task.error_code })
+    : null
 
   useEffect(() => {
     void loadProjects('video')
@@ -393,9 +400,9 @@ export function VideoStudio() {
                 )}
               </>
             )}
-            {(error || active?.error || task?.error) && (
+            {(storeError || projectError || taskError) && (
               <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-error)]">
-                {error || active?.error || task?.error}
+                {storeError || projectError || taskError}
               </p>
             )}
           </div>

@@ -1,0 +1,134 @@
+/**
+ * The renderer treats media errors as a product boundary.  These codes and
+ * messages are deliberately small, stable, and free of provider, process, or
+ * filesystem details so the same failure can be projected consistently by the
+ * server, Electron bridge, and media workbenches.
+ */
+export const MEDIA_SAFE_ERROR_CODES = [
+  'MEDIA_INVALID_REQUEST',
+  'MEDIA_ACTION_NOT_ALLOWED',
+  'MEDIA_RESOURCE_UNAVAILABLE',
+  'MEDIA_STATE_CONFLICT',
+  'MEDIA_IMAGE_UNAVAILABLE',
+  'MEDIA_IMAGE_OUTCOME_UNKNOWN',
+  'MEDIA_IMAGE_CANCELLED',
+  'MEDIA_IMAGE_CANCEL_UNKNOWN',
+  'MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE',
+  'MEDIA_VIDEO_SOURCE_UNREADABLE',
+  'MEDIA_VIDEO_EXPORT_FAILED',
+  'MEDIA_VIDEO_EXPORT_CANCELLED',
+  'MEDIA_VIDEO_EXPORT_INTERRUPTED',
+  'MEDIA_VIDEO_OUTPUT_UNAVAILABLE',
+  'MEDIA_TEMPORARILY_UNAVAILABLE',
+] as const
+
+export type MediaSafeErrorCode = typeof MEDIA_SAFE_ERROR_CODES[number]
+
+export type MediaSafeError = {
+  code: MediaSafeErrorCode
+  message: string
+}
+
+export const MEDIA_SAFE_ERROR_MESSAGES: Record<MediaSafeErrorCode, string> = {
+  MEDIA_INVALID_REQUEST: '媒体操作参数有误，请检查后重试。',
+  MEDIA_ACTION_NOT_ALLOWED: '当前操作需要在桌面媒体工作台中确认。',
+  MEDIA_RESOURCE_UNAVAILABLE: '所需的媒体项目、任务或素材已不可用。',
+  MEDIA_STATE_CONFLICT: '媒体项目状态已变化，请刷新后重试。',
+  MEDIA_IMAGE_UNAVAILABLE: '图片生成暂时不可用，请稍后重试。',
+  MEDIA_IMAGE_OUTCOME_UNKNOWN: '暂时无法确认图片任务是否已提交，可能已经产生费用。请确认后再试。',
+  MEDIA_IMAGE_CANCELLED: '图片生成已取消。',
+  MEDIA_IMAGE_CANCEL_UNKNOWN: '暂时无法确认图片任务是否已取消，请稍后刷新状态。',
+  MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE: '本地视频工具未就绪，暂时无法处理视频。',
+  MEDIA_VIDEO_SOURCE_UNREADABLE: '无法读取该视频素材，请确认文件可正常播放后重试。',
+  MEDIA_VIDEO_EXPORT_FAILED: '视频导出失败，请检查素材和导出位置后重试。',
+  MEDIA_VIDEO_EXPORT_CANCELLED: '视频导出已取消。',
+  MEDIA_VIDEO_EXPORT_INTERRUPTED: '上次视频导出被中断，请重新导出。',
+  MEDIA_VIDEO_OUTPUT_UNAVAILABLE: '视频已导出，但输出文件已不可用，请重新导出。',
+  MEDIA_TEMPORARILY_UNAVAILABLE: '媒体服务暂时不可用，请稍后重试。',
+}
+
+const MEDIA_SERVICE_ERROR_CODES: Record<string, MediaSafeErrorCode> = {
+  ASSET_NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+  ASSET_OUTSIDE_PROJECT: 'MEDIA_RESOURCE_UNAVAILABLE',
+  EMPTY_TIMELINE: 'MEDIA_STATE_CONFLICT',
+  GATEWAY_NOT_CONFIGURED: 'MEDIA_IMAGE_UNAVAILABLE',
+  IMAGE_CANCEL_UNKNOWN: 'MEDIA_IMAGE_CANCEL_UNKNOWN',
+  IMAGE_NOT_EDITABLE: 'MEDIA_STATE_CONFLICT',
+  IMAGE_OUTPUT_CORRUPT: 'MEDIA_RESOURCE_UNAVAILABLE',
+  IMAGE_OUTPUT_EXTENSION_MISMATCH: 'MEDIA_INVALID_REQUEST',
+  IMAGE_OUTPUT_MISSING: 'MEDIA_RESOURCE_UNAVAILABLE',
+  IMAGE_OUTPUT_NOT_LOCAL: 'MEDIA_RESOURCE_UNAVAILABLE',
+  IMAGE_OUTPUT_NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+  IMAGE_SUBMISSION_CORRUPT: 'MEDIA_IMAGE_UNAVAILABLE',
+  IMAGE_SUBMIT_FAILED: 'MEDIA_IMAGE_UNAVAILABLE',
+  IMAGE_SUBMIT_UNKNOWN: 'MEDIA_IMAGE_OUTCOME_UNKNOWN',
+  IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED: 'MEDIA_IMAGE_OUTCOME_UNKNOWN',
+  INVALID_ASSET_NAME: 'MEDIA_INVALID_REQUEST',
+  INVALID_MEDIA_INPUT: 'MEDIA_INVALID_REQUEST',
+  INVALID_PROJECT_ID: 'MEDIA_INVALID_REQUEST',
+  INVALID_TASK_ID: 'MEDIA_INVALID_REQUEST',
+  OUTPUT_FORMAT_UNSUPPORTED: 'MEDIA_INVALID_REQUEST',
+  OUTPUT_OVERWRITES_SOURCE: 'MEDIA_STATE_CONFLICT',
+  OUTPUT_PATH_NOT_ABSOLUTE: 'MEDIA_INVALID_REQUEST',
+  PROJECT_ALREADY_ATTACHED: 'MEDIA_STATE_CONFLICT',
+  PROJECT_CORRUPT: 'MEDIA_TEMPORARILY_UNAVAILABLE',
+  PROJECT_NOT_ATTACHABLE: 'MEDIA_STATE_CONFLICT',
+  PROJECT_NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+  REFERENCE_IMAGE_MISSING: 'MEDIA_RESOURCE_UNAVAILABLE',
+  RENDER_IN_PROGRESS: 'MEDIA_STATE_CONFLICT',
+  RENDER_STATE_CONFLICT: 'MEDIA_STATE_CONFLICT',
+  REVISION_CONFLICT: 'MEDIA_STATE_CONFLICT',
+  SOURCE_MISSING: 'MEDIA_RESOURCE_UNAVAILABLE',
+  SOURCE_NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+  SOURCE_PATH_NOT_ABSOLUTE: 'MEDIA_INVALID_REQUEST',
+  TASK_CORRUPT: 'MEDIA_TEMPORARILY_UNAVAILABLE',
+  TASK_IN_PROGRESS: 'MEDIA_STATE_CONFLICT',
+  TASK_NOT_CANCELLABLE: 'MEDIA_STATE_CONFLICT',
+  TASK_NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+  VIDEO_ENCODER_UNAVAILABLE: 'MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE',
+  VIDEO_PROBE_FAILED: 'MEDIA_VIDEO_SOURCE_UNREADABLE',
+  VIDEO_RENDER_BUSY: 'MEDIA_STATE_CONFLICT',
+  VIDEO_TOOLCHAIN_UNAVAILABLE: 'MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE',
+  WRONG_PROJECT_KIND: 'MEDIA_INVALID_REQUEST',
+  MEDIA_UI_CONFIRMATION_REQUIRED: 'MEDIA_ACTION_NOT_ALLOWED',
+  BAD_REQUEST: 'MEDIA_INVALID_REQUEST',
+  CONFLICT: 'MEDIA_STATE_CONFLICT',
+  FORBIDDEN: 'MEDIA_ACTION_NOT_ALLOWED',
+  METHOD_NOT_ALLOWED: 'MEDIA_INVALID_REQUEST',
+  NOT_FOUND: 'MEDIA_RESOURCE_UNAVAILABLE',
+}
+
+function fallbackCodeForStatus(status: number | undefined): MediaSafeErrorCode {
+  if (status === 400 || status === 405) return 'MEDIA_INVALID_REQUEST'
+  if (status === 403) return 'MEDIA_ACTION_NOT_ALLOWED'
+  if (status === 404) return 'MEDIA_RESOURCE_UNAVAILABLE'
+  if (status === 409) return 'MEDIA_STATE_CONFLICT'
+  if (status === 422) return 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+  return 'MEDIA_TEMPORARILY_UNAVAILABLE'
+}
+
+export function isMediaSafeErrorCode(value: unknown): value is MediaSafeErrorCode {
+  return typeof value === 'string' && (MEDIA_SAFE_ERROR_CODES as readonly string[]).includes(value)
+}
+
+export function mediaSafeError(code: unknown): MediaSafeError {
+  const safeCode = isMediaSafeErrorCode(code) ? code : 'MEDIA_TEMPORARILY_UNAVAILABLE'
+  return { code: safeCode, message: MEDIA_SAFE_ERROR_MESSAGES[safeCode] }
+}
+
+/**
+ * Service error codes remain useful to server callers, but they are never a
+ * renderer contract.  Project them into the allow-listed product vocabulary.
+ */
+export function mediaSafeErrorForServiceError(
+  serviceCode: unknown,
+  status?: number,
+): MediaSafeError {
+  if (isMediaSafeErrorCode(serviceCode)) return mediaSafeError(serviceCode)
+  const mapped = typeof serviceCode === 'string' ? MEDIA_SERVICE_ERROR_CODES[serviceCode] : undefined
+  return mediaSafeError(mapped ?? fallbackCodeForStatus(status))
+}
+
+export function isMediaSafeErrorMessage(value: unknown): value is string {
+  return typeof value === 'string' && Object.values(MEDIA_SAFE_ERROR_MESSAGES).includes(value)
+}

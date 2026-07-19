@@ -9,6 +9,7 @@ import {
   createVideoProjectInputSchema,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
+  mediaSafeError,
   mediaProjectSchema,
   mediaTaskSchema,
   productTaskOwnerIdSchema,
@@ -24,6 +25,7 @@ import {
   type CreateVideoProjectInput,
   type ImageWorkbenchProject,
   type MediaProject,
+  type MediaSafeErrorCode,
   type MediaTask,
   type RenderVideoInput,
   type SaveImageOutputInput,
@@ -34,6 +36,7 @@ import {
   type VideoSource,
   type VideoStudioProject,
 } from '../../../shared/contracts/media.js'
+import { diagnosticsService } from './diagnosticsService.js'
 import {
   getInstallationId,
   getQfGatewayToken,
@@ -121,8 +124,18 @@ function defaultTitle(prompt: string, fallback: string): string {
   return compact ? compact.slice(0, 48) : fallback
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+/**
+ * Upstream and local-process diagnostics are useful to support staff, but they
+ * are never persisted into a task/project or sent to the renderer. The
+ * diagnostics service redacts credential-shaped values before writing.
+ */
+function recordMediaFailure(operation: string, error: unknown): void {
+  void diagnosticsService.recordEvent({
+    type: 'media_operation_failed',
+    severity: 'error',
+    summary: `Media ${operation} failed`,
+    details: { operation, error },
+  })
 }
 
 function parseRate(value: unknown): number | undefined {
@@ -492,7 +505,8 @@ export class MediaProjectService {
         throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
       }
       if (error instanceof MediaServiceError) throw error
-      throw new MediaServiceError(`媒体项目数据损坏: ${errorMessage(error)}`, 500, 'PROJECT_CORRUPT')
+      recordMediaFailure('read_project', error)
+      throw new MediaServiceError('媒体项目暂时无法读取', 500, 'PROJECT_CORRUPT')
     }
   }
 
@@ -505,7 +519,8 @@ export class MediaProjectService {
         throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
       }
       if (error instanceof MediaServiceError) throw error
-      throw new MediaServiceError(`媒体任务数据损坏: ${errorMessage(error)}`, 500, 'TASK_CORRUPT')
+      recordMediaFailure('read_task', error)
+      throw new MediaServiceError('媒体任务暂时无法读取', 500, 'TASK_CORRUPT')
     }
     task = await this.reconcileTaskAndProject(task)
     if (refreshRemote && task.kind === 'image.generate' && ['queued', 'running'].includes(task.status)) {
@@ -514,7 +529,7 @@ export class MediaProjectService {
         if (project.kind !== 'image' || !task.idempotency_key) {
           return await this.failImageTask(
             task,
-            '生图提交在应用关闭前没有保存完整凭据，无法确认上游结果，可能已经产生费用',
+            'MEDIA_IMAGE_OUTCOME_UNKNOWN',
             true,
           )
         }
@@ -545,16 +560,21 @@ export class MediaProjectService {
           outputs: result.data.outputs,
           notice: result.data.input_fidelity_risk,
           error: undefined,
+          error_code: undefined,
           updated_at: this.iso(),
         })
       } else if (
         (task.status === 'failed' || task.status === 'cancelled')
         && (project.state === 'queued' || project.state === 'generating')
       ) {
+        const failure = mediaSafeError(task.error_code ?? (task.status === 'cancelled'
+          ? 'MEDIA_IMAGE_CANCELLED'
+          : 'MEDIA_IMAGE_UNAVAILABLE'))
         await this.saveProject({
           ...project,
           state: 'failed',
-          error: task.error ?? (task.status === 'cancelled' ? '生成已取消' : '生成失败'),
+          error: failure.message,
+          error_code: failure.code,
           updated_at: this.iso(),
         })
       }
@@ -571,6 +591,7 @@ export class MediaProjectService {
           state: 'complete',
           output_path: result.data.output_path,
           error: undefined,
+          error_code: undefined,
           updated_at: this.iso(),
         })
         return task
@@ -579,7 +600,8 @@ export class MediaProjectService {
         await this.saveProject({
           ...project,
           state: 'failed',
-          error: '导出任务已完成，但输出文件已经不存在',
+          error: mediaSafeError('MEDIA_VIDEO_OUTPUT_UNAVAILABLE').message,
+          error_code: 'MEDIA_VIDEO_OUTPUT_UNAVAILABLE',
           updated_at: this.iso(),
         })
         return task
@@ -588,10 +610,16 @@ export class MediaProjectService {
         (task.status === 'failed' || task.status === 'cancelled')
         && project.state === 'rendering'
       ) {
+        const failure = mediaSafeError(task.error_code ?? (task.status === 'cancelled'
+          ? 'MEDIA_VIDEO_EXPORT_CANCELLED'
+          : task.stage === '导出已中断'
+            ? 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
+            : 'MEDIA_VIDEO_EXPORT_FAILED'))
         await this.saveProject({
           ...project,
           state: task.status === 'cancelled' || task.stage === '导出已中断' ? 'ready' : 'failed',
-          error: task.error ?? (task.status === 'cancelled' ? '导出已取消' : '导出失败'),
+          error: failure.message,
+          error_code: failure.code,
           updated_at: this.iso(),
         })
         return task
@@ -610,6 +638,7 @@ export class MediaProjectService {
             stage: '导出完成',
             result: { ...result.data, temporary_output: undefined },
             error: undefined,
+            error_code: undefined,
             updated_at: this.iso(),
           })
           await this.saveProject({
@@ -617,6 +646,7 @@ export class MediaProjectService {
             state: 'complete',
             output_path: result.data.output_path,
             error: undefined,
+            error_code: undefined,
             updated_at: this.iso(),
           })
           return succeeded
@@ -632,18 +662,25 @@ export class MediaProjectService {
   }
 
   private async recoverInterruptedVideoRender(task: MediaTask): Promise<MediaTask> {
-    const message = '上次导出因应用关闭而中断，请重新导出'
+    const failure = mediaSafeError('MEDIA_VIDEO_EXPORT_INTERRUPTED')
     const next = await this.saveTask({
       ...task,
       status: 'failed',
       progress: 0,
       stage: '导出已中断',
-      error: message,
+      error: failure.message,
+      error_code: failure.code,
       updated_at: this.iso(),
     })
     const project = await this.getProject(task.project_id).catch(() => null)
     if (project?.kind === 'video') {
-      await this.saveProject({ ...project, state: 'ready', error: message, updated_at: this.iso() })
+      await this.saveProject({
+        ...project,
+        state: 'ready',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
     }
     const result = videoRenderTaskResultSchema.safeParse(task.result)
     if (result.success && result.data.temporary_output) {
@@ -885,7 +922,7 @@ export class MediaProjectService {
       if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') return existing
     }
     if (!qfGatewayConfigured()) {
-      throw new MediaServiceError('产品网关尚未配置，无法提交生图任务', 503, 'GATEWAY_NOT_CONFIGURED')
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
 
     const now = this.iso()
@@ -912,6 +949,7 @@ export class MediaProjectService {
       state: 'queued',
       task_id: task.id,
       error: undefined,
+      error_code: undefined,
       notice: undefined,
       revision: nextRevision,
       updated_at: this.iso(),
@@ -944,7 +982,7 @@ export class MediaProjectService {
 
   private async performImageSubmission(project: ImageWorkbenchProject, originalTask: MediaTask): Promise<MediaTask> {
     if (!qfGatewayConfigured()) {
-      throw new MediaServiceError('产品网关尚未配置，无法提交生图任务', 503, 'GATEWAY_NOT_CONFIGURED')
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
     if (!originalTask.idempotency_key) {
       throw new MediaServiceError('生图任务缺少幂等凭据', 500, 'IMAGE_SUBMISSION_CORRUPT')
@@ -956,6 +994,7 @@ export class MediaProjectService {
       progress: Math.max(originalTask.progress, 1),
       stage: originalTask.outcome_unknown ? '正在确认上次提交' : '正在提交',
       error: undefined,
+      error_code: undefined,
       outcome_unknown: false,
       updated_at: this.iso(),
     })
@@ -964,6 +1003,7 @@ export class MediaProjectService {
       state: 'queued',
       task_id: task.id,
       error: undefined,
+      error_code: undefined,
       updated_at: this.iso(),
     }) as ImageWorkbenchProject
     const endpoint = `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks`
@@ -1005,21 +1045,28 @@ export class MediaProjectService {
       return task
     } catch (error) {
       const outcomeUnknown = !(error instanceof ImageSubmissionAttemptError) || error.outcomeUnknown
-      const detail = boundedMessage(errorMessage(error))
-      const message = outcomeUnknown
-        ? boundedMessage(`${detail}。上游是否已接收无法确认，可能已经产生费用；再次确认会使用同一幂等凭据，不会主动创建第二笔任务`)
-        : detail
+      recordMediaFailure('image_submission', error)
+      const failure = mediaSafeError(
+        outcomeUnknown ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+      )
       task = await this.saveTask({
         ...task,
         status: 'failed',
         stage: outcomeUnknown ? '提交结果待确认' : '提交失败',
-        error: message,
+        error: failure.message,
+        error_code: failure.code,
         outcome_unknown: outcomeUnknown,
         updated_at: this.iso(),
       })
-      await this.saveProject({ ...submittedProject, state: 'failed', error: message, updated_at: this.iso() })
+      await this.saveProject({
+        ...submittedProject,
+        state: 'failed',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
       throw new MediaServiceError(
-        message,
+        failure.message,
         error instanceof MediaServiceError ? error.status : 502,
         outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : 'IMAGE_SUBMIT_FAILED',
       )
@@ -1056,6 +1103,7 @@ export class MediaProjectService {
       count: input.count,
       revision: project.revision + 1,
       error: undefined,
+      error_code: undefined,
       notice: undefined,
       updated_at: this.iso(),
     }) as ImageWorkbenchProject
@@ -1069,25 +1117,39 @@ export class MediaProjectService {
     }
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId
-    const response = await this.fetchImpl(
-      `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
-      { headers },
-    )
+    let response: Response
+    try {
+      response = await this.fetchImpl(
+        `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
+        { headers },
+      )
+    } catch (error) {
+      // The remote task can still be running. Keep its persisted status rather
+      // than inventing a terminal result from a transient status-read failure.
+      recordMediaFailure('image_status', error)
+      return task
+    }
     const body = await response.json().catch(() => ({})) as RelayImageTask & { message?: string }
     if (!response.ok) {
-      const message = boundedMessage(body.error ?? body.message ?? `生图任务查询返回 HTTP ${response.status}`)
+      recordMediaFailure('image_status', { status: response.status, body })
       if (response.status >= 500) return task
-      return await this.failImageTask(task, message, body.status === 'failed_unknown')
+      return await this.failImageTask(
+        task,
+        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        body.status === 'failed_unknown',
+      )
     }
     if (body.status === 'cancelled') {
-      return await this.markImageTaskCancelled(task, boundedMessage(body.error ?? '生成已取消'))
+      if (body.error) recordMediaFailure('image_status_cancelled', body)
+      return await this.markImageTaskCancelled(task)
     }
     if (body.status === 'failed' || body.status === 'failed_unknown') {
-      const detail = boundedMessage(body.error ?? '生图任务失败')
-      const message = body.status === 'failed_unknown'
-        ? `${detail}。上游结果无法确认，可能已经产生费用，请确认后再决定是否重试`
-        : detail
-      return await this.failImageTask(task, message, body.status === 'failed_unknown')
+      recordMediaFailure('image_status_failed', body)
+      return await this.failImageTask(
+        task,
+        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        body.status === 'failed_unknown',
+      )
     }
     if (body.status !== 'succeeded') {
       const next = await this.saveTask({
@@ -1148,7 +1210,8 @@ export class MediaProjectService {
       }
     }
     if (outputs.length === 0) {
-      return await this.failImageTask(task, '生图任务完成，但没有返回可用图片')
+      recordMediaFailure('image_result_empty', body)
+      return await this.failImageTask(task, 'MEDIA_IMAGE_UNAVAILABLE')
     }
     const next = await this.saveTask({
       ...task,
@@ -1185,40 +1248,61 @@ export class MediaProjectService {
       outputs,
       notice: body.input_fidelity_risk ? boundedMessage(body.input_fidelity_risk) : undefined,
       error: undefined,
+      error_code: undefined,
       updated_at: this.iso(),
     })
     return next
   }
 
-  private async failImageTask(task: MediaTask, message: string, outcomeUnknown = false): Promise<MediaTask> {
+  private async failImageTask(
+    task: MediaTask,
+    errorCode: MediaSafeErrorCode,
+    outcomeUnknown = false,
+  ): Promise<MediaTask> {
+    const failure = mediaSafeError(errorCode)
     const next = await this.saveTask({
       ...task,
       status: 'failed',
       stage: '生成失败',
-      error: message,
+      error: failure.message,
+      error_code: failure.code,
       outcome_unknown: outcomeUnknown,
       updated_at: this.iso(),
     })
     const project = await this.currentImageProjectForTask(task)
     if (project) {
-      await this.saveProject({ ...project, state: 'failed', error: message, updated_at: this.iso() })
+      await this.saveProject({
+        ...project,
+        state: 'failed',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
     }
     return next
   }
 
-  private async markImageTaskCancelled(task: MediaTask, message = '生成已取消'): Promise<MediaTask> {
+  private async markImageTaskCancelled(task: MediaTask): Promise<MediaTask> {
+    const failure = mediaSafeError('MEDIA_IMAGE_CANCELLED')
     const next = await this.saveTask({
       ...task,
       status: 'cancelled',
       progress: 0,
       stage: '已取消',
-      error: message,
+      error: failure.message,
+      error_code: failure.code,
       outcome_unknown: false,
       updated_at: this.iso(),
     })
     const project = await this.getProject(task.project_id).catch(() => null)
     if (project?.kind === 'image' && project.task_id === task.id) {
-      await this.saveProject({ ...project, state: 'failed', error: message, updated_at: this.iso() })
+      await this.saveProject({
+        ...project,
+        state: 'failed',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
     }
     return next
   }
@@ -1281,7 +1365,11 @@ export class MediaProjectService {
     const explicit = this.env.BB_FFMPEG_VIDEO_ENCODER?.trim()
     if (explicit) {
       if (!['h264_videotoolbox', 'h264_mf', 'mpeg4'].includes(explicit) || !has(explicit)) {
-        throw new MediaServiceError(`配置的视频编码器不可用: ${explicit}`, 503, 'VIDEO_ENCODER_UNAVAILABLE')
+        throw new MediaServiceError(
+          mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message,
+          503,
+          'VIDEO_ENCODER_UNAVAILABLE',
+        )
       }
       return explicit === 'mpeg4'
         ? FALLBACK_VIDEO_ENCODER
@@ -1373,9 +1461,17 @@ export class MediaProjectService {
       })
       return { project: nextProject, task }
     } catch (error) {
-      const message = boundedMessage(errorMessage(error))
-      task = await this.saveTask({ ...task, status: 'failed', stage: '读取失败', error: message, updated_at: this.iso() })
-      throw new MediaServiceError(`无法读取视频素材: ${message}`, 422, 'VIDEO_PROBE_FAILED')
+      recordMediaFailure('video_probe', error)
+      const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
+      task = await this.saveTask({
+        ...task,
+        status: 'failed',
+        stage: '读取失败',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
+      throw new MediaServiceError(failure.message, 422, 'VIDEO_PROBE_FAILED')
     }
   }
 
@@ -1436,7 +1532,11 @@ export class MediaProjectService {
       }
       const status = await this.toolchainStatus()
       if (!status.ffmpeg.available || !status.ffprobe.available) {
-        throw new MediaServiceError('本机尚未准备 FFmpeg/ffprobe', 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
+        throw new MediaServiceError(
+          mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message,
+          503,
+          'VIDEO_TOOLCHAIN_UNAVAILABLE',
+        )
       }
 
       const now = this.iso()
@@ -1458,6 +1558,7 @@ export class MediaProjectService {
         task_id: task.id,
         output_path: input.output_path,
         error: undefined,
+        error_code: undefined,
         updated_at: this.iso(),
       })
       const controller = new AbortController()
@@ -1531,17 +1632,30 @@ export class MediaProjectService {
       })
       const latest = await this.getProject(project.id)
       if (latest.kind === 'video' && latest.revision === project.revision && latest.task_id === task.id) {
-        await this.saveProject({ ...latest, state: 'complete', output_path: outputPath, error: undefined, updated_at: this.iso() })
+        await this.saveProject({
+          ...latest,
+          state: 'complete',
+          output_path: outputPath,
+          error: undefined,
+          error_code: undefined,
+          updated_at: this.iso(),
+        })
       }
     } catch (error) {
       const cancelled = signal.aborted
-      const message = cancelled ? '导出已取消' : boundedMessage(errorMessage(error))
+      if (!cancelled) recordMediaFailure('video_render', error)
+      const failure = mediaSafeError(cancelled
+        ? 'MEDIA_VIDEO_EXPORT_CANCELLED'
+        : error instanceof MediaServiceError && error.code === 'VIDEO_ENCODER_UNAVAILABLE'
+          ? 'MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE'
+          : 'MEDIA_VIDEO_EXPORT_FAILED')
       await this.saveTask({
         ...task,
         status: cancelled ? 'cancelled' : 'failed',
         progress: 0,
         stage: cancelled ? '已取消' : '导出失败',
-        error: message,
+        error: failure.message,
+        error_code: failure.code,
         updated_at: this.iso(),
       })
       const latest = await this.getProject(project.id).catch(() => null)
@@ -1549,7 +1663,8 @@ export class MediaProjectService {
         await this.saveProject({
           ...latest,
           state: cancelled ? 'ready' : 'failed',
-          error: message,
+          error: failure.message,
+          error_code: failure.code,
           updated_at: this.iso(),
         })
       }
@@ -1581,12 +1696,19 @@ export class MediaProjectService {
       ...latestTask,
       status: 'cancelled',
       stage: '已取消',
-      error: '导出已取消',
+      error: mediaSafeError('MEDIA_VIDEO_EXPORT_CANCELLED').message,
+      error_code: 'MEDIA_VIDEO_EXPORT_CANCELLED',
       updated_at: this.iso(),
     })
     const project = await this.getProject(latestTask.project_id).catch(() => null)
     if (project?.kind === 'video' && project.task_id === latestTask.id) {
-      await this.saveProject({ ...project, state: 'ready', error: '导出已取消', updated_at: this.iso() })
+      await this.saveProject({
+        ...project,
+        state: 'ready',
+        error: mediaSafeError('MEDIA_VIDEO_EXPORT_CANCELLED').message,
+        error_code: 'MEDIA_VIDEO_EXPORT_CANCELLED',
+        updated_at: this.iso(),
+      })
     }
     return next
   }
@@ -1596,7 +1718,7 @@ export class MediaProjectService {
       throw new MediaServiceError('生图任务已经开始或提交结果尚未确认，不能安全取消', 409, 'TASK_NOT_CANCELLABLE')
     }
     if (!qfGatewayConfigured()) {
-      throw new MediaServiceError('产品网关尚未配置，无法确认取消结果', 503, 'GATEWAY_NOT_CONFIGURED')
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${getQfGatewayToken()}`,
@@ -1610,18 +1732,20 @@ export class MediaProjectService {
         { method: 'POST', headers },
       )
     } catch (error) {
+      recordMediaFailure('image_cancel', error)
       throw new MediaServiceError(
-        `无法确认生图任务是否已取消: ${boundedMessage(errorMessage(error))}`,
+        mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message,
         502,
         'IMAGE_CANCEL_UNKNOWN',
       )
     }
     const body = await response.json().catch(() => ({})) as RelayImageTask & { message?: string }
     if (!response.ok || body.status !== 'cancelled') {
+      recordMediaFailure('image_cancel', { status: response.status, body })
       throw new MediaServiceError(
-        boundedMessage(body.error ?? body.message ?? '生图任务已经开始，不能安全取消'),
+        mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message,
         response.status || 409,
-        'TASK_NOT_CANCELLABLE',
+        'IMAGE_CANCEL_UNKNOWN',
       )
     }
     return await this.markImageTaskCancelled(task)

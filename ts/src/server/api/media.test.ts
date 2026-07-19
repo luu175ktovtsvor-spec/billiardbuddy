@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEDIA_UI_CAPABILITY_HEADER } from '../../../shared/contracts/media.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './media.js'
-import { MediaProjectService } from '../services/mediaProjectService.js'
+import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
 
 let root: string | null = null
 afterEach(async () => {
@@ -61,7 +61,65 @@ test('media API returns structured validation errors', async () => {
     body: JSON.stringify({ prompt: '' }),
   })
   expect(response.status).toBe(400)
-  expect(await response.json()).toMatchObject({ error: 'INVALID_MEDIA_INPUT' })
+  expect(await response.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
+})
+
+test('media API projects persisted and thrown implementation errors into safe media failures', async () => {
+  root = await mkdtemp(join(tmpdir(), 'billiardbuddy-media-api-'))
+  const service = new MediaProjectService({ root })
+  const handler = createMediaApiHandler(service)
+  const rawDetail = 'gateway provider rejected token=private-token for /private/ffmpeg.log'
+  const project = await service.createImageProject({ prompt: '安全错误投影' })
+  await mkdir(join(root, 'tasks'), { recursive: true })
+  await writeFile(join(root, 'projects', `${project.id}.json`), `${JSON.stringify({
+    ...project,
+    state: 'failed',
+    error: rawDetail,
+  })}\n`)
+  await writeFile(join(root, 'tasks', 'task_rawerror.json'), `${JSON.stringify({
+    schema_version: 1,
+    id: 'task_rawerror',
+    project_id: project.id,
+    kind: 'video.render',
+    status: 'failed',
+    progress: 0,
+    stage: '导出失败',
+    error: rawDetail,
+    created_at: '2026-07-19T00:00:00.000Z',
+    updated_at: '2026-07-19T00:00:00.000Z',
+  })}\n`)
+
+  const projectResponse = await route(handler, `/api/media/project/${project.id}`)
+  const projectBody = await projectResponse.json() as { project: { error?: string; error_code?: string } }
+  expect(projectResponse.status).toBe(200)
+  expect(projectBody.project).toMatchObject({
+    error: '图片生成暂时不可用，请稍后重试。',
+    error_code: 'MEDIA_IMAGE_UNAVAILABLE',
+  })
+  expect(JSON.stringify(projectBody)).not.toContain(rawDetail)
+
+  const taskResponse = await route(handler, '/api/media/tasks/task_rawerror')
+  const taskBody = await taskResponse.json() as { task: { error?: string; error_code?: string } }
+  expect(taskResponse.status).toBe(200)
+  expect(taskBody.task).toMatchObject({
+    error: '视频导出失败，请检查素材和导出位置后重试。',
+    error_code: 'MEDIA_VIDEO_EXPORT_FAILED',
+  })
+  expect(JSON.stringify(taskBody)).not.toContain(rawDetail)
+
+  const failingHandler = createMediaApiHandler({
+    async getProject() {
+      throw new MediaServiceError(rawDetail, 503, 'GATEWAY_NOT_CONFIGURED')
+    },
+  } as unknown as MediaProjectService)
+  const failingResponse = await route(failingHandler, '/api/media/project/img_project01')
+  const failingBody = await failingResponse.json() as { error?: string; message?: string }
+  expect(failingResponse.status).toBe(503)
+  expect(failingBody).toEqual({
+    error: 'MEDIA_IMAGE_UNAVAILABLE',
+    message: '图片生成暂时不可用，请稍后重试。',
+  })
+  expect(JSON.stringify(failingBody)).not.toContain(rawDetail)
 })
 
 test('media API redacts reference image bytes, updates drafts, and deletes projects', async () => {
@@ -154,7 +212,7 @@ test('paid image submission and final render require the Electron-owned UI capab
 
   const deniedSubmit = await route(handler, '/api/media/images/projects/img_project01/submit', { method: 'POST' })
   expect(deniedSubmit.status).toBe(403)
-  expect(await deniedSubmit.json()).toMatchObject({ error: 'MEDIA_UI_CONFIRMATION_REQUIRED' })
+  expect(await deniedSubmit.json()).toMatchObject({ error: 'MEDIA_ACTION_NOT_ALLOWED' })
   const deniedRender = await route(handler, '/api/media/videos/projects/vid_project01/render', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -181,7 +239,7 @@ test('paid image submission and final render require the Electron-owned UI capab
     }),
   })
   expect(deniedUnknownUpdate.status).toBe(403)
-  expect(await deniedUnknownUpdate.json()).toMatchObject({ error: 'MEDIA_UI_CONFIRMATION_REQUIRED' })
+  expect(await deniedUnknownUpdate.json()).toMatchObject({ error: 'MEDIA_ACTION_NOT_ALLOWED' })
 
   const headers = { [MEDIA_UI_CAPABILITY_HEADER]: capability }
   expect((await route(handler, '/api/media/images/projects/img_project01/submit', {

@@ -4,6 +4,8 @@ import {
   addVideoSourceInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
+  mediaSafeError,
+  mediaSafeErrorForServiceError,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   submitImageProjectInputSchema,
@@ -11,6 +13,7 @@ import {
   updateVideoTimelineInputSchema,
   MEDIA_UI_CAPABILITY_HEADER,
   type MediaProject,
+  type MediaTask,
 } from '../../../shared/contracts/media.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
@@ -29,18 +32,31 @@ async function parseJson(req: Request): Promise<unknown> {
 
 function mediaErrorResponse(error: unknown): Response {
   if (error instanceof MediaServiceError) {
+    const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json(
-      { error: error.code, message: error.message },
+      { error: safe.code, message: safe.message },
       { status: error.status },
     )
   }
   if (error instanceof z.ZodError) {
+    const safe = mediaSafeError('MEDIA_INVALID_REQUEST')
     return Response.json(
-      { error: 'INVALID_MEDIA_INPUT', message: error.issues[0]?.message ?? '媒体参数无效' },
+      { error: safe.code, message: safe.message },
       { status: 400 },
     )
   }
-  return errorResponse(error)
+  if (error instanceof ApiError) {
+    const safe = mediaSafeErrorForServiceError(error.code, error.statusCode)
+    return Response.json(
+      { error: safe.code, message: safe.message },
+      { status: error.statusCode },
+    )
+  }
+  // Keep the complete failure in internal diagnostics, but media routes always
+  // return the stable product envelope instead of the generic server wording.
+  errorResponse(error)
+  const safe = mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE')
+  return Response.json({ error: safe.code, message: safe.message }, { status: 500 })
 }
 
 function requireMediaUiCapability(req: Request, expected: string): void {
@@ -65,15 +81,43 @@ export function consumeMediaUiCapability(
 }
 
 function publicProject(project: MediaProject): MediaProject {
-  const { product_task_id: _productTaskId, ...safeProject } = project
-  if (safeProject.kind !== 'image') return safeProject
-  return {
+  const {
+    product_task_id: _productTaskId,
+    error: _rawError,
+    error_code: persistedErrorCode,
+    ...safeProject
+  } = project
+  const failure = _rawError
+    ? mediaSafeError(persistedErrorCode ?? (project.kind === 'image'
+      ? 'MEDIA_IMAGE_UNAVAILABLE'
+      : 'MEDIA_VIDEO_EXPORT_FAILED'))
+    : null
+  const projected = {
     ...safeProject,
-    reference_image_count: safeProject.reference_images.length
-      || safeProject.reference_image_assets?.length
-      || safeProject.reference_image_count,
+    ...(failure ? { error: failure.message, error_code: failure.code } : {}),
+  } as MediaProject
+  if (projected.kind !== 'image') return projected
+  return {
+    ...projected,
+    reference_image_count: projected.reference_images.length
+      || projected.reference_image_assets?.length
+      || projected.reference_image_count,
     reference_images: [],
     reference_image_assets: [],
+  }
+}
+
+function publicTask(task: MediaTask): MediaTask {
+  const { error: _rawError, error_code: persistedErrorCode, ...safeTask } = task
+  const fallback = task.kind === 'image.generate'
+    ? 'MEDIA_IMAGE_UNAVAILABLE'
+    : task.kind === 'video.probe'
+      ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+      : 'MEDIA_VIDEO_EXPORT_FAILED'
+  const failure = _rawError ? mediaSafeError(persistedErrorCode ?? fallback) : null
+  return {
+    ...safeTask,
+    ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   }
 }
 
@@ -129,10 +173,10 @@ export function createMediaApiHandler(
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          return Response.json({ task: await service.cancelTask(taskId) })
+          return Response.json({ task: publicTask(await service.cancelTask(taskId)) })
         }
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
-        return Response.json({ task: await service.getTask(taskId) })
+        return Response.json({ task: publicTask(await service.getTask(taskId)) })
       }
 
       if (area === 'images' && segments[3] === 'projects') {
@@ -165,7 +209,7 @@ export function createMediaApiHandler(
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
           const input = submitImageProjectInputSchema.parse(await parseJson(req))
-          return Response.json({ task: await service.submitImageProject(projectId, input) }, { status: 202 })
+          return Response.json({ task: publicTask(await service.submitImageProject(projectId, input)) }, { status: 202 })
         }
       }
 
@@ -192,7 +236,7 @@ export function createMediaApiHandler(
           if (req.method !== 'POST' || sourceId) throw methodNotAllowed(req.method)
           const input = addVideoSourceInputSchema.parse(await parseJson(req))
           const result = await service.addVideoSource(projectId, input)
-          return Response.json({ ...result, project: publicProject(result.project) }, { status: 201 })
+          return Response.json({ ...result, project: publicProject(result.project), task: publicTask(result.task) }, { status: 201 })
         }
         if (action === 'timeline') {
           if (req.method !== 'PUT') throw methodNotAllowed(req.method)
@@ -203,7 +247,7 @@ export function createMediaApiHandler(
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
           const input = renderVideoInputSchema.parse(await parseJson(req))
-          return Response.json({ task: await service.renderVideo(projectId, input) }, { status: 202 })
+          return Response.json({ task: publicTask(await service.renderVideo(projectId, input)) }, { status: 202 })
         }
       }
 
