@@ -289,6 +289,54 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('运行状态：等待确认')).toBeInTheDocument()
   })
 
+  it('keeps archive unavailable while a task is running or waiting for approval', () => {
+    const { rerender } = render(
+      <TaskIndex
+        {...{
+          index: makeIndex(makeTask({ actions: ['archive'] })),
+          isLoading: false,
+          error: null,
+          mutations: {},
+          onRefresh: vi.fn(async () => undefined),
+          onRenameTask: vi.fn(async () => undefined),
+          onPinTask: vi.fn(async () => undefined),
+          onUnpinTask: vi.fn(async () => undefined),
+          onArchiveTask: vi.fn(async () => undefined),
+          onRestoreTask: vi.fn(async () => undefined),
+          onContinueTask: vi.fn(async () => undefined),
+          onRequestNewTask: vi.fn(),
+          onOpenTask: vi.fn(),
+          runtimeStatesBySessionId: { 'task-1': 'running' },
+        } satisfies TaskIndexProps}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: '归档' })).toBeNull()
+
+    rerender(
+      <TaskIndex
+        {...{
+          index: makeIndex(makeTask({ actions: ['archive'] })),
+          isLoading: false,
+          error: null,
+          mutations: {},
+          onRefresh: vi.fn(async () => undefined),
+          onRenameTask: vi.fn(async () => undefined),
+          onPinTask: vi.fn(async () => undefined),
+          onUnpinTask: vi.fn(async () => undefined),
+          onArchiveTask: vi.fn(async () => undefined),
+          onRestoreTask: vi.fn(async () => undefined),
+          onContinueTask: vi.fn(async () => undefined),
+          onRequestNewTask: vi.fn(),
+          onOpenTask: vi.fn(),
+          runtimeStatesBySessionId: { 'task-1': 'awaiting_approval' },
+        } satisfies TaskIndexProps}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: '归档' })).toBeNull()
+  })
+
   it('does not let an archived task lifecycle hide a live Agent run state', () => {
     renderIndex(makeIndex(makeTask({ lifecycle: 'archived', actions: ['restore'] })), {
       runtimeStatesBySessionId: { 'task-1': 'running' },

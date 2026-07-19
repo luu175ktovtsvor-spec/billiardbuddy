@@ -8,6 +8,7 @@ import {
   type AgentCoreAdapter,
   type AgentCoreSession,
 } from '../product/taskService.js'
+import { ProductTaskRunProjection } from '../product/taskRunProjection.js'
 import type { MessageEntry } from '../services/sessionService.js'
 
 let tempDir: string | undefined
@@ -562,6 +563,48 @@ describe('ProductTaskService', () => {
     const restored = await service.setArchived(task.id, false)
     expect(restored.lifecycle).toBe('active')
     expect(restored.actions).toContain('pin')
+  })
+
+  it('keeps a live product run visible and rejects archival until it settles', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const runs = new ProductTaskRunProjection()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+      runs,
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+    const coreSessionId = await service.resolveCoreSessionId(task.id)
+
+    runs.beginRun(task.id, coreSessionId)
+
+    expect((await service.getTask(task.id)).actions).not.toContain('archive')
+    expect((await service.listTasks()).tasks[0]?.actions).not.toContain('archive')
+    await expect(service.setArchived(task.id, true)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'PRODUCT_TASK_ACTIVE_RUN',
+    })
+
+    runs.projectSessionMessage(coreSessionId, {
+      type: 'status',
+      state: 'permission_pending',
+    })
+
+    expect((await service.getTask(task.id)).actions).not.toContain('archive')
+    await expect(service.setArchived(task.id, true)).rejects.toThrow(
+      '任务正在运行或等待确认，请先停止任务后再归档',
+    )
+
+    runs.projectSessionMessage(coreSessionId, {
+      type: 'message_complete',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+
+    expect((await service.getTask(task.id)).actions).toContain('archive')
+    await expect(service.setArchived(task.id, true)).resolves.toMatchObject({
+      lifecycle: 'archived',
+    })
   })
 
   it('imports legacy Core sessions once, then indexes only the product task registry', async () => {

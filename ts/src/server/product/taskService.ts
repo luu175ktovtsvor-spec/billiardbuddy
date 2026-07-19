@@ -39,6 +39,7 @@ import {
   projectSessionTranscriptForProductTask,
   resolveCoreMessageIdForProductThreadEntry,
 } from './taskThreadProjection.js'
+import { productTaskRunProjection } from './taskRunProjection.js'
 import { findCanonicalGitRoot, findGitRoot } from '../../utils/git.js'
 
 export type ProductTaskAction =
@@ -150,6 +151,15 @@ export type AgentCoreAdapter = {
   }>
   getWorktreeLaunchState: (sessionId: string) => Promise<ProductTask['worktreeState']>
   getSessionMessages?: (sessionId: string) => Promise<MessageEntry[]>
+}
+
+/**
+ * Server-owned product runtime state. The Core session ID never crosses the
+ * product API, but the task registry needs this narrow check to keep a live
+ * task from being hidden while its stop or approval controls are still needed.
+ */
+export type ProductTaskRunInspector = {
+  hasActiveRunForSession: (sessionId: string) => boolean
 }
 
 export const agentCoreAdapter: AgentCoreAdapter = {
@@ -739,14 +749,17 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
   throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
 }
 
-function actionsFor(task: ProductTask): ProductTaskAction[] {
+function actionsFor(task: ProductTask, hasActiveRun: boolean): ProductTaskAction[] {
   if (task.lifecycle === 'archived') return ['restore', 'continue']
-  return [
+  const actions: ProductTaskAction[] = [
     task.pinnedAt ? 'unpin' : 'pin',
     'rename',
-    'archive',
     'continue',
   ]
+  // An active Core turn has a product-owned stop/approval surface. Do not
+  // offer a lifecycle action that would make that live task disappear.
+  if (!hasActiveRun) actions.splice(2, 0, 'archive')
+  return actions
 }
 
 function requireTaskAction(task: ProductTaskRecord, action: ProductTaskAction): void {
@@ -758,10 +771,16 @@ export class ProductTaskService {
   private static readonly storeLocks = new Map<string, Promise<void>>()
   private readonly storagePath: string
   private readonly core: AgentCoreAdapter
+  private readonly runs: ProductTaskRunInspector
 
-  constructor(options: { storagePath?: string; core?: AgentCoreAdapter } = {}) {
+  constructor(options: {
+    storagePath?: string
+    core?: AgentCoreAdapter
+    runs?: ProductTaskRunInspector
+  } = {}) {
     this.storagePath = options.storagePath ?? productStorePath()
     this.core = options.core ?? agentCoreAdapter
+    this.runs = options.runs ?? productTaskRunProjection
   }
 
   /**
@@ -990,7 +1009,15 @@ export class ProductTaskService {
 
   private async setArchivedUnlocked(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
     if (typeof archived !== 'boolean') throw ApiError.badRequest('archived 必须是布尔值')
-    const task = await this.requireTask(taskId)
+    const binding = await this.requireTaskBinding(taskId)
+    const task = binding.task
+    if (archived && this.runs.hasActiveRunForSession(binding.metadata.coreSessionId)) {
+      throw new ApiError(
+        409,
+        '任务正在运行或等待确认，请先停止任务后再归档',
+        'PRODUCT_TASK_ACTIVE_RUN',
+      )
+    }
     requireTaskAction(task, archived ? 'archive' : 'restore')
     const now = new Date().toISOString()
     await this.updateMetadata(taskId, (metadata) => ({
@@ -1521,7 +1548,10 @@ export class ProductTaskService {
       updatedAt: latestProductTimestamp(metadata.updatedAt, session.modifiedAt) || session.modifiedAt,
       worktreeState,
     }
-    return { ...task, actions: actionsFor(task) }
+    return {
+      ...task,
+      actions: actionsFor(task, this.runs.hasActiveRunForSession(session.id)),
+    }
   }
 
   private async resolveWorktreeState(sessionId: string): Promise<ProductTask['worktreeState']> {

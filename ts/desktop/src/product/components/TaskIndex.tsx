@@ -90,6 +90,10 @@ function hasAction(task: ProductTaskRecord, action: ProductTaskAction): boolean 
   return task.actions.includes(action)
 }
 
+function hasActiveTaskRun(runtimeState: ProductTaskRuntimeState): boolean {
+  return runtimeState === 'running' || runtimeState === 'awaiting_approval'
+}
+
 function taskKindLabel(task: ProductTaskRecord): string {
   if (task.kind === 'continuation') return '继续任务'
   return '任务'
@@ -751,6 +755,7 @@ function TaskRow({
   const renamed = mutations[taskActionKey(task.id, 'rename')] === true
   const desktopHost = getDesktopHost()
   const taskLink = buildProductTaskLink(task.id)
+  const canArchiveTask = hasAction(task, 'archive') && !hasActiveTaskRun(runtimeState)
 
   const run = async (action: () => Promise<unknown>) => {
     try {
@@ -843,7 +848,7 @@ function TaskRow({
               />
             </>
           ) : null}
-          {hasAction(task, 'archive') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'archive')] === true} label="归档" onClick={() => run(() => onArchiveTask(task.id))} /> : null}
+          {canArchiveTask ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'archive')] === true} label="归档" onClick={() => run(() => onArchiveTask(task.id))} /> : null}
           {hasAction(task, 'restore') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'restore')] === true} label="恢复" onClick={() => run(() => onRestoreTask(task.id))} /> : null}
         </div>
       </div>
