@@ -65,41 +65,42 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
   }
 }
 
-type ProductTaskDockPanel = 'review' | 'media' | 'terminal' | 'browser-preview'
+type ProductTaskRightDockPanel = 'review' | 'media' | 'browser-preview'
 
-type OpenProductTaskDockPanels = Record<ProductTaskDockPanel, boolean>
+type OpenProductTaskRightDockPanels = Record<ProductTaskRightDockPanel, boolean>
 
-const PRODUCT_TASK_DOCK_PANEL_ORDER: readonly ProductTaskDockPanel[] = [
+const PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER: readonly ProductTaskRightDockPanel[] = [
   'review',
   'media',
-  'terminal',
   'browser-preview',
 ]
 
-function firstOpenDockPanel(openPanels: OpenProductTaskDockPanels): ProductTaskDockPanel | null {
-  return PRODUCT_TASK_DOCK_PANEL_ORDER.find((panel) => openPanels[panel]) ?? null
+function firstOpenRightDockPanel(
+  openPanels: OpenProductTaskRightDockPanels,
+): ProductTaskRightDockPanel | null {
+  return PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.find((panel) => openPanels[panel]) ?? null
 }
 
-function nextOpenDockPanel(
-  closedPanel: ProductTaskDockPanel,
-  openPanels: OpenProductTaskDockPanels,
-): ProductTaskDockPanel | null {
-  const index = PRODUCT_TASK_DOCK_PANEL_ORDER.indexOf(closedPanel)
-  for (let offset = 1; offset < PRODUCT_TASK_DOCK_PANEL_ORDER.length; offset += 1) {
-    const candidate = PRODUCT_TASK_DOCK_PANEL_ORDER[
-      (index + offset) % PRODUCT_TASK_DOCK_PANEL_ORDER.length
+function nextOpenRightDockPanel(
+  closedPanel: ProductTaskRightDockPanel,
+  openPanels: OpenProductTaskRightDockPanels,
+): ProductTaskRightDockPanel | null {
+  const index = PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.indexOf(closedPanel)
+  for (let offset = 1; offset < PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.length; offset += 1) {
+    const candidate = PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER[
+      (index + offset) % PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.length
     ]!
     if (openPanels[candidate]) return candidate
   }
   return null
 }
 
-function resolveActiveDockPanel(
-  requestedPanel: ProductTaskDockPanel | null,
-  openPanels: OpenProductTaskDockPanels,
-): ProductTaskDockPanel | null {
+function resolveActiveRightDockPanel(
+  requestedPanel: ProductTaskRightDockPanel | null,
+  openPanels: OpenProductTaskRightDockPanels,
+): ProductTaskRightDockPanel | null {
   if (requestedPanel && openPanels[requestedPanel]) return requestedPanel
-  return firstOpenDockPanel(openPanels)
+  return firstOpenRightDockPanel(openPanels)
 }
 
 type ProductTaskThreadEntryViewProps = {
@@ -432,29 +433,30 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [isReviewOpen, setIsReviewOpen] = useState(false)
   const [isMediaOpen, setIsMediaOpen] = useState(false)
   const [isTerminalOpen, setIsTerminalOpen] = useState(false)
-  const [activeDockPanel, setActiveDockPanel] = useState<ProductTaskDockPanel | null>(null)
+  const [activeRightDockPanel, setActiveRightDockPanel] = useState<ProductTaskRightDockPanel | null>(null)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const isBrowserOpen = browserPreviewPanel?.browserOpen ?? false
   const isPreviewOpen = browserPreviewPanel?.previewOpen ?? false
   const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
-  const openDockPanels: OpenProductTaskDockPanels = {
+  const openRightDockPanels: OpenProductTaskRightDockPanels = {
     review: isReviewOpen,
     media: isMediaOpen,
-    terminal: isTerminalOpen,
     'browser-preview': isBrowserPreviewOpen,
   }
-  const resolvedActiveDockPanel = resolveActiveDockPanel(activeDockPanel, openDockPanels)
-  const isReviewActive = resolvedActiveDockPanel === 'review'
-  const isMediaActive = resolvedActiveDockPanel === 'media'
-  const isTerminalActive = resolvedActiveDockPanel === 'terminal'
-  const isBrowserPreviewActive = resolvedActiveDockPanel === 'browser-preview'
+  const resolvedActiveRightDockPanel = resolveActiveRightDockPanel(
+    activeRightDockPanel,
+    openRightDockPanels,
+  )
+  const isReviewActive = resolvedActiveRightDockPanel === 'review'
+  const isMediaActive = resolvedActiveRightDockPanel === 'media'
+  const isBrowserPreviewActive = resolvedActiveRightDockPanel === 'browser-preview'
 
   useEffect(() => {
-    if (resolvedActiveDockPanel === activeDockPanel) return
-    setActiveDockPanel(resolvedActiveDockPanel)
-  }, [activeDockPanel, resolvedActiveDockPanel])
+    if (resolvedActiveRightDockPanel === activeRightDockPanel) return
+    setActiveRightDockPanel(resolvedActiveRightDockPanel)
+  }, [activeRightDockPanel, resolvedActiveRightDockPanel])
 
   const task = useMemo(
     () => index.tasks.find((candidate) => candidate.id === taskId) ?? null,
@@ -595,45 +597,41 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
   const closeReviewDock = () => {
     setIsReviewOpen(false)
-    setActiveDockPanel((current) => current === 'review'
-      ? nextOpenDockPanel('review', { ...openDockPanels, review: false })
+    setActiveRightDockPanel((current) => current === 'review'
+      ? nextOpenRightDockPanel('review', { ...openRightDockPanels, review: false })
       : current)
   }
 
   const closeTerminalDock = () => {
     setIsTerminalOpen(false)
-    setActiveDockPanel((current) => current === 'terminal'
-      ? nextOpenDockPanel('terminal', { ...openDockPanels, terminal: false })
-      : current)
   }
 
   const closeMediaDock = () => {
     setIsMediaOpen(false)
-    setActiveDockPanel((current) => current === 'media'
-      ? nextOpenDockPanel('media', { ...openDockPanels, media: false })
+    setActiveRightDockPanel((current) => current === 'media'
+      ? nextOpenRightDockPanel('media', { ...openRightDockPanels, media: false })
       : current)
   }
 
   const openReviewDock = () => {
     setIsReviewOpen(true)
-    setActiveDockPanel('review')
+    setActiveRightDockPanel('review')
   }
 
   const openMediaDock = () => {
     setIsMediaOpen(true)
-    setActiveDockPanel('media')
+    setActiveRightDockPanel('media')
   }
 
   const openTerminalDock = () => {
     setIsTerminalOpen(true)
-    setActiveDockPanel('terminal')
   }
 
   const closeBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
     closeBrowserPreviewPanel(task.id, mode)
     const remainsOpen = mode === 'browser' ? isPreviewOpen : isBrowserOpen
-    setActiveDockPanel((current) => current === 'browser-preview' && !remainsOpen
-      ? nextOpenDockPanel('browser-preview', { ...openDockPanels, 'browser-preview': false })
+    setActiveRightDockPanel((current) => current === 'browser-preview' && !remainsOpen
+      ? nextOpenRightDockPanel('browser-preview', { ...openRightDockPanels, 'browser-preview': false })
       : current)
   }
 
@@ -644,7 +642,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     } else {
       openBrowserPreviewPanel(task.id, mode)
     }
-    setActiveDockPanel('browser-preview')
+    setActiveRightDockPanel('browser-preview')
   }
 
   const continueFromEntry = async (
@@ -743,7 +741,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={openTerminalDock}
-          aria-pressed={isTerminalActive}
+          aria-pressed={isTerminalOpen}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           终端
@@ -885,7 +883,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           </form>
         </section>
 
-        {resolvedActiveDockPanel ? (
+        {resolvedActiveRightDockPanel ? (
           <aside className="flex min-h-0 w-[min(34rem,46vw)] min-w-[22rem] flex-col overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
             {isReviewOpen ? (
               <div
@@ -905,21 +903,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 <ProductTaskMediaDock taskId={task.id} onClose={closeMediaDock} />
               </div>
             ) : null}
-            {isTerminalOpen ? (
-              <section
-                data-testid="product-task-terminal-dock"
-                data-active={isTerminalActive ? 'true' : 'false'}
-                className={`min-h-0 flex-1 flex-col overflow-hidden ${isTerminalActive ? 'flex' : 'hidden'}`}
-              >
-                <ProductTaskTerminalDock
-                  taskId={task.id}
-                  workDir={task.workDir}
-                  active={isTerminalActive}
-                  onClose={closeTerminalDock}
-                  testId={`product-task-terminal-${task.id}`}
-                />
-              </section>
-            ) : null}
             {isBrowserPreviewActive ? (
               <div
                 data-testid="product-task-dock-panel-browser-preview"
@@ -933,7 +916,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   activeMode={browserPreviewPanel?.activeMode ?? null}
                   onActivate={(mode) => {
                     activateBrowserPreviewPanel(task.id, mode)
-                    setActiveDockPanel('browser-preview')
+                    setActiveRightDockPanel('browser-preview')
                   }}
                   onClose={closeBrowserPreviewMode}
                   onCapture={addBrowserPreviewCapture}
@@ -943,6 +926,21 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           </aside>
         ) : null}
       </div>
+      {isTerminalOpen ? (
+        <section
+          data-testid="product-task-terminal-dock"
+          data-active="true"
+          className="flex h-[min(24rem,42vh)] min-h-48 shrink-0 flex-col overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-surface)]"
+        >
+          <ProductTaskTerminalDock
+            taskId={task.id}
+            workDir={task.workDir}
+            active
+            onClose={closeTerminalDock}
+            testId={`product-task-terminal-${task.id}`}
+          />
+        </section>
+      ) : null}
     </main>
   )
 }

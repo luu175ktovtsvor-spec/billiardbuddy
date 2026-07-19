@@ -506,7 +506,7 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByRole('button', { name: '创建侧边任务' })).toBeNull()
   })
 
-  it('uses task actions and independent terminal dock controls', () => {
+  it('uses task actions and closes the task-scoped terminal dock', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '置顶' }))
@@ -515,7 +515,7 @@ describe('ProductTaskPage', () => {
 
     expect(mocks.pinTask).toHaveBeenCalledWith('task-1')
     expect(mocks.archiveTask).toHaveBeenCalledWith('task-1')
-    expect(screen.getByTestId('product-task-terminal-dock').textContent).toContain('/workspace/billiard')
+    expect(screen.getByTestId('product-task-terminal-runtime').textContent).toContain('/workspace/billiard')
 
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
@@ -544,59 +544,58 @@ describe('ProductTaskPage', () => {
     expect(mocks.unpinTask).not.toHaveBeenCalled()
   })
 
-  it('keeps review and terminal panels independently open in the same dock rail', () => {
+  it('keeps a right-side review panel open while opening a task-scoped terminal', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '审阅' }))
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
-
     expect(screen.getByTestId('product-task-dock-rail')).toBeTruthy()
     expect(screen.getByTestId('product-task-review-dock').textContent).toContain('review:task-1')
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: '关闭审阅' }))
-    expect(screen.queryByTestId('product-task-review-dock')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-  })
-
-  it('keeps open dock panels inactive until selected, with only one full-height panel visible', () => {
-    render(<ProductTaskPage taskId="task-1" />)
-
-    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
-    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('true')
 
     fireEvent.click(screen.getByRole('button', { name: '终端' }))
-    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('false')
-    expect(screen.getByTestId('product-task-dock-panel-review').classList.contains('hidden')).toBe(true)
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
 
+    expect(screen.getByTestId('product-task-review-dock').textContent).toContain('review:task-1')
+    const terminalDock = screen.getByTestId('product-task-terminal-dock')
+    expect(terminalDock.parentElement).toBe(screen.getByTestId('product-task-page'))
+    expect(screen.getByTestId('product-task-terminal-runtime').textContent).toContain('/workspace/billiard')
+  })
+
+  it('switches Browser and Preview in the right area without hiding the terminal', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '终端' }))
     fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('false')
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('false')
-    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(true)
+
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(false)
     expect(screen.getByTestId('product-task-dock-panel-browser-preview').getAttribute('data-active')).toBe('true')
     expect(screen.getByRole('button', { name: '浏览器' }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByRole('button', { name: '终端' }).getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(screen.getByRole('button', { name: '预览' }))
+
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+      browserOpen: true,
+      previewOpen: true,
+      activeMode: 'preview',
+    })
+    expect(screen.getByRole('button', { name: '预览' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(false)
   })
 
-  it('selects the next open panel after closing the active one without stealing focus when closing an inactive panel', () => {
+  it('closes each panel axis without closing the other one', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '审阅' }))
     fireEvent.click(screen.getByRole('button', { name: '终端' }))
 
-    fireEvent.click(screen.getByRole('button', { name: '关闭审阅', hidden: true }))
-    expect(screen.queryByTestId('product-task-dock-panel-review')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
-    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-    expect(screen.getByTestId('product-task-dock-panel-browser-preview').getAttribute('data-active')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: '关闭浏览器' }))
-    expect(screen.queryByTestId('product-task-dock-panel-browser-preview')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
     expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('true')
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('false')
+
+    fireEvent.click(screen.getByRole('button', { name: '终端' }))
+    fireEvent.click(screen.getByRole('button', { name: '关闭审阅' }))
+    expect(screen.queryByTestId('product-task-dock-panel-review')).toBeNull()
+    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
   })
 
   it('opens Browser and Preview only through the product task scoped panel store', () => {
