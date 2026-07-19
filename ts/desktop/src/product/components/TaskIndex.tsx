@@ -5,6 +5,7 @@ import type {
   ProductProject,
   ProductTaskAction,
   ProductTaskIndexResponse,
+  ProductTaskPermissionMode,
   ProductTaskRecord,
 } from '../domain/types'
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
@@ -53,6 +54,28 @@ const WORKTREE_STATE_LABEL: Record<string, string> = {
   planned: '工作树计划中',
   materialized: '独立工作树已启用',
 }
+
+const PRODUCT_TASK_PERMISSION_OPTIONS: Array<{
+  value: ProductTaskPermissionMode
+  label: string
+  description: string
+}> = [
+  {
+    value: 'ask',
+    label: '每次确认',
+    description: '涉及文件修改和高风险操作时会先征求你的确认。',
+  },
+  {
+    value: 'allow_edits',
+    label: '允许自动修改文件',
+    description: '可直接修改工作目录中的文件；其他高风险操作仍会请求确认。',
+  },
+  {
+    value: 'plan_only',
+    label: '先制定计划',
+    description: '先分析并给出方案，不直接修改文件。',
+  },
+]
 
 function taskActionKey(taskId: string, action: string): string {
   return `${taskId}:${action}`
@@ -253,6 +276,7 @@ export function TaskComposer({
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
+  const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask')
   const [discoverableSkills, setDiscoverableSkills] = useState<DiscoveredSlashCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<AgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
@@ -409,6 +433,7 @@ export function TaskComposer({
       workDir: normalizedWorkDir,
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(useWorktree ? { useWorktree: true } : {}),
+      permissionMode,
     }
     const initialAttachments = attachmentResult.attachments
     const initialMessage: ProductTaskInitialMessage = {
@@ -457,6 +482,22 @@ export function TaskComposer({
       <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         任务标题（可选）
         <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+      </label>
+      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        执行权限
+        <select
+          aria-label="执行权限"
+          value={permissionMode}
+          onChange={(event) => setPermissionMode(event.target.value as ProductTaskPermissionMode)}
+          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]"
+        >
+          {PRODUCT_TASK_PERMISSION_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <span className="text-xs leading-5 text-[var(--color-text-tertiary)]">
+          {PRODUCT_TASK_PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.description}
+        </span>
       </label>
       <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
         <label className="flex flex-col gap-1">

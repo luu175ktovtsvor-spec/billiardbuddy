@@ -29,6 +29,7 @@ export type {
   ProductTaskIndex,
   ProductTaskKind,
   ProductTaskLifecycle,
+  ProductTaskPermissionMode,
   ProductWorktreeState,
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'

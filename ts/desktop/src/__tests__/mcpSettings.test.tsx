@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
+import { ApiError } from '../api/client'
 import { McpSettings } from '../pages/McpSettings'
 import { useMcpStore } from '../stores/mcpStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useUIStore } from '../stores/uiStore'
 import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../stores/tabStore'
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../product/stores/productTaskStore'
 import type { McpServerRecord } from '../types/mcp'
@@ -36,6 +38,7 @@ async function renderLoadedMcpSettings() {
 describe('McpSettings', () => {
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
+    useUIStore.setState({ toasts: [] })
     useTabStore.setState({
       activeTabId: '__settings__',
       lastActiveProductTaskId: 'task-1',
@@ -195,7 +198,10 @@ describe('McpSettings', () => {
 
   it('uses the active product task when toggling a connection', async () => {
     const server = makeServer()
-    const toggleServer = vi.fn().mockResolvedValue({ ...server, enabled: false })
+    const toggleServer = vi.fn().mockResolvedValue({
+      server: { ...server, enabled: false },
+      taskSync: { applied: true },
+    })
     useMcpStore.setState({ servers: [server], toggleServer })
 
     await renderLoadedMcpSettings()
@@ -204,6 +210,62 @@ describe('McpSettings', () => {
     })
 
     expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'task-1')
+  })
+
+  it('warns when an MCP toggle is saved but the current task is not running', async () => {
+    const server = makeServer()
+    const toggleServer = vi.fn().mockResolvedValue({
+      server: { ...server, enabled: false },
+      taskSync: { applied: false, reason: 'not_running' },
+    })
+    useMcpStore.setState({ servers: [server], toggleServer })
+
+    await renderLoadedMcpSettings()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('switch'))
+    })
+
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+      type: 'warning',
+      message: 'Saved MCP server "context7", but the current task was not updated. It will take effect the next time the task runs.',
+    })
+  })
+
+  it('warns when an MCP toggle cannot sync to the current task', async () => {
+    const server = makeServer()
+    const toggleServer = vi.fn().mockResolvedValue({
+      server: { ...server, enabled: false },
+      taskSync: { applied: false, reason: 'failed' },
+    })
+    useMcpStore.setState({ servers: [server], toggleServer })
+
+    await renderLoadedMcpSettings()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('switch'))
+    })
+
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+      type: 'warning',
+      message: 'Saved MCP server "context7", but it could not be applied to the current task. Try again or it will take effect the next time the task runs.',
+    })
+  })
+
+  it('shows a safe error when the current product task is unavailable', async () => {
+    const server = makeServer()
+    const toggleServer = vi.fn().mockRejectedValue(new ApiError(503, {
+      error: 'PRODUCT_TASK_UNAVAILABLE',
+    }))
+    useMcpStore.setState({ servers: [server], toggleServer })
+
+    await renderLoadedMcpSettings()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('switch'))
+    })
+
+    expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+      type: 'error',
+      message: 'The current task is unavailable. The MCP server state was not changed.',
+    })
   })
 
   it('creates a connection only after the user supplies the required advanced fields', async () => {

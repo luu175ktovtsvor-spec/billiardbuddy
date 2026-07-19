@@ -1,5 +1,18 @@
-import { api } from './client'
-import type { McpServerRecord, McpUpsertPayload } from '../types/mcp'
+import { ApiError, api } from './client'
+import type { McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
+
+export type McpRequestErrorCode =
+  | 'PRODUCT_TASK_UNAVAILABLE'
+  | 'MCP_REQUEST_FAILED'
+
+export function getMcpRequestErrorCode(error: unknown): McpRequestErrorCode {
+  if (error instanceof ApiError && error.body && typeof error.body === 'object') {
+    const code = 'error' in error.body ? error.body.error : undefined
+    if (code === 'PRODUCT_TASK_UNAVAILABLE') return code
+  }
+
+  return 'MCP_REQUEST_FAILED'
+}
 
 export const mcpApi = {
   list: (cwd?: string) => {
@@ -35,7 +48,7 @@ export const mcpApi = {
   },
 
   toggle: (name: string, cwd?: string, taskId?: string) => {
-    return api.post<{ server: McpServerRecord }>(
+    return api.post<McpToggleResponse>(
       `/api/mcp/${encodeURIComponent(name)}/toggle`,
       {
         ...(cwd ? { cwd } : {}),

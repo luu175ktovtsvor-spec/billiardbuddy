@@ -329,6 +329,7 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
       title: '整理球台配置',
+      permissionMode: 'ask',
     }, {
       text: '请列出本周的训练安排',
       attachments: [],
@@ -351,6 +352,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'ask',
     }, {
       text: '整理球台配置',
       attachments: [],
@@ -417,6 +419,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'ask',
     }, {
       text: '',
       attachments: [expect.objectContaining({
@@ -444,6 +447,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'ask',
     }, {
       text: '',
       attachments: [expect.objectContaining({
@@ -472,6 +476,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'ask',
     }, {
       text: '/venue-daily-review',
       attachments: [],
@@ -502,6 +507,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'ask',
     }, {
       text: '/agent venue-analyst',
       attachments: [],
@@ -544,16 +550,26 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
   })
 
-  it('keeps legacy permission-mode state out of new product task creation', async () => {
-    useSettingsStore.setState({ permissionMode: 'plan' })
+  it('starts with a safe product permission choice and forwards an explicit selection', async () => {
+    useSettingsStore.setState({ permissionMode: 'bypassPermissions' })
     const { onSubmit } = renderComposer()
+    const permissionSelect = screen.getByLabelText('执行权限') as HTMLSelectElement
+
+    expect(permissionSelect).toHaveValue('ask')
+    expect(Array.from(permissionSelect.options).map((option) => option.value)).toEqual([
+      'ask',
+      'allow_edits',
+      'plan_only',
+    ])
+    expect(screen.queryByRole('option', { name: /跳过权限/i })).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(permissionSelect, { target: { value: 'allow_edits' } })
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
+      permissionMode: 'allow_edits',
     }))
-    expect(screen.queryByText('执行权限')).not.toBeInTheDocument()
   })
 })

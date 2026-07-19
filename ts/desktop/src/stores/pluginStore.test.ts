@@ -50,6 +50,7 @@ describe('pluginStore', () => {
       summary: null,
       selectedPlugin: null,
       lastReloadSummary: null,
+      lastTaskReloadSummary: null,
       isLoading: false,
       isDetailLoading: false,
       isApplying: false,
@@ -63,11 +64,21 @@ describe('pluginStore', () => {
       action: 'enabled',
     })
 
-    const action = await usePluginStore
+    const result = await usePluginStore
       .getState()
       .enablePlugin('draw@test', 'user', '/workspace/project', 'task-1')
 
-    expect(action).toBe('enabled')
+    expect(result).toEqual({
+      action: 'enabled',
+      task: {
+        applied: true,
+        commands: 1,
+        agents: 0,
+        plugins: 1,
+        mcpServers: 0,
+        errors: 0,
+      },
+    })
     expect(mockedPluginsApi.enable).toHaveBeenCalledWith({
       id: 'draw@test',
       scope: 'user',
@@ -86,6 +97,14 @@ describe('pluginStore', () => {
       lspServers: 0,
       errors: 0,
     })
+    expect(usePluginStore.getState().lastTaskReloadSummary).toEqual({
+      applied: true,
+      commands: 1,
+      agents: 0,
+      plugins: 1,
+      mcpServers: 0,
+      errors: 0,
+    })
   })
 
   it('reloads and refreshes once after bulk enabling plugins', async () => {
@@ -94,7 +113,7 @@ describe('pluginStore', () => {
       action: 'enabled',
     })
 
-    const changed = await usePluginStore.getState().bulkEnablePlugins(
+    const result = await usePluginStore.getState().bulkEnablePlugins(
       [
         { id: 'draw@test', scope: 'user' },
         { id: 'review@test', scope: 'project' },
@@ -103,7 +122,7 @@ describe('pluginStore', () => {
       'task-1',
     )
 
-    expect(changed).toBe(2)
+    expect(result).toMatchObject({ changed: 2, task: { applied: true } })
     expect(mockedPluginsApi.enable).toHaveBeenCalledTimes(2)
     expect(mockedPluginsApi.enable).toHaveBeenNthCalledWith(1, {
       id: 'draw@test',
@@ -128,7 +147,7 @@ describe('pluginStore', () => {
       action: 'disabled',
     })
 
-    const changed = await usePluginStore.getState().bulkDisablePlugins(
+    const result = await usePluginStore.getState().bulkDisablePlugins(
       [
         { id: 'github@test', scope: 'user' },
         { id: 'review@test', scope: 'project' },
@@ -137,7 +156,7 @@ describe('pluginStore', () => {
       'task-1',
     )
 
-    expect(changed).toBe(2)
+    expect(result).toMatchObject({ changed: 2, task: { applied: true } })
     expect(mockedPluginsApi.disable).toHaveBeenCalledTimes(2)
     expect(mockedPluginsApi.disable).toHaveBeenNthCalledWith(1, {
       id: 'github@test',
@@ -164,5 +183,36 @@ describe('pluginStore', () => {
 
     expect(usePluginStore.getState().selectedPlugin).toBeNull()
     expect(usePluginStore.getState().error).toBe('PLUGIN_REQUEST_FAILED')
+  })
+
+  it('preserves a task sync result when plugin configuration is not applied to a running task', async () => {
+    const task = {
+      applied: false,
+      reason: 'not_running' as const,
+      commands: 0,
+      agents: 0,
+      plugins: 0,
+      mcpServers: 0,
+      errors: 0,
+    }
+    mockedPluginsApi.reload.mockResolvedValue({
+      ok: true,
+      summary: {
+        enabled: 1,
+        disabled: 0,
+        skills: 1,
+        agents: 0,
+        hooks: 0,
+        mcpServers: 0,
+        lspServers: 0,
+        errors: 0,
+      },
+      task,
+    })
+
+    const result = await usePluginStore.getState().reloadPlugins('/workspace/project', 'task-1')
+
+    expect(result).toMatchObject({ task })
+    expect(usePluginStore.getState().lastTaskReloadSummary).toEqual(task)
   })
 })

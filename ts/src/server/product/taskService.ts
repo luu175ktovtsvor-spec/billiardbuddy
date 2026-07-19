@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   PRODUCT_DOMAIN_VERSION,
+  PRODUCT_TASK_PERMISSION_MODES,
   type ContinueProductTaskInput,
   type CreateProductTaskInput,
   type CreateProductSideTaskInput,
@@ -12,6 +13,7 @@ import {
   type ProductSideTask,
   type ProductTask,
   type ProductTaskIndex,
+  type ProductTaskPermissionMode,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import type { ProductTaskThread } from '../../../shared/product/taskEvents.js'
@@ -235,6 +237,28 @@ function validTitle(value: string | undefined): string | undefined {
   if (!title) throw ApiError.badRequest('任务标题不能为空')
   if (title.length > 200) throw ApiError.badRequest('任务标题不能超过 200 个字符')
   return title
+}
+
+const CORE_PERMISSION_MODE_BY_PRODUCT_MODE: Record<
+  ProductTaskPermissionMode,
+  'default' | 'acceptEdits' | 'plan'
+> = {
+  ask: 'default',
+  allow_edits: 'acceptEdits',
+  plan_only: 'plan',
+}
+
+function productTaskPermissionMode(value: unknown): ProductTaskPermissionMode {
+  if (value === undefined) return 'ask'
+  if (
+    typeof value === 'string'
+    && (PRODUCT_TASK_PERMISSION_MODES as readonly string[]).includes(value)
+  ) {
+    return value as ProductTaskPermissionMode
+  }
+  throw ApiError.badRequest(
+    `permissionMode 必须是 ${PRODUCT_TASK_PERMISSION_MODES.join('、')} 之一`,
+  )
 }
 
 function continuationTarget(value: unknown): ProductContinuationTarget {
@@ -541,15 +565,16 @@ export class ProductTaskService {
   }
 
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
-    if (!input || typeof input.workDir !== 'string' || !input.workDir.trim()) {
+    if (!input || typeof input !== 'object' || typeof input.workDir !== 'string' || !input.workDir.trim()) {
       throw ApiError.badRequest('workDir 必须是非空字符串')
     }
     const title = validTitle(input.title)
+    const permissionMode = productTaskPermissionMode(input.permissionMode)
     const created = await this.core.createSession({
       workDir: input.workDir.trim(),
-      // Product tasks always start in per-request confirmation mode. The
-      // product contract deliberately has no runtime permission-mode picker.
-      permissionMode: 'default',
+      // Keep Core-specific values inside this adapter boundary. Product
+      // clients only send the safe product-facing choices above.
+      permissionMode: CORE_PERMISSION_MODE_BY_PRODUCT_MODE[permissionMode],
       useWorktree: input.useWorktree,
     })
     const now = new Date().toISOString()

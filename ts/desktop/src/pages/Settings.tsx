@@ -18,7 +18,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource, PermissionMode } from '../types/settings'
+import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
 import type { Locale } from '../i18n'
 import { SkillList } from '../components/skills/SkillList'
 import { usePluginStore } from '../stores/pluginStore'
@@ -285,8 +285,6 @@ export function Settings() {
 
 export function GeneralSettings() {
   const {
-    permissionMode,
-    setPermissionMode,
     autoDreamEnabled,
     setAutoDreamEnabled,
     locale,
@@ -329,7 +327,6 @@ export function GeneralSettings() {
   const [notificationActionRunning, setNotificationActionRunning] = useState(false)
   const [autoDreamConfirmOpen, setAutoDreamConfirmOpen] = useState(false)
   const [autoDreamActionRunning, setAutoDreamActionRunning] = useState(false)
-  const [pendingPermissionMode, setPendingPermissionMode] = useState<PermissionMode | null>(null)
   const [modeSwitchConfirmOpen, setModeSwitchConfirmOpen] = useState(false)
   const [pendingMode, setPendingMode] = useState<AppMode | null>(null)
   const [pendingPortableDir, setPendingPortableDir] = useState<string | null>(null)
@@ -414,49 +411,6 @@ export function GeneralSettings() {
     { value: 'norwegian', label: 'Norsk (Norwegian)' },
   ]
 
-  const DEFAULT_PERMISSION_MODES: Array<{
-    value: PermissionMode
-    label: string
-    description: string
-  }> = [
-    {
-      value: 'default',
-      label: t('permMode.askPermissions'),
-      description: t('permMode.askPermDesc'),
-    },
-    {
-      value: 'acceptEdits',
-      label: t('permMode.autoAccept'),
-      description: t('permMode.autoAcceptDesc'),
-    },
-    {
-      value: 'plan',
-      label: t('permMode.planMode'),
-      description: t('permMode.planModeDesc'),
-    },
-    {
-      value: 'bypassPermissions',
-      label: t('permMode.bypass'),
-      description: t('permMode.bypassDesc'),
-    },
-  ]
-
-  const selectedPermissionMode = DEFAULT_PERMISSION_MODES.find((option) => option.value === permissionMode)
-
-  const handleDefaultPermissionModeChange = (mode: PermissionMode) => {
-    if (mode === 'bypassPermissions' && permissionMode !== 'bypassPermissions') {
-      setPendingPermissionMode(mode)
-      return
-    }
-    void setPermissionMode(mode)
-  }
-
-  const confirmDefaultPermissionMode = async () => {
-    const mode = pendingPermissionMode
-    if (!mode) return
-    setPendingPermissionMode(null)
-    await setPermissionMode(mode)
-  }
   const selectedResponseLanguageLabel =
     RESPONSE_LANGUAGES.find(({ value }) => value === responseLanguage)?.label ?? RESPONSE_LANGUAGES[0]!.label
   const outputStyleItems = outputStyles.map((style) => ({
@@ -971,41 +925,6 @@ export function GeneralSettings() {
         </summary>
         <div className="pl-1">
           <div className="mt-6">
-            <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.defaultPermissionTitle')}</h2>
-            <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.defaultPermissionDescription')}</p>
-            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-[var(--color-text-primary)]">
-                    {t('settings.general.defaultPermissionLabel')}
-                  </div>
-                  <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                    {t('settings.general.defaultPermissionHint')}
-                  </div>
-                </div>
-                <Dropdown<PermissionMode>
-                  items={DEFAULT_PERMISSION_MODES}
-                  value={permissionMode}
-                  onChange={handleDefaultPermissionModeChange}
-                  width={320}
-                  align="right"
-                  trigger={
-                    <button
-                      type="button"
-                      aria-label={t('settings.general.defaultPermissionLabel')}
-                      className="flex min-h-9 items-center gap-2 rounded-full bg-[var(--color-surface-container-low)] px-3 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">verified_user</span>
-                      <span>{selectedPermissionMode?.label ?? t('permMode.label.default')}</span>
-                      <span className="material-symbols-outlined text-[12px]">expand_more</span>
-                    </button>
-                  }
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-8">
             <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.autoDreamTitle')}</h2>
             <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.autoDreamDescription')}</p>
             <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
@@ -1478,21 +1397,6 @@ export function GeneralSettings() {
         cancelLabel={t('common.cancel')}
         confirmVariant="primary"
         loading={autoDreamActionRunning}
-      />
-      <ConfirmDialog
-        open={pendingPermissionMode === 'bypassPermissions'}
-        onClose={() => setPendingPermissionMode(null)}
-        onConfirm={() => void confirmDefaultPermissionMode()}
-        title={t('permMode.enableBypassTitle')}
-        body={(
-          <div className="space-y-2 text-sm leading-6 text-[var(--color-text-secondary)]">
-            <p>{t('permMode.enableBypassSubtitle')}</p>
-            <p>{t('settings.general.defaultPermissionScope')}</p>
-          </div>
-        )}
-        confirmLabel={t('permMode.enableBypassBtn')}
-        cancelLabel={t('common.cancel')}
-        confirmVariant="danger"
       />
     </div>
   )

@@ -191,7 +191,7 @@ describe('ProductTaskService', () => {
     expect(JSON.stringify({ task, listed })).not.toContain(coreSessionId)
   })
 
-  it('always starts product tasks with confirmation mode even if a caller supplies a permission mode', async () => {
+  it('maps supported product execution choices to Core permission modes', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
     const service = new ProductTaskService({
@@ -199,17 +199,43 @@ describe('ProductTaskService', () => {
       core,
     })
 
-    const task = await service.createTask({
+    const cases = [
+      { permissionMode: undefined, corePermissionMode: 'default' },
+      { permissionMode: 'allow_edits', corePermissionMode: 'acceptEdits' },
+      { permissionMode: 'plan_only', corePermissionMode: 'plan' },
+    ] as const
+
+    for (const [index, entry] of cases.entries()) {
+      const task = await service.createTask({
+        workDir: `/workspace/hall-operations-${index}`,
+        ...(entry.permissionMode ? { permissionMode: entry.permissionMode } : {}),
+      })
+
+      expect(core.getLastCreateInput()).toEqual({
+        workDir: `/workspace/hall-operations-${index}`,
+        useWorktree: undefined,
+        permissionMode: entry.corePermissionMode,
+      })
+      expect(task).not.toHaveProperty('permissionMode')
+    }
+  })
+
+  it('rejects raw or unsafe Core permission values before creating a product task', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    await expect(service.createTask({
       workDir: '/workspace/hall-operations',
       permissionMode: 'bypassPermissions',
-    } as Parameters<ProductTaskService['createTask']>[0])
+    } as unknown as Parameters<ProductTaskService['createTask']>[0])).rejects.toThrow(
+      'permissionMode 必须是 ask、allow_edits、plan_only 之一',
+    )
 
-    expect(core.getLastCreateInput()).toEqual({
-      workDir: '/workspace/hall-operations',
-      useWorktree: undefined,
-      permissionMode: 'default',
-    })
-    expect(task).not.toHaveProperty('permissionMode')
+    expect(core.getLastCreateInput()).toBeNull()
   })
 
   it('keeps BilliardBuddy task lifecycle metadata outside the Agent core sessions', async () => {
