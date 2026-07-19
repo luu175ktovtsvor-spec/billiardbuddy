@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { destroyTerminalRuntime } from '../../lib/terminalRuntime'
+import { destroyTerminalRuntime, getTerminalRuntime } from '../../lib/terminalRuntime'
 import { browserHost } from '../../lib/desktopHost/browserHost'
 import { useSettingsStore } from '../../stores/settingsStore'
 
@@ -98,6 +98,16 @@ describe('ProductTaskTerminalDock', () => {
     expect(terminalMocks.spawn).not.toHaveBeenCalled()
   })
 
+  it('removes an unavailable task runtime when its panel unmounts', () => {
+    const { unmount } = render(<ProductTaskTerminalDock taskId="task-1" workDir="/workspace/billiard" />)
+
+    expect(getTerminalRuntime('product-task-terminal-task-1', 'idle').status).toBe('unavailable')
+
+    unmount()
+
+    expect(getTerminalRuntime('product-task-terminal-task-1', 'idle').status).toBe('idle')
+  })
+
   it('starts exactly in the owning product task work directory', async () => {
     terminalMocks.available = true
 
@@ -113,6 +123,52 @@ describe('ProductTaskTerminalDock', () => {
     expect(screen.getByText('/bin/zsh')).toBeInTheDocument()
     expect(screen.getByText('/workspace/billiard')).toBeInTheDocument()
     expect(terminalMocks.terminal.open).toHaveBeenCalled()
+  })
+
+  it('abandons initialization when the output subscription resolves after unmount', async () => {
+    terminalMocks.available = true
+    const outputUnlisten = vi.fn()
+    let resolveOutput: ((unlisten: () => void) => void) | undefined
+    terminalMocks.onOutput.mockImplementation(
+      () => new Promise<() => void>((resolve) => {
+        resolveOutput = resolve
+      }),
+    )
+
+    const { unmount } = render(<ProductTaskTerminalDock taskId="task-1" workDir="/workspace/billiard" />)
+    await waitFor(() => expect(terminalMocks.onOutput).toHaveBeenCalledOnce())
+
+    unmount()
+    await act(async () => {
+      resolveOutput?.(outputUnlisten)
+      await Promise.resolve()
+    })
+
+    expect(outputUnlisten).toHaveBeenCalledOnce()
+    expect(terminalMocks.onExit).not.toHaveBeenCalled()
+    expect(terminalMocks.spawn).not.toHaveBeenCalled()
+    expect(terminalMocks.terminal.dispose).toHaveBeenCalled()
+  })
+
+  it('kills a terminal spawned after its task panel has unmounted', async () => {
+    terminalMocks.available = true
+    let resolveSpawn: ((result: { session_id: number; shell: string; cwd: string }) => void) | undefined
+    terminalMocks.spawn.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveSpawn = resolve
+      }),
+    )
+
+    const { unmount } = render(<ProductTaskTerminalDock taskId="task-1" workDir="/workspace/billiard" />)
+    await waitFor(() => expect(terminalMocks.spawn).toHaveBeenCalledOnce())
+
+    unmount()
+    await act(async () => {
+      resolveSpawn?.({ session_id: 7, shell: '/bin/zsh', cwd: '/workspace/billiard' })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(terminalMocks.kill).toHaveBeenCalledWith(7))
   })
 
   it('keeps the task terminal controls visible when native startup fails', async () => {
