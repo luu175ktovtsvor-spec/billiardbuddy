@@ -148,6 +148,36 @@ describe('MediaProjectService image projects', () => {
     })
   })
 
+  test('persists a safe image failure instead of the upstream response detail', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    const rawDetail = 'provider quota rejected token=private-token at /private/gateway.log'
+    const service = new MediaProjectService({
+      root: await root(),
+      fetchImpl: async () => Response.json({ error: rawDetail }, { status: 400 }),
+    })
+    const project = await service.createImageProject({ prompt: '安全失败海报' })
+
+    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+      code: 'IMAGE_SUBMIT_FAILED',
+      message: '图片生成暂时不可用，请稍后重试。',
+    })
+    const failedProject = await service.getProject(project.id)
+    if (failedProject.kind !== 'image') throw new Error('wrong kind')
+    const failedTask = await service.getTask(failedProject.task_id!, false)
+    expect(failedProject).toMatchObject({
+      state: 'failed',
+      error: '图片生成暂时不可用，请稍后重试。',
+      error_code: 'MEDIA_IMAGE_UNAVAILABLE',
+    })
+    expect(failedTask).toMatchObject({
+      status: 'failed',
+      error: '图片生成暂时不可用，请稍后重试。',
+      error_code: 'MEDIA_IMAGE_UNAVAILABLE',
+    })
+    expect(JSON.stringify({ failedProject, failedTask })).not.toContain(rawDetail)
+  })
+
   test('requires explicit confirmation before an unknown submission is replaced by an edited draft', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
@@ -430,11 +460,82 @@ describe('MediaProjectService image projects', () => {
     const project = await service.createImageProject({ prompt: '排队图片' })
     const task = await service.submitImageProject(project.id)
     expect((await service.cancelTask(task.id)).status).toBe('cancelled')
-    expect(await service.getProject(project.id)).toMatchObject({ state: 'failed', error: '生成已取消' })
+    expect(await service.getProject(project.id)).toMatchObject({
+      state: 'failed',
+      error: '图片生成已取消。',
+      error_code: 'MEDIA_IMAGE_CANCELLED',
+    })
   })
 })
 
 describe('MediaProjectService video projects', () => {
+  test('returns a safe source-read error instead of probe diagnostics', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    const rawDetail = 'ffprobe could not parse /private/Movies/source.mp4 token=private-token'
+    await writeFile(sourcePath, 'source')
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      runProcess: async () => ({ exitCode: 1, stdout: '', stderr: rawDetail }),
+    })
+    const project = await service.createVideoProject({})
+
+    await expect(service.addVideoSource(project.id, { path: sourcePath })).rejects.toMatchObject({
+      code: 'VIDEO_PROBE_FAILED',
+      message: '无法读取该视频素材，请确认文件可正常播放后重试。',
+    })
+  })
+
+  test('persists a safe export failure instead of local process output', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    const outputPath = join(mediaRoot, 'output.mp4')
+    const rawDetail = 'ffmpeg failed for /private/Movies/source.mp4 token=private-token'
+    await writeFile(sourcePath, 'source')
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      runProcess: async command => {
+        if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+        if (command.includes('-encoders')) return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
+        if (command.includes('-show_streams')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              format: { duration: '2' },
+              streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+            }),
+            stderr: '',
+          }
+        }
+        return { exitCode: 1, stdout: '', stderr: rawDetail }
+      },
+    })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const task = await service.renderVideo(project.id, {
+      revision: project.revision,
+      output_path: outputPath,
+    })
+
+    let failed = await service.getTask(task.id, false)
+    for (let index = 0; index < 20 && failed.status !== 'failed'; index += 1) {
+      await Bun.sleep(5)
+      failed = await service.getTask(task.id, false)
+    }
+    const failedProject = await service.getProject(project.id)
+    expect(failed).toMatchObject({
+      status: 'failed',
+      error: '视频导出失败，请检查素材和导出位置后重试。',
+      error_code: 'MEDIA_VIDEO_EXPORT_FAILED',
+    })
+    expect(failedProject).toMatchObject({
+      state: 'failed',
+      error: '视频导出失败，请检查素材和导出位置后重试。',
+      error_code: 'MEDIA_VIDEO_EXPORT_FAILED',
+    })
+    expect(JSON.stringify({ failed, failedProject })).not.toContain(rawDetail)
+  })
+
   test('probes real source metadata and builds a deterministic local FFmpeg render', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')

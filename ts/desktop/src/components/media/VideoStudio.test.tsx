@@ -15,7 +15,10 @@ const mediaApiMock = vi.hoisted(() => ({
   sourceUrl: vi.fn(() => 'http://127.0.0.1/source.mp4'),
 }))
 
-vi.mock('../../api/media', () => ({ mediaApi: mediaApiMock }))
+vi.mock('../../api/media', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../api/media')>()),
+  mediaApi: mediaApiMock,
+}))
 vi.mock('../../lib/desktopHost', () => ({
   getDesktopHost: () => ({
     dialogs: { open: vi.fn(), save: vi.fn() },
@@ -80,5 +83,22 @@ describe('VideoStudio committing state', () => {
     render(<VideoStudio />)
     await waitFor(() => expect(screen.getByText('正在导出')).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: '取消导出' })).not.toBeInTheDocument()
+  })
+
+  it('renders a stable product error instead of persisted process output', async () => {
+    const rawDetail = 'ffmpeg stderr /private/Movies/source.mp4 token=private-token'
+    mediaApiMock.listProjects.mockResolvedValue({
+      projects: [{
+        ...project,
+        state: 'failed',
+        error: rawDetail,
+        error_code: 'MEDIA_VIDEO_EXPORT_FAILED',
+      }],
+    })
+    render(<VideoStudio />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('视频导出失败，请检查素材和导出位置后重试。')
+    expect(alert).not.toHaveTextContent(rawDetail)
   })
 })

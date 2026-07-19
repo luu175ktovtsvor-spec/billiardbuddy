@@ -1,4 +1,8 @@
 import { z } from 'zod/v4'
+import { MEDIA_SAFE_ERROR_CODES } from './mediaErrors.js'
+
+export { MEDIA_SAFE_ERROR_CODES, MEDIA_SAFE_ERROR_MESSAGES, isMediaSafeErrorCode, isMediaSafeErrorMessage, mediaSafeError, mediaSafeErrorForServiceError } from './mediaErrors.js'
+export type { MediaSafeError, MediaSafeErrorCode } from './mediaErrors.js'
 
 export const MEDIA_UI_CAPABILITY_HEADER = 'X-BilliardBuddy-Media-Capability'
 export const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
@@ -34,6 +38,7 @@ export const mediaTaskStatusSchema = z.enum([
   'failed',
   'cancelled',
 ])
+export const mediaSafeErrorCodeSchema = z.enum(MEDIA_SAFE_ERROR_CODES)
 
 const mediaProjectBaseSchema = z.object({
   schema_version: z.literal(1),
@@ -72,6 +77,7 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   outputs: z.array(imageWorkbenchOutputSchema).max(16).default([]),
   notice: z.string().max(2000).optional(),
   error: z.string().max(2000).optional(),
+  error_code: mediaSafeErrorCodeSchema.optional(),
 })
 
 export const videoSourceSchema = z.object({
@@ -109,6 +115,7 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   task_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096).optional(),
   error: z.string().max(2000).optional(),
+  error_code: mediaSafeErrorCodeSchema.optional(),
 })
 
 export const mediaProjectSchema = z.discriminatedUnion('kind', [
@@ -129,6 +136,7 @@ export const mediaTaskSchema = z.object({
   outcome_unknown: z.boolean().optional(),
   result: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(2000).optional(),
+  error_code: mediaSafeErrorCodeSchema.optional(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })

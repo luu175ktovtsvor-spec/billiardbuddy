@@ -7,6 +7,7 @@ import {
   type MediaTask,
   type MediaToolchainStatus,
   type VideoStudioProject,
+  mediaUserFacingError,
 } from '../api/media'
 
 type MediaWorkbenchStore = {
@@ -41,7 +42,11 @@ type MediaWorkbenchStore = {
 type MediaWorkbenchSet = Parameters<StateCreator<MediaWorkbenchStore>>[0]
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return mediaUserFacingError(error)
+}
+
+function rendererSafeError(error: unknown): Error {
+  return new Error(message(error))
 }
 
 function upsert<T extends { id: string }>(items: T[], item: T): T[] {
@@ -168,8 +173,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set(state => ({ imageProjects: upsert(state.imageProjects, project), activeImageId: project.id }))
       return project
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -184,10 +190,10 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       await get().loadProjects('image')
       return task
     } catch (error) {
-      const detail = message(error)
+      const safeError = rendererSafeError(error)
       await get().loadProjects('image')
-      set({ error: detail })
-      throw error
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -207,8 +213,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set(state => ({ imageProjects: upsert(state.imageProjects, saved) }))
       return saved
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -222,8 +229,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set(state => ({ videoProjects: upsert(state.videoProjects, project), activeVideoId: project.id }))
       return project
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -241,8 +249,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       }))
       return project
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -259,8 +268,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -278,8 +288,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       await get().loadProjects('video')
       return task
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -294,8 +305,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       await get().loadProjects(task.kind === 'image.generate' ? 'image' : 'video')
       return task
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -328,8 +340,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         })
       }
     } catch (error) {
-      set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
     } finally {
       finishLoading()
     }
@@ -346,8 +359,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       }
       return task
     } catch (error) {
-      if (taskLoadVersion[taskId] === version) set({ error: message(error) })
-      throw error
+      const safeError = rendererSafeError(error)
+      if (taskLoadVersion[taskId] === version) set({ error: safeError.message })
+      throw safeError
     }
   },
 

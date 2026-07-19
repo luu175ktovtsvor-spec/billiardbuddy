@@ -1,5 +1,6 @@
 import {
   MEDIA_UI_CAPABILITY_HEADER,
+  mediaSafeError,
   type MediaTask,
   type RenderVideoInput,
   type UpdateImageProjectInput,
@@ -60,17 +61,22 @@ export class ElectronMediaActions {
 
   private async request<T>(path: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
-    const response = await this.fetchImpl(`${baseUrl}${path}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const payload = await response.json().catch(() => ({})) as { message?: string }
+    let response: Response
+    try {
+      response = await this.fetchImpl(`${baseUrl}${path}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+    } catch {
+      throw new Error(mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE').message)
+    }
+    const payload = await response.json().catch(() => ({})) as { error?: unknown }
     if (!response.ok) {
-      throw new Error(payload.message ?? `媒体服务返回 HTTP ${response.status}`)
+      throw new Error(mediaSafeError(payload.error).message)
     }
     return payload as T
   }
