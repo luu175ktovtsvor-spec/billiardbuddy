@@ -399,6 +399,12 @@ function productTaskPermissionMode(value: unknown): ProductTaskPermissionMode {
   )
 }
 
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw ApiError.badRequest(`${field} 必须是布尔值`)
+  return value
+}
+
 function continuationTarget(value: unknown): ProductContinuationTarget {
   if (value === undefined) return 'current_workspace'
   if (value === 'current_workspace' || value === 'new_worktree') return value
@@ -879,16 +885,17 @@ export class ProductTaskService {
   }
 
   private async createTaskUnlocked(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
-    if (!input || typeof input !== 'object') throw ApiError.badRequest('创建任务参数必须是对象')
+    if (!isRecord(input)) throw ApiError.badRequest('创建任务参数必须是对象')
     const title = validTitle(input.title)
     const permissionMode = productTaskPermissionMode(input.permissionMode)
+    const useWorktree = optionalBoolean(input.useWorktree, 'useWorktree')
     const { store, binding } = await this.resolveCreateTaskBinding(input)
     const created = await this.core.createSession({
       workDir: binding.directory.path,
       // Keep Core-specific values inside this adapter boundary. Product
       // clients only send the safe product-facing choices above.
       permissionMode: CORE_PERMISSION_MODE_BY_PRODUCT_MODE[permissionMode],
-      useWorktree: input.useWorktree,
+      useWorktree,
     })
     const now = new Date().toISOString()
     const metadata: ProductTaskMetadata = {
@@ -901,7 +908,7 @@ export class ProductTaskService {
       kind: 'main',
       createdAt: now,
       updatedAt: now,
-      worktreeState: input.useWorktree ? 'planned' : 'not_requested',
+      worktreeState: useWorktree ? 'planned' : 'not_requested',
       visibility: 'main',
     }
     if (title) await this.core.renameSession(created.sessionId, title)
@@ -946,6 +953,7 @@ export class ProductTaskService {
   }
 
   private async updateTaskUnlocked(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
+    if (!isRecord(input)) throw ApiError.badRequest('更新任务参数必须是对象')
     const binding = await this.requireTaskBinding(taskId)
     const task = binding.task
     const title = validTitle(input.title)
@@ -1002,7 +1010,7 @@ export class ProductTaskService {
     taskId: string,
     input: ContinueProductTaskInput,
   ): Promise<ProductTaskRecord> {
-    if (!input || typeof input !== 'object') {
+    if (!isRecord(input)) {
       throw ApiError.badRequest('继续任务参数必须是对象')
     }
     rejectCoreSourceTurnId(input)
@@ -1072,7 +1080,7 @@ export class ProductTaskService {
     taskId: string,
     input: CreateProductSideTaskInput,
   ): Promise<ProductSideTask> {
-    if (!input || typeof input !== 'object') {
+    if (!isRecord(input)) {
       throw ApiError.badRequest('侧边任务参数必须是对象')
     }
     rejectCoreSourceTurnId(input)
