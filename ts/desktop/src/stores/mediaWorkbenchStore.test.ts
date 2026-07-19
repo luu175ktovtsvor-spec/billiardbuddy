@@ -48,6 +48,26 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
   }
 }
 
+function task(
+  id: string,
+  status: MediaTask['status'],
+  progress: number,
+): MediaTask {
+  return {
+    schema_version: 1,
+    id,
+    project_id: 'img_task001',
+    kind: 'image.generate',
+    status,
+    progress,
+    stage: status === 'succeeded' ? '已完成' : '生成中',
+    created_at: '2026-07-18T00:00:00.000Z',
+    updated_at: status === 'succeeded'
+      ? '2026-07-18T00:01:00.000Z'
+      : '2026-07-18T00:00:30.000Z',
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mediaApiMock.listProjects.mockResolvedValue({ projects: [] })
@@ -85,6 +105,26 @@ describe('mediaWorkbenchStore', () => {
       activeImageId: newer.id,
       loading: false,
     })
+  })
+
+  it('stays loading until overlapping project lists for different workbenches finish', async () => {
+    const imageResponse = deferred<{ projects: ImageWorkbenchProject[] }>()
+    const videoResponse = deferred<{ projects: ImageWorkbenchProject[] }>()
+    mediaApiMock.listProjects
+      .mockReturnValueOnce(imageResponse.promise)
+      .mockReturnValueOnce(videoResponse.promise)
+
+    const imageLoad = useMediaWorkbenchStore.getState().loadProjects('image')
+    const videoLoad = useMediaWorkbenchStore.getState().loadProjects('video')
+    expect(useMediaWorkbenchStore.getState().loading).toBe(true)
+
+    imageResponse.resolve({ projects: [] })
+    await imageLoad
+    expect(useMediaWorkbenchStore.getState().loading).toBe(true)
+
+    videoResponse.resolve({ projects: [] })
+    await videoLoad
+    expect(useMediaWorkbenchStore.getState().loading).toBe(false)
   })
 
   it('saves an editable image draft and selects the next project after deletion', async () => {
@@ -132,6 +172,26 @@ describe('mediaWorkbenchStore', () => {
     await useMediaWorkbenchStore.getState().refreshTask(task.id)
     expect(useMediaWorkbenchStore.getState().tasks[task.id]).toEqual(task)
     expect(useMediaWorkbenchStore.getState().imageProjects).toEqual([failedProject])
+  })
+
+  it('keeps the newest task refresh response when a poll finishes after a manual refresh', async () => {
+    const older = task('task_refresh01', 'running', 40)
+    const newer = task(older.id, 'succeeded', 100)
+    const olderResponse = deferred<{ task: MediaTask }>()
+    const newerResponse = deferred<{ task: MediaTask }>()
+    mediaApiMock.getTask
+      .mockReturnValueOnce(olderResponse.promise)
+      .mockReturnValueOnce(newerResponse.promise)
+
+    const poll = useMediaWorkbenchStore.getState().refreshTask(older.id)
+    const manualRefresh = useMediaWorkbenchStore.getState().refreshTask(older.id)
+
+    newerResponse.resolve({ task: newer })
+    await manualRefresh
+    olderResponse.resolve({ task: older })
+    await poll
+
+    expect(useMediaWorkbenchStore.getState().tasks[older.id]).toEqual(newer)
   })
 
   it('reloads the persisted project revision when image submission has an unknown outcome', async () => {

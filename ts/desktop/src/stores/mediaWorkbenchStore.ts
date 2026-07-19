@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { create, type StateCreator } from 'zustand'
 import {
   mediaApi,
   type CreateImageProjectInput,
@@ -38,6 +38,8 @@ type MediaWorkbenchStore = {
   clearError: () => void
 }
 
+type MediaWorkbenchSet = Parameters<StateCreator<MediaWorkbenchStore>>[0]
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -61,10 +63,31 @@ const projectLoadVersion: Record<'image' | 'video', number> = {
   video: 0,
 }
 
+const taskLoadVersion: Record<string, number> = {}
+
 function nextProjectLoadVersion(kind: 'image' | 'video'): number {
   const version = projectLoadVersion[kind] + 1
   projectLoadVersion[kind] = version
   return version
+}
+
+function nextTaskLoadVersion(taskId: string): number {
+  const version = (taskLoadVersion[taskId] ?? 0) + 1
+  taskLoadVersion[taskId] = version
+  return version
+}
+
+let nextLoadingOperation = 0
+const pendingLoadingOperations = new Set<number>()
+
+function beginLoading(set: MediaWorkbenchSet): () => void {
+  const operation = ++nextLoadingOperation
+  pendingLoadingOperations.add(operation)
+  set({ loading: true, error: null })
+  return () => {
+    pendingLoadingOperations.delete(operation)
+    set({ loading: pendingLoadingOperations.size > 0 })
+  }
 }
 
 async function loadProjectTasks(
@@ -72,8 +95,11 @@ async function loadProjectTasks(
 ): Promise<Record<string, MediaTask | undefined>> {
   const taskIds = [...new Set(projects.flatMap(project => project.task_id ? [project.task_id] : []))]
   const entries = await Promise.all(taskIds.map(async taskId => {
+    const version = nextTaskLoadVersion(taskId)
     const result = await mediaApi.getTask(taskId).catch(() => null)
-    return result?.task ? [taskId, result.task] as const : null
+    return result?.task && taskLoadVersion[taskId] === version
+      ? [taskId, result.task] as const
+      : null
   }))
   return Object.fromEntries(entries.filter((entry): entry is readonly [string, MediaTask] => entry !== null))
 }
@@ -90,7 +116,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
 
   loadProjects: async kind => {
     const version = nextProjectLoadVersion(kind)
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { projects } = await mediaApi.listProjects(kind)
       if (projectLoadVersion[kind] !== version) return
@@ -119,7 +145,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       if (projectLoadVersion[kind] !== version) return
       set({ error: message(error) })
     } finally {
-      if (projectLoadVersion[kind] === version) set({ loading: false })
+      finishLoading()
     }
   },
 
@@ -135,7 +161,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   selectVideo: activeVideoId => set({ activeVideoId }),
 
   createImage: async input => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { project } = await mediaApi.createImageProject(input)
       nextProjectLoadVersion('image')
@@ -145,14 +171,15 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   submitImage: async (projectId, confirmUnknownRetry = false) => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { task } = await mediaApi.submitImageProject(projectId, confirmUnknownRetry)
+      nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       await get().loadProjects('image')
       return task
@@ -162,12 +189,12 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: detail })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   saveImageDraft: async (project, confirmUnknownRetry = false) => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { project: saved } = await mediaApi.updateImageProject(project.id, {
         revision: project.revision,
@@ -183,12 +210,12 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   createVideo: async input => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { project } = await mediaApi.createVideoProject(input ?? {})
       nextProjectLoadVersion('video')
@@ -198,15 +225,16 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   addVideoSource: async (projectId, path) => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { project, task } = await mediaApi.addVideoSource(projectId, path)
       nextProjectLoadVersion('video')
+      nextTaskLoadVersion(task.id)
       set(state => ({
         videoProjects: upsert(state.videoProjects, project),
         tasks: { ...state.tasks, [task.id]: task },
@@ -216,12 +244,12 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   saveTimeline: async project => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { project: saved } = await mediaApi.updateVideoTimeline(project.id, {
         revision: project.revision,
@@ -234,17 +262,18 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   renderVideo: async (project, outputPath) => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { task } = await mediaApi.renderVideo(project.id, {
         revision: project.revision,
         output_path: outputPath,
       })
+      nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       await get().loadProjects('video')
       return task
@@ -252,14 +281,15 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   cancelTask: async taskId => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       const { task } = await mediaApi.cancelTask(taskId)
+      nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       await get().loadProjects(task.kind === 'image.generate' ? 'image' : 'video')
       return task
@@ -267,12 +297,12 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   deleteProject: async (projectId, kind) => {
-    set({ loading: true, error: null })
+    const finishLoading = beginLoading(set)
     try {
       await mediaApi.deleteProject(projectId)
       nextProjectLoadVersion(kind)
@@ -301,20 +331,22 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       set({ error: message(error) })
       throw error
     } finally {
-      set({ loading: false })
+      finishLoading()
     }
   },
 
   refreshTask: async taskId => {
+    const version = nextTaskLoadVersion(taskId)
     try {
       const { task } = await mediaApi.getTask(taskId)
+      if (taskLoadVersion[taskId] !== version) return get().tasks[taskId] ?? task
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
         await get().loadProjects(task.kind === 'image.generate' ? 'image' : 'video')
       }
       return task
     } catch (error) {
-      set({ error: message(error) })
+      if (taskLoadVersion[taskId] === version) set({ error: message(error) })
       throw error
     }
   },
