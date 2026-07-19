@@ -277,9 +277,6 @@ function getUpdaterService() {
     },
   }, {
     updateConfigPath: !smokeUpdater && app.isPackaged ? path.join(process.resourcesPath, 'app-update.yml') : undefined,
-    // No confirmed BilliardBuddy update feed → fail closed. The smoke updater (test
-    // harness) is left enabled so update-flow smoke tests still exercise the plumbing.
-    disabled: !smokeUpdater,
   })
   return updaterService
 }

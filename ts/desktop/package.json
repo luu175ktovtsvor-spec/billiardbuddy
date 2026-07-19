@@ -1,7 +1,7 @@
 {
   "name": "billiardbuddy-desktop",
   "private": true,
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Desktop coding agent workbench for BilliardBuddy.",
   "author": {
     "name": "BilliardBuddy"
@@ -20,6 +20,14 @@
       "src-tauri/binaries/**"
     ],
     "artifactName": "BilliardBuddy-${version}-${os}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "luu175ktovtsvor-spec",
+        "repo": "billiards-desktop-agent",
+        "releaseType": "release"
+      }
+    ],
     "protocols": [
       {
         "name": "BilliardBuddy 任务链接",

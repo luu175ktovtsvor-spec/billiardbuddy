@@ -842,16 +842,30 @@ describe('Settings > General tab', () => {
 
 describe('Settings > About tab', () => {
   beforeEach(() => {
+    installElectronDesktopHost()
     useUIStore.setState({ activeSettingsTab: 'general', pendingSettingsTab: 'about' })
     useSettingsStore.setState({ locale: 'en' })
+    useUpdateStore.setState({
+      status: 'idle',
+      availableVersion: null,
+      releaseNotes: null,
+      progressPercent: 0,
+      downloadedBytes: 0,
+      totalBytes: null,
+      error: null,
+      checkedAt: null,
+      shouldPrompt: false,
+      checkForUpdates: vi.fn().mockResolvedValue(null),
+      installUpdate: vi.fn().mockResolvedValue(undefined),
+    })
   })
 
-  it('shows the product identity without an unconfigured update surface', async () => {
+  it('lets desktop users check the configured release feed from About', async () => {
     render(<Settings />)
 
     expect(await screen.findByRole('heading', { name: 'BilliardBuddy' })).toBeInTheDocument()
-    expect(screen.queryByText(/release notes/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /check for updates/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /update proxy/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /check now/i }))
+
+    expect(useUpdateStore.getState().checkForUpdates).toHaveBeenCalledWith({ autoDownload: true })
   })
 })
