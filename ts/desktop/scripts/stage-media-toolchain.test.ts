@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { stageMediaToolchain } from './stage-media-toolchain'
+import { parseMediaToolchainCliOptions, stageMediaToolchain } from './stage-media-toolchain'
 
 const roots: string[] = []
 
@@ -62,6 +62,20 @@ afterEach(() => {
 })
 
 describe('media toolchain staging', () => {
+  test('parses only the explicit staging and packaged-artifact verification arguments', () => {
+    expect(parseMediaToolchainCliOptions([
+      '--verify',
+      '--platform', 'darwin',
+      '--destination', '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries',
+    ])).toEqual({
+      verifyOnly: true,
+      platform: 'darwin',
+      destinationDir: '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries',
+    })
+    expect(() => parseMediaToolchainCliOptions(['--platform'])).toThrow('需要一个值')
+    expect(() => parseMediaToolchainCliOptions(['--unknown'])).toThrow('未知媒体工具链参数')
+  })
+
   test('rejects unsupported platform selections', () => {
     expect(() => stageMediaToolchain({
       sourceDir: fixture(),

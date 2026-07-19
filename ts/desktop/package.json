@@ -12,6 +12,7 @@
     "appId": "com.billiardbuddy.desktop",
     "productName": "BilliardBuddy",
     "beforePack": "scripts/electron-before-pack.cjs",
+    "afterPack": "scripts/electron-after-pack.cjs",
     "asar": true,
     "asarUnpack": [
       "dist/**",
