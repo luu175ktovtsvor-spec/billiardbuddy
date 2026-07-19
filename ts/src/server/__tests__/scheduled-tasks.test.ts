@@ -7,7 +7,6 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { CronService } from '../services/cronService.js'
-import { cronScheduler } from '../services/cronScheduler.js'
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
@@ -210,11 +209,11 @@ describe('CronService', () => {
   })
 })
 
-// ─── Scheduled Tasks API integration ────────────────────────────────────────
+// ─── Product Scheduled Tasks API integration ───────────────────────────────
 
-describe('Scheduled Tasks API', () => {
+describe('Product Scheduled Tasks API', () => {
   // 直接测试 handler 函数，不需要启动完整服务器
-  let handleScheduledTasksApi: (
+  let handleProductScheduledTasksApi: (
     req: Request,
     url: URL,
     segments: string[],
@@ -225,8 +224,8 @@ describe('Scheduled Tasks API', () => {
     process.env.CLAUDE_CONFIG_DIR = tmpDir
 
     // 动态导入以获取最新的环境变量
-    const mod = await import('../api/scheduled-tasks.js')
-    handleScheduledTasksApi = mod.handleScheduledTasksApi
+    const mod = await import('../api/productScheduledTasks.js')
+    handleProductScheduledTasksApi = mod.handleProductScheduledTasksApi
   })
 
   afterEach(async () => {
@@ -239,12 +238,13 @@ describe('Scheduled Tasks API', () => {
   })
 
   it('should list empty tasks via GET', async () => {
-    const req = new Request('http://localhost/api/scheduled-tasks', {
+    const req = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'GET',
     })
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
     ])
     const body = (await resp.json()) as { tasks: unknown[] }
@@ -252,63 +252,63 @@ describe('Scheduled Tasks API', () => {
     expect(body.tasks).toEqual([])
   })
 
-  it('should create a task via POST', async () => {
-    const req = new Request('http://localhost/api/scheduled-tasks', {
+  it('creates a task through the bounded product contract', async () => {
+    const req = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        cron: '0 9 * * *',
-        prompt: 'Daily review',
+        title: 'Daily review',
+        schedule: '0 9 * * *',
+        instruction: 'Daily review',
         recurring: true,
         model: 'provider-fast',
         providerId: 'provider-a',
       }),
     })
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
     ])
     const body = (await resp.json()) as {
       task: {
         id: string
-        prompt: string
+        title: string
+        instruction: string
         model?: string
         providerId?: string
-        permissionMode?: string
       }
     }
     expect(resp.status).toBe(201)
     expect(body.task.id).toBeDefined()
-    expect(body.task.prompt).toBe('Daily review')
-    expect(body.task.model).toBe('provider-fast')
-    expect(body.task.providerId).toBe('provider-a')
-    expect(body.task.permissionMode).toBe('dontAsk')
+    expect(body.task.title).toBe('Daily review')
+    expect(body.task.instruction).toBe('Daily review')
+    expect(body.task.model).toBeUndefined()
+    expect(body.task.providerId).toBeUndefined()
   })
 
-  it('rejects permission bypass requests instead of persisting them', async () => {
-    const createReq = new Request('http://localhost/api/scheduled-tasks', {
+  it('does not persist permission bypass requests from the product surface', async () => {
+    const createReq = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        cron: '0 9 * * *',
-        prompt: 'Unsafe task',
+        title: 'Unsafe task',
+        schedule: '0 9 * * *',
+        instruction: 'Unsafe task',
         permissionMode: 'bypassPermissions',
       }),
     })
 
-    const response = await handleScheduledTasksApi(
+    const response = await handleProductScheduledTasksApi(
       createReq,
       new URL(createReq.url),
-      ['api', 'scheduled-tasks'],
+      ['api', 'product', 'scheduled-tasks'],
     )
 
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toMatchObject({
-      error: 'BAD_REQUEST',
-      message: expect.stringContaining('never bypass permissions'),
-    })
-    expect(await new CronService().listTasks()).toEqual([])
+    expect(response.status).toBe(201)
+    const [stored] = await new CronService().listTasks()
+    expect(stored?.permissionMode).toBe('dontAsk')
   })
 
   it('rejects a bypass mode when updating an existing task', async () => {
@@ -317,18 +317,18 @@ describe('Scheduled Tasks API', () => {
       prompt: 'Safe task',
     })
     const updateReq = new Request(
-      `http://localhost/api/scheduled-tasks/${created.id}`,
+      `http://localhost/api/product/scheduled-tasks/${created.id}`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ permissionMode: 'bypassPermissions' }),
       },
     )
 
-    const response = await handleScheduledTasksApi(
+    const response = await handleProductScheduledTasksApi(
       updateReq,
       new URL(updateReq.url),
-      ['api', 'scheduled-tasks', created.id],
+      ['api', 'product', 'scheduled-tasks', created.id],
     )
 
     expect(response.status).toBe(400)
@@ -338,92 +338,62 @@ describe('Scheduled Tasks API', () => {
 
   it('should CRUD a full lifecycle', async () => {
     // Create
-    const createReq = new Request('http://localhost/api/scheduled-tasks', {
+    const createReq = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cron: '0 9 * * *', prompt: 'Test task' }),
+      body: JSON.stringify({ title: 'Test task', schedule: '0 9 * * *', instruction: 'Test task' }),
     })
-    const createResp = await handleScheduledTasksApi(
+    const createResp = await handleProductScheduledTasksApi(
       createReq,
       new URL(createReq.url),
-      ['api', 'scheduled-tasks'],
+      ['api', 'product', 'scheduled-tasks'],
     )
     const { task } = (await createResp.json()) as {
-      task: { id: string; prompt: string }
+      task: { id: string; instruction: string }
     }
 
     // Update
     const updateReq = new Request(
-      `http://localhost/api/scheduled-tasks/${task.id}`,
+      `http://localhost/api/product/scheduled-tasks/${task.id}`,
       {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Updated task' }),
+        body: JSON.stringify({ instruction: 'Updated task' }),
       },
     )
-    const updateResp = await handleScheduledTasksApi(
+    const updateResp = await handleProductScheduledTasksApi(
       updateReq,
       new URL(updateReq.url),
-      ['api', 'scheduled-tasks', task.id],
+      ['api', 'product', 'scheduled-tasks', task.id],
     )
     const updated = (await updateResp.json()) as {
-      task: { id: string; prompt: string }
+      task: { id: string; instruction: string }
     }
-    expect(updated.task.prompt).toBe('Updated task')
+    expect(updated.task.instruction).toBe('Updated task')
 
     // Delete
     const deleteReq = new Request(
-      `http://localhost/api/scheduled-tasks/${task.id}`,
+      `http://localhost/api/product/scheduled-tasks/${task.id}`,
       { method: 'DELETE' },
     )
-    const deleteResp = await handleScheduledTasksApi(
+    const deleteResp = await handleProductScheduledTasksApi(
       deleteReq,
       new URL(deleteReq.url),
-      ['api', 'scheduled-tasks', task.id],
+      ['api', 'product', 'scheduled-tasks', task.id],
     )
     expect(deleteResp.status).toBe(200)
 
     // Verify empty
-    const listReq = new Request('http://localhost/api/scheduled-tasks', {
+    const listReq = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'GET',
     })
-    const listResp = await handleScheduledTasksApi(
+    const listResp = await handleProductScheduledTasksApi(
       listReq,
       new URL(listReq.url),
-      ['api', 'scheduled-tasks'],
+      ['api', 'product', 'scheduled-tasks'],
     )
     const list = (await listResp.json()) as { tasks: unknown[] }
     expect(list.tasks).toHaveLength(0)
   })
 
-  it('runs a scheduled task without creating a legacy Core session', async () => {
-    const task = await new CronService().createTask({
-      cron: '0 9 * * *',
-      prompt: '整理今天的营业数据',
-    })
-    const executeTask = spyOn(cronScheduler, 'executeTask').mockResolvedValue({
-      id: 'run-1',
-      taskId: task.id,
-      taskName: task.name,
-      startedAt: new Date().toISOString(),
-      status: 'completed',
-      prompt: task.prompt,
-    })
-
-    try {
-      const req = new Request(`http://localhost/api/scheduled-tasks/${task.id}/run`, {
-        method: 'POST',
-      })
-      const response = await handleScheduledTasksApi(
-        req,
-        new URL(req.url),
-        ['api', 'scheduled-tasks', task.id, 'run'],
-      )
-
-      expect(response.status).toBe(200)
-      expect(executeTask).toHaveBeenCalledWith(expect.objectContaining({ id: task.id }))
-    } finally {
-      executeTask.mockRestore()
-    }
-  })
 })

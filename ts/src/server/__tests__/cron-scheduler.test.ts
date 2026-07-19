@@ -469,10 +469,10 @@ describe('Execution log trimming', () => {
   })
 })
 
-// ─── Scheduled Tasks API with runs endpoints ──────────────────────────────
+// ─── Product Scheduled Tasks API with runs endpoints ──────────────────────
 
-describe('Scheduled Tasks API — runs endpoints', () => {
-  let handleScheduledTasksApi: (
+describe('Product Scheduled Tasks API — runs endpoints', () => {
+  let handleProductScheduledTasksApi: (
     req: Request,
     url: URL,
     segments: string[],
@@ -482,8 +482,8 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
 
-    const mod = await import('../api/scheduled-tasks.js')
-    handleScheduledTasksApi = mod.handleScheduledTasksApi
+    const mod = await import('../api/productScheduledTasks.js')
+    handleProductScheduledTasksApi = mod.handleProductScheduledTasksApi
   })
 
   afterEach(async () => {
@@ -495,13 +495,14 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     await cleanupTmpDir(tmpDir)
   })
 
-  it('GET /api/scheduled-tasks/runs should return empty runs', async () => {
-    const req = new Request('http://localhost/api/scheduled-tasks/runs', {
+  it('GET /api/product/scheduled-tasks/runs should return empty runs', async () => {
+    const req = new Request('http://localhost/api/product/scheduled-tasks/runs', {
       method: 'GET',
     })
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
       'runs',
     ])
@@ -510,14 +511,15 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     expect(body.runs).toEqual([])
   })
 
-  it('GET /api/scheduled-tasks/:id/runs should return empty runs for a task', async () => {
+  it('GET /api/product/scheduled-tasks/:id/runs should return empty runs for a task', async () => {
     const req = new Request(
-      'http://localhost/api/scheduled-tasks/abc123/runs',
+      'http://localhost/api/product/scheduled-tasks/abc123/runs',
       { method: 'GET' },
     )
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
       'abc123',
       'runs',
@@ -527,7 +529,7 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     expect(body.runs).toEqual([])
   })
 
-  it('GET /api/scheduled-tasks/runs should return runs from log', async () => {
+  it('GET /api/product/scheduled-tasks/runs should return safe runs from log', async () => {
     // Write some runs to the log file
     const logPath = path.join(tmpDir, 'scheduled_tasks_log.json')
     const runs: TaskRun[] = [
@@ -558,23 +560,26 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     ]
     await fs.writeFile(logPath, JSON.stringify({ runs }, null, 2), 'utf-8')
 
-    const req = new Request('http://localhost/api/scheduled-tasks/runs', {
+    const req = new Request('http://localhost/api/product/scheduled-tasks/runs', {
       method: 'GET',
     })
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
       'runs',
     ])
-    const body = (await resp.json()) as { runs: Array<Omit<TaskRun, 'sessionId'>> }
+    const body = (await resp.json()) as { runs: Array<Record<string, unknown>> }
     expect(resp.status).toBe(200)
     expect(body.runs).toHaveLength(2)
     expect(body.runs[0]).not.toHaveProperty('sessionId')
     expect(JSON.stringify(body)).not.toContain('private-scheduled-run-session')
+    expect(JSON.stringify(body)).not.toContain('test prompt')
+    expect(JSON.stringify(body)).not.toContain('some error')
   })
 
-  it('GET /api/scheduled-tasks/:id/runs should filter by task ID', async () => {
+  it('GET /api/product/scheduled-tasks/:id/runs should filter by task ID', async () => {
     const logPath = path.join(tmpDir, 'scheduled_tasks_log.json')
     const runs: TaskRun[] = [
       {
@@ -599,17 +604,18 @@ describe('Scheduled Tasks API — runs endpoints', () => {
     await fs.writeFile(logPath, JSON.stringify({ runs }, null, 2), 'utf-8')
 
     const req = new Request(
-      'http://localhost/api/scheduled-tasks/task-a/runs',
+      'http://localhost/api/product/scheduled-tasks/task-a/runs',
       { method: 'GET' },
     )
     const url = new URL(req.url)
-    const resp = await handleScheduledTasksApi(req, url, [
+    const resp = await handleProductScheduledTasksApi(req, url, [
       'api',
+      'product',
       'scheduled-tasks',
       'task-a',
       'runs',
     ])
-    const body = (await resp.json()) as { runs: TaskRun[] }
+    const body = (await resp.json()) as { runs: Array<{ taskId: string }> }
     expect(resp.status).toBe(200)
     expect(body.runs).toHaveLength(1)
     expect(body.runs[0].taskId).toBe('task-a')

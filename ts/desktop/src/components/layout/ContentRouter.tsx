@@ -1,12 +1,12 @@
 import { useEffect, type ReactNode } from 'react'
 import { useTabStore } from '../../stores/tabStore'
-import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
 import { ImageWorkbench } from '../media/ImageWorkbench'
 import { VideoStudio } from '../media/VideoStudio'
 import { ProductShell } from '../../product/components/ProductShell'
 import { ProductTaskPage } from '../../product/components/ProductTaskPage'
+import { ProductScheduledTasksPage } from '../../product/components/ProductScheduledTasksPage'
 import { previewBridge } from '../../lib/previewBridge'
 
 export function ContentRouter() {
@@ -27,7 +27,7 @@ export function ContentRouter() {
   } else if (activeTabType === 'settings') {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
-    page = <ScheduledTasks />
+    page = <ProductScheduledTasksPage />
   } else if (activeTabType === 'image-workbench') {
     page = <ImageWorkbench />
   } else if (activeTabType === 'video-studio') {

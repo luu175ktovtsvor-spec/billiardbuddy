@@ -76,38 +76,37 @@ describe('Business Flow: Scheduled Tasks', () => {
   // ==========================================================================
 
   it('should start with no scheduled tasks', async () => {
-    const { status, data } = await api('GET', '/api/scheduled-tasks')
+    const { status, data } = await api('GET', '/api/product/scheduled-tasks')
     expect(status).toBe(200)
     expect(data.tasks).toEqual([])
   })
 
   it('should create a daily task with all fields', async () => {
-    const { status, data } = await api('POST', '/api/scheduled-tasks', {
-      name: 'morning-standup',
+    const { status, data } = await api('POST', '/api/product/scheduled-tasks', {
+      title: 'morning-standup',
       description: 'Generate standup report from yesterday',
-      cron: '0 9 * * 1-5',
-      prompt: 'Look at git log from yesterday, summarize changes, list blockers',
+      schedule: '0 9 * * 1-5',
+      instruction: 'Look at git log from yesterday, summarize changes, list blockers',
       recurring: true,
-      permissionMode: 'dontAsk',
-      model: 'claude-sonnet-4-6',
-      folderPath: '/Users/dev/project',
+      workDir: '/Users/dev/project',
     })
     expect(status).toBe(201)
     expect(data.task).toBeDefined()
     expect(data.task.id).toMatch(/^[0-9a-f]{8}$/)
-    expect(data.task.name).toBe('morning-standup')
-    expect(data.task.cron).toBe('0 9 * * 1-5')
-    expect(data.task.prompt).toContain('git log')
+    expect(data.task.title).toBe('morning-standup')
+    expect(data.task.schedule).toBe('0 9 * * 1-5')
+    expect(data.task.instruction).toContain('git log')
     expect(data.task.recurring).toBe(true)
-    expect(data.task.permissionMode).toBe('dontAsk')
-    expect(data.task.model).toBe('claude-sonnet-4-6')
+    expect(data.task.permissionMode).toBeUndefined()
+    expect(data.task.model).toBeUndefined()
     expect(data.task.createdAt).toBeGreaterThan(0)
   })
 
   it('should create a second one-shot task', async () => {
-    const { status, data } = await api('POST', '/api/scheduled-tasks', {
-      cron: '30 14 5 4 *',
-      prompt: 'Run security audit',
+    const { status, data } = await api('POST', '/api/product/scheduled-tasks', {
+      title: 'security audit',
+      schedule: '30 14 5 4 *',
+      instruction: 'Run security audit',
       recurring: false,
     })
     expect(status).toBe(201)
@@ -115,62 +114,64 @@ describe('Business Flow: Scheduled Tasks', () => {
   })
 
   it('should list both tasks', async () => {
-    const { data } = await api('GET', '/api/scheduled-tasks')
+    const { data } = await api('GET', '/api/product/scheduled-tasks')
     expect(data.tasks.length).toBe(2)
-    expect(data.tasks[0].name).toBe('morning-standup')
+    expect(data.tasks[0].title).toBe('morning-standup')
   })
 
   it('should update task schedule', async () => {
-    const { data: listData } = await api('GET', '/api/scheduled-tasks')
+    const { data: listData } = await api('GET', '/api/product/scheduled-tasks')
     const taskId = listData.tasks[0].id
 
-    const { status, data } = await api('PUT', `/api/scheduled-tasks/${taskId}`, {
-      cron: '0 8 * * 1-5',
+    const { status, data } = await api('PATCH', `/api/product/scheduled-tasks/${taskId}`, {
+      schedule: '0 8 * * 1-5',
       description: 'Updated: earlier standup',
     })
     expect(status).toBe(200)
-    expect(data.task.cron).toBe('0 8 * * 1-5')
+    expect(data.task.schedule).toBe('0 8 * * 1-5')
     expect(data.task.description).toBe('Updated: earlier standup')
     // Other fields should remain unchanged
-    expect(data.task.name).toBe('morning-standup')
-    expect(data.task.prompt).toContain('git log')
+    expect(data.task.title).toBe('morning-standup')
+    expect(data.task.instruction).toContain('git log')
   })
 
-  it('should reject creating task without cron', async () => {
-    const { status, data } = await api('POST', '/api/scheduled-tasks', {
-      prompt: 'missing cron field',
+  it('should reject creating task without a schedule', async () => {
+    const { status, data } = await api('POST', '/api/product/scheduled-tasks', {
+      title: 'missing schedule',
+      instruction: 'missing schedule field',
     })
     expect(status).toBe(400)
     expect(data.error).toBeDefined()
   })
 
-  it('should reject creating task without prompt', async () => {
-    const { status } = await api('POST', '/api/scheduled-tasks', {
-      cron: '0 * * * *',
+  it('should reject creating task without instructions', async () => {
+    const { status } = await api('POST', '/api/product/scheduled-tasks', {
+      title: 'missing instruction',
+      schedule: '0 * * * *',
     })
     expect(status).toBe(400)
   })
 
   it('should reject updating non-existent task', async () => {
-    const { status } = await api('PUT', '/api/scheduled-tasks/nonexistent', {
-      cron: '0 * * * *',
+    const { status } = await api('PATCH', '/api/product/scheduled-tasks/nonexistent', {
+      schedule: '0 * * * *',
     })
     expect(status).toBe(404)
   })
 
   it('should reject deleting non-existent task', async () => {
-    const { status } = await api('DELETE', '/api/scheduled-tasks/nonexistent')
+    const { status } = await api('DELETE', '/api/product/scheduled-tasks/nonexistent')
     expect(status).toBe(404)
   })
 
   it('should delete one task', async () => {
-    const { data: listData } = await api('GET', '/api/scheduled-tasks')
+    const { data: listData } = await api('GET', '/api/product/scheduled-tasks')
     const taskId = listData.tasks[1].id
 
-    const { status } = await api('DELETE', `/api/scheduled-tasks/${taskId}`)
+    const { status } = await api('DELETE', `/api/product/scheduled-tasks/${taskId}`)
     expect([200, 204]).toContain(status)
 
-    const { data: afterDelete } = await api('GET', '/api/scheduled-tasks')
+    const { data: afterDelete } = await api('GET', '/api/product/scheduled-tasks')
     expect(afterDelete.tasks.length).toBe(1)
   })
 

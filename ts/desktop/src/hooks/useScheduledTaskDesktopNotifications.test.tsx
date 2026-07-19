@@ -9,8 +9,8 @@ const { listMock, getRecentRunsMock, notifyDesktopMock, serverReadyMock } = vi.h
   serverReadyMock: vi.fn(),
 }))
 
-vi.mock('../api/tasks', () => ({
-  tasksApi: {
+vi.mock('../product/api/scheduledTasks', () => ({
+  productScheduledTasksApi: {
     list: listMock,
     getRecentRuns: getRecentRunsMock,
   },
@@ -68,9 +68,9 @@ describe('useScheduledTaskDesktopNotifications', () => {
     listMock.mockResolvedValue({
       tasks: [{
         id: 'task-1',
-        name: 'Daily review',
-        cron: '* * * * *',
-        prompt: 'review',
+        title: 'Daily review',
+        schedule: '* * * * *',
+        instruction: 'review',
         enabled: true,
         createdAt: 1,
         notification: { enabled: true, channels: ['desktop'] },
@@ -81,12 +81,11 @@ describe('useScheduledTaskDesktopNotifications', () => {
         runs: [{
           id: 'run-old',
           taskId: 'task-1',
-          taskName: 'Daily review',
+          taskTitle: 'Daily review',
           startedAt: '2026-05-03T00:00:00.000Z',
           completedAt: '2026-05-03T00:00:01.000Z',
           status: 'completed',
-          prompt: 'review',
-          output: 'old result',
+          result: 'old result',
         }],
       })
       .mockResolvedValueOnce({
@@ -94,22 +93,19 @@ describe('useScheduledTaskDesktopNotifications', () => {
           {
             id: 'run-old',
             taskId: 'task-1',
-            taskName: 'Daily review',
+            taskTitle: 'Daily review',
             startedAt: '2026-05-03T00:00:00.000Z',
             completedAt: '2026-05-03T00:00:01.000Z',
             status: 'completed',
-            prompt: 'review',
-            output: 'old result',
+            result: 'old result',
           },
           {
             id: 'run-new',
             taskId: 'task-1',
-            taskName: 'Daily review',
+            taskTitle: 'Daily review',
             startedAt: '2026-05-03T00:01:00.000Z',
             completedAt: '2026-05-03T00:01:01.000Z',
             status: 'failed',
-            prompt: 'review',
-            error: 'provider timeout',
           },
         ],
       })
@@ -123,7 +119,7 @@ describe('useScheduledTaskDesktopNotifications', () => {
     expect(notifyDesktopMock).toHaveBeenCalledWith({
       dedupeKey: 'scheduled-task:run-new',
       title: '定时任务 Daily review',
-      body: '失败: provider timeout',
+      body: '状态: 失败',
       target: { type: 'scheduled' },
     })
   })
@@ -132,9 +128,9 @@ describe('useScheduledTaskDesktopNotifications', () => {
     listMock.mockResolvedValue({
       tasks: [{
         id: 'task-1',
-        name: 'Daily review',
-        cron: '* * * * *',
-        prompt: 'review',
+        title: 'Daily review',
+        schedule: '* * * * *',
+        instruction: 'review',
         enabled: true,
         createdAt: 1,
         notification: { enabled: true, channels: ['desktop'] },
@@ -146,12 +142,11 @@ describe('useScheduledTaskDesktopNotifications', () => {
         runs: [{
           id: 'run-new',
           taskId: 'task-1',
-          taskName: 'Daily review',
+          taskTitle: 'Daily review',
           startedAt: '2026-05-03T00:01:00.000Z',
           completedAt: '2026-05-03T00:01:01.000Z',
           status: 'completed',
-          prompt: 'review',
-          output: 'done',
+          result: 'done',
           // A stale older server can include this extra field; it must not
           // become a raw-session notification target.
           sessionId: 'session-task-run',
@@ -175,23 +170,22 @@ describe('useScheduledTaskDesktopNotifications', () => {
     listMock.mockResolvedValue({
       tasks: [{
         id: 'task-1',
-        name: 'IM only',
-        cron: '* * * * *',
-        prompt: 'review',
+        title: 'IM only',
+        schedule: '* * * * *',
+        instruction: 'review',
         enabled: true,
         createdAt: 1,
-        notification: { enabled: true, channels: ['telegram'] },
+        notification: { enabled: true, channels: [] },
       }],
     })
     getRecentRunsMock.mockResolvedValue({
       runs: [{
         id: 'run-1',
         taskId: 'task-1',
-        taskName: 'IM only',
+        taskTitle: 'IM only',
         startedAt: '2026-05-03T00:00:00.000Z',
         completedAt: '2026-05-03T00:00:01.000Z',
         status: 'completed',
-        prompt: 'review',
       }],
     })
 
@@ -209,9 +203,9 @@ describe('useScheduledTaskDesktopNotifications', () => {
     listMock.mockResolvedValue({
       tasks: [{
         id: 'task-1',
-        name: 'Daily review',
-        cron: '* * * * *',
-        prompt: 'review',
+        title: 'Daily review',
+        schedule: '* * * * *',
+        instruction: 'review',
         enabled: true,
         createdAt: 1,
         notification: { enabled: true, channels: ['desktop'] },
@@ -223,11 +217,10 @@ describe('useScheduledTaskDesktopNotifications', () => {
         runs: [{
           id: 'run-new',
           taskId: 'task-1',
-          taskName: 'Daily review',
+          taskTitle: 'Daily review',
           startedAt: '2026-05-03T00:01:00.000Z',
           completedAt: '2026-05-03T00:01:01.000Z',
           status: 'completed',
-          prompt: 'review',
         }],
       })
 

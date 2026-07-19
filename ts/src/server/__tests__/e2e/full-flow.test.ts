@@ -178,43 +178,43 @@ describe('E2E: Full Flow', () => {
   let taskId: string
 
   it('should start with empty task list', async () => {
-    const { data } = await api('GET', '/api/scheduled-tasks')
+    const { data } = await api('GET', '/api/product/scheduled-tasks')
     expect(data.tasks).toEqual([])
   })
 
   it('should create a scheduled task', async () => {
-    const { status, data } = await api('POST', '/api/scheduled-tasks', {
-      cron: '0 9 * * *',
-      prompt: 'Review commits from last 24h',
+    const { status, data } = await api('POST', '/api/product/scheduled-tasks', {
+      schedule: '0 9 * * *',
+      instruction: 'Review commits from last 24h',
       recurring: true,
-      name: 'daily-review',
+      title: 'daily-review',
       description: 'Daily code review',
     })
     expect(status).toBe(201)
     expect(data.task.id).toBeDefined()
-    expect(data.task.cron).toBe('0 9 * * *')
+    expect(data.task.schedule).toBe('0 9 * * *')
     taskId = data.task.id
   })
 
   it('should list the created task', async () => {
-    const { data } = await api('GET', '/api/scheduled-tasks')
+    const { data } = await api('GET', '/api/product/scheduled-tasks')
     expect(data.tasks.length).toBe(1)
     expect(data.tasks[0].id).toBe(taskId)
   })
 
   it('should update a task', async () => {
-    const { status, data } = await api('PUT', `/api/scheduled-tasks/${taskId}`, {
-      cron: '0 10 * * 1-5',
+    const { status, data } = await api('PATCH', `/api/product/scheduled-tasks/${taskId}`, {
+      schedule: '0 10 * * 1-5',
     })
     expect(status).toBe(200)
-    expect(data.task.cron).toBe('0 10 * * 1-5')
+    expect(data.task.schedule).toBe('0 10 * * 1-5')
   })
 
   it('should delete a task', async () => {
-    const { status } = await api('DELETE', `/api/scheduled-tasks/${taskId}`)
+    const { status } = await api('DELETE', `/api/product/scheduled-tasks/${taskId}`)
     expect([200, 204]).toContain(status)
 
-    const { data } = await api('GET', '/api/scheduled-tasks')
+    const { data } = await api('GET', '/api/product/scheduled-tasks')
     expect(data.tasks).toEqual([])
   })
 

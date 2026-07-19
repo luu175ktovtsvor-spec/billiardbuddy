@@ -1,18 +1,18 @@
 import { useEffect } from 'react'
-import { tasksApi } from '../api/tasks'
 import { notifyDesktop } from '../lib/desktopNotifications'
 import { whenDesktopServerReady } from '../lib/desktopRuntime'
-import type { CronTask, TaskRun } from '../types/task'
+import { productScheduledTasksApi } from '../product/api/scheduledTasks'
+import type { ProductScheduledTask, ProductScheduledTaskRun } from '../product/domain/types'
 
 const POLL_INTERVAL_MS = 30_000
 const NOTIFIED_RUNS_STORAGE_KEY = 'billiardbuddy.notifiedDesktopTaskRuns.v1'
 const MAX_STORED_RUN_IDS = 200
 
-function isTerminalRun(run: TaskRun): boolean {
+function isTerminalRun(run: ProductScheduledTaskRun): boolean {
   return run.status === 'completed' || run.status === 'failed' || run.status === 'timeout'
 }
 
-function hasDesktopNotification(task: CronTask | undefined): boolean {
+function hasDesktopNotification(task: ProductScheduledTask | undefined): boolean {
   return !!task?.notification?.enabled && task.notification.channels.includes('desktop')
 }
 
@@ -35,28 +35,28 @@ function writeNotifiedRunIds(runIds: Set<string>): void {
   }
 }
 
-function formatTaskRunNotification(run: TaskRun): { title: string; body: string } {
+function formatTaskRunNotification(run: ProductScheduledTaskRun): { title: string; body: string } {
   const status = run.status === 'completed'
     ? '完成'
     : run.status === 'failed'
       ? '失败'
       : '超时'
-  const detail = run.error || run.output || run.prompt
+  const detail = run.result
   const body = detail
     ? `${status}: ${detail.slice(0, 160)}`
     : `状态: ${status}`
 
   return {
-    title: `定时任务 ${run.taskName || run.taskId}`,
+    title: `定时任务 ${run.taskTitle || run.taskId}`,
     body,
   }
 }
 
 export function collectDesktopNotifiableRuns(
-  tasks: CronTask[],
-  runs: TaskRun[],
+  tasks: ProductScheduledTask[],
+  runs: ProductScheduledTaskRun[],
   notifiedRunIds: Set<string>,
-): TaskRun[] {
+): ProductScheduledTaskRun[] {
   const taskById = new Map(tasks.map((task) => [task.id, task]))
   return runs
     .filter((run) => isTerminalRun(run))
@@ -74,8 +74,8 @@ export function useScheduledTaskDesktopNotifications(): void {
     const poll = async () => {
       try {
         const [{ tasks }, { runs }] = await Promise.all([
-          tasksApi.list(),
-          tasksApi.getRecentRuns(50),
+          productScheduledTasksApi.list(),
+          productScheduledTasksApi.getRecentRuns(50),
         ])
         if (stopped) return
 
