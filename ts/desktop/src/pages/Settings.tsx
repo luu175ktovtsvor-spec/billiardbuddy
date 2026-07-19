@@ -932,7 +932,7 @@ export function GeneralSettings() {
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">
         <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-          {locale === 'zh' ? 'Agent 运行选项' : 'Agent runtime options'}
+          {locale === 'zh' ? '任务运行选项' : 'Task run options'}
         </summary>
         <div className="pl-1">
           <div className="mt-6">

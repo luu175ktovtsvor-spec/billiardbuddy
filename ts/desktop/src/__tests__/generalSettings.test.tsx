@@ -622,43 +622,43 @@ describe('Settings > General tab', () => {
     expect(outputStyle).not.toHaveTextContent(/Claude|DeepSeek|Provider|model|\.claude|hidden system prompt|tokens/i)
   })
 
-  it('keeps Auto-dream inside collapsed runtime options and confirms before enabling it', async () => {
+  it('keeps background memory consolidation inside collapsed task run options and confirms before enabling it', async () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    expect(screen.getByLabelText('Enable Auto-dream')).not.toBeVisible()
+    expect(screen.getByLabelText('Enable background memory consolidation')).not.toBeVisible()
 
-    fireEvent.click(screen.getByText('Agent runtime options'))
+    fireEvent.click(screen.getByText('Task run options'))
 
-    const toggle = screen.getByLabelText('Enable Auto-dream')
+    const toggle = screen.getByLabelText('Enable background memory consolidation')
     expect(toggle).toBeVisible()
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
 
     expect(useSettingsStore.getState().setAutoDreamEnabled).not.toHaveBeenCalled()
-    const dialog = screen.getByRole('dialog', { name: 'Enable Auto-dream?' })
+    const dialog = screen.getByRole('dialog', { name: 'Enable background memory consolidation?' })
     expect(within(dialog).getByText(/Keep the desktop app running/i)).toBeInTheDocument()
     expect(dialog.textContent).not.toContain('tokens')
 
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Enable Auto-dream' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Enable background memory consolidation' }))
     })
 
     expect(useSettingsStore.getState().setAutoDreamEnabled).toHaveBeenCalledWith(true)
-    expect(screen.getByLabelText('Enable Auto-dream')).toBeChecked()
+    expect(screen.getByLabelText('Enable background memory consolidation')).toBeChecked()
   })
 
-  it('lets the user disable Auto-dream without a confirmation dialog', async () => {
+  it('lets the user disable background memory consolidation without a confirmation dialog', async () => {
     useSettingsStore.setState({ autoDreamEnabled: true })
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByText('Agent runtime options'))
+    fireEvent.click(screen.getByText('Task run options'))
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Enable Auto-dream'))
+      fireEvent.click(screen.getByLabelText('Enable background memory consolidation'))
     })
 
-    expect(screen.queryByRole('dialog', { name: 'Enable Auto-dream?' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Enable background memory consolidation?' })).not.toBeInTheDocument()
     expect(useSettingsStore.getState().setAutoDreamEnabled).toHaveBeenCalledWith(false)
   })
 
@@ -666,10 +666,10 @@ describe('Settings > General tab', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByText('Agent runtime options'))
+    fireEvent.click(screen.getByText('Task run options'))
 
     for (const label of [
-      'Enable Auto-dream',
+      'Enable background memory consolidation',
       'Enable system notifications',
       'Skip WebFetch domain preflight',
     ]) {

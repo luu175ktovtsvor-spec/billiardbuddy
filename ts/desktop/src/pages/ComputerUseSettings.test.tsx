@@ -88,4 +88,29 @@ describe('ComputerUseSettings', () => {
 
     expect(computerUseApiMock.openSettings).toHaveBeenCalledWith('Privacy_Accessibility')
   })
+
+  it('keeps the default Chinese setup errors product-facing', async () => {
+    useSettingsStore.setState({ locale: 'zh' })
+    computerUseApiMock.getStatus.mockRejectedValue(new Error('private setup failure'))
+
+    render(<ComputerUseSettings />)
+
+    expect(await screen.findByText('暂时无法检查安装状态。')).toBeInTheDocument()
+    expect(screen.queryByText(/private setup failure/i)).not.toBeInTheDocument()
+  })
+
+  it('does not show a raw setup failure in the default Chinese interface', async () => {
+    useSettingsStore.setState({ locale: 'zh' })
+    computerUseApiMock.runSetup.mockRejectedValue(new Error('private setup failure'))
+
+    render(<ComputerUseSettings />)
+
+    await screen.findByText('安装环境')
+    await act(async () => {
+      fireEvent.click(screen.getByText('安装环境'))
+    })
+
+    expect(await screen.findByText('安装请求未能完成，请稍后重试。')).toBeInTheDocument()
+    expect(screen.queryByText(/private setup failure/i)).not.toBeInTheDocument()
+  })
 })
