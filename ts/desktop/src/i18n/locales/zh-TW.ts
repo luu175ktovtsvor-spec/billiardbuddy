@@ -473,13 +473,6 @@ export const zh: Record<TranslationKey, string> = {
   'settings.mcp.toast.taskUnavailable': '目前任務暫時無法使用，未修改 MCP 服務狀態。',
   'settings.mcp.toast.reconnectFailed': '重連 MCP 服務失敗',
 
-  // Settings > Agents
-  'settings.tab.agents': '協作助手',
-  'settings.agents.title': '協作助手',
-  'settings.agents.description': '在對話或任務中輸入 /agent，即可選擇系統為目前工作準備的協作助手。',
-  'settings.agents.usageTitle': '如何使用',
-  'settings.agents.usage': '在輸入框中鍵入 /agent，選擇一個協作助手後說明要完成的事情。',
-
   // Settings > Skills
   'settings.skills.title': '可用工作流程',
   'settings.skills.description': '說明業務目標即可，任務執行時會自動選擇並套用合適的支援能力。',

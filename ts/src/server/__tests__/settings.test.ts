@@ -2,12 +2,11 @@
  * Unit tests for Settings, model options, and health-check APIs
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { SettingsService } from '../services/settingsService.js'
-import { conversationService } from '../services/conversationService.js'
 import { handleProductSettingsApi } from '../api/productSettings.js'
 import { handleStatusApi } from '../api/status.js'
 import {
@@ -492,26 +491,22 @@ describe('Settings API', () => {
     expect((await handleProductSettingsApi(providerInput.req, providerInput.url, providerInput.segments)).status).toBe(400)
   })
 
-  it('keeps Agent runtime settings on a dedicated endpoint and syncs thinking changes', async () => {
-    const syncSpy = spyOn(conversationService, 'setMaxThinkingTokensForActiveSessions')
-      .mockImplementation(() => 0)
+  it('does not expose or mutate Core-owned thinking configuration', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'settings.json'),
+      JSON.stringify({ alwaysThinkingEnabled: false }),
+      'utf8',
+    )
 
-    try {
-      const disabled = makeRequest('PATCH', '/api/product/settings/runtime', {
-        alwaysThinkingEnabled: false,
-      })
-      expect((await handleProductSettingsApi(disabled.req, disabled.url, disabled.segments)).status).toBe(200)
+    const read = makeRequest('GET', '/api/product/settings/runtime')
+    expect(await (await handleProductSettingsApi(read.req, read.url, read.segments)).json()).toEqual({})
 
-      const enabled = makeRequest('PATCH', '/api/product/settings/runtime', {
-        alwaysThinkingEnabled: true,
-      })
-      expect((await handleProductSettingsApi(enabled.req, enabled.url, enabled.segments)).status).toBe(200)
-
-      expect(syncSpy).toHaveBeenNthCalledWith(1, 0)
-      expect(syncSpy).toHaveBeenNthCalledWith(2, null)
-    } finally {
-      syncSpy.mockRestore()
-    }
+    const update = makeRequest('PATCH', '/api/product/settings/runtime', {
+      alwaysThinkingEnabled: true,
+    })
+    expect((await handleProductSettingsApi(update.req, update.url, update.segments)).status).toBe(400)
+    expect(JSON.parse(await fs.readFile(path.join(tmpDir, 'settings.json'), 'utf8')))
+      .toMatchObject({ alwaysThinkingEnabled: false })
   })
 
   it('keeps runtime network fields scoped and preserves private nested fields', async () => {

@@ -6,6 +6,7 @@ import { Settings } from '../pages/Settings'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
+import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import type { AppMode, ChatSendBehavior, ThemeMode } from '../types/settings'
 import { browserHost } from '../lib/desktopHost/browserHost'
 
@@ -91,7 +92,6 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       locale: 'en',
       theme: 'light',
-      thinkingEnabled: true,
       autoDreamEnabled: false,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
@@ -119,9 +119,6 @@ describe('Settings > General tab', () => {
       fetchOutputStyles: vi.fn().mockResolvedValue(undefined),
       setOutputStyle: vi.fn().mockImplementation(async (outputStyle: string) => {
         useSettingsStore.setState({ outputStyle })
-      }),
-      setThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
-        useSettingsStore.setState({ thinkingEnabled: enabled })
       }),
       setAutoDreamEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ autoDreamEnabled: enabled })
@@ -802,6 +799,39 @@ describe('Settings > General tab', () => {
     expect(screen.getByText('Terminal')).toBeInTheDocument()
     expect(screen.getByText('External connections')).toBeInTheDocument()
     expect(screen.getByText('Plugins')).toBeInTheDocument()
+    expect(screen.queryByText('Agents')).not.toBeInTheDocument()
+  })
+
+  it('returns from settings to the latest product surface', () => {
+    useTabStore.setState({
+      tabs: [
+        { sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings' },
+      ],
+      activeTabId: '__settings__',
+    })
+
+    render(<Settings />)
+    fireEvent.click(screen.getByTestId('settings-back'))
+
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
+  })
+
+  it('opens the task index when settings is the only open surface', () => {
+    useTabStore.setState({
+      tabs: [{ sessionId: '__settings__', title: 'Settings', type: 'settings' }],
+      activeTabId: '__settings__',
+    })
+
+    render(<Settings />)
+    fireEvent.click(screen.getByTestId('settings-back'))
+
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
+    expect(useTabStore.getState().tabs).toContainEqual({
+      sessionId: PRODUCT_TASKS_TAB_ID,
+      title: '任务中心',
+      type: 'product-tasks',
+    })
   })
 })
 

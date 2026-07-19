@@ -45,7 +45,6 @@ function getStoredLocale(): Locale {
 }
 
 type SettingsStore = {
-  thinkingEnabled: boolean
   autoDreamEnabled: boolean
   locale: Locale
   theme: ThemeMode
@@ -71,7 +70,6 @@ type SettingsStore = {
   appModeRequiresRestart: boolean
 
   fetchAll: () => Promise<void>
-  setThinkingEnabled: (enabled: boolean) => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
   setTheme: (theme: ThemeMode) => Promise<void>
@@ -117,13 +115,12 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
   {
     value: DEFAULT_OUTPUT_STYLE,
     label: 'Default',
-    description: 'The Agent completes coding tasks efficiently and provides concise responses',
+    description: 'BilliardBuddy completes tasks efficiently and provides concise responses',
     source: 'built-in',
   },
 ]
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
-  thinkingEnabled: true,
   autoDreamEnabled: false,
   locale: getStoredLocale(),
   theme: useUIStore.getState().theme,
@@ -171,7 +168,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
       useUIStore.getState().setTheme(theme)
       set({
-        thinkingEnabled: runtimeSettings.alwaysThinkingEnabled !== false,
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         theme,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
@@ -190,16 +186,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         error instanceof Error ? error.message : 'Failed to load desktop settings'
       set({ isLoading: false, error: message })
       throw error
-    }
-  },
-
-  setThinkingEnabled: async (enabled) => {
-    const prev = get().thinkingEnabled
-    set({ thinkingEnabled: enabled })
-    try {
-      await productSettingsApi.updateRuntime({ alwaysThinkingEnabled: enabled })
-    } catch {
-      set({ thinkingEnabled: prev })
     }
   },
 

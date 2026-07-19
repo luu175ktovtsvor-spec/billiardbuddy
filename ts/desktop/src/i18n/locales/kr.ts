@@ -473,13 +473,6 @@ export const kr: Record<TranslationKey, string> = {
   'settings.mcp.toast.taskUnavailable': '현재 작업을 사용할 수 없어 MCP 서버 상태를 변경하지 않았습니다.',
   'settings.mcp.toast.reconnectFailed': 'MCP 서버를 다시 연결하지 못했습니다',
 
-  // Settings > Agents
-  'settings.tab.agents': '에이전트',
-  'settings.agents.title': '협업 도우미',
-  'settings.agents.description': '대화나 작업에서 /agent를 입력하면 현재 작업을 위해 준비된 협업 도우미를 선택할 수 있습니다.',
-  'settings.agents.usageTitle': '사용 방법',
-  'settings.agents.usage': '입력창에 /agent를 입력하고 도우미를 선택한 뒤, 이루고 싶은 일을 설명하세요.',
-
   // Settings > Skills
   'settings.skills.title': '사용 가능한 워크플로',
   'settings.skills.description': '업무 목표를 설명하면 작업 실행 중에 알맞은 지원이 자동으로 선택되고 적용됩니다.',

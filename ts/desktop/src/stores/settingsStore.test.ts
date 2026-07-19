@@ -493,47 +493,6 @@ describe('settingsStore desktop notification persistence', () => {
   })
 })
 
-describe('settingsStore thinking persistence', () => {
-  beforeEach(() => {
-    vi.resetModules()
-    vi.clearAllMocks()
-    window.localStorage.clear()
-  })
-
-  it('persists both enabled and disabled thinking states explicitly', async () => {
-    const updateRuntime = vi.fn().mockResolvedValue({})
-
-    vi.doMock('../product/api/settings', () => ({
-      productSettingsApi: {
-        getUser: vi.fn(),
-        updateRuntime,
-      },
-    }))
-    const { useSettingsStore } = await import('./settingsStore')
-
-    await useSettingsStore.getState().setThinkingEnabled(false)
-    await useSettingsStore.getState().setThinkingEnabled(true)
-
-    expect(updateRuntime).toHaveBeenNthCalledWith(1, { alwaysThinkingEnabled: false })
-    expect(updateRuntime).toHaveBeenNthCalledWith(2, { alwaysThinkingEnabled: true })
-    expect(useSettingsStore.getState().thinkingEnabled).toBe(true)
-  })
-
-  it('rolls back the thinking toggle when persistence fails', async () => {
-    vi.doMock('../product/api/settings', () => ({
-      productSettingsApi: {
-        getUser: vi.fn(),
-        updateRuntime: vi.fn().mockRejectedValue(new Error('save failed')),
-      },
-    }))
-    const { useSettingsStore } = await import('./settingsStore')
-
-    await useSettingsStore.getState().setThinkingEnabled(false)
-
-    expect(useSettingsStore.getState().thinkingEnabled).toBe(true)
-  })
-})
-
 describe('settingsStore Auto-dream persistence', () => {
   beforeEach(() => {
     vi.resetModules()

@@ -8,7 +8,6 @@ const SETTINGS_TABS = [
   'general',
   'terminal',
   'mcp',
-  'agents',
   'skills',
   'plugins',
   'computerUse',
@@ -82,7 +81,6 @@ export type SettingsTab =
   | 'general'
   | 'terminal'
   | 'mcp'
-  | 'agents'
   | 'skills'
   | 'plugins'
   | 'computerUse'

@@ -10,7 +10,6 @@
 
 import { SettingsService } from '../services/settingsService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import { conversationService } from '../services/conversationService.js'
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
   getAllOutputStyles,
@@ -61,7 +60,6 @@ const USER_PREFERENCE_KEYS = [
   'autoDreamEnabled',
 ] as const
 const RUNTIME_SETTING_KEYS = [
-  'alwaysThinkingEnabled',
   'skipWebFetchPreflight',
   'network',
 ] as const
@@ -135,7 +133,6 @@ async function handleRuntimeSettings(req: Request): Promise<Response> {
     await settingsService.mutateUserSettings(current =>
       mergeRuntimeSettingsUpdate(current, update),
     )
-    syncThinkingSettingToActiveSessions(update)
     return Response.json({ ok: true })
   }
 
@@ -293,9 +290,6 @@ function mergeUserPreferenceUpdate(
 
 function projectRuntimeSettings(settings: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  if (typeof settings.alwaysThinkingEnabled === 'boolean') {
-    result.alwaysThinkingEnabled = settings.alwaysThinkingEnabled
-  }
   if (typeof settings.skipWebFetchPreflight === 'boolean') {
     result.skipWebFetchPreflight = settings.skipWebFetchPreflight
   }
@@ -309,10 +303,6 @@ function validateRuntimeSettingsUpdate(body: Record<string, unknown>): Record<st
   assertKnownKeys(body, RUNTIME_SETTING_KEYS, 'runtime')
   const update: Record<string, unknown> = {}
 
-  if (hasOwn(body, 'alwaysThinkingEnabled')) {
-    assertBoolean(body.alwaysThinkingEnabled, 'alwaysThinkingEnabled')
-    update.alwaysThinkingEnabled = body.alwaysThinkingEnabled
-  }
   if (hasOwn(body, 'skipWebFetchPreflight')) {
     assertBoolean(body.skipWebFetchPreflight, 'skipWebFetchPreflight')
     update.skipWebFetchPreflight = body.skipWebFetchPreflight
@@ -581,17 +571,4 @@ async function listOutputStyles(workDir?: string): Promise<OutputStyleListItem[]
     description: config?.description ?? DEFAULT_OUTPUT_STYLE_DESCRIPTION,
     source: config?.source ?? 'built-in',
   }))
-}
-
-function syncThinkingSettingToActiveSessions(settings: Record<string, unknown>): void {
-  if (
-    !Object.prototype.hasOwnProperty.call(settings, 'alwaysThinkingEnabled') ||
-    typeof settings.alwaysThinkingEnabled !== 'boolean'
-  ) {
-    return
-  }
-
-  conversationService.setMaxThinkingTokensForActiveSessions(
-    settings.alwaysThinkingEnabled ? null : 0,
-  )
 }
