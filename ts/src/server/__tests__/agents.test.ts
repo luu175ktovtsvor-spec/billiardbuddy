@@ -8,6 +8,7 @@ import { clearInstalledPluginsCache } from '../../utils/plugins/installedPlugins
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { handleAgentsApi } from '../api/agents.js'
+import { handleApiRequest } from '../router.js'
 
 let tmpHome: string
 let workspace: string
@@ -139,30 +140,27 @@ describe('Agents API product boundary', () => {
     expect(body).not.toHaveProperty('allAgents')
   })
 
-  it('does not return saved Agent configuration from the legacy CRUD routes', async () => {
-    const privateConfig = {
-      name: 'saved-private-agent',
-      description: 'PRIVATE_SAVED_AGENT_DESCRIPTION',
-      model: 'PRIVATE_SAVED_AGENT_MODEL',
-      tools: ['PRIVATE_SAVED_AGENT_TOOL'],
-      systemPrompt: 'PRIVATE_SAVED_AGENT_PROMPT',
+  it('keeps legacy Agent CRUD and background task routes retired', async () => {
+    const requests = [
+      makeRequest('/api/agents', 'POST', {
+        name: 'saved-private-agent',
+        description: 'PRIVATE_SAVED_AGENT_DESCRIPTION',
+        model: 'PRIVATE_SAVED_AGENT_MODEL',
+        tools: ['PRIVATE_SAVED_AGENT_TOOL'],
+        systemPrompt: 'PRIVATE_SAVED_AGENT_PROMPT',
+      }),
+      makeRequest('/api/agents/saved-private-agent'),
+      makeRequest('/api/agents/saved-private-agent', 'PUT', {
+        description: 'PRIVATE_UPDATED_AGENT_DESCRIPTION',
+      }),
+      makeRequest('/api/agents/saved-private-agent', 'DELETE'),
+      makeRequest('/api/tasks'),
+      makeRequest('/api/tasks/lists/legacy-task-list'),
+    ]
+
+    for (const { req, url } of requests) {
+      const response = await handleApiRequest(req, url)
+      expect(response.status).toBe(404)
     }
-    const create = makeRequest('/api/agents', 'POST', privateConfig)
-    const createResponse = await handleAgentsApi(create.req, create.url, create.segments)
-    expect(createResponse.status).toBe(201)
-    expect(await createResponse.json()).toEqual({ ok: true })
-
-    const detail = makeRequest('/api/agents/saved-private-agent')
-    const detailResponse = await handleAgentsApi(detail.req, detail.url, detail.segments)
-    expect(detailResponse.status).toBe(200)
-    expect(await detailResponse.json()).toEqual({ available: true })
-
-    const update = makeRequest('/api/agents/saved-private-agent', 'PUT', {
-      description: 'PRIVATE_UPDATED_AGENT_DESCRIPTION',
-      tools: ['PRIVATE_UPDATED_AGENT_TOOL'],
-    })
-    const updateResponse = await handleAgentsApi(update.req, update.url, update.segments)
-    expect(updateResponse.status).toBe(200)
-    expect(await updateResponse.json()).toEqual({ ok: true })
   })
 })
