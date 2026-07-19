@@ -15,6 +15,7 @@ import { ConversationService, ConversationStartupError, conversationService } fr
 import { SessionService, sessionService } from '../services/sessionService.js'
 import { ProviderService } from '../services/providerService.js'
 import { SettingsService } from '../services/settingsService.js'
+import { createDirectCoreClient } from './helpers/coreClientHarness.js'
 
 async function setDefaultPermissionModeForIntegrationTests(mode: string): Promise<void> {
   await new SettingsService().setPermissionMode(mode)
@@ -1149,7 +1150,12 @@ describe('ConversationService', () => {
 // WebSocket integration tests (with mock CLI using the SDK websocket protocol)
 // ============================================================================
 
-describe('WebSocket Chat Integration', () => {
+describe('Core handler and SDK integration', () => {
+  // The ordinary product renderer no longer receives a generic Core-session
+  // websocket URL. Keep these Core protocol scenarios below the server
+  // boundary while the spawned mock CLI still connects through `/sdk/:id`.
+  const WebSocket: typeof globalThis.WebSocket =
+    createDirectCoreClient as unknown as typeof globalThis.WebSocket
   let server: ReturnType<typeof Bun.serve>
   let baseUrl: string
   let wsUrl: string

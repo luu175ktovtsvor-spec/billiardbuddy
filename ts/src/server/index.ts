@@ -187,39 +187,6 @@ export function startServer(port = PORT, host = HOST) {
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
-        // Core session websocket. Product pages use the task-scoped route
-        // above; this remains for the unreplaced Core surfaces and SDK tooling.
-        if (url.pathname.startsWith('/ws/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req, url.searchParams.get('token'))
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-
-          // Validate session ID format
-          const sessionId = url.pathname.split('/').pop() || ''
-          if (!sessionId || !/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
-            return new Response('Invalid session ID', { status: 400 })
-          }
-          const upgraded = server.upgrade(req, {
-            data: {
-              sessionId,
-              connectedAt: Date.now(),
-              channel: 'client',
-              sdkToken: null,
-              serverPort,
-              serverHost: localConnectHost,
-            },
-          })
-          if (upgraded) return undefined
-          return new Response('WebSocket upgrade failed', { status: 400 })
-        }
-
         // Internal SDK WebSocket used by the spawned Claude CLI.
         if (url.pathname.startsWith('/sdk/')) {
           if (cors.rejected) {

@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url'
 
 let server: ReturnType<typeof Bun.serve>
 let baseUrl: string
-let wsUrl: string
 let tmpDir: string
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalCliPath = process.env.CLAUDE_CLI_PATH
@@ -72,7 +71,6 @@ async function startTestServer() {
   const { startServer } = await import('../../index.js')
   server = startServer(0, '127.0.0.1')
   baseUrl = `http://127.0.0.1:${server.port}`
-  wsUrl = `ws://127.0.0.1:${server.port}`
 }
 
 async function api(method: string, urlPath: string, body?: unknown) {
@@ -584,142 +582,18 @@ describe('Business Flow: Sessions & CLI Interop', () => {
   })
 })
 
-describe('Business Flow: WebSocket Chat', () => {
+describe('Business Flow: Retired generic session WebSocket', () => {
   beforeAll(startTestServer)
   afterAll(async () => {
     server?.stop()
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  it('should establish WebSocket connection and receive connected event', async () => {
-    const messages: any[] = []
-    const ws = new WebSocket(`${wsUrl}/ws/ws-test-1`)
-
-    await new Promise<void>((resolve) => {
-      ws.onmessage = (event) => {
-        messages.push(JSON.parse(event.data as string))
-        if (messages.length >= 1) {
-          ws.close()
-          resolve()
-        }
-      }
-      ws.onerror = () => { ws.close(); resolve() }
-      setTimeout(() => { ws.close(); resolve() }, 3000)
-    })
-
-    expect(messages[0].type).toBe('connected')
-    expect(messages[0].sessionId).toBe('ws-test-1')
-  })
-
-  it('should echo message and transition through states', async () => {
-    const messages: any[] = []
-    const ws = new WebSocket(`${wsUrl}/ws/ws-test-2`)
-
-    await new Promise<void>((resolve) => {
-      ws.onopen = () => {}
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string)
-        messages.push(msg)
-        if (msg.type === 'connected') {
-          ws.send(JSON.stringify({ type: 'user_message', content: 'test message' }))
-        }
-        if (msg.type === 'message_complete') {
-          ws.close()
-          resolve()
-        }
-      }
-      ws.onerror = () => { ws.close(); resolve() }
-      setTimeout(() => { ws.close(); resolve() }, 15000)
-    })
-
-    const types = messages.map((m) => m.type)
-    expect(types).toContain('connected')
-    expect(types).toContain('status')
-    expect(types).toContain('content_start')
-    expect(types).toContain('content_delta')
-    expect(types).toContain('message_complete')
-
-    // Should have thinking state first
-    const statusMsgs = messages.filter((m) => m.type === 'status')
-    expect(statusMsgs[0].state).toBe('thinking')
-  }, 20000)
-
-  it('should handle ping/pong', async () => {
-    const messages: any[] = []
-    const ws = new WebSocket(`${wsUrl}/ws/ws-test-3`)
-
-    await new Promise<void>((resolve) => {
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string)
-        messages.push(msg)
-        if (msg.type === 'connected') {
-          ws.send(JSON.stringify({ type: 'ping' }))
-        }
-        if (msg.type === 'pong') {
-          ws.close()
-          resolve()
-        }
-      }
-      setTimeout(() => { ws.close(); resolve() }, 3000)
-    })
-
-    expect(messages.some((m) => m.type === 'pong')).toBe(true)
-  })
-
-  it('should handle stop_generation', async () => {
-    const messages: any[] = []
-    const ws = new WebSocket(`${wsUrl}/ws/ws-test-4`)
-
-    await new Promise<void>((resolve) => {
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string)
-        messages.push(msg)
-        if (msg.type === 'connected') {
-          ws.send(JSON.stringify({ type: 'stop_generation' }))
-        }
-        if (msg.type === 'status' && msg.state === 'idle') {
-          ws.close()
-          resolve()
-        }
-      }
-      setTimeout(() => { ws.close(); resolve() }, 3000)
-    })
-
-    const idleStatus = messages.find((m) => m.type === 'status' && m.state === 'idle')
-    expect(idleStatus).toBeDefined()
-  })
-
-  it('should handle invalid message gracefully', async () => {
-    const messages: any[] = []
-    const ws = new WebSocket(`${wsUrl}/ws/ws-test-5`)
-
-    await new Promise<void>((resolve) => {
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string)
-        messages.push(msg)
-        if (msg.type === 'connected') {
-          ws.send('not valid json {{{')
-        }
-        if (msg.type === 'error') {
-          ws.close()
-          resolve()
-        }
-      }
-      setTimeout(() => { ws.close(); resolve() }, 3000)
-    })
-
-    const errorMsg = messages.find((m) => m.type === 'error')
-    expect(errorMsg).toBeDefined()
-    expect(errorMsg.code).toBe('PARSE_ERROR')
-  })
-
-  it('should reject invalid session ID in WebSocket URL', async () => {
-    // Path traversal gets resolved by URL parser, so test with special chars
-    const res = await fetch(`${baseUrl}/ws/invalid session!@#`, {
+  it('does not expose the retired Core-session upgrade endpoint', async () => {
+    const res = await fetch(`${baseUrl}/ws/legacy-session`, {
       headers: { 'Upgrade': 'websocket', 'Connection': 'Upgrade' },
     })
-    // URL with special chars either returns 400 (invalid ID) or 404 (path resolution)
-    expect([400, 404]).toContain(res.status)
+    expect(res.status).toBe(404)
   })
 })
 
