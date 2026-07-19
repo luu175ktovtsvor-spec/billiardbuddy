@@ -26,12 +26,6 @@ vi.mock('../../pages/TerminalSettings', () => ({
   ),
 }))
 
-vi.mock('../workbench/WorkbenchTab', () => ({
-  WorkbenchTab: ({ sessionId, tabId }: { sessionId: string; tabId: string }) => (
-    <div data-testid="workbench-tab">workbench:{sessionId}:{tabId}</div>
-  ),
-}))
-
 vi.mock('../media/ImageWorkbench', () => ({
   ImageWorkbench: () => <div data-testid="image-workbench" />,
 }))
@@ -154,7 +148,7 @@ describe('ContentRouter tab surfaces', () => {
     expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === useTabStore.getState().activeTabId)?.terminalCwd).toBe('/tmp/project')
   })
 
-  it('renders workbench tabs as main content instead of mounting the chat session surface', () => {
+  it('evicts a legacy workbench tab into the product task index and closes native preview', async () => {
     useTabStore.setState({
       tabs: [{
         sessionId: '__workbench__session-1',
@@ -168,8 +162,21 @@ describe('ContentRouter tab surfaces', () => {
 
     render(<ContentRouter />)
 
-    expect(screen.getByTestId('workbench-tab')).toHaveTextContent('workbench:session-1:__workbench__session-1')
+    await waitFor(() => {
+      expect(useTabStore.getState()).toMatchObject({
+        activeTabId: '__product_tasks__',
+        tabs: [{
+          sessionId: '__product_tasks__',
+          title: '任务中心',
+          type: 'product-tasks',
+          status: 'idle',
+        }],
+      })
+    })
+
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'task-index')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+    expect(previewBridgeMock.close).toHaveBeenCalled()
   })
 
   it('renders the image workbench as a product surface', () => {
@@ -272,18 +279,65 @@ describe('ContentRouter tab surfaces', () => {
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 
-  it('routes a legacy session tab back to the new-task product surface and closes any native preview', async () => {
+  it('evicts every legacy session tab into the product task index and closes native preview', async () => {
     useTabStore.setState({
-      tabs: [{ sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' }],
+      tabs: [
+        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
+        { sessionId: 'session-2', title: '另一个旧会话', type: 'session', status: 'idle' },
+      ],
       activeTabId: 'session-1',
     })
 
     render(<ContentRouter />)
 
-    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
+    await waitFor(() => {
+      expect(useTabStore.getState()).toMatchObject({
+        activeTabId: '__product_tasks__',
+        tabs: [{
+          sessionId: '__product_tasks__',
+          title: '任务中心',
+          type: 'product-tasks',
+          status: 'idle',
+        }],
+      })
+    })
+
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'task-index')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
     await waitFor(() => {
-      expect(previewBridgeMock.close).toHaveBeenCalledTimes(1)
+      expect(previewBridgeMock.close).toHaveBeenCalled()
     })
+  })
+
+  it('evicts a background legacy tab without interrupting the active product task', async () => {
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
+        {
+          sessionId: '__product_task__task-1',
+          title: '整理开球训练',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+      ],
+      activeTabId: '__product_task__task-1',
+    })
+
+    render(<ContentRouter />)
+
+    await waitFor(() => {
+      expect(useTabStore.getState()).toMatchObject({
+        activeTabId: '__product_task__task-1',
+        tabs: [{
+          sessionId: '__product_task__task-1',
+          type: 'product-task',
+          taskId: 'task-1',
+        }],
+      })
+    })
+
+    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
+    expect(previewBridgeMock.close).not.toHaveBeenCalled()
   })
 })

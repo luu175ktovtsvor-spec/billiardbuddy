@@ -26,14 +26,12 @@ import { WorkbenchPanel } from './WorkbenchPanel'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
-import { useTabStore } from '../../stores/tabStore'
 
 const SESSION_ID = 'workbench-session'
 
 beforeEach(() => {
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
-  useTabStore.setState(useTabStore.getInitialState(), true)
   useSettingsStore.setState({ locale: 'en' })
   useWorkspacePanelStore.getState().openPanel(SESSION_ID)
 })
@@ -42,7 +40,6 @@ afterEach(() => {
   cleanup()
   useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
-  useTabStore.setState(useTabStore.getInitialState(), true)
 })
 
 describe('WorkbenchPanel', () => {
@@ -125,35 +122,10 @@ describe('WorkbenchPanel', () => {
     expect(screen.getByTestId('workspace-panel')).toBeInTheDocument()
   })
 
-  it('the expand button promotes the current workbench into a main content tab', () => {
-    useBrowserPanelStore.getState().ensureBlank(SESSION_ID)
-    useWorkspacePanelStore.getState().setMode(SESSION_ID, 'browser')
+  it('keeps the workbench dock-only without a main-tab promotion control', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand panel' }))
-
-    expect(useTabStore.getState().activeTabId).toBe(`__workbench__${SESSION_ID}`)
-    expect(useTabStore.getState().tabs).toEqual([
-      {
-        sessionId: `__workbench__${SESSION_ID}`,
-        title: 'Workbench',
-        type: 'workbench',
-        status: 'idle',
-        workbenchSessionId: SESSION_ID,
-      },
-    ])
-  })
-
-  it('renders the tab variant without a nested expand action', () => {
-    const handleClose = vi.fn()
-    render(<WorkbenchPanel sessionId={SESSION_ID} variant="tab" onClose={handleClose} />)
-
     expect(screen.queryByRole('button', { name: 'Expand panel' })).not.toBeInTheDocument()
-    expect(screen.getByTestId('workspace-panel')).toHaveAttribute('data-force-visible', 'true')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-
-    expect(handleClose).toHaveBeenCalledTimes(1)
-    expect(useWorkspacePanelStore.getState().isPanelOpen(SESSION_ID)).toBe(true)
   })
+
 })

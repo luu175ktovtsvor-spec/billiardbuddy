@@ -14,7 +14,7 @@ import {
   IMAGE_WORKBENCH_TAB_ID,
   VIDEO_STUDIO_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
-  type TabType,
+  type OpenTabType,
 } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { Smiley } from '../shared/Smiley'
@@ -93,7 +93,7 @@ function useSidebarData() {
   const openNewTask = (workDir?: string) => {
     openProductTaskComposer(workDir)
   }
-  const openTabView = (id: string, title: string, type: TabType) => openTab(id, title, type)
+  const openTabView = (id: string, title: string, type: OpenTabType) => openTab(id, title, type)
 
   return {
     t,

@@ -13,17 +13,36 @@ describe('tabStore', () => {
     localStorage.clear()
   })
 
-  it('refreshes an existing tab title when opening the same session again', () => {
-    useTabStore.getState().openTab('session-1', '```json {"title":')
-    useTabStore.getState().openTab('session-1', '使用bash写一个shell，随便写点什么东西')
+  it('refreshes an existing fixed product surface title when opened again', () => {
+    useTabStore.getState().openTab(PRODUCT_TASKS_TAB_ID, '```json {"title":', 'product-tasks')
+    useTabStore.getState().openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
 
     expect(useTabStore.getState().tabs).toHaveLength(1)
     expect(useTabStore.getState().tabs[0]).toMatchObject({
-      sessionId: 'session-1',
-      title: '使用bash写一个shell，随便写点什么东西',
-      type: 'session',
+      sessionId: PRODUCT_TASKS_TAB_ID,
+      title: '任务中心',
+      type: 'product-tasks',
     })
-    expect(useTabStore.getState().activeTabId).toBe('session-1')
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
+  })
+
+  it('fails closed to the product task index when JavaScript bypasses the public tab type', () => {
+    const unsafeOpenTab = useTabStore.getState().openTab as unknown as (
+      sessionId: string,
+      title: string,
+      type: string,
+    ) => void
+
+    unsafeOpenTab('session-1', '旧会话', 'session')
+    unsafeOpenTab('__workbench__session-1', 'Workbench', 'workbench')
+
+    expect(useTabStore.getState().tabs).toEqual([{
+      sessionId: PRODUCT_TASKS_TAB_ID,
+      title: '任务中心',
+      type: 'product-tasks',
+      status: 'idle',
+    }])
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
   })
 
   it('does not persist raw Core session tabs', () => {
@@ -72,28 +91,6 @@ describe('tabStore', () => {
       },
     ])
     expect(useTabStore.getState().activeTabId).toBe(tabId)
-  })
-
-  it('opens one ephemeral workbench tab per source session', () => {
-    const firstTabId = useTabStore.getState().openWorkbenchTab('session-1', 'Workbench')
-    const secondTabId = useTabStore.getState().openWorkbenchTab('session-1', 'Workbench')
-
-    expect(firstTabId).toBe('__workbench__session-1')
-    expect(secondTabId).toBe(firstTabId)
-    expect(useTabStore.getState().tabs).toEqual([
-      {
-        sessionId: '__workbench__session-1',
-        title: 'Workbench',
-        type: 'workbench',
-        status: 'idle',
-        workbenchSessionId: 'session-1',
-      },
-    ])
-    expect(useTabStore.getState().activeTabId).toBe('__workbench__session-1')
-    expect(localStorage.getItem('billiardbuddy-open-tabs')).toBe(JSON.stringify({
-      openTabs: [],
-      activeTabId: null,
-    }))
   })
 
   it('opens one ephemeral dedicated new-task tab and refreshes its work-directory request', () => {

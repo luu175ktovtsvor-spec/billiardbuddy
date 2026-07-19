@@ -15,17 +15,34 @@ export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
 export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 
+/**
+ * These discriminants remain readable only so stale in-memory state can be
+ * evicted safely. New renderer navigation must never create either surface.
+ */
+export type LegacyTabType = 'session' | 'workbench'
+
 export type TabType =
-  | 'session'
+  | LegacyTabType
   | 'settings'
   | 'scheduled'
   | 'terminal'
-  | 'workbench'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
   | 'new-product-task'
   | 'product-task'
+
+/**
+ * Fixed product surfaces may use the generic tab opener. Task and terminal
+ * tabs have dedicated constructors so their required metadata cannot be
+ * omitted, and legacy Core surfaces are deliberately excluded.
+ */
+export type OpenTabType =
+  | 'settings'
+  | 'scheduled'
+  | 'image-workbench'
+  | 'video-studio'
+  | 'product-tasks'
 
 export type Tab = {
   sessionId: string
@@ -49,9 +66,8 @@ type TabStore = {
   tabs: Tab[]
   activeTabId: string | null
 
-  openTab: (sessionId: string, title: string, type?: TabType) => void
+  openTab: (sessionId: string, title: string, type: OpenTabType) => void
   openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
-  openWorkbenchTab: (sessionId: string, title?: string) => string
   openNewProductTask: (workDir?: string) => void
   openProductTaskTab: (taskId: string, title: string) => string
   closeTab: (sessionId: string) => void
@@ -66,11 +82,24 @@ type TabStore = {
   restoreTabs: () => Promise<void>
 }
 
+function isOpenTabType(value: unknown): value is OpenTabType {
+  return value === 'settings'
+    || value === 'scheduled'
+    || value === 'image-workbench'
+    || value === 'video-studio'
+    || value === 'product-tasks'
+}
+
 export const useTabStore = create<TabStore>((set, get) => ({
   tabs: [],
   activeTabId: null,
 
-  openTab: (sessionId, title, type = 'session') => {
+  openTab: (sessionId, title, type) => {
+    if (!isOpenTabType(type)) {
+      get().openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
+      return
+    }
+
     const { tabs } = get()
     const existing = tabs.find((t) => t.sessionId === sessionId)
     if (existing) {
@@ -113,33 +142,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
     })
     get().saveTabs()
     return sessionId
-  },
-
-  openWorkbenchTab: (sessionId, title = 'Workbench') => {
-    const tabId = `${WORKBENCH_TAB_PREFIX}${sessionId}`
-    const { tabs } = get()
-    const existing = tabs.find((tab) => tab.sessionId === tabId)
-    const tab: Tab = {
-      sessionId: tabId,
-      title,
-      type: 'workbench',
-      status: 'idle',
-      workbenchSessionId: sessionId,
-    }
-
-    if (existing) {
-      set({
-        tabs: tabs.map((current) => current.sessionId === tabId ? tab : current),
-        activeTabId: tabId,
-      })
-    } else {
-      set({
-        tabs: [...tabs, tab],
-        activeTabId: tabId,
-      })
-    }
-    get().saveTabs()
-    return tabId
   },
 
   openNewProductTask: (workDir) => {
