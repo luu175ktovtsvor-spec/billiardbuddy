@@ -144,6 +144,7 @@ describe('ProductTaskBrowserPreviewDock', () => {
     fireEvent.click(screen.getByLabelText('关闭预览'))
     expect(onClose).toHaveBeenCalledWith('preview')
     expect(onClose).not.toHaveBeenCalledWith('browser')
+    expect(useBrowserPanelStore.getState().bySession[previewKey]).toMatchObject({ isOpen: false })
   })
 
   it('accepts only explicit HTTP(S) navigation and never routes a product key through preview-fs', async () => {

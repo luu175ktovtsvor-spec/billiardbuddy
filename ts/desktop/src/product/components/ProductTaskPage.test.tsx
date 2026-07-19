@@ -427,6 +427,46 @@ describe('ProductTaskPage', () => {
     expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
   })
 
+  it('keeps open dock panels inactive until selected, with only one full-height panel visible', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
+    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '终端' }))
+    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('false')
+    expect(screen.getByTestId('product-task-dock-panel-review').classList.contains('hidden')).toBe(true)
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
+    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('false')
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('false')
+    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(true)
+    expect(screen.getByTestId('product-task-dock-panel-browser-preview').getAttribute('data-active')).toBe('true')
+    expect(screen.getByRole('button', { name: '浏览器' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '终端' }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('selects the next open panel after closing the active one without stealing focus when closing an inactive panel', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
+    fireEvent.click(screen.getByRole('button', { name: '终端' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭审阅', hidden: true }))
+    expect(screen.queryByTestId('product-task-dock-panel-review')).toBeNull()
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
+    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
+    expect(screen.getByTestId('product-task-dock-panel-browser-preview').getAttribute('data-active')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭浏览器' }))
+    expect(screen.queryByTestId('product-task-dock-panel-browser-preview')).toBeNull()
+    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('false')
+  })
+
   it('opens Browser and Preview only through the product task scoped panel store', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
