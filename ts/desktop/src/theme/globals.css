@@ -547,34 +547,6 @@
   --radius-2xl: 20px;
   --radius-full: 9999px;
 
-  /* ── Codex 四栏骨架令牌(布局，跨主题共用) ── */
-  --rail-w-collapsed: 72px;      /* 栏1 收起(图标轨) */
-  --rail-w-expanded: 240px;      /* 栏1 展开默认；拖拽 clamp 220–280 */
-  --tree-w: 260px;               /* 栏4 默认；min 200 max 360，折叠=0 */
-  --conv-fr: 1;                  /* 栏2 权重 */
-  --ws-fr: 1.3;                  /* 栏3 = 栏2 ×1.3 */
-  --h-toolbar: 46px;             /* 主工具/审阅条 */
-  --h-toolbar-pane: 40px;        /* tab 条/面包屑 */
-  --h-toolbar-sm: 36px;          /* 筛选/紧凑条 */
-  --h-nav-row: 30px;             /* 导航/树/列表行 */
-  --pad-row-y: 5px;
-  --pad-row-x: 8px;
-  --pad-panel: 12px;
-  --pad-toolbar: 16px;
-  --thread-max: 40rem;           /* 会话收口 640；宽模式 48rem */
-  --thread-margin: 24px;
-  --chat-font: 14px;
-  --chat-code-font: 12px;
-  --diff-font: 12px;
-  --diff-line-h: 21.6px;
-  --diff-num-col: 4ch;
-  --msg-marker-w: 26px;
-  /* diff 增删底(低透明只做语义) + 实色符号 — light */
-  --diff-added-bg: rgba(0, 162, 64, 0.15);
-  --diff-deleted-bg: rgba(186, 38, 35, 0.15);
-  --diff-added-fg: #00A240;
-  --diff-deleted-fg: #BA2623;
-  --diff-modified-fg: #923B0F;
 }
 
 [data-theme="white"] {
@@ -735,13 +707,6 @@
   --shadow-input: 0 0 0 .5px var(--color-border), 0 3px 7.5px #0003, 0 0 20px #0003;
   --shadow-control: 0 0 0 .5px var(--color-border), 0 1px 2px #0006;
   --shadow-popover: 0 8px 20px -6px rgba(0, 0, 0, 0.6), 0 0 0 .5px rgba(255, 255, 255, 0.08);
-
-  /* Dark-theme diff colors. */
-  --diff-added-bg: rgba(64, 201, 119, 0.23);
-  --diff-deleted-bg: rgba(250, 66, 62, 0.23);
-  --diff-added-fg: #40C977;
-  --diff-deleted-fg: #FA423E;
-  --diff-modified-fg: #FF8549;
 
   --color-primary: #4DA3FF;
   --color-primary-container: var(--bb-blue-400);
