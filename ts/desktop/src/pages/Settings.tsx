@@ -937,56 +937,55 @@ export function GeneralSettings() {
           {locale === 'zh' ? 'Agent 运行选项' : 'Agent runtime options'}
         </summary>
         <div className="pl-1">
-      <div className="mt-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.defaultPermissionTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.defaultPermissionDescription')}</p>
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-[var(--color-text-primary)]">
-                {t('settings.general.defaultPermissionLabel')}
-              </div>
-              <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                {t('settings.general.defaultPermissionHint')}
+          <div className="mt-6">
+            <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.defaultPermissionTitle')}</h2>
+            <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.defaultPermissionDescription')}</p>
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                    {t('settings.general.defaultPermissionLabel')}
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                    {t('settings.general.defaultPermissionHint')}
+                  </div>
+                </div>
+                <PermissionModeSelector
+                  value={permissionMode}
+                  onChange={(mode) => void setPermissionMode(mode)}
+                  workDir={t('settings.general.defaultPermissionScope')}
+                  menuPlacement="bottom"
+                />
               </div>
             </div>
-            <PermissionModeSelector
-              value={permissionMode}
-              onChange={(mode) => void setPermissionMode(mode)}
-              workDir={t('settings.general.defaultPermissionScope')}
-              menuPlacement="bottom"
-            />
           </div>
-        </div>
-      </div>
 
+          <div className="mt-8">
+            <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.autoDreamTitle')}</h2>
+            <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.autoDreamDescription')}</p>
+            <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
+              <input
+                type="checkbox"
+                aria-label={t('settings.general.autoDreamEnabled')}
+                checked={autoDreamEnabled}
+                onChange={(e) => handleAutoDreamToggle(e.target.checked)}
+                className={SETTINGS_CHECKBOX_INPUT_CLASS}
+              />
+              <SettingsCheckboxMark checked={autoDreamEnabled} />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                  {t('settings.general.autoDreamEnabled')}
+                </div>
+                <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
+                  {autoDreamEnabled
+                    ? t('settings.general.autoDreamHintOn')
+                    : t('settings.general.autoDreamHintOff')}
+                </div>
+              </div>
+            </label>
+          </div>
         </div>
       </details>
-
-      <div className="mt-8">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.autoDreamTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.autoDreamDescription')}</p>
-        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
-          <input
-            type="checkbox"
-            aria-label={t('settings.general.autoDreamEnabled')}
-            checked={autoDreamEnabled}
-            onChange={(e) => handleAutoDreamToggle(e.target.checked)}
-            className={SETTINGS_CHECKBOX_INPUT_CLASS}
-          />
-          <SettingsCheckboxMark checked={autoDreamEnabled} />
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">
-              {t('settings.general.autoDreamEnabled')}
-            </div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
-              {autoDreamEnabled
-                ? t('settings.general.autoDreamHintOn')
-                : t('settings.general.autoDreamHintOff')}
-            </div>
-          </div>
-        </label>
-      </div>
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">
         <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">

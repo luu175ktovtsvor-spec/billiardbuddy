@@ -586,12 +586,16 @@ describe('Settings > General tab', () => {
     expect(useSettingsStore.getState().permissionMode).toBe('bypassPermissions')
   })
 
-  it('keeps Auto-dream disabled by default and confirms before enabling it', async () => {
+  it('keeps Auto-dream inside collapsed runtime options and confirms before enabling it', async () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
+    expect(screen.getByLabelText('Enable Auto-dream')).not.toBeVisible()
+
+    fireEvent.click(screen.getByText('Agent runtime options'))
 
     const toggle = screen.getByLabelText('Enable Auto-dream')
+    expect(toggle).toBeVisible()
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
 
@@ -613,6 +617,7 @@ describe('Settings > General tab', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByText('Agent runtime options'))
     await act(async () => {
       fireEvent.click(screen.getByLabelText('Enable Auto-dream'))
     })
@@ -625,6 +630,7 @@ describe('Settings > General tab', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
+    fireEvent.click(screen.getByText('Agent runtime options'))
 
     for (const label of [
       'Enable Auto-dream',
