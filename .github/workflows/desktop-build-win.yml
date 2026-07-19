@@ -129,18 +129,22 @@ jobs:
       - name: 发布 Windows 安装包与更新清单
         shell: pwsh
         env:
-          BB_RELEASE_UPLOAD_SSH_KEY: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY }}
+          BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:BB_RELEASE_UPLOAD_SSH_KEY)) {
-            throw '缺少 GitHub Secret: BB_RELEASE_UPLOAD_SSH_KEY'
+          if ([string]::IsNullOrWhiteSpace($env:BB_RELEASE_UPLOAD_SSH_KEY_B64)) {
+            throw '缺少 GitHub Secret: BB_RELEASE_UPLOAD_SSH_KEY_B64'
           }
 
           $sshDir = Join-Path $env:USERPROFILE '.ssh'
           $keyPath = Join-Path $sshDir 'billiardbuddy-release-upload'
           $knownHostsPath = Join-Path $sshDir 'known_hosts'
           New-Item -ItemType Directory -Force $sshDir | Out-Null
-          $env:BB_RELEASE_UPLOAD_SSH_KEY | Set-Content -LiteralPath $keyPath -Encoding ascii -NoNewline
+          try {
+            [System.IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:BB_RELEASE_UPLOAD_SSH_KEY_B64))
+          } catch {
+            throw 'BB_RELEASE_UPLOAD_SSH_KEY_B64 不是有效的 Base64 私钥'
+          }
           & icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
           'zzyppz.cn ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJIxRR8LH+6jH3sUGNFy9HlxDKRF9MA9QLYm7AYuwa3P' |
           Set-Content -LiteralPath $knownHostsPath -Encoding ascii
