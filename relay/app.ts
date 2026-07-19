@@ -73,10 +73,10 @@ export function loadRelayConfig(env: Env): RelayConfig {
     // Terminal results must survive app restarts and users returning days later.
     // Active queued/running work is never swept regardless of this value.
     taskTtlMs: Math.max(1, intEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000)),
-    // 生图是昂贵且慢的同步上游。500 个桌面窗口可以被异步受理，但默认只让 6 个真实
+    // 生图是昂贵且慢的同步上游。1,000 个桌面窗口可以被异步受理，但默认只让 6 个真实
     // OpenAI 调用在途；只有在已测得该账号的图片 RPM/并发配额后才提高这个阀门。
     imgConc,
-    // A user may enqueue five windows, but one installation must not monopolize all
+    // A user may enqueue ten windows, but one installation must not monopolize all
     // paid upstream slots while 99 other users are waiting. With a 100-user burst this
     // keeps the six active image calls spread across six owners whenever possible.
     imgUserConc: Math.min(imgConc, Math.max(1, intEnv(env, 'RELAY_IMG_USER_CONC', 1))),
@@ -84,16 +84,16 @@ export function loadRelayConfig(env: Env): RelayConfig {
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
-    // 100 人同时各开 5 个窗口时，500 个任务可全部被短请求受理；额外的 100 个位置
+    // 100 人同时各开 10 个窗口时，1,000 个小任务可全部被短请求受理；额外的 200 个位置
     // 仅用于短暂重试/调度抖动。它是“可排队量”，不是对上游并发或完成时延的承诺。
-    queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 600)), // 全局在途(queued+running)总上限
-    // 和产品的单人 5 窗口假设对齐，避免一个 installation 抢占整条图片队列。
-    userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 5)), // 单 owner 在途上限
+    queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 1_200)), // 全局在途(queued+running)总上限
+    // 和产品的单人 10 窗口假设对齐，避免一个 installation 抢占整条图片队列。
+    userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 10)), // 单 owner 在途上限
     // 队列满时给网关/调用方明确的退避提示，而不是立刻并发重试放大流量。
     retryAfterSeconds: Math.min(3600, Math.max(1, intEnv(env, 'RELAY_RETRY_AFTER_SECONDS', 30))),
     // 20 MB decoded reference images expand to about 26.7 MB as base64, plus JSON framing.
     maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024)), // 提交请求体大小上限
-    // 500 个小文生图可同时排队，但不能让 500 个 32 MB 改图输入一起耗尽内存和 blob 磁盘。
+    // 1,000 个小文生图可同时排队，但不能让 1,000 个 32 MB 改图输入一起耗尽内存和 blob 磁盘。
     activeInputBytesMax,
     // Input chunks are temporarily held both as stream chunks and as a contiguous JSON
     // buffer before they can be written to the persistent blob. Keep that transient heap

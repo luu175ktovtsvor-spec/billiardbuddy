@@ -63,10 +63,10 @@ async function waitFor(condition: () => boolean | Promise<boolean>, message: str
   throw new Error(message)
 }
 
-test('capacity defaults admit the 100 users × 5 windows burst without increasing paid upstream concurrency', () => {
+test('capacity defaults admit the 100 users × 10 windows burst without increasing paid upstream concurrency', () => {
   const config = loadRelayConfig(baseEnv())
-  expect(config.queueMax).toBe(600)
-  expect(config.userMax).toBe(5)
+  expect(config.queueMax).toBe(1_200)
+  expect(config.userMax).toBe(10)
   expect(config.imgConc).toBe(6)
   expect(config.imgUserConc).toBe(1)
   expect(config.retryAfterSeconds).toBe(30)
@@ -83,6 +83,36 @@ test('capacity defaults admit the 100 users × 5 windows burst without increasin
   expect(malformed.imgUserConc).toBe(1)
   expect(malformed.retryAfterSeconds).toBe(1)
   expect(malformed.pendingInputBytesMax).toBe(64 * 1024 * 1024)
+})
+
+test('relay accepts a 100-user × 10 small-image burst while retaining six paid upstream slots', async () => {
+  let upstreamCalls = 0
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const fetch = createRelayFetch({
+    env: baseEnv(),
+    fetchImpl: async () => {
+      upstreamCalls++
+      await gate
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+
+  const responses = await Promise.all(Array.from({ length: 1_000 }, async (_, index) => {
+    const owner = `owner-${Math.floor(index / 10)}`
+    return fetch(submit(GEN, { 'x-relay-owner': owner, 'idempotency-key': `window-${index % 10}` }))
+  }))
+  expect(responses.every(response => response.status === 202)).toBe(true)
+  await waitFor(() => upstreamCalls === 6, 'default image semaphore did not reach six active calls')
+  const before = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+  expect(before).toMatchObject({ active: 1_000, queued: 994, running: 6, queue_max: 1_200, user_max: 10, img_conc: 6 })
+
+  release()
+  await waitFor(async () => {
+    const health = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+    return health.active === 0 && health.queued === 0 && health.running === 0
+  }, '1,000-task image burst did not drain')
+  expect(upstreamCalls).toBe(1_000)
 })
 
 test('same (owner, Idempotency-Key) resubmit returns the original task_id and runs upstream only once', async () => {

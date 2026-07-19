@@ -703,18 +703,18 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。真实短请求爬坡已验证 100 人 × 8 窗口时 800 路可直入
-    // 而不发生网关排队（尾延迟已明显上升），所以固定为 800 实际流、每安装最多 8 路、共享 app
-    // token 最多 800 路。200 个队列槽仅吸收短抖动且最多等 15 秒；这不替代长 SSE、长上下文、
-    // CPU 余量与真实混合负载的持续验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
+    // DeepSeek V4 Flash:真 key 只在服务器。受控假上游验证覆盖 100 人 × 10 窗口的 1,000 路
+    // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、共享 app token
+    // 最多 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
+    // CPU 余量与真实混合负载的渐进式验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
     // 2500；缺 key 时路由到它会 503，绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
-    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 800)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(8, intEnv(env, 'GW_DEEPSEEK_CONC', 800)))),
-    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 800))),
+    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(10, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
+    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
     deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
     deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
@@ -766,11 +766,11 @@ function loadConfig(env: Env): GatewayConfig {
     )),
     ingressBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_INGRESS_BODY_READ_TIMEOUT_MS', 30_000)),
     // Image generation itself is queued on relay; qfgw only accepts short submissions.
-    // Permit a 100×5 burst to reach relay's idempotent queue instead of throttling it to
+    // Permit a 100×10 burst to reach relay's idempotent queue instead of throttling it to
     // 18/min here. The byte reservation below is the memory guard for those submissions.
-    imgIpm: intEnv(env, 'GW_IMG_IPM', 600),
-    // RPM 桶耗尽后的短提交等待也必须有硬上限；默认 100 只影响超过首个 600/min burst 的流量。
-    imgQueueMax: Math.max(0, intEnv(env, 'GW_IMG_QUEUE_MAX', 100)),
+    imgIpm: intEnv(env, 'GW_IMG_IPM', 1_200),
+    // RPM 桶耗尽后的短提交等待也必须有硬上限；默认 200 只影响超过首个 1,200/min burst 的流量。
+    imgQueueMax: Math.max(0, intEnv(env, 'GW_IMG_QUEUE_MAX', 200)),
     // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
     // same 32 MB request ceiling at the public gateway before buffering or forwarding.
     imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),

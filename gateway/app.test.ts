@@ -76,7 +76,7 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(res.status).toBe(200)
   const body = await res.json()
   expect(body.ok).toBe(true)
-  // RPM 默认值已放开到不再节流正常文字流量。单装机默认按产品的 5 窗口上限，
+  // RPM 默认值已放开到不再节流正常文字流量。DeepSeek 单装机默认按产品的 10 窗口上限，
   // 全局闸与有界队列继续保护上游和网关内存。
   expect(body.limits.qwen_rpm).toBe(100_000)
   expect(body.limits.qwen_conc).toBe(16)
@@ -100,7 +100,7 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   // Default one-slot fairness means a multi-image request is serialized rather than
   // allowing its own first image to reject the second at the shared MiMo gate.
   expect(body.limits.vision_per_request_conc).toBe(1)
-  expect(body.limits.img_queue_max).toBe(100)
+  expect(body.limits.img_queue_max).toBe(200)
   expect(body.limits.relay_submit_timeout_ms).toBe(15_000)
   expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
   expect(body.quota).toEqual({})
@@ -1082,20 +1082,20 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   const body = await res.json()
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
-  // 真实短请求爬坡已观察到 800 路可直入；本合成用例锁定调度器不退化，不能替代长 SSE、
-  // 长上下文、CPU 余量与真实用户混合负载的持续验收。
+  // 本合成用例锁定 1,000 路调度器不退化；它不能替代长 SSE、长上下文、CPU 余量与
+  // 真实用户混合负载的渐进式验收。
   // 仅保留 200 个、最多 15 秒的短等待槽来吸收抖动，尾延迟上升时不会隐藏成长队列。
-  expect(body.limits.deepseek_conc).toBe(800)
-  expect(body.limits.deepseek_user_conc).toBe(8)
-  expect(body.limits.deepseek_token_conc).toBe(800)
+  expect(body.limits.deepseek_conc).toBe(1_000)
+  expect(body.limits.deepseek_user_conc).toBe(10)
+  expect(body.limits.deepseek_token_conc).toBe(1_000)
   expect(body.limits.deepseek_queue_max).toBe(200)
   expect(body.limits.deepseek_queue_max_wait_seconds).toBe(15)
   expect(body.capacity.deepseek).toMatchObject({
     active: 0,
     queued: 0,
-    maxConcurrent: 800,
-    maxConcurrentPerUser: 8,
-    maxConcurrentPerToken: 800,
+    maxConcurrent: 1_000,
+    maxConcurrentPerUser: 10,
+    maxConcurrentPerToken: 1_000,
     queueMax: 200,
     oldestQueueMs: 0,
   })
@@ -1200,7 +1200,7 @@ test('image task submit enforces its body limit before forwarding declared or st
   expect(streamed.calls).toEqual([])
 })
 
-test('image gateway admits a 100-user × 5-submit burst to relay while the body budget stays bounded', async () => {
+test('image gateway admits a 100-user × 10-submit burst to relay while the body budget stays bounded', async () => {
   let relayActive = 0
   let relayPeak = 0
   let openGate!: () => void
@@ -1225,14 +1225,14 @@ test('image gateway admits a 100-user × 5-submit burst to relay while the body 
     body: JSON.stringify({ mode: 'generate', prompt: `球房海报 ${n}` }),
   }))).then(async response => { await response.text(); return response.status })
 
-  const pending = Array.from({ length: 500 }, (_, n) => submit(n))
+  const pending = Array.from({ length: 1_000 }, (_, n) => submit(n))
   const deadline = performance.now() + 3000
-  while (relayActive !== 500 && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
-  expect(relayActive).toBe(500)
+  while (relayActive !== 1_000 && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(relayActive).toBe(1_000)
   const health = await fetch(new Request('http://local/healthz', authed()))
   const body = await health.json()
   expect(body.limits).toMatchObject({
-    img_ipm: 600,
+    img_ipm: 1_200,
     img_task_max_body_bytes: 32 * 1024 * 1024,
     ingress_inflight_body_bytes: 256 * 1024 * 1024,
   })
@@ -1241,9 +1241,9 @@ test('image gateway admits a 100-user × 5-submit burst to relay while the body 
 
   openGate()
   const statuses = await Promise.all(pending)
-  expect(statuses.filter(status => status === 202)).toHaveLength(500)
-  expect(relayPeak).toBe(500)
-  expect(usage.rows.filter(row => row.model === 'img' && row.ok)).toHaveLength(500)
+  expect(statuses.filter(status => status === 202)).toHaveLength(1_000)
+  expect(relayPeak).toBe(1_000)
+  expect(usage.rows.filter(row => row.model === 'img' && row.ok)).toHaveLength(1_000)
   const drained = await fetch(new Request('http://local/healthz', authed()))
   expect((await drained.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })

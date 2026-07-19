@@ -9,17 +9,17 @@
 #   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
-#   - 真实短请求爬坡已观察到 DeepSeek 100 人 × 8 窗口的 800 个实际流直入且无网关排队，但尾延迟
-#     已明显上升。因此 GW_DEEPSEEK_CONC=800 / GW_DEEPSEEK_USER_CONC=8 /
-#     GW_DEEPSEEK_TOKEN_CONC=800 是安全上限而非体验承诺；只留 GW_DEEPSEEK_QUEUE_MAX=200、
-#     GW_DEEPSEEK_QUEUE_MAX_WAIT=15 吸收短暂抖动，不把持续超载变成分钟级隐藏等待。2500 是上游
-#     账号额度，不等于单机 Bun 网关应直接开到 2500；/healthz(带 app token)会返回
-#     active/queued/queueMax/oldestQueueMs 供观察。
-#   - 在把线上阈值调高、或将 800 当成长期生产承诺前，必须以真 DeepSeek 账号逐级压测，并同时观察
+#   - 受控假上游压测已验证网关能公平调度 DeepSeek 100 人 × 10 窗口的 1,000 个请求而不在网关排队；
+#     这不是 1,000 路真实上游流的性能证明。因此 GW_DEEPSEEK_CONC=1000 / GW_DEEPSEEK_USER_CONC=10 /
+#     GW_DEEPSEEK_TOKEN_CONC=1000 只是待逐级线上验证的安全上限，不是体验承诺；只留
+#     GW_DEEPSEEK_QUEUE_MAX=200、GW_DEEPSEEK_QUEUE_MAX_WAIT=15 吸收短暂抖动，不把持续超载变成
+#     分钟级隐藏等待。2500 是上游账号额度，不等于单机 Bun 网关应直接开到 2500；/healthz(带 app token)
+#     会返回 active/queued/queueMax/oldestQueueMs 供观察。
+#   - 在把线上阈值调高、或将 1,000 当成长期生产承诺前，必须以真 DeepSeek 账号逐级压测，并同时观察
 #     长 SSE/长上下文下的 qfgw CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
 #     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
-#   - Qwen 仍保守使用 16 实际流。MiMo 的真实短请求爬坡达到 64 槽但高尾延迟明显，不能承诺
-#     100 人多窗口无等待。因此固定 GW_MIMO_CONC=64（账号级物理总上限）/
+#   - Qwen 仍保守使用 16 实际流。MiMo 尚无可复现的高并发真实上游验收，不能承诺
+#     100 人多窗口无等待。因此先固定 GW_MIMO_CONC=64（当前账号级物理总上限）/
 #     GW_MIMO_NATIVE_CONC=52（原生 MiMo 文本/Computer Use 槽）/
 #     GW_VISION_CONC=12（DeepSeek→MiMo 图片桥接槽）的硬预留，52 + 12 = 64。原生路径不能借用
 #     视觉的 12 槽，视觉也不会在 64 条原生请求之后排队；任一数值调整时必须同时校验三者之和等于
@@ -27,9 +27,9 @@
 #     GW_MIMO_TOKEN_CONC=64，只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发吸收，
 #     不把 100 人多窗口变成多分钟的隐藏等待。视觉侧另有 GW_VISION_QUEUE_MAX=24 的三秒短队列，
 #     不能据此宣称能承接 500 张图。
-#   - 生图提交默认 GW_IMG_IPM=600，目的是让 100 人 × 5 次的短提交进入 relay 的幂等任务队列；
+#   - 生图提交默认 GW_IMG_IPM=1200，目的是让 100 人 × 10 次的小请求进入 relay 的幂等任务队列；
 #     它不是 OpenAI/GPT 生图并发，实际生成并发仍由 relay 控制。首个 burst 后最多只保留
-#     GW_IMG_QUEUE_MAX=100 个令牌桶等待者，且单次 relay 提交最多等 GW_RELAY_SUBMIT_TIMEOUT_MS=15000；
+#     GW_IMG_QUEUE_MAX=200 个令牌桶等待者，且单次 relay 提交最多等 GW_RELAY_SUBMIT_TIMEOUT_MS=15000；
 #     这样异常跨境连接不会无界占住 socket 或 body。聊天、原生 Messages 与生图提交共用
 #     GW_INGRESS_INFLIGHT_BODY_BYTES(256MB，按读入/合并/解码/解析六倍预留)的大陆网关内存闸；
 #     GW_IMG_INFLIGHT_BODY_BYTES/GW_CHAT_INFLIGHT_BODY_BYTES 只保留为旧配置兼容别名。生产若调整图片
@@ -51,7 +51,7 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts; do
+for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts validate-mimo-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -62,6 +62,7 @@ install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
+install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
 if [ -f /tmp/gw.env ]; then
   install -m 600 /tmp/gw.env "$APPDIR/gw.env.new"
   mv -f "$APPDIR/gw.env.new" "$APPDIR/gw.env"
@@ -78,6 +79,11 @@ if ! grep -Eq '^[[:space:]]*GW_MIMO_CONC=' "$APPDIR/gw.env" \
   && ! grep -Eq '^[[:space:]]*GW_VISION_CONC=' "$APPDIR/gw.env"; then
   printf '\nGW_MIMO_CONC=64\nGW_MIMO_NATIVE_CONC=52\nGW_VISION_CONC=12\n' >> "$APPDIR/gw.env"
 fi
+
+# Fail before touching systemd if an operator supplied a partial or inconsistent
+# reservation. This script reads only the three non-secret capacity settings and never
+# sources gw.env, so app tokens and provider credentials cannot be executed or printed.
+"$APPDIR/validate-mimo-capacity-env.sh" "$APPDIR/gw.env"
 
 chmod 600 "$APPDIR/gw.env"
 cd "$APPDIR"
@@ -104,8 +110,8 @@ WorkingDirectory=/opt/qfgw
 ExecStart=__BUN_BIN__ /opt/qfgw/app.ts --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
-# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 8 窗口时最多约 800 个
-# 入站连接、800 个 DeepSeek 上游流；65536 为日志、健康检查、文件、重试和后续压测预留余量，避免
+# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 10 窗口时最多约 1,000 个
+# 入站连接、1,000 个 DeepSeek 上游流；65536 为日志、健康检查、文件、重试和后续压测预留余量，避免
 # 系统默认 soft nofile 在突发时把健康网关误判为上游故障。
 LimitNOFILE=65536
 UMask=0077

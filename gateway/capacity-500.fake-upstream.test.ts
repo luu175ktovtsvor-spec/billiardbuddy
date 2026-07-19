@@ -1,4 +1,4 @@
-// 100 用户 × 5 窗口基线及 100 用户 × 8 窗口默认 DeepSeek profile 的假 upstream 压测。
+// 100 用户 × 5 窗口基线及 100 用户 × 10 窗口默认 DeepSeek profile 的假 upstream 压测。
 //
 // 本文件刻意不访问真实 DeepSeek / MiMo 账号：用一个可控的假上游把请求挂住，观察网关
 // 实际发出的上游请求峰值、每个可信 token 的额度、取消后的排队回收和 response stream
@@ -11,7 +11,7 @@ import { createGatewayFetch, MemoryUsageStore } from './app'
 const USERS = 100
 const WINDOWS_PER_USER = 5
 const TOTAL = USERS * WINDOWS_PER_USER
-const MAX_WINDOWS_PER_USER = 8
+const MAX_WINDOWS_PER_USER = 10
 const MAX_TOTAL = USERS * MAX_WINDOWS_PER_USER
 
 type UpstreamKind = 'deepseek' | 'mimoText' | 'mimoVision'
@@ -264,7 +264,7 @@ for (const profile of [
   })
 }
 
-test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 8 窗口为 800 实际在途、零网关排队，全部可排空', async () => {
+test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 10 窗口为 1,000 实际在途、零网关排队，全部可排空', async () => {
   const sharedToken = 'shared-desktop-token'
   const upstream = createFakeUpstream({ holdText: true })
   const fetch = createGatewayFetch({
@@ -292,7 +292,7 @@ test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 8 窗�
   await eventually(async () => {
     const capacity = await health(fetch, sharedToken)
     return upstream.stats.deepseek.calls === MAX_TOTAL && capacity.deepseek.active === MAX_TOTAL && capacity.deepseek.queued === 0
-  }, 'default 800 active + zero queued DeepSeek calls', 10_000)
+  }, 'default 1000 active + zero queued DeepSeek calls', 10_000)
   expect(upstream.stats.deepseek).toMatchObject({ calls: MAX_TOTAL, inFlight: MAX_TOTAL, peak: MAX_TOTAL })
 
   upstream.openText()
