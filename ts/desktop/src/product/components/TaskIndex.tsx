@@ -17,7 +17,7 @@ import {
   type ProductTaskSkillCommand,
 } from '../api/taskCommands'
 import {
-  buildTaskComposerAgentCommands,
+  buildTaskComposerCommands,
   resolveTaskComposerRuntimeCommand,
   type TaskComposerCommand,
 } from '../taskComposerCommands'
@@ -353,25 +353,19 @@ export function TaskComposer({
     }
   }, [isSlashInput, normalizedWorkDir])
 
-  const agentSlashCommands = useMemo(
-    () => buildTaskComposerAgentCommands(discoverableAgents ?? []),
-    [discoverableAgents],
+  const taskComposerCommands = useMemo(
+    () => buildTaskComposerCommands(discoverableSkills ?? [], discoverableAgents ?? []),
+    [discoverableAgents, discoverableSkills],
   )
   const matchingCommands = useMemo<TaskComposerSlashCommand[]>(() => {
     if (query === null) return []
-    const skills: TaskComposerSlashCommand[] = (discoverableSkills ?? []).map((skill) => ({
-      key: `skill:${skill.name}`,
-      name: skill.name,
-      description: '',
-    }))
-    const agents: TaskComposerSlashCommand[] = agentSlashCommands.map((agent) => ({
-      ...agent,
-      key: `agent:${agent.runtimeName ?? agent.name}`,
-    }))
-    return [...skills, ...agents].filter((command) => (
+    return taskComposerCommands.map((command) => ({
+      ...command,
+      key: `command:${command.runtimeName ?? command.name}:${command.name}`,
+    })).filter((command) => (
       command.name.toLocaleLowerCase().startsWith(query)
     ))
-  }, [agentSlashCommands, discoverableSkills, query])
+  }, [query, taskComposerCommands])
   const hasAgentDiscoveryForCurrentWorkDir = agentDiscoveryWorkDir === normalizedWorkDir
   const visibleCommands = hasAgentDiscoveryForCurrentWorkDir ? matchingCommands : []
   const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
@@ -491,7 +485,7 @@ export function TaskComposer({
     }
     const initialAttachments = attachmentResult.attachments
     const initialMessage: ProductTaskInitialMessage = {
-      text: resolveTaskComposerRuntimeCommand(initialText.trim(), agentSlashCommands),
+      text: resolveTaskComposerRuntimeCommand(initialText.trim(), taskComposerCommands),
       attachments: initialAttachments,
     }
     void (initialMessage.text || initialAttachments.length > 0

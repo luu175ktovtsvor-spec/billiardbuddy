@@ -23,14 +23,24 @@ describe('productTaskCommandsApi', () => {
       .mockResolvedValueOnce(Response.json({
         agents: [{ displayName: 'agent-guide', runtimeName: 'claude-code-guide' }],
       }))
-      .mockResolvedValueOnce(Response.json({ commands: [{ name: 'venue-daily-review' }] }))
+      .mockResolvedValueOnce(Response.json({
+        commands: [{
+          runtimeName: 'venue-daily-review',
+          displayName: '复盘今天经营',
+          description: '把球房营业数据整理成经营复盘。',
+        }],
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(productTaskCommandsApi.listAgents('/workspace/桌球厅')).resolves.toEqual({
       agents: [{ displayName: 'agent-guide', runtimeName: 'claude-code-guide' }],
     })
     await expect(productTaskCommandsApi.listSkills('/workspace/桌球厅')).resolves.toEqual({
-      commands: [{ name: 'venue-daily-review' }],
+      commands: [{
+        runtimeName: 'venue-daily-review',
+        displayName: '复盘今天经营',
+        description: '把球房营业数据整理成经营复盘。',
+      }],
     })
 
     expect(fetchMock).toHaveBeenNthCalledWith(
