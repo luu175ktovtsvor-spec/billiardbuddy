@@ -24,7 +24,7 @@ afterEach(async () => {
 })
 
 describe('MediaProjectService image projects', () => {
-  test('uses one idempotent edit relay task, requests b64_json, and persists local image bytes', async () => {
+  test('uses one idempotent GPT edit task without legacy parameters and persists local image bytes', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const calls: Array<{ url: string; key: string | null; body?: Record<string, unknown> }> = []
@@ -47,9 +47,6 @@ describe('MediaProjectService image projects', () => {
               task_id: 'remote-1',
               status: 'succeeded',
               data: [{ b64_json: Buffer.from('png-bytes').toString('base64') }],
-              input_fidelity_requested: 'high',
-              input_fidelity_status: 'unsupported',
-              input_fidelity_risk: '请人工确认参考图一致性',
             })
       },
     })
@@ -64,15 +61,14 @@ describe('MediaProjectService image projects', () => {
     expect(duplicate.id).toBe(first.id)
     expect(calls.filter(call => call.url.endsWith('/v1/images/tasks'))).toHaveLength(1)
     expect(calls[0]?.key).toMatch(/^bb-media-[a-f0-9]{64}$/)
-    expect(calls[0]?.body).toMatchObject({ mode: 'edit', response_format: 'b64_json' })
+    expect(calls[0]?.body).toMatchObject({ mode: 'edit', model: 'gpt-image-2' })
+    expect(calls[0]?.body?.response_format).toBeUndefined()
+    expect(calls[0]?.body?.input_fidelity).toBeUndefined()
 
     expect((await service.getTask(first.id)).status).toBe('running')
     const completed = await service.getTask(first.id)
     expect(completed.status).toBe('succeeded')
-    expect(completed.result).toMatchObject({
-      input_fidelity_status: 'unsupported',
-      input_fidelity_risk: '请人工确认参考图一致性',
-    })
+    expect(completed.result?.input_fidelity_status).toBeUndefined()
     const ready = await service.getProject(project.id)
     expect(ready.kind).toBe('image')
     if (ready.kind !== 'image') throw new Error('wrong kind')
@@ -94,6 +90,57 @@ describe('MediaProjectService image projects', () => {
       output_path: savedPath,
     })).toEqual({ path: savedPath })
     expect(await readFile(savedPath, 'utf8')).toBe('png-bytes')
+  })
+
+  test('submits the selected Seedream model and preserves its canvas size and output mime type', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    let submittedBody: Record<string, unknown> | undefined
+    let polls = 0
+    const mediaRoot = await root()
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      fetchImpl: async (_input, init) => {
+        if (init?.method === 'POST') {
+          submittedBody = JSON.parse(String(init.body)) as Record<string, unknown>
+          return Response.json({ task_id: 'seedream-task', status: 'queued' }, { status: 202 })
+        }
+        polls += 1
+        return Response.json(polls === 1
+          ? { task_id: 'seedream-task', status: 'running' }
+          : {
+              task_id: 'seedream-task',
+              status: 'succeeded',
+              data: [{
+                b64_json: Buffer.from('webp-bytes').toString('base64'),
+                mime_type: 'image/webp',
+              }],
+            })
+      },
+    })
+    const project = await service.createImageProject({
+      prompt: '竖版中文活动海报',
+      model: 'doubao-seedream-4-5-251128',
+      size: '1600x2848',
+    })
+    const task = await service.submitImageProject(project.id)
+    await service.getTask(task.id)
+    await service.getTask(task.id)
+
+    expect(submittedBody).toMatchObject({
+      model: 'doubao-seedream-4-5-251128',
+      size: '1600x2848',
+    })
+    const ready = await service.getProject(project.id)
+    if (ready.kind !== 'image') throw new Error('wrong kind')
+    expect(ready).toMatchObject({
+      model: 'doubao-seedream-4-5-251128',
+      size: '1600x2848',
+      outputs: [expect.objectContaining({
+        mime_type: 'image/webp',
+        asset_path: expect.stringMatching(/\.webp$/),
+      })],
+    })
   })
 
   test('rejects a project asset directory symlink that points outside the media asset root', async () => {
@@ -213,6 +260,7 @@ describe('MediaProjectService image projects', () => {
     await expect(service.updateImageProject(project.id, {
       revision: failed.revision,
       prompt: '第二版海报',
+      model: 'gpt-image-2',
       size: '1536x1024',
       count: 2,
     })).rejects.toMatchObject({ code: 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED' })
@@ -220,6 +268,7 @@ describe('MediaProjectService image projects', () => {
     const edited = await service.updateImageProject(project.id, {
       revision: failed.revision,
       prompt: '第二版海报',
+      model: 'gpt-image-2',
       size: '1536x1024',
       count: 2,
       confirm_unknown_retry: true,
@@ -588,6 +637,15 @@ describe('MediaProjectService video projects', () => {
     }
     expect(done.status).toBe('succeeded')
     expect(await readFile(outputPath, 'utf8')).toBe('rendered')
+    expect(await service.availableVideoOutputMimeType(project.id)).toBe('video/mp4')
+    const preview = await service.videoOutputResponse(
+      project.id,
+      new Request('http://localhost/video', { headers: { Range: 'bytes=0-3' } }),
+    )
+    expect(preview.status).toBe(206)
+    expect(preview.headers.get('Content-Type')).toBe('video/mp4')
+    expect(preview.headers.get('Content-Range')).toBe('bytes 0-3/8')
+    expect(await preview.text()).toBe('rend')
     const ffmpeg = commands.find(command => command.includes('-filter_complex'))
     expect(ffmpeg).toContain('mpeg4')
     expect(ffmpeg).toContain('+faststart')

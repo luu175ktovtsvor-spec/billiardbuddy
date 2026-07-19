@@ -297,6 +297,24 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
                   <div className="grid gap-3 p-3">
                     {project.assets.map((asset) => {
                       const url = getApiUrl(asset.url)
+                      if (asset.kind === 'video') {
+                        return (
+                          <figure key={asset.id}>
+                            <video
+                              src={url}
+                              controls
+                              preload="metadata"
+                              aria-label={`${project.title} 视频预览`}
+                              className="max-h-80 w-full rounded-lg border border-[var(--color-border)] bg-black object-contain"
+                            >
+                              当前运行环境不支持视频预览。
+                            </video>
+                            <figcaption className="mt-1">
+                              <a href={url} target="_blank" rel="noreferrer" className="text-xs text-[var(--color-primary)] hover:underline">打开视频</a>
+                            </figcaption>
+                          </figure>
+                        )
+                      }
                       return (
                         <figure key={asset.id}>
                           <img
@@ -314,7 +332,7 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
                 ) : (
                   <p className="px-3 py-3 text-xs leading-5 text-[var(--color-text-tertiary)]">
                     {project.kind === 'video'
-                      ? '视频导出位于本机选择的位置，任务页不会读取或公开该路径。'
+                      ? '还没有可预览的已导出视频。'
                       : '当前没有可安全预览的本地图片资产。'}
                   </p>
                 )}

@@ -46,6 +46,7 @@ const project: ImageWorkbenchProject = {
   updated_at: '2026-07-18T00:01:00.000Z',
   state: 'failed',
   mode: 'generate',
+  model: 'gpt-image-2',
   prompt: '活动海报',
   size: '1024x1024',
   count: 1,
@@ -91,6 +92,18 @@ beforeEach(() => {
 })
 
 describe('ImageWorkbench unknown paid result', () => {
+  it('shows both image models and the Seedream-specific canvas sizes', async () => {
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [] })
+    render(<ImageWorkbench />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '豆包 Seedream 适合中文海报与更多长宽比例' }))
+    const canvas = screen.getByLabelText('画布')
+    expect(canvas).toHaveValue('2048x2048')
+    expect(screen.getByRole('option', { name: '2K 短视频 9:16 · 1600×2848' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '2K 电影宽屏 21:9 · 3136×1344' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '4K 短视频 9:16 · 3040×5504' })).toBeInTheDocument()
+  })
+
   it('backs queued image polls off while keeping running image polls responsive', () => {
     const queued = imageTaskPollDelayMs('task_queue001', 'queued', 30)
     const running = imageTaskPollDelayMs('task_queue001', 'generating', 3)

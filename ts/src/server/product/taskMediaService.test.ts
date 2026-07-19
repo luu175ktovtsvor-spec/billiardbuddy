@@ -32,6 +32,7 @@ function imageProject(owner: string | undefined, id = 'img_12345678'): MediaProj
     updated_at: '2026-07-19T00:00:00.000Z',
     state: 'ready',
     mode: 'generate',
+    model: 'gpt-image-2',
     prompt: 'private prompt',
     size: '1024x1024',
     count: 1,
@@ -255,7 +256,7 @@ describe('ProductTaskMediaService', () => {
     )).rejects.toMatchObject({ statusCode: 404, message: '找不到任务媒体产物' })
   })
 
-  test('keeps completed video exports state-only without exposing their local output path', async () => {
+  test('projects and streams a completed video without exposing its local output path', async () => {
     const owner = ownerApi()
     const video: MediaProject = {
       schema_version: 1,
@@ -279,11 +280,37 @@ describe('ProductTaskMediaService', () => {
       getTask: async () => mediaTask,
       attachProjectToProductTask: async () => video,
       availableImageOutputAssetPath: async () => null,
+      availableVideoOutputMimeType: async () => 'video/quicktime',
+      videoOutputResponse: async (_projectId, request) => new Response('video-bytes', {
+        status: request.headers.has('range') ? 206 : 200,
+        headers: { 'Content-Type': 'video/quicktime' },
+      }),
     } as never)
 
     const result = await service.listForTask(TASK_ID)
 
-    expect(result.projects[0]?.assets).toEqual([])
+    expect(result.projects[0]?.assets).toEqual([{
+      id: 'export',
+      kind: 'video',
+      mimeType: 'video/quicktime',
+      url: `/api/product/tasks/${TASK_ID}/media/projects/${video.id}/assets/export`,
+    }])
     expect(JSON.stringify(result)).not.toContain('/private/export/activity.mov')
+
+    const response = await service.assetResponse(
+      TASK_ID,
+      video.id,
+      'export',
+      new Request('http://localhost/media', { headers: { Range: 'bytes=0-3' } }),
+    )
+    expect(response.status).toBe(206)
+    expect(response.headers.get('Content-Type')).toBe('video/quicktime')
+    expect(await response.text()).toBe('video-bytes')
+    await expect(service.assetResponse(
+      OTHER_TASK_ID,
+      video.id,
+      'export',
+      new Request('http://localhost/media'),
+    )).rejects.toMatchObject({ statusCode: 404, message: '找不到任务媒体产物' })
   })
 })

@@ -57,7 +57,110 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
 })
 
-test('submit edit sends multipart b64_json output contract to /images/edits with attached image', async () => {
+test('Seedream generate uses the native JSON contract and persists each returned image', async () => {
+  const generationBodies: Array<Record<string, unknown>> = []
+  let generated = 0
+  const fetch = createRelayFetch({
+    env: env({
+      RELAY_ARK_KEY: 'ark-real',
+      RELAY_ARK_BASE: 'https://ark.example/api/v3',
+    }),
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      expect(url).toBe('https://ark.example/api/v3/images/generations')
+      expect((init?.headers as Record<string, string>).authorization).toBe('Bearer ark-real')
+      generationBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+      generated += 1
+      return Response.json({
+        data: [{ b64_json: Buffer.from(`seedream-${generated}`).toString('base64') }],
+      })
+    },
+  })
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'generate',
+      model: 'doubao-seedream-4-5-251128',
+      prompt: '中文活动海报',
+      n: 2,
+      size: '1536x2736',
+    }),
+  }))
+  expect(submit.status).toBe(202)
+  const { task_id } = await submit.json()
+  const done = await pollUntilDone(fetch, task_id)
+  expect(done.status).toBe('succeeded')
+  expect(done.data).toHaveLength(2)
+  expect(done.data[0]).toMatchObject({
+    b64_json: Buffer.from('seedream-1').toString('base64'),
+    mime_type: 'image/png',
+  })
+  expect(generationBodies).toEqual([
+    {
+      model: 'doubao-seedream-4-5-251128',
+      prompt: '中文活动海报',
+      size: '1536x2736',
+      watermark: false,
+      response_format: 'b64_json',
+    },
+    {
+      model: 'doubao-seedream-4-5-251128',
+      prompt: '中文活动海报',
+      size: '1536x2736',
+      watermark: false,
+      response_format: 'b64_json',
+    },
+  ])
+})
+
+test('Seedream edit sends reference images in JSON instead of OpenAI multipart', async () => {
+  let generationBody: Record<string, unknown> | null = null
+  const fetch = createRelayFetch({
+    env: env({ RELAY_ARK_KEY: 'ark-real', RELAY_ARK_BASE: 'https://ark.example/api/v3' }),
+    fetchImpl: async (_input, init) => {
+      generationBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+  const image = `data:image/png;base64,${B64}`
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'edit',
+      model: 'doubao-seedream-4-5-251128',
+      prompt: '把标题改成周五台球夜',
+      size: '2048x2048',
+      images: [image],
+    }),
+  }))
+  const { task_id } = await submit.json()
+  expect((await pollUntilDone(fetch, task_id)).status).toBe('succeeded')
+  expect(generationBody).toMatchObject({
+    image,
+    sequential_image_generation: 'disabled',
+    watermark: false,
+  })
+})
+
+test('Seedream submission fails closed before queueing when its server credential is absent', async () => {
+  const fetch = createRelayFetch({ env: env(), fetchImpl: async () => Response.json({}) })
+  const response = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'generate',
+      model: 'doubao-seedream-4-5-251128',
+      prompt: '海报',
+      size: '2048x2048',
+    }),
+  }))
+  expect(response.status).toBe(503)
+  expect(await response.json()).toMatchObject({ error: expect.stringContaining('豆包生图未配置') })
+})
+
+test('submit edit uses the GPT Image 2 multipart contract with attached images', async () => {
   let editUrl = ''
   let form: FormData | null = null
   const fetch = createRelayFetch({
@@ -86,14 +189,16 @@ test('submit edit sends multipart b64_json output contract to /images/edits with
   expect(editUrl).toBe('https://api.openai.example/v1/images/edits')
   expect(form).toBeInstanceOf(FormData)
   expect((form as unknown as FormData).getAll('image')).toHaveLength(1)
-  expect((form as unknown as FormData).get('response_format')).toBe('b64_json')
+  expect((form as unknown as FormData).get('response_format')).toBeNull()
 })
 
-test('submit edit forwards input_fidelity when the deployed endpoint accepts it', async () => {
+test('GPT Image 2 omits legacy response_format and input_fidelity parameters', async () => {
   let form: FormData | null = null
+  let upstreamCalls = 0
   const fetch = createRelayFetch({
     env: env(),
     fetchImpl: async (_input, init) => {
+      upstreamCalls += 1
       form = init?.body as FormData
       return Response.json({ data: [{ b64_json: B64 }] })
     },
@@ -105,35 +210,13 @@ test('submit edit forwards input_fidelity when the deployed endpoint accepts it'
   }))
   const { task_id } = await submit.json()
   const done = await pollUntilDone(fetch, task_id)
-  expect((form as unknown as FormData).get('input_fidelity')).toBe('high')
-  expect(done).toMatchObject({
-    input_fidelity_requested: 'high',
-    input_fidelity_status: 'accepted',
-  })
+  expect(upstreamCalls).toBe(1)
+  expect((form as unknown as FormData).get('input_fidelity')).toBeNull()
+  expect((form as unknown as FormData).get('response_format')).toBeNull()
+  expect(done.status).toBe('succeeded')
+  expect(done.input_fidelity_requested).toBeUndefined()
+  expect(done.input_fidelity_status).toBeUndefined()
   expect(done.input_fidelity_risk).toBeUndefined()
-})
-
-test('submit edit retries without input_fidelity only after an explicit endpoint rejection', async () => {
-  const fidelities: Array<FormDataEntryValue | null> = []
-  const fetch = createRelayFetch({
-    env: env(),
-    fetchImpl: async (_input, init) => {
-      const form = init?.body as FormData
-      fidelities.push(form.get('input_fidelity'))
-      if (fidelities.length === 1) return Response.json({ error: { message: 'unknown parameter input_fidelity' } }, { status: 400 })
-      return Response.json({ data: [{ b64_json: B64 }] })
-    },
-  })
-  const submit = await fetch(new Request('http://relay/images/tasks', {
-    method: 'POST',
-    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
-    body: JSON.stringify({ mode: 'edit', model: 'gpt-image-2', prompt: 'portrait', images: [`data:image/png;base64,${B64}`], input_fidelity: 'high' }),
-  }))
-  const { task_id } = await submit.json()
-  const done = await pollUntilDone(fetch, task_id)
-  expect(fidelities).toEqual(['high', null])
-  expect(done).toMatchObject({ input_fidelity_requested: 'high', input_fidelity_status: 'unsupported' })
-  expect(done.input_fidelity_risk).toContain('自动降级')
 })
 
 test('OpenAI failure is captured as failed task, not thrown', async () => {

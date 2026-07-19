@@ -47,7 +47,7 @@ afterEach(() => {
 })
 
 describe('ProductTaskMediaDock', () => {
-  it('renders verified image assets and keeps video exports state-only without exposing output paths', async () => {
+  it('renders verified image and video assets without exposing output paths', async () => {
     apiMocks.getMedia.mockResolvedValue({
       taskId: 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb',
       projects: [
@@ -72,7 +72,12 @@ describe('ProductTaskMediaDock', () => {
           state: 'complete',
           updatedAt: '2026-07-19T00:01:00.000Z',
           mediaTask: { status: 'succeeded', progress: 100, stage: '导出完成', outcomeUnknown: false },
-          assets: [],
+          assets: [{
+            id: 'export',
+            kind: 'video',
+            mimeType: 'video/mp4',
+            url: '/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/vid_12345678/assets/export',
+          }],
         },
       ],
     })
@@ -89,8 +94,14 @@ describe('ProductTaskMediaDock', () => {
       'href',
       'http://127.0.0.1:49237/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/img_12345678/assets/out_12345678.png',
     )
-    expect(screen.queryByLabelText('活动集锦 视频预览')).not.toBeInTheDocument()
-    expect(screen.getByText('视频导出位于本机选择的位置，任务页不会读取或公开该路径。')).toBeInTheDocument()
+    expect(screen.getByLabelText('活动集锦 视频预览')).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:49237/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/vid_12345678/assets/export',
+    )
+    expect(screen.getByRole('link', { name: '打开视频' })).toHaveAttribute(
+      'href',
+      'http://127.0.0.1:49237/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/vid_12345678/assets/export',
+    )
     expect(screen.queryByText('/private/export/activity.mp4')).not.toBeInTheDocument()
     expect(screen.getByText('此处不会创建、生成或导出媒体；你可以明确关联一个尚未归属任务的已有项目，其他操作仍需在独立媒体工作台中完成。')).toBeInTheDocument()
     expect(apiMocks.getMedia).toHaveBeenCalledWith('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')

@@ -9,7 +9,19 @@ const inputSchema = lazySchema(() => z.discriminatedUnion('action', [
     prompt: z.string().min(1).max(8000),
     title: z.string().min(1).max(160).optional(),
     workspace_root: z.string().min(1).max(4096).optional(),
-    size: z.enum(['1024x1024', '1536x1024', '1024x1536']).optional(),
+    model: z.enum(['gpt-image-2', 'doubao-seedream-4-5-251128']).optional(),
+    size: z.enum([
+      '1024x1024', '1536x1024', '1024x1536',
+      '2048x1152', '3840x2160', '2160x3840',
+      '2304x1728', '1728x2304', '2848x1600',
+      '1600x2848', '2496x1664', '1664x2496',
+      '3136x1344', '4096x4096', '4704x3520',
+      '3520x4704', '5504x3040', '3040x5504',
+      '4992x3328', '3328x4992', '6240x2656',
+      '2048x2048', '2352x1568', '1568x2352',
+      '1680x2240', '2240x1680', '1536x2736',
+      '2736x1536', '1216x3040', '3040x1216',
+    ]).optional(),
   }),
   z.strictObject({
     action: z.literal('create_video_project'),
@@ -61,7 +73,19 @@ const imageStates = new Set(['draft', 'queued', 'generating', 'ready', 'failed']
 const videoStates = new Set(['draft', 'ready', 'rendering', 'complete', 'failed'])
 const taskKinds = new Set(['image.generate', 'video.probe', 'video.render'])
 const taskStatuses = new Set(['queued', 'running', 'committing', 'succeeded', 'failed', 'cancelled'])
-const imageSizes = new Set(['1024x1024', '1536x1024', '1024x1536'])
+const imageModels = new Set(['gpt-image-2', 'doubao-seedream-4-5-251128'])
+const imageSizes = new Set([
+  '1024x1024', '1536x1024', '1024x1536',
+  '2048x1152', '3840x2160', '2160x3840',
+  '2304x1728', '1728x2304', '2848x1600',
+  '1600x2848', '2496x1664', '1664x2496',
+  '3136x1344', '4096x4096', '4704x3520',
+  '3520x4704', '5504x3040', '3040x5504',
+  '4992x3328', '3328x4992', '6240x2656',
+  '2048x2048', '2352x1568', '1568x2352',
+  '1680x2240', '2240x1680', '1536x2736',
+  '2736x1536', '1216x3040', '3040x1216',
+])
 const inputFidelityStatuses = new Set(['accepted', 'unsupported'])
 
 function localServerBase(): string {
@@ -89,6 +113,7 @@ function requestFor(input: z.infer<InputSchema>): { method: string; path: string
           prompt: input.prompt,
           title: input.title,
           workspace_root: input.workspace_root,
+          model: input.model,
           size: input.size,
         },
       }
@@ -216,6 +241,7 @@ function sanitizeProject(project: Record<string, unknown>): Record<string, unkno
     setString(safeProject, 'title', project.title, 160)
     setInteger(safeProject, 'revision', project.revision, 0, Number.MAX_SAFE_INTEGER)
     setString(safeProject, 'mode', safeEnum(project.mode, new Set(['generate', 'edit'])), 16)
+    setString(safeProject, 'model', safeEnum(project.model, imageModels), 64)
     setString(safeProject, 'prompt', project.prompt, 8000)
     setString(safeProject, 'size', safeEnum(project.size, imageSizes), 16)
     setInteger(safeProject, 'count', project.count, 1, 4)

@@ -1,6 +1,8 @@
 import type {
   CreateImageProjectInput,
   CreateVideoProjectInput,
+  ImageCanvasSize,
+  ImageGenerationModel,
   ImageWorkbenchProject,
   MediaProject,
   MediaTask,
@@ -104,6 +106,8 @@ export const mediaApi = {
 export type {
   CreateImageProjectInput,
   CreateVideoProjectInput,
+  ImageCanvasSize,
+  ImageGenerationModel,
   ImageWorkbenchProject,
   MediaProject,
   MediaTask,

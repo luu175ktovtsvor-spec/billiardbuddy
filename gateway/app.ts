@@ -1553,13 +1553,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
-      // GPT 生图异步任务:提交(短请求,转发到美国 relay 任务服务;慢调用在美国本地跑,绕开跨境长连接 60s 被掐)。
+      // 生图异步任务:提交短请求到 relay；relay 再按模型调用 GPT Image 或豆包 Seedream。
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
         const user = auth(config, request)
         // Relay forwarding can cross the default Bun 10 s idle window even though image
         // generation itself is asynchronous. Disable it before buffering/rate waiting.
         server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
         try {
@@ -1630,7 +1630,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // 10 s idle timeout before that request so a slow relay acknowledgement is
         // not turned into a client-side socket reset.
         server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/cancel'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
         const upstream = await fetchImpl(
@@ -1646,7 +1646,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         return await proxyJsonOrRaw(upstream)
       }
 
-      // GPT 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",
+      // 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",
       // 拿别人的 task id 轮询会被 relay 返 403。
       if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
         const user = auth(config, request)
@@ -1654,7 +1654,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // forwarding so Bun's default 10 s idle timeout cannot reset the client
         // socket while the relay is still responding.
         server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
         // The load runner asks only for compact terminal metadata so it never pulls

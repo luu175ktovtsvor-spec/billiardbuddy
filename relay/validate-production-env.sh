@@ -82,8 +82,10 @@ validate_blob_dir() {
 
 db_path="$(read_value RELAY_DB)"
 blob_dir="$(read_value RELAY_BLOB_DIR)"
+ark_key="$(read_value RELAY_ARK_KEY)"
 [[ -n "$db_path" && "$db_path" != ':memory:' ]] || die 'RELAY_DB must be a persistent SQLite path'
 [[ -n "$blob_dir" ]] || die 'RELAY_BLOB_DIR must be configured for durable queued input'
+[[ -n "$ark_key" ]] || die 'RELAY_ARK_KEY must be configured for the Seedream image model'
 while [[ "$blob_dir" == */ && "$blob_dir" != '/' ]]; do
   blob_dir="${blob_dir%/}"
 done

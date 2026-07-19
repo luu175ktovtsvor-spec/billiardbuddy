@@ -3,6 +3,8 @@ import { Download, ImagePlus, Loader2, Minus, Plus, RefreshCw, Sparkles, X } fro
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
+  type ImageCanvasSize,
+  type ImageGenerationModel,
   mediaApi,
   mediaUserFacingError,
 } from '../../api/media'
@@ -23,6 +25,60 @@ function stateLabel(state: string): string {
 type ReferenceImage = { name: string; dataUrl: string; size: number }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+const IMAGE_MODEL_OPTIONS: Array<{
+  value: ImageGenerationModel
+  label: string
+  description: string
+}> = [
+  {
+    value: 'gpt-image-2',
+    label: 'GPT Image',
+    description: '适合高保真创意与参考图编辑',
+  },
+  {
+    value: 'doubao-seedream-4-5-251128',
+    label: '豆包 Seedream',
+    description: '适合中文海报与更多长宽比例',
+  },
+]
+
+const IMAGE_SIZE_OPTIONS: Record<ImageGenerationModel, Array<{
+  value: ImageCanvasSize
+  label: string
+}>> = {
+  'gpt-image-2': [
+    { value: '1024x1024', label: '方形 1:1 · 1024×1024' },
+    { value: '1536x1024', label: '横版 3:2 · 1536×1024' },
+    { value: '1024x1536', label: '竖版 2:3 · 1024×1536' },
+    { value: '2048x2048', label: '2K 方形 1:1 · 2048×2048' },
+    { value: '2048x1152', label: '2K 横版 16:9 · 2048×1152' },
+    { value: '3840x2160', label: '4K 横版 16:9 · 3840×2160' },
+    { value: '2160x3840', label: '4K 竖版 9:16 · 2160×3840' },
+  ],
+  'doubao-seedream-4-5-251128': [
+    { value: '2048x2048', label: '2K 方形 1:1 · 2048×2048' },
+    { value: '2304x1728', label: '2K 横版 4:3 · 2304×1728' },
+    { value: '1728x2304', label: '2K 竖版 3:4 · 1728×2304' },
+    { value: '2848x1600', label: '2K 宽屏 16:9 · 2848×1600' },
+    { value: '1600x2848', label: '2K 短视频 9:16 · 1600×2848' },
+    { value: '2496x1664', label: '2K 横版 3:2 · 2496×1664' },
+    { value: '1664x2496', label: '2K 竖版 2:3 · 1664×2496' },
+    { value: '3136x1344', label: '2K 电影宽屏 21:9 · 3136×1344' },
+    { value: '4096x4096', label: '4K 方形 1:1 · 4096×4096' },
+    { value: '4704x3520', label: '4K 横版 4:3 · 4704×3520' },
+    { value: '3520x4704', label: '4K 竖版 3:4 · 3520×4704' },
+    { value: '5504x3040', label: '4K 宽屏 16:9 · 5504×3040' },
+    { value: '3040x5504', label: '4K 短视频 9:16 · 3040×5504' },
+    { value: '4992x3328', label: '4K 横版 3:2 · 4992×3328' },
+    { value: '3328x4992', label: '4K 竖版 2:3 · 3328×4992' },
+    { value: '6240x2656', label: '4K 电影宽屏 21:9 · 6240×2656' },
+  ],
+}
+
+function modelLabel(model: ImageGenerationModel): string {
+  return IMAGE_MODEL_OPTIONS.find(option => option.value === model)?.label ?? model
+}
 
 /**
  * A queued task can sit behind a paid image slot for minutes. Respect the relay's
@@ -78,7 +134,8 @@ export function ImageWorkbench() {
   const [prompt, setPrompt] = useState('')
   const [creating, setCreating] = useState(false)
   const [mode, setMode] = useState<'generate' | 'edit'>('generate')
-  const [size, setSize] = useState<'1024x1024' | '1536x1024' | '1024x1536'>('1024x1024')
+  const [model, setModel] = useState<ImageGenerationModel>('gpt-image-2')
+  const [size, setSize] = useState<ImageCanvasSize>('1024x1024')
   const [count, setCount] = useState(1)
   const [references, setReferences] = useState<ReferenceImage[]>([])
   const [selectedOutput, setSelectedOutput] = useState(0)
@@ -104,6 +161,7 @@ export function ImageWorkbench() {
   const taskError = task?.error
     ? mediaUserFacingError({ code: task.error_code })
     : null
+  const [previewWidth, previewHeight] = (active?.size ?? size).split('x').map(Number)
 
   useEffect(() => {
     void loadProjects('image')
@@ -116,6 +174,7 @@ export function ImageWorkbench() {
   useEffect(() => {
     if (!active || creating) return
     setPrompt(active.prompt)
+    setModel(active.model)
     setSize(active.size)
     setCount(active.count)
   }, [active, creating])
@@ -146,6 +205,7 @@ export function ImageWorkbench() {
     selectImage(null)
     setPrompt('')
     setMode('generate')
+    setModel('gpt-image-2')
     setSize('1024x1024')
     setCount(1)
     setReferences([])
@@ -159,6 +219,7 @@ export function ImageWorkbench() {
     await createImage({
       prompt: value,
       mode,
+      model,
       size,
       count,
       reference_images: mode === 'edit' ? references.map(reference => reference.dataUrl) : [],
@@ -212,7 +273,12 @@ export function ImageWorkbench() {
 
   const hasDraftChanges = Boolean(
     active
-    && (prompt.trim() !== active.prompt || size !== active.size || count !== active.count),
+    && (
+      prompt.trim() !== active.prompt
+      || model !== active.model
+      || size !== active.size
+      || count !== active.count
+    ),
   )
 
   const saveActiveDraft = async (confirmUnknownRetry = false) => {
@@ -221,9 +287,16 @@ export function ImageWorkbench() {
     return await saveImageDraft({
       ...active,
       prompt: prompt.trim(),
+      model,
       size,
       count,
     }, confirmUnknownRetry)
+  }
+
+  const selectModel = (nextModel: ImageGenerationModel) => {
+    setModel(nextModel)
+    const supported = IMAGE_SIZE_OPTIONS[nextModel].some(option => option.value === size)
+    if (!supported) setSize(IMAGE_SIZE_OPTIONS[nextModel][0]!.value)
   }
 
   const startGeneration = async () => {
@@ -294,7 +367,10 @@ export function ImageWorkbench() {
               className="max-h-full max-w-full object-contain shadow-[var(--shadow-popover)]"
             />
           ) : (
-            <div className="flex aspect-square w-[min(68vh,70%)] max-w-[720px] items-center justify-center border border-dashed border-[var(--color-border)] bg-[var(--color-app-main)]">
+            <div
+              className="flex max-h-[68vh] w-[min(68vh,70%)] max-w-[720px] items-center justify-center border border-dashed border-[var(--color-border)] bg-[var(--color-app-main)]"
+              style={{ aspectRatio: `${previewWidth || 1} / ${previewHeight || 1}` }}
+            >
               {active && ['queued', 'generating'].includes(active.state) ? (
                 <Loader2 size={28} className="animate-spin text-[var(--color-brand)]" aria-label="生成中" />
               ) : (
@@ -395,6 +471,26 @@ export function ImageWorkbench() {
                     )}
                   </div>
                 )}
+                <div className="mt-3">
+                  <div className="mb-1 text-[12px] text-[var(--color-text-secondary)]">生图模型</div>
+                  <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">
+                    {IMAGE_MODEL_OPTIONS.map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => selectModel(option.value)}
+                        className="rounded-[4px] px-2 py-2 text-left"
+                        style={{
+                          color: model === option.value ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                          background: model === option.value ? 'var(--color-app-main)' : undefined,
+                        }}
+                      >
+                        <span className="block text-[12px] font-medium">{option.label}</span>
+                        <span className="mt-0.5 block text-[10px] leading-4 text-[var(--color-text-tertiary)]">{option.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="mt-3 grid grid-cols-[72px_1fr] items-center gap-x-2 gap-y-2 text-[12px]">
                   <label htmlFor="image-size" className="text-[var(--color-text-tertiary)]">画布</label>
                   <select
@@ -403,9 +499,9 @@ export function ImageWorkbench() {
                     onChange={event => setSize(event.target.value as typeof size)}
                     className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                   >
-                    <option value="1024x1024">方形</option>
-                    <option value="1536x1024">横版</option>
-                    <option value="1024x1536">竖版</option>
+                    {IMAGE_SIZE_OPTIONS[model].map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                   <span className="text-[var(--color-text-tertiary)]">数量</span>
                   <div className="flex h-8 items-center justify-between rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)]">
@@ -445,6 +541,25 @@ export function ImageWorkbench() {
                       rows={8}
                       className="w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
                     />
+                    <div className="mt-3">
+                      <div className="mb-1 text-[12px] text-[var(--color-text-secondary)]">生图模型</div>
+                      <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">
+                        {IMAGE_MODEL_OPTIONS.map(option => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => selectModel(option.value)}
+                            className="h-9 rounded-[4px] px-2 text-[12px]"
+                            style={{
+                              color: model === option.value ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                              background: model === option.value ? 'var(--color-app-main)' : undefined,
+                            }}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <div className="mt-3 grid grid-cols-[72px_1fr] items-center gap-x-2 gap-y-2 text-[12px]">
                       <label htmlFor="active-image-size" className="text-[var(--color-text-tertiary)]">画布</label>
                       <select
@@ -453,9 +568,9 @@ export function ImageWorkbench() {
                         onChange={event => setSize(event.target.value as typeof size)}
                         className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                       >
-                        <option value="1024x1024">方形</option>
-                        <option value="1536x1024">横版</option>
-                        <option value="1024x1536">竖版</option>
+                        {IMAGE_SIZE_OPTIONS[model].map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                       </select>
                       <span className="text-[var(--color-text-tertiary)]">数量</span>
                       <div className="flex h-8 items-center justify-between rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)]">
@@ -474,6 +589,8 @@ export function ImageWorkbench() {
                 <div className="mb-5 mt-4 grid grid-cols-2 gap-y-2 text-[12px]">
                   {!['draft', 'failed'].includes(active.state) && (
                     <>
+                      <span className="text-[var(--color-text-tertiary)]">模型</span>
+                      <span className="text-right text-[var(--color-text-secondary)]">{modelLabel(active.model)}</span>
                       <span className="text-[var(--color-text-tertiary)]">尺寸</span>
                       <span className="text-right text-[var(--color-text-secondary)]">{active.size}</span>
                       <span className="text-[var(--color-text-tertiary)]">数量</span>

@@ -40,6 +40,80 @@ export const mediaTaskStatusSchema = z.enum([
 ])
 export const mediaSafeErrorCodeSchema = z.enum(MEDIA_SAFE_ERROR_CODES)
 
+export const IMAGE_GENERATION_MODELS = [
+  'gpt-image-2',
+  'doubao-seedream-4-5-251128',
+] as const
+export const imageGenerationModelSchema = z.enum(IMAGE_GENERATION_MODELS)
+
+export const GPT_IMAGE_CANVAS_SIZES = [
+  '1024x1024',
+  '1536x1024',
+  '1024x1536',
+  '2048x2048',
+  '2048x1152',
+  '3840x2160',
+  '2160x3840',
+] as const
+export const SEEDREAM_IMAGE_CANVAS_SIZES = [
+  '2048x2048',
+  '2304x1728',
+  '1728x2304',
+  '2848x1600',
+  '1600x2848',
+  '2496x1664',
+  '1664x2496',
+  '3136x1344',
+  '4096x4096',
+  '4704x3520',
+  '3520x4704',
+  '5504x3040',
+  '3040x5504',
+  '4992x3328',
+  '3328x4992',
+  '6240x2656',
+  // Kept for projects created by the earlier Seedream picker. These sizes also
+  // satisfy Seedream 4.5's documented pixel-count and aspect-ratio constraints.
+  '2352x1568',
+  '1568x2352',
+  '1680x2240',
+  '2240x1680',
+  '1536x2736',
+  '2736x1536',
+  '1216x3040',
+  '3040x1216',
+] as const
+export const IMAGE_CANVAS_SIZES = [
+  ...GPT_IMAGE_CANVAS_SIZES,
+  ...SEEDREAM_IMAGE_CANVAS_SIZES,
+] as const
+export const imageCanvasSizeSchema = z.enum(IMAGE_CANVAS_SIZES)
+
+export type ImageGenerationModel = z.infer<typeof imageGenerationModelSchema>
+export type ImageCanvasSize = z.infer<typeof imageCanvasSizeSchema>
+
+export function imageSizeSupportedByModel(
+  model: ImageGenerationModel,
+  size: ImageCanvasSize,
+): boolean {
+  return model === 'gpt-image-2'
+    ? (GPT_IMAGE_CANVAS_SIZES as readonly string[]).includes(size)
+    : (SEEDREAM_IMAGE_CANVAS_SIZES as readonly string[]).includes(size)
+}
+
+function validateImageModelSize(
+  value: { model: ImageGenerationModel, size: ImageCanvasSize },
+  context: z.RefinementCtx,
+): void {
+  if (!imageSizeSupportedByModel(value.model, value.size)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['size'],
+      message: 'the selected image size is not supported by this model',
+    })
+  }
+}
+
 const mediaProjectBaseSchema = z.object({
   schema_version: z.literal(1),
   id: mediaIdSchema,
@@ -67,8 +141,9 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('image'),
   state: z.enum(['draft', 'queued', 'generating', 'ready', 'failed']),
   mode: z.enum(['generate', 'edit']).default('generate'),
+  model: imageGenerationModelSchema.default('gpt-image-2'),
   prompt: z.string().min(1).max(8000),
-  size: z.enum(['1024x1024', '1536x1024', '1024x1536']).default('1024x1024'),
+  size: imageCanvasSizeSchema.default('1024x1024'),
   count: z.number().int().min(1).max(4).default(1),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   reference_image_assets: z.array(referenceImageAssetNameSchema).max(8).optional(),
@@ -163,10 +238,12 @@ export const createImageProjectInputSchema = z.object({
   prompt: z.string().min(1).max(8000),
   workspace_root: z.string().min(1).max(4096).optional(),
   mode: z.enum(['generate', 'edit']).default('generate'),
-  size: z.enum(['1024x1024', '1536x1024', '1024x1536']).default('1024x1024'),
+  model: imageGenerationModelSchema.default('gpt-image-2'),
+  size: imageCanvasSizeSchema.default('1024x1024'),
   count: z.number().int().min(1).max(4).default(1),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
 }).superRefine((value, context) => {
+  validateImageModelSize(value, context)
   if (value.mode === 'edit' && value.reference_images.length === 0) {
     context.addIssue({
       code: 'custom',
@@ -196,10 +273,11 @@ export const createVideoProjectInputSchema = z.object({
 export const updateImageProjectInputSchema = z.object({
   revision: z.number().int().nonnegative(),
   prompt: z.string().min(1).max(8000),
-  size: z.enum(['1024x1024', '1536x1024', '1024x1536']),
+  model: imageGenerationModelSchema,
+  size: imageCanvasSizeSchema,
   count: z.number().int().min(1).max(4),
   confirm_unknown_retry: z.boolean().default(false),
-})
+}).superRefine(validateImageModelSize)
 
 export const submitImageProjectInputSchema = z.object({
   confirm_unknown_retry: z.boolean().default(false),

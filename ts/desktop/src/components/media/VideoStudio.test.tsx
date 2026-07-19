@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -100,5 +100,60 @@ describe('VideoStudio committing state', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('视频导出失败，请检查素材和导出位置后重试。')
     expect(alert).not.toHaveTextContent(rawDetail)
+  })
+
+  it('can add the same source again and split clips before saving the timeline', async () => {
+    const editable: VideoStudioProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      output_path: undefined,
+      sources: [{
+        id: 'src_video001',
+        path: '/tmp/source.mp4',
+        name: 'source.mp4',
+        duration_ms: 10_000,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        has_audio: true,
+      }],
+      timeline: [{
+        id: 'clip_video01',
+        source_id: 'src_video001',
+        in_ms: 0,
+        out_ms: 10_000,
+      }],
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [editable] })
+    mediaApiMock.updateVideoTimeline.mockImplementation(async (_projectId, input) => ({
+      project: { ...editable, revision: 2, timeline: input.clips },
+    }))
+    useMediaWorkbenchStore.setState({
+      videoProjects: [editable],
+      tasks: {},
+      activeVideoId: editable.id,
+      toolchain: {
+        ffmpeg: { available: true },
+        ffprobe: { available: true },
+      },
+    })
+
+    render(<VideoStudio />)
+    fireEvent.click(await screen.findByRole('button', { name: '将 source.mp4 加入时间线' }))
+    const splitButtons = screen.getAllByRole('button', { name: '拆分片段' })
+    fireEvent.click(splitButtons[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(mediaApiMock.updateVideoTimeline).toHaveBeenCalledWith(
+        editable.id,
+        expect.objectContaining({ clips: expect.any(Array) }),
+      )
+    })
+    const saved = mediaApiMock.updateVideoTimeline.mock.calls[0]?.[1]
+    expect(saved.clips).toHaveLength(3)
+    expect(saved.clips[0]).toMatchObject({ in_ms: 0, out_ms: 5_000 })
+    expect(saved.clips[1]).toMatchObject({ in_ms: 5_000, out_ms: 10_000 })
   })
 })

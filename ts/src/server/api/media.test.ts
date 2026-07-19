@@ -144,6 +144,7 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
     body: JSON.stringify({
       revision: createdBody.project.revision,
       prompt: '修改后的海报',
+      model: 'gpt-image-2',
       size: '1024x1536',
       count: 2,
     }),
@@ -233,6 +234,7 @@ test('paid image submission and final render require the Electron-owned UI capab
     body: JSON.stringify({
       revision: 0,
       prompt: 'updated prompt',
+      model: 'gpt-image-2',
       size: '1024x1024',
       count: 1,
       confirm_unknown_retry: true,
@@ -253,6 +255,7 @@ test('paid image submission and final render require the Electron-owned UI capab
     body: JSON.stringify({
       revision: 0,
       prompt: 'updated prompt',
+      model: 'gpt-image-2',
       size: '1024x1024',
       count: 1,
       confirm_unknown_retry: true,

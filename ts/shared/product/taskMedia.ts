@@ -3,13 +3,21 @@
  * It deliberately contains no filesystem paths, Agent Core ids, prompts,
  * references, provider details, or raw task errors.
  */
-export type ProductTaskMediaAsset = {
-  id: string
-  kind: 'image'
-  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
-  /** A server-relative URL that was verified to resolve to a real local asset. */
-  url: string
-}
+export type ProductTaskMediaAsset =
+  | {
+      id: string
+      kind: 'image'
+      mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+      /** A server-relative URL that was verified to resolve to a real local asset. */
+      url: string
+    }
+  | {
+      id: string
+      kind: 'video'
+      mimeType: 'video/mp4' | 'video/quicktime' | 'video/webm'
+      /** A task-scoped streaming URL; the backing filesystem path stays private. */
+      url: string
+    }
 
 export type ProductTaskMediaTask = {
   status: 'queued' | 'running' | 'committing' | 'succeeded' | 'failed' | 'cancelled'
