@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import * as fs from 'node:fs'
-import { isAllowedFilesystemPath } from './filesystem.js'
+import { isAllowedFilesystemPath } from '../services/filesystemAccessRoots.js'
 import { serveFileWithRange } from './previewFs.js'
 import { normalizeDriveRootPathForPlatform } from '../services/windowsDrivePath.js'
 
@@ -65,8 +65,8 @@ export function reconstructAbsolutePath(rest: string): string | null {
  *
  * Security: both the resolved request path and its existing real path are
  * gated by {@link isAllowedFilesystemPath} — the same `$HOME` / `/tmp` /
- * `/private/tmp` / registered-roots allow-list used by the filesystem image
- * endpoint. This rejects an allowed-looking path that reaches `/etc/passwd`
+ * `/private/tmp` / registered-roots allow-list used by local previews. This
+ * rejects an allowed-looking path that reaches `/etc/passwd`
  * through a symbolic link. Streaming + byte-range handling is shared with
  * `/preview-fs` via {@link serveFileWithRange}, so HTML, CSS, JS, images,
  * fonts, video, and text all serve with the correct `Content-Type`,

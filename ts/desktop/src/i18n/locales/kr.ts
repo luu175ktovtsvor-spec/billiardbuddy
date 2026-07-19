@@ -1134,23 +1134,6 @@ export const kr: Record<TranslationKey, string> = {
   'dirPicker.useThisFolder': '이 폴더 사용',
   'dirPicker.noSubdirs': '하위 디렉터리가 없습니다',
 
-  // ─── File Search ──────────────────────────────────────
-  'fileSearch.searching': '검색 중...',
-  'fileSearch.noMatch': '일치하는 파일이 없습니다',
-  'fileSearch.noFiles': '이 디렉터리에 파일이 없습니다',
-  'fileSearch.accessDenied': '이 디렉터리에 접근할 수 없습니다',
-  'fileSearch.loadFailed': '디렉터리를 불러오지 못했습니다',
-  'fileSearch.navigate': '이동',
-  'fileSearch.attach': '첨부',
-  'fileSearch.select': '선택',
-  'fileSearch.open': '폴더 열기',
-  'fileSearch.close': '닫기',
-  'fileSearch.directory': '폴더',
-  'fileSearch.currentDirectory': '현재 폴더',
-  'fileSearch.folderTag': '폴더',
-  'fileSearch.fileTag': '파일',
-  'fileSearch.openFolder': '폴더 열기',
-
   // ─── Teams ──────────────────────────────────────
   'teams.backToLeader': '\u2190 \ub9ac\ub354\ub85c \ub3cc\uc544\uac00\uae30',
   'teams.viewing': '\ubcf4\ub294 \uc911:',

@@ -1132,23 +1132,6 @@ export const en = {
   'dirPicker.useThisFolder': 'Use this folder',
   'dirPicker.noSubdirs': 'No subdirectories',
 
-  // ─── File Search ──────────────────────────────────────
-  'fileSearch.searching': 'Searching...',
-  'fileSearch.noMatch': 'No files match',
-  'fileSearch.noFiles': 'No files in this directory',
-  'fileSearch.accessDenied': 'Cannot access this directory',
-  'fileSearch.loadFailed': 'Failed to load directory',
-  'fileSearch.navigate': 'navigate',
-  'fileSearch.attach': 'attach',
-  'fileSearch.select': 'select',
-  'fileSearch.open': 'open folder',
-  'fileSearch.close': 'close',
-  'fileSearch.directory': 'folder',
-  'fileSearch.currentDirectory': 'current folder',
-  'fileSearch.folderTag': 'folder',
-  'fileSearch.fileTag': 'file',
-  'fileSearch.openFolder': 'Open folder',
-
   // ─── Teams ──────────────────────────────────────
   'teams.backToLeader': '\u2190 Back to Leader',
   'teams.viewing': 'Viewing:',
