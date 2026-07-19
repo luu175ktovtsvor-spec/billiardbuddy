@@ -34,7 +34,7 @@ function statusForCoreState(state: ChatState): ProductTaskRunState {
   return 'working'
 }
 
-function activityKindForTool(toolName: string | undefined): ProductTaskActivityKind {
+export function productTaskActivityKindForTool(toolName: string | undefined): ProductTaskActivityKind {
   const normalized = toolName?.trim().toLowerCase() ?? ''
   if (!normalized) return 'tool'
 
@@ -112,7 +112,7 @@ export function projectAskUserQuestions(input: unknown): ProductTaskQuestion[] {
 function activity(phase: ProductTaskActivityPhase, toolName?: string): ProductTaskEvent {
   return {
     type: 'activity',
-    kind: activityKindForTool(toolName),
+    kind: productTaskActivityKindForTool(toolName),
     phase,
   }
 }

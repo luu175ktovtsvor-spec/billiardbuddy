@@ -14,9 +14,11 @@ import {
   type ProductTaskIndex,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
+import type { ProductTaskThread } from '../../../shared/product/taskEvents.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
+  type MessageEntry,
   type SessionListItem,
 } from '../services/sessionService.js'
 import {
@@ -28,6 +30,7 @@ import {
   isMaterializedWorktreeLaunch,
   prepareSessionWorkspace,
 } from '../services/repositoryLaunchService.js'
+import { projectSessionTranscriptForProductTask } from './taskThreadProjection.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -93,6 +96,7 @@ export type AgentCoreAdapter = {
     title: string
   }>
   getWorktreeLaunchState: (sessionId: string) => Promise<ProductTask['worktreeState']>
+  getSessionMessages?: (sessionId: string) => Promise<MessageEntry[]>
 }
 
 export const agentCoreAdapter: AgentCoreAdapter = {
@@ -169,6 +173,10 @@ export const agentCoreAdapter: AgentCoreAdapter = {
     const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
     if (!launchInfo?.repository?.worktree) return 'not_requested'
     return isMaterializedWorktreeLaunch(launchInfo) ? 'materialized' : 'planned'
+  },
+
+  async getSessionMessages(sessionId) {
+    return sessionService.getSessionMessages(sessionId)
   },
 }
 
@@ -332,6 +340,16 @@ export class ProductTaskService {
   async resolveCoreSessionId(taskId: string): Promise<string> {
     const task = await this.requireTask(taskId)
     return task.id
+  }
+
+  async getTaskThread(taskId: string): Promise<ProductTaskThread> {
+    const getSessionMessages = this.core.getSessionMessages
+    if (!getSessionMessages) {
+      throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+    }
+    const sessionId = await this.resolveCoreSessionId(taskId)
+    const messages = await getSessionMessages(sessionId)
+    return projectSessionTranscriptForProductTask(taskId, messages)
   }
 
   async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
