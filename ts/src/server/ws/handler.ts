@@ -3056,27 +3056,6 @@ function normalizeSessionSlashCommand(command: unknown): SessionSlashCommand | n
   return { name: name.trim() }
 }
 
-export function closeSessionConnection(sessionId: string, reason = 'session closed'): boolean {
-  const cleanupTimer = sessionCleanupTimers.get(sessionId)
-  if (cleanupTimer) {
-    clearTimeout(cleanupTimer)
-    sessionCleanupTimers.delete(sessionId)
-  }
-  computerUseApprovalService.cancelSession(sessionId)
-  conversationService.clearOutputCallbacks(sessionId)
-  sessionOutputCallbacks.delete(sessionId)
-  cleanupSessionRuntimeState(sessionId)
-
-  const clients = activeSessions.get(sessionId)
-  if (!clients || clients.size === 0) return false
-
-  activeSessions.delete(sessionId)
-  for (const ws of clients) {
-    ws.close(1000, reason)
-  }
-  return true
-}
-
 export function getActiveSessionIds(): string[] {
   return Array.from(activeSessions.keys())
 }
