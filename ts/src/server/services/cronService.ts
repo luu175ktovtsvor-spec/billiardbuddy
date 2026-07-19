@@ -54,6 +54,7 @@ type TasksFile = {
 }
 
 const TASKS_FILE_WRITE_ATTEMPTS = 2
+const tasksFileLocks = new Map<string, Promise<void>>()
 
 export class CronService {
   /** 任务文件路径 */
@@ -61,6 +62,26 @@ export class CronService {
     const configDir =
       process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
     return path.join(configDir, 'scheduled_tasks.json')
+  }
+
+  private async withTasksLock<T>(operation: () => Promise<T>): Promise<T> {
+    const filePath = this.getTasksFilePath()
+    const previous = tasksFileLocks.get(filePath) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    tasksFileLocks.set(filePath, current)
+
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (tasksFileLocks.get(filePath) === current) {
+        tasksFileLocks.delete(filePath)
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -77,72 +98,80 @@ export class CronService {
   async createTask(
     task: Omit<CronTask, 'id' | 'createdAt'>,
   ): Promise<CronTask> {
-    if (!task.cron || !task.prompt) {
-      throw ApiError.badRequest('Fields "cron" and "prompt" are required')
-    }
+    return this.withTasksLock(async () => {
+      if (!task.cron || !task.prompt) {
+        throw ApiError.badRequest('Fields "cron" and "prompt" are required')
+      }
 
-    const data = await this.readTasksFile()
-    const {
-      permissionMode: _requestedPermissionMode,
-      useWorktree: _legacyUseWorktree,
-      ...safeTask
-    } = task as typeof task & { useWorktree?: unknown }
-    const newTask: CronTask = {
-      ...safeTask,
-      permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
-      id: crypto.randomBytes(4).toString('hex'),
-      createdAt: Date.now(),
-    }
-    data.tasks.push(newTask)
-    await this.writeTasksFile(data)
-    return newTask
+      const data = await this.readTasksFile()
+      const {
+        permissionMode: _requestedPermissionMode,
+        useWorktree: _legacyUseWorktree,
+        ...safeTask
+      } = task as typeof task & { useWorktree?: unknown }
+      const newTask: CronTask = {
+        ...safeTask,
+        permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+        id: crypto.randomBytes(4).toString('hex'),
+        createdAt: Date.now(),
+      }
+      data.tasks.push(newTask)
+      await this.writeTasksFile(data)
+      return newTask
+    })
   }
 
   /** 更新已有任务 */
   async updateTask(id: string, updates: Partial<CronTask>): Promise<CronTask> {
-    const data = await this.readTasksFile()
-    const index = data.tasks.findIndex((t) => t.id === id)
-    if (index === -1) {
-      throw ApiError.notFound(`Task not found: ${id}`)
-    }
+    return this.withTasksLock(async () => {
+      const data = await this.readTasksFile()
+      const index = data.tasks.findIndex((t) => t.id === id)
+      if (index === -1) {
+        throw ApiError.notFound(`Task not found: ${id}`)
+      }
 
-    // 不允许修改 id 和 createdAt
-    const {
-      id: _id,
-      createdAt: _ca,
-      permissionMode: _requestedPermissionMode,
-      useWorktree: _legacyUseWorktree,
-      ...safeUpdates
-    } = updates as typeof updates & { useWorktree?: unknown }
-    data.tasks[index] = {
-      ...data.tasks[index],
-      ...safeUpdates,
-      permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
-    }
-    await this.writeTasksFile(data)
-    return data.tasks[index]
+      // 不允许修改 id 和 createdAt
+      const {
+        id: _id,
+        createdAt: _ca,
+        permissionMode: _requestedPermissionMode,
+        useWorktree: _legacyUseWorktree,
+        ...safeUpdates
+      } = updates as typeof updates & { useWorktree?: unknown }
+      data.tasks[index] = {
+        ...data.tasks[index],
+        ...safeUpdates,
+        permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+      }
+      await this.writeTasksFile(data)
+      return data.tasks[index]
+    })
   }
 
   /** 删除任务 */
   async deleteTask(id: string): Promise<void> {
-    const data = await this.readTasksFile()
-    const index = data.tasks.findIndex((t) => t.id === id)
-    if (index === -1) {
-      throw ApiError.notFound(`Task not found: ${id}`)
-    }
-    data.tasks.splice(index, 1)
-    await this.writeTasksFile(data)
+    await this.withTasksLock(async () => {
+      const data = await this.readTasksFile()
+      const index = data.tasks.findIndex((t) => t.id === id)
+      if (index === -1) {
+        throw ApiError.notFound(`Task not found: ${id}`)
+      }
+      data.tasks.splice(index, 1)
+      await this.writeTasksFile(data)
+    })
   }
 
   /** 更新任务的最后执行时间 */
   async updateLastFired(taskId: string, timestamp: string): Promise<void> {
-    const data = await this.readTasksFile()
-    const index = data.tasks.findIndex((t) => t.id === taskId)
-    if (index === -1) {
-      return // Task may have been deleted; silently ignore
-    }
-    data.tasks[index].lastFiredAt = timestamp
-    await this.writeTasksFile(data)
+    await this.withTasksLock(async () => {
+      const data = await this.readTasksFile()
+      const index = data.tasks.findIndex((t) => t.id === taskId)
+      if (index === -1) {
+        return // Task may have been deleted; silently ignore
+      }
+      data.tasks[index].lastFiredAt = timestamp
+      await this.writeTasksFile(data)
+    })
   }
 
   // ---------------------------------------------------------------------------

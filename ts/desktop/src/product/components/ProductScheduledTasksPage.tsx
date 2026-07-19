@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Bell,
   CheckCircle2,
@@ -82,29 +82,82 @@ export function ProductScheduledTasksPage() {
   const [runsTaskId, setRunsTaskId] = useState<string | null>(null)
   const [runs, setRuns] = useState<ProductScheduledTaskRun[]>([])
   const [runsLoading, setRunsLoading] = useState(false)
+  const taskListVersionRef = useRef(0)
+  const taskListRequestVersionRef = useRef(0)
+  const taskListLoadedRef = useRef(false)
+  const runsRequestVersionRef = useRef(0)
+  const runsScopeRef = useRef({ taskId: runsTaskId, version: 0 })
+
+  if (runsScopeRef.current.taskId !== runsTaskId) {
+    runsScopeRef.current = {
+      taskId: runsTaskId,
+      version: runsScopeRef.current.version + 1,
+    }
+  }
 
   const refreshTasks = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
+    const requestVersion = taskListRequestVersionRef.current + 1
+    taskListRequestVersionRef.current = requestVersion
+    const taskListVersion = taskListVersionRef.current
+    const showLoading = !taskListLoadedRef.current
+    if (showLoading) setIsLoading(true)
+
     try {
       const response = await productScheduledTasksApi.list()
+      if (
+        taskListRequestVersionRef.current !== requestVersion ||
+        taskListVersionRef.current !== taskListVersion
+      ) return
       setTasks(response.tasks)
+      taskListLoadedRef.current = true
+      setError(null)
     } catch (cause) {
+      if (
+        taskListRequestVersionRef.current !== requestVersion ||
+        taskListVersionRef.current !== taskListVersion
+      ) return
       setError(productApiUserFacingError(cause, '暂时无法读取定时任务，请稍后重试。'))
     } finally {
-      setIsLoading(false)
+      if (
+        showLoading &&
+        taskListRequestVersionRef.current === requestVersion &&
+        taskListVersionRef.current === taskListVersion
+      ) {
+        setIsLoading(false)
+      }
     }
   }, [])
 
   const refreshRuns = useCallback(async (taskId: string) => {
+    const scope = runsScopeRef.current
+    if (scope.taskId !== taskId) return
+    const requestVersion = runsRequestVersionRef.current + 1
+    runsRequestVersionRef.current = requestVersion
     setRunsLoading(true)
     try {
       const response = await productScheduledTasksApi.getTaskRuns(taskId)
-      setRuns(response.runs)
+      if (
+        runsScopeRef.current.taskId !== taskId ||
+        runsScopeRef.current.version !== scope.version ||
+        runsRequestVersionRef.current !== requestVersion
+      ) return
+      setRuns(response.runs.filter((run) => run.taskId === taskId))
+      setError(null)
     } catch (cause) {
+      if (
+        runsScopeRef.current.taskId !== taskId ||
+        runsScopeRef.current.version !== scope.version ||
+        runsRequestVersionRef.current !== requestVersion
+      ) return
       setError(productApiUserFacingError(cause, '暂时无法读取运行记录，请稍后重试。'))
     } finally {
-      setRunsLoading(false)
+      if (
+        runsScopeRef.current.taskId === taskId &&
+        runsScopeRef.current.version === scope.version &&
+        runsRequestVersionRef.current === requestVersion
+      ) {
+        setRunsLoading(false)
+      }
     }
   }, [])
 
@@ -115,12 +168,18 @@ export function ProductScheduledTasksPage() {
   useEffect(() => {
     if (!runsTaskId) {
       setRuns([])
+      setRunsLoading(false)
       return
     }
+    setRuns([])
     void refreshRuns(runsTaskId)
   }, [refreshRuns, runsTaskId])
 
-  const hasRunningRun = runs.some((run) => run.status === 'running')
+  const currentRuns = useMemo(
+    () => runs.filter((run) => run.taskId === runsTaskId),
+    [runs, runsTaskId],
+  )
+  const hasRunningRun = currentRuns.some((run) => run.status === 'running')
   useEffect(() => {
     if (!runsTaskId || !hasRunningRun) return
     const interval = window.setInterval(() => {
@@ -135,7 +194,14 @@ export function ProductScheduledTasksPage() {
     [runsTaskId, tasks],
   )
 
+  const invalidateTaskList = () => {
+    taskListVersionRef.current += 1
+    taskListLoadedRef.current = true
+    setIsLoading(false)
+  }
+
   const updateTask = async (taskId: string, input: UpdateProductScheduledTaskInput) => {
+    invalidateTaskList()
     setPendingAction(`update:${taskId}`)
     setError(null)
     try {
@@ -154,6 +220,7 @@ export function ProductScheduledTasksPage() {
   const saveEditor = async (input: CreateProductScheduledTaskInput | UpdateProductScheduledTaskInput) => {
     setError(null)
     if (editorTarget === 'create') {
+      invalidateTaskList()
       setPendingAction('create')
       try {
         const { task } = await productScheduledTasksApi.create(input as CreateProductScheduledTaskInput)
@@ -197,6 +264,7 @@ export function ProductScheduledTasksPage() {
   }
 
   const deleteTask = async (task: ProductScheduledTask) => {
+    invalidateTaskList()
     setPendingAction(`delete:${task.id}`)
     setError(null)
     try {
@@ -279,7 +347,7 @@ export function ProductScheduledTasksPage() {
                   {runOpen && activeRunsTask ? (
                     <ScheduledTaskRunsPanel
                       task={activeRunsTask}
-                      runs={runs}
+                      runs={currentRuns}
                       loading={runsLoading}
                       onClose={() => setRunsTaskId(null)}
                       onRefresh={() => void refreshRuns(activeRunsTask.id)}

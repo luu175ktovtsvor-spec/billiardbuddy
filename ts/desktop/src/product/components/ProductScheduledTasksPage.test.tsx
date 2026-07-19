@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import type { ProductScheduledTask } from '../domain/types'
+import type { ProductScheduledTask, ProductScheduledTaskRun } from '../domain/types'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -44,6 +44,14 @@ function makeTask(overrides: Partial<ProductScheduledTask> = {}): ProductSchedul
     notification: { enabled: true, channels: ['desktop'] },
     ...overrides,
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }
 
 beforeEach(() => {
@@ -103,5 +111,76 @@ describe('ProductScheduledTasksPage', () => {
       enabled: true,
     })))
     expect(await screen.findByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
+  })
+
+  it('keeps a created task when an earlier list response returns late', async () => {
+    const initialList = deferred<{ tasks: ProductScheduledTask[] }>()
+    mocks.list.mockReturnValueOnce(initialList.promise)
+
+    render(<ProductScheduledTasksPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '新建定时任务' }))
+    await screen.findByRole('dialog', { name: '新建定时任务' })
+    fireEvent.change(screen.getByLabelText(/任务名称/), { target: { value: '早班检查' } })
+    fireEvent.change(screen.getByLabelText(/执行内容/), { target: { value: '检查球台、灯光和预约。' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(await screen.findByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
+
+    await act(async () => {
+      initialList.resolve({ tasks: [makeTask()] })
+    })
+
+    expect(screen.getByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
+  })
+
+  it('does not show one task\'s late run history under another task', async () => {
+    const firstRuns = deferred<{ runs: ProductScheduledTaskRun[] }>()
+    const secondRuns = deferred<{ runs: ProductScheduledTaskRun[] }>()
+    const firstTask = makeTask()
+    const secondTask = makeTask({ id: 'schedule-2', title: '早班检查' })
+    mocks.list.mockResolvedValue({ tasks: [firstTask, secondTask] })
+    mocks.getTaskRuns.mockImplementation((taskId: string) => (
+      taskId === firstTask.id ? firstRuns.promise : secondRuns.promise
+    ))
+
+    render(<ProductScheduledTasksPage />)
+    const firstCard = await screen.findByTestId('product-scheduled-task-schedule-1')
+    const secondCard = await screen.findByTestId('product-scheduled-task-schedule-2')
+
+    fireEvent.click(within(firstCard).getByRole('button', { name: '运行记录' }))
+    await waitFor(() => expect(mocks.getTaskRuns).toHaveBeenCalledWith(firstTask.id))
+    fireEvent.click(within(secondCard).getByRole('button', { name: '运行记录' }))
+    await waitFor(() => expect(mocks.getTaskRuns).toHaveBeenCalledWith(secondTask.id))
+
+    await act(async () => {
+      secondRuns.resolve({
+        runs: [{
+          id: 'run-second',
+          taskId: secondTask.id,
+          taskTitle: secondTask.title,
+          startedAt: '2026-07-19T12:01:00.000Z',
+          status: 'completed',
+          result: '早班检查已完成。',
+        }],
+      })
+    })
+    expect(await screen.findByText('早班检查已完成。')).toBeInTheDocument()
+
+    await act(async () => {
+      firstRuns.resolve({
+        runs: [{
+          id: 'run-first',
+          taskId: firstTask.id,
+          taskTitle: firstTask.title,
+          startedAt: '2026-07-19T12:00:00.000Z',
+          status: 'completed',
+          result: '不应出现在早班检查中的旧结果。',
+        }],
+      })
+    })
+
+    expect(screen.queryByText('不应出现在早班检查中的旧结果。')).not.toBeInTheDocument()
+    expect(screen.getByText('早班检查已完成。')).toBeInTheDocument()
   })
 })
