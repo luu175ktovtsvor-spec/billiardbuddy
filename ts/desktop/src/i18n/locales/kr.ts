@@ -194,21 +194,6 @@ export const kr: Record<TranslationKey, string> = {
   'settings.tab.mcp': '외부 연결',
   'settings.tab.plugins': '플러그인',
 
-  // Settings > Profile
-  'settings.general.profileTitle': '프로필',
-  'settings.general.profileDescription': '개인 정보는 이 기기에만 저장됩니다.',
-  'settings.general.profileDisplayName': '표시 이름',
-  'settings.general.profileSubtitle': '둘째 줄',
-  'settings.general.profileDisplayNameHelper': '프로필에 선택 사항인 둘째 줄을 추가할 수 있습니다.',
-  'settings.general.profileAvatar': '아바타',
-  'settings.general.profileAvatarHelper': 'PNG, JPEG 또는 WebP, 최대 2MB.',
-  'settings.general.profileChangeAvatar': '아바타 변경',
-  'settings.general.profileRemoveAvatar': '아바타 제거',
-  'settings.general.profileSave': '프로필 저장',
-  'settings.general.profileSaved': '로컬에 저장됨',
-  'settings.general.profileLoadFailed': '프로필을 불러올 수 없습니다',
-  'settings.general.profileSaveFailed': '프로필을 저장할 수 없습니다',
-
   // Settings > Terminal
   'settings.terminal.title': '터미널',
   'settings.terminal.description': '플러그인, 스킬, MCP 설정을 위해 호스트 컴퓨터의 명령을 실행합니다.',

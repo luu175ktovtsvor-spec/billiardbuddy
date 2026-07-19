@@ -194,21 +194,6 @@ export const jp: Record<TranslationKey, string> = {
   'settings.tab.mcp': '外部接続',
   'settings.tab.plugins': 'プラグイン',
 
-  // Settings > Profile
-  'settings.general.profileTitle': 'プロフィール',
-  'settings.general.profileDescription': '個人情報はこのデバイスだけに保存されます。',
-  'settings.general.profileDisplayName': '表示名',
-  'settings.general.profileSubtitle': '2 行目',
-  'settings.general.profileDisplayNameHelper': 'プロフィールに任意の 2 行目を追加できます。',
-  'settings.general.profileAvatar': 'アバター',
-  'settings.general.profileAvatarHelper': 'PNG、JPEG、または WebP（最大 2 MB）。',
-  'settings.general.profileChangeAvatar': 'アバターを変更',
-  'settings.general.profileRemoveAvatar': 'アバターを削除',
-  'settings.general.profileSave': 'プロフィールを保存',
-  'settings.general.profileSaved': 'ローカルに保存しました',
-  'settings.general.profileLoadFailed': 'プロフィールを読み込めませんでした',
-  'settings.general.profileSaveFailed': 'プロフィールを保存できませんでした',
-
   // Settings > Terminal
   'settings.terminal.title': 'ターミナル',
   'settings.terminal.description': 'プラグイン、スキル、MCP のセットアップ用にホストマシンのコマンドを実行します。',
