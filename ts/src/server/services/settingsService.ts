@@ -168,11 +168,22 @@ export class SettingsService {
 
   /** 更新用户级设置（浅合并） */
   async updateUserSettings(settings: Record<string, unknown>): Promise<void> {
+    await this.mutateUserSettings(current => Object.assign({}, current, settings))
+  }
+
+  /**
+   * 在同一把写锁内读取并更新用户级设置。
+   *
+   * Product-facing endpoints use this for narrow nested updates so they do not
+   * replace unrelated Core-owned properties in the same settings object.
+   */
+  async mutateUserSettings(
+    mutator: (current: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<void> {
     const filePath = this.getUserSettingsPath()
     await this.withWriteLock(filePath, async () => {
       const current = await this.readJsonFile(filePath)
-      const merged = Object.assign({}, current, settings)
-      await this.writeJsonFile(filePath, merged)
+      await this.writeJsonFile(filePath, mutator(current))
     })
   }
 

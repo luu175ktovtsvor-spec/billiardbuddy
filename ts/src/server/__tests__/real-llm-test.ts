@@ -169,7 +169,7 @@ async function testSessionsApi() {
 
 async function testSettingsApi() {
   console.log('\n── Test 3: Settings API ──')
-  const res = await fetch(`${BASE_URL}/api/settings`)
+  const res = await fetch(`${BASE_URL}/api/settings/user`)
   if (res.status !== 200) {
     throw new Error(`Settings API failed: ${res.status}`)
   }
@@ -351,28 +351,32 @@ async function testSettingsReadWrite() {
   console.log('\n── Test 9: Settings Read/Write ──')
 
   // Read current
-  const readRes = await fetch(`${BASE_URL}/api/settings`)
+  const readRes = await fetch(`${BASE_URL}/api/settings/user`)
+  if (readRes.status !== 200) throw new Error(`Settings read failed: ${readRes.status}`)
   const original = await readRes.json()
 
-  // Update via /api/settings/user
+  // Update a normal product preference via /api/settings/user.
   const updateRes = await fetch(`${BASE_URL}/api/settings/user`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ testKey_integration: true }),
+    body: JSON.stringify({ desktopNotificationsEnabled: true }),
   })
   if (updateRes.status !== 200) throw new Error(`Settings update failed: ${updateRes.status}`)
 
   // Read back
   const readBack = await fetch(`${BASE_URL}/api/settings/user`)
   const updated = await readBack.json()
+  if (updated.desktopNotificationsEnabled !== true) {
+    throw new Error('Settings read-back did not preserve the notification preference')
+  }
 
-  // Clean up: remove test key via overwrite
-  const cleanSettings = { ...updated }
-  delete cleanSettings.testKey_integration
+  // Restore the existing normal preference without mirroring Core settings.
   await fetch(`${BASE_URL}/api/settings/user`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cleanSettings),
+    body: JSON.stringify({
+      desktopNotificationsEnabled: original.desktopNotificationsEnabled === true,
+    }),
   })
 
   console.log('✅ Settings read/write works')

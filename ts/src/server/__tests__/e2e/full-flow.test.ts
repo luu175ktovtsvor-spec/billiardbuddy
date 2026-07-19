@@ -110,10 +110,9 @@ describe('E2E: Full Flow', () => {
     expect(data.version).toBeDefined()
   })
 
-  it('should return diagnostics', async () => {
-    const { data } = await api('GET', '/api/status/diagnostics')
-    expect(data.platform).toBe('darwin')
-    expect(data.configDir).toBe(tmpDir)
+  it('does not expose retired diagnostics', async () => {
+    const { status } = await api('GET', '/api/status/diagnostics')
+    expect(status).toBe(404)
   })
 
   // =============================================
@@ -180,11 +179,15 @@ describe('E2E: Full Flow', () => {
   })
 
   it('should update and read user settings', async () => {
-    await api('PUT', '/api/settings/user', { theme: 'dark', model: 'claude-sonnet-4-6' })
+    const { status } = await api('PUT', '/api/settings/user', {
+      theme: 'dark',
+      webSearch: { enabled: false },
+    })
+    expect(status).toBe(200)
 
     const { data } = await api('GET', '/api/settings/user')
     expect(data.theme).toBe('dark')
-    expect(data.model).toBe('claude-sonnet-4-6')
+    expect(data.webSearch).toEqual({ enabled: false })
   })
 
   it('should get and set permission mode', async () => {

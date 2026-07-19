@@ -1,11 +1,11 @@
 /**
  * Settings REST API
  *
- * GET  /api/settings            — 获取合并后的设置
- * GET  /api/settings/user       — 获取用户设置
- * GET  /api/settings/project    — 获取项目设置
- * PUT  /api/settings/user       — 更新用户设置
- * PUT  /api/settings/project    — 更新项目设置
+ * GET/PUT /api/settings/user    — 普通产品偏好
+ * GET/PUT /api/settings/runtime — Agent 运行时偏好
+ * GET/PUT /api/settings/desktop — 桌面宿主偏好
+ * GET  /api/settings/output-styles
+ * PUT  /api/settings/output-style
  * GET  /api/permissions/mode    — 获取权限模式
  * PUT  /api/permissions/mode    — 设置权限模式
  */
@@ -19,6 +19,11 @@ import {
   type OutputStyleConfig,
 } from '../../constants/outputStyles.js'
 import { getCwd } from '../../utils/cwd.js'
+import {
+  MAX_AI_REQUEST_TIMEOUT_MS,
+  MIN_AI_REQUEST_TIMEOUT_MS,
+  normalizeNetworkSettings,
+} from '../services/networkSettings.js'
 
 const settingsService = new SettingsService()
 
@@ -37,6 +42,33 @@ const DEFAULT_OUTPUT_STYLE_LABEL = 'Default'
 const DEFAULT_OUTPUT_STYLE_DESCRIPTION =
   'Claude completes coding tasks efficiently and provides concise responses'
 
+const PRODUCT_THEME_MODES = ['light', 'dark', 'system'] as const
+const CHAT_SEND_BEHAVIORS = ['enter', 'modifierEnter'] as const
+const DESKTOP_TERMINAL_SHELLS = [
+  'system',
+  'pwsh',
+  'powershell',
+  'cmd',
+  'custom',
+] as const
+const NETWORK_PROXY_MODES = ['direct', 'system', 'manual'] as const
+const UPDATE_PROXY_MODES = ['system', 'manual'] as const
+
+const USER_PREFERENCE_KEYS = [
+  'theme',
+  'chatSendBehavior',
+  'language',
+  'desktopNotificationsEnabled',
+  'webSearch',
+  'autoDreamEnabled',
+] as const
+const RUNTIME_SETTING_KEYS = [
+  'alwaysThinkingEnabled',
+  'skipWebFetchPreflight',
+  'network',
+] as const
+const DESKTOP_SETTING_KEYS = ['desktopTerminal', 'updateProxy'] as const
+
 export async function handleSettingsApi(
   req: Request,
   url: URL,
@@ -44,7 +76,7 @@ export async function handleSettingsApi(
 ): Promise<Response> {
   try {
     const resource = segments[1] // 'settings' | 'permissions'
-    const sub = segments[2] // 'user' | 'project' | 'mode' | undefined
+    const sub = segments[2] // 'user' | 'runtime' | 'desktop' | 'mode' | undefined
 
     // ── /api/permissions/* ──────────────────────────────────────────────
     if (resource === 'permissions') {
@@ -59,15 +91,19 @@ export async function handleSettingsApi(
 
     switch (sub) {
       case undefined:
-        // GET /api/settings
-        if (method !== 'GET') throw methodNotAllowed(method)
-        return Response.json(publicSettings(await settingsService.getSettings()))
+      case 'project':
+        // The generic merged/project endpoints previously mirrored the full
+        // Core settings files to the renderer. No product client consumes them.
+        throw ApiError.notFound('This settings endpoint has been retired')
 
       case 'user':
         return await handleUserSettings(req)
 
-      case 'project':
-        return await handleProjectSettings(req, url)
+      case 'runtime':
+        return await handleRuntimeSettings(req)
+
+      case 'desktop':
+        return await handleDesktopSettings(req)
 
       case 'output-styles':
         return await handleOutputStyles(req, url)
@@ -88,71 +124,371 @@ export async function handleSettingsApi(
 async function handleUserSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
     const settings = await settingsService.getUserSettings()
-    return Response.json(publicSettings(settings))
+    return Response.json(projectUserPreferences(settings))
   }
 
   if (req.method === 'PUT') {
-    const body = productizeWebSearchUpdate(await parseJsonBody(req))
-    await settingsService.updateUserSettings(body)
-    syncThinkingSettingToActiveSessions(body)
+    const update = validateUserPreferenceUpdate(await parseJsonBody(req))
+    await settingsService.mutateUserSettings(current =>
+      mergeUserPreferenceUpdate(current, update),
+    )
     return Response.json({ ok: true })
   }
 
   throw methodNotAllowed(req.method)
 }
 
-async function handleProjectSettings(req: Request, url: URL): Promise<Response> {
-  const projectRoot = url.searchParams.get('projectRoot') || undefined
-
+async function handleRuntimeSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
-    return Response.json(publicSettings(await settingsService.getProjectSettings(projectRoot)))
+    return Response.json(projectRuntimeSettings(await settingsService.getUserSettings()))
   }
 
   if (req.method === 'PUT') {
-    const body = productizeWebSearchUpdate(await parseJsonBody(req))
-    await settingsService.updateProjectSettings(body, projectRoot)
+    const update = validateRuntimeSettingsUpdate(await parseJsonBody(req))
+    await settingsService.mutateUserSettings(current =>
+      mergeRuntimeSettingsUpdate(current, update),
+    )
+    syncThinkingSettingToActiveSessions(update)
     return Response.json({ ok: true })
   }
 
   throw methodNotAllowed(req.method)
 }
 
-function productizeWebSearchUpdate(body: Record<string, unknown>): Record<string, unknown> {
-  if (!Object.prototype.hasOwnProperty.call(body, 'webSearch')) return body
+async function handleDesktopSettings(req: Request): Promise<Response> {
+  if (req.method === 'GET') {
+    return Response.json(projectDesktopSettings(await settingsService.getUserSettings()))
+  }
 
-  const raw = body.webSearch
-  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? raw as Record<string, unknown>
-    : {}
+  if (req.method === 'PUT') {
+    const update = validateDesktopSettingsUpdate(await parseJsonBody(req))
+    await settingsService.mutateUserSettings(current =>
+      mergeDesktopSettingsUpdate(current, update),
+    )
+    return Response.json({ ok: true })
+  }
 
-  // The desktop product accepts only the user-facing on/off preference. Legacy
-  // clients that sent mode: disabled keep their intent, while provider names
-  // and credentials are deliberately neither persisted nor echoed back.
-  const enabled = typeof record.enabled === 'boolean'
-    ? record.enabled
-    : record.mode !== 'disabled'
+  throw methodNotAllowed(req.method)
+}
 
-  return {
-    ...body,
-    webSearch: { mode: enabled ? 'auto' : 'disabled' },
+// ─── Product preference boundary ─────────────────────────────────────────────
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function copyRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? { ...value } : {}
+}
+
+function isOneOf<T extends readonly string[]>(value: unknown, choices: T): value is T[number] {
+  return typeof value === 'string' && choices.includes(value as T[number])
+}
+
+function assertKnownKeys(
+  body: Record<string, unknown>,
+  allowed: readonly string[],
+  endpoint: string,
+): void {
+  const unknown = Object.keys(body).filter(key => !allowed.includes(key))
+  if (unknown.length > 0) {
+    throw ApiError.badRequest(
+      `Unsupported ${endpoint} setting: ${unknown.join(', ')}`,
+    )
   }
 }
 
-function publicSettings(settings: Record<string, unknown>): Record<string, unknown> {
-  if (!Object.prototype.hasOwnProperty.call(settings, 'webSearch')) return settings
-
-  const raw = settings.webSearch
-  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? raw as Record<string, unknown>
-    : {}
-  const enabled = typeof record.enabled === 'boolean'
-    ? record.enabled
-    : record.mode !== 'disabled'
-
-  return {
-    ...settings,
-    webSearch: { enabled },
+function assertBoolean(value: unknown, key: string): asserts value is boolean {
+  if (typeof value !== 'boolean') {
+    throw ApiError.badRequest(`Invalid "${key}" setting`)
   }
+}
+
+function assertString(value: unknown, key: string): asserts value is string {
+  if (typeof value !== 'string') {
+    throw ApiError.badRequest(`Invalid "${key}" setting`)
+  }
+}
+
+function assertRecord(value: unknown, key: string): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw ApiError.badRequest(`Invalid "${key}" setting`)
+  }
+}
+
+function projectUserPreferences(settings: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+
+  if (isOneOf(settings.theme, PRODUCT_THEME_MODES)) result.theme = settings.theme
+  if (isOneOf(settings.chatSendBehavior, CHAT_SEND_BEHAVIORS)) {
+    result.chatSendBehavior = settings.chatSendBehavior
+  }
+  if (typeof settings.language === 'string') result.language = settings.language
+  if (typeof settings.desktopNotificationsEnabled === 'boolean') {
+    result.desktopNotificationsEnabled = settings.desktopNotificationsEnabled
+  }
+  if (typeof settings.autoDreamEnabled === 'boolean') {
+    result.autoDreamEnabled = settings.autoDreamEnabled
+  }
+  if (hasOwn(settings, 'webSearch')) {
+    const webSearch = copyRecord(settings.webSearch)
+    result.webSearch = {
+      enabled: typeof webSearch.enabled === 'boolean'
+        ? webSearch.enabled
+        : webSearch.mode !== 'disabled',
+    }
+  }
+
+  return result
+}
+
+function validateUserPreferenceUpdate(body: Record<string, unknown>): Record<string, unknown> {
+  assertKnownKeys(body, USER_PREFERENCE_KEYS, 'user preference')
+  const update: Record<string, unknown> = {}
+
+  if (hasOwn(body, 'theme')) {
+    if (!isOneOf(body.theme, PRODUCT_THEME_MODES)) {
+      throw ApiError.badRequest('Invalid "theme" setting')
+    }
+    update.theme = body.theme
+  }
+  if (hasOwn(body, 'chatSendBehavior')) {
+    if (!isOneOf(body.chatSendBehavior, CHAT_SEND_BEHAVIORS)) {
+      throw ApiError.badRequest('Invalid "chatSendBehavior" setting')
+    }
+    update.chatSendBehavior = body.chatSendBehavior
+  }
+  if (hasOwn(body, 'language')) {
+    if (body.language !== null) assertString(body.language, 'language')
+    // JSON has no undefined. Null is the explicit clear operation for the
+    // product language preference and is omitted on the next atomic write.
+    update.language = body.language === null ? undefined : body.language
+  }
+  if (hasOwn(body, 'desktopNotificationsEnabled')) {
+    assertBoolean(body.desktopNotificationsEnabled, 'desktopNotificationsEnabled')
+    update.desktopNotificationsEnabled = body.desktopNotificationsEnabled
+  }
+  if (hasOwn(body, 'autoDreamEnabled')) {
+    assertBoolean(body.autoDreamEnabled, 'autoDreamEnabled')
+    update.autoDreamEnabled = body.autoDreamEnabled
+  }
+  if (hasOwn(body, 'webSearch')) {
+    assertRecord(body.webSearch, 'webSearch')
+    assertKnownKeys(body.webSearch, ['enabled'], 'web search')
+    assertBoolean(body.webSearch.enabled, 'webSearch.enabled')
+    update.webSearch = body.webSearch.enabled
+  }
+
+  return update
+}
+
+function mergeUserPreferenceUpdate(
+  current: Record<string, unknown>,
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...current, ...update }
+
+  if (hasOwn(update, 'webSearch')) {
+    const webSearch = copyRecord(current.webSearch)
+    // `enabled` was a renderer-only legacy field. Its presence would otherwise
+    // take precedence over the product toggle after a mode update.
+    delete webSearch.enabled
+    webSearch.mode = update.webSearch === true ? 'auto' : 'disabled'
+    next.webSearch = webSearch
+  }
+
+  return next
+}
+
+function projectRuntimeSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  if (typeof settings.alwaysThinkingEnabled === 'boolean') {
+    result.alwaysThinkingEnabled = settings.alwaysThinkingEnabled
+  }
+  if (typeof settings.skipWebFetchPreflight === 'boolean') {
+    result.skipWebFetchPreflight = settings.skipWebFetchPreflight
+  }
+  if (hasOwn(settings, 'network')) {
+    result.network = normalizeNetworkSettings(settings)
+  }
+  return result
+}
+
+function validateRuntimeSettingsUpdate(body: Record<string, unknown>): Record<string, unknown> {
+  assertKnownKeys(body, RUNTIME_SETTING_KEYS, 'runtime')
+  const update: Record<string, unknown> = {}
+
+  if (hasOwn(body, 'alwaysThinkingEnabled')) {
+    assertBoolean(body.alwaysThinkingEnabled, 'alwaysThinkingEnabled')
+    update.alwaysThinkingEnabled = body.alwaysThinkingEnabled
+  }
+  if (hasOwn(body, 'skipWebFetchPreflight')) {
+    assertBoolean(body.skipWebFetchPreflight, 'skipWebFetchPreflight')
+    update.skipWebFetchPreflight = body.skipWebFetchPreflight
+  }
+  if (hasOwn(body, 'network')) {
+    update.network = validateNetworkSettingsUpdate(body.network)
+  }
+
+  return update
+}
+
+function validateNetworkSettingsUpdate(value: unknown): Record<string, unknown> {
+  assertRecord(value, 'network')
+  assertKnownKeys(value, ['aiRequestTimeoutMs', 'proxy'], 'network')
+  const update: Record<string, unknown> = {}
+
+  if (hasOwn(value, 'aiRequestTimeoutMs')) {
+    const timeout = value.aiRequestTimeoutMs
+    if (
+      typeof timeout !== 'number' ||
+      !Number.isFinite(timeout) ||
+      timeout < MIN_AI_REQUEST_TIMEOUT_MS ||
+      timeout > MAX_AI_REQUEST_TIMEOUT_MS
+    ) {
+      throw ApiError.badRequest('Invalid "network.aiRequestTimeoutMs" setting')
+    }
+    update.aiRequestTimeoutMs = Math.round(timeout)
+  }
+  if (hasOwn(value, 'proxy')) {
+    assertRecord(value.proxy, 'network.proxy')
+    assertKnownKeys(value.proxy, ['mode', 'url'], 'network proxy')
+    const proxy: Record<string, unknown> = {}
+    if (hasOwn(value.proxy, 'mode')) {
+      if (!isOneOf(value.proxy.mode, NETWORK_PROXY_MODES)) {
+        throw ApiError.badRequest('Invalid "network.proxy.mode" setting')
+      }
+      proxy.mode = value.proxy.mode
+    }
+    if (hasOwn(value.proxy, 'url')) {
+      assertString(value.proxy.url, 'network.proxy.url')
+      proxy.url = value.proxy.url.trim()
+    }
+    update.proxy = proxy
+  }
+
+  return update
+}
+
+function mergeRuntimeSettingsUpdate(
+  current: Record<string, unknown>,
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...current, ...update }
+  if (!hasOwn(update, 'network')) return next
+
+  const currentNetwork = copyRecord(current.network)
+  const networkUpdate = copyRecord(update.network)
+  const network = { ...currentNetwork, ...networkUpdate }
+  if (hasOwn(networkUpdate, 'proxy')) {
+    network.proxy = {
+      ...copyRecord(currentNetwork.proxy),
+      ...copyRecord(networkUpdate.proxy),
+    }
+  }
+  const proxy = copyRecord(network.proxy)
+  if (proxy.mode !== 'manual') proxy.url = ''
+  network.proxy = proxy
+  next.network = network
+  return next
+}
+
+function projectDesktopSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  const terminal = copyRecord(settings.desktopTerminal)
+  if (isOneOf(terminal.startupShell, DESKTOP_TERMINAL_SHELLS)) {
+    result.desktopTerminal = {
+      startupShell: terminal.startupShell,
+      customShellPath: typeof terminal.customShellPath === 'string'
+        ? terminal.customShellPath
+        : '',
+    }
+  }
+  const updateProxy = copyRecord(settings.updateProxy)
+  if (isOneOf(updateProxy.mode, UPDATE_PROXY_MODES)) {
+    result.updateProxy = {
+      mode: updateProxy.mode,
+      url: typeof updateProxy.url === 'string' ? updateProxy.url : '',
+    }
+  }
+  return result
+}
+
+function validateDesktopSettingsUpdate(body: Record<string, unknown>): Record<string, unknown> {
+  assertKnownKeys(body, DESKTOP_SETTING_KEYS, 'desktop')
+  const update: Record<string, unknown> = {}
+
+  if (hasOwn(body, 'desktopTerminal')) {
+    assertRecord(body.desktopTerminal, 'desktopTerminal')
+    assertKnownKeys(body.desktopTerminal, ['startupShell', 'customShellPath'], 'desktop terminal')
+    const terminal: Record<string, unknown> = {}
+    if (hasOwn(body.desktopTerminal, 'startupShell')) {
+      if (!isOneOf(body.desktopTerminal.startupShell, DESKTOP_TERMINAL_SHELLS)) {
+        throw ApiError.badRequest('Invalid "desktopTerminal.startupShell" setting')
+      }
+      terminal.startupShell = body.desktopTerminal.startupShell
+    }
+    if (hasOwn(body.desktopTerminal, 'customShellPath')) {
+      assertString(body.desktopTerminal.customShellPath, 'desktopTerminal.customShellPath')
+      terminal.customShellPath = body.desktopTerminal.customShellPath.trim()
+    }
+    update.desktopTerminal = terminal
+  }
+
+  if (hasOwn(body, 'updateProxy')) {
+    assertRecord(body.updateProxy, 'updateProxy')
+    assertKnownKeys(body.updateProxy, ['mode', 'url'], 'update proxy')
+    const updateProxy: Record<string, unknown> = {}
+    if (hasOwn(body.updateProxy, 'mode')) {
+      if (!isOneOf(body.updateProxy.mode, UPDATE_PROXY_MODES)) {
+        throw ApiError.badRequest('Invalid "updateProxy.mode" setting')
+      }
+      updateProxy.mode = body.updateProxy.mode
+    }
+    if (hasOwn(body.updateProxy, 'url')) {
+      assertString(body.updateProxy.url, 'updateProxy.url')
+      updateProxy.url = body.updateProxy.url.trim()
+    }
+    update.updateProxy = updateProxy
+  }
+
+  return update
+}
+
+function mergeDesktopSettingsUpdate(
+  current: Record<string, unknown>,
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...current, ...update }
+
+  if (hasOwn(update, 'desktopTerminal')) {
+    const terminal = {
+      ...copyRecord(current.desktopTerminal),
+      ...copyRecord(update.desktopTerminal),
+    }
+    if (terminal.startupShell === 'custom' && typeof terminal.customShellPath !== 'string') {
+      throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
+    }
+    if (terminal.startupShell === 'custom' && terminal.customShellPath.trim().length === 0) {
+      throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
+    }
+    next.desktopTerminal = terminal
+  }
+
+  if (hasOwn(update, 'updateProxy')) {
+    const updateProxy = {
+      ...copyRecord(current.updateProxy),
+      ...copyRecord(update.updateProxy),
+    }
+    if (updateProxy.mode !== 'manual') updateProxy.url = ''
+    next.updateProxy = updateProxy
+  }
+
+  return next
 }
 
 async function handleOutputStyles(req: Request, url: URL): Promise<Response> {
@@ -244,11 +580,16 @@ async function handlePermissionMode(req: Request): Promise<Response> {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
+  let body: unknown
   try {
-    return (await req.json()) as Record<string, unknown>
+    body = await req.json()
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
+  if (!isRecord(body)) {
+    throw ApiError.badRequest('Settings request body must be an object')
+  }
+  return body
 }
 
 function methodNotAllowed(method: string): ApiError {

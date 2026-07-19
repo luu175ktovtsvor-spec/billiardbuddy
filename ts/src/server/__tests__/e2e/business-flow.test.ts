@@ -777,60 +777,45 @@ describe('Business Flow: Settings Persistence', () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  it('should write and read complex settings', async () => {
+  it('should write and read ordinary product preferences', async () => {
     const settings = {
       theme: 'dark',
-      model: 'claude-opus-4-7',
-      effort: 'high',
-      outputStyle: 'verbose',
-      permissions: {
-        allow: ['Bash(npm test)', 'Bash(npm run build)', 'Read'],
-        deny: ['Bash(rm -rf /)'],
-      },
+      chatSendBehavior: 'modifierEnter',
+      desktopNotificationsEnabled: true,
+      webSearch: { enabled: false },
     }
 
-    await api('PUT', '/api/settings/user', settings)
+    const { status } = await api('PUT', '/api/settings/user', settings)
+    expect(status).toBe(200)
     const { data } = await api('GET', '/api/settings/user')
 
     expect(data.theme).toBe('dark')
-    expect(data.model).toBe('claude-opus-4-7')
-    expect(data.permissions.allow).toContain('Read')
-    expect(data.permissions.deny).toContain('Bash(rm -rf /)')
+    expect(data.chatSendBehavior).toBe('modifierEnter')
+    expect(data.desktopNotificationsEnabled).toBe(true)
+    expect(data.webSearch).toEqual({ enabled: false })
   })
 
-  it('should merge settings (not overwrite)', async () => {
+  it('should merge ordinary preferences without accepting Core settings', async () => {
     // First write
     await api('PUT', '/api/settings/user', { theme: 'dark' })
     // Second write (should merge, not overwrite)
-    await api('PUT', '/api/settings/user', { outputStyle: 'concise' })
+    await api('PUT', '/api/settings/user', { language: 'chinese' })
 
     const { data } = await api('GET', '/api/settings/user')
     expect(data.theme).toBe('dark') // Should still be there
-    expect(data.outputStyle).toBe('concise')
+    expect(data.language).toBe('chinese')
+
+    const rejected = await api('PUT', '/api/settings/user', { model: 'not-allowed' })
+    expect(rejected.status).toBe(400)
   })
 
-  it('should support project-level settings', async () => {
-    const projectRoot = path.join(tmpDir, 'test-project')
-    await fs.mkdir(path.join(projectRoot, '.claude'), { recursive: true })
-
-    await api('PUT', `/api/settings/project?projectRoot=${encodeURIComponent(projectRoot)}`, {
-      permissions: { allow: ['Bash(make)'] },
-    })
-
-    const { data } = await api('GET', `/api/settings/project?projectRoot=${encodeURIComponent(projectRoot)}`)
-    expect(data.permissions.allow).toContain('Bash(make)')
-  })
-
-  it('should merge user and project settings', async () => {
-    await api('PUT', '/api/settings/user', { theme: 'light', model: 'claude-sonnet-4-6' })
-
-    const { data } = await api('GET', '/api/settings')
-    expect(data.theme).toBeDefined()
-    expect(data.model).toBeDefined()
+  it('should retire generic and project settings endpoints', async () => {
+    expect((await api('GET', '/api/settings')).status).toBe(404)
+    expect((await api('GET', '/api/settings/project')).status).toBe(404)
   })
 })
 
-describe('Business Flow: Status & Diagnostics', () => {
+describe('Business Flow: Health Check', () => {
   beforeAll(startTestServer)
   afterAll(async () => {
     server?.stop()
@@ -843,25 +828,11 @@ describe('Business Flow: Status & Diagnostics', () => {
     expect(data.uptime).toBeGreaterThanOrEqual(0)
   })
 
-  it('should return diagnostics with system info', async () => {
-    const { data } = await api('GET', '/api/status/diagnostics')
-    expect(data.platform).toBe(process.platform)
-    expect(data.arch).toBe(process.arch)
-    expect(data.configDir).toBe(tmpDir)
-    expect(data.memory.rss).toBeGreaterThan(0)
-  })
-
-  it('should return usage stats', async () => {
-    const { data } = await api('GET', '/api/status/usage')
-    expect(data).toHaveProperty('totalInputTokens')
-    expect(data).toHaveProperty('totalOutputTokens')
-    expect(data).toHaveProperty('totalCost')
-  })
-
-  it('should return user info with project list', async () => {
-    const { data } = await api('GET', '/api/status/user')
-    expect(data.configDir).toBe(tmpDir)
-    expect(Array.isArray(data.projects)).toBe(true)
+  it('does not expose retired status details', async () => {
+    for (const path of ['/api/status/diagnostics', '/api/status/usage', '/api/status/user']) {
+      const { status } = await api('GET', path)
+      expect(status).toBe(404)
+    }
   })
 
   it('should reject non-GET methods', async () => {
