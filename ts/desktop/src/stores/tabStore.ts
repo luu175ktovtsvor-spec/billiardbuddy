@@ -22,8 +22,7 @@ export type TabType =
 
 /**
  * Fixed product surfaces may use the generic tab opener. Product tasks have a
- * dedicated constructor so their required metadata cannot be omitted, and
- * legacy Core surfaces are deliberately excluded.
+ * dedicated constructor so their required metadata cannot be omitted.
  */
 export type OpenTabType =
   | 'settings'

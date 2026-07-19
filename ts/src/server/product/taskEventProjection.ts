@@ -144,7 +144,7 @@ function projectComputerUseCapabilities(
 }
 
 /**
- * Keep Computer Use approval useful without exposing the legacy desktop
+ * Keep Computer Use approval useful without exposing the raw desktop
  * request. In particular, omit the reason, bundle IDs, paths, icon payloads,
  * screenshot implementation, hide previews, and every raw tool field.
  */

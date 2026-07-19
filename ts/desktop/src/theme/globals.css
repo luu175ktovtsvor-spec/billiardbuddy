@@ -334,9 +334,9 @@
   }
 }
 
-/* ─── Tailwind Theme Override (matches prototype design system) ─── */
+/* ─── Tailwind Theme Override ─── */
 @theme {
-  /* BilliardBuddy 品牌蓝 = Codex 蓝系原值（blue-300 #339CFF，非 macOS 系统蓝），审美锚点 */
+  /* BilliardBuddy 品牌蓝 */
   --bb-blue-50: #E5F3FF;
   --bb-blue-100: #99CEFF;
   --bb-blue-300: #339CFF;
@@ -539,7 +539,7 @@
   --color-selection-bg: rgba(153, 206, 255, 0.55);
   --color-selection-fg: var(--bb-blue-900);
 
-  /* Radii — Codex 1.25× 密度 */
+  /* Radii */
   --radius-sm: 7px;
   --radius-md: 10px;
   --radius-lg: 12px;
@@ -909,9 +909,7 @@ button, input, textarea, select, a, [role="button"] {
   contain-intrinsic-size: auto 300px;
 }
 
-/* Desktop product surface follows the original main renderer palette. The
-   imported agent UI keeps its semantic token names, while these final values
-   make every surviving capability render inside the same neutral Codex shell. */
+/* Desktop product surface uses BilliardBuddy's shared semantic tokens. */
 :root,
 [data-theme="light"] {
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif;

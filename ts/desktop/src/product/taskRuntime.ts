@@ -24,7 +24,7 @@ export type ProductTaskStreamRuntime = {
 
 /**
  * Product task pages own their stream state. Keep the task index on this
- * narrow contract instead of reaching through the generic ChatStore session.
+ * narrow contract instead of reaching through unrelated conversation state.
  */
 export function getProductTaskRuntimeStateFromStream(
   runtime: ProductTaskStreamRuntime | undefined,
