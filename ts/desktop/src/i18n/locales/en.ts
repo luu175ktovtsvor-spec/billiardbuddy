@@ -19,7 +19,8 @@ export const en = {
   'common.copied': 'Copied',
 
   // ─── Sidebar ──────────────────────────────────────
-  'sidebar.newSession': 'New session',
+  'sidebar.newTask': 'New task',
+  'sidebar.untitledTask': 'Untitled task',
   'sidebar.scheduled': 'Scheduled',
   'sidebar.terminal': 'Terminal',
   'sidebar.settings': 'Settings',
@@ -66,7 +67,7 @@ export const en = {
   'sidebar.restoreProjectToSidebar': 'Restore to Sidebar',
   'sidebar.restoreHiddenProjects': 'Restore hidden projects ({count})',
   'sidebar.projectHidden': '{project} was hidden from the sidebar. Existing sessions were not deleted.',
-  'sidebar.newSessionInProject': 'New session in {project}',
+  'sidebar.newTaskInProject': 'New task in {project}',
   'sidebar.showMoreSessions': 'Expand display',
   'sidebar.showFewerSessions': 'Collapse display',
   'sidebar.expandProject': 'Expand {project}',
@@ -1235,7 +1236,6 @@ export const en = {
   'update.failed': 'Update failed: {error}',
 
   // ─── Active Session ──────────────────────────────────────
-  'session.untitled': 'Untitled Session',
   'session.active': 'session active',
   'session.lastUpdated': 'last updated {time}',
   'session.messages': '{count} messages',

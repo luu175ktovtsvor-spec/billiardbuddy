@@ -21,7 +21,8 @@ export const zh: Record<TranslationKey, string> = {
   'common.copied': '已复制',
 
   // ─── Sidebar ──────────────────────────────────────
-  'sidebar.newSession': '新建会话',
+  'sidebar.newTask': '新建任务',
+  'sidebar.untitledTask': '未命名任务',
   'sidebar.scheduled': '定时任务',
   'sidebar.terminal': '终端',
   'sidebar.settings': '设置',
@@ -68,7 +69,7 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.restoreProjectToSidebar': '恢复到侧边栏',
   'sidebar.restoreHiddenProjects': '恢复隐藏项目（{count}）',
   'sidebar.projectHidden': '已从侧边栏隐藏 {project}，已有会话不会被删除。',
-  'sidebar.newSessionInProject': '在 {project} 中新建会话',
+  'sidebar.newTaskInProject': '在 {project} 中新建任务',
   'sidebar.showMoreSessions': '展开显示',
   'sidebar.showFewerSessions': '折叠显示',
   'sidebar.expandProject': '展开 {project}',
@@ -1237,7 +1238,6 @@ export const zh: Record<TranslationKey, string> = {
   'update.failed': '更新失败: {error}',
 
   // ─── 活跃会话 ──────────────────────────────────────
-  'session.untitled': '未命名会话',
   'session.active': '会话活跃中',
   'session.lastUpdated': '最后更新 {time}',
   'session.messages': '{count} 条消息',

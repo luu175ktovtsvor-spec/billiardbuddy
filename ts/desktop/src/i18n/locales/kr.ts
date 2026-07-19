@@ -21,7 +21,8 @@ export const kr: Record<TranslationKey, string> = {
   'common.copied': '복사됨',
 
   // ─── Sidebar ──────────────────────────────────────
-  'sidebar.newSession': '새 세션',
+  'sidebar.newTask': '새 작업',
+  'sidebar.untitledTask': '제목 없는 작업',
   'sidebar.scheduled': '예약 작업',
   'sidebar.terminal': '터미널',
   'sidebar.settings': '설정',
@@ -68,7 +69,7 @@ export const kr: Record<TranslationKey, string> = {
   'sidebar.restoreProjectToSidebar': '사이드바로 복원',
   'sidebar.restoreHiddenProjects': '숨긴 프로젝트 복원 ({count})',
   'sidebar.projectHidden': '{project}을(를) 사이드바에서 숨겼습니다. 기존 세션은 삭제되지 않았습니다.',
-  'sidebar.newSessionInProject': '{project}에서 새 세션',
+  'sidebar.newTaskInProject': '{project}에서 새 작업',
   'sidebar.showMoreSessions': '펼쳐서 표시',
   'sidebar.showFewerSessions': '접어서 표시',
   'sidebar.expandProject': '{project} 펼치기',
@@ -1237,7 +1238,6 @@ export const kr: Record<TranslationKey, string> = {
   'update.failed': '업데이트에 실패했습니다: {error}',
 
   // ─── Active Session ──────────────────────────────────────
-  'session.untitled': '제목 없는 세션',
   'session.active': '세션 활성',
   'session.lastUpdated': '마지막 업데이트 {time}',
   'session.messages': '{count}개의 메시지',

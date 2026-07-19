@@ -85,7 +85,7 @@ function useSidebarData() {
   }, [index])
 
   const openTask = (task: ProductTaskRecord) => {
-    openProductTaskTab(task.id, task.title || t('session.untitled'))
+    openProductTaskTab(task.id, task.title || t('sidebar.untitledTask'))
   }
   const openProductTasks = () => {
     openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
@@ -225,7 +225,7 @@ export function DesktopSidebar() {
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-1.5 pl-2.5 pr-7 text-left"
         >
           <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
-            {task.title || t('sidebar.newSession')}
+            {task.title || t('sidebar.untitledTask')}
           </span>
           {task.pinnedAt ? (
             <span title="已置顶" aria-label="已置顶" className="shrink-0 text-[var(--color-text-tertiary)]">
@@ -279,7 +279,7 @@ export function DesktopSidebar() {
 
       {/* 主导航：新建任务 / 任务中心 / 生成图片 / 剪视频 / 已安排 / 插件 */}
       <nav className="px-2 pb-1">
-        <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newSession')} onClick={() => d.openNewTask()} />
+        <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newTask')} onClick={() => d.openNewTask()} />
         <NavItem icon={<ListTodo size={17} />} label="任务中心" active={d.activeTabType === 'product-tasks'} onClick={d.openProductTasks} />
         <NavItem icon={<Sparkles size={17} />} label="生成图片" active={d.activeTabType === 'image-workbench'} onClick={d.openImageWorkbench} />
         <NavItem icon={<Zap size={17} />} label="剪视频" active={d.activeTabType === 'video-studio'} onClick={d.openVideoStudio} />
@@ -369,7 +369,7 @@ export function DesktopSidebar() {
                 className="flex w-full items-center rounded-lg px-2.5 py-1.5 text-left"
                 style={{ background: 'var(--color-surface-selected)' }}
               >
-                <span className="truncate text-[13px] text-[var(--color-text-primary)]">{t('sidebar.newSession')}</span>
+                <span className="truncate text-[13px] text-[var(--color-text-primary)]">{t('sidebar.newTask')}</span>
               </button>
             ) : ungrouped.length === 0 ? (
               q ? <div className="px-2.5 py-1.5 text-[12px] text-[var(--color-text-tertiary)]">没有匹配的任务</div> : null

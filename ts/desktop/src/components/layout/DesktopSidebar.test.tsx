@@ -14,11 +14,11 @@ import type { ProductTaskIndexResponse } from '../../product/domain/types'
 
 vi.mock('../../i18n', () => ({
   useTranslation: () => (key: string) => ({
-    'sidebar.newSession': '新建任务',
+    'sidebar.newTask': '新建任务',
     'sidebar.scheduled': '已安排',
     'sidebar.settings': '设置',
     'sidebar.collapse': '收起侧边栏',
-    'session.untitled': '未命名任务',
+    'sidebar.untitledTask': '未命名任务',
   })[key] ?? key,
 }))
 
