@@ -1,7 +1,6 @@
 import {
   DEFAULT_GRANT_FLAGS,
   type AppGrant,
-  type CuGrantFlags,
   type CuPermissionRequest,
   type CuPermissionResponse,
 } from '../../vendor/computer-use-mcp/types.js'
@@ -17,15 +16,6 @@ type PendingApproval = {
 }
 
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000
-const GRANT_FLAG_KEYS = [
-  'clipboardRead',
-  'clipboardWrite',
-  'systemKeyCombos',
-] as const
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function deniedResponse(): CuPermissionResponse {
   return {
@@ -110,72 +100,6 @@ function projectPermissionRequestForDesktop(
   }
 }
 
-/**
- * The WebSocket carries untrusted JSON. Only send grants back to the tool
- * process when every privilege was present in the pending, task-bound request.
- */
-function normalizeApprovalResponse(
-  request: CuPermissionRequest,
-  response: CuPermissionResponse,
-): CuPermissionResponse | null {
-  const raw = response as unknown
-  if (!isRecord(raw) || !Array.isArray(raw.granted) || !isRecord(raw.flags)) {
-    return null
-  }
-
-  const requestedApps = new Map(
-    request.apps
-      .filter((app): app is typeof app & { resolved: NonNullable<typeof app.resolved> } => (
-        app.resolved !== undefined
-      ))
-      .map(app => [app.resolved.bundleId, app]),
-  )
-  const granted: AppGrant[] = []
-  const grantedBundleIds = new Set<string>()
-
-  for (const candidate of raw.granted) {
-    if (!isRecord(candidate) || typeof candidate.bundleId !== 'string') return null
-    const requested = requestedApps.get(candidate.bundleId)
-    if (!requested || grantedBundleIds.has(candidate.bundleId)) return null
-
-    grantedBundleIds.add(candidate.bundleId)
-    granted.push({
-      bundleId: requested.resolved.bundleId,
-      displayName: requested.resolved.displayName,
-      grantedAt: Date.now(),
-      tier: requested.proposedTier,
-    })
-  }
-
-  const flags = {} as CuGrantFlags
-  for (const key of GRANT_FLAG_KEYS) {
-    const value = raw.flags[key]
-    if (typeof value !== 'boolean') return null
-    if (value && request.requestedFlags[key] !== true) return null
-    flags[key] = value && request.requestedFlags[key] === true
-  }
-
-  const userConsented = raw.userConsented
-  if (userConsented !== undefined && typeof userConsented !== 'boolean') return null
-  if (userConsented === false && (granted.length > 0 || GRANT_FLAG_KEYS.some(key => flags[key]))) {
-    return null
-  }
-
-  const denyableBundleIds = new Set(
-    request.apps.map(app => app.resolved?.bundleId ?? app.requestedName),
-  )
-  const denied = Array.isArray(raw.denied)
-    ? raw.denied.flatMap(candidate => {
-        if (!isRecord(candidate) || typeof candidate.bundleId !== 'string') return []
-        if (!denyableBundleIds.has(candidate.bundleId)) return []
-        if (candidate.reason !== 'user_denied' && candidate.reason !== 'not_installed') return []
-        return [{ bundleId: candidate.bundleId, reason: candidate.reason }]
-      })
-    : []
-
-  return { granted, denied, flags, ...(userConsented === undefined ? {} : { userConsented }) }
-}
-
 export class ComputerUseApprovalService {
   private pending = new Map<string, PendingApproval>()
 
@@ -221,20 +145,6 @@ export class ComputerUseApprovalService {
         reject(new Error('Desktop session is not connected'))
       }
     })
-  }
-
-  resolveApproval(
-    sessionId: string,
-    requestId: string,
-    response: CuPermissionResponse,
-  ): boolean {
-    const pending = this.pending.get(requestId)
-    if (!pending || pending.sessionId !== sessionId) return false
-    clearTimeout(pending.timeout)
-    this.pending.delete(requestId)
-    const normalized = normalizeApprovalResponse(pending.request, response)
-    pending.resolve(normalized ?? deniedResponse())
-    return normalized !== null
   }
 
   /**

@@ -618,7 +618,7 @@ describe('WebSocket handler product task inbound boundary', () => {
   it('rejects Core-only product payload fields without invoking Core handlers', () => {
     const ws = makeClientSocket(`product-inbound-${crypto.randomUUID()}`, 'product')
     const respondToPermission = spyOn(conversationService, 'respondToPermission')
-    const resolveComputerUseApproval = spyOn(computerUseApprovalService, 'resolveApproval')
+    const resolveProductTaskApproval = spyOn(computerUseApprovalService, 'resolveProductTaskApproval')
     const sendUserMessage = spyOn(conversationService, 'sendMessage')
     const privateCommand = 'PRIVATE_PERMISSION_COMMAND'
 
@@ -660,7 +660,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     }
 
     expect(respondToPermission).not.toHaveBeenCalled()
-    expect(resolveComputerUseApproval).not.toHaveBeenCalled()
+    expect(resolveProductTaskApproval).not.toHaveBeenCalled()
     expect(sendUserMessage).not.toHaveBeenCalled()
 
     const events = ws.sent.map((payload) => JSON.parse(payload))
