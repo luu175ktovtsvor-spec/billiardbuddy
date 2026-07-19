@@ -41,17 +41,6 @@ export type SessionListItem = {
   permissionMode?: string
 }
 
-export type DeleteSessionFailure = {
-  sessionId: string
-  message: string
-  code?: string
-}
-
-export type DeleteSessionsResult = {
-  successes: string[]
-  failures: DeleteSessionFailure[]
-}
-
 export type SessionDetail = SessionListItem & {
   messages: MessageEntry[]
 }
@@ -68,11 +57,6 @@ export type SessionLaunchInfo = {
   runtimeProviderId?: string | null
   runtimeModelId?: string
   effortLevel?: string
-}
-
-export type TrimSessionResult = {
-  removedCount: number
-  removedMessageIds: string[]
 }
 
 export type MessageUsage = {
@@ -93,16 +77,6 @@ export type MessageEntry = {
   parentUuid?: string
   parentToolUseId?: string
   isSidechain?: boolean
-}
-
-export type SessionTaskNotification = {
-  taskId: string
-  toolUseId: string
-  status: 'completed' | 'failed' | 'stopped'
-  summary?: string
-  result?: string
-  outputFile?: string
-  timestamp?: string
 }
 
 /** Raw entry parsed from a single JSONL line */
@@ -222,14 +196,6 @@ const USER_INTERRUPTION_TEXTS = new Set([
 const NO_RESPONSE_REQUESTED_TEXT = 'No response requested.'
 const TASK_NOTIFICATION_RE = /^<task-notification>\s*[\s\S]*<\/task-notification>$/i
 const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>\s*[\s\S]*?<\/task-notification>/i
-function safeJsonLength(value: unknown): number {
-  if (value === undefined) return 0
-  try {
-    return JSON.stringify(value)?.length ?? 0
-  } catch {
-    return 0
-  }
-}
 
 // ============================================================================
 // Service
@@ -590,30 +556,6 @@ export class SessionService {
     }
   }
 
-  /**
-   * Resolve a session's display title + lightweight metadata from its JSONL file.
-   *
-   * Reuses the same title precedence as the session list (custom-title > goal >
-   * ai-title > first user message), so global session search shows real titles
-   * instead of the raw UUID file name.
-   */
-  async getSessionTitleAndMeta(filePath: string): Promise<{
-    title: string
-    modifiedAt: string
-    workDir: string | null
-    projectPath: string
-  }> {
-    const stat = await fs.stat(filePath)
-    const projectPath = path.basename(path.dirname(filePath))
-    const summary = await this.scanSessionListSummary(filePath, projectPath, stat)
-    return {
-      title: summary.title,
-      modifiedAt: summary.modifiedAt,
-      workDir: summary.workDir ?? null,
-      projectPath,
-    }
-  }
-
   private async appendJsonlEntry(filePath: string, entry: Record<string, unknown>): Promise<void> {
     const line = JSON.stringify(entry) + '\n'
     await fs.appendFile(filePath, line, 'utf-8')
@@ -888,39 +830,6 @@ export class SessionService {
   private readXmlTag(xml: string, tag: string): string | undefined {
     const match = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'))
     return match?.[1] ? this.decodeXmlText(match[1].trim()) : undefined
-  }
-
-  private parseTaskNotificationContent(
-    content: unknown,
-    timestamp?: string,
-  ): SessionTaskNotification | null {
-    const xml = this.extractTextBlocks(content)
-      .map((text) => this.extractTaskNotificationXml(text))
-      .find((value): value is string => value !== null)
-    if (!xml) return null
-
-    const toolUseId = this.readXmlTag(xml, 'tool-use-id')
-    const status = this.readXmlTag(xml, 'status')
-    if (
-      !toolUseId ||
-      (status !== 'completed' && status !== 'failed' && status !== 'stopped')
-    ) {
-      return null
-    }
-
-    const taskId = this.readXmlTag(xml, 'task-id') || toolUseId
-    const summary = this.readXmlTag(xml, 'summary')
-    const result = this.readXmlTag(xml, 'result')
-    const outputFile = this.readXmlTag(xml, 'output-file')
-    return {
-      taskId,
-      toolUseId,
-      status,
-      ...(summary ? { summary } : {}),
-      ...(result ? { result } : {}),
-      ...(outputFile ? { outputFile } : {}),
-      ...(timestamp ? { timestamp } : {}),
-    }
   }
 
   private shouldHideTranscriptEntry(entry: RawEntry): boolean {
@@ -1589,75 +1498,6 @@ export class SessionService {
     )
   }
 
-  async getSessionMessagesSignature(sessionId: string): Promise<string | null> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) return null
-
-    let count = 0
-    let last = ''
-    const agentToolUseIds = new Set<string>()
-    const resultLinks = new Map<string, string>()
-    await this.streamJsonlFile(found.filePath, (entry) => {
-      const agentToolUseId = this.extractAgentToolUseId(entry)
-      if (agentToolUseId) {
-        agentToolUseIds.add(agentToolUseId)
-      }
-      if (entry.message?.role === 'user' && Array.isArray(entry.message.content)) {
-        for (const block of entry.message.content as ContentBlock[]) {
-          if (
-            block.type !== 'tool_result' ||
-            typeof block.tool_use_id !== 'string' ||
-            !agentToolUseIds.has(block.tool_use_id)
-          ) {
-            continue
-          }
-          const agentId = this.extractAgentIdFromResultText(
-            this.extractTextFromContent(block.content),
-          )
-          if (agentId) {
-            resultLinks.set(block.tool_use_id, agentId)
-          }
-        }
-      }
-      if (!this.isVisibleTranscriptMessageEntry(entry)) return
-      count += 1
-      const contentLength = safeJsonLength(entry.content) + safeJsonLength(entry.message?.content)
-      last = [
-        entry.uuid ?? entry.messageId ?? '',
-        entry.type ?? '',
-        entry.timestamp ?? '',
-        entry.parentUuid ?? '',
-        entry.parent_tool_use_id ?? '',
-        contentLength,
-      ].join(':')
-    })
-
-    const subagentSignatures = await Promise.all(
-      [...resultLinks.entries()].map(async ([parentToolUseId, agentId]) => {
-        let childCount = 0
-        let childLast = ''
-        await this.streamJsonlFile(this.subagentTranscriptPath(found.projectDir, sessionId, agentId), (entry) => {
-          if (!this.isVisibleTranscriptMessageEntry(entry)) return
-          childCount += 1
-          const contentLength = safeJsonLength(entry.content) + safeJsonLength(entry.message?.content)
-          childLast = [
-            parentToolUseId,
-            agentId,
-            entry.uuid ?? entry.messageId ?? '',
-            entry.type ?? '',
-            entry.timestamp ?? '',
-            entry.parentUuid ?? '',
-            entry.parent_tool_use_id ?? '',
-            contentLength,
-          ].join(':')
-        })
-        return `${parentToolUseId}:${agentId}:${childCount}:${childLast}`
-      }),
-    )
-
-    return `${count}:${last}:${subagentSignatures.join('|')}`
-  }
-
   /**
    * Create a new session file for the given working directory.
    */
@@ -1729,52 +1569,6 @@ export class SessionService {
   }
 
   /**
-   * Delete a session's JSONL file.
-   */
-  async deleteSession(sessionId: string): Promise<void> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) {
-      throw ApiError.notFound(`Session not found: ${sessionId}`)
-    }
-
-    await fs.unlink(found.filePath)
-    this.invalidateSessionListCache()
-  }
-
-  async deleteSessions(sessionIds: string[]): Promise<DeleteSessionsResult> {
-    const successes: string[] = []
-    const failures: DeleteSessionFailure[] = []
-
-    const results = await Promise.all(sessionIds.map(async (sessionId) => {
-      try {
-        await this.deleteSession(sessionId)
-        return { type: 'success' as const, sessionId }
-      } catch (error) {
-        return {
-          type: 'failure' as const,
-          sessionId,
-          message: error instanceof Error ? error.message : 'Unknown delete failure',
-          code: error instanceof ApiError ? error.code : undefined,
-        }
-      }
-    }))
-
-    for (const result of results) {
-      if (result.type === 'success') {
-        successes.push(result.sessionId)
-      } else {
-        failures.push({
-          sessionId: result.sessionId,
-          message: result.message,
-          code: result.code,
-        })
-      }
-    }
-
-    return { successes, failures }
-  }
-
-  /**
    * Rename a session by appending a custom-title entry to its JSONL file.
    */
   async renameSession(sessionId: string, title: string): Promise<void> {
@@ -1838,18 +1632,6 @@ export class SessionService {
     return this.resolveWorkDirFromEntries(entries, found.projectDir)
   }
 
-  async getSessionMessageCwd(
-    sessionId: string,
-    messageId: string,
-  ): Promise<string | null> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) return null
-
-    const entries = await this.readJsonlFile(found.filePath)
-    const entry = entries.find((candidate) => candidate.uuid === messageId)
-    return typeof entry?.cwd === 'string' && entry.cwd.trim() ? entry.cwd : null
-  }
-
   /**
    * Inspect how a session should be launched.
    * Placeholder desktop-created sessions have zero transcript messages.
@@ -1903,13 +1685,6 @@ export class SessionService {
       ...(runtimeModelId ? { runtimeModelId } : {}),
       ...(effortLevel ? { effortLevel } : {}),
     }
-  }
-
-  async deleteSessionFile(sessionId: string): Promise<void> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) return
-    await fs.unlink(found.filePath)
-    this.invalidateSessionListCache()
   }
 
   async clearSessionTranscript(
@@ -2075,64 +1850,6 @@ export class SessionService {
     return removed
   }
 
-  async trimSessionMessagesFrom(
-    sessionId: string,
-    startMessageId: string,
-  ): Promise<TrimSessionResult> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) {
-      throw ApiError.notFound(`Session not found: ${sessionId}`)
-    }
-
-    const entries = await this.readJsonlFile(found.filePath)
-    const activeMessages = this.entriesToMessages(entries)
-    const startIndex = activeMessages.findIndex((message) => message.id === startMessageId)
-
-    if (startIndex < 0) {
-      throw ApiError.badRequest(`Message not found in active session chain: ${startMessageId}`)
-    }
-
-    const removedMessageIds = activeMessages
-      .slice(startIndex)
-      .map((message) => message.id)
-    const remainingMessageIds = new Set(
-      activeMessages
-        .slice(0, startIndex)
-        .map((message) => message.id),
-    )
-
-    if (removedMessageIds.length === 0) {
-      return { removedCount: 0, removedMessageIds: [] }
-    }
-
-    const removedIds = new Set(removedMessageIds)
-    const filteredEntries = entries.filter(
-      (entry) => {
-        if (typeof entry.uuid !== 'string') return true
-        if (removedIds.has(entry.uuid)) return false
-        if (
-          entry.message?.role &&
-          (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'system')
-        ) {
-          return remainingMessageIds.has(entry.uuid)
-        }
-        return true
-      },
-    )
-
-    const content =
-      filteredEntries.length > 0
-        ? filteredEntries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
-        : ''
-    await fs.writeFile(found.filePath, content, 'utf-8')
-    this.invalidateSessionListCache()
-
-    return {
-      removedCount: removedMessageIds.length,
-      removedMessageIds,
-    }
-  }
-
   async getSessionFileHistorySnapshots(
     sessionId: string,
   ): Promise<FileHistorySnapshot[]> {
@@ -2170,27 +1887,6 @@ export class SessionService {
     }
 
     return [...snapshotsByMessageId.values()]
-  }
-
-  async getSessionTaskNotifications(
-    sessionId: string,
-  ): Promise<SessionTaskNotification[]> {
-    const found = await this.findSessionFile(sessionId)
-    if (!found) {
-      throw ApiError.notFound(`Session not found: ${sessionId}`)
-    }
-
-    const entries = await this.readJsonlFile(found.filePath)
-    const notifications: SessionTaskNotification[] = []
-    for (const entry of entries) {
-      if (entry.message?.role !== 'user') continue
-      const notification = this.parseTaskNotificationContent(
-        entry.message.content,
-        entry.timestamp,
-      )
-      if (notification) notifications.push(notification)
-    }
-    return notifications
   }
 
   // --------------------------------------------------------------------------

@@ -805,92 +805,6 @@ describe('SessionService', () => {
     ])
   })
 
-  it('should include linked subagent transcript changes in the message signature', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const projectDir = '-tmp-project'
-    const agentId = 'abc123'
-
-    await writeSessionFile(projectDir, sessionId, [
-      makeSnapshotEntry(),
-      {
-        type: 'assistant',
-        message: {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool_use',
-              id: 'Agent:0',
-              name: 'Agent',
-              input: { description: 'Inspect alpha' },
-            },
-          ],
-        },
-        uuid: crypto.randomUUID(),
-        timestamp: '2026-01-01T00:00:02.000Z',
-      },
-      {
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: 'Agent:0',
-              content: [
-                {
-                  type: 'text',
-                  text: `alpha summary\nagentId: ${agentId}`,
-                },
-              ],
-            },
-          ],
-        },
-        uuid: crypto.randomUUID(),
-        timestamp: '2026-01-01T00:00:03.000Z',
-      },
-    ])
-    const subagentFile = await writeSubagentTranscriptFile(projectDir, sessionId, agentId, [
-      {
-        type: 'assistant',
-        message: {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool_use',
-              id: 'Read:0',
-              name: 'Read',
-              input: { file_path: '/tmp/alpha.txt' },
-            },
-          ],
-        },
-        uuid: crypto.randomUUID(),
-        timestamp: '2026-01-01T00:00:04.000Z',
-      },
-    ])
-
-    const before = await service.getSessionMessagesSignature(sessionId)
-
-    await fs.appendFile(subagentFile, `${JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'Read:0',
-            content: 'updated alpha body',
-          },
-        ],
-      },
-      uuid: crypto.randomUUID(),
-      timestamp: '2026-01-01T00:00:05.000Z',
-    })}\n`)
-
-    const after = await service.getSessionMessagesSignature(sessionId)
-
-    expect(before).not.toBe(after)
-  })
-
   it('should hide synthetic interruption, no-response, and malformed command breadcrumb transcript entries', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-project', sessionId, [
@@ -1127,7 +1041,6 @@ describe('SessionService', () => {
     ])
 
     const messages = await service.getSessionMessages(sessionId)
-    const taskNotifications = await service.getSessionTaskNotifications(sessionId)
 
     expect(messages.map((message) => message.id)).toEqual([
       firstUserId,
@@ -1139,15 +1052,6 @@ describe('SessionService', () => {
     expect(JSON.stringify(messages)).not.toContain('旧后台任务通知')
     expect(JSON.stringify(messages)).not.toContain('server restarted')
     expect(JSON.stringify(messages)).not.toContain('后台任务触发的工具调用完成')
-    expect(taskNotifications).toEqual([
-      {
-        taskId: 'bg-1',
-        toolUseId: 'toolu_bg',
-        status: 'completed',
-        summary: 'Background command completed',
-        timestamp: '2026-01-01T00:01:00.000Z',
-      },
-    ])
   })
 
   it('should reconstruct parent agent tool linkage from parentUuid chains', async () => {
@@ -1700,26 +1604,6 @@ describe('SessionService', () => {
     expect(service.createSession('/tmp/definitely-missing-billiardbuddy')).rejects.toThrow(
       'Working directory does not exist'
     )
-  })
-
-  // --------------------------------------------------------------------------
-  // deleteSession
-  // --------------------------------------------------------------------------
-
-  it('should delete an existing session', async () => {
-    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    const filePath = await writeSessionFile('-tmp-project', sessionId, [makeSnapshotEntry()])
-
-    await service.deleteSession(sessionId)
-
-    // File should no longer exist
-    expect(fs.access(filePath)).rejects.toThrow()
-  })
-
-  it('should throw when deleting non-existent session', async () => {
-    expect(
-      service.deleteSession('00000000-0000-0000-0000-000000000000')
-    ).rejects.toThrow('Session not found')
   })
 
   // --------------------------------------------------------------------------
