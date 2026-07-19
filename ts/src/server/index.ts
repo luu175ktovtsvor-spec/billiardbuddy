@@ -23,6 +23,7 @@ import { handleProductApi } from './api/product.js'
 import { productTaskService } from './product/taskService.js'
 import { ProductTaskMediaService } from './product/taskMediaService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
+import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkbenches.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -98,12 +99,16 @@ export function resolveLocalServerHost(host: string): string {
 
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
+  // Consume the Electron-owned capability once. Product command discovery
+  // needs only this boolean; it never receives the raw confirmation value.
+  const mediaUiCapability = consumeMediaUiCapability()
+  configureMediaWorkbenchDiscovery(Boolean(mediaUiCapability))
   // All media-facing routes share one process-local service so video exports from
   // task views and the media workbench use the same FFmpeg admission queue.
   const mediaService = new MediaProjectService()
   const mediaApiHandler = createMediaApiHandler(
     mediaService,
-    consumeMediaUiCapability(),
+    mediaUiCapability,
   )
   const productMedia = new ProductTaskMediaService(productTaskService, mediaService)
   const productApiHandler = (req: Request, url: URL, segments: string[]) => (
