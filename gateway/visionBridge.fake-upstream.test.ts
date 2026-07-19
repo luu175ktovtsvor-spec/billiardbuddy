@@ -315,13 +315,20 @@ test('⑬ once the global vision concurrency and queue are both saturated, a new
     webSearchImpl: null,
     fetchImpl,
   })
-  const req = () => new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('deepseek-v4-flash') }))
+  // These must be distinct both by image and trusted installation id. Otherwise
+  // singleflight deliberately coalesces the same image into one MiMo request, and the
+  // per-install vision limiter deliberately gives one installation only one slot.
+  const req = (n: number) => new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'X-QF-Client-ID': `vision-overflow-${n}` },
+    body: withImageBody('deepseek-v4-flash', `data:image/png;base64,${Buffer.from(`overflow-image-${n}`).toString('base64')}`),
+  }))
 
-  const busy = fetch(req())    // 占住唯一的全局并发槽(挂起等 visionGate)
+  const busy = fetch(req(1))    // 占住唯一的全局并发槽(挂起等 visionGate)
   await new Promise(r => setTimeout(r, 20))
-  const queued = fetch(req())  // 排进队列(queueMax=1,刚好占满)
+  const queued = fetch(req(2))  // 排进队列(queueMax=1,刚好占满)
   await new Promise(r => setTimeout(r, 20))
-  const overflow = await fetch(req()) // 队列也满了,应立即 429,不再入队等待
+  const overflow = await fetch(req(3)) // 队列也满了,应立即 429,不再入队等待
   expect(overflow.status).toBe(429)
 
   releaseVisionCalls!()

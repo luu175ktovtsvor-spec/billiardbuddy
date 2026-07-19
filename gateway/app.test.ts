@@ -76,20 +76,35 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(res.status).toBe(200)
   const body = await res.json()
   expect(body.ok).toBe(true)
-  // RPM 默认值已放开到不再节流正常文字流量;USER_CONC 默认 = CONC(不再单独节流单装机)。
-  // GW_*_CONC 全局并发闸不变,仍是保护上游的高水位紧急上限。
+  // RPM 默认值已放开到不再节流正常文字流量。单装机默认按产品的 5 窗口上限，
+  // 全局闸与有界队列继续保护上游和网关内存。
   expect(body.limits.qwen_rpm).toBe(100_000)
   expect(body.limits.qwen_conc).toBe(16)
-  expect(body.limits.qwen_user_conc).toBe(16)
+  expect(body.limits.qwen_user_conc).toBe(5)
+  expect(body.limits.qwen_token_conc).toBe(16)
+  expect(body.limits.qwen_queue_max).toBe(128)
+  // The test fixture explicitly makes Qwen queue timeout short; production default is 120s.
+  expect(body.limits.qwen_queue_max_wait_seconds).toBe(0.2)
   expect(body.limits.mimo_rpm).toBe(100_000)
   expect(body.limits.mimo_conc).toBe(16)
-  expect(body.limits.mimo_user_conc).toBe(16)
+  expect(body.limits.mimo_user_conc).toBe(5)
+  expect(body.limits.mimo_token_conc).toBe(16)
+  expect(body.limits.mimo_queue_max).toBe(128)
+  expect(body.limits.vision_conc).toBe(12)
+  expect(body.limits.vision_queue_max).toBe(24)
+  expect(body.limits.vision_queue_max_wait_ms).toBe(3_000)
+  expect(body.limits.vision_per_client_conc).toBe(1)
+  expect(body.limits.vision_per_request_conc).toBe(2)
+  expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
   expect(body.features.chat_qwen).toBe(true)
   expect(body.features.chat_mimo).toBe(true)
-  expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
-  expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16 })
+  expect(body.features.vision_bridge).toBe(true)
+  expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128, oldestQueueMs: 0 })
+  expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128, oldestQueueMs: 0 })
+  expect(body.capacity.vision).toEqual({ active: 0, queued: 0, limit: 12, queueMax: 24, perClientConc: 1, oldestQueueMs: 0 })
+  expect(body.capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })
 
 test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only credentials', async () => {
@@ -223,6 +238,33 @@ test('audio transcription disables the request idle timeout for long-running ASR
   )
   expect(response.status).toBe(200)
   expect(timeoutCalls).toEqual([0])
+})
+
+test('long-lived chat, native Messages, and relay image submit all disable Bun idle timeout before body/queue work', async () => {
+  const timeoutCalls: number[] = []
+  const fetch = createGatewayFetch({
+    env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async () => new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } }),
+  })
+  const server = { timeout: (_request: Request, seconds: number) => { timeoutCalls.push(seconds) } }
+
+  const chat = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST', body: JSON.stringify({ model: 'qwen3-coder-plus', messages: [] }),
+  })), server)
+  expect(chat.status).toBe(200)
+
+  const messages = await fetch(new Request('http://local/v1/messages', authed({
+    method: 'POST', body: JSON.stringify({ model: 'deepseek-v4-flash', tools: [{ type: 'computer_20241022' }] }),
+  })), server)
+  expect(messages.status).toBe(400)
+
+  const image = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST', body: JSON.stringify({ prompt: '台球海报' }),
+  })), server)
+  expect(image.status).toBe(200)
+  expect(timeoutCalls).toEqual([0, 0, 0])
 })
 
 test('audio transcription rejects unsupported and oversized files before execution', async () => {
@@ -382,7 +424,7 @@ test('MiMo does not retry a 429 even when retries are configured — it surfaces
   })))
   expect(res.status).toBe(429)
   expect(bodies).toHaveLength(1)
-  expect(usage.rows[0]?.note).toBe('attempts=1')
+  expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;attempts=1$/)
   expect(usage.rows[0]?.model).toBe('mimo')
   expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
 })
@@ -412,7 +454,7 @@ test('MiMo retries a transient 5xx at most once then succeeds, logging the attem
   await res.text()
   expect(bodies).toHaveLength(2)
   expect(sleeps).toEqual([0])
-  expect(usage.rows[0]?.note).toBe('attempts=2')
+  expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;attempts=2$/)
   expect(usage.rows[0]?.model).toBe('mimo')
   expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
 })
@@ -640,6 +682,26 @@ test('client abort mid body-read fails closed with 499 (never silently treated a
   expect(calls).toEqual([])
 })
 
+test('a slowloris-style chat body hits the bounded ingress read deadline after Bun idle timeout is disabled', async () => {
+  const { fetch, calls } = makeGateway({ GW_INGRESS_BODY_READ_TIMEOUT_MS: '20' })
+  let cancelled = false
+  const hangingStream = new ReadableStream<Uint8Array>({
+    pull() { return new Promise<void>(() => {}) },
+    cancel() { cancelled = true },
+  })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: hangingStream,
+    duplex: 'half',
+    headers: { 'Content-Type': 'application/json' },
+  } as RequestInit)))
+  expect(res.status).toBe(408)
+  expect(cancelled).toBe(true)
+  expect(calls).toEqual([])
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
 test('a body stream read error fails closed with 400 (never silently treated as done)', async () => {
   const { fetch, calls } = makeGateway()
   const erroringStream = new ReadableStream<Uint8Array>({
@@ -693,7 +755,7 @@ test('Qwen retries a transient 5xx at most once and records the attempt count wi
   await response.text()
   expect(calls).toHaveLength(2)
   expect(sleeps).toEqual([0])
-  expect(usage.rows[0]?.note).toBe('attempts=2')
+  expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;attempts=2$/)
   expect(JSON.stringify(usage.rows)).not.toContain('provider detail')
 })
 
@@ -716,7 +778,7 @@ test('Qwen does not retry a 429 even with a retry budget — surfaces it in one 
   })))
   expect(response.status).toBe(429)
   expect(calls).toHaveLength(1)
-  expect(usage.rows[0]?.note).toBe('attempts=1')
+  expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;attempts=1$/)
 })
 
 test('Qwen distinguishes upstream account exhaustion from temporary concurrency limits and redacts detail', async () => {
@@ -783,6 +845,62 @@ test('Qwen concurrency permit is held until the proxied stream completes', async
   const second = await secondPromise
   expect(upstreamCalls).toBe(2)
   expect(await second.text()).toBe('data: second\n\n')
+})
+
+test('bounded model queue rejects overflow, exposes its wait state, and records the rejection', async () => {
+  let firstController: ReadableStreamDefaultController<Uint8Array> | undefined
+  let upstreamCalls = 0
+  const usage = new MemoryUsageStore()
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_QWEN_CONC: '1',
+      GW_QWEN_USER_CONC: '1',
+      GW_QWEN_TOKEN_CONC: '1',
+      GW_QWEN_QUEUE_MAX: '1',
+      GW_QWEN_QUEUE_MAX_WAIT: '5',
+    }),
+    usageStore: usage,
+    transcribeImpl: null,
+    fetchImpl: async () => {
+      upstreamCalls += 1
+      if (upstreamCalls === 1) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { firstController = controller },
+        }), { headers: { 'content-type': 'text/event-stream' } })
+      }
+      return new Response('data: second\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const request = () => new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qwen3-coder-plus', stream: true }),
+  }))
+
+  const first = await fetch(request())
+  const queued = fetch(request())
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  const body = await health.json()
+  expect(body.capacity.qwen).toMatchObject({ active: 1, queued: 1, queueMax: 1 })
+  expect(body.capacity.qwen.oldestQueueMs).toBeGreaterThanOrEqual(0)
+
+  const overflow = await fetch(request())
+  expect(overflow.status).toBe(429)
+  expect(await overflow.json()).toEqual({ detail: '当前使用人数较多，排队已满，请稍后重试' })
+  expect(usage.rows).toContainEqual(expect.objectContaining({
+    model: 'qwen',
+    ok: false,
+    status: 429,
+    note: expect.stringMatching(/^queue_ms=\d+;queue_rejected=1$/),
+  }))
+
+  firstController?.close()
+  await first.text()
+  const second = await queued
+  await second.text()
+  const drained = await fetch(new Request('http://local/healthz', authed()))
+  expect((await drained.json()).capacity.qwen).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
 test('client cancellation aborts the upstream request and fails closed (no hung request)', async () => {
@@ -914,9 +1032,22 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   const body = await res.json()
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
-  expect(body.limits.deepseek_conc).toBe(32)
-  // USER_CONC 默认 = CONC(不再单独节流单装机)。
-  expect(body.limits.deepseek_user_conc).toBe(32)
+  // 100 人 × 8 窗口 profile:800 路正常请求直接进入 1000 个实际 DeepSeek 流；
+  // 200 个短队列槽只用于吸收瞬时抖动，不让超载悄悄堆成分钟级等待。
+  expect(body.limits.deepseek_conc).toBe(1_000)
+  expect(body.limits.deepseek_user_conc).toBe(8)
+  expect(body.limits.deepseek_token_conc).toBe(1_000)
+  expect(body.limits.deepseek_queue_max).toBe(200)
+  expect(body.limits.deepseek_queue_max_wait_seconds).toBe(15)
+  expect(body.capacity.deepseek).toMatchObject({
+    active: 0,
+    queued: 0,
+    maxConcurrent: 1_000,
+    maxConcurrentPerUser: 8,
+    maxConcurrentPerToken: 1_000,
+    queueMax: 200,
+    oldestQueueMs: 0,
+  })
 })
 
 test('after relaxing default RPM/concurrency, plain-text chat completions still route to the correct upstream', async () => {
@@ -1013,6 +1144,92 @@ test('image task submit enforces its body limit before forwarding declared or st
   } as RequestInit & { duplex: 'half' })))
   expect(streamedRes.status).toBe(413)
   expect(streamed.calls).toEqual([])
+})
+
+test('image gateway admits a 100-user × 5-submit burst to relay while the body budget stays bounded', async () => {
+  let relayActive = 0
+  let relayPeak = 0
+  let openGate!: () => void
+  const gate = new Promise<void>(resolve => { openGate = resolve })
+  const usage = new MemoryUsageStore()
+  const fetch = createGatewayFetch({
+    env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
+    usageStore: usage,
+    transcribeImpl: null,
+    fetchImpl: async input => {
+      if (!String(input).endsWith('/images/tasks')) return Response.json({ ok: true })
+      relayActive += 1
+      relayPeak = Math.max(relayPeak, relayActive)
+      await gate
+      relayActive -= 1
+      return Response.json({ task_id: 'relay-task', state: 'queued' }, { status: 202 })
+    },
+  })
+  const submit = (n: number) => fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `burst-${n}` },
+    body: JSON.stringify({ mode: 'generate', prompt: `球房海报 ${n}` }),
+  }))).then(async response => { await response.text(); return response.status })
+
+  const pending = Array.from({ length: 500 }, (_, n) => submit(n))
+  const deadline = performance.now() + 3000
+  while (relayActive !== 500 && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(relayActive).toBe(500)
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  const body = await health.json()
+  expect(body.limits).toMatchObject({
+    img_ipm: 600,
+    img_task_max_body_bytes: 32 * 1024 * 1024,
+    ingress_inflight_body_bytes: 256 * 1024 * 1024,
+  })
+  expect(body.capacity.ingress_body.reservedBytes).toBeGreaterThan(0)
+  expect(body.capacity.ingress_body.reservedBytes).toBeLessThanOrEqual(256 * 1024 * 1024)
+
+  openGate()
+  const statuses = await Promise.all(pending)
+  expect(statuses.filter(status => status === 202)).toHaveLength(500)
+  expect(relayPeak).toBe(500)
+  expect(usage.rows.filter(row => row.model === 'img' && row.ok)).toHaveLength(500)
+  const drained = await fetch(new Request('http://local/healthz', authed()))
+  expect((await drained.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
+test('image gateway rejects a body-budget overflow before it can reach relay and releases after forward', async () => {
+  let relayCalls = 0
+  let openGate!: () => void
+  const gate = new Promise<void>(resolve => { openGate = resolve })
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
+      GW_IMG_TASK_MAX_BODY_BYTES: '64',
+      GW_INGRESS_INFLIGHT_BODY_BYTES: '300',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async () => {
+      relayCalls += 1
+      await gate
+      return Response.json({ task_id: 'relay-task', state: 'queued' }, { status: 202 })
+    },
+  })
+  const payload = JSON.stringify({ prompt: 'x'.repeat(20) })
+  const submit = () => fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload,
+  })))
+
+  const accepted = submit()
+  const deadline = performance.now() + 1000
+  while (relayCalls !== 1 && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(relayCalls).toBe(1)
+  const rejected = await submit()
+  expect(rejected.status).toBe(429)
+  expect(await rejected.json()).toEqual({ detail: '请求较多，请稍后重试' })
+  expect(relayCalls).toBe(1)
+
+  openGate()
+  expect((await accepted).status).toBe(202)
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 300 })
 })
 
 test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () => {

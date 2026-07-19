@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { CapacityQueueError, type CapacityPermit, type FairCapacityScheduler } from './modelCapacity'
 import { fetchMimoWithRetry } from './mimoChat'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -21,9 +22,6 @@ const MIMO_VISION_RETRY_MAX = 1
 const MIMO_VISION_RETRY_BASE_MS = 300
 const MIMO_VISION_RETRY_MAX_MS = 2000
 
-// 视觉桥接并发信号量的排队等待窗口：必须"短暂排队后失败关闭"，不能引入长排队拖垮整体时延。
-const VISION_QUEUE_MAX_WAIT_MS = 3000
-
 export class VisionBridgeError extends Error {
   constructor(readonly status: number, readonly publicMessage: string) {
     super(publicMessage)
@@ -44,6 +42,10 @@ export interface VisionBridgeCaps {
   maxConcurrent: number
   /** 全局视觉排队队列上限(不含正在执行的 maxConcurrent 个)；排满后新等待者立即 429，不再入队。 */
   queueMax: number
+  /** 视觉请求最多排队多久；满时或超时都快速失败，避免长队拖垮聊天时延。 */
+  queueMaxWaitMs: number
+  /** 同一受信桌面安装最多同时占用的视觉槽，防单人多窗口挤占全局队列。 */
+  perClientConc: number
   /** 单个聊天请求最多同时占用几个全局视觉并发槽(应 ≤ maxConcurrent)；防止一个多图请求独占
    *  全局槽、饿死同时到达的其它请求。请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。 */
   perRequestConc: number
@@ -58,11 +60,22 @@ export interface VisionCache {
   set(key: string, text: string): void
 }
 
+/** Structural adapter for the same account-level MiMo RPM bucket used by native chat. */
+export interface VisionRateLimiter {
+  acquire(maxWaitSeconds: number, signal?: AbortSignal): Promise<void>
+}
+
 export interface VisionBridgeDeps {
   mimoBase: string
   mimoKey: string
   fetchImpl: FetchLike
   caps: VisionBridgeCaps
+  /** 原生 MiMo 聊天与视觉桥接复用同一个账号级容量池。 */
+  mimoCapacity?: FairCapacityScheduler
+  /** 原生 MiMo 聊天与视觉桥接也复用同一个账号级 RPM 桶，不能绕过账户速率保护。 */
+  mimoRateLimiter?: VisionRateLimiter
+  /** Vision's short queue window caps how long it may wait for the shared RPM bucket. */
+  mimoRateLimitMaxWaitSeconds?: number
   /** 可选注入，主要给测试用；默认是进程内存 Map,不落盘,只存哈希 key + 文本。 */
   cache?: VisionCache
 }
@@ -75,7 +88,22 @@ export interface VisionBridgeMetrics {
 }
 
 export interface VisionBridge {
-  transform(rawBody: string, opts: { signal?: AbortSignal }): Promise<{ body: string; metrics: VisionBridgeMetrics }>
+  transform(rawBody: string, opts: { signal?: AbortSignal; schedulerId?: string; tokenId?: string }): Promise<{ body: string; metrics: VisionBridgeMetrics }>
+  /** Live semaphore state for the authenticated gateway health endpoint. */
+  snapshot(): VisionSemaphoreSnapshot
+}
+
+/**
+ * One deduplicated image lookup may have several request windows waiting for it.  The
+ * work owns its own AbortController: individual windows can leave without cancelling
+ * their peers, while the last subscriber leaving tears down a queued or active lookup
+ * instead of needlessly consuming a VisionSemaphore/MiMo slot.
+ */
+type SharedVisionLookup = {
+  promise: Promise<string>
+  controller: AbortController
+  subscribers: number
+  settled: boolean
 }
 
 /**
@@ -141,15 +169,39 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
     visionTimeoutMs: Math.max(1, Math.floor(deps.caps.visionTimeoutMs)),
     maxConcurrent: Math.max(1, Math.floor(deps.caps.maxConcurrent)),
     queueMax: Math.max(1, Math.floor(deps.caps.queueMax)),
+    queueMaxWaitMs: Math.max(1, Math.floor(deps.caps.queueMaxWaitMs)),
+    perClientConc: Math.max(1, Math.floor(deps.caps.perClientConc)),
     perRequestConc: Math.max(1, Math.floor(deps.caps.perRequestConc)),
     cacheMax: Math.max(1, Math.floor(deps.caps.cacheMax)),
     cacheTtlMs: Math.max(1, Math.floor(deps.caps.cacheTtlMs)),
   }
   const cache = deps.cache ?? new DefaultVisionCache(caps.cacheMax, caps.cacheTtlMs)
-  const semaphore = new VisionSemaphore(caps.maxConcurrent, VISION_QUEUE_MAX_WAIT_MS, caps.queueMax)
+  const semaphore = new VisionSemaphore(caps.maxConcurrent, caps.queueMaxWaitMs, caps.queueMax, caps.perClientConc)
+  // 缓存只命中“已完成”结果时，多个窗口同一时刻上传同图仍会重复打 MiMo。实例级
+  // singleflight 让相同 hash+promptVersion 复用一次真实识图；请求各自可以离开等待，
+  // 但不能由一个取消动作中断其它窗口仍在等的共享上游调用。
+  const inFlightByKey = new Map<string, SharedVisionLookup>()
+
+  const settleLookup = (key: string, lookup: SharedVisionLookup) => {
+    lookup.settled = true
+    if (inFlightByKey.get(key) === lookup) inFlightByKey.delete(key)
+  }
+  const subscribeToLookup = (lookup: SharedVisionLookup, signal: AbortSignal | undefined): Promise<string> => {
+    lookup.subscribers += 1
+    return awaitWithAbort(lookup.promise, signal).finally(() => {
+      lookup.subscribers = Math.max(0, lookup.subscribers - 1)
+      // Do not let an orphaned singleflight task occupy either the visual queue or the
+      // shared MiMo capacity queue.  A surviving subscriber keeps the same lookup alive.
+      if (lookup.subscribers === 0 && !lookup.settled) lookup.controller.abort()
+    })
+  }
 
   return {
+    snapshot() {
+      return semaphore.snapshot()
+    },
     async transform(rawBody, opts) {
+      if (opts.signal?.aborted) throw new VisionBridgeError(499, '请求已取消')
       const started = performance.now()
       let parsed: unknown
       try {
@@ -191,11 +243,10 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
       }
 
       let cacheHits = 0
-      const pendingByKey = new Map<string, Promise<string>>()
       // 不再用 Promise.all 把一个请求的所有图同时扔给全局视觉信号量抢槽——8 图请求会瞬间抢占
       // 8 个全局并发槽，饿死同时到达的其它请求。改用有界并发 map：单个请求最多同时发起
-      // caps.perRequestConc 张图的 MiMo 调用(每张仍受全局 semaphore 约束)，请求内相同图片
-      // 仍按哈希去重(pendingByKey)只调一次，不受此限流放大延迟。
+      // caps.perRequestConc 张图的 MiMo 调用(每张仍受全局 semaphore 约束)，相同图片
+      // 会按哈希复用实例级 in-flight 调用，不受此限流放大延迟。
       const texts = await mapWithConcurrency(images, caps.perRequestConc, async ({ url }, index) => {
         const cacheKey = `${decoded[index]!.hash}:${VISION_PROMPT_VERSION}`
         const cached = cache.get(cacheKey)
@@ -203,16 +254,24 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
           cacheHits += 1
           return cached
         }
-        // 同一请求内的重复图片只发起一次 MiMo 调用(按哈希去重共享同一个 in-flight promise)。
-        let pending = pendingByKey.get(cacheKey)
-        if (!pending) {
-          pending = semaphore.run(() => callMimoVision(deps, url, opts.signal), opts.signal).then(text => {
+        let lookup = inFlightByKey.get(cacheKey)
+        if (!lookup) {
+          const controller = new AbortController()
+          const created = semaphore.run(() => callMimoVision(deps, url, {
+            schedulerId: opts.schedulerId,
+            tokenId: opts.tokenId,
+          }, controller.signal), controller.signal, opts.schedulerId).then(text => {
             cache.set(cacheKey, text)
             return text
           })
-          pendingByKey.set(cacheKey, pending)
+          lookup = { promise: created, controller, subscribers: 0, settled: false }
+          inFlightByKey.set(cacheKey, lookup)
+          void created.then(
+            () => settleLookup(cacheKey, lookup!),
+            () => settleLookup(cacheKey, lookup!),
+          )
         }
-        return pending
+        return await subscribeToLookup(lookup, opts.signal)
       })
 
       images.forEach(({ part }, index) => {
@@ -303,16 +362,36 @@ function decodeImageUrl(url: string, maxImageBytes: number): { hash: string; byt
   throw new VisionBridgeError(400, '不支持的图片 URL 格式')
 }
 
-async function callMimoVision(deps: VisionBridgeDeps, url: string, signal: AbortSignal | undefined): Promise<string> {
+async function callMimoVision(
+  deps: VisionBridgeDeps,
+  url: string,
+  identity: { schedulerId?: string; tokenId?: string },
+  externalSignal?: AbortSignal,
+): Promise<string> {
+  let permit: CapacityPermit | undefined
   const controller = new AbortController()
   let timedOut = false
+  const abortForNoSubscribers = () => controller.abort()
+  if (externalSignal?.aborted) abortForNoSubscribers()
+  else externalSignal?.addEventListener('abort', abortForNoSubscribers, { once: true })
   const timer = setTimeout(() => { timedOut = true; controller.abort() }, deps.caps.visionTimeoutMs)
-  const onOuterAbort = () => controller.abort()
-  if (signal) {
-    if (signal.aborted) controller.abort()
-    else signal.addEventListener('abort', onOuterAbort, { once: true })
-  }
   try {
+    if (controller.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
+    if (deps.mimoRateLimiter) {
+      await deps.mimoRateLimiter.acquire(
+        Math.max(0, deps.mimoRateLimitMaxWaitSeconds ?? deps.caps.queueMaxWaitMs / 1000),
+        controller.signal,
+      )
+    }
+    if (controller.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
+    if (deps.mimoCapacity) {
+      permit = await deps.mimoCapacity.acquire(identity.schedulerId ?? 'vision', {
+        maxWaitMs: deps.caps.queueMaxWaitMs,
+        signal: controller.signal,
+        tokenId: identity.tokenId ?? identity.schedulerId ?? 'vision',
+      })
+    }
+    if (controller.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
     const body = JSON.stringify({
       model: 'mimo-v2.5',
       stream: false,
@@ -343,6 +422,8 @@ async function callMimoVision(deps: VisionBridgeDeps, url: string, signal: Abort
       signal: controller.signal,
     })
 
+    if (controller.signal.aborted) throw new VisionBridgeError(timedOut ? 504 : 499, timedOut ? '图片理解超时，请稍后重试' : '请求已取消')
+
     if (!response.ok) {
       await response.text().catch(() => '')
       if (response.status === 429) throw new VisionBridgeError(429, '图片理解服务繁忙，请稍后重试')
@@ -360,6 +441,13 @@ async function callMimoVision(deps: VisionBridgeDeps, url: string, signal: Abort
     return content
   } catch (error) {
     if (error instanceof VisionBridgeError) throw error
+    if (error instanceof CapacityQueueError) {
+      throw new VisionBridgeError(error.status, error.status === 499 ? '请求已取消' : '图片理解服务繁忙，请稍后重试')
+    }
+    if (hasPublicStatus(error)) {
+      if (error.status === 499) throw new VisionBridgeError(499, '请求已取消')
+      if (error.status === 429) throw new VisionBridgeError(429, '图片理解服务繁忙，请稍后重试')
+    }
     if (isAbortError(error)) {
       throw timedOut
         ? new VisionBridgeError(504, '图片理解超时，请稍后重试')
@@ -367,9 +455,33 @@ async function callMimoVision(deps: VisionBridgeDeps, url: string, signal: Abort
     }
     throw new VisionBridgeError(502, '图片理解服务暂时不可用，请稍后重试')
   } finally {
+    permit?.release()
     clearTimeout(timer)
-    if (signal) signal.removeEventListener('abort', onOuterAbort)
+    externalSignal?.removeEventListener('abort', abortForNoSubscribers)
   }
+}
+
+/** A requester may leave a shared image lookup without cancelling it for every other
+ * requester. Both branches are attached to the shared promise, so a later rejection is
+ * still observed after this requester has already returned 499. */
+function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new VisionBridgeError(499, '请求已取消'))
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      fn()
+    }
+    const onAbort = () => finish(() => reject(new VisionBridgeError(499, '请求已取消')))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      value => finish(() => resolve(value)),
+      error => finish(() => reject(error)),
+    )
+  })
 }
 
 function extractVisionText(data: unknown): string | undefined {
@@ -386,6 +498,10 @@ function extractVisionText(data: unknown): string | undefined {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function hasPublicStatus(error: unknown): error is { status: number } {
+  return typeof error === 'object' && error !== null && typeof (error as { status?: unknown }).status === 'number'
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -429,6 +545,8 @@ export interface VisionSemaphoreSnapshot {
   queued: number
   limit: number
   queueMax: number
+  perClientConc: number
+  oldestQueueMs: number
 }
 
 /** 小信号量：约束全局在途 MiMo 视觉调用数，防图片请求打爆 MiMo 账号。
@@ -439,47 +557,103 @@ export interface VisionSemaphoreSnapshot {
  *  只会有一条真正生效，避免重复 resolve/reject 或 active 计数被重复增减。 */
 export class VisionSemaphore {
   private active = 0
-  private readonly queue: Array<{ grant: () => void }> = []
+  private readonly activeByClient = new Map<string, number>()
+  // A bounded global queue also needs a bounded contribution from every real desktop.
+  // Otherwise one user's five windows can fill all 24 waiting entries before the next
+  // installation is even considered, defeating per-client fairness at low MiMo limits.
+  private readonly queuedByClient = new Map<string, number>()
+  private readonly queue: Array<{ clientId: string; grant: () => void; queuedAt: number }> = []
 
   constructor(
     private readonly limit: number,
     private readonly queueMaxWaitMs: number,
     private readonly queueMax: number = Infinity,
+    private readonly perClientConc: number = Infinity,
   ) {}
 
-  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    await this.acquire(signal)
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal, clientId = ''): Promise<T> {
+    await this.acquire(signal, clientId)
     try {
       return await fn()
     } finally {
-      this.release()
+      this.release(clientId)
     }
   }
 
   /** 供测试/可观测性用：当前在途数、排队数、并发上限、队列上限。 */
   snapshot(): VisionSemaphoreSnapshot {
-    return { active: this.active, queued: this.queue.length, limit: this.limit, queueMax: this.queueMax }
+    const oldestQueuedAt = this.queue[0]?.queuedAt
+    return {
+      active: this.active,
+      queued: this.queue.length,
+      limit: this.limit,
+      queueMax: this.queueMax,
+      perClientConc: this.perClientConc,
+      oldestQueueMs: oldestQueuedAt === undefined ? 0 : Math.max(0, Math.trunc(performance.now() - oldestQueuedAt)),
+    }
   }
 
-  private acquire(signal?: AbortSignal): Promise<void> {
+  private canStart(clientId: string): boolean {
+    return this.active < this.limit && (this.activeByClient.get(clientId) ?? 0) < this.perClientConc
+  }
+
+  private canQueue(clientId: string): boolean {
+    // Unit-level callers without an installation id preserve the generic semaphore
+    // behavior. Gateway calls always have a trusted schedulerId. Divide a finite queue
+    // across its active slots: the default 24/12 allows two waiting turns per desktop,
+    // while an explicit 450/50 canary can still accept five windows per desktop.
+    const maxPerClient = this.queueMax === Infinity ? Infinity : Math.max(1, Math.floor(this.queueMax / this.limit))
+    return clientId === '' || (this.queuedByClient.get(clientId) ?? 0) < maxPerClient
+  }
+
+  private trackQueued(clientId: string): void {
+    if (clientId === '') return
+    this.queuedByClient.set(clientId, (this.queuedByClient.get(clientId) ?? 0) + 1)
+  }
+
+  private untrackQueued(clientId: string): void {
+    if (clientId === '') return
+    const next = Math.max(0, (this.queuedByClient.get(clientId) ?? 1) - 1)
+    if (next === 0) this.queuedByClient.delete(clientId)
+    else this.queuedByClient.set(clientId, next)
+  }
+
+  private grant(clientId: string): void {
+    this.active += 1
+    this.activeByClient.set(clientId, (this.activeByClient.get(clientId) ?? 0) + 1)
+  }
+
+  private acquire(signal: AbortSignal | undefined, clientId: string): Promise<void> {
     if (signal?.aborted) {
       return Promise.reject(new VisionBridgeError(499, '请求已取消'))
     }
-    if (this.active < this.limit) {
-      this.active += 1
+    // Preserve queued request fairness: a newly arrived client cannot leapfrog an
+    // existing waiter merely because a different client is at its per-client cap.
+    if (this.queue.length === 0 && this.canStart(clientId)) {
+      this.grant(clientId)
       return Promise.resolve()
     }
     if (this.queue.length >= this.queueMax) {
       // 队列已满：不入队、不占位，立即拒绝，不让等待队伍无界增长。
       return Promise.reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
     }
+    if (!this.canQueue(clientId)) {
+      return Promise.reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
+    }
     return new Promise<void>((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout>
-      const entry: { grant: () => void } = { grant: () => {} }
+      const entry: { clientId: string; grant: () => void; queuedAt: number } = {
+        clientId,
+        grant: () => {},
+        queuedAt: performance.now(),
+      }
       const removeFromQueue = () => {
         const index = this.queue.indexOf(entry)
-        if (index >= 0) this.queue.splice(index, 1)
+        if (index >= 0) {
+          this.queue.splice(index, 1)
+          this.untrackQueued(entry.clientId)
+        }
       }
       const cleanup = () => {
         clearTimeout(timer)
@@ -491,12 +665,13 @@ export class VisionSemaphore {
         removeFromQueue()
         cleanup()
         reject(new VisionBridgeError(499, '请求已取消'))
+        this.drain()
       }
       entry.grant = () => {
         if (settled) return
         settled = true
         cleanup()
-        this.active += 1
+        this.grant(clientId)
         resolve()
       }
       timer = setTimeout(() => {
@@ -505,15 +680,30 @@ export class VisionSemaphore {
         removeFromQueue()
         cleanup()
         reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
+        this.drain()
       }, this.queueMaxWaitMs)
       signal?.addEventListener('abort', onAbort, { once: true })
       this.queue.push(entry)
+      this.trackQueued(clientId)
+      this.drain()
     })
   }
 
-  private release(): void {
+  private release(clientId: string): void {
     this.active = Math.max(0, this.active - 1)
-    const next = this.queue.shift()
-    if (next) next.grant()
+    const nextClientActive = Math.max(0, (this.activeByClient.get(clientId) ?? 1) - 1)
+    if (nextClientActive === 0) this.activeByClient.delete(clientId)
+    else this.activeByClient.set(clientId, nextClientActive)
+    this.drain()
+  }
+
+  private drain(): void {
+    while (this.active < this.limit) {
+      const nextIndex = this.queue.findIndex(entry => this.canStart(entry.clientId))
+      if (nextIndex < 0) return
+      const [next] = this.queue.splice(nextIndex, 1)
+      if (next) this.untrackQueued(next.clientId)
+      next?.grant()
+    }
   }
 }

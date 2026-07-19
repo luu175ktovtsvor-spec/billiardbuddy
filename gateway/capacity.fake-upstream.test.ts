@@ -12,10 +12,13 @@ function env(overrides: Record<string, string | undefined> = {}) {
   return {
     GW_QWEN_KEY: 'qwen-secret', GW_QWEN_BASE: 'https://qwen.example/v1', GW_QWEN_MODEL: 'qwen3-coder-plus',
     GW_QWEN_CONC: '16', GW_QWEN_USER_CONC: '2', GW_QWEN_RPM: '1000000', GW_QWEN_QUEUE_MAX_WAIT: '30', GW_QWEN_MAX_RETRIES: '1',
+    GW_QWEN_QUEUE_MAX: '512',
     GW_MIMO_KEY: 'mimo-secret', GW_MIMO_BASE: 'https://mimo.example/v1', GW_MIMO_MODEL: 'mimo-v2.5',
     GW_MIMO_CONC: '16', GW_MIMO_USER_CONC: '2', GW_MIMO_RPM: '1000000', GW_MIMO_QUEUE_MAX_WAIT: '30', GW_MIMO_MAX_RETRIES: '1',
+    GW_MIMO_QUEUE_MAX: '512',
     GW_DEEPSEEK_KEY: 'deepseek-secret', GW_DEEPSEEK_BASE: 'https://deepseek.example', GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_DEEPSEEK_CONC: '32', GW_DEEPSEEK_USER_CONC: '2', GW_DEEPSEEK_RPM: '1000000', GW_DEEPSEEK_QUEUE_MAX_WAIT: '30', GW_DEEPSEEK_MAX_RETRIES: '1',
+    GW_DEEPSEEK_QUEUE_MAX: '512',
     GW_RELAY_BASE: 'https://relay.example/v1', GW_RELAY_TOKEN: 'relay-secret',
     GW_APP_TOKENS: JSON.stringify({ 'app-token': 'beta' }),
     ...overrides,
@@ -56,7 +59,15 @@ function poolUpstream() {
 }
 
 function makeGateway(fetchImpl: (input: RequestInfo | URL) => Promise<Response>, overrides: Record<string, string | undefined> = {}) {
-  return createGatewayFetch({ env: env(overrides), usageStore: new MemoryUsageStore(), transcribeImpl: null, fetchImpl })
+  return makeGatewayWithUsage(fetchImpl, overrides).fetch
+}
+
+function makeGatewayWithUsage(fetchImpl: (input: RequestInfo | URL) => Promise<Response>, overrides: Record<string, string | undefined> = {}) {
+  const usage = new MemoryUsageStore()
+  return {
+    fetch: createGatewayFetch({ env: env(overrides), usageStore: usage, transcribeImpl: null, fetchImpl }),
+    usage,
+  }
 }
 
 function chatReq(model: string, client: string | null, token = 'app-token', signal?: AbortSignal): Request {
@@ -81,6 +92,15 @@ async function capacity(fetch: (r: Request) => Promise<Response>): Promise<Recor
 }
 
 const tick = (ms = 30) => new Promise(r => setTimeout(r, ms))
+
+async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = performance.now() + timeoutMs
+  while (performance.now() < deadline) {
+    if (check()) return
+    await tick(10)
+  }
+  throw new Error('timed out waiting for fake upstream capacity state')
+}
 
 // ── 三池分别:100 装机 × 2 请求 ──────────────────────────────────
 for (const p of POOLS) {
@@ -153,7 +173,126 @@ test('单 token 二级闸:伪造大量 installationId 也拿不到超过 token �
   expect((await Promise.all([...aReqs, ...bReqs])).every(s => s === 200)).toBe(true)
 })
 
-// ── 100 用户 × 3 窗口 = 300 并发(容量证据,假 upstream;不打真上游)──────
+// ── 100 用户 × 8 窗口 = 800 并发(默认 DeepSeek 容量证据,假 upstream;不打真上游) ──
+test('默认 DeepSeek profile:100 用户 × 8 窗口=800 请求，全部直接在途、无排队，公平、usage 与许可均排空', async () => {
+  const u = poolUpstream()
+  // The fixture normally pins the old small values so the legacy per-pool tests stay
+  // deterministic. Delete those overrides here to exercise the production default.
+  const { fetch, usage } = makeGatewayWithUsage(u.fetchImpl, {
+    GW_DEEPSEEK_CONC: undefined,
+    GW_DEEPSEEK_USER_CONC: undefined,
+    GW_DEEPSEEK_TOKEN_CONC: undefined,
+    GW_DEEPSEEK_QUEUE_MAX: undefined,
+    GW_DEEPSEEK_QUEUE_MAX_WAIT: undefined,
+  })
+  const reqs: Array<Promise<number>> = []
+  for (let user = 0; user < 100; user++) {
+    const id = `eightwin-${String(user).padStart(4, '0')}`
+    for (let window = 0; window < 8; window++) {
+      reqs.push(fire(fetch, 'deepseek-v4-flash', id))
+    }
+  }
+
+  await waitFor(() => u.stats.deepseek.inFlight === 800, 10_000)
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const body = await health.json()
+  expect(body.limits).toMatchObject({
+    deepseek_conc: 1_000,
+    deepseek_user_conc: 8,
+    deepseek_token_conc: 1_000,
+    deepseek_queue_max: 200,
+    deepseek_queue_max_wait_seconds: 15,
+  })
+  expect(body.capacity.deepseek).toMatchObject({
+    active: 800,
+    queued: 0,
+    maxConcurrent: 1_000,
+    maxConcurrentPerUser: 8,
+    maxConcurrentPerToken: 1_000,
+    queueMax: 200,
+  })
+  expect(body.capacity.deepseek.oldestQueueMs).toBeGreaterThanOrEqual(0)
+  expect(u.stats.deepseek.peak).toBe(800)
+  expect(u.stats.cross).toBe(0)
+
+  u.open()
+  const statuses = await Promise.all(reqs)
+  expect(statuses).toHaveLength(800)
+  expect(statuses.every(status => status === 200)).toBe(true)
+  expect(u.stats.deepseek.calls).toBe(800)
+  expect(u.stats.deepseek.peak).toBe(800)
+  expect(usage.rows).toHaveLength(800)
+  expect(usage.rows.every(row => row.model === 'deepseek' && row.ok && /^queue_ms=\d+;attempts=1;client=/.test(row.note ?? ''))).toBe(true)
+  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  expect((await drained.json()).capacity.deepseek).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
+test('默认 DeepSeek profile:超过 1000 在途的突发只保留 200 个短等待槽，余量立即 429 而不无界堆积', async () => {
+  const u = poolUpstream()
+  const { fetch } = makeGatewayWithUsage(u.fetchImpl, {
+    GW_DEEPSEEK_CONC: undefined,
+    GW_DEEPSEEK_USER_CONC: undefined,
+    GW_DEEPSEEK_TOKEN_CONC: undefined,
+    GW_DEEPSEEK_QUEUE_MAX: undefined,
+    GW_DEEPSEEK_QUEUE_MAX_WAIT: undefined,
+  })
+  // 151 个安装 × 8 窗口 = 1208：1000 个真实上游位 + 200 个队列位，剩余 8 个
+  // 必须快速拒绝。使用同一个 app token，覆盖桌面端共享产品 bearer 的实际调度形状。
+  const reqs: Array<Promise<number>> = []
+  for (let user = 0; user < 151; user++) {
+    const id = `overflow-${String(user).padStart(4, '0')}`
+    for (let window = 0; window < 8; window++) reqs.push(fire(fetch, 'deepseek-v4-flash', id))
+  }
+
+  await waitFor(() => u.stats.deepseek.inFlight === 1_000, 10_000)
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  expect((await health.json()).capacity.deepseek).toMatchObject({ active: 1_000, queued: 200, queueMax: 200 })
+  expect(u.stats.deepseek.peak).toBe(1_000)
+
+  u.open()
+  const statuses = await Promise.all(reqs)
+  expect(statuses.filter(status => status === 200)).toHaveLength(1_200)
+  expect(statuses.filter(status => status === 429)).toHaveLength(8)
+  expect(u.stats.deepseek.calls).toBe(1_200)
+  expect((await capacity(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
+})
+
+test('默认 MiMo profile:500 请求只接受16在途+128等待，剩余立即429而不把未知上游配额当成500', async () => {
+  const u = poolUpstream()
+  const { fetch, usage } = makeGatewayWithUsage(u.fetchImpl, {
+    GW_MIMO_CONC: undefined,
+    GW_MIMO_USER_CONC: undefined,
+    GW_MIMO_TOKEN_CONC: undefined,
+    GW_MIMO_QUEUE_MAX: undefined,
+    GW_MIMO_QUEUE_MAX_WAIT: undefined,
+  })
+  const reqs: Array<Promise<number>> = []
+  for (let user = 0; user < 100; user++) {
+    const id = `mimo-fivewin-${String(user).padStart(4, '0')}`
+    for (let window = 0; window < 5; window++) reqs.push(fire(fetch, 'mimo-v2.5', id))
+  }
+
+  await waitFor(() => u.stats.mimo.inFlight === 16)
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const body = await health.json()
+  expect(body.limits).toMatchObject({ mimo_conc: 16, mimo_user_conc: 5, mimo_token_conc: 16, mimo_queue_max: 128 })
+  expect(body.capacity.mimo).toMatchObject({ active: 16, queued: 128, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128 })
+  expect(body.capacity.mimo.oldestQueueMs).toBeGreaterThanOrEqual(0)
+  expect(u.stats.mimo.peak).toBe(16)
+
+  u.open()
+  const statuses = await Promise.all(reqs)
+  expect(statuses.filter(status => status === 200)).toHaveLength(144)
+  expect(statuses.filter(status => status === 429)).toHaveLength(356)
+  expect(u.stats.mimo.calls).toBe(144)
+  expect(u.stats.mimo.peak).toBe(16)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(144)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(356)
+  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  expect((await drained.json()).capacity.mimo).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
+// ── 保留旧 3 窗口回归：小容量显式 env 仍照旧生效 ────────────────────────
 test('单装机 3 窗口:同一装机同时只有 2 路在途,第 3 窗口排队(单装机上限)', async () => {
   const u = poolUpstream()
   const fetch = makeGateway(u.fetchImpl)

@@ -6,7 +6,7 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
+import { CapacityQueueError, FairCapacityScheduler, type CapacityPermit } from './modelCapacity'
 import {
   fetchQwenWithRetry,
   loadQwenAllowedModels,
@@ -105,6 +105,7 @@ type GatewayConfig = {
   qwenConc: number
   qwenUserConc: number
   qwenTokenConc: number
+  qwenQueueMax: number
   qwenQueueMaxWait: number
   qwenRetryMax: number
   qwenRetryBaseMs: number
@@ -117,6 +118,7 @@ type GatewayConfig = {
   mimoConc: number
   mimoUserConc: number
   mimoTokenConc: number
+  mimoQueueMax: number
   mimoQueueMaxWait: number
   mimoRetryMax: number
   mimoRetryBaseMs: number
@@ -129,6 +131,7 @@ type GatewayConfig = {
   deepseekConc: number
   deepseekUserConc: number
   deepseekTokenConc: number
+  deepseekQueueMax: number
   deepseekQueueMaxWait: number
   deepseekRetryMax: number
   deepseekRetryBaseMs: number
@@ -139,9 +142,15 @@ type GatewayConfig = {
   visionMaxImageBytes: number
   // 同时也是 /v1/chat/completions 的整体请求体大小闸(在任何路由/解析/许可之前生效)。
   visionMaxTotalBytes: number
+  /** One process-wide ingress reservation for chat, native Messages and image task bodies. */
+  ingressInflightBodyBytes: number
+  /** Slowloris guard for public JSON body reads after Bun's request idle timeout is disabled. */
+  ingressBodyReadTimeoutMs: number
   visionTimeoutMs: number
   visionConc: number
   visionQueueMax: number
+  visionQueueMaxWaitMs: number
+  visionPerClientConc: number
   visionPerRequestConc: number
   visionCacheMax: number
   visionCacheTtlMs: number
@@ -263,6 +272,43 @@ class AsyncSemaphore {
   }
 }
 
+/**
+ * Tracks a process-wide reservation for image-task request bodies while qfgw reads,
+ * merges, decodes and forwards them. Relay's task queue protects expensive image work,
+ * but it cannot protect this gateway from a simultaneous burst of base64 bodies.
+ */
+class InflightByteBudget {
+  private reservedBytes = 0
+
+  constructor(
+    private readonly maxBytes: number,
+    private readonly overflowMessage = '请求较多，请稍后重试',
+  ) {}
+
+  reserve(bytes: number): void {
+    if (!Number.isFinite(bytes) || bytes < 0) throw new Error('invalid byte reservation')
+    if (bytes > this.maxBytes - this.reservedBytes) {
+      throw new HttpError(429, this.overflowMessage)
+    }
+    this.reservedBytes += bytes
+  }
+
+  release(bytes: number): void {
+    if (!Number.isFinite(bytes) || bytes <= 0) return
+    this.reservedBytes = Math.max(0, this.reservedBytes - bytes)
+  }
+
+  snapshot(): { reservedBytes: number; maxBytes: number } {
+    return { reservedBytes: this.reservedBytes, maxBytes: this.maxBytes }
+  }
+}
+
+// `readRequestBodyBounded` retains chunks, one merged Uint8Array and a decoded string.
+// Reserving six times observed wire bytes covers chunk/merged/decoded copies plus JSON
+// parsing and transient string representation for both
+// ordinary chat and image-task forwarding without shrinking either route's per-request cap.
+const BUFFERED_BODY_RESERVATION_MULTIPLIER = 6
+
 export class SqliteUsageStore implements UsageStore {
   private db: Database
 
@@ -358,30 +404,45 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * 三条失败路径互斥：读到的真实字节超限 → 413；客户端取消(request.signal abort) → 499；
  * reader.read() 本身抛错(网络/协议异常) → 400。
  */
-async function readRequestBodyBounded(request: Request, maxBytes: number): Promise<string> {
+async function readRequestBodyBounded(
+  request: Request,
+  maxBytes: number,
+  onChunk?: (bytes: number) => void,
+  readTimeoutMs?: number,
+): Promise<string> {
   if (!request.body) return ''
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []
   let total = 0
   let aborted = request.signal?.aborted ?? false
+  let readTimedOut = false
   const onAbort = () => {
     aborted = true
     reader.cancel().catch(() => {})
   }
+  const timeout = readTimeoutMs && Number.isFinite(readTimeoutMs) && readTimeoutMs > 0
+    ? setTimeout(() => {
+      readTimedOut = true
+      reader.cancel().catch(() => {})
+    }, readTimeoutMs)
+    : undefined
   if (!aborted) request.signal?.addEventListener('abort', onAbort, { once: true })
   try {
     while (true) {
       if (aborted) throw new HttpError(499, '请求已取消')
+      if (readTimedOut) throw new HttpError(408, '请求体读取超时')
       let result: ReadableStreamReadResult<Uint8Array>
       try {
         result = await reader.read()
       } catch {
         if (aborted) throw new HttpError(499, '请求已取消')
+        if (readTimedOut) throw new HttpError(408, '请求体读取超时')
         throw new HttpError(400, '请求体读取失败')
       }
       // cancel() 触发的 abort 可能让挂起的 read() 以 {done:true} 而非抛错的方式结算，
       // 这里再判一次，不让已取消的请求被当成"正常读完"放行。
       if (aborted) throw new HttpError(499, '请求已取消')
+      if (readTimedOut) throw new HttpError(408, '请求体读取超时')
       if (result.done) break
       const value = result.value
       if (value && value.byteLength > 0) {
@@ -390,11 +451,21 @@ async function readRequestBodyBounded(request: Request, maxBytes: number): Promi
           await reader.cancel().catch(() => {})
           throw new HttpError(413, '请求体过大')
         }
+        // The image-task route uses this hook to reserve global body memory before
+        // retaining the chunk. If that budget is full, cancel immediately rather than
+        // continuing to buffer a request that cannot be forwarded safely.
+        try {
+          onChunk?.(value.byteLength)
+        } catch (error) {
+          await reader.cancel().catch(() => {})
+          throw error
+        }
         chunks.push(value)
       }
     }
   } finally {
     request.signal?.removeEventListener('abort', onAbort)
+    if (timeout) clearTimeout(timeout)
   }
   const merged = new Uint8Array(total)
   let offset = 0
@@ -403,6 +474,48 @@ async function readRequestBodyBounded(request: Request, maxBytes: number): Promi
     offset += chunk.byteLength
   }
   return new TextDecoder('utf-8').decode(merged)
+}
+
+/**
+ * Hold a process-wide body-memory reservation from the first retained chunk until the
+ * caller has finished parsing/forwarding the request.  A truthful Content-Length is
+ * reserved before reading; missing or dishonest headers are topped up before each chunk
+ * is retained.  This is deliberately separate from the per-request maxBytes check: the
+ * latter limits one request, while this cap prevents 500 concurrent valid requests from
+ * multiplying into an OOM.
+ */
+async function withBufferedBodyReservation<T>(
+  request: Request,
+  maxBytes: number,
+  budget: InflightByteBudget,
+  readTimeoutMs: number,
+  fn: (rawBody: string) => Promise<T>,
+): Promise<T> {
+  const declaredLength = Number(request.headers.get('content-length') ?? '')
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new HttpError(413, '请求体过大')
+  }
+  let reservedBytes = 0
+  let observedBytes = 0
+  const reserveObservedBytes = (wireBytes: number) => {
+    const target = wireBytes * BUFFERED_BODY_RESERVATION_MULTIPLIER
+    const additional = target - reservedBytes
+    if (additional <= 0) return
+    budget.reserve(additional)
+    reservedBytes = target
+  }
+  try {
+    if (Number.isFinite(declaredLength) && declaredLength > 0) {
+      reserveObservedBytes(Math.min(declaredLength, maxBytes))
+    }
+    const rawBody = await readRequestBodyBounded(request, maxBytes, bytes => {
+      observedBytes += bytes
+      reserveObservedBytes(observedBytes)
+    }, readTimeoutMs)
+    return await fn(rawBody)
+  } finally {
+    budget.release(reservedBytes)
+  }
 }
 
 function intEnv(env: Env, name: string, fallback: number): number {
@@ -447,11 +560,14 @@ function loadConfig(env: Env): GatewayConfig {
     // 保护上游的高水位紧急总闸,真正收紧限速请调小对应 env,不靠这个默认值节流。
     qwenRpm: intEnv(env, 'GW_QWEN_RPM', 100_000),
     qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
-    // 单装机并发默认 = 全局并发(不再单独节流单装机);GW_*_CONC 全局闸继续兜底。
-    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
+    // 产品按“每人最多开 5 个窗口”建模：单装机默认最多同时占 5 个槽，既不把正常多窗口
+    // 用户卡成 1 路，也不让先到的一个安装吞掉整池。仍可由 gw.env 对特殊客户显式调整。
+    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', Math.min(5, intEnv(env, 'GW_QWEN_CONC', 16)))),
     // 单 token 名下所有装机合计在途上限:默认=全局并发(共享私测 token 需用满整池)。发独立用户
     // token 后设为低于全局以在 token 间预留 headroom;是防"单 token 伪造多装机独占池"的二级闸。
     qwenTokenConc: Math.max(1, intEnv(env, 'GW_QWEN_TOKEN_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
+    // 有界等待队列与 active 槽分开计数；0 表示池满即 429，不允许无界排队。
+    qwenQueueMax: Math.max(0, intEnv(env, 'GW_QWEN_QUEUE_MAX', 128)),
     qwenQueueMaxWait: Math.max(0, floatEnv(env, 'GW_QWEN_QUEUE_MAX_WAIT', 120)),
     // 一次逻辑调用最多只额外尝试一次(连接错误/可重试 5xx),硬夹在 [0,1]:CC CLI 自己也会重试,
     // 网关再叠加多次会把一次调用放大成对上游的多次请求。429 由 isRetryableStatus 直接不重试。
@@ -464,24 +580,29 @@ function loadConfig(env: Env): GatewayConfig {
     mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 16)),
-    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
+    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', Math.min(5, intEnv(env, 'GW_MIMO_CONC', 16)))),
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 16))),
+    mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 128)),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 120)),
     // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。全局并发 32、RPM 放开到不限流,靠真实压测再收紧;
-    // 不因官方账号并发(~2500)就直接放到无限。缺 key 时路由到它会 503,绝不改投千问/MiMo。
+    // DeepSeek V4 Flash:真 key 只在服务器。按产品目标 100 人 × 每人最多 8 窗口，默认允许
+    // 1000 个实际流，因此 800 个普通聊天可直接进入上游、不会落到排队。账号声称的 2500 并发
+    // 不是单个 Bun 进程的可验证吞吐，保留约 60% 的上游额度给重试、其它部署和故障余量；200 个
+    // 队列槽只吸收短抖动且最多等 15 秒，避免把持续超载伪装成长时间“排队中”。缺 key 时路由到它会
+    // 503，绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
-    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 32)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 32))),
-    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 32))),
-    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
+    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(8, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
+    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
+    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
+    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
@@ -494,17 +615,38 @@ function loadConfig(env: Env): GatewayConfig {
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
     visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
     visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
-    // 视觉排队队列的硬上限(不含正在执行的 GW_VISION_CONC 个)：50~100 装机私测阶段，按
-    // "全局在途并发(12)的约 5 倍"给一个保守值——既防队列无界增长打爆内存，又不至于让正常的
-    // 突发（多个装机同时贴图）过早被 429；真实生产量上来后按压测结果再收紧或放宽。
-    visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 64)),
+    // MiMo image capacity has not been load-tested at product scale. Keep only a short
+    // 12-active + 24-waiting bridge queue by default and deliberately shed a 500-image
+    // burst rather than turning it into stale work or allocating unbounded request state.
+    visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 24)),
+    // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证 MiMo
+    // 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
+    visionQueueMaxWaitMs: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX_WAIT_MS', 3_000)),
+    // Unlike plain text, image understanding is a conservative, unverified MiMo path:
+    // one installation gets one visual slot by default so 12 distinct desktops can make
+    // progress. This is intentionally stricter than normal chat's five-window limit.
+    visionPerClientConc: Math.max(1, intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1)),
     // 单个聊天请求最多同时占用几个全局视觉并发槽：默认 2——一个最多 GW_VISION_MAX_IMAGES(8)张图
     // 的请求最多同时占 2 个全局槽，给同一时刻到达的其它请求留出至少 (GW_VISION_CONC-2) 个槽位，
     // 不被单个大请求饿死；请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。
     visionPerRequestConc: Math.max(1, intEnv(env, 'GW_VISION_PER_REQUEST_CONC', 2)),
     visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
-    imgIpm: intEnv(env, 'GW_IMG_IPM', 18),
+    // A valid 24/32 MB body can temporarily exist as chunks + merged bytes + decoded
+    // text + parsed/rewritten JSON.  One conservative 256 MB ingress reservation spans
+    // ordinary chat, vision bridge, native Messages and image submissions so a burst
+    // fails quickly instead of multiplying into an OOM.  The two older per-route names
+    // remain read-only compatibility fallbacks; a new deployment should set only GW_INGRESS_INFLIGHT_BODY_BYTES.
+    ingressInflightBodyBytes: Math.max(1, intEnv(
+      env,
+      'GW_INGRESS_INFLIGHT_BODY_BYTES',
+      intEnv(env, 'GW_CHAT_INFLIGHT_BODY_BYTES', intEnv(env, 'GW_IMG_INFLIGHT_BODY_BYTES', 256 * 1024 * 1024)),
+    )),
+    ingressBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_INGRESS_BODY_READ_TIMEOUT_MS', 30_000)),
+    // Image generation itself is queued on relay; qfgw only accepts short submissions.
+    // Permit a 100×5 burst to reach relay's idempotent queue instead of throttling it to
+    // 18/min here. The byte reservation below is the memory guard for those submissions.
+    imgIpm: intEnv(env, 'GW_IMG_IPM', 600),
     // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
     // same 32 MB request ceiling at the public gateway before buffering or forwarding.
     imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),
@@ -664,14 +806,33 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
     // 公平调度按装机身份细分:同一 token 的不同装机各占一份单用户额度。装机身份只细分单用户
     // 公平,永远受同一个 provider 全局并发上限约束,伪造装机 id 也无法放大全局额度或提权。
     const schedId = client ? `${user}#${client}` : user
-    const usageNote = (attempts: number) => `attempts=${attempts}${client ? `;client=${client}` : ''}`
     // tokenId=user 让"同一 token 名下所有装机"合计受 maxConcurrentPerToken 约束:即使伪造任意多
     // client id,一个 token 也拿不到超过其 token 级上限的在途,防单 token 独占整池。
-    const permit = await provider.capacity.acquire(schedId, {
-      maxWaitMs: provider.queueMaxWait * 1000,
-      signal: request.signal,
-      tokenId: user,
-    })
+    const queuedStarted = performance.now()
+    let permit: CapacityPermit
+    try {
+      permit = await provider.capacity.acquire(schedId, {
+        maxWaitMs: provider.queueMaxWait * 1000,
+        signal: request.signal,
+        tokenId: user,
+      })
+    } catch (error) {
+      // Queue-full / timeout / client-cancel used to return before usage logging, making
+      // the only evidence of overload disappear. Record the bounded wait, without body
+      // content or provider detail, so /admin/usage can be used to tune the pool safely.
+      const known = error instanceof CapacityQueueError
+      await logUsage(store, {
+        user,
+        model: provider.label,
+        ok: false,
+        status: known ? error.status : 502,
+        ms: elapsedMs(queuedStarted),
+        note: `queue_ms=${elapsedMs(queuedStarted)};queue_rejected=1`,
+      })
+      throw error
+    }
+    const queueMs = elapsedMs(queuedStarted)
+    const usageNote = (attempts: number) => `queue_ms=${queueMs};attempts=${attempts}${client ? `;client=${client}` : ''}`
     const started = performance.now()
     try {
       const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
@@ -733,7 +894,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         ok: false,
         status,
         ms: elapsedMs(started),
-        note: 'upstream_request_failed',
+        note: `queue_ms=${queueMs};upstream_request_failed`,
       })
       throw new HttpError(status, detail)
     }
@@ -764,13 +925,30 @@ function createNativeAnthropicWebSearchHandler(
       { userId },
     )
     const schedulerId = client ? `${user}#${client}` : user
-    const permit = await provider.capacity.acquire(schedulerId, {
-      maxWaitMs: provider.queueMaxWait * 1000,
-      signal: request.signal,
-      tokenId: user,
-    })
+    const queuedStarted = performance.now()
+    let permit: CapacityPermit
+    try {
+      permit = await provider.capacity.acquire(schedulerId, {
+        maxWaitMs: provider.queueMaxWait * 1000,
+        signal: request.signal,
+        tokenId: user,
+      })
+    } catch (error) {
+      const known = error instanceof CapacityQueueError
+      const queueMs = elapsedMs(queuedStarted)
+      await logUsage(store, {
+        user,
+        model: 'deepseek_web_search',
+        ok: false,
+        status: known ? error.status : 502,
+        ms: queueMs,
+        note: `queue_ms=${queueMs};queue_rejected=1`,
+      })
+      throw error
+    }
+    const queueMs = elapsedMs(queuedStarted)
     const started = performance.now()
-    const usageNote = (attempts: number) => `native_web_search;attempts=${attempts}${client ? `;client=${client}` : ''}`
+    const usageNote = (attempts: number) => `queue_ms=${queueMs};native_web_search;attempts=${attempts}${client ? `;client=${client}` : ''}`
 
     try {
       const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
@@ -853,7 +1031,7 @@ function createNativeAnthropicWebSearchHandler(
         ok: false,
         status,
         ms: elapsedMs(started),
-        note: 'native_web_search_failed',
+        note: `queue_ms=${queueMs};native_web_search_failed`,
       })
       throw new HttpError(status, detail)
     }
@@ -866,9 +1044,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const qwenBucket = new TokenBucket(config.qwenRpm)
-  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc)
+  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc, config.qwenQueueMax)
   const mimoBucket = new TokenBucket(config.mimoRpm)
-  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc, config.mimoTokenConc)
+  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc, config.mimoTokenConc, config.mimoQueueMax)
   // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
   const qwenChat: ChatHandler | null = config.qwenKey
     ? createChatHandler({
@@ -911,7 +1089,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     }, fetchImpl, store)
     : null
   const deepseekBucket = new TokenBucket(config.deepseekRpm)
-  const deepseekCapacity = new FairCapacityScheduler(config.deepseekConc, config.deepseekUserConc, config.deepseekTokenConc)
+  const deepseekCapacity = new FairCapacityScheduler(
+    config.deepseekConc,
+    config.deepseekUserConc,
+    config.deepseekTokenConc,
+    config.deepseekQueueMax,
+  )
   const deepseekProvider: ChatProvider | null = config.deepseekKey
     ? {
       label: 'deepseek',
@@ -944,6 +1127,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       mimoBase: config.mimoBase,
       mimoKey: config.mimoKey,
       fetchImpl,
+      mimoCapacity,
+      mimoRateLimiter: mimoBucket,
+      // Keep a vision call's RPM wait inside its own short queue budget instead of
+      // borrowing the ordinary MiMo chat path's potentially much longer 120 s wait.
+      mimoRateLimitMaxWaitSeconds: Math.min(config.mimoQueueMaxWait, config.visionQueueMaxWaitMs / 1000),
       caps: {
         maxImages: config.visionMaxImages,
         maxImageBytes: config.visionMaxImageBytes,
@@ -951,13 +1139,16 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         visionTimeoutMs: config.visionTimeoutMs,
         maxConcurrent: config.visionConc,
         queueMax: config.visionQueueMax,
+        queueMaxWaitMs: config.visionQueueMaxWaitMs,
+        perClientConc: config.visionPerClientConc,
         perRequestConc: config.visionPerRequestConc,
         cacheMax: config.visionCacheMax,
         cacheTtlMs: config.visionCacheTtlMs,
       },
-    })
+  })
     : null
   const imgBucket = new TokenBucket(config.imgIpm)
+  const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
@@ -972,13 +1163,30 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             qwen_rpm: config.qwenRpm,
             qwen_conc: config.qwenConc,
             qwen_user_conc: config.qwenUserConc,
+            qwen_token_conc: config.qwenTokenConc,
+            qwen_queue_max: config.qwenQueueMax,
+            qwen_queue_max_wait_seconds: config.qwenQueueMaxWait,
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
             mimo_user_conc: config.mimoUserConc,
+            mimo_token_conc: config.mimoTokenConc,
+            mimo_queue_max: config.mimoQueueMax,
+            mimo_queue_max_wait_seconds: config.mimoQueueMaxWait,
             deepseek_rpm: config.deepseekRpm,
             deepseek_conc: config.deepseekConc,
             deepseek_user_conc: config.deepseekUserConc,
+            deepseek_token_conc: config.deepseekTokenConc,
+            deepseek_queue_max: config.deepseekQueueMax,
+            deepseek_queue_max_wait_seconds: config.deepseekQueueMaxWait,
+            vision_conc: config.visionConc,
+            vision_queue_max: config.visionQueueMax,
+            vision_queue_max_wait_ms: config.visionQueueMaxWaitMs,
+            vision_per_client_conc: config.visionPerClientConc,
+            vision_per_request_conc: config.visionPerRequestConc,
             img_ipm: config.imgIpm,
+            img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
+            ingress_inflight_body_bytes: config.ingressInflightBodyBytes,
+            ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
           },
@@ -988,12 +1196,25 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             qwen: qwenCapacity.snapshot(),
             mimo: mimoCapacity.snapshot(),
             deepseek: deepseekCapacity.snapshot(),
+            // MiMo direct-chat and image bridge are separate guarded call paths. Expose
+            // the bridge semaphore too; otherwise a healthy text pool can hide a
+            // saturated image-understanding queue.
+            vision: visionBridge?.snapshot() ?? {
+              active: 0,
+              queued: 0,
+              limit: config.visionConc,
+              queueMax: config.visionQueueMax,
+              perClientConc: config.visionPerClientConc,
+              oldestQueueMs: 0,
+            },
+            ingress_body: ingressBodyBudget.snapshot(),
           },
           features: {
             transcription: transcribe !== null,
             chat_qwen: qwenChat !== null,
             chat_mimo: mimoChat !== null,
             chat_deepseek: deepseekChat !== null,
+            vision_bridge: visionBridge !== null,
           },
         })
       }
@@ -1027,23 +1248,26 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // and image bridge are not bypassed.
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const user = auth(config, request)
+        // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
+        // in the same DeepSeek pool as chat, so disable it before body read/queue wait.
+        server?.timeout(request, 0)
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) {
           throw new HttpError(415, '联网检索请求需要 JSON')
         }
-        const declaredLength = Number(request.headers.get('content-length') ?? '')
-        if (Number.isFinite(declaredLength) && declaredLength > config.visionMaxTotalBytes) {
-          throw new HttpError(413, '请求体过大')
-        }
-        const rawBody = await readRequestBodyBounded(request, config.visionMaxTotalBytes)
-        if (!deepseekNativeWebSearch) {
-          throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
-        }
-        return await deepseekNativeWebSearch(request, rawBody, user, readClientId(request))
+        return await withBufferedBodyReservation(request, config.visionMaxTotalBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+          if (!deepseekNativeWebSearch) {
+            throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
+          }
+          return await deepseekNativeWebSearch(request, rawBody, user, readClientId(request))
+        })
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const user = auth(config, request)
+        // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
+        // this before buffering/vision admission so Bun's 10 s default cannot sever it.
+        server?.timeout(request, 0)
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
         // 请求体大小闸,在任何路由/解析/许可之前:防超大/伪造 Content-Length/chunked body(典型是
@@ -1051,11 +1275,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // (常规场景零额外开销);真正兜底的上限由 readRequestBodyBounded 按流式真实字节数强制,
         // 不信任可被伪造的头或 chunked 编码。复用视觉桥接的 maxTotalBytes 上限,对所有聊天请求
         // 生效(不止带图请求)。
-        const declaredLength = Number(request.headers.get('content-length') ?? '')
-        if (Number.isFinite(declaredLength) && declaredLength > config.visionMaxTotalBytes) {
-          throw new HttpError(413, '请求体过大')
-        }
-        const rawBody = await readRequestBodyBounded(request, config.visionMaxTotalBytes)
+        return await withBufferedBodyReservation(request, config.visionMaxTotalBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
         // 路由规则(按 model 显式分流,绝不自动跨供应商回退):
         //   命中 DeepSeek 白名单 → 只能走 DeepSeek;命中 MiMo 白名单 → 只能走 MiMo;
         //   两者未配置对应 key 时各自显式 503,绝不改投千问。未命中任何白名单(未知或千问模型)
@@ -1092,7 +1312,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
           const bridgeStarted = performance.now()
           try {
-            const { body, metrics } = await visionBridge.transform(rawBody, { signal: request.signal })
+            const schedulerId = client ? `${user}#${client}` : user
+            const { body, metrics } = await visionBridge.transform(rawBody, {
+              signal: request.signal,
+              schedulerId,
+              tokenId: user,
+            })
             effectiveBody = body
             await logUsage(store, {
               user,
@@ -1120,6 +1345,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
         if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
         return await qwenChat(request, effectiveBody, user, client)
+        })
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
@@ -1170,36 +1396,43 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // GPT 生图异步任务:提交(短请求,转发到美国 relay 任务服务;慢调用在美国本地跑,绕开跨境长连接 60s 被掐)。
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
         const user = auth(config, request)
+        // Relay forwarding can cross the default Bun 10 s idle window even though image
+        // generation itself is asynchronous. Disable it before buffering/rate waiting.
+        server?.timeout(request, 0)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
-        const declaredLength = Number(request.headers.get('content-length') ?? '')
-        if (Number.isFinite(declaredLength) && declaredLength > config.imgTaskMaxBodyBytes) {
-          throw new HttpError(413, '生图任务请求体过大')
-        }
-        const rawBody = await readRequestBodyBounded(request, config.imgTaskMaxBodyBytes)
-        await imgBucket.acquire(config.queueMaxWait) // 提交计入生图 IPM 限速;短请求不占 imgSem 在途并发
-        const started = performance.now()
         try {
-          // 把受信任务归属身份传给 relay(relay 据此绑定 owner、越权轮询 403);客户端若带
-          // Idempotency-Key 则透传,relay 按 (owner,key) 去重,重复提交只跑一次真实上游。
-          const submitHeaders: Record<string, string> = {
-            Authorization: `Bearer ${config.relayToken}`,
-            'Content-Type': 'application/json',
-            'X-Relay-Owner': relayOwner(user, readClientId(request)),
-          }
-          const idempotencyKey = request.headers.get('idempotency-key')
-          if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
-          const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
-            method: 'POST',
-            body: rawBody,
-            headers: submitHeaders,
+          return await withBufferedBodyReservation(request, config.imgTaskMaxBodyBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+            // Submission counts toward the short ingress rate guard, not relay's actual
+            // image-generation concurrency. Respect cancellation while waiting so a
+            // disconnected client cannot occupy TokenBucket's serialized chain forever.
+            await imgBucket.acquire(config.queueMaxWait, request.signal)
+            const started = performance.now()
+            // 把受信任务归属身份传给 relay(relay 据此绑定 owner、越权轮询 403);客户端若带
+            // Idempotency-Key 则透传,relay 按 (owner,key) 去重,重复提交只跑一次真实上游。
+            const submitHeaders: Record<string, string> = {
+              Authorization: `Bearer ${config.relayToken}`,
+              'Content-Type': 'application/json',
+              'X-Relay-Owner': relayOwner(user, readClientId(request)),
+            }
+            const idempotencyKey = request.headers.get('idempotency-key')
+            if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
+            const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
+              method: 'POST',
+              body: rawBody,
+              signal: request.signal,
+              headers: submitHeaders,
+            })
+            await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
+            return await proxyJsonOrRaw(upstream)
           })
-          await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-          return await proxyJsonOrRaw(upstream)
         } catch (err) {
-          await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: elapsedMs(started), note: String(err).slice(0, 120) })
-          throw new HttpError(502, `生图任务提交出错:${String(err).slice(0, 120)}`)
+          if (err instanceof HttpError) throw err
+          // Do not expose raw relay/network details. The usage row keeps only a fixed
+          // category; the shared ingress reservation is released by the helper above.
+          await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: 0, note: 'image_task_forward_failed' })
+          throw new HttpError(502, '生图任务提交出错，请稍后重试')
         }
       }
 
