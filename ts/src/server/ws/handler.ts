@@ -163,11 +163,15 @@ export type WebSocketData = {
 // Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
-const clientOutputCallbacks = new Map<
-  ServerWebSocket<WebSocketData>,
+// The CLI stream owns mutable per-session parsing state (partial tool input,
+// parent ids, and completion bookkeeping). Translate it once, then fan the
+// resulting events out to every connected renderer instead of letting each
+// client consume the same state independently.
+const sessionOutputCallbacks = new Map<
+  string,
   {
-    sessionId: string
     callback: (cliMsg: any) => void
+    shouldForward?: (cliMsg: any) => boolean
   }
 >()
 
@@ -287,11 +291,12 @@ export const handleWebSocket = {
       console.log(`[WS] Ignoring stale client disconnect for session: ${sessionId}`)
       return
     }
-    removeClientOutputCallback(ws)
 
     if (hasActiveClients(sessionId)) {
       return
     }
+
+    removeSessionOutputCallback(sessionId)
 
     // No clients left. A turn that is still running must finish in the
     // background (issue #764) — never kill it just because a phone locked its
@@ -527,6 +532,7 @@ async function handleDesktopClearCommand(
     : undefined
   conversationService.stopSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
+  sessionOutputCallbacks.delete(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
   cleanupStreamState(sessionId)
@@ -1379,6 +1385,7 @@ function bindPrewarmMetadataCapture(sessionId: string) {
   if (!conversationService.hasSession(sessionId)) return
 
   conversationService.clearOutputCallbacks(sessionId)
+  sessionOutputCallbacks.delete(sessionId)
   conversationService.onOutput(sessionId, (cliMsg) => {
     cacheSessionInitMetadata(sessionId, cliMsg)
   })
@@ -2418,52 +2425,70 @@ function hasActiveClients(sessionId: string): boolean {
   return (activeSessions.get(sessionId)?.size ?? 0) > 0
 }
 
-function removeClientOutputCallback(ws: ServerWebSocket<WebSocketData>): void {
-  const entry = clientOutputCallbacks.get(ws)
-  if (!entry) return
-  conversationService.removeOutputCallback(entry.sessionId, entry.callback)
-  clientOutputCallbacks.delete(ws)
-}
-
 function bindAllClientSessionOutputs(
   sessionId: string,
   options?: {
     shouldForward?: (cliMsg: any) => boolean
   },
 ): void {
-  const clients = activeSessions.get(sessionId)
-  if (!clients) return
-  for (const ws of clients) {
-    bindClientSessionOutput(sessionId, ws, options)
-  }
+  bindSessionOutput(sessionId, options, true)
 }
 
 function bindClientSessionOutput(
   sessionId: string,
-  ws: ServerWebSocket<WebSocketData>,
+  _ws: ServerWebSocket<WebSocketData>,
   options?: {
     shouldForward?: (cliMsg: any) => boolean
   },
 ) {
+  bindSessionOutput(sessionId, options)
+}
+
+function bindSessionOutput(
+  sessionId: string,
+  options?: {
+    shouldForward?: (cliMsg: any) => boolean
+  },
+  replaceForwardingGuard = false,
+) {
   if (!conversationService.hasSession(sessionId)) return
 
-  removeClientOutputCallback(ws)
+  const existing = sessionOutputCallbacks.get(sessionId)
+  if (existing) {
+    // A just-sent turn replaces the pre-send forwarding guard. Keep the one
+    // callback alive so translating a live stream never resets its state.
+    if (replaceForwardingGuard) {
+      existing.shouldForward = options?.shouldForward
+    }
+    return
+  }
 
   const callback = (cliMsg: any) => {
-    if (options?.shouldForward && !options.shouldForward(cliMsg)) {
+    const current = sessionOutputCallbacks.get(sessionId)
+    if (current?.shouldForward && !current.shouldForward(cliMsg)) {
       return
     }
 
     handleCliPermissionModeBroadcast(sessionId, cliMsg)
     const serverMsgs = translateCliMessage(cliMsg, sessionId)
-    for (const msg of serverMsgs) {
-      sendMessage(ws, msg)
+    const clients = activeSessions.get(sessionId)
+    if (!clients?.size) return
+    for (const client of clients) {
+      for (const msg of serverMsgs) {
+        sendMessage(client, msg)
+      }
     }
-
   }
 
-  clientOutputCallbacks.set(ws, { sessionId, callback })
+  sessionOutputCallbacks.set(sessionId, { callback, shouldForward: options?.shouldForward })
   conversationService.onOutput(sessionId, callback)
+}
+
+function removeSessionOutputCallback(sessionId: string): void {
+  const entry = sessionOutputCallbacks.get(sessionId)
+  if (!entry) return
+  conversationService.removeOutputCallback(sessionId, entry.callback)
+  sessionOutputCallbacks.delete(sessionId)
 }
 
 function getCliPermissionModeBroadcast(cliMsg: any): string | null {
@@ -2744,6 +2769,7 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
   }
   computerUseApprovalService.cancelSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
+  sessionOutputCallbacks.delete(sessionId)
   cleanupSessionRuntimeState(sessionId)
 
   const clients = activeSessions.get(sessionId)
@@ -2751,7 +2777,6 @@ export function closeSessionConnection(sessionId: string, reason = 'session clos
 
   activeSessions.delete(sessionId)
   for (const ws of clients) {
-    clientOutputCallbacks.delete(ws)
     ws.close(1000, reason)
   }
   return true
@@ -2766,7 +2791,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
   for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
-  clientOutputCallbacks.clear()
+  sessionOutputCallbacks.clear()
   sessionCleanupTimers.clear()
   sessionDisconnectWatchers.clear()
   prewarmPendingSessions.clear()
