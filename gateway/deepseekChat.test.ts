@@ -36,10 +36,10 @@ test('prepareBody injects the trusted opaque user_id, dropping any client-sent u
   expect(parsed.user).toBeUndefined() // OpenAI-style field removed
 })
 
-test('prepareBody passes the thinking toggle and reasoning fields through untouched', () => {
+test('prepareBody normalizes Core adaptive thinking and preserves DeepSeek reasoning effort', () => {
   const allowed = new Set(['deepseek-v4-flash'])
   const { body } = prepareDeepSeekChatBody(
-    JSON.stringify({ model: 'deepseek-v4-flash', thinking: { type: 'enabled' }, reasoning_effort: 'high', messages: [{ role: 'user', content: 'hi' }] }),
+    JSON.stringify({ model: 'deepseek-v4-flash', thinking: { type: 'adaptive' }, reasoning_effort: 'high', messages: [{ role: 'user', content: 'hi' }] }),
     allowed,
     'deepseek-v4-flash',
     { userId: 'bb_x' },
@@ -47,6 +47,23 @@ test('prepareBody passes the thinking toggle and reasoning fields through untouc
   const parsed = JSON.parse(body)
   expect(parsed.thinking).toEqual({ type: 'enabled' })
   expect(parsed.reasoning_effort).toBe('high')
+})
+
+test('prepareBody preserves supported DeepSeek thinking values and rejects unknown ones before upstream', () => {
+  const allowed = new Set(['deepseek-v4-flash'])
+  for (const type of ['enabled', 'disabled']) {
+    const { body } = prepareDeepSeekChatBody(
+      JSON.stringify({ model: 'deepseek-v4-flash', thinking: { type }, messages: [] }),
+      allowed,
+      'deepseek-v4-flash',
+    )
+    expect(JSON.parse(body).thinking).toEqual({ type })
+  }
+  expect(() => prepareDeepSeekChatBody(
+    JSON.stringify({ model: 'deepseek-v4-flash', thinking: { type: 'maximum' }, messages: [] }),
+    allowed,
+    'deepseek-v4-flash',
+  )).toThrow(DeepSeekRequestError)
 })
 
 test('prepareBody rejects non-JSON and non-object and bad tools', () => {
