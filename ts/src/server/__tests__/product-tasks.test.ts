@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -156,6 +157,10 @@ function sourceMessage(id: string, text = '从这条消息继续'): MessageEntry
   }
 }
 
+function legacyProductTaskIdForTest(coreSessionId: string): string {
+  return `task_${createHash('sha256').update(coreSessionId).digest('hex').slice(0, 16)}`
+}
+
 describe('ProductTaskService', () => {
   it('does not expose the Core binding in public task records', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
@@ -252,6 +257,35 @@ describe('ProductTaskService', () => {
     expect(index.projects[0]?.taskCount).toBe(2)
     expect(index.tasks).toHaveLength(2)
     expect(index.total).toBe(2)
+  })
+
+  it('imports legacy Core sessions once, then indexes only the product task registry', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const storagePath = path.join(tempDir, 'product-tasks.json')
+    const legacy = await core.createSession({ workDir: '/workspace/imported-legacy' })
+    const service = new ProductTaskService({ storagePath, core })
+
+    const firstIndex = await service.listTasks()
+    expect(firstIndex.tasks).toHaveLength(1)
+    expect(firstIndex.tasks[0]?.id).toBe(legacyProductTaskIdForTest(legacy.sessionId))
+    expect(JSON.stringify(firstIndex)).not.toContain(legacy.sessionId)
+
+    const persistedAfterImport = JSON.parse(await fs.readFile(storagePath, 'utf8')) as {
+      version: number
+      legacyCoreSessionsImportedAt?: string
+      tasks: Record<string, { coreSessionId?: string }>
+    }
+    expect(persistedAfterImport.version).toBe(3)
+    expect(persistedAfterImport.legacyCoreSessionsImportedAt).toEqual(expect.any(String))
+    expect(persistedAfterImport.tasks[firstIndex.tasks[0]!.id]?.coreSessionId).toBe(legacy.sessionId)
+
+    const laterCoreSession = await core.createSession({ workDir: '/workspace/late-core-session' })
+    const secondIndex = await service.listTasks()
+    expect(secondIndex.tasks.map((task) => task.id)).toEqual([firstIndex.tasks[0]!.id])
+    await expect(service.resolveCoreSessionId(
+      legacyProductTaskIdForTest(laterCoreSession.sessionId),
+    )).rejects.toThrow(`任务不存在：${legacyProductTaskIdForTest(laterCoreSession.sessionId)}`)
   })
 
   it('keeps a project with an active pinned task ahead of a newer unpinned project', async () => {
@@ -482,7 +516,7 @@ describe('ProductTaskService', () => {
       version: number
       tasks: Record<string, { coreSessionId?: string }>
     }
-    expect(persisted.version).toBe(2)
+    expect(persisted.version).toBe(3)
     expect(persisted.tasks[task!.id]?.coreSessionId).toBe(created.sessionId)
   })
 
