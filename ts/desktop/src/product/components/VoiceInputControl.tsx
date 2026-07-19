@@ -1,6 +1,6 @@
 import { LoaderCircle, Mic, RefreshCw, Square, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { voiceApi } from '../../api/voice'
+import { productVoiceApi } from '../api/voice'
 import { useUIStore } from '../../stores/uiStore'
 
 export type VoiceInputState =
@@ -84,7 +84,7 @@ export function VoiceInputControl({
     requestRef.current = controller
     setState('transcribing')
     try {
-      const text = await voiceApi.transcribe(blob, {
+      const text = await productVoiceApi.transcribe(blob, {
         language,
         signal: controller.signal,
       })

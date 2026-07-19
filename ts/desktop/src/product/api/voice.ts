@@ -1,8 +1,8 @@
 import {
   voiceErrorResponseSchema,
   voiceTranscriptionResponseSchema,
-} from '../../../shared/contracts/voice'
-import { getBaseUrl } from './client'
+} from '../../../../shared/contracts/voice'
+import { getServerBaseUrl } from '../../lib/desktopRuntime'
 
 export type VoiceTranscriptionOptions = {
   language?: string
@@ -16,7 +16,9 @@ function audioExtension(type: string): string {
   return 'webm'
 }
 
-export const voiceApi = {
+const PRODUCT_VOICE_PATH = '/api/product/voice/transcribe'
+
+export const productVoiceApi = {
   async transcribe(
     blob: Blob,
     options: VoiceTranscriptionOptions = {},
@@ -30,7 +32,7 @@ export const voiceApi = {
     ))
     if (options.language) form.set('language', options.language)
 
-    const response = await fetch(`${getBaseUrl()}/api/voice/transcribe`, {
+    const response = await fetch(`${getServerBaseUrl().replace(/\/$/, '')}${PRODUCT_VOICE_PATH}`, {
       method: 'POST',
       body: form,
       signal: options.signal,
@@ -38,7 +40,7 @@ export const voiceApi = {
     const body: unknown = await response.json().catch(() => ({}))
     if (!response.ok) {
       const parsed = voiceErrorResponseSchema.safeParse(body)
-      throw new Error(parsed.success ? parsed.data.detail : '语音转写失败，请重试')
+      throw new Error(parsed.success ? parsed.data.detail : '语音转写暂时无法完成，请稍后重试。')
     }
     return voiceTranscriptionResponseSchema.parse(body).text
   },

@@ -1,11 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { voiceApi } from '../../api/voice'
+import { productVoiceApi } from '../api/voice'
 import { useUIStore } from '../../stores/uiStore'
 import { VoiceInputControl, type VoiceInputState } from './VoiceInputControl'
 
-vi.mock('../../api/voice', () => ({
-  voiceApi: { transcribe: vi.fn() },
+vi.mock('../api/voice', () => ({
+  productVoiceApi: { transcribe: vi.fn() },
 }))
 
 class FakeMediaRecorder {
@@ -48,7 +48,7 @@ beforeEach(() => {
 
 describe('VoiceInputControl', () => {
   it('records, transcribes and returns text to the product composer owner', async () => {
-    vi.mocked(voiceApi.transcribe).mockResolvedValue('今晚八点开始比赛')
+    vi.mocked(productVoiceApi.transcribe).mockResolvedValue('今晚八点开始比赛')
     const onTranscript = vi.fn()
     const states: VoiceInputState[] = []
     render(
@@ -63,7 +63,7 @@ describe('VoiceInputControl', () => {
     fireEvent.click(screen.getByRole('button', { name: '停止并转写' }))
 
     await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('今晚八点开始比赛'))
-    expect(voiceApi.transcribe).toHaveBeenCalledWith(
+    expect(productVoiceApi.transcribe).toHaveBeenCalledWith(
       expect.any(Blob),
       expect.objectContaining({ language: 'zh', signal: expect.any(AbortSignal) }),
     )
@@ -79,13 +79,13 @@ describe('VoiceInputControl', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消录音' }))
 
     await screen.findByTestId('voice-input')
-    expect(voiceApi.transcribe).not.toHaveBeenCalled()
+    expect(productVoiceApi.transcribe).not.toHaveBeenCalled()
     expect(stopTrack).toHaveBeenCalled()
   })
 
   it('uses a safe recovery message when transcription fails', async () => {
     const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
-    vi.mocked(voiceApi.transcribe).mockRejectedValue(new Error(rawError))
+    vi.mocked(productVoiceApi.transcribe).mockRejectedValue(new Error(rawError))
     render(<VoiceInputControl onTranscript={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: '语音输入' }))
