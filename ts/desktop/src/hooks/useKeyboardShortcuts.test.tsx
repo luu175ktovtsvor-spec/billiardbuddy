@@ -1,6 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { APP_ZOOM_STORAGE_KEY } from '../lib/appZoom'
+import {
+  useProductTaskRuntimeStore,
+  type ProductTaskRuntime,
+} from '../product/stores/productTaskRuntimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { NEW_PRODUCT_TASK_TAB_ID, useTabStore } from '../stores/tabStore'
 import { useUIStore } from '../stores/uiStore'
@@ -18,7 +22,52 @@ function setNavigatorPlatform(platform: string) {
   })
 }
 
-describe('useKeyboardShortcuts app zoom', () => {
+const originalStopTask = useProductTaskRuntimeStore.getState().stopTask
+const stopTask = vi.fn()
+
+function makeRuntime(runState: ProductTaskRuntime['runState']): ProductTaskRuntime {
+  return {
+    connectionState: 'connected',
+    historyStatus: 'ready',
+    runState,
+    entries: [],
+    activeActivity: null,
+    pendingApproval: null,
+    approvalResponsePending: false,
+    error: null,
+    streamingEntryId: null,
+  }
+}
+
+function setActiveProductTask(
+  taskId: string,
+  runState: ProductTaskRuntime['runState'],
+) {
+  useTabStore.setState({
+    tabs: [{
+      sessionId: `__product_task__${taskId}`,
+      title: taskId,
+      type: 'product-task',
+      taskId,
+      status: 'idle',
+    }],
+    activeTabId: `__product_task__${taskId}`,
+  })
+  useProductTaskRuntimeStore.setState({ tasks: { [taskId]: makeRuntime(runState) } })
+}
+
+function dispatchStopShortcut(modifier: 'ctrlKey' | 'metaKey'): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key: '.',
+    [modifier]: true,
+  })
+  document.dispatchEvent(event)
+  return event
+}
+
+describe('useKeyboardShortcuts', () => {
   beforeEach(() => {
     window.localStorage.clear()
     document.documentElement.removeAttribute('data-app-zoom-mode')
@@ -28,11 +77,14 @@ describe('useKeyboardShortcuts app zoom', () => {
     useSettingsStore.setState({ uiZoom: 1 })
     useTabStore.setState({ tabs: [], activeTabId: null })
     useUIStore.setState({ activeModal: null })
+    useProductTaskRuntimeStore.setState({ tasks: {}, stopTask })
+    stopTask.mockReset()
     setNavigatorPlatform('Win32')
   })
 
   afterEach(() => {
     cleanup()
+    useProductTaskRuntimeStore.setState({ tasks: {}, stopTask: originalStopTask })
   })
 
   it('handles Ctrl zoom shortcuts on Windows and Linux style platforms', async () => {
@@ -131,5 +183,59 @@ describe('useKeyboardShortcuts app zoom', () => {
     })
 
     expect(useUIStore.getState().activeModal).toBe('task-search')
+  })
+
+  it('stops a working active product task with Ctrl + .', () => {
+    setActiveProductTask('task-working', 'working')
+    render(<ShortcutHost />)
+
+    const event = dispatchStopShortcut('ctrlKey')
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(stopTask).toHaveBeenCalledTimes(1)
+    expect(stopTask).toHaveBeenCalledWith('task-working')
+  })
+
+  it('stops an awaiting-approval active product task with Cmd + .', () => {
+    setNavigatorPlatform('MacIntel')
+    setActiveProductTask('task-awaiting-approval', 'awaiting_approval')
+    render(<ShortcutHost />)
+
+    const event = dispatchStopShortcut('metaKey')
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(stopTask).toHaveBeenCalledTimes(1)
+    expect(stopTask).toHaveBeenCalledWith('task-awaiting-approval')
+  })
+
+  it('does not intercept Cmd or Ctrl + . for an idle product task', () => {
+    setActiveProductTask('task-idle', 'idle')
+    render(<ShortcutHost />)
+
+    const event = dispatchStopShortcut('ctrlKey')
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(stopTask).not.toHaveBeenCalled()
+  })
+
+  it('does not stop a runtime when the active tab is not a product task', () => {
+    useTabStore.setState({
+      tabs: [{
+        sessionId: 'legacy-session',
+        title: '旧会话',
+        type: 'session',
+        status: 'running',
+      }],
+      activeTabId: 'legacy-session',
+    })
+    useProductTaskRuntimeStore.setState({
+      tasks: { 'legacy-session': makeRuntime('working') },
+    })
+    render(<ShortcutHost />)
+
+    const event = dispatchStopShortcut('ctrlKey')
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(stopTask).not.toHaveBeenCalled()
   })
 })

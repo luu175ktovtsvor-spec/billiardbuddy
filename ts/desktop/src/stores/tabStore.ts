@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { dropSession as dropVirtualHeightSession } from '../components/chat/virtualHeightCache'
 import { destroyTerminalRuntime } from '../lib/terminalRuntime'
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
@@ -60,11 +59,17 @@ export type Tab = {
 type TabPersistence = {
   openTabs: Array<{ sessionId: string; title: string; type?: string; taskId?: string }>
   activeTabId: string | null
+  lastActiveProductTaskId?: string
 }
 
 type TabStore = {
   tabs: Tab[]
   activeTabId: string | null
+  /**
+   * Public product context only. This is a product task id, never a renderer
+   * tab id or a Core session id.
+   */
+  lastActiveProductTaskId: string | null
 
   openTab: (sessionId: string, title: string, type: OpenTabType) => void
   openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
@@ -90,9 +95,40 @@ function isOpenTabType(value: unknown): value is OpenTabType {
     || value === 'product-tasks'
 }
 
+function normalizeProductTaskId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return value.trim() || null
+}
+
+function getProductTaskId(tab: Tab | undefined): string | null {
+  if (tab?.type !== 'product-task') return null
+  return normalizeProductTaskId(tab.taskId)
+}
+
+function getOpenProductTaskId(tabs: readonly Tab[], candidate: unknown): string | null {
+  const taskId = normalizeProductTaskId(candidate)
+  if (!taskId) return null
+  return tabs.some((tab) => getProductTaskId(tab) === taskId) ? taskId : null
+}
+
+function getActiveProductTaskId(tabs: readonly Tab[], activeTabId: string | null): string | null {
+  if (!activeTabId) return null
+  return getProductTaskId(tabs.find((tab) => tab.sessionId === activeTabId))
+}
+
+function resolveLastActiveProductTaskId(
+  tabs: readonly Tab[],
+  activeTabId: string | null,
+  lastActiveProductTaskId: unknown,
+): string | null {
+  return getActiveProductTaskId(tabs, activeTabId)
+    ?? getOpenProductTaskId(tabs, lastActiveProductTaskId)
+}
+
 export const useTabStore = create<TabStore>((set, get) => ({
   tabs: [],
   activeTabId: null,
+  lastActiveProductTaskId: null,
 
   openTab: (sessionId, title, type) => {
     if (!isOpenTabType(type)) {
@@ -100,32 +136,45 @@ export const useTabStore = create<TabStore>((set, get) => ({
       return
     }
 
-    const { tabs } = get()
+    const { tabs, lastActiveProductTaskId } = get()
     const existing = tabs.find((t) => t.sessionId === sessionId)
+    const nextTabs: Tab[] = existing
+      ? tabs.map((tab) =>
+        tab.sessionId === sessionId
+          ? {
+              ...tab,
+              title,
+              ...(!(tab as Partial<Tab>).type ? { type } : {}),
+            }
+          : tab,
+      )
+      : [...tabs, { sessionId, title, type, status: 'idle' }]
     if (existing) {
       set({
-        tabs: tabs.map((tab) =>
-          tab.sessionId === sessionId
-            ? {
-                ...tab,
-                title,
-                ...(!(tab as Partial<Tab>).type ? { type } : {}),
-              }
-            : tab,
-        ),
+        tabs: nextTabs,
         activeTabId: sessionId,
+        lastActiveProductTaskId: resolveLastActiveProductTaskId(
+          nextTabs,
+          sessionId,
+          lastActiveProductTaskId,
+        ),
       })
     } else {
       set({
-        tabs: [...tabs, { sessionId, title, type, status: 'idle' }],
+        tabs: nextTabs,
         activeTabId: sessionId,
+        lastActiveProductTaskId: resolveLastActiveProductTaskId(
+          nextTabs,
+          sessionId,
+          lastActiveProductTaskId,
+        ),
       })
     }
     get().saveTabs()
   },
 
   openTerminalTab: (cwd, terminalRuntimeId) => {
-    const { tabs } = get()
+    const { tabs, lastActiveProductTaskId } = get()
     const nextIndex = Math.max(
       0,
       ...tabs
@@ -139,6 +188,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
     set({
       tabs: [...tabs, { sessionId, title: `Terminal ${nextIndex}`, type: 'terminal', status: 'idle', terminalCwd: cwd, terminalRuntimeId }],
       activeTabId: sessionId,
+      lastActiveProductTaskId: getOpenProductTaskId(tabs, lastActiveProductTaskId),
     })
     get().saveTabs()
     return sessionId
@@ -147,7 +197,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
   openNewProductTask: (workDir) => {
     const normalizedWorkDir = workDir?.trim() || undefined
     const requestId = ++nextNewProductTaskRequestId
-    const { tabs } = get()
+    const { tabs, lastActiveProductTaskId } = get()
     const tab: Tab = {
       sessionId: NEW_PRODUCT_TASK_TAB_ID,
       title: '新建任务',
@@ -162,6 +212,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         ? tabs.map((current) => current.sessionId === NEW_PRODUCT_TASK_TAB_ID ? tab : current)
         : [...tabs, tab],
       activeTabId: NEW_PRODUCT_TASK_TAB_ID,
+      lastActiveProductTaskId: getOpenProductTaskId(tabs, lastActiveProductTaskId),
     })
     get().saveTabs()
   },
@@ -185,13 +236,14 @@ export const useTabStore = create<TabStore>((set, get) => ({
         ? tabs.map((current) => current.sessionId === tabId ? tab : current)
         : [...tabs, tab],
       activeTabId: tabId,
+      lastActiveProductTaskId: normalizedTaskId,
     })
     get().saveTabs()
     return tabId
   },
 
   closeTab: (sessionId) => {
-    const { tabs, activeTabId } = get()
+    const { tabs, activeTabId, lastActiveProductTaskId } = get()
     const index = tabs.findIndex((t) => t.sessionId === sessionId)
     if (index < 0) return
 
@@ -208,17 +260,32 @@ export const useTabStore = create<TabStore>((set, get) => ({
       }
     }
 
-    set({ tabs: newTabs, activeTabId: newActiveId })
+    set({
+      tabs: newTabs,
+      activeTabId: newActiveId,
+      lastActiveProductTaskId: resolveLastActiveProductTaskId(
+        newTabs,
+        newActiveId,
+        lastActiveProductTaskId,
+      ),
+    })
     get().saveTabs()
     const closedTab = tabs[index]
     if (closedTab?.type === 'terminal') {
       destroyTerminalRuntime(closedTab.terminalRuntimeId ?? closedTab.sessionId)
     }
-    dropVirtualHeightSession(sessionId)
   },
 
   setActiveTab: (sessionId) => {
-    set({ activeTabId: sessionId })
+    const { tabs, lastActiveProductTaskId } = get()
+    set({
+      activeTabId: sessionId,
+      lastActiveProductTaskId: resolveLastActiveProductTaskId(
+        tabs,
+        sessionId,
+        lastActiveProductTaskId,
+      ),
+    })
     get().saveTabs()
   },
 
@@ -258,12 +325,17 @@ export const useTabStore = create<TabStore>((set, get) => ({
   },
 
   replaceTabSession: (oldSessionId, newSessionId) => {
-    const { activeTabId } = get()
+    const { activeTabId, lastActiveProductTaskId } = get()
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.sessionId === oldSessionId ? { ...t, sessionId: newSessionId } : t,
       ),
       activeTabId: activeTabId === oldSessionId ? newSessionId : activeTabId,
+      lastActiveProductTaskId: resolveLastActiveProductTaskId(
+        s.tabs.map((t) => (t.sessionId === oldSessionId ? { ...t, sessionId: newSessionId } : t)),
+        activeTabId === oldSessionId ? newSessionId : activeTabId,
+        lastActiveProductTaskId,
+      ),
     }))
     get().saveTabs()
   },
@@ -275,13 +347,25 @@ export const useTabStore = create<TabStore>((set, get) => ({
     const newTabs = [...tabs]
     const [moved] = newTabs.splice(fromIndex, 1)
     newTabs.splice(toIndex, 0, moved!)
-    set({ tabs: newTabs })
+    set((state) => ({
+      tabs: newTabs,
+      lastActiveProductTaskId: resolveLastActiveProductTaskId(
+        newTabs,
+        state.activeTabId,
+        state.lastActiveProductTaskId,
+      ),
+    }))
     get().saveTabs()
   },
 
   saveTabs: () => {
-    const { tabs, activeTabId } = get()
+    const { tabs, activeTabId, lastActiveProductTaskId } = get()
     const persistableTabs = tabs.filter(isPersistableTab)
+    const persistedLastActiveProductTaskId = resolveLastActiveProductTaskId(
+      persistableTabs,
+      activeTabId,
+      lastActiveProductTaskId,
+    )
     const data: TabPersistence = {
       openTabs: persistableTabs.map((t) => ({
         sessionId: t.sessionId,
@@ -292,6 +376,9 @@ export const useTabStore = create<TabStore>((set, get) => ({
       activeTabId: activeTabId && persistableTabs.some((tab) => tab.sessionId === activeTabId)
         ? activeTabId
         : (persistableTabs[0]?.sessionId ?? null),
+      ...(persistedLastActiveProductTaskId
+        ? { lastActiveProductTaskId: persistedLastActiveProductTaskId }
+        : {}),
     }
     try {
       localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(data))
@@ -301,11 +388,14 @@ export const useTabStore = create<TabStore>((set, get) => ({
   restoreTabs: async () => {
     try {
       const raw = localStorage.getItem(TAB_STORAGE_KEY)
-      if (!raw) return
+      if (!raw) {
+        set({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
+        return
+      }
 
       const data = JSON.parse(raw) as Partial<TabPersistence>
       if (!Array.isArray(data.openTabs) || data.openTabs.length === 0) {
-        set({ tabs: [], activeTabId: null })
+        set({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
         localStorage.removeItem(TAB_STORAGE_KEY)
         return
       }
@@ -314,7 +404,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         .flatMap(toRestoredTab)
 
       if (validTabs.length === 0) {
-        set({ tabs: [], activeTabId: null })
+        set({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
         localStorage.removeItem(TAB_STORAGE_KEY)
         return
       }
@@ -323,7 +413,15 @@ export const useTabStore = create<TabStore>((set, get) => ({
         ? data.activeTabId
         : validTabs[0]!.sessionId
 
-      set({ tabs: validTabs, activeTabId: activeId })
+      set({
+        tabs: validTabs,
+        activeTabId: activeId,
+        lastActiveProductTaskId: resolveLastActiveProductTaskId(
+          validTabs,
+          activeId,
+          data.lastActiveProductTaskId,
+        ),
+      })
       get().saveTabs()
     } catch { /* noop */ }
   },

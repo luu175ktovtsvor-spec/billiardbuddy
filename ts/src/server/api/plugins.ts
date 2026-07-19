@@ -3,10 +3,11 @@ import { ApiError } from '../middleware/errorHandler.js'
 import { PluginService } from '../services/pluginService.js'
 import { conversationService } from '../services/conversationService.js'
 import { updateSessionSlashCommands } from '../ws/handler.js'
+import { productTaskService, type ProductTaskService } from '../product/taskService.js'
 
 const pluginService = new PluginService()
 
-type PluginSessionReloadSummary = {
+type PluginTaskReloadSummary = {
   applied: boolean
   reason?: 'not_running' | 'failed'
   commands: number
@@ -20,6 +21,7 @@ export async function handlePluginsApi(
   req: Request,
   url: URL,
   segments: string[],
+  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'> = productTaskService,
 ): Promise<Response> {
   try {
     const method = req.method
@@ -41,15 +43,18 @@ export async function handlePluginsApi(
     }
 
     if (method === 'POST' && sub === 'reload') {
-      const sessionId = url.searchParams.get('sessionId') || undefined
+      const taskId = optionalProductTaskId(url.searchParams)
+      const coreSessionId = taskId
+        ? await resolveProductTaskCoreSessionId(taskId, tasks)
+        : undefined
       const response = await pluginService.reloadPlugins(cwd)
-      if (!sessionId) {
+      if (!coreSessionId) {
         return Response.json(response)
       }
 
       return Response.json({
         ...response,
-        session: await reloadSessionPlugins(sessionId),
+        task: await reloadCoreSessionPlugins(coreSessionId),
       })
     }
 
@@ -90,29 +95,43 @@ export async function handlePluginsApi(
   }
 }
 
-async function reloadSessionPlugins(
-  sessionId: string,
-): Promise<PluginSessionReloadSummary> {
-  if (!conversationService.hasSession(sessionId)) {
-    return {
-      applied: false,
-      reason: 'not_running',
-      commands: 0,
-      agents: 0,
-      plugins: 0,
-      mcpServers: 0,
-      errors: 0,
-    }
+function optionalProductTaskId(searchParams: URLSearchParams): string | undefined {
+  if (!searchParams.has('taskId')) return undefined
+  const taskId = searchParams.get('taskId')?.trim()
+  if (taskId) return taskId
+  throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
+}
+
+async function resolveProductTaskCoreSessionId(
+  taskId: string,
+  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
+): Promise<string> {
+  try {
+    // This is the product/Core boundary: a renderer only supplies an opaque
+    // product task id, and the Core session binding remains server-private.
+    return await tasks.resolveCoreSessionId(taskId)
+  } catch {
+    // Do not expose whether the private binding is absent, stale, or the
+    // product store itself is temporarily unavailable.
+    throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
+  }
+}
+
+async function reloadCoreSessionPlugins(
+  coreSessionId: string,
+): Promise<PluginTaskReloadSummary> {
+  if (!conversationService.hasSession(coreSessionId)) {
+    return inactiveTaskPluginSummary()
   }
 
   try {
     const response = await conversationService.requestControl(
-      sessionId,
+      coreSessionId,
       { subtype: 'reload_plugins' },
       120_000,
     )
     const commands = Array.isArray(response.commands) ? response.commands : []
-    const normalizedCommands = updateSessionSlashCommands(sessionId, commands)
+    const normalizedCommands = updateSessionSlashCommands(coreSessionId, commands)
 
     return {
       applied: true,
@@ -132,6 +151,18 @@ async function reloadSessionPlugins(
       mcpServers: 0,
       errors: 0,
     }
+  }
+}
+
+function inactiveTaskPluginSummary(): PluginTaskReloadSummary {
+  return {
+    applied: false,
+    reason: 'not_running',
+    commands: 0,
+    agents: 0,
+    plugins: 0,
+    mcpServers: 0,
+    errors: 0,
   }
 }
 
@@ -178,7 +209,9 @@ function pluginErrorCode(error: ApiError):
   | 'PLUGIN_ACTION_FAILED'
   | 'PLUGIN_ACTION_INVALID'
   | 'PLUGIN_NOT_FOUND'
+  | 'PRODUCT_TASK_UNAVAILABLE'
   | 'PLUGIN_REQUEST_FAILED' {
+  if (error.code === 'PRODUCT_TASK_UNAVAILABLE') return 'PRODUCT_TASK_UNAVAILABLE'
   if (error.code === 'PLUGIN_ACTION_FAILED') return 'PLUGIN_ACTION_FAILED'
   if (error.code === 'PLUGIN_ACTION_INVALID' || error.code === 'BAD_REQUEST') {
     return 'PLUGIN_ACTION_INVALID'

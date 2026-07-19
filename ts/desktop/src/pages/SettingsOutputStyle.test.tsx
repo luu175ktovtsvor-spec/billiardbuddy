@@ -28,30 +28,47 @@ vi.mock('../lib/desktopRuntime', () => ({
 }))
 
 import { GeneralSettings } from './Settings'
-import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../stores/tabStore'
+import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../product/stores/productTaskStore'
 
 describe('GeneralSettings output style', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useSettingsStore.setState(useSettingsStore.getInitialState(), true)
-    useSessionStore.setState(useSessionStore.getInitialState(), true)
+    useTabStore.setState({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
+    useProductTaskStore.setState({ index: EMPTY_PRODUCT_TASK_INDEX })
     useSettingsStore.setState({ locale: 'en' })
-    useSessionStore.setState({
-      activeSessionId: 'session-1',
-      sessions: [
-        {
-          id: 'session-1',
-          title: 'Project session',
-          createdAt: '2026-06-09T00:00:00.000Z',
-          modifiedAt: '2026-06-09T00:00:00.000Z',
-          messageCount: 0,
-          projectPath: '/repo',
-          projectRoot: '/repo',
+    useTabStore.setState({
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      lastActiveProductTaskId: 'task-1',
+      tabs: [{
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        title: 'Project task',
+        type: 'product-task',
+        status: 'idle',
+        taskId: 'task-1',
+      }],
+    })
+    useProductTaskStore.setState({
+      index: {
+        schemaVersion: 1,
+        projects: [],
+        tasks: [{
+          id: 'task-1',
+          projectId: 'project-1',
           workDir: '/repo',
-          workDirExists: true,
-        },
-      ],
+          title: 'Project task',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-06-09T00:00:00.000Z',
+          updatedAt: '2026-06-09T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['rename'],
+        }],
+        total: 1,
+        capabilities: { createTask: true },
+      },
     })
     settingsApiMock.getOutputStyles.mockResolvedValue({
       outputStyle: 'Project Style',

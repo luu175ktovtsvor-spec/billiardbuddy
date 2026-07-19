@@ -4,10 +4,10 @@ import {
   pluginErrorTranslationKey,
 } from '../../api/plugins'
 import { usePluginStore, type PluginActionTarget } from '../../stores/pluginStore'
-import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
+import { useCurrentProductTaskContext } from '../../product/currentProductTaskContext'
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import type {
@@ -37,15 +37,11 @@ export function PluginList() {
     bulkEnablePlugins,
     bulkDisablePlugins,
   } = usePluginStore()
-  const sessions = useSessionStore((s) => s.sessions)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const { taskId: currentTaskId, workDir: currentWorkDir } = useCurrentProductTaskContext()
   const addToast = useUIStore((s) => s.addToast)
   const t = useTranslation()
   const [selectedPluginIds, setSelectedPluginIds] = useState<Set<string>>(() => new Set())
   const [confirmBatchAction, setConfirmBatchAction] = useState<BatchAction | null>(null)
-  const activeSession = sessions.find((session) => session.id === activeSessionId)
-  const currentWorkDir = activeSession?.workDir || undefined
-
   useEffect(() => {
     void fetchPlugins(currentWorkDir)
   }, [fetchPlugins, currentWorkDir])
@@ -98,7 +94,7 @@ export function PluginList() {
 
   const handleReload = async () => {
     try {
-      const reloadSummary = await reloadPlugins(currentWorkDir, activeSessionId || undefined)
+      const reloadSummary = await reloadPlugins(currentWorkDir, currentTaskId)
       addToast({
         type: reloadSummary.errors > 0 ? 'warning' : 'success',
         message: t('settings.plugins.reloadToast', {
@@ -146,8 +142,8 @@ export function PluginList() {
 
     try {
       const changed = action === 'enable'
-        ? await bulkEnablePlugins(toActionTargets(targets), currentWorkDir, activeSessionId || undefined)
-        : await bulkDisablePlugins(toActionTargets(targets), currentWorkDir, activeSessionId || undefined)
+        ? await bulkEnablePlugins(toActionTargets(targets), currentWorkDir, currentTaskId)
+        : await bulkDisablePlugins(toActionTargets(targets), currentWorkDir, currentTaskId)
 
       setSelectedPluginIds((current) => {
         const next = new Set(current)

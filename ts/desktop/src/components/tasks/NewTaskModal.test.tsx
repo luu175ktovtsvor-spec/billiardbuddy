@@ -5,11 +5,15 @@ import '@testing-library/jest-dom'
 import { NewTaskModal } from './NewTaskModal'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTaskStore } from '../../stores/taskStore'
+import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
+import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../../product/stores/productTaskStore'
 
 afterEach(() => {
   cleanup()
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
   useTaskStore.setState(useTaskStore.getInitialState(), true)
+  useTabStore.setState({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
+  useProductTaskStore.setState({ index: EMPTY_PRODUCT_TASK_INDEX })
 })
 
 describe('NewTaskModal', () => {
@@ -17,6 +21,35 @@ describe('NewTaskModal', () => {
     const createTask = vi.fn(async () => {})
     useTaskStore.setState({ createTask } as Partial<ReturnType<typeof useTaskStore.getState>>)
     useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      lastActiveProductTaskId: 'task-1',
+      tabs: [{
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        title: '运营任务',
+        type: 'product-task',
+        status: 'idle',
+        taskId: 'task-1',
+      }],
+    })
+    useProductTaskStore.setState({
+      index: {
+        ...EMPTY_PRODUCT_TASK_INDEX,
+        tasks: [{
+          id: 'task-1',
+          projectId: 'project-1',
+          workDir: '/workspace/product-task',
+          title: '运营任务',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['rename'],
+        }],
+        total: 1,
+      },
+    })
 
     render(<NewTaskModal open onClose={vi.fn()} />)
 
@@ -41,6 +74,7 @@ describe('NewTaskModal', () => {
       permissionMode: 'bypassPermissions',
       enabled: true,
       recurring: true,
+      folderPath: '/workspace/product-task',
     }))
   })
 })

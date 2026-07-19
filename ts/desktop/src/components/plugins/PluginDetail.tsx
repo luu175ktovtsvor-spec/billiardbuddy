@@ -5,10 +5,10 @@ import {
   pluginErrorTranslationKey,
 } from '../../api/plugins'
 import { usePluginStore } from '../../stores/pluginStore'
-import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
+import { useCurrentProductTaskContext } from '../../product/currentProductTaskContext'
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import type {
@@ -43,15 +43,11 @@ export function PluginDetail() {
     uninstallPlugin,
     reloadPlugins,
   } = usePluginStore()
-  const sessions = useSessionStore((s) => s.sessions)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const { taskId: currentTaskId, workDir: currentWorkDir } = useCurrentProductTaskContext()
   const addToast = useUIStore((s) => s.addToast)
   const t = useTranslation()
   const [actionKey, setActionKey] = useState<string | null>(null)
   const [showUninstallDialog, setShowUninstallDialog] = useState(false)
-
-  const activeSession = sessions.find((session) => session.id === activeSessionId)
-  const currentWorkDir = activeSession?.workDir || undefined
 
   if (isDetailLoading) {
     return (
@@ -81,7 +77,7 @@ export function PluginDetail() {
   const handleReload = async () => {
     setActionKey('reload')
     try {
-      const summary = await reloadPlugins(currentWorkDir, activeSessionId || undefined)
+      const summary = await reloadPlugins(currentWorkDir, currentTaskId)
       addToast({
         type: summary.errors > 0 ? 'warning' : 'success',
         message: t('settings.plugins.reloadToast', {
@@ -166,7 +162,7 @@ export function PluginDetail() {
                 variant="secondary"
                 size="sm"
                 loading={isApplying && actionKey === 'disable'}
-                onClick={() => void runAction('disable', () => disablePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, activeSessionId || undefined))}
+                onClick={() => void runAction('disable', () => disablePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, currentTaskId))}
               >
                 {t('settings.plugins.disable')}
               </Button>
@@ -174,7 +170,7 @@ export function PluginDetail() {
               <Button
                 size="sm"
                 loading={isApplying && actionKey === 'enable'}
-                onClick={() => void runAction('enable', () => enablePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, activeSessionId || undefined))}
+                onClick={() => void runAction('enable', () => enablePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, currentTaskId))}
               >
                 {t('settings.plugins.enable')}
               </Button>
@@ -186,7 +182,7 @@ export function PluginDetail() {
               variant="secondary"
               size="sm"
               loading={isApplying && actionKey === 'update'}
-              onClick={() => void runAction('update', () => updatePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, activeSessionId || undefined))}
+              onClick={() => void runAction('update', () => updatePlugin(selectedPlugin.id, selectedPlugin.scope, currentWorkDir, currentTaskId))}
             >
               {t('settings.plugins.update')}
             </Button>
@@ -253,7 +249,7 @@ export function PluginDetail() {
         }}
         onConfirm={async () => {
           setShowUninstallDialog(false)
-          await runAction('uninstall', () => uninstallPlugin(selectedPlugin.id, selectedPlugin.scope, false, currentWorkDir, activeSessionId || undefined))
+          await runAction('uninstall', () => uninstallPlugin(selectedPlugin.id, selectedPlugin.scope, false, currentWorkDir, currentTaskId))
         }}
         title={t('settings.plugins.uninstall')}
         body={t('settings.plugins.confirmUninstall', { name: selectedPlugin.name })}

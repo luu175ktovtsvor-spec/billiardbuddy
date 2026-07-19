@@ -30,6 +30,7 @@ import { enableConfigs } from '../../utils/config.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { conversationService } from '../services/conversationService.js'
+import { productTaskService, type ProductTaskService } from '../product/taskService.js'
 
 type McpServerDto = {
   name: string
@@ -47,11 +48,11 @@ type McpMutationBody = {
   cwd?: string
   previousCwd?: string
   scope?: string
-  sessionId?: string
+  taskId?: string
   config?: unknown
 }
 
-type McpSessionSyncDto = {
+type McpTaskSyncDto = {
   applied: boolean
   reason?: 'not_running' | 'failed'
 }
@@ -71,19 +72,42 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-async function syncMcpToggleToSession(
-  sessionId: string | undefined,
+function optionalProductTaskId(body?: Record<string, unknown>): string | undefined {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, 'taskId')) return undefined
+  const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : ''
+  if (taskId) return taskId
+  throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
+}
+
+async function resolveProductTaskCoreSessionId(
+  taskId: string,
+  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
+): Promise<string> {
+  try {
+    // This is the product/Core boundary: a renderer only supplies an opaque
+    // product task id, and the Core session binding remains server-private.
+    return await tasks.resolveCoreSessionId(taskId)
+  } catch {
+    // Do not expose whether the private binding is absent, stale, or the
+    // product store itself is temporarily unavailable.
+    throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
+  }
+}
+
+async function syncMcpToggleToProductTask(
+  coreSessionId: string | undefined,
   serverName: string,
   enabled: boolean,
-): Promise<McpSessionSyncDto | undefined> {
-  if (!sessionId) return undefined
-  if (!conversationService.hasSession(sessionId)) {
+): Promise<McpTaskSyncDto | undefined> {
+  if (!coreSessionId) return undefined
+
+  if (!conversationService.hasSession(coreSessionId)) {
     return { applied: false, reason: 'not_running' }
   }
 
   try {
     await conversationService.requestControl(
-      sessionId,
+      coreSessionId,
       { subtype: 'mcp_toggle', serverName, enabled },
       120_000,
     )
@@ -426,20 +450,27 @@ async function deleteServer(name: string, url: URL): Promise<Response> {
   return Response.json({ ok: true })
 }
 
-async function toggleServer(name: string, sessionId?: string): Promise<Response> {
+async function toggleServer(
+  name: string,
+  taskId: string | undefined,
+  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
+): Promise<Response> {
   const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
     throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
   }
 
+  const coreSessionId = taskId
+    ? await resolveProductTaskCoreSessionId(taskId, tasks)
+    : undefined
   const enabled = isMcpServerDisabled(name)
   setMcpServerEnabled(name, enabled)
-  const sessionSync = await syncMcpToggleToSession(sessionId, name, enabled)
+  const taskSync = await syncMcpToggleToProductTask(coreSessionId, name, enabled)
 
   if (!enabled) {
     await clearServerCache(name, existing).catch(() => {})
     const updated = serializeServerSnapshot(name, existing)
-    return Response.json({ server: updated, ...(sessionSync ? { sessionSync } : {}) })
+    return Response.json({ server: updated, ...(taskSync ? { taskSync } : {}) })
   }
 
   const hostPreflightStatus = await getHostPreflightStatus(existing, true)
@@ -456,7 +487,7 @@ async function toggleServer(name: string, sessionId?: string): Promise<Response>
   const updated = await serializeServerWithLiveStatus(name, existing)
   return Response.json({
     server: updated,
-    ...(sessionSync ? { sessionSync } : {}),
+    ...(taskSync ? { taskSync } : {}),
   })
 }
 
@@ -485,7 +516,9 @@ function mcpErrorResponse(error: unknown): Response {
   const status = error instanceof ApiError ? error.statusCode : 500
   const requestedCode = error instanceof ApiError ? error.code : undefined
   const code =
-    requestedCode === 'MCP_NOT_AVAILABLE' || requestedCode === 'MCP_NAME_CONFLICT'
+    requestedCode === 'MCP_NOT_AVAILABLE' ||
+    requestedCode === 'MCP_NAME_CONFLICT' ||
+    requestedCode === 'PRODUCT_TASK_UNAVAILABLE'
       ? requestedCode
       : requestedCode === 'MCP_HOST_UNAVAILABLE' || requestedCode === 'MCP_CONFIGURATION_LOCKED'
         ? requestedCode
@@ -502,6 +535,7 @@ export async function handleMcpApi(
   req: Request,
   url: URL,
   segments: string[],
+  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'> = productTaskService,
 ): Promise<Response> {
   try {
     enableConfigs()
@@ -535,7 +569,7 @@ export async function handleMcpApi(
       }
 
       if (req.method === 'POST' && serverName && action === 'toggle') {
-        return toggleServer(serverName, optionalString(body?.sessionId))
+        return toggleServer(serverName, optionalProductTaskId(body), tasks)
       }
 
       if (req.method === 'POST' && serverName && action === 'reconnect') {

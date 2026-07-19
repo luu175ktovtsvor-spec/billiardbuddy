@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -363,7 +363,7 @@ describe('Plugins API', () => {
     expect(typeof body.summary.errors).toBe('number')
   })
 
-  it('POST /api/plugins/reload hot-reloads an active CLI session and updates slash commands', async () => {
+  it('POST /api/plugins/reload resolves a public product task before hot-reloading its Core runtime', async () => {
     const controlRequests: Array<{ sessionId: string; request: Record<string, unknown> }> = []
     conversationService.hasSession = ((sessionId: string) => sessionId === 'session-plugins') as typeof conversationService.hasSession
     conversationService.requestControl = (async (
@@ -388,14 +388,18 @@ describe('Plugins API', () => {
 
     const { req, url, segments } = makeRequest(
       'POST',
-      '/api/plugins/reload?sessionId=session-plugins',
+      '/api/plugins/reload?taskId=task-plugins',
       {},
     )
-    const res = await handlePluginsApi(req, url, segments)
+    const resolveCoreSessionId = mock(async (taskId: string) => {
+      expect(taskId).toBe('task-plugins')
+      return 'session-plugins'
+    })
+    const res = await handlePluginsApi(req, url, segments, { resolveCoreSessionId })
 
     expect(res.status).toBe(200)
     const body = await res.json() as {
-      session: {
+      task: {
         applied: boolean
         commands: number
         agents: number
@@ -411,7 +415,8 @@ describe('Plugins API', () => {
         request: { subtype: 'reload_plugins' },
       },
     ])
-    expect(body.session).toEqual({
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('task-plugins')
+    expect(body.task).toEqual({
       applied: true,
       commands: 1,
       agents: 1,
@@ -423,6 +428,63 @@ describe('Plugins API', () => {
     expect(slashCommands).toEqual([{ name: 'draw:render' }])
     expect(JSON.stringify(slashCommands)).not.toContain('Render a drawing.')
     expect(JSON.stringify(slashCommands)).not.toContain('<prompt>')
+  })
+
+  it('returns a safe task-context error before reloading plugins when the public task cannot resolve', async () => {
+    const requestControl = mock(async () => ({}))
+    conversationService.requestControl = requestControl as typeof conversationService.requestControl
+    const { req, url, segments } = makeRequest(
+      'POST',
+      '/api/plugins/reload?taskId=missing-task',
+      {},
+    )
+    const resolveCoreSessionId = mock(async () => {
+      throw new Error('private product store detail')
+    })
+
+    const res = await handlePluginsApi(req, url, segments, { resolveCoreSessionId })
+
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'PRODUCT_TASK_UNAVAILABLE' })
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('missing-task')
+    expect(requestControl).not.toHaveBeenCalled()
+  })
+
+  it('does not treat an empty taskId as a global plugin reload request', async () => {
+    const { req, url, segments } = makeRequest(
+      'POST',
+      '/api/plugins/reload?taskId=',
+      {},
+    )
+
+    const res = await handlePluginsApi(req, url, segments)
+
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'PRODUCT_TASK_UNAVAILABLE' })
+  })
+
+  it('returns not_running only after a public task resolves to an inactive Core runtime', async () => {
+    conversationService.hasSession = (() => false) as typeof conversationService.hasSession
+    const { req, url, segments } = makeRequest(
+      'POST',
+      '/api/plugins/reload?taskId=offline-task',
+      {},
+    )
+    const resolveCoreSessionId = mock(async () => 'offline-core-session')
+
+    const res = await handlePluginsApi(req, url, segments, { resolveCoreSessionId })
+
+    expect(res.status).toBe(200)
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('offline-task')
+    expect((await res.json() as { task: unknown }).task).toEqual({
+      applied: false,
+      reason: 'not_running',
+      commands: 0,
+      agents: 0,
+      plugins: 0,
+      mcpServers: 0,
+      errors: 0,
+    })
   })
 
   it('refreshActivePlugins rereads settings after an external enable toggle', async () => {

@@ -36,7 +36,7 @@ describe('pluginStore', () => {
         lspServers: 0,
         errors: 0,
       },
-      session: {
+      task: {
         applied: true,
         commands: 1,
         agents: 0,
@@ -57,7 +57,7 @@ describe('pluginStore', () => {
     })
   })
 
-  it('reloads the active CLI session after enabling a plugin', async () => {
+  it('reloads the active product task after enabling a plugin', async () => {
     mockedPluginsApi.enable.mockResolvedValue({
       ok: true,
       action: 'enabled',
@@ -65,7 +65,7 @@ describe('pluginStore', () => {
 
     const action = await usePluginStore
       .getState()
-      .enablePlugin('draw@test', 'user', '/workspace/project', 'session-1')
+      .enablePlugin('draw@test', 'user', '/workspace/project', 'task-1')
 
     expect(action).toBe('enabled')
     expect(mockedPluginsApi.enable).toHaveBeenCalledWith({
@@ -74,7 +74,7 @@ describe('pluginStore', () => {
     })
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
       '/workspace/project',
-      'session-1',
+      'task-1',
     )
     expect(usePluginStore.getState().lastReloadSummary).toEqual({
       enabled: 1,
@@ -100,7 +100,7 @@ describe('pluginStore', () => {
         { id: 'review@test', scope: 'project' },
       ],
       '/workspace/project',
-      'session-1',
+      'task-1',
     )
 
     expect(changed).toBe(2)
@@ -116,7 +116,7 @@ describe('pluginStore', () => {
     expect(mockedPluginsApi.reload).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
       '/workspace/project',
-      'session-1',
+      'task-1',
     )
     expect(mockedPluginsApi.list).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.list).toHaveBeenCalledWith('/workspace/project')
@@ -134,7 +134,7 @@ describe('pluginStore', () => {
         { id: 'review@test', scope: 'project' },
       ],
       '/workspace/project',
-      'session-1',
+      'task-1',
     )
 
     expect(changed).toBe(2)
@@ -150,7 +150,7 @@ describe('pluginStore', () => {
     expect(mockedPluginsApi.reload).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
       '/workspace/project',
-      'session-1',
+      'task-1',
     )
     expect(mockedPluginsApi.list).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.list).toHaveBeenCalledWith('/workspace/project')

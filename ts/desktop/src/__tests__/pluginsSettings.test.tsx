@@ -5,8 +5,9 @@ import '@testing-library/jest-dom'
 import { Settings } from '../pages/Settings'
 import { usePluginStore } from '../stores/pluginStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useSessionStore } from '../stores/sessionStore'
 import { useUIStore } from '../stores/uiStore'
+import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../stores/tabStore'
+import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../product/stores/productTaskStore'
 import type { PluginDetail, PluginSummary } from '../types/plugin'
 
 const noop = vi.fn()
@@ -46,22 +47,42 @@ describe('Settings > Plugins tab', () => {
     vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
     useUIStore.setState({ activeSettingsTab: 'plugins', pendingSettingsTab: null })
-    useSessionStore.setState({
-      sessions: [
+    useTabStore.setState({
+      activeTabId: '__settings__',
+      lastActiveProductTaskId: 'task-1',
+      tabs: [
         {
-          id: 'session-1',
-          title: 'Active session',
-          createdAt: '2026-04-20T00:00:00.000Z',
-          modifiedAt: '2026-04-20T00:00:00.000Z',
-          messageCount: 1,
-          projectPath: '/workspace/project',
-          workDir: '/workspace/project',
-          workDirExists: true,
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+          title: 'Active task',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+        {
+          sessionId: '__settings__',
+          title: 'Settings',
+          type: 'settings',
+          status: 'idle',
         },
       ],
-      activeSessionId: 'session-1',
-      isLoading: false,
-      error: null,
+    })
+    useProductTaskStore.setState({
+      index: {
+        ...EMPTY_PRODUCT_TASK_INDEX,
+        tasks: [{
+          id: 'task-1',
+          projectId: 'project-1',
+          workDir: '/workspace/project',
+          title: 'Active task',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-04-20T00:00:00.000Z',
+          updatedAt: '2026-04-20T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['rename'],
+        }],
+        total: 1,
+      },
     })
     usePluginStore.setState({
       plugins: [],
@@ -180,7 +201,7 @@ describe('Settings > Plugins tab', () => {
           { id: 'review@safe-market', scope: 'project' },
         ],
         '/workspace/project',
-        'session-1',
+        'task-1',
       )
     })
   })
