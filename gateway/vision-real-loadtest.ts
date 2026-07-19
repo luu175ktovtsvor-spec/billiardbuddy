@@ -29,6 +29,7 @@ type Sample = {
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])
 const encoder = new TextEncoder()
 const MAX_GATEWAY_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_IMAGES_PER_REQUEST = 8
 // Leave room for the per-request tEXt chunk so a valid source image cannot turn
 // into a gateway-oversize payload merely because this runner makes it unique.
 const MAX_IMAGE_FILE_BYTES = MAX_GATEWAY_IMAGE_BYTES - 256
@@ -41,6 +42,7 @@ type Pool = typeof pools[number]
 type PoolObservation = { active: number; queued: number; oldestQueueMs: number }
 type ValidPng = { bytes: Uint8Array; iendOffset: number }
 type LoadTarget = { base: URL; baseUrl: string; targetOrigin: string }
+export type ThinkingMode = 'enabled' | 'disabled'
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
@@ -58,8 +60,11 @@ Options:
   --generate-image            Make a distinct, valid 64x64 PNG for each request
   --image-file=<png>          Use a PNG file, adding unique safe tEXt metadata per request
   --image-seed=<n>            Optional distinct-image seed (default: current time)
+  --images-per-request=<n>    Distinct images per chat request (default: 1, max: ${MAX_IMAGES_PER_REQUEST})
   --unique-image-per-request  Required acknowledgement; prevents cache/singleflight bias
   --max-tokens=<n>            Downstream completion cap (default: 16)
+  --thinking=enabled|disabled Send an explicit model thinking mode; omitted uses
+                               the gateway/upstream default
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
@@ -83,6 +88,20 @@ function integer(value: string | undefined, name: string, fallback: number): num
 function option(args: string[], name: string): string | undefined {
   const prefix = `${name}=`
   return args.find(arg => arg.startsWith(prefix))?.slice(prefix.length)
+}
+
+export function parseThinkingMode(value: string | undefined): ThinkingMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'enabled' || value === 'disabled') return value
+  throw new Error('--thinking must be enabled or disabled')
+}
+
+export function parseImagesPerRequest(value: string | undefined): number {
+  const count = integer(value, '--images-per-request', 1)
+  if (count > MAX_IMAGES_PER_REQUEST) {
+    throw new Error(`--images-per-request must be at most ${MAX_IMAGES_PER_REQUEST}`)
+  }
+  return count
 }
 
 export function parsePhases(raw: string | undefined, total: number): number[] {
@@ -440,6 +459,8 @@ async function main(): Promise<void> {
   const users = integer(option(args, '--users'), '--users', 1)
   const windows = integer(option(args, '--windows'), '--windows', 1)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 16)
+  const thinking = parseThinkingMode(option(args, '--thinking'))
+  const imagesPerRequest = parseImagesPerRequest(option(args, '--images-per-request'))
   const timeoutMs = integer(option(args, '--timeout-ms'), '--timeout-ms', 180_000)
   const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 100)
   const healthTimeoutMs = integer(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000)
@@ -455,8 +476,15 @@ async function main(): Promise<void> {
   const imageSeed = integer(option(args, '--image-seed'), '--image-seed', Date.now())
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
-  if (!Number.isSafeInteger(imageSeed + total - 1)) throw new Error('--image-seed plus request count is too large')
   const phases = parsePhases(option(args, '--phases'), total)
+  const generatedImageCount = phases.reduce((count, phase) => {
+    const next = count + phase * imagesPerRequest
+    if (!Number.isSafeInteger(next)) throw new Error('--images-per-request times total staged requests is too large')
+    return next
+  }, 0)
+  if (!Number.isSafeInteger(imageSeed + generatedImageCount - 1)) {
+    throw new Error('--image-seed plus total staged image count is too large')
+  }
   const model = route === 'bridge' ? 'deepseek-v4-flash' : 'mimo-v2.5'
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
@@ -488,12 +516,19 @@ async function main(): Promise<void> {
     }
   }
 
-  async function runOne(index: number, imageIndex: number): Promise<Sample> {
+  async function runOne(index: number, firstImageIndex: number): Promise<Sample> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
     try {
       const installation = `vision-capacity-${String(index % users).padStart(4, '0')}`
+      const content = [
+        { type: 'text', text: '请只回复 OK。' },
+        ...Array.from({ length: imagesPerRequest }, (_, offset) => ({
+          type: 'image_url',
+          image_url: { url: uniqueImage(firstImageIndex + offset) },
+        })),
+      ]
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { ...headers, 'X-QF-Client-ID': installation },
@@ -502,13 +537,11 @@ async function main(): Promise<void> {
           model,
           stream: false,
           max_tokens: maxTokens,
+          ...(thinking ? { thinking: { type: thinking } } : {}),
           temperature: 0,
           messages: [{
             role: 'user',
-            content: [
-              { type: 'text', text: '请只回复 OK。' },
-              { type: 'image_url', image_url: { url: uniqueImage(imageIndex) } },
-            ],
+            content,
           }],
         }),
       })
@@ -571,7 +604,9 @@ async function main(): Promise<void> {
     model,
     imageSource: generated ? 'generated-64x64-png' : 'png-file',
     imageSeed,
+    imagesPerRequest,
     maxTokens,
+    thinking,
   }))
 
   let imageSequence = 0
@@ -600,7 +635,11 @@ async function main(): Promise<void> {
         await sleep(Math.max(0, healthIntervalMs - (performance.now() - started)))
       }
     })()
-    const samples = await Promise.all(Array.from({ length: requested }, (_, index) => runOne(index, imageSequence++)))
+    const samples = await Promise.all(Array.from({ length: requested }, (_, index) => {
+      const firstImageIndex = imageSequence
+      imageSequence += imagesPerRequest
+      return runOne(index, firstImageIndex)
+    }))
     monitoring = false
     await monitor
     const finalGateway = await health()
