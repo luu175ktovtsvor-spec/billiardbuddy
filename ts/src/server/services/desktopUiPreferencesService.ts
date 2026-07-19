@@ -7,7 +7,6 @@ import { readRecoverableJsonFile } from './recoverableJsonFile.js'
 import { ensurePersistentStorageUpgraded } from './persistentStorageMigrations.js'
 
 const CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION = 2
-const MAX_PROJECT_PREFERENCE_ENTRIES = 2_000
 const MAX_PROFILE_DISPLAY_NAME_LENGTH = 80
 const MAX_PROFILE_SUBTITLE_LENGTH = 160
 const MAX_PROFILE_AVATAR_BYTES = 2_000_000
@@ -19,14 +18,6 @@ const AVATAR_CONTENT_TYPES = {
   'image/webp': { extension: 'webp', mediaType: 'image/webp' },
 } as const
 
-export type SidebarProjectPreferences = {
-  projectOrder: string[]
-  pinnedProjects: string[]
-  hiddenProjects: string[]
-  projectOrganization: 'project' | 'recentProject' | 'time'
-  projectSortBy: 'createdAt' | 'updatedAt'
-}
-
 export type DesktopProfilePreferences = {
   displayName: string
   subtitle: string
@@ -36,7 +27,6 @@ export type DesktopProfilePreferences = {
 
 export type DesktopUiPreferences = {
   schemaVersion: number
-  sidebar: SidebarProjectPreferences
   profile: DesktopProfilePreferences
   [key: string]: unknown
 }
@@ -44,14 +34,6 @@ export type DesktopUiPreferences = {
 export type DesktopUiPreferencesReadResult = {
   preferences: DesktopUiPreferences
   exists: boolean
-}
-
-const DEFAULT_SIDEBAR_PROJECT_PREFERENCES: SidebarProjectPreferences = {
-  projectOrder: [],
-  pinnedProjects: [],
-  hiddenProjects: [],
-  projectOrganization: 'recentProject',
-  projectSortBy: 'updatedAt',
 }
 
 const DEFAULT_PROFILE_PREFERENCES: DesktopProfilePreferences = {
@@ -64,38 +46,7 @@ const DEFAULT_PROFILE_PREFERENCES: DesktopProfilePreferences = {
 function defaultPreferences(): DesktopUiPreferences {
   return {
     schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-    sidebar: { ...DEFAULT_SIDEBAR_PROJECT_PREFERENCES },
     profile: { ...DEFAULT_PROFILE_PREFERENCES },
-  }
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  const seen = new Set<string>()
-  const normalized: string[] = []
-
-  for (const item of value) {
-    if (typeof item !== 'string' || item.length === 0 || seen.has(item)) continue
-    seen.add(item)
-    normalized.push(item)
-    if (normalized.length >= MAX_PROJECT_PREFERENCE_ENTRIES) break
-  }
-
-  return normalized
-}
-
-export function normalizeSidebarProjectPreferences(value: unknown): SidebarProjectPreferences {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ...DEFAULT_SIDEBAR_PROJECT_PREFERENCES }
-  }
-
-  const record = value as Record<string, unknown>
-  return {
-    projectOrder: normalizeStringArray(record.projectOrder),
-    pinnedProjects: normalizeStringArray(record.pinnedProjects),
-    hiddenProjects: normalizeStringArray(record.hiddenProjects),
-    projectOrganization: normalizeProjectOrganization(record.projectOrganization),
-    projectSortBy: normalizeProjectSortBy(record.projectSortBy),
   }
 }
 
@@ -133,14 +84,6 @@ function normalizeProfilePreferences(value: unknown): DesktopProfilePreferences 
   }
 }
 
-function normalizeProjectOrganization(value: unknown): SidebarProjectPreferences['projectOrganization'] {
-  return value === 'project' || value === 'recentProject' || value === 'time' ? value : 'recentProject'
-}
-
-function normalizeProjectSortBy(value: unknown): SidebarProjectPreferences['projectSortBy'] {
-  return value === 'createdAt' || value === 'updatedAt' ? value : 'updatedAt'
-}
-
 function normalizeDesktopUiPreferences(value: unknown): DesktopUiPreferences | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
@@ -150,7 +93,6 @@ function normalizeDesktopUiPreferences(value: unknown): DesktopUiPreferences | n
   return {
     ...record,
     schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-    sidebar: normalizeSidebarProjectPreferences(record.sidebar),
     profile: normalizeProfilePreferences(record.profile),
   }
 }
@@ -248,22 +190,6 @@ export class DesktopUiPreferencesService {
     }
   }
 
-  async updateSidebarPreferences(sidebar: unknown): Promise<DesktopUiPreferences> {
-    const filePath = this.getPreferencesPath()
-    return this.withWriteLock(filePath, async () => {
-      const { preferences } = await this.readPreferences()
-      const nextPreferences: DesktopUiPreferences = {
-        ...preferences,
-        schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-        sidebar: normalizeSidebarProjectPreferences(sidebar),
-        profile: normalizeProfilePreferences(preferences.profile),
-      }
-
-      await this.writePreferences(nextPreferences)
-      return nextPreferences
-    })
-  }
-
   async updateProfilePreferences(profile: unknown): Promise<DesktopUiPreferences> {
     const filePath = this.getPreferencesPath()
     return this.withWriteLock(filePath, async () => {
@@ -284,7 +210,6 @@ export class DesktopUiPreferencesService {
       const nextPreferences: DesktopUiPreferences = {
         ...preferences,
         schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-        sidebar: normalizeSidebarProjectPreferences(preferences.sidebar),
         profile: {
           ...nextProfile,
           avatarFile: currentProfile.avatarFile,
@@ -333,7 +258,6 @@ export class DesktopUiPreferencesService {
       const nextPreferences: DesktopUiPreferences = {
         ...preferences,
         schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-        sidebar: normalizeSidebarProjectPreferences(preferences.sidebar),
         profile: {
           ...normalizeProfilePreferences(preferences.profile),
           avatarFile,
@@ -358,7 +282,6 @@ export class DesktopUiPreferencesService {
       const nextPreferences: DesktopUiPreferences = {
         ...preferences,
         schemaVersion: CURRENT_DESKTOP_UI_PREFERENCES_SCHEMA_VERSION,
-        sidebar: normalizeSidebarProjectPreferences(preferences.sidebar),
         profile: {
           ...normalizeProfilePreferences(preferences.profile),
           avatarFile: null,

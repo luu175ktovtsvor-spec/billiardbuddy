@@ -2,7 +2,6 @@
  * Desktop UI Preferences REST API
  *
  * GET  /api/desktop-ui/preferences          — read billiardbuddy UI preferences
- * PUT  /api/desktop-ui/preferences/sidebar  — persist sidebar project preferences
  * PUT  /api/desktop-ui/preferences/profile  — persist local profile preferences
  * GET  /api/desktop-ui/preferences/profile/avatar — read local profile avatar
  * PUT  /api/desktop-ui/preferences/profile/avatar — persist local profile avatar
@@ -32,15 +31,6 @@ export async function handleDesktopUiApi(
     if (detail === undefined) {
       if (req.method !== 'GET') throw methodNotAllowed(req.method)
       return Response.json(await desktopUiPreferencesService.readPreferences())
-    }
-
-    if (detail === 'sidebar') {
-      if (req.method !== 'PUT') throw methodNotAllowed(req.method)
-      const body = await parseJsonBody(req)
-      return Response.json({
-        ok: true,
-        preferences: await desktopUiPreferencesService.updateSidebarPreferences(body),
-      })
     }
 
     if (detail === 'profile') {

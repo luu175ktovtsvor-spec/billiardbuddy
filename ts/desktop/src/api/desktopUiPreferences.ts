@@ -1,13 +1,5 @@
 import { ApiError, api, getApiUrl } from './client'
 
-export type SidebarProjectPreferences = {
-  projectOrder: string[]
-  pinnedProjects: string[]
-  hiddenProjects: string[]
-  projectOrganization: 'project' | 'recentProject' | 'time'
-  projectSortBy: 'createdAt' | 'updatedAt'
-}
-
 export type DesktopProfilePreferences = {
   displayName: string
   subtitle: string
@@ -17,7 +9,6 @@ export type DesktopProfilePreferences = {
 
 export type DesktopUiPreferences = {
   schemaVersion: number
-  sidebar: SidebarProjectPreferences
   profile: DesktopProfilePreferences
 }
 
@@ -29,13 +20,6 @@ export type DesktopUiPreferencesResponse = {
 export const desktopUiPreferencesApi = {
   getPreferences() {
     return api.get<DesktopUiPreferencesResponse>('/api/desktop-ui/preferences')
-  },
-
-  updateSidebarPreferences(sidebar: SidebarProjectPreferences) {
-    return api.put<{ ok: true; preferences: DesktopUiPreferences }>(
-      '/api/desktop-ui/preferences/sidebar',
-      sidebar,
-    )
   },
 
   updateProfilePreferences(profile: Pick<DesktopProfilePreferences, 'displayName' | 'subtitle'>) {

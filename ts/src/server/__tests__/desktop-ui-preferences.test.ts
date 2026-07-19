@@ -63,72 +63,57 @@ describe('DesktopUiPreferencesService', () => {
         avatarFile: null,
         avatarUpdatedAt: null,
       },
-      sidebar: {
-        projectOrder: [],
-        pinnedProjects: [],
-        hiddenProjects: [],
-        projectOrganization: 'recentProject',
-        projectSortBy: 'updatedAt',
-      },
     })
   })
 
-  test('normalizes old schema files and preserves unknown fields when updating sidebar preferences', async () => {
+  test('preserves legacy desktop-ui fields while updating profile preferences', async () => {
     await fs.mkdir(path.join(tmpDir, 'billiardbuddy'), { recursive: true })
     await fs.writeFile(
       path.join(tmpDir, 'billiardbuddy', 'desktop-ui.json'),
       JSON.stringify({
         futureField: { keep: true },
         sidebar: {
-          projectOrder: ['/workspace/alpha', 42, '/workspace/alpha', '/workspace/beta'],
-          pinnedProjects: ['/workspace/beta'],
-          hiddenProjects: [null, '/workspace/gamma'],
+          projectOrder: ['/workspace/alpha', 42],
+          projectSortBy: 'legacy-value',
         },
+        profile: { displayName: 'Original profile' },
       }),
       'utf-8',
     )
 
     const service = new DesktopUiPreferencesService()
     const before = await service.readPreferences()
-    const after = await service.updateSidebarPreferences({
-      projectOrder: ['/workspace/gamma'],
-      pinnedProjects: [],
-      hiddenProjects: ['/workspace/beta'],
+    const after = await service.updateProfilePreferences({
+      displayName: 'Updated profile',
     })
 
     expect(before.exists).toBe(true)
     expect(before.preferences).toEqual({
       schemaVersion: 2,
       futureField: { keep: true },
+      sidebar: {
+        projectOrder: ['/workspace/alpha', 42],
+        projectSortBy: 'legacy-value',
+      },
       profile: {
-        displayName: 'BilliardBuddy',
+        displayName: 'Original profile',
         subtitle: '',
         avatarFile: null,
         avatarUpdatedAt: null,
-      },
-      sidebar: {
-        projectOrder: ['/workspace/alpha', '/workspace/beta'],
-        pinnedProjects: ['/workspace/beta'],
-        hiddenProjects: ['/workspace/gamma'],
-        projectOrganization: 'recentProject',
-        projectSortBy: 'updatedAt',
       },
     })
     expect(after).toEqual({
       schemaVersion: 2,
       futureField: { keep: true },
+      sidebar: {
+        projectOrder: ['/workspace/alpha', 42],
+        projectSortBy: 'legacy-value',
+      },
       profile: {
-        displayName: 'BilliardBuddy',
+        displayName: 'Updated profile',
         subtitle: '',
         avatarFile: null,
         avatarUpdatedAt: null,
-      },
-      sidebar: {
-        projectOrder: ['/workspace/gamma'],
-        pinnedProjects: [],
-        hiddenProjects: ['/workspace/beta'],
-        projectOrganization: 'recentProject',
-        projectSortBy: 'updatedAt',
       },
     })
     expect(await readDesktopUiFile()).toEqual(after)
@@ -143,12 +128,11 @@ describe('DesktopUiPreferencesService', () => {
     const files = await fs.readdir(path.join(tmpDir, 'billiardbuddy'))
 
     expect(result.exists).toBe(false)
-    expect(result.preferences.sidebar.hiddenProjects).toEqual([])
     expect(result.preferences.profile.displayName).toBe('BilliardBuddy')
     expect(files.some((name) => name.startsWith('desktop-ui.json.invalid-'))).toBe(true)
   })
 
-  test('normalizes and persists profile preferences without touching sidebar preferences', async () => {
+  test('normalizes and persists profile preferences', async () => {
     const service = new DesktopUiPreferencesService()
     const after = await service.updateProfilePreferences({
       displayName: '  Claude Captain  ',
@@ -164,13 +148,6 @@ describe('DesktopUiPreferencesService', () => {
         subtitle: 'local.example/profile',
         avatarFile: null,
         avatarUpdatedAt: null,
-      },
-      sidebar: {
-        projectOrder: [],
-        pinnedProjects: [],
-        hiddenProjects: [],
-        projectOrganization: 'recentProject',
-        projectSortBy: 'updatedAt',
       },
     })
     expect(await readDesktopUiFile()).toEqual(after)
@@ -211,65 +188,6 @@ describe('DesktopUiPreferencesService', () => {
 describe('desktop UI preferences API', () => {
   beforeEach(setup)
   afterEach(teardown)
-
-  test('persists sidebar preferences under billiardbuddy desktop-ui.json', async () => {
-    const putReq = makeRequest('PUT', '/api/desktop-ui/preferences/sidebar', {
-      projectOrder: ['/workspace/beta', '/workspace/alpha'],
-      pinnedProjects: ['/workspace/beta'],
-      hiddenProjects: ['/workspace/old'],
-      projectOrganization: 'project',
-      projectSortBy: 'createdAt',
-    })
-
-    const putRes = await handleDesktopUiApi(putReq.req, putReq.url, putReq.segments)
-    const putBody = await putRes.json() as Record<string, unknown>
-
-    expect(putRes.status).toBe(200)
-    expect(putBody).toEqual({
-      ok: true,
-      preferences: {
-        schemaVersion: 2,
-        profile: {
-          displayName: 'BilliardBuddy',
-          subtitle: '',
-          avatarFile: null,
-          avatarUpdatedAt: null,
-        },
-        sidebar: {
-          projectOrder: ['/workspace/beta', '/workspace/alpha'],
-          pinnedProjects: ['/workspace/beta'],
-          hiddenProjects: ['/workspace/old'],
-          projectOrganization: 'project',
-          projectSortBy: 'createdAt',
-        },
-      },
-    })
-
-    const getReq = makeRequest('GET', '/api/desktop-ui/preferences')
-    const getRes = await handleDesktopUiApi(getReq.req, getReq.url, getReq.segments)
-    const getBody = await getRes.json() as Record<string, unknown>
-
-    expect(getRes.status).toBe(200)
-    expect(getBody).toEqual({
-      exists: true,
-      preferences: {
-        schemaVersion: 2,
-        profile: {
-          displayName: 'BilliardBuddy',
-          subtitle: '',
-          avatarFile: null,
-          avatarUpdatedAt: null,
-        },
-        sidebar: {
-          projectOrder: ['/workspace/beta', '/workspace/alpha'],
-          pinnedProjects: ['/workspace/beta'],
-          hiddenProjects: ['/workspace/old'],
-          projectOrganization: 'project',
-          projectSortBy: 'createdAt',
-        },
-      },
-    })
-  })
 
   test('persists profile preferences and avatar uploads through the API', async () => {
     const profileReq = makeRequest('PUT', '/api/desktop-ui/preferences/profile', {
@@ -369,6 +287,14 @@ describe('desktop UI preferences API', () => {
       unknownPreferenceReq.segments,
     )
     expect(unknownPreferenceRes.status).toBe(404)
+
+    const retiredSidebarReq = makeRequest('PUT', '/api/desktop-ui/preferences/sidebar', {})
+    const retiredSidebarRes = await handleDesktopUiApi(
+      retiredSidebarReq.req,
+      retiredSidebarReq.url,
+      retiredSidebarReq.segments,
+    )
+    expect(retiredSidebarRes.status).toBe(404)
   })
 
   test('clears profile avatars and rejects unsupported avatar methods through the API', async () => {

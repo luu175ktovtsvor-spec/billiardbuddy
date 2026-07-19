@@ -38,13 +38,6 @@ function preferences(profile: {
     preferences: {
       schemaVersion: 2,
       profile,
-      sidebar: {
-        projectOrder: [],
-        pinnedProjects: [],
-        hiddenProjects: [],
-        projectOrganization: 'recentProject' as const,
-        projectSortBy: 'updatedAt' as const,
-      },
     },
   }
 }
