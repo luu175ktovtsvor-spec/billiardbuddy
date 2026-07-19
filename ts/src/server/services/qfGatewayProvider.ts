@@ -57,7 +57,13 @@ export function getQfGatewayUrl(): string {
 function isSecureQfGatewayUrl(value: string): boolean {
   try {
     const url = new URL(value)
-    return url.protocol === 'https:' && url.hostname.length > 0
+    return url.protocol === 'https:'
+      && url.hostname.length > 0
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && url.pathname.replace(/\/+$/, '') === '/gw'
   } catch {
     return false
   }

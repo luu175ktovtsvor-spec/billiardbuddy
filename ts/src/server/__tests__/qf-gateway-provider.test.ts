@@ -23,7 +23,7 @@ import {
 
 // ─── Test harness ───────────────────────────────────────────────────────────
 
-const GATEWAY_URL = 'https://gateway.example.com'
+const GATEWAY_URL = 'https://gateway.example.com/gw'
 const GATEWAY_TOKEN = 'qf-app-token-SECRET-value'
 const TEST_SERVER_PORT = 4599
 
@@ -246,6 +246,18 @@ describe('qf-gateway readiness predicate & startup race', () => {
 
   test('a public HTTP gateway is never configured or used as a proxy target', async () => {
     process.env.QF_GATEWAY_URL = 'http://39.106.214.21/gw'
+    const { qfGatewayConfigured, resolveQfGatewayProxyTarget } = await import(
+      '../services/qfGatewayProvider.js'
+    )
+    expect(qfGatewayConfigured()).toBe(false)
+    expect(resolveQfGatewayProxyTarget()).toEqual({ baseUrl: '', apiKey: '' })
+
+    const svc = new ProviderService()
+    expect(await svc.getProviderForProxy(QF_GATEWAY_PROVIDER_ID)).toBeNull()
+  })
+
+  test('a secure URL outside the /gw gateway base is never configured or used as a proxy target', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example'
     const { qfGatewayConfigured, resolveQfGatewayProxyTarget } = await import(
       '../services/qfGatewayProvider.js'
     )

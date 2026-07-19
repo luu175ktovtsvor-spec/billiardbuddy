@@ -60,6 +60,26 @@ function trimmed(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
+/**
+ * Product traffic carries the managed app token and user content. Keep the
+ * packaged URL on HTTPS and bind it to the product gateway base path, rather
+ * than accepting an arbitrary secure website as a proxy target.
+ */
+export function isAllowedProductGatewayUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:'
+      && url.hostname.length > 0
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && url.pathname.replace(/\/+$/, '') === '/gw'
+  } catch {
+    return false
+  }
+}
+
 /** Directory that holds the packaged config files for the current run. */
 export function productConfigDir(source: ProductConfigSource): string | undefined {
   return source.isPackaged ? source.resourcesPath : source.devBuildDir
@@ -90,14 +110,15 @@ export function requireProductGatewayConfig(
     throw new ProductGatewayConfigError('Product gateway is not configured: missing gateway URL.')
   }
 
-  let parsed: URL
   try {
-    parsed = new URL(config.url)
+    new URL(config.url)
   } catch {
     throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL is invalid.')
   }
-  if (parsed.protocol !== 'https:') {
-    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL must use HTTPS.')
+  if (!isAllowedProductGatewayUrl(config.url)) {
+    throw new ProductGatewayConfigError(
+      'Product gateway is not configured: gateway URL must use HTTPS at the /gw endpoint.',
+    )
   }
   if (!config.token) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing app token.')

@@ -147,10 +147,22 @@ describe('requireProductGatewayConfig', () => {
     expect(() => requireProductGatewayConfig({
       url: 'file:///tmp/gateway',
       token: 'app-token',
-    })).toThrow('gateway URL must use HTTPS')
+    })).toThrow('gateway URL must use HTTPS at the /gw endpoint')
     expect(() => requireProductGatewayConfig({
       url: 'http://39.106.214.21/gw',
       token: 'app-token',
-    })).toThrow('gateway URL must use HTTPS')
+    })).toThrow('gateway URL must use HTTPS at the /gw endpoint')
+    expect(() => requireProductGatewayConfig({
+      url: 'https://gateway.example',
+      token: 'app-token',
+    })).toThrow('gateway URL must use HTTPS at the /gw endpoint')
+    expect(() => requireProductGatewayConfig({
+      url: 'https://app-token@gateway.example/gw',
+      token: 'app-token',
+    })).toThrow('gateway URL must use HTTPS at the /gw endpoint')
+    expect(() => requireProductGatewayConfig({
+      url: 'https://gateway.example/gw?override=true',
+      token: 'app-token',
+    })).toThrow('gateway URL must use HTTPS at the /gw endpoint')
   })
 })
