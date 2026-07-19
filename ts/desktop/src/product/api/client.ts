@@ -2,13 +2,42 @@ import { getServerBaseUrl } from '../../lib/desktopRuntime'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
+const PRODUCT_API_FALLBACK_ERROR = 'BilliardBuddy 服务暂时不可用，请稍后重试。'
+
+const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
+  BAD_REQUEST: '请求内容有误，请检查后重试。',
+  CONFLICT: '当前内容已发生变化，请刷新后重试。',
+  FORBIDDEN: '当前任务不允许执行此操作。',
+  METHOD_NOT_ALLOWED: '当前操作暂不支持。',
+  NOT_FOUND: '请求的任务或资源已不可用。',
+  PRODUCT_TASK_REVIEW_UNAVAILABLE: '当前任务审阅暂时不可用，请稍后重试。',
+  PRODUCT_TASK_STORE_ERROR: '任务数据暂时无法读取，请稍后重试。',
+  PRODUCT_TASK_THREAD_UNAVAILABLE: '当前任务记录暂时无法读取，请稍后重试。',
+}
+
+function readProductApiErrorCode(body: unknown): string | null {
+  if (
+    body
+    && typeof body === 'object'
+    && 'error' in body
+    && typeof body.error === 'string'
+  ) {
+    return body.error
+  }
+  return null
+}
+
 export class ProductApiError extends Error {
+  public readonly code: string | null
+
   constructor(
     public readonly status: number,
     public readonly body: unknown,
   ) {
-    super(readProductApiErrorMessage(status, body))
+    const code = readProductApiErrorCode(body)
+    super(readProductApiErrorMessage(code))
     this.name = 'ProductApiError'
+    this.code = code
   }
 }
 
@@ -16,12 +45,22 @@ type ProductRequestOptions = {
   timeout?: number
 }
 
-function readProductApiErrorMessage(status: number, body: unknown): string {
-  if (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string') {
-    return body.message
-  }
-  if (typeof body === 'string' && body.trim()) return body
-  return `产品接口请求失败（${status}）`
+function readProductApiErrorMessage(code: string | null): string {
+  return code && PRODUCT_API_SAFE_ERROR_MESSAGES[code]
+    ? PRODUCT_API_SAFE_ERROR_MESSAGES[code]
+    : PRODUCT_API_FALLBACK_ERROR
+}
+
+/**
+ * Product API responses are not a user-copy boundary: upstream and server
+ * messages can contain implementation details. Keep status/code on
+ * ProductApiError for callers that need to branch, but only render this copy.
+ */
+export function productApiUserFacingError(
+  error: unknown,
+  fallback = PRODUCT_API_FALLBACK_ERROR,
+): string {
+  return error instanceof ProductApiError ? error.message : fallback
 }
 
 function buildProductApiUrl(path: string): string {

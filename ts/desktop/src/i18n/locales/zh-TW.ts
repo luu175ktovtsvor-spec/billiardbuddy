@@ -630,6 +630,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.storageUseDefaultPortableDir': '使用應用旁邊的預設便攜目錄',
   'settings.general.storageApplyPortable': '使用這個目錄並重啟',
   'settings.general.storageActiveDir': '當前實際讀取目錄',
+  'settings.general.storageManagedLocation': '由 BilliardBuddy 管理的資料位置',
   'settings.general.storageEnvironmentHint': '當前目錄在應用啟動時已固定，無法在這裡切換；請移除啟動時的目錄設定並重啟，再使用系統目錄。',
   'settings.general.storageEnvironmentSwitchBlocked': '當前資料目錄由啟動時的設定控制。請先移除該設定，再切回系統目錄。',
   'settings.general.storageRestartHint': '已儲存切換請求。請重啟應用，讓新的資料目錄生效。',
@@ -658,7 +659,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.outputStyleSelectLabel': '選擇輸出風格',
   'settings.general.outputStyleLoading': '正在載入輸出風格...',
   'settings.general.outputStyleSaved': '輸出風格已儲存。',
-  'settings.general.outputStyleRestartHint': '正在執行的會話會繼續使用目前提示詞。新建會話、在新程序中繼續，或重啟會話後生效。',
+  'settings.general.outputStyleRestartHint': '正在執行的任務會繼續保持目前回覆風格。新建任務、在新程序中繼續，或重啟任務後生效。',
   'settings.general.outputStyleScopeLocal': '目前專案',
   'settings.general.outputStyleScopeUser': '使用者設定',
   'settings.general.outputStyleScopeLocalHint': '已儲存到目前專案的本機設定中。',
@@ -669,17 +670,11 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.outputStyleSourceLocal': '專案本地風格',
   'settings.general.outputStyleSourcePolicy': '受管風格',
   'settings.general.outputStyleSourcePlugin': '外掛風格',
-  'settings.general.effortTitle': '推理強度',
-  'settings.general.effortDescription': '控制模型使用的計算量。',
-  'settings.general.effort.low': '低',
-  'settings.general.effort.medium': '中',
-  'settings.general.effort.high': '高',
-  'settings.general.effort.max': '最大',
   'settings.general.autoDreamTitle': '自動做夢',
   'settings.general.autoDreamDescription': '在累積足夠會話後，背景定期整理和壓縮 auto-memory。',
   'settings.general.autoDreamEnabled': '啟用自動做夢',
   'settings.general.autoDreamHintOn': '符合條件的會話結束後，桌面端可以在背景執行記憶整理。',
-  'settings.general.autoDreamHintOff': '預設關閉，因為它可能發起背景 AI 請求。',
+  'settings.general.autoDreamHintOff': '預設關閉，因為它可能在背景發起輔助任務。',
   'settings.general.autoDreamConfirmTitle': '啟用自動做夢？',
   'settings.general.autoDreamConfirmKeepRunning': '請保持桌面端處於啟用狀態，這樣符合條件的會話結束後才能啟動背景記憶整理。',
   'settings.general.autoDreamConfirmEnable': '啟用自動做夢',
@@ -724,6 +719,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.networkTimeoutRequired': '請輸入超時時間。',
   'settings.general.networkTimeoutRange': '請輸入 {min}-{max} 秒之間的整數。',
   'settings.general.networkSaved': '網路設定已儲存。',
+  'settings.general.networkSaveError': '網路設定暫時無法儲存，請檢查連線後重試。',
   'settings.general.networkScopeHint': '不會影響單獨的應用更新代理。',
   'settings.general.networkSave': '儲存',
   'settings.general.webFetchPreflightTitle': 'WebFetch 預檢',
@@ -776,7 +772,6 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Chat Input ──────────────────────────────────────
   'chat.placeholder': '說說你接下來想做什麼...',
-  'chat.runtimeManaged': '助手連線由 BilliardBuddy 自動管理，無需手動登入或選擇。',
   'chat.taskProgressAutoShown': '任務進度會自動顯示在對話中。',
   'chat.placeholderMissing': '此會話指向的工作目錄缺失。請新建會話或選擇其他專案。',
   'chat.addFiles': '新增檔案或圖片',
@@ -1129,11 +1124,6 @@ export const zh: Record<TranslationKey, string> = {
   'tasks.lastRunAt': '上次執行 ',
   'tasks.outputHintSession': '點選「檢視完整對話」可在會話中檢視完整輸出。',
   'tasks.noOutputText': '暫無輸出內容。',
-
-  // ─── Model Selector ──────────────────────────────────────
-  'model.selectModel': '選擇模型',
-  'model.configuration': '模型配置',
-  'model.effort': '推理強度',
 
   // ─── Directory Picker ──────────────────────────────────────
   'dirPicker.selectProject': '選擇專案...',

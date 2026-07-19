@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { productApiUserFacingError } from '../api/client'
 import { productSideTasksApi } from '../api/sideTasks'
 import type {
   CreateProductSideTaskInput,
@@ -25,8 +26,8 @@ type ProductSideTaskStore = {
   selectSideTask: (parentTaskId: string, sideTaskId: string) => void
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(error: unknown, fallback: string): string {
+  return productApiUserFacingError(error, fallback)
 }
 
 export function productSideTaskMutationKey(parentTaskId: string, sideTaskId: string, action: string): string {
@@ -95,7 +96,7 @@ export const useProductSideTaskStore = create<ProductSideTaskStore>((set, get) =
         },
         errorsByParentTaskId: {
           ...state.errorsByParentTaskId,
-          [parentTaskId]: errorMessage(error),
+          [parentTaskId]: errorMessage(error, '暂时无法读取侧边任务，请稍后重试。'),
         },
       }))
     }
@@ -128,7 +129,7 @@ export const useProductSideTaskStore = create<ProductSideTaskStore>((set, get) =
       set((state) => ({
         errorsByParentTaskId: {
           ...state.errorsByParentTaskId,
-          [parentTaskId]: errorMessage(error),
+          [parentTaskId]: errorMessage(error, '暂时无法创建侧边任务，请稍后重试。'),
         },
       }))
       throw error
@@ -169,7 +170,7 @@ export const useProductSideTaskStore = create<ProductSideTaskStore>((set, get) =
       set((state) => ({
         errorsByParentTaskId: {
           ...state.errorsByParentTaskId,
-          [parentTaskId]: errorMessage(error),
+          [parentTaskId]: errorMessage(error, '暂时无法关闭侧边任务，请稍后重试。'),
         },
       }))
       throw error

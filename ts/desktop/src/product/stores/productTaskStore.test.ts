@@ -82,6 +82,17 @@ describe('productTaskStore', () => {
     })
   })
 
+  it('does not retain raw upstream details when loading the task index fails', async () => {
+    const rawError = new Error('DeepSeek provider rejected /private/.claude/settings.json token')
+    vi.mocked(productTasksApi.list).mockRejectedValue(rawError)
+
+    await useProductTaskStore.getState().refresh()
+
+    expect(useProductTaskStore.getState().error).toBe('暂时无法读取任务，请稍后重试。')
+    expect(useProductTaskStore.getState().error).not.toContain('DeepSeek')
+    expect(useProductTaskStore.getState().error).not.toContain('.claude')
+  })
+
   it('applies a streamed title to the indexed product task without changing lifecycle metadata', () => {
     const original = makeTask({
       lifecycle: 'archived',

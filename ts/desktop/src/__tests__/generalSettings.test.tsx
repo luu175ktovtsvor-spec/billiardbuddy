@@ -307,6 +307,23 @@ describe('Settings > General tab', () => {
     })
   })
 
+  it('does not show raw network save failures in General settings', async () => {
+    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    useSettingsStore.setState({
+      setNetwork: vi.fn().mockRejectedValue(new Error(rawError)),
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    fireEvent.change(screen.getByLabelText('AI request timeout'), { target: { value: '180' } })
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0]!)
+    })
+
+    expect(await screen.findByText('Could not save network settings. Check your connection and try again.')).toBeInTheDocument()
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument()
+  })
+
   it('validates typed provider network timeout and supports precise step controls', () => {
     render(<Settings />)
 
@@ -388,6 +405,12 @@ describe('Settings > General tab', () => {
   })
 
   it('validates portable directory input and lets users reset to the app-side folder', async () => {
+    useSettingsStore.setState({
+      appMode: {
+        ...useSettingsStore.getState().appMode,
+        defaultPortableDir: '/Applications/BilliardBuddy/data',
+      },
+    })
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
@@ -398,8 +421,30 @@ describe('Settings > General tab', () => {
     expect(screen.getByText('Choose or enter a portable data directory first.')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Use the default portable folder beside the app' }))
-    expect(input).toHaveValue('/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR')
+    expect(input).toHaveValue('/Applications/BilliardBuddy/data')
     expect(screen.queryByText('Choose or enter a portable data directory first.')).not.toBeInTheDocument()
+  })
+
+  it('masks managed agent data locations while retaining the configured app mode', () => {
+    useSettingsStore.setState({
+      appMode: {
+        mode: 'portable',
+        portableDir: '/Users/test/.claude',
+        defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
+        activeConfigDir: '/Users/test/.claude',
+        configDirSource: 'portable',
+      },
+    })
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    const input = screen.getByLabelText('Portable data directory')
+    expect(input).toHaveValue('')
+    expect(input).toHaveAttribute('placeholder', 'BilliardBuddy-managed data location')
+    expect(screen.getAllByText('BilliardBuddy-managed data location').length).toBeGreaterThanOrEqual(2)
+    expect(screen.queryByText('/Users/test/.claude')).not.toBeInTheDocument()
   })
 
   it('shows folder picker failures as an inline storage error', async () => {
@@ -462,7 +507,8 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
 
-    expect(await screen.findByText('restart preparation failed')).toBeInTheDocument()
+    expect(await screen.findByText('The change was saved, but automatic restart failed. Restart the app manually.')).toBeInTheDocument()
+    expect(screen.queryByText('restart preparation failed')).not.toBeInTheDocument()
     expect(tauriProcessMock.relaunch).not.toHaveBeenCalled()
   })
 
@@ -561,6 +607,26 @@ describe('Settings > General tab', () => {
     expect(screen.queryByLabelText('Enable thinking mode')).not.toBeInTheDocument()
     expect(screen.queryByText(/DeepSeek/)).not.toBeInTheDocument()
     expect(screen.queryByText(/--thinking/)).not.toBeInTheDocument()
+  })
+
+  it('sanitizes internal output-style labels and descriptions before displaying them', () => {
+    useSettingsStore.setState({
+      outputStyle: 'managed',
+      outputStyles: [{
+        value: 'managed',
+        label: 'Claude Code / DeepSeek V4',
+        description: 'Provider model reads .claude/settings.local.json and hidden system prompts with 120k tokens.',
+        source: 'built-in',
+      }],
+    })
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    const outputStyle = screen.getByRole('button', { name: 'Select output style' })
+    expect(outputStyle).toHaveTextContent('BilliardBuddy')
+    expect(outputStyle).not.toHaveTextContent(/Claude|DeepSeek|Provider|model|\.claude|hidden system prompt|tokens/i)
   })
 
   it('keeps Auto-dream inside collapsed runtime options and confirms before enabling it', async () => {

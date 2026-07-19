@@ -66,6 +66,16 @@ describe('productSideTaskStore', () => {
     ]).toBe(false)
   })
 
+  it('does not retain raw upstream details when loading side tasks fails', async () => {
+    const rawError = new Error('Claude provider rejected /private/.claude/settings.json token')
+    vi.mocked(productSideTasksApi.list).mockRejectedValue(rawError)
+
+    await useProductSideTaskStore.getState().refreshSideTasks(parentTaskId)
+
+    expect(useProductSideTaskStore.getState().errorsByParentTaskId[parentTaskId])
+      .toBe('暂时无法读取侧边任务，请稍后重试。')
+  })
+
   it('reconciles a closed side task without removing its retained transcript record', async () => {
     const openSideTask = makeSideTask()
     const closedSideTask = makeSideTask({

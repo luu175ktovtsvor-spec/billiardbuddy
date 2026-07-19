@@ -131,6 +131,15 @@ afterEach(() => {
 })
 
 describe('TaskIndex', () => {
+  it('renders only the safe task-list error supplied by the product store', () => {
+    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    renderIndex(makeIndex(), { error: '暂时无法读取任务，请稍后重试。' })
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('暂时无法读取任务，请稍后重试。')
+    expect(alert).not.toHaveTextContent(rawError)
+  })
+
   it('shows a task under its project with its real work directory and planned worktree state', () => {
     renderIndex()
 

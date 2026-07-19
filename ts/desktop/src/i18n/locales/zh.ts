@@ -630,6 +630,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.storageUseDefaultPortableDir': '使用应用旁边的默认便携目录',
   'settings.general.storageApplyPortable': '使用这个目录并重启',
   'settings.general.storageActiveDir': '当前实际读取目录',
+  'settings.general.storageManagedLocation': '由 BilliardBuddy 管理的数据位置',
   'settings.general.storageEnvironmentHint': '当前目录在应用启动时已固定，无法在这里切换；请移除启动时的目录设置并重启，再使用系统目录。',
   'settings.general.storageEnvironmentSwitchBlocked': '当前数据目录由启动时的设置控制。请先移除该设置，再切回系统目录。',
   'settings.general.storageRestartHint': '已保存切换请求。请重启应用，让新的数据目录生效。',
@@ -658,7 +659,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.outputStyleSelectLabel': '选择输出风格',
   'settings.general.outputStyleLoading': '正在加载输出风格...',
   'settings.general.outputStyleSaved': '输出风格已保存。',
-  'settings.general.outputStyleRestartHint': '正在运行的会话会继续使用当前提示词。新建会话、在新进程中继续，或重启会话后生效。',
+  'settings.general.outputStyleRestartHint': '正在运行的任务会继续保持当前回复风格。新建任务、在新进程中继续，或重启任务后生效。',
   'settings.general.outputStyleScopeLocal': '当前项目',
   'settings.general.outputStyleScopeUser': '用户设置',
   'settings.general.outputStyleScopeLocalHint': '已保存到当前项目的本地设置中。',
@@ -669,17 +670,11 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.outputStyleSourceLocal': '项目本地风格',
   'settings.general.outputStyleSourcePolicy': '受管风格',
   'settings.general.outputStyleSourcePlugin': '插件风格',
-  'settings.general.effortTitle': '推理强度',
-  'settings.general.effortDescription': '控制模型使用的计算量。',
-  'settings.general.effort.low': '低',
-  'settings.general.effort.medium': '中',
-  'settings.general.effort.high': '高',
-  'settings.general.effort.max': '最大',
   'settings.general.autoDreamTitle': '自动做梦',
   'settings.general.autoDreamDescription': '在积累足够会话后，后台定期整理和压缩 auto-memory。',
   'settings.general.autoDreamEnabled': '启用自动做梦',
   'settings.general.autoDreamHintOn': '符合条件的会话结束后，桌面端可以在后台执行记忆整理。',
-  'settings.general.autoDreamHintOff': '默认关闭，因为它可能发起后台 AI 请求。',
+  'settings.general.autoDreamHintOff': '默认关闭，因为它可能在后台发起辅助任务。',
   'settings.general.autoDreamConfirmTitle': '启用自动做梦？',
   'settings.general.autoDreamConfirmKeepRunning': '请保持桌面端处于启用状态，这样符合条件的会话结束后才能启动后台记忆整理。',
   'settings.general.autoDreamConfirmEnable': '启用自动做梦',
@@ -724,6 +719,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.general.networkTimeoutRequired': '请输入超时时间。',
   'settings.general.networkTimeoutRange': '请输入 {min}-{max} 秒之间的整数。',
   'settings.general.networkSaved': '网络设置已保存。',
+  'settings.general.networkSaveError': '网络设置暂时无法保存，请检查连接后重试。',
   'settings.general.networkScopeHint': '不会影响单独的应用更新代理。',
   'settings.general.networkSave': '保存',
   'settings.general.webFetchPreflightTitle': 'WebFetch 预检',
@@ -776,7 +772,6 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Chat Input ──────────────────────────────────────
   'chat.placeholder': '说说你接下来想做什么...',
-  'chat.runtimeManaged': '助手连接由 BilliardBuddy 自动管理，无需手动登录或选择。',
   'chat.taskProgressAutoShown': '当前任务进度会自动显示在对话中。',
   'chat.placeholderMissing': '此会话指向的工作目录缺失。请新建会话或选择其他项目。',
   'chat.addFiles': '添加文件或图片',
@@ -1129,11 +1124,6 @@ export const zh: Record<TranslationKey, string> = {
   'tasks.lastRunAt': '上次执行 ',
   'tasks.outputHintSession': '点击「查看完整对话」可在会话中查看完整输出。',
   'tasks.noOutputText': '暂无输出内容。',
-
-  // ─── Model Selector ──────────────────────────────────────
-  'model.selectModel': '选择模型',
-  'model.configuration': '模型配置',
-  'model.effort': '推理强度',
 
   // ─── Directory Picker ──────────────────────────────────────
   'dirPicker.selectProject': '选择项目...',

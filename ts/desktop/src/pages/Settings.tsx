@@ -116,8 +116,29 @@ function settingsContentTitle(
   return locale === 'zh' ? label : `${label} · ${t('settings.title')}`
 }
 
+const INTERNAL_AGENT_DATA_LOCATION = /(?:^|[\\/])\.claude(?:[\\/]|$)|\bCLAUDE_CONFIG_DIR\b/i
+
 function productizeAgentText(value: string): string {
-  return value.replace(/Claude Code/g, 'BilliardBuddy').replace(/Claude/g, 'Agent')
+  return value
+    .replace(/\bClaude Code\b/gi, 'BilliardBuddy')
+    .replace(/\bClaude\b/gi, 'BilliardBuddy')
+    .replace(/\b(?:DeepSeek|MiMo|Qwen)(?:[-\w.]*)?\b/gi, 'BilliardBuddy assistant')
+    .replace(/\b(?:Anthropic|OpenAI)\b/gi, 'BilliardBuddy')
+    .replace(/\bproviders?\b/gi, 'assistant service')
+    .replace(/\bmodels?\b/gi, 'assistant setup')
+    .replace(/\bCLAUDE_CONFIG_DIR\b/gi, 'BilliardBuddy data')
+    .replace(/\.claude(?:[\\/][\w.-]+)*/gi, 'BilliardBuddy settings')
+    .replace(/\b(?:hidden\s+)?system\s+prompts?\b|\bhidden\s+prompts?\b/gi, 'task settings')
+    .replace(/\bprompts?\b/gi, 'task instructions')
+    .replace(/\b(?:context\s+)?tokens?\b/gi, 'task context')
+}
+
+function isInternalAgentDataLocation(value: string | null | undefined): boolean {
+  return typeof value === 'string' && INTERNAL_AGENT_DATA_LOCATION.test(value)
+}
+
+function productDataLocationLabel(value: string, managedLabel: string): string {
+  return isInternalAgentDataLocation(value) ? managedLabel : value
 }
 
 function SettingsNavRow({ item, label, active, onClick }: { item: SettingsNavItem; label: string; active: boolean; onClick: () => void }) {
@@ -342,6 +363,8 @@ export function GeneralSettings() {
   const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
   const configDirSource = appMode.configDirSource ?? (appMode.mode === 'portable' ? 'portable' : 'system')
   const isEnvironmentConfigDir = configDirSource === 'environment'
+  const managedDataLocationLabel = t('settings.general.storageManagedLocation')
+  const portableDirUsesInternalAgentLocation = isInternalAgentDataLocation(portableDirDraft)
   useEffect(() => {
     void fetchOutputStyles(outputStyleWorkDir)
   }, [fetchOutputStyles, outputStyleWorkDir])
@@ -415,7 +438,7 @@ export function GeneralSettings() {
     RESPONSE_LANGUAGES.find(({ value }) => value === responseLanguage)?.label ?? RESPONSE_LANGUAGES[0]!.label
   const outputStyleItems = outputStyles.map((style) => ({
     value: style.value,
-    label: style.label,
+    label: productizeAgentText(style.label),
     description: `${productizeAgentText(style.description)} · ${getOutputStyleSourceLabel(style.source, t)}`,
   }))
   const selectedOutputStyle =
@@ -597,8 +620,8 @@ export function GeneralSettings() {
         type: 'success',
         message: t('settings.general.networkSaved'),
       })
-    } catch (error) {
-      setNetworkSaveError(error instanceof Error ? error.message : String(error))
+    } catch {
+      setNetworkSaveError(t('settings.general.networkSaveError'))
     } finally {
       setIsSavingNetwork(false)
     }
@@ -672,12 +695,8 @@ export function GeneralSettings() {
       const host = getDesktopHost()
       await host.appMode.prepareRestart()
       await host.appMode.restart()
-    } catch (error) {
-      setModeError(
-        error instanceof Error
-          ? error.message
-          : t('settings.general.storageRestartError'),
-      )
+    } catch {
+      setModeError(t('settings.general.storageRestartError'))
       setModeSwitchConfirmOpen(false)
       setPendingMode(null)
       setPendingPortableDir(null)
@@ -886,7 +905,7 @@ export function GeneralSettings() {
                 <span className="block truncate font-medium">
                   {outputStylesLoading
                     ? t('settings.general.outputStyleLoading')
-                    : selectedOutputStyle?.label ?? outputStyle}
+                    : selectedOutputStyle ? productizeAgentText(selectedOutputStyle.label) : outputStyle}
                 </span>
                 {selectedOutputStyle?.description && (
                   <span className="mt-0.5 block truncate text-xs text-[var(--color-text-tertiary)]">
@@ -1278,8 +1297,10 @@ export function GeneralSettings() {
                     <Input
                       id="portable-data-dir"
                       label={t('settings.general.storagePortableDirLabel')}
-                      value={portableDirDraft}
-                      placeholder={t('settings.general.storagePortableDirPlaceholder')}
+                      value={portableDirUsesInternalAgentLocation ? '' : portableDirDraft}
+                      placeholder={portableDirUsesInternalAgentLocation
+                        ? managedDataLocationLabel
+                        : t('settings.general.storagePortableDirPlaceholder')}
                       onChange={(event) => {
                         setPortableDirDraft(event.target.value)
                         setModeError(null)
@@ -1296,6 +1317,11 @@ export function GeneralSettings() {
                     {t('settings.general.storageChooseDir')}
                   </Button>
                 </div>
+                {portableDirUsesInternalAgentLocation ? (
+                  <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                    {managedDataLocationLabel}
+                  </p>
+                ) : null}
 
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                   <button
@@ -1324,7 +1350,9 @@ export function GeneralSettings() {
             {activeConfigDir && (
               <div className="mt-3 rounded-lg border border-[var(--color-border)]/70 bg-[var(--color-surface)] px-3 py-2">
                 <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">{t('settings.general.storageActiveDir')}</div>
-                <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">{activeConfigDir}</div>
+                <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">
+                  {productDataLocationLabel(activeConfigDir, managedDataLocationLabel)}
+                </div>
               </div>
             )}
 
@@ -1370,7 +1398,7 @@ export function GeneralSettings() {
             </p>
             {pendingMode === 'portable' && pendingPortableDir && (
               <div className="rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2 font-mono text-xs break-all text-[var(--color-text-secondary)]">
-                {pendingPortableDir}
+                {productDataLocationLabel(pendingPortableDir, managedDataLocationLabel)}
               </div>
             )}
             <p>{t('settings.general.storageSwitchRestartBody')}</p>
