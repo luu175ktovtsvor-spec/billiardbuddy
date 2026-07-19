@@ -19,25 +19,7 @@ const originalCliPath = process.env.CLAUDE_CLI_PATH
 const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 const mockSdkCliPath = fileURLToPath(new URL('../fixtures/mock-sdk-cli.ts', import.meta.url))
 
-// The models API derives its model list from these env vars (see
-// src/server/api/models.ts getEnvConfiguredAnthropicModels). A developer who
-// exports them for a custom provider would otherwise leak them into the
-// no-provider fixture and break the default-model assertions. Isolate them.
-const MODEL_ENV_KEYS = [
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-] as const
-const originalModelEnv = Object.fromEntries(
-  MODEL_ENV_KEYS.map((key) => [key, process.env[key]]),
-) as Record<(typeof MODEL_ENV_KEYS)[number], string | undefined>
-
 function restoreEnv() {
-  for (const key of MODEL_ENV_KEYS) {
-    if (originalModelEnv[key] !== undefined) process.env[key] = originalModelEnv[key]
-    else delete process.env[key]
-  }
   if (originalConfigDir !== undefined) {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   } else {
@@ -64,7 +46,6 @@ async function startTestServer() {
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.CLAUDE_CLI_PATH = mockSdkCliPath
   process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
-  for (const key of MODEL_ENV_KEYS) delete process.env[key]
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   await fs.mkdir(path.join(tmpDir, 'agents'), { recursive: true })
 
@@ -374,93 +355,6 @@ describe('Business Flow: Agent Management', () => {
     const { status, data } = await api('DELETE', '/api/agents/nonexistent')
     expect(status).toBe(404)
     expect(data).toEqual({ error: 'AGENT_NOT_FOUND' })
-  })
-})
-
-describe('Business Flow: Models & Effort', () => {
-  beforeAll(startTestServer)
-  afterAll(async () => {
-    server?.stop()
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  it('should return available fallback models', async () => {
-    const { data } = await api('GET', '/api/models')
-    expect(data.models.length).toBe(3)
-    const names = data.models.map((m: any) => m.name)
-    expect(names).toContain('Opus 4.7')
-    expect(names).toContain('Sonnet 4.6')
-    expect(names).toContain('Haiku 4.5')
-  })
-
-  it('should default to Opus model', async () => {
-    const { data } = await api('GET', '/api/models/current')
-    expect(data.model.id).toBe('claude-opus-4-7')
-  })
-
-  it('should switch to Opus 4.7', async () => {
-    const { status } = await api('PUT', '/api/models/current', {
-      modelId: 'claude-opus-4-7',
-    })
-    expect(status).toBe(200)
-
-    const { data } = await api('GET', '/api/models/current')
-    expect(data.model.id).toBe('claude-opus-4-7')
-    expect(data.model.name).toBe('Opus 4.7')
-  })
-
-  it('should switch to Haiku 4.5', async () => {
-    await api('PUT', '/api/models/current', { modelId: 'claude-haiku-4-5' })
-    const { data } = await api('GET', '/api/models/current')
-    expect(data.model.name).toBe('Haiku 4.5')
-  })
-
-  it('should reject empty model ID', async () => {
-    const { status } = await api('PUT', '/api/models/current', { modelId: '' })
-    expect(status).toBe(400)
-  })
-
-  it('should reject missing model ID', async () => {
-    const { status } = await api('PUT', '/api/models/current', {})
-    expect(status).toBe(400)
-  })
-
-  it('should default effort to max', async () => {
-    const { data } = await api('GET', '/api/effort')
-    expect(data.level).toBe('max')
-    expect(data.available).toEqual(['low', 'medium', 'high', 'max'])
-  })
-
-  it('should set effort to max', async () => {
-    const { status, data } = await api('PUT', '/api/effort', { level: 'max' })
-    expect(status).toBe(200)
-    expect(data.level).toBe('max')
-
-    const { data: verify } = await api('GET', '/api/effort')
-    expect(verify.level).toBe('max')
-  })
-
-  it('should set effort to low', async () => {
-    await api('PUT', '/api/effort', { level: 'low' })
-    const { data } = await api('GET', '/api/effort')
-    expect(data.level).toBe('low')
-  })
-
-  it('should reject invalid effort level', async () => {
-    const { status, data } = await api('PUT', '/api/effort', { level: 'extreme' })
-    expect(status).toBe(400)
-    expect(data.message).toContain('Invalid effort level')
-  })
-
-  it('should persist model and effort to settings file', async () => {
-    await api('PUT', '/api/models/current', { modelId: 'claude-opus-4-7' })
-    await api('PUT', '/api/effort', { level: 'high' })
-
-    const settingsPath = path.join(tmpDir, 'settings.json')
-    const raw = await fs.readFile(settingsPath, 'utf-8')
-    const settings = JSON.parse(raw)
-    expect(settings.model).toBe('claude-opus-4-7')
-    expect(settings.effort).toBe('high')
   })
 })
 

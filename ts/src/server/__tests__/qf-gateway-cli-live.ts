@@ -21,6 +21,8 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { ProviderService } from '../services/providerService.js'
+import { whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 
 const SERVER_PORT = 19891
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`
@@ -129,8 +131,8 @@ async function main() {
     await sleep(700)
 
     // 1. The product gateway must auto-activate as the managed provider (no manual config).
-    const models = await (await fetch(`${BASE_URL}/api/models`)).json() as any
-    const activeId = models?.provider?.id
+    await whenQfGatewayReady()
+    const { activeId } = await new ProviderService().listProviders()
     console.log(`active provider: ${activeId}`)
     if (activeId !== 'qf-gateway') {
       failures.push(`expected qf-gateway auto-active, got ${activeId}`)
