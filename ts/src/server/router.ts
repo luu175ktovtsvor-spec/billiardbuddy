@@ -9,7 +9,6 @@ import { handleScheduledTasksApi } from './api/scheduled-tasks.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
 import { handleFilesystemRoute } from './api/filesystem.js'
-import { handleProvidersApi } from './api/providers.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
@@ -55,9 +54,6 @@ export async function handleApiRequest(
 
     case 'status':
       return handleStatusApi(req, url, segments)
-
-    case 'providers':
-      return handleProvidersApi(req, url, segments)
 
     case 'skills':
       return handleSkillsApi(req, url, segments)
