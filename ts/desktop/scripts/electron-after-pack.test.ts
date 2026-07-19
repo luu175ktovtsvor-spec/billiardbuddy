@@ -2,11 +2,13 @@ import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { stageMediaToolchain } from './stage-media-toolchain'
 
 const require = createRequire(import.meta.url)
+const scriptDir = dirname(fileURLToPath(import.meta.url))
 const afterPack = require('./electron-after-pack.cjs') as {
   (context: unknown): void
   packagePlatform: (context: unknown) => 'darwin' | 'win32'
@@ -87,7 +89,7 @@ afterEach(() => {
 
 describe('packaged media toolchain verification', () => {
   it('registers the post-pack verifier in Electron Builder configuration', () => {
-    const packageJson = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf8')) as {
+    const packageJson = JSON.parse(readFileSync(join(scriptDir, '..', 'package.json'), 'utf8')) as {
       build?: { afterPack?: string }
     }
     expect(packageJson.build?.afterPack).toBe('scripts/electron-after-pack.cjs')
