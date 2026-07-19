@@ -1,11 +1,25 @@
 import { describe, expect, test } from 'bun:test'
-import { classifyCompletionJson, generatedPng, hasCompletionJson, parseLoadTarget, parsePhases, validatePng } from './vision-real-loadtest'
+import { classifyCompletionJson, generatedPng, hasCompletionJson, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, validatePng } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
   test('uses a bounded staged default instead of immediately testing the full 100 x 5 burst', () => {
     expect(parsePhases(undefined, 500)).toEqual([1, 4, 8, 12, 24])
     expect(parsePhases(undefined, 12)).toEqual([1, 4, 8, 12])
     expect(parsePhases('1,12,36', 100)).toEqual([1, 12, 36])
+  })
+
+  test('only accepts explicit documented thinking values', () => {
+    expect(parseThinkingMode(undefined)).toBeUndefined()
+    expect(parseThinkingMode('enabled')).toBe('enabled')
+    expect(parseThinkingMode('disabled')).toBe('disabled')
+    expect(() => parseThinkingMode('adaptive')).toThrow('--thinking must be enabled or disabled')
+  })
+
+  test('keeps a real visual request within the gateway image-count boundary', () => {
+    expect(parseImagesPerRequest(undefined)).toBe(1)
+    expect(parseImagesPerRequest('2')).toBe(2)
+    expect(() => parseImagesPerRequest('0')).toThrow('--images-per-request must be a positive integer')
+    expect(() => parseImagesPerRequest('9')).toThrow('--images-per-request must be at most 8')
   })
 
   test('allows HTTP only for a loopback target and rejects URL token-leak paths', () => {
