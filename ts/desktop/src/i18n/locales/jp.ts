@@ -1334,6 +1334,7 @@ export const jp: Record<TranslationKey, string> = {
   'error.CLI_AUTH_REQUIRED': '認証が必要です。ログインしてください。',
   'error.CLI_SESSION_CONFLICT': 'セッションは既に別のプロセスで使用されています。',
   'error.CLI_SPAWN_FAILED': 'タスクエンジンのサブプロセス生成に失敗しました。',
+  'error.CLI_RESTART_FAILED': 'タスクエンジンの再起動に失敗しました。',
   'error.CLI_ERROR': '処理中にエラーが発生しました。',
   'error.WORKDIR_INVALID': '作業ディレクトリが無効か、存在しません。',
   'error.PARSE_ERROR': 'メッセージの形式が無効です。',

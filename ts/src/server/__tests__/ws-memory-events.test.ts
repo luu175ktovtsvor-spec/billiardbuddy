@@ -1,30 +1,51 @@
 import { describe, expect, it } from 'bun:test'
 import {
   createCurrentTurnLocalCommandForwarder,
+  getSlashCommands,
   shouldRestartForPermissionMode,
   translateCliMessage,
 } from '../ws/handler.js'
 import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
 
 describe('WebSocket memory events', () => {
-  it('forwards assistant business error codes to the desktop client', () => {
-    expect(translateCliMessage({
+  it('forwards only safe business error state to the desktop client', () => {
+    const rawProviderOutput = 'provider=private-gateway model=secret-model stderr=/Users/test/private.log'
+    const messages = translateCliMessage({
       type: 'assistant',
-      error: 'invalid_request',
+      error: rawProviderOutput,
       isApiErrorMessage: true,
       businessErrorCode: 'image_unsupported',
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: 'This model does not support images.' }],
+        content: [{ type: 'text', text: rawProviderOutput }],
       },
-    }, 'session-1')).toEqual([
+    }, 'session-1')
+
+    expect(messages).toEqual([
       {
         type: 'error',
-        message: 'This model does not support images.',
-        code: 'invalid_request',
+        message: 'The task could not be completed. Please try again.',
+        code: 'CLI_ERROR',
+        retryable: false,
         businessErrorCode: 'image_unsupported',
       },
     ])
+    expect(JSON.stringify(messages)).not.toContain(rawProviderOutput)
+  })
+
+  it('keeps init metadata internal and does not forward the runtime model', () => {
+    const sessionId = `init-private-${crypto.randomUUID()}`
+    const privateModel = 'provider/private-model-at-/Users/test/.claude/config'
+    const messages = translateCliMessage({
+      type: 'system',
+      subtype: 'init',
+      model: privateModel,
+      slash_commands: [{ name: 'help', description: 'Show help' }],
+    }, sessionId)
+
+    expect(messages).toEqual([])
+    expect(JSON.stringify(messages)).not.toContain(privateModel)
+    expect(getSlashCommands(sessionId)).toEqual([{ name: 'help' }])
   })
 
   it('replays slash-command breadcrumbs as readable user messages', () => {
@@ -295,25 +316,30 @@ describe('WebSocket permission mode restart policy', () => {
 })
 
 describe('WebSocket API retry events', () => {
-  it('forwards CLI api_retry messages as structured retry status', () => {
-    expect(translateCliMessage({
+  it('forwards CLI api_retry messages as safe retry status', () => {
+    const rawRetryError = 'provider=private-gateway model=secret-model stderr=/Users/test/private.log'
+    const messages = translateCliMessage({
       type: 'system',
       subtype: 'api_retry',
       attempt: 2,
       max_retries: 10,
       retry_delay_ms: 1500,
       error_status: 503,
-      error: 'server_error',
-    }, 'session-1')).toEqual([
+      error: { message: rawRetryError, status: 503 },
+    }, 'session-1')
+
+    expect(messages).toEqual([
       {
         type: 'api_retry',
+        code: 'API_RETRYING',
+        retryable: true,
         attempt: 2,
         maxRetries: 10,
         retryDelayMs: 1500,
         errorStatus: 503,
-        errorType: 'server_error',
       },
     ])
+    expect(JSON.stringify(messages)).not.toContain(rawRetryError)
   })
 
   it('forwards CLI streaming_fallback messages with a recognized cause', () => {

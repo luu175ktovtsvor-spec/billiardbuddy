@@ -1332,6 +1332,7 @@ export const en = {
   'error.CLI_AUTH_REQUIRED': 'Authentication is required. Please log in.',
   'error.CLI_SESSION_CONFLICT': 'Session is already in use by another process.',
   'error.CLI_SPAWN_FAILED': 'Failed to spawn task engine subprocess.',
+  'error.CLI_RESTART_FAILED': 'Failed to restart task engine.',
   'error.CLI_ERROR': 'An error occurred during processing.',
   'error.WORKDIR_INVALID': 'Working directory is invalid or does not exist.',
   'error.PARSE_ERROR': 'Invalid message format.',

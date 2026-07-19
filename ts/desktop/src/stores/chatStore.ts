@@ -1636,8 +1636,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             maxRetries,
             retryDelayMs,
             errorStatus: msg.errorStatus ?? null,
-            errorType: msg.errorType,
-            errorMessage: msg.errorMessage,
             receivedAt: Date.now(),
           },
           chatState: session.chatState === 'idle' ? 'thinking' : session.chatState,
@@ -2005,8 +2003,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             {
               id: nextId(),
               type: 'error',
-              message: msg.message,
+              // Runtime errors arrive over the local WS boundary. Keep only
+              // the stable code and recovery state, never opaque CLI output.
+              message: '',
               code: msg.code,
+              ...(msg.retryable ? { retryable: true } : {}),
               ...(msg.businessErrorCode ? { businessErrorCode: msg.businessErrorCode } : {}),
               timestamp: Date.now(),
             },

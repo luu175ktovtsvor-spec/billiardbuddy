@@ -106,7 +106,6 @@ const runtimeTransitionPromises = new Map<string, Promise<void>>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
 const runtimeOverrideVersions = new Map<string, number>()
 const sessionStartupRuntimeVersions = new Map<string, number>()
-const lastResolvedStartupWorkDirs = new Map<string, string>()
 const prewarmPendingSessions = new Set<string>()
 const prewarmedSessions = new Set<string>()
 const prewarmIdleTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -267,10 +266,10 @@ export const handleWebSocket = {
           break
 
         default:
-          sendError(ws, `Unknown message type: ${(message as any).type}`, 'UNKNOWN_TYPE')
+          sendError(ws, 'UNKNOWN_TYPE')
       }
-    } catch (error) {
-      sendError(ws, `Invalid message format: ${error}`, 'PARSE_ERROR')
+    } catch {
+      sendError(ws, 'PARSE_ERROR')
     }
   },
 
@@ -391,16 +390,8 @@ async function handleUserMessage(
     await ensureCliSessionStarted(ws, sessionId, 'user_message')
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    const code =
-      err instanceof ConversationStartupError ? err.code : 'CLI_START_FAILED'
     console.error(`[WS] CLI start failed for ${sessionId}: ${errMsg}`)
-    sendMessage(ws, {
-      type: 'error',
-      message: await buildSessionStartupDiagnosticMessage(sessionId, errMsg),
-      code,
-      retryable:
-        err instanceof ConversationStartupError ? err.retryable : false,
-    })
+    sendMessage(ws, projectStartupError(err))
     sendMessage(ws, { type: 'status', state: 'idle' })
     clearActiveUserTurn(sessionId, activeTurn)
     return
@@ -446,11 +437,7 @@ async function handleUserMessage(
     clearActiveUserTurn(sessionId, activeTurn)
     removeTitleOutputCallback?.()
     discardActiveTitleTurn(sessionId, titleTurnNumber)
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Task engine is not running. The session may have ended or the process crashed.',
-      code: 'CLI_NOT_RUNNING',
-    })
+    sendMessage(ws, toSafeRuntimeError('CLI_NOT_RUNNING', true))
     sendMessage(ws, { type: 'status', state: 'idle' })
     return
   }
@@ -546,13 +533,8 @@ async function handleDesktopClearCommand(
 
   try {
     await sessionService.clearSessionTranscript(sessionId, workDir || undefined, permissionMode)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    sendMessage(ws, {
-      type: 'error',
-      message: errMsg,
-      code: 'SESSION_CLEAR_FAILED',
-    })
+  } catch {
+    sendMessage(ws, toSafeRuntimeError('SESSION_CLEAR_FAILED', true))
     sendMessage(ws, { type: 'status', state: 'idle' })
     return
   }
@@ -854,14 +836,7 @@ async function restartSessionWithPermissionMode(
       details: { mode, error: err },
     })
     console.error(`[WS] Failed to restart CLI for ${sessionId}: ${errMsg}`)
-    sendMessage(ws, {
-      type: 'error',
-      message: await buildSessionStartupDiagnosticMessage(
-        sessionId,
-        `Failed to restart session with new permission mode: ${errMsg}`,
-      ),
-      code: 'CLI_RESTART_FAILED',
-    })
+    sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
     sendMessage(ws, { type: 'status', state: 'idle' })
   }
 }
@@ -929,14 +904,7 @@ async function restartSessionWithRuntimeConfig(
       details: { runtimeOverride: runtimeOverrides.get(sessionId), error: err },
     })
     console.error(`[WS] Failed to restart CLI for ${sessionId} after runtime override: ${errMsg}`)
-    sendMessage(ws, {
-      type: 'error',
-      message: await buildSessionStartupDiagnosticMessage(
-        sessionId,
-        `Failed to switch provider/model: ${errMsg}`,
-      ),
-      code: 'CLI_RESTART_FAILED',
-    })
+    sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
     sendMessage(ws, { type: 'status', state: 'idle' })
   }
 }
@@ -1195,6 +1163,48 @@ type SessionStreamState = {
   }
 }
 
+const SAFE_BUSINESS_ERROR_CODES = new Set([
+  'pdf_too_large',
+  'pdf_password_protected',
+  'pdf_invalid',
+  'image_too_large',
+  'image_unsupported',
+  'request_too_large',
+  'prompt_too_long',
+  'auto_mode_unavailable',
+])
+
+const SAFE_RUNTIME_ERROR_MESSAGE = 'The task could not be completed. Please try again.'
+
+function toSafeRuntimeError(
+  code: string,
+  retryable: boolean,
+  businessErrorCode?: string,
+): Extract<ServerMessage, { type: 'error' }> {
+  return {
+    type: 'error',
+    code,
+    message: SAFE_RUNTIME_ERROR_MESSAGE,
+    retryable,
+    ...(businessErrorCode ? { businessErrorCode } : {}),
+  }
+}
+
+function projectStartupError(error: unknown): Extract<ServerMessage, { type: 'error' }> {
+  if (!(error instanceof ConversationStartupError)) {
+    return toSafeRuntimeError('CLI_START_FAILED', false)
+  }
+
+  const code = error.code === 'SESSION_DELETED' ? 'CLI_NOT_RUNNING' : error.code
+  return toSafeRuntimeError(code, error.retryable)
+}
+
+function safeBusinessErrorCode(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_BUSINESS_ERROR_CODES.has(value)
+    ? value
+    : undefined
+}
+
 const sessionStreamStates = new Map<string, SessionStreamState>()
 
 function getStreamState(sessionId: string): SessionStreamState {
@@ -1255,7 +1265,6 @@ function cleanupSessionRuntimeState(sessionId: string) {
   deferredPermissionModes.delete(sessionId)
   runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
-  lastResolvedStartupWorkDirs.delete(sessionId)
   clearPrewarmState(sessionId)
 }
 
@@ -1413,7 +1422,6 @@ async function ensureCliSessionStarted(
 
   const startup = (async () => {
     const workDir = await resolveSessionWorkDir(sessionId)
-    lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
     const startupSettings = reason === 'prewarm_session'
       ? { ...runtimeSettings, resumeInterruptedTurn: false }
@@ -1449,17 +1457,10 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         if (sessionStopRequested.has(sessionId)) {
           return []
         }
-        const message = extractAssistantText(cliMsg) || cliMsg.error || 'Unknown API error'
-        const code = typeof cliMsg.error === 'string' ? cliMsg.error : 'API_ERROR'
-        streamState.lastApiError = { message, code }
-        return [{
-          type: 'error',
-          message,
-          code,
-          ...(typeof cliMsg.businessErrorCode === 'string'
-            ? { businessErrorCode: cliMsg.businessErrorCode }
-            : {}),
-        }]
+        const rawMessage = extractAssistantText(cliMsg) || cliMsg.error || 'Unknown API error'
+        streamState.lastApiError = { message: rawMessage, code: 'CLI_ERROR' }
+        const businessErrorCode = safeBusinessErrorCode(cliMsg.businessErrorCode)
+        return [toSafeRuntimeError('CLI_ERROR', !businessErrorCode, businessErrorCode)]
       }
 
       // If we already received stream_events, text/thinking were already sent.
@@ -1751,11 +1752,7 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         }
         // 错误和完成消息都发送
         return [
-          {
-            type: 'error',
-            message: resultMessage,
-            code: 'CLI_ERROR',
-          },
+          toSafeRuntimeError('CLI_ERROR', true),
           { type: 'message_complete', usage },
         ]
       }
@@ -1777,19 +1774,16 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         return [toStreamingFallbackServerMessage(cliMsg)]
       }
       if (subtype === 'init') {
-        // CLI 初始化完成 — 缓存 slash commands 并发送模型信息
+        // CLI 初始化完成 — 缓存 slash commands，但不把模型或其他
+        // runtime metadata 透传到普通产品界面。
         // NOTE: Do NOT send status:idle here — the CLI init fires while
         // processing the first user message, and sending idle would reset
         // the frontend's streaming state prematurely.
         cacheSessionInitMetadata(sessionId, cliMsg)
-        const messages: ServerMessage[] = [
-          // Send model info as a system notification, not a status change
-          { type: 'system_notification', subtype: 'init', message: `Model: ${cliMsg.model || 'unknown'}`, data: { model: cliMsg.model } },
-        ]
         // Slash command discovery is intentionally pull-only: the active
         // Composer asks for name-only commands after a user types '/'. Do not
         // push a catalog while opening or initializing a normal session.
-        return messages
+        return []
       }
       if (subtype === 'memory_saved') {
         const data = projectMemorySavedData(cliMsg)
@@ -1973,16 +1967,6 @@ function readRetryErrorRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
-function readRetryErrorString(value: unknown, keys: string[]): string | undefined {
-  const record = readRetryErrorRecord(value)
-  if (!record) return undefined
-  for (const key of keys) {
-    const candidate = record[key]
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
-  }
-  return undefined
-}
-
 function toApiRetryServerMessage(cliMsg: any): ServerMessage | null {
   const attempt = normalizeRetryCount(cliMsg.attempt)
   const maxRetries = normalizeRetryCount(cliMsg.max_retries)
@@ -1994,19 +1978,18 @@ function toApiRetryServerMessage(cliMsg: any): ServerMessage | null {
   const rawStatus = cliMsg.error_status === null
     ? null
     : finiteNumber(cliMsg.error_status) ?? embeddedStatus
-  const errorType = typeof cliMsg.error === 'string' && cliMsg.error.trim()
-    ? cliMsg.error.trim()
-    : readRetryErrorString(cliMsg.error, ['type', 'code', 'name'])
-  const errorMessage = readRetryErrorString(cliMsg.error, ['message', 'error'])
+  const errorStatus = rawStatus !== null && rawStatus >= 100 && rawStatus <= 599
+    ? Math.trunc(rawStatus)
+    : null
 
   return {
     type: 'api_retry',
+    code: 'API_RETRYING',
+    retryable: true,
     attempt,
     maxRetries,
     retryDelayMs,
-    errorStatus: rawStatus === null ? null : Math.trunc(rawStatus),
-    ...(errorType ? { errorType } : {}),
-    ...(errorMessage ? { errorMessage } : {}),
+    errorStatus,
   }
 }
 
@@ -2029,8 +2012,8 @@ function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage)
   ws.send(JSON.stringify(message))
 }
 
-function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {
-  sendMessage(ws, { type: 'error', message, code })
+function sendError(ws: ServerWebSocket<WebSocketData>, code: string) {
+  sendMessage(ws, toSafeRuntimeError(code, false))
 }
 
 /**
@@ -2652,55 +2635,6 @@ function resolveDesktopThinkingMode(
   return settings.alwaysThinkingEnabled === false ? 'disabled' : undefined
 }
 
-async function buildSessionStartupDiagnosticMessage(
-  sessionId: string,
-  cause: string,
-): Promise<string> {
-  const lines = [
-    cause,
-    '',
-    'Desktop service diagnostics:',
-    `- sessionId: ${sessionId}`,
-  ]
-
-  try {
-    const recentWorkDir = lastResolvedStartupWorkDirs.get(sessionId)
-    const workDir =
-      recentWorkDir ||
-      conversationService.getSessionWorkDir(sessionId) ||
-      await sessionService.getSessionWorkDir(sessionId)
-    lines.push(`- workDir: ${workDir ?? '(unknown)'}`)
-  } catch (err) {
-    lines.push(`- workDir: failed to resolve (${err instanceof Error ? err.message : String(err)})`)
-  }
-
-  const runtimeOverride = runtimeOverrides.get(sessionId)
-  if (runtimeOverride) {
-    lines.push(`- runtimeOverride.providerId: ${runtimeOverride.providerId ?? '(official)'}`)
-    lines.push(`- runtimeOverride.modelId: ${runtimeOverride.modelId}`)
-    lines.push(`- runtimeOverride.effort: ${runtimeOverride.effort ?? '(auto)'}`)
-  } else {
-    lines.push('- runtimeOverride: (none)')
-  }
-
-  try {
-    const { providers, activeId } = await providerService.listProviders()
-    lines.push(`- activeProviderId: ${activeId ?? '(official)'}`)
-    lines.push(`- configuredProviders: ${providers.length}`)
-    if (providers.length > 0) {
-      lines.push(
-        `- providerIndex: ${providers
-          .map((provider) => `${provider.name} (${provider.id})`)
-          .join(', ')}`,
-      )
-    }
-  } catch (err) {
-    lines.push(`- providers: failed to read (${err instanceof Error ? err.message : String(err)})`)
-  }
-
-  return lines.join('\n')
-}
-
 function enqueueRuntimeTransition(
   sessionId: string,
   transition: () => Promise<void>,
@@ -2738,11 +2672,7 @@ async function waitForRuntimeTransitionBeforeUserTurn(
         details: err,
       })
       console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
-      sendMessage(ws, {
-        type: 'error',
-        message: `Failed to switch provider/model: ${errMsg}`,
-        code: 'CLI_RESTART_FAILED',
-      })
+      sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
       sendMessage(ws, { type: 'status', state: 'idle' })
       return { ok: false, waited }
     }

@@ -99,12 +99,12 @@ export type ServerMessage =
   | { type: 'permission_mode_changed'; mode: PermissionMode }
   | {
       type: 'api_retry'
+      code: 'API_RETRYING'
+      retryable: true
       attempt: number
       maxRetries: number
       retryDelayMs: number
       errorStatus: number | null
-      errorType?: string
-      errorMessage?: string
     }
   // 流式请求失败、CLI 已降级为非流式重试：完整响应一次性返回，期间无增量输出。
   | { type: 'streaming_fallback'; cause: StreamingFallbackCause }
@@ -131,8 +131,6 @@ export type ApiRetryState = {
   maxRetries: number
   retryDelayMs: number
   errorStatus: number | null
-  errorType?: string
-  errorMessage?: string
   receivedAt: number
 }
 
@@ -166,7 +164,7 @@ export type ComputerUseResolvedApp = {
 
 export type ComputerUseResolvedAppRequest = {
   requestedName: string
-  resolved?: ComputerUseResolvedApp
+  resolved?: Pick<ComputerUseResolvedApp, 'bundleId' | 'displayName'>
   isSentinel: boolean
   alreadyGranted: boolean
   proposedTier: 'read' | 'click' | 'full'
@@ -316,5 +314,5 @@ export type UIMessage =
       description?: string
       timestamp: number
     }
-  | { id: string; type: 'error'; message: string; code: string; businessErrorCode?: string; timestamp: number }
+  | { id: string; type: 'error'; message: string; code: string; retryable?: boolean; businessErrorCode?: string; timestamp: number }
   | { id: string; type: 'task_summary'; tasks: TaskSummaryItem[]; timestamp: number }

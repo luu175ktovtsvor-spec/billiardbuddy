@@ -991,7 +991,6 @@ describe('MessageList nested tool calls', () => {
             maxRetries: 10,
             retryDelayMs: 3000,
             errorStatus: 503,
-            errorType: 'server_error',
             receivedAt: Date.now(),
           },
         }),
@@ -4582,7 +4581,8 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByText('second.ts')).toBeNull()
   })
 
-  it('shows raw startup details under translated task engine startup errors', () => {
+  it('shows a safe, retryable startup summary without raw runtime details', () => {
+    const rawStartupOutput = 'provider=private-gateway model=secret-model stderr=/Users/test/private.log'
     useChatStore.setState({
       sessions: {
         [ACTIVE_TAB]: makeSessionState({
@@ -4591,8 +4591,8 @@ describe('MessageList nested tool calls', () => {
               id: 'error-1',
               type: 'error',
               code: 'CLI_START_FAILED',
-              message:
-                'Task engine exited during startup (code 1): Claude Code on Windows requires git-bash (https://git-scm.com/downloads/win).',
+              message: rawStartupOutput,
+              retryable: true,
               timestamp: 1,
             },
           ],
@@ -4603,11 +4603,8 @@ describe('MessageList nested tool calls', () => {
     render(<MessageList />)
 
     expect(screen.getByText('Failed to start task engine.')).toBeTruthy()
-    expect(
-      screen.getByText(
-        'Task engine exited during startup (code 1): Claude Code on Windows requires git-bash (https://git-scm.com/downloads/win).',
-      ),
-    ).toBeTruthy()
+    expect(screen.getByText('Retry')).toBeTruthy()
+    expect(screen.queryByText(rawStartupOutput)).toBeNull()
   })
 
   it('renders business API errors in the active locale without raw English fallback', () => {
