@@ -91,6 +91,50 @@ describe('ProductTaskReviewDock', () => {
     })
   })
 
+  it('keeps the latest directory when an earlier tree request returns late', async () => {
+    const firstTree = deferred<Record<string, unknown>>()
+    apiMocks.getReviewTree.mockImplementation((_taskId: string, path?: string) => {
+      if (path === 'src') return firstTree.promise
+      if (path === 'docs') {
+        return Promise.resolve({
+          taskId: 'task-1',
+          state: 'ok',
+          path,
+          entries: [{ name: 'notes.md', path: 'docs/notes.md', isDirectory: false }],
+        })
+      }
+      return Promise.resolve({
+        taskId: 'task-1',
+        state: 'ok',
+        path: '',
+        entries: [
+          { name: 'src', path: 'src', isDirectory: true },
+          { name: 'docs', path: 'docs', isDirectory: true },
+        ],
+      })
+    })
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByText('src'))
+    fireEvent.click(screen.getByText('docs'))
+
+    expect(await screen.findByText('notes.md')).toBeTruthy()
+
+    await act(async () => {
+      firstTree.resolve({
+        taskId: 'task-1',
+        state: 'ok',
+        path: 'src',
+        entries: [{ name: 'stale.ts', path: 'src/stale.ts', isDirectory: false }],
+      })
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('notes.md')).toBeTruthy()
+    expect(screen.queryByText('stale.ts')).toBeNull()
+  })
+
   it('keeps the latest file selection when an earlier file and diff request returns late', async () => {
     const firstFile = deferred<Record<string, unknown>>()
     const firstDiff = deferred<Record<string, unknown>>()

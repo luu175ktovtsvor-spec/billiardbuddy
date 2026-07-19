@@ -66,11 +66,16 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   const [isLoadingSelection, setIsLoadingSelection] = useState(false)
   const [videoPreviewError, setVideoPreviewError] = useState(false)
   const initialLoadVersionRef = useRef(0)
+  const treeLoadVersionRef = useRef(0)
   const selectionLoadVersionRef = useRef(0)
 
   const loadTree = useCallback(async (path = '') => {
+    const requestVersion = treeLoadVersionRef.current + 1
+    treeLoadVersionRef.current = requestVersion
     const nextTree = await productTasksApi.getReviewTree(taskId, path)
-    setTree(nextTree)
+    if (treeLoadVersionRef.current === requestVersion) {
+      setTree(nextTree)
+    }
   }, [taskId])
 
   const loadInitial = useCallback(async () => {
@@ -78,6 +83,7 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
     initialLoadVersionRef.current = requestVersion
     // A new task-level load also invalidates file/diff requests from the
     // previous tree, so their late results cannot repopulate this dock.
+    treeLoadVersionRef.current += 1
     selectionLoadVersionRef.current += 1
     setLoadState('loading')
     setStatus(null)
@@ -105,6 +111,7 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
     void loadInitial()
     return () => {
       initialLoadVersionRef.current += 1
+      treeLoadVersionRef.current += 1
       selectionLoadVersionRef.current += 1
     }
   }, [loadInitial])
