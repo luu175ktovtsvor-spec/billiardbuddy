@@ -119,9 +119,9 @@ jobs:
         shell: pwsh
         run: |
           $installers = Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction SilentlyContinue
-          if ($installers.Count -eq 0) { throw '未生成 Windows 安装包' }
+          if ($installers.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
           $blockmaps = Get-ChildItem ts/desktop/build-artifacts/electron/*.blockmap -ErrorAction SilentlyContinue
-          if ($blockmaps.Count -eq 0) { throw '未生成 Windows 更新 blockmap' }
+          if ($blockmaps.Count -ne 1) { throw '未生成唯一的 Windows 更新 blockmap' }
           $updateMetadata = Get-ChildItem ts/desktop/build-artifacts/electron/latest.yml -ErrorAction SilentlyContinue
           if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
@@ -146,10 +146,13 @@ jobs:
           Set-Content -LiteralPath $knownHostsPath -Encoding ascii
 
           $artifactDir = 'ts/desktop/build-artifacts/electron'
-          $files = @(Get-ChildItem $artifactDir -File | Where-Object {
-            $_.Extension -in '.exe', '.blockmap' -or $_.Name -eq 'latest.yml'
-          })
-          if ($files.Count -lt 3) { throw 'Windows 发布文件不完整' }
+          $installers = @(Get-ChildItem "$artifactDir/*.exe" -ErrorAction Stop)
+          $blockmaps = @(Get-ChildItem "$artifactDir/*.blockmap" -ErrorAction Stop)
+          $updateMetadata = @(Get-ChildItem "$artifactDir/latest.yml" -ErrorAction Stop)
+          if ($installers.Count -ne 1 -or $blockmaps.Count -ne 1 -or $updateMetadata.Count -ne 1) {
+            throw 'Windows 发布文件不完整或不唯一'
+          }
+          $files = @($installers[0], $blockmaps[0], $updateMetadata[0])
 
           $incoming = "/var/www/desktop-updates/.incoming-win-$env:GITHUB_RUN_ID"
           $sshArgs = @('-i', $keyPath, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes')
@@ -161,8 +164,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "上传失败: $($file.Name)" }
           }
 
-          $publishCommand = "set -eu; test -s '$incoming/latest.yml'; test -n \"`$(find '$incoming' -maxdepth 1 -type f -name '*.exe' -size +1M -print -quit)\"; test -n \"`$(find '$incoming' -maxdepth 1 -type f -name '*.blockmap' -size +1k -print -quit)\"; for file in '$incoming'/*; do [ -f \"`$file\" ] || continue; mv \"`$file\" /var/www/desktop-updates/; done; rmdir '$incoming'"
-          & ssh @sshArgs root@zzyppz.cn $publishCommand
+          $publishCommands = @('set -eu')
+          foreach ($file in $files) {
+            $publishCommands += "test -s '$incoming/$($file.Name)'"
+          }
+          foreach ($file in $files) {
+            $publishCommands += "mv '$incoming/$($file.Name)' /var/www/desktop-updates/"
+          }
+          $publishCommands += "rmdir '$incoming'"
+          & ssh @sshArgs root@zzyppz.cn ($publishCommands -join '; ')
           if ($LASTEXITCODE -ne 0) { throw 'Windows 发布文件校验或切换失败' }
 
       - name: 清理临时凭据与媒体工具链
