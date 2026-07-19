@@ -648,11 +648,11 @@ function loadConfig(env: Env): GatewayConfig {
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
-    // MiMo native chat and the image bridge share this exact account-wide pool. A
-    // real-account ramp reached 64 active calls, but its tail latency was already
-    // noticeable, so keep the proven ceiling and admit only one active call per
-    // installation. The 64-entry, five-second queue is deliberately a brief burst
-    // absorber, not a hidden multi-minute backlog for 100 users' extra windows.
+    // MiMo native chat and the image bridge share this exact account-wide pool. A real
+    // short-request ramp reached 64 active calls, but its tail latency was already
+    // noticeable, so this is a safety ceiling rather than an instant-response promise.
+    // Admit only one active call per installation; the 64-entry, five-second queue is
+    // a brief burst absorber, not a hidden multi-minute backlog for 100 users' windows.
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64)),
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 64))),
@@ -663,11 +663,11 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。真实生产请求已验证 100 人 × 每人 8 窗口时，800 路
-    // 可以直接进入该网关而不发生网关排队（但尾延迟已明显上升），所以默认锁在 800 个实际流、每安装
-    // 最多 8 路、共享 app token 最多 800 路。200 个队列槽只吸收短抖动且最多等 15 秒，避免把持续
-    // 超载伪装成长期“排队中”。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到 2500；缺 key
-    // 时路由到它会 503，绝不改投千问/MiMo。
+    // DeepSeek V4 Flash:真 key 只在服务器。真实短请求爬坡已验证 100 人 × 8 窗口时 800 路可直入
+    // 而不发生网关排队（尾延迟已明显上升），所以固定为 800 实际流、每安装最多 8 路、共享 app
+    // token 最多 800 路。200 个队列槽仅吸收短抖动且最多等 15 秒；这不替代长 SSE、长上下文、
+    // CPU 余量与真实混合负载的持续验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
+    // 2500；缺 key 时路由到它会 503，绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
@@ -689,9 +689,9 @@ function loadConfig(env: Env): GatewayConfig {
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
     visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
     visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
-    // The real MiMo bridge reached 12 active calls but showed a noticeable tail. Keep
-    // only a short 12-active + 24-waiting bridge queue and deliberately shed a
-    // 500-image burst rather than turning it into stale work or unbounded request state.
+    // A real 12-call vision ramp showed noticeable tail latency. Keep only 12-active +
+    // 24-waiting as a short safety envelope, not a claim of 500-image throughput; shed
+    // the remainder rather than turning it into stale work or unbounded request state.
     visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 24)),
     // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证 MiMo
     // 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
