@@ -8,7 +8,6 @@ import { handleModelsApi } from './api/models.js'
 import { handleScheduledTasksApi } from './api/scheduled-tasks.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
-import { handleConversationsApi } from './api/conversations.js'
 import { handleTeamsApi } from './api/teams.js'
 import { handleFilesystemRoute } from './api/filesystem.js'
 import { handleProvidersApi } from './api/providers.js'
@@ -39,17 +38,8 @@ export async function handleApiRequest(
   const resource = segments[1]
 
   switch (resource) {
-    case 'sessions': {
-      // Route /api/sessions/:id/chat/* to conversations handler
-      const subResource = segments[3]
-      if (subResource === 'chat') {
-        return handleConversationsApi(req, url, segments)
-      }
+    case 'sessions':
       return handleSessionsApi(req, url, segments)
-    }
-
-    case 'conversations':
-      return handleConversationsApi(req, url, segments)
 
     case 'settings':
       return handleSettingsApi(req, url, segments)
