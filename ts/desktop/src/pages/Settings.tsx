@@ -27,6 +27,7 @@ import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { ProductTerminalPreferences } from '../product/components/ProductTerminalPreferences'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
+import { useUpdateStore } from '../stores/updateStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { getDesktopHost } from '../lib/desktopHost'
@@ -1541,6 +1542,16 @@ function isValidHttpProxyUrl(value: string) {
 function AboutSettings() {
   const t = useTranslation()
   const [version, setVersion] = useState('')
+  const updateStatus = useUpdateStore((state) => state.status)
+  const availableVersion = useUpdateStore((state) => state.availableVersion)
+  const progressPercent = useUpdateStore((state) => state.progressPercent)
+  const error = useUpdateStore((state) => state.error)
+  const checkForUpdates = useUpdateStore((state) => state.checkForUpdates)
+  const installUpdate = useUpdateStore((state) => state.installUpdate)
+  const isChecking = updateStatus === 'checking'
+  const isDownloading = updateStatus === 'downloading'
+  const isInstalling = updateStatus === 'installing' || updateStatus === 'restarting'
+  const canCheck = !isChecking && !isDownloading && !isInstalling
 
   useEffect(() => {
     let cancelled = false
@@ -1566,6 +1577,49 @@ function AboutSettings() {
       {version && (
         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
           <span>{t('settings.about.version')} {version}</span>
+        </div>
+      )}
+
+      {isDesktopRuntime() && (
+        <div className="mt-8 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">{t('update.checkNow')}</h2>
+              <p className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                {isChecking
+                  ? t('update.checking')
+                  : isDownloading
+                    ? (progressPercent > 0 ? t('update.progress', { progress: String(progressPercent) }) : t('update.downloading'))
+                    : isInstalling
+                      ? t('update.installing')
+                      : updateStatus === 'downloaded' && availableVersion
+                        ? t('update.downloaded')
+                        : updateStatus === 'up-to-date' && version
+                          ? t('update.upToDate', { version })
+                          : t('update.idle')}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!canCheck}
+              className="shrink-0"
+              onClick={() => void checkForUpdates({ autoDownload: true })}
+            >
+              <RotateCw className={isChecking ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} aria-hidden="true" />
+              {t('update.checkNow')}
+            </Button>
+          </div>
+
+          {updateStatus === 'downloaded' && availableVersion && (
+            <Button type="button" className="mt-3 w-full" onClick={() => void installUpdate()}>
+              {t('update.installAndRestart')}
+            </Button>
+          )}
+
+          {error && (
+            <p className="mt-3 text-xs leading-5 text-[var(--color-error)]">{t('update.failed', { error })}</p>
+          )}
         </div>
       )}
 

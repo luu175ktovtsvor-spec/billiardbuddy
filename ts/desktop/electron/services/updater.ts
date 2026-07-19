@@ -36,12 +36,6 @@ export type ElectronUpdaterProxyController = {
 
 export type ElectronUpdaterRuntimeOptions = {
   updateConfigPath?: string
-  /**
-   * Fail-closed kill switch. BilliardBuddy has no confirmed update feed, so updates
-   * are disabled by construction: checks always resolve null and nothing downloads.
-   * This is independent of app-update.yml so a stray/inherited feed can't re-enable it.
-   */
-  disabled?: boolean
 }
 
 export function normalizeUpdateInfo(info: ElectronUpdateInfo | undefined): ElectronUpdateMetadata | null {
@@ -79,7 +73,6 @@ export class ElectronUpdaterService {
   private readonly updater: ElectronUpdaterLike
   private readonly proxyController?: ElectronUpdaterProxyController
   private readonly updateConfigPath?: string
-  private readonly disabled: boolean
   private pendingUpdate: ElectronUpdateMetadata | null = null
   private downloaded = false
   private proxyKey: string | null = null
@@ -92,7 +85,6 @@ export class ElectronUpdaterService {
     this.updater = updater
     this.proxyController = proxyController
     this.updateConfigPath = runtimeOptions.updateConfigPath
-    this.disabled = runtimeOptions.disabled ?? false
     this.updater.autoDownload = false
     this.updater.logger = null
   }
@@ -109,12 +101,6 @@ export class ElectronUpdaterService {
   }
 
   async checkForUpdates(options?: ElectronUpdateCheckOptions): Promise<ElectronUpdateMetadata | null> {
-    if (this.disabled) {
-      // Fail closed: never reach the network, never surface a pending update.
-      this.pendingUpdate = null
-      this.downloaded = false
-      return null
-    }
     let result: ElectronUpdateCheckResult
     try {
       await this.applyProxy(options)
