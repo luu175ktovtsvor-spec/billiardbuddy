@@ -3,6 +3,10 @@
 export const THEME_MODES = ['light', 'dark', 'system'] as const
 export type ThemeMode = (typeof THEME_MODES)[number]
 
+/** Supported product interface languages kept in desktop-local persistence. */
+export const DESKTOP_LOCALES = ['en', 'zh', 'zh-TW', 'jp', 'kr'] as const
+export type DesktopLocale = (typeof DESKTOP_LOCALES)[number]
+
 export function isThemeMode(value: unknown): value is ThemeMode {
   return typeof value === 'string' && (THEME_MODES as readonly string[]).includes(value)
 }

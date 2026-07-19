@@ -1,4 +1,4 @@
-import { THEME_MODES } from '../types/settings'
+import { DESKTOP_LOCALES, THEME_MODES } from '../types/settings'
 import {
   APP_ZOOM_STORAGE_KEY,
   LEGACY_UI_ZOOM_STORAGE_KEY,
@@ -173,7 +173,12 @@ export function runDesktopPersistenceMigrations(storage: StorageLike | null = ge
   runMigrationStep(report, TAB_STORAGE_KEY, () => migrateTabs(storage, report))
   runMigrationStep(report, RETIRED_SESSION_RUNTIME_STORAGE_KEY, () => removeRetiredSessionRuntime(storage, report))
   runMigrationStep(report, THEME_STORAGE_KEY, () => normalizeEnumKey(storage, THEME_STORAGE_KEY, [...THEME_MODES], report))
-  runMigrationStep(report, LOCALE_STORAGE_KEY, () => normalizeEnumKey(storage, LOCALE_STORAGE_KEY, ['zh', 'en'], report))
+  runMigrationStep(report, LOCALE_STORAGE_KEY, () => normalizeEnumKey(
+    storage,
+    LOCALE_STORAGE_KEY,
+    [...DESKTOP_LOCALES],
+    report,
+  ))
   runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => migrateRetiredActivitySettingsTab(storage, report))
   runMigrationStep(report, APP_ZOOM_STORAGE_KEY, () => normalizeAppZoomKey(storage, report))
   try {

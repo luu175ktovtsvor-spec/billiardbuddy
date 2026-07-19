@@ -140,6 +140,15 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
   })
 
+  test.each(['zh-TW', 'jp', 'kr'])('preserves the supported %s locale on restart', (locale) => {
+    window.localStorage.setItem('billiardbuddy-locale', locale)
+
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys).not.toContain('billiardbuddy-locale')
+    expect(window.localStorage.getItem('billiardbuddy-locale')).toBe(locale)
+  })
+
   test('preserves valid app zoom and removes invalid app zoom values', () => {
     window.localStorage.setItem('billiardbuddy-app-zoom', '1.2')
 
