@@ -5,6 +5,7 @@ import type {
   ProductTaskActionResponse,
   ProductTaskApi,
   ProductTaskIndexResponse,
+  ProductTaskThreadResponse,
   UpdateProductTaskInput,
 } from '../domain/types'
 
@@ -22,4 +23,5 @@ export const productTasksApi: ProductTaskApi = {
   restore: (taskId: string) => productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/restore`, {}),
   continue: (taskId: string, input: ContinueProductTaskInput) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/continue`, input),
+  getThread: (taskId: string) => productApi.get<ProductTaskThreadResponse>(`${taskPath(taskId)}/thread`),
 }
