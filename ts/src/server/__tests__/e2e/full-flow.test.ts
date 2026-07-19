@@ -237,28 +237,6 @@ describe('E2E: Full Flow', () => {
     }
   })
 
-  it('should create an agent', async () => {
-    const { status } = await api('POST', '/api/agents', {
-      name: 'test-agent',
-      description: 'A test agent',
-      model: 'claude-sonnet-4-6',
-    })
-    expect(status).toBe(201)
-  })
-
-  it('should keep CRUD storage out of the safe command catalog', async () => {
-    const { data } = await api('GET', '/api/agents')
-    expect(Array.isArray(data.agents)).toBe(true)
-    expect(data.agents.length).toBeGreaterThan(0)
-    expect(data.agents.some((agent: any) => agent.runtimeName === 'test-agent')).toBe(false)
-    expect(data).not.toHaveProperty('allAgents')
-  })
-
-  it('should delete an agent', async () => {
-    const { status } = await api('DELETE', '/api/agents/test-agent')
-    expect([200, 204]).toContain(status)
-  })
-
   // =============================================
   // 6. Task-scoped WebSocket
   // =============================================

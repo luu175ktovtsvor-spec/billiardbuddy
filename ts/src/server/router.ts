@@ -40,7 +40,6 @@ export async function handleApiRequest(
       return handleSettingsApi(req, url, segments)
 
     case 'agents':
-    case 'tasks':
       return handleAgentsApi(req, url, segments)
 
     case 'status':

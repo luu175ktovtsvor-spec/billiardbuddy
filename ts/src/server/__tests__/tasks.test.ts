@@ -1,5 +1,5 @@
 /**
- * Unit tests for TaskService and Tasks API
+ * Unit tests for TaskService and the retired background-task route
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
@@ -7,6 +7,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { TaskService } from '../services/taskService.js'
+import { handleApiRequest } from '../router.js'
 
 const taskFixture = (overrides: Record<string, unknown>) => ({
   id: '1',
@@ -115,60 +116,17 @@ describe('TaskService', () => {
   })
 })
 
-// ============================================================================
-// Tasks API integration tests
-// ============================================================================
-
-describe('Tasks API', () => {
-  let server: any
-  let baseUrl: string
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-tasks-api-'))
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
-    await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
-
-    const { startServer } = await import('../../server/index.js')
-    server = startServer(0, '127.0.0.1')
-    baseUrl = `http://127.0.0.1:${server.port}`
-  })
-
-  afterEach(async () => {
-    server?.stop()
-    await fs.rm(tmpDir, { recursive: true, force: true })
-    delete process.env.CLAUDE_CONFIG_DIR
-  })
-
-  it('should return empty tasks list', async () => {
-    const res = await fetch(`${baseUrl}/api/tasks`)
-    const data = await res.json()
-    expect(res.status).toBe(200)
-    expect(data.tasks).toEqual([])
-  })
-
-  it('should return tasks when files exist', async () => {
-    const tasksDir = path.join(tmpDir, 'tasks', 'default-list')
-    await fs.mkdir(tasksDir, { recursive: true })
-    await fs.writeFile(path.join(tasksDir, 'test.json'), JSON.stringify(taskFixture({
-      id: 'test',
-      status: 'completed',
-      subject: 'test-task',
-    })))
-
-    const res = await fetch(`${baseUrl}/api/tasks`)
-    const data = await res.json()
-    expect(data.tasks.length).toBe(1)
-    expect(data.tasks[0].subject).toBe('test-task')
-  })
-
-  it('should return 404 for unknown task', async () => {
-    const res = await fetch(`${baseUrl}/api/tasks/lists/default-list/nonexistent`)
-    expect(res.status).toBe(404)
-  })
-
-  it('should reject non-GET methods', async () => {
-    const res = await fetch(`${baseUrl}/api/tasks`, { method: 'POST' })
-    expect(res.status).toBe(405)
+describe('Retired background tasks API', () => {
+  it('does not expose Agent Core task lists through the old REST surface', async () => {
+    for (const [method, path] of [
+      ['GET', '/api/tasks'],
+      ['POST', '/api/tasks'],
+      ['GET', '/api/tasks/lists/default-list'],
+      ['POST', '/api/tasks/lists/default-list/reset'],
+    ] as const) {
+      const url = new URL(`http://localhost${path}`)
+      const response = await handleApiRequest(new Request(url, { method }), url)
+      expect(response.status).toBe(404)
+    }
   })
 })
