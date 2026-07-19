@@ -93,7 +93,7 @@ describe('WebSocket memory events', () => {
     }, 'session-1')).toEqual([])
   })
 
-  it('forwards only a safe memory count to the desktop client', () => {
+  it('keeps memory save details out of the product stream', () => {
     const privatePath = '/Users/test/.claude/projects/example/memory/preferences.md'
     const privateMessage = 'PRIVATE_MEMORY_WS_MESSAGE'
     const messages = translateCliMessage(
@@ -111,15 +111,7 @@ describe('WebSocket memory events', () => {
       'session-1',
     )
 
-    expect(messages).toEqual([
-      {
-        type: 'system_notification',
-        subtype: 'memory_saved',
-        data: {
-          writtenCount: 2,
-        },
-      },
-    ])
+    expect(messages).toEqual([])
     expect(JSON.stringify(messages)).not.toContain(privatePath)
     expect(JSON.stringify(messages)).not.toContain(privateMessage)
   })
