@@ -1,6 +1,12 @@
 import '@testing-library/jest-dom'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  IMAGE_WORKBENCH_TAB_ID,
+  VIDEO_STUDIO_TAB_ID,
+  useTabStore,
+} from '../../stores/tabStore'
+import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 
 const apiMocks = vi.hoisted(() => ({
   getMedia: vi.fn(),
@@ -22,6 +28,8 @@ beforeEach(() => {
   apiMocks.getMedia.mockReset()
   apiMocks.getAttachableMedia.mockReset()
   apiMocks.attachMediaProject.mockReset()
+  useTabStore.setState({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
+  useMediaWorkbenchStore.setState({ activeImageId: null, activeVideoId: null })
 })
 
 afterEach(() => {
@@ -46,7 +54,7 @@ describe('ProductTaskMediaDock', () => {
             id: 'out_12345678',
             kind: 'image',
             mimeType: 'image/png',
-            url: '/api/media/assets/img_12345678/out_12345678.png',
+            url: '/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/img_12345678/assets/out_12345678.png',
           }],
         },
         {
@@ -67,17 +75,69 @@ describe('ProductTaskMediaDock', () => {
     const image = screen.getByAltText('会员日海报 图片结果')
     expect(image).toHaveAttribute(
       'src',
-      'http://127.0.0.1:49237/api/media/assets/img_12345678/out_12345678.png',
+      'http://127.0.0.1:49237/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/img_12345678/assets/out_12345678.png',
     )
     expect(screen.getByRole('link', { name: '打开原图' })).toHaveAttribute(
       'href',
-      'http://127.0.0.1:49237/api/media/assets/img_12345678/out_12345678.png',
+      'http://127.0.0.1:49237/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/img_12345678/assets/out_12345678.png',
     )
     expect(screen.queryByLabelText('活动集锦 视频预览')).not.toBeInTheDocument()
     expect(screen.getByText('视频导出位于本机选择的位置，任务页不会读取或公开该路径。')).toBeInTheDocument()
     expect(screen.queryByText('/private/export/activity.mp4')).not.toBeInTheDocument()
     expect(screen.getByText('此处不会创建、生成或导出媒体；你可以明确关联一个尚未归属任务的已有项目，其他操作仍需在独立媒体工作台中完成。')).toBeInTheDocument()
     expect(apiMocks.getMedia).toHaveBeenCalledWith('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
+  })
+
+  it('opens each task-scoped project in its dedicated workbench and selects it first', async () => {
+    const taskId = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
+    apiMocks.getMedia.mockResolvedValue({
+      taskId,
+      projects: [
+        {
+          id: 'img_12345678',
+          kind: 'image',
+          title: '会员日海报',
+          state: 'ready',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+          mediaTask: null,
+          assets: [],
+        },
+        {
+          id: 'vid_12345678',
+          kind: 'video',
+          title: '活动集锦',
+          state: 'complete',
+          updatedAt: '2026-07-19T00:01:00.000Z',
+          mediaTask: null,
+          assets: [],
+        },
+      ],
+    })
+
+    render(<ProductTaskMediaDock taskId={taskId} onClose={vi.fn()} />)
+    await screen.findByTestId('product-task-media-project-img_12345678')
+
+    fireEvent.click(screen.getByRole('button', { name: '在图片工作台中打开' }))
+    expect(useMediaWorkbenchStore.getState().activeImageId).toBe('img_12345678')
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: IMAGE_WORKBENCH_TAB_ID,
+      tabs: [{
+        sessionId: IMAGE_WORKBENCH_TAB_ID,
+        title: '生成图片',
+        type: 'image-workbench',
+      }],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '在视频工作台中打开' }))
+    expect(useMediaWorkbenchStore.getState().activeVideoId).toBe('vid_12345678')
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: VIDEO_STUDIO_TAB_ID,
+      tabs: expect.arrayContaining([{
+        sessionId: VIDEO_STUDIO_TAB_ID,
+        title: '剪视频',
+        type: 'video-studio',
+      }]),
+    })
   })
 
   it('keeps the empty state honest and offers no create control', async () => {
@@ -161,7 +221,7 @@ describe('ProductTaskMediaDock', () => {
             id: 'out_12345678',
             kind: 'image',
             mimeType: 'image/png',
-            url: '/api/media/assets/img_12345678/out_12345678.png',
+            url: '/api/product/tasks/task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb/media/projects/img_12345678/assets/out_12345678.png',
           }],
         }],
       })
