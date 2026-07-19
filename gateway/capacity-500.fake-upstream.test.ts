@@ -50,6 +50,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_MIMO_RPM: '1000000',
     GW_MIMO_CONC: '16',
     GW_MIMO_USER_CONC: '16',
+    GW_MIMO_INFLIGHT_PER_USER: '16',
     GW_MIMO_TOKEN_CONC: '16',
     GW_MIMO_QUEUE_MAX_WAIT: '10',
     GW_DEEPSEEK_KEY: 'deepseek-secret',
@@ -231,7 +232,7 @@ function countBy(values: readonly string[]): Map<string, number> {
 
 for (const profile of [
   { label: 'DeepSeek 文本池', model: 'deepseek-v4-flash', kind: 'deepseek' as const, env: { GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5' } },
-  { label: 'MiMo 原生文本池', model: 'mimo-v2.5', kind: 'mimoText' as const, env: { GW_MIMO_CONC: '500', GW_MIMO_USER_CONC: '5', GW_MIMO_TOKEN_CONC: '5' } },
+  { label: 'MiMo 原生文本池', model: 'mimo-v2.5', kind: 'mimoText' as const, env: { GW_MIMO_CONC: '500', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '5' } },
 ]) {
   test(`100 用户 × 5 窗口：${profile.label}在 500/5/5 配置下全部同时进入上游，可信身份各占 5 路`, async () => {
     const upstream = createFakeUpstream({ holdText: true })
@@ -304,6 +305,7 @@ test('100 用户 × 5 窗口：默认 MiMo 共享64槽下，视觉阀门只接�
       // Explicitly clear the fixture's small test pool: this assertion locks the
       // production 64/1/64/64/5 MiMo profile rather than a synthetic 16-slot one.
       GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      GW_MIMO_INFLIGHT_PER_USER: undefined,
       GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
     }),
     usageStore: new MemoryUsageStore(),
@@ -337,10 +339,10 @@ test('100 用户 × 5 窗口：显式扩大为 50 个共享 MiMo 槽 + 50/450 �
       // This is an explicit canary profile, not the production default: capacity is
       // widened consistently at both layers so the visual semaphore cannot promise
       // more real MiMo calls than the shared account pool permits.
-      GW_MIMO_CONC: '50', GW_MIMO_USER_CONC: '5', GW_MIMO_TOKEN_CONC: '50',
+      GW_MIMO_CONC: '50', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '50',
       GW_MIMO_QUEUE_MAX: '450', GW_MIMO_QUEUE_MAX_WAIT: '10',
       GW_VISION_CONC: '50', GW_VISION_QUEUE_MAX: '450', GW_VISION_QUEUE_MAX_WAIT_MS: '10000',
-      GW_VISION_PER_CLIENT_CONC: '1', GW_VISION_PER_REQUEST_CONC: '1',
+      GW_VISION_PER_CLIENT_CONC: '1', GW_VISION_MAX_INFLIGHT_PER_CLIENT: '5', GW_VISION_PER_REQUEST_CONC: '1',
     }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -370,6 +372,7 @@ test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥�
     env: env({
       GW_APP_TOKENS: JSON.stringify({ [sharedToken]: 'shared-product-token' }),
       GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      GW_MIMO_INFLIGHT_PER_USER: undefined,
       GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
     }),
     usageStore: new MemoryUsageStore(),

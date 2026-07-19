@@ -44,7 +44,9 @@ type Pending = {
 
 /**
  * One capacity pool with round-robin admission across users. A user may queue several
- * requests, but each scheduling pass grants at most one before moving to the next user.
+ * requests by default, but deployments can cap that user's total active + waiting work
+ * with `maxInflightPerUser` so an early multi-window burst cannot occupy every waiting
+ * slot before later installations arrive.
  *
  * Three tiers gate every grant:
  *  - `maxConcurrent`        — global pool ceiling (protects the upstream). Never exceeded.
@@ -53,6 +55,9 @@ type Pending = {
  *    with unlimited fake client ids, a token can hold at most this many in-flight.
  *  - `maxConcurrentPerUser` — a single fair-scheduling identity (token#client, i.e. one
  *    install). Gives honest multi-install usage its per-install fair share.
+ *  - `maxInflightPerUser` — optional active + queued cap for one scheduling identity.
+ *    This is deliberately separate from the active-only per-user limit: it protects a
+ *    bounded waiting queue from a single installation's sequential follow-up windows.
  */
 export class FairCapacityScheduler {
   private active = 0
@@ -67,6 +72,7 @@ export class FairCapacityScheduler {
     private readonly maxConcurrentPerUser: number,
     maxConcurrentPerToken?: number,
     private readonly queueMax: number = Infinity,
+    private readonly maxInflightPerUser: number = Infinity,
   ) {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('maxConcurrent must be >= 1')
     if (!Number.isInteger(maxConcurrentPerUser) || maxConcurrentPerUser < 1) {
@@ -81,12 +87,22 @@ export class FairCapacityScheduler {
     if (queueMax !== Infinity && (!Number.isInteger(queueMax) || queueMax < 0)) {
       throw new Error('queueMax must be a non-negative integer or Infinity')
     }
+    if (maxInflightPerUser !== Infinity && (!Number.isInteger(maxInflightPerUser) || maxInflightPerUser < 1)) {
+      throw new Error('maxInflightPerUser must be a positive integer or Infinity')
+    }
   }
 
   acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit> {
     const tokenId = opts.tokenId ?? user
     if (opts.signal?.aborted) {
       return Promise.reject(new CapacityQueueError(499, '请求已取消'))
+    }
+
+    // Count both active and queued work. Checking this before the queue-full fallback is
+    // essential: a repeat request from an early installation must not bypass the global
+    // queue simply because its own active-only limit currently leaves a slot elsewhere.
+    if (this.inflightForUser(user) >= this.maxInflightPerUser) {
+      return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，请稍后重试'))
     }
 
     if (this.waitingUsers.length === 0 && this.canStart(user, tokenId)) {
@@ -162,6 +178,13 @@ export class FairCapacityScheduler {
     let queued = 0
     for (const queue of this.pendingByUser.values()) queued += queue.length
     return queued
+  }
+
+  /** Active + pending work for one fair-scheduling identity. A queued request keeps
+   * this count while it is granted, so draining the queue never accidentally consumes a
+   * second allowance. */
+  private inflightForUser(user: string): number {
+    return (this.activeByUser.get(user) ?? 0) + (this.pendingByUser.get(user)?.length ?? 0)
   }
 
   private canStart(user: string, tokenId: string): boolean {

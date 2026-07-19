@@ -46,6 +46,11 @@ export interface VisionBridgeCaps {
   queueMaxWaitMs: number
   /** 同一受信桌面安装最多同时占用的视觉槽，防单人多窗口挤占全局队列。 */
   perClientConc: number
+  /** Optional active + queued cap for one trusted installation. Unlike
+   * `perClientConc`, this also prevents its follow-up windows from filling the short
+   * waiting queue before later installations can arrive. Omitted means Infinity for
+   * backwards-compatible generic bridge construction. */
+  maxInflightPerClient?: number
   /** 单个聊天请求最多同时占用几个全局视觉并发槽(应 ≤ maxConcurrent)；防止一个多图请求独占
    *  全局槽、饿死同时到达的其它请求。请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。 */
   perRequestConc: number
@@ -171,12 +176,26 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
     queueMax: Math.max(1, Math.floor(deps.caps.queueMax)),
     queueMaxWaitMs: Math.max(1, Math.floor(deps.caps.queueMaxWaitMs)),
     perClientConc: Math.max(1, Math.floor(deps.caps.perClientConc)),
-    perRequestConc: Math.max(1, Math.floor(deps.caps.perRequestConc)),
+    maxInflightPerClient: normalizePositiveIntOrInfinity(deps.caps.maxInflightPerClient),
+    // A request cannot safely launch more visual work than its installation can own.
+    // Production also caps this against the shared MiMo pool in loadConfig; keep the
+    // generic bridge internally consistent for direct callers and tests as well.
+    perRequestConc: Math.max(1, Math.min(
+      Math.floor(deps.caps.perRequestConc),
+      Math.floor(deps.caps.perClientConc),
+      normalizePositiveIntOrInfinity(deps.caps.maxInflightPerClient),
+    )),
     cacheMax: Math.max(1, Math.floor(deps.caps.cacheMax)),
     cacheTtlMs: Math.max(1, Math.floor(deps.caps.cacheTtlMs)),
   }
   const cache = deps.cache ?? new DefaultVisionCache(caps.cacheMax, caps.cacheTtlMs)
-  const semaphore = new VisionSemaphore(caps.maxConcurrent, caps.queueMaxWaitMs, caps.queueMax, caps.perClientConc)
+  const semaphore = new VisionSemaphore(
+    caps.maxConcurrent,
+    caps.queueMaxWaitMs,
+    caps.queueMax,
+    caps.perClientConc,
+    caps.maxInflightPerClient,
+  )
   // 缓存只命中“已完成”结果时，多个窗口同一时刻上传同图仍会重复打 MiMo。实例级
   // singleflight 让相同 hash+promptVersion 复用一次真实识图；请求各自可以离开等待，
   // 但不能由一个取消动作中断其它窗口仍在等的共享上游调用。
@@ -546,6 +565,7 @@ export interface VisionSemaphoreSnapshot {
   limit: number
   queueMax: number
   perClientConc: number
+  maxInflightPerClient: number
   oldestQueueMs: number
 }
 
@@ -554,7 +574,9 @@ export interface VisionSemaphoreSnapshot {
  *  新来的等待者不入队、不占位，立即 429。已入队的等待者仍按 queueMaxWaitMs 短暂排队后超时
  *  失败关闭(不引入长排队)，也会响应调用方传入的 AbortSignal：客户端取消时立即出队+拒绝，
  *  不用等到超时。grant / timeout / abort 三条结算路径通过每个等待者自己的 settled 标志互斥，
- *  只会有一条真正生效，避免重复 resolve/reject 或 active 计数被重复增减。 */
+ *  只会有一条真正生效，避免重复 resolve/reject 或 active 计数被重复增减。除了 active-only
+ *  `perClientConc` 外，可选的 `maxInflightPerClient` 还会限制同一安装的 active + queued 总数，
+ *  让顺序到达的多窗口请求不能垄断有限队列。 */
 export class VisionSemaphore {
   private active = 0
   private readonly activeByClient = new Map<string, number>()
@@ -569,7 +591,12 @@ export class VisionSemaphore {
     private readonly queueMaxWaitMs: number,
     private readonly queueMax: number = Infinity,
     private readonly perClientConc: number = Infinity,
-  ) {}
+    private readonly maxInflightPerClient: number = Infinity,
+  ) {
+    if (maxInflightPerClient !== Infinity && (!Number.isInteger(maxInflightPerClient) || maxInflightPerClient < 1)) {
+      throw new Error('maxInflightPerClient must be a positive integer or Infinity')
+    }
+  }
 
   async run<T>(fn: () => Promise<T>, signal?: AbortSignal, clientId = ''): Promise<T> {
     await this.acquire(signal, clientId)
@@ -589,12 +616,21 @@ export class VisionSemaphore {
       limit: this.limit,
       queueMax: this.queueMax,
       perClientConc: this.perClientConc,
+      maxInflightPerClient: this.maxInflightPerClient,
       oldestQueueMs: oldestQueuedAt === undefined ? 0 : Math.max(0, Math.trunc(performance.now() - oldestQueuedAt)),
     }
   }
 
   private canStart(clientId: string): boolean {
     return this.active < this.limit && (this.activeByClient.get(clientId) ?? 0) < this.perClientConc
+  }
+
+  private inflightForClient(clientId: string): number {
+    return (this.activeByClient.get(clientId) ?? 0) + (this.queuedByClient.get(clientId) ?? 0)
+  }
+
+  private canAcceptInflight(clientId: string): boolean {
+    return this.inflightForClient(clientId) < this.maxInflightPerClient
   }
 
   private canQueue(clientId: string): boolean {
@@ -607,12 +643,10 @@ export class VisionSemaphore {
   }
 
   private trackQueued(clientId: string): void {
-    if (clientId === '') return
     this.queuedByClient.set(clientId, (this.queuedByClient.get(clientId) ?? 0) + 1)
   }
 
   private untrackQueued(clientId: string): void {
-    if (clientId === '') return
     const next = Math.max(0, (this.queuedByClient.get(clientId) ?? 1) - 1)
     if (next === 0) this.queuedByClient.delete(clientId)
     else this.queuedByClient.set(clientId, next)
@@ -626,6 +660,12 @@ export class VisionSemaphore {
   private acquire(signal: AbortSignal | undefined, clientId: string): Promise<void> {
     if (signal?.aborted) {
       return Promise.reject(new VisionBridgeError(499, '请求已取消'))
+    }
+    // Check active + queued ownership before the ordinary queue rules. Without this,
+    // an early installation's windows 2–5 can consume all short-wait entries while the
+    // semaphore is still filling its active slots from the same sequential burst.
+    if (!this.canAcceptInflight(clientId)) {
+      return Promise.reject(new VisionBridgeError(429, '图片理解并发已满，请稍后重试'))
     }
     // Preserve queued request fairness: a newly arrived client cannot leapfrog an
     // existing waiter merely because a different client is at its per-client cap.
@@ -706,4 +746,9 @@ export class VisionSemaphore {
       next?.grant()
     }
   }
+}
+
+function normalizePositiveIntOrInfinity(value: number | undefined): number {
+  if (value === undefined || value === Infinity || !Number.isFinite(value)) return Infinity
+  return Math.max(1, Math.floor(value))
 }

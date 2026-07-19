@@ -89,30 +89,39 @@ test('capacity scheduler caps its waiting queue and reports the oldest waiter', 
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
-test('100 installations with five windows fill a 64/1/64 pool even when its 64-entry queue fills first', async () => {
-  const scheduler = new FairCapacityScheduler(64, 1, 64, 64)
+test('MiMo-style 64/1/64 pool admits one permit for each of 100 sequential installations before repeat windows', async () => {
+  // The fifth argument is an active + queued per-install cap. It deliberately differs
+  // from the active-only `maxConcurrentPerUser`: each installation may hold one MiMo
+  // call or wait for one, but cannot consume all 64 short-queue entries with windows 2–5.
+  const scheduler = new FairCapacityScheduler(64, 1, 64, 64, 1)
   const active: Array<{ release(): void }> = []
+  const admittedByUser = new Map<string, number>()
   let releaseSubsequentPermits = false
   const outcomes = Array.from({ length: 100 }, (_, user) =>
-    Array.from({ length: 5 }, () => scheduler.acquire(`shared-token#install-${String(user).padStart(3, '0')}`, {
-      tokenId: 'shared-token',
-      maxWaitMs: 1_000,
-    }).then(permit => {
-      if (releaseSubsequentPermits) permit.release()
-      else active.push(permit)
-      return 200
-    }).catch((error: unknown) => {
-      expect(error).toBeInstanceOf(CapacityQueueError)
-      return 429
-    })),
+    Array.from({ length: 5 }, () => {
+      const installation = `shared-token#install-${String(user).padStart(3, '0')}`
+      return scheduler.acquire(installation, {
+        tokenId: 'shared-token',
+        maxWaitMs: 1_000,
+      }).then(permit => {
+        admittedByUser.set(installation, (admittedByUser.get(installation) ?? 0) + 1)
+        if (releaseSubsequentPermits) permit.release()
+        else active.push(permit)
+        return 200
+      }).catch((error: unknown) => {
+        expect(error).toBeInstanceOf(CapacityQueueError)
+        return 429
+      })
+    }),
   ).flat()
 
-  // The bounded queue fills with early installations' extra windows. A later
-  // installation that can start must still claim each otherwise-idle global slot.
+  // Requests are intentionally created installation-by-installation, the worst ordering
+  // for fairness. The first 64 are active; the remaining 36 accepted requests are one
+  // each from later installations, rather than repeat windows from the first 64.
   await Promise.resolve()
   expect(scheduler.snapshot()).toMatchObject({
     active: 64,
-    queued: 64,
+    queued: 36,
     maxConcurrent: 64,
     maxConcurrentPerUser: 1,
     maxConcurrentPerToken: 64,
@@ -123,8 +132,10 @@ test('100 installations with five windows fill a 64/1/64 pool even when its 64-e
   releaseSubsequentPermits = true
   for (const permit of active.splice(0)) permit.release()
   const statuses = await Promise.all(outcomes)
-  expect(statuses.filter(status => status === 200)).toHaveLength(128)
-  expect(statuses.filter(status => status === 429)).toHaveLength(372)
+  expect(statuses.filter(status => status === 200)).toHaveLength(100)
+  expect(statuses.filter(status => status === 429)).toHaveLength(400)
+  expect(admittedByUser.size).toBe(100)
+  expect([...admittedByUser.values()]).toEqual(Array.from({ length: 100 }, () => 1))
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 

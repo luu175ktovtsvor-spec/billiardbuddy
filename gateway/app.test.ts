@@ -88,6 +88,7 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.mimo_rpm).toBe(100_000)
   expect(body.limits.mimo_conc).toBe(64)
   expect(body.limits.mimo_user_conc).toBe(1)
+  expect(body.limits.mimo_inflight_per_user).toBe(1)
   expect(body.limits.mimo_token_conc).toBe(64)
   expect(body.limits.mimo_queue_max).toBe(64)
   expect(body.limits.mimo_queue_max_wait_seconds).toBe(5)
@@ -95,7 +96,10 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.vision_queue_max).toBe(24)
   expect(body.limits.vision_queue_max_wait_ms).toBe(3_000)
   expect(body.limits.vision_per_client_conc).toBe(1)
-  expect(body.limits.vision_per_request_conc).toBe(2)
+  expect(body.limits.vision_max_inflight_per_client).toBe(1)
+  // Default one-slot fairness means a multi-image request is serialized rather than
+  // allowing its own first image to reject the second at the shared MiMo gate.
+  expect(body.limits.vision_per_request_conc).toBe(1)
   expect(body.limits.img_queue_max).toBe(100)
   expect(body.limits.relay_submit_timeout_ms).toBe(15_000)
   expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
@@ -106,7 +110,15 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.features.vision_bridge).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128, oldestQueueMs: 0 })
   expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 64, maxConcurrentPerUser: 1, queueMax: 64, oldestQueueMs: 0 })
-  expect(body.capacity.vision).toEqual({ active: 0, queued: 0, limit: 12, queueMax: 24, perClientConc: 1, oldestQueueMs: 0 })
+  expect(body.capacity.vision).toEqual({
+    active: 0,
+    queued: 0,
+    limit: 12,
+    queueMax: 24,
+    perClientConc: 1,
+    maxInflightPerClient: 1,
+    oldestQueueMs: 0,
+  })
   expect(body.capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })
 

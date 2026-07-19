@@ -127,6 +127,7 @@ type GatewayConfig = {
   mimoRpm: number
   mimoConc: number
   mimoUserConc: number
+  mimoInflightPerUser: number
   mimoTokenConc: number
   mimoQueueMax: number
   mimoQueueMaxWait: number
@@ -161,6 +162,7 @@ type GatewayConfig = {
   visionQueueMax: number
   visionQueueMaxWaitMs: number
   visionPerClientConc: number
+  visionMaxInflightPerClient: number
   visionPerRequestConc: number
   visionCacheMax: number
   visionCacheTtlMs: number
@@ -663,10 +665,13 @@ function loadConfig(env: Env): GatewayConfig {
     // MiMo native chat and the image bridge share this exact account-wide pool. A real
     // short-request ramp reached 64 active calls, but its tail latency was already
     // noticeable, so this is a safety ceiling rather than an instant-response promise.
-    // Admit only one active call per installation; the 64-entry, five-second queue is
-    // a brief burst absorber, not a hidden multi-minute backlog for 100 users' windows.
+    // Admit only one active call and one total active-or-queued call per installation;
+    // this keeps a sequential five-window burst from letting early desktops fill the
+    // 64-entry queue before later installations are admitted. The queue remains only a
+    // brief burst absorber, not a hidden multi-minute backlog for 100 users' windows.
     mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64)),
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
+    mimoInflightPerUser: Math.max(1, intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1)),
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 64))),
     mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 64)),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 5)),
@@ -709,13 +714,21 @@ function loadConfig(env: Env): GatewayConfig {
     // 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
     visionQueueMaxWaitMs: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX_WAIT_MS', 3_000)),
     // Unlike plain text, image understanding is a conservative, unverified MiMo path:
-    // one installation gets one visual slot by default so 12 distinct desktops can make
-    // progress. This is intentionally stricter than normal chat's five-window limit.
+    // one installation gets one active visual slot by default so 12 distinct desktops can
+    // make progress. The total active-or-queued cap below is also one, so its follow-up
+    // windows cannot fill all 24 brief wait slots before later installations arrive.
     visionPerClientConc: Math.max(1, intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1)),
-    // 单个聊天请求最多同时占用几个全局视觉并发槽：默认 2——一个最多 GW_VISION_MAX_IMAGES(8)张图
-    // 的请求最多同时占 2 个全局槽，给同一时刻到达的其它请求留出至少 (GW_VISION_CONC-2) 个槽位，
-    // 不被单个大请求饿死；请求内相同图片仍按哈希去重只调一次，不受此限流放大延迟。
-    visionPerRequestConc: Math.max(1, intEnv(env, 'GW_VISION_PER_REQUEST_CONC', 2)),
+    visionMaxInflightPerClient: Math.max(1, intEnv(env, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', 1)),
+    // 一次多图聊天可并发处理的图片数，必须同时服从视觉和共享 MiMo 池的单安装额度。
+    // 否则默认 "每安装 1 槽" 下，一个两图请求的第二张会被自己的第一张挤成 429。
+    // 运营侧若同时把这四项公平额度提高，才可把 GW_VISION_PER_REQUEST_CONC 提高到 2+。
+    visionPerRequestConc: Math.max(1, Math.min(
+      intEnv(env, 'GW_VISION_PER_REQUEST_CONC', 2),
+      intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1),
+      intEnv(env, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', 1),
+      intEnv(env, 'GW_MIMO_USER_CONC', 1),
+      intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1),
+    )),
     visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
     // A valid 24/32 MB body can temporarily exist as chunks + merged bytes + decoded
@@ -1134,7 +1147,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const qwenBucket = new TokenBucket(config.qwenRpm)
   const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc, config.qwenQueueMax)
   const mimoBucket = new TokenBucket(config.mimoRpm)
-  const mimoCapacity = new FairCapacityScheduler(config.mimoConc, config.mimoUserConc, config.mimoTokenConc, config.mimoQueueMax)
+  const mimoCapacity = new FairCapacityScheduler(
+    config.mimoConc,
+    config.mimoUserConc,
+    config.mimoTokenConc,
+    config.mimoQueueMax,
+    config.mimoInflightPerUser,
+  )
   // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
   const qwenChat: ChatHandler | null = config.qwenKey
     ? createChatHandler({
@@ -1229,6 +1248,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         queueMax: config.visionQueueMax,
         queueMaxWaitMs: config.visionQueueMaxWaitMs,
         perClientConc: config.visionPerClientConc,
+        maxInflightPerClient: config.visionMaxInflightPerClient,
         perRequestConc: config.visionPerRequestConc,
         cacheMax: config.visionCacheMax,
         cacheTtlMs: config.visionCacheTtlMs,
@@ -1257,6 +1277,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
             mimo_user_conc: config.mimoUserConc,
+            mimo_inflight_per_user: config.mimoInflightPerUser,
             mimo_token_conc: config.mimoTokenConc,
             mimo_queue_max: config.mimoQueueMax,
             mimo_queue_max_wait_seconds: config.mimoQueueMaxWait,
@@ -1270,6 +1291,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             vision_queue_max: config.visionQueueMax,
             vision_queue_max_wait_ms: config.visionQueueMaxWaitMs,
             vision_per_client_conc: config.visionPerClientConc,
+            vision_max_inflight_per_client: config.visionMaxInflightPerClient,
             vision_per_request_conc: config.visionPerRequestConc,
             img_ipm: config.imgIpm,
             img_queue_max: config.imgQueueMax,
@@ -1295,6 +1317,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               limit: config.visionConc,
               queueMax: config.visionQueueMax,
               perClientConc: config.visionPerClientConc,
+              maxInflightPerClient: config.visionMaxInflightPerClient,
               oldestQueueMs: 0,
             },
             ingress_body: ingressBodyBudget.snapshot(),
