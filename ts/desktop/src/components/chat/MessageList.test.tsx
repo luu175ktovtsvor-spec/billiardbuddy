@@ -518,7 +518,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.getByText('Goal set')).toBeTruthy()
     expect(screen.getByText('Objective: ship the smoke test')).toBeTruthy()
     expect(screen.getByText('Status: active')).toBeTruthy()
-    expect(screen.getByText('Budget: 0 / 2,000 tokens')).toBeTruthy()
+    expect(screen.queryByText('Budget: 0 / 2,000 tokens')).toBeNull()
   })
 
   it('renders replacement goal events distinctly', () => {
@@ -542,7 +542,7 @@ describe('MessageList nested tool calls', () => {
 
     expect(screen.getByText('Goal set')).toBeTruthy()
     expect(screen.getByText('Objective: ship the replacement target')).toBeTruthy()
-    expect(screen.getByText('Budget: 0 / unlimited tokens')).toBeTruthy()
+    expect(screen.queryByText('Budget: 0 / unlimited tokens')).toBeNull()
   })
 
   it('renders goal continuation status as a divider between assistant turns', () => {
@@ -630,7 +630,7 @@ describe('MessageList nested tool calls', () => {
     expect(card.textContent).toContain('Background command')
     expect(card.textContent).toContain('running')
     expect(card.textContent).toContain('Running Playwright checks')
-    expect(card.textContent).toContain('1.2k tokens')
+    expect(card.textContent).not.toContain('1.2k tokens')
     expect(card.textContent).toContain('45s')
   })
 
@@ -1054,7 +1054,7 @@ describe('MessageList nested tool calls', () => {
     fireEvent.click(within(divider).getByRole('button'))
 
     expect(divider.textContent).toContain('auto')
-    expect(divider.textContent).toContain('123k tokens before compact')
+    expect(divider.textContent).not.toContain('123k tokens before compact')
     expect(divider.textContent).toContain('Built the invoice import flow and verified retry behavior.')
   })
 
@@ -4632,7 +4632,7 @@ describe('MessageList nested tool calls', () => {
     expect(screen.getByText('错误:')).toBeTruthy()
     expect(
       screen.getByText(
-        '当前模型不支持图片。请继续使用文字，或切换到支持视觉的模型后重新发送图片。',
+        '当前任务暂时无法处理图片。请继续使用文字，稍后再尝试图片。',
       ),
     ).toBeTruthy()
     expect(screen.queryByText(/This model does not support images/)).toBeNull()
