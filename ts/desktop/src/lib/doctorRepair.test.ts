@@ -1,20 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-const doctorApiMock = vi.hoisted(() => ({
-  reportAndRepair: vi.fn(),
-}))
-
-vi.mock('../api/doctor', () => ({
-  doctorApi: doctorApiMock,
-}))
+import { describe, expect, it } from 'vitest'
 
 import { SAFE_DOCTOR_STORAGE_KEYS, runLocalDoctorRepair, runDoctorRepair } from './doctorRepair'
 
 describe('doctorRepair', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('clears only the safe desktop UI storage keys', () => {
     window.localStorage.clear()
     for (const key of SAFE_DOCTOR_STORAGE_KEYS) {
@@ -50,16 +38,14 @@ describe('doctorRepair', () => {
     expect(result.failedKeys).toEqual(expect.arrayContaining([...SAFE_DOCTOR_STORAGE_KEYS]))
   })
 
-  it('keeps local repair successful when the server doctor endpoint is unavailable', async () => {
+  it('returns only the local repair result', async () => {
     window.localStorage.clear()
     window.localStorage.setItem('billiardbuddy-theme', 'dark')
-    doctorApiMock.reportAndRepair.mockRejectedValueOnce(new Error('Failed to fetch'))
 
     const result = await runDoctorRepair({ storage: window.localStorage })
 
-    expect(doctorApiMock.reportAndRepair).toHaveBeenCalled()
-    expect(result.local.removedKeys).toContain('billiardbuddy-theme')
-    expect(result.server).toBeNull()
-    expect(result.serverError).toBe('Failed to fetch')
+    expect(result.removedKeys).toContain('billiardbuddy-theme')
+    expect(result).not.toHaveProperty('server')
+    expect(result).not.toHaveProperty('serverError')
   })
 })
