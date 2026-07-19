@@ -6,6 +6,20 @@ export type ProductWorktreeState = 'not_requested' | 'planned' | 'materialized'
 export type ProductSideTaskStatus = 'open' | 'closed'
 export type ProductContinuationTarget = 'current_workspace' | 'new_worktree'
 
+/**
+ * Product-facing task start choices. These intentionally do not mirror the
+ * Agent Core's permission-mode wire values, so the product contract can stay
+ * stable and only offer modes that are appropriate for ordinary users.
+ */
+export const PRODUCT_TASK_PERMISSION_MODES = [
+  'ask',
+  'allow_edits',
+  'plan_only',
+] as const
+
+export type ProductTaskPermissionMode =
+  (typeof PRODUCT_TASK_PERMISSION_MODES)[number]
+
 export type ProductProject = {
   id: string
   title: string
@@ -63,6 +77,11 @@ export type CreateProductTaskInput = {
   workDir: string
   title?: string
   useWorktree?: boolean
+  /**
+   * The safe product-facing execution choice for this new task. Omitted
+   * values keep the same per-request confirmation behavior as `ask`.
+   */
+  permissionMode?: ProductTaskPermissionMode
 }
 
 export type UpdateProductTaskInput = {

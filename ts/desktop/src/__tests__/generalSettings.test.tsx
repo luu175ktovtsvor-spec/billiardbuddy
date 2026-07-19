@@ -6,7 +6,7 @@ import { Settings } from '../pages/Settings'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
-import type { AppMode, ChatSendBehavior, PermissionMode, ThemeMode } from '../types/settings'
+import type { AppMode, ChatSendBehavior, ThemeMode } from '../types/settings'
 import { browserHost } from '../lib/desktopHost/browserHost'
 
 const desktopNotificationsMock = vi.hoisted(() => ({
@@ -91,7 +91,6 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       locale: 'en',
       theme: 'light',
-      permissionMode: 'default',
       thinkingEnabled: true,
       autoDreamEnabled: false,
       skipWebFetchPreflight: true,
@@ -129,9 +128,6 @@ describe('Settings > General tab', () => {
       }),
       setTheme: vi.fn().mockImplementation(async (theme: ThemeMode) => {
         useSettingsStore.setState({ theme })
-      }),
-      setPermissionMode: vi.fn().mockImplementation(async (permissionMode: PermissionMode) => {
-        useSettingsStore.setState({ permissionMode })
       }),
       setSkipWebFetchPreflight: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ skipWebFetchPreflight: enabled })
@@ -565,25 +561,6 @@ describe('Settings > General tab', () => {
     expect(screen.queryByLabelText('Enable thinking mode')).not.toBeInTheDocument()
     expect(screen.queryByText(/DeepSeek/)).not.toBeInTheDocument()
     expect(screen.queryByText(/--thinking/)).not.toBeInTheDocument()
-  })
-
-  it('lets the user choose a default permission mode for new sessions', async () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Ask permissions' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Bypass permissions/ }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Enable bypass' }))
-      await Promise.resolve()
-    })
-
-    expect(useSettingsStore.getState().setPermissionMode).toHaveBeenCalledWith('bypassPermissions')
-    expect(useSettingsStore.getState().permissionMode).toBe('bypassPermissions')
   })
 
   it('keeps Auto-dream inside collapsed runtime options and confirms before enabling it', async () => {

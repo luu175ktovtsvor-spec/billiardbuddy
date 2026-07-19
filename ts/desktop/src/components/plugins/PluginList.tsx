@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   getPluginRequestErrorCode,
   pluginErrorTranslationKey,
+  pluginTaskSyncTranslationKey,
 } from '../../api/plugins'
 import { usePluginStore, type PluginActionTarget } from '../../stores/pluginStore'
 import { useTranslation } from '../../i18n'
@@ -94,14 +95,17 @@ export function PluginList() {
 
   const handleReload = async () => {
     try {
-      const reloadSummary = await reloadPlugins(currentWorkDir, currentTaskId)
+      const { summary: reloadSummary, task } = await reloadPlugins(currentWorkDir, currentTaskId)
+      const taskSyncKey = pluginTaskSyncTranslationKey(task)
       addToast({
-        type: reloadSummary.errors > 0 ? 'warning' : 'success',
-        message: t('settings.plugins.reloadToast', {
-          enabled: String(reloadSummary.enabled),
-          skills: String(reloadSummary.skills),
-          errors: String(reloadSummary.errors),
-        }),
+        type: taskSyncKey || reloadSummary.errors > 0 ? 'warning' : 'success',
+        message: taskSyncKey
+          ? t(taskSyncKey)
+          : t('settings.plugins.reloadToast', {
+              enabled: String(reloadSummary.enabled),
+              skills: String(reloadSummary.skills),
+              errors: String(reloadSummary.errors),
+            }),
       })
     } catch (err) {
       addToast({
@@ -141,7 +145,7 @@ export function PluginList() {
     }
 
     try {
-      const changed = action === 'enable'
+      const result = action === 'enable'
         ? await bulkEnablePlugins(toActionTargets(targets), currentWorkDir, currentTaskId)
         : await bulkDisablePlugins(toActionTargets(targets), currentWorkDir, currentTaskId)
 
@@ -153,11 +157,14 @@ export function PluginList() {
         return next
       })
       setConfirmBatchAction(null)
+      const taskSyncKey = pluginTaskSyncTranslationKey(result.task)
       addToast({
-        type: 'success',
-        message: t(action === 'enable' ? 'settings.plugins.bulkEnableToast' : 'settings.plugins.bulkDisableToast', {
-          count: String(changed),
-        }),
+        type: taskSyncKey ? 'warning' : 'success',
+        message: taskSyncKey
+          ? t(taskSyncKey)
+          : t(action === 'enable' ? 'settings.plugins.bulkEnableToast' : 'settings.plugins.bulkDisableToast', {
+              count: String(result.changed),
+            }),
       })
     } catch (err) {
       setConfirmBatchAction(null)

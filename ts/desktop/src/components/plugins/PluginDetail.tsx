@@ -3,8 +3,9 @@ import {
   getPluginRequestErrorCode,
   pluginActionTranslationKey,
   pluginErrorTranslationKey,
+  pluginTaskSyncTranslationKey,
 } from '../../api/plugins'
-import { usePluginStore } from '../../stores/pluginStore'
+import { usePluginStore, type PluginActionResult } from '../../stores/pluginStore'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
 import { useUIStore } from '../../stores/uiStore'
@@ -12,7 +13,6 @@ import { useCurrentProductTaskContext } from '../../product/currentProductTaskCo
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import type {
-  PluginAction,
   PluginCapabilityKey,
   PluginDescriptionKind,
   PluginStatus,
@@ -59,11 +59,15 @@ export function PluginDetail() {
 
   if (!selectedPlugin) return null
 
-  const runAction = async (key: string, fn: () => Promise<PluginAction>) => {
+  const runAction = async (key: string, fn: () => Promise<PluginActionResult>) => {
     setActionKey(key)
     try {
-      const action = await fn()
-      addToast({ type: 'success', message: t(pluginActionTranslationKey(action)) })
+      const { action, task } = await fn()
+      const taskSyncKey = pluginTaskSyncTranslationKey(task)
+      addToast({
+        type: taskSyncKey ? 'warning' : 'success',
+        message: taskSyncKey ? t(taskSyncKey) : t(pluginActionTranslationKey(action)),
+      })
     } catch (error) {
       addToast({
         type: 'error',
@@ -77,14 +81,17 @@ export function PluginDetail() {
   const handleReload = async () => {
     setActionKey('reload')
     try {
-      const summary = await reloadPlugins(currentWorkDir, currentTaskId)
+      const { summary, task } = await reloadPlugins(currentWorkDir, currentTaskId)
+      const taskSyncKey = pluginTaskSyncTranslationKey(task)
       addToast({
-        type: summary.errors > 0 ? 'warning' : 'success',
-        message: t('settings.plugins.reloadToast', {
-          enabled: String(summary.enabled),
-          skills: String(summary.skills),
-          errors: String(summary.errors),
-        }),
+        type: taskSyncKey || summary.errors > 0 ? 'warning' : 'success',
+        message: taskSyncKey
+          ? t(taskSyncKey)
+          : t('settings.plugins.reloadToast', {
+              enabled: String(summary.enabled),
+              skills: String(summary.skills),
+              errors: String(summary.errors),
+            }),
       })
     } catch (error) {
       addToast({

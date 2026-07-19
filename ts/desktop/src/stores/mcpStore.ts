@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { mcpApi } from '../api/mcp'
-import type { McpServerRecord, McpUpsertPayload } from '../types/mcp'
+import type { McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
 
 type McpStore = {
   servers: McpServerRecord[]
@@ -11,7 +11,7 @@ type McpStore = {
   createServer: (name: string, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
   updateServer: (server: McpServerRecord, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
   deleteServer: (server: McpServerRecord, cwd?: string) => Promise<void>
-  toggleServer: (server: McpServerRecord, cwd?: string, taskId?: string) => Promise<McpServerRecord>
+  toggleServer: (server: McpServerRecord, cwd?: string, taskId?: string) => Promise<McpToggleResponse>
   reconnectServer: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   refreshServerStatus: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   selectServer: (server: McpServerRecord | null) => void
@@ -146,7 +146,10 @@ export const useMcpStore = create<McpStore>((set) => ({
       selectedServer: state.selectedServer && isSameServer(state.selectedServer, server) ? updated : state.selectedServer,
       error: null,
     }))
-    return updated
+    return {
+      server: updated,
+      ...(response.taskSync ? { taskSync: response.taskSync } : {}),
+    }
   },
 
   reconnectServer: async (server, cwd) => {

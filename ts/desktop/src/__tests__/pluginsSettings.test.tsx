@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
+import { ApiError } from '../api/client'
 import { usePluginStore } from '../stores/pluginStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
@@ -38,6 +39,45 @@ function makePlugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
   }
 }
 
+function makeTaskReload(overrides: Partial<{
+  applied: boolean
+  reason: 'not_running' | 'failed'
+  commands: number
+  agents: number
+  plugins: number
+  mcpServers: number
+  errors: number
+}> = {}) {
+  return {
+    applied: true,
+    commands: 1,
+    agents: 1,
+    plugins: 1,
+    mcpServers: 1,
+    errors: 0,
+    ...overrides,
+  }
+}
+
+function makeReloadResult(overrides: Partial<{
+  task: ReturnType<typeof makeTaskReload>
+}> = {}) {
+  return {
+    summary: {
+      enabled: 1,
+      disabled: 0,
+      skills: 2,
+      agents: 1,
+      hooks: 0,
+      mcpServers: 1,
+      lspServers: 0,
+      errors: 0,
+    },
+    task: makeTaskReload(),
+    ...overrides,
+  }
+}
+
 function switchToPluginsTab() {
   fireEvent.click(screen.getByText('Plugins'))
 }
@@ -46,7 +86,7 @@ describe('Settings > Plugins tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
-    useUIStore.setState({ activeSettingsTab: 'plugins', pendingSettingsTab: null })
+    useUIStore.setState({ activeSettingsTab: 'plugins', pendingSettingsTab: null, toasts: [] })
     useTabStore.setState({
       activeTabId: '__settings__',
       lastActiveProductTaskId: 'task-1',
@@ -89,28 +129,20 @@ describe('Settings > Plugins tab', () => {
       summary: { total: 0, enabled: 0, attention: 0 },
       selectedPlugin: null,
       lastReloadSummary: null,
+      lastTaskReloadSummary: null,
       isLoading: false,
       isDetailLoading: false,
       isApplying: false,
       error: null,
       fetchPlugins: noop,
       fetchPluginDetail: noop,
-      reloadPlugins: vi.fn().mockResolvedValue({
-        enabled: 1,
-        disabled: 0,
-        skills: 2,
-        agents: 1,
-        hooks: 0,
-        mcpServers: 1,
-        lspServers: 0,
-        errors: 0,
-      }),
-      enablePlugin: vi.fn().mockResolvedValue('enabled'),
-      disablePlugin: vi.fn().mockResolvedValue('disabled'),
-      bulkEnablePlugins: vi.fn().mockResolvedValue(0),
-      bulkDisablePlugins: vi.fn().mockResolvedValue(0),
-      updatePlugin: vi.fn().mockResolvedValue('updated'),
-      uninstallPlugin: vi.fn().mockResolvedValue('uninstalled'),
+      reloadPlugins: vi.fn().mockResolvedValue(makeReloadResult()),
+      enablePlugin: vi.fn().mockResolvedValue({ action: 'enabled', task: makeTaskReload() }),
+      disablePlugin: vi.fn().mockResolvedValue({ action: 'disabled', task: makeTaskReload() }),
+      bulkEnablePlugins: vi.fn().mockResolvedValue({ changed: 0, task: makeTaskReload() }),
+      bulkDisablePlugins: vi.fn().mockResolvedValue({ changed: 0, task: makeTaskReload() }),
+      updatePlugin: vi.fn().mockResolvedValue({ action: 'updated', task: makeTaskReload() }),
+      uninstallPlugin: vi.fn().mockResolvedValue({ action: 'uninstalled', task: makeTaskReload() }),
       clearSelection: vi.fn(),
     })
   })
@@ -161,7 +193,7 @@ describe('Settings > Plugins tab', () => {
   })
 
   it('bulk enables selected editable plugins and preserves real action targets', async () => {
-    const bulkEnablePlugins = vi.fn().mockResolvedValue(2)
+    const bulkEnablePlugins = vi.fn().mockResolvedValue({ changed: 2, task: makeTaskReload() })
     usePluginStore.setState({
       plugins: [
         makePlugin({
@@ -244,5 +276,78 @@ describe('Settings > Plugins tab', () => {
     switchToPluginsTab()
 
     expect(screen.getByText('The plugin action could not be completed. Try again after applying changes.')).toBeInTheDocument()
+  })
+
+  it('warns when saved plugin configuration cannot be applied because the current task is not running', async () => {
+    const reloadPlugins = vi.fn().mockResolvedValue(makeReloadResult({
+      task: makeTaskReload({ applied: false, reason: 'not_running', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
+    }))
+    usePluginStore.setState({
+      plugins: [makePlugin()],
+      summary: { total: 1, enabled: 1, attention: 0 },
+      reloadPlugins,
+    })
+
+    render(<Settings />)
+    switchToPluginsTab()
+    fireEvent.click(screen.getByRole('button', { name: /Apply changes/ }))
+
+    await waitFor(() => {
+      expect(reloadPlugins).toHaveBeenCalledWith('/workspace/project', 'task-1')
+      expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+        type: 'warning',
+        message: 'Plugin configuration was saved, but the current task was not updated. It will take effect the next time the task runs.',
+      })
+    })
+  })
+
+  it('warns instead of claiming success when a plugin action cannot sync to the current task', async () => {
+    const disablePlugin = vi.fn().mockResolvedValue({
+      action: 'disabled',
+      task: makeTaskReload({ applied: false, reason: 'failed', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
+    })
+    usePluginStore.setState({
+      selectedPlugin: makePlugin(),
+      disablePlugin,
+    })
+
+    render(<Settings />)
+    switchToPluginsTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+
+    await waitFor(() => {
+      expect(disablePlugin).toHaveBeenCalledWith(
+        'github@safe-market',
+        'user',
+        '/workspace/project',
+        'task-1',
+      )
+      expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+        type: 'warning',
+        message: 'Plugin configuration was saved, but it could not be applied to the current task. Try again or it will take effect the next time the task runs.',
+      })
+    })
+  })
+
+  it('shows a safe task-unavailable error instead of a successful apply message', async () => {
+    const reloadPlugins = vi.fn().mockRejectedValue(new ApiError(503, {
+      error: 'PRODUCT_TASK_UNAVAILABLE',
+    }))
+    usePluginStore.setState({
+      plugins: [makePlugin()],
+      summary: { total: 1, enabled: 1, attention: 0 },
+      reloadPlugins,
+    })
+
+    render(<Settings />)
+    switchToPluginsTab()
+    fireEvent.click(screen.getByRole('button', { name: /Apply changes/ }))
+
+    await waitFor(() => {
+      expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
+        type: 'error',
+        message: 'The current task is unavailable. Plugin changes were not applied to it.',
+      })
+    })
   })
 })

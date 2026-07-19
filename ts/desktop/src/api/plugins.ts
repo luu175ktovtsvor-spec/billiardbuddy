@@ -3,10 +3,10 @@ import type {
   PluginAction,
   PluginDetail,
   PluginListResponse,
-  PluginReloadSummary,
+  PluginReloadResponse,
   PluginRequestErrorCode,
-  PluginTaskReloadSummary,
   PluginScope,
+  PluginTaskReloadSummary,
 } from '../types/plugin'
 
 type PluginActionPayload = {
@@ -19,6 +19,7 @@ const PLUGIN_REQUEST_ERROR_CODES = new Set<PluginRequestErrorCode>([
   'PLUGIN_ACTION_FAILED',
   'PLUGIN_ACTION_INVALID',
   'PLUGIN_NOT_FOUND',
+  'PRODUCT_TASK_UNAVAILABLE',
   'PLUGIN_REQUEST_FAILED',
 ])
 
@@ -26,6 +27,7 @@ const PLUGIN_ERROR_TRANSLATION_KEYS: Record<PluginRequestErrorCode, string> = {
   PLUGIN_ACTION_FAILED: 'settings.plugins.error.actionFailed',
   PLUGIN_ACTION_INVALID: 'settings.plugins.error.actionInvalid',
   PLUGIN_NOT_FOUND: 'settings.plugins.error.notFound',
+  PRODUCT_TASK_UNAVAILABLE: 'settings.plugins.error.taskUnavailable',
   PLUGIN_REQUEST_FAILED: 'settings.plugins.error.requestFailed',
 }
 
@@ -52,6 +54,7 @@ export function pluginErrorTranslationKey(code: PluginRequestErrorCode) {
     | 'settings.plugins.error.actionFailed'
     | 'settings.plugins.error.actionInvalid'
     | 'settings.plugins.error.notFound'
+    | 'settings.plugins.error.taskUnavailable'
     | 'settings.plugins.error.requestFailed'
 }
 
@@ -61,6 +64,14 @@ export function pluginActionTranslationKey(action: PluginAction) {
     | 'settings.plugins.action.disabled'
     | 'settings.plugins.action.updated'
     | 'settings.plugins.action.uninstalled'
+}
+
+export function pluginTaskSyncTranslationKey(task?: PluginTaskReloadSummary) {
+  if (!task || task.applied) return undefined
+
+  return task.reason === 'not_running'
+    ? 'settings.plugins.taskSync.nextRun'
+    : 'settings.plugins.taskSync.failed'
 }
 
 export const pluginsApi = {
@@ -92,11 +103,7 @@ export const pluginsApi = {
     if (cwd) query.set('cwd', cwd)
     if (taskId) query.set('taskId', taskId)
     const suffix = query.size > 0 ? `?${query.toString()}` : ''
-    return api.post<{
-      ok: true
-      summary: PluginReloadSummary
-      task?: PluginTaskReloadSummary
-    }>(
+    return api.post<PluginReloadResponse>(
       `/api/plugins/reload${suffix}`,
       undefined,
       { timeout: 120_000 },

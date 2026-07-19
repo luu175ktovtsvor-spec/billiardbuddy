@@ -38,3 +38,14 @@ export type McpUpsertPayload = {
   scope: McpWritableScope
   config: McpConnectionConfig
 }
+
+/** Safe result of applying an MCP toggle to the active product task. */
+export type McpTaskSyncResult = {
+  applied: boolean
+  reason?: 'not_running' | 'failed'
+}
+
+export type McpToggleResponse = {
+  server: McpServerRecord
+  taskSync?: McpTaskSyncResult
+}

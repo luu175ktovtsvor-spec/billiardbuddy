@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { getMcpRequestErrorCode } from '../api/mcp'
 import { Button } from '../components/shared/Button'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { DirectoryPicker } from '../components/shared/DirectoryPicker'
@@ -472,15 +473,27 @@ export function McpSettings() {
   const handleToggle = async (server: McpServerRecord) => {
     setBusyServerKey(getServerIdentityKey(server))
     try {
-      const updated = await toggleServer(server, resolveOperationCwd(server), currentTaskId)
+      const { server: updated, taskSync } = await toggleServer(server, resolveOperationCwd(server), currentTaskId)
       addToast({
-        type: 'success',
-        message: updated.enabled
-          ? t('settings.mcp.toast.enabled', { name: server.name })
-          : t('settings.mcp.toast.disabled', { name: server.name }),
+        type: taskSync?.applied === false ? 'warning' : 'success',
+        message: taskSync?.applied === false
+          ? t(
+              taskSync.reason === 'not_running'
+                ? 'settings.mcp.toast.taskSyncNextRun'
+                : 'settings.mcp.toast.taskSyncFailed',
+              { name: server.name },
+            )
+          : updated.enabled
+            ? t('settings.mcp.toast.enabled', { name: server.name })
+            : t('settings.mcp.toast.disabled', { name: server.name }),
       })
-    } catch {
-      addToast({ type: 'error', message: t('settings.mcp.toast.toggleFailed') })
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: getMcpRequestErrorCode(error) === 'PRODUCT_TASK_UNAVAILABLE'
+          ? t('settings.mcp.toast.taskUnavailable')
+          : t('settings.mcp.toast.toggleFailed'),
+      })
     } finally {
       setBusyServerKey(null)
     }

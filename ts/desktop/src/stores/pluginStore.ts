@@ -8,26 +8,43 @@ import type {
   PluginRequestErrorCode,
   PluginScope,
   PluginSummary,
+  PluginTaskReloadSummary,
 } from '../types/plugin'
+
+export type PluginReloadResult = {
+  summary: PluginReloadSummary
+  task?: PluginTaskReloadSummary
+}
+
+export type PluginActionResult = {
+  action: PluginAction
+  task?: PluginTaskReloadSummary
+}
+
+export type PluginBulkActionResult = {
+  changed: number
+  task?: PluginTaskReloadSummary
+}
 
 type PluginStore = {
   plugins: PluginSummary[]
   summary: PluginListResponse['summary'] | null
   selectedPlugin: PluginDetail | null
   lastReloadSummary: PluginReloadSummary | null
+  lastTaskReloadSummary: PluginTaskReloadSummary | null
   isLoading: boolean
   isDetailLoading: boolean
   isApplying: boolean
   error: PluginRequestErrorCode | null
   fetchPlugins: (cwd?: string) => Promise<void>
   fetchPluginDetail: (id: string, cwd?: string) => Promise<void>
-  reloadPlugins: (cwd?: string, taskId?: string) => Promise<PluginReloadSummary>
-  enablePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginAction>
-  disablePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginAction>
-  bulkEnablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<number>
-  bulkDisablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<number>
-  updatePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginAction>
-  uninstallPlugin: (id: string, scope?: PluginScope, keepData?: boolean, cwd?: string, taskId?: string) => Promise<PluginAction>
+  reloadPlugins: (cwd?: string, taskId?: string) => Promise<PluginReloadResult>
+  enablePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginActionResult>
+  disablePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginActionResult>
+  bulkEnablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<PluginBulkActionResult>
+  bulkDisablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<PluginBulkActionResult>
+  updatePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginActionResult>
+  uninstallPlugin: (id: string, scope?: PluginScope, keepData?: boolean, cwd?: string, taskId?: string) => Promise<PluginActionResult>
   clearSelection: () => void
 }
 
@@ -41,6 +58,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   summary: null,
   selectedPlugin: null,
   lastReloadSummary: null,
+  lastTaskReloadSummary: null,
   isLoading: false,
   isDetailLoading: false,
   isApplying: false,
@@ -78,16 +96,23 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   },
 
   reloadPlugins: async (cwd, taskId) => {
-    set({ isApplying: true, error: null })
+    set({ isApplying: true, error: null, lastTaskReloadSummary: null })
     try {
-      const { summary } = await pluginsApi.reload(cwd, taskId)
+      const { summary, task } = await pluginsApi.reload(cwd, taskId)
       await get().fetchPlugins(cwd)
       const selected = get().selectedPlugin
       if (selected) {
         await get().fetchPluginDetail(selected.id, cwd)
       }
-      set({ isApplying: false, lastReloadSummary: summary })
-      return summary
+      set({
+        isApplying: false,
+        lastReloadSummary: summary,
+        lastTaskReloadSummary: task ?? null,
+      })
+      return {
+        summary,
+        ...(task ? { task } : {}),
+      }
     } catch (err) {
       set({ isApplying: false, error: getPluginRequestErrorCode(err) })
       throw err
@@ -167,11 +192,11 @@ async function runAction(
   cwd?: string,
   taskId?: string,
   clearSelection = false,
-): Promise<PluginAction> {
-  set({ isApplying: true, error: null })
+): Promise<PluginActionResult> {
+  set({ isApplying: true, error: null, lastTaskReloadSummary: null })
   try {
     const { action: completedAction } = await action()
-    const { summary } = await pluginsApi.reload(cwd, taskId)
+    const { summary, task } = await pluginsApi.reload(cwd, taskId)
     await get().fetchPlugins(cwd)
     const selected = get().selectedPlugin
     if (clearSelection) {
@@ -179,8 +204,15 @@ async function runAction(
     } else if (selected) {
       await get().fetchPluginDetail(selected.id, cwd)
     }
-    set({ isApplying: false, lastReloadSummary: summary })
-    return completedAction
+    set({
+      isApplying: false,
+      lastReloadSummary: summary,
+      lastTaskReloadSummary: task ?? null,
+    })
+    return {
+      action: completedAction,
+      ...(task ? { task } : {}),
+    }
   } catch (err) {
     set({
       isApplying: false,
@@ -197,23 +229,30 @@ async function runBulkAction(
   get: () => PluginStore,
   cwd?: string,
   taskId?: string,
-): Promise<number> {
-  if (plugins.length === 0) return 0
+): Promise<PluginBulkActionResult> {
+  if (plugins.length === 0) return { changed: 0 }
 
-  set({ isApplying: true, error: null })
+  set({ isApplying: true, error: null, lastTaskReloadSummary: null })
   try {
     for (const plugin of plugins) {
       await action(plugin)
     }
 
-    const { summary } = await pluginsApi.reload(cwd, taskId)
+    const { summary, task } = await pluginsApi.reload(cwd, taskId)
     await get().fetchPlugins(cwd)
     const selected = get().selectedPlugin
     if (selected) {
       await get().fetchPluginDetail(selected.id, cwd)
     }
-    set({ isApplying: false, lastReloadSummary: summary })
-    return plugins.length
+    set({
+      isApplying: false,
+      lastReloadSummary: summary,
+      lastTaskReloadSummary: task ?? null,
+    })
+    return {
+      changed: plugins.length,
+      ...(task ? { task } : {}),
+    }
   } catch (err) {
     set({
       isApplying: false,

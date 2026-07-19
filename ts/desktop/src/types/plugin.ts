@@ -20,6 +20,7 @@ export type PluginRequestErrorCode =
   | 'PLUGIN_ACTION_FAILED'
   | 'PLUGIN_ACTION_INVALID'
   | 'PLUGIN_NOT_FOUND'
+  | 'PRODUCT_TASK_UNAVAILABLE'
   | 'PLUGIN_REQUEST_FAILED'
 
 export type PluginSummary = {
@@ -64,4 +65,10 @@ export type PluginTaskReloadSummary = {
   plugins: number
   mcpServers: number
   errors: number
+}
+
+export type PluginReloadResponse = {
+  ok: true
+  summary: PluginReloadSummary
+  task?: PluginTaskReloadSummary
 }
