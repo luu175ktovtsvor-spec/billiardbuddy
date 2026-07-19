@@ -580,8 +580,12 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   }
 
   const isArchived = task.lifecycle === 'archived'
+  const pinAction = task.pinnedAt ? 'unpin' : 'pin'
+  const lifecycleAction = isArchived ? 'restore' : 'archive'
+  const canPinTask = task.actions.includes(pinAction)
+  const canChangeLifecycle = task.actions.includes(lifecycleAction)
   const isTaskMutationPending = mutations[`${taskId}:archive`] || mutations[`${taskId}:restore`]
-  const isPinMutationPending = mutations[`${taskId}:${task.pinnedAt ? 'unpin' : 'pin'}`]
+  const isPinMutationPending = mutations[`${taskId}:${pinAction}`]
   const isContinuationPending = mutations[`${taskId}:continue`] === true
   const isSideTaskCreationPending = sideTaskMutations[
     productSideTaskMutationKey(taskId, 'new', 'create')
@@ -682,22 +686,26 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
         <span className={`hidden rounded-full px-2.5 py-1 text-xs sm:inline ${runtime?.runState === 'awaiting_approval' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : runtime?.runState === 'working' ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]' : 'bg-[var(--color-surface-container)] text-[var(--color-text-secondary)]'}`}>
           {runStateLabel(runtime?.runState ?? 'idle')}
         </span>
-        <button
-          type="button"
-          onClick={() => void (task.pinnedAt ? unpinTask(task.id) : pinTask(task.id))}
-          disabled={isPinMutationPending === true}
-          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50"
-        >
-          {task.pinnedAt ? '取消置顶' : '置顶'}
-        </button>
-        <button
-          type="button"
-          onClick={() => void (isArchived ? restoreTask(task.id) : archiveTask(task.id))}
-          disabled={isTaskMutationPending === true}
-          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50"
-        >
-          {isArchived ? '恢复' : '归档'}
-        </button>
+        {canPinTask ? (
+          <button
+            type="button"
+            onClick={() => void (task.pinnedAt ? unpinTask(task.id) : pinTask(task.id))}
+            disabled={isPinMutationPending === true}
+            className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50"
+          >
+            {task.pinnedAt ? '取消置顶' : '置顶'}
+          </button>
+        ) : null}
+        {canChangeLifecycle ? (
+          <button
+            type="button"
+            onClick={() => void (isArchived ? restoreTask(task.id) : archiveTask(task.id))}
+            disabled={isTaskMutationPending === true}
+            className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50"
+          >
+            {isArchived ? '恢复' : '归档'}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={openReviewDock}

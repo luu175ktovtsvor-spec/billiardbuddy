@@ -321,6 +321,32 @@ describe('ProductTaskService', () => {
     expect(index.total).toBe(2)
   })
 
+  it('rejects task mutations that are not declared for the current lifecycle', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+
+    await service.setArchived(task.id, true)
+
+    await expect(service.setPinned(task.id, true)).rejects.toThrow('该任务当前不能执行此操作')
+    await expect(service.updateTask(task.id, { title: '归档后重命名' })).rejects.toThrow('该任务当前不能执行此操作')
+    await expect(service.setArchived(task.id, true)).rejects.toThrow('该任务当前不能执行此操作')
+    await expect(service.createSideTask(task.id, {
+      sourceEntryId: 'thread_0123456789abcdef0123',
+    })).rejects.toThrow('归档任务不能创建侧边任务')
+
+    const continuation = await service.continueTask(task.id, {})
+    expect(continuation.parentTaskId).toBe(task.id)
+
+    const restored = await service.setArchived(task.id, false)
+    expect(restored.lifecycle).toBe('active')
+    expect(restored.actions).toContain('pin')
+  })
+
   it('imports legacy Core sessions once, then indexes only the product task registry', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
