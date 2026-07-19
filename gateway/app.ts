@@ -1610,7 +1610,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
-        const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}`, {
+        // The load runner asks only for compact terminal metadata so it never pulls
+        // b64 image output merely to observe status. Do not forward arbitrary query
+        // parameters from an app client to the internal relay.
+        const metadataOnly = url.searchParams.get('metadata_only') === '1'
+        const metadataQuery = metadataOnly ? '?metadata_only=1' : ''
+        const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${config.relayToken}`,

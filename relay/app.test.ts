@@ -44,6 +44,16 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
   const done = await pollUntilDone(fetch, task_id)
   expect(done.status).toBe('succeeded')
   expect(done.data[0].b64_json).toBe(B64)
+  const metadata = await (await fetch(new Request(`http://relay/images/tasks/${task_id}?metadata_only=1`, {
+    headers: { authorization: 'Bearer relay-secret' },
+  }))).json()
+  expect(metadata).toMatchObject({
+    status: 'succeeded',
+    metadata_only: true,
+    result_available: true,
+    output_count: 1,
+  })
+  expect(metadata.data).toBeUndefined()
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
 })
 
