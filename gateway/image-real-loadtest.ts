@@ -43,6 +43,8 @@ export type ImageLoadtestOptions = ImageLoadtestPlan & {
   baseUrl: string
   targetOrigin: string
   token: string
+  /** `admission` verifies the gateway/relay burst envelope, then cancels queued work. */
+  mode: 'terminal' | 'admission'
   size: '1024x1024' | '1536x1024' | '1024x1536'
   submitTimeoutMs: number
   terminalTimeoutMs: number
@@ -52,6 +54,7 @@ export type ImageLoadtestOptions = ImageLoadtestPlan & {
 }
 
 export type ImageLoadtestSummary = {
+  mode: 'terminal' | 'admission'
   requested: number
   accepted: number
   succeeded: number
@@ -73,9 +76,11 @@ type JsonRead = { ok: true; value: unknown } | { ok: false; reason: 'response_to
 type FetchAttempt = { response: Response } | { failure: 'timeout' | 'network' | 'terminal_timeout' }
 
 const MAX_USERS = 100
-const MAX_WINDOWS = 8
+const MAX_WINDOWS = 10
 const MAX_TASKS = MAX_USERS * MAX_WINDOWS
-const MAX_SUBMIT_CONCURRENCY = 32
+// A 100 × 10 admission test must be able to create the actual burst. This is a
+// load-test-only ceiling; relay still limits paid upstream work independently.
+const MAX_SUBMIT_CONCURRENCY = MAX_TASKS
 const MAX_METADATA_RESPONSE_BYTES = 64 * 1024
 const IMAGE_SIZES = new Set(['1024x1024', '1536x1024', '1024x1536'])
 const TERMINAL_STATES = new Set<TerminalState>(['succeeded', 'failed', 'failed_unknown', 'cancelled'])
@@ -90,7 +95,9 @@ Options:
   --users=<n>                 Simulated installations (default: 1, max: ${MAX_USERS})
   --windows=<n>               Image windows per installation (default: 1, max: ${MAX_WINDOWS})
   --confirm-billable-batch    Required whenever users × windows is greater than one
-  --submit-concurrency=<n>    Bounded submit workers (default: 16, max: ${MAX_SUBMIT_CONCURRENCY})
+  --mode=terminal|admission   terminal waits for outputs (default); admission checks the
+                               full submit burst, then attempts to cancel accepted work
+  --submit-concurrency=<n>    Submit workers (default: all requested tasks, max: ${MAX_SUBMIT_CONCURRENCY})
   --size=<WxH>                1024x1024, 1536x1024, or 1024x1536 (default: 1024x1024)
   --submit-timeout-ms=<n>     Per-submit deadline (default: 30000)
   --terminal-timeout-ms=<n>   Per-task terminal-status deadline (default: 600000)
@@ -100,7 +107,9 @@ Options:
                                http://127.0.0.1:8799 (never an external URL)
 
 The runner uses one X-QF-Client-ID per simulated installation, so --users=100
---windows=5 models five windows from each installation. It never logs app tokens,
+--windows=10 models ten windows from each installation. admission mode is the right
+mode for a 1,000-task burst: it proves acceptance/queue behaviour but does not
+claim that 1,000 paid images completed without waiting. It never logs app tokens,
 task IDs, request bodies, image bytes, model output, or a target URL path/query.`)
   process.exit(exitCode)
 }
@@ -110,6 +119,7 @@ function assertKnownArgs(args: string[]): void {
   const values = [
     '--users',
     '--windows',
+    '--mode',
     '--submit-concurrency',
     '--size',
     '--submit-timeout-ms',
@@ -493,7 +503,7 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
     sleepImpl: suppliedDeps.sleepImpl ?? sleepAbortable,
     onEvent: suppliedDeps.onEvent ?? ((event: Record<string, unknown>) => console.log(JSON.stringify(event))),
   }
-  const headers = { targetOrigin: options.targetOrigin, users: options.users, windows: options.windows, requested: options.total, size: options.size }
+  const headers = { targetOrigin: options.targetOrigin, users: options.users, windows: options.windows, requested: options.total, mode: options.mode, size: options.size }
   deps.onEvent({ event: 'image_loadtest_start', ...headers })
 
   const submitted = await mapWithConcurrency(
@@ -528,6 +538,43 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
     deps.onEvent({ event: 'image_loadtest_partial_submit_cleanup', attempted: cleanup.length, statuses, failureKinds: failures })
   }
 
+  // A high submission burst and a high paid-image completion burst are different
+  // questions. In admission mode, promptly try to cancel every accepted task so a
+  // queue-capacity experiment does not quietly turn into a many-hour billable run.
+  // Running tasks can legitimately return 409: they are reported, never retried.
+  if (options.mode === 'admission') {
+    if (accepted.length === options.total && accepted.length > 0) {
+      const admissionCleanup = await mapWithConcurrency(accepted, options.submitConcurrency, task => cancelTask(task, options, deps.fetchImpl))
+      cleanup = [...cleanup, ...admissionCleanup]
+      const statuses: Record<string, number> = {}
+      const failures: Record<string, number> = {}
+      for (const result of admissionCleanup) {
+        count(statuses, String(result.status))
+        if (result.failureKind) count(failures, result.failureKind)
+      }
+      deps.onEvent({ event: 'image_loadtest_admission_cleanup', attempted: admissionCleanup.length, statuses, failureKinds: failures })
+    }
+    const summary: ImageLoadtestSummary = {
+      mode: options.mode,
+      requested: options.total,
+      accepted: accepted.length,
+      // In admission mode this is deliberately an admission success count, not a
+      // generated-output count; the event name makes that distinction explicit.
+      succeeded: accepted.length,
+      failed: options.total - accepted.length,
+      cleanupAttempted: cleanup.length,
+      exitCode: accepted.length === options.total ? 0 : 1,
+    }
+    deps.onEvent({
+      event: 'image_loadtest_admission',
+      requested: summary.requested,
+      accepted: summary.accepted,
+      rejected: summary.failed,
+      cleanupAttempted: summary.cleanupAttempted,
+    })
+    return summary
+  }
+
   const terminal = await Promise.all(accepted.map(task => pollTask(task, options, deps)))
   const unresolved = accepted.filter((_, index) => terminal[index]?.terminal === 'unknown')
   if (unresolved.length > 0) {
@@ -549,6 +596,7 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
   }
   const succeeded = terminal.filter(result => result.terminal === 'succeeded').length
   const summary: ImageLoadtestSummary = {
+    mode: options.mode,
     requested: options.total,
     accepted: accepted.length,
     succeeded,
@@ -592,6 +640,8 @@ async function main(): Promise<void> {
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const plan = createImageLoadtestPlan(users, windows, args.includes('--confirm-billable-batch'))
+  const mode = option(args, '--mode') ?? 'terminal'
+  if (mode !== 'terminal' && mode !== 'admission') throw new Error('--mode must be terminal or admission')
   const size = option(args, '--size') ?? '1024x1024'
   if (!IMAGE_SIZES.has(size)) throw new Error('--size must be 1024x1024, 1536x1024, or 1024x1536')
   const options: ImageLoadtestOptions = {
@@ -599,8 +649,14 @@ async function main(): Promise<void> {
     baseUrl,
     targetOrigin,
     token,
+    mode,
     size: size as ImageLoadtestOptions['size'],
-    submitConcurrency: boundedInteger(option(args, '--submit-concurrency'), '--submit-concurrency', 16, MAX_SUBMIT_CONCURRENCY),
+    submitConcurrency: boundedInteger(
+      option(args, '--submit-concurrency'),
+      '--submit-concurrency',
+      Math.min(plan.total, MAX_SUBMIT_CONCURRENCY),
+      MAX_SUBMIT_CONCURRENCY,
+    ),
     submitTimeoutMs: boundedInteger(option(args, '--submit-timeout-ms'), '--submit-timeout-ms', 30_000, 60_000),
     terminalTimeoutMs: boundedInteger(option(args, '--terminal-timeout-ms'), '--terminal-timeout-ms', 600_000, 24 * 60 * 60_000),
     pollFloorMs: boundedInteger(option(args, '--poll-floor-ms'), '--poll-floor-ms', 5_000, 60_000),
