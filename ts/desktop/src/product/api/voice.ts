@@ -1,8 +1,5 @@
-import {
-  voiceErrorResponseSchema,
-  voiceTranscriptionResponseSchema,
-} from '../../../../shared/contracts/voice'
-import { getServerBaseUrl } from '../../lib/desktopRuntime'
+import { voiceTranscriptionResponseSchema } from '../../../../shared/contracts/voice'
+import { productApi } from './client'
 
 export type VoiceTranscriptionOptions = {
   language?: string
@@ -17,6 +14,7 @@ function audioExtension(type: string): string {
 }
 
 const PRODUCT_VOICE_PATH = '/api/product/voice/transcribe'
+const PRODUCT_VOICE_TIMEOUT_MS = 10 * 60_000
 
 export const productVoiceApi = {
   async transcribe(
@@ -32,16 +30,10 @@ export const productVoiceApi = {
     ))
     if (options.language) form.set('language', options.language)
 
-    const response = await fetch(`${getServerBaseUrl().replace(/\/$/, '')}${PRODUCT_VOICE_PATH}`, {
-      method: 'POST',
-      body: form,
+    const response = await productApi.postForm<unknown>(PRODUCT_VOICE_PATH, form, {
       signal: options.signal,
+      timeout: PRODUCT_VOICE_TIMEOUT_MS,
     })
-    const body: unknown = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      const parsed = voiceErrorResponseSchema.safeParse(body)
-      throw new Error(parsed.success ? parsed.data.detail : '语音转写暂时无法完成，请稍后重试。')
-    }
-    return voiceTranscriptionResponseSchema.parse(body).text
+    return voiceTranscriptionResponseSchema.parse(response).text
   },
 }
