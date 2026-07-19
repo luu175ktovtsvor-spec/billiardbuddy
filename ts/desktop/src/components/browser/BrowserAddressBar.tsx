@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Loader2, RotateCw } from 'lucide-react'
-import { isHtmlFilePath } from '../../lib/htmlPreviewPolicy'
 
 type Props = {
   url: string
@@ -34,7 +33,7 @@ export function BrowserAddressBar({ url, canGoBack, canGoForward, loading = fals
           className="w-full rounded-md bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="输入网址..."
+          placeholder="输入 HTTP(S) 地址..."
           spellCheck={false}
         />
       </form>
@@ -59,9 +58,15 @@ export function normalizeBrowserAddress(input: string): string {
   const value = input.trim()
   if (!value) return ''
   if (/^[a-z][a-z\d+\-.]*:\/\//i.test(value) || /^(about|data|file):/i.test(value)) return value
-  if (isHtmlFilePath(value)) return value
+  if (looksLikeLocalFileReference(value)) return value
   if (/^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)(?::\d+)?(?:[/?#].*)?$/i.test(value)) {
     return `http://${value}`
   }
   return `https://${value}`
+}
+
+function looksLikeLocalFileReference(value: string): boolean {
+  if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) return true
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return true
+  return /\.(?:html?|xhtml|md|markdown|txt|tsx?|jsx?|json|css|py|rs|go|java|sh|ya?ml|png|jpe?g|gif|svg|webp|mp4|webm|mov|ogg)(?:[?#].*)?$/i.test(value)
 }

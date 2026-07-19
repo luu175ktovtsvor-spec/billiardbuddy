@@ -264,7 +264,6 @@ export function ProductTaskBrowserPreviewDock({
           <BrowserSurface
             key={browserKey}
             sessionId={browserKey}
-            navigationPolicy="http"
             unsupportedNavigationMessage={meta.unsupportedNavigationMessage}
             showPreviewActions={false}
             subscribeEvents={subscribeTaskPreviewEvents}

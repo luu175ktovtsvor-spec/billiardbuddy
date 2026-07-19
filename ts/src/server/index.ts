@@ -14,9 +14,6 @@ import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
 import { ensureQfGatewayRegistration } from './services/qfGatewayProvider.js'
-import { handlePreviewFs } from './api/previewFs.js'
-import { handleLocalFile } from './api/localFile.js'
-import { sessionService } from './services/sessionService.js'
 import { conversationService } from './services/conversationService.js'
 import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
@@ -216,49 +213,6 @@ export function startServer(port = PORT, host = HOST) {
           })
           if (upgraded) return undefined
           return new Response('WebSocket upgrade failed', { status: 400 })
-        }
-
-        // Preview filesystem — serve sandboxed workspace files for a session.
-        if (url.pathname.startsWith('/preview-fs/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req)
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-
-          const response = await handlePreviewFs(
-            url,
-            async (sessionId) =>
-              conversationService.getSessionWorkDir(sessionId) ||
-              (await sessionService.getSessionWorkDir(sessionId)) ||
-              null,
-            req.headers,
-          )
-          return withCors(response, cors)
-        }
-
-        // Local filesystem — serve an ABSOLUTE local file ($HOME/tmp/registered
-        // roots sandbox) so `file://` links / AI-emitted absolute paths open in
-        // the in-app browser. Gated identically to /preview-fs above.
-        if (url.pathname.startsWith('/local-file/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req)
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-
-          const response = await handleLocalFile(url, req.headers)
-          return withCors(response, cors)
         }
 
         // REST API
