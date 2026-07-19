@@ -16,6 +16,18 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 const cronService = new CronService()
 
+type PublicTaskRun = Omit<Awaited<ReturnType<typeof cronScheduler.getRecentRuns>>[number], 'sessionId'>
+
+/**
+ * Scheduled-run summaries are a product surface.  The optional Core session
+ * used by older manual runs remains server-private and cannot become a raw
+ * renderer navigation target.
+ */
+function publicTaskRun(run: Awaited<ReturnType<typeof cronScheduler.getRecentRuns>>[number]): PublicTaskRun {
+  const { sessionId: _coreSessionId, ...publicRun } = run
+  return publicRun
+}
+
 export async function handleScheduledTasksApi(
   req: Request,
   _url: URL,
@@ -31,13 +43,13 @@ export async function handleScheduledTasksApi(
       const url = new URL(req.url)
       const limit = parseInt(url.searchParams.get('limit') || '50', 10)
       const runs = await cronScheduler.getRecentRuns(limit)
-      return Response.json({ runs })
+      return Response.json({ runs: runs.map(publicTaskRun) })
     }
 
     // ── GET /api/scheduled-tasks/:id/runs ────────────────────────────────
     if (method === 'GET' && taskId && subResource === 'runs') {
       const runs = await cronScheduler.getTaskRuns(taskId)
-      return Response.json({ runs })
+      return Response.json({ runs: runs.map(publicTaskRun) })
     }
 
     // ── GET /api/scheduled-tasks ──────────────────────────────────────────
@@ -74,7 +86,9 @@ export async function handleScheduledTasksApi(
       const tasks = await cronService.listTasks()
       const task = tasks.find((t) => t.id === taskId)
       if (!task) throw ApiError.notFound(`Task ${taskId} not found`)
-      cronScheduler.executeTask(task, { createSession: true }).catch((err) => {
+      // Scheduled runs have their own output/error history. Do not create a
+      // legacy Core conversation merely to support a renderer escape hatch.
+      cronScheduler.executeTask(task).catch((err) => {
         console.error(`[ScheduledTasks] Manual run failed for task ${taskId}:`, err)
       })
       // Small delay to let appendRun() write the "running" entry to disk

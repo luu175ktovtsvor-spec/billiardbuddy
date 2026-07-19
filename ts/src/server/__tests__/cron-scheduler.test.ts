@@ -541,6 +541,7 @@ describe('Scheduled Tasks API — runs endpoints', () => {
         prompt: 'test prompt',
         exitCode: 0,
         durationMs: 500,
+        sessionId: 'private-scheduled-run-session',
       },
       {
         id: 'run-2',
@@ -566,9 +567,11 @@ describe('Scheduled Tasks API — runs endpoints', () => {
       'scheduled-tasks',
       'runs',
     ])
-    const body = (await resp.json()) as { runs: TaskRun[] }
+    const body = (await resp.json()) as { runs: Array<Omit<TaskRun, 'sessionId'>> }
     expect(resp.status).toBe(200)
     expect(body.runs).toHaveLength(2)
+    expect(body.runs[0]).not.toHaveProperty('sessionId')
+    expect(JSON.stringify(body)).not.toContain('private-scheduled-run-session')
   })
 
   it('GET /api/scheduled-tasks/:id/runs should filter by task ID', async () => {
