@@ -388,7 +388,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const result: AppModeConfig = await host.appMode.get()
       set({ appMode: result })
-    } catch { /* silently ignore - not in Tauri or command unavailable */ }
+    } catch { /* silently ignore when the desktop command is unavailable */ }
   },
 
   setAppMode: async (mode, portableDir) => {

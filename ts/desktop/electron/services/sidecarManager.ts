@@ -10,8 +10,7 @@ export const SERVER_CONTROL_HOST = '127.0.0.1'
 export const SERVER_STARTUP_TIMEOUT_MS = 30_000
 export const SERVER_STARTUP_LOG_LIMIT = 80
 export const STARTUP_ERROR_CODE = 'BB_STARTUP_FAILED'
-// Shared with the Tauri shell (src-tauri/src/lib.rs) so both desktop builds
-// reuse the same sticky port across restarts (issue #767).
+// Reuse the same sticky port across Electron restarts.
 export const SERVER_STATE_FILE = 'desktop-server-state.json'
 
 export type SidecarChild = ChildProcessByStdio<null, Readable, Readable>

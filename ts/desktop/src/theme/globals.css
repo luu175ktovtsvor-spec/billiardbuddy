@@ -1339,12 +1339,9 @@ button, input, textarea, select, a, [role="button"] {
 }
 
 /* Off-screen paint skipping for fully-mounted (non-virtualized) transcript rows.
-   WebKit (Tauri WKWebView) paints complex message DOM ~2x slower than Blink and
-   stutters on long worst-case frames; content-visibility lets it skip off-screen
-   rows WITHOUT unmounting or re-measuring them. Measured (Playwright WebKit, 79-msg
-   session): worst frame 279ms -> 18ms, jank 2 -> 0. Only non-virtualized rows get
-   this class — virtualized window items must stay free of content-visibility to
-   avoid the zero-height measurement regression in the virtualizer. */
+   content-visibility lets long conversations skip off-screen rows without
+   unmounting or re-measuring them. Virtualized window items must stay free of
+   this class to avoid zero-height measurement regressions. */
 .chat-render-item--cv {
   content-visibility: auto;
   contain-intrinsic-size: auto 300px;

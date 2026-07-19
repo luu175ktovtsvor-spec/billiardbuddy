@@ -180,8 +180,7 @@ export class ElectronServerRuntime {
   }
 
   // On Windows, forward the user's chosen PowerShell to the agent sidecar so its
-  // PowerShellTool honors the same shell as the UI terminal (regression from the
-  // Tauri build, where this lived in src-tauri/src/lib.rs). Best-effort: never
+  // PowerShellTool honors the same shell as the UI terminal. Best-effort: never
   // block sidecar startup, and never override an explicitly set env var.
   private applyPowerShellOverride(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (process.platform !== 'win32' || env[POWERSHELL_PATH_OVERRIDE_ENV]) return env
