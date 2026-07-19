@@ -423,6 +423,116 @@ describe('WebSocket handler product error projection', () => {
   })
 })
 
+describe('WebSocket handler product task inbound boundary', () => {
+  afterEach(() => {
+    __resetWebSocketHandlerStateForTests()
+    mock.restore()
+  })
+
+  it('rejects Core configuration and approval envelopes without invoking Core handlers', () => {
+    const ws = makeClientSocket(`product-inbound-${crypto.randomUUID()}`, 'product')
+    const respondToPermission = spyOn(conversationService, 'respondToPermission')
+    const setPermissionMode = spyOn(conversationService, 'setPermissionMode')
+    const resolveComputerUseApproval = spyOn(computerUseApprovalService, 'resolveApproval')
+    const sendUserMessage = spyOn(conversationService, 'sendMessage')
+    const privateCommand = 'PRIVATE_PERMISSION_COMMAND'
+
+    for (const payload of [
+      { type: 'set_permission_mode', mode: 'bypassPermissions' },
+      { type: 'set_runtime_config', providerId: 'private-provider', modelId: 'private-model' },
+      { type: 'prewarm_session' },
+      {
+        type: 'permission_response',
+        requestId: 'permission-1',
+        allowed: true,
+        rule: 'Bash(*)',
+        updatedInput: { command: privateCommand },
+        permissionUpdates: [{ type: 'addRules' }],
+      },
+      {
+        type: 'computer_use_permission_response',
+        requestId: 'computer-1',
+        response: { granted: [], denied: [], flags: { clipboardRead: true, clipboardWrite: false, systemKeyCombos: false } },
+      },
+      {
+        type: 'user_message',
+        content: '查看附件',
+        attachments: [{ type: 'file', path: '/private/file.txt' }],
+      },
+      {
+        type: 'user_message',
+        content: '普通任务文字',
+        updatedInput: { command: privateCommand },
+      },
+    ]) {
+      handleWebSocket.message(ws, JSON.stringify(payload))
+    }
+
+    expect(respondToPermission).not.toHaveBeenCalled()
+    expect(setPermissionMode).not.toHaveBeenCalled()
+    expect(resolveComputerUseApproval).not.toHaveBeenCalled()
+    expect(sendUserMessage).not.toHaveBeenCalled()
+
+    const events = ws.sent.map((payload) => JSON.parse(payload))
+    expect(events).toEqual(Array.from({ length: 7 }, () => ({
+      type: 'error',
+      code: 'task_failed',
+      retryable: false,
+    })))
+    expect(JSON.stringify(events)).not.toContain(privateCommand)
+    expect(JSON.stringify(events)).not.toContain('private-provider')
+  })
+
+  it('allows only plain product text, task-local stop, and ping while preserving Core client and sdk channels', async () => {
+    const productSessionId = `product-safe-${crypto.randomUUID()}`
+    const productWs = makeClientSocket(productSessionId, 'product')
+    const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('固定任务标题')
+
+    handleWebSocket.message(productWs, JSON.stringify({
+      type: 'user_message',
+      content: '  /skill ball-hall-daily-review 整理本周球房活动安排  ',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(sendMessage).toHaveBeenCalledWith(productSessionId, '/skill ball-hall-daily-review 整理本周球房活动安排', undefined)
+
+    productWs.sent.length = 0
+    spyOn(conversationService, 'hasSession').mockReturnValue(false)
+    handleWebSocket.message(productWs, JSON.stringify({ type: 'stop_generation' }))
+    handleWebSocket.message(productWs, JSON.stringify({ type: 'ping' }))
+    expect(productWs.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: 'status', state: 'idle' },
+    ])
+
+    const clientWs = makeClientSocket(`client-safe-${crypto.randomUUID()}`)
+    const clientPermissionResponse = spyOn(conversationService, 'respondToPermission')
+    handleWebSocket.message(clientWs, JSON.stringify({
+      type: 'permission_response',
+      requestId: 'core-permission-1',
+      allowed: true,
+      updatedInput: { coreOnly: true },
+    }))
+    expect(clientPermissionResponse).toHaveBeenCalledWith(
+      clientWs.data.sessionId,
+      'core-permission-1',
+      true,
+      undefined,
+      { coreOnly: true },
+      undefined,
+      undefined,
+    )
+
+    const sdkWs = makeClientSocket(`sdk-safe-${crypto.randomUUID()}`, 'sdk')
+    const handleSdkPayload = spyOn(conversationService, 'handleSdkPayload')
+    handleWebSocket.message(sdkWs, 'raw-sdk-payload')
+    expect(handleSdkPayload).toHaveBeenCalledWith(sdkWs.data.sessionId, 'raw-sdk-payload')
+  })
+})
+
 describe('prewarm idle timer active-turn guard (issue #865 follow-up)', () => {
   afterEach(() => {
     __resetWebSocketHandlerStateForTests()
