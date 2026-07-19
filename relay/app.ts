@@ -656,15 +656,26 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
   refreshActiveInputBytes()
 
+  function pollAfterSeconds(rec: Pick<TaskRow, 'status'>): number | undefined {
+    // Queued image work may legitimately wait minutes behind the paid six-slot
+    // upstream. Tell clients to back off instead of multiplying 500 queued windows
+    // into hundreds of cross-region status reads per second.
+    if (rec.status === 'queued') return config.retryAfterSeconds
+    if (rec.status === 'running') return 3
+    return undefined
+  }
+
   function pollResponse(rec: TaskRow): Response {
     const out = rec.status === 'succeeded' ? (blobs.get(rec.id, 'out') as { data?: unknown[] } | null) : null
     let fidelity: InputFidelityCapability | null = null
     if (rec.input_fidelity) { try { fidelity = JSON.parse(rec.input_fidelity) } catch { fidelity = null } }
+    const pollAfter = pollAfterSeconds(rec)
     return Response.json({
       status: rec.status,
       data: out?.data,
       error: rec.error ?? undefined,
       created: rec.created,
+      ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
       ...(fidelity ? {
         input_fidelity_requested: fidelity.requested,
         input_fidelity_status: fidelity.status,
@@ -724,7 +735,12 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           // 幂等:同 (owner, key) 已存在 → 返回原 task_id,不再跑第二次真实上游。
           if (idempotencyKey) {
             const existing = store.findByIdempotency(owner, idempotencyKey)
-            if (existing) return Response.json({ task_id: existing.id, status: existing.status, reused: true }, { status: 202 })
+            if (existing) return Response.json({
+              task_id: existing.id,
+              status: existing.status,
+              reused: true,
+              ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
+            }, { status: 202 })
           }
           // 队列上限:全局在途 + 单 owner 在途。
           if (store.countActive() >= config.queueMax) throw queueFull('relay: 生图队列已满,请稍后重试')
@@ -738,7 +754,12 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
             if (idempotencyKey) {
               const existing = store.findByIdempotency(owner, idempotencyKey)
-              if (existing) return Response.json({ task_id: existing.id, status: existing.status, reused: true }, { status: 202 })
+              if (existing) return Response.json({
+                task_id: existing.id,
+                status: existing.status,
+                reused: true,
+                ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
+              }, { status: 202 })
             }
             throw err
           }
@@ -753,7 +774,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           persisted = true
           bodyReservation.release() // SQLite 已持久化这段输入字节，转入 active_input_bytes 统计。
           void runOpenAi(id)
-          return Response.json({ task_id: id, status: 'queued' }, { status: 202 })
+          return Response.json({ task_id: id, status: 'queued', poll_after_seconds: config.retryAfterSeconds }, { status: 202 })
         } finally {
           if (!persisted) bodyReservation.release()
         }

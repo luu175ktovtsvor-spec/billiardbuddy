@@ -437,11 +437,13 @@ test('500 concurrent image submissions and polls stay bounded, dedup retries, sh
   const polled = await Promise.all(submitted.map(async submittedTask => {
     const response = await fetch(poll(submittedTask.taskId, { 'x-relay-owner': submittedTask.owner }))
     expect(response.status).toBe(200)
-    const body = await response.json() as { status?: string }
-    return { ...submittedTask, status: body.status }
+    const body = await response.json() as { status?: string; poll_after_seconds?: number }
+    return { ...submittedTask, status: body.status, pollAfterSeconds: body.poll_after_seconds }
   }))
   expect(polled.filter(task => task.status === 'running')).toHaveLength(6)
   expect(polled.filter(task => task.status === 'queued')).toHaveLength(494)
+  expect(polled.filter(task => task.status === 'running').every(task => task.pollAfterSeconds === 3)).toBe(true)
+  expect(polled.filter(task => task.status === 'queued').every(task => task.pollAfterSeconds === 17)).toBe(true)
 
   // A duplicate retry stays admissible even when the queue is full: it returns the persisted task
   // rather than consuming a new slot or a second paid upstream request.

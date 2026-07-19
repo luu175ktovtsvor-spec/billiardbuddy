@@ -34,7 +34,7 @@ vi.mock('../../api/media', async importOriginal => ({
 
 import type { ImageWorkbenchProject, MediaTask } from '../../api/media'
 import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
-import { ImageWorkbench } from './ImageWorkbench'
+import { ImageWorkbench, imageTaskPollDelayMs } from './ImageWorkbench'
 
 const project: ImageWorkbenchProject = {
   schema_version: 1,
@@ -91,6 +91,15 @@ beforeEach(() => {
 })
 
 describe('ImageWorkbench unknown paid result', () => {
+  it('backs queued image polls off while keeping running image polls responsive', () => {
+    const queued = imageTaskPollDelayMs('task_queue001', 'queued', 30)
+    const running = imageTaskPollDelayMs('task_queue001', 'generating', 3)
+    expect(queued).toBeGreaterThanOrEqual(30_000)
+    expect(queued).toBeLessThan(33_000)
+    expect(running).toBeGreaterThanOrEqual(3_000)
+    expect(running).toBeLessThan(3_300)
+  })
+
   it('warns before creating another paid task and forwards explicit confirmation', async () => {
     const confirm = vi.spyOn(window, 'confirm')
       .mockReturnValueOnce(false)
