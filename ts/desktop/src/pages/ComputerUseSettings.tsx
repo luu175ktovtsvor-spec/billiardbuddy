@@ -76,7 +76,10 @@ export function ComputerUseSettings() {
       setSetupResult(result)
       await fetchStatus()
     } catch {
-      setSetupResult({ success: false, steps: [{ name: 'error', ok: false, message: 'Request failed' }] })
+      setSetupResult({
+        success: false,
+        steps: [{ name: 'error', ok: false, message: t('settings.computerUse.setupRequestFailed') }],
+      })
     } finally {
       setSetupRunning(false)
     }
@@ -115,7 +118,7 @@ export function ComputerUseSettings() {
         </div>
       ) : checkState === 'error' ? (
         <div className="py-8 text-center text-sm text-red-400">
-          Failed to check status.
+          {t('settings.computerUse.statusCheckFailed')}
           <button onClick={() => void fetchStatus()} className="ml-2 underline">{t('common.retry')}</button>
         </div>
       ) : status ? (
