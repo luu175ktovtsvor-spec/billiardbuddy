@@ -1134,23 +1134,6 @@ export const jp: Record<TranslationKey, string> = {
   'dirPicker.useThisFolder': 'このフォルダを使用',
   'dirPicker.noSubdirs': 'サブディレクトリがありません',
 
-  // ─── File Search ──────────────────────────────────────
-  'fileSearch.searching': '検索中...',
-  'fileSearch.noMatch': '一致するファイルがありません',
-  'fileSearch.noFiles': 'このディレクトリにファイルがありません',
-  'fileSearch.accessDenied': 'このディレクトリにアクセスできません',
-  'fileSearch.loadFailed': 'ディレクトリの読み込みに失敗しました',
-  'fileSearch.navigate': '移動',
-  'fileSearch.attach': '添付',
-  'fileSearch.select': '選択',
-  'fileSearch.open': 'フォルダを開く',
-  'fileSearch.close': '閉じる',
-  'fileSearch.directory': 'フォルダ',
-  'fileSearch.currentDirectory': '現在のフォルダ',
-  'fileSearch.folderTag': 'フォルダ',
-  'fileSearch.fileTag': 'ファイル',
-  'fileSearch.openFolder': 'フォルダを開く',
-
   // ─── Teams ──────────────────────────────────────
   'teams.backToLeader': '\u2190 \u30ea\u30fc\u30c0\u30fc\u306b\u623b\u308b',
   'teams.viewing': '\u8868\u793a\u4e2d:',

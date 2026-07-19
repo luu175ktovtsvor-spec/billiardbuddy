@@ -1,4 +1,5 @@
 import * as path from 'node:path'
+import * as os from 'node:os'
 import {
   isSameOrInsidePathForPlatform,
   normalizeDriveRootPathForPlatform,
@@ -42,6 +43,27 @@ export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
     if (isWithinRoot(targetPath, rootPath)) return true
   }
   return false
+}
+
+/**
+ * Restrict local preview reads to user-controlled roots. Kept with the root
+ * registry because both the default and dynamically registered roots are part
+ * of the same preview access policy.
+ */
+export function isAllowedFilesystemPath(targetPath: string): boolean {
+  const resolvedPath = path.resolve(normalizeDriveRootPathForPlatform(targetPath))
+  const homeDir = path.resolve(os.homedir())
+
+  if (isWithinRoot(resolvedPath, homeDir) || isWithinRoot(resolvedPath, '/tmp')) {
+    return true
+  }
+
+  if (isWithinRegisteredFilesystemRoot(resolvedPath)) {
+    return true
+  }
+
+  // macOS reports /tmp as /private/tmp via native folder pickers and realpath().
+  return process.platform === 'darwin' && isWithinRoot(resolvedPath, '/private/tmp')
 }
 
 export function clearFilesystemAccessRootsForTests(): void {

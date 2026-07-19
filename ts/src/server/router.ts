@@ -5,7 +5,6 @@
 import { handleSettingsApi } from './api/settings.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
-import { handleFilesystemRoute } from './api/filesystem.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
@@ -67,9 +66,6 @@ export async function handleApiRequest(
 
     case 'product':
       return handleProductApi(req, url, segments)
-
-    case 'filesystem':
-      return handleFilesystemRoute(url.pathname, url)
 
     default:
       return Response.json(

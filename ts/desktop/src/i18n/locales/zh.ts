@@ -1134,23 +1134,6 @@ export const zh: Record<TranslationKey, string> = {
   'dirPicker.useThisFolder': '使用此文件夹',
   'dirPicker.noSubdirs': '无子目录',
 
-  // ─── File Search ──────────────────────────────────────
-  'fileSearch.searching': '搜索中...',
-  'fileSearch.noMatch': '没有匹配的文件',
-  'fileSearch.noFiles': '此目录下无文件',
-  'fileSearch.accessDenied': '无法访问此目录',
-  'fileSearch.loadFailed': '目录加载失败',
-  'fileSearch.navigate': '导航',
-  'fileSearch.attach': '附加',
-  'fileSearch.select': '选择',
-  'fileSearch.open': '打开目录',
-  'fileSearch.close': '关闭',
-  'fileSearch.directory': '目录',
-  'fileSearch.currentDirectory': '当前目录',
-  'fileSearch.folderTag': '目录',
-  'fileSearch.fileTag': '文件',
-  'fileSearch.openFolder': '打开目录',
-
   // ─── Teams ──────────────────────────────────────
   'teams.backToLeader': '\u2190 返回主控',
   'teams.viewing': '查看:',
