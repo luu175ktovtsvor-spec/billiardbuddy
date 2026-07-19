@@ -4,7 +4,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRelayFetch } from './app'
+import { createRelayFetch, loadRelayConfig } from './app'
 
 const B64 = Buffer.from('png-bytes').toString('base64')
 const dirs: string[] = []
@@ -22,6 +22,27 @@ function submit(body: unknown, headers: Record<string, string> = {}) {
     body: JSON.stringify(body),
   })
 }
+
+function chunkedSubmit(raw: string, headers: Record<string, string> = {}) {
+  const bytes = new TextEncoder().encode(raw)
+  let offset = 0
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.byteLength) {
+        controller.close()
+        return
+      }
+      const end = Math.min(bytes.byteLength, offset + 7)
+      controller.enqueue(bytes.slice(offset, end))
+      offset = end
+    },
+  })
+  return new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json', ...headers },
+    body,
+  })
+}
 function poll(id: string, headers: Record<string, string> = {}) {
   return new Request(`http://relay/images/tasks/${id}`, { headers: { authorization: 'Bearer relay-secret', ...headers } })
 }
@@ -33,6 +54,27 @@ function cancel(id: string, headers: Record<string, string> = {}) {
 }
 const tick = (ms = 5) => new Promise(r => setTimeout(r, ms))
 const GEN = { mode: 'generate', model: 'gpt-image-2', prompt: '海报' }
+
+async function waitFor(condition: () => boolean | Promise<boolean>, message: string): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if (await condition()) return
+    await tick(2)
+  }
+  throw new Error(message)
+}
+
+test('capacity defaults admit the 100 users × 5 windows burst without increasing paid upstream concurrency', () => {
+  const config = loadRelayConfig(baseEnv())
+  expect(config.queueMax).toBe(600)
+  expect(config.userMax).toBe(5)
+  expect(config.imgConc).toBe(6)
+  expect(config.retryAfterSeconds).toBe(30)
+  expect(config.activeInputBytesMax).toBe(512 * 1024 * 1024)
+
+  const malformed = loadRelayConfig(baseEnv({ RELAY_IMG_CONC: 'not-a-number', RELAY_RETRY_AFTER_SECONDS: '-1' }))
+  expect(malformed.imgConc).toBe(6)
+  expect(malformed.retryAfterSeconds).toBe(1)
+})
 
 test('same (owner, Idempotency-Key) resubmit returns the original task_id and runs upstream only once', async () => {
   let calls = 0
@@ -85,7 +127,9 @@ test('global queue cap rejects excess submissions with 429', async () => {
 test('per-owner cap rejects a single owner hogging the queue, but other owners still get in', async () => {
   const fetch = createRelayFetch({ env: baseEnv({ RELAY_USER_MAX: '1', RELAY_QUEUE_MAX: '50' }), fetchImpl: () => new Promise(() => {}) })
   expect((await fetch(submit(GEN, { 'x-relay-owner': 'hog' }))).status).toBe(202)
-  expect((await fetch(submit(GEN, { 'x-relay-owner': 'hog' }))).status).toBe(429)
+  const capped = await fetch(submit(GEN, { 'x-relay-owner': 'hog' }))
+  expect(capped.status).toBe(429)
+  expect(capped.headers.get('retry-after')).toBe('30')
   expect((await fetch(submit(GEN, { 'x-relay-owner': 'other' }))).status).toBe(202)
 })
 
@@ -116,6 +160,45 @@ test('oversized submit body is rejected with 413 before any work', async () => {
   const big = { mode: 'generate', model: 'gpt-image-2', prompt: 'x'.repeat(500) }
   expect((await fetch(submit(big, { 'x-relay-owner': 'a' }))).status).toBe(413)
   expect(calls).toBe(0)
+})
+
+test('active image input byte budget rejects a second large queued payload with Retry-After', async () => {
+  const body = { ...GEN, prompt: 'x'.repeat(80) }
+  const bytes = Buffer.byteLength(JSON.stringify(body))
+  const fetch = createRelayFetch({
+    env: baseEnv({ RELAY_QUEUE_MAX: '10', RELAY_ACTIVE_INPUT_BYTES_MAX: String(bytes * 2 - 1) }),
+    fetchImpl: () => new Promise(() => {}),
+  })
+  expect((await fetch(submit(body, { 'x-relay-owner': 'first' }))).status).toBe(202)
+  const denied = await fetch(submit(body, { 'x-relay-owner': 'second' }))
+  expect(denied.status).toBe(429)
+  expect(denied.headers.get('retry-after')).toBe('30')
+  const health = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+  expect(health).toMatchObject({
+    active: 1,
+    active_input_bytes: bytes,
+    pending_input_bytes: 0,
+    active_input_bytes_max: bytes * 2 - 1,
+  })
+})
+
+test('chunked submit reservations release after malformed and idempotent early-return paths', async () => {
+  const body = { ...GEN, prompt: 'x'.repeat(80) }
+  const raw = JSON.stringify(body)
+  const bytes = Buffer.byteLength(raw)
+  const fetch = createRelayFetch({
+    env: baseEnv({ RELAY_QUEUE_MAX: '10', RELAY_ACTIVE_INPUT_BYTES_MAX: String(bytes * 3) }),
+    fetchImpl: () => new Promise(() => {}),
+  })
+  const headers = { 'x-relay-owner': 'chunked-owner', 'idempotency-key': 'chunked-key' }
+  expect((await fetch(chunkedSubmit(raw, headers))).status).toBe(202)
+  const duplicate = await fetch(chunkedSubmit(raw, headers))
+  expect(duplicate.status).toBe(202)
+  expect((await duplicate.json() as { reused?: boolean }).reused).toBe(true)
+  expect((await fetch(chunkedSubmit('{not json', { 'x-relay-owner': 'bad-body' }))).status).toBe(400)
+
+  const health = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+  expect(health).toMatchObject({ active: 1, active_input_bytes: bytes, pending_input_bytes: 0 })
 })
 
 test('TTL cleanup keeps active work and only removes old terminal results', async () => {
@@ -209,4 +292,107 @@ test('restart recovery: running → failed_unknown (no auto-resubmit); queued �
   expect(resumedRec.status).toBe('succeeded') // queued at crash → resumed and completed
   expect(resumedRec.data?.[0]?.b64_json).toBe(B64)
   expect(resumedCalls).toBe(1)
+})
+
+test('500 concurrent image submissions and polls stay bounded, dedup retries, shed overflow, cancel queued work, and drain cleanly', async () => {
+  let upstreamCalls = 0
+  let releaseUpstream: (() => void) | undefined
+  const upstreamGate = new Promise<void>(resolve => { releaseUpstream = resolve })
+  const fetch = createRelayFetch({
+    env: baseEnv({
+      RELAY_QUEUE_MAX: '500',
+      RELAY_USER_MAX: '5',
+      RELAY_IMG_CONC: '6',
+      RELAY_RETRY_AFTER_SECONDS: '17',
+      RELAY_ACTIVE_INPUT_BYTES_MAX: '1048576',
+    }),
+    fetchImpl: async () => {
+      upstreamCalls++
+      await upstreamGate
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+
+  const windows = Array.from({ length: 500 }, (_, index) => ({
+    owner: `owner-${Math.floor(index / 5)}`,
+    key: `window-${index % 5}`,
+  }))
+  const submitted = await Promise.all(windows.map(async window => {
+    const response = await fetch(submit(GEN, {
+      'x-relay-owner': window.owner,
+      'idempotency-key': window.key,
+    }))
+    expect(response.status).toBe(202)
+    const body = await response.json() as { task_id?: string }
+    expect(body.task_id).toBeTruthy()
+    return { ...window, taskId: body.task_id! }
+  }))
+
+  await waitFor(() => upstreamCalls === 6, 'upstream semaphore did not reach its configured limit')
+  const initialHealth = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+  expect(initialHealth).toMatchObject({
+    active: 500,
+    queued: 494,
+    running: 6,
+    queue_available: 0,
+    pending_input_bytes: 0,
+    active_input_bytes_max: 1048576,
+    img_conc: 6,
+    queue_max: 500,
+    user_max: 5,
+    retry_after_seconds: 17,
+  })
+
+  const polled = await Promise.all(submitted.map(async submittedTask => {
+    const response = await fetch(poll(submittedTask.taskId, { 'x-relay-owner': submittedTask.owner }))
+    expect(response.status).toBe(200)
+    const body = await response.json() as { status?: string }
+    return { ...submittedTask, status: body.status }
+  }))
+  expect(polled.filter(task => task.status === 'running')).toHaveLength(6)
+  expect(polled.filter(task => task.status === 'queued')).toHaveLength(494)
+
+  // A duplicate retry stays admissible even when the queue is full: it returns the persisted task
+  // rather than consuming a new slot or a second paid upstream request.
+  const reused = await Promise.all(submitted.map(async submittedTask => {
+    const response = await fetch(submit(GEN, {
+      'x-relay-owner': submittedTask.owner,
+      'idempotency-key': submittedTask.key,
+    }))
+    expect(response.status).toBe(202)
+    const body = await response.json() as { task_id?: string; reused?: boolean }
+    return { ...body, expectedTaskId: submittedTask.taskId }
+  }))
+  expect(reused.every(task => task.reused && task.task_id === task.expectedTaskId)).toBe(true)
+  expect(upstreamCalls).toBe(6)
+
+  const overflow = await fetch(submit(GEN, {
+    'x-relay-owner': 'owner-overflow',
+    'idempotency-key': 'overflow-window',
+  }))
+  expect(overflow.status).toBe(429)
+  expect(overflow.headers.get('retry-after')).toBe('17')
+  expect(overflow.headers.get('cache-control')).toBe('no-store')
+
+  const queued = polled.filter(task => task.status === 'queued')
+  const cancelled = await Promise.all(queued.map(async queuedTask => {
+    const response = await fetch(cancel(queuedTask.taskId, { 'x-relay-owner': queuedTask.owner }))
+    expect(response.status).toBe(200)
+    return await response.json() as { status?: string }
+  }))
+  expect(cancelled.every(task => task.status === 'cancelled')).toBe(true)
+
+  releaseUpstream?.()
+  await waitFor(async () => {
+    const health = await (await fetch(new Request('http://relay/healthz'))).json() as Record<string, number>
+    return health.active === 0 && health.queued === 0 && health.running === 0 && health.active_input_bytes === 0 && health.pending_input_bytes === 0
+  }, 'terminal tasks were left in the active queue')
+  expect(upstreamCalls).toBe(6)
+
+  const terminal = await Promise.all(submitted.map(async submittedTask => {
+    const response = await fetch(poll(submittedTask.taskId, { 'x-relay-owner': submittedTask.owner }))
+    return await response.json() as { status?: string }
+  }))
+  expect(terminal.filter(task => task.status === 'succeeded')).toHaveLength(6)
+  expect(terminal.filter(task => task.status === 'cancelled')).toHaveLength(494)
 })

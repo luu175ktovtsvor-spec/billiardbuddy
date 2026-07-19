@@ -8,12 +8,16 @@
 #   RELAY_OPENAI_BASE      # 默认 https://api.openai.com/v1
 #   RELAY_DB=/opt/qfrelay/relay.db          # SQLite 持久化(重启恢复必须落盘,别用 :memory:)
 #   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 大体积输入/结果 blob(700 目录,应用会自建)
-#   RELAY_QUEUE_MAX RELAY_USER_MAX RELAY_IMG_CONC RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 队列上限,可选
+#   RELAY_QUEUE_MAX=600 RELAY_USER_MAX=5 RELAY_IMG_CONC=6 RELAY_RETRY_AFTER_SECONDS=30  # 100×5 排队、单 owner 与上游并发/退避阀门
+#   RELAY_ACTIVE_INPUT_BYTES_MAX=536870912  # 活跃任务输入（请求体/参考图 blob）总预算，避免 500 个大改图耗尽磁盘/内存
+#   RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 单请求大小与结果留存,可选
 #
 # 部署后需在该机 nginx 暴露受保护路径,且【仅允许大陆 qfgw 出口 IP + 保留 Bearer】,客户端不得直连:
 #   location /relay/imgtasks/ {
 #     allow <大陆 qfgw 出口 IP>;    # 只放行大陆网关,例如 39.106.214.21
 #     deny all;
+#     client_max_body_size 32m;    # 与 RELAY_MAX_BODY_BYTES 对齐，避免 nginx 默认 1m 先行拒绝改图
+#     proxy_request_buffering off; # 流式交给 relay 的活跃输入预算，不让 nginx 先攒满大请求
 #     proxy_pass http://127.0.0.1:8790/;
 #     proxy_read_timeout 120s;
 #   }

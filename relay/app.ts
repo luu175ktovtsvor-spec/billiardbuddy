@@ -40,7 +40,9 @@ export type RelayConfig = {
   blobDir: string | null
   queueMax: number
   userMax: number
+  retryAfterSeconds: number
   maxBodyBytes: number
+  activeInputBytesMax: number
   upstreamTimeoutMs: number
 }
 
@@ -66,22 +68,35 @@ export function loadRelayConfig(env: Env): RelayConfig {
     openaiBase: (env.RELAY_OPENAI_BASE ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
     // Terminal results must survive app restarts and users returning days later.
     // Active queued/running work is never swept regardless of this value.
-    taskTtlMs: Number(env.RELAY_TASK_TTL_MS ?? 7 * 24 * 60 * 60_000),
-    imgConc: Math.max(1, Number(env.RELAY_IMG_CONC ?? 6)), // 本服务对 OpenAI 的在途并发上限
+    taskTtlMs: Math.max(1, intEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000)),
+    // 生图是昂贵且慢的同步上游。500 个桌面窗口可以被异步受理，但默认只让 6 个真实
+    // OpenAI 调用在途；只有在已测得该账号的图片 RPM/并发配额后才提高这个阀门。
+    imgConc: Math.max(1, intEnv(env, 'RELAY_IMG_CONC', 6)),
     // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/qfrelay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
-    queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 200)), // 全局在途(queued+running)总上限
-    userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 8)), // 单 owner 在途上限
+    // 100 人同时各开 5 个窗口时，500 个任务可全部被短请求受理；额外的 100 个位置
+    // 仅用于短暂重试/调度抖动。它是“可排队量”，不是对上游并发或完成时延的承诺。
+    queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 600)), // 全局在途(queued+running)总上限
+    // 和产品的单人 5 窗口假设对齐，避免一个 installation 抢占整条图片队列。
+    userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 5)), // 单 owner 在途上限
+    // 队列满时给网关/调用方明确的退避提示，而不是立刻并发重试放大流量。
+    retryAfterSeconds: Math.min(3600, Math.max(1, intEnv(env, 'RELAY_RETRY_AFTER_SECONDS', 30))),
     // 20 MB decoded reference images expand to about 26.7 MB as base64, plus JSON framing.
     maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024)), // 提交请求体大小上限
+    // 500 个小文生图可同时排队，但不能让 500 个 32 MB 改图输入一起耗尽内存和 blob 磁盘。
+    activeInputBytesMax: Math.max(1, intEnv(env, 'RELAY_ACTIVE_INPUT_BYTES_MAX', 512 * 1024 * 1024)),
     upstreamTimeoutMs: Math.max(1, intEnv(env, 'RELAY_UPSTREAM_TIMEOUT_MS', 5 * 60_000)),
   }
 }
 
 class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message) }
+  constructor(
+    public status: number,
+    message: string,
+    public headers?: Record<string, string>,
+  ) { super(message) }
 }
 
 class UpstreamResponseError extends Error {}
@@ -165,6 +180,7 @@ type TaskRow = {
   status: TaskState
   error: string | null
   input_fidelity: string | null // JSON of InputFidelityCapability, or null
+  input_bytes: number
   created: number
   updated: number
 }
@@ -178,17 +194,30 @@ class TaskStore {
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS tasks(' +
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
-      'error TEXT, input_fidelity TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
+      'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
+    // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
+    const columns = this.db.query('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'input_bytes')) {
+      this.db.exec('ALTER TABLE tasks ADD COLUMN input_bytes INTEGER NOT NULL DEFAULT 0')
+    }
     // (owner, key) 唯一 —— 幂等去重;key 为 NULL 的行不参与(旧请求无幂等键,不去重)。
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(owner, idempotency_key) WHERE idempotency_key IS NOT NULL')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
   }
 
-  insert(id: string, owner: string, key: string | null): void {
+  insert(id: string, owner: string, key: string | null, inputBytes: number): void {
     const ts = this.now()
-    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,created,updated) VALUES(?,?,?,?,?,?,?,?)')
-      .run(id, owner, key, 'queued', null, null, ts, ts)
+    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,created,updated) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(id, owner, key, 'queued', null, null, inputBytes, ts, ts)
+  }
+
+  setInputBytes(id: string, inputBytes: number): void {
+    this.db.query('UPDATE tasks SET input_bytes=?, updated=? WHERE id=?').run(inputBytes, this.now(), id)
+  }
+
+  remove(id: string): void {
+    this.db.query('DELETE FROM tasks WHERE id=?').run(id)
   }
 
   get(id: string): TaskRow | null {
@@ -218,6 +247,23 @@ class TaskStore {
   countActiveByOwner(owner: string): number {
     const row = this.db.query("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('queued','running') AND owner=?").get(owner) as { c: number }
     return Number(row.c ?? 0)
+  }
+
+  countActiveInputBytes(): number {
+    const row = this.db.query(
+      "SELECT COALESCE(SUM(input_bytes), 0) AS bytes FROM tasks WHERE status IN ('queued','running')",
+    ).get() as { bytes: number }
+    return Number(row.bytes ?? 0)
+  }
+
+  activeCounts(): { queued: number; running: number } {
+    const row = this.db.query(
+      "SELECT " +
+      "SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued, " +
+      "SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running " +
+      "FROM tasks WHERE status IN ('queued','running')",
+    ).get() as { queued: number | null; running: number | null }
+    return { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0) }
   }
 
   /** 只删除过期终态任务,活跃任务永不被 TTL 清理。 */
@@ -252,6 +298,64 @@ function dataUriToFile(uri: string, name: string): File | null {
   return new File([bytes], name, { type: contentType })
 }
 
+/**
+ * 按 chunk 读取提交体，并在读取过程中预留全局输入字节预算。不能用 request.arrayBuffer()
+ * 再检查：500 个分块的大改图请求会先同时进入 JS 堆，等检查时已经来不及了。
+ */
+async function readRequestBodyBounded(
+  req: Request,
+  maxBytes: number,
+  reserve: (bytes: number) => void,
+  release: (bytes: number) => void,
+): Promise<{ raw: Uint8Array; release: () => void }> {
+  if (!req.body) return { raw: new Uint8Array(), release: () => {} }
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let reserved = 0
+  let wasReleased = false
+  const releaseReserved = () => {
+    if (wasReleased || reserved === 0) return
+    wasReleased = true
+    release(reserved)
+  }
+
+  try {
+    while (true) {
+      let next: ReadableStreamReadResult<Uint8Array>
+      try {
+        next = await reader.read()
+      } catch {
+        throw new HttpError(400, 'relay: 请求体读取失败')
+      }
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new HttpError(413, 'relay: 请求体过大')
+      }
+      reserve(value.byteLength)
+      reserved += value.byteLength
+      total += value.byteLength
+      chunks.push(value)
+    }
+    const raw = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      raw.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return { raw, release: releaseReserved }
+  } catch (error) {
+    await reader.cancel().catch(() => {})
+    releaseReserved()
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 function clampCount(n: unknown): number {
   const v = Math.floor(Number(n))
   return Number.isFinite(v) ? Math.max(1, Math.min(4, v)) : 1
@@ -277,6 +381,20 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   const store = new TaskStore(config.dbPath, now)
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
   const sem = new Semaphore(config.imgConc)
+  // 尚未落入 SQLite 的上传体也要计入预算；否则 500 个 chunked 请求可在入队前一起占满内存。
+  let pendingInputBytes = 0
+
+  function reserveInputBytes(bytes: number): void {
+    const used = store.countActiveInputBytes() + pendingInputBytes
+    if (used + bytes > config.activeInputBytesMax) {
+      throw queueFull('relay: 活跃生图输入数据已达上限,请等待前面的任务完成或取消')
+    }
+    pendingInputBytes += bytes
+  }
+
+  function releaseInputBytes(bytes: number): void {
+    pendingInputBytes = Math.max(0, pendingInputBytes - bytes)
+  }
 
   function sweep(): void {
     const cutoff = now() - config.taskTtlMs
@@ -287,6 +405,13 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     const header = req.headers.get('authorization') ?? ''
     const token = header.startsWith('Bearer ') ? header.slice(7) : ''
     if (!token || token !== config.relayToken) throw new HttpError(401, 'relay: 无效令牌')
+  }
+
+  function queueFull(message: string): HttpError {
+    return new HttpError(429, message, {
+      'Retry-After': String(config.retryAfterSeconds),
+      'Cache-Control': 'no-store',
+    })
   }
 
   async function fetchUpstream(input: string, init: RequestInit): Promise<Response> {
@@ -424,7 +549,14 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
   for (const id of recovered.queued) {
     const body = blobs.get(id, 'in') as SubmitBody | null
-    if (body) void runOpenAi(id, body)
+    if (body) {
+      // Pre-budget databases receive 0 from the additive SQLite migration. Re-account their
+      // persisted input before resuming so an old queued edit cannot bypass the new byte cap.
+      if (store.get(id)?.input_bytes === 0) {
+        store.setInputBytes(id, Buffer.byteLength(JSON.stringify(body)))
+      }
+      void runOpenAi(id, body)
+    }
     else {
       store.setStatus(id, 'failed_unknown', '重启后找不到原始输入,无法续跑')
       blobs.delKind(id, 'in')
@@ -452,7 +584,24 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     try {
       const url = new URL(req.url)
       if (req.method === 'GET' && url.pathname === '/healthz') {
-        return Response.json({ ok: true, active: store.countActive(), img_conc: config.imgConc, queue_max: config.queueMax, user_max: config.userMax })
+        const counts = store.activeCounts()
+        const active = counts.queued + counts.running
+        const activeInputBytes = store.countActiveInputBytes()
+        return Response.json({
+          ok: true,
+          active,
+          queued: counts.queued,
+          running: counts.running,
+          queue_available: Math.max(0, config.queueMax - active),
+          active_input_bytes: activeInputBytes,
+          pending_input_bytes: pendingInputBytes,
+          active_input_bytes_max: config.activeInputBytesMax,
+          active_input_bytes_available: Math.max(0, config.activeInputBytesMax - activeInputBytes - pendingInputBytes),
+          img_conc: config.imgConc,
+          queue_max: config.queueMax,
+          user_max: config.userMax,
+          retry_after_seconds: config.retryAfterSeconds,
+        }, { headers: { 'Cache-Control': 'no-store' } })
       }
       if (req.method === 'POST' && url.pathname === '/images/tasks') {
         auth(req)
@@ -462,36 +611,54 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         // 请求体大小上限:先看 content-length 快速拒,再按实际字节校验。
         const declared = Number(req.headers.get('content-length') ?? '')
         if (Number.isFinite(declared) && declared > config.maxBodyBytes) throw new HttpError(413, 'relay: 请求体过大')
-        const raw = await req.arrayBuffer()
-        if (raw.byteLength > config.maxBodyBytes) throw new HttpError(413, 'relay: 请求体过大')
-        let body: SubmitBody
-        try { body = JSON.parse(Buffer.from(raw).toString('utf8')) as SubmitBody } catch { throw new HttpError(400, 'relay: 请求体不是合法 JSON') }
-        if (!body || typeof body !== 'object') throw new HttpError(400, 'relay: 请求体必须是对象')
-        if (!String(body.prompt ?? '').trim()) throw new HttpError(400, 'relay: 缺少 prompt')
-
-        // 幂等:同 (owner, key) 已存在 → 返回原 task_id,不再跑第二次真实上游。
-        if (idempotencyKey) {
-          const existing = store.findByIdempotency(owner, idempotencyKey)
-          if (existing) return Response.json({ task_id: existing.id, status: existing.status, reused: true }, { status: 202 })
-        }
-        // 队列上限:全局在途 + 单 owner 在途。
-        if (store.countActive() >= config.queueMax) throw new HttpError(429, 'relay: 生图队列已满,请稍后重试')
-        if (owner && store.countActiveByOwner(owner) >= config.userMax) throw new HttpError(429, 'relay: 你的生图任务已达上限,请等待前面的完成')
-
-        const id = crypto.randomUUID()
+        const bodyReservation = await readRequestBodyBounded(
+          req,
+          config.maxBodyBytes,
+          reserveInputBytes,
+          releaseInputBytes,
+        )
+        const raw = bodyReservation.raw
+        let persisted = false
         try {
-          store.insert(id, owner, idempotencyKey)
-        } catch (err) {
-          // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
+          let body: SubmitBody
+          try { body = JSON.parse(Buffer.from(raw).toString('utf8')) as SubmitBody } catch { throw new HttpError(400, 'relay: 请求体不是合法 JSON') }
+          if (!body || typeof body !== 'object') throw new HttpError(400, 'relay: 请求体必须是对象')
+          if (!String(body.prompt ?? '').trim()) throw new HttpError(400, 'relay: 缺少 prompt')
+
+          // 幂等:同 (owner, key) 已存在 → 返回原 task_id,不再跑第二次真实上游。
           if (idempotencyKey) {
             const existing = store.findByIdempotency(owner, idempotencyKey)
             if (existing) return Response.json({ task_id: existing.id, status: existing.status, reused: true }, { status: 202 })
           }
-          throw err
+          // 队列上限:全局在途 + 单 owner 在途。
+          if (store.countActive() >= config.queueMax) throw queueFull('relay: 生图队列已满,请稍后重试')
+          if (owner && store.countActiveByOwner(owner) >= config.userMax) throw queueFull('relay: 你的生图任务已达上限,请等待前面的完成')
+
+          const id = crypto.randomUUID()
+          try {
+            store.insert(id, owner, idempotencyKey, raw.byteLength)
+          } catch (err) {
+            // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
+            if (idempotencyKey) {
+              const existing = store.findByIdempotency(owner, idempotencyKey)
+              if (existing) return Response.json({ task_id: existing.id, status: existing.status, reused: true }, { status: 202 })
+            }
+            throw err
+          }
+          try {
+            blobs.put(id, 'in', body) // 持久化原始输入,供重启后续跑
+          } catch (error) {
+            try { blobs.del(id) } catch {}
+            store.remove(id)
+            throw error
+          }
+          persisted = true
+          bodyReservation.release() // SQLite 已持久化这段输入字节，转入 active_input_bytes 统计。
+          void runOpenAi(id, body)
+          return Response.json({ task_id: id, status: 'queued' }, { status: 202 })
+        } finally {
+          if (!persisted) bodyReservation.release()
         }
-        blobs.put(id, 'in', body) // 持久化原始输入,供重启后续跑
-        void runOpenAi(id, body)
-        return Response.json({ task_id: id, status: 'queued' }, { status: 202 })
       }
       if (req.method === 'GET' && url.pathname.startsWith('/images/tasks/')) {
         auth(req)
@@ -520,7 +687,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       }
       return new Response('Not found', { status: 404 })
     } catch (err) {
-      if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status })
+      if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status, headers: err.headers })
       return Response.json({ error: `relay 内部错误:${String(err).slice(0, 200)}` }, { status: 500 })
     }
   }
