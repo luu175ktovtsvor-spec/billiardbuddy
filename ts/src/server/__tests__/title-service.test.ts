@@ -447,8 +447,7 @@ describe('titleService', () => {
 
     await expect(saveAiTitle(sessionId, 'Automatic topic')).resolves.toBe(false)
 
-    const detail = await sessionService.getSession(sessionId)
-    expect(detail?.title).toBe('My fixed name')
+    expect(await sessionService.getCustomTitle(sessionId)).toBe('My fixed name')
 
     const found = await sessionService.findSessionFile(sessionId)
     expect(found).not.toBeNull()
