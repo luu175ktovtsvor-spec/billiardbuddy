@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getApiUrl } from '../../api/client'
+import {
+  IMAGE_WORKBENCH_TAB_ID,
+  VIDEO_STUDIO_TAB_ID,
+  useTabStore,
+} from '../../stores/tabStore'
+import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 import { productTasksApi } from '../api/tasks'
 import type {
   ProductTaskMediaAttachableList,
@@ -135,6 +141,17 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
     }
   }
 
+  const openProjectInWorkbench = (project: ProductTaskMediaProject) => {
+    if (project.kind === 'image') {
+      useMediaWorkbenchStore.getState().selectImage(project.id)
+      useTabStore.getState().openTab(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench')
+      return
+    }
+
+    useMediaWorkbenchStore.getState().selectVideo(project.id)
+    useTabStore.getState().openTab(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio')
+  }
+
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="product-task-media-dock">
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--color-border)] px-3 py-2">
@@ -228,9 +245,18 @@ export function ProductTaskMediaDock({ taskId, onClose }: ProductTaskMediaDockPr
                 <header className="border-b border-[var(--color-border)] px-3 py-2">
                   <div className="flex items-start justify-between gap-3">
                     <h3 className="min-w-0 truncate text-sm font-medium text-[var(--color-text-primary)]">{project.title}</h3>
-                    <span className="shrink-0 rounded-full bg-[var(--color-surface-container)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">
-                      {PROJECT_STATE_LABEL[project.state]}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openProjectInWorkbench(project)}
+                        className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+                      >
+                        {project.kind === 'image' ? '在图片工作台中打开' : '在视频工作台中打开'}
+                      </button>
+                      <span className="rounded-full bg-[var(--color-surface-container)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">
+                        {PROJECT_STATE_LABEL[project.state]}
+                      </span>
+                    </div>
                   </div>
                   <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{project.kind === 'image' ? '图片项目' : '视频项目'} · 更新于 {updatedAtLabel(project.updatedAt)}</p>
                   {project.mediaTask ? (
