@@ -12,15 +12,10 @@ const mocks = vi.hoisted(() => ({
   copyText: vi.fn(),
 }))
 
-vi.mock('../../api/commandDiscovery', () => ({
-  commandDiscoveryApi: {
-    listSkillCommands: mocks.listSkillCommands,
-  },
-}))
-
-vi.mock('../../api/agents', () => ({
-  agentsApi: {
-    list: mocks.listAgents,
+vi.mock('../api/taskCommands', () => ({
+  productTaskCommandsApi: {
+    listSkills: mocks.listSkillCommands,
+    listAgents: mocks.listAgents,
   },
 }))
 
@@ -43,7 +38,7 @@ vi.mock('../../components/chat/clipboard', () => ({
 import { TaskComposer, TaskIndex, type TaskIndexProps } from './TaskIndex'
 import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { useSettingsStore } from '../../stores/settingsStore'
-import type { DiscoveredSlashCommand } from '../../api/commandDiscovery'
+import type { ProductTaskSkillCommand } from '../api/taskCommands'
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
   return {
@@ -78,7 +73,7 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
   }
 }
 
-function makeSkill(overrides: Partial<DiscoveredSlashCommand> = {}): DiscoveredSlashCommand {
+function makeSkill(overrides: Partial<ProductTaskSkillCommand> = {}): ProductTaskSkillCommand {
   return {
     name: 'venue-daily-review',
     ...overrides,

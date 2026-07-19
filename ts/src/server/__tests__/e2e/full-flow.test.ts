@@ -165,11 +165,11 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 4. Agents
+  // 4. Task command discovery
   // =============================================
 
-  it('should start with safe Agent command descriptors', async () => {
-    const { data } = await api('GET', '/api/agents')
+  it('should discover safe product task Agent command descriptors', async () => {
+    const { data } = await api('GET', '/api/product/task-commands/agents')
     expect(Array.isArray(data.agents)).toBe(true)
     expect(data.agents.length).toBeGreaterThan(0)
     expect(data.agents).toContainEqual({

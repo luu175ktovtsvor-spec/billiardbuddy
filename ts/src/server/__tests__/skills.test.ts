@@ -11,7 +11,7 @@ import { clearSkillCaches } from '../../skills/loadSkillsDir.js'
 import { clearInstalledPluginsCache } from '../../utils/plugins/installedPluginsManager.js'
 import { clearPluginCache } from '../../utils/plugins/pluginLoader.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
-import { handleSkillsApi } from '../api/skills.js'
+import { handleApiRequest } from '../router.js'
 
 let tmpHome: string
 let originalHome: string | undefined
@@ -65,7 +65,7 @@ function expectNameOnlyCommands(
   }
 }
 
-describe('Skills API product boundary', () => {
+describe('product task Skill command discovery', () => {
   beforeEach(async () => {
     tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-skills-test-'))
     originalHome = process.env.HOME
@@ -97,41 +97,27 @@ describe('Skills API product boundary', () => {
     await fs.rm(tmpHome, { recursive: true, force: true })
   })
 
-  it('keeps ordinary catalog requests empty without scanning or exposing private inputs', async () => {
-    const privateValue = 'PRIVATE_SKILL_DESCRIPTION_SENTINEL'
-    const { req, url, segments } = makeRequest(
-      `/api/skills?cwd=${encodeURIComponent(`/private/${privateValue}`)}`,
-    )
-
-    const response = await handleSkillsApi(req, url, segments)
-
-    expect(response.status).toBe(200)
-    const body = await response.json()
-    expect(body).toEqual({ skills: [] })
-    expect(JSON.stringify(body)).not.toContain(privateValue)
-  })
-
-  it('rejects Skill detail requests with a generic code and no request echo', async () => {
+  it('rejects unknown task command resources without echoing private input', async () => {
     const privateValue = 'PRIVATE_SKILL_DETAIL_SENTINEL'
-    const { req, url, segments } = makeRequest(`/api/skills/detail?name=${privateValue}`)
+    const { req, url } = makeRequest(`/api/product/task-commands/${privateValue}?cwd=/private/${privateValue}`)
 
-    const response = await handleSkillsApi(req, url, segments)
+    const response = await handleApiRequest(req, url)
 
     expect(response.status).toBe(404)
     const body = await response.json()
-    expect(body).toEqual({ error: 'SKILL_NOT_AVAILABLE' })
+    expect(body).toEqual({ error: 'NOT_FOUND', message: '未知任务命令资源' })
     expect(JSON.stringify(body)).not.toContain(privateValue)
   })
 
-  it('returns only an error code for invalid methods', async () => {
+  it('returns a safe product error for invalid methods', async () => {
     const privateValue = 'PRIVATE_SKILL_METHOD_SENTINEL'
-    const { req, url, segments } = makeRequest(`/api/skills?probe=${privateValue}`, 'POST')
+    const { req, url } = makeRequest(`/api/product/task-commands/skills?probe=${privateValue}`, 'POST')
 
-    const response = await handleSkillsApi(req, url, segments)
+    const response = await handleApiRequest(req, url)
 
     expect(response.status).toBe(405)
     const body = await response.json()
-    expect(body).toEqual({ error: 'SKILL_REQUEST_INVALID' })
+    expect(body).toEqual({ error: 'METHOD_NOT_ALLOWED', message: '当前任务命令操作暂不支持' })
     expect(JSON.stringify(body)).not.toContain(privateValue)
   })
 
@@ -153,10 +139,10 @@ describe('Skills API product boundary', () => {
       ['---', `description: ${projectDescription}`, '---', '', projectBody].join('\n'),
     )
 
-    const { req, url, segments } = makeRequest(
-      `/api/skills/slash-commands?cwd=${encodeURIComponent(cwd)}`,
+    const { req, url } = makeRequest(
+      `/api/product/task-commands/skills?cwd=${encodeURIComponent(cwd)}`,
     )
-    const response = await handleSkillsApi(req, url, segments)
+    const response = await handleApiRequest(req, url)
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse
@@ -178,8 +164,8 @@ describe('Skills API product boundary', () => {
     await fs.rm(skillDir, { recursive: true, force: true })
 
     try {
-      const { req, url, segments } = makeRequest('/api/skills/slash-commands')
-      const response = await handleSkillsApi(req, url, segments)
+      const { req, url } = makeRequest('/api/product/task-commands/skills')
+      const response = await handleApiRequest(req, url)
       const body = await response.json() as SlashCommandsResponse
 
       expect(response.status).toBe(200)
@@ -256,8 +242,8 @@ describe('Skills API product boundary', () => {
       'utf-8',
     )
 
-    const { req, url, segments } = makeRequest('/api/skills/slash-commands')
-    const response = await handleSkillsApi(req, url, segments)
+    const { req, url } = makeRequest('/api/product/task-commands/skills')
+    const response = await handleApiRequest(req, url)
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse
@@ -276,10 +262,10 @@ describe('Skills API product boundary', () => {
       'utf-8',
     )
 
-    const { req, url, segments } = makeRequest(
-      `/api/skills/slash-commands?cwd=${encodeURIComponent(cwd)}`,
+    const { req, url } = makeRequest(
+      `/api/product/task-commands/skills?cwd=${encodeURIComponent(cwd)}`,
     )
-    const response = await handleSkillsApi(req, url, segments)
+    const response = await handleApiRequest(req, url)
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse

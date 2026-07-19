@@ -1,7 +1,9 @@
 import { parseAgentCommandArgs } from '../../commands/agent.js'
-import { listSkillSlashCommands } from '../api/skills.js'
-import { getAgentDefinitionsWithOverrides } from '../../tools/AgentTool/loadAgentsDir.js'
 import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
+import {
+  listProductTaskAgentRuntimeNames,
+  listProductTaskSkillNames,
+} from './taskCommandDiscovery.js'
 
 /**
  * Product task pages accept task intent, not the Coding Agent's management
@@ -71,13 +73,11 @@ export type ProductTaskCommandCandidate =
 
 const defaultDependencies: ProductTaskCommandPolicyDependencies = {
   async listSkillNames(cwd) {
-    const commands = await listSkillSlashCommands(cwd)
-    return commands.map((command) => command.name)
+    return listProductTaskSkillNames(cwd)
   },
 
   async listAgentRuntimeNames(cwd) {
-    const { activeAgents } = await getAgentDefinitionsWithOverrides(cwd)
-    return activeAgents.map((agent) => agent.agentType)
+    return listProductTaskAgentRuntimeNames(cwd)
   },
 }
 

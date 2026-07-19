@@ -10,8 +10,11 @@ import type {
 } from '../domain/types'
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
-import { agentsApi, type AgentCommand } from '../../api/agents'
-import { commandDiscoveryApi, type DiscoveredSlashCommand } from '../../api/commandDiscovery'
+import {
+  productTaskCommandsApi,
+  type ProductTaskAgentCommand,
+  type ProductTaskSkillCommand,
+} from '../api/taskCommands'
 import {
   buildTaskComposerAgentCommands,
   resolveTaskComposerRuntimeCommand,
@@ -278,8 +281,8 @@ export function TaskComposer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
   const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask')
-  const [discoverableSkills, setDiscoverableSkills] = useState<DiscoveredSlashCommand[] | null>(null)
-  const [discoverableAgents, setDiscoverableAgents] = useState<AgentCommand[] | null>(null)
+  const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
+  const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
@@ -309,7 +312,7 @@ export function TaskComposer({
     setSkillDiscoveryError(null)
     setAgentDiscoveryError(null)
 
-    commandDiscoveryApi.listSkillCommands(normalizedWorkDir)
+    productTaskCommandsApi.listSkills(normalizedWorkDir)
       .then(({ commands }) => {
         if (cancelled) return
         setDiscoverableSkills(commands)
@@ -320,7 +323,7 @@ export function TaskComposer({
         setSkillDiscoveryError('暂时无法读取可用命令')
       })
 
-    agentsApi.list(normalizedWorkDir)
+    productTaskCommandsApi.listAgents(normalizedWorkDir)
       .then(({ agents }) => {
         if (cancelled) return
         setDiscoverableAgents(agents)

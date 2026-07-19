@@ -23,6 +23,11 @@ describe('ProductApiError', () => {
       error: 'VOICE_TRANSCRIPTION_TOO_LARGE',
       message: 'the upload reached an internal private limit',
     }).message).toBe('录音文件过大，请缩短后重试。')
+
+    expect(new ProductApiError(503, {
+      error: 'PRODUCT_TASK_COMMANDS_UNAVAILABLE',
+      message: 'plugin at /private/workspace could not be read',
+    }).message).toBe('暂时无法读取可用命令，请稍后重试。')
   })
 
   it('replaces unknown and transport errors with a recoverable generic message', () => {
