@@ -523,7 +523,7 @@ export function TerminalSettings({
               </div>
             </div>
           </div>
-          <BashPathSettings isTauri={terminalApi.isAvailable()} />
+          <BashPathSettings isTerminalAvailable={terminalApi.isAvailable()} />
         </>
       )}
 
@@ -682,7 +682,7 @@ function StatusPill({ status, label, compact = false }: { status: TerminalStatus
   )
 }
 
-function BashPathSettings({ isTauri }: { isTauri: boolean }) {
+function BashPathSettings({ isTerminalAvailable }: { isTerminalAvailable: boolean }) {
   const t = useTranslation()
   const [bashPath, setBashPath] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -690,9 +690,9 @@ function BashPathSettings({ isTauri }: { isTauri: boolean }) {
   const [invalid, setInvalid] = useState(false)
 
   useEffect(() => {
-    if (!isTauri) return
+    if (!isTerminalAvailable) return
     void terminalApi.getBashPath().then((path) => setBashPath(path)).catch(() => {})
-  }, [isTauri])
+  }, [isTerminalAvailable])
 
   const handleSave = async () => {
     const trimmed = bashPath?.trim() || null
@@ -728,7 +728,7 @@ function BashPathSettings({ isTauri }: { isTauri: boolean }) {
   }
 
   const handleBrowse = async () => {
-    if (!isTauri) return
+    if (!isTerminalAvailable) return
     const host = getDesktopHost()
     if (!host.capabilities.dialogs) return
     try {
@@ -749,7 +749,7 @@ function BashPathSettings({ isTauri }: { isTauri: boolean }) {
     }
   }
 
-  if (!isTauri) return null
+  if (!isTerminalAvailable) return null
 
   return (
     <div className="mb-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">

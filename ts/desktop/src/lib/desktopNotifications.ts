@@ -339,7 +339,7 @@ export async function installDesktopNotificationClickListener(
     const unlisten = await getDesktopHost().events.listen<unknown>('desktop-notification-clicked', handlePayload)
     cleanups.push(unlisten)
   } catch {
-    // Non-Tauri browser tests and unsupported runtimes do not expose native events.
+    // Browser tests and unsupported runtimes do not expose native events.
   }
 
   try {
