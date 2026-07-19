@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   clearBundledSkills,
+  getBundledSkillExtractDir,
   getBundledSkillDescriptors,
+  getBundledSkills,
 } from '../bundledSkills.js'
 import {
   BOSS_RECRUITING_FILES,
@@ -26,19 +30,21 @@ describe('boss recruiting skill', () => {
     expect(descriptors[0]).toEqual(expect.objectContaining({
       name: 'boss-recruiting',
       displayName: '招聘球房员工',
+      description: '把球房招聘目标整理成真实岗位、候选人分析、沟通草稿和可人工确认的跟进清单。',
       userInvocable: true,
     }))
     expect(descriptors[0]!.content).toContain('岗位名称与真实工作保持一致')
     expect(descriptors[0]!.content).toContain('按批次确认并读回结果')
   })
 
-  it('does not bind the workflow to browser automation', () => {
+  it('does not promise a BOSS connection before a real execution channel exists', () => {
     registerBossRecruitingSkill()
 
     const content = getBundledSkillDescriptors()[0]!.content
     expect(content).toContain('让 Agent 自己选择执行方式')
     expect(content).toContain('Skill 不绑定具体工具')
-    expect(content).toContain('运行已有脚本或为本次任务编写代码')
+    expect(content).toContain('它本身不提供 BOSS 直聘或其他招聘平台的连接和页面适配')
+    expect(content).toContain('不要把它说成已发布、已联系或已改变状态')
   })
 
   it('ships progressive references for execution and recruiting facts', () => {
@@ -52,5 +58,53 @@ describe('boss recruiting skill', () => {
     expect(BOSS_RECRUITING_FILES['references/recruiting-worksheet.md']).toContain(
       '未知项保持待确认',
     )
+  })
+
+  it('keeps account credentials and irrelevant candidate data out of the workflow', () => {
+    registerBossRecruitingSkill()
+
+    const content = getBundledSkillDescriptors()[0]!.content
+    expect(content).toContain('不要索取账号密码、验证码、Cookie、会话令牌或身份、生物识别信息')
+    expect(content).toContain('不收集、复制或推断与岗位职责无直接关系的身份、家庭、健康、宗教、民族等个人信息')
+    expect(BOSS_RECRUITING_FILES['references/execution-pattern.md']).toContain(
+      '账号密码、验证码、Cookie、会话令牌、身份证号、人脸或其他生物识别信息',
+    )
+  })
+
+  it('loads the same guarded instructions and references when the Skill is invoked', async () => {
+    const macroTarget = globalThis as typeof globalThis & {
+      MACRO?: { VERSION: string }
+    }
+    const previousMacro = macroTarget.MACRO
+    if (!previousMacro) macroTarget.MACRO = { VERSION: 'boss-recruiting-test' }
+
+    const skillDir = getBundledSkillExtractDir('boss-recruiting')
+    await rm(skillDir, { recursive: true, force: true })
+
+    try {
+      registerBossRecruitingSkill()
+      const command = getBundledSkills().find(candidate => candidate.name === 'boss-recruiting')
+      expect(command?.type).toBe('prompt')
+      if (!command || command.type !== 'prompt') {
+        throw new Error('BOSS recruiting Skill was not registered as a prompt command')
+      }
+
+      const prompt = await command.getPromptForCommand('招一名球房教练', undefined as never)
+      const firstBlock = prompt[0]
+      expect(firstBlock?.type).toBe('text')
+      if (firstBlock?.type !== 'text') {
+        throw new Error('BOSS recruiting Skill did not return a text prompt')
+      }
+
+      expect(firstBlock.text).toStartWith(`Base directory for this skill: ${skillDir}`)
+      expect(firstBlock.text).toContain('不把准备工作说成已完成的招聘动作')
+      expect(await readFile(join(skillDir, 'references', 'execution-pattern.md'), 'utf-8')).toContain(
+        '也不提供 BOSS 直聘或其他招聘平台的专用连接和页面适配',
+      )
+    } finally {
+      await rm(skillDir, { recursive: true, force: true })
+      if (previousMacro === undefined) delete macroTarget.MACRO
+      else macroTarget.MACRO = previousMacro
+    }
   })
 })
