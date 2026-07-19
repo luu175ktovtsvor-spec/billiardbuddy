@@ -10,10 +10,6 @@ const { previewBridgeMock } = vi.hoisted(() => ({
 
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: previewBridgeMock }))
 
-vi.mock('../../pages/ActiveSession', () => ({
-  ActiveSession: () => <div data-testid="active-session" />,
-}))
-
 vi.mock('../../pages/ScheduledTasks', () => ({
   ScheduledTasks: () => <div data-testid="scheduled-tasks" />,
 }))
@@ -123,19 +119,25 @@ describe('ContentRouter tab surfaces', () => {
     expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-runtime-id', '__session_terminal__session-1')
   })
 
-  it('keeps terminal tabs mounted while chat content is active', () => {
+  it('keeps terminal tabs mounted while a product task is active', () => {
     useTabStore.setState({
       tabs: [
         { sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', status: 'idle' },
-        { sessionId: 'session-1', title: 'Chat', type: 'session', status: 'idle' },
+        {
+          sessionId: '__product_task__task-1',
+          title: '任务',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
       ],
-      activeTabId: 'session-1',
+      activeTabId: '__product_task__task-1',
     })
 
     render(<ContentRouter />)
 
     expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-active', 'false')
-    expect(screen.getByTestId('active-session')).toBeInTheDocument()
+    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
   })
 
   it('can open another terminal tab from a terminal page', () => {
@@ -224,6 +226,35 @@ describe('ContentRouter tab surfaces', () => {
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 
+  it('keeps the native preview host available while a product task is active, then closes it after leaving', async () => {
+    useTabStore.setState({
+      tabs: [
+        {
+          sessionId: '__product_task__task-1',
+          title: '整理开球训练',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+      ],
+      activeTabId: '__product_task__task-1',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-task-page')).toBeInTheDocument()
+    expect(previewBridgeMock.close).not.toHaveBeenCalled()
+
+    act(() => {
+      useTabStore.setState({ activeTabId: '__settings__' })
+    })
+
+    await waitFor(() => {
+      expect(previewBridgeMock.close).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('does not route an unknown persisted tab through the legacy chat surface', () => {
     useTabStore.setState({
       tabs: [{
@@ -241,24 +272,16 @@ describe('ContentRouter tab surfaces', () => {
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 
-  it('closes the native preview when switching from a chat session to settings', async () => {
+  it('routes a legacy session tab back to the new-task product surface and closes any native preview', async () => {
     useTabStore.setState({
-      tabs: [
-        { sessionId: 'session-1', title: 'Chat', type: 'session', status: 'idle' },
-        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
-      ],
+      tabs: [{ sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' }],
       activeTabId: 'session-1',
     })
 
     render(<ContentRouter />)
-    expect(screen.getByTestId('active-session')).toBeInTheDocument()
-    previewBridgeMock.close.mockClear()
 
-    act(() => {
-      useTabStore.setState({ activeTabId: '__settings__' })
-    })
-
-    expect(screen.getByTestId('settings-page')).toBeInTheDocument()
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
     await waitFor(() => {
       expect(previewBridgeMock.close).toHaveBeenCalledTimes(1)
     })

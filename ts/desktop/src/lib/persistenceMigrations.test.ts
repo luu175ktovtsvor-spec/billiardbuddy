@@ -10,7 +10,7 @@ describe('desktop persistence migrations', () => {
     window.localStorage.clear()
   })
 
-  test('migrates legacy open-tab arrays into the current tab persistence shape', () => {
+  test('drops legacy open-tab arrays instead of recreating raw Core session tabs', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify([
       { sessionId: 'session-1', title: 'Old tab' },
       { sessionId: '__terminal__legacy', title: 'Terminal 1', type: 'terminal' },
@@ -20,16 +20,17 @@ describe('desktop persistence migrations', () => {
     const report = runDesktopPersistenceMigrations()
 
     expect(report.migratedKeys).toContain('billiardbuddy-open-tabs')
-    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
-      openTabs: [{ sessionId: 'session-1', title: 'Old tab', type: 'session' }],
-      activeTabId: 'session-1',
-    })
+    expect(window.localStorage.getItem('billiardbuddy-open-tabs')).toBeNull()
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
-  test('preserves supported product tabs instead of downgrading them to raw sessions', () => {
+  test('preserves only supported product tabs', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [
+        { sessionId: '__settings__', title: '设置', type: 'settings' },
+        { sessionId: '__scheduled__', title: '定时任务', type: 'scheduled' },
+        { sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' },
+        { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
         { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
         {
           sessionId: '__product_task__task-1',
@@ -38,6 +39,8 @@ describe('desktop persistence migrations', () => {
           taskId: 'task-1',
         },
         { sessionId: '__product_task__missing', title: '不完整任务', type: 'product-task' },
+        { sessionId: 'session-1', title: '旧会话', type: 'session' },
+        { sessionId: '__terminal__legacy', title: '终端', type: 'terminal' },
       ],
       activeTabId: '__product_task__task-1',
     }))
@@ -46,6 +49,10 @@ describe('desktop persistence migrations', () => {
 
     expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
       openTabs: [
+        { sessionId: '__settings__', title: '设置', type: 'settings' },
+        { sessionId: '__scheduled__', title: '定时任务', type: 'scheduled' },
+        { sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' },
+        { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
         { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
         {
           sessionId: '__product_task__task-1',
@@ -53,13 +60,12 @@ describe('desktop persistence migrations', () => {
           type: 'product-task',
           taskId: 'task-1',
         },
-        { sessionId: '__product_task__missing', title: '不完整任务', type: 'session' },
       ],
       activeTabId: '__product_task__task-1',
     })
   })
 
-  test('drops retired trace tabs instead of restoring their inspection state', () => {
+  test('drops retired traces and raw sessions instead of restoring their inspection state', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [
         { sessionId: '__traces__', title: 'Trace list', type: 'traces' },
@@ -76,10 +82,7 @@ describe('desktop persistence migrations', () => {
       'billiardbuddy-open-tabs',
       'billiardbuddy-active-settings-tab',
     ]))
-    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
-      openTabs: [{ sessionId: 'session-1', title: 'Current task', type: 'session' }],
-      activeTabId: 'session-1',
-    })
+    expect(window.localStorage.getItem('billiardbuddy-open-tabs')).toBeNull()
     expect(window.localStorage.getItem('billiardbuddy-active-settings-tab')).toBeNull()
   })
 

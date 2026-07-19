@@ -12,7 +12,6 @@ import { useElectronWindowDragRegions } from '../../hooks/useElectronWindowDragR
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
-import { useChatStore } from '../../stores/chatStore'
 import { useTranslation } from '../../i18n'
 import { TaskSearchModal } from '../../product/components/TaskSearchModal'
 
@@ -43,16 +42,7 @@ export function AppShell() {
 
         if (!cancelled) setReady(true)
 
-        void (async () => {
-          await useTabStore.getState().restoreTabs()
-          if (cancelled) return
-
-          const { activeTabId, tabs } = useTabStore.getState()
-          const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
-          if (activeTabId && activeTab?.type === 'session') {
-            useChatStore.getState().connectToSession(activeTabId)
-          }
-        })().catch(() => {})
+        void useTabStore.getState().restoreTabs().catch(() => {})
       } catch (error) {
         if (!cancelled) {
           setStartupError(error instanceof Error ? error.message : String(error))

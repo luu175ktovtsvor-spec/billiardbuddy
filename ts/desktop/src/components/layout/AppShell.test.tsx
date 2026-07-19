@@ -7,7 +7,6 @@ const mocks = vi.hoisted(() => ({
   initializeDesktopServerUrl: vi.fn(),
   fetchAll: vi.fn(),
   restoreTabs: vi.fn(),
-  connectToSession: vi.fn(),
   openTab: vi.fn(),
   tabState: {
     activeTabId: null as string | null,
@@ -32,14 +31,6 @@ vi.mock('../../stores/tabStore', () => ({
       activeTabId: mocks.tabState.activeTabId,
       tabs: mocks.tabState.tabs,
       openTab: mocks.openTab,
-    }),
-  },
-}))
-
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({
-      connectToSession: mocks.connectToSession,
     }),
   },
 }))
@@ -144,7 +135,7 @@ describe('AppShell desktop boot flow', () => {
     expect(screen.queryByTestId('startup-error')).not.toBeInTheDocument()
   })
 
-  it('reconnects the restored active session after boot', async () => {
+  it('completes tab restoration without using a legacy active session tab', async () => {
     mocks.tabState.activeTabId = 'session-1'
     mocks.tabState.tabs = [
       { sessionId: 'session-1', title: 'Existing session', type: 'session', status: 'idle' },
@@ -153,7 +144,7 @@ describe('AppShell desktop boot flow', () => {
     render(<AppShell />)
 
     await screen.findByText('sidebar loaded')
-    await waitFor(() => expect(mocks.connectToSession).toHaveBeenCalledWith('session-1'))
+    await waitFor(() => expect(mocks.restoreTabs).toHaveBeenCalled())
   })
 
   it('routes native settings navigation through the desktop host', async () => {

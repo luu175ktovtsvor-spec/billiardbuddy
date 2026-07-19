@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { sessionsApi } from '../api/sessions'
 import { dropSession as dropVirtualHeightSession } from '../components/chat/virtualHeightCache'
 import { destroyTerminalRuntime } from '../lib/terminalRuntime'
 
@@ -280,11 +279,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
 
   saveTabs: () => {
     const { tabs, activeTabId } = get()
-    const persistableTabs = tabs.filter((tab) => (
-      tab.type !== 'terminal'
-      && tab.type !== 'workbench'
-      && tab.type !== 'new-product-task'
-    ))
+    const persistableTabs = tabs.filter(isPersistableTab)
     const data: TabPersistence = {
       openTabs: persistableTabs.map((t) => ({
         sessionId: t.sessionId,
@@ -303,69 +298,18 @@ export const useTabStore = create<TabStore>((set, get) => ({
 
   restoreTabs: async () => {
     try {
-      const restoreStartedWith = get()
       const raw = localStorage.getItem(TAB_STORAGE_KEY)
       if (!raw) return
 
-      const data = JSON.parse(raw) as TabPersistence
-      if (!data.openTabs || data.openTabs.length === 0) {
+      const data = JSON.parse(raw) as Partial<TabPersistence>
+      if (!Array.isArray(data.openTabs) || data.openTabs.length === 0) {
         set({ tabs: [], activeTabId: null })
         localStorage.removeItem(TAB_STORAGE_KEY)
         return
       }
 
-      const { sessions } = await sessionsApi.list({ limit: 200 })
-      const current = get()
-      if (
-        current.tabs !== restoreStartedWith.tabs ||
-        current.activeTabId !== restoreStartedWith.activeTabId
-      ) {
-        return
-      }
-      const existingIds = new Set(sessions.map((s) => s.id))
-
       const validTabs: Tab[] = data.openTabs
-        .filter((tab) => !isRetiredTraceTab(tab))
-        .filter((t) => {
-          // Special tabs are always valid
-          if (
-            t.type === 'settings' ||
-            t.type === 'scheduled' ||
-            t.type === 'image-workbench' ||
-            t.type === 'video-studio' ||
-            t.type === 'product-tasks' ||
-            (t.type === 'product-task' && typeof t.taskId === 'string' && t.taskId.trim().length > 0)
-          ) return true
-          if (t.type === 'terminal') return false
-          // Session tabs must exist on server
-          return existingIds.has(t.sessionId)
-        })
-        .map((t) => {
-          if (
-            t.type === 'settings' ||
-            t.type === 'scheduled' ||
-            t.type === 'image-workbench' ||
-            t.type === 'video-studio' ||
-            t.type === 'product-tasks'
-          ) {
-            return { sessionId: t.sessionId, title: t.title, type: t.type, status: 'idle' as const }
-          }
-          if (t.type === 'product-task' && typeof t.taskId === 'string' && t.taskId.trim()) {
-            return {
-              sessionId: t.sessionId,
-              title: t.title,
-              type: 'product-task' as const,
-              status: 'idle' as const,
-              taskId: t.taskId.trim(),
-            }
-          }
-          return {
-            sessionId: t.sessionId,
-            title: sessions.find((s) => s.id === t.sessionId)?.title || t.title,
-            type: 'session' as const,
-            status: 'idle' as const,
-          }
-        })
+        .flatMap(toRestoredTab)
 
       if (validTabs.length === 0) {
         set({ tabs: [], activeTabId: null })
@@ -373,7 +317,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         return
       }
 
-      const activeId = data.activeTabId && validTabs.some((t) => t.sessionId === data.activeTabId)
+      const activeId = typeof data.activeTabId === 'string' && validTabs.some((t) => t.sessionId === data.activeTabId)
         ? data.activeTabId
         : validTabs[0]!.sessionId
 
@@ -383,9 +327,39 @@ export const useTabStore = create<TabStore>((set, get) => ({
   },
 }))
 
-function isRetiredTraceTab(tab: { sessionId: string; type?: string }): boolean {
-  return tab.type === 'trace'
-    || tab.type === 'traces'
-    || tab.sessionId === '__traces__'
-    || tab.sessionId.startsWith('__trace__')
+function isPersistableTab(tab: Tab): boolean {
+  return (
+    tab.type === 'settings'
+    || tab.type === 'scheduled'
+    || tab.type === 'image-workbench'
+    || tab.type === 'video-studio'
+    || tab.type === 'product-tasks'
+    || (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim().length > 0)
+  )
+}
+
+function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
+  if (!tab || typeof tab.sessionId !== 'string' || typeof tab.title !== 'string') return []
+
+  if (
+    tab.type === 'settings'
+    || tab.type === 'scheduled'
+    || tab.type === 'image-workbench'
+    || tab.type === 'video-studio'
+    || tab.type === 'product-tasks'
+  ) {
+    return [{ sessionId: tab.sessionId, title: tab.title, type: tab.type, status: 'idle' }]
+  }
+
+  if (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim()) {
+    return [{
+      sessionId: tab.sessionId,
+      title: tab.title,
+      type: 'product-task',
+      status: 'idle',
+      taskId: tab.taskId.trim(),
+    }]
+  }
+
+  return []
 }
