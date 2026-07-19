@@ -17,8 +17,8 @@ vi.mock('../workspace/WorkspacePanel', () => ({
 }))
 
 vi.mock('../browser/BrowserSurface', () => ({
-  BrowserSurface: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="browser-surface">browser:{sessionId}</div>
+  BrowserSurface: ({ sessionId, subscribeEvents }: { sessionId: string; subscribeEvents?: unknown }) => (
+    <div data-testid="browser-surface" data-legacy-preview-events={subscribeEvents ? 'true' : 'false'}>browser:{sessionId}</div>
   ),
 }))
 
@@ -61,6 +61,7 @@ describe('WorkbenchPanel', () => {
     render(<WorkbenchPanel sessionId={SESSION_ID} />)
 
     expect(screen.getByTestId('browser-surface')).toHaveTextContent(`browser:${SESSION_ID}`)
+    expect(screen.getByTestId('browser-surface')).toHaveAttribute('data-legacy-preview-events', 'true')
     expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument()
   })
 

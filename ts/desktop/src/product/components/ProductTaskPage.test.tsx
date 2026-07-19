@@ -132,6 +132,7 @@ vi.mock('./SideTaskPanel', () => ({
 }))
 
 import { ProductTaskPage } from './ProductTaskPage'
+import { useProductTaskBrowserPreviewStore } from '../stores/productTaskBrowserPreviewStore'
 
 beforeEach(() => {
   mocks.index = {
@@ -192,6 +193,7 @@ beforeEach(() => {
   mocks.refreshThread.mockReset().mockResolvedValue(undefined)
   mocks.openTab.mockReset()
   mocks.openProductTaskTab.mockReset()
+  useProductTaskBrowserPreviewStore.setState({ byTaskId: {} })
   mocks.createSideTask.mockReset().mockResolvedValue({
     id: 'side-1',
     parentTaskId: 'task-1',
@@ -206,6 +208,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  useProductTaskBrowserPreviewStore.setState({ byTaskId: {} })
   vi.clearAllMocks()
 })
 
@@ -422,6 +425,34 @@ describe('ProductTaskPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭审阅' }))
     expect(screen.queryByTestId('product-task-review-dock')).toBeNull()
     expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+  })
+
+  it('opens Browser and Preview only through the product task scoped panel store', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId).toEqual({
+      'task-1': {
+        browserOpen: true,
+        previewOpen: false,
+        activeMode: 'browser',
+      },
+    })
+    expect(screen.getByTestId('product-task-browser-preview-dock')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '预览' }))
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toEqual({
+      browserOpen: true,
+      previewOpen: true,
+      activeMode: 'preview',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }))
+    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toEqual({
+      browserOpen: true,
+      previewOpen: false,
+      activeMode: 'browser',
+    })
   })
 
   it('uses a real stop action only while the task is running', () => {

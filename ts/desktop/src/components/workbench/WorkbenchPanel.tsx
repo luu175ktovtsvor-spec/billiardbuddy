@@ -8,6 +8,7 @@ import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import { useTabStore } from '../../stores/tabStore'
 import { WorkspacePanel } from '../workspace/WorkspacePanel'
 import { BrowserSurface } from '../browser/BrowserSurface'
+import { subscribeChatPreviewEvents } from '../../lib/chatPreviewEvents'
 
 type WorkbenchPanelProps = {
   sessionId: string
@@ -132,7 +133,7 @@ export function WorkbenchPanel({ sessionId, variant = 'panel', onClose }: Workbe
 
       <div className="flex min-h-0 flex-1 flex-col">
         {activeMode === 'browser' ? (
-          <BrowserSurface sessionId={sessionId} />
+          <BrowserSurface sessionId={sessionId} subscribeEvents={subscribeChatPreviewEvents} />
         ) : (
           <WorkspacePanel sessionId={sessionId} embedded forceVisible={isTabVariant} />
         )}

@@ -1,15 +1,50 @@
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
-import { useChatStore } from '../stores/chatStore'
 import { getDesktopHost } from './desktopHost'
-import { buildSelectionDirectMessage, type SelectionPayload } from './selectionComposer'
+import type { SelectionPayload } from './selectionComposer'
 
-function kindLabel(kind?: string): string {
-  if (kind === 'viewport') return 'viewport'
-  if (kind === 'element') return 'element'
-  return 'full'
+export type BrowserPreviewScreenshot = {
+  dataUrl: string
+  kind?: string
 }
 
-export async function subscribePreviewEvents(sessionId: string): Promise<() => void> {
+export type BrowserPreviewSelection = SelectionPayload & {
+  screenshot?: {
+    dataUrl?: string
+    kind?: string
+  }
+}
+
+export type BrowserPreviewEventOptions = {
+  onScreenshot?: (screenshot: BrowserPreviewScreenshot) => void
+  onSelection?: (selection: BrowserPreviewSelection) => void
+  isNavigationAllowed?: (url: string) => boolean
+}
+
+export type BrowserPreviewEventSubscriber = (
+  browserKey: string,
+  options?: BrowserPreviewEventOptions,
+) => Promise<() => void>
+
+function isSelectionPayload(value: unknown): value is BrowserPreviewSelection {
+  if (!value || typeof value !== 'object') return false
+  const selection = value as Partial<BrowserPreviewSelection>
+  const element = selection.element
+  return Boolean(
+    element &&
+    typeof element === 'object' &&
+    typeof (element as { selector?: unknown }).selector === 'string',
+  )
+}
+
+/**
+ * Subscribe the native preview host to a browser-panel key without assuming
+ * that key is an Agent Core session. Callers opt into screenshot and selection
+ * handling explicitly; navigation and readiness remain generic panel state.
+ */
+export const subscribePreviewEvents: BrowserPreviewEventSubscriber = async (
+  browserKey,
+  options = {},
+) => {
   const host = getDesktopHost()
   if (!host.capabilities.previewWebview) return () => {}
 
@@ -21,44 +56,23 @@ export async function subscribePreviewEvents(sessionId: string): Promise<() => v
         : payload as typeof msg
     } catch { return }
     const store = useBrowserPanelStore.getState()
-    if (msg.type === 'navigated' && msg.url) store.setNavigated(sessionId, msg.url, msg.title ?? '')
-    else if (msg.type === 'ready') store.setReady(sessionId)
-    else if (msg.type === 'screenshot' && msg.dataUrl) {
-      useChatStore.getState().queueComposerPrefill(sessionId, {
-        text: '',
-        mode: 'append',
-        attachments: [{ type: 'image', name: `screenshot-${kindLabel(msg.kind)}.png`, mimeType: 'image/png', data: msg.dataUrl }],
-      })
-    }
-    else if (msg.type === 'selection') {
-      // A page can call APIs exposed in its own main world. Only consume a
-      // selection while the renderer is also expecting the user's picker gesture.
-      const session = store.bySession[sessionId]
+    if (msg.type === 'navigated' && msg.url) {
+      if (options.isNavigationAllowed && !options.isNavigationAllowed(msg.url)) return
+      store.setNavigated(browserKey, msg.url, msg.title ?? '')
+    } else if (msg.type === 'ready') {
+      store.setReady(browserKey)
+    } else if (msg.type === 'screenshot' && msg.dataUrl) {
+      options.onScreenshot?.({ dataUrl: msg.dataUrl, kind: msg.kind })
+    } else if (msg.type === 'selection') {
+      // A page can forge a preview event. Accept a selection only after a
+      // renderer-owned picker gesture armed this specific browser panel.
+      const session = store.bySession[browserKey]
       if (!session?.pickerActive) return
-      store.setPicker(sessionId, false)
-      const p = msg.payload as (SelectionPayload & { screenshot?: { dataUrl?: string; kind?: string } }) | undefined
-      if (!p || typeof p !== 'object' || !p.element) return
-      const selection = buildSelectionDirectMessage(p)
-      const attachments = p.screenshot?.dataUrl
-        ? [{
-            type: 'image' as const,
-            name: selection.displayName,
-            mimeType: 'image/png',
-            data: p.screenshot.dataUrl,
-            note: selection.note,
-            quote: p.element.selector,
-          }]
-        : []
-      useChatStore.getState().queueComposerPrefill(sessionId, {
-        text: selection.modelText,
-        attachments,
-        mode: 'replace',
-      })
-    }
-    else if (msg.type === 'picker-exited') {
-      store.setPicker(sessionId, false)
-    }
-    else if (msg.type === 'error') {
+      store.setPicker(browserKey, false)
+      if (isSelectionPayload(msg.payload)) options.onSelection?.(msg.payload)
+    } else if (msg.type === 'picker-exited') {
+      store.setPicker(browserKey, false)
+    } else if (msg.type === 'error') {
       console.warn('[preview-agent]', msg)
     }
   })
