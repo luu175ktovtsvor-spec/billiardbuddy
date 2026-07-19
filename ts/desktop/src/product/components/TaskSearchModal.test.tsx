@@ -77,7 +77,7 @@ function makeIndex(tasks: ProductTaskRecord[] = [
   }),
 ]): ProductTaskIndexResponse {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projects: [
       {
         id: 'project-a',

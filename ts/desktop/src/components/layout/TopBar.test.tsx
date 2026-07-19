@@ -50,7 +50,7 @@ function makeProductTask(overrides: Partial<ProductTaskRecord> = {}): ProductTas
 function setActiveProductTask(task = makeProductTask()) {
   useProductTaskStore.setState({
     index: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [],
       directories: [],
       tasks: [task],

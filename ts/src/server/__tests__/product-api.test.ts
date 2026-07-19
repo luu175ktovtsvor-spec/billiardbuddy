@@ -50,7 +50,7 @@ function createService() {
     calls,
     service: {
       listTasks: record('listTasks', {
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: [],
         directories: [],
         tasks: [task],

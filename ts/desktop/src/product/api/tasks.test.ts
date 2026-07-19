@@ -20,7 +20,7 @@ describe('productTasksApi', () => {
 
   it('uses the product task index endpoint as its list source', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [],
       directories: [],
       tasks: [],

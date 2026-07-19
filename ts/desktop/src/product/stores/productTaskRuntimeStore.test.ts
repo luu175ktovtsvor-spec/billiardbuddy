@@ -537,7 +537,7 @@ describe('product task runtime store', () => {
     }
     useProductTaskStore.setState({
       index: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: [],
         directories: [],
         tasks: [task],
