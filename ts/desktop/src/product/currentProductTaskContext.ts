@@ -15,8 +15,8 @@ function normalizedTaskId(value: string | null | undefined): string | undefined 
 /**
  * Settings can be the active surface while a task remains open beside it.
  * Prefer the active product task; otherwise use the explicit last product
- * task selected by tab navigation. Legacy Core tabs are never read and tab
- * array order never decides the public task context.
+ * task selected by tab navigation. Only product task tabs are considered and
+ * tab array order never decides the public task context.
  */
 export function resolveCurrentProductTaskId(
   tabs: readonly Tab[],

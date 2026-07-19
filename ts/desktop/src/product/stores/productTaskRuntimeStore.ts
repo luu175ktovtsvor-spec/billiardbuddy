@@ -511,8 +511,8 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     handleEvent: (taskId, event) => {
       if (event.type === 'title_updated') {
         // The stream is the first place an Agent-generated task title arrives.
-        // Keep every product-owned title surface in sync without addressing a
-        // Core session or the legacy ChatStore.
+        // Keep every product-owned title surface in sync without addressing
+        // raw Agent state.
         useProductTaskStore.getState().applyRuntimeTaskTitle(taskId, event.title)
         useTabStore.getState().updateProductTaskTitle(taskId, event.title)
         return
