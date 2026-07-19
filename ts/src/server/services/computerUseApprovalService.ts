@@ -6,6 +6,7 @@ import {
   type CuPermissionResponse,
 } from '../../vendor/computer-use-mcp/types.js'
 import { sendToSession } from '../ws/handler.js'
+import type { ComputerUsePermissionRequest } from '../ws/events.js'
 
 type PendingApproval = {
   sessionId: string
@@ -21,12 +22,6 @@ const GRANT_FLAG_KEYS = [
   'clipboardWrite',
   'systemKeyCombos',
 ] as const
-
-type DesktopPermissionRequest = Omit<CuPermissionRequest, 'apps'> & {
-  apps: Array<Omit<CuPermissionRequest['apps'][number], 'resolved'> & {
-    resolved?: Pick<NonNullable<CuPermissionRequest['apps'][number]['resolved']>, 'bundleId' | 'displayName'>
-  }>
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -48,9 +43,10 @@ function deniedResponse(): CuPermissionResponse {
  */
 function projectPermissionRequestForDesktop(
   request: CuPermissionRequest,
-): DesktopPermissionRequest {
+): ComputerUsePermissionRequest {
   return {
-    ...request,
+    requestId: request.requestId,
+    reason: 'Computer Use needs permission to continue this task.',
     apps: request.apps.map(app => ({
       requestedName: app.requestedName,
       ...(app.resolved
@@ -65,6 +61,17 @@ function projectPermissionRequestForDesktop(
       alreadyGranted: app.alreadyGranted,
       proposedTier: app.proposedTier,
     })),
+    requestedFlags: request.requestedFlags,
+    screenshotFiltering: request.screenshotFiltering,
+    ...(request.tccState ? { tccState: request.tccState } : {}),
+    ...(request.willHide
+      ? {
+          willHide: request.willHide,
+        }
+      : {}),
+    ...(request.autoUnhideEnabled === undefined
+      ? {}
+      : { autoUnhideEnabled: request.autoUnhideEnabled }),
   }
 }
 
@@ -170,11 +177,8 @@ export class ComputerUseApprovalService {
       const sent = this.send(sessionId, {
         type: 'computer_use_permission_request',
         requestId: request.requestId,
-        // ServerMessage currently shares the Agent's richer request type.
-        // The wire payload is intentionally narrower until that contract is
-        // split into an Agent-side and desktop-side shape.
         request: desktopRequest,
-      } as Parameters<typeof sendToSession>[1])
+      })
 
       if (!sent) {
         clearTimeout(timeout)

@@ -49,6 +49,7 @@ describe('ComputerUseApprovalService', () => {
   test('projects approval prompts without local paths or icon data', async () => {
     const privatePath = '/Users/test/private/Editor.app'
     const privateIcon = 'data:image/png;base64,private-icon-payload'
+    const privateConfig = 'provider=private-gateway token=secret'
     const sent: unknown[] = []
     const request = makeRequest('request-projection')
     request.apps[0]!.resolved = {
@@ -56,6 +57,8 @@ describe('ComputerUseApprovalService', () => {
       path: privatePath,
       iconDataUrl: privateIcon,
     }
+    const requestWithPrivateConfig = request as CuPermissionRequest & { privateConfig: string }
+    requestWithPrivateConfig.privateConfig = privateConfig
     const service = new ComputerUseApprovalService((_sessionId, message) => {
       sent.push(message)
       return true
@@ -68,7 +71,7 @@ describe('ComputerUseApprovalService', () => {
       requestId: 'request-projection',
       request: {
         requestId: 'request-projection',
-        reason: 'Edit the active document',
+        reason: 'Computer Use needs permission to continue this task.',
         apps: [{
           requestedName: 'Editor',
           resolved: {
@@ -85,6 +88,7 @@ describe('ComputerUseApprovalService', () => {
     }])
     expect(JSON.stringify(sent)).not.toContain(privatePath)
     expect(JSON.stringify(sent)).not.toContain(privateIcon)
+    expect(JSON.stringify(sent)).not.toContain(privateConfig)
 
     expect(service.resolveApproval('task-1', 'request-projection', makeResponse())).toBe(true)
     await expect(approval).resolves.toMatchObject({
