@@ -25,6 +25,9 @@ import {
   canSendProductTaskText,
   useProductTaskRuntimeStore,
 } from './productTaskRuntimeStore'
+import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from './productTaskStore'
+import { useTabStore } from '../../stores/tabStore'
+import type { ProductTaskRecord } from '../domain/types'
 
 let eventHandler: ((event: any) => void) | null = null
 let lifecycleHandler: ((event: ProductTaskSocketLifecycleEvent) => void) | null = null
@@ -73,6 +76,13 @@ describe('product task runtime store', () => {
       useProductTaskRuntimeStore.getState().disconnectTask(taskId)
     }
     useProductTaskRuntimeStore.setState({ tasks: {} })
+    useProductTaskStore.setState({
+      index: EMPTY_PRODUCT_TASK_INDEX,
+      isLoading: false,
+      error: null,
+      mutations: {},
+    })
+    useTabStore.setState({ tabs: [], activeTabId: null })
     apiMocks.getThread.mockReset()
     socketMocks.connect.mockReset()
     socketMocks.disconnect.mockReset()
@@ -331,6 +341,59 @@ describe('product task runtime store', () => {
       code: 'temporarily_unavailable',
       retryable: true,
     })
+  })
+
+  it('synchronizes a streamed title to the product index and product task tab only', () => {
+    const task: ProductTaskRecord = {
+      id: 'task-title',
+      projectId: 'project-title',
+      workDir: '/workspace/billiard',
+      title: '旧任务标题',
+      lifecycle: 'active',
+      kind: 'main',
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+      worktreeState: 'not_requested',
+      actions: ['rename', 'archive'],
+    }
+    useProductTaskStore.setState({
+      index: {
+        schemaVersion: 1,
+        projects: [],
+        tasks: [task],
+        total: 1,
+        capabilities: { createTask: true },
+      },
+    })
+    useTabStore.setState({
+      tabs: [
+        {
+          sessionId: '__product_task__task-title',
+          title: task.title,
+          type: 'product-task',
+          taskId: task.id,
+          status: 'idle',
+        },
+        {
+          sessionId: task.id,
+          title: '旧会话标题',
+          type: 'session',
+          status: 'idle',
+        },
+      ],
+      activeTabId: '__product_task__task-title',
+    })
+
+    useProductTaskRuntimeStore.getState().handleEvent(task.id, {
+      type: 'title_updated',
+      title: '自动整理开球训练',
+    })
+
+    expect(useProductTaskStore.getState().index.tasks[0]?.title).toBe('自动整理开球训练')
+    expect(useTabStore.getState().tabs).toEqual([
+      expect.objectContaining({ type: 'product-task', title: '自动整理开球训练' }),
+      expect.objectContaining({ type: 'session', title: '旧会话标题' }),
+    ])
   })
 
   it('returns a terminally failed task to an actionable idle state', () => {

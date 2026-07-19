@@ -31,6 +31,8 @@ type ProductTaskStore = {
 
   refresh: () => Promise<void>
   clearError: () => void
+  /** Apply a title received through the restricted product task stream. */
+  applyRuntimeTaskTitle: (taskId: string, title: string) => void
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
   pinTask: (taskId: string) => Promise<ProductTaskRecord>
@@ -116,6 +118,28 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
     },
 
     clearError: () => set({ error: null }),
+
+    applyRuntimeTaskTitle: (taskId, title) => {
+      const normalizedTaskId = taskId.trim()
+      const normalizedTitle = title.trim()
+      if (!normalizedTaskId || !normalizedTitle) return
+
+      set((state) => {
+        const current = state.index.tasks.find((task) => task.id === normalizedTaskId)
+        if (!current || current.title === normalizedTitle) return state
+
+        return {
+          index: {
+            ...state.index,
+            // A title event carries no trustworthy ordering timestamp, so keep
+            // lifecycle, actions, and updatedAt from the last task record.
+            tasks: state.index.tasks.map((task) => task.id === normalizedTaskId
+              ? { ...task, title: normalizedTitle }
+              : task),
+          },
+        }
+      })
+    },
 
     createTask: (input) => runMutation('create', () => productTasksApi.create(input)),
 
