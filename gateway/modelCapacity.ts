@@ -15,6 +15,12 @@ export interface CapacitySnapshot {
   maxConcurrent: number
   maxConcurrentPerUser: number
   maxConcurrentPerToken: number
+  /** Maximum number of waiters accepted by this provider pool. `Infinity` is only
+   * used by direct unit-test construction; gateway production pools set a finite value. */
+  queueMax: number
+  /** Age of the oldest waiting request, so health checks can distinguish a busy
+   * but draining pool from a stuck/slow upstream. */
+  oldestQueueMs: number
 }
 
 export interface AcquireOptions {
@@ -28,6 +34,7 @@ export interface AcquireOptions {
 type Pending = {
   user: string
   tokenId: string
+  queuedAt: number
   resolve: (permit: CapacityPermit) => void
   reject: (error: CapacityQueueError) => void
   timer?: ReturnType<typeof setTimeout>
@@ -59,6 +66,7 @@ export class FairCapacityScheduler {
     private readonly maxConcurrent: number,
     private readonly maxConcurrentPerUser: number,
     maxConcurrentPerToken?: number,
+    private readonly queueMax: number = Infinity,
   ) {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('maxConcurrent must be >= 1')
     if (!Number.isInteger(maxConcurrentPerUser) || maxConcurrentPerUser < 1) {
@@ -70,6 +78,9 @@ export class FairCapacityScheduler {
     const perToken = maxConcurrentPerToken ?? maxConcurrent
     if (!Number.isInteger(perToken) || perToken < 1) throw new Error('maxConcurrentPerToken must be >= 1')
     this.maxConcurrentPerToken = perToken
+    if (queueMax !== Infinity && (!Number.isInteger(queueMax) || queueMax < 0)) {
+      throw new Error('queueMax must be a non-negative integer or Infinity')
+    }
   }
 
   acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit> {
@@ -86,8 +97,15 @@ export class FairCapacityScheduler {
       return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，请稍后重试'))
     }
 
+    // A finite queue is as important as the active concurrency ceiling: each queued
+    // request retains its parsed body and response promise. Refuse overflow before it
+    // can turn a short burst into unbounded gateway memory/latency.
+    if (this.queuedCount() >= this.queueMax) {
+      return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
+    }
+
     return new Promise<CapacityPermit>((resolve, reject) => {
-      const pending: Pending = { user, tokenId, resolve, reject, signal: opts.signal }
+      const pending: Pending = { user, tokenId, queuedAt: performance.now(), resolve, reject, signal: opts.signal }
       let queue = this.pendingByUser.get(user)
       if (!queue) {
         queue = []
@@ -113,15 +131,26 @@ export class FairCapacityScheduler {
   }
 
   snapshot(): CapacitySnapshot {
-    let queued = 0
-    for (const queue of this.pendingByUser.values()) queued += queue.length
+    let oldestQueuedAt = Infinity
+    for (const queue of this.pendingByUser.values()) {
+      for (const pending of queue) oldestQueuedAt = Math.min(oldestQueuedAt, pending.queuedAt)
+    }
+    const queued = this.queuedCount()
     return {
       active: this.active,
       queued,
       maxConcurrent: this.maxConcurrent,
       maxConcurrentPerUser: this.maxConcurrentPerUser,
       maxConcurrentPerToken: this.maxConcurrentPerToken,
+      queueMax: this.queueMax,
+      oldestQueueMs: oldestQueuedAt === Infinity ? 0 : Math.max(0, Math.trunc(performance.now() - oldestQueuedAt)),
     }
+  }
+
+  private queuedCount(): number {
+    let queued = 0
+    for (const queue of this.pendingByUser.values()) queued += queue.length
+    return queued
   }
 
   private canStart(user: string, tokenId: string): boolean {

@@ -13,6 +13,8 @@ test('capacity scheduler applies per-user limits without blocking other users', 
     maxConcurrent: 2,
     maxConcurrentPerUser: 1,
     maxConcurrentPerToken: 2, // defaults to the global cap when not specified
+    queueMax: Infinity, // gateway production pools always set this to a finite bound
+    oldestQueueMs: expect.any(Number),
   })
 
   firstB.release()
@@ -56,4 +58,63 @@ test('capacity scheduler times out and removes cancelled requests', async () => 
   await expect(cancelled).rejects.toBeInstanceOf(CapacityQueueError)
   expect(scheduler.snapshot()).toMatchObject({ active: 1, queued: 0 })
   active.release()
+})
+
+test('capacity scheduler caps its waiting queue and reports the oldest waiter', async () => {
+  const scheduler = new FairCapacityScheduler(1, 1, 1, 2)
+  const active = await scheduler.acquire('active', { maxWaitMs: 1000 })
+  const firstQueued = scheduler.acquire('queued-a', { maxWaitMs: 1000 })
+  const secondQueued = scheduler.acquire('queued-b', { maxWaitMs: 1000 })
+
+  const snapshot = scheduler.snapshot()
+  expect(snapshot).toMatchObject({
+    active: 1,
+    queued: 2,
+    maxConcurrent: 1,
+    maxConcurrentPerUser: 1,
+    maxConcurrentPerToken: 1,
+    queueMax: 2,
+  })
+  expect(snapshot.oldestQueueMs).toBeGreaterThanOrEqual(0)
+  await expect(scheduler.acquire('overflow', { maxWaitMs: 1000 })).rejects.toMatchObject({
+    status: 429,
+    publicMessage: '当前使用人数较多，排队已满，请稍后重试',
+  })
+
+  active.release()
+  const next = await firstQueued
+  next.release()
+  const final = await secondQueued
+  final.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
+test('five-window profile caps one installation at five permits before later users arrive', async () => {
+  const scheduler = new FairCapacityScheduler(256, 5, 256, 256)
+  const firstFive = await Promise.all(
+    Array.from({ length: 5 }, () => scheduler.acquire('shared-token#install-0001', {
+      tokenId: 'shared-token',
+      maxWaitMs: 1000,
+    })),
+  )
+  const sixth = scheduler.acquire('shared-token#install-0001', {
+    tokenId: 'shared-token',
+    maxWaitMs: 1000,
+  })
+  expect(scheduler.snapshot()).toMatchObject({ active: 5, queued: 1, maxConcurrentPerUser: 5 })
+
+  // A different installation sharing the same app token still gets a slot: the token
+  // ceiling is global, while the five-window cap is per installation.
+  const otherInstall = await scheduler.acquire('shared-token#install-0002', {
+    tokenId: 'shared-token',
+    maxWaitMs: 1000,
+  })
+  expect(scheduler.snapshot()).toMatchObject({ active: 6, queued: 1 })
+
+  firstFive[0]!.release()
+  const sixthPermit = await sixth
+  for (const permit of firstFive.slice(1)) permit.release()
+  sixthPermit.release()
+  otherInstall.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0 })
 })

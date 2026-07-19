@@ -12,6 +12,8 @@ function baseCaps(overrides: Partial<Parameters<typeof createVisionBridge>[0]['c
     visionTimeoutMs: 2000,
     maxConcurrent: 4,
     queueMax: 16,
+    queueMaxWaitMs: 3000,
+    perClientConc: 4,
     perRequestConc: 4,
     cacheMax: 16,
     cacheTtlMs: 60_000,
@@ -231,6 +233,85 @@ test('VisionSemaphore never exceeds its concurrency limit and returns to 0 activ
   expect(active).toBe(0)
 })
 
+test('VisionSemaphore limits one installation while allowing another installation to use open vision slots', async () => {
+  const sem = new VisionSemaphore(6, 1000, 16, 2)
+  let open!: () => void
+  const gate = new Promise<void>(resolve => { open = resolve })
+  const hold = (clientId: string) => sem.run(async () => { await gate }, undefined, clientId)
+
+  const a1 = hold('owner-a#install-a')
+  const a2 = hold('owner-a#install-a')
+  const a3 = hold('owner-a#install-a') // queued: client A already owns its two allowed slots
+  const b1 = hold('owner-b#install-b')
+  const b2 = hold('owner-b#install-b')
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(sem.snapshot()).toMatchObject({ active: 4, queued: 1, limit: 6, perClientConc: 2 })
+  open()
+  await Promise.all([a1, a2, a3, b1, b2])
+  expect(sem.snapshot()).toMatchObject({ active: 0, queued: 0, perClientConc: 2, oldestQueueMs: 0 })
+})
+
+test('last subscriber cancellation removes a queued unique-image lookup before it can call MiMo', async () => {
+  let calls = 0
+  let releaseFirst!: () => void
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+  const fetchImpl = async () => {
+    calls += 1
+    if (calls === 1) await firstGate
+    return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+  }
+  const bridge = createVisionBridge({
+    mimoBase: 'https://mimo.example/v1',
+    mimoKey: 'mimo-secret',
+    fetchImpl,
+    caps: baseCaps({ maxConcurrent: 1, queueMax: 4, perClientConc: 1 }),
+  })
+  const first = bridge.transform(chatBodyWithImages([
+    `data:image/png;base64,${Buffer.from('first-queued-cancel').toString('base64')}`,
+  ]), { schedulerId: 'owner-a#desktop-a' })
+  await sleep(10)
+  expect(calls).toBe(1)
+
+  const abort = new AbortController()
+  const queued = bridge.transform(chatBodyWithImages([
+    `data:image/png;base64,${Buffer.from('second-queued-cancel').toString('base64')}`,
+  ]), { signal: abort.signal, schedulerId: 'owner-b#desktop-b' })
+  await sleep(10)
+  expect(bridge.snapshot()).toMatchObject({ active: 1, queued: 1 })
+  abort.abort()
+  await expect(queued).rejects.toMatchObject({ status: 499 })
+  await sleep(5)
+  expect(bridge.snapshot()).toMatchObject({ active: 1, queued: 0 })
+
+  releaseFirst()
+  await first
+  expect(calls).toBe(1)
+  expect(bridge.snapshot()).toMatchObject({ active: 0, queued: 0 })
+})
+
+test('vision consumes the shared MiMo RPM limiter before invoking the upstream', async () => {
+  const rateWaits: Array<{ seconds: number; aborted: boolean }> = []
+  let upstreamCalls = 0
+  const bridge = createVisionBridge({
+    mimoBase: 'https://mimo.example/v1',
+    mimoKey: 'mimo-secret',
+    fetchImpl: async () => {
+      upstreamCalls += 1
+      return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+    },
+    mimoRateLimiter: {
+      acquire: async (seconds, signal) => { rateWaits.push({ seconds, aborted: signal?.aborted ?? false }) },
+    },
+    mimoRateLimitMaxWaitSeconds: 0.75,
+    caps: baseCaps(),
+  })
+  await bridge.transform(chatBodyWithImages([PNG_DATA_URI]), { schedulerId: 'owner-a#desktop-a', tokenId: 'owner-a' })
+  expect(rateWaits).toEqual([{ seconds: 0.75, aborted: false }])
+  expect(upstreamCalls).toBe(1)
+})
+
 test('VisionSemaphore rejects a queued waiter with a 429 VisionBridgeError after queueMaxWaitMs (no long queue)', async () => {
   const sem = new VisionSemaphore(1, 30) // 1 并发,排队最多等 30ms
   let holderReleased = false
@@ -312,7 +393,7 @@ test('VisionSemaphore: grant / timeout / abort settle exactly once each (mutuall
   expect(results.sort()).toEqual(['abort:499', 'timeout:429'])
 
   await holder
-  expect(sem.snapshot()).toEqual({ active: 0, queued: 0, limit: 1, queueMax: Infinity })
+  expect(sem.snapshot()).toEqual({ active: 0, queued: 0, limit: 1, queueMax: Infinity, perClientConc: Infinity, oldestQueueMs: 0 })
 })
 
 test('a single multi-image request is capped at caps.perRequestConc global vision slots, leaving room for a concurrently arriving request', async () => {
