@@ -1,13 +1,18 @@
 import { useBrowserPanelStore } from '../stores/browserPanelStore'
 import { getDesktopHost } from './desktopHost'
-import type { SelectionPayload } from './selectionComposer'
+import type { ElementMetadata } from '../preview-agent/metadata'
+import type { EditDiff } from '../preview-agent/popover'
 
 export type BrowserPreviewScreenshot = {
   dataUrl: string
   kind?: string
 }
 
-export type BrowserPreviewSelection = SelectionPayload & {
+export type BrowserPreviewSelection = {
+  pageUrl: string
+  sourceHint?: string
+  element: ElementMetadata
+  change?: EditDiff & { description?: string }
   screenshot?: {
     dataUrl?: string
     kind?: string
