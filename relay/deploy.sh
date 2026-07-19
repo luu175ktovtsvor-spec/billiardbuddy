@@ -6,11 +6,11 @@
 #   RELAY_TOKEN            # = 大陆网关注入的 GW_RELAY_TOKEN
 #   RELAY_OPENAI_KEY       # 真 OpenAI key,只在本机
 #   RELAY_OPENAI_BASE      # 默认 https://api.openai.com/v1
-#   RELAY_DB=/opt/qfrelay/relay.db          # SQLite 持久化(重启恢复必须落盘,别用 :memory:)
-#   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 大体积输入/结果 blob(700 目录,应用会自建)
-#   RELAY_QUEUE_MAX=600 RELAY_USER_MAX=5 RELAY_IMG_CONC=6 RELAY_RETRY_AFTER_SECONDS=30  # 100×5 排队、单 owner 与上游并发/退避阀门
-#   RELAY_ACTIVE_INPUT_BYTES_MAX=536870912  # 活跃任务输入（请求体/参考图 blob）总预算，避免 500 个大改图耗尽磁盘/内存
-#   RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 单请求大小与结果留存,可选
+#   RELAY_DB=/opt/qfrelay/relay.db          # 100 用户生产部署必须配置；SQLite 持久化(重启恢复不能用 :memory:)
+#   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 100 用户生产部署必须配置；大体积输入/结果 blob(700 目录,应用会自建)
+#   RELAY_QUEUE_MAX=600 RELAY_USER_MAX=5 RELAY_IMG_CONC=6 RELAY_IMG_USER_CONC=1 RELAY_RETRY_AFTER_SECONDS=30  # 100×5 排队；一个 owner 不占满六个真实生图槽
+#   RELAY_ACTIVE_INPUT_BYTES_MAX=536870912 RELAY_PENDING_INPUT_BYTES_MAX=67108864  # 落盘队列总输入预算 + 上传阶段 JS 堆预算
+#   RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 单请求大小与结果留存,可选；结果默认留 7 天，磁盘需按实际图片体积监控
 #
 # 部署后需在该机 nginx 暴露受保护路径,且【仅允许大陆 qfgw 出口 IP + 保留 Bearer】,客户端不得直连:
 #   location /relay/imgtasks/ {
@@ -60,6 +60,7 @@ WorkingDirectory=/opt/qfrelay
 ExecStart=__BUN_BIN__ /opt/qfrelay/app.ts
 Restart=always
 RestartSec=2
+LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT

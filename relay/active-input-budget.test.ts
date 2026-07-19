@@ -90,6 +90,36 @@ test('reserves chunked request bytes before task admission so concurrent uploads
   })
 })
 
+test('caps simultaneous chunked uploads below the larger durable queue budget', async () => {
+  const payload = new TextEncoder().encode(JSON.stringify({ mode: 'generate', prompt: 'x'.repeat(256) }))
+  const fetch = createRelayFetch({
+    env: env({
+      RELAY_ACTIVE_INPUT_BYTES_MAX: String(payload.byteLength * 4),
+      RELAY_PENDING_INPUT_BYTES_MAX: String(payload.byteLength * 2 - 1),
+    }),
+    fetchImpl: () => new Promise(() => {}),
+  })
+  const first = controlledStream()
+  const firstResponse = fetch(streamedSubmit(first.body))
+  first.write(payload)
+  await waitFor(async () => (await health(fetch)).pending_input_bytes === payload.byteLength, 'first upload did not reserve pending bytes')
+
+  const second = controlledStream()
+  const secondResponse = fetch(streamedSubmit(second.body))
+  second.write(payload)
+  second.close()
+  const denied = await secondResponse
+  expect(denied.status).toBe(429)
+  expect((await denied.json() as { error?: string }).error).toContain('同时上传')
+  expect(await health(fetch)).toMatchObject({
+    pending_input_bytes: payload.byteLength,
+    pending_input_bytes_max: payload.byteLength * 2 - 1,
+  })
+
+  first.close()
+  expect((await firstResponse).status).toBe(202)
+})
+
 test('migrates a pre-budget queued task database and accounts its recovered input bytes', async () => {
   const dir = tempDir()
   const dbPath = join(dir, 'relay.db')

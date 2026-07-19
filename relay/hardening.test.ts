@@ -68,12 +68,21 @@ test('capacity defaults admit the 100 users × 5 windows burst without increasin
   expect(config.queueMax).toBe(600)
   expect(config.userMax).toBe(5)
   expect(config.imgConc).toBe(6)
+  expect(config.imgUserConc).toBe(1)
   expect(config.retryAfterSeconds).toBe(30)
   expect(config.activeInputBytesMax).toBe(512 * 1024 * 1024)
+  expect(config.pendingInputBytesMax).toBe(64 * 1024 * 1024)
 
-  const malformed = loadRelayConfig(baseEnv({ RELAY_IMG_CONC: 'not-a-number', RELAY_RETRY_AFTER_SECONDS: '-1' }))
+  const malformed = loadRelayConfig(baseEnv({
+    RELAY_IMG_CONC: 'not-a-number',
+    RELAY_IMG_USER_CONC: 'not-a-number',
+    RELAY_RETRY_AFTER_SECONDS: '-1',
+    RELAY_PENDING_INPUT_BYTES_MAX: 'not-a-number',
+  }))
   expect(malformed.imgConc).toBe(6)
+  expect(malformed.imgUserConc).toBe(1)
   expect(malformed.retryAfterSeconds).toBe(1)
+  expect(malformed.pendingInputBytesMax).toBe(64 * 1024 * 1024)
 })
 
 test('same (owner, Idempotency-Key) resubmit returns the original task_id and runs upstream only once', async () => {
@@ -131,6 +140,33 @@ test('per-owner cap rejects a single owner hogging the queue, but other owners s
   expect(capped.status).toBe(429)
   expect(capped.headers.get('retry-after')).toBe('30')
   expect((await fetch(submit(GEN, { 'x-relay-owner': 'other' }))).status).toBe(202)
+})
+
+test('running image slots stay fair across owners while each owner keeps five queued windows', async () => {
+  const started: string[] = []
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const fetch = createRelayFetch({
+    env: baseEnv({ RELAY_IMG_CONC: '2', RELAY_IMG_USER_CONC: '1', RELAY_USER_MAX: '5' }),
+    fetchImpl: async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { prompt?: string }
+      started.push(payload.prompt ?? '')
+      await gate
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+
+  for (let index = 0; index < 5; index++) {
+    expect((await fetch(submit({ ...GEN, prompt: `owner-a-window-${index}` }, { 'x-relay-owner': 'owner-a' }))).status).toBe(202)
+  }
+  expect((await fetch(submit({ ...GEN, prompt: 'owner-b-window-0' }, { 'x-relay-owner': 'owner-b' }))).status).toBe(202)
+
+  await waitFor(() => started.length === 2, 'two paid image slots did not start')
+  expect(started).toContain('owner-a-window-0')
+  expect(started).toContain('owner-b-window-0')
+
+  release?.()
+  await waitFor(async () => (await (await fetch(new Request('http://relay/healthz'))).json() as { active: number }).active === 0, 'fair queue did not drain')
 })
 
 test('cancels only queued work before the upstream request starts', async () => {
@@ -236,6 +272,61 @@ test('terminal tasks delete sensitive input blobs while retaining pollable outpu
   const record = await (await fetch(poll(task_id))).json()
   expect(record.status).toBe('succeeded')
   expect(readdirSync(blobDir).sort()).toEqual([`${task_id}.out.json`])
+})
+
+test('a queued disk input is read only after it obtains an upstream slot', async () => {
+  const dir = tempDir()
+  const blobDir = join(dir, 'blobs')
+  const started: string[] = []
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const fetch = createRelayFetch({
+    env: baseEnv({ RELAY_BLOB_DIR: blobDir, RELAY_IMG_CONC: '1' }),
+    fetchImpl: async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { prompt?: string }
+      started.push(payload.prompt ?? '')
+      await gate
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+
+  expect((await fetch(submit({ ...GEN, prompt: 'first' }, { 'x-relay-owner': 'first-owner' }))).status).toBe(202)
+  const queued = await (await fetch(submit({ ...GEN, prompt: 'stale-in-memory-copy' }, { 'x-relay-owner': 'second-owner' }))).json() as { task_id: string }
+  await waitFor(() => started.length === 1, 'first task did not occupy the only upstream slot')
+
+  writeFileSync(join(blobDir, `${queued.task_id}.in.json`), JSON.stringify({ ...GEN, prompt: 'loaded-at-execution' }))
+  release?.()
+  await waitFor(() => started.length === 2, 'queued task did not start after the slot freed')
+  expect(started).toEqual(['first', 'loaded-at-execution'])
+})
+
+test('a successful provider result that cannot be persisted remains failed_unknown, never retry-safe failed', async () => {
+  const dir = tempDir()
+  const blobDir = join(dir, 'blobs')
+  let started = false
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const fetch = createRelayFetch({
+    env: baseEnv({ RELAY_BLOB_DIR: blobDir }),
+    fetchImpl: async () => {
+      started = true
+      await gate
+      return Response.json({ data: [{ b64_json: B64 }] })
+    },
+  })
+  const submitted = await (await fetch(submit(GEN, { 'x-relay-owner': 'storage-owner' }))).json() as { task_id: string }
+  await waitFor(() => started, 'upstream did not start')
+  rmSync(blobDir, { recursive: true, force: true })
+  release?.()
+
+  await waitFor(async () => {
+    const response = await fetch(poll(submitted.task_id, { 'x-relay-owner': 'storage-owner' }))
+    const body = await response.json() as { status?: string }
+    return body.status === 'failed_unknown'
+  }, 'storage failure was not recorded as failed_unknown')
+  const record = await (await fetch(poll(submitted.task_id, { 'x-relay-owner': 'storage-owner' }))).json() as { status?: string; error?: string }
+  expect(record.status).toBe('failed_unknown')
+  expect(record.error).toContain('无法持久化结果')
 })
 
 test('restart recovery: running → failed_unknown (no auto-resubmit); queued → resumes and succeeds', async () => {
