@@ -119,7 +119,7 @@ describe('ProductTaskMediaService', () => {
           id: 'out_12345678',
           kind: 'image',
           mimeType: 'image/png',
-          url: `/api/media/assets/${owned.id}/out_12345678.png`,
+          url: `/api/product/tasks/${TASK_ID}/media/projects/${owned.id}/assets/out_12345678`,
         }],
       }],
     })
@@ -127,6 +127,7 @@ describe('ProductTaskMediaService', () => {
     const serialized = JSON.stringify(result)
     expect(serialized).not.toContain('core-session-private')
     expect(serialized).not.toContain('/private/workspace')
+    expect(serialized).not.toContain('/api/media/assets/')
     expect(serialized).not.toContain('private prompt')
     expect(serialized).not.toContain('private upstream detail')
   })
@@ -218,6 +219,40 @@ describe('ProductTaskMediaService', () => {
       code: 'CONFLICT',
       message: '媒体项目已关联到另一项任务',
     })
+  })
+
+  test('streams an image only through its matching task-owned project', async () => {
+    const owner = ownerApi()
+    const owned = imageProject(TASK_ID)
+    const outputCalls: string[][] = []
+    const service = new ProductTaskMediaService(owner.api as never, {
+      listProjects: async () => [owned],
+      getProject: async () => owned,
+      getTask: async () => mediaTask,
+      attachProjectToProductTask: async () => owned,
+      availableImageOutputAssetPath: async () => null,
+      imageOutputResponse: async (...args: string[]) => {
+        outputCalls.push(args)
+        return new Response('image-bytes', { headers: { 'Content-Type': 'image/png' } })
+      },
+    } as never)
+
+    const response = await service.assetResponse(
+      TASK_ID,
+      owned.id,
+      'out_12345678',
+      new Request('http://localhost/media'),
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('image-bytes')
+    expect(outputCalls).toEqual([[owned.id, 'out_12345678']])
+    await expect(service.assetResponse(
+      OTHER_TASK_ID,
+      owned.id,
+      'out_12345678',
+      new Request('http://localhost/media'),
+    )).rejects.toMatchObject({ statusCode: 404, message: '找不到任务媒体产物' })
   })
 
   test('keeps completed video exports state-only without exposing their local output path', async () => {

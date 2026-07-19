@@ -74,6 +74,12 @@ describe('MediaProjectService image projects', () => {
     expect(persisted).not.toContain(Buffer.from('png-bytes').toString('base64'))
     const asset = await service.assetResponse(project.id, ready.outputs[0]!.asset_path!.split('/').pop()!)
     expect(await asset.text()).toBe('png-bytes')
+    const taskScopedAsset = await service.imageOutputResponse(project.id, ready.outputs[0]!.id)
+    expect(await taskScopedAsset.text()).toBe('png-bytes')
+    await expect(service.imageOutputResponse(project.id, 'out_missing')).rejects.toMatchObject({
+      code: 'IMAGE_OUTPUT_NOT_FOUND',
+      status: 404,
+    })
     const savedPath = join(mediaRoot, 'saved-output.png')
     expect(await service.saveImageOutput(project.id, {
       output_id: ready.outputs[0]!.id,
