@@ -820,7 +820,7 @@ describe('MediaProjectService video projects', () => {
     await service.cancelTask(secondTask.id)
   })
 
-  test('bounds one desktop sidecar to five admitted video windows by default', async () => {
+  test('admits one desktop sidecar\'s ten video windows while keeping only one FFmpeg encoder active', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     await writeFile(sourcePath, 'source')
@@ -847,7 +847,7 @@ describe('MediaProjectService video projects', () => {
     }
     const service = new MediaProjectService({ root: mediaRoot, runProcess })
     const ready: Array<{ project: VideoStudioProject }> = []
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 11; index += 1) {
       const project = await service.createVideoProject({ title: `window-${index + 1}` })
       ready.push(await service.addVideoSource(project.id, { path: sourcePath }))
     }
@@ -865,7 +865,7 @@ describe('MediaProjectService video projects', () => {
     }))
     const accepted = outcomes.flatMap(outcome => 'task' in outcome ? [outcome.task] : [])
     const rejected = outcomes.flatMap(outcome => 'error' in outcome ? [outcome.error] : [])
-    expect(accepted).toHaveLength(5)
+    expect(accepted).toHaveLength(10)
     expect(rejected).toHaveLength(1)
     expect(rejected[0]).toMatchObject({ code: 'VIDEO_RENDER_BUSY' })
     for (let index = 0; index < 50 && renderStarts < 1; index += 1) await Bun.sleep(2)
@@ -873,7 +873,7 @@ describe('MediaProjectService video projects', () => {
     await Promise.all(accepted.map(task => service.cancelTask(task.id)))
   })
 
-  test('runs 100 local sidecars with five video windows each without sharing an FFmpeg encoder', async () => {
+  test('runs 100 local sidecars with ten admitted video windows each without sharing an FFmpeg encoder', async () => {
     let renderStarts = 0
     let activeEncoders = 0
     let peakEncoders = 0
@@ -910,7 +910,7 @@ describe('MediaProjectService video projects', () => {
       const sourcePath = join(mediaRoot, 'source.mp4')
       await writeFile(sourcePath, 'source')
       const service = new MediaProjectService({ root: mediaRoot, runProcess })
-      const projects = await Promise.all(Array.from({ length: 5 }, (_, windowIndex) => (
+      const projects = await Promise.all(Array.from({ length: 10 }, (_, windowIndex) => (
         service.createVideoProject({ title: `user-${userIndex + 1}-window-${windowIndex + 1}` })
       )))
       const prepared = await Promise.all(projects.map(project => service.addVideoSource(project.id, { path: sourcePath })))
@@ -924,7 +924,7 @@ describe('MediaProjectService video projects', () => {
     }))
 
     const accepted = users.flatMap(user => user.tasks)
-    expect(accepted).toHaveLength(500)
+    expect(accepted).toHaveLength(1_000)
     expect(users.every(user => user.tasks[0]?.stage === '等待导出')).toBe(true)
     expect(users.every(user => user.tasks.slice(1).every(task => task.stage === '正在排队等待本机视频导出'))).toBe(true)
     for (let index = 0; index < 500 && renderStarts < 100; index += 1) await Bun.sleep(2)
@@ -934,7 +934,7 @@ describe('MediaProjectService video projects', () => {
     const cancelledQueued = await Promise.all(users.flatMap(user => (
       user.tasks.slice(1).map(task => user.service.cancelTask(task.id))
     )))
-    expect(cancelledQueued).toHaveLength(400)
+    expect(cancelledQueued).toHaveLength(900)
     expect(cancelledQueued.every(task => task.status === 'cancelled')).toBe(true)
     const cancelledActive = await Promise.all(users.map(user => user.service.cancelTask(user.tasks[0]!.id)))
     expect(cancelledActive.every(task => task.status === 'cancelled')).toBe(true)
@@ -942,7 +942,7 @@ describe('MediaProjectService video projects', () => {
     expect(activeEncoders).toBe(0)
   })
 
-  test('limits each local sidecar to two FFprobe scans and three waiting windows', async () => {
+  test('limits each local sidecar to two FFprobe scans and eight waiting windows', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     await writeFile(sourcePath, 'source')
@@ -964,12 +964,12 @@ describe('MediaProjectService video projects', () => {
       }
     }
     const service = new MediaProjectService({ root: mediaRoot, runProcess })
-    const projectIds = await Promise.all(Array.from({ length: 5 }, async (_, index) => (
+    const projectIds = await Promise.all(Array.from({ length: 10 }, async (_, index) => (
       (await service.createVideoProject({ title: `probe-window-${index + 1}` })).id
     )))
 
     const results = await Promise.all(projectIds.map(projectId => service.addVideoSource(projectId, { path: sourcePath })))
-    expect(results).toHaveLength(5)
+    expect(results).toHaveLength(10)
     expect(peakProbes).toBe(2)
     expect(activeProbes).toBe(0)
   })
@@ -991,7 +991,7 @@ describe('MediaProjectService video projects', () => {
       }
     }
     const service = new MediaProjectService({ root: mediaRoot, runProcess })
-    const projectIds = await Promise.all(Array.from({ length: 6 }, async (_, index) => (
+    const projectIds = await Promise.all(Array.from({ length: 11 }, async (_, index) => (
       (await service.createVideoProject({ title: `probe-overflow-${index + 1}` })).id
     )))
     const outcomes = await Promise.all(projectIds.map(async projectId => {
@@ -1003,7 +1003,7 @@ describe('MediaProjectService video projects', () => {
     }))
     const accepted = outcomes.flatMap(outcome => 'result' in outcome ? [outcome.result] : [])
     const rejected = outcomes.flatMap(outcome => 'error' in outcome ? [outcome.error] : [])
-    expect(accepted).toHaveLength(5)
+    expect(accepted).toHaveLength(10)
     expect(rejected).toHaveLength(1)
     expect(rejected[0]).toMatchObject({ code: 'VIDEO_PROBE_BUSY' })
   })
