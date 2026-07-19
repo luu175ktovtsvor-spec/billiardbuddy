@@ -412,6 +412,7 @@ describe('Settings API', () => {
       language: 'chinese',
       desktopNotificationsEnabled: true,
       autoDreamEnabled: true,
+      deepThinkingEnabled: false,
       webSearch: { enabled: false },
     })
     const res = await handleProductSettingsApi(req, url, segments)
@@ -430,6 +431,7 @@ describe('Settings API', () => {
       language: 'chinese',
       desktopNotificationsEnabled: true,
       autoDreamEnabled: true,
+      deepThinkingEnabled: false,
       webSearch: { enabled: false },
     })
   })

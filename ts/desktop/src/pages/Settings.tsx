@@ -302,6 +302,8 @@ export function GeneralSettings() {
   const {
     autoDreamEnabled,
     setAutoDreamEnabled,
+    deepThinkingEnabled,
+    setDeepThinkingEnabled,
     locale,
     setLocale,
     theme,
@@ -928,6 +930,29 @@ export function GeneralSettings() {
             {outputStyleError}
           </p>
         )}
+      </div>
+
+      <div className="mb-8">
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.deepThinkingTitle')}</h2>
+        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.deepThinkingDescription')}</p>
+        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
+          <input
+            type="checkbox"
+            aria-label={t('settings.general.deepThinkingEnabled')}
+            checked={deepThinkingEnabled}
+            onChange={(event) => void setDeepThinkingEnabled(event.target.checked)}
+            className={SETTINGS_CHECKBOX_INPUT_CLASS}
+          />
+          <SettingsCheckboxMark checked={deepThinkingEnabled} />
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[var(--color-text-primary)]">
+              {t('settings.general.deepThinkingEnabled')}
+            </div>
+            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
+              {t('settings.general.deepThinkingHint')}
+            </div>
+          </div>
+        </label>
       </div>
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">

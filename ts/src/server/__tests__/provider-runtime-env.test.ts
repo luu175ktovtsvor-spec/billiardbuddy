@@ -4,9 +4,11 @@ import * as os from 'os'
 import * as path from 'path'
 
 import {
+  buildProviderManagedEnv,
   mergeActiveProviderManagedEnv,
   readActiveProviderManagedEnv,
 } from '../services/providerRuntimeEnv.js'
+import { buildQfGatewayProvider } from '../services/qfGatewayProvider.js'
 
 let tmpDir: string
 
@@ -218,6 +220,35 @@ describe('providerRuntimeEnv', () => {
     const env = readActiveProviderManagedEnv(tmpDir)
 
     expect(env.ENABLE_TOOL_SEARCH).toBeUndefined()
+  })
+
+  test('declares thinking and effort compatibility only for the managed DeepSeek gateway runtime', () => {
+    const deepSeekEnv = buildProviderManagedEnv(buildQfGatewayProvider())
+
+    expect(deepSeekEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES).toBe(
+      'thinking,effort,adaptive_thinking,max_effort',
+    )
+    expect(deepSeekEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
+      'thinking,effort,adaptive_thinking,max_effort',
+    )
+    expect(deepSeekEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES).toBe(
+      'thinking,effort,adaptive_thinking,max_effort',
+    )
+
+    const mimoProvider = {
+      ...buildQfGatewayProvider(),
+      models: {
+        main: 'mimo-v2.5',
+        haiku: 'mimo-v2.5',
+        sonnet: 'mimo-v2.5',
+        opus: 'mimo-v2.5',
+      },
+    }
+    const mimoEnv = buildProviderManagedEnv(mimoProvider)
+
+    expect(mimoEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES).toBeUndefined()
+    expect(mimoEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBeUndefined()
+    expect(mimoEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES).toBeUndefined()
   })
 
   test('applies updated docs-backed preset env for domestic Anthropic-compatible providers', async () => {

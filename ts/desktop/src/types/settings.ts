@@ -76,6 +76,8 @@ export type DesktopTerminalSettings = {
 
 export type UserSettings = {
   autoDreamEnabled?: boolean
+  /** Product-only preference for new managed DeepSeek task processes. */
+  deepThinkingEnabled?: boolean
   theme?: ThemeMode
   chatSendBehavior?: ChatSendBehavior
   desktopNotificationsEnabled?: boolean

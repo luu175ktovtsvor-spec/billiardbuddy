@@ -24,6 +24,7 @@ describe('ConversationService', () => {
   let originalDiagnosticsFile: string | undefined
   let originalAttributionHeader: string | undefined
   let originalDisableExperimentalBetas: string | undefined
+  let originalDisableThinking: string | undefined
   let originalTraceApiCalls: string | undefined
   let originalTraceProviderId: string | undefined
   let originalTraceProviderName: string | undefined
@@ -47,6 +48,7 @@ describe('ConversationService', () => {
     originalDiagnosticsFile = process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     originalAttributionHeader = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     originalDisableExperimentalBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+    originalDisableThinking = process.env.CLAUDE_CODE_DISABLE_THINKING
     originalTraceApiCalls = process.env.BB_TRACE_API_CALLS
     originalTraceProviderId = process.env.BB_TRACE_PROVIDER_ID
     originalTraceProviderName = process.env.BB_TRACE_PROVIDER_NAME
@@ -70,6 +72,7 @@ describe('ConversationService', () => {
     delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+    delete process.env.CLAUDE_CODE_DISABLE_THINKING
     delete process.env.BB_TRACE_API_CALLS
     delete process.env.BB_TRACE_PROVIDER_ID
     delete process.env.BB_TRACE_PROVIDER_NAME
@@ -111,6 +114,9 @@ describe('ConversationService', () => {
 
     if (originalDisableExperimentalBetas === undefined) delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
     else process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = originalDisableExperimentalBetas
+
+    if (originalDisableThinking === undefined) delete process.env.CLAUDE_CODE_DISABLE_THINKING
+    else process.env.CLAUDE_CODE_DISABLE_THINKING = originalDisableThinking
 
     if (originalTraceApiCalls === undefined) delete process.env.BB_TRACE_API_CALLS
     else process.env.BB_TRACE_API_CALLS = originalTraceApiCalls
@@ -538,6 +544,19 @@ describe('ConversationService', () => {
     })) as Record<string, string>
 
     expect(disabledEnv.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1')
+  })
+
+  test('buildChildEnv removes inherited thinking kill switch for managed qf gateway sessions', async () => {
+    process.env.CLAUDE_CODE_DISABLE_THINKING = '1'
+
+    const service = new ConversationService() as any
+    const env = (await service.buildChildEnv('/tmp', undefined, {
+      providerId: 'qf-gateway',
+      model: 'deepseek-v4-flash',
+      thinking: 'enabled',
+    })) as Record<string, string>
+
+    expect(env.CLAUDE_CODE_DISABLE_THINKING).toBeUndefined()
   })
 
   test('buildChildEnv injects trace provider metadata for desktop sdk session-scoped providers', async () => {

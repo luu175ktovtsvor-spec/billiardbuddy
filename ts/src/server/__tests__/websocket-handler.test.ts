@@ -5,6 +5,7 @@ import {
   __resetWebSocketHandlerStateForTests,
   getActiveSessionIds,
   handleWebSocket,
+  resolveProductThinkingMode,
   sendToSession,
   translateCliMessage,
   type WebSocketData,
@@ -65,6 +66,35 @@ describe('translateCliMessage usage mapping', () => {
         cache_creation_tokens: 789,
       },
     }])
+  })
+})
+
+describe('product deep-thinking startup policy', () => {
+  it('defaults managed DeepSeek task processes to thinking enabled and persists an explicit off choice', () => {
+    expect(resolveProductThinkingMode({}, 'qf-gateway', 'deepseek-v4-flash')).toBe('enabled')
+    expect(resolveProductThinkingMode(
+      { alwaysThinkingEnabled: false },
+      'qf-gateway',
+      'deepseek-v4-flash',
+    )).toBe('enabled')
+    expect(resolveProductThinkingMode(
+      { deepThinkingEnabled: false },
+      'qf-gateway',
+      'deepseek-v4-flash',
+    )).toBe('disabled')
+  })
+
+  it('keeps MiMo and non-managed providers out of the product Deep Thinking toggle', () => {
+    expect(resolveProductThinkingMode(
+      { deepThinkingEnabled: true },
+      'qf-gateway',
+      'mimo-v2.5',
+    )).toBe('disabled')
+    expect(resolveProductThinkingMode(
+      { deepThinkingEnabled: true },
+      'manual-provider',
+      'deepseek-v4-flash',
+    )).toBeUndefined()
   })
 })
 
