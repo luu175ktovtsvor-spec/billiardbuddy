@@ -85,7 +85,9 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
 
 function makeSkill(overrides: Partial<ProductTaskSkillCommand> = {}): ProductTaskSkillCommand {
   return {
-    name: 'venue-daily-review',
+    runtimeName: 'venue-daily-review',
+    displayName: '复盘今天经营',
+    description: '把球房营业数据和当天情况整理成经营复盘。',
     ...overrides,
   }
 }
@@ -552,19 +554,22 @@ describe('TaskIndex', () => {
     }))
   })
 
-  it('discovers and inserts name-only Skill commands in the new-task composer', async () => {
+  it('shows a bundled Skill in Chinese and submits only its runtime command', async () => {
     mocks.listSkillCommands.mockResolvedValue({
       commands: [makeSkill()],
     })
     const { onSubmit } = renderComposer()
 
     fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/venue' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/复盘' } })
 
     await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/new-table'))
-    fireEvent.click(await screen.findByRole('button', { name: /\/venue-daily-review/ }))
+    const command = await screen.findByRole('button', { name: /\/复盘今天经营/ })
+    expect(command).toHaveTextContent('把球房营业数据和当天情况整理成经营复盘。')
+    expect(command).not.toHaveTextContent('venue-daily-review')
+    fireEvent.click(command)
 
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/venue-daily-review ')
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/复盘今天经营 ')
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
@@ -572,6 +577,34 @@ describe('TaskIndex', () => {
       permissionMode: 'ask',
     }, {
       text: '/venue-daily-review',
+      attachments: [],
+    }))
+  })
+
+  it('keeps an external Skill selectable without exposing its private description', async () => {
+    mocks.listSkillCommands.mockResolvedValue({
+      commands: [{
+        runtimeName: 'custom-report',
+        displayName: 'custom-report',
+        description: '当前环境提供的扩展命令。',
+      }],
+    })
+    const { onSubmit } = renderComposer()
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/custom' } })
+
+    const command = await screen.findByRole('button', { name: /\/custom-report/ })
+    expect(command).toHaveTextContent('当前环境提供的扩展命令。')
+    fireEvent.click(command)
+    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/custom-report ')
+
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+      permissionMode: 'ask',
+    }, {
+      text: '/custom-report',
       attachments: [],
     }))
   })
@@ -635,12 +668,12 @@ describe('TaskIndex', () => {
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/' } })
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在读取可用命令')
-    expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
 
     rejectSkillCommands(new Error('服务不可用'))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('无法读取可用命令：暂时无法读取可用命令')
-    expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
   })
 
   it('starts with a safe product permission choice and forwards an explicit selection', async () => {

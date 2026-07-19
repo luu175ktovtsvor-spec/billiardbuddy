@@ -20,7 +20,11 @@ let originalClaudeConfigDir: string | undefined
 let originalCwdState: string
 
 type SlashCommandsResponse = {
-  commands: Array<{ name: string }>
+  commands: Array<{
+    runtimeName: string
+    displayName: string
+    description: string
+  }>
 }
 
 function makeRequest(
@@ -50,13 +54,16 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
-function expectNameOnlyCommands(
+function expectSafeProductCommands(
   body: SlashCommandsResponse,
   privateValues: readonly string[],
 ): void {
   expect(Object.keys(body).sort()).toEqual(['commands'])
   for (const command of body.commands) {
-    expect(Object.keys(command).sort()).toEqual(['name'])
+    expect(typeof command.runtimeName).toBe('string')
+    expect(typeof command.displayName).toBe('string')
+    expect(typeof command.description).toBe('string')
+    expect(Object.keys(command).sort()).toEqual(['description', 'displayName', 'runtimeName'])
   }
 
   const serialized = JSON.stringify(body)
@@ -121,7 +128,7 @@ describe('product task Skill command discovery', () => {
     expect(JSON.stringify(body)).not.toContain(privateValue)
   })
 
-  it('discovers bundled, user, and project commands only by name after an explicit slash request', async () => {
+  it('projects bundled Skills with safe Chinese labels while keeping user and project Skill details private', async () => {
     const userDescription = 'USER_SKILL_PRIVATE_DESCRIPTION_SENTINEL'
     const projectDescription = 'PROJECT_SKILL_PRIVATE_DESCRIPTION_SENTINEL'
     const projectBody = 'PROJECT_SKILL_PRIVATE_BODY_SENTINEL'
@@ -146,10 +153,22 @@ describe('product task Skill command discovery', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse
-    expectNameOnlyCommands(body, [userDescription, projectDescription, projectBody])
-    expect(body.commands).toContainEqual({ name: 'user-skill' })
-    expect(body.commands).toContainEqual({ name: 'project-skill' })
-    expect(body.commands).toContainEqual({ name: 'image-workbench' })
+    expectSafeProductCommands(body, [userDescription, projectDescription, projectBody])
+    expect(body.commands).toContainEqual({
+      runtimeName: 'user-skill',
+      displayName: 'user-skill',
+      description: '当前环境提供的扩展命令。',
+    })
+    expect(body.commands).toContainEqual({
+      runtimeName: 'project-skill',
+      displayName: 'project-skill',
+      description: '当前环境提供的扩展命令。',
+    })
+    expect(body.commands).toContainEqual({
+      runtimeName: 'image-workbench',
+      displayName: '做海报和图片',
+      description: '把活动、招聘、朋友圈等自然语言需求整理成可确认的图片草稿。',
+    })
   })
 
   it('writes billiards references only after invoking a discovered command', async () => {
@@ -169,7 +188,11 @@ describe('product task Skill command discovery', () => {
       const body = await response.json() as SlashCommandsResponse
 
       expect(response.status).toBe(200)
-      expect(body.commands).toContainEqual({ name: skillName })
+      expect(body.commands).toContainEqual({
+        runtimeName: skillName,
+        displayName: '复盘今天经营',
+        description: '把球房营业数据和当天情况整理成看得懂、能继续跟进的经营复盘。',
+      })
       expect(await pathExists(skillDir)).toBe(false)
 
       const command = getBundledSkills().find((candidate) => candidate.name === skillName)
@@ -247,8 +270,12 @@ describe('product task Skill command discovery', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse
-    expectNameOnlyCommands(body, [manifestDescription, skillDescription, marketplaceRoot])
-    expect(body.commands).toContainEqual({ name: 'draw:render' })
+    expectSafeProductCommands(body, [manifestDescription, skillDescription, marketplaceRoot])
+    expect(body.commands).toContainEqual({
+      runtimeName: 'draw:render',
+      displayName: 'draw:render',
+      description: '当前环境提供的扩展命令。',
+    })
   })
 
   it('discovers a legacy command only by name', async () => {
@@ -269,7 +296,11 @@ describe('product task Skill command discovery', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json() as SlashCommandsResponse
-    expectNameOnlyCommands(body, [description, commandBody])
-    expect(body.commands).toContainEqual({ name: 'legacy-command' })
+    expectSafeProductCommands(body, [description, commandBody])
+    expect(body.commands).toContainEqual({
+      runtimeName: 'legacy-command',
+      displayName: 'legacy-command',
+      description: '当前环境提供的扩展命令。',
+    })
   })
 })

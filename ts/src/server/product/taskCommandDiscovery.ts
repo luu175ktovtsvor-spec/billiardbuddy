@@ -22,12 +22,19 @@ export type ProductTaskAgentCommand = {
 }
 
 export type ProductTaskSkillCommand = {
-  name: string
+  /** Runtime identifier used only by the task command policy and adapter. */
+  runtimeName: string
+  /** Safe product label from a bundled Skill; never sourced from user files. */
+  displayName: string
+  /** Safe product summary; never sourced from user files. */
+  description: string
 }
 
 type LoadedSkill = {
   name: string
   userInvocable: boolean
+  displayName?: string
+  description?: string
 }
 
 type PluginSkillLocation = {
@@ -36,6 +43,7 @@ type PluginSkillLocation = {
 
 const GUIDE_RUNTIME_NAME = 'claude-code-guide'
 const GUIDE_DISPLAY_NAME = 'agent-guide'
+const EXTERNAL_SKILL_DESCRIPTION = '当前环境提供的扩展命令。'
 
 /**
  * The task Composer only needs a safe alias and the Core runtime name. Agent
@@ -220,17 +228,46 @@ async function collectAllSkills(cwd = getCwd()): Promise<LoadedSkill[]> {
   initBundledSkills()
   const bundledSkills: LoadedSkill[] = getBundledSkillDescriptors()
     .filter((skill) => skill.enabled)
-    .map((skill) => ({ name: skill.name, userInvocable: skill.userInvocable }))
+    .map((skill) => ({
+      name: skill.name,
+      userInvocable: skill.userInvocable,
+      ...(skill.displayName?.trim() ? { displayName: skill.displayName.trim() } : {}),
+      ...(skill.displayName?.trim() && skill.description.trim()
+        ? { description: skill.description.trim() }
+        : {}),
+    }))
 
   return [...bundledSkills, ...userSkills, ...projectSkills, ...pluginSkills]
 }
 
-function listCommandNames(skills: ReadonlyArray<LoadedSkill>): string[] {
-  const names = new Set<string>()
-  for (const skill of skills) {
-    if (skill.userInvocable) names.add(skill.name)
+function productSkillCommand(skill: LoadedSkill): ProductTaskSkillCommand {
+  const runtimeName = skill.name
+  const displayName = skill.displayName?.trim()
+  if (!displayName) {
+    return {
+      runtimeName,
+      displayName: runtimeName,
+      description: EXTERNAL_SKILL_DESCRIPTION,
+    }
   }
-  return [...names].sort((a, b) => a.localeCompare(b))
+
+  const description = skill.description?.trim() || EXTERNAL_SKILL_DESCRIPTION
+  return {
+    runtimeName,
+    displayName,
+    description,
+  }
+}
+
+function listSkillCommands(skills: ReadonlyArray<LoadedSkill>): ProductTaskSkillCommand[] {
+  const commandsByRuntimeName = new Map<string, ProductTaskSkillCommand>()
+  for (const skill of skills) {
+    if (!skill.userInvocable || commandsByRuntimeName.has(skill.name)) continue
+    commandsByRuntimeName.set(skill.name, productSkillCommand(skill))
+  }
+  return [...commandsByRuntimeName.values()].sort((left, right) => (
+    left.runtimeName.localeCompare(right.runtimeName)
+  ))
 }
 
 async function collectLegacySlashCommands(cwd: string): Promise<ProductTaskSkillCommand[]> {
@@ -242,12 +279,17 @@ async function collectLegacySlashCommands(cwd: string): Promise<ProductTaskSkill
       && command.userInvocable !== false
       && !command.isHidden
     ))
-    .map((command) => ({ name: command.name }))
+    .map((command) => ({
+      runtimeName: command.name,
+      displayName: command.name,
+      description: EXTERNAL_SKILL_DESCRIPTION,
+    }))
 }
 
 /**
- * Enumerates only user-invocable slash command names. Skill text, paths,
- * frontmatter and plugin metadata stay private to the Agent Core.
+ * Enumerates user-invocable slash command names plus product-safe labels for
+ * bundled Skills. Skill text, paths, frontmatter and plugin metadata stay
+ * private to the Agent Core.
  */
 export async function listProductTaskSkillCommands(
   cwd = getCwd(),
@@ -256,13 +298,20 @@ export async function listProductTaskSkillCommands(
     collectAllSkills(cwd),
     collectLegacySlashCommands(cwd),
   ])
-  const names = new Set(listCommandNames(skills))
-  for (const command of legacyCommands) names.add(command.name)
-  return [...names]
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => ({ name }))
+  const commandsByRuntimeName = new Map<string, ProductTaskSkillCommand>()
+  for (const command of listSkillCommands(skills)) {
+    commandsByRuntimeName.set(command.runtimeName, command)
+  }
+  for (const command of legacyCommands) {
+    if (!commandsByRuntimeName.has(command.runtimeName)) {
+      commandsByRuntimeName.set(command.runtimeName, command)
+    }
+  }
+  return [...commandsByRuntimeName.values()].sort((left, right) => (
+    left.runtimeName.localeCompare(right.runtimeName)
+  ))
 }
 
 export async function listProductTaskSkillNames(cwd: string): Promise<string[]> {
-  return (await listProductTaskSkillCommands(cwd)).map((command) => command.name)
+  return (await listProductTaskSkillCommands(cwd)).map((command) => command.runtimeName)
 }

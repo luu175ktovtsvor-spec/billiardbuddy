@@ -6,7 +6,9 @@ export type ProductTaskAgentCommand = {
 }
 
 export type ProductTaskSkillCommand = {
-  name: string
+  runtimeName: string
+  displayName: string
+  description: string
 }
 
 const PRODUCT_TASK_COMMAND_TIMEOUT_MS = 120_000
