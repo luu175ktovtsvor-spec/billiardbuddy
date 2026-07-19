@@ -1042,7 +1042,8 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   const body = await res.json()
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
-  // 真实生产请求已验证 100 人 × 8 窗口：800 路直接进入实际 DeepSeek 流；
+  // 真实短请求爬坡已观察到 800 路可直入；本合成用例锁定调度器不退化，不能替代长 SSE、
+  // 长上下文、CPU 余量与真实用户混合负载的持续验收。
   // 仅保留 200 个、最多 15 秒的短等待槽来吸收抖动，尾延迟上升时不会隐藏成长队列。
   expect(body.limits.deepseek_conc).toBe(800)
   expect(body.limits.deepseek_user_conc).toBe(8)
