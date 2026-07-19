@@ -27,12 +27,43 @@ export type MediaToolchainStageOptions = {
   verifyOnly?: boolean
 }
 
+export type MediaToolchainCliOptions = {
+  destinationDir?: string
+  platform?: string
+  verifyOnly: boolean
+}
+
 const SOURCE_MANIFEST = 'media-toolchain-source.json'
 const STAGED_MANIFEST = 'media-toolchain-manifest.json'
 const LICENSE_FILE = 'media-toolchain-LICENSE.txt'
 
 function binaryNames(platform: SupportedPlatform): [string, string] {
   return platform === 'win32' ? ['ffmpeg.exe', 'ffprobe.exe'] : ['ffmpeg', 'ffprobe']
+}
+
+export function parseMediaToolchainCliOptions(argv: string[]): MediaToolchainCliOptions {
+  let destinationDir: string | undefined
+  let platform: string | undefined
+  let verifyOnly = false
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '--verify') {
+      verifyOnly = true
+      continue
+    }
+    if (argument === '--destination' || argument === '--platform') {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('--')) throw new Error(`${argument} 需要一个值`)
+      if (argument === '--destination') destinationDir = value
+      else platform = value
+      index += 1
+      continue
+    }
+    throw new Error(`未知媒体工具链参数: ${argument}`)
+  }
+
+  return { destinationDir, platform, verifyOnly }
 }
 
 function sha256(path: string): string {
@@ -199,13 +230,14 @@ export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
 
 if (import.meta.main) {
   const desktopRoot = resolve(import.meta.dir, '..')
-  const platform = (process.env.BB_MEDIA_TOOLCHAIN_PLATFORM ?? process.platform) as SupportedPlatform
+  const cli = parseMediaToolchainCliOptions(process.argv.slice(2))
+  const platform = (cli.platform ?? process.env.BB_MEDIA_TOOLCHAIN_PLATFORM ?? process.platform) as SupportedPlatform
   if (!['darwin', 'win32'].includes(platform)) throw new Error(`不支持的媒体工具链平台: ${platform}`)
   stageMediaToolchain({
     sourceDir: process.env.BB_MEDIA_TOOLCHAIN_SOURCE_DIR,
-    destinationDir: join(desktopRoot, 'src-tauri', 'binaries'),
+    destinationDir: cli.destinationDir ?? join(desktopRoot, 'src-tauri', 'binaries'),
     platform,
-    verifyOnly: process.argv.includes('--verify'),
+    verifyOnly: cli.verifyOnly,
   })
-  console.log(`[media-toolchain] ${process.argv.includes('--verify') ? 'verified' : 'staged'} for ${platform}`)
+  console.log(`[media-toolchain] ${cli.verifyOnly ? 'verified' : 'staged'} for ${platform}`)
 }
