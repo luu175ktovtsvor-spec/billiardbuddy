@@ -79,6 +79,37 @@ describe('product task protocol attachment summaries', () => {
   })
 })
 
+describe('product task protocol media draft entries', () => {
+  const taskId = 'task-media-draft'
+  const entry = {
+    id: 'thread-media-draft',
+    type: 'media_draft',
+    draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
+    createdAt: '2026-07-20T00:00:00.000Z',
+  } as const
+
+  it('accepts only the narrow task-scoped media draft reference', () => {
+    expect(parseProductTaskThread({ taskId, entries: [entry] }, taskId)).toEqual({
+      taskId,
+      entries: [entry],
+    })
+  })
+
+  it('rejects media paths, prompts, non-draft state, and invalid project ids', () => {
+    for (const draft of [
+      { ...entry.draft, path: '/Users/private/project.json' },
+      { ...entry.draft, prompt: 'PRIVATE_PROMPT' },
+      { ...entry.draft, state: 'ready' },
+      { ...entry.draft, projectId: '../private-project' },
+    ]) {
+      expect(parseProductTaskThread({
+        taskId,
+        entries: [{ ...entry, draft }],
+      }, taskId)).toBeNull()
+    }
+  })
+})
+
 describe('product task protocol run activities', () => {
   const activityId = `activity_${'a'.repeat(32)}`
   const parentId = `activity_${'b'.repeat(32)}`

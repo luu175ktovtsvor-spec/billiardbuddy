@@ -132,6 +132,17 @@ export type ProductTaskAttachmentSummary = {
   mimeType?: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
 }
 
+/**
+ * A task-thread hint for a media draft prepared by the Agent. It contains
+ * only the opaque local project identity and its immutable draft shape; the
+ * renderer must still ask the product media API to associate it explicitly.
+ */
+export type ProductTaskMediaDraft = {
+  projectId: string
+  kind: 'image' | 'video'
+  state: 'draft'
+}
+
 export type ProductTaskEvent =
   | { type: 'connected' }
   | {
@@ -208,6 +219,12 @@ export type ProductTaskThreadEntry =
       type: 'activity'
       kind: ProductTaskActivityKind
       phase: Extract<ProductTaskActivityPhase, 'completed' | 'failed'>
+      createdAt: string
+    }
+  | {
+      id: string
+      type: 'media_draft'
+      draft: ProductTaskMediaDraft
       createdAt: string
     }
 

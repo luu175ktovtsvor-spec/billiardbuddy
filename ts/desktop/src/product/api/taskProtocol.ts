@@ -4,6 +4,7 @@ import type {
   ProductTaskActivityProgress,
   ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
+  ProductTaskMediaDraft,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
   ProductTaskComputerUseApproval,
@@ -111,6 +112,12 @@ const PRODUCT_TASK_ATTACHMENT_TYPES = new Set<ProductTaskAttachmentSummary['type
   'file',
   'image',
 ])
+const PRODUCT_TASK_MEDIA_DRAFT_KINDS = new Set<ProductTaskMediaDraft['kind']>([
+  'image',
+  'video',
+])
+const PRODUCT_TASK_MEDIA_DRAFT_STATE = 'draft' as const
+const PRODUCT_TASK_MEDIA_PROJECT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{7,79}$/
 const PRODUCT_TASK_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentSummary['mimeType']>>([
   'image/jpeg',
   'image/png',
@@ -344,6 +351,23 @@ function parseAttachmentSummaries(value: unknown): ProductTaskAttachmentSummary[
     : attachments as ProductTaskAttachmentSummary[]
 }
 
+function parseMediaDraft(value: unknown): ProductTaskMediaDraft | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'kind', 'state'])) return null
+  if (
+    typeof value.projectId !== 'string' ||
+    !PRODUCT_TASK_MEDIA_PROJECT_ID_PATTERN.test(value.projectId) ||
+    !isEnumValue(value.kind, PRODUCT_TASK_MEDIA_DRAFT_KINDS) ||
+    value.state !== PRODUCT_TASK_MEDIA_DRAFT_STATE
+  ) {
+    return null
+  }
+  return {
+    projectId: value.projectId,
+    kind: value.kind,
+    state: 'draft',
+  }
+}
+
 /**
  * Runtime-validate the browser-facing product event contract.  TypeScript
  * types alone cannot protect the reducer from a malformed socket payload.
@@ -542,6 +566,19 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
           type: 'activity',
           kind: value.kind,
           phase: value.phase,
+          createdAt: value.createdAt,
+        }
+      : null
+  }
+
+  if (value.type === 'media_draft') {
+    if (!hasOnlyKeys(value, ['id', 'type', 'draft', 'createdAt'])) return null
+    const draft = parseMediaDraft(value.draft)
+    return draft
+      ? {
+          id: value.id,
+          type: 'media_draft',
+          draft,
           createdAt: value.createdAt,
         }
       : null

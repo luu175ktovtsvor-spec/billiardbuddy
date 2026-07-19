@@ -6,6 +6,85 @@ import {
 } from '../product/taskThreadProjection.js'
 
 describe('product task thread projection', () => {
+  it('projects only a safe draft reference after a matching MediaWorkbench creation result', () => {
+    const privateToolId = 'private-media-tool-use-id'
+    const privatePrompt = 'PRIVATE_POSTER_PROMPT'
+    const privatePath = '/Users/private/media-workspace'
+    const source: MessageEntry[] = [
+      {
+        id: 'core-assistant-media-create',
+        type: 'assistant',
+        timestamp: '2026-07-20T08:00:00.000Z',
+        content: [{
+          type: 'tool_use',
+          id: privateToolId,
+          name: 'MediaWorkbench',
+          input: { action: 'create_image_project', prompt: privatePrompt, workspace_root: privatePath },
+        }, {
+          type: 'tool_use',
+          id: 'private-media-read-tool-use-id',
+          name: 'MediaWorkbench',
+          input: { action: 'get_project', project_id: 'img_unmatched' },
+        }],
+      },
+      {
+        id: 'core-media-result',
+        type: 'tool_result',
+        timestamp: '2026-07-20T08:00:01.000Z',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: privateToolId,
+          is_error: false,
+          content: JSON.stringify({
+            project: {
+              id: 'img_12345678',
+              kind: 'image',
+              state: 'draft',
+              title: 'PRIVATE_TITLE',
+              prompt: privatePrompt,
+              workspace_root: privatePath,
+            },
+          }),
+        }],
+      },
+      {
+        id: 'core-media-read-result',
+        type: 'tool_result',
+        timestamp: '2026-07-20T08:00:02.000Z',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'private-media-read-tool-use-id',
+          is_error: false,
+          content: JSON.stringify({
+            project: { id: 'img_unmatched', kind: 'image', state: 'draft' },
+          }),
+        }],
+      },
+    ]
+
+    const projected = projectSessionTranscriptForProductTask('task-visible-media', source)
+    const drafts = projected.entries.filter((entry) => entry.type === 'media_draft')
+
+    expect(drafts).toEqual([{
+      id: expect.stringMatching(/^thread_[a-f0-9]{20}$/),
+      type: 'media_draft',
+      draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
+      createdAt: '2026-07-20T08:00:01.000Z',
+    }])
+
+    const serialized = JSON.stringify(projected)
+    for (const secret of [
+      privateToolId,
+      'MediaWorkbench',
+      privatePrompt,
+      privatePath,
+      'PRIVATE_TITLE',
+      'private-media-read-tool-use-id',
+    ]) {
+      expect(serialized).not.toContain(secret)
+    }
+  })
+
   it('keeps task conversation and completed activity without leaking Core transcript payloads', () => {
     const privateThinking = 'PRIVATE_THINKING_CHAIN'
     const privateToolInput = 'PRIVATE_TOOL_INPUT'
