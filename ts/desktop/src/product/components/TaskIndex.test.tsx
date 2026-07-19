@@ -6,7 +6,9 @@ const mocks = vi.hoisted(() => ({
   listSkillCommands: vi.fn(),
   listAgents: vi.fn(),
   openDirectory: vi.fn(),
+  openProductTaskWindow: vi.fn(),
   isDesktop: false,
+  canOpenTaskWindow: false,
   copyText: vi.fn(),
 }))
 
@@ -25,8 +27,12 @@ vi.mock('../../api/agents', () => ({
 vi.mock('../../lib/desktopHost', () => ({
   getDesktopHost: () => ({
     isDesktop: mocks.isDesktop,
-    capabilities: { dialogs: mocks.isDesktop },
+    capabilities: {
+      dialogs: mocks.isDesktop,
+      taskWindows: mocks.canOpenTaskWindow,
+    },
     dialogs: { open: mocks.openDirectory },
+    window: { openProductTask: mocks.openProductTaskWindow },
   }),
 }))
 
@@ -119,6 +125,7 @@ function renderComposer(overrides: Partial<{
 
 beforeEach(() => {
   mocks.isDesktop = false
+  mocks.canOpenTaskWindow = false
   mocks.listSkillCommands.mockResolvedValue({ commands: [] })
   mocks.listAgents.mockResolvedValue({ agents: [] })
   mocks.copyText.mockResolvedValue(true)
@@ -209,12 +216,16 @@ describe('TaskIndex', () => {
     expect(groups[1]).toHaveTextContent('较新项目')
   })
 
-  it('copies the real task ID and Markdown details without inventing a link', async () => {
+  it('copies a bounded product task link alongside the real ID and Markdown details', async () => {
     renderIndex(makeIndex(makeTask({
       kind: 'continuation',
       worktreeState: 'materialized',
       parentTaskId: 'task-parent',
     })))
+
+    fireEvent.click(screen.getByRole('button', { name: '复制链接' }))
+    await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith('billiardbuddy://task/task-1'))
+    expect(screen.getByRole('button', { name: '已复制链接' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '复制 ID' }))
     await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith('task-1'))
@@ -298,6 +309,28 @@ describe('TaskIndex', () => {
     expect(screen.getByRole('button', { name: '打开' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '打开工作台' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '打开终端' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新窗口打开' })).not.toBeInTheDocument()
+  })
+
+  it('opens a task in a real desktop task window only when the host advertises that capability', async () => {
+    mocks.canOpenTaskWindow = true
+    mocks.openProductTaskWindow.mockResolvedValue(undefined)
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新窗口打开' }))
+
+    await waitFor(() => expect(mocks.openProductTaskWindow).toHaveBeenCalledWith('task-1'))
+  })
+
+  it('shows a safe error if opening the independent task window fails', async () => {
+    mocks.canOpenTaskWindow = true
+    mocks.openProductTaskWindow.mockRejectedValue(new Error('internal renderer path'))
+    renderIndex()
+
+    fireEvent.click(screen.getByRole('button', { name: '新窗口打开' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法打开独立任务窗口，请稍后重试。')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('internal renderer path')
   })
 
   it('does not show the native folder chooser outside the desktop app', () => {

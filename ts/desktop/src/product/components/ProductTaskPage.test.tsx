@@ -460,6 +460,30 @@ describe('ProductTaskPage', () => {
     expect(mocks.openSideTaskPanel).toHaveBeenCalledWith('task-1', 'side-1')
   })
 
+  it('uses the detached task-window callbacks instead of a shared tab when supplied', async () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      entries: [{
+        id: 'thread_0123456789abcdef0123',
+        type: 'assistant_text',
+        text: '可以从这里继续处理。',
+        createdAt: '2026-07-19T00:00:00.000Z',
+      }],
+    }
+    const closeWindow = vi.fn()
+    const openTask = vi.fn()
+    render(<ProductTaskPage taskId="task-1" onReturnToTaskIndex={closeWindow} onOpenTask={openTask} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭窗口' }))
+    expect(closeWindow).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: '从此处继续' }))
+    await waitFor(() => expect(openTask).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-continuation-1',
+    })))
+    expect(mocks.openProductTaskTab).not.toHaveBeenCalled()
+  })
+
   it('waits for a streaming entry to become persisted before offering task branches', () => {
     mocks.runtime = {
       ...mocks.runtime,

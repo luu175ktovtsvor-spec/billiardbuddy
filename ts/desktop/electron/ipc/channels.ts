@@ -29,6 +29,7 @@ export const ELECTRON_IPC_CHANNELS = {
   windowRequestAttention: 'desktop:window:request-attention',
   windowFocus: 'desktop:window:focus',
   windowIsMaximized: 'desktop:window:is-maximized',
+  windowOpenProductTask: 'desktop:window:open-product-task',
   terminalSpawn: 'desktop:terminal:spawn',
   terminalWrite: 'desktop:terminal:write',
   terminalResize: 'desktop:terminal:resize',

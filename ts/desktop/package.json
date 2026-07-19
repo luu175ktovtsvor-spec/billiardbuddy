@@ -19,6 +19,14 @@
       "src-tauri/binaries/**"
     ],
     "artifactName": "BilliardBuddy-${version}-${os}-${arch}.${ext}",
+    "protocols": [
+      {
+        "name": "BilliardBuddy 任务链接",
+        "schemes": [
+          "billiardbuddy"
+        ]
+      }
+    ],
     "npmRebuild": false,
     "directories": {
       "output": "build-artifacts/electron"

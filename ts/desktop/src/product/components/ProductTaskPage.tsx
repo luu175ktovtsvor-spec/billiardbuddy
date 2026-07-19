@@ -4,7 +4,7 @@ import { TerminalSettings } from '../../pages/TerminalSettings'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import type { ProductTaskThreadEntry } from '../domain/types'
+import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
   PRODUCT_TASK_SAFE_ERROR_LABEL,
   canSendProductTaskMessage,
@@ -386,13 +386,15 @@ export function ProductTaskApprovalCard({
 
 type ProductTaskPageProps = {
   taskId: string
+  onReturnToTaskIndex?: () => void
+  onOpenTask?: (task: ProductTaskRecord) => void
 }
 
 /**
  * The product-owned task surface. It consumes only ProductTask contracts;
  * Agent Core sessions and raw protocol messages stay behind the server adapter.
  */
-export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
+export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: ProductTaskPageProps) {
   const index = useProductTaskStore((state) => state.index)
   const isTaskIndexLoading = useProductTaskStore((state) => state.isLoading)
   const indexError = useProductTaskStore((state) => state.error)
@@ -471,8 +473,13 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   }, [connectTask, disconnectTask, resolvedTaskId])
 
   const returnToTaskIndex = () => {
+    if (onReturnToTaskIndex) {
+      onReturnToTaskIndex()
+      return
+    }
     openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
   }
+  const returnLabel = onReturnToTaskIndex ? '关闭窗口' : '返回任务'
 
   const submit = () => {
     if (!canSendProductTaskMessage(draft, attachments)) {
@@ -565,7 +572,7 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
             </p>
             <div className="flex gap-2">
               <button type="button" onClick={() => void refreshTasks()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">重新读取</button>
-              <button type="button" onClick={returnToTaskIndex} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">返回任务中心</button>
+              <button type="button" onClick={returnToTaskIndex} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">{onReturnToTaskIndex ? '关闭窗口' : '返回任务中心'}</button>
             </div>
           </>
         )}
@@ -647,7 +654,8 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
     try {
       setThreadActionError(null)
       const nextTask = await continueTask(taskId, { sourceEntryId, target })
-      openProductTaskTab(nextTask.id, nextTask.title)
+      if (onOpenTask) onOpenTask(nextTask)
+      else openProductTaskTab(nextTask.id, nextTask.title)
     } catch {
       setThreadActionError('暂时无法从这条记录继续任务，请稍后重试。')
     }
@@ -671,7 +679,7 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
           onClick={returnToTaskIndex}
           className="rounded-md px-2 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
         >
-          返回任务
+          {returnLabel}
         </button>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{task.title}</h1>

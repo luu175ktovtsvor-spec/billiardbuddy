@@ -57,6 +57,10 @@ const urlWithOptionalBounds: Validator = value =>
 
 const zoomPayload: Validator = value => typeof value === 'number' && Number.isFinite(value)
 
+const productTaskId: Validator = value =>
+  typeof value === 'string'
+  && /^[0-9a-zA-Z_-]{1,64}$/.test(value)
+
 const updateCheckOptions: Validator = value => {
   if (value === undefined) return true
   if (!isRecord(value) || !hasOnlyKeys(value, ['proxy'])) return false
@@ -144,6 +148,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.windowRequestAttention]: noPayload,
   [ELECTRON_IPC_CHANNELS.windowFocus]: noPayload,
   [ELECTRON_IPC_CHANNELS.windowIsMaximized]: noPayload,
+  [ELECTRON_IPC_CHANNELS.windowOpenProductTask]: productTaskId,
   [ELECTRON_IPC_CHANNELS.terminalSpawn]: terminalSpawn,
   [ELECTRON_IPC_CHANNELS.terminalWrite]: terminalWrite,
   [ELECTRON_IPC_CHANNELS.terminalResize]: terminalResize,

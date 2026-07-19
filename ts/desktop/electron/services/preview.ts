@@ -108,6 +108,7 @@ export class ElectronPreviewService {
   private readonly previewScriptPath: string
   private view: PreviewViewLike | null = null
   private parent: PreviewParentWindowLike | null = null
+  private renderer: PreviewWebContentsLike | null = null
   private zoomFactor = 1
   private pickerArmed = false
 
@@ -116,11 +117,17 @@ export class ElectronPreviewService {
     this.previewScriptPath = options.previewScriptPath
   }
 
-  async open(parent: PreviewParentWindowLike, url: string, bounds: PreviewBounds): Promise<void> {
+  async open(
+    parent: PreviewParentWindowLike,
+    url: string,
+    bounds: PreviewBounds,
+    renderer?: PreviewWebContentsLike,
+  ): Promise<void> {
     this.pickerArmed = false
     const normalizedUrl = normalizePreviewUrl(url)
     const normalizedBounds = normalizePreviewBounds(bounds)
     const view = this.ensureView(parent)
+    this.renderer = renderer ?? null
     view.setBounds(normalizedBounds)
     await view.webContents.loadURL(normalizedUrl)
   }
@@ -153,6 +160,11 @@ export class ElectronPreviewService {
     }
     this.view = null
     this.parent = null
+    this.renderer = null
+  }
+
+  closeForParent(parent: PreviewParentWindowLike): void {
+    if (this.parent === parent) this.close()
   }
 
   async message(payload: unknown, renderer?: PreviewWebContentsLike | null): Promise<void> {
@@ -176,7 +188,11 @@ export class ElectronPreviewService {
     }
   }
 
-  async sendMessageToRenderer(sender: PreviewWebContentsLike, raw: unknown, renderer: PreviewWebContentsLike | null | undefined): Promise<void> {
+  async sendMessageToRenderer(
+    sender: PreviewWebContentsLike,
+    raw: unknown,
+    renderer: PreviewWebContentsLike | null | undefined = this.renderer,
+  ): Promise<void> {
     if (sender !== this.view?.webContents) return
     if (typeof raw !== 'string') return
     const message = parsePreviewAgentMessage(raw)
@@ -196,6 +212,7 @@ export class ElectronPreviewService {
   }
 
   private ensureView(parent: PreviewParentWindowLike): PreviewViewLike {
+    if (this.view && this.parent !== parent) this.close()
     if (this.view) return this.view
     const view = this.createView()
     parent.contentView.addChildView(view)

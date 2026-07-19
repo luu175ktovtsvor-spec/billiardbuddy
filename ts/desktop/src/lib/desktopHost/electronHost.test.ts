@@ -71,6 +71,19 @@ describe('electron desktop host', () => {
     expect(invoke).toHaveBeenCalledWith(ELECTRON_IPC_CHANNELS.windowStartDragging, undefined)
   })
 
+  it('opens a product task only through its narrow desktop window channel', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    const host = createElectronHost({ invoke, subscribe: vi.fn() })
+
+    await host.window.openProductTask('task_abc-123')
+
+    expect(host.capabilities.taskWindows).toBe(true)
+    expect(invoke).toHaveBeenCalledWith(
+      ELECTRON_IPC_CHANNELS.windowOpenProductTask,
+      'task_abc-123',
+    )
+  })
+
   it('routes preview zoom through the preview IPC channel', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     const host = createElectronHost({

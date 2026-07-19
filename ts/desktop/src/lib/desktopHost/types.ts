@@ -20,6 +20,7 @@ export type DesktopHostCapability =
   | 'previewWebview'
   | 'shell'
   | 'terminal'
+  | 'taskWindows'
   | 'updates'
   | 'windowControls'
   | 'zoom'
@@ -219,6 +220,7 @@ export type DesktopHost = {
     requestAttention(): Promise<void>
     focus(): Promise<void>
     isMaximized(): Promise<boolean>
+    openProductTask(taskId: string): Promise<void>
     onResized(handler: () => void): Promise<DesktopHostUnlisten>
     onNativeMenuNavigate(handler: (destination: string) => void): Promise<DesktopHostUnlisten>
   }
