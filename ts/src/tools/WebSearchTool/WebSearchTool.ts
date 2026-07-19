@@ -20,14 +20,13 @@ import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import {
   getApiKeyForProvider,
-  getFallbackProvider,
   isWebSearchEnabledForModel,
+  isNativeWebSearchProtocolMismatch,
   makeWebSearchUnavailableOutput,
   markAnthropicNativeUnsupported,
   resolveWebSearchProvider,
   searchWithExternalProvider,
   searchWithProductGateway,
-  shouldFallbackFromNativeError,
 } from './backend.js'
 import { getWebSearchPrompt, WEB_SEARCH_TOOL_NAME } from './prompt.js'
 import {
@@ -353,55 +352,22 @@ export const WebSearchTool = buildTool({
         startTime,
       )
     } catch (error) {
-      // Explicit native mode stays native. In legacy auto mode we retain the
-      // pre-existing user-key fallback, but the product gateway never reaches
-      // this branch and can therefore never silently switch provider.
-      if (!shouldFallbackFromNativeError(error) || resolved.settings.mode !== 'auto') {
-        const durationSeconds = (performance.now() - startTime) / 1000
-        logError(error instanceof Error ? error : new Error(String(error)))
-        return {
-          data: makeWebSearchUnavailableOutput(
-            query,
-            durationSeconds,
-            'Web search is temporarily unavailable. Please try again.',
-          ),
-        }
+      // Native responses can explicitly reject server tools. Remember that
+      // capability mismatch for this model, but fail closed: automatic search
+      // must not send the same query to Tavily or Brave without an explicit
+      // advanced provider selection.
+      if (isNativeWebSearchProtocolMismatch(error)) {
+        markAnthropicNativeUnsupported(model)
       }
-
-      markAnthropicNativeUnsupported(model)
-      const fallbackProvider = getFallbackProvider(resolved.settings)
-      if (!fallbackProvider) {
-        const durationSeconds = (performance.now() - startTime) / 1000
-        logError(error instanceof Error ? error : new Error(String(error)))
-        return {
-          data: makeWebSearchUnavailableOutput(
-            query,
-            durationSeconds,
-            'Web search is temporarily unavailable. Please try again.',
-          ),
-        }
-      }
-
-      const apiKey = getApiKeyForProvider(fallbackProvider, resolved.settings)
-      if (!apiKey) {
-        const durationSeconds = (performance.now() - startTime) / 1000
-        return {
-          data: makeWebSearchUnavailableOutput(
-            query,
-            durationSeconds,
-            'Web search is not available for this task.',
-          ),
-        }
-      }
-
       logError(error instanceof Error ? error : new Error(String(error)))
-      const data = await searchWithExternalProvider(
-        fallbackProvider,
-        input,
-        apiKey,
-        context.abortController.signal,
-      )
-      return { data }
+      const durationSeconds = (performance.now() - startTime) / 1000
+      return {
+        data: makeWebSearchUnavailableOutput(
+          query,
+          durationSeconds,
+          'Web search is temporarily unavailable. Please try again.',
+        ),
+      }
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

@@ -30,6 +30,12 @@ export type WebSearchResolveOptions = {
    * ANTHROPIC_BASE_URL; null explicitly disables product gateway resolution.
    */
   productGatewayUrl?: string | null
+  /**
+   * Test/host override for the native Anthropic-compatible endpoint. Undefined
+   * means inspect ANTHROPIC_BASE_URL; null explicitly disables DeepSeek native
+   * transport detection.
+   */
+  anthropicBaseUrl?: string | null
 }
 
 type ExternalSearchHit = {
@@ -70,6 +76,37 @@ export function isLikelyClaudeModel(model: string | undefined): boolean {
   return /(^|[/:._-])claude([/:._-]|$)/.test(model.toLowerCase())
 }
 
+export function isLikelyDeepSeekModel(model: string | undefined): boolean {
+  if (!model) {
+    return false
+  }
+
+  return /^deepseek(?:[-_./]|$)/.test(model.trim().toLowerCase())
+}
+
+/**
+ * DeepSeek documents this exact Anthropic-compatible endpoint for Claude Code.
+ * Keep this deliberately strict: a model name alone must never cause a request
+ * to a different Anthropic-compatible provider to opt into a server tool.
+ */
+export function isDeepSeekAnthropicBaseUrl(baseUrl: string | null | undefined): boolean {
+  if (!baseUrl) return false
+  try {
+    const parsed = new URL(baseUrl)
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.hostname.toLowerCase() === 'api.deepseek.com' &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash &&
+      parsed.pathname.replace(/\/+$/, '') === '/anthropic'
+    )
+  } catch {
+    return false
+  }
+}
+
 export function getConfiguredWebSearchSettings(
   settings: Pick<SettingsJson, 'webSearch'> = getSettings_DEPRECATED(),
 ): WebSearchSettings {
@@ -96,16 +133,12 @@ export function resolveWebSearchProvider(
   const productGatewayUrl = options.productGatewayUrl === undefined
     ? getProductWebSearchProxyUrl()
     : options.productGatewayUrl
+  const anthropicBaseUrl = options.anthropicBaseUrl === undefined
+    ? process.env.ANTHROPIC_BASE_URL
+    : options.anthropicBaseUrl
 
   if (mode === 'disabled') {
     return { provider: 'disabled', settings }
-  }
-
-  // A managed desktop runtime has one product-owned route. Existing local
-  // provider choices and keys must not override it or become a fallback when
-  // that route reports an error.
-  if (productGatewayUrl) {
-    return { provider: 'product', settings, productGatewayUrl }
   }
 
   if (mode === 'tavily') {
@@ -113,28 +146,29 @@ export function resolveWebSearchProvider(
   }
 
   if (mode === 'brave') {
+    // The managed route ultimately uses Brave. Keep it behind the explicit
+    // advanced mode so ordinary search never silently leaves DeepSeek's native
+    // server-tool transport.
+    if (productGatewayUrl) {
+      return { provider: 'product', settings, productGatewayUrl }
+    }
     return { provider: settings.braveApiKey ? 'brave' : 'disabled', settings }
   }
 
   if (mode === 'anthropic') {
     return {
-      provider: canUseAnthropicNativeWebSearch(model) ? 'anthropic' : 'disabled',
+      provider: canUseAnthropicNativeWebSearch(model, anthropicBaseUrl) ? 'anthropic' : 'disabled',
       settings,
     }
   }
 
-  if (canUseAnthropicNativeWebSearch(model)) {
+  if (canUseAnthropicNativeWebSearch(model, anthropicBaseUrl)) {
     return { provider: 'anthropic', settings }
   }
 
-  if (settings.tavilyApiKey) {
-    return { provider: 'tavily', settings }
-  }
-
-  if (settings.braveApiKey) {
-    return { provider: 'brave', settings }
-  }
-
+  // Automatic search is native-only. External providers stay available only
+  // through an explicit advanced setting so a native transport failure can
+  // never quietly switch the query to a different provider.
   return { provider: 'disabled', settings }
 }
 
@@ -195,7 +229,7 @@ function isProductWebSearchProxyUrl(value: string): boolean {
   }
 }
 
-export function shouldFallbackFromNativeError(error: unknown): boolean {
+export function isNativeWebSearchProtocolMismatch(error: unknown): boolean {
   const message = String(error instanceof Error ? error.message : error)
   return (
     /\b(400|422)\b/.test(message) ||
@@ -278,18 +312,6 @@ export async function searchWithProductGateway(
   return makeExternalSearchOutput(normalizedInput.query, hits, durationSeconds)
 }
 
-export function getFallbackProvider(
-  settings: WebSearchSettings,
-): Exclude<WebSearchProvider, 'product' | 'anthropic' | 'disabled'> | null {
-  if (settings.tavilyApiKey) {
-    return 'tavily'
-  }
-  if (settings.braveApiKey) {
-    return 'brave'
-  }
-  return null
-}
-
 export function getApiKeyForProvider(
   provider: Exclude<WebSearchProvider, 'product' | 'anthropic' | 'disabled'>,
   settings: WebSearchSettings,
@@ -311,9 +333,15 @@ export function makeWebSearchUnavailableOutput(
   }
 }
 
-function canUseAnthropicNativeWebSearch(model: string | undefined): boolean {
+function canUseAnthropicNativeWebSearch(
+  model: string | undefined,
+  anthropicBaseUrl: string | null | undefined,
+): boolean {
   const key = normalizeModelKey(model)
-  return isLikelyClaudeModel(model) && (!key || !unsupportedNativeModels.has(key))
+  const supportsNativeTransport =
+    isLikelyClaudeModel(model) ||
+    (isLikelyDeepSeekModel(model) && isDeepSeekAnthropicBaseUrl(anthropicBaseUrl))
+  return supportsNativeTransport && (!key || !unsupportedNativeModels.has(key))
 }
 
 function normalizeModelKey(model: string | undefined): string | null {
