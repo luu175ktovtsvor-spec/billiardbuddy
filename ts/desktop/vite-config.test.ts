@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest'
 const desktopRoot = dirname(fileURLToPath(import.meta.url))
 
 describe('desktop build compatibility', () => {
-  it('keeps production bundles loadable in the macOS 12 Safari 15 WebView', () => {
+  it('keeps production bundles on the explicit Electron renderer compatibility target', () => {
     const config = readFileSync(join(desktopRoot, 'vite.config.ts'), 'utf8')
 
-    expect(config).toContain("target: ['es2021', 'safari15']")
+    expect(config).toContain("target: 'es2021'")
   })
 
   it('defines the product shell palette with semantic surface tokens', () => {
