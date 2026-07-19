@@ -66,7 +66,7 @@ vi.mock('./TerminalSettings', () => ({
   ),
 }))
 
-import { ActiveSession, getRightDockLayout } from './ActiveSession'
+import { ActiveSession, getRightDockLayout, getTerminalPanelLayout } from './ActiveSession'
 import { useChatStore } from '../stores/chatStore'
 import { useCLITaskStore } from '../stores/cliTaskStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -200,6 +200,25 @@ describe('ActiveSession task polling', () => {
     })
     expect(getRightDockLayout(1000, Number.NaN)?.width).toBe(620)
     expect(getRightDockLayout(0, WORKSPACE_PANEL_DEFAULT_WIDTH)).toBeNull()
+  })
+
+  it('keeps a usable session area when the docked terminal is taller than the window allows', () => {
+    expect(getTerminalPanelLayout(600, TERMINAL_PANEL_MAX_HEIGHT)).toEqual({
+      minHeight: TERMINAL_PANEL_MIN_HEIGHT,
+      maxHeight: 340,
+      height: 340,
+    })
+    expect(getTerminalPanelLayout(1000, TERMINAL_PANEL_MAX_HEIGHT)).toEqual({
+      minHeight: TERMINAL_PANEL_MIN_HEIGHT,
+      maxHeight: 740,
+      height: 740,
+    })
+    expect(getTerminalPanelLayout(1200, TERMINAL_PANEL_MAX_HEIGHT)).toEqual({
+      minHeight: TERMINAL_PANEL_MIN_HEIGHT,
+      maxHeight: TERMINAL_PANEL_MAX_HEIGHT,
+      height: TERMINAL_PANEL_MAX_HEIGHT,
+    })
+    expect(getTerminalPanelLayout(0, TERMINAL_PANEL_DEFAULT_HEIGHT)).toBeNull()
   })
 
   it('mounts the embedded side-task panel only for the active product task', () => {
@@ -1740,9 +1759,11 @@ describe('ActiveSession task polling', () => {
       },
     })
     useTerminalPanelStore.getState().openPanel(sessionId)
+    useWorkspacePanelStore.getState().openPanel(sessionId)
 
     render(<ActiveSession />)
 
+    const root = screen.getByTestId('active-session-root')
     const panel = screen.getByTestId('session-terminal-panel')
     const resizeHandle = screen.getByTestId('terminal-resize-handle')
     const host = screen.getByTestId(`session-terminal-host-${sessionId}`)
@@ -1753,6 +1774,49 @@ describe('ActiveSession task polling', () => {
     expect(host).toHaveAttribute('data-preserve-on-unmount', 'true')
     expect(resizeHandle).toHaveAttribute('aria-valuemin', `${TERMINAL_PANEL_MIN_HEIGHT}`)
     expect(resizeHandle).toHaveAttribute('aria-valuemax', `${TERMINAL_PANEL_MAX_HEIGHT}`)
+    expect(screen.getByTestId('workbench-panel')).toBeInTheDocument()
+
+    const rootRect = vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 1200,
+      height: 600,
+      top: 0,
+      right: 1200,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(panel).toHaveStyle({ height: '340px', minHeight: '260px', maxHeight: '340px' })
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', '260')
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', '340')
+    expect(resizeHandle).toHaveAttribute('aria-valuenow', '340')
+
+    rootRect.mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 1200,
+      height: 1200,
+      top: 0,
+      right: 1200,
+      bottom: 1200,
+      left: 0,
+      toJSON: () => ({}),
+    })
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+    rootRect.mockRestore()
+
+    expect(panel).toHaveStyle({ height: `${TERMINAL_PANEL_DEFAULT_HEIGHT}px` })
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', `${TERMINAL_PANEL_MIN_HEIGHT}`)
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', `${TERMINAL_PANEL_MAX_HEIGHT}`)
+    expect(resizeHandle).toHaveAttribute('aria-valuenow', `${TERMINAL_PANEL_DEFAULT_HEIGHT}`)
 
     act(() => {
       fireEvent.keyDown(resizeHandle, { key: 'ArrowUp' })
