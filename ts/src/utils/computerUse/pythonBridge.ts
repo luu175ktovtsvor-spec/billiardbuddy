@@ -6,7 +6,6 @@ import { execFileNoThrow } from '../execFileNoThrow.js'
 import { logForDebugging } from '../debug.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import { buildPipInstallAttempts } from './pipInstall.js'
-import { loadStoredComputerUseConfig } from './preauthorizedConfig.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '../../..')
@@ -85,8 +84,6 @@ export async function installRuntimeDependencies(
 }
 
 async function getVenvCreationPythonCommand(): Promise<string> {
-  const config = await loadStoredComputerUseConfig()
-  if (config.pythonPath) return config.pythonPath
   return isWindows ? 'python' : 'python3'
 }
 

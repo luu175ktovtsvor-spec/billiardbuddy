@@ -1,16 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { describe, expect, it } from 'bun:test'
 
-const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
-let configDir: string | null = null
-let computerUseApi: typeof import('../api/computer-use.js') | null = null
-
-async function importComputerUseApi() {
-  if (!computerUseApi) throw new Error('Computer Use API module was not initialized')
-  return computerUseApi
-}
+import {
+  checkComputerUseStatus,
+  getUnsupportedPythonVersionStep,
+  handleComputerUseApi,
+  installSetupDependencies,
+  runPipInstallWithFallback,
+} from '../api/computer-use.js'
 
 function makeRequest(method: string, body?: unknown): Request {
   return new Request('http://localhost/api/computer-use/authorized-apps', {
@@ -20,7 +16,6 @@ function makeRequest(method: string, body?: unknown): Request {
 }
 
 async function callAuthorizedApps(method: string, body?: unknown): Promise<Response> {
-  const { handleComputerUseApi } = await importComputerUseApi()
   return handleComputerUseApi(
     makeRequest(method, body),
     new URL('http://localhost/api/computer-use/authorized-apps'),
@@ -28,79 +23,54 @@ async function callAuthorizedApps(method: string, body?: unknown): Promise<Respo
   )
 }
 
-beforeAll(async () => {
-  configDir = await mkdtemp(join(tmpdir(), 'billiardbuddy-computer-use-api-'))
-  process.env.CLAUDE_CONFIG_DIR = configDir
-  computerUseApi = await import('../api/computer-use.js')
-})
+describe('Computer Use API authorization boundary', () => {
+  it('reports setup readiness without exposing local runtime paths or errors', async () => {
+    const status = await checkComputerUseStatus({
+      pathExists: async () => false,
+      detectPythonRuntime: async () => ({
+        installed: true,
+        version: '3.12.0',
+        path: '/private/runtime/python3',
+        command: 'python3',
+        prefixArgs: [],
+        source: 'system',
+        error: null,
+      }),
+    }) as {
+      python: Record<string, unknown>
+      venv: Record<string, unknown>
+      dependencies: Record<string, unknown>
+    }
+    expect(status.python.installed).toEqual(expect.any(Boolean))
+    expect(status.python).toHaveProperty('version')
+    expect(status.venv).toEqual({ created: expect.any(Boolean) })
+    expect(status.dependencies).toEqual({ installed: expect.any(Boolean) })
+    expect(JSON.stringify(status)).not.toMatch(/(?:path|error|source)/i)
+  })
 
-beforeEach(async () => {
-  if (!configDir) throw new Error('configDir was not initialized')
-  process.env.CLAUDE_CONFIG_DIR = configDir
-  await rm(join(configDir, 'billiardbuddy'), { recursive: true, force: true })
-  await rm(join(configDir, '.runtime'), { recursive: true, force: true })
-})
+  it('rejects persistent authorization writes without a desktop capability', async () => {
+    const putRes = await callAuthorizedApps('PUT', {
+      enabled: false,
+      pythonPath: '/tmp/attacker-python',
+      authorizedApps: [{ bundleId: 'com.attacker.app', displayName: 'Attacker' }],
+      grantFlags: { clipboardRead: true, clipboardWrite: true, systemKeyCombos: true },
+    })
 
-afterAll(async () => {
-  if (originalClaudeConfigDir === undefined) {
-    delete process.env.CLAUDE_CONFIG_DIR
-  } else {
-    process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
-  }
-
-  if (configDir) {
-    await rm(configDir, { recursive: true, force: true })
-    configDir = null
-  }
-})
-
-describe('Computer Use API authorized app config', () => {
-  it('defaults Computer Use enabled for existing users without config', async () => {
-    const res = await callAuthorizedApps('GET')
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({
-      enabled: true,
-      authorizedApps: [],
+    expect(putRes.status).toBe(403)
+    expect(await putRes.json()).toMatchObject({
+      error: 'COMPUTER_USE_PERSISTENCE_FORBIDDEN',
     })
   })
 
-  it('persists the Computer Use enabled flag independently', async () => {
-    const putRes = await callAuthorizedApps('PUT', { enabled: false })
-    expect(putRes.status).toBe(200)
-
+  it('does not expose the retired persistent allowlist API', async () => {
     const getRes = await callAuthorizedApps('GET')
-    expect(await getRes.json()).toMatchObject({ enabled: false })
 
-    const raw = await readFile(
-      join(configDir!, 'billiardbuddy', 'computer-use-config.json'),
-      'utf8',
-    )
-    expect(JSON.parse(raw)).toMatchObject({ enabled: false })
-  })
-
-  it('persists and normalizes a custom Python interpreter path', async () => {
-    const pythonPath = '  C:\\Users\\me\\miniconda3\\envs\\cu\\python.exe  '
-    const putRes = await callAuthorizedApps('PUT', { pythonPath })
-    expect(putRes.status).toBe(200)
-
-    const getRes = await callAuthorizedApps('GET')
-    expect(await getRes.json()).toMatchObject({
-      pythonPath: 'C:\\Users\\me\\miniconda3\\envs\\cu\\python.exe',
-    })
-
-    const resetRes = await callAuthorizedApps('PUT', { pythonPath: '' })
-    expect(resetRes.status).toBe(200)
-
-    const resetGetRes = await callAuthorizedApps('GET')
-    expect(await resetGetRes.json()).toMatchObject({ pythonPath: null })
+    expect(getRes.status).toBe(410)
   })
 })
 
 describe('runPipInstallWithFallback', () => {
   it('builds a clear unsupported Python version step for setup', async () => {
-    const { getUnsupportedPythonVersionStep } = await importComputerUseApi()
-
     expect(getUnsupportedPythonVersionStep('3.8.18')).toEqual({
       name: 'python_version',
       ok: false,
@@ -110,7 +80,6 @@ describe('runPipInstallWithFallback', () => {
   })
 
   it('installs setup dependencies by upgrading pip before requirements', async () => {
-    const { installSetupDependencies } = await importComputerUseApi()
     const calls: string[] = []
 
     const result = await installSetupDependencies(
@@ -130,7 +99,6 @@ describe('runPipInstallWithFallback', () => {
   })
 
   it('tries the mirror first and falls back to the default PyPI index', async () => {
-    const { runPipInstallWithFallback } = await importComputerUseApi()
     const calls: string[] = []
     const result = await runPipInstallWithFallback(
       'python',
@@ -153,7 +121,6 @@ describe('runPipInstallWithFallback', () => {
   })
 
   it('returns the first failure when every pip index attempt fails', async () => {
-    const { runPipInstallWithFallback } = await importComputerUseApi()
     const result = await runPipInstallWithFallback(
       'python',
       ['-m', 'pip', 'install', '-r', 'requirements.txt'],

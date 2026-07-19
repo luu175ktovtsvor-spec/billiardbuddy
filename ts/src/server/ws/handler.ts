@@ -639,6 +639,7 @@ function handleComputerUsePermissionResponse(
 ) {
   const { sessionId } = ws.data
   const ok = computerUseApprovalService.resolveApproval(
+    sessionId,
     message.requestId,
     message.response,
   )
