@@ -4,8 +4,6 @@
 
 import { handleSessionsApi } from './api/sessions.js'
 import { handleSettingsApi } from './api/settings.js'
-import { handleModelsApi } from './api/models.js'
-import { handleScheduledTasksApi } from './api/scheduled-tasks.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
 import { handleFilesystemRoute } from './api/filesystem.js'
@@ -40,13 +38,6 @@ export async function handleApiRequest(
 
     case 'settings':
       return handleSettingsApi(req, url, segments)
-
-    case 'models':
-    case 'effort':
-      return handleModelsApi(req, url, segments)
-
-    case 'scheduled-tasks':
-      return handleScheduledTasksApi(req, url, segments)
 
     case 'agents':
     case 'tasks':

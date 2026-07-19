@@ -18,25 +18,7 @@ const originalCliPath = process.env.CLAUDE_CLI_PATH
 const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 const mockSdkCliPath = fileURLToPath(new URL('../fixtures/mock-sdk-cli.ts', import.meta.url))
 
-// The models API derives its model list from these env vars (see
-// src/server/api/models.ts getEnvConfiguredAnthropicModels). A developer who
-// exports them for a custom provider would otherwise leak them into the
-// no-provider fixture and break the default-model assertions. Isolate them.
-const MODEL_ENV_KEYS = [
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-] as const
-const originalModelEnv = Object.fromEntries(
-  MODEL_ENV_KEYS.map((key) => [key, process.env[key]]),
-) as Record<(typeof MODEL_ENV_KEYS)[number], string | undefined>
-
 function restoreEnv() {
-  for (const key of MODEL_ENV_KEYS) {
-    if (originalModelEnv[key] !== undefined) process.env[key] = originalModelEnv[key]
-    else delete process.env[key]
-  }
   if (originalConfigDir !== undefined) {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   } else {
@@ -64,7 +46,6 @@ async function startTestServer() {
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.CLAUDE_CLI_PATH = mockSdkCliPath
   process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
-  for (const key of MODEL_ENV_KEYS) delete process.env[key]
 
   // Create required directories
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
@@ -191,31 +172,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 4. Models
-  // =============================================
-
-  it('should list available models', async () => {
-    const { data } = await api('GET', '/api/models')
-    expect(data.models.length).toBe(3)
-    expect(data.models[0].name).toBe('Opus 4.7')
-  })
-
-  it('should switch model', async () => {
-    await api('PUT', '/api/models/current', { modelId: 'claude-haiku-4-5' })
-
-    const { data } = await api('GET', '/api/models/current')
-    expect(data.model.id).toBe('claude-haiku-4-5')
-  })
-
-  it('should get and set effort level', async () => {
-    await api('PUT', '/api/effort', { level: 'high' })
-
-    const { data } = await api('GET', '/api/effort')
-    expect(data.level).toBe('high')
-  })
-
-  // =============================================
-  // 5. Scheduled Tasks
+  // 4. Scheduled Tasks
   // =============================================
 
   let taskId: string
@@ -262,7 +219,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 6. Agents
+  // 5. Agents
   // =============================================
 
   it('should start with safe Agent command descriptors', async () => {
@@ -303,7 +260,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 8. Task-scoped WebSocket
+  // 6. Task-scoped WebSocket
   // =============================================
 
   it('streams a product task without exposing its private Core session binding', async () => {
@@ -354,7 +311,7 @@ describe('E2E: Full Flow', () => {
   }, 20_000)
 
   // =============================================
-  // 9. CORS
+  // 7. CORS
   // =============================================
 
   // Loopback browser origins (local dev servers) are trusted without a token
@@ -376,7 +333,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 11. Error Handling
+  // 8. Error Handling
   // =============================================
 
   it('should return 404 for unknown API', async () => {
