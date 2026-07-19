@@ -19,6 +19,12 @@ import type {
   ProductTaskMediaList,
   ProductTaskMediaProject,
 } from '../../../../shared/product/taskMedia'
+import type {
+  CreateProductScheduledTaskInput,
+  ProductScheduledTask,
+  ProductScheduledTaskRun,
+  UpdateProductScheduledTaskInput,
+} from '../../../../shared/product/scheduledTasks'
 
 export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
 export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvents'
@@ -74,6 +80,14 @@ export type {
   ProductTaskMediaProject,
   ProductTaskMediaTask,
 } from '../../../../shared/product/taskMedia'
+export type {
+  CreateProductScheduledTaskInput,
+  ProductScheduledTask,
+  ProductScheduledTaskNotification,
+  ProductScheduledTaskRun,
+  ProductScheduledTaskRunStatus,
+  UpdateProductScheduledTaskInput,
+} from '../../../../shared/product/scheduledTasks'
 
 export type ProductTaskAction =
   | 'pin'
@@ -131,4 +145,26 @@ export type ProductSideTaskApi = {
   list: (taskId: string) => Promise<ProductSideTaskListResponse>
   create: (taskId: string, input: CreateProductSideTaskInput) => Promise<ProductSideTaskActionResponse>
   close: (taskId: string, sideTaskId: string) => Promise<ProductSideTaskActionResponse>
+}
+
+export type ProductScheduledTaskListResponse = {
+  tasks: ProductScheduledTask[]
+}
+
+export type ProductScheduledTaskResponse = {
+  task: ProductScheduledTask
+}
+
+export type ProductScheduledTaskRunsResponse = {
+  runs: ProductScheduledTaskRun[]
+}
+
+export type ProductScheduledTaskApi = {
+  list: () => Promise<ProductScheduledTaskListResponse>
+  create: (input: CreateProductScheduledTaskInput) => Promise<ProductScheduledTaskResponse>
+  update: (taskId: string, input: UpdateProductScheduledTaskInput) => Promise<ProductScheduledTaskResponse>
+  delete: (taskId: string) => Promise<{ ok: true }>
+  run: (taskId: string) => Promise<{ ok: true }>
+  getRecentRuns: (limit?: number) => Promise<ProductScheduledTaskRunsResponse>
+  getTaskRuns: (taskId: string) => Promise<ProductScheduledTaskRunsResponse>
 }

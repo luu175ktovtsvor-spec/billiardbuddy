@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
-import { ScheduledTasks } from '../pages/ScheduledTasks'
 import { AttachmentGallery } from '../components/chat/AttachmentGallery'
 import { useSettingsStore } from '../stores/settingsStore'
 
@@ -16,17 +15,6 @@ afterEach(async () => {
     await Promise.resolve()
   })
   cleanup()
-})
-
-describe('Content-only pages render without errors', () => {
-  it('ScheduledTasks renders (store-connected)', async () => {
-    const { container } = render(<ScheduledTasks />)
-    await screen.findByText('Scheduled tasks')
-    expect(
-      screen.getByText(/Scheduled tasks never bypass permissions/i),
-    ).toBeInTheDocument()
-    expect(container.innerHTML).toContain('Scheduled tasks')
-  })
 })
 
 describe('Task attachments', () => {

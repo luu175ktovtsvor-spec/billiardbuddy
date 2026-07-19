@@ -16,6 +16,11 @@ import {
   ProductTaskMediaService,
   type ProductTaskMediaApi,
 } from '../product/taskMediaService.js'
+import { handleProductScheduledTasksApi } from './productScheduledTasks.js'
+import {
+  productScheduledTaskService,
+  type ProductScheduledTaskService,
+} from '../product/scheduledTaskService.js'
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
@@ -43,8 +48,13 @@ export async function handleProductApi(
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
   media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
+  scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
 ): Promise<Response> {
   try {
+    if (segments[2] === 'scheduled-tasks') {
+      return await handleProductScheduledTasksApi(req, url, segments, scheduledTasks)
+    }
+
     if (segments[2] === 'projects') {
       if (segments[3] !== 'recent' || segments[4]) {
         throw ApiError.notFound('未知产品项目资源')

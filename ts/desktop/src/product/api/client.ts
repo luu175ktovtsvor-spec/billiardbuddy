@@ -108,4 +108,5 @@ export const productApi = {
   get: <T>(path: string, options?: ProductRequestOptions) => request<T>('GET', path, undefined, options),
   post: <T>(path: string, body?: unknown, options?: ProductRequestOptions) => request<T>('POST', path, body, options),
   patch: <T>(path: string, body?: unknown, options?: ProductRequestOptions) => request<T>('PATCH', path, body, options),
+  delete: <T>(path: string, options?: ProductRequestOptions) => request<T>('DELETE', path, undefined, options),
 }

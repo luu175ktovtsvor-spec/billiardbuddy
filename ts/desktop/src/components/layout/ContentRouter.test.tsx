@@ -10,8 +10,8 @@ const { previewBridgeMock } = vi.hoisted(() => ({
 
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: previewBridgeMock }))
 
-vi.mock('../../pages/ScheduledTasks', () => ({
-  ScheduledTasks: () => <div data-testid="scheduled-tasks" />,
+vi.mock('../../product/components/ProductScheduledTasksPage', () => ({
+  ProductScheduledTasksPage: () => <div data-testid="product-scheduled-tasks" />,
 }))
 
 vi.mock('../../pages/Settings', () => ({
