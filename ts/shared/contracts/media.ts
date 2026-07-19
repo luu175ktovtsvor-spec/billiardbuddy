@@ -132,6 +132,8 @@ export const mediaTaskSchema = z.object({
   progress: z.number().min(0).max(100),
   stage: z.string().max(160),
   remote_task_id: z.string().min(1).max(256).optional(),
+  /** Server-provided status polling backoff for asynchronous image work. */
+  poll_after_seconds: z.number().int().min(1).max(3600).optional(),
   idempotency_key: z.string().min(16).max(160).optional(),
   outcome_unknown: z.boolean().optional(),
   result: z.record(z.string(), z.unknown()).optional(),

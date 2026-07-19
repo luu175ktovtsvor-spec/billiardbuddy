@@ -24,6 +24,27 @@ type ReferenceImage = { name: string; dataUrl: string; size: number }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
+/**
+ * A queued task can sit behind a paid image slot for minutes. Respect the relay's
+ * backoff hint and add a stable small jitter so a 500-window burst does not wake up
+ * and poll the mainland/US path in one synchronized spike.
+ */
+export function imageTaskPollDelayMs(
+  taskId: string,
+  state: string,
+  suggestedSeconds?: number,
+): number {
+  const fallbackSeconds = state === 'generating' ? 3 : 15
+  const rawSeconds = typeof suggestedSeconds === 'number' && Number.isFinite(suggestedSeconds)
+    ? Math.trunc(suggestedSeconds)
+    : fallbackSeconds
+  const baseMs = Math.max(2_500, Math.min(60_000, Math.max(1, rawSeconds) * 1_000))
+  let hash = 0
+  for (let index = 0; index < taskId.length; index += 1) hash = (hash * 31 + taskId.charCodeAt(index)) >>> 0
+  const jitterMs = Math.max(250, Math.floor(baseMs * 0.1))
+  return baseMs + (hash % jitterMs)
+}
+
 function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)} MB`
 }
@@ -106,14 +127,19 @@ export function ImageWorkbench() {
     const poll = async () => {
       if (stopped) return
       await refreshTask(active.task_id!).catch(() => undefined)
-      if (!stopped) timer = window.setTimeout(() => void poll(), 2500)
+      if (!stopped) {
+        timer = window.setTimeout(
+          () => void poll(),
+          imageTaskPollDelayMs(active.task_id!, active.state, task?.poll_after_seconds),
+        )
+      }
     }
     void poll()
     return () => {
       stopped = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [active?.state, active?.task_id, refreshTask])
+  }, [active?.state, active?.task_id, refreshTask, task?.poll_after_seconds])
 
   const beginNew = () => {
     clearError()

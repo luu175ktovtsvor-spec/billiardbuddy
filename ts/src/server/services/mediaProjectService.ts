@@ -120,12 +120,19 @@ export type MediaProjectServiceOptions = {
 type RelayImageTask = {
   task_id?: string
   status?: string
+  poll_after_seconds?: number
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
   error?: string
   reused?: boolean
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
   input_fidelity_risk?: string
+}
+
+function relayPollAfterSeconds(value: unknown, fallbackSeconds: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  const seconds = Number.isFinite(parsed) ? Math.trunc(parsed) : fallbackSeconds
+  return Math.max(1, Math.min(3600, seconds))
 }
 
 export class MediaServiceError extends Error {
@@ -1139,6 +1146,7 @@ export class MediaProjectService {
         progress: body.status === 'running' ? 10 : 2,
         stage: body.reused ? '已复用同一任务' : '已进入生图队列',
         remote_task_id: body.task_id,
+        poll_after_seconds: relayPollAfterSeconds(body.poll_after_seconds, body.status === 'running' ? 3 : 15),
         updated_at: this.iso(),
       })
       await this.saveProject({
@@ -1261,6 +1269,7 @@ export class MediaProjectService {
         status: body.status === 'running' ? 'running' : 'queued',
         progress: body.status === 'running' ? Math.max(task.progress, 35) : Math.max(task.progress, 5),
         stage: body.status === 'running' ? '正在生成' : '等待生成',
+        poll_after_seconds: relayPollAfterSeconds(body.poll_after_seconds, body.status === 'running' ? 3 : 15),
         updated_at: this.iso(),
       })
       const project = await this.currentImageProjectForTask(task)
