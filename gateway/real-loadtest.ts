@@ -26,10 +26,14 @@ type Sample = {
   status: number
   firstByteMs: number | null
   totalMs: number
+  /** Metadata only: whether the successful OpenAI SSE stream included reasoning_content. */
+  sawReasoning: boolean
   /** A 2xx response is not enough: the test request must finish its SSE protocol. */
   completed: boolean
   failureKind?: 'timeout' | 'network' | 'empty_stream' | 'incomplete_sse'
 }
+
+export type ThinkingMode = 'enabled' | 'disabled'
 
 type PhaseSummary = {
   requested: number
@@ -39,6 +43,7 @@ type PhaseSummary = {
   failureKinds: Record<string, number>
   firstByteMs: { p50: number | null; p95: number | null }
   totalMs: { p50: number | null; p95: number | null }
+  responsesWithReasoning: number
   /** Observed through periodic /healthz samples; never use this as an exact peak proof. */
   observedGateway: { active: number; queued: number; oldestQueueMs: number; samples: number; unavailableSamples: number }
   finalGateway: Capacity | null
@@ -56,6 +61,8 @@ Options:
   --phases=a,b,c              Concurrent request steps (default: 1,20,50,100,...,total)
   --scenario=short|stream     "short" asks for OK; "stream" asks for a short numbered stream
   --max-tokens=<n>            Upstream max_tokens per request (default: 64)
+  --thinking=enabled|disabled Send an explicit DeepSeek thinking mode; omitted uses
+                               the upstream default and still records metadata only
   --pool=deepseek|mimo        Capacity pool sampled from /healthz (auto from model)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
@@ -83,6 +90,18 @@ function integer(value: string | undefined, name: string, fallback: number): num
 function option(args: string[], name: string): string | undefined {
   const prefix = `${name}=`
   return args.find(arg => arg.startsWith(prefix))?.slice(prefix.length)
+}
+
+/** Keep test traffic on the two documented DeepSeek spellings. */
+export function parseThinkingMode(value: string | undefined): ThinkingMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'enabled' || value === 'disabled') return value
+  throw new Error('--thinking must be enabled or disabled')
+}
+
+/** Deliberately inspect only the protocol field name, never a reasoning value. */
+export function sawReasoningInSse(text: string): boolean {
+  return text.includes('"reasoning_content"')
 }
 
 function percentile(values: number[], ratio: number): number | null {
@@ -196,6 +215,7 @@ async function main(): Promise<void> {
   const pauseMs = integer(option(args, '--pause-ms'), '--pause-ms', 2_500)
   const scenario = option(args, '--scenario') ?? 'stream'
   if (scenario !== 'short' && scenario !== 'stream') throw new Error('--scenario must be short or stream')
+  const thinking = parseThinkingMode(option(args, '--thinking'))
   const model = process.env.QF_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash'
   const pool = option(args, '--pool') ?? (model.toLowerCase().startsWith('mimo') ? 'mimo' : 'deepseek')
   if (pool !== 'deepseek' && pool !== 'mimo') throw new Error('--pool must be deepseek or mimo')
@@ -240,6 +260,7 @@ async function main(): Promise<void> {
           model,
           stream: true,
           max_tokens: maxTokens,
+          ...(thinking ? { thinking: { type: thinking } } : {}),
           temperature: 0,
           messages: [{ role: 'user', content: prompt }],
         }),
@@ -247,6 +268,7 @@ async function main(): Promise<void> {
       let firstByteMs: number | null = null
       let sawChunk = false
       let sawDone = false
+      let sawReasoning = false
       let sseTail = ''
       const decoder = new TextDecoder()
       const reader = response.body?.getReader()
@@ -260,15 +282,18 @@ async function main(): Promise<void> {
           // `[DONE]` may be split across TCP chunks, so retain a tiny decoded tail.
           sseTail = `${sseTail}${decoder.decode(next.value, { stream: true })}`.slice(-64)
           if (sseTail.includes('data: [DONE]')) sawDone = true
+          if (sawReasoningInSse(sseTail)) sawReasoning = true
         }
       }
       sseTail = `${sseTail}${decoder.decode()}`.slice(-64)
       if (sseTail.includes('data: [DONE]')) sawDone = true
+      if (sawReasoningInSse(sseTail)) sawReasoning = true
       const completed = response.ok && sawChunk && sawDone
       return {
         status: response.status,
         firstByteMs: firstByteMs === null ? null : Math.round(firstByteMs),
         totalMs: Math.round(performance.now() - started),
+        sawReasoning,
         completed,
         failureKind: completed || !response.ok
           ? undefined
@@ -279,6 +304,7 @@ async function main(): Promise<void> {
         status: 0,
         firstByteMs: null,
         totalMs: Math.round(performance.now() - started),
+        sawReasoning: false,
         completed: false,
         failureKind: controller.signal.aborted ? 'timeout' : 'network',
       }
@@ -296,6 +322,7 @@ async function main(): Promise<void> {
     scenario,
     pool,
     maxTokens,
+    thinking: thinking ?? 'upstream_default',
   }))
 
   for (const requested of phases) {
@@ -343,6 +370,7 @@ async function main(): Promise<void> {
       failureKinds,
       firstByteMs: { p50: percentile(firstBytes, 0.5), p95: percentile(firstBytes, 0.95) },
       totalMs: { p50: percentile(totals, 0.5), p95: percentile(totals, 0.95) },
+      responsesWithReasoning: samples.filter(sample => sample.sawReasoning).length,
       observedGateway: {
         active: peakActive,
         queued: peakQueued,
@@ -362,4 +390,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main()
+if (import.meta.main) await main()
