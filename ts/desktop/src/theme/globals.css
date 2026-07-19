@@ -459,16 +459,6 @@
   --shadow-inspector: 0 28px 80px rgba(65, 54, 48, 0.22);
   --color-switch-checked-bg: #90C1F7;
   --color-switch-thumb: #FFFFFF;
-  --color-sidebar-filter-bg: transparent;
-  --color-sidebar-filter-border: rgba(218, 193, 186, 0.92);
-  --color-sidebar-filter-icon-bg: transparent;
-  --color-sidebar-search-bg: rgba(255, 255, 255, 0.78);
-  --color-sidebar-search-border: rgba(218, 193, 186, 0.88);
-  --color-sidebar-item-hover: rgba(237, 237, 237, 0.82);
-  --color-sidebar-item-active: rgba(229, 243, 255, 0.9);
-  --color-sidebar-item-active-border: rgba(51, 156, 255, 0.18);
-  --sidebar-panel-bg-image: none;
-
   /* Border aliases */
   --color-border: var(--color-outline-variant);
   --color-border-focus: var(--bb-blue-300);
@@ -488,7 +478,6 @@
 
   /* Shadows */
   --shadow-dropdown: 0 4px 20px rgba(27, 28, 26, 0.04), 0 12px 40px rgba(27, 28, 26, 0.08);
-  --shadow-sidebar-filter: none;
   --shadow-focus-ring: 0 0 0 1px rgba(51, 156, 255, 0.16);
   --shadow-error-ring: 0 0 0 1px rgba(186, 26, 26, 0.18);
   --shadow-button-primary: 0 8px 24px rgba(51, 156, 255, 0.18);
@@ -549,16 +538,6 @@
   --color-window-close-hover: #E81123;
   --color-selection-bg: rgba(153, 206, 255, 0.55);
   --color-selection-fg: var(--bb-blue-900);
-  --color-text-secondary-a72: rgba(84, 67, 62, 0.72);
-  --color-text-secondary-a68: rgba(84, 67, 62, 0.68);
-  --color-text-primary-a88: rgba(27, 28, 26, 0.88);
-  --color-text-primary-a82: rgba(27, 28, 26, 0.82);
-  --color-text-primary-a78: rgba(27, 28, 26, 0.78);
-  --color-surface-hover-a34: rgba(237, 237, 237, 0.34);
-  --color-surface-hover-a54: rgba(237, 237, 237, 0.54);
-  --color-outline-a72: rgba(93, 93, 93, 0.72);
-  --color-outline-a78: rgba(93, 93, 93, 0.78);
-  --color-outline-a92: rgba(93, 93, 93, 0.92);
 
   /* Radii — Codex 1.25× 密度 */
   --radius-sm: 7px;
@@ -680,16 +659,6 @@
   --shadow-inspector: 0 28px 80px rgba(15, 23, 42, 0.14);
   --color-switch-checked-bg: #90C1F7;
   --color-switch-thumb: #FFFFFF;
-  --color-sidebar-filter-bg: #FFFFFF;
-  --color-sidebar-filter-border: rgba(203, 213, 225, 0.92);
-  --color-sidebar-filter-icon-bg: transparent;
-  --color-sidebar-search-bg: rgba(255, 255, 255, 0.9);
-  --color-sidebar-search-border: rgba(203, 213, 225, 0.88);
-  --color-sidebar-item-hover: rgba(255, 255, 255, 0.78);
-  --color-sidebar-item-active: rgba(229, 243, 255, 0.9);
-  --color-sidebar-item-active-border: rgba(51, 156, 255, 0.18);
-  --sidebar-panel-bg-image: none;
-
   --color-border: #DDE3EA;
   --color-border-focus: var(--color-primary);
   --color-border-separator: #E5EAF0;
@@ -703,7 +672,6 @@
   --color-text-accent: var(--bb-blue-400);
 
   --shadow-dropdown: 0 8px 24px rgba(15, 23, 42, 0.06), 0 24px 60px rgba(15, 23, 42, 0.08);
-  --shadow-sidebar-filter: 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow-focus-ring: 0 0 0 1px rgba(51, 156, 255, 0.5), 0 0 0 4px rgba(51, 156, 255, 0.16);
   --shadow-error-ring: 0 0 0 1px rgba(180, 35, 24, 0.22), 0 0 0 4px rgba(254, 228, 226, 0.86);
   --shadow-button-primary: 0 10px 24px rgba(51, 156, 255, 0.18);
@@ -758,16 +726,6 @@
   --color-window-close-hover: #E5484D;
   --color-selection-bg: rgba(153, 206, 255, 0.55);
   --color-selection-fg: var(--bb-blue-900);
-  --color-text-secondary-a72: rgba(75, 85, 99, 0.72);
-  --color-text-secondary-a68: rgba(75, 85, 99, 0.68);
-  --color-text-primary-a88: rgba(17, 24, 39, 0.88);
-  --color-text-primary-a82: rgba(17, 24, 39, 0.82);
-  --color-text-primary-a78: rgba(17, 24, 39, 0.78);
-  --color-surface-hover-a34: rgba(241, 244, 247, 0.34);
-  --color-surface-hover-a54: rgba(241, 244, 247, 0.54);
-  --color-outline-a72: rgba(139, 152, 167, 0.72);
-  --color-outline-a78: rgba(139, 152, 167, 0.78);
-  --color-outline-a92: rgba(139, 152, 167, 0.92);
 }
 
 [data-theme="dark"] {
@@ -864,18 +822,6 @@
   --shadow-inspector: 0 28px 80px rgba(0, 0, 0, 0.58);
   --color-switch-checked-bg: rgba(116, 224, 247, 0.36);
   --color-switch-thumb: #E5E2E1;
-  --color-sidebar-filter-bg: rgba(255, 255, 255, 0.01);
-  --color-sidebar-filter-border: rgba(255, 255, 255, 0.08);
-  --color-sidebar-filter-icon-bg: transparent;
-  --color-sidebar-search-bg: rgba(255, 255, 255, 0.03);
-  --color-sidebar-search-border: rgba(255, 255, 255, 0.06);
-  --color-sidebar-item-hover: rgba(255, 255, 255, 0.04);
-  --color-sidebar-item-active: rgba(255, 255, 255, 0.06);
-  --color-sidebar-item-active-border: rgba(51, 156, 255, 0.2);
-  --sidebar-panel-bg-image:
-    radial-gradient(circle at top left, rgba(51, 156, 255, 0.05), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
-
   --color-border: rgba(229, 226, 225, 0.12);
   --color-border-focus: rgba(51, 156, 255, 0.55);
   --color-border-separator: rgba(229, 226, 225, 0.08);
@@ -889,7 +835,6 @@
   --color-text-accent: var(--bb-blue-100);
 
   --shadow-dropdown: 0 16px 40px rgba(0, 0, 0, 0.42);
-  --shadow-sidebar-filter: none;
   --shadow-focus-ring: 0 0 0 1px rgba(51, 156, 255, 0.32);
   --shadow-error-ring: 0 0 0 1px rgba(255, 180, 171, 0.26);
   --shadow-button-primary: 0 12px 24px rgba(51, 156, 255, 0.18);
@@ -943,16 +888,6 @@
   --color-window-close-hover: #C63B44;
   --color-selection-bg: rgba(51, 156, 255, 0.4);
   --color-selection-fg: #E5F3FF;
-  --color-text-secondary-a72: rgba(183, 170, 165, 0.72);
-  --color-text-secondary-a68: rgba(183, 170, 165, 0.68);
-  --color-text-primary-a88: rgba(229, 226, 225, 0.88);
-  --color-text-primary-a82: rgba(229, 226, 225, 0.82);
-  --color-text-primary-a78: rgba(229, 226, 225, 0.78);
-  --color-surface-hover-a34: rgba(53, 53, 52, 0.34);
-  --color-surface-hover-a54: rgba(53, 53, 52, 0.54);
-  --color-outline-a72: rgba(141, 127, 122, 0.72);
-  --color-outline-a78: rgba(141, 127, 122, 0.78);
-  --color-outline-a92: rgba(141, 127, 122, 0.92);
 }
 
 /* ─── Material Symbols ─────────────────────────────────────────── */
@@ -1059,10 +994,6 @@ button, input, textarea, select, a, [role="button"] {
   overflow-x: hidden;
 }
 
-.app-shell-backdrop {
-  background: var(--color-overlay-scrim);
-}
-
 .sidebar-shell {
   width: var(--sidebar-width);
   flex-shrink: 0;
@@ -1075,137 +1006,8 @@ button, input, textarea, select, a, [role="button"] {
   width: 0;
 }
 
-.sidebar-panel {
-  width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
-  background-image: var(--sidebar-panel-bg-image);
-  background-repeat: no-repeat;
-  transition:
-    background-color var(--motion-sidebar-duration) var(--motion-sidebar-easing),
-    border-color var(--motion-sidebar-duration) var(--motion-sidebar-easing);
-}
-
-.sidebar-panel[data-state="closed"] {
-  width: 0;
-  min-width: 0;
-}
-
-.sidebar-toggle-button {
-  color: var(--color-text-secondary-a72);
-  background: transparent;
-  transition:
-    color 180ms ease,
-    background-color 180ms ease,
-    transform 180ms ease;
-  border: 0;
-  box-shadow: none;
-}
-
-.sidebar-toggle-button:hover {
-  color: var(--color-text-primary-a88);
-  background: var(--color-surface-hover-a34);
-}
-
-.sidebar-toggle-button:active {
-  transform: translateY(0.5px);
-  background: var(--color-surface-hover-a54);
-}
-
-.sidebar-toggle-button--open {
-  color: var(--color-text-secondary-a68);
-}
-
-.sidebar-toggle-button--open:hover {
-  color: var(--color-text-primary-a82);
-}
-
-.sidebar-toggle-button--collapsed {
-  color: var(--color-text-primary-a78);
-}
-
-.sidebar-toggle-button--collapsed:hover {
-  color: var(--color-text-primary);
-}
-
-.sidebar-toggle-button--collapsed:active {
-}
-
-.sidebar-toggle-icon {
-  overflow: visible;
-}
-
-.sidebar-toggle-chevron {
-  stroke: currentColor;
-  transition:
-    opacity 180ms ease,
-    transform 180ms ease;
-  vector-effect: non-scaling-stroke;
-}
-
-.sidebar-toggle-chevron {
-  opacity: 0.95;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.85;
-  transform-origin: 50% 50%;
-}
-
-.sidebar-toggle-icon--open .sidebar-toggle-chevron {
-  transform: translateX(-0.2px);
-}
-
-.sidebar-toggle-button--collapsed .sidebar-toggle-chevron {
-  stroke-width: 2;
-  transform: translateX(0.4px);
-}
-
-.sidebar-copy {
-  overflow: hidden;
-  white-space: nowrap;
-  transition:
-    max-width var(--motion-sidebar-duration) var(--motion-sidebar-easing),
-    opacity calc(var(--motion-sidebar-duration) - 40ms) ease,
-    transform var(--motion-sidebar-duration) var(--motion-sidebar-easing);
-}
-
-.sidebar-copy--visible {
-  max-width: 240px;
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.sidebar-copy--hidden {
-  max-width: 0;
-  opacity: 0;
-  transform: translateX(-10px);
-}
-
-.sidebar-section {
-  overflow: hidden;
-  transition:
-    max-height var(--motion-sidebar-duration) var(--motion-sidebar-easing),
-    opacity calc(var(--motion-sidebar-duration) - 40ms) ease,
-    transform var(--motion-sidebar-duration) var(--motion-sidebar-easing);
-}
-
-.sidebar-section--visible {
-  max-height: 1200px;
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.sidebar-section--hidden {
-  max-height: 0;
-  opacity: 0;
-  transform: translateX(-12px);
-  pointer-events: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .sidebar-shell,
-  .sidebar-panel,
-  .sidebar-copy,
-  .sidebar-section {
+  .sidebar-shell {
     transition-duration: 0.01ms !important;
   }
 }
@@ -1248,37 +1050,6 @@ button, input, textarea, select, a, [role="button"] {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-outline); border-radius: 9999px; opacity: 0.3; }
 ::-webkit-scrollbar-thumb:hover { opacity: 0.6; }
-
-.sidebar-scroll-area {
-  padding-bottom: 72px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-outline-a72) transparent;
-}
-
-.sidebar-settings-dock {
-  z-index: 30;
-  background-color: var(--color-surface-sidebar);
-  background-image: var(--sidebar-panel-bg-image);
-  background-repeat: no-repeat;
-  background-position: left bottom;
-}
-
-.sidebar-scroll-area::-webkit-scrollbar {
-  width: 4px;
-}
-
-.sidebar-scroll-area::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sidebar-scroll-area::-webkit-scrollbar-thumb {
-  background: var(--color-outline-a78);
-  border-radius: 9999px;
-}
-
-.sidebar-scroll-area::-webkit-scrollbar-thumb:hover {
-  background: var(--color-outline-a92);
-}
 
 /* Animations */
 @keyframes shimmer {

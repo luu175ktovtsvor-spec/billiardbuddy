@@ -45,16 +45,6 @@ describe('desktop theme tokens', () => {
     '--color-goal-icon-bg',
     '--color-goal-chip-bg',
     '--color-goal-chip-border',
-    '--color-text-secondary-a72',
-    '--color-text-secondary-a68',
-    '--color-text-primary-a88',
-    '--color-text-primary-a82',
-    '--color-text-primary-a78',
-    '--color-surface-hover-a34',
-    '--color-surface-hover-a54',
-    '--color-outline-a72',
-    '--color-outline-a78',
-    '--color-outline-a92',
   ]
 
   it('defines status tokens for every supported theme', () => {
