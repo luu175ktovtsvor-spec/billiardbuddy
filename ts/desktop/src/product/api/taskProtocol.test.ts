@@ -102,12 +102,12 @@ describe('product task protocol run activities', () => {
       progress: { completed: 1, total: 3 },
     })
 
-    // The flat event remains valid while a stored product task is upgraded.
+    // Live task activity is always a rich, opaque activity record.
     expect(parseProductTaskEvent({
       type: 'activity',
       kind: 'workspace',
       phase: 'completed',
-    })).toEqual({ type: 'activity', kind: 'workspace', phase: 'completed' })
+    })).toBeNull()
   })
 
   it('rejects Core details and malformed identifiers before activity state is updated', () => {
@@ -130,6 +130,9 @@ describe('product task protocol run activities', () => {
       },
       {
         type: 'activity', kind: 'command', phase: 'running', summary: '正在处理任务操作',
+      },
+      {
+        type: 'activity', id: activityId, kind: 'command', phase: 'running',
       },
     ]) {
       expect(parseProductTaskEvent(value)).toBeNull()

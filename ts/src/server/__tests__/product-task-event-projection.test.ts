@@ -7,7 +7,7 @@ import {
 } from '../product/taskEventProjection.js'
 
 describe('product task event projection', () => {
-  it('keeps real user-visible task progress while excluding core internals', () => {
+  it('keeps safe non-activity task events while excluding Core internals', () => {
     const rawThinking = 'PRIVATE_THINKING_CHAIN'
     const rawToolInput = 'PRIVATE_TOOL_INPUT'
     const rawToolResult = 'PRIVATE_TOOL_RESULT'
@@ -95,9 +95,6 @@ describe('product task event projection', () => {
       { type: 'status', state: 'working' },
       { type: 'assistant_text_start' },
       { type: 'assistant_text_delta', text: '这是实际的流式回复。' },
-      { type: 'activity', kind: 'command', phase: 'started' },
-      { type: 'activity', kind: 'command', phase: 'running' },
-      { type: 'activity', kind: 'tool', phase: 'completed' },
       { type: 'approval_required', requestId: 'approval-1', kind: 'action' },
       {
         type: 'approval_required',
@@ -108,7 +105,6 @@ describe('product task event projection', () => {
           capabilities: ['clipboard_read'],
         },
       },
-      { type: 'activity', kind: 'subtask', phase: 'running' },
       { type: 'error', code: 'task_failed', retryable: true },
       { type: 'status', state: 'idle' },
       { type: 'turn_complete' },
@@ -133,6 +129,25 @@ describe('product task event projection', () => {
     ]) {
       expect(serialized).not.toContain(secret)
     }
+  })
+
+  it('omits activity messages until the task-scoped rich projector handles them', () => {
+    const projected = projectServerMessagesForProductTask([
+      {
+        type: 'content_start',
+        blockType: 'tool_use',
+        toolName: 'Bash',
+        toolUseId: 'core-tool-PRIVATE',
+      },
+      { type: 'tool_use_complete', toolName: 'Bash', toolUseId: 'core-tool-PRIVATE' },
+      { type: 'tool_result', toolUseId: 'core-tool-PRIVATE', content: 'PRIVATE_RESULT' },
+      { type: 'system_notification', subtype: 'task_progress', message: 'PRIVATE_PROGRESS' },
+      { type: 'team_created', teamName: 'private-team' },
+      { type: 'team_deleted', teamName: 'private-team' },
+      { type: 'task_update', taskId: 'private-task', status: 'completed' },
+    ])
+
+    expect(projected).toEqual([])
   })
 
   it('projects Computer Use as a narrow human-readable approval', () => {
