@@ -117,7 +117,7 @@ function binaryVersion(value: string, name: string): string {
 }
 
 function verifyBinaryLicense(value: string, name: string): void {
-  if (!/GNU Lesser General Public License/i.test(value)) {
+  if (!/GNU\s+Lesser\s+General\s+Public\s+License/i.test(value)) {
     throw new Error(`${name} 未声明 GNU Lesser General Public License`)
   }
 }
