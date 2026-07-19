@@ -22,7 +22,6 @@ export const en = {
   'sidebar.newTask': 'New task',
   'sidebar.untitledTask': 'Untitled task',
   'sidebar.scheduled': 'Scheduled',
-  'sidebar.terminal': 'Terminal',
   'sidebar.settings': 'Settings',
   'sidebar.searchPlaceholder': 'Search sessions...',
   'sidebar.noSessions': 'No sessions yet',
@@ -194,11 +193,8 @@ export const en = {
 
   // Settings > Terminal
   'settings.terminal.title': 'Terminal',
-  'settings.terminal.description': 'Run host-machine commands for plugin, Skill, and MCP setup.',
-  'settings.terminal.infoLabel': 'Terminal setup help',
   'settings.terminal.clear': 'Clear',
   'settings.terminal.restart': 'Restart',
-  'settings.terminal.windowTitle': 'Host shell',
   'settings.terminal.unavailableTitle': 'Desktop runtime required',
   'settings.terminal.unavailableBody': 'Open this page in the packaged desktop app to start an interactive terminal.',
   'settings.terminal.preferencesTitle': 'Startup shell',
@@ -232,10 +228,7 @@ export const en = {
   'settings.terminal.bashPathReset': 'Reset to default',
   'settings.terminal.bashPathSaved': 'Saved',
   'settings.terminal.bashPathInvalid': 'Path does not exist. Select a valid Bash executable.',
-  'terminal.newTab': 'New Terminal',
-  'terminal.openInTab': 'Open in Tab',
   'terminal.closePanel': 'Close terminal panel',
-  'terminal.resizePanel': 'Resize terminal panel',
 
   // Recovery > Doctor
   'doctor.title': 'Doctor',

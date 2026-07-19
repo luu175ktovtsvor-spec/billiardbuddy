@@ -144,9 +144,7 @@ export function TopBar() {
     ? t('sidebar.settings')
     : activeTab?.type === 'scheduled'
       ? t('sidebar.scheduled')
-      : activeTab?.type === 'terminal'
-        ? t('sidebar.terminal')
-        : activeTab?.title || t('sidebar.newTask')
+      : activeTab?.title || t('sidebar.newTask')
 
   async function handleCopy(text: string) {
     const copied = await copyTextToClipboard(text)

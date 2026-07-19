@@ -1,7 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { useTabStore } from '../../stores/tabStore'
 import { Settings } from '../../pages/Settings'
-import { TerminalSettings } from '../../pages/TerminalSettings'
 import { ImageWorkbench } from '../media/ImageWorkbench'
 import { VideoStudio } from '../media/VideoStudio'
 import { ProductShell } from '../../product/components/ProductShell'
@@ -14,7 +13,6 @@ export function ContentRouter() {
   const tabs = useTabStore((s) => s.tabs)
   const activeTab = tabs.find((t) => t.sessionId === activeTabId)
   const activeTabType = activeTab?.type
-  const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
 
   useEffect(() => {
     if (activeTabType === 'product-task') return
@@ -46,7 +44,7 @@ export function ContentRouter() {
     page = activeTab?.taskId
       ? <ProductTaskPage taskId={activeTab.taskId} />
       : <ProductShell />
-  } else if (activeTabType !== 'terminal') {
+  } else {
     // A persisted or plugin-provided unknown tab must not select a task
     // runtime by treating its tab id as public task identity.
     page = <ProductShell page="new-task" />
@@ -59,29 +57,6 @@ export function ContentRouter() {
           {page}
         </div>
       )}
-      {terminalTabs.map((tab) => {
-        const active = tab.sessionId === activeTabId
-        const visible = activeTabType === 'terminal' && active
-        return (
-          <div
-            key={tab.sessionId}
-            aria-hidden={!visible}
-            data-testid={`terminal-tab-panel-${tab.sessionId}`}
-            className={`absolute inset-0 flex min-h-0 flex-col overflow-hidden ${
-              visible ? 'z-20 opacity-100' : 'pointer-events-none z-0 opacity-0'
-            }`}
-          >
-            <TerminalSettings
-              active={active}
-              cwd={tab.terminalCwd}
-              runtimeId={tab.terminalRuntimeId ?? tab.sessionId}
-              workspace
-              testId={`terminal-host-${tab.sessionId}`}
-              onNewTerminal={() => useTabStore.getState().openTerminalTab(tab.terminalCwd)}
-            />
-          </div>
-        )
-      })}
     </div>
   )
 }

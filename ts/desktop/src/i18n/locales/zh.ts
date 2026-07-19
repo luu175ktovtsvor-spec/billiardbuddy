@@ -24,7 +24,6 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.newTask': '新建任务',
   'sidebar.untitledTask': '未命名任务',
   'sidebar.scheduled': '定时任务',
-  'sidebar.terminal': '终端',
   'sidebar.settings': '设置',
   'sidebar.searchPlaceholder': '搜索会话...',
   'sidebar.noSessions': '暂无会话',
@@ -196,11 +195,8 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': '终端',
-  'settings.terminal.description': '直接运行宿主机命令，用于安装插件、Skills、MCP 等扩展。',
-  'settings.terminal.infoLabel': '终端安装说明',
   'settings.terminal.clear': '清屏',
   'settings.terminal.restart': '重启',
-  'settings.terminal.windowTitle': '宿主机 Shell',
   'settings.terminal.unavailableTitle': '需要桌面端运行时',
   'settings.terminal.unavailableBody': '请在打包后的桌面端里打开这个页面，才能启动交互式终端。',
   'settings.terminal.preferencesTitle': '启动 Shell',
@@ -234,10 +230,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.terminal.bashPathReset': '恢复默认',
   'settings.terminal.bashPathSaved': '已保存',
   'settings.terminal.bashPathInvalid': '路径不存在，请选择有效的 Bash 可执行文件',
-  'terminal.newTab': '新建终端',
-  'terminal.openInTab': '在 Tab 中打开',
   'terminal.closePanel': '关闭终端面板',
-  'terminal.resizePanel': '调整终端面板大小',
 
   // Recovery > Doctor
   'doctor.title': 'Doctor',

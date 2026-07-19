@@ -24,7 +24,6 @@ export const zh: Record<TranslationKey, string> = {
   'sidebar.newTask': '新建任務',
   'sidebar.untitledTask': '未命名任務',
   'sidebar.scheduled': '定時任務',
-  'sidebar.terminal': '終端',
   'sidebar.settings': '設定',
   'sidebar.searchPlaceholder': '搜尋會話...',
   'sidebar.noSessions': '暫無會話',
@@ -196,11 +195,8 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': '終端',
-  'settings.terminal.description': '直接執行宿主機命令，用於安裝外掛、Skills、MCP 等擴充套件。',
-  'settings.terminal.infoLabel': '終端安裝說明',
   'settings.terminal.clear': '清屏',
   'settings.terminal.restart': '重啟',
-  'settings.terminal.windowTitle': '宿主機 Shell',
   'settings.terminal.unavailableTitle': '需要桌面端執行時',
   'settings.terminal.unavailableBody': '請在打包後的桌面端裡開啟這個頁面，才能啟動互動式終端。',
   'settings.terminal.preferencesTitle': '啟動 Shell',
@@ -234,10 +230,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.terminal.bashPathReset': '恢復預設',
   'settings.terminal.bashPathSaved': '已儲存',
   'settings.terminal.bashPathInvalid': '路徑不存在，請選擇有效的 Bash 可執行檔案',
-  'terminal.newTab': '新建終端',
-  'terminal.openInTab': '在 Tab 中開啟',
   'terminal.closePanel': '關閉終端面板',
-  'terminal.resizePanel': '調整終端面板大小',
 
   // Recovery > Doctor
   'doctor.title': 'Doctor',
