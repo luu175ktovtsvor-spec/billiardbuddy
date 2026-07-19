@@ -1,58 +1,68 @@
 import { getBaseUrl } from '../../api/client'
 import type { ProductTaskEvent } from '../domain/types'
+import { parseProductTaskEvent } from './taskProtocol'
+
+export type ProductTaskAttachment = {
+  type: 'file' | 'image'
+  name?: string
+  data: string
+  mimeType: string
+}
 
 export type ProductTaskClientMessage =
-  | { type: 'user_message'; content: string }
+  | { type: 'user_message'; content: string; attachments?: ProductTaskAttachment[] }
+  | { type: 'permission_response'; requestId: string; allowed: boolean }
+  | { type: 'ask_user_question_response'; requestId: string; answers: string[] }
+  | { type: 'computer_use_permission_response'; requestId: string; allowed: boolean }
   | { type: 'stop_generation' }
   | { type: 'ping' }
 
 export type ProductTaskEventHandler = (event: ProductTaskEvent) => void
 
+export type ProductTaskSocketLifecycleEvent =
+  | { type: 'connecting' }
+  | { type: 'reconnecting' }
+  | { type: 'connected'; reconnected: boolean }
+  | { type: 'disconnected'; willReconnect: boolean }
+
+export type ProductTaskSocketLifecycleHandler = (
+  event: ProductTaskSocketLifecycleEvent,
+) => void
+
 type Connection = {
   ws: WebSocket
   handlers: Set<ProductTaskEventHandler>
+  lifecycleHandlers: Set<ProductTaskSocketLifecycleHandler>
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   pingInterval: ReturnType<typeof setInterval> | null
   intentionalClose: boolean
   pendingMessages: ProductTaskClientMessage[]
-}
-
-const PRODUCT_TASK_EVENT_TYPES = new Set<ProductTaskEvent['type']>([
-  'connected',
-  'user_text',
-  'assistant_text_start',
-  'assistant_text_delta',
-  'status',
-  'activity',
-  'approval_required',
-  'turn_complete',
-  'error',
-  'title_updated',
-])
-
-function isProductTaskEvent(value: unknown): value is ProductTaskEvent {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    'type' in value &&
-    typeof (value as { type?: unknown }).type === 'string' &&
-    PRODUCT_TASK_EVENT_TYPES.has((value as { type: ProductTaskEvent['type'] }).type),
-  )
+  hasOpened: boolean
+  lifecycleEvent: ProductTaskSocketLifecycleEvent
 }
 
 export class ProductTaskSocketManager {
   private connections = new Map<string, Connection>()
 
-  connect(taskId: string, handler: ProductTaskEventHandler): () => void {
+  connect(
+    taskId: string,
+    handler: ProductTaskEventHandler,
+    lifecycleHandler?: ProductTaskSocketLifecycleHandler,
+  ): () => void {
     let connection = this.connections.get(taskId)
     if (!connection || connection.intentionalClose) {
       connection = this.createConnection(taskId, connection)
     }
     connection.handlers.add(handler)
+    if (lifecycleHandler) {
+      connection.lifecycleHandlers.add(lifecycleHandler)
+      this.notifyLifecycleHandler(lifecycleHandler, connection.lifecycleEvent)
+    }
     return () => {
       const current = this.connections.get(taskId)
       current?.handlers.delete(handler)
+      if (lifecycleHandler) current?.lifecycleHandlers.delete(lifecycleHandler)
     }
   }
 
@@ -67,6 +77,7 @@ export class ProductTaskSocketManager {
       connection.reconnectTimer = null
     }
     connection.pendingMessages = []
+    this.publishLifecycle(connection, { type: 'disconnected', willReconnect: false })
     connection.ws.close()
     this.connections.delete(taskId)
   }
@@ -102,17 +113,31 @@ export class ProductTaskSocketManager {
     const connection: Connection = {
       ws,
       handlers: previous?.handlers ?? new Set(),
+      lifecycleHandlers: previous?.lifecycleHandlers ?? new Set(),
       reconnectTimer: null,
       reconnectAttempt: previous?.reconnectAttempt ?? 0,
       pingInterval: null,
       intentionalClose: false,
       pendingMessages: previous?.pendingMessages ?? [],
+      hasOpened: previous?.hasOpened ?? false,
+      lifecycleEvent: previous?.hasOpened
+        ? { type: 'reconnecting' }
+        : { type: 'connecting' },
     }
     this.connections.set(taskId, connection)
 
+    if (previous) this.publishLifecycle(connection, { type: 'reconnecting' })
+
     ws.onopen = () => {
+      if (this.connections.get(taskId) !== connection || connection.intentionalClose) {
+        ws.close()
+        return
+      }
+      const reconnected = connection.hasOpened
+      connection.hasOpened = true
       connection.reconnectAttempt = 0
       this.startPingLoop(taskId, connection)
+      this.publishLifecycle(connection, { type: 'connected', reconnected })
       while (connection.pendingMessages.length > 0) {
         const message = connection.pendingMessages.shift()!
         ws.send(JSON.stringify(message))
@@ -121,9 +146,17 @@ export class ProductTaskSocketManager {
 
     ws.onmessage = (event) => {
       try {
+        if (this.connections.get(taskId) !== connection || connection.intentionalClose) return
         const message = JSON.parse(event.data as string) as unknown
-        if (!isProductTaskEvent(message)) return
-        for (const handler of connection.handlers) handler(message)
+        const productEvent = parseProductTaskEvent(message)
+        if (!productEvent) return
+        for (const handler of connection.handlers) {
+          try {
+            handler(productEvent)
+          } catch {
+            // One product subscriber must not starve the other subscribers.
+          }
+        }
       } catch {
         // Invalid payloads are never promoted into product task state.
       }
@@ -132,6 +165,7 @@ export class ProductTaskSocketManager {
     ws.onclose = () => {
       this.stopPingLoop(connection)
       if (!connection.intentionalClose && this.connections.get(taskId) === connection) {
+        this.publishLifecycle(connection, { type: 'disconnected', willReconnect: true })
         this.scheduleReconnect(taskId, connection)
       }
     }
@@ -158,6 +192,7 @@ export class ProductTaskSocketManager {
 
   private scheduleReconnect(taskId: string, connection: Connection): void {
     if (connection.intentionalClose || connection.reconnectTimer) return
+    this.publishLifecycle(connection, { type: 'reconnecting' })
     const delay = Math.min(1_000 * 2 ** connection.reconnectAttempt, 30_000)
     connection.reconnectAttempt += 1
     connection.reconnectTimer = setTimeout(() => {
@@ -165,6 +200,27 @@ export class ProductTaskSocketManager {
       connection.reconnectTimer = null
       this.createConnection(taskId, connection)
     }, delay)
+  }
+
+  private publishLifecycle(
+    connection: Connection,
+    event: ProductTaskSocketLifecycleEvent,
+  ): void {
+    connection.lifecycleEvent = event
+    for (const handler of connection.lifecycleHandlers) {
+      this.notifyLifecycleHandler(handler, event)
+    }
+  }
+
+  private notifyLifecycleHandler(
+    handler: ProductTaskSocketLifecycleHandler,
+    event: ProductTaskSocketLifecycleEvent,
+  ): void {
+    try {
+      handler(event)
+    } catch {
+      // Lifecycle observers are UI concerns and must not disrupt transport recovery.
+    }
   }
 }
 

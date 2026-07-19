@@ -20,8 +20,7 @@ function makeSideTask(overrides: Partial<ProductSideTask> = {}): ProductSideTask
   return {
     id: 'side-1',
     parentTaskId,
-    sourceTurnId: 'message-42',
-    coreSessionId: 'session-side-1',
+    taskId: 'task-side-1',
     title: '单独核对优惠规则',
     status: 'open',
     createdAt: '2026-07-18T00:00:00.000Z',
@@ -55,11 +54,11 @@ describe('productSideTaskStore', () => {
     vi.mocked(productSideTasksApi.create).mockResolvedValue({ sideTask })
 
     await useProductSideTaskStore.getState().createSideTask(parentTaskId, {
-      sourceTurnId: 'message-42',
+      sourceEntryId: 'thread_0123456789abcdef0123',
     })
 
     expect(productSideTasksApi.create).toHaveBeenCalledWith(parentTaskId, {
-      sourceTurnId: 'message-42',
+      sourceEntryId: 'thread_0123456789abcdef0123',
     })
     expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parentTaskId]).toEqual([sideTask])
     expect(useProductSideTaskStore.getState().mutations[

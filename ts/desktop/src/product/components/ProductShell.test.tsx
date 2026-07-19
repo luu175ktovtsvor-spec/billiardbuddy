@@ -13,15 +13,16 @@ const mocks = vi.hoisted(() => ({
   continueTask: vi.fn(),
   refreshSessions: vi.fn(),
   openTab: vi.fn(),
+  openProductTaskTab: vi.fn(),
   openNewProductTask: vi.fn(),
   closeTab: vi.fn(),
   connectToSession: vi.fn(),
   sendMessage: vi.fn(),
-  setWorkspaceMode: vi.fn(),
-  openWorkspace: vi.fn(),
-  openTerminal: vi.fn(),
+  connectProductTask: vi.fn(),
+  sendProductTaskMessage: vi.fn(),
   index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
   chatSessions: {} as Record<string, unknown>,
+  taskRuntimes: {} as Record<string, unknown>,
   tabs: [] as Array<Record<string, unknown>>,
 }))
 
@@ -59,44 +60,28 @@ vi.mock('../../stores/sessionStore', () => ({
   }),
 }))
 
-vi.mock('../../stores/tabStore', () => ({
-  PRODUCT_TASKS_TAB_ID: '__product_tasks__',
-  NEW_PRODUCT_TASK_TAB_ID: '__new_product_task__',
-  useTabStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    openTab: mocks.openTab,
-    openNewProductTask: mocks.openNewProductTask,
-    closeTab: mocks.closeTab,
-    tabs: mocks.tabs,
-  }),
-}))
-
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: Object.assign(
-    (selector: (state: Record<string, unknown>) => unknown) => selector({ sessions: mocks.chatSessions }),
+vi.mock('../stores/productTaskRuntimeStore', () => ({
+  useProductTaskRuntimeStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({ tasks: mocks.taskRuntimes }),
     {
       getState: () => ({
-      connectToSession: mocks.connectToSession,
-      sendMessage: mocks.sendMessage,
+        connectTask: mocks.connectProductTask,
+        sendMessage: mocks.sendProductTaskMessage,
       }),
     },
   ),
 }))
 
-vi.mock('../../stores/workspacePanelStore', () => ({
-  useWorkspacePanelStore: {
-    getState: () => ({
-      setMode: mocks.setWorkspaceMode,
-      openPanel: mocks.openWorkspace,
-    }),
-  },
-}))
-
-vi.mock('../../stores/terminalPanelStore', () => ({
-  useTerminalPanelStore: {
-    getState: () => ({
-      openPanel: mocks.openTerminal,
-    }),
-  },
+vi.mock('../../stores/tabStore', () => ({
+  PRODUCT_TASKS_TAB_ID: '__product_tasks__',
+  NEW_PRODUCT_TASK_TAB_ID: '__new_product_task__',
+  useTabStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
+    openTab: mocks.openTab,
+    openProductTaskTab: mocks.openProductTaskTab,
+    openNewProductTask: mocks.openNewProductTask,
+    closeTab: mocks.closeTab,
+    tabs: mocks.tabs,
+  }),
 }))
 
 import { ProductShell } from './ProductShell'
@@ -140,7 +125,7 @@ beforeEach(() => {
   mocks.taskComposerProps = null
   mocks.events.length = 0
   mocks.index = { projects: [], tasks: [], total: 0, capabilities: { createTask: true } }
-  mocks.chatSessions = {}
+  mocks.taskRuntimes = {}
   mocks.tabs = []
   mocks.refresh.mockResolvedValue(undefined)
   mocks.createTask.mockImplementation(async () => {
@@ -157,22 +142,17 @@ beforeEach(() => {
   mocks.openTab.mockImplementation(() => {
     mocks.events.push('open-tab')
   })
+  mocks.openProductTaskTab.mockImplementation(() => {
+    mocks.events.push('open-product-task')
+  })
   mocks.openNewProductTask.mockReset()
   mocks.closeTab.mockReset()
-  mocks.connectToSession.mockImplementation(() => {
-    mocks.events.push('connect')
+  mocks.connectProductTask.mockImplementation(() => {
+    mocks.events.push('connect-product-task')
   })
-  mocks.sendMessage.mockImplementation(() => {
-    mocks.events.push('send-message')
-  })
-  mocks.setWorkspaceMode.mockImplementation(() => {
-    mocks.events.push('set-workspace-mode')
-  })
-  mocks.openWorkspace.mockImplementation(() => {
-    mocks.events.push('open-workspace')
-  })
-  mocks.openTerminal.mockImplementation(() => {
-    mocks.events.push('open-terminal')
+  mocks.sendProductTaskMessage.mockImplementation(() => {
+    mocks.events.push('send-product-message')
+    return true
   })
 })
 
@@ -190,56 +170,29 @@ describe('ProductShell', () => {
     expect(mocks.openNewProductTask).toHaveBeenCalledOnce()
   })
 
-  it('opens an existing product task and explicitly connects its core session', () => {
+  it('opens an existing task in the dedicated product task surface', () => {
     render(<ProductShell />)
     const task = makeTask()
 
     taskIndexProps().onOpenTask(task)
 
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-1')
-    expect(mocks.events).toEqual(['open-tab', 'connect'])
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-1', '整理开球训练')
+    expect(mocks.events).toEqual(['open-product-task'])
   })
 
-  it('opens the real task session before exposing its file workbench', () => {
-    render(<ProductShell />)
-    const task = makeTask()
-
-    taskIndexProps().onOpenTaskWorkbench(task)
-
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-1')
-    expect(mocks.setWorkspaceMode).toHaveBeenCalledWith('task-1', 'workspace')
-    expect(mocks.openWorkspace).toHaveBeenCalledWith('task-1')
-    expect(mocks.events).toEqual(['open-tab', 'connect', 'set-workspace-mode', 'open-workspace'])
-  })
-
-  it('opens the real task session before exposing its terminal', () => {
-    render(<ProductShell />)
-    const task = makeTask()
-
-    taskIndexProps().onOpenTaskTerminal(task)
-
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-1')
-    expect(mocks.openTerminal).toHaveBeenCalledWith('task-1')
-    expect(mocks.events).toEqual(['open-tab', 'connect', 'open-terminal'])
-  })
-
-  it('projects the real Agent Core session state into the task index', () => {
+  it('projects the product task stream state into the task index', () => {
     mocks.index = {
       projects: [],
       tasks: [makeTask()],
       total: 1,
       capabilities: { createTask: true },
     }
-    mocks.chatSessions = {
+    mocks.taskRuntimes = {
       'task-1': {
-        chatState: 'permission_pending',
         connectionState: 'connected',
-        pendingPermission: null,
-        pendingComputerUsePermission: null,
-        backgroundAgentTasks: {},
+        runState: 'awaiting_approval',
+        pendingApproval: { requestId: 'permission-1', kind: 'action' },
+        error: null,
       },
     }
 
@@ -250,23 +203,21 @@ describe('ProductShell', () => {
     })
   })
 
-  it('surfaces the real session tab error through the task index', () => {
+  it('surfaces a product stream error through the task index', () => {
     mocks.index = {
       projects: [],
       tasks: [makeTask()],
       total: 1,
       capabilities: { createTask: true },
     }
-    mocks.chatSessions = {
+    mocks.taskRuntimes = {
       'task-1': {
-        chatState: 'idle',
         connectionState: 'connected',
-        pendingPermission: null,
-        pendingComputerUsePermission: null,
-        backgroundAgentTasks: {},
+        runState: 'idle',
+        pendingApproval: null,
+        error: { code: 'task_failed' },
       },
     }
-    mocks.tabs = [{ sessionId: 'task-1', title: '整理开球训练', type: 'session', status: 'error' }]
 
     render(<ProductShell />)
 
@@ -275,7 +226,7 @@ describe('ProductShell', () => {
     })
   })
 
-  it('refreshes and connects the real continuation session after continuing a task', async () => {
+  it('opens the resulting product task after continuing a task', async () => {
     render(<ProductShell />)
 
     await act(async () => {
@@ -283,13 +234,12 @@ describe('ProductShell', () => {
     })
 
     expect(mocks.continueTask).toHaveBeenCalledWith('task-1', {})
-    expect(mocks.refreshSessions).toHaveBeenCalledTimes(1)
-    expect(mocks.openTab).toHaveBeenCalledWith('task-2', '继续整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-2')
-    expect(mocks.events).toEqual(['continue', 'refresh-sessions', 'open-tab', 'connect'])
+    expect(mocks.refreshSessions).not.toHaveBeenCalled()
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-2', '继续整理开球训练')
+    expect(mocks.events).toEqual(['continue', 'open-product-task'])
   })
 
-  it('keeps creation on the original open, connect, then initial-message path without reconnecting', async () => {
+  it('creates on the product open, connect, then initial-message path without opening a generic session', async () => {
     render(<ProductShell page="new-task" />)
     const input: CreateProductTaskInput = {
       workDir: '/workspace/billiard',
@@ -300,14 +250,14 @@ describe('ProductShell', () => {
       await taskComposerProps().onSubmit(input, { text: '请整理本周开球训练计划' })
     })
 
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledTimes(1)
-    expect(mocks.sendMessage).toHaveBeenCalledWith('task-1', '请整理本周开球训练计划', [])
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-1', '整理开球训练')
+    expect(mocks.connectProductTask).toHaveBeenCalledWith('task-1')
+    expect(mocks.sendProductTaskMessage).toHaveBeenCalledWith('task-1', '请整理本周开球训练计划', [])
     expect(mocks.closeTab).toHaveBeenCalledWith('__new_product_task__')
-    expect(mocks.events).toEqual(['create', 'refresh-sessions', 'open-tab', 'connect', 'send-message'])
+    expect(mocks.events).toEqual(['create', 'open-product-task', 'connect-product-task', 'send-product-message'])
   })
 
-  it('forwards initial attachment refs to the existing chat store without putting them into task creation', async () => {
+  it('forwards inline initial attachments to the product transport without putting them into task creation', async () => {
     render(<ProductShell page="new-task" initialWorkDir="/workspace/billiard" />)
     const input: CreateProductTaskInput = {
       workDir: '/workspace/billiard',
@@ -325,9 +275,9 @@ describe('ProductShell', () => {
     })
 
     expect(mocks.createTask).toHaveBeenCalledWith(input)
-    expect(mocks.sendMessage).toHaveBeenCalledWith('task-1', '', attachments)
+    expect(mocks.sendProductTaskMessage).toHaveBeenCalledWith('task-1', '', attachments)
     expect(taskComposerProps().initialWorkDir).toBe('/workspace/billiard')
-    expect(mocks.events).toEqual(['create', 'refresh-sessions', 'open-tab', 'connect', 'send-message'])
+    expect(mocks.events).toEqual(['create', 'open-product-task', 'connect-product-task', 'send-product-message'])
   })
 
   it('returns to the task index and closes the dedicated tab when creation is cancelled', () => {

@@ -6,47 +6,42 @@ import { productSideTasksApi } from '../api/sideTasks'
 import { useProductSideTaskStore } from '../stores/productSideTaskStore'
 
 const mocks = vi.hoisted(() => ({
-  connectToSession: vi.fn(),
-  disconnectSession: vi.fn(),
+  connectTask: vi.fn(),
+  disconnectTask: vi.fn(),
+  sendText: vi.fn(),
+  stopTask: vi.fn(),
+  respondToApproval: vi.fn(),
+  respondToQuestions: vi.fn(),
+  respondToComputerUseApproval: vi.fn(),
+  runtimes: {} as Record<string, Record<string, unknown>>,
 }))
 
-vi.mock('../../components/chat/MessageList', () => ({
-  MessageList: ({
-    sessionId,
-    compact,
-    enableProductActions,
-  }: {
-    sessionId?: string
-    compact?: boolean
-    enableProductActions?: boolean
-  }) => (
-    <div
-      data-testid="side-task-message-list"
-      data-session-id={sessionId}
-      data-compact={String(compact)}
-      data-enable-product-actions={String(enableProductActions)}
-    />
+vi.mock('../stores/productTaskRuntimeStore', () => ({
+  PRODUCT_TASK_SAFE_ERROR_LABEL: {},
+  canSendProductTaskText: (value: string) => Boolean(value.trim()),
+  useProductTaskRuntimeStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
+    tasks: mocks.runtimes,
+    connectTask: mocks.connectTask,
+    disconnectTask: mocks.disconnectTask,
+    sendText: mocks.sendText,
+    stopTask: mocks.stopTask,
+    respondToApproval: mocks.respondToApproval,
+    respondToQuestions: mocks.respondToQuestions,
+    respondToComputerUseApproval: mocks.respondToComputerUseApproval,
+  }),
+}))
+
+vi.mock('../../stores/settingsStore', () => ({
+  useSettingsStore: (selector: (state: { chatSendBehavior: 'enter' }) => unknown) => selector({
+    chatSendBehavior: 'enter',
+  }),
+}))
+
+vi.mock('./ProductTaskPage', () => ({
+  ProductTaskThreadEntryView: ({ entry }: { entry: { text?: string } }) => (
+    <div data-testid="side-task-thread-entry">{entry.text ?? ''}</div>
   ),
-}))
-
-vi.mock('../../components/chat/ChatInput', () => ({
-  ChatInput: ({ sessionId, workDir, compact }: { sessionId?: string; workDir?: string; compact?: boolean }) => (
-    <div
-      data-testid="side-task-chat-input"
-      data-session-id={sessionId}
-      data-work-dir={workDir}
-      data-compact={String(compact)}
-    />
-  ),
-}))
-
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({
-      connectToSession: mocks.connectToSession,
-      disconnectSession: mocks.disconnectSession,
-    }),
-  },
+  ProductTaskApprovalCard: () => <div data-testid="side-task-approval" />,
 }))
 
 vi.mock('../api/sideTasks', () => ({
@@ -81,8 +76,7 @@ function makeSideTask(overrides: Partial<ProductSideTask> = {}): ProductSideTask
   return {
     id: 'side-1',
     parentTaskId,
-    sourceTurnId: 'message-42',
-    coreSessionId: 'session-side-1',
+    taskId: 'task-side-1',
     title: '单独核对优惠规则',
     status: 'open',
     createdAt: '2026-07-19T00:00:00.000Z',
@@ -101,10 +95,24 @@ function resetSideTaskStore() {
   })
 }
 
+function makeRuntime(entries: Array<Record<string, unknown>> = []): Record<string, unknown> {
+  return {
+    historyStatus: 'ready',
+    entries,
+    runState: 'idle',
+    streamingEntryId: null,
+    pendingApproval: null,
+    approvalResponsePending: false,
+    error: null,
+  }
+}
+
 describe('SideTaskPanel', () => {
   beforeEach(() => {
     resetSideTaskStore()
     vi.clearAllMocks()
+    mocks.runtimes = {}
+    mocks.connectTask.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -112,13 +120,22 @@ describe('SideTaskPanel', () => {
     resetSideTaskStore()
   })
 
-  it('connects the selected temporary fork and keeps it embedded while closing it', async () => {
+  it('connects the selected temporary fork through its product task stream while closing it', async () => {
     const firstSideTask = makeSideTask()
     const secondSideTask = makeSideTask({
       id: 'side-2',
-      coreSessionId: 'session-side-2',
+      taskId: 'task-side-2',
       title: '比较两套练习安排',
     })
+    mocks.runtimes = {
+      [firstSideTask.taskId]: makeRuntime([{
+        id: 'entry-1',
+        type: 'assistant_text',
+        text: '已列出优惠规则。',
+        createdAt: '2026-07-19T00:00:00.000Z',
+      }]),
+      [secondSideTask.taskId]: makeRuntime(),
+    }
     const closedFirstSideTask = makeSideTask({
       status: 'closed',
       closedAt: '2026-07-19T00:05:00.000Z',
@@ -138,20 +155,14 @@ describe('SideTaskPanel', () => {
 
     render(<SideTaskPanel parentTask={makeParentTask()} />)
 
-    await waitFor(() => expect(mocks.connectToSession).toHaveBeenCalledWith(firstSideTask.coreSessionId))
-    expect(screen.getByTestId('side-task-message-list')).toHaveAttribute('data-session-id', firstSideTask.coreSessionId)
-    expect(screen.getByTestId('side-task-message-list')).toHaveAttribute('data-compact', 'true')
-    expect(screen.getByTestId('side-task-message-list')).toHaveAttribute('data-enable-product-actions', 'false')
-    expect(screen.getByTestId('side-task-chat-input')).toHaveAttribute('data-session-id', firstSideTask.coreSessionId)
-    expect(screen.getByTestId('side-task-chat-input')).toHaveAttribute('data-work-dir', '/workspace/billiard')
-    expect(screen.getByTestId('side-task-chat-input')).toHaveAttribute('data-compact', 'true')
+    await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith(firstSideTask.taskId))
+    expect(screen.getByTestId('side-task-thread-entry')).toHaveTextContent('已列出优惠规则。')
 
-    fireEvent.click(screen.getByRole('button', { name: `关闭侧边任务 ${firstSideTask.title}` }))
+    fireEvent.click(screen.getByRole('button', { name: `Close side task ${firstSideTask.title}` }))
 
     await waitFor(() => expect(productSideTasksApi.close).toHaveBeenCalledWith(parentTaskId, firstSideTask.id))
-    expect(mocks.disconnectSession).toHaveBeenCalledWith(firstSideTask.coreSessionId)
-    await waitFor(() => expect(mocks.connectToSession).toHaveBeenCalledWith(secondSideTask.coreSessionId))
-    expect(screen.getByTestId('side-task-message-list')).toHaveAttribute('data-session-id', secondSideTask.coreSessionId)
+    expect(mocks.disconnectTask).toHaveBeenCalledWith(firstSideTask.taskId)
+    await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith(secondSideTask.taskId))
     expect(useProductSideTaskStore.getState().panelByParentTaskId[parentTaskId]).toEqual({
       isOpen: true,
       selectedSideTaskId: secondSideTask.id,
@@ -173,10 +184,39 @@ describe('SideTaskPanel', () => {
 
     render(<SideTaskPanel parentTask={makeParentTask()} />)
 
-    await waitFor(() => expect(mocks.connectToSession).toHaveBeenCalledWith(sideTask.coreSessionId))
-    fireEvent.click(screen.getByRole('button', { name: '关闭侧边任务面板' }))
+    mocks.runtimes = { [sideTask.taskId]: makeRuntime() }
+    await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith(sideTask.taskId))
+    fireEvent.click(screen.getByRole('button', { name: 'Close side-task panel' }))
 
     expect(useProductSideTaskStore.getState().panelByParentTaskId[parentTaskId]).toEqual({ isOpen: false })
-    expect(mocks.disconnectSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.disconnectTask).toHaveBeenCalledWith(sideTask.taskId))
+  })
+
+  it('sends and stops a side task through its public product task reference', async () => {
+    const sideTask = makeSideTask({ taskId: 'task-public-side-73' })
+    const runtime = makeRuntime()
+    runtime.runState = 'working'
+    mocks.runtimes = { [sideTask.taskId]: runtime }
+    mocks.sendText.mockReturnValue(true)
+    useProductSideTaskStore.setState({
+      sideTasksByParentTaskId: { [parentTaskId]: [sideTask] },
+      panelByParentTaskId: {
+        [parentTaskId]: {
+          isOpen: true,
+          selectedSideTaskId: sideTask.id,
+        },
+      },
+    })
+    vi.mocked(productSideTasksApi.list).mockResolvedValue({ sideTasks: [sideTask] })
+
+    render(<SideTaskPanel parentTask={makeParentTask()} />)
+
+    await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith('task-public-side-73'))
+    fireEvent.change(screen.getByLabelText('继续侧边任务'), { target: { value: '核对价格表' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    fireEvent.click(screen.getByRole('button', { name: '停止' }))
+
+    expect(mocks.sendText).toHaveBeenCalledWith('task-public-side-73', '核对价格表')
+    expect(mocks.stopTask).toHaveBeenCalledWith('task-public-side-73')
   })
 })

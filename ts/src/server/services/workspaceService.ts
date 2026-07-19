@@ -99,6 +99,17 @@ export type WorkspaceReadFileResult = {
   error?: string
 }
 
+/**
+ * Optional limits for a single file-preview request.
+ *
+ * The default preserves the existing workspace behavior. Callers that expose
+ * previews in a narrower surface can opt into an image cap before the image
+ * bytes are read from disk.
+ */
+export type WorkspaceReadFileOptions = {
+  maxImagePreviewBytes?: number
+}
+
 export type WorkspaceTreeEntry = {
   name: string
   path: string
@@ -402,6 +413,7 @@ export class WorkspaceService {
   async readFile(
     sessionId: string,
     filePath: string,
+    options: WorkspaceReadFileOptions = {},
   ): Promise<WorkspaceReadFileResult> {
     const resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
 
@@ -426,6 +438,23 @@ export class WorkspaceService {
 
     const language = this.detectLanguage(resolvedPath.absolutePath)
     const imageMimeType = this.detectImageMimeType(resolvedPath.absolutePath)
+    const maxImagePreviewBytes = options.maxImagePreviewBytes
+
+    if (
+      imageMimeType &&
+      typeof maxImagePreviewBytes === 'number' &&
+      Number.isFinite(maxImagePreviewBytes) &&
+      maxImagePreviewBytes >= 0 &&
+      stat.stat.size > maxImagePreviewBytes
+    ) {
+      return {
+        state: 'too_large',
+        path: resolvedPath.relativePath,
+        mimeType: imageMimeType,
+        language: 'image',
+        size: stat.stat.size,
+      }
+    }
 
     let content: Buffer
     try {

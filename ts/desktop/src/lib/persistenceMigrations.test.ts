@@ -27,6 +27,38 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
+  test('preserves supported product tabs instead of downgrading them to raw sessions', () => {
+    window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
+        {
+          sessionId: '__product_task__task-1',
+          title: '球房排班',
+          type: 'product-task',
+          taskId: 'task-1',
+        },
+        { sessionId: '__product_task__missing', title: '不完整任务', type: 'product-task' },
+      ],
+      activeTabId: '__product_task__task-1',
+    }))
+
+    runDesktopPersistenceMigrations()
+
+    expect(JSON.parse(window.localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
+      openTabs: [
+        { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
+        {
+          sessionId: '__product_task__task-1',
+          title: '球房排班',
+          type: 'product-task',
+          taskId: 'task-1',
+        },
+        { sessionId: '__product_task__missing', title: '不完整任务', type: 'session' },
+      ],
+      activeTabId: '__product_task__task-1',
+    })
+  })
+
   test('drops retired trace tabs instead of restoring their inspection state', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [

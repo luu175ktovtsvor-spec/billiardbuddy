@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test'
 import type { MessageEntry } from '../services/sessionService.js'
-import { projectSessionTranscriptForProductTask } from '../product/taskThreadProjection.js'
+import {
+  projectSessionTranscriptForProductTask,
+  resolveCoreMessageIdForProductThreadEntry,
+} from '../product/taskThreadProjection.js'
 
 describe('product task thread projection', () => {
   it('keeps task conversation and completed activity without leaking Core transcript payloads', () => {
@@ -97,5 +100,132 @@ describe('product task thread projection', () => {
       expect(serialized).not.toContain(secret)
     }
     expect(serialized).not.toContain('"usage"')
+  })
+
+  it('resolves only visible text entries back to a Core message on the server', () => {
+    const messages: MessageEntry[] = [
+      {
+        id: 'core-user-private-42',
+        type: 'user',
+        timestamp: '2026-07-19T08:05:00.000Z',
+        content: '从这一条继续核对优惠规则。',
+      },
+      {
+        id: 'core-assistant-private-42',
+        type: 'assistant',
+        timestamp: '2026-07-19T08:05:01.000Z',
+        content: [
+          { type: 'text', text: '我会先列出需要核对的规则。' },
+          {
+            type: 'tool_use',
+            id: 'private-tool-call',
+            name: 'Bash',
+            input: { command: 'PRIVATE_COMMAND' },
+          },
+        ],
+      },
+    ]
+    const projected = projectSessionTranscriptForProductTask('task-visible-lookup', messages)
+    const userEntryId = projected.entries.find((entry) => entry.type === 'user_text')?.id
+    const assistantEntryId = projected.entries.find((entry) => entry.type === 'assistant_text')?.id
+    const activityEntryId = projected.entries.find((entry) => entry.type === 'activity')?.id
+
+    expect(userEntryId).toMatch(/^thread_[a-f0-9]{20}$/)
+    expect(assistantEntryId).toMatch(/^thread_[a-f0-9]{20}$/)
+    expect(activityEntryId).toMatch(/^thread_[a-f0-9]{20}$/)
+    expect(resolveCoreMessageIdForProductThreadEntry(messages, userEntryId!))
+      .toBe('core-user-private-42')
+    expect(resolveCoreMessageIdForProductThreadEntry(messages, assistantEntryId!))
+      .toBe('core-assistant-private-42')
+
+    // Activity entries describe progress only; they can never become a branch anchor.
+    expect(resolveCoreMessageIdForProductThreadEntry(messages, activityEntryId!)).toBeNull()
+    expect(resolveCoreMessageIdForProductThreadEntry(
+      messages,
+      'thread_0123456789abcdef0123',
+    )).toBeNull()
+    expect(JSON.stringify(projected)).not.toContain('core-user-private-42')
+    expect(JSON.stringify(projected)).not.toContain('core-assistant-private-42')
+  })
+
+  it('replaces persisted upload transport with safe attachment summaries', () => {
+    const uploadRoot = '/Users/private-user/.claude/uploads/core-session-secret'
+    const rawImageData = 'data:image/png;base64,PRIVATE_IMAGE_BASE64'
+    const source: MessageEntry[] = [
+      {
+        id: 'core-user-attachment',
+        type: 'user',
+        timestamp: '2026-07-19T08:10:00.000Z',
+        content: [
+          {
+            type: 'text',
+            text: `@"${uploadRoot}/3b8c78a3-7d07-4f0a-9d4b-b8bc5a44e8b4-daily-report.pdf" 请核对今天的台账。 ${rawImageData}`,
+          },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'PRIVATE_IMAGE_BYTES',
+            },
+          },
+          {
+            type: 'text',
+            text: `[Image: source: ${uploadRoot}/1f32d6d7-8ae6-4c3d-a16f-913db5926f14-table.png, original 3000x2000, displayed at 1500x1000]`,
+          },
+        ],
+      },
+      {
+        id: 'core-assistant-attachment',
+        type: 'assistant',
+        timestamp: '2026-07-19T08:10:01.000Z',
+        content: `已处理 @"${uploadRoot}/internal-result.json" ${rawImageData}`,
+      },
+      {
+        id: 'core-user-attachment-only',
+        type: 'user',
+        timestamp: '2026-07-19T08:10:02.000Z',
+        content: `@"${uploadRoot}/f2c8cd99-c0bc-4b1e-8f11-6d2c1ec7f4d0-score-sheet.csv" Please analyze the attached files.`,
+      },
+    ]
+
+    const projected = projectSessionTranscriptForProductTask('task-visible-attachments', source)
+
+    expect(projected.entries).toEqual([
+      {
+        id: expect.stringMatching(/^thread_/),
+        type: 'user_text',
+        text: '请核对今天的台账。',
+        attachments: [
+          { type: 'file', name: 'daily-report.pdf' },
+          { type: 'image', name: 'table.png', mimeType: 'image/png' },
+        ],
+        createdAt: '2026-07-19T08:10:00.000Z',
+      },
+      {
+        id: expect.stringMatching(/^thread_/),
+        type: 'assistant_text',
+        text: '已处理',
+        createdAt: '2026-07-19T08:10:01.000Z',
+      },
+      {
+        id: expect.stringMatching(/^thread_/),
+        type: 'user_text',
+        text: '已添加附件',
+        attachments: [{ type: 'file', name: 'score-sheet.csv' }],
+        createdAt: '2026-07-19T08:10:02.000Z',
+      },
+    ])
+
+    const serialized = JSON.stringify(projected)
+    for (const secret of [
+      uploadRoot,
+      'core-session-secret',
+      rawImageData,
+      'PRIVATE_IMAGE_BYTES',
+      'internal-result.json',
+    ]) {
+      expect(serialized).not.toContain(secret)
+    }
   })
 })

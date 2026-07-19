@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, X } from 'lucide-react'
 import { useTranslation } from '../../i18n'
-import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import type { ProductProject, ProductTaskRecord } from '../domain/types'
 import { useProductTaskStore } from '../stores/productTaskStore'
@@ -81,8 +80,7 @@ export function TaskSearchModal({ open, onClose }: TaskSearchModalProps) {
   }, [activeIndex, open, results.length])
 
   const openTask = (result: TaskSearchResult) => {
-    useTabStore.getState().openTab(result.task.id, result.task.title, 'session')
-    useChatStore.getState().connectToSession(result.task.id)
+    useTabStore.getState().openProductTaskTab(result.task.id, result.task.title)
     onClose()
   }
 

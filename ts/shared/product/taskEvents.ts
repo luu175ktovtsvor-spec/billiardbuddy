@@ -34,6 +34,36 @@ export type ProductTaskApprovalKind =
   | 'question'
   | 'computer_use'
 
+/**
+ * Safe Computer Use capabilities a product task can request. These are
+ * deliberately capability labels rather than desktop grant flags, so the
+ * browser never receives a mutable Computer Use policy object.
+ */
+export type ProductTaskComputerUseCapability =
+  | 'clipboard_read'
+  | 'clipboard_write'
+  | 'system_key_combos'
+
+/** A human-readable application summary with no bundle identifier or path. */
+export type ProductTaskComputerUseApp = {
+  name: string
+  tier: 'read' | 'click' | 'full'
+  alreadyAuthorized: boolean
+}
+
+/**
+ * Product-safe Computer Use approval details. Local paths, bundle IDs, icon
+ * payloads, raw tool input, and runtime metadata never cross this boundary.
+ */
+export type ProductTaskComputerUseApproval = {
+  apps: ProductTaskComputerUseApp[]
+  capabilities: ProductTaskComputerUseCapability[]
+  systemPermissions?: {
+    accessibilityRequired: boolean
+    screenRecordingRequired: boolean
+  }
+}
+
 export type ProductTaskQuestionOption = {
   label: string
   description?: string
@@ -59,9 +89,24 @@ export type ProductTaskSafeErrorCode =
   | 'unsupported_input'
   | 'temporarily_unavailable'
 
+/**
+ * A persisted, user-readable attachment hint. It deliberately carries no
+ * local path, upload handle, source data, checksum, or file contents.
+ */
+export type ProductTaskAttachmentSummary = {
+  type: 'file' | 'image'
+  name: string
+  mimeType?: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+}
+
 export type ProductTaskEvent =
   | { type: 'connected' }
-  | { type: 'user_text'; text: string; replayed: true }
+  | {
+      type: 'user_text'
+      text: string
+      replayed: true
+      attachments?: ProductTaskAttachmentSummary[]
+    }
   | { type: 'assistant_text_start' }
   | { type: 'assistant_text_delta'; text: string }
   | { type: 'status'; state: ProductTaskRunState }
@@ -73,8 +118,19 @@ export type ProductTaskEvent =
   | {
       type: 'approval_required'
       requestId: string
-      kind: ProductTaskApprovalKind
-      questions?: ProductTaskQuestion[]
+      kind: 'action'
+    }
+  | {
+      type: 'approval_required'
+      requestId: string
+      kind: 'question'
+      questions: ProductTaskQuestion[]
+    }
+  | {
+      type: 'approval_required'
+      requestId: string
+      kind: 'computer_use'
+      computerUse: ProductTaskComputerUseApproval
     }
   | { type: 'turn_complete' }
   | {
@@ -92,7 +148,14 @@ export type ProductTaskEvent =
 export type ProductTaskThreadEntry =
   | {
       id: string
-      type: 'user_text' | 'assistant_text'
+      type: 'user_text'
+      text: string
+      createdAt: string
+      attachments?: ProductTaskAttachmentSummary[]
+    }
+  | {
+      id: string
+      type: 'assistant_text'
       text: string
       createdAt: string
     }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ProductTaskSocketLifecycleEvent } from '../api/taskSocket'
 
 const apiMocks = vi.hoisted(() => ({
   getThread: vi.fn(),
@@ -20,20 +21,64 @@ vi.mock('../api/taskSocket', () => ({
 }))
 
 import {
+  canSendProductTaskMessage,
   canSendProductTaskText,
   useProductTaskRuntimeStore,
 } from './productTaskRuntimeStore'
 
 let eventHandler: ((event: any) => void) | null = null
+let lifecycleHandler: ((event: ProductTaskSocketLifecycleEvent) => void) | null = null
+
+function wireTaskSocket(): void {
+  socketMocks.connect.mockImplementation((
+    _taskId: string,
+    handler: (event: any) => void,
+    lifecycle: (event: ProductTaskSocketLifecycleEvent) => void,
+  ) => {
+    eventHandler = handler
+    lifecycleHandler = lifecycle
+    return () => {}
+  })
+}
+
+function threadEntry(
+  id: string,
+  type: 'user_text' | 'assistant_text',
+  text: string,
+) {
+  return {
+    id,
+    type,
+    text,
+    createdAt: '2026-07-19T00:00:00.000Z',
+  }
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
 
 describe('product task runtime store', () => {
   afterEach(() => {
+    for (const taskId of Object.keys(useProductTaskRuntimeStore.getState().tasks)) {
+      useProductTaskRuntimeStore.getState().disconnectTask(taskId)
+    }
     useProductTaskRuntimeStore.setState({ tasks: {} })
     apiMocks.getThread.mockReset()
     socketMocks.connect.mockReset()
     socketMocks.disconnect.mockReset()
     socketMocks.send.mockReset()
     eventHandler = null
+    lifecycleHandler = null
   })
 
   it('loads a product thread and applies only task-safe live events', async () => {
@@ -46,10 +91,7 @@ describe('product task runtime store', () => {
         createdAt: '2026-07-19T00:00:00.000Z',
       }],
     })
-    socketMocks.connect.mockImplementation((_taskId: string, handler: (event: any) => void) => {
-      eventHandler = handler
-      return () => {}
-    })
+    wireTaskSocket()
 
     await useProductTaskRuntimeStore.getState().connectTask('task-1')
     eventHandler?.({ type: 'connected' })
@@ -67,6 +109,138 @@ describe('product task runtime store', () => {
     ])
     expect(runtime.entries[1]).toEqual(expect.objectContaining({ text: '实时回复' }))
     expect(runtime.entries[2]).toEqual(expect.objectContaining({ kind: 'workspace', phase: 'completed' }))
+  })
+
+  it('replaces completed live entries with the canonical thread snapshot', async () => {
+    apiMocks.getThread
+      .mockResolvedValueOnce({ taskId: 'task-complete', entries: [] })
+      .mockResolvedValueOnce({
+        taskId: 'task-complete',
+        entries: [
+          threadEntry('thread-user', 'user_text', '整理今天订单'),
+          threadEntry('thread-assistant', 'assistant_text', '已整理完成'),
+          {
+            id: 'thread-activity',
+            type: 'activity',
+            kind: 'workspace',
+            phase: 'completed',
+            createdAt: '2026-07-19T00:00:01.000Z',
+          },
+        ],
+      })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-complete')
+    const store = useProductTaskRuntimeStore.getState()
+    store.sendText('task-complete', '整理今天订单')
+    eventHandler?.({ type: 'assistant_text_start' })
+    eventHandler?.({ type: 'assistant_text_delta', text: '已整理完成' })
+    eventHandler?.({ type: 'activity', kind: 'workspace', phase: 'completed' })
+    eventHandler?.({ type: 'turn_complete' })
+    await flushMicrotasks()
+
+    expect(useProductTaskRuntimeStore.getState().tasks['task-complete']?.entries).toEqual([
+      threadEntry('thread-user', 'user_text', '整理今天订单'),
+      threadEntry('thread-assistant', 'assistant_text', '已整理完成'),
+      {
+        id: 'thread-activity',
+        type: 'activity',
+        kind: 'workspace',
+        phase: 'completed',
+        createdAt: '2026-07-19T00:00:01.000Z',
+      },
+    ])
+  })
+
+  it('hydrates the latest thread after a socket reconnection', async () => {
+    apiMocks.getThread
+      .mockResolvedValueOnce({
+        taskId: 'task-reconnect',
+        entries: [threadEntry('thread-before', 'assistant_text', '断线前')],
+      })
+      .mockResolvedValueOnce({
+        taskId: 'task-reconnect',
+        entries: [
+          threadEntry('thread-before', 'assistant_text', '断线前'),
+          threadEntry('thread-user', 'user_text', '断线期间完成'),
+          threadEntry('thread-after', 'assistant_text', '已完成'),
+        ],
+      })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-reconnect')
+    useProductTaskRuntimeStore.getState().sendText('task-reconnect', '断线期间完成')
+    eventHandler?.({ type: 'assistant_text_start' })
+    eventHandler?.({ type: 'assistant_text_delta', text: '已完成' })
+    lifecycleHandler?.({ type: 'disconnected', willReconnect: true })
+    expect(useProductTaskRuntimeStore.getState().tasks['task-reconnect']?.connectionState).toBe('disconnected')
+
+    lifecycleHandler?.({ type: 'reconnecting' })
+    expect(useProductTaskRuntimeStore.getState().tasks['task-reconnect']?.connectionState).toBe('connecting')
+
+    lifecycleHandler?.({ type: 'connected', reconnected: true })
+    await flushMicrotasks()
+
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-reconnect']!
+    expect(runtime.connectionState).toBe('connected')
+    expect(runtime.entries).toEqual([
+      threadEntry('thread-before', 'assistant_text', '断线前'),
+      threadEntry('thread-user', 'user_text', '断线期间完成'),
+      threadEntry('thread-after', 'assistant_text', '已完成'),
+    ])
+    expect(apiMocks.getThread).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not apply an in-flight history response after task disconnect', async () => {
+    const pendingThread = deferred<unknown>()
+    apiMocks.getThread.mockReturnValue(pendingThread.promise)
+    wireTaskSocket()
+
+    const connecting = useProductTaskRuntimeStore.getState().connectTask('task-disconnect')
+    useProductTaskRuntimeStore.getState().disconnectTask('task-disconnect')
+    pendingThread.resolve({
+      taskId: 'task-disconnect',
+      entries: [threadEntry('thread-stale', 'assistant_text', '不应写入')],
+    })
+    await connecting
+
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-disconnect']!
+    expect(runtime.connectionState).toBe('disconnected')
+    expect(runtime.historyStatus).toBe('idle')
+    expect(runtime.entries).toEqual([])
+  })
+
+  it('rejects an invalid or cross-task transcript before it reaches task state', async () => {
+    apiMocks.getThread.mockResolvedValue({
+      taskId: 'other-task',
+      entries: [threadEntry('thread-other', 'assistant_text', '不应显示')],
+    })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-invalid-thread')
+
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-invalid-thread']!
+    expect(runtime.historyStatus).toBe('error')
+    expect(runtime.entries).toEqual([])
+  })
+
+  it('rejects malformed transcript entries before they reach task state', async () => {
+    apiMocks.getThread.mockResolvedValue({
+      taskId: 'task-malformed-thread',
+      entries: [{
+        id: 'thread-malformed',
+        type: 'assistant_text',
+        text: { raw: 'must not render' },
+        createdAt: '2026-07-19T00:00:00.000Z',
+      }],
+    })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-malformed-thread')
+
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-malformed-thread']!
+    expect(runtime.historyStatus).toBe('error')
+    expect(runtime.entries).toEqual([])
   })
 
   it('queues real task text and never treats an empty composer as a send', () => {
@@ -89,6 +263,61 @@ describe('product task runtime store', () => {
     expect(canSendProductTaskText('普通任务内容')).toBe(true)
     expect(canSendProductTaskText('  /Agent 研究下周活动方案')).toBe(true)
     expect(canSendProductTaskText('x'.repeat(32_001))).toBe(false)
+    expect(canSendProductTaskMessage('', [{
+      type: 'image',
+      name: '球台.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,QQ==',
+    }])).toBe(true)
+  })
+
+  it('sends only the narrow approval and question response envelopes', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    store.handleEvent('task-approval', {
+      type: 'approval_required',
+      requestId: 'permission-1',
+      kind: 'action',
+    })
+
+    expect(store.respondToApproval('task-approval', true)).toBe(true)
+    expect(socketMocks.send).toHaveBeenCalledWith('task-approval', {
+      type: 'permission_response',
+      requestId: 'permission-1',
+      allowed: true,
+    })
+
+    store.handleEvent('task-question', {
+      type: 'approval_required',
+      requestId: 'question-1',
+      kind: 'question',
+      questions: [{ question: '选择方案', options: [{ label: '方案 A' }] }],
+    })
+
+    expect(store.respondToQuestions('task-question', ['方案 A'])).toBe(true)
+    expect(socketMocks.send).toHaveBeenCalledWith('task-question', {
+      type: 'ask_user_question_response',
+      requestId: 'question-1',
+      answers: ['方案 A'],
+    })
+    expect(store.respondToQuestions('task-question', ['方案 A'])).toBe(false)
+
+    store.handleEvent('task-computer-use', {
+      type: 'approval_required',
+      requestId: 'computer-use-1',
+      kind: 'computer_use',
+      computerUse: {
+        apps: [{ name: '记分牌', tier: 'click', alreadyAuthorized: false }],
+        capabilities: ['clipboard_read'],
+      },
+    })
+
+    expect(store.respondToComputerUseApproval('task-computer-use', true)).toBe(true)
+    expect(socketMocks.send).toHaveBeenCalledWith('task-computer-use', {
+      type: 'computer_use_permission_response',
+      requestId: 'computer-use-1',
+      allowed: true,
+    })
+    expect(store.respondToComputerUseApproval('task-computer-use', false)).toBe(false)
   })
 
   it('records a safe error code instead of a raw runtime error message', () => {
@@ -102,5 +331,96 @@ describe('product task runtime store', () => {
       code: 'temporarily_unavailable',
       retryable: true,
     })
+  })
+
+  it('returns a terminally failed task to an actionable idle state', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    store.handleEvent('task-terminal-error', {
+      type: 'activity',
+      kind: 'workspace',
+      phase: 'running',
+    })
+    store.handleEvent('task-terminal-error', {
+      type: 'approval_required',
+      requestId: 'approval-terminal',
+      kind: 'action',
+    })
+    store.handleEvent('task-terminal-error', {
+      type: 'error',
+      code: 'task_failed',
+      retryable: false,
+    })
+
+    expect(useProductTaskRuntimeStore.getState().tasks['task-terminal-error']).toEqual(
+      expect.objectContaining({
+        runState: 'idle',
+        activeActivity: null,
+        pendingApproval: null,
+        approvalResponsePending: false,
+        error: { code: 'task_failed', retryable: false },
+      }),
+    )
+  })
+
+  it('does not collapse a later attachment-only message into a same-text history snapshot', async () => {
+    const pendingThread = deferred<unknown>()
+    const firstAttachment = {
+      type: 'image' as const,
+      name: 'earlier.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,aGVsbG8=',
+    }
+    const laterAttachment = {
+      type: 'image' as const,
+      name: 'later.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,d29ybGQ=',
+    }
+    apiMocks.getThread
+      .mockResolvedValueOnce({ taskId: 'task-attachment-signature', entries: [] })
+      .mockReturnValueOnce(pendingThread.promise)
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-attachment-signature')
+    const refreshing = useProductTaskRuntimeStore.getState().refreshThread('task-attachment-signature')
+    useProductTaskRuntimeStore.getState().sendMessage(
+      'task-attachment-signature',
+      '同一说明',
+      [laterAttachment],
+    )
+    pendingThread.resolve({
+      taskId: 'task-attachment-signature',
+      entries: [{
+        ...threadEntry('thread-earlier-attachment', 'user_text', '同一说明'),
+        attachments: [{
+          type: 'image',
+          name: firstAttachment.name,
+          mimeType: firstAttachment.mimeType,
+        }],
+      }],
+    })
+    await refreshing
+
+    const entries = useProductTaskRuntimeStore.getState().tasks['task-attachment-signature']?.entries
+    expect(entries).toEqual([
+      {
+        ...threadEntry('thread-earlier-attachment', 'user_text', '同一说明'),
+        attachments: [{
+          type: 'image',
+          name: 'earlier.png',
+          mimeType: 'image/png',
+        }],
+      },
+      expect.objectContaining({
+        type: 'user_text',
+        text: '同一说明',
+        attachments: [{
+          type: 'image',
+          name: 'later.png',
+          mimeType: 'image/png',
+        }],
+      }),
+    ])
+    expect(JSON.stringify(entries)).not.toContain('data:image')
   })
 })

@@ -421,6 +421,45 @@ describe('WebSocket handler product error projection', () => {
     expect(serialized).not.toContain('Bash')
     expect(serialized).not.toContain('private-tool-id')
   })
+
+  it('fails closed once when an AskUserQuestion cannot be represented safely', () => {
+    const sessionId = `product-ask-fail-closed-${crypto.randomUUID()}`
+    const first = makeClientSocket(sessionId, 'product')
+    const second = makeClientSocket(sessionId, 'product')
+    const callbacks: Array<(cliMsg: any) => void> = []
+    const privateQuestion = '  /Users/test/private-scope  '
+    const respondToPermission = spyOn(conversationService, 'respondToPermission')
+
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation((_id, callback) => {
+      callbacks.push(callback)
+    })
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+    handleWebSocket.open(first)
+    handleWebSocket.open(second)
+    callbacks[0]!({
+      type: 'control_request',
+      request_id: 'ask-not-renderable',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'AskUserQuestion',
+        input: { questions: [{ question: privateQuestion }] },
+      },
+    })
+
+    expect(respondToPermission).toHaveBeenCalledTimes(1)
+    expect(respondToPermission).toHaveBeenCalledWith(sessionId, 'ask-not-renderable', false)
+    for (const ws of [first, second]) {
+      const events = ws.sent.map((payload) => JSON.parse(payload))
+      expect(events).toEqual([
+        { type: 'connected' },
+        { type: 'error', code: 'task_failed', retryable: false },
+      ])
+      expect(JSON.stringify(events)).not.toContain(privateQuestion)
+    }
+  })
 })
 
 describe('WebSocket handler product task inbound boundary', () => {
@@ -429,7 +468,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     mock.restore()
   })
 
-  it('rejects Core configuration and approval envelopes without invoking Core handlers', () => {
+  it('rejects Core-only product payload fields without invoking Core handlers', () => {
     const ws = makeClientSocket(`product-inbound-${crypto.randomUUID()}`, 'product')
     const respondToPermission = spyOn(conversationService, 'respondToPermission')
     const setPermissionMode = spyOn(conversationService, 'setPermissionMode')
@@ -464,6 +503,12 @@ describe('WebSocket handler product task inbound boundary', () => {
         content: '普通任务文字',
         updatedInput: { command: privateCommand },
       },
+      {
+        type: 'ask_user_question_response',
+        requestId: 'ask-1',
+        answers: ['整理台账'],
+        updatedInput: { command: privateCommand },
+      },
     ]) {
       handleWebSocket.message(ws, JSON.stringify(payload))
     }
@@ -474,7 +519,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     expect(sendUserMessage).not.toHaveBeenCalled()
 
     const events = ws.sent.map((payload) => JSON.parse(payload))
-    expect(events).toEqual(Array.from({ length: 7 }, () => ({
+    expect(events).toEqual(Array.from({ length: 8 }, () => ({
       type: 'error',
       code: 'task_failed',
       retryable: false,
@@ -483,7 +528,155 @@ describe('WebSocket handler product task inbound boundary', () => {
     expect(JSON.stringify(events)).not.toContain('private-provider')
   })
 
-  it('allows only plain product text, task-local stop, and ping while preserving Core client and sdk channels', async () => {
+  it('resolves product approvals only against matching server pending requests', () => {
+    const sessionId = `product-approval-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId, 'product')
+    const privateToolInput = 'PRIVATE_TOOL_INPUT'
+    const askInput = {
+      questions: [{
+        question: '先处理哪一项？',
+        header: '优先级',
+        options: [
+          { label: '整理台账', description: '核对当天收入' },
+          { label: '联系客户', description: '确认预约' },
+        ],
+      }],
+      privateToolInput,
+    }
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([
+      {
+        requestId: 'action-allow',
+        toolName: 'Bash',
+        input: { command: privateToolInput },
+      },
+      {
+        requestId: 'action-deny',
+        toolName: 'Write',
+        input: { file_path: privateToolInput },
+      },
+      {
+        requestId: 'ask-1',
+        toolName: 'AskUserQuestion',
+        input: askInput,
+      },
+    ])
+    const respondToPermission = spyOn(conversationService, 'respondToPermission')
+
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'permission_response',
+      requestId: 'action-allow',
+      allowed: true,
+    }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'permission_response',
+      requestId: 'action-deny',
+      allowed: false,
+    }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'permission_response',
+      requestId: 'ask-1',
+      allowed: true,
+    }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'ask_user_question_response',
+      requestId: 'action-allow',
+      answers: ['整理台账'],
+    }))
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'ask_user_question_response',
+      requestId: 'ask-1',
+      answers: ['  整理台账  '],
+    }))
+
+    expect(respondToPermission).toHaveBeenNthCalledWith(1, sessionId, 'action-allow', true)
+    expect(respondToPermission).toHaveBeenNthCalledWith(2, sessionId, 'action-deny', false)
+    expect(respondToPermission).toHaveBeenNthCalledWith(
+      3,
+      sessionId,
+      'ask-1',
+      true,
+      undefined,
+      {
+        ...askInput,
+        answers: { '先处理哪一项？': '整理台账' },
+      },
+    )
+
+    const events = ws.sent.map((payload) => JSON.parse(payload))
+    expect(events).toEqual(Array.from({ length: 2 }, () => ({
+      type: 'error',
+      code: 'task_failed',
+      retryable: false,
+    })))
+    expect(JSON.stringify(events)).not.toContain(privateToolInput)
+  })
+
+  it('forwards only a one-shot product Computer Use decision to the pending-request service', () => {
+    const sessionId = `product-computer-use-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId, 'product')
+    const resolveProductTaskApproval = spyOn(
+      computerUseApprovalService,
+      'resolveProductTaskApproval',
+    ).mockReturnValue(true)
+
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'computer_use_permission_response',
+      requestId: 'computer-use-1',
+      allowed: true,
+    }))
+
+    expect(resolveProductTaskApproval).toHaveBeenCalledWith(
+      sessionId,
+      'computer-use-1',
+      true,
+    )
+
+    resolveProductTaskApproval.mockReturnValue(false)
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'computer_use_permission_response',
+      requestId: 'stale-computer-use',
+      allowed: false,
+    }))
+
+    expect(ws.sent.map((payload) => JSON.parse(payload))).toEqual([{
+      type: 'error',
+      code: 'task_failed',
+      retryable: false,
+    }])
+  })
+
+  it('preserves the existing full Computer Use response path for ordinary Core clients', () => {
+    const ws = makeClientSocket(`core-computer-use-${crypto.randomUUID()}`)
+    const resolveApproval = spyOn(computerUseApprovalService, 'resolveApproval').mockReturnValue(true)
+    const response = {
+      granted: [{
+        bundleId: 'com.example.scoreboard',
+        displayName: '记分牌',
+        grantedAt: 1,
+        tier: 'click' as const,
+      }],
+      denied: [],
+      flags: {
+        clipboardRead: false,
+        clipboardWrite: false,
+        systemKeyCombos: true,
+      },
+    }
+
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'computer_use_permission_response',
+      requestId: 'core-computer-use-1',
+      response,
+    }))
+
+    expect(resolveApproval).toHaveBeenCalledWith(
+      ws.data.sessionId,
+      'core-computer-use-1',
+      response,
+    )
+  })
+
+  it('allows controlled product attachments, task-local stop, and ping while preserving Core client and sdk channels', async () => {
     const productSessionId = `product-safe-${crypto.randomUUID()}`
     const productWs = makeClientSocket(productSessionId, 'product')
     const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
@@ -494,11 +687,26 @@ describe('WebSocket handler product task inbound boundary', () => {
 
     handleWebSocket.message(productWs, JSON.stringify({
       type: 'user_message',
-      content: '  /skill ball-hall-daily-review 整理本周球房活动安排  ',
+      content: '  /goal 整理本周球房活动安排  ',
+      attachments: [{
+        type: 'image',
+        name: 'table.png',
+        mimeType: 'image/png',
+        data: 'data:image/png;base64,aGVsbG8=',
+      }],
     }))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(sendMessage).toHaveBeenCalledWith(productSessionId, '/skill ball-hall-daily-review 整理本周球房活动安排', undefined)
+    expect(sendMessage).toHaveBeenCalledWith(
+      productSessionId,
+      '/goal 整理本周球房活动安排',
+      [{
+        type: 'image',
+        name: 'table.png',
+        mimeType: 'image/png',
+        data: 'data:image/png;base64,aGVsbG8=',
+      }],
+    )
 
     productWs.sent.length = 0
     spyOn(conversationService, 'hasSession').mockReturnValue(false)
@@ -530,6 +738,50 @@ describe('WebSocket handler product task inbound boundary', () => {
     const handleSdkPayload = spyOn(conversationService, 'handleSdkPayload')
     handleWebSocket.message(sdkWs, 'raw-sdk-payload')
     expect(handleSdkPayload).toHaveBeenCalledWith(sdkWs.data.sessionId, 'raw-sdk-payload')
+  })
+
+  it('blocks /model while preserving ordinary product task text', async () => {
+    const ws = makeClientSocket(`product-command-${crypto.randomUUID()}`, 'product')
+    const sendUserMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    const privateCommand = '/model private-model /Users/test/.claude/private-provider.json token=secret'
+
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: privateCommand,
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(sendUserMessage).not.toHaveBeenCalled()
+    const events = ws.sent.map((payload) => JSON.parse(payload))
+    expect(events).toEqual([
+      {
+        type: 'error',
+        code: 'task_failed',
+        retryable: false,
+      },
+      { type: 'status', state: 'idle' },
+    ])
+    expect(JSON.stringify(events)).not.toContain(privateCommand)
+    expect(JSON.stringify(events)).not.toContain('private-provider')
+
+    ws.sent.length = 0
+    sendUserMessage.mockClear()
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('普通任务')
+
+    handleWebSocket.message(ws, JSON.stringify({
+      type: 'user_message',
+      content: '整理今天球房的营业数据，并列出待确认问题',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(sendUserMessage).toHaveBeenCalledWith(
+      ws.data.sessionId,
+      '整理今天球房的营业数据，并列出待确认问题',
+      undefined,
+    )
   })
 })
 

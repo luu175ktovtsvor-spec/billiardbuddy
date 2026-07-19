@@ -152,4 +152,50 @@ describe('ComputerUseApprovalService', () => {
       userConsented: true,
     })
   })
+
+  test('resolves a product task decision from server-owned request details only', async () => {
+    const request = makeRequest('product-request-1')
+    request.requestedFlags = {
+      clipboardRead: true,
+      systemKeyCombos: true,
+    }
+    const service = new ComputerUseApprovalService(() => true)
+    const approval = service.requestApproval('task-1', request)
+
+    expect(service.resolveProductTaskApproval('other-task', 'product-request-1', true)).toBe(false)
+    expect(service.resolveProductTaskApproval('task-1', 'product-request-1', true)).toBe(true)
+
+    await expect(approval).resolves.toEqual({
+      granted: [{
+        bundleId: 'com.example.Editor',
+        displayName: 'Editor',
+        grantedAt: expect.any(Number),
+        tier: 'full',
+      }],
+      denied: [],
+      flags: {
+        clipboardRead: true,
+        clipboardWrite: false,
+        systemKeyCombos: true,
+      },
+      userConsented: true,
+    })
+  })
+
+  test('turns a product task denial into the canonical deny response', async () => {
+    const service = new ComputerUseApprovalService(() => true)
+    const approval = service.requestApproval('task-1', makeRequest('product-request-deny'))
+
+    expect(service.resolveProductTaskApproval('task-1', 'product-request-deny', false)).toBe(true)
+    await expect(approval).resolves.toEqual({
+      granted: [],
+      denied: [],
+      flags: {
+        clipboardRead: false,
+        clipboardWrite: false,
+        systemKeyCombos: false,
+      },
+      userConsented: false,
+    })
+  })
 })

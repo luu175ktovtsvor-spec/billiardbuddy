@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
-import { MessageActionBar, type MessageBranchAction } from './MessageActionBar'
+import { MessageActionBar } from './MessageActionBar'
 import { InlineImageGallery } from './InlineImageGallery'
 import { InlineVideoGallery } from './InlineVideoGallery'
 import { AssistantOutputTargetCard } from './AssistantOutputTargetCard'
@@ -16,9 +16,6 @@ import { useTranslation } from '../../i18n'
 type Props = {
   content: string
   isStreaming?: boolean
-  branchAction?: MessageBranchAction
-  worktreeBranchAction?: MessageBranchAction
-  sideTaskAction?: MessageBranchAction
   sessionId?: string
   timestamp?: number
   /** This turn's real changed files (absolute), used to anchor output chips onto
@@ -28,7 +25,7 @@ type Props = {
 
 const MAX_CARDS = 3
 
-export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, branchAction, worktreeBranchAction, sideTaskAction, sessionId, timestamp, turnChangedFiles }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, sessionId, timestamp, turnChangedFiles }: Props) {
   const t = useTranslation()
   const workDir = useWorkspacePanelStore((s) => (sessionId ? s.statusBySession[sessionId]?.workDir : undefined))
 
@@ -105,9 +102,6 @@ export const AssistantMessage = memo(function AssistantMessage({ content, isStre
         <MessageActionBar
           copyText={isStreaming ? undefined : content}
           copyLabel="Copy reply"
-          branchAction={branchAction}
-          worktreeBranchAction={worktreeBranchAction}
-          sideTaskAction={sideTaskAction}
           align="start"
           timestamp={timestamp}
         />

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   getProductTaskRuntimeState,
+  getProductTaskRuntimeStateFromStream,
   type ProductTaskSessionRuntime,
+  type ProductTaskStreamRuntime,
 } from './taskRuntime'
 
 function makeSession(
@@ -13,6 +15,18 @@ function makeSession(
     pendingPermission: null,
     pendingComputerUsePermission: null,
     backgroundAgentTasks: {},
+    ...overrides,
+  }
+}
+
+function makeStreamRuntime(
+  overrides: Partial<ProductTaskStreamRuntime> = {},
+): ProductTaskStreamRuntime {
+  return {
+    connectionState: 'connected',
+    runState: 'idle',
+    pendingApproval: null,
+    error: null,
     ...overrides,
   }
 }
@@ -67,5 +81,19 @@ describe('getProductTaskRuntimeState', () => {
   it('surfaces the existing tab error state when no newer Agent activity has replaced it', () => {
     expect(getProductTaskRuntimeState(makeSession(), 'error')).toBe('needs_attention')
     expect(getProductTaskRuntimeState(undefined, 'running')).toBe('running')
+  })
+})
+
+describe('getProductTaskRuntimeStateFromStream', () => {
+  it('uses the product task stream rather than a generic Agent Core session', () => {
+    expect(getProductTaskRuntimeStateFromStream(undefined)).toBe('not_connected')
+    expect(getProductTaskRuntimeStateFromStream(makeStreamRuntime({ connectionState: 'connecting' }))).toBe('connecting')
+    expect(getProductTaskRuntimeStateFromStream(makeStreamRuntime({ runState: 'working' }))).toBe('running')
+    expect(getProductTaskRuntimeStateFromStream(makeStreamRuntime({
+      runState: 'awaiting_approval',
+      pendingApproval: { requestId: 'approval-1' },
+    }))).toBe('awaiting_approval')
+    expect(getProductTaskRuntimeStateFromStream(makeStreamRuntime({ error: { code: 'task_failed' } }))).toBe('needs_attention')
+    expect(getProductTaskRuntimeStateFromStream(makeStreamRuntime())).toBe('idle')
   })
 })

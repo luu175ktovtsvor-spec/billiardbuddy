@@ -4,11 +4,12 @@ import '@testing-library/jest-dom'
 import { DesktopSidebar } from './DesktopSidebar'
 import {
   NEW_PRODUCT_TASK_TAB_ID,
+  PRODUCT_TASK_TAB_PREFIX,
   PRODUCT_TASKS_TAB_ID,
   useTabStore,
 } from '../../stores/tabStore'
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../../product/stores/productTaskStore'
-import { useChatStore } from '../../stores/chatStore'
+import { useProductTaskRuntimeStore, type ProductTaskRuntime } from '../../product/stores/productTaskRuntimeStore'
 import type { ProductTaskIndexResponse } from '../../product/domain/types'
 
 vi.mock('../../i18n', () => ({
@@ -27,7 +28,6 @@ vi.mock('../../lib/desktopHost', () => ({
 
 describe('DesktopSidebar', () => {
   const refresh = vi.fn(async () => undefined)
-  const connectToSession = vi.fn()
 
   beforeEach(() => {
     useTabStore.setState({ tabs: [], activeTabId: null })
@@ -38,11 +38,8 @@ describe('DesktopSidebar', () => {
       mutations: {},
       refresh,
     })
-    useChatStore.setState({
-      connectToSession,
-    } as Partial<ReturnType<typeof useChatStore.getState>>)
+    useProductTaskRuntimeStore.setState({ tasks: {} })
     refresh.mockClear()
-    connectToSession.mockClear()
   })
 
   afterEach(() => {
@@ -51,6 +48,7 @@ describe('DesktopSidebar', () => {
     useProductTaskStore.setState({
       index: EMPTY_PRODUCT_TASK_INDEX,
     })
+    useProductTaskRuntimeStore.setState({ tasks: {} })
   })
 
   it('opens the product task index through the desktop navigation', () => {
@@ -69,7 +67,7 @@ describe('DesktopSidebar', () => {
     })
   })
 
-  it('opens a product task through its real core session instead of a raw session entry', () => {
+  it('opens a product task through its dedicated product-task route', () => {
     const index: ProductTaskIndexResponse = {
       schemaVersion: 1,
       projects: [{
@@ -101,10 +99,52 @@ describe('DesktopSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: '整理训练计划' }))
 
     expect(useTabStore.getState()).toMatchObject({
-      activeTabId: 'task-1',
-      tabs: [expect.objectContaining({ sessionId: 'task-1', type: 'session' })],
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      tabs: [expect.objectContaining({
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        type: 'product-task',
+        taskId: 'task-1',
+      })],
     })
-    expect(connectToSession).toHaveBeenCalledWith('task-1')
+  })
+
+  it('shows a running marker from the product task runtime only for the active product task', () => {
+    const index: ProductTaskIndexResponse = {
+      schemaVersion: 1,
+      projects: [],
+      tasks: [{
+        id: 'task-running',
+        projectId: 'project-1',
+        workDir: '/workspace/billiard',
+        title: '正在整理训练计划',
+        lifecycle: 'active',
+        kind: 'main',
+        createdAt: '2026-07-18T00:00:00.000Z',
+        updatedAt: '2026-07-18T00:00:00.000Z',
+        worktreeState: 'not_requested',
+        actions: ['archive'],
+      }],
+      total: 1,
+      capabilities: { createTask: true },
+    }
+    const runtime: ProductTaskRuntime = {
+      connectionState: 'connected',
+      historyStatus: 'ready',
+      runState: 'working',
+      entries: [],
+      activeActivity: null,
+      pendingApproval: null,
+      approvalResponsePending: false,
+      error: null,
+      streamingEntryId: null,
+    }
+    useProductTaskStore.setState({ index })
+    useProductTaskRuntimeStore.setState({ tasks: { 'task-running': runtime } })
+
+    const { container } = render(<DesktopSidebar />)
+    fireEvent.click(screen.getByRole('button', { name: '正在整理训练计划' }))
+
+    expect(container.querySelector('.animate-spin')).toBeInTheDocument()
   })
 
   it('keeps an active pinned project and task first in the sidebar', () => {

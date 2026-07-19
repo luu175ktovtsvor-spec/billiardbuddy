@@ -5,8 +5,7 @@ import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/type
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
-  openTab: vi.fn(),
-  connectToSession: vi.fn(),
+  openProductTaskTab: vi.fn(),
   index: null as unknown,
   isLoading: false,
   error: null as string | null,
@@ -23,13 +22,7 @@ vi.mock('../stores/productTaskStore', () => ({
 
 vi.mock('../../stores/tabStore', () => ({
   useTabStore: {
-    getState: () => ({ openTab: mocks.openTab }),
-  },
-}))
-
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({ connectToSession: mocks.connectToSession }),
+    getState: () => ({ openProductTaskTab: mocks.openProductTaskTab }),
   },
 }))
 
@@ -113,8 +106,7 @@ beforeEach(() => {
   mocks.error = null
   mocks.refresh.mockReset()
   mocks.refresh.mockResolvedValue(undefined)
-  mocks.openTab.mockReset()
-  mocks.connectToSession.mockReset()
+  mocks.openProductTaskTab.mockReset()
 })
 
 afterEach(() => {
@@ -196,14 +188,13 @@ describe('TaskSearchModal', () => {
     expect(screen.getByText('共同任务 0')).toBeInTheDocument()
   })
 
-  it('opens the selected product task core session, connects it, and closes', () => {
+  it('opens the selected product task page and closes', () => {
     const onClose = vi.fn()
     render(<TaskSearchModal open onClose={onClose} />)
 
     fireEvent.click(screen.getByText('归档的球台维护计划'))
 
-    expect(mocks.openTab).toHaveBeenCalledWith('task-2', '归档的球台维护计划', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-2')
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-2', '归档的球台维护计划')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -217,8 +208,7 @@ describe('TaskSearchModal', () => {
     expect(screen.getByRole('option', { name: /整理开球训练/ })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
-    expect(mocks.connectToSession).toHaveBeenCalledWith('task-1')
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-1', '整理开球训练')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -236,7 +226,7 @@ describe('TaskSearchModal', () => {
     })
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    expect(mocks.openTab).toHaveBeenCalledWith('task-1', '整理开球训练', 'session')
+    expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-1', '整理开球训练')
     expect(onClose).toHaveBeenCalledOnce()
   })
 

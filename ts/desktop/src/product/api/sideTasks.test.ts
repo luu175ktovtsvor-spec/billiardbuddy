@@ -23,7 +23,7 @@ describe('productSideTasksApi', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await productSideTasksApi.list('task 1')
-    await productSideTasksApi.create('task 1', { sourceTurnId: 'message-42' })
+    await productSideTasksApi.create('task 1', { sourceEntryId: 'thread_0123456789abcdef0123' })
     await productSideTasksApi.close('task 1', 'side 1')
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -39,7 +39,7 @@ describe('productSideTasksApi', () => {
       'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ sourceTurnId: 'message-42' }),
+        body: JSON.stringify({ sourceEntryId: 'thread_0123456789abcdef0123' }),
       }),
     )
     expect(fetchMock).toHaveBeenNthCalledWith(

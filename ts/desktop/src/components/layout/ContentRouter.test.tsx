@@ -50,6 +50,10 @@ vi.mock('../../product/components/ProductShell', () => ({
   ),
 }))
 
+vi.mock('../../product/components/ProductTaskPage', () => ({
+  ProductTaskPage: ({ taskId }: { taskId: string }) => <div data-testid="product-task-page">task:{taskId}</div>,
+}))
+
 import { ContentRouter } from './ContentRouter'
 import { useTabStore } from '../../stores/tabStore'
 
@@ -199,6 +203,41 @@ describe('ContentRouter tab surfaces', () => {
     render(<ContentRouter />)
 
     expect(screen.getByTestId('product-shell')).toBeInTheDocument()
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('renders a product task through its task identity without mounting the chat session surface', () => {
+    useTabStore.setState({
+      tabs: [{
+        sessionId: '__product_task__task-1',
+        title: '整理开球训练',
+        type: 'product-task',
+        status: 'idle',
+        taskId: 'task-1',
+      }],
+      activeTabId: '__product_task__task-1',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('does not route an unknown persisted tab through the legacy chat surface', () => {
+    useTabStore.setState({
+      tabs: [{
+        sessionId: '__unknown_tab__',
+        title: 'Unknown',
+        type: 'unknown' as never,
+        status: 'idle',
+      }],
+      activeTabId: '__unknown_tab__',
+    })
+
+    render(<ContentRouter />)
+
+    expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 
