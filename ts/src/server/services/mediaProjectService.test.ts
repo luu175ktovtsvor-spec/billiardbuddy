@@ -25,7 +25,7 @@ afterEach(async () => {
 
 describe('MediaProjectService image projects', () => {
   test('uses one idempotent relay task and persists image bytes outside project JSON', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const calls: Array<{ url: string; key: string | null }> = []
     let polls = 0
@@ -149,7 +149,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('persists a safe image failure instead of the upstream response detail', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const rawDetail = 'provider quota rejected token=private-token at /private/gateway.log'
     const service = new MediaProjectService({
@@ -179,7 +179,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('requires explicit confirmation before an unknown submission is replaced by an edited draft', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let submissions = 0
@@ -224,7 +224,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('reuses the persisted idempotency key when a submit response is lost', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let calls = 0
@@ -249,7 +249,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('recovers a crash after intent persistence but before remote task id persistence', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
     let firstKey = ''
@@ -285,7 +285,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('surfaces failed_unknown as a possible-charge warning instead of silently retrying', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let postCount = 0
@@ -351,7 +351,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('rejects a reference-image symlink before it can be sent to the image service', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
     const service = new MediaProjectService({
@@ -380,7 +380,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('reconciles a succeeded image task whose project update was interrupted', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
     const service = new MediaProjectService({
@@ -411,7 +411,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('does not attach a stale image task result to a project already bound to a replacement task', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
     const service = new MediaProjectService({
@@ -447,7 +447,7 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('cancels only a remotely confirmed queued image task', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const service = new MediaProjectService({
       root: await root(),
