@@ -658,16 +658,16 @@ export const SettingsSchema = lazySchema(() =>
             .enum(['auto', 'anthropic', 'tavily', 'brave', 'disabled'])
             .optional()
             .describe(
-              'WebSearch backend selection. auto uses native Claude web search for Claude model names, then Tavily, then Brave.',
+              'WebSearch backend selection. auto uses the native Claude or direct DeepSeek Anthropic transport only; Tavily and Brave require an explicit advanced selection.',
             ),
           tavilyApiKey: z
             .string()
             .optional()
-            .describe('Tavily API key for WebSearch fallback'),
+            .describe('Tavily API key for an explicitly selected advanced WebSearch backend'),
           braveApiKey: z
             .string()
             .optional()
-            .describe('Brave Search API key for WebSearch fallback'),
+            .describe('Brave Search API key for an explicitly selected domain-filtering WebSearch backend'),
         })
         .optional()
         .describe('Configures native and external WebSearch backends'),

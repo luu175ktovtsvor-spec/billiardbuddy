@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import {
   getProductWebSearchProxyUrl,
+  isDeepSeekAnthropicBaseUrl,
   isLikelyClaudeModel,
+  markAnthropicNativeUnsupported,
   isWebSearchEnabledForModel,
   resolveWebSearchProvider,
   searchWithExternalProvider,
   searchWithProductGateway,
-  shouldFallbackFromNativeError,
+  isNativeWebSearchProtocolMismatch,
 } from './backend.js'
 
 describe('WebSearch backend resolver', () => {
@@ -27,21 +29,53 @@ describe('WebSearch backend resolver', () => {
     ).toBe('anthropic')
   })
 
-  test('auto mode keeps WebSearch available for non-Claude models with fallback keys', () => {
+  test('auto mode uses the direct DeepSeek Anthropic transport before external keys', () => {
     expect(
-      resolveWebSearchProvider('gpt-5.4', {
+      resolveWebSearchProvider('deepseek-v4-flash', {
         mode: 'auto',
         tavilyApiKey: 'tvly-key',
         braveApiKey: 'brave-key',
-      }, { productGatewayUrl: null }).provider,
-    ).toBe('tavily')
+      }, {
+        productGatewayUrl: null,
+        anthropicBaseUrl: 'https://api.deepseek.com/anthropic/',
+      }).provider,
+    ).toBe('anthropic')
 
     expect(
-      resolveWebSearchProvider('gpt-5.4', {
+      resolveWebSearchProvider('deepseek-v4-flash', {
         mode: 'auto',
+        tavilyApiKey: 'tvly-key',
         braveApiKey: 'brave-key',
-      }, { productGatewayUrl: null }).provider,
-    ).toBe('brave')
+      }, {
+        productGatewayUrl: null,
+        anthropicBaseUrl: 'https://example.invalid/anthropic',
+      }).provider,
+    ).toBe('disabled')
+  })
+
+  test('accepts only the documented DeepSeek Anthropic endpoint for native DeepSeek search', () => {
+    expect(isDeepSeekAnthropicBaseUrl('https://api.deepseek.com/anthropic')).toBe(true)
+    expect(isDeepSeekAnthropicBaseUrl('https://api.deepseek.com/anthropic/')).toBe(true)
+    expect(isDeepSeekAnthropicBaseUrl('https://api.deepseek.com/v1')).toBe(false)
+    expect(isDeepSeekAnthropicBaseUrl('http://api.deepseek.com/anthropic')).toBe(false)
+    expect(isDeepSeekAnthropicBaseUrl('https://api.deepseek.com/anthropic?key=secret')).toBe(false)
+  })
+
+  test('auto mode never selects an external key as a fallback after native incompatibility', () => {
+    const model = 'deepseek-v4-web-search-test'
+    const settings = {
+      mode: 'auto' as const,
+      tavilyApiKey: 'tvly-key',
+      braveApiKey: 'brave-key',
+    }
+    const options = {
+      productGatewayUrl: null,
+      anthropicBaseUrl: 'https://api.deepseek.com/anthropic',
+    }
+
+    expect(resolveWebSearchProvider(model, settings, options).provider).toBe('anthropic')
+    markAnthropicNativeUnsupported(model)
+    expect(resolveWebSearchProvider(model, settings, options).provider).toBe('disabled')
   })
 
   test('explicit provider modes require their API key', () => {
@@ -50,13 +84,19 @@ describe('WebSearch backend resolver', () => {
     )
     expect(
       resolveWebSearchProvider('gpt-5.4', {
+        mode: 'tavily',
+        tavilyApiKey: 'tvly-key',
+      }, { productGatewayUrl: null }).provider,
+    ).toBe('tavily')
+    expect(
+      resolveWebSearchProvider('gpt-5.4', {
         mode: 'brave',
         braveApiKey: 'brave-key',
       }, { productGatewayUrl: null }).provider,
     ).toBe('brave')
   })
 
-  test('isEnabled reflects native Claude or external fallback availability', () => {
+  test('isEnabled reflects native transport availability rather than external keys in auto mode', () => {
     expect(isWebSearchEnabledForModel('claude-sonnet-4-5', { mode: 'auto' }, { productGatewayUrl: null })).toBe(
       true,
     )
@@ -65,13 +105,13 @@ describe('WebSearch backend resolver', () => {
         mode: 'auto',
         tavilyApiKey: 'tvly-key',
       }, { productGatewayUrl: null }),
-    ).toBe(true)
+    ).toBe(false)
     expect(isWebSearchEnabledForModel('qwen3-coder', { mode: 'auto' }, { productGatewayUrl: null })).toBe(
       false,
     )
   })
 
-  test('managed runtime resolves only the exact loopback qf route and does not silently use user keys', () => {
+  test('managed runtime exposes the exact loopback qf route only for explicit Brave search', () => {
     const productUrl = getProductWebSearchProxyUrl(
       'http://127.0.0.1:4599/proxy/providers/qf-gateway',
     )
@@ -84,11 +124,10 @@ describe('WebSearch backend resolver', () => {
       tavilyApiKey: 'tvly-user-key',
       braveApiKey: 'brave-user-key',
     }, { productGatewayUrl: productUrl })
-    expect(resolved).toMatchObject({ provider: 'product', productGatewayUrl: productUrl })
+    expect(resolved).toMatchObject({ provider: 'disabled' })
 
-    // Legacy local provider choices are ignored in the managed desktop runtime.
-    // A gateway failure is therefore reported rather than silently switching
-    // upstream.
+    // The managed proxy owns the gateway credential, but it is only selected
+    // after an explicit advanced Brave choice.
     expect(resolveWebSearchProvider('deepseek-v4-flash', {
       mode: 'brave',
       braveApiKey: 'brave-user-key',
@@ -100,13 +139,13 @@ describe('WebSearch backend resolver', () => {
     }, { productGatewayUrl: productUrl }).provider).toBe('disabled')
   })
 
-  test('falls back on native tool schema/provider mismatch errors', () => {
+  test('recognizes native tool schema/provider mismatch errors without selecting another provider', () => {
     expect(
-      shouldFallbackFromNativeError(
+      isNativeWebSearchProtocolMismatch(
         new Error('422 Extra inputs are not permitted: web_search_20250305'),
       ),
     ).toBe(true)
-    expect(shouldFallbackFromNativeError(new Error('network timeout'))).toBe(
+    expect(isNativeWebSearchProtocolMismatch(new Error('network timeout'))).toBe(
       false,
     )
   })
