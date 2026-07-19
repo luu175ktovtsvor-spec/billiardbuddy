@@ -44,7 +44,7 @@ export function translate(
  *
  * @example
  * const t = useTranslation()
- * t('sidebar.newSession')  // => "New session" or "新建会话"
+ * t('sidebar.newTask')  // => "New task" or "新建任务"
  */
 export function useTranslation() {
   const locale = useSettingsStore((s) => s.locale)

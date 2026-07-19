@@ -21,7 +21,8 @@ export const jp: Record<TranslationKey, string> = {
   'common.copied': 'コピーしました',
 
   // ─── Sidebar ──────────────────────────────────────
-  'sidebar.newSession': '新しいセッション',
+  'sidebar.newTask': '新しいタスク',
+  'sidebar.untitledTask': '無題のタスク',
   'sidebar.scheduled': 'スケジュール',
   'sidebar.terminal': 'ターミナル',
   'sidebar.settings': '設定',
@@ -68,7 +69,7 @@ export const jp: Record<TranslationKey, string> = {
   'sidebar.restoreProjectToSidebar': 'サイドバーに復元',
   'sidebar.restoreHiddenProjects': '非表示のプロジェクトを復元 ({count})',
   'sidebar.projectHidden': '{project} をサイドバーから非表示にしました。既存のセッションは削除されていません。',
-  'sidebar.newSessionInProject': '{project} で新しいセッション',
+  'sidebar.newTaskInProject': '{project} で新しいタスク',
   'sidebar.showMoreSessions': '表示を展開',
   'sidebar.showFewerSessions': '表示を折りたたむ',
   'sidebar.expandProject': '{project} を展開',
@@ -1237,7 +1238,6 @@ export const jp: Record<TranslationKey, string> = {
   'update.failed': '更新に失敗しました: {error}',
 
   // ─── Active Session ──────────────────────────────────────
-  'session.untitled': '無題のセッション',
   'session.active': 'セッションがアクティブ',
   'session.lastUpdated': '最終更新 {time}',
   'session.messages': '{count} 件のメッセージ',
