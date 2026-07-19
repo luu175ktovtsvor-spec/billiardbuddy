@@ -2,12 +2,18 @@ import { describe, expect, test } from 'bun:test'
 import {
   isSseContentType,
   parseLoadTarget,
+  parsePhases,
   parseThinkingMode,
   sawReasoningInSse,
   SseTerminalDetector,
 } from './real-loadtest'
 
 describe('real upstream loadtest thinking-mode guard', () => {
+  test('defaults to a high-to-low 1000-window capacity search', () => {
+    expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 50, 20, 1])
+    expect(parsePhases('100,1000,400', 1_000)).toEqual([1_000, 400, 100])
+  })
+
   test('allows only the two documented DeepSeek thinking values', () => {
     expect(parseThinkingMode(undefined)).toBeUndefined()
     expect(parseThinkingMode('enabled')).toBe('enabled')

@@ -8,8 +8,8 @@
  * Example on the gateway host (the token should be populated locally there):
  *   QF_LOADTEST_URL=http://127.0.0.1:8799 \
  *   QF_LOADTEST_TOKEN=... \
- *   bun gateway/real-loadtest.ts --execute --users=100 --windows=8 \
- *     --phases=1,20,50,100,256 --scenario=stream
+ *   bun gateway/real-loadtest.ts --execute --users=100 --windows=10 \
+ *     --phases=1000,800,600,400,200,100 --scenario=stream
  */
 
 type Capacity = {
@@ -65,8 +65,8 @@ function usage(exitCode = 2): never {
 
 Options:
   --users=<n>                 Simulated installation count (default: 100)
-  --windows=<n>               Concurrent windows per installation (default: 5)
-  --phases=a,b,c              Concurrent request steps (default: 1,20,50,100,...,total)
+  --windows=<n>               Concurrent windows per installation (default: 10)
+  --phases=a,b,c              Concurrent request steps, highest first by default
   --scenario=short|stream     "short" asks for OK; "stream" asks for a short numbered stream
   --max-tokens=<n>            Upstream max_tokens per request (default: 64)
   --thinking=enabled|disabled Send an explicit DeepSeek thinking mode; omitted uses
@@ -76,11 +76,12 @@ Options:
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
-  --continue-after-failure    Continue after a phase has an HTTP or incomplete-SSE failure
+  --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
+  --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
   --use-server-app-token      Gateway-host only: read its app token solely for
                                http://127.0.0.1:8799 (never an external URL)
 
-The runner uses controlled X-QF-Client-ID values so a 100×5 phase models five
+The runner uses controlled X-QF-Client-ID values so a 100×10 phase models ten
 windows per installation, reads every SSE body to completion, and requires a
 terminal data: [DONE] event for success. It reports only status/timing/capacity
 metadata; it never logs tokens, request bodies, or model output.`)
@@ -130,12 +131,15 @@ function recordCount(target: Record<string, number>, key: string): void {
   target[key] = (target[key] ?? 0) + 1
 }
 
-function parsePhases(raw: string | undefined, total: number): number[] {
-  const defaults = [1, 20, 50, 100, 256, total].filter(phase => phase <= total)
+export function parsePhases(raw: string | undefined, total: number): number[] {
+  // The first real probe must answer the user's actual capacity question instead of
+  // normalizing a server with an easy warm-up. If it fails, the following lower phases
+  // identify a usable ceiling in the same invocation.
+  const defaults = [total, 800, 600, 400, 200, 100, 50, 20, 1].filter(phase => phase <= total)
   const candidates = raw === undefined
     ? defaults
     : raw.split(',').map(value => integer(value.trim(), '--phases', 0))
-  const phases = [...new Set(candidates)].sort((a, b) => a - b)
+  const phases = [...new Set(candidates)].sort((a, b) => b - a)
   if (phases.length === 0 || phases.some(phase => phase > total)) {
     throw new Error(`--phases must contain values from 1 through ${total}`)
   }
@@ -288,7 +292,7 @@ async function main(): Promise<void> {
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
 
   const users = integer(option(args, '--users'), '--users', 100)
-  const windows = integer(option(args, '--windows'), '--windows', 5)
+  const windows = integer(option(args, '--windows'), '--windows', 10)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 64)
   // Keep the caller deadline above a valid upstream stream even when an explicit
   // deployment uses a longer bounded queue. The current production default is much
@@ -307,7 +311,10 @@ async function main(): Promise<void> {
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
   const phases = parsePhases(option(args, '--phases'), total)
-  const continueAfterFailure = args.includes('--continue-after-failure')
+  // A high-to-low capacity run needs to continue after a failed upper bound in order
+  // to locate the first viable lower bound. The explicit stop switch remains for
+  // incident-style probes where any failure must halt traffic immediately.
+  const continueAfterFailure = !args.includes('--stop-after-failure') || args.includes('--continue-after-failure')
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -473,7 +480,7 @@ async function main(): Promise<void> {
     }
     console.log(JSON.stringify({ event: 'loadtest_phase', ...summary }))
     if (summary.failed > 0 && !continueAfterFailure) {
-      console.error('Stopping after a failed phase. Use --continue-after-failure only when deliberately mapping overload behavior.')
+      console.error('Stopping after a failed phase because --stop-after-failure was supplied.')
       process.exitCode = 1
       return
     }
