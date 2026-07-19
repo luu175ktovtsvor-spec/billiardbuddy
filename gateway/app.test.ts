@@ -243,7 +243,7 @@ test('audio transcription disables the request idle timeout for long-running ASR
   expect(timeoutCalls).toEqual([0])
 })
 
-test('long-lived chat, native Messages, and relay image submit all disable Bun idle timeout before body/queue work', async () => {
+test('long-lived chat, native Messages, and every relay image task operation disable Bun idle timeout before forwarding', async () => {
   const timeoutCalls: number[] = []
   const fetch = createGatewayFetch({
     env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
@@ -267,7 +267,14 @@ test('long-lived chat, native Messages, and relay image submit all disable Bun i
     method: 'POST', body: JSON.stringify({ prompt: '台球海报' }),
   })), server)
   expect(image.status).toBe(200)
-  expect(timeoutCalls).toEqual([0, 0, 0])
+
+  const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })), server)
+  expect(poll.status).toBe(200)
+
+  const cancel = await fetch(new Request('http://local/v1/images/tasks/task-1/cancel', authed({ method: 'POST' })), server)
+  expect(cancel.status).toBe(200)
+
+  expect(timeoutCalls).toEqual([0, 0, 0, 0, 0])
 })
 
 test('audio transcription rejects unsupported and oversized files before execution', async () => {

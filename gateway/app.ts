@@ -1544,6 +1544,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         && url.pathname.endsWith('/cancel')
       ) {
         const user = auth(config, request)
+        // Cancellation still crosses the mainland/US relay boundary. Disable Bun's
+        // 10 s idle timeout before that request so a slow relay acknowledgement is
+        // not turned into a client-side socket reset.
+        server?.timeout(request, 0)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/cancel'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
@@ -1564,6 +1568,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // 拿别人的 task id 轮询会被 relay 返 403。
       if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
         const user = auth(config, request)
+        // A status poll also waits on the cross-border relay. Apply this before
+        // forwarding so Bun's default 10 s idle timeout cannot reset the client
+        // socket while the relay is still responding.
+        server?.timeout(request, 0)
         if (!config.relayTasksBase) throw new HttpError(503, 'GPT 生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const taskId = url.pathname.slice('/v1/images/tasks/'.length)
         if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
