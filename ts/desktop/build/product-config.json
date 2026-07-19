@@ -1,5 +1,5 @@
 {
-  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The revocable app token is supplied separately via product-secrets.json (git-ignored, injected at build time) or the QF_GATEWAY_TOKEN env override. gatewayUrl is the verified mainland gateway /gw entry; this deployment has no mainland domain, so the direct public IPv4 HTTP endpoint is explicitly permitted. Override only with HTTPS or another verified public IPv4 /gw endpoint.",
-  "gatewayUrl": "http://39.106.214.21/gw",
+  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The revocable app token is supplied separately via product-secrets.json (git-ignored, injected at build time) or the QF_GATEWAY_TOKEN env override. gatewayUrl is the US HTTPS /gw entry; release requires the US /gw proxy to be deployed and health-checked. Override only with HTTPS.",
+  "gatewayUrl": "https://zzyppz.cn/gw",
   "gatewayModel": "deepseek-v4-flash"
 }
