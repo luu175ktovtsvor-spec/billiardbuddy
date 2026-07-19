@@ -15,9 +15,7 @@ beforeAll(() => {
   })
 })
 
-let previewHandler: ((payload: unknown) => void) | null = null
-
-const { bridge, prefill } = vi.hoisted(() => ({
+const { bridge } = vi.hoisted(() => ({
   bridge: {
     open: vi.fn(),
     navigate: vi.fn(),
@@ -27,15 +25,9 @@ const { bridge, prefill } = vi.hoisted(() => ({
     close: vi.fn(),
     message: vi.fn(),
   },
-  prefill: vi.fn(),
 }))
 
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: bridge }))
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: {
-    getState: () => ({ queueComposerPrefill: prefill }),
-  },
-}))
 
 import { ProductTaskBrowserPreviewDock } from './ProductTaskBrowserPreviewDock'
 
@@ -49,15 +41,6 @@ function setPreviewHostAvailable(available: boolean) {
     capabilities: {
       ...browserHost.capabilities,
       previewWebview: available,
-    },
-    preview: {
-      ...browserHost.preview,
-      onEvent: async (handler) => {
-        previewHandler = handler
-        return () => {
-          previewHandler = null
-        }
-      },
     },
   }
 }
@@ -90,11 +73,9 @@ function renderDock({
 }
 
 beforeEach(() => {
-  previewHandler = null
   setPreviewHostAvailable(true)
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
   Object.values(bridge).forEach((mock) => mock.mockReset())
-  prefill.mockReset()
 })
 
 afterEach(() => {
@@ -164,9 +145,6 @@ describe('ProductTaskBrowserPreviewDock', () => {
     expect(useBrowserPanelStore.getState().bySession[previewKey]!.url).toBe('')
     expect(screen.queryByLabelText('截图')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('选择元素')).not.toBeInTheDocument()
-
-    previewHandler!({ v: 1, type: 'screenshot', dataUrl: 'data:image/png;base64,AAAA', kind: 'full' })
-    expect(prefill).not.toHaveBeenCalled()
 
     fireEvent.change(input, { target: { value: 'http://localhost:3000' } })
     fireEvent.submit(input.closest('form')!)

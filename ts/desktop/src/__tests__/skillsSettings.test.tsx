@@ -4,7 +4,6 @@ import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { useUIStore } from '../stores/uiStore'
 
@@ -16,23 +15,6 @@ describe('Settings > Skills tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useSettingsStore.setState({ locale: 'en' })
-    useSessionStore.setState({
-      sessions: [
-        {
-          id: 'session-1',
-          title: 'Active session',
-          createdAt: '2026-04-20T00:00:00.000Z',
-          modifiedAt: '2026-04-20T00:00:00.000Z',
-          messageCount: 1,
-          projectPath: '/workspace/project',
-          workDir: '/workspace/project',
-          workDirExists: true,
-        },
-      ],
-      activeSessionId: 'session-1',
-      isLoading: false,
-      error: null,
-    })
     useTabStore.setState({ tabs: [], activeTabId: null })
     useUIStore.setState({ activeSettingsTab: 'skills', pendingSettingsTab: null })
   })

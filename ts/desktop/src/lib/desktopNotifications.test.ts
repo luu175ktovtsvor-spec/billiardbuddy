@@ -139,7 +139,7 @@ describe('desktopNotifications', () => {
 
   it('passes notification targets through the desktop notification payload', async () => {
     notificationPluginMock.isPermissionGranted.mockResolvedValue(true)
-    const target = { type: 'session' as const, sessionId: 'session-1', title: 'Build fix' }
+    const target = { type: 'scheduled' as const }
 
     await expect(notifyDesktop({
       dedupeKey: 'permission:targeted',
@@ -199,7 +199,7 @@ describe('desktopNotifications', () => {
       value: 'MacIntel',
     })
     coreApiMock.invoke.mockResolvedValueOnce(true)
-    const target = { type: 'session' as const, sessionId: 'session-1', title: 'Build fix' }
+    const target = { type: 'scheduled' as const }
 
     await expect(notifyDesktop({
       title: 'Permission required',
@@ -440,7 +440,7 @@ describe('desktopNotifications', () => {
     }
     let nativeRegistered = false
     let pluginRegistered = false
-    const sessionTarget = { type: 'session' as const, sessionId: 'session-1', title: 'Build fix' }
+    const nativeTarget = { type: 'scheduled' as const }
     const scheduledTarget = { type: 'scheduled' as const }
 
     eventApiMock.listen.mockImplementation(async (_eventName: string, callback: (event: { payload: unknown }) => void) => {
@@ -459,10 +459,10 @@ describe('desktopNotifications', () => {
 
     expect(nativeRegistered).toBe(true)
     expect(pluginRegistered).toBe(true)
-    nativeCallback({ payload: { target: JSON.stringify(sessionTarget) } })
+    nativeCallback({ payload: { target: JSON.stringify(nativeTarget) } })
     pluginCallback({ extra: { billiardBuddyTarget: JSON.stringify(scheduledTarget) } })
 
-    expect(onTarget).toHaveBeenCalledWith(sessionTarget)
+    expect(onTarget).toHaveBeenCalledWith(nativeTarget)
     expect(onTarget).toHaveBeenCalledWith(scheduledTarget)
 
     cleanup()

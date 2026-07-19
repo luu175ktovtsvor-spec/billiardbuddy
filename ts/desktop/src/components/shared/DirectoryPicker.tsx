@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { sessionsApi, type RecentProject } from '../../api/sessions'
+import { recentProjectsApi, type RecentProject } from '../../api/recentProjects'
 import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 import {
@@ -90,7 +90,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       return
     }
     setLoading(true)
-    sessionsApi.getRecentProjects()
+    recentProjectsApi.list()
       .then(({ projects: p }) => {
         setCachedRecentProjects(p)
         setProjects(p)
