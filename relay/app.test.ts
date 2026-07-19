@@ -57,7 +57,7 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
 })
 
-test('submit edit sends multipart to /images/edits with attached image', async () => {
+test('submit edit sends multipart b64_json output contract to /images/edits with attached image', async () => {
   let editUrl = ''
   let form: FormData | null = null
   const fetch = createRelayFetch({
@@ -71,7 +71,14 @@ test('submit edit sends multipart to /images/edits with attached image', async (
   const submit = await fetch(new Request('http://relay/images/tasks', {
     method: 'POST',
     headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json' },
-    body: JSON.stringify({ mode: 'edit', model: 'gpt-image-2', prompt: '改成深绿', n: 1, images: [`data:image/png;base64,${B64}`] }),
+    body: JSON.stringify({
+      mode: 'edit',
+      model: 'gpt-image-2',
+      prompt: '改成深绿',
+      n: 1,
+      response_format: 'b64_json',
+      images: [`data:image/png;base64,${B64}`],
+    }),
   }))
   const { task_id } = await submit.json()
   const done = await pollUntilDone(fetch, task_id)
@@ -79,6 +86,7 @@ test('submit edit sends multipart to /images/edits with attached image', async (
   expect(editUrl).toBe('https://api.openai.example/v1/images/edits')
   expect(form).toBeInstanceOf(FormData)
   expect((form as unknown as FormData).getAll('image')).toHaveLength(1)
+  expect((form as unknown as FormData).get('response_format')).toBe('b64_json')
 })
 
 test('submit edit forwards input_fidelity when the deployed endpoint accepts it', async () => {

@@ -24,10 +24,10 @@ afterEach(async () => {
 })
 
 describe('MediaProjectService image projects', () => {
-  test('uses one idempotent relay task and persists image bytes outside project JSON', async () => {
+  test('uses one idempotent edit relay task, requests b64_json, and persists local image bytes', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
-    const calls: Array<{ url: string; key: string | null }> = []
+    const calls: Array<{ url: string; key: string | null; body?: Record<string, unknown> }> = []
     let polls = 0
     const mediaRoot = await root()
     const service = new MediaProjectService({
@@ -35,7 +35,10 @@ describe('MediaProjectService image projects', () => {
       fetchImpl: async (input, init) => {
         const requestUrl = String(input)
         const headers = new Headers(init?.headers)
-        calls.push({ url: requestUrl, key: headers.get('idempotency-key') })
+        const body = init?.method === 'POST' && typeof init.body === 'string'
+          ? JSON.parse(init.body) as Record<string, unknown>
+          : undefined
+        calls.push({ url: requestUrl, key: headers.get('idempotency-key'), body })
         if (init?.method === 'POST') return Response.json({ task_id: 'remote-1', status: 'queued' }, { status: 202 })
         polls += 1
         return Response.json(polls === 1
@@ -51,12 +54,17 @@ describe('MediaProjectService image projects', () => {
       },
     })
 
-    const project = await service.createImageProject({ prompt: '蓝色台球活动海报' })
+    const project = await service.createImageProject({
+      prompt: '蓝色台球活动海报',
+      mode: 'edit',
+      reference_images: [`data:image/png;base64,${Buffer.from('reference-image').toString('base64')}`],
+    })
     const first = await service.submitImageProject(project.id)
     const duplicate = await service.submitImageProject(project.id)
     expect(duplicate.id).toBe(first.id)
     expect(calls.filter(call => call.url.endsWith('/v1/images/tasks'))).toHaveLength(1)
     expect(calls[0]?.key).toMatch(/^bb-media-[a-f0-9]{64}$/)
+    expect(calls[0]?.body).toMatchObject({ mode: 'edit', response_format: 'b64_json' })
 
     expect((await service.getTask(first.id)).status).toBe('running')
     const completed = await service.getTask(first.id)
