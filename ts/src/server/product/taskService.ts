@@ -10,6 +10,8 @@ import {
   type CreateProductSideTaskInput,
   type ProductContinuationTarget,
   type ProductProject,
+  type ProductRecentProject,
+  type ProductRecentProjectList,
   type ProductSideTask,
   type ProductTask,
   type ProductTaskIndex,
@@ -36,6 +38,7 @@ import {
   projectSessionTranscriptForProductTask,
   resolveCoreMessageIdForProductThreadEntry,
 } from './taskThreadProjection.js'
+import { findGitRoot } from '../../utils/git.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -81,6 +84,8 @@ type ProductSideTaskMetadata = ProductSideTask & {
 }
 
 const PRODUCT_TASK_STORE_VERSION = 3 as const
+const DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
+const MAX_RECENT_PRODUCT_PROJECTS = 500
 
 type ProductTaskStore = {
   version: typeof PRODUCT_TASK_STORE_VERSION
@@ -228,6 +233,75 @@ function createProductSideTaskId(): string {
 function projectTitle(workDir: string): string {
   const base = path.basename(workDir.replace(/[\\/]+$/, ''))
   return base || workDir || '未命名项目'
+}
+
+function boundedRecentProjectLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return 10
+  return Math.min(Math.max(Math.floor(limit), 1), MAX_RECENT_PRODUCT_PROJECTS)
+}
+
+function isDesktopWorktreeBranchName(branch: string | null): boolean {
+  return !!branch && branch.startsWith('worktree-desktop-')
+}
+
+async function runRecentProjectGitCommand(
+  workDir: string,
+  args: string[],
+): Promise<string | null> {
+  let process: Bun.Subprocess<'ignore', 'pipe', 'ignore'> | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = null
+
+  try {
+    process = Bun.spawn(['git', ...args], {
+      cwd: workDir,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    const output = new Response(process.stdout).text()
+      .then(async (text) => (await process!.exited) === 0 ? text.trim() : null)
+      .catch(() => null)
+    const timedOut = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => {
+        try {
+          process?.kill()
+        } catch {
+          // The process may already have exited.
+        }
+        resolve(null)
+      }, DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS)
+    })
+    return await Promise.race([output, timedOut])
+  } catch {
+    return null
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+function ownerRepoNameFromRemote(remote: string | null): string | null {
+  if (!remote) return null
+  const match = remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/) || remote.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/)
+  return match ? match[1]! : null
+}
+
+async function recentProjectGitInfo(workDir: string): Promise<Pick<
+  ProductRecentProject,
+  'isGit' | 'repoName' | 'branch'
+>> {
+  if (!findGitRoot(workDir)) {
+    return { isGit: false, repoName: null, branch: null }
+  }
+
+  const [branchResult, remoteResult] = await Promise.all([
+    runRecentProjectGitCommand(workDir, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    runRecentProjectGitCommand(workDir, ['remote', 'get-url', 'origin']),
+  ])
+  return {
+    isGit: true,
+    repoName: ownerRepoNameFromRemote(remoteResult),
+    branch: isDesktopWorktreeBranchName(branchResult) ? null : branchResult,
+  }
 }
 
 function validTitle(value: string | undefined): string | undefined {
@@ -561,6 +635,33 @@ export class ProductTaskService {
       tasks: records,
       total: records.length,
       capabilities: { createTask: true },
+    }
+  }
+
+  /**
+   * Directory-picker projects are derived from the public product task index.
+   * This deliberately excludes unregistered Agent Core sessions and never
+   * exposes their private session bindings.
+   */
+  async listRecentProjects(limit = 10): Promise<ProductRecentProjectList> {
+    const taskIndex = await this.listTasks()
+    const projects = [...taskIndex.projects]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, boundedRecentProjectLimit(limit))
+
+    return {
+      projects: await Promise.all(projects.map(async (project) => {
+        const realPath = await fs.realpath(project.workDir).catch(() => project.workDir)
+        const git = await recentProjectGitInfo(realPath)
+        return {
+          projectPath: project.workDir,
+          realPath,
+          projectName: project.title,
+          ...git,
+          modifiedAt: project.updatedAt,
+          sessionCount: project.taskCount + project.archivedTaskCount,
+        }
+      })),
     }
   }
 

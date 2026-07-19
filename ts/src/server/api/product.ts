@@ -2,6 +2,8 @@ import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
   CreateProductSideTaskInput,
+  ProductRecentProject,
+  ProductRecentProjectList,
   UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
@@ -23,6 +25,7 @@ export async function handleProductApi(
   tasks: Pick<
     ProductTaskService,
     | 'listTasks'
+    | 'listRecentProjects'
     | 'createTask'
     | 'updateTask'
     | 'setPinned'
@@ -36,6 +39,16 @@ export async function handleProductApi(
   review: ProductTaskReviewApi = productTaskReviewService,
 ): Promise<Response> {
   try {
+    if (segments[2] === 'projects') {
+      if (segments[3] !== 'recent' || segments[4]) {
+        throw ApiError.notFound('未知产品项目资源')
+      }
+      if (req.method !== 'GET') return methodNotAllowed(req.method)
+      return Response.json(
+        publicRecentProjectList(await tasks.listRecentProjects(recentProjectLimit(url))),
+      )
+    }
+
     if (segments[2] !== 'tasks') {
       throw ApiError.notFound('未知产品资源')
     }
@@ -119,6 +132,13 @@ export async function handleProductApi(
   }
 }
 
+function recentProjectLimit(url: URL): number {
+  const raw = url.searchParams.get('limit')
+  if (raw === null || !raw.trim()) return 10
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : 10
+}
+
 async function handleTaskReviewRoute(
   review: ProductTaskReviewApi,
   req: Request,
@@ -183,5 +203,31 @@ function publicTaskIndex<T extends { tasks: object[] }>(index: T): T {
   return {
     ...index,
     tasks: index.tasks.map(publicTask),
+  }
+}
+
+/**
+ * The task service returns this public shape already, but retain a narrow
+ * projection at the HTTP boundary so future private task metadata cannot be
+ * serialized into the ordinary project picker by accident.
+ */
+function publicRecentProjectList(
+  result: ProductRecentProjectList,
+): ProductRecentProjectList {
+  return {
+    projects: result.projects.map(publicRecentProject),
+  }
+}
+
+function publicRecentProject(project: ProductRecentProject): ProductRecentProject {
+  return {
+    projectPath: project.projectPath,
+    realPath: project.realPath,
+    projectName: project.projectName,
+    isGit: project.isGit,
+    repoName: project.repoName,
+    branch: project.branch,
+    modifiedAt: project.modifiedAt,
+    sessionCount: project.sessionCount,
   }
 }

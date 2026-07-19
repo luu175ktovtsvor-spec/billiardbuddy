@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RecentProject } from '../api/recentProjects'
+import type { ProductRecentProject } from '../product/api/projects'
 import {
   getCachedRecentProjects,
   invalidateRecentProjectsCache,
   setCachedRecentProjects,
 } from './recentProjectsCache'
 
-function makeProject(path: string): RecentProject {
+function makeProject(path: string): ProductRecentProject {
   return {
     projectPath: path,
     realPath: path,

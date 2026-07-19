@@ -86,11 +86,6 @@ export async function handleSessionsApi(
       return await batchDeleteSessions(req)
     }
 
-    // Special collection route: /api/sessions/recent-projects
-    if (sessionId === 'recent-projects' && req.method === 'GET') {
-      return await getRecentProjects(url)
-    }
-
     // Special collection route: /api/sessions/repository-context
     if (sessionId === 'repository-context' && req.method === 'GET') {
       return await getSessionRepositoryContext(url)
@@ -298,7 +293,6 @@ async function createSession(req: Request): Promise<Response> {
   }
 
   const result = await sessionService.createSession(body.workDir, body.repository, body.permissionMode)
-  recentProjectsCache = null
   return Response.json(result, { status: 201 })
 }
 
@@ -379,7 +373,6 @@ async function deleteSession(sessionId: string): Promise<Response> {
     throw error
   }
   closeSessionConnection(sessionId, 'session deleted')
-  recentProjectsCache = null
   return Response.json({ ok: true })
 }
 
@@ -402,10 +395,6 @@ async function batchDeleteSessions(req: Request): Promise<Response> {
   for (const sessionId of result.successes) {
     closeSessionConnection(sessionId, 'session deleted')
   }
-  if (result.successes.length > 0) {
-    recentProjectsCache = null
-  }
-
   return Response.json({
     ok: result.failures.length === 0,
     successes: result.successes,
@@ -517,12 +506,6 @@ function repoNameFromRemote(remote: string | null): string {
   if (!remote) return ''
   const match = remote.match(/\/([^/]+?)(?:\.git)?$/) || remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/)
   return match ? match[1]! : ''
-}
-
-function ownerRepoNameFromRemote(remote: string | null): string | null {
-  if (!remote) return null
-  const match = remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/) || remote.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/)
-  return match ? match[1]! : null
 }
 
 function repoNameFromWorkDir(workDir: string): string {
@@ -687,145 +670,4 @@ async function patchSession(req: Request, sessionId: string): Promise<Response> 
 
   await sessionService.renameSession(sessionId, body.title)
   return Response.json({ ok: true })
-}
-
-type RecentProjectEntry = {
-  projectPath: string
-  realPath: string
-  projectName: string
-  isGit: boolean
-  repoName: string | null
-  branch: string | null
-  modifiedAt: string
-  sessionCount: number
-}
-
-// In-memory cache for recent projects (TTL: 30s)
-let recentProjectsCache: { projects: RecentProjectEntry[]; timestamp: number } | null = null
-const RECENT_PROJECTS_CACHE_TTL = 30_000
-const DESKTOP_WORKTREE_MARKER = '/.claude/worktrees/'
-
-function projectNameForRecentPath(realPath: string, fallback: string): string {
-  const normalizedRealPath = realPath.replace(/\\/g, '/')
-  const displayRoot = normalizedRealPath.includes(DESKTOP_WORKTREE_MARKER)
-    ? normalizedRealPath.slice(0, normalizedRealPath.indexOf(DESKTOP_WORKTREE_MARKER))
-    : normalizedRealPath
-  return displayRoot.split('/').filter(Boolean).pop() || fallback
-}
-
-function isDesktopWorktreeBranchName(branch: string | null): boolean {
-  return !!branch && branch.startsWith('worktree-desktop-')
-}
-
-async function getRecentProjects(url: URL): Promise<Response> {
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '10', 10) || 10, 1), 500)
-  const sessionScanLimit = Math.min(Math.max(limit * 8, 50), 200)
-
-  // Return cached response if fresh
-  if (recentProjectsCache && Date.now() - recentProjectsCache.timestamp < RECENT_PROJECTS_CACHE_TTL) {
-    return Response.json({ projects: recentProjectsCache.projects.slice(0, limit) })
-  }
-
-  const { sessions } = await sessionService.listSessions({ limit: sessionScanLimit })
-  const validSessions = sessions.filter((session) => session.workDirExists && session.workDir)
-
-  // First pass: group by logical project root so worktrees stay under the same project.
-  // Optimization: prefer s.projectRoot (already resolved by listSessions) and only fall back
-  // to the expensive getSessionWorkDir (reads the full transcript) when projectRoot is absent.
-  const realPathMap = new Map<string, { projectPath: string; modifiedAt: string; sessionCount: number; sessionId: string }>()
-  const fallbackSessionIds: string[] = []
-  for (const s of validSessions) {
-    const realPath = s.projectRoot || sessionService.desanitizePath(s.projectPath)
-    if (!s.projectRoot && s.id) {
-      fallbackSessionIds.push(s.id)
-    }
-
-    const existing = realPathMap.get(realPath)
-    if (!existing || s.modifiedAt > existing.modifiedAt) {
-      realPathMap.set(realPath, {
-        projectPath: realPath,
-        modifiedAt: s.modifiedAt,
-        sessionCount: (existing?.sessionCount ?? 0) + 1,
-        sessionId: s.id,
-      })
-    } else {
-      existing.sessionCount++
-    }
-  }
-
-  // Resolve fallback sessions in parallel (only those missing projectRoot)
-  if (fallbackSessionIds.length > 0) {
-    const resolvedPaths = await Promise.all(
-      fallbackSessionIds.map(async (sessionId) => {
-        try {
-          const workDir = await sessionService.getSessionWorkDir(sessionId)
-          return { sessionId, workDir }
-        } catch {
-          return { sessionId, workDir: null as string | null }
-        }
-      }),
-    )
-    for (const { sessionId, workDir } of resolvedPaths) {
-      if (!workDir) continue
-      // Find the entry we already inserted with the desanitized projectPath
-      const session = validSessions.find((s) => s.id === sessionId)
-      const oldKey = session?.projectRoot || sessionService.desanitizePath(session?.projectPath || '')
-      const oldEntry = oldKey ? realPathMap.get(oldKey) : undefined
-      const newRealPath = workDir
-      if (oldKey && oldEntry && oldKey !== newRealPath) {
-        // Migrate entry to the resolved real path
-        realPathMap.delete(oldKey)
-        const existingNew = realPathMap.get(newRealPath)
-        if (!existingNew || oldEntry.modifiedAt > (existingNew?.modifiedAt ?? '')) {
-          realPathMap.set(newRealPath, {
-            projectPath: newRealPath,
-            modifiedAt: oldEntry.modifiedAt,
-            sessionCount: oldEntry.sessionCount + (existingNew?.sessionCount ?? 0),
-            sessionId: oldEntry.sessionId,
-          })
-        } else {
-          existingNew.sessionCount += oldEntry.sessionCount
-        }
-      }
-    }
-  }
-
-  // Build project list with git info — parallelize git operations
-  // Optimization: use findGitRoot (fs.stat traversal + LRU cache, <5ms) to skip git spawns
-  // on non-git directories, avoiding slow git rev-parse on each (seconds per non-git dir).
-  const entries = Array.from(realPathMap.entries())
-  const projects = await Promise.all(
-    entries.map(async ([realPath, info]) => {
-      const projectName = projectNameForRecentPath(realPath, info.projectPath)
-
-      let isGit = false
-      let repoName: string | null = null
-      let branch: string | null = null
-      const gitRoot = findGitRoot(realPath)
-      if (gitRoot) {
-        isGit = true
-        // Run branch + remote in parallel
-        try {
-          const [branchResult, remoteResult] = await Promise.all([
-            runGitInfoCommand(realPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
-            runGitInfoCommand(realPath, ['remote', 'get-url', 'origin']),
-          ])
-          branch = isDesktopWorktreeBranchName(branchResult) ? null : branchResult
-          repoName = ownerRepoNameFromRemote(remoteResult)
-        } catch { /* git command failed */ }
-      }
-      
-
-      return {
-        projectPath: info.projectPath, realPath, projectName, isGit, repoName, branch,
-        modifiedAt: info.modifiedAt, sessionCount: info.sessionCount,
-      }
-    })
-  )
-
-  // Sort by most recent
-  projects.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
-
-  recentProjectsCache = { projects, timestamp: Date.now() }
-  return Response.json({ projects: projects.slice(0, limit) })
 }

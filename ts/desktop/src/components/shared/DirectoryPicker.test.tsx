@@ -2,14 +2,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
-vi.mock('../../api/recentProjects', () => ({
-  recentProjectsApi: {
+vi.mock('../../product/api/projects', () => ({
+  productRecentProjectsApi: {
     list: vi.fn(),
   },
 }))
 
 import { DirectoryPicker } from './DirectoryPicker'
-import { recentProjectsApi } from '../../api/recentProjects'
+import { productRecentProjectsApi } from '../../product/api/projects'
 import { browserHost } from '../../lib/desktopHost/browserHost'
 
 describe('DirectoryPicker', () => {
@@ -38,7 +38,7 @@ describe('DirectoryPicker', () => {
   })
 
   it('does not duplicate the branch in the selected project chip', async () => {
-    vi.mocked(recentProjectsApi.list).mockResolvedValue({
+    vi.mocked(productRecentProjectsApi.list).mockResolvedValue({
       projects: [{
         projectPath: '/workspace/project',
         realPath: '/workspace/project',
@@ -117,7 +117,7 @@ describe('DirectoryPicker', () => {
 
   it('keeps the recent-project menu inside the viewport when the trigger is near the right edge', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
-    vi.mocked(recentProjectsApi.list).mockResolvedValue({ projects: [] })
+    vi.mocked(productRecentProjectsApi.list).mockResolvedValue({ projects: [] })
 
     render(
       <DirectoryPicker
@@ -146,7 +146,7 @@ describe('DirectoryPicker', () => {
   })
 
   it('does not expose a browser-only directory fallback outside the desktop host', async () => {
-    vi.mocked(recentProjectsApi.list).mockResolvedValue({ projects: [] })
+    vi.mocked(productRecentProjectsApi.list).mockResolvedValue({ projects: [] })
 
     render(<DirectoryPicker value="" onChange={vi.fn()} />)
 
@@ -157,7 +157,7 @@ describe('DirectoryPicker', () => {
   })
 
   it('uses the injected desktop host for native folder selection', async () => {
-    vi.mocked(recentProjectsApi.list).mockResolvedValue({ projects: [] })
+    vi.mocked(productRecentProjectsApi.list).mockResolvedValue({ projects: [] })
     const open = vi.fn().mockResolvedValue('/workspace/native-project')
     window.desktopHost = {
       ...browserHost,

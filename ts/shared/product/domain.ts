@@ -29,6 +29,28 @@ export type ProductProject = {
   updatedAt: string
 }
 
+/**
+ * A recent project for product-owned directory selection.
+ *
+ * `sessionCount` is retained for the existing picker contract, but its value
+ * is derived from visible product tasks rather than exposing Agent Core
+ * sessions or their identifiers.
+ */
+export type ProductRecentProject = {
+  projectPath: string
+  realPath: string
+  projectName: string
+  isGit: boolean
+  repoName: string | null
+  branch: string | null
+  modifiedAt: string
+  sessionCount: number
+}
+
+export type ProductRecentProjectList = {
+  projects: ProductRecentProject[]
+}
+
 export type ProductTask = {
   id: string
   projectId: string
