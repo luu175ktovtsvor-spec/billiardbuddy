@@ -115,6 +115,8 @@ export type MediaProjectServiceOptions = {
   moveFile?: MoveFile
   now?: () => Date
   env?: Record<string, string | undefined>
+  /** Injectable only for deterministic encoder-selection tests. */
+  platform?: NodeJS.Platform
 }
 
 type RelayImageTask = {
@@ -296,6 +298,7 @@ export class MediaProjectService {
   private readonly moveFile: MoveFile
   private readonly now: () => Date
   private readonly env: Record<string, string | undefined>
+  private readonly platform: NodeJS.Platform
   private readonly activeRenders = new Map<string, ActiveVideoRender>()
   private readonly queuedVideoRenders: QueuedVideoRender[] = []
   private readonly maxQueuedVideoRenders: number
@@ -319,6 +322,7 @@ export class MediaProjectService {
     this.moveFile = options.moveFile ?? rename
     this.now = options.now ?? (() => new Date())
     this.env = options.env ?? process.env
+    this.platform = options.platform ?? process.platform
     this.maxQueuedVideoRenders = maxQueuedVideoRenders(this.env)
     this.maxQueuedVideoProbes = maxQueuedVideoProbes(this.env)
   }
@@ -1444,7 +1448,7 @@ export class MediaProjectService {
     const explicit = this.env[name === 'ffmpeg' ? 'FFMPEG_BIN' : 'FFPROBE_BIN']?.trim()
     if (explicit) return explicit
     const directory = this.env.BB_MEDIA_BIN_DIR?.trim()
-    if (directory) return join(directory, process.platform === 'win32' ? `${name}.exe` : name)
+    if (directory) return join(directory, this.platform === 'win32' ? `${name}.exe` : name)
     return name
   }
 
@@ -1488,10 +1492,10 @@ export class MediaProjectService {
         ? FALLBACK_VIDEO_ENCODER
         : { name: explicit as VideoEncoderProfile['name'], args: ['-b:v', '8M'] }
     }
-    if (process.platform === 'darwin' && has('h264_videotoolbox')) {
+    if (this.platform === 'darwin' && has('h264_videotoolbox')) {
       return { name: 'h264_videotoolbox', args: ['-b:v', '8M'] }
     }
-    if (process.platform === 'win32' && has('h264_mf')) {
+    if (this.platform === 'win32' && has('h264_mf')) {
       return { name: 'h264_mf', args: ['-b:v', '8M'] }
     }
     return FALLBACK_VIDEO_ENCODER
@@ -1731,12 +1735,31 @@ export class MediaProjectService {
         },
         updated_at: this.iso(),
       })
-      const encoder = await this.videoEncoderProfile()
+      let encoder = await this.videoEncoderProfile()
       if (signal.aborted) throw new Error('导出已取消')
-      const result = await this.runProcess(
+      let result = await this.runProcess(
         buildVideoRenderCommand(this.binary('ffmpeg'), project, temporaryOutput, encoder),
         { signal },
       )
+      // Encoder discovery only proves that a binary advertises a hardware codec. On
+      // real macOS/Windows machines the hardware session can still be busy or absent.
+      // For an automatic hardware choice, retry the same atomic temporary export once
+      // with the portable software encoder and remember it for this sidecar. An explicit
+      // BB_FFMPEG_VIDEO_ENCODER remains a deliberate operator choice and is not changed.
+      if (
+        result.exitCode !== 0
+        && !signal.aborted
+        && !this.env.BB_FFMPEG_VIDEO_ENCODER?.trim()
+        && encoder.name !== FALLBACK_VIDEO_ENCODER.name
+      ) {
+        await rm(temporaryOutput, { force: true }).catch(() => undefined)
+        encoder = FALLBACK_VIDEO_ENCODER
+        this.encoderProfilePromise = Promise.resolve(FALLBACK_VIDEO_ENCODER)
+        result = await this.runProcess(
+          buildVideoRenderCommand(this.binary('ffmpeg'), project, temporaryOutput, encoder),
+          { signal },
+        )
+      }
       if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `ffmpeg exited ${result.exitCode}`)
       if (signal.aborted) throw new Error('导出已取消')
       await this.saveTask({

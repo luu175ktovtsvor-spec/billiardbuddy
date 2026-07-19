@@ -587,6 +587,64 @@ describe('MediaProjectService video projects', () => {
     expect(ffmpeg?.join(' ')).toContain('channel_layouts=stereo')
   })
 
+  test('falls back once from an automatic VideoToolbox encoder failure to portable mpeg4', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    const attemptedEncoders: string[] = []
+    const runProcess: MediaProcessRunner = async command => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-encoders')) {
+        return { exitCode: 0, stdout: ' V..... h264_videotoolbox H.264\n V..... mpeg4 MPEG-4 part 2', stderr: '' }
+      }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            format: { duration: '2' },
+            streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+          }),
+          stderr: '',
+        }
+      }
+      const encoder = command[command.indexOf('-c:v') + 1]
+      attemptedEncoders.push(encoder ?? '')
+      if (encoder === 'h264_videotoolbox') {
+        return { exitCode: 1, stdout: '', stderr: 'Cannot create compression session: -12908' }
+      }
+      await writeFile(command.at(-1)!, 'rendered')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    const service = new MediaProjectService({ root: mediaRoot, runProcess, platform: 'darwin' })
+    const first = await service.createVideoProject({ title: 'hardware fallback' })
+    const firstReady = await service.addVideoSource(first.id, { path: sourcePath })
+    const firstTask = await service.renderVideo(firstReady.project.id, {
+      revision: firstReady.project.revision,
+      output_path: join(mediaRoot, 'first.mp4'),
+    })
+    let completed = await service.getTask(firstTask.id, false)
+    for (let index = 0; index < 20 && completed.status !== 'succeeded'; index += 1) {
+      await Bun.sleep(5)
+      completed = await service.getTask(firstTask.id, false)
+    }
+    expect(completed).toMatchObject({ status: 'succeeded', result: { video_encoder: 'mpeg4' } })
+    expect(attemptedEncoders).toEqual(['h264_videotoolbox', 'mpeg4'])
+
+    const second = await service.createVideoProject({ title: 'cached software fallback' })
+    const secondReady = await service.addVideoSource(second.id, { path: sourcePath })
+    const secondTask = await service.renderVideo(secondReady.project.id, {
+      revision: secondReady.project.revision,
+      output_path: join(mediaRoot, 'second.mp4'),
+    })
+    let secondCompleted = await service.getTask(secondTask.id, false)
+    for (let index = 0; index < 20 && secondCompleted.status !== 'succeeded'; index += 1) {
+      await Bun.sleep(5)
+      secondCompleted = await service.getTask(secondTask.id, false)
+    }
+    expect(secondCompleted).toMatchObject({ status: 'succeeded', result: { video_encoder: 'mpeg4' } })
+    expect(attemptedEncoders).toEqual(['h264_videotoolbox', 'mpeg4', 'mpeg4'])
+  })
+
   test('rejects timeline ranges beyond the source duration', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
