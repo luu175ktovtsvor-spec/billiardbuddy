@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMocks = vi.hoisted(() => ({
@@ -7,6 +7,14 @@ const apiMocks = vi.hoisted(() => ({
   getReviewFile: vi.fn(),
   getReviewDiff: vi.fn(),
 }))
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
 
 vi.mock('../api/tasks', () => ({
   productTasksApi: apiMocks,
@@ -81,6 +89,74 @@ describe('ProductTaskReviewDock', () => {
     await waitFor(() => {
       expect(apiMocks.getReviewTree).toHaveBeenLastCalledWith('task-1', '')
     })
+  })
+
+  it('keeps the latest file selection when an earlier file and diff request returns late', async () => {
+    const firstFile = deferred<Record<string, unknown>>()
+    const firstDiff = deferred<Record<string, unknown>>()
+    apiMocks.getReviewTree.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: '',
+      entries: [
+        { name: 'first.ts', path: 'src/first.ts', isDirectory: false },
+        { name: 'second.ts', path: 'src/second.ts', isDirectory: false },
+      ],
+    })
+    apiMocks.getReviewFile.mockImplementation((_taskId: string, path: string) => (
+      path === 'src/first.ts'
+        ? firstFile.promise
+        : Promise.resolve({
+            taskId: 'task-1',
+            state: 'ok',
+            path,
+            previewType: 'text',
+            content: 'export const selected = "second"',
+            language: 'typescript',
+            size: 32,
+          })
+    ))
+    apiMocks.getReviewDiff.mockImplementation((_taskId: string, path: string) => (
+      path === 'src/first.ts'
+        ? firstDiff.promise
+        : Promise.resolve({
+            taskId: 'task-1',
+            state: 'ok',
+            path,
+            diff: '+export const selected = "second"',
+          })
+    ))
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByText('first.ts'))
+    fireEvent.click(screen.getByText('second.ts'))
+
+    expect(await screen.findByText('export const selected = "second"')).toBeTruthy()
+
+    await act(async () => {
+      firstFile.resolve({
+        taskId: 'task-1',
+        state: 'ok',
+        path: 'src/first.ts',
+        previewType: 'text',
+        content: 'export const selected = "first"',
+        language: 'typescript',
+        size: 31,
+      })
+      firstDiff.resolve({
+        taskId: 'task-1',
+        state: 'ok',
+        path: 'src/first.ts',
+        diff: '+export const selected = "first"',
+      })
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('export const selected = "second"')).toBeTruthy()
+    expect(screen.queryByText('export const selected = "first"')).toBeNull()
+    expect(screen.getByText('+export const selected = "second"')).toBeTruthy()
+    expect(screen.queryByText('+export const selected = "first"')).toBeNull()
   })
 
   it('renders a bounded task video preview without a workspace URL or Core session reference', async () => {
