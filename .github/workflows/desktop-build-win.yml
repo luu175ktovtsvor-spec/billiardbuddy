@@ -120,24 +120,58 @@ jobs:
         run: |
           $installers = Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction SilentlyContinue
           if ($installers.Count -eq 0) { throw '未生成 Windows 安装包' }
+          $blockmaps = Get-ChildItem ts/desktop/build-artifacts/electron/*.blockmap -ErrorAction SilentlyContinue
+          if ($blockmaps.Count -eq 0) { throw '未生成 Windows 更新 blockmap' }
+          $updateMetadata = Get-ChildItem ts/desktop/build-artifacts/electron/latest.yml -ErrorAction SilentlyContinue
+          if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
-      - name: 上传安装包 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: 球房管家-Windows安装包-${{ github.ref_name }}
-          path: |
-            ts/desktop/build-artifacts/electron/*.exe
-            ts/desktop/build-artifacts/electron/*.yml
-          if-no-files-found: error
-          retention-days: 7
+      - name: 发布 Windows 安装包与更新清单
+        shell: pwsh
+        env:
+          BB_RELEASE_UPLOAD_SSH_KEY: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:BB_RELEASE_UPLOAD_SSH_KEY)) {
+            throw '缺少 GitHub Secret: BB_RELEASE_UPLOAD_SSH_KEY'
+          }
+
+          $sshDir = Join-Path $env:USERPROFILE '.ssh'
+          $keyPath = Join-Path $sshDir 'billiardbuddy-release-upload'
+          $knownHostsPath = Join-Path $sshDir 'known_hosts'
+          New-Item -ItemType Directory -Force $sshDir | Out-Null
+          $env:BB_RELEASE_UPLOAD_SSH_KEY | Set-Content -LiteralPath $keyPath -Encoding ascii -NoNewline
+          & icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          'zzyppz.cn ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJIxRR8LH+6jH3sUGNFy9HlxDKRF9MA9QLYm7AYuwa3P' |
+          Set-Content -LiteralPath $knownHostsPath -Encoding ascii
+
+          $artifactDir = 'ts/desktop/build-artifacts/electron'
+          $files = @(Get-ChildItem $artifactDir -File | Where-Object {
+            $_.Extension -in '.exe', '.blockmap' -or $_.Name -eq 'latest.yml'
+          })
+          if ($files.Count -lt 3) { throw 'Windows 发布文件不完整' }
+
+          $incoming = "/var/www/desktop-updates/.incoming-win-$env:GITHUB_RUN_ID"
+          $sshArgs = @('-i', $keyPath, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes')
+          & ssh @sshArgs root@zzyppz.cn "set -eu; mkdir -p '$incoming'"
+          if ($LASTEXITCODE -ne 0) { throw '无法创建 Windows 发布暂存目录' }
+
+          foreach ($file in $files) {
+            & scp @sshArgs $file.FullName "root@zzyppz.cn:$incoming/$($file.Name)"
+            if ($LASTEXITCODE -ne 0) { throw "上传失败: $($file.Name)" }
+          }
+
+          $publishCommand = "set -eu; test -s '$incoming/latest.yml'; test -n \"`$(find '$incoming' -maxdepth 1 -type f -name '*.exe' -size +1M -print -quit)\"; test -n \"`$(find '$incoming' -maxdepth 1 -type f -name '*.blockmap' -size +1k -print -quit)\"; for file in '$incoming'/*; do [ -f \"`$file\" ] || continue; mv \"`$file\" /var/www/desktop-updates/; done; rmdir '$incoming'"
+          & ssh @sshArgs root@zzyppz.cn $publishCommand
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 发布文件校验或切换失败' }
 
       - name: 清理临时凭据与媒体工具链
         if: always()
         shell: pwsh
         run: |
           Remove-Item 'ts/desktop/build/product-secrets.json' -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:USERPROFILE '.ssh\billiardbuddy-release-upload') -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain.zip') -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain') -Recurse -Force -ErrorAction SilentlyContinue
 
-# 当前只构建并上传 CI artifact。自动更新渠道、签名、版本策略与回滚验证完成前，不自动发布给用户（electron:package 内置 --publish never）。
+# Windows 发布文件仅在本工作流完成构建和完整性校验后上传至受控更新源；electron-builder 本身始终不直接发布。
