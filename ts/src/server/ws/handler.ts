@@ -21,19 +21,10 @@ import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.j
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectMemorySavedData } from '../api/productMessageProjection.js'
-import type { ProductTaskEvent } from '../../../shared/product/taskEvents.js'
 import { projectProductTaskUserContent } from '../product/taskAttachmentProjection.js'
-import { productTaskRunProjection } from '../product/taskRunProjection.js'
 import {
-  classifyProductTaskCommand,
-  resolveProductTaskText,
-  type ProductTaskCommandResolution,
-} from '../product/taskCommandPolicy.js'
-import {
-  buildProductTaskAskUserQuestionUpdatedInput,
-  parseProductTaskInboundMessage,
-  type ProductTaskInboundMessage,
-} from '../product/taskInboundPolicy.js'
+  ProductTaskAgentCoreAdapter,
+} from '../product/taskAgentCoreAdapter.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
@@ -177,9 +168,6 @@ export type WebSocketData = {
 // Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
-// A malformed AskUserQuestion must be rejected once at the server boundary.
-// Multiple product renderers can observe the same pending request.
-const rejectedProductAskRequests = new Set<string>()
 // The CLI stream owns mutable per-session parsing state (partial tool input,
 // parent ids, and completion bookkeeping). Translate it once, then fan the
 // resulting events out to every connected renderer instead of letting each
@@ -191,6 +179,37 @@ const sessionOutputCallbacks = new Map<
     shouldForward?: (cliMsg: any) => boolean
   }
 >()
+
+const productTaskAgentCoreAdapter = new ProductTaskAgentCoreAdapter({
+  getSessionWorkDir: resolveProductTaskWorkDir,
+  sendUserMessage: (socket, message) => handleUserMessage(
+    socket as ServerWebSocket<WebSocketData>,
+    message,
+  ),
+  stopGeneration: (socket) => handleStopGeneration(socket as ServerWebSocket<WebSocketData>),
+  getPendingPermission: (sessionId, requestId) => conversationService
+    .getPendingPermissionRequests(sessionId)
+    .find((request) => request.requestId === requestId),
+  respondToPermission: (sessionId, requestId, allowed, updatedInput) => {
+    if (updatedInput === undefined) {
+      conversationService.respondToPermission(sessionId, requestId, allowed)
+      return
+    }
+    conversationService.respondToPermission(
+      sessionId,
+      requestId,
+      allowed,
+      undefined,
+      updatedInput,
+    )
+  },
+  resolveComputerUseApproval: (sessionId, requestId, allowed) => (
+    computerUseApprovalService.resolveProductTaskApproval(sessionId, requestId, allowed)
+  ),
+  hasDirectCoreClient: hasDirectCoreClientForSession,
+  isDesktopClearCommand,
+  createSafeError: toSafeRuntimeError,
+})
 
 export const handleWebSocket = {
   open(ws: ServerWebSocket<WebSocketData>) {
@@ -208,20 +227,12 @@ export const handleWebSocket = {
       return
     }
 
-    if (channel === 'product') {
-      if (!ws.data.productTaskId) {
-        ws.close(1008, 'Invalid product task')
-        return
-      }
-      try {
-        productTaskRunProjection.register(ws.data.productTaskId, sessionId)
-      } catch {
-        // This identifier comes from the task-scoped upgrade route. If a
-        // malformed in-process caller bypasses that route, fail closed rather
-        // than ever falling back to a Core-session identifier.
-        ws.close(1008, 'Invalid product task')
-        return
-      }
+    if (channel === 'product' && !productTaskAgentCoreAdapter.attach(ws)) {
+      // This identifier comes from the task-scoped upgrade route. If a
+      // malformed in-process caller bypasses that route, fail closed rather
+      // than ever falling back to a Core-session identifier.
+      ws.close(1008, 'Invalid product task')
+      return
     }
 
     console.log(`[WS] Client connected for session: ${sessionId}`)
@@ -245,9 +256,8 @@ export const handleWebSocket = {
 
     const msg: ServerMessage = { type: 'connected', sessionId }
     sendMessage(ws, msg)
-    if (channel === 'product' && ws.data.productTaskId) {
-      const snapshot = productTaskRunProjection.getSnapshot(ws.data.productTaskId, sessionId)
-      ws.send(JSON.stringify({ type: 'run_snapshot', ...snapshot }))
+    if (channel === 'product') {
+      productTaskAgentCoreAdapter.sendRunSnapshot(ws)
     }
     replayPendingPermissionRequests(ws, sessionId)
   },
@@ -265,48 +275,17 @@ export const handleWebSocket = {
       ) as unknown
 
       if (ws.data.channel === 'product') {
-        const productMessage = parseProductTaskInboundMessage(parsed)
-        if (!productMessage) {
-          sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-          return
-        }
-
-        switch (productMessage.type) {
-          case 'user_message':
-            handleProductTaskUserMessage(ws, productMessage).catch((err) => {
-              void diagnosticsService.recordEvent({
-                type: 'ws_product_user_message_failed',
-                severity: 'error',
-                sessionId: ws.data.sessionId,
-                summary: err instanceof Error ? err.message : String(err),
-                details: err,
-              })
-              console.error(`[WS] Unhandled error in product task user message:`, err)
-            })
-            return
-
-          case 'permission_response':
-            handleProductTaskPermissionResponse(ws, productMessage)
-            return
-
-          case 'ask_user_question_response':
-            handleProductTaskAskUserQuestionResponse(ws, productMessage)
-            return
-
-          case 'computer_use_permission_response':
-            handleProductTaskComputerUsePermissionResponse(ws, productMessage)
-            return
-
-          case 'stop_generation':
-            handleStopGeneration(ws)
-            return
-
-          case 'ping':
-            // The product event stream intentionally has no Core transport
-            // metadata, so its pong projection is omitted by sendMessage.
-            sendMessage(ws, { type: 'pong' })
-            return
-        }
+        void productTaskAgentCoreAdapter.handleIncoming(ws, parsed).catch((err) => {
+          void diagnosticsService.recordEvent({
+            type: 'ws_product_user_message_failed',
+            severity: 'error',
+            sessionId: ws.data.sessionId,
+            summary: err instanceof Error ? err.message : String(err),
+            details: err,
+          })
+          console.error(`[WS] Unhandled error in product task user message:`, err)
+        })
+        return
       }
 
       const message = parsed as ClientMessage
@@ -384,7 +363,7 @@ export const handleWebSocket = {
     // renderer closes. The process-local product run projection holds only a
     // bounded safe tree, and lets a reconnect receive the same real progress
     // rather than a fabricated loading state.
-    if (!productTaskRunProjection.hasActiveRunForSession(sessionId)) {
+    if (!productTaskAgentCoreAdapter.hasActiveRunForSession(sessionId)) {
       removeSessionOutputCallback(sessionId)
     }
 
@@ -410,60 +389,12 @@ export const handleWebSocket = {
 // Message handlers
 // ============================================================================
 
-async function resolveProductTaskTextForSession(
-  sessionId: string,
-  content: string,
-): Promise<ProductTaskCommandResolution> {
-  const candidate = classifyProductTaskCommand(content)
-  if (candidate.kind === 'plain_text' || candidate.kind === 'local_command') {
-    return resolveProductTaskText(content)
-  }
-  if (candidate.kind === 'rejected') return { allowed: false }
+async function resolveProductTaskWorkDir(sessionId: string): Promise<string | undefined> {
+  const activeWorkDir = conversationService.getSessionWorkDir(sessionId).trim()
+  if (activeWorkDir) return activeWorkDir
 
-  let workDir = conversationService.getSessionWorkDir(sessionId).trim()
-  if (!workDir) {
-    try {
-      workDir = (await sessionService.getSessionWorkDir(sessionId))?.trim() ?? ''
-    } catch {
-      // A command without a task workspace cannot discover a trusted Skill or
-      // Agent. Keep the product response generic below.
-      return { allowed: false }
-    }
-  }
-
-  return resolveProductTaskText(content, { cwd: workDir })
-}
-
-async function handleProductTaskUserMessage(
-  ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ProductTaskInboundMessage, { type: 'user_message' }>,
-): Promise<void> {
-  const productTaskId = ws.data.productTaskId
-  if (!productTaskId) {
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-    return
-  }
-
-  // Attachment-only product turns have no slash command to validate; their
-  // narrow input shape was already validated by taskInboundPolicy.
-  if (message.content.trim()) {
-    const resolution = await resolveProductTaskTextForSession(ws.data.sessionId, message.content)
-    if (!resolution.allowed) {
-      sendError(ws, 'PRODUCT_COMMAND_NOT_ALLOWED')
-      // A rejected command never reaches the Core, so no later state event
-      // will settle the product composer on its behalf.
-      sendMessage(ws, { type: 'status', state: 'idle' })
-      return
-    }
-    if (!isDesktopClearCommand(resolution.content)) {
-      productTaskRunProjection.beginRun(productTaskId, ws.data.sessionId)
-    }
-    await handleUserMessage(ws, { ...message, content: resolution.content })
-    return
-  }
-
-  productTaskRunProjection.beginRun(productTaskId, ws.data.sessionId)
-  await handleUserMessage(ws, message)
+  const persistedWorkDir = (await sessionService.getSessionWorkDir(sessionId))?.trim()
+  return persistedWorkDir || undefined
 }
 
 function isDesktopClearCommand(content: string): boolean {
@@ -696,9 +627,7 @@ async function handleDesktopClearCommand(
     return
   }
 
-  if (ws.data.productTaskId) {
-    productTaskRunProjection.clearRun(ws.data.productTaskId, sessionId)
-  }
+  productTaskAgentCoreAdapter.clearRunForSocket(ws)
 
   sendMessage(ws, {
     type: 'system_notification',
@@ -774,88 +703,6 @@ function handlePermissionResponse(
     message.permissionUpdates,
   )
   console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
-}
-
-function getPendingProductTaskPermission(
-  sessionId: string,
-  requestId: string,
-) {
-  return conversationService.getPendingPermissionRequests(sessionId)
-    .find((request) => request.requestId === requestId)
-}
-
-function handleProductTaskPermissionResponse(
-  ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ProductTaskInboundMessage, { type: 'permission_response' }>,
-) {
-  const { sessionId } = ws.data
-  const pendingRequest = getPendingProductTaskPermission(sessionId, message.requestId)
-
-  // AskUserQuestion needs a server-built answers object. Product sockets must
-  // never turn a generic approval into a raw updatedInput pass-through.
-  if (!pendingRequest || pendingRequest.toolName === 'AskUserQuestion') {
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-    return
-  }
-
-  // Intentionally omit rule, updatedInput, denial text, and permission updates.
-  // Product task actions are single-request allow/deny decisions only.
-  conversationService.respondToPermission(sessionId, message.requestId, message.allowed)
-}
-
-function handleProductTaskAskUserQuestionResponse(
-  ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ProductTaskInboundMessage, { type: 'ask_user_question_response' }>,
-) {
-  const { sessionId } = ws.data
-  const pendingRequest = getPendingProductTaskPermission(sessionId, message.requestId)
-  if (!pendingRequest || pendingRequest.toolName !== 'AskUserQuestion') {
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-    return
-  }
-
-  const updatedInput = buildProductTaskAskUserQuestionUpdatedInput(
-    pendingRequest.input,
-    message.answers,
-  )
-  if (!updatedInput) {
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-    return
-  }
-
-  // Only this server-side synthesis is allowed to carry AskUserQuestion's
-  // Core-specific input back to the CLI. The browser contributed answers only.
-  conversationService.respondToPermission(
-    sessionId,
-    message.requestId,
-    true,
-    undefined,
-    updatedInput,
-  )
-}
-
-function handleProductTaskComputerUsePermissionResponse(
-  ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ProductTaskInboundMessage, { type: 'computer_use_permission_response' }>,
-) {
-  // Product WebSocket establishment has already resolved the public task ID
-  // to this Core session. Refuse a malformed/stale channel before touching
-  // the pending approval; the service then verifies request ID + session.
-  if (!ws.data.productTaskId) {
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-    return
-  }
-
-  const accepted = computerUseApprovalService.resolveProductTaskApproval(
-    ws.data.sessionId,
-    message.requestId,
-    message.allowed,
-  )
-  if (!accepted) {
-    // Fail closed: an unknown, expired, or cross-session request never
-    // reaches Computer Use and the browser receives no request details.
-    sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
-  }
 }
 
 function handleComputerUsePermissionResponse(
@@ -1507,7 +1354,7 @@ function cleanupStreamState(sessionId: string) {
 
 function cleanupSessionRuntimeState(sessionId: string) {
   cancelSessionDisconnectWatcher(sessionId)
-  productTaskRunProjection.removeSession(sessionId)
+  productTaskAgentCoreAdapter.removeSession(sessionId)
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
@@ -1517,9 +1364,6 @@ function cleanupSessionRuntimeState(sessionId: string) {
   deferredPermissionModes.delete(sessionId)
   runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
-  for (const key of rejectedProductAskRequests) {
-    if (key.startsWith(`${sessionId}:`)) rejectedProductAskRequests.delete(key)
-  }
   clearPrewarmState(sessionId)
 }
 
@@ -2268,87 +2112,19 @@ function toStreamingFallbackServerMessage(cliMsg: any): ServerMessage {
   return { type: 'streaming_fallback', cause }
 }
 
-function isUnanswerableProductAskUserQuestion(
-  message: ServerMessage,
-  events: readonly unknown[],
-): message is Extract<ServerMessage, { type: 'permission_request' }> {
-  return message.type === 'permission_request' &&
-    message.toolName === 'AskUserQuestion' &&
-    events.length === 0
-}
-
-function hasCoreClientForSession(sessionId: string): boolean {
+function hasDirectCoreClientForSession(sessionId: string): boolean {
   return [...(activeSessions.get(sessionId) ?? [])].some((client) => client.data.channel === 'client')
-}
-
-function rejectUnanswerableProductAskUserQuestion(
-  ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ServerMessage, { type: 'permission_request' }>,
-): void {
-  const key = `${ws.data.sessionId}:${message.requestId}`
-  if (!rejectedProductAskRequests.has(key)) {
-    rejectedProductAskRequests.add(key)
-    // No raw input, option key, or error detail leaves the product channel.
-    // A product-only task cannot safely answer this request, so fail closed.
-    conversationService.respondToPermission(ws.data.sessionId, message.requestId, false)
-  }
-  ws.send(JSON.stringify({ type: 'error', code: 'task_failed', retryable: false }))
-}
-
-function productTaskEventsForMessage(
-  ws: ServerWebSocket<WebSocketData>,
-  message: ServerMessage,
-): ProductTaskEvent[] {
-  const productTaskId = ws.data.productTaskId
-  if (!productTaskId) return []
-  try {
-    return productTaskRunProjection.projectTaskMessage(
-      productTaskId,
-      ws.data.sessionId,
-      message,
-    )
-  } catch {
-    // Product upgrade validates the task id before opening the socket. A
-    // malformed in-process caller still fails closed instead of receiving a
-    // generic Core-shaped event.
-    return []
-  }
-}
-
-function sendProductTaskEvents(
-  ws: ServerWebSocket<WebSocketData>,
-  message: ServerMessage,
-  events: readonly ProductTaskEvent[],
-): void {
-  if (isUnanswerableProductAskUserQuestion(message, events)) {
-    // A legacy Core client can still answer its own raw request. Do not reject
-    // it just because an additional product observer cannot render it.
-    if (!hasCoreClientForSession(ws.data.sessionId)) {
-      rejectUnanswerableProductAskUserQuestion(ws, message)
-    }
-    return
-  }
-  for (const event of events) {
-    ws.send(JSON.stringify(event))
-  }
 }
 
 function sendMessage(
   ws: ServerWebSocket<WebSocketData>,
   message: ServerMessage,
-  projectedProductEvents?: readonly ProductTaskEvent[],
 ) {
-  const events = ws.data.channel === 'product'
-    ? projectedProductEvents ?? productTaskEventsForMessage(ws, message)
-    : [message]
-
-  if (ws.data.channel === 'product') {
-    sendProductTaskEvents(ws, message, events)
+  if (productTaskAgentCoreAdapter.isProductSocket(ws)) {
+    productTaskAgentCoreAdapter.sendCoreMessage(ws, message)
     return
   }
-  for (const event of events) {
-    ws.send(JSON.stringify(event))
-  }
+  ws.send(JSON.stringify(message))
 }
 
 /**
@@ -2363,16 +2139,14 @@ function sendServerMessagesToSessionClients(
 ): void {
   const clients = activeSessions.get(sessionId)
   for (const message of messages) {
-    const productEventsByTask = productTaskRunProjection.projectSessionMessage(sessionId, message)
+    const productEventsByTask = productTaskAgentCoreAdapter.projectSessionMessage(sessionId, message)
     if (!clients?.size) continue
     for (const client of clients) {
-      if (client.data.channel !== 'product') {
-        sendMessage(client, message)
+      if (productTaskAgentCoreAdapter.isProductSocket(client)) {
+        productTaskAgentCoreAdapter.sendCoreMessage(client, message, productEventsByTask)
         continue
       }
-      const productTaskId = client.data.productTaskId
-      const events = productTaskId ? productEventsByTask.get(productTaskId) : undefined
-      sendMessage(client, message, events)
+      sendMessage(client, message)
     }
   }
 }
@@ -3120,8 +2894,7 @@ export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
   for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
-  productTaskRunProjection.reset()
-  rejectedProductAskRequests.clear()
+  productTaskAgentCoreAdapter.reset()
   sessionOutputCallbacks.clear()
   sessionCleanupTimers.clear()
   sessionDisconnectWatchers.clear()
