@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -17,6 +17,7 @@ import {
   resolveSlashCommandRuntimeValue,
   type SlashCommandOption,
 } from '../../components/chat/composerUtils'
+import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import {
   filesToComposerAttachments,
   selectNativeFileAttachments,
@@ -275,8 +276,10 @@ export function TaskComposer({
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
+  const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const composingRef = useRef(false)
   const desktopHost = getDesktopHost()
   const canChooseWorkDir = desktopHost.isDesktop && desktopHost.capabilities.dialogs
   const normalizedWorkDir = workDir.trim()
@@ -433,26 +436,39 @@ export function TaskComposer({
     quote: attachment.quote,
   }))
 
+  const submitTask = () => {
+    if (isSubmitting || !normalizedWorkDir) return
+
+    const taskInput: CreateProductTaskInput = {
+      workDir: normalizedWorkDir,
+      ...(title.trim() ? { title: title.trim() } : {}),
+      ...(useWorktree ? { useWorktree: true } : {}),
+      ...(permissionMode !== 'default' ? { permissionMode } : {}),
+    }
+    const initialAttachments = attachmentRefs()
+    const initialMessage: ProductTaskInitialMessage = {
+      text: resolveSlashCommandRuntimeValue(initialText.trim(), agentSlashCommands),
+      attachments: initialAttachments,
+    }
+    void (initialMessage.text || initialAttachments.length > 0
+      ? onSubmit(taskInput, initialMessage)
+      : onSubmit(taskInput))
+  }
+
+  const handleInitialGoalKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return
+    if (!shouldSubmitOnEnter(event, chatSendBehavior)) return
+
+    event.preventDefault()
+    submitTask()
+  }
+
   return (
     <form
       className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
       onSubmit={(event) => {
         event.preventDefault()
-        if (!normalizedWorkDir) return
-        const taskInput: CreateProductTaskInput = {
-          workDir: normalizedWorkDir,
-          ...(title.trim() ? { title: title.trim() } : {}),
-          ...(useWorktree ? { useWorktree: true } : {}),
-          ...(permissionMode !== 'default' ? { permissionMode } : {}),
-        }
-        const initialAttachments = attachmentRefs()
-        const initialMessage: ProductTaskInitialMessage = {
-          text: resolveSlashCommandRuntimeValue(initialText.trim(), agentSlashCommands),
-          attachments: initialAttachments,
-        }
-        void (initialMessage.text || initialAttachments.length > 0
-          ? onSubmit(taskInput, initialMessage)
-          : onSubmit(taskInput))
+        submitTask()
       }}
     >
       {projects.length > 0 ? (
@@ -484,6 +500,9 @@ export function TaskComposer({
             aria-label="初始目标（可选）"
             value={initialText}
             onChange={(event) => setInitialText(event.target.value)}
+            onKeyDown={handleInitialGoalKeyDown}
+            onCompositionStart={() => { composingRef.current = true }}
+            onCompositionEnd={() => { composingRef.current = false }}
             placeholder="描述这项任务希望完成什么…"
             rows={3}
             className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"

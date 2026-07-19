@@ -129,7 +129,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  useSettingsStore.setState({ permissionMode: 'default' })
+  useSettingsStore.setState({ permissionMode: 'default', chatSendBehavior: 'enter' })
 })
 
 describe('TaskIndex', () => {
@@ -352,6 +352,63 @@ describe('TaskIndex', () => {
     }))
   })
 
+  it('uses the configured Enter shortcut for the initial task goal', async () => {
+    const { onSubmit } = renderComposer()
+    const initialGoal = screen.getByLabelText('初始目标（可选）')
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
+
+    fireEvent.keyDown(initialGoal, { key: 'Enter', shiftKey: true })
+    fireEvent.keyDown(initialGoal, { key: 'Enter', ctrlKey: true })
+    fireEvent.keyDown(initialGoal, { key: 'Enter', metaKey: true })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(initialGoal, { key: 'Enter' })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, {
+      text: '整理球台配置',
+      attachments: [],
+    }))
+  })
+
+  it('uses Ctrl or Command Enter for the initial goal when that preference is selected', async () => {
+    useSettingsStore.setState({ chatSendBehavior: 'modifierEnter' })
+    const { onSubmit } = renderComposer()
+    const initialGoal = screen.getByLabelText('初始目标（可选）')
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
+
+    fireEvent.keyDown(initialGoal, { key: 'Enter' })
+    fireEvent.keyDown(initialGoal, { key: 'Enter', shiftKey: true })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(initialGoal, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    fireEvent.keyDown(initialGoal, { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not submit the initial goal while an IME composition is active', async () => {
+    const { onSubmit } = renderComposer()
+    const initialGoal = screen.getByLabelText('初始目标（可选）')
+
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
+    fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
+    fireEvent.compositionStart(initialGoal)
+    fireEvent.keyDown(initialGoal, { key: 'Enter' })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    fireEvent.compositionEnd(initialGoal)
+    fireEvent.keyDown(initialGoal, { key: 'Enter' })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+  })
+
   it('uses the existing browser picker for initial image attachments, lets the user remove them, and keeps refs out of the task payload', async () => {
     const { onSubmit } = renderComposer()
     const pickerClick = vi.spyOn(HTMLInputElement.prototype, 'click')
@@ -373,7 +430,7 @@ describe('TaskIndex', () => {
     fireEvent.change(fileInput!, { target: { files: [image] } })
     expect(await screen.findByRole('button', { name: 'Remove 球台布局.png' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+    fireEvent.keyDown(screen.getByLabelText('初始目标（可选）'), { key: 'Enter' })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
