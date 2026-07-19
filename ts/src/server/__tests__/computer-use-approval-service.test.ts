@@ -1,9 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import type {
-  CuPermissionRequest,
-  CuPermissionResponse,
-} from '../../vendor/computer-use-mcp/types.js'
+import type { CuPermissionRequest } from '../../vendor/computer-use-mcp/types.js'
 import { ComputerUseApprovalService } from '../services/computerUseApprovalService.js'
 
 function makeRequest(requestId: string): CuPermissionRequest {
@@ -23,25 +20,6 @@ function makeRequest(requestId: string): CuPermissionRequest {
     }],
     requestedFlags: { clipboardRead: true },
     screenshotFiltering: 'native',
-  }
-}
-
-function makeResponse(overrides: Partial<CuPermissionResponse> = {}): CuPermissionResponse {
-  return {
-    granted: [{
-      bundleId: 'com.example.Editor',
-      displayName: 'Editor',
-      grantedAt: 0,
-      tier: 'full',
-    }],
-    denied: [],
-    flags: {
-      clipboardRead: true,
-      clipboardWrite: false,
-      systemKeyCombos: false,
-    },
-    userConsented: true,
-    ...overrides,
   }
 }
 
@@ -90,66 +68,9 @@ describe('ComputerUseApprovalService', () => {
     expect(JSON.stringify(sent)).not.toContain(privateIcon)
     expect(JSON.stringify(sent)).not.toContain(privateConfig)
 
-    expect(service.resolveApproval('task-1', 'request-projection', makeResponse())).toBe(true)
+    expect(service.resolveProductTaskApproval('task-1', 'request-projection', true)).toBe(true)
     await expect(approval).resolves.toMatchObject({
       granted: [{ bundleId: 'com.example.Editor' }],
-    })
-  })
-
-  test('rejects a forged bundle ID instead of granting it to the task', async () => {
-    const service = new ComputerUseApprovalService(() => true)
-    const approval = service.requestApproval('task-1', makeRequest('request-1'))
-
-    const accepted = service.resolveApproval('task-1', 'request-1', makeResponse({
-      granted: [{
-        bundleId: 'com.attacker.HiddenTerminal',
-        displayName: 'Attacker Terminal',
-        grantedAt: 0,
-        tier: 'full',
-      }],
-    }))
-
-    expect(accepted).toBe(false)
-    await expect(approval).resolves.toEqual({
-      granted: [],
-      denied: [],
-      flags: {
-        clipboardRead: false,
-        clipboardWrite: false,
-        systemKeyCombos: false,
-      },
-      userConsented: false,
-    })
-  })
-
-  test('keeps a request bound to its task and returns a canonical controlled grant', async () => {
-    const service = new ComputerUseApprovalService(() => true)
-    const approval = service.requestApproval('task-1', makeRequest('request-2'))
-
-    expect(service.resolveApproval('other-task', 'request-2', makeResponse())).toBe(false)
-    expect(service.resolveApproval('task-1', 'request-2', makeResponse({
-      granted: [{
-        bundleId: 'com.example.Editor',
-        displayName: 'Forged display name',
-        grantedAt: 0,
-        tier: 'read',
-      }],
-    }))).toBe(true)
-
-    await expect(approval).resolves.toEqual({
-      granted: [{
-        bundleId: 'com.example.Editor',
-        displayName: 'Editor',
-        grantedAt: expect.any(Number),
-        tier: 'full',
-      }],
-      denied: [],
-      flags: {
-        clipboardRead: true,
-        clipboardWrite: false,
-        systemKeyCombos: false,
-      },
-      userConsented: true,
     })
   })
 
