@@ -52,7 +52,7 @@ export type ProductTaskReviewFile = {
   taskId: string
   state: 'ok' | 'binary' | 'too_large' | 'missing' | 'unavailable'
   path: string
-  previewType?: 'text' | 'image'
+  previewType?: 'text' | 'image' | 'video'
   content?: string
   dataUrl?: string
   mimeType?: string

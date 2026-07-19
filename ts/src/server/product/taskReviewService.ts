@@ -19,6 +19,7 @@ import {
 import { productTaskService, type ProductTaskService } from './taskService.js'
 
 const MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES = 16 * 1024 * 1024
 
 type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId'>
 type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff'> & {
@@ -62,6 +63,7 @@ export class ProductTaskReviewService {
     const file = await this.withTaskWorkspace(taskId, (sessionId) => (
       this.workspace.readFile(sessionId, filePath, {
         maxImagePreviewBytes: MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES,
+        maxVideoPreviewBytes: MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES,
       })
     ))
     return projectFile(taskId, file)

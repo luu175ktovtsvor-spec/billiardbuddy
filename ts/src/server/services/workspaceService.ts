@@ -57,6 +57,14 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   webp: 'image/webp',
 }
 
+const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
+  mov: 'video/quicktime',
+  mp4: 'video/mp4',
+  ogg: 'video/ogg',
+  ogv: 'video/ogg',
+  webm: 'video/webm',
+}
+
 export type WorkspaceFileStatus =
   | 'modified'
   | 'added'
@@ -88,7 +96,7 @@ export type WorkspaceStatusResult = {
 export type WorkspaceReadFileResult = {
   state: 'ok' | 'binary' | 'too_large' | 'missing' | 'error'
   path: string
-  previewType?: 'text' | 'image'
+  previewType?: 'text' | 'image' | 'video'
   content?: string
   dataUrl?: string
   mimeType?: string
@@ -103,11 +111,13 @@ export type WorkspaceReadFileResult = {
  * Optional limits for a single file-preview request.
  *
  * The default preserves the existing workspace behavior. Callers that expose
- * previews in a narrower surface can opt into an image cap before the image
- * bytes are read from disk.
+ * previews in a narrower surface can opt into image or video caps before the
+ * corresponding bytes are read from disk. Video data URLs are intentionally
+ * opt-in so the general workspace preview keeps treating videos as binary.
  */
 export type WorkspaceReadFileOptions = {
   maxImagePreviewBytes?: number
+  maxVideoPreviewBytes?: number
 }
 
 export type WorkspaceTreeEntry = {
@@ -438,7 +448,17 @@ export class WorkspaceService {
 
     const language = this.detectLanguage(resolvedPath.absolutePath)
     const imageMimeType = this.detectImageMimeType(resolvedPath.absolutePath)
+    const videoMimeType = this.detectVideoMimeType(resolvedPath.absolutePath)
     const maxImagePreviewBytes = options.maxImagePreviewBytes
+    const maxVideoPreviewBytes = options.maxVideoPreviewBytes
+    const videoPreview = (
+      videoMimeType &&
+      typeof maxVideoPreviewBytes === 'number' &&
+      Number.isFinite(maxVideoPreviewBytes) &&
+      maxVideoPreviewBytes >= 0
+    )
+      ? { mimeType: videoMimeType, maxBytes: maxVideoPreviewBytes }
+      : null
 
     if (
       imageMimeType &&
@@ -456,9 +476,22 @@ export class WorkspaceService {
       }
     }
 
+    if (
+      videoPreview &&
+      stat.stat.size > videoPreview.maxBytes
+    ) {
+      return {
+        state: 'too_large',
+        path: resolvedPath.relativePath,
+        mimeType: videoPreview.mimeType,
+        language: 'video',
+        size: stat.stat.size,
+      }
+    }
+
     let content: Buffer
     try {
-      if (!imageMimeType && stat.stat.size > MAX_PREVIEW_BYTES) {
+      if (!imageMimeType && !videoPreview && stat.stat.size > MAX_PREVIEW_BYTES) {
         const fileHandle = await fs.open(resolvedPath.absolutePath, 'r')
         try {
           const previewBuffer = Buffer.alloc(MAX_PREVIEW_BYTES)
@@ -491,6 +524,18 @@ export class WorkspaceService {
         dataUrl: `data:${imageMimeType};base64,${content.toString('base64')}`,
         mimeType: imageMimeType,
         language: 'image',
+        size: stat.stat.size,
+      }
+    }
+
+    if (videoPreview) {
+      return {
+        state: 'ok',
+        path: resolvedPath.relativePath,
+        previewType: 'video',
+        dataUrl: `data:${videoPreview.mimeType};base64,${content.toString('base64')}`,
+        mimeType: videoPreview.mimeType,
+        language: 'video',
         size: stat.stat.size,
       }
     }
@@ -1335,6 +1380,11 @@ export class WorkspaceService {
   private detectImageMimeType(filePath: string): string | null {
     const ext = path.extname(filePath).slice(1).toLowerCase()
     return IMAGE_MIME_BY_EXTENSION[ext] ?? null
+  }
+
+  private detectVideoMimeType(filePath: string): string | null {
+    const ext = path.extname(filePath).slice(1).toLowerCase()
+    return VIDEO_MIME_BY_EXTENSION[ext] ?? null
   }
 
   private async safeStat(targetPath: string): Promise<WorkspaceStatResult> {

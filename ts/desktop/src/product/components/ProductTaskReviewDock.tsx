@@ -37,6 +37,9 @@ function fileStateLabel(file: ProductTaskReviewFile | null): string | null {
     case 'binary':
       return '这个文件是二进制内容，无法直接展示文本。'
     case 'too_large':
+      if (file.mimeType?.startsWith('video/')) {
+        return '视频超过 16 MB 的安全预览限制，无法直接展示。'
+      }
       return '这个文件过大，无法直接展示。'
     case 'missing':
       return '这个文件已不存在。'
@@ -61,6 +64,7 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   const [file, setFile] = useState<ProductTaskReviewFile | null>(null)
   const [diff, setDiff] = useState<ProductTaskReviewDiff | null>(null)
   const [isLoadingSelection, setIsLoadingSelection] = useState(false)
+  const [videoPreviewError, setVideoPreviewError] = useState(false)
 
   const loadTree = useCallback(async (path = '') => {
     const nextTree = await productTasksApi.getReviewTree(taskId, path)
@@ -74,6 +78,7 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
     setSelectedPath(null)
     setFile(null)
     setDiff(null)
+    setVideoPreviewError(false)
     try {
       const [nextStatus] = await Promise.all([
         productTasksApi.getReviewStatus(taskId),
@@ -93,6 +98,7 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   const selectFile = useCallback(async (path: string) => {
     setSelectedPath(path)
     setIsLoadingSelection(true)
+    setVideoPreviewError(false)
     try {
       const [nextFile, nextDiff] = await Promise.all([
         productTasksApi.getReviewFile(taskId, path),
@@ -195,7 +201,24 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
                 {!isLoadingSelection && file?.state === 'ok' && file.previewType === 'image' && file.dataUrl ? (
                   <img src={file.dataUrl} alt={file.path} className="max-h-72 max-w-full rounded-lg border border-[var(--color-border)] object-contain" />
                 ) : null}
-                {!isLoadingSelection && file?.state === 'ok' && file.previewType !== 'image' && typeof file.content === 'string' ? (
+                {!isLoadingSelection && file?.state === 'ok' && file.previewType === 'video' && file.dataUrl ? (
+                  <div>
+                    <video
+                      data-testid="product-task-review-video"
+                      controls
+                      preload="metadata"
+                      src={file.dataUrl}
+                      onError={() => setVideoPreviewError(true)}
+                      aria-label={`${file.path} 视频预览`}
+                      className="max-h-72 max-w-full rounded-lg border border-[var(--color-border)] bg-black object-contain"
+                    >
+                      当前运行环境不支持视频预览。
+                    </video>
+                    <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">视频预览仅读取当前任务工作区内不超过 16 MB 的 MP4、WebM、Ogg 或 MOV 文件。</p>
+                    {videoPreviewError ? <p role="alert" className="mt-1 text-xs text-[var(--color-text-secondary)]">当前运行环境无法播放这个视频编码。</p> : null}
+                  </div>
+                ) : null}
+                {!isLoadingSelection && file?.state === 'ok' && file.previewType === 'text' && typeof file.content === 'string' ? (
                   <pre className="overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-app-main)] p-3 text-xs leading-5 text-[var(--color-text-primary)]"><code>{file.content}</code></pre>
                 ) : null}
                 {!isLoadingSelection && diff?.state === 'ok' && typeof diff.diff === 'string' && diff.diff ? (

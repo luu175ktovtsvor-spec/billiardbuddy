@@ -10,6 +10,7 @@ function createService() {
     sessionId: string
     path?: string
     maxImagePreviewBytes?: number
+    maxVideoPreviewBytes?: number
   }> = []
   const workspace = {
     async getStatus(sessionId: string) {
@@ -41,13 +42,14 @@ function createService() {
     async readFile(
       sessionId: string,
       filePath: string,
-      options?: { maxImagePreviewBytes?: number },
+      options?: { maxImagePreviewBytes?: number; maxVideoPreviewBytes?: number },
     ) {
       calls.push({
         name: 'file',
         sessionId,
         path: filePath,
         maxImagePreviewBytes: options?.maxImagePreviewBytes,
+        maxVideoPreviewBytes: options?.maxVideoPreviewBytes,
       })
       if (filePath === 'assets/large.png') {
         return {
@@ -56,6 +58,17 @@ function createService() {
           mimeType: 'image/png',
           language: 'image',
           size: 8 * 1024 * 1024 + 1,
+        }
+      }
+      if (filePath === 'assets/replay.webm') {
+        return {
+          state: 'ok' as const,
+          path: filePath,
+          previewType: 'video' as const,
+          dataUrl: 'data:video/webm;base64,AAAA',
+          mimeType: 'video/webm',
+          language: 'video',
+          size: 3,
         }
       }
       return {
@@ -106,6 +119,7 @@ describe('ProductTaskReviewService', () => {
         sessionId: coreSessionId,
         path: 'src/price.ts',
         maxImagePreviewBytes: 8 * 1024 * 1024,
+        maxVideoPreviewBytes: 16 * 1024 * 1024,
       },
       { name: 'diff', sessionId: coreSessionId, path: 'src/price.ts' },
     ])
@@ -155,6 +169,32 @@ describe('ProductTaskReviewService', () => {
       sessionId: coreSessionId,
       path: 'assets/large.png',
       maxImagePreviewBytes: 8 * 1024 * 1024,
+      maxVideoPreviewBytes: 16 * 1024 * 1024,
+    }])
+  })
+
+  it('projects an explicitly bounded task video preview without exposing its Core workspace', async () => {
+    const { calls, service } = createService()
+
+    const file = await service.getFile(taskId, 'assets/replay.webm')
+    expect(file).toEqual({
+      taskId,
+      state: 'ok',
+      path: 'assets/replay.webm',
+      previewType: 'video',
+      dataUrl: 'data:video/webm;base64,AAAA',
+      mimeType: 'video/webm',
+      language: 'video',
+      size: 3,
+    })
+    expect(JSON.stringify(file)).not.toContain(coreSessionId)
+    expect(JSON.stringify(file)).not.toContain('/private/')
+    expect(calls).toEqual([{
+      name: 'file',
+      sessionId: coreSessionId,
+      path: 'assets/replay.webm',
+      maxImagePreviewBytes: 8 * 1024 * 1024,
+      maxVideoPreviewBytes: 16 * 1024 * 1024,
     }])
   })
 

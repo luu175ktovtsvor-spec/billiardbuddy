@@ -162,7 +162,16 @@ describe('Product tasks API', () => {
       },
       getFile: async (...args: unknown[]) => {
         calls.push({ name: 'getFile', args })
-        return { taskId: task.id, state: 'missing' as const, path: 'src/price.ts', language: 'typescript', size: 0 }
+        return {
+          taskId: task.id,
+          state: 'ok' as const,
+          path: 'assets/replay.webm',
+          previewType: 'video' as const,
+          dataUrl: 'data:video/webm;base64,AAAA',
+          mimeType: 'video/webm',
+          language: 'video',
+          size: 3,
+        }
       },
       getDiff: async (...args: unknown[]) => {
         calls.push({ name: 'getDiff', args })
@@ -190,9 +199,18 @@ describe('Product tasks API', () => {
       status: 200,
       body: { taskId: task.id, state: 'ok', path: 'src', entries: [] },
     })
-    expect(await callReviewRoute('/api/product/tasks/task-1/review/file?path=src%2Fprice.ts')).toEqual({
+    expect(await callReviewRoute('/api/product/tasks/task-1/review/file?path=assets%2Freplay.webm')).toEqual({
       status: 200,
-      body: { taskId: task.id, state: 'missing', path: 'src/price.ts', language: 'typescript', size: 0 },
+      body: {
+        taskId: task.id,
+        state: 'ok',
+        path: 'assets/replay.webm',
+        previewType: 'video',
+        dataUrl: 'data:video/webm;base64,AAAA',
+        mimeType: 'video/webm',
+        language: 'video',
+        size: 3,
+      },
     })
     expect(await callReviewRoute('/api/product/tasks/task-1/review/diff?path=src%2Fprice.ts')).toEqual({
       status: 200,
@@ -201,7 +219,7 @@ describe('Product tasks API', () => {
     expect(calls).toEqual([
       { name: 'getStatus', args: ['task-1'] },
       { name: 'getTree', args: ['task-1', 'src'] },
-      { name: 'getFile', args: ['task-1', 'src/price.ts'] },
+      { name: 'getFile', args: ['task-1', 'assets/replay.webm'] },
       { name: 'getDiff', args: ['task-1', 'src/price.ts'] },
     ])
   })
