@@ -9,7 +9,7 @@
  *   QF_LOADTEST_URL=http://127.0.0.1:8799 \
  *   QF_LOADTEST_TOKEN=... \
  *   bun gateway/real-loadtest.ts --execute --users=100 --windows=10 \
- *     --phases=1000,800,600,400,200,100 --scenario=stream
+ *     --phases=1000,800,600,400,200,100 --scenario=stream --thinking=enabled
  */
 
 type Capacity = {
@@ -55,6 +55,7 @@ type PhaseSummary = {
   /** Observed through periodic /healthz samples; never use this as an exact peak proof. */
   observedGateway: { active: number; queued: number; oldestQueueMs: number; samples: number; unavailableSamples: number }
   finalGateway: Capacity | null
+  drained: boolean
 }
 
 function usage(exitCode = 2): never {
@@ -69,13 +70,13 @@ Options:
   --phases=a,b,c              Concurrent request steps, highest first by default
   --scenario=short|stream     "short" asks for OK; "stream" asks for a short numbered stream
   --max-tokens=<n>            Upstream max_tokens per request (default: 64)
-  --thinking=enabled|disabled Send an explicit DeepSeek thinking mode; omitted uses
-                               the upstream default and still records metadata only
+  --thinking=enabled|disabled DeepSeek thinking mode (default: enabled)
   --pool=deepseek|mimo        Capacity pool sampled from /healthz (auto from model)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
+  --drain-timeout-ms=<n>      Wait for the sampled pool to drain (default: request timeout)
   --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
   --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
   --use-server-app-token      Gateway-host only: read its app token solely for
@@ -106,6 +107,11 @@ export function parseThinkingMode(value: string | undefined): ThinkingMode | und
   if (value === undefined) return undefined
   if (value === 'enabled' || value === 'disabled') return value
   throw new Error('--thinking must be enabled or disabled')
+}
+
+/** Production desktop tasks default to deep thinking; real capacity tests must match. */
+export function resolveLoadtestThinkingMode(value: string | undefined): ThinkingMode {
+  return parseThinkingMode(value) ?? 'enabled'
 }
 
 /** Deliberately inspect only the protocol field name, never a reasoning value. */
@@ -144,6 +150,10 @@ export function parsePhases(raw: string | undefined, total: number): number[] {
     throw new Error(`--phases must contain values from 1 through ${total}`)
   }
   return phases
+}
+
+export function isCapacityDrained(snapshot: Capacity | null): boolean {
+  return snapshot !== null && nonNegative(snapshot.active) === 0 && nonNegative(snapshot.queued) === 0
 }
 
 function isHttpLoopback(url: URL): boolean {
@@ -302,9 +312,10 @@ async function main(): Promise<void> {
   const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 100)
   const healthTimeoutMs = integer(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000)
   const pauseMs = integer(option(args, '--pause-ms'), '--pause-ms', 2_500)
+  const drainTimeoutMs = integer(option(args, '--drain-timeout-ms'), '--drain-timeout-ms', timeoutMs)
   const scenario = option(args, '--scenario') ?? 'stream'
   if (scenario !== 'short' && scenario !== 'stream') throw new Error('--scenario must be short or stream')
-  const thinking = parseThinkingMode(option(args, '--thinking'))
+  const thinking = resolveLoadtestThinkingMode(option(args, '--thinking'))
   const model = process.env.QF_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash'
   const pool = option(args, '--pool') ?? (model.toLowerCase().startsWith('mimo') ? 'mimo' : 'deepseek')
   if (pool !== 'deepseek' && pool !== 'mimo') throw new Error('--pool must be deepseek or mimo')
@@ -340,6 +351,16 @@ async function main(): Promise<void> {
     } finally {
       clearTimeout(timeout)
     }
+  }
+
+  async function waitForDrain(): Promise<{ snapshot: Capacity | null; drained: boolean }> {
+    const deadline = performance.now() + drainTimeoutMs
+    let snapshot = await health()
+    while (!isCapacityDrained(snapshot) && performance.now() < deadline) {
+      await sleep(Math.min(250, Math.max(1, deadline - performance.now())))
+      snapshot = await health()
+    }
+    return { snapshot, drained: isCapacityDrained(snapshot) }
   }
 
   async function runOne(index: number): Promise<Sample> {
@@ -420,9 +441,11 @@ async function main(): Promise<void> {
     scenario,
     pool,
     maxTokens,
-    thinking: thinking ?? 'upstream_default',
+    thinking,
   }))
 
+  let highestSuccessfulPhase: number | null = null
+  let observedFailure = false
   for (const requested of phases) {
     let monitor = true
     let peakActive = 0
@@ -450,7 +473,8 @@ async function main(): Promise<void> {
     const samples = await Promise.all(Array.from({ length: requested }, (_, index) => runOne(index)))
     monitor = false
     await monitorTask
-    const finalGateway = await health()
+    const drain = await waitForDrain()
+    const finalGateway = drain.snapshot
     const statuses: Record<string, number> = {}
     const failureKinds: Record<string, number> = {}
     for (const sample of samples) {
@@ -477,15 +501,28 @@ async function main(): Promise<void> {
         unavailableSamples: unavailableHealthSamples,
       },
       finalGateway,
+      drained: drain.drained,
     }
     console.log(JSON.stringify({ event: 'loadtest_phase', ...summary }))
-    if (summary.failed > 0 && !continueAfterFailure) {
+    const phasePassed = summary.failed === 0 && summary.drained
+    if (phasePassed && highestSuccessfulPhase === null) highestSuccessfulPhase = requested
+    if (!phasePassed) observedFailure = true
+    if (!phasePassed && !continueAfterFailure) {
       console.error('Stopping after a failed phase because --stop-after-failure was supplied.')
       process.exitCode = 1
       return
     }
     if (requested !== phases.at(-1)) await sleep(pauseMs)
   }
+  console.log(JSON.stringify({
+    event: 'loadtest_result',
+    requestedMaximum: phases[0] ?? 0,
+    highestSuccessfulPhase,
+    allPhasesSucceeded: !observedFailure,
+  }))
+  // Continuing downward maps a usable ceiling, but must not produce a successful
+  // process result when any requested higher phase failed or leaked permits.
+  if (observedFailure || highestSuccessfulPhase === null) process.exitCode = 1
 }
 
 if (import.meta.main) await main()

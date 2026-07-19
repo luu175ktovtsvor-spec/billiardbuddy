@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   isSseContentType,
+  isCapacityDrained,
   parseLoadTarget,
   parsePhases,
   parseThinkingMode,
+  resolveLoadtestThinkingMode,
   sawReasoningInSse,
   SseTerminalDetector,
 } from './real-loadtest'
@@ -19,6 +21,18 @@ describe('real upstream loadtest thinking-mode guard', () => {
     expect(parseThinkingMode('enabled')).toBe('enabled')
     expect(parseThinkingMode('disabled')).toBe('disabled')
     expect(() => parseThinkingMode('adaptive')).toThrow('--thinking must be enabled or disabled')
+  })
+
+  test('uses enabled thinking by default so the capacity run matches the desktop product path', () => {
+    expect(resolveLoadtestThinkingMode(undefined)).toBe('enabled')
+    expect(resolveLoadtestThinkingMode('disabled')).toBe('disabled')
+  })
+
+  test('requires the sampled pool to fully drain before a phase can be called complete', () => {
+    expect(isCapacityDrained({ active: 0, queued: 0 })).toBe(true)
+    expect(isCapacityDrained({ active: 1, queued: 0 })).toBe(false)
+    expect(isCapacityDrained({ active: 0, queued: 1 })).toBe(false)
+    expect(isCapacityDrained(null)).toBe(false)
   })
 
   test('counts only the reasoning protocol field and never parses or emits its value', () => {

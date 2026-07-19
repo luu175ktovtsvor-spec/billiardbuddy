@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createGatewayFetch, MemoryUsageStore } from './app'
+import { createGatewayFetch, gatewayServerIdleTimeoutSeconds, MemoryUsageStore } from './app'
 import type { GatewayTranscriber } from './transcription'
 
 function env(overrides: Record<string, string | undefined> = {}) {
@@ -148,6 +148,12 @@ test('MiMo hard reservations must account for the whole account capacity', () =>
     GW_MIMO_NATIVE_CONC: '51',
     GW_VISION_CONC: '12',
   })).toThrow('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
+})
+
+test('gateway server keeps an SSE-safe idle timeout before per-request stream overrides apply', () => {
+  expect(gatewayServerIdleTimeoutSeconds({})).toBe(300)
+  expect(gatewayServerIdleTimeoutSeconds({ GW_SERVER_IDLE_TIMEOUT_SECONDS: '5' })).toBe(30)
+  expect(gatewayServerIdleTimeoutSeconds({ GW_SERVER_IDLE_TIMEOUT_SECONDS: '99999' })).toBe(3_600)
 })
 
 test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only credentials', async () => {

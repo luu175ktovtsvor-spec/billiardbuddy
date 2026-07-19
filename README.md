@@ -35,3 +35,7 @@ bun run electron:dev
 这不是可互相借用的软限流，而是 `52 + 12 = 64` 的硬预留：原生请求不会耗尽视觉槽，图片桥接也不会在 64 条原生请求之后继续等待。手工调整时必须使 `GW_MIMO_NATIVE_CONC + GW_VISION_CONC = GW_MIMO_CONC`；网关会拒绝未分配或超配的配置。视觉桥接仍受 24 个短队列和 3 秒等待限制，不能据此承诺 100 人多窗口图片请求全部无等待。
 
 部署脚本会把 `gateway/validate-mimo-capacity-env.sh` 与网关源码一并复制到大陆机，并在重启 `qfgw` 前校验这三个非敏感字段；手工上传时也必须带上该脚本。旧环境只设置 `GW_MIMO_CONC` 时，会按网关同一规则自动推导分区；格式错误或不相加的显式配置会在服务重启前失败。
+
+面向 100 人 × 10 个 DeepSeek 窗口的部署会执行 `gateway/validate-production-capacity-env.sh` 做容量配置准入预检：显式旧 `800/8/800` 配置会被拒绝，必须改为至少 `1000/10/1000` 后才能重启。它只读取非敏感容量字段，不会执行或打印 `gw.env` 中的令牌和上游密钥；这只证明配置下限，不代表 1,000 个真实请求已经通过。图片 relay 的 `relay/validate-production-env.sh` 同样要求持久化 SQLite、blob 目录、至少 1000 个小任务队列和每装机 10 个任务额度，避免重启后丢失队列或悄然保留旧 `600/5` 档位。
+
+计划真机验收时，可同时上传 `real-loadtest.ts`、`vision-real-loadtest.ts`、`image-real-loadtest.ts`、`mimo-mixed-real-loadtest.ts`；网关部署脚本只复制它们，不会自动发起收费或高并发请求。真实压测应从高档位逐级向下，并在每档确认网关已排空后再继续。
