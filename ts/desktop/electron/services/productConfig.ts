@@ -7,8 +7,9 @@ import path from 'node:path'
  * A Finder-launched .app has no shell to export QF_GATEWAY_* — so besides the
  * dev/ops env override we resolve the config from packaged resources:
  *
- *  - `product-config.json` — PUBLIC config, safe to commit and ship: the stable
- *    HTTPS product gateway URL and the default upstream model. No secrets.
+ *  - `product-config.json` — PUBLIC config, safe to commit and ship: the HTTPS
+ *    product gateway URL (or the explicitly allowed public IPv4 /gw endpoint when
+ *    the mainland deployment has no domain) and the default upstream model. No secrets.
  *  - `product-secrets.json` — the revocable client app token. Git-ignored; it is
  *    written into the build resources at release/packaging time from a build
  *    secret, never committed. It never appears in product-config.json, source,
@@ -60,6 +61,39 @@ function trimmed(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
+function isPublicIpv4(hostname: string): boolean {
+  const parts = hostname.split('.')
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part))) return false
+  const [first, second, third, fourth] = parts.map(Number)
+  if ([first, second, third, fourth].some(part => part > 255)) return false
+  if (first === 0 || first === 10 || first === 127 || first >= 224) return false
+  if (first === 100 && second >= 64 && second <= 127) return false
+  if (first === 169 && second === 254) return false
+  if (first === 172 && second >= 16 && second <= 31) return false
+  if (first === 192 && second === 168) return false
+  return true
+}
+
+/**
+ * HTTPS is always allowed. A mainland deployment without DNS may use only a
+ * public IPv4 HTTP endpoint with the fixed gateway base path; this deliberately
+ * excludes HTTP hostnames, private addresses, credentials, query strings, and
+ * fragments so an arbitrary clear-text override never becomes a product default.
+ */
+export function isAllowedProductGatewayUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (!url.hostname || url.username || url.password || url.search || url.hash) return false
+    if (url.protocol === 'https:') return true
+    return url.protocol === 'http:'
+      && (url.port === '' || url.port === '80')
+      && url.pathname.replace(/\/+$/, '') === '/gw'
+      && isPublicIpv4(url.hostname)
+  } catch {
+    return false
+  }
+}
+
 /** Directory that holds the packaged config files for the current run. */
 export function productConfigDir(source: ProductConfigSource): string | undefined {
   return source.isPackaged ? source.resourcesPath : source.devBuildDir
@@ -96,8 +130,10 @@ export function requireProductGatewayConfig(
   } catch {
     throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL is invalid.')
   }
-  if (parsed.protocol !== 'https:') {
-    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL must use HTTPS.')
+  if (!isAllowedProductGatewayUrl(config.url)) {
+    throw new ProductGatewayConfigError(
+      'Product gateway is not configured: gateway URL must use HTTPS or a verified public IPv4 /gw endpoint.',
+    )
   }
   if (!config.token) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing app token.')
