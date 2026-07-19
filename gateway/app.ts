@@ -1713,10 +1713,21 @@ function parseArgs(argv: string[]): { host: string; port: number } {
   return { host, port }
 }
 
+/**
+ * Bun defaults an HTTP connection to a short idle timeout. Chat and thinking
+ * streams already disable their per-request timeout in the handler, but the
+ * server-level setting also needs enough headroom before the first upstream
+ * byte arrives. Keep it aligned with the public proxy's 300-second SSE window.
+ */
+export function gatewayServerIdleTimeoutSeconds(env: Env = process.env): number {
+  return Math.min(3_600, Math.max(30, intEnv(env, 'GW_SERVER_IDLE_TIMEOUT_SECONDS', 300)))
+}
+
 export function startGatewayServer(opts: { host?: string; port?: number } = {}) {
   return Bun.serve({
     hostname: opts.host ?? '127.0.0.1',
     port: opts.port ?? 8799,
+    idleTimeout: gatewayServerIdleTimeoutSeconds(),
     fetch: createGatewayFetch(),
   })
 }

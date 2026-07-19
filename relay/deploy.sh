@@ -24,8 +24,10 @@
 set -e
 APPDIR=/opt/qfrelay
 [ -f /tmp/relay-app.ts ] || { echo "缺少 /tmp/relay-app.ts" >&2; exit 1; }
+[ -f /tmp/validate-production-env.sh ] || { echo "缺少 /tmp/validate-production-env.sh" >&2; exit 1; }
 mkdir -p "$APPDIR"
 install -m 644 /tmp/relay-app.ts "$APPDIR/app.ts" && rm -f /tmp/relay-app.ts
+install -m 755 /tmp/validate-production-env.sh "$APPDIR/validate-production-env.sh"
 # 只在显式提供 /tmp/relay.env 时才覆盖现网 relay.env;否则保留现网凭据(真 OpenAI key 不被清空)。
 # 更新代码时必须先 `rm -f /tmp/relay.env`,与 gateway/deploy.sh 对 gw.env 的处理一致。
 if [ -f /tmp/relay.env ]; then
@@ -36,10 +38,25 @@ elif [ ! -f "$APPDIR/relay.env" ]; then
   echo "缺少 /tmp/relay.env,且现网不存在 $APPDIR/relay.env" >&2
   exit 1
 fi
+# Do not silently restart a production relay at the former 600/5 profile or with
+# in-memory queue state. The preflight reads only non-secret values and never
+# evaluates relay.env.
+"$APPDIR/validate-production-env.sh" "$APPDIR/relay.env"
 chmod 600 "$APPDIR/relay.env"
-# blob 目录(700):应用启动也会自建,这里预建保证属主与权限正确。
-mkdir -p "$APPDIR/blobs"
-chmod 700 "$APPDIR/blobs"
+# Keep relay input/output blobs in the exact durable directory from relay.env.
+# The helper parses only this non-secret path and rejects shell references; it
+# never sources relay.env or prints credentials.
+relay_blob_dir="$("$APPDIR/validate-production-env.sh" --print-blob-dir "$APPDIR/relay.env")"
+if [ -L "$relay_blob_dir" ]; then
+  echo 'RELAY_BLOB_DIR must not be a symlink' >&2
+  exit 1
+fi
+mkdir -p -- "$relay_blob_dir"
+if [ ! -d "$relay_blob_dir" ] || [ -L "$relay_blob_dir" ]; then
+  echo 'RELAY_BLOB_DIR must resolve to a real directory' >&2
+  exit 1
+fi
+chmod 700 -- "$relay_blob_dir"
 cd "$APPDIR"
 
 echo "=== Bun runtime ==="

@@ -35,7 +35,10 @@ const MAX_IMAGES_PER_REQUEST = 8
 const MAX_IMAGE_FILE_BYTES = MAX_GATEWAY_IMAGE_BYTES - 256
 const MAX_IMAGE_PIXELS = 16 * 1024 * 1024
 const MAX_RESPONSE_BYTES = 1024 * 1024
-const SAFE_DEFAULT_PHASES = [1, 4, 8, 12, 24]
+const MAX_USERS = 100
+const MAX_WINDOWS = 10
+const MAX_REQUESTS = MAX_USERS * MAX_WINDOWS
+const HIGH_TO_LOW_DEFAULT_PHASES = [1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1]
 const pools = ['vision', 'mimo', 'deepseek', 'ingress_body'] as const
 
 type Pool = typeof pools[number]
@@ -52,9 +55,9 @@ function usage(exitCode = 2): never {
     --unique-image-per-request [options]
 
 Options:
-  --users=<n>                 Simulated installation count (default: 1)
-  --windows=<n>               Concurrent visual requests per installation (default: 1)
-  --phases=a,b,c              Concurrent request steps (default: 1,4,8,12,24; capped at total)
+  --users=<n>                 Simulated installation count (default: 1, max: ${MAX_USERS})
+  --windows=<n>               Concurrent visual requests per installation (default: 1, max: ${MAX_WINDOWS})
+  --phases=a,b,c              Concurrent request steps, highest first by default
   --route=bridge|native       bridge=MiMo VisionBridge then DeepSeek (default)
                                native=direct MiMo v2.5 visual request
   --generate-image            Make a distinct, valid 64x64 PNG for each request
@@ -69,6 +72,9 @@ Options:
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
+  --drain-timeout-ms=<n>      Wait for visual/MiMo/DeepSeek permits to drain (default: request timeout)
+  --stop-after-failure        Stop after a failed phase instead of locating a lower ceiling
+  --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
   --use-server-app-token      Gateway-host only: read its app token solely for
                                http://127.0.0.1:8799 (never an external URL)
 
@@ -82,6 +88,12 @@ function integer(value: string | undefined, name: string, fallback: number): num
   if (!/^\d+$/.test(value)) throw new Error(`${name} must be a positive integer`)
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`)
+  return parsed
+}
+
+function boundedInteger(value: string | undefined, name: string, fallback: number, maximum: number): number {
+  const parsed = integer(value, name, fallback)
+  if (parsed > maximum) throw new Error(`${name} must not exceed ${maximum}`)
   return parsed
 }
 
@@ -106,9 +118,9 @@ export function parseImagesPerRequest(value: string | undefined): number {
 
 export function parsePhases(raw: string | undefined, total: number): number[] {
   const values = raw === undefined
-    ? [...SAFE_DEFAULT_PHASES.filter(value => value <= total), ...(total <= SAFE_DEFAULT_PHASES.at(-1)! ? [total] : [])]
+    ? [total, ...HIGH_TO_LOW_DEFAULT_PHASES].filter(value => value <= total)
     : raw.split(',').map(value => integer(value.trim(), '--phases', 0))
-  const phases = [...new Set(values)].sort((a, b) => a - b)
+  const phases = [...new Set(values)].sort((a, b) => b - a)
   if (phases.length === 0 || phases.some(value => value > total)) {
     throw new Error(`--phases must contain values from 1 through ${total}`)
   }
@@ -456,8 +468,8 @@ async function main(): Promise<void> {
     ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
 
-  const users = integer(option(args, '--users'), '--users', 1)
-  const windows = integer(option(args, '--windows'), '--windows', 1)
+  const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
+  const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 16)
   const thinking = parseThinkingMode(option(args, '--thinking'))
   const imagesPerRequest = parseImagesPerRequest(option(args, '--images-per-request'))
@@ -465,6 +477,7 @@ async function main(): Promise<void> {
   const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 100)
   const healthTimeoutMs = integer(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000)
   const pauseMs = integer(option(args, '--pause-ms'), '--pause-ms', 2_500)
+  const drainTimeoutMs = integer(option(args, '--drain-timeout-ms'), '--drain-timeout-ms', timeoutMs)
   const route = option(args, '--route') ?? 'bridge'
   if (route !== 'bridge' && route !== 'native') throw new Error('--route must be bridge or native')
   const generated = args.includes('--generate-image')
@@ -475,8 +488,9 @@ async function main(): Promise<void> {
   const sourceImage = imagePath === undefined ? null : await loadPngFile(imagePath)
   const imageSeed = integer(option(args, '--image-seed'), '--image-seed', Date.now())
   const total = users * windows
-  if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
+  if (!Number.isSafeInteger(total) || total > MAX_REQUESTS) throw new Error(`--users * --windows must not exceed ${MAX_REQUESTS}`)
   const phases = parsePhases(option(args, '--phases'), total)
+  const continueAfterFailure = !args.includes('--stop-after-failure') || args.includes('--continue-after-failure')
   const generatedImageCount = phases.reduce((count, phase) => {
     const next = count + phase * imagesPerRequest
     if (!Number.isSafeInteger(next)) throw new Error('--images-per-request times total staged requests is too large')
@@ -514,6 +528,20 @@ async function main(): Promise<void> {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  async function waitForDrain(): Promise<{ snapshot: GatewayHealth | null; drained: boolean }> {
+    const deadline = performance.now() + drainTimeoutMs
+    let snapshot = await health()
+    const drained = () => snapshot !== null && pools.every(pool => {
+      const capacity = snapshot?.capacity?.[pool]
+      return nonNegative(capacity?.active) === 0 && nonNegative(capacity?.queued) === 0
+    })
+    while (!drained() && performance.now() < deadline) {
+      await sleep(Math.min(250, Math.max(1, deadline - performance.now())))
+      snapshot = await health()
+    }
+    return { snapshot, drained: drained() }
   }
 
   async function runOne(index: number, firstImageIndex: number): Promise<Sample> {
@@ -610,6 +638,8 @@ async function main(): Promise<void> {
   }))
 
   let imageSequence = 0
+  let highestSuccessfulPhase: number | null = null
+  let observedFailure = false
   for (const requested of phases) {
     let monitoring = true
     const observed: Record<Pool, PoolObservation> = Object.fromEntries(
@@ -642,7 +672,8 @@ async function main(): Promise<void> {
     }))
     monitoring = false
     await monitor
-    const finalGateway = await health()
+    const drain = await waitForDrain()
+    const finalGateway = drain.snapshot
     const statuses: Record<string, number> = {}
     const failureKinds: Record<string, number> = {}
     for (const sample of samples) {
@@ -651,24 +682,38 @@ async function main(): Promise<void> {
       if (sample.failureKind) failureKinds[sample.failureKind] = (failureKinds[sample.failureKind] ?? 0) + 1
     }
     const succeeded = samples.filter(sample => sample.completed).length
+    const failed = requested - succeeded
+    const phasePassed = failed === 0 && drain.drained
+    if (phasePassed && highestSuccessfulPhase === null) highestSuccessfulPhase = requested
+    if (!phasePassed) observedFailure = true
     console.log(JSON.stringify({
       event: 'vision_loadtest_phase',
       requested,
       succeeded,
-      failed: requested - succeeded,
+      failed,
       statuses,
       failureKinds,
       totalMs: { p50: percentile(samples.map(sample => sample.totalMs), 0.5), p95: percentile(samples.map(sample => sample.totalMs), 0.95) },
       observedGateway: { pools: observed, samples: healthSamples, unavailableSamples: unavailableHealthSamples },
       finalGateway: finalGateway?.capacity ?? null,
+      drained: drain.drained,
     }))
-    if (succeeded !== requested) {
-      console.error('Stopping after a failed phase; visual overload must be mapped deliberately in a separate run.')
+    if (!phasePassed && !continueAfterFailure) {
+      console.error('Stopping after a failed phase because --stop-after-failure was supplied.')
       process.exitCode = 1
       return
     }
     if (requested !== phases.at(-1)) await sleep(pauseMs)
   }
+  console.log(JSON.stringify({
+    event: 'vision_loadtest_result',
+    requestedMaximum: phases[0] ?? 0,
+    highestSuccessfulPhase,
+    allPhasesSucceeded: !observedFailure,
+  }))
+  // A lower phase can still identify a usable ceiling, but the process must be
+  // non-zero whenever the requested upper envelope was not cleanly sustained.
+  if (observedFailure || highestSuccessfulPhase === null) process.exitCode = 1
 }
 
 if (import.meta.main) await main()

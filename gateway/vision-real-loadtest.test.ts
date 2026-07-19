@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { classifyCompletionJson, generatedPng, hasCompletionJson, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, validatePng } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
-  test('uses a bounded staged default instead of immediately testing the full 100 x 5 burst', () => {
-    expect(parsePhases(undefined, 500)).toEqual([1, 4, 8, 12, 24])
-    expect(parsePhases(undefined, 12)).toEqual([1, 4, 8, 12])
-    expect(parsePhases('1,12,36', 100)).toEqual([1, 12, 36])
+  test('maps the 100 x 10 visual envelope from high to low so failures reveal a lower ceiling', () => {
+    expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1])
+    expect(parsePhases(undefined, 12)).toEqual([12, 1])
+    expect(parsePhases('1,12,36', 100)).toEqual([36, 12, 1])
   })
 
   test('only accepts explicit documented thinking values', () => {

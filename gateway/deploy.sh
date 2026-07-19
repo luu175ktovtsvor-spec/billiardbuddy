@@ -6,7 +6,7 @@
 #   GW_DEEPSEEK_MODEL(默认 deepseek-v4-flash) / 可选 GW_DEEPSEEK_MODELS /
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
 #   GW_DEEPSEEK_QUEUE_MAX / GW_DEEPSEEK_QUEUE_MAX_WAIT / GW_DEEPSEEK_RPM
-#   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS
+#   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS / GW_SERVER_IDLE_TIMEOUT_SECONDS
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
 #   - 受控假上游压测已验证网关能公平调度 DeepSeek 100 人 × 10 窗口的 1,000 个请求而不在网关排队；
@@ -44,6 +44,9 @@
 #     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
 #   - 长聊天/relay 请求在 Bun 层关闭 10 秒空闲超时，但公共请求体仍受
 #     GW_INGRESS_BODY_READ_TIMEOUT_MS(30000) 限制，防慢上传长期占住连接和内存。
+#   - Bun 服务级 idleTimeout 默认显式设为 300 秒（可用 GW_SERVER_IDLE_TIMEOUT_SECONDS 调整，范围
+#     30–3600）；它与 US /gw 代理的 300 秒 SSE 窗口对齐，避免思考模式首 token 较慢时被默认连接
+#     空闲阀门提前关闭。长流 handler 仍会对具体请求调用 timeout(..., 0)。
 # 回滚(本脚本不做备份/回滚,需运维在部署前手工执行):
 #   部署前备份代码 `cp -a /opt/qfgw /opt/qfgw.bak-<ts>`、gw.env 单独备份 `cp -a /opt/qfgw/gw.env /root/gw.env.bak-<ts>`。
 #   部署失败回滚**不能** `cp -a /opt/qfgw.bak-<ts> /opt/qfgw`(/opt/qfgw 已存在,cp -a 会把备份复制成子目录、不覆盖、回滚不生效),
@@ -51,7 +54,7 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts validate-mimo-capacity-env.sh; do
+for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -63,6 +66,18 @@ install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
+install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
+# Upload these separately with the runtime files when a controlled live capacity
+# run is scheduled. They are never invoked by deployment, and keeping them in
+# /opt/qfgw lets them read the local app-token map without exporting a secret.
+# A normal runtime-only deployment remains valid when no runner was uploaded.
+for runner in real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts; do
+  if [ -f "/tmp/$runner" ]; then
+    install -m 644 "/tmp/$runner" "$APPDIR/$runner"
+  else
+    echo "未上传受控压测器 /tmp/$runner；此次未更新该工具" >&2
+  fi
+done
 if [ -f /tmp/gw.env ]; then
   install -m 600 /tmp/gw.env "$APPDIR/gw.env.new"
   mv -f "$APPDIR/gw.env.new" "$APPDIR/gw.env"
@@ -84,6 +99,7 @@ fi
 # reservation. This script reads only the three non-secret capacity settings and never
 # sources gw.env, so app tokens and provider credentials cannot be executed or printed.
 "$APPDIR/validate-mimo-capacity-env.sh" "$APPDIR/gw.env"
+"$APPDIR/validate-production-capacity-env.sh" "$APPDIR/gw.env"
 
 chmod 600 "$APPDIR/gw.env"
 cd "$APPDIR"
