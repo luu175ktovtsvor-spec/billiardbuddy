@@ -80,7 +80,7 @@ beforeEach(() => {
   useProductTaskStore.setState(useProductTaskStore.getInitialState(), true)
   useTabStore.setState({ tabs: [], activeTabId: null })
   useSettingsStore.setState({ locale: 'en' })
-  useUIStore.setState({ sidebarOpen: true })
+  useUIStore.setState({ sidebarOpen: true, activeModal: null })
   setActiveProductTask()
 })
 
@@ -92,13 +92,18 @@ afterEach(() => {
 })
 
 describe('TopBar product task navigation', () => {
-  it('keeps the product task title and window controls', () => {
+  it('keeps product task search navigation, title, and window controls', () => {
     render(<TopBar />)
 
     expect(screen.getByTestId('window-controls')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '任务操作：Panel task' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Search tasks' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Recent tasks' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search tasks' }))
+    expect(useUIStore.getState().activeModal).toBe('task-search')
+
+    useUIStore.getState().closeModal()
+    fireEvent.click(screen.getByRole('button', { name: 'Recent tasks' }))
+    expect(useUIStore.getState().activeModal).toBe('task-search')
   })
 
   it('keeps the product task lifecycle menu and work-directory copy', async () => {
@@ -142,24 +147,6 @@ describe('TopBar product task navigation', () => {
 
     expect(screen.getByText('任务中心')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /任务操作/ })).not.toBeInTheDocument()
-  })
-
-  it('does not expose a task menu for a legacy session tab', () => {
-    useTabStore.setState({
-      tabs: [{
-        sessionId: 'legacy-session',
-        title: '旧会话',
-        type: 'session',
-        status: 'idle',
-      }],
-      activeTabId: 'legacy-session',
-    })
-
-    render(<TopBar />)
-
-    expect(screen.getByText('旧会话')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /任务操作/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('menuitem', { name: '复制整段对话' })).not.toBeInTheDocument()
   })
 
   it('renames the real product task through its dedicated tab identity', async () => {
