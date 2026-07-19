@@ -19,6 +19,7 @@ export async function handleProductApi(
     | 'setPinned'
     | 'setArchived'
     | 'continueTask'
+    | 'getTaskThread'
     | 'listSideTasks'
     | 'createSideTask'
     | 'closeSideTask'
@@ -39,6 +40,11 @@ export async function handleProductApi(
         return Response.json({ task: publicTask(await tasks.createTask(input)) }, { status: 201 })
       }
       return methodNotAllowed(req.method)
+    }
+
+    if (action === 'thread') {
+      if (req.method !== 'GET') return methodNotAllowed(req.method)
+      return Response.json(await tasks.getTaskThread(taskId))
     }
 
     if (action === 'side-tasks') {

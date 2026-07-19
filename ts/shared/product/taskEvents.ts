@@ -83,3 +83,28 @@ export type ProductTaskEvent =
       retryable: boolean
     }
   | { type: 'title_updated'; title: string }
+
+/**
+ * A persisted, product-safe rendering of a task transcript.  It deliberately
+ * carries no Agent Core message envelope, tool argument/result payload, model,
+ * token usage, or Core session id.
+ */
+export type ProductTaskThreadEntry =
+  | {
+      id: string
+      type: 'user_text' | 'assistant_text'
+      text: string
+      createdAt: string
+    }
+  | {
+      id: string
+      type: 'activity'
+      kind: ProductTaskActivityKind
+      phase: Extract<ProductTaskActivityPhase, 'completed' | 'failed'>
+      createdAt: string
+    }
+
+export type ProductTaskThread = {
+  taskId: string
+  entries: ProductTaskThreadEntry[]
+}

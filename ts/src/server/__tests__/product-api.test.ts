@@ -44,6 +44,7 @@ function createService() {
       setPinned: record('setPinned'),
       setArchived: record('setArchived'),
       continueTask: record('continueTask'),
+      getTaskThread: record('getTaskThread', { taskId: task.id, entries: [] }),
       listSideTasks: record('listSideTasks', [sideTask]),
       createSideTask: record('createSideTask', sideTask),
       closeSideTask: record('closeSideTask', { ...sideTask, status: 'closed' }),
@@ -126,6 +127,15 @@ describe('Product tasks API', () => {
         }],
       },
     ])
+  })
+
+  it('serves a task-scoped product thread instead of a Core session transcript', async () => {
+    const { service, calls } = createService()
+
+    const response = await request(service, 'GET', '/api/product/tasks/task-1/thread')
+
+    expect(response).toEqual({ status: 200, body: { taskId: task.id, entries: [] } })
+    expect(calls).toEqual([{ name: 'getTaskThread', args: ['task-1'] }])
   })
 
   it('routes temporary side-task lifecycle actions separately from normal tasks', async () => {
