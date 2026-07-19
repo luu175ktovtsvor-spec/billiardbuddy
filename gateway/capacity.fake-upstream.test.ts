@@ -173,8 +173,8 @@ test('单 token 二级闸:伪造大量 installationId 也拿不到超过 token �
   expect((await Promise.all([...aReqs, ...bReqs])).every(s => s === 200)).toBe(true)
 })
 
-// ── 100 用户 × 8 窗口 = 800 并发(默认 DeepSeek 容量证据,假 upstream;不打真上游) ──
-test('默认 DeepSeek profile:100 用户 × 8 窗口=800 请求，全部直接在途、无排队，公平、usage 与许可均排空', async () => {
+// ── 100 用户 × 5 窗口 = 500 并发(默认 DeepSeek 容量证据,假 upstream;不打真上游) ──
+test('默认 DeepSeek profile:100 用户 × 5 窗口=500 请求，256 实际在途+244 有界排队，公平、usage 与许可均排空', async () => {
   const u = poolUpstream()
   // The fixture normally pins the old small values so the legacy per-pool tests stay
   // deterministic. Delete those overrides here to exercise the production default.
@@ -187,47 +187,47 @@ test('默认 DeepSeek profile:100 用户 × 8 窗口=800 请求，全部直接�
   })
   const reqs: Array<Promise<number>> = []
   for (let user = 0; user < 100; user++) {
-    const id = `eightwin-${String(user).padStart(4, '0')}`
-    for (let window = 0; window < 8; window++) {
+    const id = `fivewin-${String(user).padStart(4, '0')}`
+    for (let window = 0; window < 5; window++) {
       reqs.push(fire(fetch, 'deepseek-v4-flash', id))
     }
   }
 
-  await waitFor(() => u.stats.deepseek.inFlight === 800, 10_000)
+  await waitFor(() => u.stats.deepseek.inFlight === 256, 10_000)
   const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   const body = await health.json()
   expect(body.limits).toMatchObject({
-    deepseek_conc: 1_000,
-    deepseek_user_conc: 8,
-    deepseek_token_conc: 1_000,
-    deepseek_queue_max: 200,
-    deepseek_queue_max_wait_seconds: 15,
+    deepseek_conc: 256,
+    deepseek_user_conc: 5,
+    deepseek_token_conc: 256,
+    deepseek_queue_max: 256,
+    deepseek_queue_max_wait_seconds: 120,
   })
   expect(body.capacity.deepseek).toMatchObject({
-    active: 800,
-    queued: 0,
-    maxConcurrent: 1_000,
-    maxConcurrentPerUser: 8,
-    maxConcurrentPerToken: 1_000,
-    queueMax: 200,
+    active: 256,
+    queued: 244,
+    maxConcurrent: 256,
+    maxConcurrentPerUser: 5,
+    maxConcurrentPerToken: 256,
+    queueMax: 256,
   })
   expect(body.capacity.deepseek.oldestQueueMs).toBeGreaterThanOrEqual(0)
-  expect(u.stats.deepseek.peak).toBe(800)
+  expect(u.stats.deepseek.peak).toBe(256)
   expect(u.stats.cross).toBe(0)
 
   u.open()
   const statuses = await Promise.all(reqs)
-  expect(statuses).toHaveLength(800)
+  expect(statuses).toHaveLength(500)
   expect(statuses.every(status => status === 200)).toBe(true)
-  expect(u.stats.deepseek.calls).toBe(800)
-  expect(u.stats.deepseek.peak).toBe(800)
-  expect(usage.rows).toHaveLength(800)
+  expect(u.stats.deepseek.calls).toBe(500)
+  expect(u.stats.deepseek.peak).toBe(256)
+  expect(usage.rows).toHaveLength(500)
   expect(usage.rows.every(row => row.model === 'deepseek' && row.ok && /^queue_ms=\d+;attempts=1;client=/.test(row.note ?? ''))).toBe(true)
   const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   expect((await drained.json()).capacity.deepseek).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
-test('默认 DeepSeek profile:超过 1000 在途的突发只保留 200 个短等待槽，余量立即 429 而不无界堆积', async () => {
+test('默认 DeepSeek profile:超过 256 在途+256 等待的突发会立即 429，而不无界堆积', async () => {
   const u = poolUpstream()
   const { fetch } = makeGatewayWithUsage(u.fetchImpl, {
     GW_DEEPSEEK_CONC: undefined,
@@ -236,24 +236,24 @@ test('默认 DeepSeek profile:超过 1000 在途的突发只保留 200 个短等
     GW_DEEPSEEK_QUEUE_MAX: undefined,
     GW_DEEPSEEK_QUEUE_MAX_WAIT: undefined,
   })
-  // 151 个安装 × 8 窗口 = 1208：1000 个真实上游位 + 200 个队列位，剩余 8 个
+  // 103 个安装 × 5 窗口 = 515：256 个真实上游位 + 256 个队列位，剩余 3 个
   // 必须快速拒绝。使用同一个 app token，覆盖桌面端共享产品 bearer 的实际调度形状。
   const reqs: Array<Promise<number>> = []
-  for (let user = 0; user < 151; user++) {
+  for (let user = 0; user < 103; user++) {
     const id = `overflow-${String(user).padStart(4, '0')}`
-    for (let window = 0; window < 8; window++) reqs.push(fire(fetch, 'deepseek-v4-flash', id))
+    for (let window = 0; window < 5; window++) reqs.push(fire(fetch, 'deepseek-v4-flash', id))
   }
 
-  await waitFor(() => u.stats.deepseek.inFlight === 1_000, 10_000)
+  await waitFor(() => u.stats.deepseek.inFlight === 256, 10_000)
   const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
-  expect((await health.json()).capacity.deepseek).toMatchObject({ active: 1_000, queued: 200, queueMax: 200 })
-  expect(u.stats.deepseek.peak).toBe(1_000)
+  expect((await health.json()).capacity.deepseek).toMatchObject({ active: 256, queued: 256, queueMax: 256 })
+  expect(u.stats.deepseek.peak).toBe(256)
 
   u.open()
   const statuses = await Promise.all(reqs)
-  expect(statuses.filter(status => status === 200)).toHaveLength(1_200)
-  expect(statuses.filter(status => status === 429)).toHaveLength(8)
-  expect(u.stats.deepseek.calls).toBe(1_200)
+  expect(statuses.filter(status => status === 200)).toHaveLength(512)
+  expect(statuses.filter(status => status === 429)).toHaveLength(3)
+  expect(u.stats.deepseek.calls).toBe(512)
   expect((await capacity(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 

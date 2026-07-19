@@ -95,6 +95,8 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.vision_queue_max_wait_ms).toBe(3_000)
   expect(body.limits.vision_per_client_conc).toBe(1)
   expect(body.limits.vision_per_request_conc).toBe(2)
+  expect(body.limits.img_queue_max).toBe(100)
+  expect(body.limits.relay_submit_timeout_ms).toBe(15_000)
   expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
@@ -1032,20 +1034,19 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   const body = await res.json()
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
-  // 100 人 × 8 窗口 profile:800 路正常请求直接进入 1000 个实际 DeepSeek 流；
-  // 200 个短队列槽只用于吸收瞬时抖动，不让超载悄悄堆成分钟级等待。
-  expect(body.limits.deepseek_conc).toBe(1_000)
-  expect(body.limits.deepseek_user_conc).toBe(8)
-  expect(body.limits.deepseek_token_conc).toBe(1_000)
-  expect(body.limits.deepseek_queue_max).toBe(200)
-  expect(body.limits.deepseek_queue_max_wait_seconds).toBe(15)
+  // 100 人 × 5 窗口 profile:256 路实际流 + 256 个有界等待位；真机跑通后才能用 env 扩容。
+  expect(body.limits.deepseek_conc).toBe(256)
+  expect(body.limits.deepseek_user_conc).toBe(5)
+  expect(body.limits.deepseek_token_conc).toBe(256)
+  expect(body.limits.deepseek_queue_max).toBe(256)
+  expect(body.limits.deepseek_queue_max_wait_seconds).toBe(120)
   expect(body.capacity.deepseek).toMatchObject({
     active: 0,
     queued: 0,
-    maxConcurrent: 1_000,
-    maxConcurrentPerUser: 8,
-    maxConcurrentPerToken: 1_000,
-    queueMax: 200,
+    maxConcurrent: 256,
+    maxConcurrentPerUser: 5,
+    maxConcurrentPerToken: 256,
+    queueMax: 256,
     oldestQueueMs: 0,
   })
 })
@@ -1192,6 +1193,91 @@ test('image gateway admits a 100-user × 5-submit burst to relay while the body 
   expect(usage.rows.filter(row => row.model === 'img' && row.ok)).toHaveLength(500)
   const drained = await fetch(new Request('http://local/healthz', authed()))
   expect((await drained.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
+test('image gateway bounds exhausted-IPM waiters and releases a cancelled waiter immediately', async () => {
+  let relayCalls = 0
+  let releaseRelay!: () => void
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
+      GW_IMG_IPM: '1',
+      GW_IMG_QUEUE_MAX: '1',
+      GW_QUEUE_MAX_WAIT: '60',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async (_input, init) => {
+      relayCalls += 1
+      const signal = init?.signal
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => reject(Object.assign(new Error('relay request aborted'), { name: 'AbortError' }))
+        if (signal?.aborted) return onAbort()
+        signal?.addEventListener('abort', onAbort, { once: true })
+        releaseRelay = () => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        }
+      })
+      return Response.json({ task_id: 'relay-task', state: 'queued' }, { status: 202 })
+    },
+  })
+  const submit = (key: string, signal?: AbortSignal) => fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify({ mode: 'generate', prompt: key }),
+  })))
+
+  const first = submit('first')
+  const deadline = performance.now() + 1000
+  while (relayCalls !== 1 && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  expect(relayCalls).toBe(1)
+  const secondController = new AbortController()
+  const second = submit('second', secondController.signal)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  const third = await submit('third')
+  expect(third.status).toBe(429)
+  expect(relayCalls).toBe(1)
+
+  secondController.abort()
+  expect((await second).status).toBe(499)
+  releaseRelay()
+  expect((await first).status).toBe(202)
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
+test('image gateway aborts a stalled relay submission at its bounded deadline and releases ingress memory', async () => {
+  let relayAborted = false
+  const usage = new MemoryUsageStore()
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
+      GW_RELAY_SUBMIT_TIMEOUT_MS: '20',
+    }),
+    usageStore: usage,
+    transcribeImpl: null,
+    fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      const onAbort = () => {
+        relayAborted = true
+        reject(Object.assign(new Error('relay request aborted'), { name: 'AbortError' }))
+      }
+      if (signal?.aborted) return onAbort()
+      signal?.addEventListener('abort', onAbort, { once: true })
+    }),
+  })
+  const response = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'generate', prompt: 'stalled relay' }),
+  })))
+  expect(response.status).toBe(504)
+  expect(relayAborted).toBe(true)
+  expect(usage.rows).toMatchObject([{ model: 'img', ok: false, status: 504, note: 'relay_submit_timeout' }])
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })
 
 test('image gateway rejects a body-budget overflow before it can reach relay and releases after forward', async () => {

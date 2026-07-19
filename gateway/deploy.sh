@@ -6,21 +6,24 @@
 #   GW_DEEPSEEK_MODEL(默认 deepseek-v4-flash) / 可选 GW_DEEPSEEK_MODELS /
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
 #   GW_DEEPSEEK_QUEUE_MAX / GW_DEEPSEEK_QUEUE_MAX_WAIT / GW_DEEPSEEK_RPM
+#   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
-#   - DeepSeek 默认 1000 个实际流、每安装最多 8 路、共享 app token 最多 1000 路；因此 100 人 ×
-#     8 窗口的 800 个普通聊天可直接进上游而不排队。另有 200 个有界队列槽且最长仅等 15 秒，用于
-#     短暂抖动，不把持续超载伪装成长期“排队中”。2500 是上游账号额度，不等于单机 Bun 网关应直接
-#     放到 2500。/healthz(带 app token)会返回 active/queued/queueMax/oldestQueueMs 供观察。
-#   - 上线前仍需用真 DeepSeek 账号从小到大验证 100、300、800 路持续 SSE，并同步观察 qfgw 的
+#   - DeepSeek 默认 256 个实际流、每安装最多 5 路、共享 app token 最多 256 路；100 人 × 5
+#     窗口的 500 个普通聊天会由 256 实际流 + 244 个有界排队位承接。2500 是上游账号额度，不等于
+#     单机 Bun 网关已经验证可直接放到 2500。排队最长等 120 秒；/healthz(带 app token)会返回
+#     active/queued/queueMax/oldestQueueMs 供观察。
+#   - 上线前仍需用真 DeepSeek 账号从小到大验证 100、256、500 路持续 SSE，并同步观察 qfgw 的
 #     CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间；若其中任一项恶化，先在 gw.env
-#     调低 GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，保留 GW_DEEPSEEK_USER_CONC=8 及有限队列。
+#     调低 GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，保留 GW_DEEPSEEK_USER_CONC=5 及有限队列。
 #   - Qwen/MiMo 的账户并发未由此脚本假定：保守默认仍为各 16 实际流，均有独立有界队列。
 #     MiMo 原生文本和图片桥接共用 GW_MIMO_CONC(16) 的总上游闸；图片桥接只可占其中至多
 #     GW_VISION_CONC(12) 个槽并另有 GW_VISION_QUEUE_MAX(24) 的短队列，不能据此宣称能承接 500 张图。
 #   - 生图提交默认 GW_IMG_IPM=600，目的是让 100 人 × 5 次的短提交进入 relay 的幂等任务队列；
-#     它不是 OpenAI/GPT 生图并发，实际生成并发仍由 relay 控制。聊天、原生 Messages 与生图提交
-#     共用 GW_INGRESS_INFLIGHT_BODY_BYTES(256MB，按读入/合并/解码/解析六倍预留)的大陆网关内存闸；
+#     它不是 OpenAI/GPT 生图并发，实际生成并发仍由 relay 控制。首个 burst 后最多只保留
+#     GW_IMG_QUEUE_MAX=100 个令牌桶等待者，且单次 relay 提交最多等 GW_RELAY_SUBMIT_TIMEOUT_MS=15000；
+#     这样异常跨境连接不会无界占住 socket 或 body。聊天、原生 Messages 与生图提交共用
+#     GW_INGRESS_INFLIGHT_BODY_BYTES(256MB，按读入/合并/解码/解析六倍预留)的大陆网关内存闸；
 #     GW_IMG_INFLIGHT_BODY_BYTES/GW_CHAT_INFLIGHT_BODY_BYTES 只保留为旧配置兼容别名。生产若调整图片
 #     输入大小或机器内存，应一起调整该全局闸，而不是只放大 IPM。
 #   - 视觉桥接:带图请求经网关 MiMo 视觉桥接读成文本后再交默认模型 DeepSeek;可选 env(默认见 app.ts loadConfig):
@@ -82,10 +85,10 @@ WorkingDirectory=/opt/qfgw
 ExecStart=__BUN_BIN__ /opt/qfgw/app.ts --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
-# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 8 窗口时约有 800 个
-# 入站连接，默认最多 1000 个 DeepSeek 上游流；预留给健康检查、日志、部署和后续实测
-# 扩容，避免系统默认 soft nofile 在突发时把健康网关误判为上游故障。
-LimitNOFILE=65536
+# 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 5 窗口时最多约 500 个
+# 入站连接、256 个 DeepSeek 上游流；8192 为日志、健康检查、文件和后续验证预留余量，避免
+# 系统默认 soft nofile 在突发时把健康网关误判为上游故障。
+LimitNOFILE=8192
 UMask=0077
 [Install]
 WantedBy=multi-user.target

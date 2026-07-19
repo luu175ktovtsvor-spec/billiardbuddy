@@ -56,6 +56,15 @@ interface ChatRequestError {
 
 type ChatRequestErrorCtor = new (status: number, publicMessage: string) => Error & ChatRequestError
 
+type TokenBucketWaiter = {
+  deadlineAt: number
+  resolve: () => void
+  reject: (error: HttpError) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+  timeout?: ReturnType<typeof setTimeout>
+}
+
 // 一个可路由的聊天上游(千问 / MiMo / DeepSeek)。每个上游各自持有独立的凭据、白名单、限速、
 // 并发、重试与用量标签;共享的代理逻辑由 createChatHandler 消费本结构,互不串台。
 type ChatProvider = {
@@ -98,6 +107,7 @@ type GatewayConfig = {
   qwenModel: string
   relayToken: string
   relayTasksBase: string
+  relaySubmitTimeoutMs: number
   adminToken: string
   db: string
   appTokens: Map<string, string>
@@ -155,6 +165,7 @@ type GatewayConfig = {
   visionCacheMax: number
   visionCacheTtlMs: number
   imgIpm: number
+  imgQueueMax: number
   imgTaskMaxBodyBytes: number
   queueMaxWait: number
   transcribeRpm: number
@@ -199,39 +210,95 @@ class TokenBucket {
   private tokens: number
   private rate: number
   private ts = performance.now()
-  private chain: Promise<void> = Promise.resolve()
+  private waiters: TokenBucketWaiter[] = []
+  private wakeTimer?: ReturnType<typeof setTimeout>
 
-  constructor(rpm: number) {
+  constructor(rpm: number, private readonly queueMax = Infinity) {
     this.capacity = Math.max(1, rpm)
     this.tokens = this.capacity
     this.rate = this.capacity / 60_000
+    if (queueMax !== Infinity && (!Number.isInteger(queueMax) || queueMax < 0)) {
+      throw new Error('TokenBucket queueMax must be a non-negative integer or Infinity')
+    }
   }
 
   async acquire(maxWaitSeconds: number, signal?: AbortSignal): Promise<void> {
-    const previous = this.chain
-    let release!: () => void
-    this.chain = new Promise<void>(resolve => { release = resolve })
-    await previous
-    try {
-      const deadline = performance.now() + Math.max(0, maxWaitSeconds) * 1000
-      while (true) {
-        if (signal?.aborted) throw new HttpError(499, '请求已取消')
-        const now = performance.now()
-        this.tokens = Math.min(this.capacity, this.tokens + (now - this.ts) * this.rate)
-        this.ts = now
-        if (this.tokens >= 1) {
-          this.tokens -= 1
-          return
-        }
-        const needMs = (1 - this.tokens) / this.rate
-        if (performance.now() + needMs > deadline) {
-          throw new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')
-        }
-        await sleep(Math.min(needMs, 500), signal)
-      }
-    } finally {
-      release()
+    if (signal?.aborted) throw new HttpError(499, '请求已取消')
+    this.refill()
+    if (this.waiters.length === 0 && this.tokens >= 1) {
+      this.tokens -= 1
+      return
     }
+    const maxWaitMs = Math.max(0, maxWaitSeconds) * 1000
+    if (maxWaitMs <= 0 || this.waiters.length >= this.queueMax) {
+      throw new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')
+    }
+    return await new Promise<void>((resolve, reject) => {
+      const waiter: TokenBucketWaiter = {
+        deadlineAt: performance.now() + maxWaitMs,
+        resolve,
+        reject,
+        signal,
+      }
+      const rejectAndRemove = (error: HttpError) => {
+        if (!this.remove(waiter)) return
+        this.cleanup(waiter)
+        reject(error)
+        this.drain()
+      }
+      waiter.timeout = setTimeout(
+        () => rejectAndRemove(new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')),
+        maxWaitMs,
+      )
+      waiter.onAbort = () => rejectAndRemove(new HttpError(499, '请求已取消'))
+      signal?.addEventListener('abort', waiter.onAbort, { once: true })
+      this.waiters.push(waiter)
+      this.drain()
+    })
+  }
+
+  private refill(now = performance.now()): void {
+    this.tokens = Math.min(this.capacity, this.tokens + (now - this.ts) * this.rate)
+    this.ts = now
+  }
+
+  private drain(): void {
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer)
+      this.wakeTimer = undefined
+    }
+    this.refill()
+    const now = performance.now()
+    while (this.waiters.length > 0 && this.waiters[0]!.deadlineAt <= now) {
+      const expired = this.waiters.shift()!
+      this.cleanup(expired)
+      expired.reject(new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)'))
+    }
+    while (this.waiters.length > 0 && this.tokens >= 1) {
+      const waiter = this.waiters.shift()!
+      this.cleanup(waiter)
+      this.tokens -= 1
+      waiter.resolve()
+    }
+    if (this.waiters.length > 0) {
+      const waitMs = Math.max(1, Math.ceil((1 - this.tokens) / this.rate))
+      this.wakeTimer = setTimeout(() => {
+        this.wakeTimer = undefined
+        this.drain()
+      }, waitMs)
+    }
+  }
+
+  private remove(waiter: TokenBucketWaiter): boolean {
+    const index = this.waiters.indexOf(waiter)
+    if (index < 0) return false
+    this.waiters.splice(index, 1)
+    return true
+  }
+
+  private cleanup(waiter: TokenBucketWaiter): void {
+    if (waiter.timeout) clearTimeout(waiter.timeout)
+    if (waiter.onAbort) waiter.signal?.removeEventListener('abort', waiter.onAbort)
   }
 }
 
@@ -553,6 +620,8 @@ function loadConfig(env: Env): GatewayConfig {
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
     relayTasksBase: (env.GW_RELAY_TASKS_BASE ?? '').replace(/\/+$/, ''),
+    // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
+    relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
@@ -589,20 +658,19 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     mimoAllowedModels: loadMimoAllowedModels(env),
-    // DeepSeek V4 Flash:真 key 只在服务器。按产品目标 100 人 × 每人最多 8 窗口，默认允许
-    // 1000 个实际流，因此 800 个普通聊天可直接进入上游、不会落到排队。账号声称的 2500 并发
-    // 不是单个 Bun 进程的可验证吞吐，保留约 60% 的上游额度给重试、其它部署和故障余量；200 个
-    // 队列槽只吸收短抖动且最多等 15 秒，避免把持续超载伪装成长时间“排队中”。缺 key 时路由到它会
-    // 503，绝不改投千问/MiMo。
+    // DeepSeek V4 Flash:真 key 只在服务器。产品目标是 100 人 × 每人 5 窗口；先保守地把
+    // 单进程实流限定为 256，并给另 256 个请求有界排队。DeepSeek 账号的 2500 并发额度不等于
+    // 一台 Bun 网关已验证能承受 2500 个 SSE；只有在真机压测后才应从 gw.env 调高。缺 key 时路由
+    // 到它会 503，绝不改投千问/MiMo。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
-    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(8, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
-    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
-    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
-    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
+    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 256)),
+    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(5, intEnv(env, 'GW_DEEPSEEK_CONC', 256)))),
+    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 256))),
+    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 256)),
+    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 120)),
     // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
@@ -647,6 +715,8 @@ function loadConfig(env: Env): GatewayConfig {
     // Permit a 100×5 burst to reach relay's idempotent queue instead of throttling it to
     // 18/min here. The byte reservation below is the memory guard for those submissions.
     imgIpm: intEnv(env, 'GW_IMG_IPM', 600),
+    // RPM 桶耗尽后的短提交等待也必须有硬上限；默认 100 只影响超过首个 600/min burst 的流量。
+    imgQueueMax: Math.max(0, intEnv(env, 'GW_IMG_QUEUE_MAX', 100)),
     // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
     // same 32 MB request ceiling at the public gateway before buffering or forwarding.
     imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),
@@ -1147,7 +1217,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       },
   })
     : null
-  const imgBucket = new TokenBucket(config.imgIpm)
+  const imgBucket = new TokenBucket(config.imgIpm, config.imgQueueMax)
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
@@ -1184,7 +1254,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             vision_per_client_conc: config.visionPerClientConc,
             vision_per_request_conc: config.visionPerRequestConc,
             img_ipm: config.imgIpm,
+            img_queue_max: config.imgQueueMax,
             img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
+            relay_submit_timeout_ms: config.relaySubmitTimeoutMs,
             ingress_inflight_body_bytes: config.ingressInflightBodyBytes,
             ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
@@ -1418,14 +1490,38 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             }
             const idempotencyKey = request.headers.get('idempotency-key')
             if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
-            const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
-              method: 'POST',
-              body: rawBody,
-              signal: request.signal,
-              headers: submitHeaders,
-            })
-            await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-            return await proxyJsonOrRaw(upstream)
+            const relayController = new AbortController()
+            let relayTimedOut = false
+            const abortForClient = () => relayController.abort()
+            if (request.signal.aborted) abortForClient()
+            else request.signal.addEventListener('abort', abortForClient, { once: true })
+            const relayTimer = setTimeout(() => {
+              relayTimedOut = true
+              relayController.abort()
+            }, config.relaySubmitTimeoutMs)
+            try {
+              const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
+                method: 'POST',
+                body: rawBody,
+                signal: relayController.signal,
+                headers: submitHeaders,
+              })
+              await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
+              return await proxyJsonOrRaw(upstream)
+            } catch (error) {
+              if (relayTimedOut) {
+                await logUsage(store, { user, model: 'img', ok: false, status: 504, ms: elapsedMs(started), note: 'relay_submit_timeout' })
+                throw new HttpError(504, '生图任务提交超时，请稍后重试')
+              }
+              if (request.signal.aborted) {
+                await logUsage(store, { user, model: 'img', ok: false, status: 499, ms: elapsedMs(started), note: 'client_cancelled' })
+                throw new HttpError(499, '请求已取消')
+              }
+              throw error
+            } finally {
+              clearTimeout(relayTimer)
+              request.signal.removeEventListener('abort', abortForClient)
+            }
           })
         } catch (err) {
           if (err instanceof HttpError) throw err
