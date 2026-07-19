@@ -22,6 +22,7 @@ import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectMemorySavedData } from '../api/productMessageProjection.js'
 import { projectServerMessageForProductTask } from '../product/taskEventProjection.js'
+import { parseProductTaskInboundMessage } from '../product/taskInboundPolicy.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
@@ -225,9 +226,44 @@ export const handleWebSocket = {
     }
 
     try {
-      const message = JSON.parse(
+      const parsed = JSON.parse(
         typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()
-      ) as ClientMessage
+      ) as unknown
+
+      if (ws.data.channel === 'product') {
+        const productMessage = parseProductTaskInboundMessage(parsed)
+        if (!productMessage) {
+          sendError(ws, 'PRODUCT_MESSAGE_NOT_ALLOWED')
+          return
+        }
+
+        switch (productMessage.type) {
+          case 'user_message':
+            handleUserMessage(ws, productMessage).catch((err) => {
+              void diagnosticsService.recordEvent({
+                type: 'ws_product_user_message_failed',
+                severity: 'error',
+                sessionId: ws.data.sessionId,
+                summary: err instanceof Error ? err.message : String(err),
+                details: err,
+              })
+              console.error(`[WS] Unhandled error in product task user message:`, err)
+            })
+            return
+
+          case 'stop_generation':
+            handleStopGeneration(ws)
+            return
+
+          case 'ping':
+            // The product event stream intentionally has no Core transport
+            // metadata, so its pong projection is omitted by sendMessage.
+            sendMessage(ws, { type: 'pong' })
+            return
+        }
+      }
+
+      const message = parsed as ClientMessage
 
       switch (message.type) {
         case 'user_message':
