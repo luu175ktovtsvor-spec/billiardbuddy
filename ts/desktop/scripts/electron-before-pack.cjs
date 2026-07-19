@@ -15,6 +15,16 @@ function readJsonObject(file, label) {
   }
 }
 
+function isAllowedGatewayUrl(url) {
+  return url.protocol === 'https:'
+    && url.hostname.length > 0
+    && !url.username
+    && !url.password
+    && !url.search
+    && !url.hash
+    && url.pathname.replace(/\/+$/, '') === '/gw'
+}
+
 function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   const buildDir = path.join(desktopDir, 'build')
   const publicConfig = readJsonObject(path.join(buildDir, 'product-config.json'), 'product-config.json')
@@ -32,8 +42,8 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   } catch {
     throw new Error('Cannot package BilliardBuddy: product-config.json contains an invalid gatewayUrl')
   }
-  if (gatewayUrl.protocol !== 'https:') {
-    throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTPS')
+  if (!isAllowedGatewayUrl(gatewayUrl)) {
+    throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTPS at the /gw endpoint')
   }
   if (typeof secrets.gatewayToken !== 'string' || !secrets.gatewayToken.trim()) {
     throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing gatewayToken')

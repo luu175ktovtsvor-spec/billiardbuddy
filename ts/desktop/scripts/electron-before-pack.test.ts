@@ -59,6 +59,14 @@ describe('desktop product package config', () => {
       { gatewayUrl: 'http://39.106.214.21/gw' },
       { gatewayToken: 'revocable-app-token' },
     )
-    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS')
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS at the /gw endpoint')
+  })
+
+  it('blocks a secure URL that is not the product gateway base path', () => {
+    const desktopDir = createDesktopBuild(
+      { gatewayUrl: 'https://gateway.example', gatewayModel: 'deepseek-v4-flash' },
+      { gatewayToken: 'revocable-app-token' },
+    )
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS at the /gw endpoint')
   })
 })
