@@ -11,6 +11,7 @@ import { useProductTaskStore } from './productTaskStore'
 import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
+  ProductTaskActivityProgress,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApproval,
@@ -26,6 +27,15 @@ export type ProductTaskConnectionState =
   | 'connecting'
   | 'connected'
 
+export type ProductTaskRunActivity = {
+  id: string
+  parentId?: string
+  kind: ProductTaskActivityKind
+  phase: ProductTaskActivityPhase
+  summary: string
+  progress?: ProductTaskActivityProgress
+}
+
 export type ProductTaskRuntime = {
   connectionState: ProductTaskConnectionState
   historyStatus: 'idle' | 'loading' | 'ready' | 'error'
@@ -34,7 +44,9 @@ export type ProductTaskRuntime = {
   activeActivity: {
     kind: ProductTaskActivityKind
     phase: ProductTaskActivityPhase
+    summary?: string
   } | null
+  runActivities: ProductTaskRunActivity[]
   pendingApproval: {
     requestId: string
     kind: ProductTaskApprovalKind
@@ -64,6 +76,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   runState: 'idle',
   entries: [],
   activeActivity: null,
+  runActivities: [],
   pendingApproval: null,
   approvalResponsePending: false,
   error: null,
@@ -72,6 +85,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
 const MAX_ATTACHMENT_NAME_LENGTH = 160
+const MAX_TRACKED_RUN_ACTIVITIES = 256
 const SAFE_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentSummary['mimeType']>>([
   'image/jpeg',
   'image/png',
@@ -236,6 +250,37 @@ function appendActivity(
   }
 }
 
+function upsertRunActivity(
+  activities: readonly ProductTaskRunActivity[],
+  event: Extract<ProductTaskEvent, { type: 'activity' }>,
+): ProductTaskRunActivity[] {
+  if (!event.id || !event.summary) return [...activities]
+  const previousIndex = activities.findIndex((activity) => activity.id === event.id)
+  const previous = previousIndex === -1 ? undefined : activities[previousIndex]
+  const activity: ProductTaskRunActivity = {
+    id: event.id,
+    ...(event.parentId && event.parentId !== event.id
+      ? { parentId: event.parentId }
+      : previous?.parentId
+        ? { parentId: previous.parentId }
+        : {}),
+    kind: event.kind,
+    phase: event.phase,
+    summary: event.summary,
+    ...(event.progress
+      ? { progress: event.progress }
+      : previous?.progress
+        ? { progress: previous.progress }
+        : {}),
+  }
+  const next = previousIndex === -1
+    ? [...activities, activity]
+    : activities.map((current, index) => index === previousIndex ? activity : current)
+  return next.length > MAX_TRACKED_RUN_ACTIVITIES
+    ? next.slice(-MAX_TRACKED_RUN_ACTIVITIES)
+    : next
+}
+
 const socketUnsubscribers = new Map<string, () => void>()
 const historyRequestVersions = new Map<string, number>()
 
@@ -385,6 +430,8 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         ...runtime,
         runState: 'working',
         error: null,
+        activeActivity: null,
+        runActivities: [],
         entries: content || attachmentSummaries.length > 0
           ? [
               ...runtime.entries,
@@ -506,6 +553,8 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             if (alreadyOptimistic) return runtime
             return {
               ...runtime,
+              activeActivity: null,
+              runActivities: [],
               entries: [...runtime.entries, {
                 id: liveEntryId(taskId, 'replayed-user'),
                 type: 'user_text',
@@ -534,9 +583,14 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           case 'activity': {
             let next: ProductTaskRuntime = {
               ...runtime,
-              activeActivity: { kind: event.kind, phase: event.phase },
+              activeActivity: {
+                kind: event.kind,
+                phase: event.phase,
+                ...(event.summary ? { summary: event.summary } : {}),
+              },
+              runActivities: upsertRunActivity(runtime.runActivities, event),
             }
-            if (event.phase === 'completed' || event.phase === 'failed') {
+            if (!event.id && (event.phase === 'completed' || event.phase === 'failed')) {
               next = appendActivity(next, taskId, event.kind, event.phase)
             }
             return next

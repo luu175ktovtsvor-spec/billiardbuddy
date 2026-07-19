@@ -64,6 +64,36 @@ describe('subscribePreviewEvents', () => {
     })
   })
 
+  it('preserves only a bounded native capture id for caller verification', async () => {
+    const onScreenshot = vi.fn()
+    await subscribePreviewEvents('product-task:task_abc:browser', { onScreenshot })
+
+    previewHandler!({
+      v: 1,
+      type: 'screenshot',
+      dataUrl: 'data:image/png;base64,AAAA',
+      kind: 'viewport',
+      captureId: 'native_capture_id_0123456789',
+    })
+    previewHandler!({
+      v: 1,
+      type: 'screenshot',
+      dataUrl: 'data:image/png;base64,BBBB',
+      kind: 'viewport',
+      captureId: 'too-short',
+    })
+
+    expect(onScreenshot).toHaveBeenNthCalledWith(1, {
+      dataUrl: 'data:image/png;base64,AAAA',
+      kind: 'viewport',
+      captureId: 'native_capture_id_0123456789',
+    })
+    expect(onScreenshot).toHaveBeenNthCalledWith(2, {
+      dataUrl: 'data:image/png;base64,BBBB',
+      kind: 'viewport',
+    })
+  })
+
   it('delivers only an armed, well-formed selection to the caller callback', async () => {
     const key = 'product-task:task_abc:preview'
     const onSelection = vi.fn()

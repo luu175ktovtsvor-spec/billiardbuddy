@@ -29,6 +29,16 @@ export type ProductTaskActivityPhase =
   | 'completed'
   | 'failed'
 
+/**
+ * A bounded, count-based progress signal for a product activity.  It is
+ * intentionally not a percentage or a raw runtime message: callers only set
+ * it when both counts are known from a structured Core event.
+ */
+export type ProductTaskActivityProgress = {
+  completed: number
+  total: number
+}
+
 export type ProductTaskApprovalKind =
   | 'action'
   | 'question'
@@ -114,6 +124,17 @@ export type ProductTaskEvent =
       type: 'activity'
       kind: ProductTaskActivityKind
       phase: ProductTaskActivityPhase
+      /**
+       * Opaque, product-scoped identity for one Core activity.  Older
+       * producers may omit this while the task stream is being migrated.
+       */
+      id?: string
+      /** Opaque parent activity identity when Core supplied a reliable link. */
+      parentId?: string
+      /** Product-authored, human-readable status text. Never a Core message. */
+      summary?: string
+      /** Present only when the source exposes a trustworthy bounded count. */
+      progress?: ProductTaskActivityProgress
     }
   | {
       type: 'approval_required'

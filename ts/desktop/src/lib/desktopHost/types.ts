@@ -127,6 +127,7 @@ export type PreviewCaptureMessage = {
   v: 1
   type: 'capture'
   kind: 'full' | 'viewport' | 'element'
+  captureId?: string
 }
 
 export type PreviewPickerMessage = {

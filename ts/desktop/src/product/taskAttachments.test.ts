@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   PRODUCT_TASK_ATTACHMENT_LIMITS,
+  createProductTaskPreviewImageDraft,
   readProductTaskAttachmentDrafts,
   validateProductTaskAttachments,
 } from './taskAttachments'
@@ -63,5 +64,30 @@ describe('validateProductTaskAttachments', () => {
       mimeType: 'image/png',
       data: expect.stringMatching(/^data:image\/png;base64,/),
     })])
+  })
+})
+
+describe('createProductTaskPreviewImageDraft', () => {
+  it('accepts only bounded native image data as a task attachment draft', () => {
+    expect(createProductTaskPreviewImageDraft(
+      'data:image/png;base64,TkFUSVZF',
+      '浏览器截图.png',
+    )).toEqual(expect.objectContaining({
+      type: 'image',
+      name: '浏览器截图.png',
+      mimeType: 'image/png',
+      data: 'data:image/png;base64,TkFUSVZF',
+    }))
+  })
+
+  it('rejects malformed, unsupported, and path-like preview captures', () => {
+    expect(createProductTaskPreviewImageDraft(
+      'data:text/html;base64,PHNjcmlwdD4=',
+      '浏览器截图.png',
+    )).toBeNull()
+    expect(createProductTaskPreviewImageDraft(
+      'data:image/png;base64,TkFUSVZF',
+      ' ',
+    )).toBeNull()
   })
 })

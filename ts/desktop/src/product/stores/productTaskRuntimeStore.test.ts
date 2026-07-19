@@ -121,6 +121,53 @@ describe('product task runtime store', () => {
     expect(runtime.entries[2]).toEqual(expect.objectContaining({ kind: 'workspace', phase: 'completed' }))
   })
 
+  it('keeps a bounded opaque run activity tree separate from the message transcript', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    const parentId = `activity_${'a'.repeat(32)}`
+    const childId = `activity_${'b'.repeat(32)}`
+
+    store.handleEvent('task-run-tree', {
+      type: 'activity',
+      id: parentId,
+      kind: 'workspace',
+      phase: 'started',
+      summary: '正在整理任务计划',
+    })
+    store.handleEvent('task-run-tree', {
+      type: 'activity',
+      id: childId,
+      parentId,
+      kind: 'subtask',
+      phase: 'running',
+      summary: '正在协同处理事项',
+      progress: { completed: 1, total: 2 },
+    })
+    store.handleEvent('task-run-tree', {
+      type: 'activity',
+      id: childId,
+      parentId,
+      kind: 'subtask',
+      phase: 'completed',
+      summary: '已完成协同事项',
+      progress: { completed: 2, total: 2 },
+    })
+
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-run-tree']!
+    expect(runtime.runActivities).toEqual([
+      expect.objectContaining({ id: parentId, summary: '正在整理任务计划', phase: 'started' }),
+      expect.objectContaining({
+        id: childId,
+        parentId,
+        summary: '已完成协同事项',
+        progress: { completed: 2, total: 2 },
+      }),
+    ])
+    expect(runtime.entries).toEqual([])
+
+    expect(store.sendText('task-run-tree', '开始下一项')).toBe(true)
+    expect(useProductTaskRuntimeStore.getState().tasks['task-run-tree']?.runActivities).toEqual([])
+  })
+
   it('replaces completed live entries with the canonical thread snapshot', async () => {
     apiMocks.getThread
       .mockResolvedValueOnce({ taskId: 'task-complete', entries: [] })

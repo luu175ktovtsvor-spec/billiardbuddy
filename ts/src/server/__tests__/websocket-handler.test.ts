@@ -9,6 +9,7 @@ import {
   closeSessionConnection,
   getActiveSessionIds,
   handleWebSocket,
+  sendToSession,
   translateCliMessage,
   type WebSocketData,
 } from '../ws/handler.js'
@@ -407,12 +408,21 @@ describe('WebSocket handler product error projection', () => {
     })
 
     const events = ws.sent.map((payload) => JSON.parse(payload))
-    expect(events).toEqual([
-      { type: 'connected' },
-      { type: 'status', state: 'working' },
-      { type: 'activity', kind: 'command', phase: 'running' },
-      { type: 'activity', kind: 'tool', phase: 'completed' },
-    ])
+    expect(events).toHaveLength(4)
+    expect(events[0]).toEqual({ type: 'connected' })
+    expect(events[1]).toEqual({ type: 'status', state: 'working' })
+    expect(events[2]).toMatchObject({
+      id: expect.stringMatching(/^activity_[a-f0-9]{32}$/),
+      kind: 'command',
+      phase: 'running',
+      summary: '正在处理任务操作',
+    })
+    expect(events[3]).toMatchObject({
+      id: events[2].id,
+      kind: 'command',
+      phase: 'completed',
+      summary: '已完成任务操作',
+    })
     const serialized = JSON.stringify(events)
     expect(serialized).not.toContain(sessionId)
     expect(serialized).not.toContain(privateThinking)
@@ -420,6 +430,138 @@ describe('WebSocket handler product error projection', () => {
     expect(serialized).not.toContain(privateToolResult)
     expect(serialized).not.toContain('Bash')
     expect(serialized).not.toContain('private-tool-id')
+  })
+
+  it('uses the opaque activity tree only for product sockets and keeps Core clients unchanged', () => {
+    const productSessionId = `product-tree-${crypto.randomUUID()}`
+    const coreSessionId = `core-tree-${crypto.randomUUID()}`
+    const productWs = makeClientSocket(productSessionId, 'product')
+    const coreWs = makeClientSocket(coreSessionId)
+    const productTaskId = `task-${productSessionId}`
+    const privateToolUseId = 'PRIVATE_TOOL_USE_ID'
+    const privateParentToolUseId = 'PRIVATE_PARENT_TOOL_USE_ID'
+    const privateTeamName = 'PRIVATE_TEAM_NAME'
+    const privateTaskId = 'PRIVATE_BACKGROUND_TASK_ID'
+    const privatePath = '/Users/private/task-output.txt'
+    const privateMessage = `PRIVATE_MESSAGE ${privatePath}`
+
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    handleWebSocket.open(productWs)
+    handleWebSocket.open(coreWs)
+
+    expect(sendToSession(productSessionId, {
+      type: 'content_start',
+      blockType: 'tool_use',
+      toolName: 'Bash',
+      toolUseId: privateToolUseId,
+      parentToolUseId: privateParentToolUseId,
+    })).toBe(true)
+    sendToSession(productSessionId, {
+      type: 'tool_use_complete',
+      toolName: 'Bash',
+      toolUseId: privateToolUseId,
+      parentToolUseId: privateParentToolUseId,
+      input: { command: `cat ${privatePath}`, prompt: 'PRIVATE_PROMPT' },
+    })
+    sendToSession(productSessionId, {
+      type: 'tool_result',
+      toolUseId: privateToolUseId,
+      parentToolUseId: privateParentToolUseId,
+      content: { stdout: 'PRIVATE_TOOL_RESULT', path: privatePath },
+      isError: false,
+    })
+    sendToSession(productSessionId, {
+      type: 'team_update',
+      teamName: privateTeamName,
+      members: [
+        { agentId: 'PRIVATE_AGENT_A', role: 'PRIVATE_ROLE', status: 'completed', currentTask: privatePath },
+        { agentId: 'PRIVATE_AGENT_B', role: 'PRIVATE_ROLE', status: 'running', currentTask: privateMessage },
+      ],
+    })
+    sendToSession(productSessionId, {
+      type: 'system_notification',
+      subtype: 'task_progress',
+      message: privateMessage,
+      data: {
+        task_id: privateTaskId,
+        tool_use_id: privateParentToolUseId,
+        prompt: 'PRIVATE_PROMPT',
+        output_file: privatePath,
+      },
+    })
+
+    const productEvents = productWs.sent.map((payload) => JSON.parse(payload))
+    expect(productEvents[0]).toEqual({ type: 'connected' })
+    const activities = productEvents.filter((event) => event.type === 'activity')
+    expect(activities).toHaveLength(5)
+    const [started, running, completed, team, backgroundTask] = activities
+    const toolActivityId = started.id
+    const toolParentId = started.parentId
+    expect(toolActivityId).toMatch(/^activity_[a-f0-9]{32}$/)
+    expect(toolParentId).toMatch(/^activity_[a-f0-9]{32}$/)
+    expect(started).toMatchObject({
+      kind: 'command',
+      phase: 'started',
+      summary: '正在处理任务操作',
+    })
+    expect(running).toMatchObject({
+      id: toolActivityId,
+      parentId: toolParentId,
+      kind: 'command',
+      phase: 'running',
+      summary: '正在处理任务操作',
+    })
+    expect(completed).toMatchObject({
+      id: toolActivityId,
+      parentId: toolParentId,
+      kind: 'command',
+      phase: 'completed',
+      summary: '已完成任务操作',
+    })
+    expect(team).toMatchObject({
+      kind: 'subtask',
+      phase: 'running',
+      summary: '正在协同处理事项',
+      progress: { completed: 1, total: 2 },
+    })
+    expect(backgroundTask).toMatchObject({
+      kind: 'subtask',
+      phase: 'running',
+      summary: '正在协同处理事项',
+      parentId: toolParentId,
+    })
+
+    const productSerialized = JSON.stringify(productEvents)
+    for (const secret of [
+      productSessionId,
+      productTaskId,
+      privateToolUseId,
+      privateParentToolUseId,
+      privateTeamName,
+      privateTaskId,
+      privatePath,
+      privateMessage,
+      'PRIVATE_PROMPT',
+      'PRIVATE_TOOL_RESULT',
+      'PRIVATE_AGENT_A',
+      'PRIVATE_ROLE',
+      'Bash',
+    ]) {
+      expect(productSerialized).not.toContain(secret)
+    }
+
+    const rawCoreEvent = {
+      type: 'tool_use_complete' as const,
+      toolName: 'Bash',
+      toolUseId: privateToolUseId,
+      parentToolUseId: privateParentToolUseId,
+      input: { command: `cat ${privatePath}` },
+    }
+    expect(sendToSession(coreSessionId, rawCoreEvent)).toBe(true)
+    expect(coreWs.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: 'connected', sessionId: coreSessionId },
+      rawCoreEvent,
+    ])
   })
 
   it('fails closed once when an AskUserQuestion cannot be represented safely', () => {

@@ -44,6 +44,7 @@ type PreviewHostCaptureMessage = {
   v: 1
   type: 'capture'
   kind: 'full' | 'viewport' | 'element'
+  captureId?: string
 }
 
 type PreviewHostPickerMessage = {
@@ -55,11 +56,16 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function isPreviewCaptureId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-zA-Z_-]{16,64}$/.test(value)
+}
+
 function isHostCaptureMessage(payload: unknown): payload is PreviewHostCaptureMessage {
   return isPlainRecord(payload) &&
     payload.v === 1 &&
     payload.type === 'capture' &&
-    (payload.kind === 'full' || payload.kind === 'viewport' || payload.kind === 'element')
+    (payload.kind === 'full' || payload.kind === 'viewport' || payload.kind === 'element') &&
+    (payload.captureId === undefined || isPreviewCaptureId(payload.captureId))
 }
 
 function isHostPickerMessage(payload: unknown): payload is PreviewHostPickerMessage {
@@ -151,7 +157,7 @@ export class ElectronPreviewService {
 
   async message(payload: unknown, renderer?: PreviewWebContentsLike | null): Promise<void> {
     if (isHostCaptureMessage(payload) && renderer) {
-      await this.captureScreenshotToRenderer(payload.kind, renderer)
+      await this.captureScreenshotToRenderer(payload.kind, renderer, payload.captureId)
       return
     }
 
@@ -225,13 +231,18 @@ export class ElectronPreviewService {
     view?.webContents.setZoomFactor?.(this.zoomFactor)
   }
 
-  private async captureScreenshotToRenderer(kind: PreviewHostCaptureMessage['kind'], renderer: PreviewWebContentsLike): Promise<void> {
+  private async captureScreenshotToRenderer(
+    kind: PreviewHostCaptureMessage['kind'],
+    renderer: PreviewWebContentsLike,
+    captureId?: string,
+  ): Promise<void> {
     try {
       renderer.send(ELECTRON_EVENT_CHANNELS.previewEvent, {
         v: 1,
         type: 'screenshot',
         dataUrl: await this.captureNativeDataUrl(),
         kind,
+        ...(captureId ? { captureId } : {}),
       })
     } catch (error) {
       renderer.send(ELECTRON_EVENT_CHANNELS.previewEvent, {

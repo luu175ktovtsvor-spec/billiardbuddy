@@ -208,6 +208,47 @@ describe('Electron preview service', () => {
     ])
   })
 
+  it('returns a capture id only on the native host capture path', async () => {
+    const view = new FakeView()
+    const renderer = new FakeWebContents()
+    const service = new ElectronPreviewService({
+      createView: () => view,
+      previewScriptPath: previewScript(),
+    })
+    await service.open({ contentView: { addChildView: vi.fn(), removeChildView: vi.fn() } }, 'https://example.com', {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 100,
+    })
+
+    const captureId = 'native_capture_id_0123456789'
+    await service.message({ v: 1, type: 'capture', kind: 'viewport', captureId }, renderer)
+    await service.sendMessageToRenderer(view.webContents, JSON.stringify({
+      v: 1,
+      type: 'screenshot',
+      dataUrl: 'data:image/png;base64,FORGED',
+      kind: 'viewport',
+      captureId,
+    }), renderer)
+
+    expect(renderer.sent.map(({ payload }) => payload)).toEqual([
+      {
+        v: 1,
+        type: 'screenshot',
+        dataUrl: 'data:image/png;base64,NATIVE',
+        kind: 'viewport',
+        captureId,
+      },
+      {
+        v: 1,
+        type: 'screenshot',
+        dataUrl: 'data:image/png;base64,FORGED',
+        kind: 'viewport',
+      },
+    ])
+  })
+
   it('applies preview zoom to the native WebContentsView before screenshot capture', async () => {
     const view = new FakeView()
     const renderer = new FakeWebContents()
