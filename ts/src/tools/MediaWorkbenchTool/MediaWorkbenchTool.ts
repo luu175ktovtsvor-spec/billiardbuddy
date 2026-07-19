@@ -110,31 +110,92 @@ function requestFor(input: z.infer<InputSchema>): { method: string; path: string
   }
 }
 
-function sanitizeToolResult(value: Record<string, unknown>): Record<string, unknown> {
-  const project = value.project
-  if (!project || typeof project !== 'object' || Array.isArray(project)) return value
-  const record = project as Record<string, unknown>
-  if (record.kind !== 'image') return value
-  const references = Array.isArray(record.reference_images) && record.reference_images.length > 0
-    ? record.reference_images.length
-    : typeof record.reference_image_count === 'number'
-      ? record.reference_image_count
-      : 0
-  const outputs = Array.isArray(record.outputs)
-    ? record.outputs.map(output => {
-        if (!output || typeof output !== 'object' || Array.isArray(output)) return output
-        const { data_url: _dataUrl, ...safe } = output as Record<string, unknown>
-        return safe
-      })
-    : []
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function sanitizeProject(project: Record<string, unknown>): Record<string, unknown> {
+  const {
+    workspace_root: _workspaceRoot,
+    error: _error,
+    ...projectWithoutWorkspace
+  } = project
+  if (project.kind === 'image') {
+    const {
+      reference_images: referenceImages,
+      reference_image_assets: _referenceAssets,
+      outputs: rawOutputs,
+      ...safeProject
+    } = projectWithoutWorkspace
+    const references = Array.isArray(referenceImages) && referenceImages.length > 0
+      ? referenceImages.length
+      : typeof project.reference_image_count === 'number'
+        ? project.reference_image_count
+        : 0
+    const outputs = Array.isArray(rawOutputs)
+      ? rawOutputs.map(output => {
+          const record = asRecord(output)
+          if (!record) return output
+          const {
+            data_url: _dataUrl,
+            asset_path: _assetPath,
+            url: _url,
+            ...safeOutput
+          } = record
+          return safeOutput
+        })
+      : []
+    return { ...safeProject, reference_image_count: references, outputs }
+  }
+
+  if (project.kind === 'video') {
+    const { sources: rawSources, output_path: _outputPath, ...safeProject } = projectWithoutWorkspace
+    const sources = Array.isArray(rawSources)
+      ? rawSources.map(source => {
+          const record = asRecord(source)
+          if (!record) return source
+          const { path: _path, ...safeSource } = record
+          return safeSource
+        })
+      : []
+    return { ...safeProject, sources }
+  }
+
+  return projectWithoutWorkspace
+}
+
+function sanitizeTask(task: Record<string, unknown>): Record<string, unknown> {
+  const {
+    remote_task_id: _remoteTaskId,
+    idempotency_key: _idempotencyKey,
+    error: _error,
+    result: rawResult,
+    ...safeTask
+  } = task
+  const result = asRecord(rawResult)
+  if (!result) return safeTask
+  const {
+    output_path: _outputPath,
+    temporary_output: _temporaryOutput,
+    ...safeResult
+  } = result
+  return { ...safeTask, result: safeResult }
+}
+
+/**
+ * Tool output is sent back into the Agent context. Keep the project state that
+ * supports the next media action, but never expose local paths, reference-image
+ * bytes, paid-task credentials, or raw process errors to that context.
+ */
+export function sanitizeMediaWorkbenchResult(value: Record<string, unknown>): Record<string, unknown> {
+  const project = asRecord(value.project)
+  const task = asRecord(value.task)
   return {
     ...value,
-    project: {
-      ...record,
-      reference_images: undefined,
-      reference_image_count: references,
-      outputs,
-    },
+    ...(project ? { project: sanitizeProject(project) } : {}),
+    ...(task ? { task: sanitizeTask(task) } : {}),
   }
 }
 
@@ -195,7 +256,7 @@ export const MediaWorkbenchTool = buildTool({
       const message = typeof rawResult.message === 'string' ? rawResult.message : `媒体服务返回 HTTP ${response.status}`
       throw new Error(message)
     }
-    const result = sanitizeToolResult(rawResult)
+    const result = sanitizeMediaWorkbenchResult(rawResult)
     return { data: { status: response.status, result } }
   },
   mapToolResultToToolResultBlockParam(output: Output, toolUseID) {

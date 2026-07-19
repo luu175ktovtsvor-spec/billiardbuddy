@@ -60,8 +60,8 @@ beforeEach(() => {
   mediaApiMock.listProjects.mockResolvedValue({ projects: [project] })
   mediaApiMock.getTask.mockResolvedValue({ task })
   mediaApiMock.getToolchain.mockResolvedValue({
-    ffmpeg: { available: true, command: 'ffmpeg' },
-    ffprobe: { available: true, command: 'ffprobe' },
+    ffmpeg: { available: true },
+    ffprobe: { available: true },
   })
   useMediaWorkbenchStore.setState({
     imageProjects: [],
