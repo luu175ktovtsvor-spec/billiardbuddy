@@ -6,7 +6,7 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 5
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 6
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
 
 type DesktopMigrationReport = {
@@ -24,7 +24,6 @@ const SETTINGS_TABS = [
   'general',
   'terminal',
   'mcp',
-  'agents',
   'skills',
   'plugins',
   'computerUse',
@@ -117,7 +116,7 @@ function normalizeEnumKey(
   }
 }
 
-function migrateRetiredActivitySettingsTab(storage: StorageLike, report: DesktopMigrationReport): void {
+function migrateRetiredSettingsTab(storage: StorageLike, report: DesktopMigrationReport): void {
   if (storage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY) === 'activity') {
     storage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, 'general')
     report.migratedKeys.push(ACTIVE_SETTINGS_TAB_STORAGE_KEY)
@@ -179,7 +178,7 @@ export function runDesktopPersistenceMigrations(storage: StorageLike | null = ge
     [...DESKTOP_LOCALES],
     report,
   ))
-  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => migrateRetiredActivitySettingsTab(storage, report))
+  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => migrateRetiredSettingsTab(storage, report))
   runMigrationStep(report, APP_ZOOM_STORAGE_KEY, () => normalizeAppZoomKey(storage, report))
   try {
     storage.setItem(DESKTOP_PERSISTENCE_VERSION_KEY, String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))

@@ -96,7 +96,7 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('unrelated-user-key')).toBe('keep')
   })
 
-  test.each(['providers', 'memory'])('drops retired %s settings tab selections', (retiredTab) => {
+  test.each(['providers', 'memory', 'agents'])('drops retired %s settings tab selections', (retiredTab) => {
     window.localStorage.setItem('billiardbuddy-active-settings-tab', retiredTab)
 
     const report = runDesktopPersistenceMigrations()

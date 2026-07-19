@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import {
   ArrowLeft,
-  Bot,
   ChevronDown,
   Cpu,
   Info,
@@ -66,14 +65,12 @@ const CAPABILITY_SETTINGS: SettingsNavItem[] = [
 const ADVANCED_SETTINGS: SettingsNavItem[] = [
   { tab: 'terminal', icon: <Terminal size={16} /> },
   { tab: 'mcp', icon: <Plug size={16} /> },
-  { tab: 'agents', icon: <Bot size={16} /> },
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   general: 'settings.tab.general',
   terminal: 'settings.tab.terminal',
   mcp: 'settings.tab.mcp',
-  agents: 'settings.tab.agents',
   skills: 'settings.tab.skills',
   plugins: 'settings.tab.plugins',
   computerUse: 'settings.tab.computerUse',
@@ -84,7 +81,6 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   general: '常规',
   terminal: '终端',
   mcp: '外部连接',
-  agents: '协作助手',
   skills: '工作方法',
   plugins: '插件',
   computerUse: '电脑操作',
@@ -227,7 +223,6 @@ export function Settings() {
     if (activeTab === 'general') return <GeneralSettings />
     if (activeTab === 'terminal') return <TerminalSettings showPreferences />
     if (activeTab === 'mcp') return <McpSettings />
-    if (activeTab === 'agents') return <AgentsSettings />
     if (activeTab === 'skills') return <SkillSettings />
     if (activeTab === 'plugins') return <PluginSettings />
     if (activeTab === 'computerUse') return <ComputerUseSettings />
@@ -1467,42 +1462,6 @@ function SettingsCheckboxMark({ checked, disabled = false }: { checked: boolean;
   )
 }
 
-// ─── Agents Settings ──────────────────────────────────────
-
-function AgentsSettings() {
-  const t = useTranslation()
-
-  return (
-    <div className="w-full min-w-0">
-      <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-5 py-5">
-        <div className="flex items-start gap-3">
-          <span className="material-symbols-outlined mt-0.5 text-[22px] text-[var(--color-brand)]">
-            smart_toy
-          </span>
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-              {t('settings.agents.title')}
-            </h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--color-text-secondary)]">
-              {t('settings.agents.description')}
-            </p>
-          </div>
-        </div>
-        <div className="mt-5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-            <span className="material-symbols-outlined text-[18px] text-[var(--color-text-tertiary)]">
-              chat
-            </span>
-            {t('settings.agents.usageTitle')}
-          </div>
-          <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
-            {t('settings.agents.usage')}
-          </p>
-        </div>
-      </section>
-    </div>
-  )
-}
 // ─── Skill Settings ──────────────────────────────────────
 
 function SkillSettings() {

@@ -89,7 +89,6 @@ export type UserSettingsUpdate = Partial<Omit<UserSettings, 'language'>> & {
 }
 
 export type RuntimeSettings = {
-  alwaysThinkingEnabled?: boolean
   skipWebFetchPreflight?: boolean
   network?: {
     aiRequestTimeoutMs?: number

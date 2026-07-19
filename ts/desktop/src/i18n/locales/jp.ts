@@ -473,13 +473,6 @@ export const jp: Record<TranslationKey, string> = {
   'settings.mcp.toast.taskUnavailable': '現在のタスクを利用できないため、MCP サーバーの状態は変更されていません。',
   'settings.mcp.toast.reconnectFailed': 'MCP サーバーの再接続に失敗しました',
 
-  // Settings > Agents
-  'settings.tab.agents': 'エージェント',
-  'settings.agents.title': '協働アシスタント',
-  'settings.agents.description': '会話またはタスクで /agent を入力すると、現在の作業用に準備された協働アシスタントを選択できます。',
-  'settings.agents.usageTitle': '使い方',
-  'settings.agents.usage': '入力欄で /agent と入力し、アシスタントを選択してから、達成したいことを説明してください。',
-
   // Settings > Skills
   'settings.skills.title': '利用可能なワークフロー',
   'settings.skills.description': '業務目標を説明すると、タスクの実行中に適切な支援が自動で選択・適用されます。',

@@ -471,13 +471,6 @@ export const en = {
   'settings.mcp.toast.taskUnavailable': 'The current task is unavailable. The MCP server state was not changed.',
   'settings.mcp.toast.reconnectFailed': 'Failed to reconnect MCP server',
 
-  // Settings > Agents
-  'settings.tab.agents': 'Agents',
-  'settings.agents.title': 'Collaborative assistants',
-  'settings.agents.description': 'Use /agent in a conversation or task to choose a collaborative assistant prepared for the current work.',
-  'settings.agents.usageTitle': 'How to use it',
-  'settings.agents.usage': 'Type /agent in the message box, choose an assistant, then describe what you want to accomplish.',
-
   // Settings > Skills
   'settings.skills.title': 'Available workflows',
   'settings.skills.description': 'Describe the business goal, and the right support is applied automatically while the task runs.',
