@@ -20,6 +20,14 @@ vi.mock('../api/media', () => ({ mediaApi: mediaApiMock }))
 import type { ImageWorkbenchProject, MediaTask } from '../api/media'
 import { useMediaWorkbenchStore } from './mediaWorkbenchStore'
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(nextResolve => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
 function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
   return {
     schema_version: 1,
@@ -56,6 +64,29 @@ beforeEach(() => {
 })
 
 describe('mediaWorkbenchStore', () => {
+  it('keeps a newly created image project when an older refresh finishes last', async () => {
+    const older = image('img_older001', '旧快照')
+    const newer = image('img_newer001', '最新草稿')
+    const firstResponse = deferred<{ projects: ImageWorkbenchProject[] }>()
+    mediaApiMock.listProjects.mockReturnValueOnce(firstResponse.promise)
+    mediaApiMock.createImageProject.mockResolvedValue({ project: newer })
+
+    const firstLoad = useMediaWorkbenchStore.getState().loadProjects('image')
+    await useMediaWorkbenchStore.getState().createImage({ prompt: newer.prompt })
+    expect(useMediaWorkbenchStore.getState()).toMatchObject({
+      imageProjects: [newer],
+      activeImageId: newer.id,
+    })
+
+    firstResponse.resolve({ projects: [older] })
+    await firstLoad
+    expect(useMediaWorkbenchStore.getState()).toMatchObject({
+      imageProjects: [newer],
+      activeImageId: newer.id,
+      loading: false,
+    })
+  })
+
   it('saves an editable image draft and selects the next project after deletion', async () => {
     const first = image('img_first001')
     const second = image('img_second01', '第二张')

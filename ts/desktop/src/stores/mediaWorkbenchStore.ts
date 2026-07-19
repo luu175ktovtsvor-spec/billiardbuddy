@@ -50,6 +50,23 @@ function upsert<T extends { id: string }>(items: T[], item: T): T[] {
   return next
 }
 
+/**
+ * A workbench can request the same persisted project list from its initial
+ * mount, task polling, and explicit refresh at nearly the same time. Keep the
+ * newest response authoritative so an older snapshot cannot make a newly
+ * created project disappear from the current editing surface.
+ */
+const projectLoadVersion: Record<'image' | 'video', number> = {
+  image: 0,
+  video: 0,
+}
+
+function nextProjectLoadVersion(kind: 'image' | 'video'): number {
+  const version = projectLoadVersion[kind] + 1
+  projectLoadVersion[kind] = version
+  return version
+}
+
 async function loadProjectTasks(
   projects: Array<{ task_id?: string }>,
 ): Promise<Record<string, MediaTask | undefined>> {
@@ -72,10 +89,13 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   error: null,
 
   loadProjects: async kind => {
+    const version = nextProjectLoadVersion(kind)
     set({ loading: true, error: null })
     try {
       const { projects } = await mediaApi.listProjects(kind)
+      if (projectLoadVersion[kind] !== version) return
       const projectTasks = await loadProjectTasks(projects)
+      if (projectLoadVersion[kind] !== version) return
       if (kind === 'image') {
         const imageProjects = projects.filter((project): project is ImageWorkbenchProject => project.kind === 'image')
         set(state => ({
@@ -96,9 +116,10 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         }))
       }
     } catch (error) {
+      if (projectLoadVersion[kind] !== version) return
       set({ error: message(error) })
     } finally {
-      set({ loading: false })
+      if (projectLoadVersion[kind] === version) set({ loading: false })
     }
   },
 
@@ -117,6 +138,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     set({ loading: true, error: null })
     try {
       const { project } = await mediaApi.createImageProject(input)
+      nextProjectLoadVersion('image')
       set(state => ({ imageProjects: upsert(state.imageProjects, project), activeImageId: project.id }))
       return project
     } catch (error) {
@@ -154,6 +176,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         count: project.count,
         confirm_unknown_retry: confirmUnknownRetry,
       })
+      nextProjectLoadVersion('image')
       set(state => ({ imageProjects: upsert(state.imageProjects, saved) }))
       return saved
     } catch (error) {
@@ -168,6 +191,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     set({ loading: true, error: null })
     try {
       const { project } = await mediaApi.createVideoProject(input ?? {})
+      nextProjectLoadVersion('video')
       set(state => ({ videoProjects: upsert(state.videoProjects, project), activeVideoId: project.id }))
       return project
     } catch (error) {
@@ -182,6 +206,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     set({ loading: true, error: null })
     try {
       const { project, task } = await mediaApi.addVideoSource(projectId, path)
+      nextProjectLoadVersion('video')
       set(state => ({
         videoProjects: upsert(state.videoProjects, project),
         tasks: { ...state.tasks, [task.id]: task },
@@ -202,6 +227,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         revision: project.revision,
         clips: project.timeline,
       })
+      nextProjectLoadVersion('video')
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
     } catch (error) {
@@ -249,6 +275,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     set({ loading: true, error: null })
     try {
       await mediaApi.deleteProject(projectId)
+      nextProjectLoadVersion(kind)
       if (kind === 'image') {
         set(state => {
           const imageProjects = state.imageProjects.filter(project => project.id !== projectId)
