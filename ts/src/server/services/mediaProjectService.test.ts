@@ -721,6 +721,73 @@ describe('MediaProjectService video projects', () => {
     expect(project.sources.map(source => source.path).sort()).toEqual([firstPath, secondPath].sort())
   })
 
+  test('serializes timeline edits and render startup behind a source import', async () => {
+    const mediaRoot = await root()
+    const firstPath = join(mediaRoot, 'first.mp4')
+    const secondPath = join(mediaRoot, 'second.mp4')
+    const outputPath = join(mediaRoot, 'output.mp4')
+    await Promise.all([writeFile(firstPath, 'first'), writeFile(secondPath, 'second')])
+
+    let notifySecondProbeStarted!: () => void
+    let releaseSecondProbe!: () => void
+    const secondProbeStarted = new Promise<void>(resolve => { notifySecondProbeStarted = resolve })
+    const secondProbeRelease = new Promise<void>(resolve => { releaseSecondProbe = resolve })
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      runProcess: async command => {
+        if (command.includes('-show_streams')) {
+          if (command.at(-1) === secondPath) {
+            notifySecondProbeStarted()
+            await secondProbeRelease
+          }
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'video' }] }),
+            stderr: '',
+          }
+        }
+        if (command.includes('-version') || command.includes('-encoders')) {
+          return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
+        }
+        return { exitCode: 1, stdout: '', stderr: 'unexpected render' }
+      },
+    })
+    const created = await service.createVideoProject({})
+    const initial = await service.addVideoSource(created.id, { path: firstPath })
+    const importing = service.addVideoSource(created.id, { path: secondPath })
+    await secondProbeStarted
+
+    const timelineUpdate = service.updateVideoTimeline(created.id, {
+      revision: initial.project.revision,
+      clips: [{ ...initial.project.timeline[0]!, in_ms: 100, out_ms: 900 }],
+    })
+    const rendering = service.renderVideo(created.id, {
+      revision: initial.project.revision,
+      output_path: outputPath,
+    })
+
+    const duringImport = await service.getProject(created.id)
+    expect(duringImport.kind).toBe('video')
+    if (duringImport.kind !== 'video') throw new Error('wrong kind')
+    expect(duringImport).toMatchObject({ state: 'ready', revision: initial.project.revision })
+    expect(duringImport.sources).toHaveLength(1)
+
+    releaseSecondProbe()
+    const [imported, timeline, render] = await Promise.allSettled([importing, timelineUpdate, rendering])
+    expect(imported.status).toBe('fulfilled')
+    expect(timeline).toMatchObject({ status: 'rejected', reason: { code: 'REVISION_CONFLICT' } })
+    expect(render).toMatchObject({ status: 'rejected', reason: { code: 'REVISION_CONFLICT' } })
+
+    const latest = await service.getProject(created.id)
+    expect(latest.kind).toBe('video')
+    if (latest.kind !== 'video') throw new Error('wrong kind')
+    expect(latest).toMatchObject({ state: 'ready', revision: initial.project.revision + 1 })
+    expect(latest.sources.map(source => source.path).sort()).toEqual([firstPath, secondPath].sort())
+    expect(latest.timeline).toHaveLength(2)
+    expect(latest.timeline[0]).toEqual(initial.project.timeline[0])
+    expect(latest.timeline.some(clip => clip.in_ms === 100)).toBe(false)
+  })
+
   test('promotes a committing render when the final file exists and the task partial is gone', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')

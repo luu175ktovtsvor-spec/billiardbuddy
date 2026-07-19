@@ -1380,6 +1380,10 @@ export class MediaProjectService {
   }
 
   async updateVideoTimeline(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
+    return await this.withVideoProjectMutation(projectId, () => this.updateVideoTimelineSerial(projectId, raw))
+  }
+
+  private async updateVideoTimelineSerial(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
     const input = updateVideoTimelineInputSchema.parse(raw)
     const project = await this.getProject(projectId)
     if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
@@ -1401,6 +1405,10 @@ export class MediaProjectService {
   }
 
   async renderVideo(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
+    return await this.withVideoProjectMutation(projectId, () => this.renderVideoSerial(projectId, raw))
+  }
+
+  private async renderVideoSerial(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
     if (this.renderStarting) {
       throw new MediaServiceError('另一个视频正在准备导出，请稍后重试', 409, 'VIDEO_RENDER_BUSY')
     }
