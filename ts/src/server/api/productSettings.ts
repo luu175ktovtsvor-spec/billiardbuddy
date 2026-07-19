@@ -1,11 +1,11 @@
 /**
- * Settings REST API
+ * Product settings REST API
  *
- * GET/PUT /api/settings/user    — 普通产品偏好
- * GET/PUT /api/settings/runtime — Agent 运行时偏好
- * GET/PUT /api/settings/desktop — 桌面宿主偏好
- * GET  /api/settings/output-styles
- * PUT  /api/settings/output-style
+ * GET/PATCH /api/product/settings/user    — 普通产品偏好
+ * GET/PATCH /api/product/settings/runtime — Agent 运行时偏好
+ * GET/PATCH /api/product/settings/desktop — 桌面宿主偏好
+ * GET       /api/product/settings/output-styles
+ * PATCH     /api/product/settings/output-style
  */
 
 import { SettingsService } from '../services/settingsService.js'
@@ -38,7 +38,7 @@ type OutputStyleListItem = {
 
 const DEFAULT_OUTPUT_STYLE_LABEL = 'Default'
 const DEFAULT_OUTPUT_STYLE_DESCRIPTION =
-  'Claude completes coding tasks efficiently and provides concise responses'
+  'BilliardBuddy completes tasks efficiently and provides concise responses'
 
 const PRODUCT_THEME_MODES = ['light', 'dark', 'system'] as const
 const CHAT_SEND_BEHAVIORS = ['enter', 'modifierEnter'] as const
@@ -67,23 +67,21 @@ const RUNTIME_SETTING_KEYS = [
 ] as const
 const DESKTOP_SETTING_KEYS = ['desktopTerminal', 'updateProxy'] as const
 
-export async function handleSettingsApi(
+export async function handleProductSettingsApi(
   req: Request,
   url: URL,
   segments: string[],
 ): Promise<Response> {
   try {
-    const sub = segments[2] // 'user' | 'runtime' | 'desktop' | undefined
+    const sub = segments[3] // 'user' | 'runtime' | 'desktop' | undefined
 
-    // ── /api/settings/* ─────────────────────────────────────────────────
-    const method = req.method
+    if (segments[4]) {
+      throw ApiError.notFound('未知产品设置资源')
+    }
 
     switch (sub) {
       case undefined:
-      case 'project':
-        // The generic merged/project endpoints previously mirrored the full
-        // Core settings files to the renderer. No product client consumes them.
-        throw ApiError.notFound('This settings endpoint has been retired')
+        throw ApiError.notFound('未知产品设置资源')
 
       case 'user':
         return await handleUserSettings(req)
@@ -116,7 +114,7 @@ async function handleUserSettings(req: Request): Promise<Response> {
     return Response.json(projectUserPreferences(settings))
   }
 
-  if (req.method === 'PUT') {
+  if (req.method === 'PATCH') {
     const update = validateUserPreferenceUpdate(await parseJsonBody(req))
     await settingsService.mutateUserSettings(current =>
       mergeUserPreferenceUpdate(current, update),
@@ -132,7 +130,7 @@ async function handleRuntimeSettings(req: Request): Promise<Response> {
     return Response.json(projectRuntimeSettings(await settingsService.getUserSettings()))
   }
 
-  if (req.method === 'PUT') {
+  if (req.method === 'PATCH') {
     const update = validateRuntimeSettingsUpdate(await parseJsonBody(req))
     await settingsService.mutateUserSettings(current =>
       mergeRuntimeSettingsUpdate(current, update),
@@ -149,7 +147,7 @@ async function handleDesktopSettings(req: Request): Promise<Response> {
     return Response.json(projectDesktopSettings(await settingsService.getUserSettings()))
   }
 
-  if (req.method === 'PUT') {
+  if (req.method === 'PATCH') {
     const update = validateDesktopSettingsUpdate(await parseJsonBody(req))
     await settingsService.mutateUserSettings(current =>
       mergeDesktopSettingsUpdate(current, update),
@@ -509,7 +507,7 @@ async function handleOutputStyles(req: Request, url: URL): Promise<Response> {
 }
 
 async function handleOutputStyle(req: Request): Promise<Response> {
-  if (req.method !== 'PUT') {
+  if (req.method !== 'PATCH') {
     throw methodNotAllowed(req.method)
   }
 

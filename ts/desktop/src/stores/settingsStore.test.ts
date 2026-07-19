@@ -71,8 +71,8 @@ describe('settingsStore update proxy persistence', () => {
   })
 
   it('defaults old user settings to automatic system proxy mode', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -91,8 +91,8 @@ describe('settingsStore update proxy persistence', () => {
 
   it('persists manual update proxy settings trimmed', async () => {
     const updateDesktop = vi.fn().mockResolvedValue({})
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateDesktop,
       },
@@ -125,8 +125,8 @@ describe('settingsStore network persistence', () => {
   })
 
   it('defaults old user settings to 600s direct network settings', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -148,8 +148,8 @@ describe('settingsStore network persistence', () => {
 
   it('persists direct network proxy mode without keeping stale proxy URLs active', async () => {
     const updateRuntime = vi.fn().mockResolvedValue({})
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateRuntime,
       },
@@ -184,8 +184,8 @@ describe('settingsStore network persistence', () => {
 
   it('persists trimmed manual network proxy and clamps timeout', async () => {
     const updateRuntime = vi.fn().mockResolvedValue({})
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateRuntime,
       },
@@ -220,8 +220,8 @@ describe('settingsStore network persistence', () => {
 
   it('persists the chat send behavior preference and normalizes invalid values', async () => {
     const updateUser = vi.fn().mockResolvedValue({})
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({
           chatSendBehavior: 'unexpected',
         }),
@@ -429,8 +429,8 @@ describe('settingsStore desktop notification persistence', () => {
   })
 
   it('defaults desktop notifications to explicit opt-in', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateUser: vi.fn(),
       },
@@ -441,8 +441,8 @@ describe('settingsStore desktop notification persistence', () => {
   })
 
   it('keeps desktop notifications disabled when user settings do not opt in', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -465,8 +465,8 @@ describe('settingsStore desktop notification persistence', () => {
         }),
     )
 
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateUser,
       },
@@ -503,8 +503,8 @@ describe('settingsStore thinking persistence', () => {
   it('persists both enabled and disabled thinking states explicitly', async () => {
     const updateRuntime = vi.fn().mockResolvedValue({})
 
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateRuntime,
       },
@@ -520,8 +520,8 @@ describe('settingsStore thinking persistence', () => {
   })
 
   it('rolls back the thinking toggle when persistence fails', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateRuntime: vi.fn().mockRejectedValue(new Error('save failed')),
       },
@@ -542,8 +542,8 @@ describe('settingsStore Auto-dream persistence', () => {
   })
 
   it('keeps Auto-dream off unless user settings opt in', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -560,8 +560,8 @@ describe('settingsStore Auto-dream persistence', () => {
   it('hydrates and persists Auto-dream explicitly', async () => {
     const updateUser = vi.fn().mockResolvedValue({})
 
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({ autoDreamEnabled: true }),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -588,8 +588,8 @@ describe('settingsStore desktop terminal shell persistence', () => {
   })
 
   it('hydrates desktop terminal settings from the desktop endpoint and falls back to system defaults', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({
@@ -619,8 +619,8 @@ describe('settingsStore desktop terminal shell persistence', () => {
   it('persists desktop terminal settings explicitly', async () => {
     const updateDesktop = vi.fn().mockResolvedValue({ ok: true })
 
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn(),
         updateDesktop,
       },
@@ -655,8 +655,8 @@ describe('settingsStore theme persistence', () => {
   })
 
   it('falls back to follow-system when user settings have no theme', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
@@ -675,8 +675,8 @@ describe('settingsStore theme persistence', () => {
   })
 
   it('hydrates an explicit dark theme from user settings', async () => {
-    vi.doMock('../api/settings', () => ({
-      settingsApi: {
+    vi.doMock('../product/api/settings', () => ({
+      productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({ theme: 'dark' }),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),

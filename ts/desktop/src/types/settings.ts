@@ -1,4 +1,4 @@
-// Source: src/server/api/settings.ts
+// Source: src/server/api/productSettings.ts
 
 export const THEME_MODES = ['light', 'dark', 'system'] as const
 export type ThemeMode = (typeof THEME_MODES)[number]

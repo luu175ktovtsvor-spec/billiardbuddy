@@ -21,6 +21,7 @@ import {
   productScheduledTaskService,
   type ProductScheduledTaskService,
 } from '../product/scheduledTaskService.js'
+import { handleProductSettingsApi } from './productSettings.js'
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
@@ -51,6 +52,10 @@ export async function handleProductApi(
   scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
 ): Promise<Response> {
   try {
+    if (segments[2] === 'settings') {
+      return await handleProductSettingsApi(req, url, segments)
+    }
+
     if (segments[2] === 'scheduled-tasks') {
       return await handleProductScheduledTasksApi(req, url, segments, scheduledTasks)
     }

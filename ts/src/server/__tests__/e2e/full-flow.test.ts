@@ -101,18 +101,18 @@ describe('E2E: Full Flow', () => {
   // =============================================
 
   it('should get empty settings initially', async () => {
-    const { data } = await api('GET', '/api/settings/user')
+    const { data } = await api('GET', '/api/product/settings/user')
     expect(data).toEqual({})
   })
 
   it('should update and read user settings', async () => {
-    const { status } = await api('PUT', '/api/settings/user', {
+    const { status } = await api('PATCH', '/api/product/settings/user', {
       theme: 'dark',
       webSearch: { enabled: false },
     })
     expect(status).toBe(200)
 
-    const { data } = await api('GET', '/api/settings/user')
+    const { data } = await api('GET', '/api/product/settings/user')
     expect(data.theme).toBe('dark')
     expect(data.webSearch).toEqual({ enabled: false })
   })
