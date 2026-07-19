@@ -69,7 +69,6 @@ function setActiveProductTask(task = makeProductTask()) {
       title: task.title,
       type: 'product-task',
       taskId: task.id,
-      status: 'idle',
     }],
     activeTabId: `__product_task__${task.id}`,
   })
@@ -138,7 +137,6 @@ describe('TopBar product task navigation', () => {
         sessionId: '__product_tasks__',
         title: '任务中心',
         type: 'product-tasks',
-        status: 'idle',
       }],
       activeTabId: '__product_tasks__',
     })

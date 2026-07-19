@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
-import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
+import { useTabStore } from '../../stores/tabStore'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
@@ -8,12 +8,6 @@ import { VideoStudio } from '../media/VideoStudio'
 import { ProductShell } from '../../product/components/ProductShell'
 import { ProductTaskPage } from '../../product/components/ProductTaskPage'
 import { previewBridge } from '../../lib/previewBridge'
-
-const PRODUCT_TASKS_TAB_TITLE = '任务中心'
-
-function isLegacyTabType(type: string | undefined): boolean {
-  return type === 'session' || type === 'workbench'
-}
 
 export function ContentRouter() {
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -26,22 +20,6 @@ export function ContentRouter() {
     if (activeTabType === 'product-task') return
     void previewBridge.close()
   }, [activeTabType])
-
-  useEffect(() => {
-    const legacyTabIds = tabs
-      .filter((tab) => isLegacyTabType(tab.type))
-      .map((tab) => tab.sessionId)
-    if (legacyTabIds.length === 0) return
-
-    const activeWasLegacy = activeTabId !== null && legacyTabIds.includes(activeTabId)
-    const store = useTabStore.getState()
-    for (const tabId of legacyTabIds) {
-      store.closeTab(tabId)
-    }
-    if (activeWasLegacy) {
-      store.openTab(PRODUCT_TASKS_TAB_ID, PRODUCT_TASKS_TAB_TITLE, 'product-tasks')
-    }
-  }, [activeTabId, tabs])
 
   let page: ReactNode = null
   if (!activeTabId || !activeTabType) {
@@ -68,14 +46,9 @@ export function ContentRouter() {
     page = activeTab?.taskId
       ? <ProductTaskPage taskId={activeTab.taskId} />
       : <ProductShell />
-  } else if (isLegacyTabType(activeTabType)) {
-    // Render a product surface while the effect above removes every stale
-    // legacy tab. A raw Core id must never select a renderer surface.
-    page = <ProductShell page="new-task" />
   } else if (activeTabType !== 'terminal') {
-    // A persisted or plugin-provided unknown tab must not fall back to the
-    // legacy Core-session surface, which would treat its tab id as a session
-    // id. Return users to the product shell instead.
+    // A persisted or plugin-provided unknown tab must not select a task
+    // runtime by treating its tab id as public task identity.
     page = <ProductShell page="new-task" />
   }
 

@@ -62,7 +62,6 @@ describe('DesktopSidebar', () => {
         sessionId: PRODUCT_TASKS_TAB_ID,
         title: '任务中心',
         type: 'product-tasks',
-        status: 'idle',
       }],
     })
   })

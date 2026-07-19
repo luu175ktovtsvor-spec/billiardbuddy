@@ -27,7 +27,6 @@ function productTaskTab(taskId = 'task-current'): Tab {
     sessionId: `__product_task__${taskId}`,
     title: '当前任务',
     type: 'product-task',
-    status: 'idle',
     taskId,
   }
 }
@@ -67,7 +66,6 @@ describe('current product task context', () => {
       sessionId: '__settings__',
       title: '设置',
       type: 'settings',
-      status: 'idle',
     }
 
     expect(resolveCurrentProductTaskContext(
@@ -87,7 +85,6 @@ describe('current product task context', () => {
       sessionId: '__settings__',
       title: '设置',
       type: 'settings',
-      status: 'idle',
     }
 
     expect(resolveCurrentProductTaskContext(
@@ -102,7 +99,6 @@ describe('current product task context', () => {
       sessionId: '__settings__',
       title: '设置',
       type: 'settings',
-      status: 'idle',
     }
 
     expect(resolveCurrentProductTaskContext(
@@ -113,13 +109,12 @@ describe('current product task context', () => {
     )).toEqual({})
   })
 
-  it('never treats a legacy Core tab as a product task context', () => {
+  it('never treats an unknown tab as a product task context', () => {
     const legacyTab = {
-      sessionId: 'core-session-1',
-      title: '旧会话',
-      type: 'session',
-      status: 'idle',
-    } as Tab
+      sessionId: '__unknown__',
+      title: '未知页面',
+      type: 'unknown',
+    } as unknown as Tab
 
     expect(resolveCurrentProductTaskId([legacyTab], legacyTab.sessionId)).toBeUndefined()
     expect(resolveCurrentProductTaskContext([legacyTab], legacyTab.sessionId, [task()])).toEqual({})

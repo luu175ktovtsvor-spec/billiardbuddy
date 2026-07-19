@@ -49,7 +49,6 @@ function setActiveProductTask(
       title: taskId,
       type: 'product-task',
       taskId,
-      status: 'idle',
     }],
     activeTabId: `__product_task__${taskId}`,
   })
@@ -221,12 +220,11 @@ describe('useKeyboardShortcuts', () => {
   it('does not stop a runtime when the active tab is not a product task', () => {
     useTabStore.setState({
       tabs: [{
-        sessionId: 'legacy-session',
-        title: '旧会话',
-        type: 'session',
-        status: 'running',
+        sessionId: '__settings__',
+        title: '设置',
+        type: 'settings',
       }],
-      activeTabId: 'legacy-session',
+      activeTabId: '__settings__',
     })
     useProductTaskRuntimeStore.setState({
       tasks: { 'legacy-session': makeRuntime('working') },

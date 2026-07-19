@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   openTab: vi.fn(),
   tabState: {
     activeTabId: null as string | null,
-    tabs: [] as Array<{ sessionId: string; title: string; type: string; status: string }>,
+    tabs: [] as Array<{ sessionId: string; title: string; type: string }>,
   },
 }))
 
@@ -106,7 +106,7 @@ describe('AppShell desktop boot flow', () => {
   it('keeps settings inside the product shell instead of swapping to the retired renderer', async () => {
     mocks.tabState.activeTabId = '__settings__'
     mocks.tabState.tabs = [
-      { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+      { sessionId: '__settings__', title: 'Settings', type: 'settings' },
     ]
 
     render(<AppShell />)
@@ -135,10 +135,10 @@ describe('AppShell desktop boot flow', () => {
     expect(screen.queryByTestId('startup-error')).not.toBeInTheDocument()
   })
 
-  it('completes tab restoration without using a legacy active session tab', async () => {
-    mocks.tabState.activeTabId = 'session-1'
+  it('completes tab restoration with a product task tab', async () => {
+    mocks.tabState.activeTabId = '__product_task__task-1'
     mocks.tabState.tabs = [
-      { sessionId: 'session-1', title: 'Existing session', type: 'session', status: 'idle' },
+      { sessionId: '__product_task__task-1', title: 'Existing task', type: 'product-task' },
     ]
 
     render(<AppShell />)
