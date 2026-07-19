@@ -20,7 +20,6 @@ import { ProviderService } from '../services/providerService.js'
 import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.js'
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
-import { projectMemorySavedData } from '../api/productMessageProjection.js'
 import { projectProductTaskUserContent } from '../product/taskAttachmentProjection.js'
 import {
   ProductTaskAgentCoreAdapter,
@@ -1326,15 +1325,6 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         // Composer asks for name-only commands after a user types '/'. Do not
         // push a catalog while opening or initializing a normal session.
         return []
-      }
-      if (subtype === 'memory_saved') {
-        const data = projectMemorySavedData(cliMsg)
-        if (data.writtenCount === 0) return []
-        return [{
-          type: 'system_notification',
-          subtype: 'memory_saved',
-          data,
-        }]
       }
       if (subtype === 'status') {
         if (cliMsg.status === 'compacting') {
