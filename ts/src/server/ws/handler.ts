@@ -21,6 +21,7 @@ import { isOpenAIOfficialProviderId } from '../services/openaiOfficialProvider.j
 import { isQfGatewayProviderId, qfGatewayConfigured, whenQfGatewayReady } from '../services/qfGatewayProvider.js'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { projectMemorySavedData } from '../api/productMessageProjection.js'
+import { projectServerMessageForProductTask } from '../product/taskEventProjection.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
@@ -153,8 +154,9 @@ function translateCliUsage(usage: unknown): TokenUsage {
 
 export type WebSocketData = {
   sessionId: string
+  productTaskId?: string
   connectedAt: number
-  channel: 'client' | 'sdk'
+  channel: 'client' | 'product' | 'sdk'
   sdkToken: string | null
   serverPort: number
   serverHost: string
@@ -211,7 +213,7 @@ export const handleWebSocket = {
     }
 
     const msg: ServerMessage = { type: 'connected', sessionId }
-    ws.send(JSON.stringify(msg))
+    sendMessage(ws, msg)
     replayPendingPermissionRequests(ws, sessionId)
   },
 
@@ -266,7 +268,7 @@ export const handleWebSocket = {
           break
 
         case 'ping':
-          ws.send(JSON.stringify({ type: 'pong' } satisfies ServerMessage))
+          sendMessage(ws, { type: 'pong' })
           break
 
         default:
@@ -2016,7 +2018,12 @@ function toStreamingFallbackServerMessage(cliMsg: any): ServerMessage {
 }
 
 function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
-  ws.send(JSON.stringify(message))
+  const events = ws.data.channel === 'product'
+    ? projectServerMessageForProductTask(message)
+    : [message]
+  for (const event of events) {
+    ws.send(JSON.stringify(event))
+  }
 }
 
 function sendError(ws: ServerWebSocket<WebSocketData>, code: string) {
@@ -2718,9 +2725,8 @@ async function waitForRuntimeTransitionBeforeUserTurn(
 export function sendToSession(sessionId: string, message: ServerMessage): boolean {
   const clients = activeSessions.get(sessionId)
   if (!clients || clients.size === 0) return false
-  const payload = JSON.stringify(message)
   for (const ws of clients) {
-    ws.send(payload)
+    sendMessage(ws, message)
   }
   return true
 }

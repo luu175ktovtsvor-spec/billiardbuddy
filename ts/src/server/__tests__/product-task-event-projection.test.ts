@@ -1,0 +1,221 @@
+import { describe, expect, it } from 'bun:test'
+import type { ServerMessage } from '../ws/events.js'
+import {
+  projectAskUserQuestions,
+  projectServerMessagesForProductTask,
+} from '../product/taskEventProjection.js'
+
+describe('product task event projection', () => {
+  it('keeps real user-visible task progress while excluding core internals', () => {
+    const rawThinking = 'PRIVATE_THINKING_CHAIN'
+    const rawToolInput = 'PRIVATE_TOOL_INPUT'
+    const rawToolResult = 'PRIVATE_TOOL_RESULT'
+    const rawPermissionDescription = 'PRIVATE_PERMISSION_DESCRIPTION'
+    const rawComputerUsePath = '/private/Application.app'
+    const messages: ServerMessage[] = [
+      { type: 'connected', sessionId: 'core-session-secret' },
+      { type: 'status', state: 'thinking', verb: 'PRIVATE_STATUS_VERB' },
+      { type: 'thinking', text: rawThinking },
+      { type: 'content_start', blockType: 'text' },
+      {
+        type: 'content_delta',
+        text: '这是实际的流式回复。',
+        toolInput: rawToolInput,
+      },
+      {
+        type: 'content_start',
+        blockType: 'tool_use',
+        toolName: 'Bash',
+        toolUseId: 'private-tool-use-id',
+      },
+      {
+        type: 'tool_use_complete',
+        toolName: 'Bash',
+        toolUseId: 'private-tool-use-id',
+        input: { command: rawToolInput },
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'private-tool-use-id',
+        content: { stdout: rawToolResult },
+        isError: false,
+      },
+      {
+        type: 'permission_request',
+        requestId: 'approval-1',
+        toolName: 'Bash',
+        input: { command: rawToolInput },
+        description: rawPermissionDescription,
+      },
+      {
+        type: 'computer_use_permission_request',
+        requestId: 'approval-2',
+        request: {
+          requestId: 'approval-2',
+          reason: 'PRIVATE_COMPUTER_USE_REASON',
+          apps: [{
+            requestedName: 'Private App',
+            resolved: {
+              bundleId: 'com.example.private',
+              displayName: 'Private App',
+            },
+            isSentinel: false,
+            alreadyGranted: false,
+            proposedTier: 'full',
+          }],
+          requestedFlags: { clipboardRead: true },
+          screenshotFiltering: 'none',
+          willHide: [{ bundleId: 'com.example.private', displayName: rawComputerUsePath }],
+        },
+      },
+      {
+        type: 'system_notification',
+        subtype: 'task_progress',
+        message: 'PRIVATE_BACKGROUND_TASK_MESSAGE',
+        data: { prompt: rawThinking },
+      },
+      {
+        type: 'error',
+        code: 'CLI_ERROR',
+        message: 'PRIVATE_RUNTIME_ERROR',
+        retryable: true,
+      },
+      {
+        type: 'message_complete',
+        usage: { input_tokens: 99_999, output_tokens: 12_345 },
+      },
+    ]
+
+    const projected = projectServerMessagesForProductTask(messages)
+
+    expect(projected).toEqual([
+      { type: 'connected' },
+      { type: 'status', state: 'working' },
+      { type: 'status', state: 'working' },
+      { type: 'assistant_text_start' },
+      { type: 'assistant_text_delta', text: '这是实际的流式回复。' },
+      { type: 'activity', kind: 'command', phase: 'started' },
+      { type: 'activity', kind: 'command', phase: 'running' },
+      { type: 'activity', kind: 'tool', phase: 'completed' },
+      { type: 'approval_required', requestId: 'approval-1', kind: 'action' },
+      { type: 'approval_required', requestId: 'approval-2', kind: 'computer_use' },
+      { type: 'activity', kind: 'subtask', phase: 'running' },
+      { type: 'error', code: 'task_failed', retryable: true },
+      { type: 'status', state: 'idle' },
+      { type: 'turn_complete' },
+    ])
+
+    const serialized = JSON.stringify(projected)
+    for (const secret of [
+      'core-session-secret',
+      rawThinking,
+      rawToolInput,
+      rawToolResult,
+      rawPermissionDescription,
+      rawComputerUsePath,
+      'PRIVATE_STATUS_VERB',
+      'PRIVATE_RUNTIME_ERROR',
+      '99999',
+      '12345',
+      'Bash',
+      'private-tool-use-id',
+    ]) {
+      expect(serialized).not.toContain(secret)
+    }
+  })
+
+  it('projects AskUserQuestion through a narrow question schema', () => {
+    const projected = projectServerMessagesForProductTask([{
+      type: 'permission_request',
+      requestId: 'ask-1',
+      toolName: 'AskUserQuestion',
+      input: {
+        questions: [{
+          question: '要先处理哪一项？',
+          header: '需要确认',
+          options: [
+            { label: '整理台账', description: '先核对当天记录', privateValue: 'PRIVATE_OPTION_VALUE' },
+            { label: '联系客户' },
+          ],
+          multiSelect: true,
+          hiddenPrompt: 'PRIVATE_HIDDEN_PROMPT',
+        }],
+        runtimeConfig: 'PRIVATE_RUNTIME_CONFIG',
+      },
+      description: 'PRIVATE_PERMISSION_DESCRIPTION',
+    }])
+
+    expect(projected).toEqual([{
+      type: 'approval_required',
+      requestId: 'ask-1',
+      kind: 'question',
+      questions: [{
+        question: '要先处理哪一项？',
+        header: '需要确认',
+        options: [
+          { label: '整理台账', description: '先核对当天记录' },
+          { label: '联系客户' },
+        ],
+        multiSelect: true,
+      }],
+    }])
+
+    const serialized = JSON.stringify(projected)
+    expect(serialized).not.toContain('PRIVATE_OPTION_VALUE')
+    expect(serialized).not.toContain('PRIVATE_HIDDEN_PROMPT')
+    expect(serialized).not.toContain('PRIVATE_RUNTIME_CONFIG')
+    expect(serialized).not.toContain('PRIVATE_PERMISSION_DESCRIPTION')
+  })
+
+  it('only accepts explicit, bounded AskUserQuestion fields', () => {
+    const questions = projectAskUserQuestions({
+      questions: [
+        null,
+        { question: '' },
+        {
+          question: '有效问题',
+          options: [
+            { label: '' },
+            { label: '有效选项', unsupported: { value: 'discarded' } },
+          ],
+          injected: 'discarded',
+        },
+      ],
+      extra: 'discarded',
+    })
+
+    expect(questions).toEqual([{
+      question: '有效问题',
+      options: [{ label: '有效选项' }],
+    }])
+  })
+
+  it('maps safe business errors and ignores unlisted internal messages', () => {
+    const projected = projectServerMessagesForProductTask([
+      {
+        type: 'error',
+        code: 'CLI_ERROR',
+        message: 'PRIVATE_SIZE_ERROR',
+        businessErrorCode: 'request_too_large',
+      },
+      {
+        type: 'system_notification',
+        subtype: 'runtime_config_changed',
+        message: 'PRIVATE_MODEL_CONFIGURATION',
+        data: { provider: 'PRIVATE_PROVIDER' },
+      },
+      { type: 'permission_mode_changed', mode: 'bypassPermissions' },
+      { type: 'session_title_updated', sessionId: 'private-session', title: '新的任务标题' },
+    ])
+
+    expect(projected).toEqual([
+      { type: 'error', code: 'input_too_large', retryable: false },
+      { type: 'title_updated', title: '新的任务标题' },
+    ])
+    const serialized = JSON.stringify(projected)
+    expect(serialized).not.toContain('PRIVATE_SIZE_ERROR')
+    expect(serialized).not.toContain('PRIVATE_MODEL_CONFIGURATION')
+    expect(serialized).not.toContain('PRIVATE_PROVIDER')
+    expect(serialized).not.toContain('private-session')
+  })
+})

@@ -22,6 +22,7 @@ import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
+import { productTaskService } from './product/taskService.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -141,7 +142,53 @@ export function startServer(port = PORT, host = HOST) {
           return new Response(null, { status: 204, headers: cors.headers })
         }
 
-        // WebSocket upgrade
+        // Product task websocket. The URL and browser-visible protocol are
+        // task-scoped; only this server-side adapter resolves the Core session.
+        if (url.pathname.startsWith('/ws/product/tasks/')) {
+          if (cors.rejected) {
+            return corsRejectedResponse(cors)
+          }
+
+          if (forceAuth) {
+            const authError = await requireAuth(req, url.searchParams.get('token'))
+            if (authError) {
+              return withCors(authError, cors)
+            }
+          }
+
+          const parts = url.pathname.split('/').filter(Boolean)
+          const taskId = parts.length === 4 ? parts[3] || '' : ''
+          if (!taskId || !/^[0-9a-zA-Z_-]{1,64}$/.test(taskId)) {
+            return new Response('Invalid product task ID', { status: 400 })
+          }
+
+          let sessionId: string
+          try {
+            sessionId = await productTaskService.resolveCoreSessionId(taskId)
+          } catch {
+            return new Response('Product task not found', { status: 404 })
+          }
+          if (!/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
+            return new Response('Product task not found', { status: 404 })
+          }
+
+          const upgraded = server.upgrade(req, {
+            data: {
+              sessionId,
+              productTaskId: taskId,
+              connectedAt: Date.now(),
+              channel: 'product',
+              sdkToken: null,
+              serverPort,
+              serverHost: localConnectHost,
+            },
+          })
+          if (upgraded) return undefined
+          return new Response('WebSocket upgrade failed', { status: 400 })
+        }
+
+        // Core session websocket. Product pages use the task-scoped route
+        // above; this remains for the unreplaced Core surfaces and SDK tooling.
         if (url.pathname.startsWith('/ws/')) {
           if (cors.rejected) {
             return corsRejectedResponse(cors)

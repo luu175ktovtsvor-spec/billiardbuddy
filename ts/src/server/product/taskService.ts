@@ -321,6 +321,19 @@ export class ProductTaskService {
     return this.requireTask(created.sessionId)
   }
 
+  /**
+   * Resolve the Agent Core binding inside the product application layer.
+   *
+   * Product clients only ever address a task id.  The current migration keeps
+   * that id equal to the Core session id, but this single adapter seam means
+   * the websocket/review routes do not have to inherit that implementation
+   * detail when task ids become independently generated.
+   */
+  async resolveCoreSessionId(taskId: string): Promise<string> {
+    const task = await this.requireTask(taskId)
+    return task.id
+  }
+
   async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
     const task = await this.requireTask(taskId)
     const title = validTitle(input.title)

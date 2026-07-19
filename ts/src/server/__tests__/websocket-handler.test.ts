@@ -16,13 +16,17 @@ import { conversationService } from '../services/conversationService.js'
 import { sessionService } from '../services/sessionService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 
-function makeClientSocket(sessionId: string) {
+function makeClientSocket(
+  sessionId: string,
+  channel: WebSocketData['channel'] = 'client',
+) {
   const sent: string[] = []
   return {
     data: {
       sessionId,
+      ...(channel === 'product' ? { productTaskId: `task-${sessionId}` } : {}),
       connectedAt: Date.now(),
-      channel: 'client',
+      channel,
       sdkToken: null,
       serverPort: 0,
       serverHost: '127.0.0.1',
@@ -363,6 +367,59 @@ describe('WebSocket handler product error projection', () => {
       retryable: true,
     })
     expect(JSON.stringify(messages)).not.toContain(privateError)
+  })
+
+  it('projects a product task socket without forwarding Core reasoning or tool payloads', () => {
+    const sessionId = `product-stream-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId, 'product')
+    const callbacks: Array<(cliMsg: any) => void> = []
+    const privateThinking = 'PRIVATE_THINKING_CHAIN'
+    const privateToolInput = 'PRIVATE_TOOL_INPUT'
+    const privateToolResult = 'PRIVATE_TOOL_RESULT'
+
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation((_id, callback) => {
+      callbacks.push(callback)
+    })
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+    handleWebSocket.open(ws)
+    callbacks[0]!({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: privateThinking },
+          { type: 'tool_use', id: 'private-tool-id', name: 'Bash', input: { command: privateToolInput } },
+        ],
+      },
+    })
+    callbacks[0]!({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'private-tool-id',
+          content: privateToolResult,
+          is_error: false,
+        }],
+      },
+    })
+
+    const events = ws.sent.map((payload) => JSON.parse(payload))
+    expect(events).toEqual([
+      { type: 'connected' },
+      { type: 'status', state: 'working' },
+      { type: 'activity', kind: 'command', phase: 'running' },
+      { type: 'activity', kind: 'tool', phase: 'completed' },
+    ])
+    const serialized = JSON.stringify(events)
+    expect(serialized).not.toContain(sessionId)
+    expect(serialized).not.toContain(privateThinking)
+    expect(serialized).not.toContain(privateToolInput)
+    expect(serialized).not.toContain(privateToolResult)
+    expect(serialized).not.toContain('Bash')
+    expect(serialized).not.toContain('private-tool-id')
   })
 })
 
