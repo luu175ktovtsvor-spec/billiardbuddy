@@ -16,11 +16,12 @@ const image = {
 
 describe('validateProductTaskAttachments', () => {
   it('keeps only the product socket attachment shape', () => {
-    expect(validateProductTaskAttachments([{
+    const attachmentWithLegacyMetadata = {
       ...image,
       path: '/Users/example/球台.png',
       note: 'internal detail',
-    }])).toEqual({
+    }
+    expect(validateProductTaskAttachments([attachmentWithLegacyMetadata])).toEqual({
       ok: true,
       attachments: [{
         type: 'image',
@@ -32,12 +33,13 @@ describe('validateProductTaskAttachments', () => {
   })
 
   it('rejects paths, unsupported types, and oversize batches before opening the socket', () => {
-    expect(validateProductTaskAttachments([{
+    const legacyPathOnly = {
       id: 'path-only',
-      type: 'file',
+      type: 'file' as const,
       name: '秘密.txt',
       path: '/Users/example/秘密.txt',
-    }])).toMatchObject({ ok: false })
+    }
+    expect(validateProductTaskAttachments([legacyPathOnly])).toMatchObject({ ok: false })
 
     expect(validateProductTaskAttachments([{
       ...image,
