@@ -72,12 +72,12 @@ export type ServerMessage =
   | { type: 'permission_mode_changed'; mode: string }
   | {
       type: 'api_retry'
+      code: 'API_RETRYING'
+      retryable: true
       attempt: number
       maxRetries: number
       retryDelayMs: number
       errorStatus: number | null
-      errorType?: string
-      errorMessage?: string
     }
   // 流式请求失败、CLI 已降级为非流式重试。非流式响应要等完整生成才返回，
   // 期间没有任何增量输出，前端据此显示"慢速模式"轻提示而不是裸转圈。

@@ -1334,6 +1334,7 @@ export const zh: Record<TranslationKey, string> = {
   'error.CLI_AUTH_REQUIRED': '需要認證。請先登入。',
   'error.CLI_SESSION_CONFLICT': '會話已被其他程序佔用。',
   'error.CLI_SPAWN_FAILED': '任務引擎子程序啟動失敗。',
+  'error.CLI_RESTART_FAILED': '任務引擎重新啟動失敗。',
   'error.CLI_ERROR': '處理過程中發生錯誤。',
   'error.WORKDIR_INVALID': '工作目錄無效或不存在。',
   'error.PARSE_ERROR': '訊息格式無效。',

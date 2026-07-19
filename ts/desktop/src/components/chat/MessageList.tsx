@@ -2244,18 +2244,13 @@ export const MessageBlock = memo(function MessageBlock({
           ? businessErrorText
           : (errorText && errorText !== errorKey)
             ? errorText
-            : message.message
-      const showRawDetail =
-        !message.businessErrorCode &&
-        Boolean(message.message) &&
-        message.message.trim() !== '' &&
-        message.message !== displayMessage
+            : t('error.INTERNAL_ERROR')
       return (
         <div className="mb-3 px-4 py-2.5 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error-container)]/28 text-sm text-[var(--color-error)]">
           <strong>{t('common.error')}:</strong> {displayMessage}
-          {showRawDetail && (
-            <div className="mt-1 whitespace-pre-wrap text-xs text-[var(--color-on-error-container)]/85">
-              {message.message}
+          {message.retryable && (
+            <div className="mt-1 text-xs text-[var(--color-on-error-container)]/85">
+              {t('common.retry')}
             </div>
           )}
         </div>

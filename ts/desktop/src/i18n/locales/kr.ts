@@ -1334,6 +1334,7 @@ export const kr: Record<TranslationKey, string> = {
   'error.CLI_AUTH_REQUIRED': '인증이 필요합니다. 로그인하세요.',
   'error.CLI_SESSION_CONFLICT': '세션이 이미 다른 프로세스에서 사용 중입니다.',
   'error.CLI_SPAWN_FAILED': '작업 엔진 하위 프로세스를 생성하지 못했습니다.',
+  'error.CLI_RESTART_FAILED': '작업 엔진을 다시 시작하지 못했습니다.',
   'error.CLI_ERROR': '처리 중 오류가 발생했습니다.',
   'error.WORKDIR_INVALID': '작업 디렉터리가 잘못되었거나 존재하지 않습니다.',
   'error.PARSE_ERROR': '메시지 형식이 잘못되었습니다.',

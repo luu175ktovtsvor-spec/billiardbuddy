@@ -25,14 +25,6 @@ function formatRetrySeconds(ms: number): number {
   return Math.max(0, Math.ceil(ms / 1000))
 }
 
-function formatErrorType(errorType: string | undefined): string | null {
-  if (!errorType) return null
-  return errorType
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
 export function StreamingIndicator() {
   const t = useTranslation()
   const [now, setNow] = useState(() => Date.now())
@@ -57,8 +49,7 @@ export function StreamingIndicator() {
     const remainingMs = Math.max(0, apiRetry.retryDelayMs - (now - apiRetry.receivedAt))
     const statusText = apiRetry.errorStatus !== null
       ? t('chat.retry.httpStatus', { status: apiRetry.errorStatus })
-      : formatErrorType(apiRetry.errorType) ?? t('chat.retry.networkError')
-    const detailText = apiRetry.errorMessage?.trim()
+      : t('chat.retry.networkError')
 
     return (
       <div
@@ -80,11 +71,6 @@ export function StreamingIndicator() {
             ? t('chat.retry.waiting', { seconds: formatRetrySeconds(remainingMs) })
             : t('chat.retry.retrying')}
         </span>
-        {detailText && (
-          <span className="min-w-0 max-w-full truncate text-amber-700 dark:text-amber-200" title={detailText}>
-            {detailText}
-          </span>
-        )}
       </div>
     )
   }

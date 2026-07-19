@@ -13,6 +13,7 @@ import {
   type WebSocketData,
 } from '../ws/handler.js'
 import { conversationService } from '../services/conversationService.js'
+import { sessionService } from '../services/sessionService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 
 function makeClientSocket(sessionId: string) {
@@ -272,6 +273,61 @@ describe('WebSocket handler session isolation', () => {
     // A late result must not schedule cleanup now that a client is back.
     turnCompleteCallback?.({ type: 'result', subtype: 'success' })
     expect(setTimeoutSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('WebSocket handler product error projection', () => {
+  afterEach(() => {
+    __resetWebSocketHandlerStateForTests()
+    mock.restore()
+  })
+
+  it('does not echo malformed or unknown client payloads back to the renderer', () => {
+    const ws = makeClientSocket(`protocol-error-${crypto.randomUUID()}`)
+    const privatePayload = '/Users/test/.claude/private-provider-config.json token=secret'
+
+    handleWebSocket.message(ws, `{\"type\":\"${privatePayload}\"`)
+    handleWebSocket.message(ws, JSON.stringify({ type: privatePayload }))
+
+    const messages = ws.sent.map((payload) => JSON.parse(payload))
+    expect(messages).toEqual([
+      {
+        type: 'error',
+        code: 'PARSE_ERROR',
+        message: 'The task could not be completed. Please try again.',
+        retryable: false,
+      },
+      {
+        type: 'error',
+        code: 'UNKNOWN_TYPE',
+        message: 'The task could not be completed. Please try again.',
+        retryable: false,
+      },
+    ])
+    expect(JSON.stringify(messages)).not.toContain(privatePayload)
+  })
+
+  it('does not expose transcript-clear failures over the renderer socket', async () => {
+    const ws = makeClientSocket(`clear-error-${crypto.randomUUID()}`)
+    const privateError = 'failed to clear /Users/test/.claude/private-transcript.json token=secret'
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/Users/test/project')
+    spyOn(conversationService, 'hasSession').mockReturnValue(false)
+    spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
+    spyOn(sessionService, 'clearSessionTranscript').mockRejectedValue(new Error(privateError))
+
+    handleWebSocket.message(ws, JSON.stringify({ type: 'user_message', content: '/clear' }))
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const messages = ws.sent.map((payload) => JSON.parse(payload))
+    expect(messages).toContainEqual({
+      type: 'error',
+      code: 'SESSION_CLEAR_FAILED',
+      message: 'The task could not be completed. Please try again.',
+      retryable: true,
+    })
+    expect(JSON.stringify(messages)).not.toContain(privateError)
   })
 })
 

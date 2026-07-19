@@ -1905,7 +1905,8 @@ describe('WebSocket Chat Integration', () => {
       messages.some(
         (m) => m.type === 'system_notification' && m.subtype === 'init',
       ),
-    ).toBe(true)
+    ).toBe(false)
+    expect(JSON.stringify(messages)).not.toContain('mock-opus')
   })
 
   it('should display CLI /cost local command output', async () => {
@@ -2070,10 +2071,11 @@ describe('WebSocket Chat Integration', () => {
         (m) =>
           m.type === 'error' &&
           m.code === 'CLI_ERROR' &&
-          typeof m.message === 'string' &&
-          m.message.includes('Task engine exited unexpectedly'),
+          m.retryable === true &&
+          m.message === 'The task could not be completed. Please try again.',
       ),
     ).toBe(true)
+    expect(JSON.stringify(messages)).not.toContain('Task engine exited unexpectedly')
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
     expect(messages.at(-1)?.type).toBe('message_complete')
   }, 15_000)
@@ -2087,9 +2089,11 @@ describe('WebSocket Chat Integration', () => {
     const errors = messages.filter((m) => m.type === 'error')
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({
-      code: 'invalid_request',
-      message: 'Prompt is too long',
+      code: 'CLI_ERROR',
+      message: 'The task could not be completed. Please try again.',
+      retryable: true,
     })
+    expect(JSON.stringify(errors)).not.toContain('Prompt is too long')
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
     expect(messages.at(-1)?.type).toBe('message_complete')
   }, 15_000)
@@ -2103,9 +2107,11 @@ describe('WebSocket Chat Integration', () => {
     const errors = messages.filter((m) => m.type === 'error')
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({
-      code: 'invalid_request',
-      message: 'Prompt is too long',
+      code: 'CLI_ERROR',
+      message: 'The task could not be completed. Please try again.',
+      retryable: true,
     })
+    expect(JSON.stringify(errors)).not.toContain('Prompt is too long')
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
     expect(messages.at(-1)?.type).toBe('message_complete')
   }, 15_000)
@@ -2324,7 +2330,7 @@ describe('WebSocket Chat Integration', () => {
     expect(nextTurn.some((m) => m.type === 'message_complete')).toBe(true)
   })
 
-  it('should include desktop service diagnostics when CLI startup fails', async () => {
+  it('should return a safe startup code without desktop diagnostics when CLI startup fails', async () => {
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-startup-missing-workdir-'))
     const canonicalWorkDir = await fs.realpath(workDir)
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
@@ -2342,16 +2348,15 @@ describe('WebSocket Chat Integration', () => {
 
     expect(error).toMatchObject({
       code: 'WORKDIR_INVALID',
+      message: 'The task could not be completed. Please try again.',
+      retryable: false,
     })
-    expect(error?.message).toContain('Desktop service diagnostics:')
-    expect(error?.message).toContain(`sessionId: ${sessionId}`)
-    expect(error?.message).toContain(`workDir: ${canonicalWorkDir}`)
-    expect(error?.message).toContain('runtimeOverride: (none)')
-    expect(error?.message).toContain('activeProviderId:')
-    expect(error?.message).toContain('configuredProviders:')
+    expect(JSON.stringify(error)).not.toContain('Desktop service diagnostics:')
+    expect(JSON.stringify(error)).not.toContain(sessionId)
+    expect(JSON.stringify(error)).not.toContain(canonicalWorkDir)
   })
 
-  it('should include CLI stdout diagnostics when startup exits before SDK messages', async () => {
+  it('should not expose CLI stdout when startup exits before SDK messages', async () => {
     const sessionId = `chat-startup-stdout-${crypto.randomUUID()}`
 
     const messages = await withMockStartupStdoutExit(
@@ -2363,11 +2368,11 @@ describe('WebSocket Chat Integration', () => {
 
     expect(error).toMatchObject({
       code: 'CLI_START_FAILED',
+      message: 'The task could not be completed. Please try again.',
+      retryable: true,
     })
-    expect(error?.message).toContain(
-      'Task engine exited during startup (code 1): provider rejected request: invalid model id',
-    )
-    expect(error?.message).toContain('Desktop service diagnostics:')
+    expect(JSON.stringify(error)).not.toContain('provider rejected request: invalid model id')
+    expect(JSON.stringify(error)).not.toContain('Desktop service diagnostics:')
   }, 10_000)
 
   it('should prewarm the CLI before the first user turn and reuse that process', async () => {
@@ -3504,8 +3509,8 @@ describe('WebSocket Chat Integration', () => {
                 return
               }
               restartError = msg.code === 'CLI_RESTART_FAILED' &&
-                typeof msg.message === 'string' &&
-                msg.message.includes('deferred restart failed')
+                msg.retryable === true &&
+                msg.message === 'The task could not be completed. Please try again.'
               return
             }
 

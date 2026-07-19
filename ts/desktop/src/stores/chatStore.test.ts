@@ -3364,7 +3364,8 @@ describe('chatStore history mapping', () => {
       },
       {
         type: 'error',
-        message: 'Compaction canceled.',
+        message: '',
+        code: 'aborted',
       },
     ])
     expect(session?.messages.some((message) => message.type === 'compact_summary' && message.phase === 'compacting')).toBe(false)
@@ -3391,7 +3392,7 @@ describe('chatStore history mapping', () => {
     const session = useChatStore.getState().sessions[TEST_SESSION_ID]
     expect(session?.messages[session.messages.length - 1]).toMatchObject({
       type: 'error',
-      message: 'This model does not support images.',
+      message: '',
       code: 'invalid_request',
       businessErrorCode: 'image_unsupported',
     })
@@ -3766,7 +3767,8 @@ describe('chatStore history mapping', () => {
     expect(completedRows).toHaveLength(0)
   })
 
-  it('tracks API retry status until the request finishes', () => {
+  it('tracks API retry status without retaining opaque runtime error details', () => {
+    const rawRetryError = 'provider=private-gateway model=secret-model stderr=/Users/test/private.log'
     useChatStore.setState({
       sessions: {
         [TEST_SESSION_ID]: makeSession({
@@ -3779,12 +3781,15 @@ describe('chatStore history mapping', () => {
 
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'api_retry',
+      code: 'API_RETRYING',
+      retryable: true,
       attempt: 1,
       maxRetries: 10,
       retryDelayMs: 2500,
       errorStatus: 503,
-      errorType: 'server_error',
-    })
+      errorType: rawRetryError,
+      errorMessage: rawRetryError,
+    } as any)
 
     const retryingSession = useChatStore.getState().sessions[TEST_SESSION_ID]
     expect(retryingSession?.chatState).toBe('thinking')
@@ -3794,8 +3799,8 @@ describe('chatStore history mapping', () => {
       maxRetries: 10,
       retryDelayMs: 2500,
       errorStatus: 503,
-      errorType: 'server_error',
     })
+    expect(JSON.stringify(retryingSession?.apiRetry)).not.toContain(rawRetryError)
     expect(updateTabStatusMock).toHaveBeenLastCalledWith(TEST_SESSION_ID, 'running')
 
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
@@ -4541,8 +4546,9 @@ describe('chatStore history mapping', () => {
     expect(userMessages).toHaveLength(1)
   })
 
-  it('flushes pending text before appending an error message', () => {
+  it('flushes pending text before appending a safe error summary', () => {
     vi.useFakeTimers()
+    const rawRuntimeError = 'provider=private-gateway model=secret-model stderr=/Users/test/private.log'
 
     useChatStore.setState({
       sessions: {
@@ -4556,14 +4562,16 @@ describe('chatStore history mapping', () => {
     })
     useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
       type: 'error',
-      message: 'provider failed',
-      code: 'provider_error',
+      message: rawRuntimeError,
+      code: 'CLI_ERROR',
+      retryable: true,
     })
 
     expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages).toMatchObject([
       { type: 'assistant_text', content: 'partial answer before error' },
-      { type: 'error', message: 'provider failed' },
+      { type: 'error', message: '', code: 'CLI_ERROR', retryable: true },
     ])
+    expect(JSON.stringify(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages)).not.toContain(rawRuntimeError)
 
     vi.runOnlyPendingTimers()
     vi.useRealTimers()

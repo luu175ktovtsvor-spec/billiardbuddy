@@ -1334,6 +1334,7 @@ export const zh: Record<TranslationKey, string> = {
   'error.CLI_AUTH_REQUIRED': '需要认证。请先登录。',
   'error.CLI_SESSION_CONFLICT': '会话已被其他进程占用。',
   'error.CLI_SPAWN_FAILED': '任务引擎子进程启动失败。',
+  'error.CLI_RESTART_FAILED': '任务引擎重启失败。',
   'error.CLI_ERROR': '处理过程中发生错误。',
   'error.WORKDIR_INVALID': '工作目录无效或不存在。',
   'error.PARSE_ERROR': '消息格式无效。',
