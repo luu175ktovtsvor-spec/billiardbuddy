@@ -1,22 +1,19 @@
 import { useEffect, useMemo } from 'react'
 import { TaskComposer, TaskIndex } from './TaskIndex'
 import { useProductTaskStore } from '../stores/productTaskStore'
-import { useSessionStore } from '../../stores/sessionStore'
 import {
   NEW_PRODUCT_TASK_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
   useTabStore,
 } from '../../stores/tabStore'
-import { useChatStore } from '../../stores/chatStore'
-import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
-import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useProductTaskRuntimeStore } from '../stores/productTaskRuntimeStore'
 import {
   continueProductTask,
   launchProductTask,
   type ProductTaskInitialMessage,
 } from '../taskLaunch'
 import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
-import { getProductTaskRuntimeState } from '../taskRuntime'
+import { getProductTaskRuntimeStateFromStream } from '../taskRuntime'
 
 type ProductShellProps = {
   page?: 'task-index' | 'new-task'
@@ -36,64 +33,36 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
   const archiveTask = useProductTaskStore((state) => state.archiveTask)
   const restoreTask = useProductTaskStore((state) => state.restoreTask)
   const continueTask = useProductTaskStore((state) => state.continueTask)
-  const refreshSessions = useSessionStore((state) => state.fetchSessions)
   const openTab = useTabStore((state) => state.openTab)
   const openNewProductTask = useTabStore((state) => state.openNewProductTask)
+  const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
   const closeTab = useTabStore((state) => state.closeTab)
-  const tabs = useTabStore((state) => state.tabs)
-  const chatSessions = useChatStore((state) => state.sessions)
-  const sessionTabStatuses = useMemo(() => new Map(
-    tabs
-      .filter((tab) => tab.type === 'session')
-      .map((tab) => [tab.sessionId, tab.status]),
-  ), [tabs])
+  const taskRuntimes = useProductTaskRuntimeStore((state) => state.tasks)
   const runtimeStatesBySessionId = useMemo(() => Object.fromEntries(
     index.tasks.map((task) => [
       task.id,
-      getProductTaskRuntimeState(chatSessions[task.id], sessionTabStatuses.get(task.id)),
+      getProductTaskRuntimeStateFromStream(taskRuntimes[task.id]),
     ]),
-  ), [chatSessions, index.tasks, sessionTabStatuses])
+  ), [index.tasks, taskRuntimes])
 
   const openTaskTab = (task: ProductTaskRecord) => {
-    openTab(task.id, task.title, 'session')
+    openProductTaskTab(task.id, task.title)
   }
 
-  const connectToTaskSession = (sessionId: string) => {
-    useChatStore.getState().connectToSession(sessionId)
-  }
-
-  const openExistingTask = (task: ProductTaskRecord) => {
-    openTaskTab(task)
-    connectToTaskSession(task.id)
-  }
-
-  const openTaskWorkbench = (task: ProductTaskRecord) => {
-    openExistingTask(task)
-    const workspace = useWorkspacePanelStore.getState()
-    workspace.setMode(task.id, 'workspace')
-    workspace.openPanel(task.id)
-  }
-
-  const openTaskTerminal = (task: ProductTaskRecord) => {
-    openExistingTask(task)
-    useTerminalPanelStore.getState().openPanel(task.id)
-  }
+  const openExistingTask = (task: ProductTaskRecord) => openTaskTab(task)
 
   const createAndOpenTask = async (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => (
     launchProductTask({
       createTask,
-      refreshSessions,
       openTask: openTaskTab,
-      connectToSession: connectToTaskSession,
-      sendMessage: (sessionId, content, attachments) => useChatStore.getState().sendMessage(sessionId, content, attachments),
+      connectTask: (taskId) => useProductTaskRuntimeStore.getState().connectTask(taskId),
+      sendMessage: (taskId, content, attachments) => useProductTaskRuntimeStore.getState().sendMessage(taskId, content, attachments),
     }, input, initialMessage)
   )
 
   const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => continueProductTask({
     continueTask,
-    refreshSessions,
     openTask: openTaskTab,
-    connectToSession: connectToTaskSession,
   }, ...args)
 
   useEffect(() => {
@@ -148,8 +117,6 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
         onContinueTask={continueAndOpenTask}
         onRequestNewTask={() => openNewProductTask()}
         onOpenTask={openExistingTask}
-        onOpenTaskWorkbench={openTaskWorkbench}
-        onOpenTaskTerminal={openTaskTerminal}
         runtimeStatesBySessionId={runtimeStatesBySessionId}
       />
     </main>

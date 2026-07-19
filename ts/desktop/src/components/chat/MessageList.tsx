@@ -4,9 +4,6 @@ import { ArrowDown, BookMarked, Bot, CheckCircle2, ChevronDown, ChevronRight, Ci
 import { ApiError } from '../../api/client'
 import { sessionsApi, type SessionTurnCheckpoint } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
-import { useSessionStore } from '../../stores/sessionStore'
-import { useProductTaskStore } from '../../product/stores/productTaskStore'
-import { useProductSideTaskStore } from '../../product/stores/productSideTaskStore'
 import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useTeamStore } from '../../stores/teamStore'
@@ -15,7 +12,6 @@ import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n/locales/en'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
-import type { MessageBranchAction } from './MessageActionBar'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallGroup } from './ToolCallGroup'
@@ -34,7 +30,6 @@ import {
   getMetricsForSession,
   type VirtualRenderItemMetric,
 } from './virtualHeightCache'
-import { continueProductTask } from '../../product/taskLaunch'
 
 type ToolCall = Extract<UIMessage, { type: 'tool_use' }>
 type ToolResult = Extract<UIMessage, { type: 'tool_result' }>
@@ -59,11 +54,6 @@ type RewindTurnTarget = {
   content: string
   expectedContent: string
   attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
-}
-
-type BranchableMessageTarget = {
-  uiMessageId: string
-  transcriptMessageId: string
 }
 
 type TurnChangeCardModel = {
@@ -668,48 +658,6 @@ function isTurnResponseMessage(message: UIMessage) {
   )
 }
 
-function getBranchableMessageTargets(messages: UIMessage[]): Map<string, BranchableMessageTarget> {
-  const branchableTargets = new Map<string, BranchableMessageTarget>()
-  let currentTurnCandidates: Array<Extract<UIMessage, { type: 'user_text' | 'assistant_text' }>> = []
-  let hasResponseForCurrentTurn = false
-
-  const markCurrentTurnBranchable = () => {
-    if (!hasResponseForCurrentTurn) return
-    for (const candidate of currentTurnCandidates) {
-      if (!candidate.transcriptMessageId) continue
-      branchableTargets.set(candidate.id, {
-        uiMessageId: candidate.id,
-        transcriptMessageId: candidate.transcriptMessageId,
-      })
-    }
-  }
-
-  for (const message of messages) {
-    if (message.type === 'user_text') {
-      markCurrentTurnBranchable()
-      currentTurnCandidates = []
-      hasResponseForCurrentTurn = false
-      if (!message.pending && message.transcriptMessageId) {
-        currentTurnCandidates = [message]
-      }
-      continue
-    }
-
-    if (currentTurnCandidates.length === 0) continue
-
-    if (isTurnResponseMessage(message)) {
-      hasResponseForCurrentTurn = true
-    }
-
-    if (message.type === 'assistant_text' && message.transcriptMessageId) {
-      currentTurnCandidates.push(message)
-    }
-  }
-
-  markCurrentTurnBranchable()
-  return branchableTargets
-}
-
 export function getCompletedTurnTargets(messages: UIMessage[]): RewindTurnTarget[] {
   let userMessageIndex = -1
   const completedTurns: RewindTurnTarget[] = []
@@ -877,7 +825,6 @@ function MemoryEventCard({ message }: { message: MemoryEvent }) {
 type MessageListProps = {
   sessionId?: string | null
   compact?: boolean
-  enableProductActions?: boolean
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
@@ -1299,21 +1246,12 @@ const MeasuredRenderItem = memo(function MeasuredRenderItem({
   )
 })
 
-export function MessageList({ sessionId, compact = false, enableProductActions = true }: MessageListProps = {}) {
+export function MessageList({ sessionId, compact = false }: MessageListProps = {}) {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const resolvedSessionId = sessionId ?? activeTabId
   const sessionState = useChatStore((s) =>
     resolvedSessionId ? s.sessions[resolvedSessionId] : undefined,
   )
-  const refreshSessions = useSessionStore((s) => s.fetchSessions)
-  const continueTask = useProductTaskStore((s) => s.continueTask)
-  const activeProductTask = useProductTaskStore((s) =>
-    resolvedSessionId
-      ? s.index.tasks.find((task) => task.id === resolvedSessionId) ?? null
-      : null,
-  )
-  const createSideTask = useProductSideTaskStore((s) => s.createSideTask)
-  const openSideTaskPanel = useProductSideTaskStore((s) => s.openSideTaskPanel)
   const stopGeneration = useChatStore((s) => s.stopGeneration)
   const reloadHistory = useChatStore((s) => s.reloadHistory)
   const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
@@ -1361,10 +1299,6 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
   const [turnChangeLoadError, setTurnChangeLoadError] = useState<string | null>(null)
   const [turnActionErrors, setTurnActionErrors] = useState<Record<string, string>>({})
   const [isLoadingTurnChangeCards, setIsLoadingTurnChangeCards] = useState(false)
-  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null)
-  const continuationInFlightRef = useRef(false)
-  const [creatingSideTaskMessageId, setCreatingSideTaskMessageId] = useState<string | null>(null)
-  const sideTaskInFlightRef = useRef(false)
   const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
   const [turnUndoConfirmTargetId, setTurnUndoConfirmTargetId] = useState<string | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
@@ -1373,15 +1307,6 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
     viewportHeight: VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
   })
   const [measuredItemsVersion, setMeasuredItemsVersion] = useState(0)
-  const branchActionsDisabled =
-    !enableProductActions ||
-    isMemberSession ||
-    chatState !== 'idle' ||
-    hasRunningBackgroundTasks ||
-    streamingText.trim().length > 0 ||
-    Boolean(activeThinkingId) ||
-    Boolean(sessionState?.activeToolUseId) ||
-    Boolean(sessionState?.activeToolName)
   const hasCompactingDivider = messages.some((message) =>
     message.type === 'compact_summary' && message.phase === 'compacting')
 
@@ -1625,17 +1550,9 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
     () => buildRenderModel(messages, activeAskUserQuestionToolUseId),
     [activeAskUserQuestionToolUseId, messages],
   )
-  // Defer the per-message branchable / completed-turn computations so the first
-  // commit on tab switch can render the virtualization window without doing two
-  // additional O(N) walks synchronously. They re-run in a low-priority render
-  // once the initial frame is painted.
+  // Defer the completed-turn computation so the first commit on a tab switch
+  // can render the virtualization window before this O(N) transcript walk.
   const deferredMessages = useDeferredValue(messages)
-  const branchableMessageTargets = useMemo(
-    () => branchActionsDisabled
-      ? new Map<string, BranchableMessageTarget>()
-      : getBranchableMessageTargets(deferredMessages),
-    [branchActionsDisabled, deferredMessages],
-  )
   const completedTurnTargets = useMemo(
     () => getCompletedTurnTargets(deferredMessages),
     [deferredMessages],
@@ -1840,118 +1757,6 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
     t,
   ])
 
-  const handleBranchMessage = useCallback(async (
-    target: BranchableMessageTarget,
-    continuationTarget: 'current_workspace' | 'new_worktree' = 'current_workspace',
-  ) => {
-    if (!resolvedSessionId || continuationInFlightRef.current) return
-
-    continuationInFlightRef.current = true
-    setBranchingMessageId(target.uiMessageId)
-    try {
-      const task = await continueProductTask({
-        continueTask,
-        refreshSessions,
-        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.id, nextTask.title, 'session'),
-        connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
-      }, resolvedSessionId, {
-        sourceTurnId: target.transcriptMessageId,
-        target: continuationTarget,
-      })
-      const title = task.title.trim() || t('sidebar.newSession')
-      addToast({
-        type: 'success',
-        message: t('chat.branchSuccess', { title }),
-      })
-    } catch (error) {
-      addToast({
-        type: 'error',
-        message: t('chat.branchError', { detail: getApiErrorMessage(error) }),
-      })
-    } finally {
-      continuationInFlightRef.current = false
-      setBranchingMessageId(null)
-    }
-  }, [addToast, continueTask, refreshSessions, resolvedSessionId, t])
-
-  const handleStartSideTask = useCallback(async (target: BranchableMessageTarget) => {
-    if (!resolvedSessionId || !activeProductTask || sideTaskInFlightRef.current) return
-
-    sideTaskInFlightRef.current = true
-    setCreatingSideTaskMessageId(target.uiMessageId)
-    try {
-      const sideTask = await createSideTask(activeProductTask.id, {
-        sourceTurnId: target.transcriptMessageId,
-      })
-      await refreshSessions()
-      openSideTaskPanel(activeProductTask.id, sideTask.id)
-      useChatStore.getState().connectToSession(sideTask.coreSessionId)
-      const title = sideTask.title.trim() || t('sideTask.untitled')
-      addToast({
-        type: 'success',
-        message: t('chat.sideTaskSuccess', { title }),
-      })
-    } catch (error) {
-      addToast({
-        type: 'error',
-        message: t('chat.sideTaskError', { detail: getApiErrorMessage(error) }),
-      })
-    } finally {
-      sideTaskInFlightRef.current = false
-      setCreatingSideTaskMessageId(null)
-    }
-  }, [activeProductTask, addToast, createSideTask, openSideTaskPanel, refreshSessions, resolvedSessionId, t])
-
-  // Pre-compute per-message branchAction + toolResult lookups so MessageBlock's
-  // memo barrier is not broken by inline object literals on every render.
-  const branchActionByMessageId = useMemo(() => {
-    if (branchableMessageTargets.size === 0) {
-      return new Map<string, MessageBranchAction>()
-    }
-    const result = new Map<string, MessageBranchAction>()
-    const label = t('chat.branchFromHere')
-    for (const [uiMessageId, target] of branchableMessageTargets) {
-      result.set(uiMessageId, {
-        label,
-        loading: Boolean(branchingMessageId),
-        onBranch: () => { void handleBranchMessage(target) },
-      })
-    }
-    return result
-  }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
-
-  const worktreeBranchActionByMessageId = useMemo(() => {
-    if (branchableMessageTargets.size === 0) {
-      return new Map<string, MessageBranchAction>()
-    }
-    const result = new Map<string, MessageBranchAction>()
-    const label = t('chat.branchInNewWorktree')
-    for (const [uiMessageId, target] of branchableMessageTargets) {
-      result.set(uiMessageId, {
-        label,
-        loading: Boolean(branchingMessageId),
-        onBranch: () => { void handleBranchMessage(target, 'new_worktree') },
-      })
-    }
-    return result
-  }, [branchableMessageTargets, branchingMessageId, handleBranchMessage, t])
-
-  const sideTaskActionByMessageId = useMemo(() => {
-    if (!activeProductTask || branchableMessageTargets.size === 0) {
-      return new Map<string, MessageBranchAction>()
-    }
-    const result = new Map<string, MessageBranchAction>()
-    const label = t('chat.sideTaskFromHere')
-    for (const [uiMessageId, target] of branchableMessageTargets) {
-      result.set(uiMessageId, {
-        label,
-        loading: creatingSideTaskMessageId === uiMessageId,
-        onBranch: () => { void handleStartSideTask(target) },
-      })
-    }
-    return result
-  }, [activeProductTask, branchableMessageTargets, creatingSideTaskMessageId, handleStartSideTask, t])
-
   const toolResultByToolUseId = useMemo(() => {
     if (toolResultMap.size === 0) return new Map<string, { content: unknown; isError: boolean }>()
     const result = new Map<string, { content: unknown; isError: boolean }>()
@@ -1988,9 +1793,6 @@ export function MessageList({ sessionId, compact = false, enableProductActions =
                 ? toolResultByToolUseId.get(item.message.toolUseId) ?? null
                 : null
             }
-            branchAction={branchActionByMessageId.get(item.message.id)}
-            worktreeBranchAction={worktreeBranchActionByMessageId.get(item.message.id)}
-            sideTaskAction={sideTaskActionByMessageId.get(item.message.id)}
             turnChangedFiles={changedFilesByRenderIndex.get(index)}
           />
         )}
@@ -2121,9 +1923,6 @@ export const MessageBlock = memo(function MessageBlock({
   activeThinkingId,
   agentTaskNotifications,
   toolResult,
-  branchAction,
-  worktreeBranchAction,
-  sideTaskAction,
   turnChangedFiles,
 }: {
   sessionId?: string | null
@@ -2131,9 +1930,6 @@ export const MessageBlock = memo(function MessageBlock({
   activeThinkingId: string | null
   agentTaskNotifications: Record<string, AgentTaskNotification>
   toolResult?: { content: unknown; isError: boolean } | null
-  branchAction?: MessageBranchAction
-  worktreeBranchAction?: MessageBranchAction
-  sideTaskAction?: MessageBranchAction
   turnChangedFiles?: string[]
 }) {
   const t = useTranslation()
@@ -2150,9 +1946,6 @@ export const MessageBlock = memo(function MessageBlock({
           <UserMessage
             content={message.content}
             attachments={message.attachments}
-            branchAction={branchAction}
-            worktreeBranchAction={worktreeBranchAction}
-            sideTaskAction={sideTaskAction}
             timestamp={message.timestamp}
           />
         </SelectableChatMessage>
@@ -2167,9 +1960,6 @@ export const MessageBlock = memo(function MessageBlock({
         >
           <AssistantMessage
             content={message.content}
-            branchAction={branchAction}
-            worktreeBranchAction={worktreeBranchAction}
-            sideTaskAction={sideTaskAction}
             sessionId={sessionId ?? undefined}
             timestamp={message.timestamp}
             turnChangedFiles={turnChangedFiles}

@@ -221,7 +221,7 @@ describe('ActiveSession task polling', () => {
     expect(getTerminalPanelLayout(0, TERMINAL_PANEL_DEFAULT_HEIGHT)).toBeNull()
   })
 
-  it('mounts the embedded side-task panel only for the active product task', () => {
+  it('does not embed a product side-task panel for a Core session', () => {
     const sessionId = 'product-task-session'
     useSessionStore.setState({
       sessions: [{
@@ -262,10 +262,11 @@ describe('ActiveSession task polling', () => {
         capabilities: { createTask: true },
       },
     })
+    useChatStore.setState({ connectToSession: vi.fn() as never })
 
     render(<ActiveSession />)
 
-    expect(screen.getByTestId('side-task-panel')).toHaveAttribute('data-parent-task-id', sessionId)
+    expect(screen.queryByTestId('side-task-panel')).not.toBeInTheDocument()
   })
 
   it('treats a persisted historical session as non-empty before messages finish loading', () => {
@@ -1382,7 +1383,7 @@ describe('ActiveSession task polling', () => {
 
     expect(
       fetchSessionTasks.mock.calls.filter(([currentSessionId]) => currentSessionId === sessionId),
-    ).toHaveLength(4)
+    ).toHaveLength(3)
 
     unmount()
     useCLITaskStore.setState(originalCliTaskState)

@@ -14,6 +14,7 @@ export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
+export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 
 export type TabType =
   | 'session'
@@ -25,6 +26,7 @@ export type TabType =
   | 'video-studio'
   | 'product-tasks'
   | 'new-product-task'
+  | 'product-task'
 
 export type Tab = {
   sessionId: string
@@ -36,10 +38,11 @@ export type Tab = {
   workbenchSessionId?: string
   newTaskWorkDir?: string
   newTaskRequestId?: number
+  taskId?: string
 }
 
 type TabPersistence = {
-  openTabs: Array<{ sessionId: string; title: string; type?: string }>
+  openTabs: Array<{ sessionId: string; title: string; type?: string; taskId?: string }>
   activeTabId: string | null
 }
 
@@ -51,6 +54,7 @@ type TabStore = {
   openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
   openWorkbenchTab: (sessionId: string, title?: string) => string
   openNewProductTask: (workDir?: string) => void
+  openProductTaskTab: (taskId: string, title: string) => string
   closeTab: (sessionId: string) => void
   setActiveTab: (sessionId: string) => void
   updateTabTitle: (sessionId: string, title: string) => void
@@ -160,6 +164,30 @@ export const useTabStore = create<TabStore>((set, get) => ({
     get().saveTabs()
   },
 
+  openProductTaskTab: (taskId, title) => {
+    const normalizedTaskId = taskId.trim()
+    if (!normalizedTaskId) return ''
+
+    const tabId = `${PRODUCT_TASK_TAB_PREFIX}${normalizedTaskId}`
+    const { tabs } = get()
+    const tab: Tab = {
+      sessionId: tabId,
+      title,
+      type: 'product-task',
+      status: 'idle',
+      taskId: normalizedTaskId,
+    }
+    const existing = tabs.some((current) => current.sessionId === tabId)
+    set({
+      tabs: existing
+        ? tabs.map((current) => current.sessionId === tabId ? tab : current)
+        : [...tabs, tab],
+      activeTabId: tabId,
+    })
+    get().saveTabs()
+    return tabId
+  },
+
   closeTab: (sessionId) => {
     const { tabs, activeTabId } = get()
     const index = tabs.findIndex((t) => t.sessionId === sessionId)
@@ -239,6 +267,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         sessionId: t.sessionId,
         title: t.title,
         type: t.type,
+        ...(t.taskId ? { taskId: t.taskId } : {}),
       })),
       activeTabId: activeTabId && persistableTabs.some((tab) => tab.sessionId === activeTabId)
         ? activeTabId
@@ -281,7 +310,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
             t.type === 'scheduled' ||
             t.type === 'image-workbench' ||
             t.type === 'video-studio' ||
-            t.type === 'product-tasks'
+            t.type === 'product-tasks' ||
+            (t.type === 'product-task' && typeof t.taskId === 'string' && t.taskId.trim().length > 0)
           ) return true
           if (t.type === 'terminal') return false
           // Session tabs must exist on server
@@ -296,6 +326,15 @@ export const useTabStore = create<TabStore>((set, get) => ({
             t.type === 'product-tasks'
           ) {
             return { sessionId: t.sessionId, title: t.title, type: t.type, status: 'idle' as const }
+          }
+          if (t.type === 'product-task' && typeof t.taskId === 'string' && t.taskId.trim()) {
+            return {
+              sessionId: t.sessionId,
+              title: t.title,
+              type: 'product-task' as const,
+              status: 'idle' as const,
+              taskId: t.taskId.trim(),
+            }
           }
           return {
             sessionId: t.sessionId,

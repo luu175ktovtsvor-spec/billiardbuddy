@@ -124,6 +124,8 @@ export function TopBar() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const activeTab = tabs.find((tab) => tab.sessionId === activeTabId) ?? null
   const isChat = activeTab?.type === 'session'
+  const isProductTask = activeTab?.type === 'product-task'
+  const isTaskSurface = isChat || isProductTask
   const terminalOpen = useTerminalPanelStore((state) => (
     activeTabId ? state.panelBySession[activeTabId]?.isOpen ?? false : false
   ))
@@ -135,8 +137,8 @@ export function TopBar() {
   const collapsed = !sidebarOpen
 
   const activeProductTask = useProductTaskStore((state) => (
-    activeTabId
-      ? state.index.tasks.find((task) => task.id === activeTabId) ?? null
+    isProductTask && activeTab?.taskId
+      ? state.index.tasks.find((task) => task.id === activeTab.taskId) ?? null
       : null
   ))
   const productTaskMutations = useProductTaskStore((state) => state.mutations)
@@ -151,9 +153,12 @@ export function TopBar() {
   const [taskTitleDraft, setTaskTitleDraft] = useState('')
 
   // 工作目录来自 sessionStore 里当前活动会话的真实记录，不是凭空拼的路径。
-  const sessionWorkDir = useSessionStore((s) =>
+  const legacySessionWorkDir = useSessionStore((s) =>
     activeTabId ? (s.sessions.find((session) => session.id === activeTabId)?.workDir ?? null) : null,
   )
+  const sessionWorkDir = isProductTask
+    ? activeProductTask?.workDir ?? null
+    : legacySessionWorkDir
 
   // 文件、浏览器和终端的展开状态都按会话保存；右侧停靠位只记录当前展示哪一个面板。
   const workspacePanelOpen = useWorkspacePanelStore((s) =>
@@ -252,8 +257,9 @@ export function TopBar() {
 
     try {
       const task = await renameTask(activeProductTask.id, title)
-      useSessionStore.getState().updateSessionTitle(task.id, task.title)
-      useTabStore.getState().updateTabTitle(task.id, task.title)
+      if (activeTab?.type === 'product-task') {
+        useTabStore.getState().updateTabTitle(activeTab.sessionId, task.title)
+      }
       setTaskDialog(null)
       addToast({ type: 'success', message: '任务名称已更新。' })
     } catch {
@@ -302,9 +308,7 @@ export function TopBar() {
     try {
       const task = await continueProductTask({
         continueTask,
-        refreshSessions: () => useSessionStore.getState().fetchSessions(),
-        openTask: (nextTask) => useTabStore.getState().openTab(nextTask.id, nextTask.title, 'session'),
-        connectToSession: (sessionId) => useChatStore.getState().connectToSession(sessionId),
+        openTask: (nextTask) => useTabStore.getState().openProductTaskTab(nextTask.id, nextTask.title),
       }, activeProductTask.id, { target })
       addToast({ type: 'success', message: `已打开继续任务：${task.title}` })
     } catch {
@@ -329,7 +333,7 @@ export function TopBar() {
               <PanelLeft size={18} />
             </IconBtn>
           )}
-          {isChat ? (
+          {isTaskSurface ? (
             <button
               type="button"
               title="任务操作"
@@ -396,23 +400,25 @@ export function TopBar() {
         </div>
       </header>
 
-      {menuAt && activeTabId && (
+      {menuAt && activeTab && (
         <div
           ref={menuRef}
           role="menu"
           className="fixed z-50 min-w-[200px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1.5"
           style={{ left: menuAt.x, top: menuAt.y, boxShadow: 'var(--shadow-dropdown)' }}
         >
-          <MenuItem
-            onClick={() => {
-              setMenuAt(null)
-              void handleCopy(
-                composeConversationText(activeTabId, title, t('search.global.roleUser'), t('search.global.roleAssistant')),
-              )
-            }}
-          >
-            <Copy size={15} /> 复制整段对话
-          </MenuItem>
+          {isChat && activeTabId ? (
+            <MenuItem
+              onClick={() => {
+                setMenuAt(null)
+                void handleCopy(
+                  composeConversationText(activeTabId, title, t('search.global.roleUser'), t('search.global.roleAssistant')),
+                )
+              }}
+            >
+              <Copy size={15} /> 复制整段对话
+            </MenuItem>
+          ) : null}
           {sessionWorkDir && (
             <MenuItem
               onClick={() => {

@@ -94,8 +94,6 @@ function renderIndex(index = makeIndex(), overrides: Partial<TaskIndexProps> = {
     onContinueTask: vi.fn(async () => undefined),
     onRequestNewTask: vi.fn(),
     onOpenTask: vi.fn(),
-    onOpenTaskWorkbench: vi.fn(),
-    onOpenTaskTerminal: vi.fn(),
     ...overrides,
   }
   render(<TaskIndex {...props} />)
@@ -207,8 +205,6 @@ describe('TaskIndex', () => {
       kind: 'continuation',
       worktreeState: 'materialized',
       parentTaskId: 'task-parent',
-      parentThreadId: 'session-parent',
-      sourceTurnId: 'turn-42',
     })))
 
     fireEvent.click(screen.getByRole('button', { name: '复制 ID' }))
@@ -228,7 +224,6 @@ describe('TaskIndex', () => {
     ].join('\n')
     await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith(markdown))
     expect(markdown).not.toMatch(/https?:\/\//)
-    expect(markdown).not.toContain('session-parent')
     expect(markdown).not.toContain('turn-42')
     expect(screen.getByRole('button', { name: '已复制 Markdown' })).toBeInTheDocument()
   })
@@ -277,16 +272,6 @@ describe('TaskIndex', () => {
       id: 'task-1',
     }))
 
-    fireEvent.click(screen.getByRole('button', { name: '打开工作台' }))
-    expect(props.onOpenTaskWorkbench).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'task-1',
-    }))
-
-    fireEvent.click(screen.getByRole('button', { name: '打开终端' }))
-    expect(props.onOpenTaskTerminal).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'task-1',
-    }))
-
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
     await waitFor(() => expect(props.onContinueTask).toHaveBeenCalledWith('task-1', {
       target: 'current_workspace',
@@ -298,9 +283,10 @@ describe('TaskIndex', () => {
     }))
   })
 
-  it('does not offer file-dependent task tools when there is no working directory', () => {
+  it('keeps the single open action product-owned even when a legacy working directory is absent', () => {
     renderIndex(makeIndex(makeTask({ workDir: '' })))
 
+    expect(screen.getByRole('button', { name: '打开' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '打开工作台' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '打开终端' })).not.toBeInTheDocument()
   })
@@ -442,18 +428,31 @@ describe('TaskIndex', () => {
     }))
   })
 
-  it('uses the existing desktop picker for initial file attachments', async () => {
+  it('uses inline browser file data for initial attachments even in the desktop renderer', async () => {
     mocks.isDesktop = true
-    mocks.openDirectory.mockResolvedValue(['/workspace/billiard/训练记录.csv'])
-    renderComposer()
+    const { onSubmit } = renderComposer()
 
+    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
 
-    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
-      multiple: true,
-      directory: false,
-    }))
+    expect(mocks.openDirectory).not.toHaveBeenCalled()
+    const fileInput = document.querySelector('input[type="file"]')
+    const record = new File(['date,score\n2026-07-19,8'], '训练记录.csv', { type: 'text/csv' })
+    fireEvent.change(fileInput!, { target: { files: [record] } })
     expect(await screen.findByRole('button', { name: 'Remove 训练记录.csv' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+      workDir: '/workspace/new-table',
+    }, {
+      text: '',
+      attachments: [expect.objectContaining({
+        type: 'file',
+        name: '训练记录.csv',
+        mimeType: 'text/csv',
+        data: expect.stringMatching(/^data:text\/csv;base64,/),
+      })],
+    }))
   })
 
   it('discovers and inserts name-only Skill commands in the new-task composer', async () => {
@@ -545,7 +544,7 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: /\/venue-daily-review/ })).not.toBeInTheDocument()
   })
 
-  it('uses the configured default permission mode for the new core session', async () => {
+  it('keeps legacy permission-mode state out of new product task creation', async () => {
     useSettingsStore.setState({ permissionMode: 'plan' })
     const { onSubmit } = renderComposer()
 
@@ -554,7 +553,7 @@ describe('TaskIndex', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       workDir: '/workspace/new-table',
-      permissionMode: 'plan',
     }))
+    expect(screen.queryByText('执行权限')).not.toBeInTheDocument()
   })
 })

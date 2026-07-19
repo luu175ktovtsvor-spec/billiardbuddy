@@ -1,11 +1,11 @@
-// Desktop product navigation backed by the BilliardBuddy task model and Agent Core session adapter.
+// Desktop product navigation backed by the BilliardBuddy task model and its
+// restricted product-task runtime.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   PanelLeft, Search, SquarePen, Clock, Puzzle,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
   Sparkles, Zap, Plus, Loader2, ListTodo, Pin,
 } from 'lucide-react'
-import { useChatStore } from '../../stores/chatStore'
 import { useUIStore, resolveEffectiveTheme } from '../../stores/uiStore'
 import {
   useTabStore,
@@ -23,6 +23,8 @@ import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import type { ProductProject, ProductTaskRecord } from '../../product/domain/types'
 import { openProductTaskComposer } from '../../product/openTaskComposer'
 import { orderProductProjects, orderProductTasks } from '../../product/taskOrdering'
+import { useProductTaskRuntimeStore } from '../../product/stores/productTaskRuntimeStore'
+import { getProductTaskRuntimeStateFromStream } from '../../product/taskRuntime'
 
 const EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-projects'
 const PROJECT_TASKS_EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-project-tasks'
@@ -42,23 +44,21 @@ function writeJson(key: string, value: unknown) {
 
 type ProductProjectGroup = ProductProject & { tasks: ProductTaskRecord[] }
 
-/**
- * 仅负责将产品任务映射为桌面导航；会话仍由 Agent Core 负责打开和连接。
- */
+/** 仅负责将产品任务映射为桌面导航与受限运行时状态。 */
 function useSidebarData() {
   const index = useProductTaskStore((s) => s.index)
   const refresh = useProductTaskStore((s) => s.refresh)
 
-  const activeTabId = useTabStore((s) => s.activeTabId)
-  const activeTabType = useTabStore(
-    (s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId)?.type ?? null,
-  )
+  const activeTab = useTabStore((s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId))
+  const activeTabType = activeTab?.type ?? null
   const openTab = useTabStore((s) => s.openTab)
-
-  const connectToSession = useChatStore((s) => s.connectToSession)
-  const runningActive = useChatStore(
-    (s) => (activeTabId ? (s.sessions[activeTabId]?.chatState ?? 'idle') !== 'idle' : false),
+  const openProductTaskTab = useTabStore((s) => s.openProductTaskTab)
+  const taskRuntimes = useProductTaskRuntimeStore((s) => s.tasks)
+  const activeTaskId = activeTab?.type === 'product-task' ? activeTab.taskId ?? null : null
+  const activeTaskRuntime = getProductTaskRuntimeStateFromStream(
+    activeTaskId ? taskRuntimes[activeTaskId] : undefined,
   )
+  const runningActive = activeTaskRuntime === 'running' || activeTaskRuntime === 'connecting'
 
   const theme = useUIStore((s) => s.theme)
   const toggleTheme = useUIStore((s) => s.toggleTheme)
@@ -85,8 +85,7 @@ function useSidebarData() {
   }, [index])
 
   const openTask = (task: ProductTaskRecord) => {
-    openTab(task.id, task.title || t('session.untitled'), 'session')
-    connectToSession(task.id)
+    openProductTaskTab(task.id, task.title || t('session.untitled'))
   }
   const openProductTasks = () => {
     openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
@@ -99,7 +98,7 @@ function useSidebarData() {
   return {
     t,
     tasks: activeTasks,
-    activeId: activeTabId,
+    activeId: activeTaskId,
     activeTabType,
     runningActive,
     projects,

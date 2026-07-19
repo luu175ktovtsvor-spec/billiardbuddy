@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type { ServerMessage } from '../ws/events.js'
 import {
   projectAskUserQuestions,
+  projectComputerUseApprovalForProductTask,
   projectServerMessagesForProductTask,
 } from '../product/taskEventProjection.js'
 
@@ -98,7 +99,15 @@ describe('product task event projection', () => {
       { type: 'activity', kind: 'command', phase: 'running' },
       { type: 'activity', kind: 'tool', phase: 'completed' },
       { type: 'approval_required', requestId: 'approval-1', kind: 'action' },
-      { type: 'approval_required', requestId: 'approval-2', kind: 'computer_use' },
+      {
+        type: 'approval_required',
+        requestId: 'approval-2',
+        kind: 'computer_use',
+        computerUse: {
+          apps: [{ name: 'Private App', tier: 'full', alreadyAuthorized: false }],
+          capabilities: ['clipboard_read'],
+        },
+      },
       { type: 'activity', kind: 'subtask', phase: 'running' },
       { type: 'error', code: 'task_failed', retryable: true },
       { type: 'status', state: 'idle' },
@@ -113,6 +122,8 @@ describe('product task event projection', () => {
       rawToolResult,
       rawPermissionDescription,
       rawComputerUsePath,
+      'PRIVATE_COMPUTER_USE_REASON',
+      'com.example.private',
       'PRIVATE_STATUS_VERB',
       'PRIVATE_RUNTIME_ERROR',
       '99999',
@@ -122,6 +133,58 @@ describe('product task event projection', () => {
     ]) {
       expect(serialized).not.toContain(secret)
     }
+  })
+
+  it('projects Computer Use as a narrow human-readable approval', () => {
+    const privatePath = '/Users/private/.config/computer-use.json'
+    const privateBundleId = 'com.example.private'
+    const projected = projectComputerUseApprovalForProductTask({
+      requestId: 'computer-use-3',
+      reason: 'PRIVATE_MODEL_REASON',
+      apps: [
+        {
+          requestedName: privateBundleId,
+          resolved: {
+            bundleId: privateBundleId,
+            displayName: '球房记分牌',
+          },
+          isSentinel: true,
+          alreadyGranted: true,
+          proposedTier: 'read',
+        },
+        {
+          requestedName: privatePath,
+          isSentinel: false,
+          alreadyGranted: false,
+          proposedTier: 'full',
+        },
+      ],
+      requestedFlags: {
+        clipboardRead: true,
+        clipboardWrite: true,
+        systemKeyCombos: true,
+      },
+      screenshotFiltering: 'native',
+      tccState: { accessibility: false, screenRecording: true },
+      willHide: [{ bundleId: privateBundleId, displayName: privatePath }],
+    })
+
+    expect(projected).toEqual({
+      apps: [
+        { name: '球房记分牌', tier: 'read', alreadyAuthorized: true },
+        { name: '请求的应用', tier: 'full', alreadyAuthorized: false },
+      ],
+      capabilities: ['clipboard_read', 'clipboard_write', 'system_key_combos'],
+      systemPermissions: {
+        accessibilityRequired: true,
+        screenRecordingRequired: false,
+      },
+    })
+    const serialized = JSON.stringify(projected)
+    expect(serialized).not.toContain(privatePath)
+    expect(serialized).not.toContain(privateBundleId)
+    expect(serialized).not.toContain('PRIVATE_MODEL_REASON')
+    expect(serialized).not.toContain('native')
   })
 
   it('projects AskUserQuestion through a narrow question schema', () => {
@@ -165,6 +228,30 @@ describe('product task event projection', () => {
     expect(serialized).not.toContain('PRIVATE_HIDDEN_PROMPT')
     expect(serialized).not.toContain('PRIVATE_RUNTIME_CONFIG')
     expect(serialized).not.toContain('PRIVATE_PERMISSION_DESCRIPTION')
+  })
+
+  it('projects replayed attachment text without upload paths or source data', () => {
+    const uploadPath = '/Users/private-user/.claude/uploads/core-session-secret/4bf1a3ef-3c4c-4d93-b35b-14719d05498e-ledger.pdf'
+    const dataUrl = 'data:application/pdf;base64,PRIVATE_FILE_BYTES'
+
+    const projected = projectServerMessagesForProductTask([{
+      type: 'user_message_replay',
+      content: `@"${uploadPath}" 请核对附件 ${dataUrl}`,
+      attachments: [{ type: 'file', name: 'ledger.pdf' }],
+    }])
+
+    expect(projected).toEqual([{
+      type: 'user_text',
+      text: '请核对附件',
+      replayed: true,
+      attachments: [{ type: 'file', name: 'ledger.pdf' }],
+    }])
+
+    const serialized = JSON.stringify(projected)
+    expect(serialized).not.toContain(uploadPath)
+    expect(serialized).not.toContain('core-session-secret')
+    expect(serialized).not.toContain(dataUrl)
+    expect(serialized).not.toContain('PRIVATE_FILE_BYTES')
   })
 
   it('only accepts explicit, bounded AskUserQuestion fields', () => {

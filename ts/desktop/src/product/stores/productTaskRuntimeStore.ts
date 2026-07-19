@@ -1,15 +1,21 @@
 import { create } from 'zustand'
 import { productTasksApi } from '../api/tasks'
-import { productTaskSocket } from '../api/taskSocket'
+import {
+  productTaskSocket,
+  type ProductTaskAttachment,
+  type ProductTaskSocketLifecycleEvent,
+} from '../api/taskSocket'
+import { parseProductTaskThread } from '../api/taskProtocol'
 import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
+  ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
+  ProductTaskComputerUseApproval,
   ProductTaskEvent,
   ProductTaskQuestion,
   ProductTaskRunState,
   ProductTaskSafeErrorCode,
-  ProductTaskThread,
   ProductTaskThreadEntry,
 } from '../domain/types'
 
@@ -31,7 +37,9 @@ export type ProductTaskRuntime = {
     requestId: string
     kind: ProductTaskApprovalKind
     questions?: ProductTaskQuestion[]
+    computerUse?: ProductTaskComputerUseApproval
   } | null
+  approvalResponsePending: boolean
   error: {
     code: ProductTaskSafeErrorCode
     retryable: boolean
@@ -55,11 +63,19 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   entries: [],
   activeActivity: null,
   pendingApproval: null,
+  approvalResponsePending: false,
   error: null,
   streamingEntryId: null,
 }
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
+const MAX_ATTACHMENT_NAME_LENGTH = 160
+const SAFE_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentSummary['mimeType']>>([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+])
 
 export function canSendProductTaskText(value: string): boolean {
   const content = value.trim()
@@ -67,6 +83,41 @@ export function canSendProductTaskText(value: string): boolean {
   // discovers and presents them, while the Agent Core remains the authority
   // for their semantics (including Skills and Agents).
   return Boolean(content) && content.length <= MAX_PRODUCT_TASK_TEXT_LENGTH
+}
+
+export function canSendProductTaskMessage(
+  value: string,
+  attachments: readonly ProductTaskAttachment[] = [],
+): boolean {
+  const content = value.trim()
+  return content.length <= MAX_PRODUCT_TASK_TEXT_LENGTH && (Boolean(content) || attachments.length > 0)
+}
+
+function productAttachmentSummary(
+  attachment: ProductTaskAttachment,
+): ProductTaskAttachmentSummary {
+  const rawName = attachment.name?.replace(/[\u0000-\u001f\u007f]/g, '').trim() ?? ''
+  const name = rawName.slice(0, MAX_ATTACHMENT_NAME_LENGTH) || (
+    attachment.type === 'image' ? '图片附件' : '文件附件'
+  )
+  const mimeType = attachment.type === 'image' && SAFE_IMAGE_MIME_TYPES.has(
+    attachment.mimeType as NonNullable<ProductTaskAttachmentSummary['mimeType']>,
+  )
+    ? attachment.mimeType as NonNullable<ProductTaskAttachmentSummary['mimeType']>
+    : undefined
+  return {
+    type: attachment.type,
+    name,
+    ...(mimeType ? { mimeType } : {}),
+  }
+}
+
+function attachmentSignature(
+  attachments: readonly ProductTaskAttachmentSummary[] | undefined,
+): string {
+  return (attachments ?? [])
+    .map((attachment) => `${attachment.type}:${attachment.name}:${attachment.mimeType ?? ''}`)
+    .join('|')
 }
 
 function createRuntime(): ProductTaskRuntime {
@@ -84,12 +135,59 @@ function createdAt(): string {
   return new Date().toISOString()
 }
 
-function mergeInitialThread(
-  thread: ProductTaskThread,
+function mergeThreadSnapshot(
+  thread: { entries: ProductTaskThreadEntry[] },
   runtime: ProductTaskRuntime,
+  liveEntryIdsAtRequestStart: ReadonlySet<string>,
 ): ProductTaskThreadEntry[] {
-  const transient = runtime.entries.filter((entry) => entry.id.startsWith('live_'))
+  // A returned transcript is the source of truth for entries visible when the
+  // request began. Preserve only live events that arrived after that point.
+  // This prevents a completed turn from being appended a second time after its
+  // server snapshot is available, while retaining a newly started turn.
+  const availableSnapshotEntries = entryMultiset(thread.entries)
+
+  // Existing persisted entries account for the matching snapshot entries first,
+  // so a later identical message is not mistaken for historical content.
+  for (const entry of runtime.entries) {
+    if (!entry.id.startsWith('live_')) consumeSnapshotEntry(availableSnapshotEntries, entry)
+  }
+
+  const transient: ProductTaskThreadEntry[] = []
+  for (const entry of runtime.entries) {
+    if (!entry.id.startsWith('live_')) continue
+
+    const existedAtRequestStart = liveEntryIdsAtRequestStart.has(entry.id)
+    const confirmedBySnapshot = consumeSnapshotEntry(availableSnapshotEntries, entry)
+    if (!existedAtRequestStart && !confirmedBySnapshot) transient.push(entry)
+  }
   return [...thread.entries, ...transient]
+}
+
+function entrySignature(entry: ProductTaskThreadEntry): string {
+  if (entry.type === 'activity') return `activity:${entry.kind}:${entry.phase}`
+  // The persisted product projection trims visible text; stream deltas retain
+  // whitespace while they are arriving, so normalize only for reconciliation.
+  return `${entry.type}:${entry.text.trim()}:${entry.type === 'user_text'
+    ? attachmentSignature(entry.attachments)
+    : ''}`
+}
+
+function entryMultiset(entries: readonly ProductTaskThreadEntry[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    const signature = entrySignature(entry)
+    counts.set(signature, (counts.get(signature) ?? 0) + 1)
+  }
+  return counts
+}
+
+function consumeSnapshotEntry(counts: Map<string, number>, entry: ProductTaskThreadEntry): boolean {
+  const signature = entrySignature(entry)
+  const count = counts.get(signature) ?? 0
+  if (count === 0) return false
+  if (count === 1) counts.delete(signature)
+  else counts.set(signature, count - 1)
+  return true
 }
 
 function appendOrReplaceStreamingText(
@@ -139,12 +237,54 @@ function appendActivity(
 const socketUnsubscribers = new Map<string, () => void>()
 const historyRequestVersions = new Map<string, number>()
 
+type ThreadRefreshReason = 'initial' | 'reconnect' | 'turn_complete' | 'manual'
+type UpdateTask = (
+  taskId: string,
+  update: (runtime: ProductTaskRuntime) => ProductTaskRuntime,
+) => void
+type RefreshTaskThread = (taskId: string, reason?: ThreadRefreshReason) => Promise<void>
+
+function liveEntryIds(runtime: ProductTaskRuntime | undefined): Set<string> {
+  return new Set(
+    runtime?.entries
+      .filter((entry) => entry.id.startsWith('live_'))
+      .map((entry) => entry.id) ?? [],
+  )
+}
+
+function handleSocketLifecycle(
+  taskId: string,
+  event: ProductTaskSocketLifecycleEvent,
+  updateTask: UpdateTask,
+  refreshThread: RefreshTaskThread,
+): void {
+  switch (event.type) {
+    case 'connecting':
+    case 'reconnecting':
+      updateTask(taskId, (runtime) => ({ ...runtime, connectionState: 'connecting' }))
+      return
+
+    case 'disconnected':
+      updateTask(taskId, (runtime) => ({ ...runtime, connectionState: 'disconnected' }))
+      return
+
+    case 'connected':
+      updateTask(taskId, (runtime) => ({ ...runtime, connectionState: 'connected' }))
+      if (event.reconnected) void refreshThread(taskId, 'reconnect')
+      return
+  }
+}
+
 type ProductTaskRuntimeStore = {
   tasks: Record<string, ProductTaskRuntime | undefined>
   connectTask: (taskId: string) => Promise<void>
   disconnectTask: (taskId: string) => void
   sendText: (taskId: string, text: string) => boolean
+  sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[]) => boolean
   stopTask: (taskId: string) => void
+  respondToApproval: (taskId: string, allowed: boolean) => boolean
+  respondToQuestions: (taskId: string, answers: string[]) => boolean
+  respondToComputerUseApproval: (taskId: string, allowed: boolean) => boolean
   refreshThread: (taskId: string) => Promise<void>
   handleEvent: (taskId: string, event: ProductTaskEvent) => void
 }
@@ -165,9 +305,13 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     })
   }
 
-  const refreshThread = async (taskId: string) => {
+  const refreshThread = async (
+    taskId: string,
+    _reason: ThreadRefreshReason = 'manual',
+  ) => {
     const requestVersion = (historyRequestVersions.get(taskId) ?? 0) + 1
     historyRequestVersions.set(taskId, requestVersion)
+    const liveEntryIdsAtRequestStart = liveEntryIds(get().tasks[taskId])
     updateTask(taskId, (runtime) => ({
       ...runtime,
       historyStatus: runtime.entries.length === 0 ? 'loading' : runtime.historyStatus,
@@ -175,12 +319,14 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     }))
 
     try {
-      const thread = await productTasksApi.getThread(taskId)
+      const response = await productTasksApi.getThread(taskId)
+      const thread = parseProductTaskThread(response, taskId)
+      if (!thread) throw new Error('Invalid product task thread payload')
       if (historyRequestVersions.get(taskId) !== requestVersion) return
       updateTask(taskId, (runtime) => ({
         ...runtime,
         historyStatus: 'ready',
-        entries: mergeInitialThread(thread, runtime),
+        entries: mergeThreadSnapshot(thread, runtime, liveEntryIdsAtRequestStart),
       }))
     } catch {
       if (historyRequestVersions.get(taskId) !== requestVersion) return
@@ -194,46 +340,128 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     connectTask: async (taskId) => {
       if (!socketUnsubscribers.has(taskId)) {
         updateTask(taskId, (runtime) => ({ ...runtime, connectionState: 'connecting' }))
-        socketUnsubscribers.set(taskId, productTaskSocket.connect(taskId, (event) => {
-          get().handleEvent(taskId, event)
-        }))
+        socketUnsubscribers.set(taskId, productTaskSocket.connect(
+          taskId,
+          (event) => {
+            get().handleEvent(taskId, event)
+          },
+          (lifecycleEvent) => {
+            handleSocketLifecycle(taskId, lifecycleEvent, updateTask, refreshThread)
+          },
+        ))
       }
-      await refreshThread(taskId)
+      await refreshThread(taskId, 'initial')
     },
 
     disconnectTask: (taskId) => {
+      historyRequestVersions.set(taskId, (historyRequestVersions.get(taskId) ?? 0) + 1)
       socketUnsubscribers.get(taskId)?.()
       socketUnsubscribers.delete(taskId)
       productTaskSocket.disconnect(taskId)
-      updateTask(taskId, (runtime) => ({ ...runtime, connectionState: 'disconnected' }))
+      updateTask(taskId, (runtime) => ({
+        ...runtime,
+        connectionState: 'disconnected',
+        historyStatus: runtime.entries.length === 0 ? 'idle' : 'ready',
+      }))
     },
 
-    sendText: (taskId, text) => {
+    sendText: (taskId, text) => get().sendMessage(taskId, text),
+
+    sendMessage: (taskId, text, attachments = []) => {
       const content = text.trim()
-      if (!canSendProductTaskText(content)) return false
+      if (!canSendProductTaskMessage(content, attachments)) return false
+      const attachmentSummaries = attachments.map(productAttachmentSummary)
       if (!socketUnsubscribers.has(taskId)) {
         void get().connectTask(taskId)
       }
-      productTaskSocket.send(taskId, { type: 'user_message', content })
+      productTaskSocket.send(taskId, {
+        type: 'user_message',
+        content,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      })
       updateTask(taskId, (runtime) => ({
         ...runtime,
         runState: 'working',
         error: null,
-        entries: [
-          ...runtime.entries,
-          {
-            id: liveEntryId(taskId, 'user'),
-            type: 'user_text',
-            text: content,
-            createdAt: createdAt(),
-          },
-        ],
+        entries: content || attachmentSummaries.length > 0
+          ? [
+              ...runtime.entries,
+              {
+                id: liveEntryId(taskId, 'user'),
+                type: 'user_text',
+                text: content || (attachmentSummaries.length === 1 ? '已添加附件' : `已添加 ${attachmentSummaries.length} 个附件`),
+                createdAt: createdAt(),
+                ...(attachmentSummaries.length > 0 ? { attachments: attachmentSummaries } : {}),
+              },
+            ]
+          : runtime.entries,
       }))
       return true
     },
 
     stopTask: (taskId) => {
       productTaskSocket.send(taskId, { type: 'stop_generation' })
+    },
+
+    respondToApproval: (taskId, allowed) => {
+      const runtime = get().tasks[taskId]
+      const pending = runtime?.pendingApproval
+      if (!pending || pending.kind !== 'action' || runtime?.approvalResponsePending) return false
+
+      productTaskSocket.send(taskId, {
+        type: 'permission_response',
+        requestId: pending.requestId,
+        allowed,
+      })
+      updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
+      return true
+    },
+
+    respondToQuestions: (taskId, answers) => {
+      const runtime = get().tasks[taskId]
+      const pending = runtime?.pendingApproval
+      if (
+        !pending ||
+        pending.kind !== 'question' ||
+        runtime?.approvalResponsePending ||
+        !pending.questions ||
+        answers.length !== pending.questions.length ||
+        answers.some((answer) => !answer.trim())
+      ) {
+        return false
+      }
+
+      productTaskSocket.send(taskId, {
+        type: 'ask_user_question_response',
+        requestId: pending.requestId,
+        answers: answers.map((answer) => answer.trim()),
+      })
+      updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
+      return true
+    },
+
+    respondToComputerUseApproval: (taskId, allowed) => {
+      const runtime = get().tasks[taskId]
+      const pending = runtime?.pendingApproval
+      if (
+        !pending ||
+        pending.kind !== 'computer_use' ||
+        !pending.computerUse ||
+        runtime?.approvalResponsePending
+      ) {
+        return false
+      }
+
+      // The product client chooses only this one-shot allow/deny decision.
+      // The server reconstructs every app grant and requested capability from
+      // the pending Computer Use request.
+      productTaskSocket.send(taskId, {
+        type: 'computer_use_permission_response',
+        requestId: pending.requestId,
+        allowed,
+      })
+      updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
+      return true
     },
 
     refreshThread,
@@ -245,9 +473,10 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           runState: 'idle',
           activeActivity: null,
           pendingApproval: null,
+          approvalResponsePending: false,
           streamingEntryId: null,
         }))
-        void get().refreshThread(taskId)
+        void refreshThread(taskId, 'turn_complete')
         return
       }
 
@@ -257,8 +486,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return { ...runtime, connectionState: 'connected' }
 
           case 'user_text': {
+            const eventSignature = `${event.text}:${attachmentSignature(event.attachments)}`
             const alreadyOptimistic = runtime.entries.some((entry) => (
-              entry.type === 'user_text' && entry.id.startsWith('live_') && entry.text === event.text
+              entry.type === 'user_text' &&
+              entry.id.startsWith('live_') &&
+              `${entry.text}:${attachmentSignature(entry.attachments)}` === eventSignature
             ))
             if (alreadyOptimistic) return runtime
             return {
@@ -268,6 +500,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
                 type: 'user_text',
                 text: event.text,
                 createdAt: createdAt(),
+                ...(event.attachments?.length ? { attachments: event.attachments } : {}),
               }],
             }
           }
@@ -279,7 +512,13 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return appendOrReplaceStreamingText(runtime, taskId, event.text)
 
           case 'status':
-            return { ...runtime, runState: event.state }
+            return {
+              ...runtime,
+              runState: event.state,
+              ...(event.state === 'awaiting_approval'
+                ? {}
+                : { pendingApproval: null, approvalResponsePending: false }),
+            }
 
           case 'activity': {
             let next: ProductTaskRuntime = {
@@ -299,8 +538,10 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               pendingApproval: {
                 requestId: event.requestId,
                 kind: event.kind,
-                ...(event.questions ? { questions: event.questions } : {}),
+                ...(event.kind === 'question' ? { questions: event.questions } : {}),
+                ...(event.kind === 'computer_use' ? { computerUse: event.computerUse } : {}),
               },
+              approvalResponsePending: false,
             }
 
           case 'error':
@@ -308,6 +549,12 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               ...runtime,
               error: { code: event.code, retryable: event.retryable },
               streamingEntryId: null,
+              approvalResponsePending: false,
+              // A terminal product error has no corresponding Core completion
+              // event to return the compact task UI to an actionable state.
+              ...(event.retryable
+                ? {}
+                : { runState: 'idle', activeActivity: null, pendingApproval: null }),
             }
 
           case 'title_updated':

@@ -459,6 +459,15 @@ describe('WorkspaceService', () => {
       size: ONE_MIB + 5,
     })
     expect(largeImage.dataUrl).toStartWith('data:image/png;base64,')
+    await expect(service.readFile('session-1', 'large-image.png', {
+      maxImagePreviewBytes: ONE_MIB,
+    })).resolves.toEqual({
+      state: 'too_large',
+      path: 'large-image.png',
+      mimeType: 'image/png',
+      language: 'image',
+      size: ONE_MIB + 5,
+    })
     await expect(service.readFile('session-1', 'large.txt')).resolves.toMatchObject({
       state: 'ok',
       previewType: 'text',

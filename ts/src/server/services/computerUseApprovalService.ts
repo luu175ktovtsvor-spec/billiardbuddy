@@ -37,6 +37,41 @@ function deniedResponse(): CuPermissionResponse {
 }
 
 /**
+ * Product task clients can only make a single allow/deny decision. Build the
+ * complete Computer Use response from the server-owned pending request so a
+ * browser cannot add an application, alter a tier, or enable an unrequested
+ * capability.
+ */
+function approvedProductTaskResponse(request: CuPermissionRequest): CuPermissionResponse {
+  const granted: AppGrant[] = []
+  const grantedBundleIds = new Set<string>()
+  for (const app of request.apps) {
+    const resolved = app.resolved
+    if (!resolved || grantedBundleIds.has(resolved.bundleId)) continue
+    grantedBundleIds.add(resolved.bundleId)
+    granted.push({
+      bundleId: resolved.bundleId,
+      displayName: resolved.displayName,
+      grantedAt: Date.now(),
+      tier: app.proposedTier,
+    })
+  }
+
+  return {
+    granted,
+    // Unresolved applications never become grants. There is no need to echo
+    // model-provided selectors back into this internal response either.
+    denied: [],
+    flags: {
+      clipboardRead: request.requestedFlags.clipboardRead === true,
+      clipboardWrite: request.requestedFlags.clipboardWrite === true,
+      systemKeyCombos: request.requestedFlags.systemKeyCombos === true,
+    },
+    userConsented: true,
+  }
+}
+
+/**
  * The Agent-side request carries local application paths and icon payloads for
  * the executor. The desktop approval dialog only needs a stable app identity,
  * so keep those implementation details on the server with the pending request.
@@ -200,6 +235,25 @@ export class ComputerUseApprovalService {
     const normalized = normalizeApprovalResponse(pending.request, response)
     pending.resolve(normalized ?? deniedResponse())
     return normalized !== null
+  }
+
+  /**
+   * Resolve a product task Computer Use prompt without accepting a raw grant
+   * payload from the browser. The pending request remains the sole authority
+   * for its task/session binding and all granted capabilities.
+   */
+  resolveProductTaskApproval(
+    sessionId: string,
+    requestId: string,
+    allowed: boolean,
+  ): boolean {
+    const pending = this.pending.get(requestId)
+    if (!pending || pending.sessionId !== sessionId) return false
+
+    clearTimeout(pending.timeout)
+    this.pending.delete(requestId)
+    pending.resolve(allowed ? approvedProductTaskResponse(pending.request) : deniedResponse())
+    return true
   }
 
   cancelSession(sessionId: string): void {

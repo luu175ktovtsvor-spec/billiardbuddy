@@ -5,11 +5,20 @@ import type {
   UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
+import {
+  productTaskReviewService,
+  type ProductTaskReviewService,
+} from '../product/taskReviewService.js'
 import { productTaskService, type ProductTaskService } from '../product/taskService.js'
+
+type ProductTaskReviewApi = Pick<
+  ProductTaskReviewService,
+  'getStatus' | 'getTree' | 'getFile' | 'getDiff'
+>
 
 export async function handleProductApi(
   req: Request,
-  _url: URL,
+  url: URL,
   segments: string[],
   tasks: Pick<
     ProductTaskService,
@@ -24,6 +33,7 @@ export async function handleProductApi(
     | 'createSideTask'
     | 'closeSideTask'
   > = productTaskService,
+  review: ProductTaskReviewApi = productTaskReviewService,
 ): Promise<Response> {
   try {
     if (segments[2] !== 'tasks') {
@@ -47,18 +57,22 @@ export async function handleProductApi(
       return Response.json(await tasks.getTaskThread(taskId))
     }
 
+    if (action === 'review') {
+      return await handleTaskReviewRoute(review, req, url, taskId, segments[5])
+    }
+
     if (action === 'side-tasks') {
       const sideTaskId = segments[5]
       const sideTaskAction = segments[6]
 
       if (!sideTaskId) {
         if (req.method === 'GET') {
-          return Response.json({ sideTasks: await tasks.listSideTasks(taskId) })
+          return Response.json({ sideTasks: (await tasks.listSideTasks(taskId)).map(publicTask) })
         }
         if (req.method === 'POST') {
           const input = await readJson<CreateProductSideTaskInput>(req)
           return Response.json(
-            { sideTask: await tasks.createSideTask(taskId, input) },
+            { sideTask: publicTask(await tasks.createSideTask(taskId, input)) },
             { status: 201 },
           )
         }
@@ -67,7 +81,7 @@ export async function handleProductApi(
 
       if (sideTaskAction === 'close') {
         if (req.method !== 'POST') return methodNotAllowed(req.method)
-        return Response.json({ sideTask: await tasks.closeSideTask(taskId, sideTaskId) })
+        return Response.json({ sideTask: publicTask(await tasks.closeSideTask(taskId, sideTaskId)) })
       }
 
       throw ApiError.notFound(
@@ -105,6 +119,37 @@ export async function handleProductApi(
   }
 }
 
+async function handleTaskReviewRoute(
+  review: ProductTaskReviewApi,
+  req: Request,
+  url: URL,
+  taskId: string,
+  resource?: string,
+): Promise<Response> {
+  if (req.method !== 'GET') return methodNotAllowed(req.method)
+
+  switch (resource) {
+    case 'status':
+      return Response.json(await review.getStatus(taskId))
+    case 'tree':
+      return Response.json(await review.getTree(taskId, url.searchParams.get('path') ?? ''))
+    case 'file':
+      return Response.json(await review.getFile(taskId, requireReviewPath(url)))
+    case 'diff':
+      return Response.json(await review.getDiff(taskId, requireReviewPath(url)))
+    default:
+      throw ApiError.notFound('未知任务审阅资源')
+  }
+}
+
+function requireReviewPath(url: URL): string {
+  const filePath = url.searchParams.get('path')
+  if (!filePath?.trim()) {
+    throw ApiError.badRequest('审阅文件需要 path 参数')
+  }
+  return filePath
+}
+
 async function readJson<T>(req: Request): Promise<T> {
   try {
     return await req.json() as T
@@ -121,8 +166,15 @@ function methodNotAllowed(method: string): Response {
 }
 
 function publicTask<T extends object>(task: T): T {
-  const { coreSessionId: _legacyCoreSessionId, ...publicTask } = task as T & {
+  const {
+    coreSessionId: _legacyCoreSessionId,
+    sourceTurnId: _privateCoreSourceTurnId,
+    parentThreadId: _legacyCoreParentThreadId,
+    ...publicTask
+  } = task as T & {
     coreSessionId?: unknown
+    sourceTurnId?: unknown
+    parentThreadId?: unknown
   }
   return publicTask as T
 }

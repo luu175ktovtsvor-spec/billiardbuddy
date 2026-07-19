@@ -8,6 +8,7 @@ import { WorkbenchTab } from '../workbench/WorkbenchTab'
 import { ImageWorkbench } from '../media/ImageWorkbench'
 import { VideoStudio } from '../media/VideoStudio'
 import { ProductShell } from '../../product/components/ProductShell'
+import { ProductTaskPage } from '../../product/components/ProductTaskPage'
 import { previewBridge } from '../../lib/previewBridge'
 
 export function ContentRouter() {
@@ -48,10 +49,19 @@ export function ContentRouter() {
         initialWorkDir={activeTab?.newTaskWorkDir}
       />
     )
-  } else if (activeTabType !== 'terminal') {
+  } else if (activeTabType === 'product-task') {
+    page = activeTab?.taskId
+      ? <ProductTaskPage taskId={activeTab.taskId} />
+      : <ProductShell />
+  } else if (activeTabType === 'session') {
     // 会话页由 ActiveSession 承载。审阅、Diff、文件预览、浏览器和终端
     // 按需挂载，不常驻挤压任务线程。
     page = <ActiveSession />
+  } else if (activeTabType !== 'terminal') {
+    // A persisted or plugin-provided unknown tab must not fall back to the
+    // legacy Core-session surface, which would treat its tab id as a session
+    // id. Return users to the product shell instead.
+    page = <ProductShell page="new-task" />
   }
 
   return (

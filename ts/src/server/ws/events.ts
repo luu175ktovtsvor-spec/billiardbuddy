@@ -4,6 +4,8 @@
  * 定义客户端与服务器之间 WebSocket 通信的消息类型。
  */
 
+import type { ProductTaskAttachmentSummary } from '../../../shared/product/taskEvents.js'
+
 // ============================================================================
 // Client → Server
 // ============================================================================
@@ -62,7 +64,12 @@ export type ServerMessage =
       requestId: string
       request: ComputerUsePermissionRequest
     }
-  | { type: 'user_message_replay'; content: string }
+  | {
+      type: 'user_message_replay'
+      content: string
+      /** A product-safe summary derived from the full replay content. */
+      attachments?: ProductTaskAttachmentSummary[]
+    }
   | { type: 'message_complete'; usage: TokenUsage }
   | { type: 'thinking'; text: string }
   | { type: 'status'; state: ChatState; verb?: string }

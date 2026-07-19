@@ -5,12 +5,22 @@ import type {
   ProductTaskActionResponse,
   ProductTaskApi,
   ProductTaskIndexResponse,
+  ProductTaskReviewDiff,
+  ProductTaskReviewFile,
+  ProductTaskReviewStatus,
+  ProductTaskReviewTree,
   ProductTaskThreadResponse,
   UpdateProductTaskInput,
 } from '../domain/types'
 
 function taskPath(taskId: string): string {
   return `/api/product/tasks/${encodeURIComponent(taskId)}`
+}
+
+function reviewPath(taskId: string, resource: 'status' | 'tree' | 'file' | 'diff', path?: string): string {
+  const base = `${taskPath(taskId)}/review/${resource}`
+  if (!path) return base
+  return `${base}?path=${encodeURIComponent(path)}`
 }
 
 export const productTasksApi: ProductTaskApi = {
@@ -24,4 +34,8 @@ export const productTasksApi: ProductTaskApi = {
   continue: (taskId: string, input: ContinueProductTaskInput) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/continue`, input),
   getThread: (taskId: string) => productApi.get<ProductTaskThreadResponse>(`${taskPath(taskId)}/thread`),
+  getReviewStatus: (taskId) => productApi.get<ProductTaskReviewStatus>(reviewPath(taskId, 'status')),
+  getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
+  getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
+  getReviewDiff: (taskId, path) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path)),
 }

@@ -65,6 +65,16 @@ function setActiveProductTask(task = makeProductTask()) {
     restoreTask: productTaskMocks.restoreTask as never,
     unpinTask: productTaskMocks.unpinTask as never,
   })
+  useTabStore.setState({
+    tabs: [{
+      sessionId: `__product_task__${task.id}`,
+      title: task.title,
+      type: 'product-task',
+      taskId: task.id,
+      status: 'idle',
+    }],
+    activeTabId: `__product_task__${task.id}`,
+  })
 }
 
 beforeEach(() => {
@@ -183,7 +193,7 @@ describe('TopBar panel controls', () => {
 
     await waitFor(() => expect(productTaskMocks.renameTask).toHaveBeenCalledWith(SESSION_ID, '更新后的任务名称'))
     expect(useTabStore.getState().tabs[0]?.title).toBe('更新后的任务名称')
-    expect(useSessionStore.getState().sessions[0]?.title).toBe('更新后的任务名称')
+    expect(useSessionStore.getState().sessions[0]?.title).toBe('Panel task')
   })
 
   it('archives and continues through the product task contract instead of a session-only placeholder', async () => {
@@ -194,7 +204,6 @@ describe('TopBar panel controls', () => {
       kind: 'continuation',
       actions: ['archive', 'continue'],
     }))
-    productTaskMocks.fetchSessions.mockResolvedValue(undefined)
     setActiveProductTask()
     render(<TopBar />)
 
@@ -210,8 +219,10 @@ describe('TopBar panel controls', () => {
     await waitFor(() => expect(productTaskMocks.continueTask).toHaveBeenCalledWith(SESSION_ID, {
       target: 'new_worktree',
     }))
-    expect(productTaskMocks.fetchSessions).toHaveBeenCalledTimes(1)
-    expect(productTaskMocks.connectToSession).toHaveBeenCalledWith('continued-task')
-    expect(useTabStore.getState()).toMatchObject({ activeTabId: 'continued-task' })
+    expect(productTaskMocks.fetchSessions).not.toHaveBeenCalled()
+    expect(productTaskMocks.connectToSession).not.toHaveBeenCalled()
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: '__product_task__continued-task',
+    })
   })
 })

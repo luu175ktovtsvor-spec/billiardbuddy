@@ -30,7 +30,10 @@ import {
   isMaterializedWorktreeLaunch,
   prepareSessionWorkspace,
 } from '../services/repositoryLaunchService.js'
-import { projectSessionTranscriptForProductTask } from './taskThreadProjection.js'
+import {
+  projectSessionTranscriptForProductTask,
+  resolveCoreMessageIdForProductThreadEntry,
+} from './taskThreadProjection.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -53,23 +56,34 @@ export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
 
 type ProductTaskMetadata = {
   id: string
+  /** Private Agent Core binding. Never return this from a product API. */
+  coreSessionId: string
   title?: string
   lifecycle: ProductTask['lifecycle']
   kind: ProductTask['kind']
   pinnedAt?: string
   archivedAt?: string
   parentTaskId?: string
-  parentThreadId?: string
   sourceTurnId?: string
   createdAt: string
   updatedAt: string
   worktreeState: ProductTask['worktreeState']
+  visibility?: 'main' | 'side_task'
 }
 
+type ProductSideTaskMetadata = ProductSideTask & {
+  /** Private Agent Core binding for the temporary branch. */
+  coreSessionId: string
+  /** Private Core turn selected by the product-thread entry. */
+  sourceTurnId: string
+}
+
+const PRODUCT_TASK_STORE_VERSION = 2 as const
+
 type ProductTaskStore = {
-  version: typeof PRODUCT_DOMAIN_VERSION
+  version: typeof PRODUCT_TASK_STORE_VERSION
   tasks: Record<string, ProductTaskMetadata>
-  sideTasks: Record<string, ProductSideTask>
+  sideTasks: Record<string, ProductSideTaskMetadata>
 }
 
 export type AgentCoreSession = Pick<
@@ -189,6 +203,20 @@ function resourceId(prefix: string, value: string): string {
   return `${prefix}_${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
 }
 
+function legacyProductTaskId(coreSessionId: string): string {
+  // Old product metadata was keyed by the Core session id. Keep old tasks
+  // addressable without ever returning that id to a product renderer.
+  return resourceId('task', coreSessionId)
+}
+
+function createProductTaskId(): string {
+  return `task_${randomUUID()}`
+}
+
+function createProductSideTaskId(): string {
+  return `side_task_${randomUUID()}`
+}
+
 function projectTitle(workDir: string): string {
   const base = path.basename(workDir.replace(/[\\/]+$/, ''))
   return base || workDir || '未命名项目'
@@ -209,22 +237,210 @@ function continuationTarget(value: unknown): ProductContinuationTarget {
   throw ApiError.badRequest('target 必须是 current_workspace 或 new_worktree')
 }
 
-function requiredSourceTurnId(value: unknown): string {
-  if (typeof value !== 'string') throw ApiError.badRequest('sourceTurnId 必须是字符串')
-  const sourceTurnId = value.trim()
-  if (!sourceTurnId) throw ApiError.badRequest('sourceTurnId 不能为空')
-  return sourceTurnId
+function requiredSourceEntryId(value: unknown): string {
+  if (typeof value !== 'string') throw ApiError.badRequest('sourceEntryId 必须是字符串')
+  const sourceEntryId = value.trim()
+  if (!/^thread_[a-f0-9]{20}$/.test(sourceEntryId)) {
+    throw ApiError.badRequest('sourceEntryId 格式不正确')
+  }
+  return sourceEntryId
+}
+
+function optionalSourceEntryId(value: unknown): string | undefined {
+  return value === undefined ? undefined : requiredSourceEntryId(value)
+}
+
+function rejectCoreSourceTurnId(input: object): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'sourceTurnId')) {
+    throw ApiError.badRequest('产品接口不支持 sourceTurnId；请使用 sourceEntryId')
+  }
 }
 
 function defaultMetadata(session: AgentCoreSession): ProductTaskMetadata {
   return {
-    id: session.id,
+    id: legacyProductTaskId(session.id),
+    coreSessionId: session.id,
     lifecycle: 'active',
     kind: 'main',
     createdAt: session.createdAt,
     updatedAt: session.modifiedAt,
     worktreeState: 'not_requested',
+    visibility: 'main',
   }
+}
+
+function publicSideTask(sideTask: ProductSideTaskMetadata): ProductSideTask {
+  const {
+    coreSessionId: _coreSessionId,
+    sourceTurnId: _sourceTurnId,
+    ...result
+  } = sideTask
+  return result
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function storedLifecycle(value: unknown): ProductTask['lifecycle'] {
+  return value === 'archived' ? 'archived' : 'active'
+}
+
+function storedKind(value: unknown): ProductTask['kind'] {
+  return value === 'continuation' ? 'continuation' : 'main'
+}
+
+function storedWorktreeState(value: unknown): ProductTask['worktreeState'] {
+  return value === 'planned' || value === 'materialized' ? value : 'not_requested'
+}
+
+function normalizeMetadata(
+  value: unknown,
+  fallback: { id: string; coreSessionId: string },
+): ProductTaskMetadata {
+  const record = isRecord(value) ? value : {}
+  return {
+    id: fallback.id,
+    coreSessionId: fallback.coreSessionId,
+    ...(optionalString(record.title) ? { title: optionalString(record.title) } : {}),
+    lifecycle: storedLifecycle(record.lifecycle),
+    kind: storedKind(record.kind),
+    ...(optionalString(record.pinnedAt) ? { pinnedAt: optionalString(record.pinnedAt) } : {}),
+    ...(optionalString(record.archivedAt) ? { archivedAt: optionalString(record.archivedAt) } : {}),
+    ...(optionalString(record.parentTaskId) ? { parentTaskId: optionalString(record.parentTaskId) } : {}),
+    ...(optionalString(record.sourceTurnId) ? { sourceTurnId: optionalString(record.sourceTurnId) } : {}),
+    createdAt: optionalString(record.createdAt) ?? new Date(0).toISOString(),
+    updatedAt: optionalString(record.updatedAt) ?? new Date(0).toISOString(),
+    worktreeState: storedWorktreeState(record.worktreeState),
+    ...(record.visibility === 'side_task' ? { visibility: 'side_task' as const } : { visibility: 'main' as const }),
+  }
+}
+
+function normalizeProductTaskStore(value: unknown): ProductTaskStore {
+  if (!isRecord(value) || !isRecord(value.tasks)) {
+    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+  }
+
+  if (value.version === PRODUCT_TASK_STORE_VERSION) {
+    const tasks: Record<string, ProductTaskMetadata> = {}
+    const taskIdByCoreSessionId = new Map<string, string>()
+    for (const [taskId, rawMetadata] of Object.entries(value.tasks)) {
+      if (!isRecord(rawMetadata) || typeof rawMetadata.coreSessionId !== 'string' || !rawMetadata.coreSessionId) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      const existingTaskId = taskIdByCoreSessionId.get(rawMetadata.coreSessionId)
+      if (existingTaskId && existingTaskId !== taskId) {
+        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+      }
+      taskIdByCoreSessionId.set(rawMetadata.coreSessionId, taskId)
+      tasks[taskId] = normalizeMetadata(rawMetadata, {
+        id: taskId,
+        coreSessionId: rawMetadata.coreSessionId,
+      })
+    }
+
+    const sideTasks: Record<string, ProductSideTaskMetadata> = {}
+    if (isRecord(value.sideTasks)) {
+      for (const [sideTaskId, rawSideTask] of Object.entries(value.sideTasks)) {
+        if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
+          continue
+        }
+        const taskId = typeof rawSideTask.taskId === 'string' && rawSideTask.taskId
+          ? rawSideTask.taskId
+          : legacyProductTaskId(rawSideTask.coreSessionId)
+        const parentTaskId = optionalString(rawSideTask.parentTaskId)
+        const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
+        const title = optionalString(rawSideTask.title)
+        const createdAt = optionalString(rawSideTask.createdAt)
+        const updatedAt = optionalString(rawSideTask.updatedAt)
+        if (!parentTaskId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
+        sideTasks[sideTaskId] = {
+          id: sideTaskId,
+          parentTaskId,
+          taskId,
+          sourceTurnId,
+          coreSessionId: rawSideTask.coreSessionId,
+          title,
+          status: rawSideTask.status === 'closed' ? 'closed' : 'open',
+          createdAt,
+          updatedAt,
+          ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
+        }
+      }
+    }
+    return { version: PRODUCT_TASK_STORE_VERSION, tasks, sideTasks }
+  }
+
+  // Version 1 keyed metadata by Core session id and returned that id as the
+  // product id. Convert it in memory to stable opaque identifiers. The next
+  // lifecycle mutation writes this v2 representation atomically.
+  if (value.version === PRODUCT_DOMAIN_VERSION) {
+    const tasks: Record<string, ProductTaskMetadata> = {}
+    for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
+      const taskId = legacyProductTaskId(coreSessionId)
+      const metadata = normalizeMetadata(rawMetadata, { id: taskId, coreSessionId })
+      const raw = isRecord(rawMetadata) ? rawMetadata : {}
+      const legacyParentTaskId = optionalString(raw.parentTaskId)
+      const legacyParentThreadId = optionalString(raw.parentThreadId)
+      const legacyParentReference = legacyParentTaskId ?? legacyParentThreadId
+      tasks[taskId] = {
+        ...metadata,
+        ...(legacyParentReference ? { parentTaskId: legacyProductTaskId(legacyParentReference) } : {}),
+      }
+    }
+
+    const sideTasks: Record<string, ProductSideTaskMetadata> = {}
+    if (isRecord(value.sideTasks)) {
+      for (const [sideTaskId, rawSideTask] of Object.entries(value.sideTasks)) {
+        if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
+          continue
+        }
+        const parentCoreSessionId = optionalString(rawSideTask.parentTaskId)
+        const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
+        const title = optionalString(rawSideTask.title)
+        const createdAt = optionalString(rawSideTask.createdAt)
+        const updatedAt = optionalString(rawSideTask.updatedAt)
+        if (!parentCoreSessionId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
+
+        const taskId = legacyProductTaskId(rawSideTask.coreSessionId)
+        const parentTaskId = legacyProductTaskId(parentCoreSessionId)
+        sideTasks[sideTaskId] = {
+          id: sideTaskId,
+          parentTaskId,
+          taskId,
+          sourceTurnId,
+          coreSessionId: rawSideTask.coreSessionId,
+          title,
+          status: rawSideTask.status === 'closed' ? 'closed' : 'open',
+          createdAt,
+          updatedAt,
+          ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
+        }
+        if (!tasks[taskId]) {
+          tasks[taskId] = {
+            id: taskId,
+            coreSessionId: rawSideTask.coreSessionId,
+            title,
+            lifecycle: 'active',
+            kind: 'continuation',
+            parentTaskId,
+            sourceTurnId,
+            createdAt,
+            updatedAt,
+            worktreeState: 'not_requested',
+            visibility: 'side_task',
+          }
+        }
+      }
+    }
+    return { version: PRODUCT_TASK_STORE_VERSION, tasks, sideTasks }
+  }
+
+  throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
 }
 
 function actionsFor(task: ProductTask): ProductTaskAction[] {
@@ -251,10 +467,17 @@ export class ProductTaskService {
     const sideTaskSessionIds = new Set(
       Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
     )
+    const metadataByCoreSessionId = new Map(
+      Object.values(store.tasks).map((metadata) => [metadata.coreSessionId, metadata]),
+    )
     const records: ProductTaskRecord[] = []
+    const coreSessionIdByTaskId = new Map<string, string>()
     for (const session of sessions) {
-      if (sideTaskSessionIds.has(session.id)) continue
-      records.push(await this.toRecord(session, store.tasks[session.id]))
+      const metadata = metadataByCoreSessionId.get(session.id) ?? defaultMetadata(session)
+      if (sideTaskSessionIds.has(session.id) || metadata.visibility === 'side_task') continue
+      const record = await this.toRecord(session, metadata)
+      records.push(record)
+      coreSessionIdByTaskId.set(record.id, session.id)
     }
     records.sort((left, right) => {
       if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
@@ -270,7 +493,7 @@ export class ProductTaskService {
     const sessionById = new Map(sessions.map((session) => [session.id, session]))
 
     for (const task of records) {
-      const session = sessionById.get(task.id)
+      const session = sessionById.get(coreSessionIdByTaskId.get(task.id) ?? '')
       const workDir = session?.projectRoot
         ?? session?.workDir
         ?? ''
@@ -311,35 +534,38 @@ export class ProductTaskService {
     const title = validTitle(input.title)
     const created = await this.core.createSession({
       workDir: input.workDir.trim(),
-      permissionMode: input.permissionMode,
+      // Product tasks always start in per-request confirmation mode. The
+      // product contract deliberately has no runtime permission-mode picker.
+      permissionMode: 'default',
       useWorktree: input.useWorktree,
     })
     const now = new Date().toISOString()
     const metadata: ProductTaskMetadata = {
-      id: created.sessionId,
+      id: createProductTaskId(),
+      coreSessionId: created.sessionId,
       ...(title ? { title } : {}),
       lifecycle: 'active',
       kind: 'main',
       createdAt: now,
       updatedAt: now,
       worktreeState: input.useWorktree ? 'planned' : 'not_requested',
+      visibility: 'main',
     }
     if (title) await this.core.renameSession(created.sessionId, title)
-    await this.updateMetadata(created.sessionId, () => metadata)
-    return this.requireTask(created.sessionId)
+    const store = await this.readStore()
+    store.tasks[metadata.id] = metadata
+    await this.writeStore(store)
+    return this.requireTask(metadata.id)
   }
 
   /**
    * Resolve the Agent Core binding inside the product application layer.
    *
-   * Product clients only ever address a task id.  The current migration keeps
-   * that id equal to the Core session id, but this single adapter seam means
-   * the websocket/review routes do not have to inherit that implementation
-   * detail when task ids become independently generated.
+   * Product clients only ever address an opaque product id. The Core session
+   * binding stays in the private product store and never crosses this seam.
    */
   async resolveCoreSessionId(taskId: string): Promise<string> {
-    const task = await this.requireTask(taskId)
-    return task.id
+    return (await this.requireTaskBinding(taskId)).metadata.coreSessionId
   }
 
   async getTaskThread(taskId: string): Promise<ProductTaskThread> {
@@ -353,9 +579,10 @@ export class ProductTaskService {
   }
 
   async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
-    const task = await this.requireTask(taskId)
+    const binding = await this.requireTaskBinding(taskId)
+    const task = binding.task
     const title = validTitle(input.title)
-    if (title) await this.core.renameSession(task.id, title)
+    if (title) await this.core.renameSession(binding.metadata.coreSessionId, title)
     await this.updateMetadata(taskId, (metadata) => ({
       ...metadata,
       ...(title ? { title } : {}),
@@ -387,31 +614,41 @@ export class ProductTaskService {
     if (!input || typeof input !== 'object') {
       throw ApiError.badRequest('继续任务参数必须是对象')
     }
-    const source = await this.requireTask(taskId)
+    rejectCoreSourceTurnId(input)
+    const sourceBinding = await this.requireTaskBinding(taskId)
+    const source = sourceBinding.task
     const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
     const target = continuationTarget(input.target)
+    const sourceEntryId = optionalSourceEntryId(input.sourceEntryId)
+    const sourceTurnId = sourceEntryId
+      ? await this.resolveSourceTurnIdForProductEntry(sourceBinding.metadata.coreSessionId, sourceEntryId)
+      : undefined
     const created = await this.core.branchSession(
-      source.id,
+      sourceBinding.metadata.coreSessionId,
       requestedTitle,
-      input.sourceTurnId,
+      sourceTurnId,
       target,
     )
     const now = new Date().toISOString()
-    await this.updateMetadata(created.sessionId, () => ({
-      id: created.sessionId,
+    const metadata: ProductTaskMetadata = {
+      id: createProductTaskId(),
+      coreSessionId: created.sessionId,
       title: created.title,
       lifecycle: 'active',
       kind: 'continuation',
       parentTaskId: source.id,
-      parentThreadId: source.id,
-      ...(input.sourceTurnId ? { sourceTurnId: input.sourceTurnId } : {}),
+      ...(sourceTurnId ? { sourceTurnId } : {}),
       createdAt: now,
       updatedAt: now,
       worktreeState: target === 'new_worktree'
         ? 'materialized'
         : source.worktreeState,
-    }))
-    return this.requireTask(created.sessionId)
+      visibility: 'main',
+    }
+    const store = await this.readStore()
+    store.tasks[metadata.id] = metadata
+    await this.writeStore(store)
+    return this.requireTask(metadata.id)
   }
 
   async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
@@ -423,6 +660,7 @@ export class ProductTaskService {
         if (left.status !== right.status) return left.status === 'open' ? -1 : 1
         return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
       })
+      .map(publicSideTask)
   }
 
   async createSideTask(
@@ -432,18 +670,26 @@ export class ProductTaskService {
     if (!input || typeof input !== 'object') {
       throw ApiError.badRequest('侧边任务参数必须是对象')
     }
-    const source = await this.requireTask(taskId)
-    const sourceTurnId = requiredSourceTurnId(input.sourceTurnId)
+    rejectCoreSourceTurnId(input)
+    const sourceBinding = await this.requireTaskBinding(taskId)
+    const source = sourceBinding.task
+    const sourceEntryId = requiredSourceEntryId(input.sourceEntryId)
+    const sourceTurnId = await this.resolveSourceTurnIdForProductEntry(
+      sourceBinding.metadata.coreSessionId,
+      sourceEntryId,
+    )
     const requestedTitle = validTitle(input.title) ?? `侧边任务：${source.title}`
     const created = await this.core.branchSession(
-      source.id,
+      sourceBinding.metadata.coreSessionId,
       requestedTitle,
       sourceTurnId,
     )
     const now = new Date().toISOString()
-    const sideTask: ProductSideTask = {
-      id: resourceId('side_task', created.sessionId),
+    const sideTaskTaskId = createProductTaskId()
+    const sideTask: ProductSideTaskMetadata = {
+      id: createProductSideTaskId(),
       parentTaskId: source.id,
+      taskId: sideTaskTaskId,
       sourceTurnId,
       coreSessionId: created.sessionId,
       title: created.title,
@@ -452,9 +698,22 @@ export class ProductTaskService {
       updatedAt: now,
     }
     const store = await this.readStore()
+    store.tasks[sideTaskTaskId] = {
+      id: sideTaskTaskId,
+      coreSessionId: created.sessionId,
+      title: created.title,
+      lifecycle: 'active',
+      kind: 'continuation',
+      parentTaskId: source.id,
+      sourceTurnId,
+      createdAt: now,
+      updatedAt: now,
+      worktreeState: source.worktreeState,
+      visibility: 'side_task',
+    }
     store.sideTasks[sideTask.id] = sideTask
     await this.writeStore(store)
-    return sideTask
+    return publicSideTask(sideTask)
   }
 
   async closeSideTask(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
@@ -464,10 +723,10 @@ export class ProductTaskService {
     if (!sideTask || sideTask.parentTaskId !== taskId) {
       throw ApiError.notFound(`侧边任务不存在：${sideTaskId}`)
     }
-    if (sideTask.status === 'closed') return sideTask
+    if (sideTask.status === 'closed') return publicSideTask(sideTask)
 
     const now = new Date().toISOString()
-    const closed: ProductSideTask = {
+    const closed: ProductSideTaskMetadata = {
       ...sideTask,
       status: 'closed',
       closedAt: now,
@@ -475,14 +734,51 @@ export class ProductTaskService {
     }
     store.sideTasks[sideTaskId] = closed
     await this.writeStore(store)
-    return closed
+    return publicSideTask(closed)
   }
 
   private async requireTask(taskId: string): Promise<ProductTaskRecord> {
-    const index = await this.listTasks()
-    const task = index.tasks.find((candidate) => candidate.id === taskId)
-    if (!task) throw ApiError.notFound(`任务不存在：${taskId}`)
-    return task
+    return (await this.requireTaskBinding(taskId)).task
+  }
+
+  private async resolveSourceTurnIdForProductEntry(
+    coreSessionId: string,
+    sourceEntryId: string,
+  ): Promise<string> {
+    const getSessionMessages = this.core.getSessionMessages
+    if (!getSessionMessages) {
+      throw new ApiError(503, '暂时无法读取当前任务记录', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+    }
+
+    const sourceTurnId = resolveCoreMessageIdForProductThreadEntry(
+      await getSessionMessages(coreSessionId),
+      sourceEntryId,
+    )
+    if (!sourceTurnId) {
+      throw ApiError.badRequest('请选择当前任务中的一条已保存消息')
+    }
+    return sourceTurnId
+  }
+
+  private async requireTaskBinding(taskId: string): Promise<{
+    task: ProductTaskRecord
+    metadata: ProductTaskMetadata
+  }> {
+    const [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
+    const stored = store.tasks[taskId]
+    if (stored) {
+      const session = sessions.find((candidate) => candidate.id === stored.coreSessionId)
+      if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
+      return { task: await this.toRecord(session, stored), metadata: stored }
+    }
+
+    // Core sessions created by older builds receive a stable opaque reference
+    // on first product access. Persisting remains lazy until a lifecycle
+    // mutation, so listing old sessions never performs a disk write.
+    const session = sessions.find((candidate) => legacyProductTaskId(candidate.id) === taskId)
+    if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
+    const metadata = defaultMetadata(session)
+    return { task: await this.toRecord(session, metadata), metadata }
   }
 
   private async toRecord(
@@ -497,7 +793,7 @@ export class ProductTaskService {
       ? await this.resolveWorktreeState(session.id)
       : 'not_requested'
     const task: ProductTask = {
-      id: session.id,
+      id: metadata.id,
       projectId: resourceId('project', projectRoot || session.id),
       workDir,
       title: metadata.title ?? session.title,
@@ -506,8 +802,6 @@ export class ProductTaskService {
       ...(metadata.pinnedAt ? { pinnedAt: metadata.pinnedAt } : {}),
       ...(metadata.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
       ...(metadata.parentTaskId ? { parentTaskId: metadata.parentTaskId } : {}),
-      ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
-      ...(metadata.sourceTurnId ? { sourceTurnId: metadata.sourceTurnId } : {}),
       createdAt: metadata.createdAt || session.createdAt,
       updatedAt: metadata.updatedAt || session.modifiedAt,
       worktreeState,
@@ -528,21 +822,12 @@ export class ProductTaskService {
   private async readStore(): Promise<ProductTaskStore> {
     try {
       const raw = await fs.readFile(this.storagePath, 'utf8')
-      const parsed = JSON.parse(raw) as Partial<ProductTaskStore>
-      if (parsed.version !== PRODUCT_DOMAIN_VERSION || !parsed.tasks || typeof parsed.tasks !== 'object') {
-        throw new Error('invalid product task store')
-      }
-      return {
-        version: PRODUCT_DOMAIN_VERSION,
-        tasks: parsed.tasks,
-        sideTasks: parsed.sideTasks && typeof parsed.sideTasks === 'object' && !Array.isArray(parsed.sideTasks)
-          ? parsed.sideTasks
-          : {},
-      }
+      return normalizeProductTaskStore(JSON.parse(raw) as unknown)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { version: PRODUCT_DOMAIN_VERSION, tasks: {}, sideTasks: {} }
+        return { version: PRODUCT_TASK_STORE_VERSION, tasks: {}, sideTasks: {} }
       }
+      if (error instanceof ApiError) throw error
       throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
     }
   }
@@ -551,11 +836,9 @@ export class ProductTaskService {
     taskId: string,
     update: (current: ProductTaskMetadata) => ProductTaskMetadata,
   ): Promise<void> {
+    const binding = await this.requireTaskBinding(taskId)
     const store = await this.readStore()
-    const sessions = await this.core.listSessions()
-    const session = sessions.find((candidate) => candidate.id === taskId)
-    if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
-    store.tasks[taskId] = update(store.tasks[taskId] ?? defaultMetadata(session))
+    store.tasks[taskId] = update(store.tasks[taskId] ?? binding.metadata)
     await this.writeStore(store)
   }
 

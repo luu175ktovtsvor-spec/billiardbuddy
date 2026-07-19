@@ -1,12 +1,20 @@
 import { createHash } from 'node:crypto'
-import type { ProductTaskActivityKind, ProductTaskThread, ProductTaskThreadEntry } from '../../../shared/product/taskEvents.js'
+import type {
+  ProductTaskActivityKind,
+  ProductTaskAttachmentSummary,
+  ProductTaskThread,
+  ProductTaskThreadEntry,
+} from '../../../shared/product/taskEvents.js'
 import type { MessageEntry } from '../services/sessionService.js'
 import { productTaskActivityKindForTool } from './taskEventProjection.js'
+import {
+  projectProductTaskUserContent,
+  sanitizeProductTaskVisibleText,
+} from './taskAttachmentProjection.js'
 
 type RecordValue = Record<string, unknown>
 
 const MAX_THREAD_TEXT_LENGTH = 100_000
-const PRIVATE_TRANSCRIPT_MARKUP = /<(?:teammate-message|command-message|local-command-(?:stdout|stderr)|system-reminder|task-notification|user-prompt-submit-hook|hook-[\w-]+)\b/i
 
 function isRecord(value: unknown): value is RecordValue {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -15,7 +23,7 @@ function isRecord(value: unknown): value is RecordValue {
 function visibleText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
-  if (!trimmed || PRIVATE_TRANSCRIPT_MARKUP.test(trimmed)) return null
+  if (!trimmed) return null
   return trimmed.length > MAX_THREAD_TEXT_LENGTH
     ? `${trimmed.slice(0, MAX_THREAD_TEXT_LENGTH)}…`
     : trimmed
@@ -40,13 +48,20 @@ function textEntry(
   suffix: string,
   type: 'user_text' | 'assistant_text',
   text: string,
+  attachments?: ProductTaskAttachmentSummary[],
 ): ProductTaskThreadEntry {
-  return {
+  const entry = {
     id: entryId(message, suffix),
     type,
     text,
     createdAt: createdAt(message),
   }
+  return type === 'user_text'
+    ? {
+        ...entry,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      }
+    : entry
 }
 
 function activityEntry(
@@ -67,7 +82,8 @@ function activityEntry(
 function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
   if (typeof message.content === 'string') {
     const text = visibleText(message.content)
-    return text ? [textEntry(message, 'assistant', 'assistant_text', text)] : []
+    const safeText = text ? sanitizeProductTaskVisibleText(text) : ''
+    return safeText ? [textEntry(message, 'assistant', 'assistant_text', safeText)] : []
   }
   if (!Array.isArray(message.content)) return []
 
@@ -76,7 +92,8 @@ function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
     if (!isRecord(block)) continue
     if (block.type === 'text') {
       const text = visibleText(block.text)
-      if (text) entries.push(textEntry(message, `assistant-text:${index}`, 'assistant_text', text))
+      const safeText = text ? sanitizeProductTaskVisibleText(text) : ''
+      if (safeText) entries.push(textEntry(message, `assistant-text:${index}`, 'assistant_text', safeText))
       continue
     }
     if (block.type === 'tool_use') {
@@ -91,19 +108,23 @@ function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
 }
 
 function userEntries(message: MessageEntry): ProductTaskThreadEntry[] {
-  if (typeof message.content === 'string') {
-    const text = visibleText(message.content)
-    return text ? [textEntry(message, 'user', 'user_text', text)] : []
-  }
-  if (!Array.isArray(message.content)) return []
+  const visibleContent = typeof message.content === 'string'
+    ? visibleText(message.content)
+    : Array.isArray(message.content)
+      ? message.content
+        .filter(isRecord)
+        .flatMap((block) => {
+          if (block.type !== 'text') return [block]
+          const text = visibleText(block.text)
+          return text ? [{ ...block, text }] : []
+        })
+      : null
+  if (!visibleContent || (Array.isArray(visibleContent) && visibleContent.length === 0)) return []
 
-  const visibleParts = message.content
-    .filter(isRecord)
-    .filter((block) => block.type === 'text')
-    .map((block) => visibleText(block.text))
-    .filter((text): text is string => text !== null)
-  if (visibleParts.length === 0) return []
-  return [textEntry(message, 'user-blocks', 'user_text', visibleParts.join('\n'))]
+  const projected = projectProductTaskUserContent(visibleContent)
+  return projected
+    ? [textEntry(message, 'user', 'user_text', projected.text, projected.attachments)]
+    : []
 }
 
 function toolResultEntries(message: MessageEntry): ProductTaskThreadEntry[] {
@@ -121,6 +142,30 @@ function toolResultEntries(message: MessageEntry): ProductTaskThreadEntry[] {
     return entries
   }
   return [activityEntry(message, 'tool-result', 'tool')]
+}
+
+/**
+ * Resolve a product-visible text entry back to the retained Core message
+ * entirely on the server. Product clients pass only the hashed entry id, so a
+ * side-task or continuation action never receives a Core transcript id.
+ */
+export function resolveCoreMessageIdForProductThreadEntry(
+  messages: readonly MessageEntry[],
+  productEntryId: string,
+): string | null {
+  for (const message of messages) {
+    const entries = message.type === 'user'
+      ? userEntries(message)
+      : message.type === 'assistant' || message.type === 'tool_use'
+        ? assistantEntries(message)
+        : []
+    if (entries.some((entry) => entry.id === productEntryId && (
+      entry.type === 'user_text' || entry.type === 'assistant_text'
+    ))) {
+      return message.id
+    }
+  }
+  return null
 }
 
 /**

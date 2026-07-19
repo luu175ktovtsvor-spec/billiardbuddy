@@ -16,6 +16,15 @@ export type ComposerAttachment = {
   quote?: string
 }
 
+export type ComposerAttachmentReadOptions = {
+  /**
+   * Keep the selected file in the renderer as a bounded data URL. Product
+   * task sockets deliberately accept inline files only, whereas the legacy
+   * chat transport can continue passing desktop paths to its server bridge.
+   */
+  preferData?: boolean
+}
+
 function nextAttachmentId() {
   return `att-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
@@ -66,10 +75,22 @@ export async function selectNativeFileAttachments(): Promise<ComposerAttachment[
   }
 }
 
-export async function filesToComposerAttachments(files: FileList | File[]): Promise<ComposerAttachment[]> {
+export async function filesToComposerAttachments(
+  files: FileList | File[],
+  options: ComposerAttachmentReadOptions = {},
+): Promise<ComposerAttachment[]> {
   const entries = Array.from(files)
-  const attachments = await Promise.all(entries.map(fileToComposerAttachment))
+  const attachments = await Promise.all(entries.map((file) => fileToComposerAttachment(file, options)))
   return attachments.filter((attachment): attachment is ComposerAttachment => !!attachment)
+}
+
+/**
+ * Product task transport has no filesystem-path capability. Use this helper
+ * for files the user intentionally picked in its composer, including in the
+ * desktop renderer where File objects can otherwise expose a native path.
+ */
+export function filesToInlineComposerAttachments(files: FileList | File[]): Promise<ComposerAttachment[]> {
+  return filesToComposerAttachments(files, { preferData: true })
 }
 
 function normalizeDialogSelection(selected: string | string[] | null): string[] {
@@ -83,8 +104,11 @@ function getNativeFilePath(file: File): string | undefined {
   return typeof path === 'string' && path.length > 0 ? path : undefined
 }
 
-async function fileToComposerAttachment(file: File): Promise<ComposerAttachment | null> {
-  const nativePath = isDesktopRuntime() ? getNativeFilePath(file) : undefined
+async function fileToComposerAttachment(
+  file: File,
+  { preferData = false }: ComposerAttachmentReadOptions,
+): Promise<ComposerAttachment | null> {
+  const nativePath = !preferData && isDesktopRuntime() ? getNativeFilePath(file) : undefined
   if (nativePath) {
     return pathToComposerAttachment(nativePath)
   }

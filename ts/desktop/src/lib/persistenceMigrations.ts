@@ -62,11 +62,26 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
       .filter((tab) => typeof tab.sessionId === 'string' && typeof tab.title === 'string')
       .filter((tab) => tab.type !== 'terminal' && !String(tab.sessionId).startsWith('__terminal__'))
       .filter((tab) => !isRetiredTraceTab(tab))
-      .map((tab) => ({
-        sessionId: tab.sessionId as string,
-        title: tab.title as string,
-        type: tab.type === 'settings' || tab.type === 'scheduled' ? tab.type : 'session',
-      }))
+      .flatMap((tab) => {
+        const sessionId = tab.sessionId as string
+        const title = tab.title as string
+
+        if (
+          tab.type === 'settings'
+          || tab.type === 'scheduled'
+          || tab.type === 'image-workbench'
+          || tab.type === 'video-studio'
+          || tab.type === 'product-tasks'
+        ) {
+          return [{ sessionId, title, type: tab.type }]
+        }
+
+        if (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim()) {
+          return [{ sessionId, title, type: 'product-task', taskId: tab.taskId.trim() }]
+        }
+
+        return [{ sessionId, title, type: 'session' }]
+      })
     const activeTabId =
       isRecord(parsed) &&
       typeof parsed.activeTabId === 'string' &&

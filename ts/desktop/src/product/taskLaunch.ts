@@ -1,24 +1,21 @@
 import type { ContinueProductTaskInput, CreateProductTaskInput } from './domain/types'
 import type { ProductTaskRecord } from './domain/types'
-import type { AttachmentRef } from '../types/chat'
+import type { ProductTaskAttachment } from './api/taskSocket'
 
 export type ProductTaskInitialMessage = {
   text?: string
-  attachments?: AttachmentRef[]
+  attachments?: ProductTaskAttachment[]
 }
 
 export type ProductTaskLaunchDependencies = {
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
-  refreshSessions: () => Promise<void>
   openTask: (task: ProductTaskRecord) => void
-  connectToSession: (sessionId: string) => void
-  sendMessage: (sessionId: string, content: string, attachments?: AttachmentRef[]) => void
+  connectTask: (taskId: string) => void | Promise<void>
+  sendMessage: (taskId: string, content: string, attachments?: ProductTaskAttachment[]) => boolean
 }
 
-export type ProductTaskContinuationDependencies = Pick<
-  ProductTaskLaunchDependencies,
-  'refreshSessions' | 'openTask' | 'connectToSession'
-> & {
+export type ProductTaskContinuationDependencies = {
+  openTask: (task: ProductTaskRecord) => void
   continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
 
@@ -28,9 +25,8 @@ export async function launchProductTask(
   initialMessage?: ProductTaskInitialMessage,
 ): Promise<ProductTaskRecord> {
   const task = await dependencies.createTask(input)
-  await dependencies.refreshSessions()
   dependencies.openTask(task)
-  dependencies.connectToSession(task.id)
+  void dependencies.connectTask(task.id)
 
   const message = initialMessage?.text?.trim() ?? ''
   const attachments = initialMessage?.attachments ?? []
@@ -47,8 +43,6 @@ export async function continueProductTask(
   input: ContinueProductTaskInput,
 ): Promise<ProductTaskRecord> {
   const task = await dependencies.continueTask(taskId, input)
-  await dependencies.refreshSessions()
   dependencies.openTask(task)
-  dependencies.connectToSession(task.id)
   return task
 }

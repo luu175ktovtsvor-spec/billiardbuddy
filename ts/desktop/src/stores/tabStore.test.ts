@@ -3,6 +3,7 @@ import { sessionsApi } from '../api/sessions'
 import {
   NEW_PRODUCT_TASK_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
+  PRODUCT_TASK_TAB_PREFIX,
   SETTINGS_TAB_ID,
   useTabStore,
 } from './tabStore'
@@ -99,6 +100,29 @@ describe('tabStore', () => {
     expect(useTabStore.getState().tabs[0]?.newTaskRequestId).not.toBe(first?.newTaskRequestId)
   })
 
+  it('opens a stable product task tab without treating its task id as a Core session tab', () => {
+    const tabId = useTabStore.getState().openProductTaskTab('task-1', '整理开球训练')
+
+    expect(tabId).toBe(`${PRODUCT_TASK_TAB_PREFIX}task-1`)
+    expect(useTabStore.getState().tabs).toEqual([{
+      sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      title: '整理开球训练',
+      type: 'product-task',
+      status: 'idle',
+      taskId: 'task-1',
+    }])
+    expect(useTabStore.getState().activeTabId).toBe(tabId)
+    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
+      openTabs: [{
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        title: '整理开球训练',
+        type: 'product-task',
+        taskId: 'task-1',
+      }],
+      activeTabId: tabId,
+    })
+  })
+
   it('does not let async tab restore overwrite tabs opened while restore is in flight', async () => {
     let resolveSessions: (value: unknown) => void = () => {}
     vi.mocked(sessionsApi.list).mockReturnValueOnce(new Promise((resolve) => {
@@ -140,6 +164,30 @@ describe('tabStore', () => {
         title: '任务中心',
         type: 'product-tasks',
         status: 'idle',
+      }],
+    })
+  })
+
+  it('restores a product task tab through its persisted product task identity', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [{
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        title: '整理开球训练',
+        type: 'product-task',
+        taskId: 'task-1',
+      }],
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+    }))
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      tabs: [{
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        title: '整理开球训练',
+        type: 'product-task',
+        taskId: 'task-1',
       }],
     })
   })

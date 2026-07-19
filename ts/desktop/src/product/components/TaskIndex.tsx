@@ -7,7 +7,6 @@ import type {
   ProductTaskIndexResponse,
   ProductTaskRecord,
 } from '../domain/types'
-import { PermissionModeSelector } from '../../components/controls/PermissionModeSelector'
 import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
 import { agentsApi, type AgentCommand } from '../../api/agents'
@@ -19,15 +18,13 @@ import {
 } from '../../components/chat/composerUtils'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import {
-  filesToComposerAttachments,
-  selectNativeFileAttachments,
+  filesToInlineComposerAttachments,
   type ComposerAttachment,
 } from '../../lib/composerAttachments'
-import type { PermissionMode } from '../../types/settings'
-import type { AttachmentRef } from '../../types/chat'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import type { ProductTaskInitialMessage } from '../taskLaunch'
+import { validateProductTaskAttachments } from '../taskAttachments'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import {
   PRODUCT_TASK_RUNTIME_LABEL,
@@ -48,8 +45,6 @@ export type TaskIndexProps = {
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onRequestNewTask: () => void
   onOpenTask: (task: ProductTaskRecord) => void
-  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
-  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeStatesBySessionId?: Record<string, ProductTaskRuntimeState>
 }
 
@@ -124,8 +119,6 @@ export function TaskIndex({
   onContinueTask,
   onRequestNewTask,
   onOpenTask,
-  onOpenTaskWorkbench,
-  onOpenTaskTerminal,
   runtimeStatesBySessionId = {},
 }: TaskIndexProps) {
   const [showArchived, setShowArchived] = useState(false)
@@ -215,8 +208,6 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
-              onOpenTaskWorkbench={onOpenTaskWorkbench}
-              onOpenTaskTerminal={onOpenTaskTerminal}
               runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ))}
@@ -233,8 +224,6 @@ export function TaskIndex({
               onRestoreTask={onRestoreTask}
               onContinueTask={onContinueTask}
               onOpenTask={onOpenTask}
-              onOpenTaskWorkbench={onOpenTaskWorkbench}
-              onOpenTaskTerminal={onOpenTaskTerminal}
               runtimeStatesBySessionId={runtimeStatesBySessionId}
             />
           ) : null}
@@ -262,15 +251,14 @@ export function TaskComposer({
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
   const [discoverableSkills, setDiscoverableSkills] = useState<DiscoveredSlashCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<AgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
-  const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(defaultPermissionMode)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composingRef = useRef(false)
   const desktopHost = getDesktopHost()
@@ -384,27 +372,18 @@ export function TaskComposer({
   const appendAttachments = (nextAttachments: ComposerAttachment[]) => {
     if (nextAttachments.length === 0) return
     setAttachments((current) => [...current, ...nextAttachments])
+    setAttachmentError(null)
   }
 
   const openAttachmentPicker = () => {
-    void selectNativeFileAttachments()
-      .then((nativeAttachments) => {
-        if (nativeAttachments) {
-          appendAttachments(nativeAttachments)
-          return
-        }
-        fileInputRef.current?.click()
-      })
-      .catch(() => {
-        fileInputRef.current?.click()
-      })
+    fileInputRef.current?.click()
   }
 
   const selectBrowserFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (!files) return
 
-    void filesToComposerAttachments(files)
+    void filesToInlineComposerAttachments(files)
       .then(appendAttachments)
       .catch(() => {
         // File input remains available for another selection.
@@ -414,31 +393,24 @@ export function TaskComposer({
 
   const removeAttachment = (id: string) => {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id))
+    setAttachmentError(null)
   }
-
-  const attachmentRefs = (): AttachmentRef[] => attachments.map((attachment) => ({
-    type: attachment.type,
-    name: attachment.name,
-    path: attachment.path,
-    data: attachment.data,
-    mimeType: attachment.mimeType,
-    isDirectory: attachment.isDirectory,
-    lineStart: attachment.lineStart,
-    lineEnd: attachment.lineEnd,
-    note: attachment.note,
-    quote: attachment.quote,
-  }))
 
   const submitTask = () => {
     if (isSubmitting || !normalizedWorkDir) return
+
+    const attachmentResult = validateProductTaskAttachments(attachments)
+    if (attachmentResult.ok === false) {
+      setAttachmentError(attachmentResult.message)
+      return
+    }
 
     const taskInput: CreateProductTaskInput = {
       workDir: normalizedWorkDir,
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(useWorktree ? { useWorktree: true } : {}),
-      ...(permissionMode !== 'default' ? { permissionMode } : {}),
     }
-    const initialAttachments = attachmentRefs()
+    const initialAttachments = attachmentResult.attachments
     const initialMessage: ProductTaskInitialMessage = {
       text: resolveSlashCommandRuntimeValue(initialText.trim(), agentSlashCommands),
       attachments: initialAttachments,
@@ -506,6 +478,7 @@ export function TaskComposer({
             <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
           </div>
         ) : null}
+        {attachmentError ? <p role="alert" className="pt-1 text-xs text-[var(--color-error)]">{attachmentError}</p> : null}
         <div>
           <input
             ref={fileInputRef}
@@ -536,15 +509,6 @@ export function TaskComposer({
         <input type="checkbox" checked={useWorktree} onChange={(event) => setUseWorktree(event.target.checked)} />
         在新工作树中开始
       </label>
-      <div className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
-        <span>执行权限</span>
-        <PermissionModeSelector
-          value={permissionMode}
-          onChange={setPermissionMode}
-          workDir={workDir || undefined}
-          menuPlacement="bottom"
-        />
-      </div>
       <div className="flex gap-2 md:col-span-2">
         <button type="submit" disabled={isSubmitting || !workDir.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在创建…' : '创建任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
@@ -613,8 +577,6 @@ function ProjectTaskGroup({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
-  onOpenTaskWorkbench,
-  onOpenTaskTerminal,
   runtimeStatesBySessionId,
 }: {
   project: ProductProject | null
@@ -628,8 +590,6 @@ function ProjectTaskGroup({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
-  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
-  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeStatesBySessionId: Record<string, ProductTaskRuntimeState>
 }) {
   const visibleTasks = tasks.filter((task) => showArchived || task.lifecycle !== 'archived')
@@ -654,8 +614,6 @@ function ProjectTaskGroup({
             onRestoreTask={onRestoreTask}
             onContinueTask={onContinueTask}
             onOpenTask={onOpenTask}
-            onOpenTaskWorkbench={onOpenTaskWorkbench}
-            onOpenTaskTerminal={onOpenTaskTerminal}
             runtimeState={runtimeStatesBySessionId[task.id] ?? 'not_connected'}
           />
         ))}
@@ -674,8 +632,6 @@ function TaskRow({
   onRestoreTask,
   onContinueTask,
   onOpenTask,
-  onOpenTaskWorkbench,
-  onOpenTaskTerminal,
   runtimeState,
 }: {
   task: ProductTaskRecord
@@ -687,8 +643,6 @@ function TaskRow({
   onRestoreTask: (taskId: string) => Promise<unknown>
   onContinueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<unknown>
   onOpenTask: (task: ProductTaskRecord) => void
-  onOpenTaskWorkbench: (task: ProductTaskRecord) => void
-  onOpenTaskTerminal: (task: ProductTaskRecord) => void
   runtimeState: ProductTaskRuntimeState
 }) {
   const [editing, setEditing] = useState(false)
@@ -751,12 +705,6 @@ function TaskRow({
             className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
           />
           <button type="button" onClick={() => onOpenTask(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开</button>
-          {task.lifecycle !== 'archived' && task.workDir ? (
-            <button type="button" onClick={() => onOpenTaskWorkbench(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开工作台</button>
-          ) : null}
-          {task.lifecycle !== 'archived' && task.workDir ? (
-            <button type="button" onClick={() => onOpenTaskTerminal(task)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">打开终端</button>
-          ) : null}
           {hasAction(task, 'rename') ? <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">重命名</button> : null}
           {hasAction(task, 'pin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'pin')] === true} label="置顶" onClick={() => run(() => onPinTask(task.id))} /> : null}
           {hasAction(task, 'unpin') ? <TaskActionButton pending={mutations[taskActionKey(task.id, 'unpin')] === true} label="取消置顶" onClick={() => run(() => onUnpinTask(task.id))} /> : null}

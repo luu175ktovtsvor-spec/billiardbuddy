@@ -8,6 +8,12 @@ import type {
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'
 import type { ProductTaskThread } from '../../../../shared/product/taskEvents'
+import type {
+  ProductTaskReviewDiff,
+  ProductTaskReviewFile,
+  ProductTaskReviewStatus,
+  ProductTaskReviewTree,
+} from '../../../../shared/product/taskReview'
 
 export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
 export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvents'
@@ -29,7 +35,11 @@ export type {
 export type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
+  ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
+  ProductTaskComputerUseApp,
+  ProductTaskComputerUseApproval,
+  ProductTaskComputerUseCapability,
   ProductTaskEvent,
   ProductTaskQuestion,
   ProductTaskQuestionOption,
@@ -38,6 +48,15 @@ export type {
   ProductTaskThread,
   ProductTaskThreadEntry,
 } from '../../../../shared/product/taskEvents'
+export type {
+  ProductTaskReviewChangedFile,
+  ProductTaskReviewChangedFileStatus,
+  ProductTaskReviewDiff,
+  ProductTaskReviewFile,
+  ProductTaskReviewStatus,
+  ProductTaskReviewTree,
+  ProductTaskReviewTreeEntry,
+} from '../../../../shared/product/taskReview'
 
 export type ProductTaskAction =
   | 'pin'
@@ -82,6 +101,10 @@ export type ProductTaskApi = {
   restore: (taskId: string) => Promise<ProductTaskActionResponse>
   continue: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskActionResponse>
   getThread: (taskId: string) => Promise<ProductTaskThreadResponse>
+  getReviewStatus: (taskId: string) => Promise<ProductTaskReviewStatus>
+  getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
+  getReviewFile: (taskId: string, path: string) => Promise<ProductTaskReviewFile>
+  getReviewDiff: (taskId: string, path: string) => Promise<ProductTaskReviewDiff>
 }
 
 export type ProductSideTaskApi = {

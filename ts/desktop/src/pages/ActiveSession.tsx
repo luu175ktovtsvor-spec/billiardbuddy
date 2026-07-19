@@ -39,8 +39,6 @@ import type { SessionListItem } from '../types/session'
 import type { ActiveGoalState } from '../types/chat'
 import { Smiley } from '../components/shared/Smiley'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useProductTaskStore } from '../product/stores/productTaskStore'
-import { SideTaskPanel } from '../product/components/SideTaskPanel'
 import {
   createBackgroundTaskDismissKey,
   hasRunningBackgroundTasks as hasAnyRunningBackgroundTasks,
@@ -468,11 +466,6 @@ export function ActiveSession() {
   const [dismissedBackgroundTaskKeysBySession, setDismissedBackgroundTaskKeysBySession] = useState<Record<string, Set<string>>>({})
   const activeTabType = useTabStore((s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId)?.type ?? null)
   const sessions = useSessionStore((s) => s.sessions)
-  const activeProductTask = useProductTaskStore((state) =>
-    activeTabId
-      ? state.index.tasks.find((task) => task.id === activeTabId) ?? null
-      : null,
-  )
   const connectToSession = useChatStore((s) => s.connectToSession)
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
   const pendingComputerUsePermission = sessionState?.pendingComputerUsePermission ?? null
@@ -772,10 +765,6 @@ export function ActiveSession() {
               }}
             />
           )}
-
-          {!isMemberSession && activeProductTask ? (
-            <SideTaskPanel parentTask={activeProductTask} />
-          ) : null}
 
           <ChatInput
             variant={isEmpty && !isMemberSession && !showRightPanel ? 'hero' : 'default'}

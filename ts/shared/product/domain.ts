@@ -25,8 +25,6 @@ export type ProductTask = {
   pinnedAt?: string
   archivedAt?: string
   parentTaskId?: string
-  parentThreadId?: string
-  sourceTurnId?: string
   createdAt: string
   updatedAt: string
   worktreeState: ProductWorktreeState
@@ -41,8 +39,8 @@ export type ProductTask = {
 export type ProductSideTask = {
   id: string
   parentTaskId: string
-  sourceTurnId: string
-  coreSessionId: string
+  /** An opaque product task reference for the side task's safe stream. */
+  taskId: string
   title: string
   status: ProductSideTaskStatus
   createdAt: string
@@ -64,7 +62,6 @@ export type ProductTaskIndex = {
 export type CreateProductTaskInput = {
   workDir: string
   title?: string
-  permissionMode?: string
   useWorktree?: boolean
 }
 
@@ -75,7 +72,12 @@ export type UpdateProductTaskInput = {
 
 export type ContinueProductTaskInput = {
   title?: string
-  sourceTurnId?: string
+  /**
+   * Optional opaque product-thread entry anchor. When omitted, continuation
+   * branches the complete task transcript. The server resolves this to the
+   * private Core turn and never exposes that turn id to the renderer.
+   */
+  sourceEntryId?: string
   /**
    * Continue in the source task's workspace by default. A new worktree is
    * materialized before the branched transcript is created.
@@ -84,6 +86,7 @@ export type ContinueProductTaskInput = {
 }
 
 export type CreateProductSideTaskInput = {
-  sourceTurnId: string
+  /** A product-thread entry id; the server resolves the private Core turn. */
+  sourceEntryId: string
   title?: string
 }

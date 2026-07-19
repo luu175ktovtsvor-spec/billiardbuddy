@@ -18,17 +18,19 @@ function makeTask(): ProductTaskRecord {
 }
 
 describe('launchProductTask', () => {
-  it('creates through the product API input, then opens, connects, and sends the optional initial goal', async () => {
+  it('creates through the product API, opens its task surface, and sends through the product transport', async () => {
     const task = makeTask()
     const events: string[] = []
     const createTask = vi.fn(async (input) => {
       events.push(`create:${JSON.stringify(input)}`)
       return task
     })
-    const refreshSessions = vi.fn(async () => { events.push('refresh') })
     const openTask = vi.fn(() => { events.push('open') })
-    const connectToSession = vi.fn(() => { events.push('connect') })
-    const sendMessage = vi.fn(() => { events.push('send') })
+    const connectTask = vi.fn(() => { events.push('connect') })
+    const sendMessage = vi.fn(() => {
+      events.push('send')
+      return true
+    })
     const input = {
       workDir: '/workspace/billiard',
       title: '整理开球训练',
@@ -37,9 +39,8 @@ describe('launchProductTask', () => {
 
     await expect(launchProductTask({
       createTask,
-      refreshSessions,
       openTask,
-      connectToSession,
+      connectTask,
       sendMessage,
     }, input, { text: '  请整理本周开球训练计划  ' })).resolves.toBe(task)
 
@@ -47,7 +48,6 @@ describe('launchProductTask', () => {
     expect(sendMessage).toHaveBeenCalledWith('task-1', '请整理本周开球训练计划', [])
     expect(events).toEqual([
       `create:${JSON.stringify(input)}`,
-      'refresh',
       'open',
       'connect',
       'send',
@@ -56,25 +56,24 @@ describe('launchProductTask', () => {
 
   it('connects a blank task without sending an empty initial message', async () => {
     const task = makeTask()
-    const sendMessage = vi.fn()
-    const connectToSession = vi.fn()
+    const sendMessage = vi.fn(() => true)
+    const connectTask = vi.fn()
 
     await launchProductTask({
       createTask: vi.fn(async () => task),
-      refreshSessions: vi.fn(async () => undefined),
       openTask: vi.fn(),
-      connectToSession,
+      connectTask,
       sendMessage,
     }, { workDir: '/workspace/billiard' }, { text: '   ' })
 
-    expect(connectToSession).toHaveBeenCalledWith('task-1')
+    expect(connectTask).toHaveBeenCalledWith('task-1')
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
   it('forwards a selected slash command as the initial Agent message, not as product task data', async () => {
     const task = makeTask()
     const createTask = vi.fn(async () => task)
-    const sendMessage = vi.fn()
+    const sendMessage = vi.fn(() => true)
     const input = {
       workDir: '/workspace/billiard',
       title: '复盘今天经营',
@@ -82,9 +81,8 @@ describe('launchProductTask', () => {
 
     await launchProductTask({
       createTask,
-      refreshSessions: vi.fn(async () => undefined),
       openTask: vi.fn(),
-      connectToSession: vi.fn(),
+      connectTask: vi.fn(),
       sendMessage,
     }, input, { text: ' /venue-daily-review 今天营业额和昨天对比 ' })
 
@@ -96,10 +94,10 @@ describe('launchProductTask', () => {
     )
   })
 
-  it('sends attachment refs through the real chat path even when the initial text is blank', async () => {
+  it('sends bounded inline attachments through the product transport even when the initial text is blank', async () => {
     const task = makeTask()
     const createTask = vi.fn(async () => task)
-    const sendMessage = vi.fn()
+    const sendMessage = vi.fn(() => true)
     const attachments = [
       {
         type: 'image' as const,
@@ -107,19 +105,13 @@ describe('launchProductTask', () => {
         data: 'data:image/png;base64,cG9zaXRpb24=',
         mimeType: 'image/png',
       },
-      {
-        type: 'file' as const,
-        name: '训练记录.csv',
-        path: '/workspace/billiard/训练记录.csv',
-      },
     ]
     const input = { workDir: '/workspace/billiard', title: '复盘开球' }
 
     await launchProductTask({
       createTask,
-      refreshSessions: vi.fn(async () => undefined),
       openTask: vi.fn(),
-      connectToSession: vi.fn(),
+      connectTask: vi.fn(),
       sendMessage,
     }, input, { text: '   ', attachments })
 
@@ -127,27 +119,24 @@ describe('launchProductTask', () => {
     expect(sendMessage).toHaveBeenCalledWith('task-1', '', attachments)
   })
 
-  it('continues through the product task contract before refreshing and opening the real core session', async () => {
+  it('continues through the product task contract and opens the resulting product task', async () => {
     const task = makeTask()
     const events: string[] = []
     const continueTask = vi.fn(async () => {
       events.push('continue')
       return task
     })
-    const refreshSessions = vi.fn(async () => { events.push('refresh') })
     const openTask = vi.fn(() => { events.push('open') })
-    const connectToSession = vi.fn(() => { events.push('connect') })
 
     await expect(continueProductTask({
       continueTask,
-      refreshSessions,
       openTask,
-      connectToSession,
-    }, 'task-1', { sourceTurnId: 'turn-42' })).resolves.toBe(task)
+    }, 'task-1', { sourceEntryId: 'thread_0123456789abcdef0123' })).resolves.toBe(task)
 
-    expect(continueTask).toHaveBeenCalledWith('task-1', { sourceTurnId: 'turn-42' })
+    expect(continueTask).toHaveBeenCalledWith('task-1', {
+      sourceEntryId: 'thread_0123456789abcdef0123',
+    })
     expect(openTask).toHaveBeenCalledWith(task)
-    expect(connectToSession).toHaveBeenCalledWith('task-1')
-    expect(events).toEqual(['continue', 'refresh', 'open', 'connect'])
+    expect(events).toEqual(['continue', 'open'])
   })
 })
