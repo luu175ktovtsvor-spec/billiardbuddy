@@ -91,12 +91,6 @@ const sessionTitleState = new Map<string, {
   generationSeq: number
 }>()
 
-type RuntimeOverride = {
-  providerId: string | null
-  modelId: string
-  effort?: string
-}
-
 type ActiveUserTurnState = {
   messageSent: boolean
 }
@@ -106,52 +100,14 @@ type CoreUserMessage = {
   attachments?: Parameters<typeof conversationService.sendMessage>[2]
 }
 
-type LegacyPermissionResponse = {
-  requestId: string
-  allowed: boolean
-  rule?: string
-  updatedInput?: Record<string, unknown>
-  denyMessage?: string
-  permissionUpdates?: unknown[]
-}
-
-type LegacyComputerUsePermissionResponse = {
-  requestId: string
-  response: Parameters<typeof computerUseApprovalService.resolveApproval>[2]
-}
-
-type LegacyPermissionModeMessage = {
-  mode: string
-}
-
-type LegacyRuntimeConfigMessage = {
-  providerId: string | null
-  modelId: string
-  effortLevel?: string
-}
-
-const runtimeOverrides = new Map<string, RuntimeOverride>()
 const activeUserTurns = new Map<string, ActiveUserTurnState>()
-const deferredRuntimeRestarts = new Map<string, RuntimeOverride>()
-const deferredPermissionModes = new Map<string, string>()
 
-const runtimeTransitionPromises = new Map<string, Promise<void>>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
-const runtimeOverrideVersions = new Map<string, number>()
-const sessionStartupRuntimeVersions = new Map<string, number>()
-const prewarmPendingSessions = new Set<string>()
-const prewarmedSessions = new Set<string>()
-const prewarmIdleTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const DEFAULT_PREWARM_IDLE_TIMEOUT_MS = 5 * 60_000
-const VALID_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'max'])
 
 async function sendRepositoryStartupStatus(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
-  reason: 'user_message' | 'prewarm_session',
 ): Promise<void> {
-  if (reason !== 'user_message') return
-
   const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
   const repository = launchInfo?.repository
   if (!repository) return
@@ -276,17 +232,11 @@ export const handleWebSocket = {
     cancelSessionDisconnectWatcher(sessionId)
 
     addActiveClient(sessionId, ws)
-    if (prewarmPendingSessions.has(sessionId) || prewarmedSessions.has(sessionId)) {
-      bindPrewarmMetadataCapture(sessionId)
-    } else {
-      bindClientSessionOutput(sessionId, ws)
-    }
+    bindClientSessionOutput(sessionId, ws)
 
     const msg: ServerMessage = { type: 'connected', sessionId }
     sendMessage(ws, msg)
-    if (channel === 'product') {
-      productTaskAgentCoreAdapter.sendRunSnapshot(ws)
-    }
+    productTaskAgentCoreAdapter.sendRunSnapshot(ws)
     replayPendingPermissionRequests(ws, sessionId)
   },
 
@@ -386,7 +336,6 @@ async function handleUserMessage(
 
   // Clear any stale stop flag from a previous turn
   sessionStopRequested.delete(sessionId)
-  clearPrewarmState(sessionId)
 
   const desktopSlashCommand = getDesktopSlashCommand(message.content)
   if (desktopSlashCommand?.commandName === 'clear' && desktopSlashCommand.args.trim()) {
@@ -409,15 +358,6 @@ async function handleUserMessage(
 
   const activeTurn: ActiveUserTurnState = { messageSent: false }
   activeUserTurns.set(sessionId, activeTurn)
-
-  const initialRuntimeTransition = await waitForRuntimeTransitionBeforeUserTurn(ws, sessionId)
-  if (!initialRuntimeTransition.ok) {
-    clearActiveUserTurn(sessionId, activeTurn)
-    return
-  }
-  if (initialRuntimeTransition.waited) {
-    sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
-  }
 
   // Track and emit the first placeholder title before CLI startup/streaming.
   let titleState = sessionTitleState.get(sessionId)
@@ -450,22 +390,12 @@ async function handleUserMessage(
 
   // 启动 CLI 子进程（如果还没有）
   try {
-    await ensureCliSessionStarted(ws, sessionId, 'user_message')
+    await ensureCliSessionStarted(ws, sessionId)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     console.error(`[WS] CLI start failed for ${sessionId}: ${errMsg}`)
     sendMessage(ws, projectStartupError(err))
     sendMessage(ws, { type: 'status', state: 'idle' })
-    clearActiveUserTurn(sessionId, activeTurn)
-    return
-  }
-
-  const startupRuntimeTransition = await waitForRuntimeTransitionBeforeUserTurn(ws, sessionId)
-  if (startupRuntimeTransition.ok) {
-    if (startupRuntimeTransition.waited) {
-      sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
-    }
-  } else {
     clearActiveUserTurn(sessionId, activeTurn)
     return
   }
@@ -488,7 +418,7 @@ async function handleUserMessage(
       return shouldForwardCurrentTurnLocalCommand(cliMsg)
     },
   })
-  const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
+  const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(sessionId, activeTurn)
 
   const sent = await conversationService.sendMessage(
     sessionId,
@@ -516,7 +446,6 @@ function clearActiveUserTurn(sessionId: string, activeTurn: ActiveUserTurnState)
 }
 
 function bindActiveUserTurnCompletion(
-  ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
   activeTurn: ActiveUserTurnState,
 ): () => void {
@@ -526,58 +455,10 @@ function bindActiveUserTurnCompletion(
     conversationService.removeOutputCallback(sessionId, callback)
     clearActiveUserTurn(sessionId, activeTurn)
     sessionService.invalidateSessionList()
-    // Structurally disarm any prewarm idle timer that a concurrent
-    // prewarm_session/user_message flush may have armed on this session: once a
-    // turn completes the session is firmly user-owned, so no prewarm reaper
-    // should survive — regardless of the order in which the two raced.
-    clearPrewarmState(sessionId)
-    applyDeferredPermissionModeAfterActiveTurn(ws, sessionId)
-    applyDeferredRuntimeRestartAfterActiveTurn(ws, sessionId)
   }
 
   conversationService.onOutput(sessionId, callback)
   return () => conversationService.removeOutputCallback(sessionId, callback)
-}
-
-function shouldDeferRuntimeRestartForActiveTurn(sessionId: string): boolean {
-  return activeUserTurns.get(sessionId)?.messageSent === true
-}
-
-function applyDeferredPermissionModeAfterActiveTurn(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-): void {
-  const deferredMode = deferredPermissionModes.get(sessionId)
-  if (!deferredMode) return
-
-  deferredPermissionModes.delete(sessionId)
-  void enqueueRuntimeTransition(sessionId, async () => {
-    if (!conversationService.hasSession(sessionId)) return
-    await applyPermissionModeToActiveSession(ws, sessionId, deferredMode)
-  })
-}
-
-function applyDeferredRuntimeRestartAfterActiveTurn(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-): void {
-  const deferred = deferredRuntimeRestarts.get(sessionId)
-  if (!deferred) return
-
-  deferredRuntimeRestarts.delete(sessionId)
-  void enqueueRuntimeTransition(sessionId, async () => {
-    const currentOverride = runtimeOverrides.get(sessionId)
-    if (
-      !currentOverride ||
-      currentOverride.providerId !== deferred.providerId ||
-      currentOverride.modelId !== deferred.modelId ||
-      currentOverride.effort !== deferred.effort ||
-      !conversationService.hasSession(sessionId)
-    ) {
-      return
-    }
-    await restartSessionWithRuntimeConfig(ws, sessionId)
-  })
 }
 
 async function handleDesktopClearCommand(
@@ -617,301 +498,6 @@ async function handleDesktopClearCommand(
   })
 }
 
-async function handlePrewarmSession(ws: ServerWebSocket<WebSocketData>) {
-  const { sessionId } = ws.data
-  if (conversationService.hasSession(sessionId) || sessionStartupPromises.has(sessionId)) {
-    return
-  }
-
-  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
-
-  // Re-check after async gap: a user_message may have arrived during the await
-  // and already started (or is starting) the CLI session. If so, skip prewarm
-  // entirely — the user turn owns this session now, and calling markPrewarmed()
-  // would arm an idle timer that later kills the active conversation.
-  if (conversationService.hasSession(sessionId) || sessionStartupPromises.has(sessionId)) {
-    return
-  }
-
-  if (launchInfo?.repository) {
-    console.log(`[WS] Skipping prewarm for pending repository launch session ${sessionId}`)
-    return
-  }
-
-  prewarmPendingSessions.add(sessionId)
-  void ensureCliSessionStarted(ws, sessionId, 'prewarm_session')
-    .then(() => {
-      const stillPending = prewarmPendingSessions.delete(sessionId)
-      if (!stillPending) return
-      // Safety: if a user message arrived and claimed this session while we
-      // were waiting for startup, do NOT arm the prewarm idle timer — the
-      // session is now owned by the user conversation, not prewarm. Use the
-      // turn-registered check (not messageSent) so the CLI-startup window is
-      // covered: in the concurrent race the turn is registered but messageSent
-      // is still false when this .then runs, which made the old guard dead code.
-      if (hasPendingOrActiveUserTurn(sessionId)) {
-        return
-      }
-      bindPrewarmMetadataCapture(sessionId)
-      markPrewarmed(sessionId)
-    })
-    .catch((err) => {
-      prewarmPendingSessions.delete(sessionId)
-      console.warn(
-        `[WS] Prewarm failed for ${sessionId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      )
-    })
-}
-
-function handlePermissionResponse(
-  ws: ServerWebSocket<WebSocketData>,
-  message: LegacyPermissionResponse,
-) {
-  const { sessionId } = ws.data
-  conversationService.respondToPermission(
-    sessionId,
-    message.requestId,
-    message.allowed,
-    message.rule,
-    message.updatedInput,
-    message.denyMessage,
-    message.permissionUpdates,
-  )
-  console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
-}
-
-function handleComputerUsePermissionResponse(
-  ws: ServerWebSocket<WebSocketData>,
-  message: LegacyComputerUsePermissionResponse,
-) {
-  const { sessionId } = ws.data
-  const ok = computerUseApprovalService.resolveApproval(
-    sessionId,
-    message.requestId,
-    message.response,
-  )
-  if (!ok) {
-    console.warn(
-      `[WS] Ignored Computer Use permission response for unknown request ${message.requestId} from ${sessionId}`
-    )
-  }
-}
-
-async function handleSetPermissionMode(
-  ws: ServerWebSocket<WebSocketData>,
-  message: LegacyPermissionModeMessage,
-): Promise<void> {
-  const { sessionId } = ws.data
-  const pendingStartup = sessionStartupPromises.get(sessionId)
-
-  if (pendingStartup) {
-    await enqueueRuntimeTransition(sessionId, async () => {
-      await pendingStartup.catch(() => undefined)
-      if (!conversationService.hasSession(sessionId)) return
-      await applyPermissionModeToActiveSession(ws, sessionId, message.mode)
-    })
-    return
-  }
-
-  if (!conversationService.hasSession(sessionId)) {
-    if (await persistSessionPermissionMode(sessionId, message.mode)) {
-      sendMessage(ws, { type: 'permission_mode_changed', mode: message.mode })
-    }
-    return
-  }
-
-  await applyPermissionModeToActiveSession(ws, sessionId, message.mode)
-}
-
-/**
- * 决定一次权限模式切换是否需要重启 CLI 子进程。
- *
- * 只有"进入 bypassPermissions"才需要重启：CLI 必须带 --dangerously-skip-permissions
- * 启动，否则运行时的 set_permission_mode → bypassPermissions 会被拒绝，所以重启子进程
- * 带上该 flag。
- *
- * 反过来"从 bypassPermissions 切到更严格的模式"**不要**重启：此时进程已带 flag，运行时
- * 降级即可。更关键的是——重启会把进程内的 prePlanMode 记忆冲掉：若 bypass→plan 走重启，
- * 新 CLI 直接以 plan 启动、prePlanMode 为空，ExitPlanMode 只能恢复成 default 而非进入前的
- * bypassPermissions。保持进程不变、走 setPermissionMode 做进程内 transition，CLI 才会像 TUI
- * 一样栈存 prePlanMode='bypassPermissions'，退出 plan 时正确恢复 bypass。
- */
-export function shouldRestartForPermissionMode(
-  currentMode: string,
-  mode: string,
-): boolean {
-  if (currentMode === mode) return false
-  return mode === 'bypassPermissions'
-}
-
-async function applyPermissionModeToActiveSession(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-  mode: string,
-): Promise<void> {
-  const currentMode = conversationService.getSessionPermissionMode(sessionId)
-  if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
-    deferredPermissionModes.set(sessionId, mode)
-    return
-  }
-
-  if (currentMode === mode) {
-    sendMessage(ws, { type: 'permission_mode_changed', mode })
-    return
-  }
-  const needsRestart = shouldRestartForPermissionMode(currentMode, mode)
-
-  if (needsRestart) {
-    void enqueueRuntimeTransition(sessionId, () =>
-      restartSessionWithPermissionMode(ws, sessionId, mode),
-    )
-    return
-  }
-
-  const ok = conversationService.setPermissionMode(sessionId, mode)
-  if (!ok) {
-    console.warn(`[WS] Ignored permission mode update for inactive session ${sessionId}`)
-    return
-  }
-  await persistSessionPermissionMode(sessionId, mode)
-  sendMessage(ws, { type: 'permission_mode_changed', mode })
-}
-
-async function handleSetRuntimeConfig(
-  ws: ServerWebSocket<WebSocketData>,
-  message: LegacyRuntimeConfigMessage,
-) {
-  const { sessionId } = ws.data
-  // Packaged BilliardBuddy sessions are routed by the product gateway. Ignore
-  // renderer/session overrides left by older builds so hidden provider/model
-  // state cannot bypass that boundary or trigger an invisible runtime restart.
-  if (qfGatewayConfigured()) return
-
-  const modelId = typeof message.modelId === 'string' ? message.modelId.trim() : ''
-  if (!modelId) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Runtime model selection is invalid.',
-      code: 'RUNTIME_CONFIG_INVALID',
-    })
-    return
-  }
-  const effortLevel =
-    typeof message.effortLevel === 'string' ? message.effortLevel.trim() : undefined
-  if (effortLevel !== undefined && !VALID_EFFORT_LEVELS.has(effortLevel)) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Runtime effort selection is invalid.',
-      code: 'RUNTIME_CONFIG_INVALID',
-    })
-    return
-  }
-
-  const nextOverride = {
-    providerId: message.providerId ?? null,
-    modelId,
-    ...(effortLevel ? { effort: effortLevel } : {}),
-  }
-  const prevOverride = runtimeOverrides.get(sessionId)
-  if (
-    prevOverride &&
-    prevOverride.providerId === nextOverride.providerId &&
-    prevOverride.modelId === nextOverride.modelId &&
-    prevOverride.effort === nextOverride.effort
-  ) {
-    return
-  }
-
-  runtimeOverrides.set(sessionId, nextOverride)
-  runtimeOverrideVersions.set(
-    sessionId,
-    (runtimeOverrideVersions.get(sessionId) ?? 0) + 1,
-  )
-
-  if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
-    deferredRuntimeRestarts.set(sessionId, nextOverride)
-    await persistSessionRuntimeConfig(sessionId, nextOverride)
-    return
-  }
-
-  if (conversationService.hasSession(sessionId)) {
-    await enqueueRuntimeTransition(sessionId, async () => {
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
-      await restartSessionWithRuntimeConfig(ws, sessionId)
-    })
-    return
-  }
-
-  const pendingStartup = sessionStartupPromises.get(sessionId)
-  if (pendingStartup) {
-    const startupRuntimeVersion = sessionStartupRuntimeVersions.get(sessionId) ?? 0
-    const currentRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-    if (startupRuntimeVersion >= currentRuntimeVersion) {
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
-      return
-    }
-
-    await enqueueRuntimeTransition(sessionId, async () => {
-      await persistSessionRuntimeConfig(sessionId, nextOverride)
-      await pendingStartup.catch(() => undefined)
-      const currentOverride = runtimeOverrides.get(sessionId)
-      if (
-        currentOverride?.providerId !== nextOverride.providerId ||
-        currentOverride.modelId !== nextOverride.modelId ||
-        currentOverride.effort !== nextOverride.effort ||
-        !conversationService.hasSession(sessionId)
-      ) {
-        return
-      }
-      await restartSessionWithRuntimeConfig(ws, sessionId)
-    })
-    return
-  }
-
-  await persistSessionRuntimeConfig(sessionId, nextOverride)
-}
-
-async function restartSessionWithPermissionMode(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-  mode: string,
-): Promise<void> {
-  try {
-    const workDir = conversationService.getSessionWorkDir(sessionId)
-    await persistSessionPermissionMode(sessionId, mode, workDir)
-    // The forwarding callback belongs to the old CLI process. Keep the map in
-    // sync before replacing that process so the next user turn binds a fresh
-    // callback to the restarted session instead of silently retaining a stale
-    // entry that can no longer receive SDK output.
-    removeSessionOutputCallback(sessionId)
-    conversationService.stopSession(sessionId)
-
-    // Rebuild runtime settings (will pick up the session-scoped mode)
-    const runtimeSettings = await getRuntimeSettings(sessionId)
-    const sdkUrl =
-      `ws://${ws.data.serverHost}:${ws.data.serverPort}/sdk/${sessionId}` +
-      `?token=${encodeURIComponent(crypto.randomUUID())}`
-    await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
-
-    sendMessage(ws, { type: 'permission_mode_changed', mode })
-    sendMessage(ws, { type: 'status', state: 'idle' })
-    console.log(`[WS] Restarted CLI for ${sessionId} with permission mode: ${mode}`)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    void diagnosticsService.recordEvent({
-      type: 'permission_restart_failed',
-      severity: 'error',
-      sessionId,
-      summary: errMsg,
-      details: { mode, error: err },
-    })
-    console.error(`[WS] Failed to restart CLI for ${sessionId}: ${errMsg}`)
-    sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
-    sendMessage(ws, { type: 'status', state: 'idle' })
-  }
-}
 
 async function persistSessionPermissionMode(
   sessionId: string,
@@ -930,58 +516,6 @@ async function persistSessionPermissionMode(
     permissionMode: mode,
   })
   return true
-}
-
-async function persistSessionRuntimeConfig(
-  sessionId: string,
-  runtime: { providerId: string | null; modelId: string; effort?: string },
-): Promise<void> {
-  const workDir =
-    conversationService.getSessionWorkDir(sessionId) ||
-    await sessionService.getSessionWorkDir(sessionId).catch(() => null)
-
-  if (!workDir) return
-
-  await sessionService.appendSessionMetadata(sessionId, {
-    workDir,
-    runtimeProviderId: runtime.providerId,
-    runtimeModelId: runtime.modelId,
-    ...(runtime.effort ? { effortLevel: runtime.effort } : {}),
-  })
-}
-
-async function restartSessionWithRuntimeConfig(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const workDir = conversationService.getSessionWorkDir(sessionId)
-    // See the permission-mode restart above: output callbacks are owned by a
-    // concrete CLI process, not merely by the public task/session identifier.
-    removeSessionOutputCallback(sessionId)
-    conversationService.stopSession(sessionId)
-
-    const runtimeSettings = await getRuntimeSettings(sessionId)
-    const sdkUrl =
-      `ws://${ws.data.serverHost}:${ws.data.serverPort}/sdk/${sessionId}` +
-      `?token=${encodeURIComponent(crypto.randomUUID())}`
-    await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
-
-    sendMessage(ws, { type: 'status', state: 'idle' })
-    console.log(`[WS] Restarted CLI for ${sessionId} with runtime override`)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    void diagnosticsService.recordEvent({
-      type: 'runtime_config_restart_failed',
-      severity: 'error',
-      sessionId,
-      summary: errMsg,
-      details: { runtimeOverride: runtimeOverrides.get(sessionId), error: err },
-    })
-    console.error(`[WS] Failed to restart CLI for ${sessionId} after runtime override: ${errMsg}`)
-    sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
-    sendMessage(ws, { type: 'status', state: 'idle' })
-  }
 }
 
 function handleStopGeneration(ws: ServerWebSocket<WebSocketData>) {
@@ -1057,11 +591,13 @@ function triggerTitleGeneration(
   state.startedGenerationKeys.add(key)
 
   const text = buildConversationTitleInput(state.completedTurns)
-  const runtimeProviderId = runtimeOverrides.get(sessionId)?.providerId
   const generationSeq = ++state.generationSeq
 
   void (async () => {
     try {
+      const runtimeProviderId = (
+        await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
+      )?.runtimeProviderId
       const responseLanguage = await getResponseLanguageSetting()
       const titleLanguagePreference = resolveTitleLanguagePreference(
         state.firstUserMessage,
@@ -1335,61 +871,8 @@ function cleanupSessionRuntimeState(sessionId: string) {
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
-  runtimeOverrides.delete(sessionId)
   activeUserTurns.delete(sessionId)
-  deferredRuntimeRestarts.delete(sessionId)
-  deferredPermissionModes.delete(sessionId)
-  runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
-  clearPrewarmState(sessionId)
-}
-
-function getPrewarmIdleTimeoutMs(): number {
-  const raw = process.env.BB_PREWARM_IDLE_TIMEOUT_MS
-  if (!raw) return DEFAULT_PREWARM_IDLE_TIMEOUT_MS
-  const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed >= 0
-    ? parsed
-    : DEFAULT_PREWARM_IDLE_TIMEOUT_MS
-}
-
-function clearPrewarmState(sessionId: string) {
-  prewarmPendingSessions.delete(sessionId)
-  prewarmedSessions.delete(sessionId)
-  const timer = prewarmIdleTimers.get(sessionId)
-  if (timer) {
-    clearTimeout(timer)
-    prewarmIdleTimers.delete(sessionId)
-  }
-}
-
-function markPrewarmed(sessionId: string) {
-  prewarmedSessions.add(sessionId)
-  const timeoutMs = getPrewarmIdleTimeoutMs()
-  if (timeoutMs === 0) return
-
-  const existingTimer = prewarmIdleTimers.get(sessionId)
-  if (existingTimer) clearTimeout(existingTimer)
-
-  const timer = setTimeout(() => {
-    prewarmIdleTimers.delete(sessionId)
-    if (!prewarmedSessions.has(sessionId)) return
-    const turnActive = hasPendingOrActiveUserTurn(sessionId)
-    const hasClients = hasActiveClients(sessionId)
-    // Safety guard: never kill a session that has a registered user turn or
-    // connected clients. The turn-registered check (not messageSent) covers the
-    // CLI-startup window, so a turn racing through startup is protected even if
-    // the client has briefly disconnected. The prewarm idle timer is only meant
-    // to reclaim truly idle prewarmed sessions — not to interrupt a conversation.
-    if (turnActive || hasClients) {
-      prewarmedSessions.delete(sessionId)
-      return
-    }
-    console.log(`[WS] Prewarmed session ${sessionId} idle for ${timeoutMs}ms, stopping CLI subprocess`)
-    conversationService.stopSession(sessionId)
-    prewarmedSessions.delete(sessionId)
-  }, timeoutMs)
-  prewarmIdleTimers.set(sessionId, timer)
 }
 
 function cacheSessionInitMetadata(sessionId: string, cliMsg: any) {
@@ -1448,19 +931,6 @@ function isDuplicateOfLastApiError(
   )
 }
 
-function bindPrewarmMetadataCapture(sessionId: string) {
-  for (const msg of conversationService.getRecentSdkMessages(sessionId)) {
-    cacheSessionInitMetadata(sessionId, msg)
-  }
-  if (!conversationService.hasSession(sessionId)) return
-
-  conversationService.clearOutputCallbacks(sessionId)
-  sessionOutputCallbacks.delete(sessionId)
-  conversationService.onOutput(sessionId, (cliMsg) => {
-    cacheSessionInitMetadata(sessionId, cliMsg)
-  })
-}
-
 async function resolveSessionWorkDir(sessionId: string, fallback = os.homedir()): Promise<string> {
   let workDir = fallback
   try {
@@ -1484,7 +954,6 @@ async function resolveSessionWorkDir(sessionId: string, fallback = os.homedir())
 async function ensureCliSessionStarted(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
-  reason: 'user_message' | 'prewarm_session',
 ): Promise<void> {
   const pendingStartup = sessionStartupPromises.get(sessionId)
   if (pendingStartup) {
@@ -1494,21 +963,15 @@ async function ensureCliSessionStarted(
 
   if (conversationService.hasSession(sessionId)) return
 
-  const startupRuntimeVersion = runtimeOverrideVersions.get(sessionId) ?? 0
-  sessionStartupRuntimeVersions.set(sessionId, startupRuntimeVersion)
-
   const startup = (async () => {
     const workDir = await resolveSessionWorkDir(sessionId)
     const runtimeSettings = await getRuntimeSettings(sessionId)
-    const startupSettings = reason === 'prewarm_session'
-      ? { ...runtimeSettings, resumeInterruptedTurn: false }
-      : runtimeSettings
     const sdkUrl =
       `ws://${ws.data.serverHost}:${ws.data.serverPort}/sdk/${sessionId}` +
       `?token=${encodeURIComponent(crypto.randomUUID())}`
-    await sendRepositoryStartupStatus(ws, sessionId, reason)
-    console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
-    await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
+    await sendRepositoryStartupStatus(ws, sessionId)
+    console.log(`[WS] Starting CLI for ${sessionId} due to user message`)
+    await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
   })()
 
   sessionStartupPromises.set(sessionId, startup)
@@ -1517,7 +980,6 @@ async function ensureCliSessionStarted(
   } finally {
     if (sessionStartupPromises.get(sessionId) === startup) {
       sessionStartupPromises.delete(sessionId)
-      sessionStartupRuntimeVersions.delete(sessionId)
     }
   }
 }
@@ -2149,19 +1611,6 @@ function isSessionTurnActive(sessionId: string): boolean {
 }
 
 /**
- * Whether a user turn has been registered for this session and not yet settled,
- * INCLUDING the CLI-startup window before messageSent flips true. handleUserMessage
- * registers the turn in its synchronous prefix (activeUserTurns.set), well before
- * the message is actually sent. Unlike isSessionTurnActive, this is not blind to
- * that window, so the prewarm idle timer can neither arm on nor fire against a
- * session a user turn has already claimed — even when a concurrent
- * prewarm_session/user_message flush inverts their ordering.
- */
-function hasPendingOrActiveUserTurn(sessionId: string): boolean {
-  return activeUserTurns.has(sessionId)
-}
-
-/**
  * Start the idle grace timer for a disconnected, idle session. If no client
  * reconnects before it fires, the CLI subprocess is stopped.
  */
@@ -2641,31 +2090,23 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
   const launchInfo = sessionId
     ? await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
     : null
-  const sessionPermissionMode = sessionId
-    ? launchInfo?.permissionMode ?? await getSessionPermissionMode(sessionId)
-    : undefined
-  const persistedRuntimeOverride =
-    launchInfo?.runtimeModelId
+  const sessionPermissionMode = launchInfo?.permissionMode
+  const persistedRuntimeSettings =
+    !qfGatewayConfigured() && launchInfo?.runtimeModelId
       ? {
           providerId: launchInfo.runtimeProviderId ?? null,
           modelId: launchInfo.runtimeModelId,
           ...(launchInfo.effortLevel ? { effort: launchInfo.effortLevel } : {}),
         }
       : undefined
-  const runtimeOverride = qfGatewayConfigured()
-    ? undefined
-    : sessionId
-      ? runtimeOverrides.get(sessionId) ?? persistedRuntimeOverride
-      : undefined
-  if (runtimeOverride) {
-    if (typeof runtimeOverride.providerId === 'string') {
+  if (persistedRuntimeSettings) {
+    if (typeof persistedRuntimeSettings.providerId === 'string') {
       const { providers } = await providerService.listProviders()
-      const providerExists = isKnownRuntimeProviderId(runtimeOverride.providerId, providers)
+      const providerExists = isKnownRuntimeProviderId(persistedRuntimeSettings.providerId, providers)
       if (!providerExists) {
         console.warn(
-          `[WS] Ignoring stale runtime provider id for ${sessionId}: ${runtimeOverride.providerId}`,
+          `[WS] Ignoring stale persisted runtime provider id for ${sessionId}: ${persistedRuntimeSettings.providerId}`,
         )
-        runtimeOverrides.delete(sessionId!)
         const defaults = await getDefaultRuntimeSettings()
         return {
           ...defaults,
@@ -2679,10 +2120,10 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
 
     return {
       permissionMode: sessionPermissionMode ?? await settingsService.getPermissionMode().catch(() => undefined),
-      model: runtimeOverride.modelId,
-      effort: runtimeOverride.effort,
+      model: persistedRuntimeSettings.modelId,
+      effort: persistedRuntimeSettings.effort,
       thinking,
-      providerId: runtimeOverride.providerId,
+      providerId: persistedRuntimeSettings.providerId,
     }
   }
 
@@ -2692,11 +2133,6 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
     permissionMode: sessionPermissionMode ?? defaults.permissionMode,
     effort: launchInfo?.effortLevel ?? defaults.effort,
   }
-}
-
-async function getSessionPermissionMode(sessionId: string): Promise<string | undefined> {
-  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
-  return launchInfo?.permissionMode
 }
 
 async function getDefaultRuntimeSettings(): Promise<RuntimeSettings> {
@@ -2760,58 +2196,6 @@ function resolveDesktopThinkingMode(
   return settings.alwaysThinkingEnabled === false ? 'disabled' : undefined
 }
 
-function enqueueRuntimeTransition(
-  sessionId: string,
-  transition: () => Promise<void>,
-): Promise<void> {
-  const previous = runtimeTransitionPromises.get(sessionId) ?? Promise.resolve()
-  const next = previous
-    .catch(() => {})
-    .then(transition)
-    .finally(() => {
-      if (runtimeTransitionPromises.get(sessionId) === next) {
-        runtimeTransitionPromises.delete(sessionId)
-      }
-    })
-  runtimeTransitionPromises.set(sessionId, next)
-  return next
-}
-
-async function waitForRuntimeTransitionBeforeUserTurn(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-): Promise<{ ok: boolean; waited: boolean }> {
-  let waited = false
-  let pendingRuntimeTransition = runtimeTransitionPromises.get(sessionId)
-  while (pendingRuntimeTransition) {
-    waited = true
-    try {
-      await pendingRuntimeTransition
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      void diagnosticsService.recordEvent({
-        type: 'runtime_transition_failed',
-        severity: 'error',
-        sessionId,
-        summary: errMsg,
-        details: err,
-      })
-      console.error(`[WS] Runtime transition failed before handling user message for ${sessionId}: ${errMsg}`)
-      sendMessage(ws, toSafeRuntimeError('CLI_RESTART_FAILED', true))
-      sendMessage(ws, { type: 'status', state: 'idle' })
-      return { ok: false, waited }
-    }
-
-    const nextTransition = runtimeTransitionPromises.get(sessionId)
-    pendingRuntimeTransition =
-      nextTransition && nextTransition !== pendingRuntimeTransition
-        ? nextTransition
-        : undefined
-  }
-
-  return { ok: true, waited }
-}
-
 /**
  * Send a message to a specific session's WebSocket (for use by services)
  */
@@ -2864,36 +2248,15 @@ export function getActiveSessionIds(): string[] {
 
 export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of sessionCleanupTimers.values()) clearTimeout(timer)
-  for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
   for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
   productTaskAgentCoreAdapter.reset()
   sessionOutputCallbacks.clear()
   sessionCleanupTimers.clear()
   sessionDisconnectWatchers.clear()
-  prewarmPendingSessions.clear()
-  prewarmedSessions.clear()
-  prewarmIdleTimers.clear()
-}
-
-export function __markPrewarmPendingForTests(sessionId: string): void {
-  prewarmPendingSessions.add(sessionId)
 }
 
 /** Test hook: mark a session as mid-turn so disconnect keeps the CLI alive. */
 export function __markActiveTurnForTests(sessionId: string): void {
   activeUserTurns.set(sessionId, { messageSent: true })
-}
-
-/**
- * Test hook: register a user turn still in the pre-send (messageSent:false)
- * window — i.e. the CLI-startup window that isSessionTurnActive is blind to.
- */
-export function __registerPendingUserTurnForTests(sessionId: string): void {
-  activeUserTurns.set(sessionId, { messageSent: false })
-}
-
-/** Test hook: arm the prewarm idle timer for a session, as markPrewarmed does. */
-export function __markPrewarmedForTests(sessionId: string): void {
-  markPrewarmed(sessionId)
 }

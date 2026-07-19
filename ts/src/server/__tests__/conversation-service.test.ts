@@ -24,7 +24,6 @@ describe('ConversationService', () => {
   let originalDiagnosticsFile: string | undefined
   let originalAttributionHeader: string | undefined
   let originalDisableExperimentalBetas: string | undefined
-  let originalResumeInterruptedTurn: string | undefined
   let originalTraceApiCalls: string | undefined
   let originalTraceProviderId: string | undefined
   let originalTraceProviderName: string | undefined
@@ -48,7 +47,6 @@ describe('ConversationService', () => {
     originalDiagnosticsFile = process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     originalAttributionHeader = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     originalDisableExperimentalBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
-    originalResumeInterruptedTurn = process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
     originalTraceApiCalls = process.env.BB_TRACE_API_CALLS
     originalTraceProviderId = process.env.BB_TRACE_PROVIDER_ID
     originalTraceProviderName = process.env.BB_TRACE_PROVIDER_NAME
@@ -72,7 +70,6 @@ describe('ConversationService', () => {
     delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
     delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
-    delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
     delete process.env.BB_TRACE_API_CALLS
     delete process.env.BB_TRACE_PROVIDER_ID
     delete process.env.BB_TRACE_PROVIDER_NAME
@@ -114,9 +111,6 @@ describe('ConversationService', () => {
 
     if (originalDisableExperimentalBetas === undefined) delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
     else process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = originalDisableExperimentalBetas
-
-    if (originalResumeInterruptedTurn === undefined) delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
-    else process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = originalResumeInterruptedTurn
 
     if (originalTraceApiCalls === undefined) delete process.env.BB_TRACE_API_CALLS
     else process.env.BB_TRACE_API_CALLS = originalTraceApiCalls
@@ -859,18 +853,6 @@ describe('ConversationService', () => {
 
     expect(env.BB_DESKTOP_AWAIT_MCP).toBe('1')
     expect(env.BB_DESKTOP_AWAIT_MCP_TIMEOUT_MS).toBe('5000')
-  })
-
-  test('buildChildEnv disables inherited interrupted-turn resume for prewarm launches', async () => {
-    process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = '1'
-    const service = new ConversationService() as any
-    const env = (await service.buildChildEnv(
-      '/tmp',
-      'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
-      { resumeInterruptedTurn: false },
-    )) as Record<string, string>
-
-    expect(env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN).toBeUndefined()
   })
 
   test('buildChildEnv enables stream idle watchdog for desktop CLI sessions', async () => {

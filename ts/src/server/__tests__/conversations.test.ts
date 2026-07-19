@@ -5,33 +5,8 @@
  * WebSocket 集成测试验证消息从客户端经过服务端到达 CLI 的完整流转。
  */
 
-import { describe, it, expect, beforeAll, afterAll, spyOn } from 'bun:test'
-import * as fs from 'fs/promises'
-import { ConversationService, ConversationStartupError, conversationService } from '../services/conversationService.js'
-import { SettingsService } from '../services/settingsService.js'
-import { getSlashCommands } from '../ws/handler.js'
-
-async function setDefaultPermissionModeForIntegrationTests(mode: string): Promise<void> {
-  await new SettingsService().setPermissionMode(mode)
-}
-
-async function rmWithRetry(targetPath: string): Promise<void> {
-  const attempts = process.platform === 'win32' ? 5 : 1
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      await fs.rm(targetPath, { recursive: true, force: true })
-      return
-    } catch (error) {
-      if (
-        attempt === attempts - 1 ||
-        !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code || '')
-      ) {
-        throw error
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)))
-    }
-  }
-}
+import { describe, it, expect } from 'bun:test'
+import { ConversationService, ConversationStartupError } from '../services/conversationService.js'
 
 // ============================================================================
 // ConversationService unit tests
@@ -272,39 +247,6 @@ describe('ConversationService', () => {
           behavior: 'deny',
           message: 'Add rollback steps before implementation.',
         },
-      },
-    })
-  })
-
-  it('should send set_permission_mode requests to active sessions', () => {
-    const svc = new ConversationService()
-    const sent: unknown[] = []
-
-    ;(svc as any).sessions.set('session-2', {
-      proc: null,
-      outputCallbacks: [],
-      workDir: process.cwd(),
-      sdkToken: 'token',
-      sdkSocket: {
-        send(data: string) {
-          sent.push(JSON.parse(data))
-        },
-      },
-      pendingOutbound: [],
-      stderrLines: [],
-      sdkMessages: [],
-      pendingPermissionRequests: new Map(),
-    })
-
-    const result = svc.setPermissionMode('session-2', 'acceptEdits')
-
-    expect(result).toBe(true)
-    expect(sent).toHaveLength(1)
-    expect(sent[0]).toMatchObject({
-      type: 'control_request',
-      request: {
-        subtype: 'set_permission_mode',
-        mode: 'acceptEdits',
       },
     })
   })

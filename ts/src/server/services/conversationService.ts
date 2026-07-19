@@ -144,7 +144,6 @@ type SessionStartOptions = {
   effort?: string
   thinking?: 'enabled' | 'adaptive' | 'disabled'
   providerId?: string | null
-  resumeInterruptedTurn?: boolean
 }
 
 export class ConversationStartupError extends Error {
@@ -522,22 +521,6 @@ export class ConversationService {
           : { behavior: 'deny', message: denyMessage || 'User denied via UI' },
       },
     })
-  }
-
-  setPermissionMode(sessionId: string, mode: string): boolean {
-    const sent = this.sendSdkMessage(sessionId, {
-      type: 'control_request',
-      request_id: crypto.randomUUID(),
-      request: {
-        subtype: 'set_permission_mode',
-        mode,
-      },
-    })
-    if (sent) {
-      const session = this.sessions.get(sessionId)
-      if (session) session.permissionMode = mode
-    }
-    return sent
   }
 
   recordSessionPermissionMode(sessionId: string, mode: string): boolean {
@@ -1088,9 +1071,6 @@ export class ConversationService {
 
     const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
     delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN
-    if (options?.resumeInterruptedTurn === false) {
-      delete cleanEnv.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
-    }
     delete cleanEnv.BB_TRACE_PROVIDER_ID
     delete cleanEnv.BB_TRACE_PROVIDER_NAME
     delete cleanEnv.BB_TRACE_PROVIDER_FORMAT
