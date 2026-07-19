@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Camera, Loader2, Minus, MousePointer2, Plus, RotateCcw } from 'lucide-react'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { computeWebviewBounds } from './computeWebviewBounds'
@@ -6,7 +6,10 @@ import { getServerBaseUrl, isLoopbackHostname } from '../../lib/desktopRuntime'
 import { classifyPreviewLink } from '../../lib/previewLinkRouter'
 import { isAbsoluteLocalPath, localFileUrl, previewFsUrl } from '../../lib/handlePreviewLink'
 import { previewBridge } from '../../lib/previewBridge'
-import { subscribePreviewEvents } from '../../lib/previewEvents'
+import {
+  subscribePreviewEvents,
+  type BrowserPreviewEventSubscriber,
+} from '../../lib/previewEvents'
 import {
   BROWSER_ZOOM_STEP,
   DEFAULT_BROWSER_ZOOM,
@@ -47,9 +50,36 @@ async function waitForLocalPreview(url: string): Promise<void> {
   }
 }
 
-function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
+export type BrowserNavigationPolicy = 'default' | 'http'
+
+type BrowserSurfaceProps = {
+  sessionId: string
+  navigationPolicy?: BrowserNavigationPolicy
+  unsupportedNavigationMessage?: string
+  showPreviewActions?: boolean
+  subscribeEvents?: BrowserPreviewEventSubscriber
+}
+
+export function isHttpBrowserUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function resolveBrowserNavigationUrl(
+  input: string,
+  sessionId: string,
+  navigationPolicy: BrowserNavigationPolicy,
+): string | null {
   const value = input.trim()
   if (!value) return ''
+
+  if (navigationPolicy === 'http') {
+    return isHttpBrowserUrl(value) ? value : null
+  }
 
   const classified = classifyPreviewLink(value)
   if (classified.kind === 'browser-file' && classified.path) {
@@ -62,11 +92,18 @@ function resolveBrowserNavigationUrl(input: string, sessionId: string): string {
   return value
 }
 
-export function BrowserSurface({ sessionId }: { sessionId: string }) {
+export function BrowserSurface({
+  sessionId,
+  navigationPolicy = 'default',
+  unsupportedNavigationMessage,
+  showPreviewActions = true,
+  subscribeEvents = subscribePreviewEvents,
+}: BrowserSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const loadSeqRef = useRef(0)
   const requestedUrlRef = useRef<string | null>(null)
   const hasNativePreviewRef = useRef(false)
+  const [navigationError, setNavigationError] = useState<string | null>(null)
   const session = useBrowserPanelStore((s) => s.bySession[sessionId])
   const store = useBrowserPanelStore.getState()
   const overlayCount = useOverlayStore((s) => s.count)
@@ -173,10 +210,14 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     let unsub: (() => void) | undefined
-    void subscribePreviewEvents(sessionId).then((u) => { unsub = u })
+    void subscribeEvents(sessionId, {
+      ...(navigationPolicy === 'http'
+        ? { isNavigationAllowed: isHttpBrowserUrl }
+        : {}),
+    }).then((u) => { unsub = u })
     return () => { unsub?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId])
+  }, [sessionId, subscribeEvents, navigationPolicy])
 
   // 兜底：navigated/ready 依赖注入脚本，若外站 CSP 拦截则永不回灌。loading 变 true 后 ~15s 强制收尾。
   const isLoading = session?.loading ?? false
@@ -192,8 +233,13 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
   if (!session) return null
 
   const openOrNavigate = (inputUrl: string) => {
-    const url = resolveBrowserNavigationUrl(inputUrl, sessionId)
+    const url = resolveBrowserNavigationUrl(inputUrl, sessionId, navigationPolicy)
+    if (url === null) {
+      setNavigationError(unsupportedNavigationMessage ?? '仅支持可直接访问的网址。')
+      return
+    }
     if (!url) return
+    setNavigationError(null)
     store.navigate(sessionId, url)
     requestNativePreview(url)
   }
@@ -203,7 +249,7 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]',
   ].join(' ')
 
-  const previewActions = (
+  const previewActions = showPreviewActions ? (
     <>
       <button
         aria-label="截图"
@@ -237,7 +283,7 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
         <MousePointer2 size={16} />
       </button>
     </>
-  )
+  ) : undefined
 
   const setPreviewZoom = (nextZoom: number) => {
     store.setZoom(sessionId, normalizeBrowserZoom(nextZoom))
@@ -277,6 +323,11 @@ export function BrowserSurface({ sessionId }: { sessionId: string }) {
         }}
         rightActions={previewActions}
       />
+      {navigationError ? (
+        <p role="alert" className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
+          {navigationError}
+        </p>
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-surface)]">
         <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden" data-testid="preview-host">
           {session.loading && (

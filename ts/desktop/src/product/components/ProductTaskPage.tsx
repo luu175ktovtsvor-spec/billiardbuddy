@@ -20,6 +20,11 @@ import {
   productSideTaskMutationKey,
   useProductSideTaskStore,
 } from '../stores/productSideTaskStore'
+import {
+  useProductTaskBrowserPreviewStore,
+  type ProductTaskBrowserPreviewMode,
+} from '../stores/productTaskBrowserPreviewStore'
+import { ProductTaskBrowserPreviewDock } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
 import { SideTaskPanel } from './SideTaskPanel'
 import {
@@ -402,6 +407,10 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   const createSideTask = useProductSideTaskStore((state) => state.createSideTask)
   const openSideTaskPanel = useProductSideTaskStore((state) => state.openSideTaskPanel)
   const sideTaskMutations = useProductSideTaskStore((state) => state.mutations)
+  const browserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.byTaskId[taskId])
+  const openBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.openPanel)
+  const closeBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.closePanel)
+  const activateBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.activatePanel)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
@@ -518,6 +527,22 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
     productSideTaskMutationKey(taskId, 'new', 'create')
   ] === true
   const isRunning = runtime?.runState === 'working' || runtime?.runState === 'awaiting_approval'
+  const isBrowserOpen = browserPreviewPanel?.browserOpen ?? false
+  const isPreviewOpen = browserPreviewPanel?.previewOpen ?? false
+  const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
+
+  const closeBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
+    closeBrowserPreviewPanel(task.id, mode)
+  }
+
+  const openBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
+    const isOpen = mode === 'browser' ? isBrowserOpen : isPreviewOpen
+    if (isOpen) {
+      activateBrowserPreviewPanel(task.id, mode)
+      return
+    }
+    openBrowserPreviewPanel(task.id, mode)
+  }
 
   const continueFromEntry = async (
     sourceEntryId: string,
@@ -582,6 +607,22 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           审阅
+        </button>
+        <button
+          type="button"
+          onClick={() => openBrowserPreviewMode('browser')}
+          aria-pressed={isBrowserOpen && browserPreviewPanel?.activeMode === 'browser'}
+          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
+        >
+          浏览器
+        </button>
+        <button
+          type="button"
+          onClick={() => openBrowserPreviewMode('preview')}
+          aria-pressed={isPreviewOpen && browserPreviewPanel?.activeMode === 'preview'}
+          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
+        >
+          预览
         </button>
         <button
           type="button"
@@ -715,15 +756,27 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
           </form>
         </section>
 
-        {isReviewOpen || isTerminalOpen ? (
+        {isReviewOpen || isTerminalOpen || isBrowserPreviewOpen ? (
           <aside className="flex w-[min(34rem,46vw)] min-w-[22rem] flex-col border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
             {isReviewOpen ? (
-              <div className={`flex min-h-0 flex-col overflow-hidden ${isTerminalOpen ? 'min-h-[16rem] flex-1 border-b border-[var(--color-border)]' : 'flex-1'}`}>
+              <div className={`flex min-h-0 flex-col overflow-hidden ${
+                isBrowserPreviewOpen
+                  ? 'flex-1 border-b border-[var(--color-border)]'
+                  : isTerminalOpen
+                    ? 'min-h-[16rem] flex-1 border-b border-[var(--color-border)]'
+                    : 'flex-1'
+              }`}>
                 <ProductTaskReviewDock taskId={task.id} onClose={() => setIsReviewOpen(false)} />
               </div>
             ) : null}
             {isTerminalOpen ? (
-              <section className={`flex min-h-0 flex-col overflow-hidden ${isReviewOpen ? 'min-h-[16rem] flex-1' : 'flex-1'}`} data-testid="product-task-terminal-dock">
+              <section className={`flex min-h-0 flex-col overflow-hidden ${
+                isBrowserPreviewOpen
+                  ? 'flex-1 border-b border-[var(--color-border)]'
+                  : isReviewOpen
+                    ? 'min-h-[16rem] flex-1'
+                    : 'flex-1'
+              }`} data-testid="product-task-terminal-dock">
                 <header className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
                   <div>
                     <h2 className="text-sm font-medium text-[var(--color-text-primary)]">终端</h2>
@@ -743,6 +796,18 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
                   />
                 </div>
               </section>
+            ) : null}
+            {isBrowserPreviewOpen ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ProductTaskBrowserPreviewDock
+                  taskId={task.id}
+                  browserOpen={isBrowserOpen}
+                  previewOpen={isPreviewOpen}
+                  activeMode={browserPreviewPanel?.activeMode ?? null}
+                  onActivate={(mode) => activateBrowserPreviewPanel(task.id, mode)}
+                  onClose={closeBrowserPreviewMode}
+                />
+              </div>
             ) : null}
           </aside>
         ) : null}
