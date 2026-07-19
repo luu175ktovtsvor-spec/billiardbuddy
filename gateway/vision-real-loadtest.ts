@@ -77,8 +77,8 @@ Options:
   --images-per-request=<n>    Distinct images per chat request (default: 1, max: ${MAX_IMAGES_PER_REQUEST})
   --unique-image-per-request  Required acknowledgement; prevents cache/singleflight bias
   --max-tokens=<n>            Downstream completion cap (default: 16)
-  --thinking=enabled|disabled Send an explicit model thinking mode; omitted uses
-                               the gateway/upstream default
+  --thinking=enabled|disabled Thinking mode; bridge defaults to enabled for its
+                               downstream DeepSeek request, native MiMo defaults disabled
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
@@ -119,6 +119,11 @@ export function parseThinkingMode(value: string | undefined): ThinkingMode | und
   throw new Error('--thinking must be enabled or disabled')
 }
 
+/** Mirrors the desktop product path: managed DeepSeek thinks by default, MiMo does not. */
+export function resolveVisualThinkingMode(value: string | undefined, route: 'bridge' | 'native'): ThinkingMode {
+  return parseThinkingMode(value) ?? (route === 'bridge' ? 'enabled' : 'disabled')
+}
+
 export function parseImagesPerRequest(value: string | undefined): number {
   const count = integer(value, '--images-per-request', 1)
   if (count > MAX_IMAGES_PER_REQUEST) {
@@ -147,6 +152,11 @@ export function isVisualCapacityDrained(snapshot: GatewayHealth | null): boolean
     return nonNegative(current?.active) === 0 && nonNegative(current?.queued) === 0
   })
   return permitDrained && nonNegative(capacity?.ingress_body?.reservedBytes) === 0
+}
+
+/** High-to-low continuation is default; an explicit safety stop always wins. */
+export function shouldContinueAfterFailure(args: readonly string[]): boolean {
+  return !args.includes('--stop-after-failure')
 }
 
 function percentile(values: number[], ratio: number): number | null {
@@ -493,7 +503,6 @@ async function main(): Promise<void> {
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 16)
-  const thinking = parseThinkingMode(option(args, '--thinking'))
   const imagesPerRequest = parseImagesPerRequest(option(args, '--images-per-request'))
   const timeoutMs = integer(option(args, '--timeout-ms'), '--timeout-ms', 180_000)
   const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 100)
@@ -502,6 +511,7 @@ async function main(): Promise<void> {
   const drainTimeoutMs = integer(option(args, '--drain-timeout-ms'), '--drain-timeout-ms', timeoutMs)
   const route = option(args, '--route') ?? 'bridge'
   if (route !== 'bridge' && route !== 'native') throw new Error('--route must be bridge or native')
+  const thinking = resolveVisualThinkingMode(option(args, '--thinking'), route)
   const generated = args.includes('--generate-image')
   const imagePath = option(args, '--image-file')
   if (Number(generated) + Number(imagePath !== undefined) !== 1) {
@@ -512,9 +522,7 @@ async function main(): Promise<void> {
   const total = users * windows
   if (!Number.isSafeInteger(total) || total > MAX_REQUESTS) throw new Error(`--users * --windows must not exceed ${MAX_REQUESTS}`)
   const phases = parsePhases(option(args, '--phases'), total)
-  // Continuing is the default. If both compatibility switches are accidentally
-  // supplied, the explicit safety stop must win.
-  const continueAfterFailure = !args.includes('--stop-after-failure')
+  const continueAfterFailure = shouldContinueAfterFailure(args)
   const generatedImageCount = phases.reduce((count, phase) => {
     const next = count + phase * imagesPerRequest
     if (!Number.isSafeInteger(next)) throw new Error('--images-per-request times total staged requests is too large')
