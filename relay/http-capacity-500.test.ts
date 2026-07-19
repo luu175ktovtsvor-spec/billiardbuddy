@@ -28,6 +28,9 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, message: str
 async function mapWithClientConcurrency<T, R>(
   values: readonly T[],
   work: (value: T, index: number) => Promise<R>,
+  // Bun's test-client pool drops a full 500-connect SYN burst on macOS before the
+  // relay handler runs. Keep the transport test at a reliable 64 connections; the
+  // companion hardening test calls the handler with all 500 logical tasks at once.
   limit = 64,
 ): Promise<R[]> {
   const results = new Array<R>(values.length)
@@ -42,7 +45,7 @@ async function mapWithClientConcurrency<T, R>(
   return results
 }
 
-test('local Bun HTTP relay accepts and polls the 100 users × 5 windows burst without exceeding six fake upstream calls', async () => {
+test('local Bun HTTP relay accepts and polls a 500-task burst over 64 HTTP client connections without exceeding six fake upstream calls', async () => {
   let upstreamCalls = 0
   let releaseUpstream: (() => void) | undefined
   const upstreamGate = new Promise<void>(resolve => { releaseUpstream = resolve })

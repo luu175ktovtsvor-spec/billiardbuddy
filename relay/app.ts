@@ -25,7 +25,7 @@
 // 鉴权:Bearer <RELAY_TOKEN>(= 网关注入的 GW_RELAY_TOKEN)。真 OpenAI key 只在本服务的 RELAY_OPENAI_KEY,绝不下发。
 
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -36,6 +36,7 @@ export type RelayConfig = {
   openaiBase: string
   taskTtlMs: number
   imgConc: number
+  imgUserConc: number
   dbPath: string
   blobDir: string | null
   queueMax: number
@@ -43,6 +44,7 @@ export type RelayConfig = {
   retryAfterSeconds: number
   maxBodyBytes: number
   activeInputBytesMax: number
+  pendingInputBytesMax: number
   upstreamTimeoutMs: number
 }
 
@@ -62,6 +64,8 @@ function intEnv(env: Env, key: string, fallback: number): number {
 }
 
 export function loadRelayConfig(env: Env): RelayConfig {
+  const imgConc = Math.max(1, intEnv(env, 'RELAY_IMG_CONC', 6))
+  const activeInputBytesMax = Math.max(1, intEnv(env, 'RELAY_ACTIVE_INPUT_BYTES_MAX', 512 * 1024 * 1024))
   return {
     relayToken: required(env, 'RELAY_TOKEN'),
     openaiKey: required(env, 'RELAY_OPENAI_KEY'),
@@ -71,7 +75,11 @@ export function loadRelayConfig(env: Env): RelayConfig {
     taskTtlMs: Math.max(1, intEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000)),
     // 生图是昂贵且慢的同步上游。500 个桌面窗口可以被异步受理，但默认只让 6 个真实
     // OpenAI 调用在途；只有在已测得该账号的图片 RPM/并发配额后才提高这个阀门。
-    imgConc: Math.max(1, intEnv(env, 'RELAY_IMG_CONC', 6)),
+    imgConc,
+    // A user may enqueue five windows, but one installation must not monopolize all
+    // paid upstream slots while 99 other users are waiting. With a 100-user burst this
+    // keeps the six active image calls spread across six owners whenever possible.
+    imgUserConc: Math.min(imgConc, Math.max(1, intEnv(env, 'RELAY_IMG_USER_CONC', 1))),
     // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/qfrelay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
@@ -86,7 +94,14 @@ export function loadRelayConfig(env: Env): RelayConfig {
     // 20 MB decoded reference images expand to about 26.7 MB as base64, plus JSON framing.
     maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024)), // 提交请求体大小上限
     // 500 个小文生图可同时排队，但不能让 500 个 32 MB 改图输入一起耗尽内存和 blob 磁盘。
-    activeInputBytesMax: Math.max(1, intEnv(env, 'RELAY_ACTIVE_INPUT_BYTES_MAX', 512 * 1024 * 1024)),
+    activeInputBytesMax,
+    // Input chunks are temporarily held both as stream chunks and as a contiguous JSON
+    // buffer before they can be written to the persistent blob. Keep that transient heap
+    // slice much smaller than the on-disk queued-input allowance.
+    pendingInputBytesMax: Math.min(
+      activeInputBytesMax,
+      Math.max(1, intEnv(env, 'RELAY_PENDING_INPUT_BYTES_MAX', 64 * 1024 * 1024)),
+    ),
     upstreamTimeoutMs: Math.max(1, intEnv(env, 'RELAY_UPSTREAM_TIMEOUT_MS', 5 * 60_000)),
   }
 }
@@ -102,19 +117,64 @@ class HttpError extends Error {
 class UpstreamResponseError extends Error {}
 class UpstreamOutcomeUnknownError extends Error {}
 
-/** 并发闸:限制同时在跑的 OpenAI 调用数(护住 OpenAI IPM/账号并发)。 */
+/**
+ * Concurrent OpenAI call gate. It is FIFO among eligible tasks, while skipping a
+ * temporarily ineligible owner so a single installation cannot occupy every paid slot.
+ */
 class Semaphore {
   private active = 0
-  private queue: Array<() => void> = []
-  constructor(private readonly max: number) {}
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.max) await new Promise<void>(resolve => this.queue.push(resolve))
-    this.active++
+  private readonly activeByOwner = new Map<string, number>()
+  private queue: Array<{ owner: string; grant: () => void }> = []
+  constructor(private readonly max: number, private readonly perOwnerMax: number) {}
+
+  async run<T>(owner: string, fn: () => Promise<T>): Promise<T> {
+    await this.acquire(owner)
     try {
       return await fn()
     } finally {
-      this.active--
-      this.queue.shift()?.()
+      this.release(owner)
+    }
+  }
+
+  private canAcquire(owner: string): boolean {
+    return this.active < this.max && (this.activeByOwner.get(owner) ?? 0) < this.perOwnerMax
+  }
+
+  private take(owner: string): void {
+    this.active++
+    this.activeByOwner.set(owner, (this.activeByOwner.get(owner) ?? 0) + 1)
+  }
+
+  private async acquire(owner: string): Promise<void> {
+    if (this.canAcquire(owner)) {
+      this.take(owner)
+      return
+    }
+    await new Promise<void>(resolve => {
+      this.queue.push({
+        owner,
+        grant: () => {
+          this.take(owner)
+          resolve()
+        },
+      })
+    })
+  }
+
+  private release(owner: string): void {
+    this.active--
+    const nextForOwner = (this.activeByOwner.get(owner) ?? 1) - 1
+    if (nextForOwner > 0) this.activeByOwner.set(owner, nextForOwner)
+    else this.activeByOwner.delete(owner)
+    this.drain()
+  }
+
+  private drain(): void {
+    while (this.active < this.max) {
+      const index = this.queue.findIndex(waiter => this.canAcquire(waiter.owner))
+      if (index < 0) return
+      const [waiter] = this.queue.splice(index, 1)
+      waiter!.grant()
     }
   }
 }
@@ -142,6 +202,7 @@ type SubmitBody = {
 interface BlobStore {
   put(id: string, kind: 'in' | 'out', value: unknown): void
   get(id: string, kind: 'in' | 'out'): unknown | null
+  byteLength(id: string, kind: 'in' | 'out'): number | null
   delKind(id: string, kind: 'in' | 'out'): void
   del(id: string): void
 }
@@ -151,6 +212,10 @@ class MemoryBlobStore implements BlobStore {
   put(id: string, kind: 'in' | 'out', value: unknown): void { this.map.set(`${id}.${kind}`, value) }
   get(id: string, kind: 'in' | 'out'): unknown | null {
     return this.map.has(`${id}.${kind}`) ? this.map.get(`${id}.${kind}`) : null
+  }
+  byteLength(id: string, kind: 'in' | 'out'): number | null {
+    const value = this.get(id, kind)
+    return value === null ? null : Buffer.byteLength(JSON.stringify(value))
   }
   delKind(id: string, kind: 'in' | 'out'): void { this.map.delete(`${id}.${kind}`) }
   del(id: string): void { this.map.delete(`${id}.in`); this.map.delete(`${id}.out`) }
@@ -166,6 +231,10 @@ class DiskBlobStore implements BlobStore {
     const path = this.file(id, kind)
     if (!existsSync(path)) return null
     try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+  }
+  byteLength(id: string, kind: 'in' | 'out'): number | null {
+    const path = this.file(id, kind)
+    try { return statSync(path).size } catch { return null }
   }
   delKind(id: string, kind: 'in' | 'out'): void { rmSync(this.file(id, kind), { force: true }) }
   del(id: string): void {
@@ -380,12 +449,23 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   const now = deps.now ?? Date.now
   const store = new TaskStore(config.dbPath, now)
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
-  const sem = new Semaphore(config.imgConc)
+  const sem = new Semaphore(config.imgConc, config.imgUserConc)
   // 尚未落入 SQLite 的上传体也要计入预算；否则 500 个 chunked 请求可在入队前一起占满内存。
   let pendingInputBytes = 0
+  // This cache is updated on task-state transitions, not once for every HTTP chunk. A
+  // client can legally split a body into tiny chunks; issuing a SQLite SUM for each byte
+  // would turn a 500-upload burst into a database CPU denial of service.
+  let activeInputBytes = store.countActiveInputBytes()
+  const refreshActiveInputBytes = (): number => {
+    activeInputBytes = store.countActiveInputBytes()
+    return activeInputBytes
+  }
 
   function reserveInputBytes(bytes: number): void {
-    const used = store.countActiveInputBytes() + pendingInputBytes
+    if (pendingInputBytes + bytes > config.pendingInputBytesMax) {
+      throw queueFull('relay: 同时上传的生图输入数据已达上限,请等待前面的上传完成')
+    }
+    const used = activeInputBytes + pendingInputBytes
     if (used + bytes > config.activeInputBytesMax) {
       throw queueFull('relay: 活跃生图输入数据已达上限,请等待前面的任务完成或取消')
     }
@@ -437,10 +517,19 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
 
   /** 后台真正调 OpenAI(US→US);成功把 data 存 blob,失败/未知存状态。 */
-  async function runOpenAi(id: string, body: SubmitBody): Promise<void> {
+  async function runOpenAi(id: string): Promise<void> {
+    const owner = store.get(id)?.owner ?? ''
     try {
-      await sem.run(async () => {
+      await sem.run(owner, async () => {
         if (store.get(id)?.status !== 'queued') return
+        // Queued inputs are durable blobs. Read them only after this task owns a real
+        // upstream slot: retaining all 500 parsed edit bodies in Promise closures would
+        // defeat the queue's byte budget after a burst or a process restart.
+        const body = blobs.get(id, 'in') as SubmitBody | null
+        if (!body) {
+          store.setStatus(id, 'failed_unknown', '任务输入已丢失，无法安全重提')
+          return
+        }
         store.markRunning(id)
         const model = String(body.model ?? 'gpt-image-2')
         const prompt = String(body.prompt ?? '')
@@ -525,7 +614,13 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (data.length === 0) {
           throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可用结果，可能已经产生费用')
         }
-        blobs.put(id, 'out', { data })
+        try {
+          blobs.put(id, 'out', { data })
+        } catch (error) {
+          // The provider already returned a successful image. If persistent result storage
+          // is full/unavailable, never report a normal failure that invites a paid retry.
+          throw new UpstreamOutcomeUnknownError(`OpenAI 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
+        }
         store.setStatus(id, 'succeeded', undefined, inputFidelity)
       })
     } catch (err) {
@@ -534,7 +629,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     } finally {
       // Reference images and prompts are needed only while queued/running. Terminal tasks retain
       // result blobs and metadata for polling, but not the sensitive original input body.
-      blobs.delKind(id, 'in')
+      try { blobs.delKind(id, 'in') } finally { refreshActiveInputBytes() }
     }
   }
 
@@ -548,20 +643,18 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     blobs.delKind(id, 'in')
   }
   for (const id of recovered.queued) {
-    const body = blobs.get(id, 'in') as SubmitBody | null
-    if (body) {
+    const inputBytes = blobs.byteLength(id, 'in')
+    if (inputBytes !== null) {
       // Pre-budget databases receive 0 from the additive SQLite migration. Re-account their
-      // persisted input before resuming so an old queued edit cannot bypass the new byte cap.
-      if (store.get(id)?.input_bytes === 0) {
-        store.setInputBytes(id, Buffer.byteLength(JSON.stringify(body)))
-      }
-      void runOpenAi(id, body)
-    }
-    else {
+      // durable input size before resuming, but do not deserialize every queued blob at startup.
+      if (store.get(id)?.input_bytes === 0) store.setInputBytes(id, inputBytes)
+      void runOpenAi(id)
+    } else {
       store.setStatus(id, 'failed_unknown', '重启后找不到原始输入,无法续跑')
       blobs.delKind(id, 'in')
     }
   }
+  refreshActiveInputBytes()
 
   function pollResponse(rec: TaskRow): Response {
     const out = rec.status === 'succeeded' ? (blobs.get(rec.id, 'out') as { data?: unknown[] } | null) : null
@@ -586,18 +679,21 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       if (req.method === 'GET' && url.pathname === '/healthz') {
         const counts = store.activeCounts()
         const active = counts.queued + counts.running
-        const activeInputBytes = store.countActiveInputBytes()
+        const currentActiveInputBytes = refreshActiveInputBytes()
         return Response.json({
           ok: true,
           active,
           queued: counts.queued,
           running: counts.running,
           queue_available: Math.max(0, config.queueMax - active),
-          active_input_bytes: activeInputBytes,
+          active_input_bytes: currentActiveInputBytes,
           pending_input_bytes: pendingInputBytes,
+          pending_input_bytes_max: config.pendingInputBytesMax,
+          pending_input_bytes_available: Math.max(0, config.pendingInputBytesMax - pendingInputBytes),
           active_input_bytes_max: config.activeInputBytesMax,
-          active_input_bytes_available: Math.max(0, config.activeInputBytesMax - activeInputBytes - pendingInputBytes),
+          active_input_bytes_available: Math.max(0, config.activeInputBytesMax - currentActiveInputBytes - pendingInputBytes),
           img_conc: config.imgConc,
+          img_user_conc: config.imgUserConc,
           queue_max: config.queueMax,
           user_max: config.userMax,
           retry_after_seconds: config.retryAfterSeconds,
@@ -637,6 +733,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           const id = crypto.randomUUID()
           try {
             store.insert(id, owner, idempotencyKey, raw.byteLength)
+            activeInputBytes += raw.byteLength
           } catch (err) {
             // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
             if (idempotencyKey) {
@@ -650,11 +747,12 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           } catch (error) {
             try { blobs.del(id) } catch {}
             store.remove(id)
+            refreshActiveInputBytes()
             throw error
           }
           persisted = true
           bodyReservation.release() // SQLite 已持久化这段输入字节，转入 active_input_bytes 统计。
-          void runOpenAi(id, body)
+          void runOpenAi(id)
           return Response.json({ task_id: id, status: 'queued' }, { status: 202 })
         } finally {
           if (!persisted) bodyReservation.release()
@@ -682,6 +780,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'queued') throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
         store.setStatus(id, 'cancelled', '任务已在请求上游前取消')
+        refreshActiveInputBytes()
         blobs.delKind(id, 'in')
         return pollResponse(store.get(id)!)
       }
