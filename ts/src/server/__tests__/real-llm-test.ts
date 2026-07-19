@@ -393,21 +393,10 @@ async function testAgentsApi() {
   console.log('✅ Agents API works')
 }
 
-// ── Test 11: Teams API ─────────────────────────────────────────────────
-
-async function testTeamsApi() {
-  console.log('\n── Test 11: Teams API ──')
-  const res = await fetch(`${BASE_URL}/api/teams`)
-  if (res.status !== 200) throw new Error(`Teams failed: ${res.status}`)
-  const body = await res.json()
-  console.log(`   Teams: ${body.teams?.length ?? 0}`)
-  console.log('✅ Teams API works')
-}
-
-// ── Test 12: Tasks API ─────────────────────────────────────────────────
+// ── Test 11: Tasks API ─────────────────────────────────────────────────
 
 async function testTasksApi() {
-  console.log('\n── Test 12: Tasks API ──')
+  console.log('\n── Test 11: Tasks API ──')
   const res = await fetch(`${BASE_URL}/api/tasks`)
   if (res.status !== 200) throw new Error(`Tasks failed: ${res.status}`)
   const body = await res.json()
@@ -415,10 +404,10 @@ async function testTasksApi() {
   console.log('✅ Tasks API works')
 }
 
-// ── Test 13: Status/Diagnostics API ────────────────────────────────────
+// ── Test 12: Status/Diagnostics API ────────────────────────────────────
 
 async function testStatusApi() {
-  console.log('\n── Test 13: Status API ──')
+  console.log('\n── Test 12: Status API ──')
   const res = await fetch(`${BASE_URL}/api/status`)
   if (res.status !== 200) throw new Error(`Status failed: ${res.status}`)
   const body = await res.json()
@@ -447,7 +436,6 @@ async function main() {
       testScheduledTasks,
       testSettingsReadWrite,
       testAgentsApi,
-      testTeamsApi,
       testTasksApi,
       testStatusApi,
     ]
