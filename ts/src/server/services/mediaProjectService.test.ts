@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { MediaProject } from '../../../shared/contracts/media.js'
 import { MediaProjectService, MediaServiceError, type MediaProcessRunner } from './mediaProjectService.js'
 
 const roots: string[] = []
@@ -373,6 +374,42 @@ describe('MediaProjectService image projects', () => {
     })
   })
 
+  test('does not attach a stale image task result to a project already bound to a replacement task', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    const mediaRoot = await root()
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      fetchImpl: async (_input, init) => init?.method === 'POST'
+        ? Response.json({ task_id: 'remote-stale-image', status: 'queued' }, { status: 202 })
+        : Response.json({
+            status: 'succeeded',
+            data: [{ b64_json: Buffer.from('stale-image').toString('base64') }],
+          }),
+    })
+    const project = await service.createImageProject({ prompt: '旧版海报' })
+    const task = await service.submitImageProject(project.id)
+    const replacementTaskId = 'task_replacement001'
+    const persisted = await service.getProject(project.id)
+    if (persisted.kind !== 'image') throw new Error('wrong kind')
+    await writeFile(join(mediaRoot, 'projects', `${project.id}.json`), `${JSON.stringify({
+      ...persisted,
+      task_id: replacementTaskId,
+      state: 'generating',
+      outputs: [],
+    }, null, 2)}\n`)
+
+    const completed = await service.getTask(task.id)
+    expect(completed).toMatchObject({ status: 'succeeded', result: { output_count: 1 } })
+    expect(completed.result).not.toHaveProperty('outputs')
+    expect(await service.getProject(project.id)).toMatchObject({
+      task_id: replacementTaskId,
+      state: 'generating',
+      outputs: [],
+    })
+    await expect(stat(join(mediaRoot, 'assets', project.id))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   test('cancels only a remotely confirmed queued image task', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
@@ -708,5 +745,45 @@ describe('MediaProjectService video projects', () => {
     expect(await restarted.getTask(task.id)).toMatchObject({ status: 'succeeded' })
     expect(await restarted.getProject(project.id)).toMatchObject({ state: 'complete', output_path: outputPath })
     expect(await readFile(outputPath, 'utf8')).toBe('rendered')
+  })
+
+  test('persists one opaque product-task owner without affecting legacy standalone projects', async () => {
+    const mediaRoot = await root()
+    const service = new MediaProjectService({ root: mediaRoot })
+    const project = await service.createImageProject({ prompt: '任务关联海报' })
+    expect(project.product_task_id).toBeUndefined()
+
+    const owner = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
+    const attached = await service.attachProjectToProductTask(project.id, owner)
+    expect(attached.product_task_id).toBe(owner)
+    expect(await new MediaProjectService({ root: mediaRoot }).getProject(project.id))
+      .toMatchObject({ product_task_id: owner })
+
+    await expect(service.attachProjectToProductTask(project.id, 'task_0123456789abcdef'))
+      .rejects.toMatchObject({ code: 'PROJECT_ALREADY_ATTACHED', status: 409 })
+  })
+
+  test('serializes competing task attachments across separate media service instances', async () => {
+    const mediaRoot = await root()
+    const creator = new MediaProjectService({ root: mediaRoot })
+    const project = await creator.createImageProject({ prompt: '并发关联海报' })
+    const first = new MediaProjectService({ root: mediaRoot })
+    const second = new MediaProjectService({ root: mediaRoot })
+    const firstOwner = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
+    const secondOwner = 'task_0123456789abcdef'
+
+    const results = await Promise.allSettled([
+      first.attachProjectToProductTask(project.id, firstOwner),
+      second.attachProjectToProductTask(project.id, secondOwner),
+    ])
+    const attached = results.filter((result): result is PromiseFulfilledResult<MediaProject> => result.status === 'fulfilled')
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+
+    expect(attached).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.reason).toMatchObject({ code: 'PROJECT_ALREADY_ATTACHED', status: 409 })
+    expect(await creator.getProject(project.id)).toMatchObject({
+      product_task_id: attached[0]!.value.product_task_id,
+    })
   })
 })

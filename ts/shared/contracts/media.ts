@@ -18,6 +18,14 @@ function approximateDataUrlBytes(value: string): number {
 
 export const mediaIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{7,79}$/)
 export const mediaIsoDateSchema = z.string().datetime()
+/**
+ * A product task reference is intentionally distinct from an Agent Core
+ * session id. It accepts both the current UUID form and the one-time legacy
+ * import form used by the product task registry.
+ */
+export const productTaskOwnerIdSchema = z.string().regex(
+  /^task_(?:[a-f0-9]{16}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/,
+)
 export const mediaTaskStatusSchema = z.enum([
   'queued',
   'running',
@@ -32,6 +40,8 @@ const mediaProjectBaseSchema = z.object({
   id: mediaIdSchema,
   title: z.string().min(1).max(160),
   workspace_root: z.string().min(1).max(4096).optional(),
+  /** Optional so standalone and legacy media projects remain valid. */
+  product_task_id: productTaskOwnerIdSchema.optional(),
   revision: z.number().int().nonnegative(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,

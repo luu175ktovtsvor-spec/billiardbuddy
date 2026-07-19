@@ -11,6 +11,7 @@ import {
   imageGenerationTaskResultSchema,
   mediaProjectSchema,
   mediaTaskSchema,
+  productTaskOwnerIdSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   submitImageProjectInputSchema,
@@ -244,6 +245,8 @@ export class MediaProjectService {
   private readonly activeRenders = new Map<string, ActiveVideoRender>()
   private readonly activeImageSubmissions = new Map<string, Promise<MediaTask>>()
   private readonly videoProjectMutations = new Map<string, Promise<void>>()
+  /** Shared across service instances in the desktop server process. */
+  private static readonly productTaskAttachmentMutations = new Map<string, Promise<void>>()
   private renderStarting = false
   private encoderProfilePromise: Promise<VideoEncoderProfile> | null = null
 
@@ -376,6 +379,28 @@ export class MediaProjectService {
       release()
       if (this.videoProjectMutations.get(projectId) === queued) {
         this.videoProjectMutations.delete(projectId)
+      }
+    }
+  }
+
+  /**
+   * Product-media ownership is a one-time claim. Keep concurrent requests for
+   * one project serialized so two task pages cannot both observe an unowned
+   * draft and overwrite one another's owner.
+   */
+  private async withProductTaskAttachmentMutation<T>(projectId: string, action: () => Promise<T>): Promise<T> {
+    const previous = MediaProjectService.productTaskAttachmentMutations.get(projectId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>(resolveLock => { release = resolveLock })
+    const queued = previous.then(() => current)
+    MediaProjectService.productTaskAttachmentMutations.set(projectId, queued)
+    await previous
+    try {
+      return await action()
+    } finally {
+      release()
+      if (MediaProjectService.productTaskAttachmentMutations.get(projectId) === queued) {
+        MediaProjectService.productTaskAttachmentMutations.delete(projectId)
       }
     }
   }
@@ -601,6 +626,11 @@ export class MediaProjectService {
     return task
   }
 
+  private async currentImageProjectForTask(task: MediaTask): Promise<ImageWorkbenchProject | null> {
+    const project = await this.getProject(task.project_id).catch(() => null)
+    return project?.kind === 'image' && project.task_id === task.id ? project : null
+  }
+
   private async recoverInterruptedVideoRender(task: MediaTask): Promise<MediaTask> {
     const message = '上次导出因应用关闭而中断，请重新导出'
     const next = await this.saveTask({
@@ -643,6 +673,51 @@ export class MediaProjectService {
         'Content-Length': String(asset.size),
         'Cache-Control': 'private, max-age=31536000, immutable',
       },
+    })
+  }
+
+  /**
+   * Resolve an image result only when its persisted route is exactly this
+   * project's owned local asset. Callers receive the safe route, never a
+   * filesystem path.
+   */
+  async availableImageOutputAssetPath(projectId: string, assetPath: string): Promise<string | null> {
+    const prefix = `/api/media/assets/${projectId}/`
+    if (!assetPath.startsWith(prefix)) return null
+    const fileName = assetPath.slice(prefix.length)
+    if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return null
+    try {
+      await this.resolveOwnedAsset(projectId, fileName, {
+        message: '找不到媒体资产',
+        code: 'ASSET_NOT_FOUND',
+      })
+      return assetPath
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Bind an existing project to a public product task exactly once. This is
+   * intentionally separate from the standalone create routes so callers
+   * cannot smuggle arbitrary owner ids into general media project creation.
+   */
+  async attachProjectToProductTask(projectId: string, productTaskId: string): Promise<MediaProject> {
+    const ownerId = productTaskOwnerIdSchema.parse(productTaskId)
+    return await this.withProductTaskAttachmentMutation(projectId, async () => {
+      const project = await this.getProject(projectId)
+      if (project.product_task_id && project.product_task_id !== ownerId) {
+        throw new MediaServiceError('媒体项目已关联到另一项任务', 409, 'PROJECT_ALREADY_ATTACHED')
+      }
+      if (project.product_task_id === ownerId) return project
+      if (project.state !== 'draft') {
+        throw new MediaServiceError('只有未关联的媒体草稿可以加入任务', 409, 'PROJECT_NOT_ATTACHABLE')
+      }
+      return await this.saveProject({
+        ...project,
+        product_task_id: ownerId,
+        updated_at: this.iso(),
+      })
     })
   }
 
@@ -1002,21 +1077,41 @@ export class MediaProjectService {
         stage: body.status === 'running' ? '正在生成' : '等待生成',
         updated_at: this.iso(),
       })
-      const project = await this.getProject(task.project_id)
-      if (project.kind === 'image') {
+      const project = await this.currentImageProjectForTask(task)
+      if (project) {
         await this.saveProject({ ...project, state: next.status === 'running' ? 'generating' : 'queued', updated_at: this.iso() })
       }
       return next
     }
 
+    const attachedProject = await this.currentImageProjectForTask(task)
+    if (!attachedProject) {
+      return await this.saveTask({
+        ...task,
+        status: 'succeeded',
+        progress: 100,
+        stage: '生成完成（结果未附着到当前草稿）',
+        result: {
+          output_count: body.data?.length ?? 0,
+          ...(body.input_fidelity_requested ? { input_fidelity_requested: body.input_fidelity_requested } : {}),
+          ...(body.input_fidelity_status ? { input_fidelity_status: body.input_fidelity_status } : {}),
+          ...(body.input_fidelity_risk ? { input_fidelity_risk: boundedMessage(body.input_fidelity_risk) } : {}),
+        },
+        updated_at: this.iso(),
+      })
+    }
+
     const outputs: ImageWorkbenchProject['outputs'] = []
     const projectAssetDir = join(this.assetsDir, task.project_id)
+    const createdAssets: string[] = []
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
     for (const item of body.data ?? []) {
       const outputId = id('out')
       if (item.b64_json) {
         const fileName = `${outputId}.png`
-        await writeFile(join(projectAssetDir, fileName), Buffer.from(item.b64_json, 'base64'), { mode: 0o600 })
+        const assetPath = join(projectAssetDir, fileName)
+        await writeFile(assetPath, Buffer.from(item.b64_json, 'base64'), { mode: 0o600 })
+        createdAssets.push(assetPath)
         outputs.push({
           id: outputId,
           mime_type: 'image/png',
@@ -1049,17 +1144,29 @@ export class MediaProjectService {
       },
       updated_at: this.iso(),
     })
-    const project = await this.getProject(task.project_id)
-    if (project.kind === 'image') {
-      await this.saveProject({
-        ...project,
-        state: 'ready',
-        outputs,
-        notice: body.input_fidelity_risk ? boundedMessage(body.input_fidelity_risk) : undefined,
-        error: undefined,
+    const project = await this.currentImageProjectForTask(task)
+    if (!project) {
+      await Promise.all(createdAssets.map(assetPath => rm(assetPath, { force: true })))
+      return await this.saveTask({
+        ...next,
+        stage: '生成完成（结果未附着到当前草稿）',
+        result: {
+          output_count: outputs.length,
+          ...(body.input_fidelity_requested ? { input_fidelity_requested: body.input_fidelity_requested } : {}),
+          ...(body.input_fidelity_status ? { input_fidelity_status: body.input_fidelity_status } : {}),
+          ...(body.input_fidelity_risk ? { input_fidelity_risk: boundedMessage(body.input_fidelity_risk) } : {}),
+        },
         updated_at: this.iso(),
       })
     }
+    await this.saveProject({
+      ...project,
+      state: 'ready',
+      outputs,
+      notice: body.input_fidelity_risk ? boundedMessage(body.input_fidelity_risk) : undefined,
+      error: undefined,
+      updated_at: this.iso(),
+    })
     return next
   }
 
@@ -1072,8 +1179,8 @@ export class MediaProjectService {
       outcome_unknown: outcomeUnknown,
       updated_at: this.iso(),
     })
-    const project = await this.getProject(task.project_id)
-    if (project.kind === 'image') {
+    const project = await this.currentImageProjectForTask(task)
+    if (project) {
       await this.saveProject({ ...project, state: 'failed', error: message, updated_at: this.iso() })
     }
     return next

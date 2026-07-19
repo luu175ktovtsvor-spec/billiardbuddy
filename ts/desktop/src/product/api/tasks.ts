@@ -5,6 +5,9 @@ import type {
   ProductTaskActionResponse,
   ProductTaskApi,
   ProductTaskIndexResponse,
+  ProductTaskMediaAttachableList,
+  ProductTaskMediaList,
+  ProductTaskMediaProject,
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
   ProductTaskReviewStatus,
@@ -38,4 +41,10 @@ export const productTasksApi: ProductTaskApi = {
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
   getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
   getReviewDiff: (taskId, path) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path)),
+  getMedia: (taskId) => productApi.get<ProductTaskMediaList>(`${taskPath(taskId)}/media`),
+  getAttachableMedia: (taskId) => productApi.get<ProductTaskMediaAttachableList>(`${taskPath(taskId)}/media/attachable-projects`),
+  attachMediaProject: (taskId, projectId) => productApi.post<{ project: ProductTaskMediaProject }>(
+    `${taskPath(taskId)}/media/projects/${encodeURIComponent(projectId)}/attach`,
+    {},
+  ),
 }

@@ -127,6 +127,12 @@ vi.mock('./ProductTaskReviewDock', () => ({
   ),
 }))
 
+vi.mock('./ProductTaskMediaDock', () => ({
+  ProductTaskMediaDock: ({ taskId, onClose }: { taskId: string; onClose: () => void }) => (
+    <div data-testid="product-task-media-dock">media:{taskId}<button type="button" onClick={onClose}>关闭媒体</button></div>
+  ),
+}))
+
 vi.mock('./SideTaskPanel', () => ({
   SideTaskPanel: () => <div data-testid="side-task-panel-slot" />,
 }))
@@ -219,6 +225,16 @@ afterEach(() => {
 })
 
 describe('ProductTaskPage', () => {
+  it('opens a task-scoped read-only media dock without replacing the task thread', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '媒体' }))
+
+    expect(screen.getByTestId('product-task-dock-panel-media').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('product-task-media-dock').textContent).toContain('media:task-1')
+    expect(screen.getByRole('button', { name: '媒体' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('connects only through the product task runtime and renders safe thread content', () => {
     mocks.runtime = {
       ...mocks.runtime,

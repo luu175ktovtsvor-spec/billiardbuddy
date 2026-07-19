@@ -65,12 +65,13 @@ export function consumeMediaUiCapability(
 }
 
 function publicProject(project: MediaProject): MediaProject {
-  if (project.kind !== 'image') return project
+  const { product_task_id: _productTaskId, ...safeProject } = project
+  if (safeProject.kind !== 'image') return safeProject
   return {
-    ...project,
-    reference_image_count: project.reference_images.length
-      || project.reference_image_assets?.length
-      || project.reference_image_count,
+    ...safeProject,
+    reference_image_count: safeProject.reference_images.length
+      || safeProject.reference_image_assets?.length
+      || safeProject.reference_image_count,
     reference_images: [],
     reference_image_assets: [],
   }
