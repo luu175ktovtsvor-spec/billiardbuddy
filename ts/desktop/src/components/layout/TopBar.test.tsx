@@ -162,6 +162,7 @@ describe('TopBar panel controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '任务操作：Panel task' }))
 
     expect(screen.getByRole('menuitem', { name: '复制任务 ID' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '复制会话 ID' })).not.toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: '重命名任务' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: '置顶任务' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: '在当前工作目录继续' })).toBeInTheDocument()
