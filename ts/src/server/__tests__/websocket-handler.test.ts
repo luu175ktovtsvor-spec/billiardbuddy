@@ -130,6 +130,48 @@ describe('WebSocket handler session isolation', () => {
     expect(secondEvents.slice(-2)).toEqual(completion)
   })
 
+  it('persists CLI permission broadcasts without emitting a raw product event', async () => {
+    const sessionId = `permission-broadcast-${crypto.randomUUID()}`
+    const ws = makeClientSocket(sessionId)
+    const callbacks: Array<(cliMsg: any) => void> = []
+    const recordPermissionMode = spyOn(conversationService, 'recordSessionPermissionMode')
+      .mockReturnValue(true)
+    const appendMetadata = spyOn(sessionService, 'appendSessionMetadata')
+      .mockResolvedValue(undefined)
+
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getSessionPermissionMode').mockReturnValue('plan')
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/workspace')
+    spyOn(conversationService, 'onOutput').mockImplementation((_id, callback) => {
+      callbacks.push(callback)
+    })
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+
+    handleWebSocket.open(ws)
+    expect(callbacks).toHaveLength(1)
+
+    callbacks[0]!({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      permissionMode: 'bypassPermissions',
+    })
+    await Promise.resolve()
+
+    expect(recordPermissionMode).toHaveBeenCalledWith(sessionId, 'bypassPermissions')
+    expect(appendMetadata).toHaveBeenCalledWith(sessionId, {
+      workDir: '/workspace',
+      permissionMode: 'bypassPermissions',
+    })
+
+    const events = ws.sent.map((payload) => JSON.parse(payload))
+    expect(events).toEqual([
+      { type: 'connected' },
+      { type: 'run_snapshot', state: 'idle', activities: [] },
+    ])
+  })
+
   it('replays pending approvals as product-safe questions when a task reconnects', () => {
     const sessionId = `permission-reconnect-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)

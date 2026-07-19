@@ -1346,12 +1346,11 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
           }]
         }
         // CLI 在权限模式变化时也会 enqueue 一条 status 事件（status:null +
-        // permissionMode），用于把恢复后的真实权限（如 ExitPlanMode 退出 plan、
-        // Shift+Tab）广播给前端。它带 status:null 但**不是** thinking 信号，
-        // 必须在下面的 null→thinking 兜底之前拦截，否则字段会被丢弃，桌面端
-        // 选择器就会一直卡在"计划模式"。
+        // permissionMode）。会话状态已在输出回调中先被记录并持久化；它不是
+        // 产品流事件，也不是 thinking 信号，因此必须在下面的 null→thinking
+        // 兜底之前拦截。
         if (typeof cliMsg.permissionMode === 'string') {
-          return [{ type: 'permission_mode_changed', mode: cliMsg.permissionMode }]
+          return []
         }
         if (cliMsg.status == null) {
           return [{ type: 'status', state: 'thinking', verb: 'Thinking' }]
