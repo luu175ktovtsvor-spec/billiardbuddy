@@ -77,12 +77,6 @@ function taskLifecycleLabel(task: ProductTaskRecord): string {
 }
 
 function taskMarkdown(task: ProductTaskRecord, runtimeState: ProductTaskRuntimeState): string {
-  const continuationSource = [
-    task.parentTaskId ? `- 父任务 ID：\`${task.parentTaskId}\`` : null,
-    task.parentThreadId ? `- 父线程 ID：\`${task.parentThreadId}\`` : null,
-    task.sourceTurnId ? `- 来源轮次 ID：\`${task.sourceTurnId}\`` : null,
-  ].filter((line): line is string => line !== null)
-
   return [
     `# 任务：${task.title}`,
     '',
@@ -92,7 +86,6 @@ function taskMarkdown(task: ProductTaskRecord, runtimeState: ProductTaskRuntimeS
     `- 工作目录：\`${task.workDir || '未提供'}\``,
     `- 工作树：${WORKTREE_STATE_LABEL[task.worktreeState] ?? '未使用工作树'}`,
     `- 类型：${taskKindLabel(task)}`,
-    ...(continuationSource.length > 0 ? ['', '## 继续来源', ...continuationSource] : []),
   ].join('\n')
 }
 

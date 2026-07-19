@@ -225,14 +225,11 @@ describe('TaskIndex', () => {
       '- 工作目录：`/workspace/billiard`',
       '- 工作树：独立工作树已启用',
       '- 类型：继续任务',
-      '',
-      '## 继续来源',
-      '- 父任务 ID：`task-parent`',
-      '- 父线程 ID：`session-parent`',
-      '- 来源轮次 ID：`turn-42`',
     ].join('\n')
     await waitFor(() => expect(mocks.copyText).toHaveBeenCalledWith(markdown))
     expect(markdown).not.toMatch(/https?:\/\//)
+    expect(markdown).not.toContain('session-parent')
+    expect(markdown).not.toContain('turn-42')
     expect(screen.getByRole('button', { name: '已复制 Markdown' })).toBeInTheDocument()
   })
 
