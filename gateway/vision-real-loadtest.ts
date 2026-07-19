@@ -54,6 +54,7 @@ const capacityPools = ['vision', 'mimo', 'deepseek'] as const
 type Pool = typeof capacityPools[number]
 type PoolObservation = { active: number; queued: number; oldestQueueMs: number }
 type IngressBodyObservation = { reservedBytes: number; maxBytes: number }
+type RouteObservation = { active: number; queued: number }
 type ValidPng = { bytes: Uint8Array; iendOffset: number }
 type LoadTarget = { base: URL; baseUrl: string; targetOrigin: string }
 export type ThinkingMode = 'enabled' | 'disabled'
@@ -82,6 +83,10 @@ Options:
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
+  --min-observed-active=<n>   Require at least this many in-flight route requests
+                               in every phase (default: that phase's request count)
+  --max-observed-queued=<n>   Fail a phase if more than this many route requests
+                               are observed queued (default: 0)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
   --drain-timeout-ms=<n>      Wait for visual/MiMo/DeepSeek permits to drain (default: request timeout)
   --stop-after-failure        Stop after a failed phase instead of locating a lower ceiling
@@ -108,6 +113,14 @@ function boundedInteger(value: string | undefined, name: string, fallback: numbe
   return parsed
 }
 
+function nonNegativeInteger(value: string | undefined, name: string, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!/^\d+$/.test(value)) throw new Error(`${name} must be a non-negative integer`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`)
+  return parsed
+}
+
 function option(args: string[], name: string): string | undefined {
   const prefix = `${name}=`
   return args.find(arg => arg.startsWith(prefix))?.slice(prefix.length)
@@ -130,6 +143,28 @@ export function parseImagesPerRequest(value: string | undefined): number {
     throw new Error(`--images-per-request must be at most ${MAX_IMAGES_PER_REQUEST}`)
   }
   return count
+}
+
+/**
+ * A real pressure phase is only evidence for its requested concurrency when it
+ * actually exposes that many in-flight route requests.  A supplied lower value
+ * is useful for deliberate partial-envelope probes; the default is strict.
+ */
+export function parseMinimumObservedActive(value: string | undefined, total: number): number {
+  const minimum = integer(value, '--min-observed-active', total)
+  if (minimum > total) throw new Error(`--min-observed-active must not exceed ${total}`)
+  return minimum
+}
+
+export function parseMaximumObservedQueued(value: string | undefined, total: number): number {
+  const maximum = nonNegativeInteger(value, '--max-observed-queued', 0)
+  if (maximum > total) throw new Error(`--max-observed-queued must not exceed ${total}`)
+  return maximum
+}
+
+/** Lower discovery phases must never require more active work than they contain. */
+export function phaseMinimumObservedActive(requested: number, configuredMinimum: number): number {
+  return Math.min(requested, configuredMinimum)
 }
 
 export function parsePhases(raw: string | undefined, total: number): number[] {
@@ -173,6 +208,57 @@ function sleep(ms: number): Promise<void> {
 
 function nonNegative(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0
+}
+
+/**
+ * Bridge requests first occupy the MiMo-backed vision lane and then DeepSeek.
+ * `vision` already mirrors the MiMo vision reservation, so do not double-count
+ * the aggregate `mimo` snapshot here.  A native request uses the MiMo pool.
+ */
+export function visualRouteCapacity(snapshot: GatewayHealth | null, route: 'bridge' | 'native'): RouteObservation {
+  const capacity = snapshot?.capacity
+  if (route === 'native') {
+    return {
+      active: nonNegative(capacity?.mimo?.active),
+      queued: nonNegative(capacity?.mimo?.queued),
+    }
+  }
+  return {
+    active: nonNegative(capacity?.vision?.active) + nonNegative(capacity?.deepseek?.active),
+    queued: nonNegative(capacity?.vision?.queued) + nonNegative(capacity?.deepseek?.queued),
+  }
+}
+
+export type StartGate = {
+  arrive(): Promise<void>
+  waitUntilReady(): Promise<void>
+  release(): void
+}
+
+/** Hold every phase task at the same line before any request can leave the process. */
+export function createStartGate(participants: number): StartGate {
+  if (!Number.isSafeInteger(participants) || participants < 1) throw new Error('start gate requires at least one participant')
+  let arrivals = 0
+  let released = false
+  let resolveReady: (() => void) | undefined
+  let resolveRelease: (() => void) | undefined
+  const ready = new Promise<void>(resolve => { resolveReady = resolve })
+  const opened = new Promise<void>(resolve => { resolveRelease = resolve })
+  return {
+    async arrive() {
+      arrivals += 1
+      if (arrivals === participants) resolveReady?.()
+      await opened
+    },
+    waitUntilReady() {
+      return ready
+    },
+    release() {
+      if (released) return
+      released = true
+      resolveRelease?.()
+    },
+  }
 }
 
 function isHttpLoopback(url: URL): boolean {
@@ -523,6 +609,8 @@ async function main(): Promise<void> {
   const imageSeed = integer(option(args, '--image-seed'), '--image-seed', Date.now())
   const total = users * windows
   if (!Number.isSafeInteger(total) || total > MAX_REQUESTS) throw new Error(`--users * --windows must not exceed ${MAX_REQUESTS}`)
+  const minimumObservedActive = parseMinimumObservedActive(option(args, '--min-observed-active'), total)
+  const maximumObservedQueued = parseMaximumObservedQueued(option(args, '--max-observed-queued'), total)
   const phases = parsePhases(option(args, '--phases'), total)
   const continueAfterFailure = shouldContinueAfterFailure(args)
   const generatedImageCount = phases.reduce((count, phase) => {
@@ -575,7 +663,8 @@ async function main(): Promise<void> {
     return { snapshot, drained: drained() }
   }
 
-  async function runOne(index: number, firstImageIndex: number): Promise<Sample> {
+  async function runOne(index: number, firstImageIndex: number, startGate: StartGate): Promise<Sample> {
+    await startGate.arrive()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
@@ -666,6 +755,8 @@ async function main(): Promise<void> {
     imagesPerRequest,
     maxTokens,
     thinking,
+    minimumObservedActive,
+    maximumObservedQueued,
   }))
 
   let imageSequence = 0
@@ -679,6 +770,7 @@ async function main(): Promise<void> {
       deepseek: { active: 0, queued: 0, oldestQueueMs: 0 },
       ingress_body: { reservedBytes: 0, maxBytes: 0 },
     }
+    const observedRoute: RouteObservation = { active: 0, queued: 0 }
     let healthSamples = 0
     let unavailableHealthSamples = 0
     const observe = (snapshot: GatewayHealth | null) => {
@@ -693,6 +785,9 @@ async function main(): Promise<void> {
       const ingress = snapshot?.capacity?.ingress_body
       observed.ingress_body.reservedBytes = Math.max(observed.ingress_body.reservedBytes, nonNegative(ingress?.reservedBytes))
       observed.ingress_body.maxBytes = Math.max(observed.ingress_body.maxBytes, nonNegative(ingress?.maxBytes))
+      const routeCapacity = visualRouteCapacity(snapshot, route)
+      observedRoute.active = Math.max(observedRoute.active, routeCapacity.active)
+      observedRoute.queued = Math.max(observedRoute.queued, routeCapacity.queued)
     }
     observe(await health())
     const monitor = (async () => {
@@ -702,11 +797,15 @@ async function main(): Promise<void> {
         await sleep(Math.max(0, healthIntervalMs - (performance.now() - started)))
       }
     })()
-    const samples = await Promise.all(Array.from({ length: requested }, (_, index) => {
+    const startGate = createStartGate(requested)
+    const sampleTasks = Array.from({ length: requested }, (_, index) => {
       const firstImageIndex = imageSequence
       imageSequence += imagesPerRequest
-      return runOne(index, firstImageIndex)
-    }))
+      return runOne(index, firstImageIndex, startGate)
+    })
+    await startGate.waitUntilReady()
+    startGate.release()
+    const samples = await Promise.all(sampleTasks)
     monitoring = false
     await monitor
     const drain = await waitForDrain()
@@ -720,7 +819,10 @@ async function main(): Promise<void> {
     }
     const succeeded = samples.filter(sample => sample.completed).length
     const failed = requested - succeeded
-    const phasePassed = failed === 0 && drain.drained
+    const requiredObservedActive = phaseMinimumObservedActive(requested, minimumObservedActive)
+    const observedActiveSatisfied = observedRoute.active >= requiredObservedActive
+    const observedQueueSatisfied = observedRoute.queued <= maximumObservedQueued
+    const phasePassed = failed === 0 && drain.drained && observedActiveSatisfied && observedQueueSatisfied
     if (phasePassed && highestSuccessfulPhase === null) highestSuccessfulPhase = requested
     if (!phasePassed) observedFailure = true
     console.log(JSON.stringify({
@@ -731,7 +833,16 @@ async function main(): Promise<void> {
       statuses,
       failureKinds,
       totalMs: { p50: percentile(samples.map(sample => sample.totalMs), 0.5), p95: percentile(samples.map(sample => sample.totalMs), 0.95) },
-      observedGateway: { pools: observed, samples: healthSamples, unavailableSamples: unavailableHealthSamples },
+      observedGateway: {
+        pools: observed,
+        route: observedRoute,
+        requiredActive: requiredObservedActive,
+        maxQueued: maximumObservedQueued,
+        activeSatisfied: observedActiveSatisfied,
+        queueSatisfied: observedQueueSatisfied,
+        samples: healthSamples,
+        unavailableSamples: unavailableHealthSamples,
+      },
       finalGateway: finalGateway?.capacity ?? null,
       drained: drain.drained,
     }))

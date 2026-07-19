@@ -9,15 +9,15 @@ import {
 } from './mimo-mixed-real-loadtest'
 
 describe('controlled MiMo mixed real-loadtest guards', () => {
-  test('defaults to the one bounded 52 native plus 12 visual reservation wave', () => {
+  test('defaults to the one bounded 48 native plus 16 visual reservation wave', () => {
     expect(parseMixedShape(undefined, undefined)).toEqual({
       nativeSlots: DEFAULT_NATIVE_SLOTS,
       visionSlots: DEFAULT_VISION_SLOTS,
       totalSlots: 64,
     })
     expect(parseMixedShape('40', '12')).toEqual({ nativeSlots: 40, visionSlots: 12, totalSlots: 52 })
-    expect(() => parseMixedShape('53', '12')).toThrow('must not exceed 64')
-    expect(() => parseMixedShape('52', '13')).toThrow('between 1 and 12')
+    expect(() => parseMixedShape('49', '16')).toThrow('must not exceed 64')
+    expect(() => parseMixedShape('48', '17')).toThrow('between 1 and 16')
   })
 
   test('keeps app tokens off plaintext external and URL-embedded targets', () => {

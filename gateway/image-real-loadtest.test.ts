@@ -113,8 +113,9 @@ describe('image real-loadtest safety guards', () => {
     expect(submitClientIds).toEqual(['image-loadtest-user-000', 'image-loadtest-user-000'])
   })
 
-  test('admission mode reports a full burst as accepted and promptly attempts cancellation instead of waiting for paid outputs', async () => {
+  test('admission mode reports a full burst only after every accepted task confirms cancellation', async () => {
     const calls: string[] = []
+    const events: Array<Record<string, unknown>> = []
     const summary = await runImageLoadtest(options({ mode: 'admission', users: 2, windows: 2, total: 4, submitConcurrency: 4 }), {
       fetchImpl: async input => {
         const url = String(input)
@@ -123,11 +124,88 @@ describe('image real-loadtest safety guards', () => {
         if (url.endsWith('/cancel')) return Response.json({ status: 'cancelled' })
         throw new Error('admission mode must not poll image output')
       },
-      onEvent: () => {},
+      onEvent: event => events.push(event),
     })
-    expect(summary).toMatchObject({ mode: 'admission', requested: 4, accepted: 4, succeeded: 4, failed: 0, cleanupAttempted: 4, exitCode: 0 })
+    expect(summary).toMatchObject({
+      mode: 'admission',
+      requested: 4,
+      accepted: 4,
+      succeeded: 4,
+      failed: 0,
+      cleanupAttempted: 4,
+      cleanupConfirmed: 4,
+      cleanupFailed: 0,
+      exitCode: 0,
+    })
     expect(calls.filter(url => url.endsWith('/v1/images/tasks'))).toHaveLength(4)
     expect(calls.filter(url => url.endsWith('/cancel'))).toHaveLength(4)
     expect(calls.some(url => url.includes('metadata_only=1'))).toBe(false)
+    expect(events.find(event => event.event === 'image_loadtest_admission_cleanup')).toMatchObject({ attempted: 4, confirmed: 4, failed: 0 })
+  })
+
+  test('admission mode fails when an accepted task cancellation does not confirm cancelled state', async () => {
+    let submitted = 0
+    let cancelled = 0
+    const events: Array<Record<string, unknown>> = []
+    const summary = await runImageLoadtest(options({ mode: 'admission', windows: 2, total: 2, submitConcurrency: 2 }), {
+      fetchImpl: async input => {
+        const url = String(input)
+        if (url.endsWith('/v1/images/tasks')) {
+          submitted += 1
+          return Response.json({ task_id: `task-${submitted}` }, { status: 202 })
+        }
+        if (url.endsWith('/cancel')) {
+          cancelled += 1
+          return Response.json({ status: cancelled === 1 ? 'cancelled' : 'queued' })
+        }
+        throw new Error('admission mode must not poll image output')
+      },
+      onEvent: event => events.push(event),
+    })
+
+    expect(summary).toMatchObject({
+      mode: 'admission',
+      requested: 2,
+      accepted: 2,
+      cleanupAttempted: 2,
+      cleanupConfirmed: 1,
+      cleanupFailed: 1,
+      exitCode: 1,
+    })
+    expect(events.find(event => event.event === 'image_loadtest_admission_cleanup')).toMatchObject({
+      attempted: 2,
+      confirmed: 1,
+      failed: 1,
+      failureKinds: { cancel_not_confirmed: 1 },
+    })
+  })
+
+  test('reports p50 and p95 submit latency in the summary and admission events', async () => {
+    const events: Array<Record<string, unknown>> = []
+    const durations = [10, 20, 30]
+    let clock = 0
+    let submitted = 0
+    const summary = await runImageLoadtest(options({ mode: 'admission', windows: 3, total: 3 }), {
+      now: () => clock,
+      fetchImpl: async input => {
+        const url = String(input)
+        if (url.endsWith('/v1/images/tasks')) {
+          clock += durations[submitted]!
+          submitted += 1
+          return Response.json({ task_id: `task-${submitted}` }, { status: 202 })
+        }
+        if (url.endsWith('/cancel')) return Response.json({ status: 'cancelled' })
+        throw new Error('admission mode must not poll image output')
+      },
+      onEvent: event => events.push(event),
+    })
+
+    expect(summary.submitMs).toEqual({ p50: 20, p95: 30 })
+    expect(events.find(event => event.event === 'image_loadtest_submitted')).toMatchObject({
+      submitMs: { p50: 20, p95: 30 },
+    })
+    expect(events.find(event => event.event === 'image_loadtest_admission')).toMatchObject({
+      submitMs: { p50: 20, p95: 30 },
+    })
   })
 })

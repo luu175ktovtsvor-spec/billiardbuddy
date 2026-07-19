@@ -1,19 +1,19 @@
 /**
  * Controlled real-upstream validation for the MiMo 64-slot reservation.
  *
- * The default wave is deliberately fixed to the production split: 52 native
- * MiMo streams plus 12 DeepSeek -> MiMo image-bridge requests.  It never runs
+ * The default wave is deliberately fixed to the production split: 48 native
+ * MiMo streams plus 16 DeepSeek -> MiMo image-bridge requests.  It never runs
  * without --execute, never prints credentials/request bodies/model output, and
- * caps the whole run at 64 requests / 12 generated images so it cannot become
+ * caps the whole run at 64 requests / 16 generated images so it cannot become
  * a disguised 500-image load test.
  */
 
 import { generatedPng, validatePng } from './vision-real-loadtest'
 
-export const DEFAULT_NATIVE_SLOTS = 52
-export const DEFAULT_VISION_SLOTS = 12
+export const DEFAULT_NATIVE_SLOTS = 48
+export const DEFAULT_VISION_SLOTS = 16
 const MAX_TOTAL_REQUESTS = 64
-const MAX_VISION_REQUESTS = 12
+const MAX_VISION_REQUESTS = 16
 const MAX_RESPONSE_BYTES = 1024 * 1024
 
 type Capacity = {
@@ -75,8 +75,8 @@ function usage(exitCode = 2): never {
   bun gateway/mimo-mixed-real-loadtest.ts --execute [options]
 
 Options:
-  --native-slots=<n>          Native MiMo requests and expected native reservation (default: 52)
-  --vision-slots=<n>          Unique bridge-image requests and expected vision reservation (default: 12, max: 12)
+  --native-slots=<n>          Native MiMo requests and expected native reservation (default: 48)
+  --vision-slots=<n>          Unique bridge-image requests and expected vision reservation (default: 16, max: 16)
   --thinking=enabled|disabled Downstream DeepSeek thinking mode (default: enabled)
   --native-max-tokens=<n>     Native stream token cap (default: 64, max: 128)
   --bridge-max-tokens=<n>     Bridge downstream token cap (default: 256, max: 512)
@@ -88,7 +88,7 @@ Options:
   --use-server-app-token      Only on http://127.0.0.1:8799; read the local app token
 
 The runner sends exactly one same-wave reservation check. It requires an idle,
-authenticated health snapshot before traffic, checks the 52 + 12 reservation,
+authenticated health snapshot before traffic, checks the 48 + 16 reservation,
 and requires all four MiMo health views to drain back to zero afterwards.`)
   process.exit(exitCode)
 }

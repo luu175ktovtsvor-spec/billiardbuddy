@@ -2108,10 +2108,17 @@ async function getRuntimeSettings(sessionId?: string): Promise<RuntimeSettings> 
       }
     }
 
+    const thinking = resolveProductThinkingMode(
+      await settingsService.getUserSettings(),
+      persistedRuntimeSettings.providerId,
+      persistedRuntimeSettings.modelId,
+    )
+
     return {
       permissionMode: sessionPermissionMode ?? await settingsService.getPermissionMode().catch(() => undefined),
       model: persistedRuntimeSettings.modelId,
       effort: persistedRuntimeSettings.effort,
+      thinking,
       providerId: persistedRuntimeSettings.providerId,
     }
   }

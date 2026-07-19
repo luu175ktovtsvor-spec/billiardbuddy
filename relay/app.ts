@@ -73,8 +73,9 @@ export function loadRelayConfig(env: Env): RelayConfig {
     // Terminal results must survive app restarts and users returning days later.
     // Active queued/running work is never swept regardless of this value.
     taskTtlMs: Math.max(1, intEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000)),
-    // 生图是昂贵且慢的同步上游。1,000 个桌面窗口可以被异步受理，但默认只让 6 个真实
-    // OpenAI 调用在途；只有在已测得该账号的图片 RPM/并发配额后才提高这个阀门。
+    // 生图是昂贵且慢的同步上游。受理队列可以容纳 1,000 个以上桌面窗口，但真实
+    // OpenAI 调用仍由 RELAY_IMG_CONC 显式控制；默认保持保守值，生产 L2 档位可按账号
+    // 实测调高到 16，不能把受理数误称为真实完成并发。
     imgConc,
     // A user may enqueue ten windows, but one installation must not monopolize all
     // paid upstream slots while 99 other users are waiting. With a 100-user burst this

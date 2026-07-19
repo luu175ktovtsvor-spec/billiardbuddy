@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  createConcurrentStartGate,
   isSseContentType,
   isCapacityDrained,
+  meetsMinimumObservedActive,
+  meetsMaximumObservedQueued,
+  parseMinimumObservedActive,
+  parseMaximumObservedQueued,
   parseLoadTarget,
   parsePhases,
   parseThinkingMode,
+  requiredMinimumObservedActive,
   resolveLoadtestThinkingMode,
   sawReasoningInSse,
   shouldContinueAfterFailure,
@@ -15,6 +21,61 @@ describe('real upstream loadtest thinking-mode guard', () => {
   test('defaults to a high-to-low 1000-window capacity search', () => {
     expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 50, 20, 1])
     expect(parsePhases('100,1000,400', 1_000)).toEqual([1_000, 400, 100])
+  })
+
+  test('requires an observed active peak for every phase by default and supports an explicit lower bound', () => {
+    expect(parseMinimumObservedActive(undefined, 1_000)).toBe('phase')
+    expect(parseMinimumObservedActive('phase', 1_000)).toBe('phase')
+    expect(parseMinimumObservedActive('800', 1_000)).toBe(800)
+    expect(parseMinimumObservedActive('0', 1_000)).toBe(0)
+    expect(requiredMinimumObservedActive('phase', 1_000)).toBe(1_000)
+    expect(requiredMinimumObservedActive('phase', 20)).toBe(20)
+    expect(requiredMinimumObservedActive(800, 1_000)).toBe(800)
+    expect(requiredMinimumObservedActive(800, 100)).toBe(100)
+    expect(meetsMinimumObservedActive(1_000, 1_000)).toBe(true)
+    expect(meetsMinimumObservedActive(999, 1_000)).toBe(false)
+    expect(meetsMinimumObservedActive(0, 0)).toBe(true)
+    expect(() => parseMinimumObservedActive('-1', 1_000)).toThrow('must be phase or a non-negative integer')
+    expect(() => parseMinimumObservedActive('1001', 1_000)).toThrow('must be between 0 and 1000')
+  })
+
+  test('treats observed gateway queueing as a failed interactive-capacity phase by default', () => {
+    expect(parseMaximumObservedQueued(undefined, 1_000)).toBe(0)
+    expect(parseMaximumObservedQueued('24', 1_000)).toBe(24)
+    expect(meetsMaximumObservedQueued(0, 0)).toBe(true)
+    expect(meetsMaximumObservedQueued(1, 0)).toBe(false)
+    expect(meetsMaximumObservedQueued(24, 24)).toBe(true)
+    expect(() => parseMaximumObservedQueued('-1', 1_000)).toThrow('must be a non-negative integer')
+    expect(() => parseMaximumObservedQueued('1001', 1_000)).toThrow('must be between 0 and 1000')
+  })
+
+  test('holds all workers at a deterministic start barrier before releasing the burst', async () => {
+    const gate = createConcurrentStartGate(3)
+    const started: number[] = []
+    const workers = Array.from({ length: 3 }, async (_, index) => {
+      await gate.wait()
+      started.push(index)
+    })
+
+    expect(gate.arrivedCount).toBe(3)
+    expect(gate.ready).toBe(true)
+    expect(gate.released).toBe(false)
+    expect(started).toEqual([])
+    await gate.waitUntilReady()
+    gate.release()
+    await Promise.all(workers)
+
+    expect(gate.released).toBe(true)
+    expect(started.sort()).toEqual([0, 1, 2])
+  })
+
+  test('refuses to release a partial start barrier', async () => {
+    const gate = createConcurrentStartGate(2)
+    const first = gate.wait()
+    expect(() => gate.release()).toThrow('not ready (1/2)')
+    const second = gate.wait()
+    gate.release()
+    await Promise.all([first, second])
   })
 
   test('allows only the two documented DeepSeek thinking values', () => {

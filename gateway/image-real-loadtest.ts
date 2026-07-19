@@ -7,8 +7,9 @@
  * any batch. It polls only compact relay metadata, never image bytes.
  */
 
-type FailureKind = 'timeout' | 'network' | 'response_too_large' | 'invalid_response' | `http_${number}`
+type FailureKind = 'timeout' | 'network' | 'response_too_large' | 'invalid_response' | 'cancel_not_confirmed' | `http_${number}`
 type TerminalState = 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled' | 'unknown'
+type LatencyPercentiles = { p50: number | null; p95: number | null }
 
 type SubmittedTask = {
   taskId: string
@@ -18,12 +19,14 @@ type SubmittedTask = {
 
 type SubmitResult = {
   status: number
+  elapsedMs: number
   task?: SubmittedTask
   failureKind?: FailureKind
 }
 
 type CancelResult = {
   status: number
+  confirmed: boolean
   failureKind?: FailureKind
 }
 
@@ -61,6 +64,10 @@ export type ImageLoadtestSummary = {
   failed: number
   exitCode: 0 | 1
   cleanupAttempted: number
+  cleanupConfirmed: number
+  cleanupFailed: number
+  /** Includes accepted and rejected submit attempts, so admission latency exposes backpressure. */
+  submitMs: LatencyPercentiles
 }
 
 type LoadTarget = { base: URL; baseUrl: string; targetOrigin: string }
@@ -96,7 +103,7 @@ Options:
   --windows=<n>               Image windows per installation (default: 1, max: ${MAX_WINDOWS})
   --confirm-billable-batch    Required whenever users × windows is greater than one
   --mode=terminal|admission   terminal waits for outputs (default); admission checks the
-                               full submit burst, then attempts to cancel accepted work
+                               full submit burst, then confirms cancellation of accepted work
   --submit-concurrency=<n>    Submit workers (default: all requested tasks, max: ${MAX_SUBMIT_CONCURRENCY})
   --size=<WxH>                1024x1024, 1536x1024, or 1024x1536 (default: 1024x1024)
   --submit-timeout-ms=<n>     Per-submit deadline (default: 30000)
@@ -108,8 +115,9 @@ Options:
 
 The runner uses one X-QF-Client-ID per simulated installation, so --users=100
 --windows=10 models ten windows from each installation. admission mode is the right
-mode for a 1,000-task burst: it proves acceptance/queue behaviour but does not
-claim that 1,000 paid images completed without waiting. It never logs app tokens,
+mode for a 1,000-task burst: it proves acceptance/queue behaviour only when every
+accepted task confirms cancellation, but does not claim that 1,000 paid images
+completed without waiting. It never logs app tokens,
 task IDs, request bodies, image bytes, model output, or a target URL path/query.`)
   process.exit(exitCode)
 }
@@ -162,6 +170,10 @@ function percentile(values: number[], ratio: number): number | null {
   if (values.length === 0) return null
   const ordered = [...values].sort((a, b) => a - b)
   return Math.round(ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * ratio) - 1)]!)
+}
+
+function latencyPercentiles(values: number[]): LatencyPercentiles {
+  return { p50: percentile(values, 0.5), p95: percentile(values, 0.95) }
 }
 
 function count(target: Record<string, number>, key: string): void {
@@ -376,6 +388,8 @@ async function mapWithConcurrency<T, R>(items: readonly T[], concurrency: number
 }
 
 async function submitTask(index: number, options: ImageLoadtestOptions, deps: Required<Pick<RunnerDeps, 'fetchImpl' | 'now'>>): Promise<SubmitResult> {
+  const startedAt = deps.now()
+  const elapsedMs = () => Math.max(0, Math.round(deps.now() - startedAt))
   const clientId = clientIdForTask(index, options.users)
   const attempt = await fetchAttempt(
     deps.fetchImpl,
@@ -399,19 +413,23 @@ async function submitTask(index: number, options: ImageLoadtestOptions, deps: Re
     undefined,
     options.submitTimeoutMs,
   )
-  if ('failure' in attempt) return { status: 0, failureKind: attempt.failure === 'terminal_timeout' ? 'timeout' : attempt.failure }
+  if ('failure' in attempt) {
+    return { status: 0, elapsedMs: elapsedMs(), failureKind: attempt.failure === 'terminal_timeout' ? 'timeout' : attempt.failure }
+  }
   const { response } = attempt
   if (response.status !== 202) {
     await cancelResponseBody(response)
-    return { status: response.status, failureKind: `http_${response.status}` }
+    return { status: response.status, elapsedMs: elapsedMs(), failureKind: `http_${response.status}` }
   }
   const body = await readJsonBounded(response)
-  if (!body.ok) return { status: response.status, failureKind: body.reason }
+  if (!body.ok) return { status: response.status, elapsedMs: elapsedMs(), failureKind: body.reason }
   const taskId = asRecord(body.value)?.task_id
-  if (!isTaskId(taskId)) return { status: response.status, failureKind: 'invalid_response' }
+  if (!isTaskId(taskId)) return { status: response.status, elapsedMs: elapsedMs(), failureKind: 'invalid_response' }
+  const acceptedAt = deps.now()
   return {
     status: response.status,
-    task: { taskId, clientId, acceptedAt: deps.now() },
+    elapsedMs: Math.max(0, Math.round(acceptedAt - startedAt)),
+    task: { taskId, clientId, acceptedAt },
   }
 }
 
@@ -426,11 +444,45 @@ async function cancelTask(task: SubmittedTask, options: ImageLoadtestOptions, fe
     undefined,
     options.pollRequestTimeoutMs,
   )
-  if ('failure' in attempt) return { status: 0, failureKind: attempt.failure === 'terminal_timeout' ? 'timeout' : attempt.failure }
-  await cancelResponseBody(attempt.response)
-  return attempt.response.ok
-    ? { status: attempt.response.status }
-    : { status: attempt.response.status, failureKind: `http_${attempt.response.status}` }
+  if ('failure' in attempt) {
+    return { status: 0, confirmed: false, failureKind: attempt.failure === 'terminal_timeout' ? 'timeout' : attempt.failure }
+  }
+  const { response } = attempt
+  if (!response.ok) {
+    await cancelResponseBody(response)
+    return { status: response.status, confirmed: false, failureKind: `http_${response.status}` }
+  }
+  const body = await readJsonBounded(response)
+  if (!body.ok) return { status: response.status, confirmed: false, failureKind: body.reason }
+  return asRecord(body.value)?.status === 'cancelled'
+    ? { status: response.status, confirmed: true }
+    : { status: response.status, confirmed: false, failureKind: 'cancel_not_confirmed' }
+}
+
+function cleanupMetrics(results: readonly CancelResult[], expected = results.length): {
+  attempted: number
+  confirmed: number
+  failed: number
+  statuses: Record<string, number>
+  failureKinds: Record<string, number>
+} {
+  const statuses: Record<string, number> = {}
+  const failureKinds: Record<string, number> = {}
+  let confirmed = 0
+  for (const result of results) {
+    count(statuses, String(result.status))
+    if (result.confirmed) confirmed += 1
+    if (result.failureKind) count(failureKinds, result.failureKind)
+  }
+  return {
+    attempted: results.length,
+    confirmed,
+    // Treat a missing cancellation attempt as failed too. Admission mode must not
+    // call a burst safe until every accepted task has a relay confirmation.
+    failed: Math.max(0, expected - confirmed),
+    statuses,
+    failureKinds,
+  }
 }
 
 async function pollTask(
@@ -518,42 +570,36 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
     if (result.failureKind) count(submitFailures, result.failureKind)
   }
   const accepted = submitted.flatMap(result => result.task === undefined ? [] : [result.task])
+  const submitMs = latencyPercentiles(submitted.map(result => result.elapsedMs))
   deps.onEvent({
     event: 'image_loadtest_submitted',
     requested: options.total,
     accepted: accepted.length,
     statuses: submitStatuses,
     failureKinds: submitFailures,
+    submitMs,
   })
 
   let cleanup: CancelResult[] = []
   if (accepted.length !== options.total && accepted.length > 0) {
     cleanup = await mapWithConcurrency(accepted, options.submitConcurrency, task => cancelTask(task, options, deps.fetchImpl))
-    const statuses: Record<string, number> = {}
-    const failures: Record<string, number> = {}
-    for (const result of cleanup) {
-      count(statuses, String(result.status))
-      if (result.failureKind) count(failures, result.failureKind)
-    }
-    deps.onEvent({ event: 'image_loadtest_partial_submit_cleanup', attempted: cleanup.length, statuses, failureKinds: failures })
+    const metrics = cleanupMetrics(cleanup, accepted.length)
+    deps.onEvent({ event: 'image_loadtest_partial_submit_cleanup', ...metrics })
   }
 
   // A high submission burst and a high paid-image completion burst are different
   // questions. In admission mode, promptly try to cancel every accepted task so a
   // queue-capacity experiment does not quietly turn into a many-hour billable run.
-  // Running tasks can legitimately return 409: they are reported, never retried.
+  // Running tasks can legitimately return 409. They are never retried, but remain
+  // unconfirmed and therefore fail an admission run rather than yielding a false pass.
   if (options.mode === 'admission') {
     if (accepted.length === options.total && accepted.length > 0) {
       const admissionCleanup = await mapWithConcurrency(accepted, options.submitConcurrency, task => cancelTask(task, options, deps.fetchImpl))
       cleanup = [...cleanup, ...admissionCleanup]
-      const statuses: Record<string, number> = {}
-      const failures: Record<string, number> = {}
-      for (const result of admissionCleanup) {
-        count(statuses, String(result.status))
-        if (result.failureKind) count(failures, result.failureKind)
-      }
-      deps.onEvent({ event: 'image_loadtest_admission_cleanup', attempted: admissionCleanup.length, statuses, failureKinds: failures })
+      const metrics = cleanupMetrics(admissionCleanup, accepted.length)
+      deps.onEvent({ event: 'image_loadtest_admission_cleanup', ...metrics })
     }
+    const cleanupSummary = cleanupMetrics(cleanup, accepted.length)
     const summary: ImageLoadtestSummary = {
       mode: options.mode,
       requested: options.total,
@@ -562,8 +608,11 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
       // generated-output count; the event name makes that distinction explicit.
       succeeded: accepted.length,
       failed: options.total - accepted.length,
-      cleanupAttempted: cleanup.length,
-      exitCode: accepted.length === options.total ? 0 : 1,
+      cleanupAttempted: cleanupSummary.attempted,
+      cleanupConfirmed: cleanupSummary.confirmed,
+      cleanupFailed: cleanupSummary.failed,
+      submitMs,
+      exitCode: accepted.length === options.total && cleanupSummary.confirmed === accepted.length ? 0 : 1,
     }
     deps.onEvent({
       event: 'image_loadtest_admission',
@@ -571,6 +620,9 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
       accepted: summary.accepted,
       rejected: summary.failed,
       cleanupAttempted: summary.cleanupAttempted,
+      cleanupConfirmed: summary.cleanupConfirmed,
+      cleanupFailed: summary.cleanupFailed,
+      submitMs: summary.submitMs,
     })
     return summary
   }
@@ -580,13 +632,8 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
   if (unresolved.length > 0) {
     const afterPollCleanup = await mapWithConcurrency(unresolved, options.submitConcurrency, task => cancelTask(task, options, deps.fetchImpl))
     cleanup = [...cleanup, ...afterPollCleanup]
-    const statuses: Record<string, number> = {}
-    const failures: Record<string, number> = {}
-    for (const result of afterPollCleanup) {
-      count(statuses, String(result.status))
-      if (result.failureKind) count(failures, result.failureKind)
-    }
-    deps.onEvent({ event: 'image_loadtest_unresolved_cleanup', attempted: afterPollCleanup.length, statuses, failureKinds: failures })
+    const metrics = cleanupMetrics(afterPollCleanup)
+    deps.onEvent({ event: 'image_loadtest_unresolved_cleanup', ...metrics })
   }
   const terminalStatuses: Record<string, number> = {}
   const terminalFailures: Record<string, number> = {}
@@ -595,13 +642,17 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
     if (result.failureKind) count(terminalFailures, result.failureKind)
   }
   const succeeded = terminal.filter(result => result.terminal === 'succeeded').length
+  const cleanupSummary = cleanupMetrics(cleanup)
   const summary: ImageLoadtestSummary = {
     mode: options.mode,
     requested: options.total,
     accepted: accepted.length,
     succeeded,
     failed: options.total - succeeded,
-    cleanupAttempted: cleanup.length,
+    cleanupAttempted: cleanupSummary.attempted,
+    cleanupConfirmed: cleanupSummary.confirmed,
+    cleanupFailed: cleanupSummary.failed,
+    submitMs,
     exitCode: accepted.length === options.total && succeeded === options.total ? 0 : 1,
   }
   deps.onEvent({
@@ -612,6 +663,10 @@ export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDe
     failed: summary.failed,
     statuses: terminalStatuses,
     failureKinds: terminalFailures,
+    cleanupAttempted: summary.cleanupAttempted,
+    cleanupConfirmed: summary.cleanupConfirmed,
+    cleanupFailed: summary.cleanupFailed,
+    submitMs: summary.submitMs,
     totalMs: { p50: percentile(terminal.map(result => result.elapsedMs), 0.5), p95: percentile(terminal.map(result => result.elapsedMs), 0.95) },
   })
   return summary

@@ -151,9 +151,9 @@ test('MiMo hard reservations must account for the whole account capacity', () =>
 })
 
 test('gateway server keeps an SSE-safe idle timeout before per-request stream overrides apply', () => {
-  expect(gatewayServerIdleTimeoutSeconds({})).toBe(300)
+  expect(gatewayServerIdleTimeoutSeconds({})).toBe(255)
   expect(gatewayServerIdleTimeoutSeconds({ GW_SERVER_IDLE_TIMEOUT_SECONDS: '5' })).toBe(30)
-  expect(gatewayServerIdleTimeoutSeconds({ GW_SERVER_IDLE_TIMEOUT_SECONDS: '99999' })).toBe(3_600)
+  expect(gatewayServerIdleTimeoutSeconds({ GW_SERVER_IDLE_TIMEOUT_SECONDS: '99999' })).toBe(255)
 })
 
 test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only credentials', async () => {
