@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
+import {
+  IMAGE_WORKBENCH_TAB_ID,
+  PRODUCT_TASKS_TAB_ID,
+  VIDEO_STUDIO_TAB_ID,
+  useTabStore,
+} from '../../stores/tabStore'
+import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
+import type {
+  ProductTaskMediaDraft,
+  ProductTaskRecord,
+  ProductTaskThreadEntry,
+} from '../domain/types'
+import { productTasksApi } from '../api/tasks'
 import {
   productTaskCommandsApi,
   type ProductTaskAgentCommand,
@@ -96,6 +107,8 @@ type ProductTaskThreadEntryViewProps = {
   entry: ProductTaskThreadEntry
   streaming: boolean
   actionPending?: boolean
+  mediaDraftActionPending?: boolean
+  onAttachMediaDraft?: (draft: ProductTaskMediaDraft) => void
   onContinueFromEntry?: (
     sourceEntryId: string,
     target: 'current_workspace' | 'new_worktree',
@@ -159,6 +172,8 @@ export function ProductTaskThreadEntryView({
   entry,
   streaming,
   actionPending,
+  mediaDraftActionPending,
+  onAttachMediaDraft,
   onContinueFromEntry,
   onCreateSideTask,
 }: ProductTaskThreadEntryViewProps) {
@@ -206,6 +221,31 @@ export function ProductTaskThreadEntryView({
           onCreateSideTask={onCreateSideTask}
         />
       </div>
+    )
+  }
+
+  if (entry.type === 'media_draft') {
+    const mediaLabel = entry.draft.kind === 'image' ? '图片' : '视频'
+    return (
+      <article
+        className="mx-auto max-w-2xl rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]"
+        data-testid={`product-task-media-draft-${entry.draft.kind}`}
+      >
+        <p className="font-medium text-[var(--color-text-primary)]">已准备{mediaLabel}草稿</p>
+        <p className="mt-1 text-xs leading-5">尚未生成或导出。关联后会打开对应工作台，后续操作仍需你确认。</p>
+        {onAttachMediaDraft ? (
+          <button
+            type="button"
+            disabled={mediaDraftActionPending}
+            onClick={() => onAttachMediaDraft(entry.draft)}
+            className="mt-3 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+          >
+            {mediaDraftActionPending ? '关联中…' : '关联到当前任务并打开工作台'}
+          </button>
+        ) : (
+          <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">恢复任务后可以关联这个草稿。</p>
+        )}
+      </article>
     )
   }
 
@@ -425,6 +465,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
+  const [mediaDraftActionProjectId, setMediaDraftActionProjectId] = useState<string | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const isReviewOpen = workspace?.reviewOpen ?? false
@@ -742,6 +783,27 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
+  const attachMediaDraft = async (draft: ProductTaskMediaDraft) => {
+    if (mediaDraftActionProjectId) return
+    setThreadActionError(null)
+    setMediaDraftActionProjectId(draft.projectId)
+    try {
+      await productTasksApi.attachMediaProject(task.id, draft.projectId)
+      openMediaDock()
+      if (draft.kind === 'image') {
+        useMediaWorkbenchStore.getState().selectImage(draft.projectId)
+        openTab(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench')
+      } else {
+        useMediaWorkbenchStore.getState().selectVideo(draft.projectId)
+        openTab(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio')
+      }
+    } catch {
+      setThreadActionError('媒体草稿暂时无法关联，请刷新后再试。')
+    } finally {
+      setMediaDraftActionProjectId(null)
+    }
+  }
+
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-task-page">
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -848,6 +910,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   entry={entry}
                   streaming={entry.id === runtime.streamingEntryId}
                   actionPending={isContinuationPending || isSideTaskCreationPending}
+                  mediaDraftActionPending={entry.type === 'media_draft' && mediaDraftActionProjectId === entry.draft.projectId}
+                  onAttachMediaDraft={isArchived ? undefined : (draft) => {
+                    void attachMediaDraft(draft)
+                  }}
                   onContinueFromEntry={isArchived ? undefined : (sourceEntryId, target) => {
                     void continueFromEntry(sourceEntryId, target)
                   }}

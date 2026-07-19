@@ -172,6 +172,9 @@ function mergeThreadSnapshot(
 
 function entrySignature(entry: ProductTaskThreadEntry): string {
   if (entry.type === 'activity') return `activity:${entry.kind}:${entry.phase}`
+  if (entry.type === 'media_draft') {
+    return `media_draft:${entry.draft.projectId}:${entry.draft.kind}:${entry.draft.state}`
+  }
   // The persisted product projection trims visible text; stream deltas retain
   // whitespace while they are arriving, so normalize only for reconciliation.
   return `${entry.type}:${entry.text.trim()}:${entry.type === 'user_text'

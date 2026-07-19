@@ -54,6 +54,7 @@ export type {
   ProductTaskRunActivity,
   ProductTaskRunSnapshot,
   ProductTaskAttachmentSummary,
+  ProductTaskMediaDraft,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
   ProductTaskComputerUseApproval,

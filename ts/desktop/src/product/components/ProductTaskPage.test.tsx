@@ -48,6 +48,9 @@ const mocks = vi.hoisted(() => ({
   refreshThread: vi.fn(),
   openTab: vi.fn(),
   openProductTaskTab: vi.fn(),
+  attachMediaProject: vi.fn(),
+  selectImage: vi.fn(),
+  selectVideo: vi.fn(),
   createSideTask: vi.fn(),
   openSideTaskPanel: vi.fn(),
   listSkills: vi.fn(),
@@ -97,11 +100,28 @@ vi.mock('../../stores/settingsStore', () => ({
 }))
 
 vi.mock('../../stores/tabStore', () => ({
+  IMAGE_WORKBENCH_TAB_ID: '__image_workbench__',
   PRODUCT_TASKS_TAB_ID: '__product_tasks__',
+  VIDEO_STUDIO_TAB_ID: '__video_studio__',
   useTabStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     openTab: mocks.openTab,
     openProductTaskTab: mocks.openProductTaskTab,
   }),
+}))
+
+vi.mock('../../stores/mediaWorkbenchStore', () => ({
+  useMediaWorkbenchStore: {
+    getState: () => ({
+      selectImage: mocks.selectImage,
+      selectVideo: mocks.selectVideo,
+    }),
+  },
+}))
+
+vi.mock('../api/tasks', () => ({
+  productTasksApi: {
+    attachMediaProject: mocks.attachMediaProject,
+  },
 }))
 
 vi.mock('../api/taskCommands', () => ({
@@ -245,6 +265,9 @@ beforeEach(() => {
   mocks.refreshThread.mockReset().mockResolvedValue(undefined)
   mocks.openTab.mockReset()
   mocks.openProductTaskTab.mockReset()
+  mocks.attachMediaProject.mockReset().mockResolvedValue({})
+  mocks.selectImage.mockReset()
+  mocks.selectVideo.mockReset()
   mocks.listSkills.mockReset().mockResolvedValue({ commands: [] })
   mocks.listAgents.mockReset().mockResolvedValue({ agents: [] })
   useProductTaskWorkspaceStore.setState(
@@ -273,6 +296,36 @@ afterEach(() => {
 })
 
 describe('ProductTaskPage', () => {
+  it('requires a user click before associating an Agent-prepared media draft and opening its workbench', async () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      entries: [{
+        id: 'thread_media_draft',
+        type: 'media_draft',
+        draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
+        createdAt: '2026-07-20T00:00:00.000Z',
+      }],
+    }
+
+    render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.getByTestId('product-task-media-draft-image').textContent).toContain('已准备图片草稿')
+    expect(screen.queryByText('img_12345678')).toBeNull()
+    expect(mocks.attachMediaProject).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '关联到当前任务并打开工作台' }))
+
+    await waitFor(() => {
+      expect(mocks.attachMediaProject).toHaveBeenCalledWith('task-1', 'img_12345678')
+    })
+    expect(mocks.selectImage).toHaveBeenCalledWith('img_12345678')
+    expect(mocks.openTab).toHaveBeenCalledWith('__image_workbench__', '生成图片', 'image-workbench')
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
+      mediaOpen: true,
+      activePanel: 'media',
+    })
+  })
+
   it('opens a task-scoped read-only media dock without replacing the task thread', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
