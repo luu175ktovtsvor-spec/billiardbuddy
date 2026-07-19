@@ -12,6 +12,10 @@ import {
   type ProductTaskReviewService,
 } from '../product/taskReviewService.js'
 import { productTaskService, type ProductTaskService } from '../product/taskService.js'
+import {
+  ProductTaskMediaService,
+  type ProductTaskMediaApi,
+} from '../product/taskMediaService.js'
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
@@ -31,12 +35,14 @@ export async function handleProductApi(
     | 'setPinned'
     | 'setArchived'
     | 'continueTask'
+    | 'getTask'
     | 'getTaskThread'
     | 'listSideTasks'
     | 'createSideTask'
     | 'closeSideTask'
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
+  media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
 ): Promise<Response> {
   try {
     if (segments[2] === 'projects') {
@@ -72,6 +78,29 @@ export async function handleProductApi(
 
     if (action === 'review') {
       return await handleTaskReviewRoute(review, req, url, taskId, segments[5])
+    }
+
+    if (action === 'media') {
+      const resource = segments[5]
+      if (!resource) {
+        if (req.method !== 'GET') return methodNotAllowed(req.method)
+        return Response.json(await media.listForTask(taskId))
+      }
+      if (resource === 'attachable-projects' && !segments[6]) {
+        if (req.method !== 'GET') return methodNotAllowed(req.method)
+        return Response.json(await media.listAttachableForTask(taskId))
+      }
+      if (
+        resource === 'projects'
+        && segments[6]
+      ) {
+        const projectId = segments[6]
+        if (segments[7] === 'attach' && !segments[8]) {
+          if (req.method !== 'POST') return methodNotAllowed(req.method)
+          return Response.json({ project: await media.attachProject(taskId, projectId) })
+        }
+      }
+      throw ApiError.notFound('未知任务媒体资源')
     }
 
     if (action === 'side-tasks') {

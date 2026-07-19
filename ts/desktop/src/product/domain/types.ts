@@ -14,6 +14,11 @@ import type {
   ProductTaskReviewStatus,
   ProductTaskReviewTree,
 } from '../../../../shared/product/taskReview'
+import type {
+  ProductTaskMediaAttachableList,
+  ProductTaskMediaList,
+  ProductTaskMediaProject,
+} from '../../../../shared/product/taskMedia'
 
 export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
 export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvents'
@@ -60,6 +65,14 @@ export type {
   ProductTaskReviewTree,
   ProductTaskReviewTreeEntry,
 } from '../../../../shared/product/taskReview'
+export type {
+  ProductTaskMediaAsset,
+  ProductTaskMediaAttachableList,
+  ProductTaskMediaAttachableProject,
+  ProductTaskMediaList,
+  ProductTaskMediaProject,
+  ProductTaskMediaTask,
+} from '../../../../shared/product/taskMedia'
 
 export type ProductTaskAction =
   | 'pin'
@@ -108,6 +121,9 @@ export type ProductTaskApi = {
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
   getReviewFile: (taskId: string, path: string) => Promise<ProductTaskReviewFile>
   getReviewDiff: (taskId: string, path: string) => Promise<ProductTaskReviewDiff>
+  getMedia: (taskId: string) => Promise<ProductTaskMediaList>
+  getAttachableMedia: (taskId: string) => Promise<ProductTaskMediaAttachableList>
+  attachMediaProject: (taskId: string, projectId: string) => Promise<{ project: ProductTaskMediaProject }>
 }
 
 export type ProductSideTaskApi = {

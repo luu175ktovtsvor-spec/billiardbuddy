@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { handleProductApi } from '../api/product.js'
+import type { ProductTaskMediaApi } from '../product/taskMediaService.js'
 
 const task = {
   id: 'task-1',
@@ -60,6 +61,7 @@ function createService() {
       setPinned: record('setPinned'),
       setArchived: record('setArchived'),
       continueTask: record('continueTask'),
+      getTask: record('getTask'),
       getTaskThread: record('getTaskThread', { taskId: task.id, entries: [] }),
       listSideTasks: record('listSideTasks', [sideTask]),
       createSideTask: record('createSideTask', sideTask),
@@ -73,6 +75,7 @@ async function request(
   method: string,
   path: string,
   body?: unknown,
+  media?: ProductTaskMediaApi,
 ) {
   const url = new URL(`http://localhost${path}`)
   const response = await handleProductApi(
@@ -84,6 +87,8 @@ async function request(
     url,
     url.pathname.split('/').filter(Boolean),
     service,
+    undefined,
+    media,
   )
   return { status: response.status, body: await response.json() }
 }
@@ -180,6 +185,62 @@ describe('Product tasks API', () => {
 
     expect(response).toEqual({ status: 200, body: { taskId: task.id, entries: [] } })
     expect(calls).toEqual([{ name: 'getTaskThread', args: ['task-1'] }])
+  })
+
+  it('routes task-scoped media listing and explicit attachment', async () => {
+    const { service } = createService()
+    const calls: Array<{ name: string; args: unknown[] }> = []
+    const media: ProductTaskMediaApi = {
+      listForTask: async (...args) => {
+        calls.push({ name: 'listForTask', args })
+        return { taskId: task.id, projects: [] }
+      },
+      listAttachableForTask: async (...args) => {
+        calls.push({ name: 'listAttachableForTask', args })
+        return { taskId: task.id, projects: [] }
+      },
+      attachProject: async (...args) => {
+        calls.push({ name: 'attachProject', args })
+        return {
+          id: 'img_12345678',
+          kind: 'image',
+          title: '会员日海报',
+          state: 'ready',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+          mediaTask: null,
+          assets: [],
+        }
+      },
+    }
+
+    const listed = await request(service, 'GET', '/api/product/tasks/task-1/media', undefined, media)
+    const attachable = await request(
+      service,
+      'GET',
+      '/api/product/tasks/task-1/media/attachable-projects',
+      undefined,
+      media,
+    )
+    const attached = await request(
+      service,
+      'POST',
+      '/api/product/tasks/task-1/media/projects/img_12345678/attach',
+      undefined,
+      media,
+    )
+    expect(listed).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
+    expect(attachable).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
+    expect(attached).toEqual({
+      status: 200,
+      body: {
+        project: expect.objectContaining({ id: 'img_12345678', kind: 'image', assets: [] }),
+      },
+    })
+    expect(calls).toEqual([
+      { name: 'listForTask', args: [task.id] },
+      { name: 'listAttachableForTask', args: [task.id] },
+      { name: 'attachProject', args: [task.id, 'img_12345678'] },
+    ])
   })
 
   it('routes task-scoped review resources without falling back to session APIs', async () => {

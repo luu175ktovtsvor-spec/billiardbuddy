@@ -37,6 +37,21 @@ test('media API creates and lists image/video projects without invoking upstream
   expect(body.projects.map(project => project.kind).sort()).toEqual(['image', 'video'])
 })
 
+test('media API keeps a product task owner private to task-scoped product routes', async () => {
+  root = await mkdtemp(join(tmpdir(), 'billiardbuddy-media-api-'))
+  const service = new MediaProjectService({ root })
+  const handler = createMediaApiHandler(service)
+  const project = await service.createImageProject({ prompt: '任务海报' })
+  await service.attachProjectToProductTask(project.id, 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
+
+  const response = await route(handler, `/api/media/project/${project.id}`)
+  const body = await response.json() as { project: Record<string, unknown> }
+
+  expect(response.status).toBe(200)
+  expect(body.project).not.toHaveProperty('product_task_id')
+  expect(JSON.stringify(body)).not.toContain('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
+})
+
 test('media API returns structured validation errors', async () => {
   root = await mkdtemp(join(tmpdir(), 'billiardbuddy-media-api-'))
   const handler = createMediaApiHandler(new MediaProjectService({ root }))

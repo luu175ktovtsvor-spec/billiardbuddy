@@ -25,6 +25,7 @@ import {
   type ProductTaskBrowserPreviewMode,
 } from '../stores/productTaskBrowserPreviewStore'
 import { ProductTaskBrowserPreviewDock } from './ProductTaskBrowserPreviewDock'
+import { ProductTaskMediaDock } from './ProductTaskMediaDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
 import { SideTaskPanel } from './SideTaskPanel'
 import { VoiceInputControl } from './VoiceInputControl'
@@ -94,12 +95,13 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
   }
 }
 
-type ProductTaskDockPanel = 'review' | 'terminal' | 'browser-preview'
+type ProductTaskDockPanel = 'review' | 'media' | 'terminal' | 'browser-preview'
 
 type OpenProductTaskDockPanels = Record<ProductTaskDockPanel, boolean>
 
 const PRODUCT_TASK_DOCK_PANEL_ORDER: readonly ProductTaskDockPanel[] = [
   'review',
+  'media',
   'terminal',
   'browser-preview',
 ]
@@ -456,6 +458,7 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [isReviewOpen, setIsReviewOpen] = useState(false)
+  const [isMediaOpen, setIsMediaOpen] = useState(false)
   const [isTerminalOpen, setIsTerminalOpen] = useState(false)
   const [activeDockPanel, setActiveDockPanel] = useState<ProductTaskDockPanel | null>(null)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
@@ -466,11 +469,13 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
   const openDockPanels: OpenProductTaskDockPanels = {
     review: isReviewOpen,
+    media: isMediaOpen,
     terminal: isTerminalOpen,
     'browser-preview': isBrowserPreviewOpen,
   }
   const resolvedActiveDockPanel = resolveActiveDockPanel(activeDockPanel, openDockPanels)
   const isReviewActive = resolvedActiveDockPanel === 'review'
+  const isMediaActive = resolvedActiveDockPanel === 'media'
   const isTerminalActive = resolvedActiveDockPanel === 'terminal'
   const isBrowserPreviewActive = resolvedActiveDockPanel === 'browser-preview'
 
@@ -597,9 +602,21 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
       : current)
   }
 
+  const closeMediaDock = () => {
+    setIsMediaOpen(false)
+    setActiveDockPanel((current) => current === 'media'
+      ? nextOpenDockPanel('media', { ...openDockPanels, media: false })
+      : current)
+  }
+
   const openReviewDock = () => {
     setIsReviewOpen(true)
     setActiveDockPanel('review')
+  }
+
+  const openMediaDock = () => {
+    setIsMediaOpen(true)
+    setActiveDockPanel('media')
   }
 
   const openTerminalDock = () => {
@@ -688,6 +705,14 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           审阅
+        </button>
+        <button
+          type="button"
+          onClick={openMediaDock}
+          aria-pressed={isMediaActive}
+          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
+        >
+          媒体
         </button>
         <button
           type="button"
@@ -853,6 +878,15 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
                 className={`min-h-0 flex-1 flex-col overflow-hidden ${isReviewActive ? 'flex' : 'hidden'}`}
               >
                 <ProductTaskReviewDock taskId={task.id} onClose={closeReviewDock} />
+              </div>
+            ) : null}
+            {isMediaOpen ? (
+              <div
+                data-testid="product-task-dock-panel-media"
+                data-active={isMediaActive ? 'true' : 'false'}
+                className={`min-h-0 flex-1 flex-col overflow-hidden ${isMediaActive ? 'flex' : 'hidden'}`}
+              >
+                <ProductTaskMediaDock taskId={task.id} onClose={closeMediaDock} />
               </div>
             ) : null}
             {isTerminalOpen ? (

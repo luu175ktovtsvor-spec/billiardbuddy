@@ -698,6 +698,15 @@ export class ProductTaskService {
   }
 
   /**
+   * Validate and resolve a public product task without returning its private
+   * Agent Core binding. Server-side feature modules use this as their owner
+   * check instead of ever accepting a Core session id.
+   */
+  async getTask(taskId: string): Promise<ProductTaskRecord> {
+    return await this.requireTask(taskId)
+  }
+
+  /**
    * Resolve the Agent Core binding inside the product application layer.
    *
    * Product clients only ever address an opaque product id. The Core session
