@@ -131,6 +131,12 @@ vi.mock('./SideTaskPanel', () => ({
   SideTaskPanel: () => <div data-testid="side-task-panel-slot" />,
 }))
 
+vi.mock('./VoiceInputControl', () => ({
+  VoiceInputControl: ({ onTranscript, disabled }: { onTranscript: (text: string) => void; disabled?: boolean }) => (
+    <button type="button" disabled={disabled} onClick={() => onTranscript('语音补充的任务说明')}>模拟语音转写</button>
+  ),
+}))
+
 import { ProductTaskPage } from './ProductTaskPage'
 import { useProductTaskBrowserPreviewStore } from '../stores/productTaskBrowserPreviewStore'
 
@@ -250,6 +256,18 @@ describe('ProductTaskPage', () => {
 
     expect(mocks.sendText).toHaveBeenCalledWith('task-1', '  /skill ball-hall-daily-review 整理今天订单  ')
     expect(input.value).toBe('')
+  })
+
+  it('appends a voice transcript to the product composer without sending it', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+    const input = screen.getByLabelText('任务输入') as HTMLTextAreaElement
+
+    fireEvent.change(input, { target: { value: '先确认球台情况' } })
+    fireEvent.click(screen.getByRole('button', { name: '模拟语音转写' }))
+
+    expect(input.value).toBe('先确认球台情况\n语音补充的任务说明')
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
   })
 
   it('does not clear an invalid task composer and reports the validation state', () => {

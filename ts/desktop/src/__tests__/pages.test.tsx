@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { ScheduledTasks } from '../pages/ScheduledTasks'
-import { UserMessage } from '../components/chat/UserMessage'
+import { AttachmentGallery } from '../components/chat/AttachmentGallery'
 import { useSettingsStore } from '../stores/settingsStore'
 
 beforeEach(() => {
@@ -26,11 +26,10 @@ describe('Content-only pages render without errors', () => {
   })
 })
 
-describe('Chat attachments', () => {
-  it('UserMessage opens image gallery when an attachment is clicked', () => {
+describe('Task attachments', () => {
+  it('AttachmentGallery opens image gallery when an attachment is clicked', () => {
     render(
-      <UserMessage
-        content=""
+      <AttachmentGallery
         attachments={[
           {
             type: 'image',
