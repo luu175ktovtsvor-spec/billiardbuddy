@@ -306,7 +306,7 @@ describe('product task event projection', () => {
         message: 'PRIVATE_MODEL_CONFIGURATION',
         data: { provider: 'PRIVATE_PROVIDER' },
       },
-      { type: 'permission_mode_changed', mode: 'bypassPermissions' },
+      { type: 'pong' },
       { type: 'session_title_updated', sessionId: 'private-session', title: '新的任务标题' },
     ])
 

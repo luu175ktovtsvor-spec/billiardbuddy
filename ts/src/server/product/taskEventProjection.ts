@@ -756,9 +756,8 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
       return title ? [{ type: 'title_updated', title }] : []
     }
 
-    // Runtime configuration, permission modes, internal notifications and
-    // usage metadata intentionally have no product-stream representation.
-    case 'permission_mode_changed':
+    // Runtime configuration, internal notifications and usage metadata
+    // intentionally have no product-stream representation.
     case 'pong':
       return []
   }

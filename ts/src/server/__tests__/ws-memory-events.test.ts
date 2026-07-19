@@ -230,18 +230,16 @@ describe('WebSocket compact events', () => {
     }, 'session-1')).toEqual([])
   })
 
-  it('forwards CLI permission-mode broadcasts instead of dropping them as thinking', () => {
+  it('suppresses CLI permission-mode broadcasts instead of treating them as thinking', () => {
     // CLI 在退出 plan 模式后恢复权限时会广播一条 status:null + permissionMode
-    // 的事件。它必须被翻译成 permission_mode_changed，而不是被 null→thinking
-    // 兜底吞掉 —— 这正是桌面端选择器卡在"计划模式"的根因。
+    // 的事件。会话回调会先持久化该状态；翻译层不得把它投影为产品事件，也不能
+    // 落入 null→thinking 兜底。
     expect(translateCliMessage({
       type: 'system',
       subtype: 'status',
       status: null,
       permissionMode: 'bypassPermissions',
-    }, 'session-1')).toEqual([
-      { type: 'permission_mode_changed', mode: 'bypassPermissions' },
-    ])
+    }, 'session-1')).toEqual([])
 
     // 普通 thinking（无 permissionMode）仍走原路径，不受影响。
     expect(translateCliMessage({
