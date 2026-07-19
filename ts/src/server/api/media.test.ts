@@ -84,6 +84,27 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   expect((await route(handler, `/api/media/project/${createdBody.project.id}`)).status).toBe(404)
 })
 
+test('media API reports toolchain availability without disclosing executable paths', async () => {
+  const handler = createMediaApiHandler({
+    async toolchainStatus() {
+      return {
+        ffmpeg: { available: true, command: '/Applications/BilliardBuddy.app/Contents/Resources/ffmpeg' },
+        ffprobe: { available: false, command: '/private/var/folders/internal/ffprobe' },
+      }
+    },
+  } as unknown as MediaProjectService)
+
+  const response = await route(handler, '/api/media/videos/toolchain')
+  expect(response.status).toBe(200)
+  const body = await response.json()
+  expect(body).toEqual({
+    ffmpeg: { available: true },
+    ffprobe: { available: false },
+  })
+  expect(JSON.stringify(body)).not.toContain('/Applications')
+  expect(JSON.stringify(body)).not.toContain('/private')
+})
+
 test('paid image submission and final render require the Electron-owned UI capability', async () => {
   const capability = 'c'.repeat(43)
   const sidecarEnv = { BB_MEDIA_UI_CAPABILITY: capability }

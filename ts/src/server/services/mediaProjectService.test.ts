@@ -313,6 +313,35 @@ describe('MediaProjectService image projects', () => {
     expect(await readFile(persistedPath, 'utf8')).not.toContain(reference)
   })
 
+  test('rejects a reference-image symlink before it can be sent to the image service', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    const mediaRoot = await root()
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      fetchImpl: async () => Response.json({ task_id: 'should-not-submit', status: 'queued' }),
+    })
+    const reference = `data:image/png;base64,${Buffer.from('trusted-reference').toString('base64')}`
+    const project = await service.createImageProject({
+      prompt: '带参考图的海报',
+      mode: 'edit',
+      reference_images: [reference],
+    })
+    const referenceName = project.reference_image_assets?.[0]
+    if (!referenceName) throw new Error('reference asset missing')
+
+    const referencePath = join(mediaRoot, 'assets', project.id, 'references', referenceName)
+    const outsidePath = join(mediaRoot, 'outside-reference.png')
+    await writeFile(outsidePath, 'private-file')
+    await rm(referencePath)
+    await symlink(outsidePath, referencePath)
+
+    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+      code: 'ASSET_OUTSIDE_PROJECT',
+      status: 403,
+    })
+  })
+
   test('reconciles a succeeded image task whose project update was interrupted', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example'
     process.env.QF_GATEWAY_TOKEN = 'app-token'

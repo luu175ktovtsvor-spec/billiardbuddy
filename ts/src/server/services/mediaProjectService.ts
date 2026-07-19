@@ -310,19 +310,23 @@ export class MediaProjectService {
     projectId: string,
     fileName: string,
     missing: { message: string, code: string },
+    subdirectory?: 'references',
   ): Promise<{ path: string, size: number }> {
     this.projectPath(projectId)
     const projectAssetDir = join(this.assetsDir, projectId)
-    const requestedPath = join(projectAssetDir, fileName)
+    const assetDir = subdirectory ? join(projectAssetDir, subdirectory) : projectAssetDir
+    const requestedPath = join(assetDir, fileName)
 
     let canonicalAssetsDir: string
     let canonicalProjectDir: string
+    let canonicalAssetDir: string
     let canonicalAssetPath: string
     let info: Awaited<ReturnType<typeof stat>>
     try {
-      [canonicalAssetsDir, canonicalProjectDir, canonicalAssetPath, info] = await Promise.all([
+      [canonicalAssetsDir, canonicalProjectDir, canonicalAssetDir, canonicalAssetPath, info] = await Promise.all([
         realpath(this.assetsDir),
         realpath(projectAssetDir),
+        realpath(assetDir),
         realpath(requestedPath),
         stat(requestedPath),
       ])
@@ -331,10 +335,14 @@ export class MediaProjectService {
     }
 
     const expectedProjectDir = join(canonicalAssetsDir, projectId)
+    const expectedAssetDir = subdirectory
+      ? join(canonicalProjectDir, subdirectory)
+      : canonicalProjectDir
     if (
       !info.isFile()
       || !this.pathsEqual(canonicalProjectDir, expectedProjectDir)
-      || !this.pathIsInside(canonicalProjectDir, canonicalAssetPath)
+      || !this.pathsEqual(canonicalAssetDir, expectedAssetDir)
+      || !this.pathIsInside(canonicalAssetDir, canonicalAssetPath)
     ) {
       if (!info.isFile()) throw new MediaServiceError(missing.message, 404, missing.code)
       throw new MediaServiceError('媒体资产不在当前项目目录内', 403, 'ASSET_OUTSIDE_PROJECT')
@@ -387,7 +395,11 @@ export class MediaProjectService {
     const assetNames = project.reference_image_assets ?? []
     if (assetNames.length === 0) return project.reference_images
     return await Promise.all(assetNames.map(async fileName => {
-      const bytes = await readFile(join(this.assetsDir, project.id, 'references', fileName))
+      const asset = await this.resolveOwnedAsset(project.id, fileName, {
+        message: '参考图片文件已经丢失',
+        code: 'REFERENCE_IMAGE_MISSING',
+      }, 'references')
+      const bytes = await readFile(asset.path)
       return `data:${referenceImageMime(fileName)};base64,${bytes.toString('base64')}`
     }))
   }

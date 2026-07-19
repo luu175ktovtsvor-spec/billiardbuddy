@@ -18,8 +18,8 @@ import { api, getApiUrl } from './client'
 import { getDesktopHost } from '../lib/desktopHost'
 
 export type MediaToolchainStatus = {
-  ffmpeg: { available: boolean; command: string }
-  ffprobe: { available: boolean; command: string }
+  ffmpeg: { available: boolean }
+  ffprobe: { available: boolean }
 }
 
 export const mediaApi = {

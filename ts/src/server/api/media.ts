@@ -76,6 +76,13 @@ function publicProject(project: MediaProject): MediaProject {
   }
 }
 
+function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['toolchainStatus']>>) {
+  return {
+    ffmpeg: { available: status.ffmpeg.available },
+    ffprobe: { available: status.ffprobe.available },
+  }
+}
+
 export function createMediaApiHandler(
   service = new MediaProjectService(),
   mediaUiCapability = '',
@@ -163,7 +170,7 @@ export function createMediaApiHandler(
 
       if (area === 'videos' && segments[3] === 'toolchain') {
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
-        return Response.json(await service.toolchainStatus())
+        return Response.json(publicToolchainStatus(await service.toolchainStatus()))
       }
 
       if (area === 'videos' && segments[3] === 'projects') {
