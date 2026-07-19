@@ -184,7 +184,7 @@ vi.mock('./VoiceInputControl', () => ({
 }))
 
 import { ProductTaskPage } from './ProductTaskPage'
-import { useProductTaskBrowserPreviewStore } from '../stores/productTaskBrowserPreviewStore'
+import { useProductTaskWorkspaceStore } from '../stores/productTaskWorkspaceStore'
 
 beforeEach(() => {
   mocks.index = {
@@ -247,7 +247,10 @@ beforeEach(() => {
   mocks.openProductTaskTab.mockReset()
   mocks.listSkills.mockReset().mockResolvedValue({ commands: [] })
   mocks.listAgents.mockReset().mockResolvedValue({ agents: [] })
-  useProductTaskBrowserPreviewStore.setState({ byTaskId: {} })
+  useProductTaskWorkspaceStore.setState(
+    useProductTaskWorkspaceStore.getInitialState(),
+    true,
+  )
   mocks.createSideTask.mockReset().mockResolvedValue({
     id: 'side-1',
     parentTaskId: 'task-1',
@@ -262,7 +265,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  useProductTaskBrowserPreviewStore.setState({ byTaskId: {} })
+  useProductTaskWorkspaceStore.setState(
+    useProductTaskWorkspaceStore.getInitialState(),
+    true,
+  )
   vi.clearAllMocks()
 })
 
@@ -639,10 +645,11 @@ describe('ProductTaskPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '预览' }))
 
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
       browserOpen: true,
       previewOpen: true,
-      activeMode: 'preview',
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'preview',
     })
     expect(screen.getByRole('button', { name: '预览' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
@@ -691,16 +698,18 @@ describe('ProductTaskPage', () => {
     expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
 
     fireEvent.click(browser)
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
       browserOpen: true,
       previewOpen: false,
-      activeMode: 'browser',
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'browser',
     })
     fireEvent.click(browser)
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toMatchObject({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
       browserOpen: false,
       previewOpen: false,
-      activeMode: null,
+      activePanel: null,
+      activeBrowserPreviewMode: null,
     })
     expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
     expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
@@ -713,27 +722,39 @@ describe('ProductTaskPage', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId).toEqual({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({
       'task-1': {
+        reviewOpen: false,
+        mediaOpen: false,
         browserOpen: true,
         previewOpen: false,
-        activeMode: 'browser',
+        terminalOpen: false,
+        activePanel: 'browser-preview',
+        activeBrowserPreviewMode: 'browser',
       },
     })
     expect(screen.getByTestId('product-task-browser-preview-dock')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '预览' }))
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toEqual({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toEqual({
+      reviewOpen: false,
+      mediaOpen: false,
       browserOpen: true,
       previewOpen: true,
-      activeMode: 'preview',
+      terminalOpen: false,
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'preview',
     })
 
     fireEvent.click(screen.getByRole('button', { name: '关闭预览' }))
-    expect(useProductTaskBrowserPreviewStore.getState().byTaskId['task-1']).toEqual({
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toEqual({
+      reviewOpen: false,
+      mediaOpen: false,
       browserOpen: true,
       previewOpen: false,
-      activeMode: 'browser',
+      terminalOpen: false,
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'browser',
     })
   })
 

@@ -26,9 +26,9 @@ import {
   useProductSideTaskStore,
 } from '../stores/productSideTaskStore'
 import {
-  useProductTaskBrowserPreviewStore,
+  useProductTaskWorkspaceStore,
   type ProductTaskBrowserPreviewMode,
-} from '../stores/productTaskBrowserPreviewStore'
+} from '../stores/productTaskWorkspaceStore'
 import {
   ProductTaskBrowserPreviewDock,
   type ProductTaskBrowserPreviewCapture,
@@ -73,44 +73,6 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
     default:
       return '准备就绪'
   }
-}
-
-type ProductTaskRightDockPanel = 'review' | 'media' | 'browser-preview'
-
-type OpenProductTaskRightDockPanels = Record<ProductTaskRightDockPanel, boolean>
-
-const PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER: readonly ProductTaskRightDockPanel[] = [
-  'review',
-  'media',
-  'browser-preview',
-]
-
-function firstOpenRightDockPanel(
-  openPanels: OpenProductTaskRightDockPanels,
-): ProductTaskRightDockPanel | null {
-  return PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.find((panel) => openPanels[panel]) ?? null
-}
-
-function nextOpenRightDockPanel(
-  closedPanel: ProductTaskRightDockPanel,
-  openPanels: OpenProductTaskRightDockPanels,
-): ProductTaskRightDockPanel | null {
-  const index = PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.indexOf(closedPanel)
-  for (let offset = 1; offset < PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.length; offset += 1) {
-    const candidate = PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER[
-      (index + offset) % PRODUCT_TASK_RIGHT_DOCK_PANEL_ORDER.length
-    ]!
-    if (openPanels[candidate]) return candidate
-  }
-  return null
-}
-
-function resolveActiveRightDockPanel(
-  requestedPanel: ProductTaskRightDockPanel | null,
-  openPanels: OpenProductTaskRightDockPanels,
-): ProductTaskRightDockPanel | null {
-  if (requestedPanel && openPanels[requestedPanel]) return requestedPanel
-  return firstOpenRightDockPanel(openPanels)
 }
 
 function slashQuery(value: string): string | null {
@@ -446,10 +408,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const createSideTask = useProductSideTaskStore((state) => state.createSideTask)
   const openSideTaskPanel = useProductSideTaskStore((state) => state.openSideTaskPanel)
   const sideTaskMutations = useProductSideTaskStore((state) => state.mutations)
-  const browserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.byTaskId[taskId])
-  const openBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.openPanel)
-  const closeBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.closePanel)
-  const activateBrowserPreviewPanel = useProductTaskBrowserPreviewStore((state) => state.activatePanel)
+  const workspace = useProductTaskWorkspaceStore((state) => state.byTaskId[taskId])
+  const openWorkspacePanel = useProductTaskWorkspaceStore((state) => state.openPanel)
+  const closeWorkspacePanel = useProductTaskWorkspaceStore((state) => state.closePanel)
+  const activateWorkspacePanel = useProductTaskWorkspaceStore((state) => state.activatePanel)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
@@ -462,33 +424,19 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [validationMessage, setValidationMessage] = useState<string | null>(null)
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
-  const [isReviewOpen, setIsReviewOpen] = useState(false)
-  const [isMediaOpen, setIsMediaOpen] = useState(false)
-  const [isTerminalOpen, setIsTerminalOpen] = useState(false)
-  const [activeRightDockPanel, setActiveRightDockPanel] = useState<ProductTaskRightDockPanel | null>(null)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const isBrowserOpen = browserPreviewPanel?.browserOpen ?? false
-  const isPreviewOpen = browserPreviewPanel?.previewOpen ?? false
-  const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
-  const openRightDockPanels: OpenProductTaskRightDockPanels = {
-    review: isReviewOpen,
-    media: isMediaOpen,
-    'browser-preview': isBrowserPreviewOpen,
-  }
-  const resolvedActiveRightDockPanel = resolveActiveRightDockPanel(
-    activeRightDockPanel,
-    openRightDockPanels,
-  )
-  const isReviewActive = resolvedActiveRightDockPanel === 'review'
-  const isMediaActive = resolvedActiveRightDockPanel === 'media'
-  const isBrowserPreviewActive = resolvedActiveRightDockPanel === 'browser-preview'
-
-  useEffect(() => {
-    if (resolvedActiveRightDockPanel === activeRightDockPanel) return
-    setActiveRightDockPanel(resolvedActiveRightDockPanel)
-  }, [activeRightDockPanel, resolvedActiveRightDockPanel])
+  const isReviewOpen = workspace?.reviewOpen ?? false
+  const isMediaOpen = workspace?.mediaOpen ?? false
+  const isTerminalOpen = workspace?.terminalOpen ?? false
+  const isBrowserOpen = workspace?.browserOpen ?? false
+  const isPreviewOpen = workspace?.previewOpen ?? false
+  const activeRightDockPanel = workspace?.activePanel ?? null
+  const activeBrowserPreviewMode = workspace?.activeBrowserPreviewMode ?? null
+  const isReviewActive = activeRightDockPanel === 'review'
+  const isMediaActive = activeRightDockPanel === 'media'
+  const isBrowserPreviewActive = activeRightDockPanel === 'browser-preview'
 
   const task = useMemo(
     () => index.tasks.find((candidate) => candidate.id === taskId) ?? null,
@@ -705,35 +653,27 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   ] === true
 
   const closeReviewDock = () => {
-    setIsReviewOpen(false)
-    setActiveRightDockPanel((current) => current === 'review'
-      ? nextOpenRightDockPanel('review', { ...openRightDockPanels, review: false })
-      : current)
+    closeWorkspacePanel(task.id, 'review')
   }
 
   const closeTerminalDock = () => {
-    setIsTerminalOpen(false)
+    closeWorkspacePanel(task.id, 'terminal')
   }
 
   const closeMediaDock = () => {
-    setIsMediaOpen(false)
-    setActiveRightDockPanel((current) => current === 'media'
-      ? nextOpenRightDockPanel('media', { ...openRightDockPanels, media: false })
-      : current)
+    closeWorkspacePanel(task.id, 'media')
   }
 
   const openReviewDock = () => {
-    setIsReviewOpen(true)
-    setActiveRightDockPanel('review')
+    openWorkspacePanel(task.id, 'review')
   }
 
   const openMediaDock = () => {
-    setIsMediaOpen(true)
-    setActiveRightDockPanel('media')
+    openWorkspacePanel(task.id, 'media')
   }
 
   const openTerminalDock = () => {
-    setIsTerminalOpen(true)
+    openWorkspacePanel(task.id, 'terminal')
   }
 
   const toggleReviewDock = () => {
@@ -761,26 +701,16 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const closeBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
-    closeBrowserPreviewPanel(task.id, mode)
-    const remainsOpen = mode === 'browser' ? isPreviewOpen : isBrowserOpen
-    setActiveRightDockPanel((current) => current === 'browser-preview' && !remainsOpen
-      ? nextOpenRightDockPanel('browser-preview', { ...openRightDockPanels, 'browser-preview': false })
-      : current)
+    closeWorkspacePanel(task.id, mode)
   }
 
   const openBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
-    const isOpen = mode === 'browser' ? isBrowserOpen : isPreviewOpen
-    if (isOpen) {
-      activateBrowserPreviewPanel(task.id, mode)
-    } else {
-      openBrowserPreviewPanel(task.id, mode)
-    }
-    setActiveRightDockPanel('browser-preview')
+    openWorkspacePanel(task.id, mode)
   }
 
   const toggleBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
     const isOpen = mode === 'browser' ? isBrowserOpen : isPreviewOpen
-    const isActive = isBrowserPreviewActive && browserPreviewPanel?.activeMode === mode
+    const isActive = isBrowserPreviewActive && activeBrowserPreviewMode === mode
     if (isOpen && isActive) {
       closeBrowserPreviewMode(mode)
       return
@@ -868,7 +798,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={() => toggleBrowserPreviewMode('browser')}
-          aria-pressed={isBrowserPreviewActive && isBrowserOpen && browserPreviewPanel?.activeMode === 'browser'}
+          aria-pressed={isBrowserPreviewActive && isBrowserOpen && activeBrowserPreviewMode === 'browser'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           浏览器
@@ -876,7 +806,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={() => toggleBrowserPreviewMode('preview')}
-          aria-pressed={isBrowserPreviewActive && isPreviewOpen && browserPreviewPanel?.activeMode === 'preview'}
+          aria-pressed={isBrowserPreviewActive && isPreviewOpen && activeBrowserPreviewMode === 'preview'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           预览
@@ -1038,7 +968,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           </form>
         </section>
 
-        {resolvedActiveRightDockPanel ? (
+        {activeRightDockPanel ? (
           <aside className="flex min-h-0 w-[min(34rem,46vw)] min-w-[22rem] flex-col overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
             {isReviewOpen ? (
               <div
@@ -1068,11 +998,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   taskId={task.id}
                   browserOpen={isBrowserOpen}
                   previewOpen={isPreviewOpen}
-                  activeMode={browserPreviewPanel?.activeMode ?? null}
-                  onActivate={(mode) => {
-                    activateBrowserPreviewPanel(task.id, mode)
-                    setActiveRightDockPanel('browser-preview')
-                  }}
+                  activeMode={activeBrowserPreviewMode}
+                  onActivate={(mode) => activateWorkspacePanel(task.id, mode)}
                   onClose={closeBrowserPreviewMode}
                   onCapture={addBrowserPreviewCapture}
                 />

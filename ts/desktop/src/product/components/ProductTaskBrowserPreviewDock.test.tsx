@@ -6,7 +6,7 @@ import { useBrowserPanelStore } from '../../stores/browserPanelStore'
 import {
   productTaskBrowserPreviewKey,
   type ProductTaskBrowserPreviewMode,
-} from '../stores/productTaskBrowserPreviewStore'
+} from '../stores/productTaskWorkspaceStore'
 
 beforeAll(() => {
   Object.defineProperty(globalThis, 'ResizeObserver', {
