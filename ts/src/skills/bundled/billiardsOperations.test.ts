@@ -80,4 +80,14 @@ describe('billiards operations skills', () => {
       expect(skill.content).toContain('references/README.md')
     }
   })
+
+  it('does not claim that campaign artwork exists before its workbench can run', () => {
+    const campaign = BILLIARDS_OPERATIONS_SKILLS.find(
+      skill => skill.name === 'venue-campaign-planning',
+    )
+
+    expect(campaign?.prompt).toContain('先确认“做海报和图片”工作台及其执行链真实可用')
+    expect(campaign?.prompt).toContain('未接线或无法生成时，只交付图片 Brief')
+    expect(campaign?.prompt).toContain('不把草稿或成品写成已生成')
+  })
 })
