@@ -325,7 +325,9 @@ async function main(): Promise<void> {
   // A high-to-low capacity run needs to continue after a failed upper bound in order
   // to locate the first viable lower bound. The explicit stop switch remains for
   // incident-style probes where any failure must halt traffic immediately.
-  const continueAfterFailure = !args.includes('--stop-after-failure') || args.includes('--continue-after-failure')
+  // Continuing is the default. If both compatibility switches are accidentally
+  // supplied, the explicit safety stop must win.
+  const continueAfterFailure = !args.includes('--stop-after-failure')
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
