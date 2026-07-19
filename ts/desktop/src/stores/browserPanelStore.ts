@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { useWorkspacePanelStore } from './workspacePanelStore'
 
 export const MIN_BROWSER_ZOOM = 0.5
 export const MAX_BROWSER_ZOOM = 1.5
@@ -70,11 +69,6 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
         bySession: { ...st.bySession, [sessionId]: { ...empty(url), zoom, loading: true } },
       }
     })
-    // Browser visibility belongs to this store. Opening a preview only brings
-    // the browser forward in the shared right-side dock; it must not open the
-    // file workspace or overwrite that panel's visibility state.
-    const workspacePanel = useWorkspacePanelStore.getState()
-    workspacePanel.setMode(sessionId, 'browser')
   },
   ensureBlank: (sessionId) => set((st) => {
     const cur = st.bySession[sessionId]
@@ -114,10 +108,6 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set) => ({
       return { bySession: { ...st.bySession, [sessionId]: { ...cur, isOpen: false, pickerActive: false } } }
     })
 
-    const workspacePanel = useWorkspacePanelStore.getState()
-    if (workspacePanel.getMode(sessionId) === 'browser') {
-      workspacePanel.setMode(sessionId, 'workspace')
-    }
   },
   setNavigated: (sessionId, url, title) => set((st) => {
     const cur = st.bySession[sessionId]; if (!cur) return st
