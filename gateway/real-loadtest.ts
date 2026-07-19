@@ -19,7 +19,7 @@ type Capacity = {
 }
 
 type GatewayHealth = {
-  capacity?: { deepseek?: Capacity }
+  capacity?: { deepseek?: Capacity; mimo?: Capacity }
 }
 
 type Sample = {
@@ -51,6 +51,7 @@ Options:
   --phases=a,b,c              Concurrent request steps (default: 1,20,50,100,...,total)
   --scenario=short|stream     "short" asks for OK; "stream" asks for a short numbered stream
   --max-tokens=<n>            Upstream max_tokens per request (default: 64)
+  --pool=deepseek|mimo        Capacity pool sampled from /healthz (auto from model)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 200)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
@@ -181,6 +182,9 @@ async function main(): Promise<void> {
   const pauseMs = integer(option(args, '--pause-ms'), '--pause-ms', 2_500)
   const scenario = option(args, '--scenario') ?? 'stream'
   if (scenario !== 'short' && scenario !== 'stream') throw new Error('--scenario must be short or stream')
+  const model = process.env.QF_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash'
+  const pool = option(args, '--pool') ?? (model.toLowerCase().startsWith('mimo') ? 'mimo' : 'deepseek')
+  if (pool !== 'deepseek' && pool !== 'mimo') throw new Error('--pool must be deepseek or mimo')
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
   const phases = parsePhases(option(args, '--phases'), total)
@@ -198,7 +202,7 @@ async function main(): Promise<void> {
       const response = await fetch(`${baseUrl}/healthz`, { headers })
       if (!response.ok) return null
       const body = await response.json() as GatewayHealth
-      return body.capacity?.deepseek ?? null
+      return body.capacity?.[pool] ?? null
     } catch {
       return null
     }
@@ -215,7 +219,7 @@ async function main(): Promise<void> {
         headers: { ...headers, 'X-QF-Client-ID': installation },
         signal: controller.signal,
         body: JSON.stringify({
-          model: process.env.QF_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash',
+          model,
           stream: true,
           max_tokens: maxTokens,
           temperature: 0,
@@ -250,6 +254,7 @@ async function main(): Promise<void> {
     windows,
     phases,
     scenario,
+    pool,
     maxTokens,
   }))
 
