@@ -8,8 +8,8 @@
  * Example on the gateway host (the token should be populated locally there):
  *   QF_LOADTEST_URL=http://127.0.0.1:8799 \
  *   QF_LOADTEST_TOKEN=... \
- *   bun gateway/real-loadtest.ts --execute --users=100 --windows=5 \
- *     --phases=1,20,50,100,256,500 --scenario=stream
+ *   bun gateway/real-loadtest.ts --execute --users=100 --windows=8 \
+ *     --phases=1,20,50,100,256 --scenario=stream
  */
 
 type Capacity = {
@@ -26,6 +26,9 @@ type Sample = {
   status: number
   firstByteMs: number | null
   totalMs: number
+  /** A 2xx response is not enough: the test request must finish its SSE protocol. */
+  completed: boolean
+  failureKind?: 'timeout' | 'network' | 'empty_stream' | 'incomplete_sse'
 }
 
 type PhaseSummary = {
@@ -33,9 +36,11 @@ type PhaseSummary = {
   succeeded: number
   failed: number
   statuses: Record<string, number>
+  failureKinds: Record<string, number>
   firstByteMs: { p50: number | null; p95: number | null }
   totalMs: { p50: number | null; p95: number | null }
-  peakGateway: { active: number; queued: number; oldestQueueMs: number }
+  /** Observed through periodic /healthz samples; never use this as an exact peak proof. */
+  observedGateway: { active: number; queued: number; oldestQueueMs: number; samples: number; unavailableSamples: number }
   finalGateway: Capacity | null
 }
 
@@ -53,15 +58,17 @@ Options:
   --max-tokens=<n>            Upstream max_tokens per request (default: 64)
   --pool=deepseek|mimo        Capacity pool sampled from /healthz (auto from model)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
-  --health-interval-ms=<n>    Health sampling interval (default: 200)
+  --health-interval-ms=<n>    Health sampling interval (default: 100)
+  --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
-  --continue-after-failure    Continue after a phase returns any non-2xx response
+  --continue-after-failure    Continue after a phase has an HTTP or incomplete-SSE failure
   --use-server-app-token      Gateway-host only: read its app token solely for
                                http://127.0.0.1:8799 (never an external URL)
 
 The runner uses controlled X-QF-Client-ID values so a 100×5 phase models five
-windows per installation, and reads every SSE body to completion. It reports
-status/timing/capacity only; it never logs tokens or model output.`)
+windows per installation, reads every SSE body to completion, and requires a
+terminal data: [DONE] event for success. It reports only status/timing/capacity
+metadata; it never logs tokens, request bodies, or model output.`)
   process.exit(exitCode)
 }
 
@@ -90,6 +97,10 @@ function sleep(ms: number): Promise<void> {
 
 function nonNegative(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0
+}
+
+function recordCount(target: Record<string, number>, key: string): void {
+  target[key] = (target[key] ?? 0) + 1
 }
 
 function parsePhases(raw: string | undefined, total: number): number[] {
@@ -175,10 +186,13 @@ async function main(): Promise<void> {
   const users = integer(option(args, '--users'), '--users', 100)
   const windows = integer(option(args, '--windows'), '--windows', 5)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 64)
-  // Gateway's default DeepSeek queue may wait 120 seconds, so a 90-second client
-  // timeout would manufacture failures before the capacity test reaches the queue.
+  // Keep the caller deadline above a valid upstream stream even when an explicit
+  // deployment uses a longer bounded queue. The current production default is much
+  // shorter (15s), but the runner should not manufacture failures when auditing a
+  // different safe profile.
   const timeoutMs = integer(option(args, '--timeout-ms'), '--timeout-ms', 180_000)
-  const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 200)
+  const healthIntervalMs = integer(option(args, '--health-interval-ms'), '--health-interval-ms', 100)
+  const healthTimeoutMs = integer(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000)
   const pauseMs = integer(option(args, '--pause-ms'), '--pause-ms', 2_500)
   const scenario = option(args, '--scenario') ?? 'stream'
   if (scenario !== 'short' && scenario !== 'stream') throw new Error('--scenario must be short or stream')
@@ -198,13 +212,17 @@ async function main(): Promise<void> {
     : `请逐行输出从 1 到 ${Math.min(maxTokens, 128)} 的整数，不要加任何解释。`
 
   async function health(): Promise<Capacity | null> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), healthTimeoutMs)
     try {
-      const response = await fetch(`${baseUrl}/healthz`, { headers })
+      const response = await fetch(`${baseUrl}/healthz`, { headers, signal: controller.signal })
       if (!response.ok) return null
       const body = await response.json() as GatewayHealth
       return body.capacity?.[pool] ?? null
     } catch {
       return null
+    } finally {
+      clearTimeout(timeout)
     }
   }
 
@@ -227,21 +245,43 @@ async function main(): Promise<void> {
         }),
       })
       let firstByteMs: number | null = null
+      let sawChunk = false
+      let sawDone = false
+      let sseTail = ''
+      const decoder = new TextDecoder()
       const reader = response.body?.getReader()
       if (reader) {
         while (true) {
           const next = await reader.read()
           if (next.done) break
-          if (firstByteMs === null && next.value.byteLength > 0) firstByteMs = performance.now() - started
+          if (next.value.byteLength === 0) continue
+          sawChunk = true
+          if (firstByteMs === null) firstByteMs = performance.now() - started
+          // `[DONE]` may be split across TCP chunks, so retain a tiny decoded tail.
+          sseTail = `${sseTail}${decoder.decode(next.value, { stream: true })}`.slice(-64)
+          if (sseTail.includes('data: [DONE]')) sawDone = true
         }
       }
+      sseTail = `${sseTail}${decoder.decode()}`.slice(-64)
+      if (sseTail.includes('data: [DONE]')) sawDone = true
+      const completed = response.ok && sawChunk && sawDone
       return {
         status: response.status,
         firstByteMs: firstByteMs === null ? null : Math.round(firstByteMs),
         totalMs: Math.round(performance.now() - started),
+        completed,
+        failureKind: completed || !response.ok
+          ? undefined
+          : sawChunk ? 'incomplete_sse' : 'empty_stream',
       }
     } catch {
-      return { status: 0, firstByteMs: null, totalMs: Math.round(performance.now() - started) }
+      return {
+        status: 0,
+        firstByteMs: null,
+        totalMs: Math.round(performance.now() - started),
+        completed: false,
+        failureKind: controller.signal.aborted ? 'timeout' : 'network',
+      }
     } finally {
       clearTimeout(timeout)
     }
@@ -263,13 +303,23 @@ async function main(): Promise<void> {
     let peakActive = 0
     let peakQueued = 0
     let peakOldestQueueMs = 0
+    let healthSamples = 0
+    let unavailableHealthSamples = 0
+    const observeHealth = (snapshot: Capacity | null) => {
+      healthSamples += 1
+      if (!snapshot) unavailableHealthSamples += 1
+      peakActive = Math.max(peakActive, nonNegative(snapshot?.active))
+      peakQueued = Math.max(peakQueued, nonNegative(snapshot?.queued))
+      peakOldestQueueMs = Math.max(peakOldestQueueMs, nonNegative(snapshot?.oldestQueueMs))
+    }
+    // Establish the authenticated health path before the burst. Periodic samples
+    // remain observations, not an exact concurrency proof for very short streams.
+    observeHealth(await health())
     const monitorTask = (async () => {
       while (monitor) {
-        const snapshot = await health()
-        peakActive = Math.max(peakActive, nonNegative(snapshot?.active))
-        peakQueued = Math.max(peakQueued, nonNegative(snapshot?.queued))
-        peakOldestQueueMs = Math.max(peakOldestQueueMs, nonNegative(snapshot?.oldestQueueMs))
-        await sleep(healthIntervalMs)
+        const sampledAt = performance.now()
+        observeHealth(await health())
+        await sleep(Math.max(0, healthIntervalMs - (performance.now() - sampledAt)))
       }
     })()
     const samples = await Promise.all(Array.from({ length: requested }, (_, index) => runOne(index)))
@@ -277,18 +327,29 @@ async function main(): Promise<void> {
     await monitorTask
     const finalGateway = await health()
     const statuses: Record<string, number> = {}
-    for (const sample of samples) statuses[String(sample.status)] = (statuses[String(sample.status)] ?? 0) + 1
+    const failureKinds: Record<string, number> = {}
+    for (const sample of samples) {
+      recordCount(statuses, String(sample.status))
+      if (!sample.completed) recordCount(failureKinds, sample.failureKind ?? `http_${sample.status}`)
+    }
     const firstBytes = samples.flatMap(sample => sample.firstByteMs === null ? [] : [sample.firstByteMs])
     const totals = samples.map(sample => sample.totalMs)
-    const succeeded = samples.filter(sample => sample.status >= 200 && sample.status < 300).length
+    const succeeded = samples.filter(sample => sample.completed).length
     const summary: PhaseSummary = {
       requested,
       succeeded,
       failed: requested - succeeded,
       statuses,
+      failureKinds,
       firstByteMs: { p50: percentile(firstBytes, 0.5), p95: percentile(firstBytes, 0.95) },
       totalMs: { p50: percentile(totals, 0.5), p95: percentile(totals, 0.95) },
-      peakGateway: { active: peakActive, queued: peakQueued, oldestQueueMs: peakOldestQueueMs },
+      observedGateway: {
+        active: peakActive,
+        queued: peakQueued,
+        oldestQueueMs: peakOldestQueueMs,
+        samples: healthSamples,
+        unavailableSamples: unavailableHealthSamples,
+      },
       finalGateway,
     }
     console.log(JSON.stringify({ event: 'loadtest_phase', ...summary }))
