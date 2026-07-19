@@ -3,6 +3,7 @@ import type { ProductTaskSocketLifecycleEvent } from '../api/taskSocket'
 
 const apiMocks = vi.hoisted(() => ({
   getThread: vi.fn(),
+  list: vi.fn(),
 }))
 const socketMocks = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -13,6 +14,7 @@ const socketMocks = vi.hoisted(() => ({
 vi.mock('../api/tasks', () => ({
   productTasksApi: {
     getThread: apiMocks.getThread,
+    list: apiMocks.list,
   },
 }))
 
@@ -84,6 +86,7 @@ describe('product task runtime store', () => {
     })
     useTabStore.setState({ tabs: [], activeTabId: null })
     apiMocks.getThread.mockReset()
+    apiMocks.list.mockReset()
     socketMocks.connect.mockReset()
     socketMocks.disconnect.mockReset()
     socketMocks.send.mockReset()
@@ -294,6 +297,7 @@ describe('product task runtime store', () => {
   })
 
   it('replaces completed live entries with the canonical thread snapshot', async () => {
+    apiMocks.list.mockResolvedValue(EMPTY_PRODUCT_TASK_INDEX)
     apiMocks.getThread
       .mockResolvedValueOnce({ taskId: 'task-complete', entries: [] })
       .mockResolvedValueOnce({
@@ -320,6 +324,8 @@ describe('product task runtime store', () => {
     eventHandler?.({ type: 'activity', kind: 'workspace', phase: 'completed' })
     eventHandler?.({ type: 'turn_complete' })
     await flushMicrotasks()
+
+    expect(apiMocks.list).toHaveBeenCalledOnce()
 
     expect(useProductTaskRuntimeStore.getState().tasks['task-complete']?.entries).toEqual([
       threadEntry('thread-user', 'user_text', '整理今天订单'),
@@ -519,6 +525,7 @@ describe('product task runtime store', () => {
     const task: ProductTaskRecord = {
       id: 'task-title',
       projectId: 'project-title',
+      directoryId: 'directory-title',
       workDir: '/workspace/billiard',
       title: '旧任务标题',
       lifecycle: 'active',
@@ -532,6 +539,7 @@ describe('product task runtime store', () => {
       index: {
         schemaVersion: 1,
         projects: [],
+        directories: [],
         tasks: [task],
         total: 1,
         capabilities: { createTask: true },

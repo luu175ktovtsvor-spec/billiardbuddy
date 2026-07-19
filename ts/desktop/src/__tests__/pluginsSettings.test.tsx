@@ -107,9 +107,11 @@ describe('Settings > Plugins tab', () => {
     useProductTaskStore.setState({
       index: {
         ...EMPTY_PRODUCT_TASK_INDEX,
+        directories: [],
         tasks: [{
           id: 'task-1',
           projectId: 'project-1',
+          directoryId: 'directory-1',
           workDir: '/workspace/project',
           title: 'Active task',
           lifecycle: 'active',

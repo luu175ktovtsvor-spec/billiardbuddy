@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   closeTab: vi.fn(),
   connectProductTask: vi.fn(),
   sendProductTaskMessage: vi.fn(),
-  index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
+  index: { projects: [], directories: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
   taskRuntimes: {} as Record<string, unknown>,
   tabs: [] as Array<Record<string, unknown>>,
 }))
@@ -89,6 +89,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     worktreeState: 'not_requested',
     actions: ['continue'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-1',
   }
 }
 
@@ -114,7 +115,7 @@ beforeEach(() => {
   mocks.taskIndexProps = null
   mocks.taskComposerProps = null
   mocks.events.length = 0
-  mocks.index = { projects: [], tasks: [], total: 0, capabilities: { createTask: true } }
+  mocks.index = { projects: [], directories: [], tasks: [], total: 0, capabilities: { createTask: true } }
   mocks.taskRuntimes = {}
   mocks.tabs = []
   mocks.refresh.mockResolvedValue(undefined)
@@ -170,6 +171,7 @@ describe('ProductShell', () => {
   it('projects the product task stream state into the task index', () => {
     mocks.index = {
       projects: [],
+      directories: [],
       tasks: [makeTask()],
       total: 1,
       capabilities: { createTask: true },
@@ -193,6 +195,7 @@ describe('ProductShell', () => {
   it('surfaces a product stream error through the task index', () => {
     mocks.index = {
       projects: [],
+      directories: [],
       tasks: [makeTask()],
       total: 1,
       capabilities: { createTask: true },

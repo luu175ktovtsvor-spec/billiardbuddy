@@ -72,14 +72,24 @@ describe('DesktopSidebar', () => {
       projects: [{
         id: 'project-1',
         title: 'BilliardBuddy',
-        workDir: '/workspace/billiard',
+        rootDir: '/workspace/billiard',
+        createdAt: '2026-07-18T00:00:00.000Z',
         taskCount: 1,
         archivedTaskCount: 0,
+        updatedAt: '2026-07-18T00:00:00.000Z',
+      }],
+      directories: [{
+        id: 'directory-1',
+        projectId: 'project-1',
+        path: '/workspace/billiard',
+        label: 'BilliardBuddy',
+        createdAt: '2026-07-18T00:00:00.000Z',
         updatedAt: '2026-07-18T00:00:00.000Z',
       }],
       tasks: [{
         id: 'task-1',
         projectId: 'project-1',
+        directoryId: 'directory-1',
         workDir: '/workspace/billiard',
         title: '整理训练计划',
         lifecycle: 'active',
@@ -111,9 +121,11 @@ describe('DesktopSidebar', () => {
     const index: ProductTaskIndexResponse = {
       schemaVersion: 1,
       projects: [],
+      directories: [],
       tasks: [{
         id: 'task-running',
         projectId: 'project-1',
+        directoryId: 'directory-1',
         workDir: '/workspace/billiard',
         title: '正在整理训练计划',
         lifecycle: 'active',
@@ -154,7 +166,8 @@ describe('DesktopSidebar', () => {
         {
           id: 'project-newer',
           title: '较新项目',
-          workDir: '/workspace/newer',
+          rootDir: '/workspace/newer',
+          createdAt: '2026-07-19T00:00:00.000Z',
           taskCount: 1,
           archivedTaskCount: 0,
           updatedAt: '2026-07-19T00:00:00.000Z',
@@ -162,9 +175,28 @@ describe('DesktopSidebar', () => {
         {
           id: 'project-pinned',
           title: '置顶项目',
-          workDir: '/workspace/pinned',
+          rootDir: '/workspace/pinned',
+          createdAt: '2026-07-18T00:00:00.000Z',
           taskCount: 1,
           archivedTaskCount: 0,
+          updatedAt: '2026-07-18T00:00:00.000Z',
+        },
+      ],
+      directories: [
+        {
+          id: 'directory-newer',
+          projectId: 'project-newer',
+          path: '/workspace/newer',
+          label: '较新项目',
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+        },
+        {
+          id: 'directory-pinned',
+          projectId: 'project-pinned',
+          path: '/workspace/pinned',
+          label: '置顶项目',
+          createdAt: '2026-07-18T00:00:00.000Z',
           updatedAt: '2026-07-18T00:00:00.000Z',
         },
       ],
@@ -172,6 +204,7 @@ describe('DesktopSidebar', () => {
         {
           id: 'task-newer',
           projectId: 'project-newer',
+          directoryId: 'directory-newer',
           workDir: '/workspace/newer',
           title: '较新任务',
           lifecycle: 'active',
@@ -184,6 +217,7 @@ describe('DesktopSidebar', () => {
         {
           id: 'task-pinned',
           projectId: 'project-pinned',
+          directoryId: 'directory-pinned',
           workDir: '/workspace/pinned',
           title: '置顶任务',
           lifecycle: 'active',

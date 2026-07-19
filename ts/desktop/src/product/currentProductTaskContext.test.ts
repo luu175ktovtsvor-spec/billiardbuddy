@@ -19,6 +19,7 @@ function task(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
     worktreeState: 'not_requested',
     actions: ['rename'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-current',
   }
 }
 

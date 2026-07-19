@@ -13,6 +13,7 @@ import type {
 export const EMPTY_PRODUCT_TASK_INDEX: ProductTaskIndexResponse = {
   schemaVersion: PRODUCT_DOMAIN_VERSION,
   projects: [],
+  directories: [],
   tasks: [],
   total: 0,
   capabilities: {
@@ -47,17 +48,50 @@ function errorMessage(error: unknown, fallback: string): string {
   return productApiUserFacingError(error, fallback)
 }
 
+function timestamp(value: string): number {
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function reconcileProjectSummaries(
+  index: ProductTaskIndexResponse,
+  tasks: readonly ProductTaskRecord[],
+): ProductTaskIndexResponse['projects'] {
+  return index.projects.map((project) => {
+    const projectTasks = tasks.filter((task) => task.projectId === project.id)
+    let updatedAt = project.updatedAt
+    let updatedTimestamp = timestamp(updatedAt)
+    let taskCount = 0
+    let archivedTaskCount = 0
+
+    for (const task of projectTasks) {
+      if (task.lifecycle === 'archived') archivedTaskCount += 1
+      else taskCount += 1
+      const taskTimestamp = timestamp(task.updatedAt)
+      if (taskTimestamp > updatedTimestamp) {
+        updatedAt = task.updatedAt
+        updatedTimestamp = taskTimestamp
+      }
+    }
+
+    return {
+      ...project,
+      taskCount,
+      archivedTaskCount,
+      updatedAt,
+    }
+  })
+}
+
 function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): ProductTaskIndexResponse {
   const exists = index.tasks.some((current) => current.id === task.id)
   const tasks = orderProductTasks(exists
     ? index.tasks.map((current) => current.id === task.id ? task : current)
     : [task, ...index.tasks])
+  const projects = reconcileProjectSummaries(index, tasks)
   return {
     ...index,
-    projects: orderProductProjects(
-      index.projects,
-      tasks.filter((candidate) => candidate.lifecycle === 'active'),
-    ),
+    projects: orderProductProjects(projects, tasks),
     tasks,
     total: tasks.length,
   }
@@ -65,7 +99,7 @@ function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): P
 
 let latestRefreshRequest = 0
 
-export const useProductTaskStore = create<ProductTaskStore>((set) => {
+export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
   const runMutation = async (
     key: string,
     action: () => Promise<{ task: ProductTaskRecord }>,
@@ -142,7 +176,11 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
       })
     },
 
-    createTask: (input) => runMutation('create', () => productTasksApi.create(input)),
+    createTask: async (input) => {
+      const task = await runMutation('create', () => productTasksApi.create(input))
+      await get().refresh()
+      return task
+    },
 
     renameTask: (taskId, title) => runMutation(
       productTaskMutationKey(taskId, 'rename'),
@@ -169,9 +207,13 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
       () => productTasksApi.restore(taskId),
     ),
 
-    continueTask: (taskId, input) => runMutation(
-      productTaskMutationKey(taskId, 'continue'),
-      () => productTasksApi.continue(taskId, input),
-    ),
+    continueTask: async (taskId, input) => {
+      const task = await runMutation(
+        productTaskMutationKey(taskId, 'continue'),
+        () => productTasksApi.continue(taskId, input),
+      )
+      await get().refresh()
+      return task
+    },
   }
 })

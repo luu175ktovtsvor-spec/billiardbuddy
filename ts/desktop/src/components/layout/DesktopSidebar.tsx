@@ -308,7 +308,7 @@ export function DesktopSidebar() {
                       type="button"
                       onClick={() => setProjectOpen(project.id, !open)}
                       className="flex h-full min-w-0 flex-1 items-center gap-2.5 px-2.5 text-left"
-                      title={project.workDir}
+                      title={project.rootDir}
                       aria-expanded={open}
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--color-text-secondary)]">
@@ -318,7 +318,7 @@ export function DesktopSidebar() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => d.openNewTask(project.workDir)}
+                      onClick={() => d.openNewTask(project.rootDir)}
                       title={`在 ${project.title} 中新建任务`}
                       aria-label={`在 ${project.title} 中新建任务`}
                       className="shrink-0 rounded p-1 text-[var(--color-text-secondary)] opacity-0 transition-opacity hover:bg-[var(--color-surface-hover)] group-hover/proj:opacity-70"

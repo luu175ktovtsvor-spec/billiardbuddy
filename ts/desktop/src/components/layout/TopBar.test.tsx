@@ -43,6 +43,7 @@ function makeProductTask(overrides: Partial<ProductTaskRecord> = {}): ProductTas
     worktreeState: 'not_requested',
     actions: ['pin', 'rename', 'archive', 'continue'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-topbar',
   }
 }
 
@@ -51,6 +52,7 @@ function setActiveProductTask(task = makeProductTask()) {
     index: {
       schemaVersion: 1,
       projects: [],
+      directories: [],
       tasks: [task],
       total: 1,
       capabilities: { createTask: true },

@@ -52,9 +52,11 @@ describe('GeneralSettings output style', () => {
       index: {
         schemaVersion: 1,
         projects: [],
+        directories: [],
         tasks: [{
           id: 'task-1',
           projectId: 'project-1',
+          directoryId: 'directory-1',
           workDir: '/repo',
           title: 'Project task',
           lifecycle: 'active',

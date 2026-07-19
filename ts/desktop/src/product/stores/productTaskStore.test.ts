@@ -29,6 +29,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
     worktreeState: 'planned',
     actions: ['rename', 'archive', 'continue'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-1',
   }
 }
 
@@ -38,9 +39,18 @@ function makeIndex(task = makeTask()): ProductTaskIndexResponse {
     projects: [{
       id: 'project-1',
       title: 'BilliardBuddy',
-      workDir: '/workspace/billiard',
+      rootDir: '/workspace/billiard',
+      createdAt: '2026-07-18T00:00:00.000Z',
       taskCount: 1,
       archivedTaskCount: 0,
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }],
+    directories: [{
+      id: 'directory-1',
+      projectId: 'project-1',
+      path: '/workspace/billiard',
+      label: 'BilliardBuddy',
+      createdAt: '2026-07-18T00:00:00.000Z',
       updatedAt: '2026-07-18T00:00:00.000Z',
     }],
     tasks: [task],
@@ -93,6 +103,47 @@ describe('productTaskStore', () => {
     expect(useProductTaskStore.getState().error).not.toContain('.claude')
   })
 
+  it('refreshes the registered directory catalog after creating a task', async () => {
+    const created = makeTask({
+      id: 'task-created',
+      projectId: 'project-created',
+      directoryId: 'directory-created',
+      workDir: '/workspace/created',
+      title: '新建训练计划',
+    })
+    const refreshed: ProductTaskIndexResponse = {
+      schemaVersion: 1,
+      projects: [{
+        id: 'project-created',
+        title: '新建项目',
+        rootDir: '/workspace/created',
+        createdAt: '2026-07-19T00:00:00.000Z',
+        taskCount: 1,
+        archivedTaskCount: 0,
+        updatedAt: created.updatedAt,
+      }],
+      directories: [{
+        id: 'directory-created',
+        projectId: 'project-created',
+        path: '/workspace/created',
+        label: '新建项目',
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt: created.updatedAt,
+      }],
+      tasks: [created],
+      total: 1,
+      capabilities: { createTask: true },
+    }
+    vi.mocked(productTasksApi.create).mockResolvedValue({ task: created })
+    vi.mocked(productTasksApi.list).mockResolvedValue(refreshed)
+
+    await useProductTaskStore.getState().createTask({ workDir: '/workspace/created' })
+
+    expect(productTasksApi.create).toHaveBeenCalledWith({ workDir: '/workspace/created' })
+    expect(productTasksApi.list).toHaveBeenCalledOnce()
+    expect(useProductTaskStore.getState().index.directories).toEqual(refreshed.directories)
+  })
+
   it('applies a streamed title to the indexed product task without changing lifecycle metadata', () => {
     const original = makeTask({
       lifecycle: 'archived',
@@ -126,6 +177,10 @@ describe('productTaskStore', () => {
 
     expect(productTasksApi.archive).toHaveBeenCalledWith('task-1')
     expect(useProductTaskStore.getState().index.tasks).toEqual([archived])
+    expect(useProductTaskStore.getState().index.projects[0]).toEqual(expect.objectContaining({
+      taskCount: 0,
+      archivedTaskCount: 1,
+    }))
     expect(useProductTaskStore.getState().mutations['task-1:archive']).toBe(false)
   })
 
@@ -133,6 +188,7 @@ describe('productTaskStore', () => {
     const pinnedTask = makeTask({
       id: 'task-pinned',
       projectId: 'project-pinned',
+      directoryId: 'directory-pinned',
       title: '置顶任务',
       workDir: '/workspace/pinned',
       updatedAt: '2026-07-18T00:00:00.000Z',
@@ -141,6 +197,7 @@ describe('productTaskStore', () => {
     const newerTask = makeTask({
       id: 'task-newer',
       projectId: 'project-newer',
+      directoryId: 'directory-newer',
       title: '较新任务',
       workDir: '/workspace/newer',
       updatedAt: '2026-07-19T00:00:00.000Z',
@@ -152,7 +209,8 @@ describe('productTaskStore', () => {
           {
             id: 'project-newer',
             title: '较新项目',
-            workDir: '/workspace/newer',
+            rootDir: '/workspace/newer',
+            createdAt: '2026-07-19T00:00:00.000Z',
             taskCount: 1,
             archivedTaskCount: 0,
             updatedAt: newerTask.updatedAt,
@@ -160,9 +218,28 @@ describe('productTaskStore', () => {
           {
             id: 'project-pinned',
             title: '置顶项目',
-            workDir: '/workspace/pinned',
+            rootDir: '/workspace/pinned',
+            createdAt: '2026-07-18T00:00:00.000Z',
             taskCount: 1,
             archivedTaskCount: 0,
+            updatedAt: pinnedTask.updatedAt,
+          },
+        ],
+        directories: [
+          {
+            id: 'directory-newer',
+            projectId: 'project-newer',
+            path: '/workspace/newer',
+            label: '较新项目',
+            createdAt: '2026-07-19T00:00:00.000Z',
+            updatedAt: newerTask.updatedAt,
+          },
+          {
+            id: 'directory-pinned',
+            projectId: 'project-pinned',
+            path: '/workspace/pinned',
+            label: '置顶项目',
+            createdAt: '2026-07-18T00:00:00.000Z',
             updatedAt: pinnedTask.updatedAt,
           },
         ],
@@ -195,17 +272,27 @@ describe('productTaskStore', () => {
     const original = makeTask()
     const continuation = makeTask({
       id: 'task-2',
+      workDir: '/workspace/billiard/.worktrees/continuation',
       title: '继续修复开球规则',
       kind: 'continuation',
       parentTaskId: original.id,
     })
+    const refreshed: ProductTaskIndexResponse = {
+      ...makeIndex(original),
+      tasks: [continuation, original],
+      total: 2,
+    }
     useProductTaskStore.setState({ index: makeIndex(original) })
     vi.mocked(productTasksApi.continue).mockResolvedValue({ task: continuation })
+    vi.mocked(productTasksApi.list).mockResolvedValue(refreshed)
 
     await useProductTaskStore.getState().continueTask(original.id, {})
 
     expect(productTasksApi.continue).toHaveBeenCalledWith('task-1', {})
+    expect(productTasksApi.list).toHaveBeenCalledOnce()
     expect(useProductTaskStore.getState().index.tasks).toEqual([continuation, original])
+    expect(continuation.directoryId).toBe(original.directoryId)
+    expect(useProductTaskStore.getState().index.directories).toEqual(refreshed.directories)
     expect(useProductTaskStore.getState().index.total).toBe(2)
   })
 })

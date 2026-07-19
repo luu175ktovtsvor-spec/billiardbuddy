@@ -69,6 +69,7 @@ function makeParentTask(overrides: Partial<ProductTaskRecord> = {}): ProductTask
     worktreeState: 'not_requested',
     actions: ['continue'],
     ...overrides,
+    directoryId: overrides.directoryId ?? 'directory-1',
   }
 }
 

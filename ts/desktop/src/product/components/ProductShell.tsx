@@ -85,6 +85,7 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
         <TaskComposer
           key={initialWorkDir ?? 'manual'}
           projects={index.projects}
+          directories={index.directories}
           initialWorkDir={initialWorkDir}
           isSubmitting={mutations.create === true}
           onCancel={cancelNewTask}

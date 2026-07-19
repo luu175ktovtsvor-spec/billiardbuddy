@@ -617,6 +617,7 @@ function bindActiveUserTurnCompletion(
 
     conversationService.removeOutputCallback(sessionId, callback)
     clearActiveUserTurn(sessionId, activeTurn)
+    sessionService.invalidateSessionList()
     // Structurally disarm any prewarm idle timer that a concurrent
     // prewarm_session/user_message flush may have armed on this session: once a
     // turn completes the session is firmly user-owned, so no prewarm reaper

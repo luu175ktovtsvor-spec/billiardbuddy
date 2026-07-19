@@ -4,6 +4,9 @@ import type { ProductTaskMediaApi } from '../product/taskMediaService.js'
 
 const task = {
   id: 'task-1',
+  projectId: 'project-1',
+  directoryId: 'directory-1',
+  workDir: '/workspace/hall-operations',
   title: '整理本周球房活动',
   coreSessionId: 'internal-session-1',
   sourceTurnId: 'internal-turn-1',
@@ -49,8 +52,7 @@ function createService() {
       listTasks: record('listTasks', {
         schemaVersion: 1,
         projects: [],
-        workspaces: [],
-        worktrees: [],
+        directories: [],
         tasks: [task],
         total: 1,
         capabilities: { createTask: true },
