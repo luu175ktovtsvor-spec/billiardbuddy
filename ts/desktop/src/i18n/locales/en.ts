@@ -192,21 +192,6 @@ export const en = {
   'settings.tab.mcp': 'External connections',
   'settings.tab.plugins': 'Plugins',
 
-  // Settings > Profile
-  'settings.general.profileTitle': 'Profile',
-  'settings.general.profileDescription': 'Personal details stored only on this device.',
-  'settings.general.profileDisplayName': 'Display name',
-  'settings.general.profileSubtitle': 'Second line',
-  'settings.general.profileDisplayNameHelper': 'Add an optional second line to your profile.',
-  'settings.general.profileAvatar': 'Avatar',
-  'settings.general.profileAvatarHelper': 'PNG, JPEG, or WebP up to 2 MB.',
-  'settings.general.profileChangeAvatar': 'Change avatar',
-  'settings.general.profileRemoveAvatar': 'Remove avatar',
-  'settings.general.profileSave': 'Save profile',
-  'settings.general.profileSaved': 'Saved locally',
-  'settings.general.profileLoadFailed': 'Could not load profile',
-  'settings.general.profileSaveFailed': 'Could not save profile',
-
   // Settings > Terminal
   'settings.terminal.title': 'Terminal',
   'settings.terminal.description': 'Run host-machine commands for plugin, Skill, and MCP setup.',

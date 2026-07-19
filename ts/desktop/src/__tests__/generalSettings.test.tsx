@@ -30,10 +30,6 @@ vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
 vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
 vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
-vi.mock('../pages/ProfileSettings', () => ({
-  ProfileSettings: () => <div>Profile Settings Mock</div>,
-}))
-
 function installElectronDesktopHost() {
   window.desktopHost = {
     ...browserHost,

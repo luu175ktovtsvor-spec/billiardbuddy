@@ -26,7 +26,6 @@ import { PluginDetail } from '../components/plugins/PluginDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
-import { ProfileSettings } from './ProfileSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
@@ -814,8 +813,6 @@ export function GeneralSettings() {
 
   return (
     <div className="max-w-xl">
-      <ProfileSettings />
-
       {/* Appearance selector */}
       <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.appearanceTitle')}</h2>
       <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.appearanceDescription')}</p>

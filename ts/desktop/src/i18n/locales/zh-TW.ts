@@ -194,21 +194,6 @@ export const zh: Record<TranslationKey, string> = {
   'settings.tab.mcp': '外部連線',
   'settings.tab.plugins': '外掛',
 
-  // Settings > Profile
-  'settings.general.profileTitle': '個人資料',
-  'settings.general.profileDescription': '個人資料僅保存在這台裝置上。',
-  'settings.general.profileDisplayName': '顯示名稱',
-  'settings.general.profileSubtitle': '第二行',
-  'settings.general.profileDisplayNameHelper': '可為個人資料新增一行補充說明。',
-  'settings.general.profileAvatar': '頭像',
-  'settings.general.profileAvatarHelper': '支援 PNG、JPEG 或 WebP，最大 2 MB。',
-  'settings.general.profileChangeAvatar': '更換頭像',
-  'settings.general.profileRemoveAvatar': '移除頭像',
-  'settings.general.profileSave': '儲存個人資料',
-  'settings.general.profileSaved': '已儲存到本地',
-  'settings.general.profileLoadFailed': '無法載入個人資料',
-  'settings.general.profileSaveFailed': '儲存個人資料失敗',
-
   // Settings > Terminal
   'settings.terminal.title': '終端',
   'settings.terminal.description': '直接執行宿主機命令，用於安裝外掛、Skills、MCP 等擴充套件。',

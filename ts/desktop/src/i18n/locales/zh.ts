@@ -194,21 +194,6 @@ export const zh: Record<TranslationKey, string> = {
   'settings.tab.mcp': '外部连接',
   'settings.tab.plugins': '插件',
 
-  // Settings > Profile
-  'settings.general.profileTitle': '个人资料',
-  'settings.general.profileDescription': '个人资料仅保存在这台设备上。',
-  'settings.general.profileDisplayName': '显示名称',
-  'settings.general.profileSubtitle': '第二行',
-  'settings.general.profileDisplayNameHelper': '可为个人资料添加一行补充说明。',
-  'settings.general.profileAvatar': '头像',
-  'settings.general.profileAvatarHelper': '支持 PNG、JPEG 或 WebP，最大 2 MB。',
-  'settings.general.profileChangeAvatar': '更换头像',
-  'settings.general.profileRemoveAvatar': '移除头像',
-  'settings.general.profileSave': '保存个人资料',
-  'settings.general.profileSaved': '已保存到本地',
-  'settings.general.profileLoadFailed': '无法加载个人资料',
-  'settings.general.profileSaveFailed': '保存个人资料失败',
-
   // Settings > Terminal
   'settings.terminal.title': '终端',
   'settings.terminal.description': '直接运行宿主机命令，用于安装插件、Skills、MCP 等扩展。',
