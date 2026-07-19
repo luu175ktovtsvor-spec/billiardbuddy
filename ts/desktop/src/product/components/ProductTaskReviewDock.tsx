@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { productTasksApi } from '../api/tasks'
 import type {
   ProductTaskReviewDiff,
@@ -65,6 +65,8 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   const [diff, setDiff] = useState<ProductTaskReviewDiff | null>(null)
   const [isLoadingSelection, setIsLoadingSelection] = useState(false)
   const [videoPreviewError, setVideoPreviewError] = useState(false)
+  const initialLoadVersionRef = useRef(0)
+  const selectionLoadVersionRef = useRef(0)
 
   const loadTree = useCallback(async (path = '') => {
     const nextTree = await productTasksApi.getReviewTree(taskId, path)
@@ -72,30 +74,44 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   }, [taskId])
 
   const loadInitial = useCallback(async () => {
+    const requestVersion = initialLoadVersionRef.current + 1
+    initialLoadVersionRef.current = requestVersion
+    // A new task-level load also invalidates file/diff requests from the
+    // previous tree, so their late results cannot repopulate this dock.
+    selectionLoadVersionRef.current += 1
     setLoadState('loading')
     setStatus(null)
     setTree(null)
     setSelectedPath(null)
     setFile(null)
     setDiff(null)
+    setIsLoadingSelection(false)
     setVideoPreviewError(false)
     try {
       const [nextStatus] = await Promise.all([
         productTasksApi.getReviewStatus(taskId),
         loadTree(''),
       ])
+      if (initialLoadVersionRef.current !== requestVersion) return
       setStatus(nextStatus)
       setLoadState('ready')
     } catch {
+      if (initialLoadVersionRef.current !== requestVersion) return
       setLoadState('error')
     }
   }, [loadTree, taskId])
 
   useEffect(() => {
     void loadInitial()
+    return () => {
+      initialLoadVersionRef.current += 1
+      selectionLoadVersionRef.current += 1
+    }
   }, [loadInitial])
 
   const selectFile = useCallback(async (path: string) => {
+    const requestVersion = selectionLoadVersionRef.current + 1
+    selectionLoadVersionRef.current = requestVersion
     setSelectedPath(path)
     setIsLoadingSelection(true)
     setVideoPreviewError(false)
@@ -104,13 +120,17 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
         productTasksApi.getReviewFile(taskId, path),
         productTasksApi.getReviewDiff(taskId, path),
       ])
+      if (selectionLoadVersionRef.current !== requestVersion) return
       setFile(nextFile)
       setDiff(nextDiff)
     } catch {
+      if (selectionLoadVersionRef.current !== requestVersion) return
       setFile(null)
       setDiff(null)
     } finally {
-      setIsLoadingSelection(false)
+      if (selectionLoadVersionRef.current === requestVersion) {
+        setIsLoadingSelection(false)
+      }
     }
   }, [taskId])
 
