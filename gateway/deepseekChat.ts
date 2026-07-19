@@ -57,14 +57,32 @@ export function deepseekOpaqueUserId(user: string, client: string): string {
 export type DeepSeekChatContext = { userId?: string }
 
 /**
+ * The desktop Core runtime represents its enabled setting as `adaptive`, while
+ * DeepSeek's OpenAI-compatible endpoint accepts only `enabled` or `disabled`.
+ * Normalize that one compatibility spelling at the gateway boundary and reject
+ * every other shape before it can become an opaque upstream 400.
+ */
+function normalizeDeepSeekThinking(value: unknown): { type: 'enabled' | 'disabled' } | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    throw new DeepSeekRequestError(400, 'DeepSeek 思考模式必须是 enabled 或 disabled')
+  }
+  if (value.type === 'adaptive') return { type: 'enabled' }
+  if (value.type === 'enabled' || value.type === 'disabled') return { type: value.type }
+  throw new DeepSeekRequestError(400, 'DeepSeek 思考模式必须是 enabled 或 disabled')
+}
+
+/**
  * 归一化 DeepSeek 聊天请求体:
  * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
  * - 注入受信 opaque `user_id`(DeepSeek 官方字段名,非 OpenAI 的 `user`;覆盖客户端自带的任何值,
  *   防止伪造),供 DeepSeek 调度/KVCache/内容安全隔离。id 形如 bb_<hex>,匹配官方正则 [a-zA-Z0-9-_]+。
  * - 不做任何原生 web_search 注入 —— 原生检索由单独的 `/v1/messages` 路由处理；本 OpenAI
  *   Chat 请求路径不会伪造工具或绕过现有视觉桥接。
- * 其余字段(messages / tools / tool_choice / stream / thinking / reasoning_effort …)原样透传,
- * 保持 OpenAI Chat Completions 请求契约与 DeepSeek 思考模式开关。
+ * - Core 的 `thinking:{type:'adaptive'}` 在这里收敛为 DeepSeek 支持的 `enabled`；其它
+ *   非法思考值在到达上游前失败关闭，避免设置页开关悄然失效。
+ * 其余字段(messages / tools / tool_choice / stream / reasoning_effort …)原样透传,
+ * 保持 OpenAI Chat Completions 请求契约。
  */
 export function prepareDeepSeekChatBody(
   rawBody: string,
@@ -89,9 +107,15 @@ export function prepareDeepSeekChatBody(
   if (!MODEL_PATTERN.test(model)) throw new DeepSeekRequestError(503, '模型服务未配置')
 
   const userId = ctx?.userId
-  // 无改写(model 不变且无 user_id 注入)时原样透传,避免多一次序列化。
-  if (model === requested && !userId) return { body: rawBody }
+  const hasThinkingInput = parsed.thinking !== undefined
+  const thinking = normalizeDeepSeekThinking(parsed.thinking)
+  // 无改写(model 不变、无 user_id 注入、无思考参数)时原样透传,避免多一次序列化。
+  if (model === requested && !userId && !hasThinkingInput) return { body: rawBody }
   const next: Record<string, unknown> = { ...parsed, model }
+  if (hasThinkingInput) {
+    if (thinking) next.thinking = thinking
+    else delete next.thinking
+  }
   // DeepSeek 用 user_id(不是 OpenAI 的 user);删掉客户端可能自带的 user/user_id 再写入受信值,防伪造。
   if (userId) {
     delete next.user
