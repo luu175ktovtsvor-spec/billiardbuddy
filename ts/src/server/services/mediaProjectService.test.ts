@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { MediaProject } from '../../../shared/contracts/media.js'
+import type { MediaProject, VideoStudioProject } from '../../../shared/contracts/media.js'
 import { MediaProjectService, MediaServiceError, type MediaProcessRunner } from './mediaProjectService.js'
 
 const roots: string[] = []
@@ -680,7 +680,11 @@ describe('MediaProjectService video projects', () => {
         else options?.signal?.addEventListener('abort', finish, { once: true })
       })
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      runProcess,
+      env: { BB_MEDIA_MAX_QUEUED_RENDERS: '0' },
+    })
     const first = await service.createVideoProject({ title: 'first' })
     const second = await service.createVideoProject({ title: 'second' })
     const firstReady = await service.addVideoSource(first.id, { path: sourcePath })
@@ -706,6 +710,244 @@ describe('MediaProjectService video projects', () => {
     })
     expect(secondTask.project_id).toBe(second.id)
     await service.cancelTask(secondTask.id)
+  })
+
+  test('reserves a final output path while another video task owns it', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    const outputPath = join(mediaRoot, 'shared-output.mp4')
+    await writeFile(sourcePath, 'source')
+    let renderStarted = false
+    const runProcess: MediaProcessRunner = async (command, options) => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-encoders')) return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            format: { duration: '2' },
+            streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+          }),
+          stderr: '',
+        }
+      }
+      renderStarted = true
+      return await new Promise(resolve => {
+        const finish = () => resolve({ exitCode: 1, stdout: '', stderr: 'cancelled' })
+        if (options?.signal?.aborted) finish()
+        else options?.signal?.addEventListener('abort', finish, { once: true })
+      })
+    }
+    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const first = await service.createVideoProject({ title: 'first' })
+    const second = await service.createVideoProject({ title: 'second' })
+    const firstReady = await service.addVideoSource(first.id, { path: sourcePath })
+    const secondReady = await service.addVideoSource(second.id, { path: sourcePath })
+    const firstTask = await service.renderVideo(first.id, {
+      revision: firstReady.project.revision,
+      output_path: outputPath,
+    })
+    for (let index = 0; index < 50 && !renderStarted; index += 1) await Bun.sleep(2)
+
+    await expect(service.renderVideo(second.id, {
+      revision: secondReady.project.revision,
+      output_path: outputPath,
+    })).rejects.toMatchObject({ code: 'VIDEO_OUTPUT_PATH_BUSY' })
+
+    await service.cancelTask(firstTask.id)
+    const secondTask = await service.renderVideo(second.id, {
+      revision: secondReady.project.revision,
+      output_path: outputPath,
+    })
+    await service.cancelTask(secondTask.id)
+  })
+
+  test('bounds one desktop sidecar to five admitted video windows by default', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    let renderStarts = 0
+    const runProcess: MediaProcessRunner = async (command, options) => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-encoders')) return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            format: { duration: '2' },
+            streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+          }),
+          stderr: '',
+        }
+      }
+      renderStarts += 1
+      return await new Promise(resolve => {
+        const finish = () => resolve({ exitCode: 1, stdout: '', stderr: 'cancelled' })
+        if (options?.signal?.aborted) finish()
+        else options?.signal?.addEventListener('abort', finish, { once: true })
+      })
+    }
+    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const ready: Array<{ project: VideoStudioProject }> = []
+    for (let index = 0; index < 6; index += 1) {
+      const project = await service.createVideoProject({ title: `window-${index + 1}` })
+      ready.push(await service.addVideoSource(project.id, { path: sourcePath }))
+    }
+    const outcomes = await Promise.all(ready.map(async (item, index) => {
+      try {
+        return {
+          task: await service.renderVideo(item.project.id, {
+            revision: item.project.revision,
+            output_path: join(mediaRoot, 'exports', `window-${index + 1}.mp4`),
+          }),
+        }
+      } catch (error) {
+        return { error }
+      }
+    }))
+    const accepted = outcomes.flatMap(outcome => 'task' in outcome ? [outcome.task] : [])
+    const rejected = outcomes.flatMap(outcome => 'error' in outcome ? [outcome.error] : [])
+    expect(accepted).toHaveLength(5)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({ code: 'VIDEO_RENDER_BUSY' })
+    for (let index = 0; index < 50 && renderStarts < 1; index += 1) await Bun.sleep(2)
+    expect(renderStarts).toBe(1)
+    await Promise.all(accepted.map(task => service.cancelTask(task.id)))
+  })
+
+  test('runs 100 local sidecars with five video windows each without sharing an FFmpeg encoder', async () => {
+    let renderStarts = 0
+    let activeEncoders = 0
+    let peakEncoders = 0
+    const runProcess: MediaProcessRunner = async (command, options) => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-encoders')) return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            format: { duration: '2' },
+            streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+          }),
+          stderr: '',
+        }
+      }
+      renderStarts += 1
+      activeEncoders += 1
+      peakEncoders = Math.max(peakEncoders, activeEncoders)
+      return await new Promise(resolve => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          activeEncoders -= 1
+          resolve({ exitCode: 1, stdout: '', stderr: 'cancelled' })
+        }
+        if (options?.signal?.aborted) finish()
+        else options?.signal?.addEventListener('abort', finish, { once: true })
+      })
+    }
+    const users = await Promise.all(Array.from({ length: 100 }, async (_, userIndex) => {
+      const mediaRoot = await root()
+      const sourcePath = join(mediaRoot, 'source.mp4')
+      await writeFile(sourcePath, 'source')
+      const service = new MediaProjectService({ root: mediaRoot, runProcess })
+      const projects = await Promise.all(Array.from({ length: 5 }, (_, windowIndex) => (
+        service.createVideoProject({ title: `user-${userIndex + 1}-window-${windowIndex + 1}` })
+      )))
+      const prepared = await Promise.all(projects.map(project => service.addVideoSource(project.id, { path: sourcePath })))
+      const tasks = await Promise.all(prepared.map((ready, windowIndex) => (
+        service.renderVideo(ready.project.id, {
+          revision: ready.project.revision,
+          output_path: join(mediaRoot, 'exports', `window-${windowIndex + 1}.mp4`),
+        })
+      )))
+      return { service, tasks }
+    }))
+
+    const accepted = users.flatMap(user => user.tasks)
+    expect(accepted).toHaveLength(500)
+    expect(users.every(user => user.tasks[0]?.stage === '等待导出')).toBe(true)
+    expect(users.every(user => user.tasks.slice(1).every(task => task.stage === '正在排队等待本机视频导出'))).toBe(true)
+    for (let index = 0; index < 500 && renderStarts < 100; index += 1) await Bun.sleep(2)
+    expect(renderStarts).toBe(100)
+    expect(peakEncoders).toBe(100)
+
+    const cancelledQueued = await Promise.all(users.flatMap(user => (
+      user.tasks.slice(1).map(task => user.service.cancelTask(task.id))
+    )))
+    expect(cancelledQueued).toHaveLength(400)
+    expect(cancelledQueued.every(task => task.status === 'cancelled')).toBe(true)
+    const cancelledActive = await Promise.all(users.map(user => user.service.cancelTask(user.tasks[0]!.id)))
+    expect(cancelledActive.every(task => task.status === 'cancelled')).toBe(true)
+    expect(renderStarts).toBe(100)
+    expect(activeEncoders).toBe(0)
+  })
+
+  test('limits each local sidecar to two FFprobe scans and three waiting windows', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    let activeProbes = 0
+    let peakProbes = 0
+    const runProcess: MediaProcessRunner = async command => {
+      if (!command.includes('-show_streams')) throw new Error(`unexpected command: ${command[0]}`)
+      activeProbes += 1
+      peakProbes = Math.max(peakProbes, activeProbes)
+      await Bun.sleep(5)
+      activeProbes -= 1
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          format: { duration: '2' },
+          streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+        }),
+        stderr: '',
+      }
+    }
+    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const projectIds = await Promise.all(Array.from({ length: 5 }, async (_, index) => (
+      (await service.createVideoProject({ title: `probe-window-${index + 1}` })).id
+    )))
+
+    const results = await Promise.all(projectIds.map(projectId => service.addVideoSource(projectId, { path: sourcePath })))
+    expect(results).toHaveLength(5)
+    expect(peakProbes).toBe(2)
+    expect(activeProbes).toBe(0)
+  })
+
+  test('rejects excess FFprobe admissions instead of opening an unbounded local scan burst', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    const runProcess: MediaProcessRunner = async command => {
+      if (!command.includes('-show_streams')) throw new Error(`unexpected command: ${command[0]}`)
+      await Bun.sleep(5)
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          format: { duration: '2' },
+          streams: [{ codec_type: 'video', width: 1280, height: 720 }],
+        }),
+        stderr: '',
+      }
+    }
+    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const projectIds = await Promise.all(Array.from({ length: 6 }, async (_, index) => (
+      (await service.createVideoProject({ title: `probe-overflow-${index + 1}` })).id
+    )))
+    const outcomes = await Promise.all(projectIds.map(async projectId => {
+      try {
+        return { result: await service.addVideoSource(projectId, { path: sourcePath }) }
+      } catch (error) {
+        return { error }
+      }
+    }))
+    const accepted = outcomes.flatMap(outcome => 'result' in outcome ? [outcome.result] : [])
+    const rejected = outcomes.flatMap(outcome => 'error' in outcome ? [outcome.error] : [])
+    expect(accepted).toHaveLength(5)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({ code: 'VIDEO_PROBE_BUSY' })
   })
 
   test('rejects cancellation once final output commit starts', async () => {

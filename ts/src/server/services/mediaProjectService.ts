@@ -65,6 +65,13 @@ type VideoEncoderProfile = {
 type ActiveVideoRender = {
   controller: AbortController
   completion: Promise<void>
+  outputPath: string
+}
+
+type QueuedVideoRender = {
+  project: VideoStudioProject
+  task: MediaTask
+  outputPath: string
 }
 
 type MoveFile = (source: string, destination: string) => Promise<void>
@@ -72,6 +79,33 @@ type MoveFile = (source: string, destination: string) => Promise<void>
 const FALLBACK_VIDEO_ENCODER: VideoEncoderProfile = {
   name: 'mpeg4',
   args: ['-q:v', '3'],
+}
+
+/**
+ * A desktop export owns the local encoder, rather than a shared gateway
+ * worker. Keep one FFmpeg process active per desktop sidecar and retain just
+ * enough waiting slots for the product's five-window burst assumption.
+ */
+const DEFAULT_MAX_QUEUED_VIDEO_RENDERS = 4
+const MAX_QUEUED_VIDEO_RENDERS = 4
+const MAX_CONCURRENT_VIDEO_PROBES = 2
+const DEFAULT_MAX_QUEUED_VIDEO_PROBES = 3
+const MAX_QUEUED_VIDEO_PROBES = 3
+
+function maxQueuedVideoRenders(env: Record<string, string | undefined>): number {
+  const configured = env.BB_MEDIA_MAX_QUEUED_RENDERS?.trim()
+  if (!configured) return DEFAULT_MAX_QUEUED_VIDEO_RENDERS
+  const parsed = Number(configured)
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_MAX_QUEUED_VIDEO_RENDERS
+  return Math.min(parsed, MAX_QUEUED_VIDEO_RENDERS)
+}
+
+function maxQueuedVideoProbes(env: Record<string, string | undefined>): number {
+  const configured = env.BB_MEDIA_MAX_QUEUED_VIDEO_PROBES?.trim()
+  if (!configured) return DEFAULT_MAX_QUEUED_VIDEO_PROBES
+  const parsed = Number(configured)
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_MAX_QUEUED_VIDEO_PROBES
+  return Math.min(parsed, MAX_QUEUED_VIDEO_PROBES)
 }
 
 export type MediaProjectServiceOptions = {
@@ -256,11 +290,16 @@ export class MediaProjectService {
   private readonly now: () => Date
   private readonly env: Record<string, string | undefined>
   private readonly activeRenders = new Map<string, ActiveVideoRender>()
+  private readonly queuedVideoRenders: QueuedVideoRender[] = []
+  private readonly maxQueuedVideoRenders: number
+  private readonly maxQueuedVideoProbes: number
   private readonly activeImageSubmissions = new Map<string, Promise<MediaTask>>()
   private readonly videoProjectMutations = new Map<string, Promise<void>>()
+  private videoRenderAdmissions: Promise<void> = Promise.resolve()
+  private activeVideoProbes = 0
+  private readonly queuedVideoProbeAdmissions: Array<() => void> = []
   /** Shared across service instances in the desktop server process. */
   private static readonly productTaskAttachmentMutations = new Map<string, Promise<void>>()
-  private renderStarting = false
   private encoderProfilePromise: Promise<VideoEncoderProfile> | null = null
 
   constructor(options: MediaProjectServiceOptions = {}) {
@@ -273,6 +312,8 @@ export class MediaProjectService {
     this.moveFile = options.moveFile ?? rename
     this.now = options.now ?? (() => new Date())
     this.env = options.env ?? process.env
+    this.maxQueuedVideoRenders = maxQueuedVideoRenders(this.env)
+    this.maxQueuedVideoProbes = maxQueuedVideoProbes(this.env)
   }
 
   private iso(): string {
@@ -397,6 +438,51 @@ export class MediaProjectService {
   }
 
   /**
+   * Admission is deliberately separate from a project mutation. Different
+   * project windows can request export at the same instant, but they must
+   * observe one shared active-plus-waiting limit before any task is persisted.
+   */
+  private async withVideoRenderAdmission<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.videoRenderAdmissions
+    let release!: () => void
+    const current = new Promise<void>(resolveLock => { release = resolveLock })
+    const queued = previous.then(() => current)
+    this.videoRenderAdmissions = queued
+    await previous
+    try {
+      return await action()
+    } finally {
+      release()
+      if (this.videoRenderAdmissions === queued) {
+        this.videoRenderAdmissions = Promise.resolve()
+      }
+    }
+  }
+
+  /**
+   * FFprobe is much lighter than an encoder, but concurrent metadata scans
+   * still compete for the user's local disk. Two scans plus three waiting
+   * admissions cover five windows without allowing an unbounded local burst.
+   */
+  private async withVideoProbeAdmission<T>(action: () => Promise<T>): Promise<T> {
+    if (this.activeVideoProbes < MAX_CONCURRENT_VIDEO_PROBES) {
+      this.activeVideoProbes += 1
+    } else {
+      if (this.queuedVideoProbeAdmissions.length >= this.maxQueuedVideoProbes) {
+        throw new MediaServiceError('本机视频素材读取队列已满，请稍后重试', 409, 'VIDEO_PROBE_BUSY')
+      }
+      await new Promise<void>(resolveAdmission => this.queuedVideoProbeAdmissions.push(resolveAdmission))
+    }
+    try {
+      return await action()
+    } finally {
+      const next = this.queuedVideoProbeAdmissions.shift()
+      if (next) next()
+      else this.activeVideoProbes -= 1
+    }
+  }
+
+  /**
    * Product-media ownership is a one-time claim. Keep concurrent requests for
    * one project serialized so two task pages cannot both observe an unowned
    * draft and overwrite one another's owner.
@@ -460,6 +546,23 @@ export class MediaProjectService {
         const sourceInfo = await stat(source.path).catch(() => null)
         if (sourceInfo && sourceInfo.dev === outputInfo.dev && sourceInfo.ino === outputInfo.ino) return true
       }
+    }
+    return false
+  }
+
+  /**
+   * A queued render reserves its chosen final path. Without this check, two
+   * independent windows could both select the same file and the later FFmpeg
+   * commit would silently replace the first export.
+   */
+  private async outputReservedByVideoRender(outputPath: string): Promise<boolean> {
+    const requested = await this.comparablePath(outputPath)
+    const reserved = [
+      ...[...this.activeRenders.values()].map(render => render.outputPath),
+      ...this.queuedVideoRenders.map(render => render.outputPath),
+    ]
+    for (const candidate of reserved) {
+      if (this.pathsEqual(await this.comparablePath(candidate), requested)) return true
     }
     return false
   }
@@ -540,7 +643,8 @@ export class MediaProjectService {
     if (
       task.kind === 'video.render' &&
       ['queued', 'running', 'committing'].includes(task.status) &&
-      !this.activeRenders.has(task.id)
+      !this.activeRenders.has(task.id) &&
+      !this.queuedVideoRenders.some(render => render.task.id === task.id)
     ) {
       return await this.recoverInterruptedVideoRender(task)
     }
@@ -1385,7 +1489,9 @@ export class MediaProjectService {
   }
 
   async addVideoSource(projectId: string, raw: AddVideoSourceInput): Promise<{ project: VideoStudioProject; task: MediaTask }> {
-    return await this.withVideoProjectMutation(projectId, () => this.addVideoSourceSerial(projectId, raw))
+    return await this.withVideoProbeAdmission(() => (
+      this.withVideoProjectMutation(projectId, () => this.addVideoSourceSerial(projectId, raw))
+    ))
   }
 
   private async addVideoSourceSerial(projectId: string, raw: AddVideoSourceInput): Promise<{ project: VideoStudioProject; task: MediaTask }> {
@@ -1501,75 +1607,95 @@ export class MediaProjectService {
   }
 
   async renderVideo(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
-    return await this.withVideoProjectMutation(projectId, () => this.renderVideoSerial(projectId, raw))
+    return await this.withVideoRenderAdmission(() => (
+      this.withVideoProjectMutation(projectId, () => this.renderVideoSerial(projectId, raw))
+    ))
   }
 
   private async renderVideoSerial(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
-    if (this.renderStarting) {
-      throw new MediaServiceError('另一个视频正在准备导出，请稍后重试', 409, 'VIDEO_RENDER_BUSY')
+    this.startNextQueuedVideoRender()
+    const input = renderVideoInputSchema.parse(raw)
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+    if (project.state === 'rendering') {
+      const existing = project.task_id ? await this.getTask(project.task_id, false).catch(() => null) : null
+      if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
+      throw new MediaServiceError('导出状态异常，请刷新后重试', 409, 'RENDER_STATE_CONFLICT')
     }
-    this.renderStarting = true
-    try {
-      const input = renderVideoInputSchema.parse(raw)
-      const project = await this.getProject(projectId)
-      if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
-      if (project.state === 'rendering') {
-        const existing = project.task_id ? await this.getTask(project.task_id, false).catch(() => null) : null
-        if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
-        throw new MediaServiceError('导出状态异常，请刷新后重试', 409, 'RENDER_STATE_CONFLICT')
-      }
-      if (this.activeRenders.size > 0) {
-        throw new MediaServiceError('另一个视频正在导出，请等待完成或取消后再试', 409, 'VIDEO_RENDER_BUSY')
-      }
-      if (project.revision !== input.revision) throw new MediaServiceError('视频项目已更新，请刷新后再导出', 409, 'REVISION_CONFLICT')
-      if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
-      if (!isAbsolute(input.output_path)) throw new MediaServiceError('导出路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
-      if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
-        throw new MediaServiceError('视频只能导出为 MP4 或 MOV', 400, 'OUTPUT_FORMAT_UNSUPPORTED')
-      }
-      if (await this.outputMatchesSource(input.output_path, project.sources)) {
-        throw new MediaServiceError('导出位置不能覆盖原始视频素材', 409, 'OUTPUT_OVERWRITES_SOURCE')
-      }
-      const status = await this.toolchainStatus()
-      if (!status.ffmpeg.available || !status.ffprobe.available) {
-        throw new MediaServiceError(
-          mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message,
-          503,
-          'VIDEO_TOOLCHAIN_UNAVAILABLE',
-        )
-      }
+    if (project.revision !== input.revision) throw new MediaServiceError('视频项目已更新，请刷新后再导出', 409, 'REVISION_CONFLICT')
+    if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
+    if (!isAbsolute(input.output_path)) throw new MediaServiceError('导出路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
+    if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
+      throw new MediaServiceError('视频只能导出为 MP4 或 MOV', 400, 'OUTPUT_FORMAT_UNSUPPORTED')
+    }
+    if (await this.outputMatchesSource(input.output_path, project.sources)) {
+      throw new MediaServiceError('导出位置不能覆盖原始视频素材', 409, 'OUTPUT_OVERWRITES_SOURCE')
+    }
+    if (await this.outputReservedByVideoRender(input.output_path)) {
+      throw new MediaServiceError('另一个视频任务已占用这个导出位置，请选择其他文件', 409, 'VIDEO_OUTPUT_PATH_BUSY')
+    }
+    if (this.activeRenders.size + this.queuedVideoRenders.length >= 1 + this.maxQueuedVideoRenders) {
+      throw new MediaServiceError('本机视频导出队列已满，请等待当前任务完成或取消后再试', 409, 'VIDEO_RENDER_BUSY')
+    }
+    const status = await this.toolchainStatus()
+    if (!status.ffmpeg.available || !status.ffprobe.available) {
+      throw new MediaServiceError(
+        mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message,
+        503,
+        'VIDEO_TOOLCHAIN_UNAVAILABLE',
+      )
+    }
 
-      const now = this.iso()
-      const task = await this.saveTask({
-        schema_version: 1,
-        id: id('task'),
-        project_id: project.id,
-        kind: 'video.render',
-        status: 'queued',
-        progress: 0,
-        stage: '等待导出',
-        result: { render_revision: project.revision, output_path: input.output_path },
-        created_at: now,
-        updated_at: now,
-      })
-      await this.saveProject({
-        ...project,
-        state: 'rendering',
-        task_id: task.id,
-        output_path: input.output_path,
-        error: undefined,
-        error_code: undefined,
-        updated_at: this.iso(),
-      })
-      const controller = new AbortController()
-      const completion = Promise.resolve().then(() => (
-        this.runVideoRender(project, task, input.output_path, controller.signal)
-      ))
-      this.activeRenders.set(task.id, { controller, completion })
-      return task
-    } finally {
-      this.renderStarting = false
+    const now = this.iso()
+    const task = await this.saveTask({
+      schema_version: 1,
+      id: id('task'),
+      project_id: project.id,
+      kind: 'video.render',
+      status: 'queued',
+      progress: 0,
+      stage: this.activeRenders.size > 0 ? '正在排队等待本机视频导出' : '等待导出',
+      result: { render_revision: project.revision, output_path: input.output_path },
+      created_at: now,
+      updated_at: now,
+    })
+    await this.saveProject({
+      ...project,
+      state: 'rendering',
+      task_id: task.id,
+      output_path: input.output_path,
+      error: undefined,
+      error_code: undefined,
+      updated_at: this.iso(),
+    })
+    const render: QueuedVideoRender = { project, task, outputPath: input.output_path }
+    if (this.activeRenders.size > 0) {
+      this.queuedVideoRenders.push(render)
+    } else {
+      this.startVideoRender(render)
     }
+    return task
+  }
+
+  private startVideoRender(render: QueuedVideoRender): void {
+    const controller = new AbortController()
+    const completion = Promise.resolve().then(() => (
+      this.runVideoRender(render.project, render.task, render.outputPath, controller.signal)
+    ))
+    this.activeRenders.set(render.task.id, { controller, completion, outputPath: render.outputPath })
+  }
+
+  private startNextQueuedVideoRender(): void {
+    if (this.activeRenders.size > 0) return
+    const next = this.queuedVideoRenders.shift()
+    if (next) this.startVideoRender(next)
+  }
+
+  private removeQueuedVideoRender(taskId: string): boolean {
+    const index = this.queuedVideoRenders.findIndex(render => render.task.id === taskId)
+    if (index < 0) return false
+    this.queuedVideoRenders.splice(index, 1)
+    return true
   }
 
   private async runVideoRender(
@@ -1669,8 +1795,9 @@ export class MediaProjectService {
         })
       }
     } finally {
-      this.activeRenders.delete(task.id)
       await rm(temporaryOutput, { force: true }).catch(() => undefined)
+      this.activeRenders.delete(task.id)
+      this.startNextQueuedVideoRender()
     }
   }
 
@@ -1688,7 +1815,11 @@ export class MediaProjectService {
       await active.completion
       return await this.getTask(taskId, false)
     }
-    const latestTask = await this.getTask(taskId, false)
+    const removedFromQueue = this.removeQueuedVideoRender(taskId)
+    // Re-reading a just-removed queued task would correctly look like an
+    // interrupted task to crash recovery. The first read above is authoritative
+    // while this synchronous queue removal holds it out of the scheduler.
+    const latestTask = removedFromQueue ? task : await this.getTask(taskId, false)
     if (!['queued', 'running'].includes(latestTask.status)) {
       throw new MediaServiceError('当前任务不能取消', 409, 'TASK_NOT_CANCELLABLE')
     }
