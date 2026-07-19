@@ -120,6 +120,22 @@ describe('SideTaskPanel', () => {
     resetSideTaskStore()
   })
 
+  it('renders a safe error when loading side tasks fails upstream', async () => {
+    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    useProductSideTaskStore.setState({
+      panelByParentTaskId: {
+        [parentTaskId]: { isOpen: true },
+      },
+    })
+    vi.mocked(productSideTasksApi.list).mockRejectedValue(new Error(rawError))
+
+    render(<SideTaskPanel parentTask={makeParentTask()} />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('暂时无法读取侧边任务，请稍后重试。')
+    expect(alert).not.toHaveTextContent(rawError)
+  })
+
   it('connects the selected temporary fork through its product task stream while closing it', async () => {
     const firstSideTask = makeSideTask()
     const secondSideTask = makeSideTask({

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { productApiUserFacingError } from '../api/client'
 import { productTasksApi } from '../api/tasks'
 import { PRODUCT_DOMAIN_VERSION } from '../domain/types'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
@@ -42,8 +43,8 @@ type ProductTaskStore = {
   continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function errorMessage(error: unknown, fallback: string): string {
+  return productApiUserFacingError(error, fallback)
 }
 
 function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): ProductTaskIndexResponse {
@@ -84,7 +85,7 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
       }))
       return task
     } catch (error) {
-      set({ error: errorMessage(error) })
+      set({ error: errorMessage(error, '暂时无法完成任务操作，请稍后重试。') })
       throw error
     } finally {
       set((state) => ({
@@ -112,7 +113,7 @@ export const useProductTaskStore = create<ProductTaskStore>((set) => {
         }
       } catch (error) {
         if (requestId === latestRefreshRequest) {
-          set({ error: errorMessage(error), isLoading: false })
+          set({ error: errorMessage(error, '暂时无法读取任务，请稍后重试。'), isLoading: false })
         }
       }
     },

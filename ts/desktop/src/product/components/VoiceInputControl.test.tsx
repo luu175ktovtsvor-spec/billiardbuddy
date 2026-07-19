@@ -82,4 +82,20 @@ describe('VoiceInputControl', () => {
     expect(voiceApi.transcribe).not.toHaveBeenCalled()
     expect(stopTrack).toHaveBeenCalled()
   })
+
+  it('uses a safe recovery message when transcription fails', async () => {
+    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    vi.mocked(voiceApi.transcribe).mockRejectedValue(new Error(rawError))
+    render(<VoiceInputControl onTranscript={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '语音输入' }))
+    await screen.findByTestId('voice-recording')
+    fireEvent.click(screen.getByRole('button', { name: '停止并转写' }))
+
+    await waitFor(() => expect(useUIStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: 'error',
+      message: '语音转写暂时无法完成，请稍后重试。',
+    })))
+    expect(useUIStore.getState().toasts.some((toast) => toast.message === rawError)).toBe(false)
+  })
 })

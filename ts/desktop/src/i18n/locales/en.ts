@@ -628,6 +628,7 @@ export const en = {
   'settings.general.storageUseDefaultPortableDir': 'Use the default portable folder beside the app',
   'settings.general.storageApplyPortable': 'Use This Folder and Restart',
   'settings.general.storageActiveDir': 'Current active data directory',
+  'settings.general.storageManagedLocation': 'BilliardBuddy-managed data location',
   'settings.general.storageEnvironmentHint': 'The current directory was set when the app launched. It cannot be changed here; remove the launch-time setting and restart to use the system directory.',
   'settings.general.storageEnvironmentSwitchBlocked': 'A launch-time setting currently controls the data directory. Remove it before switching back to the system directory.',
   'settings.general.storageRestartHint': 'The storage change has been saved. Restart the app for the new data directory to take effect.',
@@ -656,7 +657,7 @@ export const en = {
   'settings.general.outputStyleSelectLabel': 'Select output style',
   'settings.general.outputStyleLoading': 'Loading output styles...',
   'settings.general.outputStyleSaved': 'Output style saved.',
-  'settings.general.outputStyleRestartHint': 'Running sessions keep their current prompt. Start a new session, continue in a fresh process, or restart the session for this to apply.',
+  'settings.general.outputStyleRestartHint': 'Running tasks keep their current response style. Start a new task, continue in a fresh process, or restart the task for this to apply.',
   'settings.general.outputStyleScopeLocal': 'Current project',
   'settings.general.outputStyleScopeUser': 'User settings',
   'settings.general.outputStyleScopeLocalHint': 'Saved with the active project\'s local settings.',
@@ -667,17 +668,11 @@ export const en = {
   'settings.general.outputStyleSourceLocal': 'Local project style',
   'settings.general.outputStyleSourcePolicy': 'Managed style',
   'settings.general.outputStyleSourcePlugin': 'Plugin style',
-  'settings.general.effortTitle': 'Effort Level',
-  'settings.general.effortDescription': 'Controls how much computation the model uses.',
-  'settings.general.effort.low': 'Low',
-  'settings.general.effort.medium': 'Medium',
-  'settings.general.effort.high': 'High',
-  'settings.general.effort.max': 'Max',
   'settings.general.autoDreamTitle': 'Auto-dream',
   'settings.general.autoDreamDescription': 'Periodically consolidates auto-memory in the background after enough sessions have changed.',
   'settings.general.autoDreamEnabled': 'Enable Auto-dream',
   'settings.general.autoDreamHintOn': 'The desktop app can run memory consolidation after eligible sessions finish.',
-  'settings.general.autoDreamHintOff': 'Off by default because it can make background AI requests.',
+  'settings.general.autoDreamHintOff': 'Off by default because it can run background assistance tasks.',
   'settings.general.autoDreamConfirmTitle': 'Enable Auto-dream?',
   'settings.general.autoDreamConfirmKeepRunning': 'Keep the desktop app running so background memory consolidation can start after eligible sessions finish.',
   'settings.general.autoDreamConfirmEnable': 'Enable Auto-dream',
@@ -722,6 +717,7 @@ export const en = {
   'settings.general.networkTimeoutRequired': 'Enter a timeout.',
   'settings.general.networkTimeoutRange': 'Enter a whole number from {min} to {max} seconds.',
   'settings.general.networkSaved': 'Network settings saved.',
+  'settings.general.networkSaveError': 'Could not save network settings. Check your connection and try again.',
   'settings.general.networkScopeHint': 'Does not change the separate app update proxy.',
   'settings.general.networkSave': 'Save',
   'settings.general.webFetchPreflightTitle': 'WebFetch Preflight',
@@ -774,7 +770,6 @@ export const en = {
 
   // ─── Chat Input ──────────────────────────────────────
   'chat.placeholder': 'What would you like to do next?',
-  'chat.runtimeManaged': 'BilliardBuddy manages the assistant connection automatically. No manual sign-in or selection is needed.',
   'chat.taskProgressAutoShown': 'Task progress appears automatically in the conversation.',
   'chat.placeholderMissing': 'This session points to a missing workspace. Create a new session or pick another project.',
   'chat.addFiles': 'Add files or photos',
@@ -1127,11 +1122,6 @@ export const en = {
   'tasks.lastRunAt': 'Last run: ',
   'tasks.outputHintSession': 'Click "View conversation" to see the full output in session view.',
   'tasks.noOutputText': 'No output available.',
-
-  // ─── Model Selector ──────────────────────────────────────
-  'model.selectModel': 'Select model',
-  'model.configuration': 'Model Configuration',
-  'model.effort': 'Effort',
 
   // ─── Directory Picker ──────────────────────────────────────
   'dirPicker.selectProject': 'Select a project...',

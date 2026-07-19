@@ -93,7 +93,7 @@ export function VoiceInputControl({
       lastBlobRef.current = null
       setElapsed(0)
       setState('idle')
-    } catch (error) {
+    } catch {
       if (controller.signal.aborted) {
         setElapsed(0)
         setState('idle')
@@ -102,7 +102,7 @@ export function VoiceInputControl({
       setState('error')
       addToast({
         type: 'error',
-        message: error instanceof Error ? error.message : '语音转写失败',
+        message: '语音转写暂时无法完成，请稍后重试。',
       })
     } finally {
       if (requestRef.current === controller) requestRef.current = null
