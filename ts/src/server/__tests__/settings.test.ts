@@ -708,36 +708,6 @@ describe('Settings API', () => {
     expect(res.status).toBe(400)
   })
 
-  it('GET /api/permissions/mode should return default mode', async () => {
-    const { req, url, segments } = makeRequest('GET', '/api/permissions/mode')
-    const res = await handleSettingsApi(req, url, segments)
-
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.mode).toBe('default')
-  })
-
-  it('PUT /api/permissions/mode should set mode', async () => {
-    const { req, url, segments } = makeRequest('PUT', '/api/permissions/mode', {
-      mode: 'bypassPermissions',
-    })
-    const res = await handleSettingsApi(req, url, segments)
-
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-    expect(body.mode).toBe('bypassPermissions')
-  })
-
-  it('PUT /api/permissions/mode should reject invalid mode', async () => {
-    const { req, url, segments } = makeRequest('PUT', '/api/permissions/mode', {
-      mode: 'yolo',
-    })
-    const res = await handleSettingsApi(req, url, segments)
-
-    expect(res.status).toBe(400)
-  })
-
   it('should return 404 for unknown settings endpoint', async () => {
     const { req, url, segments } = makeRequest('GET', '/api/settings/unknown')
     const res = await handleSettingsApi(req, url, segments)

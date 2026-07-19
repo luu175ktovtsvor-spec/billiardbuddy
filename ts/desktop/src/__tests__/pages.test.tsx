@@ -22,6 +22,9 @@ describe('Content-only pages render without errors', () => {
   it('ScheduledTasks renders (store-connected)', async () => {
     const { container } = render(<ScheduledTasks />)
     await screen.findByText('Scheduled tasks')
+    expect(
+      screen.getByText(/Scheduled tasks never bypass permissions/i),
+    ).toBeInTheDocument()
     expect(container.innerHTML).toContain('Scheduled tasks')
   })
 })

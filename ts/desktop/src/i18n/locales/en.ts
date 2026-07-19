@@ -185,7 +185,6 @@ export const en = {
 
   // ─── Settings ──────────────────────────────────────
   'settings.title': 'Settings',
-  'settings.tab.permissions': 'Permissions',
   'settings.tab.general': 'General',
   'settings.tab.terminal': 'Terminal',
   'settings.tab.skills': 'Skills',
@@ -267,18 +266,6 @@ export const en = {
   'doctor.serverUnavailable': 'Server Doctor was unavailable, so only local repair ran.',
   'errorBoundary.title': 'Something went wrong.',
   'errorBoundary.description': 'The issue was recorded to support recovery.',
-
-  // Settings > Permissions
-  'settings.permissions.title': 'Permission Mode',
-  'settings.permissions.description': 'Controls how tool execution permissions are handled.',
-  'settings.permissions.default': 'Ask permissions',
-  'settings.permissions.defaultDesc': 'Ask before executing tools',
-  'settings.permissions.acceptEdits': 'Accept edits',
-  'settings.permissions.acceptEditsDesc': 'Auto-approve file edits, ask for others',
-  'settings.permissions.plan': 'Plan mode',
-  'settings.permissions.planDesc': 'Think and plan without executing',
-  'settings.permissions.bypass': 'Bypass all',
-  'settings.permissions.bypassDesc': 'Skip all permission checks (dangerous)',
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM Adapters',
@@ -1055,7 +1042,8 @@ export const en = {
   // ─── New Task Modal ──────────────────────────────────────
   'newTask.title': 'New scheduled task',
   'newTask.localWarning': 'Local tasks only run while your computer is awake.',
-  'newTask.fullPermissions': 'Full permissions',
+  'newTask.unattendedSafeMode': 'Unattended safe mode',
+  'newTask.unattendedSafeModeHint': 'Scheduled tasks cannot answer permission prompts. Actions that need approval are rejected; the selected folder is the working directory, not a sandbox.',
   'newTask.name': 'Name',
   'newTask.namePlaceholder': 'daily-code-review',
   'newTask.description': 'Description',
@@ -1139,12 +1127,6 @@ export const en = {
   'tasks.outputHintSession': 'Click "View conversation" to see the full output in session view.',
   'tasks.noOutputText': 'No output available.',
 
-  // ─── Prompt Editor ──────────────────────────────────────
-  'promptEditor.worktree': 'worktree',
-  'promptEditor.bypassWarning': 'Bypass mode grants full system access',
-  'promptEditor.within': 'within',
-  'promptEditor.selectFolder': '— select a folder to limit scope',
-
   // ─── Model Selector ──────────────────────────────────────
   'model.selectModel': 'Select model',
   'model.configuration': 'Model Configuration',
@@ -1194,6 +1176,7 @@ export const en = {
   'scheduledPage.title': 'Scheduled tasks',
   'scheduledPage.subtitle': 'Run tasks on a schedule or whenever you need them. Type {code} in any existing session to create one.',
   'scheduledPage.desktopNotice': 'Scheduled tasks only run while the desktop app is open. Make sure it stays running for tasks to fire on time.',
+  'scheduledPage.unattendedSafety': 'Scheduled tasks never bypass permissions. Any action that needs approval is rejected while the task runs unattended.',
   'scheduledPage.oldSubtitle': 'Manage automated operational routines and background maintenance.',
   'scheduledPage.executionMode': 'Execution Mode',
   'scheduledPage.localMode': 'Local Mode',

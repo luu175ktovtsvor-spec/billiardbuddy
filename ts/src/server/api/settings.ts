@@ -6,8 +6,6 @@
  * GET/PUT /api/settings/desktop — 桌面宿主偏好
  * GET  /api/settings/output-styles
  * PUT  /api/settings/output-style
- * GET  /api/permissions/mode    — 获取权限模式
- * PUT  /api/permissions/mode    — 设置权限模式
  */
 
 import { SettingsService } from '../services/settingsService.js'
@@ -75,16 +73,7 @@ export async function handleSettingsApi(
   segments: string[],
 ): Promise<Response> {
   try {
-    const resource = segments[1] // 'settings' | 'permissions'
-    const sub = segments[2] // 'user' | 'runtime' | 'desktop' | 'mode' | undefined
-
-    // ── /api/permissions/* ──────────────────────────────────────────────
-    if (resource === 'permissions') {
-      if (sub === 'mode') {
-        return await handlePermissionMode(req)
-      }
-      throw ApiError.notFound(`Unknown permissions endpoint: ${sub}`)
-    }
+    const sub = segments[2] // 'user' | 'runtime' | 'desktop' | undefined
 
     // ── /api/settings/* ─────────────────────────────────────────────────
     const method = req.method
@@ -556,25 +545,6 @@ async function handleOutputStyle(req: Request): Promise<Response> {
     scope: 'userSettings',
     workDir: null,
   })
-}
-
-async function handlePermissionMode(req: Request): Promise<Response> {
-  if (req.method === 'GET') {
-    const mode = await settingsService.getPermissionMode()
-    return Response.json({ mode })
-  }
-
-  if (req.method === 'PUT') {
-    const body = await parseJsonBody(req)
-    const mode = body.mode
-    if (typeof mode !== 'string') {
-      throw ApiError.badRequest('Missing or invalid "mode" in request body')
-    }
-    await settingsService.setPermissionMode(mode)
-    return Response.json({ ok: true, mode })
-  }
-
-  throw methodNotAllowed(req.method)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -42,6 +42,13 @@ export function ScheduledTasks() {
           </span>
         </div>
 
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-[var(--radius-md)] bg-[var(--color-surface-info)] border border-[var(--color-border)] mb-6">
+          <span className="material-symbols-outlined text-[18px] text-[var(--color-text-secondary)]">shield</span>
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {t('scheduledPage.unattendedSafety')}
+          </span>
+        </div>
+
         {/* Content */}
         {!initialized && isLoading ? (
           <div className="flex items-center justify-center py-16">

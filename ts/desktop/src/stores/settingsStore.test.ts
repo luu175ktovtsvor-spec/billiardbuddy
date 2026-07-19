@@ -77,8 +77,6 @@ describe('settingsStore update proxy persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -97,8 +95,6 @@ describe('settingsStore update proxy persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateDesktop,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -135,8 +131,6 @@ describe('settingsStore network persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -158,8 +152,6 @@ describe('settingsStore network persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateRuntime,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -196,8 +188,6 @@ describe('settingsStore network persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateRuntime,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -238,8 +228,6 @@ describe('settingsStore network persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser,
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -445,8 +433,6 @@ describe('settingsStore desktop notification persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -461,8 +447,6 @@ describe('settingsStore desktop notification persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -485,8 +469,6 @@ describe('settingsStore desktop notification persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateUser,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -525,8 +507,6 @@ describe('settingsStore thinking persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateRuntime,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -544,8 +524,6 @@ describe('settingsStore thinking persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateRuntime: vi.fn().mockRejectedValue(new Error('save failed')),
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -570,8 +548,6 @@ describe('settingsStore Auto-dream persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -590,8 +566,6 @@ describe('settingsStore Auto-dream persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser,
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -625,8 +599,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
           },
         }),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -651,8 +623,6 @@ describe('settingsStore desktop terminal shell persistence', () => {
       settingsApi: {
         getUser: vi.fn(),
         updateDesktop,
-        getPermissionMode: vi.fn(),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -691,8 +661,6 @@ describe('settingsStore theme persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')
@@ -713,8 +681,6 @@ describe('settingsStore theme persistence', () => {
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser: vi.fn(),
-        getPermissionMode: vi.fn().mockResolvedValue({ mode: 'default' }),
-        setPermissionMode: vi.fn(),
       },
     }))
     const { useSettingsStore } = await import('./settingsStore')

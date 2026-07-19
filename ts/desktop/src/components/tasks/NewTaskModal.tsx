@@ -77,7 +77,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
   const [frequency, setFrequency] = useState<FrequencyKey>(parsed?.frequency || 'daily')
   const [time, setTime] = useState(parsed?.time || '09:00')
   const [folderPath, setFolderPath] = useState(editTask?.folderPath || defaultWorkDir)
-  const [useWorktree, setUseWorktree] = useState(editTask?.useWorktree || false)
   const [notifyEnabled, setNotifyEnabled] = useState(editTask?.notification?.enabled || false)
   const [notifyChannels, setNotifyChannels] = useState<NotificationChannel[]>(editTask?.notification?.channels || [])
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -113,9 +112,8 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
         description: description.trim(),
         cron: cronValue,
         prompt: prompt.trim(),
-        permissionMode: 'bypassPermissions',
+        permissionMode: 'dontAsk' as const,
         folderPath: folderPath.trim() || undefined,
-        useWorktree: useWorktree || undefined,
         notification: notifyEnabled && notifyChannels.length > 0
           ? { enabled: true, channels: notifyChannels }
           : undefined,
@@ -181,8 +179,6 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
           placeholder={t('newTask.promptPlaceholder')}
           folderPath={folderPath}
           onFolderPathChange={setFolderPath}
-          useWorktree={useWorktree}
-          onUseWorktreeChange={setUseWorktree}
         />
 
         {/* Frequency */}

@@ -5,6 +5,12 @@ export type TaskNotificationConfig = {
   channels: ('desktop')[]
 }
 
+/**
+ * Scheduled tasks run without an approval UI. The server uses this mode to
+ * reject actions that would otherwise stop for a permission prompt.
+ */
+export type ScheduledTaskPermissionMode = 'dontAsk'
+
 export type CronTask = {
   id: string
   name: string
@@ -18,9 +24,8 @@ export type CronTask = {
   lastRunAt?: number
   lastFiredAt?: string
   nextRunAt?: number
-  permissionMode?: string
+  permissionMode?: ScheduledTaskPermissionMode
   folderPath?: string
-  useWorktree?: boolean
   notification?: TaskNotificationConfig
 }
 
@@ -32,9 +37,8 @@ export type CreateTaskInput = {
   enabled?: boolean
   recurring?: boolean
   permanent?: boolean
-  permissionMode?: string
+  permissionMode?: ScheduledTaskPermissionMode
   folderPath?: string
-  useWorktree?: boolean
   notification?: TaskNotificationConfig
 }
 

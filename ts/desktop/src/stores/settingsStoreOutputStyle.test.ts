@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { settingsApiMock } = vi.hoisted(() => ({
   settingsApiMock: {
-    getPermissionMode: vi.fn(),
     getUser: vi.fn(),
     updateUser: vi.fn(),
     getOutputStyles: vi.fn(),

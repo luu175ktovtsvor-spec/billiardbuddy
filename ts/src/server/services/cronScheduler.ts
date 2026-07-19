@@ -13,8 +13,11 @@ import * as path from 'path'
 import { stripHostOnlyGatewayEnv } from './qfGatewayProvider.js'
 import * as os from 'os'
 import * as crypto from 'crypto'
-import { CronService, type CronTask } from './cronService.js'
-import { SessionService } from './sessionService.js'
+import {
+  CronService,
+  SCHEDULED_TASK_PERMISSION_MODE,
+  type CronTask,
+} from './cronService.js'
 import { ProviderService } from './providerService.js'
 import { isProviderManagedEnvVar } from '../../utils/managedEnvConstants.js'
 import {
@@ -38,7 +41,9 @@ export type TaskRun = {
   error?: string
   exitCode?: number
   durationMs?: number
-  sessionId?: string // links to a session for rich output rendering
+  // Old installations can still have this field in persisted run logs. It is
+  // never created by the scheduler and is stripped from the product API.
+  sessionId?: string
 }
 
 export function buildCronTaskSpawnOptions(
@@ -50,10 +55,9 @@ export function buildCronTaskSpawnOptions(
     stdout: 'pipe',
     stderr: 'pipe',
     cwd,
-    // Cron/scheduled-task CLI subprocesses run under bypassPermissions, so a task's
-    // Bash tool could `printenv` any inherited value. The product-gateway token/URL/
-    // model must never reach the CLI (it uses the local proxy), so strip them here —
-    // the same chokepoint guarantee as the interactive CLI spawn.
+    // Provider secrets must never reach a scheduled CLI subprocess. This is
+    // retained even in deny-on-prompt mode because explicit user rules could
+    // permit a shell command.
     env: stripHostOnlyGatewayEnv(env),
     windowsHide: true,
   } as const
@@ -371,12 +375,10 @@ export class CronScheduler {
   /** Track which minute each task last fired (prevents same-process duplicate within a minute). */
   private lastFiredMinuteKey = new Map<string, string>()
   private cronService: CronService
-  private sessionService: SessionService
   private providerService = new ProviderService()
 
   constructor(cronService?: CronService) {
     this.cronService = cronService || new CronService()
-    this.sessionService = new SessionService()
   }
 
   /** Return a string key representing the calendar minute of `date`. */
@@ -458,12 +460,8 @@ export class CronScheduler {
     }
   }
 
-  /**
-   * Execute a single task by spawning a CLI subprocess.
-   * @param task The task to execute
-   * @param options.createSession When true, creates a Session for rich output viewing (used for manual "Run Now")
-   */
-  async executeTask(task: CronTask, options?: { createSession?: boolean }): Promise<TaskRun> {
+  /** Execute one unattended task and preserve its output/error history. */
+  async executeTask(task: CronTask): Promise<TaskRun> {
     // Prevent concurrent executions of the same task
     const existing = this.runningTasks.get(task.id)
     if (existing) {
@@ -489,25 +487,6 @@ export class CronScheduler {
     }
     workDir = this.resolveCanonicalWorkDir(workDir)
 
-    // Only create a session when explicitly requested (manual "Run Now"),
-    // not for automatic cron runs — avoids flooding the sidebar.
-    let sessionId: string | undefined
-    if (options?.createSession) {
-      try {
-        const result = await this.sessionService.createSession(
-          workDir,
-          undefined,
-          'bypassPermissions',
-        )
-        sessionId = result.sessionId
-        // Delete the placeholder JSONL file so the CLI can create it fresh
-        // with actual content. Same pattern as conversationService.ts.
-        await this.sessionService.deleteSessionFile(sessionId)
-      } catch {
-        // Fall back to no session if creation fails
-      }
-    }
-
     const run: TaskRun = {
       id: runId,
       taskId: task.id,
@@ -515,7 +494,6 @@ export class CronScheduler {
       startedAt,
       status: 'running',
       prompt: task.prompt,
-      sessionId,
     }
 
     // Update lastFiredAt IMMEDIATELY so other scheduler processes see it
@@ -532,7 +510,7 @@ export class CronScheduler {
         content: [{ type: 'text', text: task.prompt }],
       },
       parent_tool_use_id: null,
-      session_id: sessionId || '',
+      session_id: '',
     }) + '\n'
 
     const cliArgs = buildCronCliArgs([
@@ -542,7 +520,6 @@ export class CronScheduler {
       'stream-json',
       '--output-format',
       'stream-json',
-      ...(sessionId ? ['--session-id', sessionId] : []),
       ...this.getRuntimeArgs(task),
     ])
 
@@ -630,7 +607,6 @@ export class CronScheduler {
         }
       }
 
-      await this.persistScheduledSessionPermission(sessionId, workDir)
       await updateRun(completedRun)
 
       // If non-recurring, disable after first run
@@ -655,24 +631,10 @@ export class CronScheduler {
           new Date(completedAt).getTime() - new Date(startedAt).getTime(),
       }
 
-      await this.persistScheduledSessionPermission(sessionId, workDir)
       await updateRun(failedRun)
 
       return failedRun
     }
-  }
-
-  private async persistScheduledSessionPermission(
-    sessionId: string | undefined,
-    workDir: string,
-  ): Promise<void> {
-    if (!sessionId) return
-    await this.sessionService.appendSessionMetadata(sessionId, {
-      workDir,
-      permissionMode: 'bypassPermissions',
-    }).catch(() => {
-      // The task result is still valid even if session metadata refresh fails.
-    })
   }
 
   private resolveCanonicalWorkDir(workDir: string): string {
@@ -687,9 +649,8 @@ export class CronScheduler {
     const model = task.model?.trim()
     return [
       ...(model ? ['--model', model] : []),
-      '--dangerously-skip-permissions',
       '--permission-mode',
-      'bypassPermissions',
+      SCHEDULED_TASK_PERMISSION_MODE,
     ]
   }
 

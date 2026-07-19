@@ -10,7 +10,6 @@ import {
   type NetworkSettings,
   type OutputStyleOption,
   type OutputStylesResponse,
-  type PermissionMode,
   type ThemeMode,
   type UpdateProxyMode,
   type UpdateProxySettings,
@@ -47,7 +46,6 @@ function getStoredLocale(): Locale {
 }
 
 type SettingsStore = {
-  permissionMode: PermissionMode
   thinkingEnabled: boolean
   autoDreamEnabled: boolean
   locale: Locale
@@ -74,7 +72,6 @@ type SettingsStore = {
   appModeRequiresRestart: boolean
 
   fetchAll: () => Promise<void>
-  setPermissionMode: (mode: PermissionMode) => Promise<void>
   setThinkingEnabled: (enabled: boolean) => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
@@ -127,7 +124,6 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
 ]
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
-  permissionMode: 'default',
   thinkingEnabled: true,
   autoDreamEnabled: false,
   locale: getStoredLocale(),
@@ -167,8 +163,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   fetchAll: async () => {
     set({ isLoading: true, error: null })
     try {
-      const [{ mode }, userSettings, runtimeSettings, desktopSettings] = await Promise.all([
-        settingsApi.getPermissionMode(),
+      const [userSettings, runtimeSettings, desktopSettings] = await Promise.all([
         settingsApi.getUser(),
         settingsApi.getRuntime(),
         settingsApi.getDesktop(),
@@ -177,7 +172,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
       useUIStore.getState().setTheme(theme)
       set({
-        permissionMode: mode,
         thinkingEnabled: runtimeSettings.alwaysThinkingEnabled !== false,
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         theme,
@@ -197,16 +191,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         error instanceof Error ? error.message : 'Failed to load desktop settings'
       set({ isLoading: false, error: message })
       throw error
-    }
-  },
-
-  setPermissionMode: async (mode) => {
-    const prev = get().permissionMode
-    set({ permissionMode: mode })
-    try {
-      await settingsApi.setPermissionMode(mode)
-    } catch {
-      set({ permissionMode: prev })
     }
   },
 

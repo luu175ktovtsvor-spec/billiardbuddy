@@ -1,6 +1,5 @@
 // Source: src/server/api/settings.ts
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
 export const THEME_MODES = ['light', 'dark', 'system'] as const
 export type ThemeMode = (typeof THEME_MODES)[number]
 

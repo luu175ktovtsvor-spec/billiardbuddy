@@ -1,7 +1,7 @@
 /**
  * Business Flow E2E Tests
  *
- * 完整的业务流程测试：涵盖定时任务、权限模式、Agent 管理、
+ * 完整的业务流程测试：涵盖定时任务、Agent 管理、
  * WebSocket 对话、搜索、会话历史互通等所有核心业务逻辑。
  */
 
@@ -109,10 +109,9 @@ describe('Business Flow: Scheduled Tasks', () => {
       cron: '0 9 * * 1-5',
       prompt: 'Look at git log from yesterday, summarize changes, list blockers',
       recurring: true,
-      permissionMode: 'default',
+      permissionMode: 'dontAsk',
       model: 'claude-sonnet-4-6',
       folderPath: '/Users/dev/project',
-      useWorktree: true,
     })
     expect(status).toBe(201)
     expect(data.task).toBeDefined()
@@ -121,7 +120,7 @@ describe('Business Flow: Scheduled Tasks', () => {
     expect(data.task.cron).toBe('0 9 * * 1-5')
     expect(data.task.prompt).toContain('git log')
     expect(data.task.recurring).toBe(true)
-    expect(data.task.permissionMode).toBe('bypassPermissions')
+    expect(data.task.permissionMode).toBe('dontAsk')
     expect(data.task.model).toBe('claude-sonnet-4-6')
     expect(data.task.createdAt).toBeGreaterThan(0)
   })
@@ -202,52 +201,6 @@ describe('Business Flow: Scheduled Tasks', () => {
     const parsed = JSON.parse(raw)
     expect(parsed.tasks.length).toBe(1)
     expect(parsed.tasks[0].name).toBe('morning-standup')
-  })
-})
-
-describe('Business Flow: Permission Modes', () => {
-  beforeAll(startTestServer)
-  afterAll(async () => {
-    server?.stop()
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  const VALID_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk']
-
-  it('should default to "default" mode', async () => {
-    const { data } = await api('GET', '/api/permissions/mode')
-    expect(data.mode).toBe('default')
-  })
-
-  for (const mode of VALID_MODES) {
-    it(`should switch to "${mode}" mode and persist`, async () => {
-      const { status, data } = await api('PUT', '/api/permissions/mode', { mode })
-      expect(status).toBe(200)
-      expect(data.mode).toBe(mode)
-
-      // Verify it persisted
-      const { data: verify } = await api('GET', '/api/permissions/mode')
-      expect(verify.mode).toBe(mode)
-    })
-  }
-
-  it('should reject invalid mode "auto"', async () => {
-    const { status, data } = await api('PUT', '/api/permissions/mode', { mode: 'auto' })
-    expect(status).toBe(400)
-    expect(data.message).toContain('Invalid permission mode')
-  })
-
-  it('should reject missing mode field', async () => {
-    const { status } = await api('PUT', '/api/permissions/mode', {})
-    expect(status).toBe(400)
-  })
-
-  it('should persist mode to settings file', async () => {
-    await api('PUT', '/api/permissions/mode', { mode: 'plan' })
-    const settingsPath = path.join(tmpDir, 'settings.json')
-    const raw = await fs.readFile(settingsPath, 'utf-8')
-    const settings = JSON.parse(raw)
-    expect(settings.defaultMode).toBe('plan')
   })
 })
 

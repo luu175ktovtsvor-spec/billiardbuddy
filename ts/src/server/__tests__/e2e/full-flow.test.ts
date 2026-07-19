@@ -190,18 +190,6 @@ describe('E2E: Full Flow', () => {
     expect(data.webSearch).toEqual({ enabled: false })
   })
 
-  it('should get and set permission mode', async () => {
-    await api('PUT', '/api/permissions/mode', { mode: 'plan' })
-
-    const { data } = await api('GET', '/api/permissions/mode')
-    expect(data.mode).toBe('plan')
-  })
-
-  it('should reject invalid permission mode', async () => {
-    const { status } = await api('PUT', '/api/permissions/mode', { mode: 'invalid' })
-    expect(status).toBe(400)
-  })
-
   // =============================================
   // 4. Models
   // =============================================

@@ -10,7 +10,11 @@
  * DELETE /api/scheduled-tasks/:id       — 删除任务
  */
 
-import { CronService, type CronTask } from '../services/cronService.js'
+import {
+  CronService,
+  isScheduledTaskPermissionMode,
+  type CronTask,
+} from '../services/cronService.js'
 import { cronScheduler } from '../services/cronScheduler.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
@@ -69,11 +73,10 @@ export async function handleScheduledTasksApi(
         enabled: body.enabled !== undefined ? (body.enabled as boolean) : undefined,
         recurring: body.recurring as boolean | undefined,
         permanent: body.permanent as boolean | undefined,
-        permissionMode: body.permissionMode as string | undefined,
+        permissionMode: parseScheduledTaskPermissionMode(body.permissionMode),
         model: body.model as string | undefined,
         providerId: body.providerId as string | null | undefined,
         folderPath: body.folderPath as string | undefined,
-        useWorktree: body.useWorktree as boolean | undefined,
         notification: body.notification as CronTask['notification'],
       })
       return Response.json({ task }, { status: 201 })
@@ -99,7 +102,10 @@ export async function handleScheduledTasksApi(
     // ── PUT /api/scheduled-tasks/:id ──────────────────────────────────────
     if (method === 'PUT' && taskId && !subResource) {
       const body = await parseJsonBody(req)
-      const task = await cronService.updateTask(taskId, body)
+      const task = await cronService.updateTask(
+        taskId,
+        parseScheduledTaskUpdate(body),
+      )
       return Response.json({ task })
     }
 
@@ -127,4 +133,25 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
+}
+
+function parseScheduledTaskPermissionMode(
+  value: unknown,
+): CronTask['permissionMode'] | undefined {
+  if (value === undefined) return undefined
+  if (isScheduledTaskPermissionMode(value)) return value
+  throw ApiError.badRequest(
+    'Scheduled tasks never bypass permissions. Actions that need approval are rejected while the task runs unattended.',
+  )
+}
+
+function parseScheduledTaskUpdate(
+  body: Record<string, unknown>,
+): Partial<CronTask> {
+  const { permissionMode, useWorktree: _legacyUseWorktree, ...updates } = body
+  const parsedPermissionMode = parseScheduledTaskPermissionMode(permissionMode)
+  return {
+    ...updates,
+    ...(parsedPermissionMode ? { permissionMode: parsedPermissionMode } : {}),
+  } as Partial<CronTask>
 }
