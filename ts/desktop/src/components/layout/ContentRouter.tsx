@@ -1,6 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
 import { useTabStore } from '../../stores/tabStore'
-import { ActiveSession } from '../../pages/ActiveSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
 import { TerminalSettings } from '../../pages/TerminalSettings'
@@ -19,7 +18,10 @@ export function ContentRouter() {
   const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
 
   useEffect(() => {
-    if (activeTabType === 'session' || activeTabType === 'workbench') return
+    if (
+      activeTabType === 'workbench' ||
+      activeTabType === 'product-task'
+    ) return
     void previewBridge.close()
   }, [activeTabType])
 
@@ -53,10 +55,6 @@ export function ContentRouter() {
     page = activeTab?.taskId
       ? <ProductTaskPage taskId={activeTab.taskId} />
       : <ProductShell />
-  } else if (activeTabType === 'session') {
-    // 会话页由 ActiveSession 承载。审阅、Diff、文件预览、浏览器和终端
-    // 按需挂载，不常驻挤压任务线程。
-    page = <ActiveSession />
   } else if (activeTabType !== 'terminal') {
     // A persisted or plugin-provided unknown tab must not fall back to the
     // legacy Core-session surface, which would treat its tab id as a session

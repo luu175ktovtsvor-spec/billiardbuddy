@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { sessionsApi } from '../api/sessions'
+import { beforeEach, describe, expect, it } from 'vitest'
 import {
   NEW_PRODUCT_TASK_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
@@ -8,17 +7,10 @@ import {
   useTabStore,
 } from './tabStore'
 
-vi.mock('../api/sessions', () => ({
-  sessionsApi: {
-    list: vi.fn(async () => ({ sessions: [] })),
-  },
-}))
-
 describe('tabStore', () => {
   beforeEach(() => {
     useTabStore.setState({ tabs: [], activeTabId: null })
     localStorage.clear()
-    vi.mocked(sessionsApi.list).mockResolvedValue({ sessions: [] } as never)
   })
 
   it('refreshes an existing tab title when opening the same session again', () => {
@@ -32,6 +24,38 @@ describe('tabStore', () => {
       type: 'session',
     })
     expect(useTabStore.getState().activeTabId).toBe('session-1')
+  })
+
+  it('does not persist raw Core session tabs', () => {
+    useTabStore.setState({
+      tabs: [
+        { sessionId: 'session-1', title: '旧会话', type: 'session', status: 'idle' },
+        { sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings', status: 'idle' },
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+          title: '整理开球训练',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+      ],
+      activeTabId: 'session-1',
+    })
+
+    useTabStore.getState().saveTabs()
+
+    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
+      openTabs: [
+        { sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings' },
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+          title: '整理开球训练',
+          type: 'product-task',
+          taskId: 'task-1',
+        },
+      ],
+      activeTabId: SETTINGS_TAB_ID,
+    })
   })
 
   it('stores a promoted terminal runtime id on new terminal tabs', () => {
@@ -159,27 +183,23 @@ describe('tabStore', () => {
     ])
   })
 
-  it('does not let async tab restore overwrite tabs opened while restore is in flight', async () => {
-    let resolveSessions: (value: unknown) => void = () => {}
-    vi.mocked(sessionsApi.list).mockReturnValueOnce(new Promise((resolve) => {
-      resolveSessions = resolve
-    }) as never)
+  it('drops legacy session tabs during restore without calling the Core session API', async () => {
     localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
-      openTabs: [{ sessionId: 'session-1', title: 'Old Session', type: 'session' }],
+      openTabs: [
+        { sessionId: 'session-1', title: 'Old Session', type: 'session' },
+        { sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' },
+      ],
       activeTabId: 'session-1',
     }))
 
-    const restore = useTabStore.getState().restoreTabs()
-    useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
-    resolveSessions({ sessions: [{ id: 'session-1', title: 'Old Session' }] })
-    await restore
+    await useTabStore.getState().restoreTabs()
 
-    expect(useTabStore.getState().activeTabId).toBe(SETTINGS_TAB_ID)
+    expect(useTabStore.getState().activeTabId).toBe(PRODUCT_TASKS_TAB_ID)
     expect(useTabStore.getState().tabs).toEqual([
       {
-        sessionId: SETTINGS_TAB_ID,
-        title: 'Settings',
-        type: 'settings',
+        sessionId: PRODUCT_TASKS_TAB_ID,
+        title: '任务中心',
+        type: 'product-tasks',
         status: 'idle',
       },
     ])
@@ -228,7 +248,7 @@ describe('tabStore', () => {
     })
   })
 
-  it('discards retired trace tabs and rewrites persisted tabs to safe task state', async () => {
+  it('discards retired trace tabs and raw sessions during restore', async () => {
     localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [
         { sessionId: '__traces__', title: 'Trace list', type: 'traces' },
@@ -237,24 +257,12 @@ describe('tabStore', () => {
       ],
       activeTabId: '__trace__session-1',
     }))
-    vi.mocked(sessionsApi.list).mockResolvedValue({
-      sessions: [{ id: 'session-1', title: 'Current task' }],
-    } as never)
-
     await useTabStore.getState().restoreTabs()
 
     expect(useTabStore.getState()).toMatchObject({
-      activeTabId: 'session-1',
-      tabs: [{
-        sessionId: 'session-1',
-        title: 'Current task',
-        type: 'session',
-        status: 'idle',
-      }],
+      activeTabId: null,
+      tabs: [],
     })
-    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
-      openTabs: [{ sessionId: 'session-1', title: 'Current task', type: 'session' }],
-      activeTabId: 'session-1',
-    })
+    expect(localStorage.getItem('billiardbuddy-open-tabs')).toBeNull()
   })
 })

@@ -1,12 +1,11 @@
-import { useChatStore } from '../stores/chatStore'
-import { useSessionStore } from '../stores/sessionStore'
-import { SCHEDULED_TAB_ID, useTabStore } from '../stores/tabStore'
+import { PRODUCT_TASKS_TAB_ID, SCHEDULED_TAB_ID, useTabStore } from '../stores/tabStore'
 import {
   installDesktopNotificationClickListener,
   type DesktopNotificationTarget,
 } from './desktopNotifications'
 
 const SCHEDULED_TAB_TITLE = 'Scheduled Tasks'
+const PRODUCT_TASKS_TAB_TITLE = '任务中心'
 
 export function openDesktopNotificationTarget(target: DesktopNotificationTarget): void {
   if (target.type === 'scheduled') {
@@ -14,13 +13,7 @@ export function openDesktopNotificationTarget(target: DesktopNotificationTarget)
     return
   }
 
-  const knownTitle = useSessionStore
-    .getState()
-    .sessions
-    .find((session) => session.id === target.sessionId)
-    ?.title
-  useTabStore.getState().openTab(target.sessionId, target.title || knownTitle || 'Session', 'session')
-  useChatStore.getState().connectToSession(target.sessionId)
+  useTabStore.getState().openTab(PRODUCT_TASKS_TAB_ID, PRODUCT_TASKS_TAB_TITLE, 'product-tasks')
 }
 
 export function installDesktopNotificationNavigation(): Promise<() => void> {

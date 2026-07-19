@@ -31,7 +31,7 @@ import { McpSettings } from './McpSettings'
 import { TerminalSettings } from './TerminalSettings'
 import { ProfileSettings } from './ProfileSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
-import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
+import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { getDesktopHost } from '../lib/desktopHost'
 import { publicAssetPath } from '../lib/publicAsset'
@@ -195,13 +195,12 @@ export function Settings() {
 
   const returnToApp = () => {
     const tabs = useTabStore.getState()
-    const target = [...tabs.tabs].reverse().find((tab) => tab.type === 'session')
-      ?? [...tabs.tabs].reverse().find((tab) => tab.type !== 'settings')
+    const target = [...tabs.tabs].reverse().find((tab) => tab.type !== 'settings' && tab.type !== 'session')
     if (target) {
       tabs.setActiveTab(target.sessionId)
       return
     }
-    tabs.closeTab(SETTINGS_TAB_ID)
+    tabs.openTab(PRODUCT_TASKS_TAB_ID, '任务中心', 'product-tasks')
   }
 
   const content = (() => {
