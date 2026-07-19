@@ -188,6 +188,15 @@ test('a request with no images passes through unchanged (defensive no-op)', asyn
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
+async function waitFor(condition: () => boolean, message: string, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (condition()) return
+    await sleep(5)
+  }
+  if (!condition()) throw new Error(message)
+}
+
 test('DefaultVisionCache evicts the oldest entry (FIFO) once maxEntries is exceeded', () => {
   const cache = new DefaultVisionCache(2, 60_000)
   cache.set('a', 'AAA')
@@ -486,4 +495,99 @@ test('a single multi-image request is capped at caps.perRequestConc global visio
   for (const resolve of waiters.splice(0)) resolve()
   await Promise.all([bigRequest, smallRequest])
   expect(calls).toHaveLength(5) // 4(大请求,各不相同不去重) + 1(小请求)
+})
+
+test('a failed image detaches its held sibling and releases the unique visual reservation immediately', async () => {
+  let calls = 0
+  let releaseFailure!: () => void
+  let heldAborts = 0
+  const failureGate = new Promise<void>(resolve => { releaseFailure = resolve })
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1
+    if (calls === 1) {
+      return await new Promise<Response>((_resolve, reject) => {
+        const abort = () => {
+          heldAborts += 1
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }
+        if (init?.signal?.aborted) abort()
+        else init?.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    await failureGate
+    return new Response('bad image request', { status: 400 })
+  }
+  const bridge = createVisionBridge({
+    mimoBase: 'https://mimo.example/v1',
+    mimoKey: 'mimo-secret',
+    fetchImpl,
+    caps: baseCaps({ maxImages: 2, maxConcurrent: 2, perRequestConc: 2, queueMax: 2 }),
+  })
+  const request = bridge.transform(chatBodyWithImages([
+    `data:image/png;base64,${Buffer.from('held-unique-image').toString('base64')}`,
+    `data:image/png;base64,${Buffer.from('failing-unique-image').toString('base64')}`,
+  ]), {})
+  await waitFor(() => calls === 2, 'both sibling image lookups did not start')
+  expect(bridge.snapshot()).toMatchObject({ active: 2, queued: 0 })
+
+  releaseFailure()
+  await expect(request).rejects.toMatchObject({ status: 502 })
+  await waitFor(() => heldAborts === 1 && bridge.snapshot().active === 0, 'held sibling visual reservation did not release')
+  expect(bridge.snapshot()).toMatchObject({ active: 0, queued: 0 })
+})
+
+test('a failed request leaves another client subscribed to the same singleflight lookup running', async () => {
+  let calls = 0
+  let releaseFailure!: () => void
+  let releaseHeld!: () => void
+  let heldAborts = 0
+  const failureGate = new Promise<void>(resolve => { releaseFailure = resolve })
+  const heldImage = `data:image/png;base64,${Buffer.from('shared-held-image').toString('base64')}`
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1
+    if (calls === 1) {
+      return await new Promise<Response>((resolve, reject) => {
+        const abort = () => {
+          heldAborts += 1
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }
+        releaseHeld = () => {
+          init?.signal?.removeEventListener('abort', abort)
+          resolve(Response.json({ choices: [{ message: { content: '共享图片理解结果' } }] }))
+        }
+        if (init?.signal?.aborted) abort()
+        else init?.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    await failureGate
+    return new Response('bad image request', { status: 400 })
+  }
+  const bridge = createVisionBridge({
+    mimoBase: 'https://mimo.example/v1',
+    mimoKey: 'mimo-secret',
+    fetchImpl,
+    caps: baseCaps({ maxImages: 2, maxConcurrent: 2, perRequestConc: 2, queueMax: 2 }),
+  })
+  const failingRequest = bridge.transform(chatBodyWithImages([
+    heldImage,
+    `data:image/png;base64,${Buffer.from('failing-shared-request').toString('base64')}`,
+  ]), {})
+  await waitFor(() => calls === 2, 'initial shared and failing lookups did not start')
+  const survivingRequest = bridge.transform(chatBodyWithImages([heldImage]), {})
+  await sleep(5) // let the second request subscribe before the sibling failure is released
+
+  releaseFailure()
+  await expect(failingRequest).rejects.toMatchObject({ status: 502 })
+  await waitFor(() => bridge.snapshot().active === 1, 'shared lookup was unexpectedly cancelled with the failed request')
+  expect(heldAborts).toBe(0)
+
+  releaseHeld()
+  const result = await survivingRequest
+  expect(result.body).toContain('共享图片理解结果')
+  expect(heldAborts).toBe(0)
+  expect(bridge.snapshot()).toMatchObject({ active: 0, queued: 0 })
 })

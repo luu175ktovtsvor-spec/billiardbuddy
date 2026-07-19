@@ -283,34 +283,53 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
       // 8 个全局并发槽，饿死同时到达的其它请求。改用有界并发 map：单个请求最多同时发起
       // caps.perRequestConc 张图的 MiMo 调用(每张仍受全局 semaphore 约束)，相同图片
       // 会按哈希复用实例级 in-flight 调用，不受此限流放大延迟。
-      const texts = await mapWithConcurrency(images, caps.perRequestConc, async ({ url }, index) => {
-        const cacheKey = `${decoded[index]!.hash}:${VISION_PROMPT_VERSION}`
-        const cached = cache.get(cacheKey)
-        if (cached !== undefined) {
-          cacheHits += 1
-          return cached
-        }
-        let lookup = inFlightByKey.get(cacheKey)
-        if (!lookup) {
-          const controller = new AbortController()
-          const created = runVisionLookup(deps, semaphore, url, {
-            schedulerId: opts.schedulerId,
-            tokenId: opts.tokenId,
-            signal: controller.signal,
-          })
-            .then(text => {
-              cache.set(cacheKey, text)
-              return text
-            })
-          lookup = { promise: created, controller, subscribers: 0, settled: false }
-          inFlightByKey.set(cacheKey, lookup)
-          void created.then(
-            () => settleLookup(cacheKey, lookup!),
-            () => settleLookup(cacheKey, lookup!),
-          )
-        }
-        return await subscribeToLookup(lookup, opts.signal)
-      })
+      // A failed sibling must detach this request from every outstanding shared lookup.
+      // That immediately releases a unique held visual reservation, while another
+      // client's subscription to the same lookup keeps its singleflight alive.
+      const requestAbort = new AbortController()
+      const abortFromCaller = () => requestAbort.abort()
+      if (opts.signal?.aborted) abortFromCaller()
+      else opts.signal?.addEventListener('abort', abortFromCaller, { once: true })
+      let texts: string[]
+      try {
+        texts = await mapWithConcurrency(
+          images,
+          caps.perRequestConc,
+          async ({ url }, index) => {
+            const cacheKey = `${decoded[index]!.hash}:${VISION_PROMPT_VERSION}`
+            const cached = cache.get(cacheKey)
+            if (cached !== undefined) {
+              cacheHits += 1
+              return cached
+            }
+            let lookup = inFlightByKey.get(cacheKey)
+            if (!lookup) {
+              const controller = new AbortController()
+              const created = runVisionLookup(deps, semaphore, url, {
+                schedulerId: opts.schedulerId,
+                tokenId: opts.tokenId,
+                signal: controller.signal,
+              })
+                .then(text => {
+                  cache.set(cacheKey, text)
+                  return text
+                })
+              lookup = { promise: created, controller, subscribers: 0, settled: false }
+              inFlightByKey.set(cacheKey, lookup)
+              void created.then(
+                () => settleLookup(cacheKey, lookup!),
+                () => settleLookup(cacheKey, lookup!),
+              )
+            }
+            return await subscribeToLookup(lookup, requestAbort.signal)
+          },
+          () => requestAbort.abort(),
+          () => requestAbort.signal.aborted,
+        )
+        if (requestAbort.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
+      } finally {
+        opts.signal?.removeEventListener('abort', abortFromCaller)
+      }
 
       images.forEach(({ part }, index) => {
         delete part.image_url
@@ -348,21 +367,28 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 
 /** 简单有界并发 map：同时最多 limit 个 fn 在执行。用于让单个请求不再用 Promise.all 一次性把
  *  所有图片都扔给全局视觉信号量抢槽(会让一个多图请求独占全局并发、饿死同时到达的其它请求)。
- *  结果按原始下标写回，顺序与输入一致；某一项失败时不取消其它 worker，行为与原先的 Promise.all
- *  语义一致(第一个失败即让整体 reject，其它已发起的调用仍在各自的 worker 里跑完/失败)。 */
+ *  结果按原始下标写回，顺序与输入一致；某一项失败会通知调用方取消该请求其余订阅，且不再启动
+ *  新工作项。共享 singleflight 的真正上游只会在最后一个订阅者离开后才被取消。 */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
+  onItemError?: () => void,
+  isStopped?: () => boolean,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length)
   let nextIndex = 0
   const workerCount = Math.max(1, Math.min(limit, items.length))
   const worker = async (): Promise<void> => {
-    while (true) {
+    while (!isStopped?.()) {
       const index = nextIndex++
       if (index >= items.length) return
-      results[index] = await fn(items[index]!, index)
+      try {
+        results[index] = await fn(items[index]!, index)
+      } catch (error) {
+        onItemError?.()
+        throw error
+      }
     }
   }
   await Promise.all(Array.from({ length: workerCount }, () => worker()))

@@ -133,7 +133,14 @@ export class MimoReservationScheduler {
       if (!this.hasRunnablePending() && this.canStart(lane, user, tokenId)) {
         return Promise.resolve(this.grant(lane, user, tokenId))
       }
-      return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
+      // Preserve the existing one-token burst behavior until another token actually
+      // arrives. Once a fresh, runnable token does arrive, do not let a token that is
+      // already at its active ceiling occupy every waiting seat: otherwise a release
+      // from a different token can leave a physical lane slot idle behind only blocked
+      // waiters. The displaced waiter receives the same explicit 429 as a full queue.
+      if (this.queuedByLane[lane] >= this.laneQueueMax[lane] && !this.makeRoomForFreshRunnableToken(lane, tokenId)) {
+        return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
+      }
     }
 
     return new Promise<CapacityPermit>((resolve, reject) => {
@@ -224,6 +231,61 @@ export class MimoReservationScheduler {
       if (queue?.some(pending => this.canStart(pending.lane, user, pending.tokenId))) return true
     }
     return false
+  }
+
+  /**
+   * A full lane queue should not turn a token-active cap into an idle physical slot.
+   * A new token gets one waiting seat only by displacing a repeat waiter, or a waiter
+   * whose token is already at its active ceiling. This is intentionally demand-driven:
+   * a single shared product token can still use every short burst seat until another
+   * authenticated token needs fair access.
+   */
+  private makeRoomForFreshRunnableToken(lane: MimoLane, tokenId: string): boolean {
+    if ((this.activeByToken.get(tokenId) ?? 0) >= this.config.maxConcurrentPerToken) return false
+
+    const queuedByToken = new Map<string, number>()
+    for (const queue of this.pendingByUser.values()) {
+      for (const pending of queue) {
+        if (pending.lane !== lane) continue
+        queuedByToken.set(pending.tokenId, (queuedByToken.get(pending.tokenId) ?? 0) + 1)
+      }
+    }
+    // A token that already has a queued request must not evict another token just to
+    // accumulate more waiters; the normal bounded queue remains its back-pressure.
+    if ((queuedByToken.get(tokenId) ?? 0) > 0) return false
+
+    let donor: string | undefined
+    let donorScore = 0
+    for (const [candidateToken, count] of queuedByToken) {
+      const tokenAtActiveCap = (this.activeByToken.get(candidateToken) ?? 0) >= this.config.maxConcurrentPerToken
+      // Prefer the token with repeat reservations. With a one-entry queue, a blocked
+      // token-cap waiter is also safe to displace: it cannot use a slot released by a
+      // different token, while the incoming token can.
+      const score = count > 1 ? 2 + count : tokenAtActiveCap ? 1 : 0
+      if (score > donorScore) {
+        donor = candidateToken
+        donorScore = score
+      }
+    }
+    if (!donor) return false
+
+    // Drop the newest eligible waiter so an older request from that token retains its
+    // place. `removePending` updates lane counters and waiting-user bookkeeping.
+    let displaced: MimoPending | undefined
+    for (const queue of this.pendingByUser.values()) {
+      for (let index = queue.length - 1; index >= 0; index--) {
+        const pending = queue[index]!
+        if (pending.lane === lane && pending.tokenId === donor) {
+          displaced = pending
+          break
+        }
+      }
+      if (displaced) break
+    }
+    if (!displaced || !this.removePending(displaced)) return false
+    this.cleanupPending(displaced)
+    displaced.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
+    return true
   }
 
   private grant(lane: MimoLane, user: string, tokenId: string): CapacityPermit {

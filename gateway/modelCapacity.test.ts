@@ -226,6 +226,38 @@ test('MiMo reservations apply one token cap across native and visual calls witho
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0 })
 })
 
+test('MiMo reservations rebalance a full lane queue when a token-capped waiter would otherwise leave the next slot idle', async () => {
+  const scheduler = mimoReservations({
+    maxConcurrent: 3,
+    nativeConcurrent: 2,
+    visionConcurrent: 1,
+    maxConcurrentPerToken: 1,
+    nativeQueueMax: 1,
+    visionQueueMax: 0,
+    maxInflightPerUser: 2,
+  })
+  const tokenAActive = await scheduler.acquire('native', 'token-a-active', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const tokenCActive = await scheduler.acquire('native', 'token-c-active', { tokenId: 'token-c', maxWaitMs: 1000 })
+  const tokenAQueued = scheduler.acquire('native', 'token-a-queued', { tokenId: 'token-a', maxWaitMs: 1000 })
+    .then(() => 'granted', (error: unknown) => error)
+  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
+
+  // Token A is already at its active cap, so this fresh token B must be able to wait
+  // for C's native slot rather than inherit a full queue of A-only blocked work.
+  const tokenBQueued = scheduler.acquire('native', 'token-b-queued', { tokenId: 'token-b', maxWaitMs: 1000 })
+  const displaced = await tokenAQueued
+  expect(displaced).toMatchObject({ status: 429 })
+  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
+
+  tokenCActive.release()
+  const tokenBPermit = await tokenBQueued
+  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 0 })
+
+  tokenAActive.release()
+  tokenBPermit.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
 test('MiMo reservations honor a widened installation allowance across both lanes and release cancelled waiters', async () => {
   const scheduler = mimoReservations({ maxConcurrent: 3, nativeConcurrent: 2, visionConcurrent: 1 })
   const native = await scheduler.acquire('native', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
