@@ -126,7 +126,7 @@ export type ComputerUseResolvedApp = {
 
 export type ComputerUseResolvedAppRequest = {
   requestedName: string
-  resolved?: ComputerUseResolvedApp
+  resolved?: Pick<ComputerUseResolvedApp, 'bundleId' | 'displayName'>
   isSentinel: boolean
   alreadyGranted: boolean
   proposedTier: 'read' | 'click' | 'full'
