@@ -7,7 +7,7 @@
  */
 
 import type { ServerWebSocket } from 'bun'
-import type { ClientMessage, ServerMessage, StreamingFallbackCause, TokenUsage } from './events.js'
+import type { ServerMessage, StreamingFallbackCause, TokenUsage } from './events.js'
 import * as os from 'node:os'
 import {
   ConversationStartupError,
@@ -101,6 +101,35 @@ type ActiveUserTurnState = {
   messageSent: boolean
 }
 
+type CoreUserMessage = {
+  content: string
+  attachments?: Parameters<typeof conversationService.sendMessage>[2]
+}
+
+type LegacyPermissionResponse = {
+  requestId: string
+  allowed: boolean
+  rule?: string
+  updatedInput?: Record<string, unknown>
+  denyMessage?: string
+  permissionUpdates?: unknown[]
+}
+
+type LegacyComputerUsePermissionResponse = {
+  requestId: string
+  response: Parameters<typeof computerUseApprovalService.resolveApproval>[2]
+}
+
+type LegacyPermissionModeMessage = {
+  mode: string
+}
+
+type LegacyRuntimeConfigMessage = {
+  providerId: string | null
+  modelId: string
+  effortLevel?: string
+}
+
 const runtimeOverrides = new Map<string, RuntimeOverride>()
 const activeUserTurns = new Map<string, ActiveUserTurnState>()
 const deferredRuntimeRestarts = new Map<string, RuntimeOverride>()
@@ -159,7 +188,7 @@ export type WebSocketData = {
   sessionId: string
   productTaskId?: string
   connectedAt: number
-  channel: 'client' | 'product' | 'sdk'
+  channel: 'product' | 'sdk'
   sdkToken: string | null
   serverPort: number
   serverHost: string
@@ -226,7 +255,7 @@ export const handleWebSocket = {
       return
     }
 
-    if (channel === 'product' && !productTaskAgentCoreAdapter.attach(ws)) {
+    if (!productTaskAgentCoreAdapter.attach(ws)) {
       // This identifier comes from the task-scoped upgrade route. If a
       // malformed in-process caller bypasses that route, fail closed rather
       // than ever falling back to a Core-session identifier.
@@ -273,67 +302,16 @@ export const handleWebSocket = {
         typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()
       ) as unknown
 
-      if (ws.data.channel === 'product') {
-        void productTaskAgentCoreAdapter.handleIncoming(ws, parsed).catch((err) => {
-          void diagnosticsService.recordEvent({
-            type: 'ws_product_user_message_failed',
-            severity: 'error',
-            sessionId: ws.data.sessionId,
-            summary: err instanceof Error ? err.message : String(err),
-            details: err,
-          })
-          console.error(`[WS] Unhandled error in product task user message:`, err)
+      void productTaskAgentCoreAdapter.handleIncoming(ws, parsed).catch((err) => {
+        void diagnosticsService.recordEvent({
+          type: 'ws_product_user_message_failed',
+          severity: 'error',
+          sessionId: ws.data.sessionId,
+          summary: err instanceof Error ? err.message : String(err),
+          details: err,
         })
-        return
-      }
-
-      const message = parsed as ClientMessage
-
-      switch (message.type) {
-        case 'user_message':
-          handleUserMessage(ws, message).catch((err) => {
-            void diagnosticsService.recordEvent({
-              type: 'ws_user_message_failed',
-              severity: 'error',
-              sessionId: ws.data.sessionId,
-              summary: err instanceof Error ? err.message : String(err),
-              details: err,
-            })
-            console.error(`[WS] Unhandled error in handleUserMessage:`, err)
-          })
-          break
-
-        case 'permission_response':
-          handlePermissionResponse(ws, message)
-          break
-
-        case 'computer_use_permission_response':
-          handleComputerUsePermissionResponse(ws, message)
-          break
-
-        case 'set_permission_mode':
-          void handleSetPermissionMode(ws, message)
-          break
-
-        case 'set_runtime_config':
-          void handleSetRuntimeConfig(ws, message)
-          break
-
-        case 'prewarm_session':
-          void handlePrewarmSession(ws)
-          break
-
-        case 'stop_generation':
-          handleStopGeneration(ws)
-          break
-
-        case 'ping':
-          sendMessage(ws, { type: 'pong' })
-          break
-
-        default:
-          sendError(ws, 'UNKNOWN_TYPE')
-      }
+        console.error(`[WS] Unhandled error in product task user message:`, err)
+      })
     } catch {
       sendError(ws, 'PARSE_ERROR')
     }
@@ -402,7 +380,7 @@ function isDesktopClearCommand(content: string): boolean {
 
 async function handleUserMessage(
   ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ClientMessage, { type: 'user_message' }>
+  message: CoreUserMessage,
 ) {
   const { sessionId } = ws.data
 
@@ -689,7 +667,7 @@ async function handlePrewarmSession(ws: ServerWebSocket<WebSocketData>) {
 
 function handlePermissionResponse(
   ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ClientMessage, { type: 'permission_response' }>
+  message: LegacyPermissionResponse,
 ) {
   const { sessionId } = ws.data
   conversationService.respondToPermission(
@@ -706,7 +684,7 @@ function handlePermissionResponse(
 
 function handleComputerUsePermissionResponse(
   ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ClientMessage, { type: 'computer_use_permission_response' }>
+  message: LegacyComputerUsePermissionResponse,
 ) {
   const { sessionId } = ws.data
   const ok = computerUseApprovalService.resolveApproval(
@@ -723,7 +701,7 @@ function handleComputerUsePermissionResponse(
 
 async function handleSetPermissionMode(
   ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ClientMessage, { type: 'set_permission_mode' }>
+  message: LegacyPermissionModeMessage,
 ): Promise<void> {
   const { sessionId } = ws.data
   const pendingStartup = sessionStartupPromises.get(sessionId)
@@ -803,7 +781,7 @@ async function applyPermissionModeToActiveSession(
 
 async function handleSetRuntimeConfig(
   ws: ServerWebSocket<WebSocketData>,
-  message: Extract<ClientMessage, { type: 'set_runtime_config' }>
+  message: LegacyRuntimeConfigMessage,
 ) {
   const { sessionId } = ws.data
   // Packaged BilliardBuddy sessions are routed by the product gateway. Ignore

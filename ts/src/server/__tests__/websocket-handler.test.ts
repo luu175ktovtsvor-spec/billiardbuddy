@@ -18,7 +18,7 @@ import { computerUseApprovalService } from '../services/computerUseApprovalServi
 
 function makeClientSocket(
   sessionId: string,
-  channel: WebSocketData['channel'] = 'client',
+  channel: WebSocketData['channel'] = 'product',
 ) {
   const sent: string[] = []
   return {
@@ -123,15 +123,17 @@ describe('WebSocket handler session isolation', () => {
 
     const firstEvents = first.sent.map((payload) => JSON.parse(payload))
     const secondEvents = second.sent.map((payload) => JSON.parse(payload))
-    const completion = {
-      type: 'message_complete',
-      usage: { input_tokens: 1, output_tokens: 2 },
-    }
-    expect(firstEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
-    expect(secondEvents.filter((event) => event.type === 'message_complete')).toEqual([completion])
+    const completion = [
+      { type: 'status', state: 'idle' },
+      { type: 'turn_complete' },
+    ]
+    expect(firstEvents.filter((event) => event.type === 'turn_complete').length).toBe(1)
+    expect(secondEvents.filter((event) => event.type === 'turn_complete').length).toBe(1)
+    expect(firstEvents.slice(-2)).toEqual(completion)
+    expect(secondEvents.slice(-2)).toEqual(completion)
   })
 
-  it('replays pending permission requests when a client reconnects', () => {
+  it('replays pending approvals as product-safe questions when a task reconnects', () => {
     const sessionId = `permission-reconnect-${crypto.randomUUID()}`
     const ws = makeClientSocket(sessionId)
     spyOn(conversationService, 'hasSession').mockReturnValue(true)
@@ -158,21 +160,17 @@ describe('WebSocket handler session isolation', () => {
     handleWebSocket.open(ws)
 
     expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual({
-      type: 'permission_request',
+      type: 'approval_required',
       requestId: 'request-ask-1',
-      toolName: 'AskUserQuestion',
-      toolUseId: 'tool-ask-1',
-      input: {
-        questions: [
-          {
-            header: 'Scope',
-            question: 'Which scope?',
-            options: [{ label: 'A', description: 'First' }, { label: 'B', description: 'Second' }],
-          },
-        ],
-      },
-      description: 'Answer questions?',
+      kind: 'question',
+      questions: [{
+        header: 'Scope',
+        question: 'Which scope?',
+        options: [{ label: 'A', description: 'First' }, { label: 'B', description: 'Second' }],
+      }],
     })
+    expect(JSON.stringify(ws.sent)).not.toContain('tool-ask-1')
+    expect(JSON.stringify(ws.sent)).not.toContain('Answer questions?')
   })
 
   it('keeps disconnected sessions alive longer while user input is pending', () => {
@@ -316,14 +314,12 @@ describe('WebSocket handler product error projection', () => {
     expect(messages).toEqual([
       {
         type: 'error',
-        code: 'PARSE_ERROR',
-        message: 'The task could not be completed. Please try again.',
+        code: 'task_failed',
         retryable: false,
       },
       {
         type: 'error',
-        code: 'UNKNOWN_TYPE',
-        message: 'The task could not be completed. Please try again.',
+        code: 'task_failed',
         retryable: false,
       },
     ])
@@ -346,8 +342,7 @@ describe('WebSocket handler product error projection', () => {
     const messages = ws.sent.map((payload) => JSON.parse(payload))
     expect(messages).toContainEqual({
       type: 'error',
-      code: 'SESSION_CLEAR_FAILED',
-      message: 'The task could not be completed. Please try again.',
+      code: 'task_failed',
       retryable: true,
     })
     expect(JSON.stringify(messages)).not.toContain(privateError)
@@ -484,11 +479,9 @@ describe('WebSocket handler product error projection', () => {
     }
   })
 
-  it('uses the opaque activity tree only for product sockets and keeps Core clients unchanged', () => {
+  it('uses the opaque activity tree for product task sockets', () => {
     const productSessionId = `product-tree-${crypto.randomUUID()}`
-    const coreSessionId = `core-tree-${crypto.randomUUID()}`
     const productWs = makeClientSocket(productSessionId, 'product')
-    const coreWs = makeClientSocket(coreSessionId)
     const productTaskId = `task-${productSessionId}`
     const privateToolUseId = 'PRIVATE_TOOL_USE_ID'
     const privateParentToolUseId = 'PRIVATE_PARENT_TOOL_USE_ID'
@@ -499,7 +492,6 @@ describe('WebSocket handler product error projection', () => {
 
     spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
     handleWebSocket.open(productWs)
-    handleWebSocket.open(coreWs)
 
     expect(sendToSession(productSessionId, {
       type: 'content_start',
@@ -603,18 +595,6 @@ describe('WebSocket handler product error projection', () => {
       expect(productSerialized).not.toContain(secret)
     }
 
-    const rawCoreEvent = {
-      type: 'tool_use_complete' as const,
-      toolName: 'Bash',
-      toolUseId: privateToolUseId,
-      parentToolUseId: privateParentToolUseId,
-      input: { command: `cat ${privatePath}` },
-    }
-    expect(sendToSession(coreSessionId, rawCoreEvent)).toBe(true)
-    expect(coreWs.sent.map((payload) => JSON.parse(payload))).toEqual([
-      { type: 'connected', sessionId: coreSessionId },
-      rawCoreEvent,
-    ])
   })
 
   it('fails closed once when an AskUserQuestion cannot be represented safely', () => {
@@ -841,38 +821,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     }])
   })
 
-  it('preserves the existing full Computer Use response path for ordinary Core clients', () => {
-    const ws = makeClientSocket(`core-computer-use-${crypto.randomUUID()}`)
-    const resolveApproval = spyOn(computerUseApprovalService, 'resolveApproval').mockReturnValue(true)
-    const response = {
-      granted: [{
-        bundleId: 'com.example.scoreboard',
-        displayName: '记分牌',
-        grantedAt: 1,
-        tier: 'click' as const,
-      }],
-      denied: [],
-      flags: {
-        clipboardRead: false,
-        clipboardWrite: false,
-        systemKeyCombos: true,
-      },
-    }
-
-    handleWebSocket.message(ws, JSON.stringify({
-      type: 'computer_use_permission_response',
-      requestId: 'core-computer-use-1',
-      response,
-    }))
-
-    expect(resolveApproval).toHaveBeenCalledWith(
-      ws.data.sessionId,
-      'core-computer-use-1',
-      response,
-    )
-  })
-
-  it('allows controlled product attachments, task-local stop, and ping while preserving Core client and sdk channels', async () => {
+  it('allows controlled product attachments, task-local stop, ping, and SDK payload delivery', async () => {
     const productSessionId = `product-safe-${crypto.randomUUID()}`
     const productWs = makeClientSocket(productSessionId, 'product')
     const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
@@ -911,24 +860,6 @@ describe('WebSocket handler product task inbound boundary', () => {
     expect(productWs.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: 'status', state: 'idle' },
     ])
-
-    const clientWs = makeClientSocket(`client-safe-${crypto.randomUUID()}`)
-    const clientPermissionResponse = spyOn(conversationService, 'respondToPermission')
-    handleWebSocket.message(clientWs, JSON.stringify({
-      type: 'permission_response',
-      requestId: 'core-permission-1',
-      allowed: true,
-      updatedInput: { coreOnly: true },
-    }))
-    expect(clientPermissionResponse).toHaveBeenCalledWith(
-      clientWs.data.sessionId,
-      'core-permission-1',
-      true,
-      undefined,
-      { coreOnly: true },
-      undefined,
-      undefined,
-    )
 
     const sdkWs = makeClientSocket(`sdk-safe-${crypto.randomUUID()}`, 'sdk')
     const handleSdkPayload = spyOn(conversationService, 'handleSdkPayload')
