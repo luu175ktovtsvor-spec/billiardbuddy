@@ -13,6 +13,10 @@ const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
   PRODUCT_TASK_REVIEW_UNAVAILABLE: '当前任务审阅暂时不可用，请稍后重试。',
   PRODUCT_TASK_STORE_ERROR: '任务数据暂时无法读取，请稍后重试。',
   PRODUCT_TASK_THREAD_UNAVAILABLE: '当前任务记录暂时无法读取，请稍后重试。',
+  VOICE_TRANSCRIPTION_CANCELLED: '语音转写已取消。',
+  VOICE_TRANSCRIPTION_INVALID_AUDIO: '请先录制一段有效音频后重试。',
+  VOICE_TRANSCRIPTION_TOO_LARGE: '录音文件过大，请缩短后重试。',
+  VOICE_TRANSCRIPTION_UNAVAILABLE: '语音转写暂时不可用，请稍后重试。',
 }
 
 function readProductApiErrorCode(body: unknown): string | null {
@@ -41,8 +45,9 @@ export class ProductApiError extends Error {
   }
 }
 
-type ProductRequestOptions = {
+export type ProductRequestOptions = {
   timeout?: number
+  signal?: AbortSignal
 }
 
 function readProductApiErrorMessage(code: string | null): string {
@@ -82,13 +87,20 @@ async function request<T>(
   options?: ProductRequestOptions,
 ): Promise<T> {
   const controller = new AbortController()
+  const abortFromCaller = () => controller.abort()
+  if (options?.signal?.aborted) {
+    abortFromCaller()
+  } else {
+    options?.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
   const timeout = setTimeout(() => controller.abort(), options?.timeout ?? DEFAULT_TIMEOUT_MS)
+  const isFormData = body instanceof FormData
 
   try {
     const response = await fetch(buildProductApiUrl(path), {
       method,
-      headers: buildProductApiHeaders(),
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: isFormData ? undefined : buildProductApiHeaders(),
+      body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
       signal: controller.signal,
     })
 
@@ -101,12 +113,14 @@ async function request<T>(
     return response.json() as Promise<T>
   } finally {
     clearTimeout(timeout)
+    options?.signal?.removeEventListener('abort', abortFromCaller)
   }
 }
 
 export const productApi = {
   get: <T>(path: string, options?: ProductRequestOptions) => request<T>('GET', path, undefined, options),
   post: <T>(path: string, body?: unknown, options?: ProductRequestOptions) => request<T>('POST', path, body, options),
+  postForm: <T>(path: string, body: FormData, options?: ProductRequestOptions) => request<T>('POST', path, body, options),
   patch: <T>(path: string, body?: unknown, options?: ProductRequestOptions) => request<T>('PATCH', path, body, options),
   delete: <T>(path: string, options?: ProductRequestOptions) => request<T>('DELETE', path, undefined, options),
 }

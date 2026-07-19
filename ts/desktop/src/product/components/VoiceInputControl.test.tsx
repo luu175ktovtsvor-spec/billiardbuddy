@@ -83,6 +83,32 @@ describe('VoiceInputControl', () => {
     expect(stopTrack).toHaveBeenCalled()
   })
 
+  it('cancels an in-flight transcription without filling the composer or showing an error', async () => {
+    let requestSignal: AbortSignal | undefined
+    vi.mocked(productVoiceApi.transcribe).mockImplementation((_blob, options) => new Promise<string>(
+      (_resolve, reject) => {
+        requestSignal = options?.signal
+        requestSignal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'))
+        }, { once: true })
+      },
+    ))
+    const onTranscript = vi.fn()
+    render(<VoiceInputControl onTranscript={onTranscript} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '语音输入' }))
+    await screen.findByTestId('voice-recording')
+    fireEvent.click(screen.getByRole('button', { name: '停止并转写' }))
+    await screen.findByTestId('voice-transcribing')
+
+    fireEvent.click(screen.getByRole('button', { name: '取消转写' }))
+
+    await screen.findByTestId('voice-input')
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true))
+    expect(onTranscript).not.toHaveBeenCalled()
+    expect(useUIStore.getState().toasts).toEqual([])
+  })
+
   it('uses a safe recovery message when transcription fails', async () => {
     const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
     vi.mocked(productVoiceApi.transcribe).mockRejectedValue(new Error(rawError))

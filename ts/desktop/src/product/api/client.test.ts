@@ -18,6 +18,11 @@ describe('ProductApiError', () => {
       error: 'PRODUCT_TASK_REVIEW_UNAVAILABLE',
       message: 'task review backend is unavailable',
     }).message).toBe('当前任务审阅暂时不可用，请稍后重试。')
+
+    expect(new ProductApiError(413, {
+      error: 'VOICE_TRANSCRIPTION_TOO_LARGE',
+      message: 'the upload reached an internal private limit',
+    }).message).toBe('录音文件过大，请缩短后重试。')
   })
 
   it('replaces unknown and transport errors with a recoverable generic message', () => {
