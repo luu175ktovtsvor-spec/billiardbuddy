@@ -21,11 +21,11 @@ describe('1000-window gateway deployment capacity preflight', () => {
   test('accepts source defaults when the non-secret capacity keys are absent', () => {
     const result = validate('GW_APP_TOKENS={"opaque":"owner"}\n')
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('deepseek=1000 user=10 token=1000 image_ipm=1200 image_waiters=200 idle_timeout=300')
+    expect(result.stdout).toContain('deepseek=1000 user=10 token=1000 image_ipm=1200 image_waiters=200 idle_timeout=255')
   })
 
   test('accepts the explicit 1000-window profile with systemd-style quoting', () => {
-    const result = validate("GW_DEEPSEEK_CONC='1000'\nGW_DEEPSEEK_USER_CONC=10\nGW_DEEPSEEK_TOKEN_CONC=\"1000\"\nGW_IMG_IPM=1200\nGW_IMG_QUEUE_MAX=200\nGW_SERVER_IDLE_TIMEOUT_SECONDS=300\n")
+    const result = validate("GW_DEEPSEEK_CONC='1000'\nGW_DEEPSEEK_USER_CONC=10\nGW_DEEPSEEK_TOKEN_CONC=\"1000\"\nGW_IMG_IPM=1200\nGW_IMG_QUEUE_MAX=200\nGW_SERVER_IDLE_TIMEOUT_SECONDS=255\n")
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('deepseek=1000 user=10 token=1000')
   })

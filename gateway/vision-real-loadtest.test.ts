@@ -1,11 +1,54 @@
 import { describe, expect, test } from 'bun:test'
-import { classifyCompletionJson, generatedPng, hasCompletionJson, isVisualCapacityDrained, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, resolveVisualThinkingMode, shouldContinueAfterFailure, validatePng } from './vision-real-loadtest'
+import { classifyCompletionJson, createStartGate, generatedPng, hasCompletionJson, isVisualCapacityDrained, parseImagesPerRequest, parseLoadTarget, parseMaximumObservedQueued, parseMinimumObservedActive, parsePhases, parseThinkingMode, phaseMinimumObservedActive, resolveVisualThinkingMode, shouldContinueAfterFailure, validatePng, visualRouteCapacity } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
   test('maps the 100 x 10 visual envelope from high to low so failures reveal a lower ceiling', () => {
     expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1])
     expect(parsePhases(undefined, 12)).toEqual([12, 1])
     expect(parsePhases('1,12,36', 100)).toEqual([36, 12, 1])
+  })
+
+  test('requires an observed in-flight route peak and no observed queue by default', () => {
+    expect(parseMinimumObservedActive(undefined, 1_000)).toBe(1_000)
+    expect(parseMinimumObservedActive('24', 1_000)).toBe(24)
+    expect(() => parseMinimumObservedActive('1001', 1_000)).toThrow('must not exceed 1000')
+    expect(parseMaximumObservedQueued(undefined, 1_000)).toBe(0)
+    expect(parseMaximumObservedQueued('3', 1_000)).toBe(3)
+    expect(() => parseMaximumObservedQueued('1001', 1_000)).toThrow('must not exceed 1000')
+    expect(phaseMinimumObservedActive(12, 1_000)).toBe(12)
+    expect(phaseMinimumObservedActive(1_000, 24)).toBe(24)
+  })
+
+  test('counts bridge route work without double-counting the MiMo vision reservation', () => {
+    const snapshot = {
+      capacity: {
+        vision: { active: 12, queued: 3 },
+        deepseek: { active: 20, queued: 4 },
+        mimo: { active: 99, queued: 88 },
+      },
+    }
+    expect(visualRouteCapacity(snapshot, 'bridge')).toEqual({ active: 32, queued: 7 })
+    expect(visualRouteCapacity(snapshot, 'native')).toEqual({ active: 99, queued: 88 })
+  })
+
+  test('holds every phase request at one start gate before releasing traffic', async () => {
+    const gate = createStartGate(2)
+    const released: string[] = []
+    const first = (async () => {
+      await gate.arrive()
+      released.push('first')
+    })()
+    await Promise.resolve()
+    expect(released).toEqual([])
+    const second = (async () => {
+      await gate.arrive()
+      released.push('second')
+    })()
+    await gate.waitUntilReady()
+    expect(released).toEqual([])
+    gate.release()
+    await Promise.all([first, second])
+    expect(released.sort()).toEqual(['first', 'second'])
   })
 
   test('does not call a phase drained while retained ingress request bytes remain', () => {

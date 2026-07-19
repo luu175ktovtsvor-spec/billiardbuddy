@@ -8,7 +8,7 @@
 #   RELAY_OPENAI_BASE      # 默认 https://api.openai.com/v1
 #   RELAY_DB=/opt/qfrelay/relay.db          # 100 用户生产部署必须配置；SQLite 持久化(重启恢复不能用 :memory:)
 #   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 100 用户生产部署必须配置；大体积输入/结果 blob(700 目录,应用会自建)
-#   RELAY_QUEUE_MAX=1200 RELAY_USER_MAX=10 RELAY_IMG_CONC=6 RELAY_IMG_USER_CONC=1 RELAY_RETRY_AFTER_SECONDS=30  # 100×10 小任务可入队；一个 owner 不占满六个真实生图槽
+#   RELAY_QUEUE_MAX=2000 RELAY_USER_MAX=20 RELAY_IMG_CONC=16 RELAY_IMG_USER_CONC=2 RELAY_RETRY_AFTER_SECONDS=30  # L2 受理队列；真实执行并发仍是显式上游阀门
 #   RELAY_ACTIVE_INPUT_BYTES_MAX=536870912 RELAY_PENDING_INPUT_BYTES_MAX=67108864  # 落盘队列总输入预算 + 上传阶段 JS 堆预算
 #   RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 单请求大小与结果留存,可选；结果默认留 7 天，磁盘需按实际图片体积监控
 #

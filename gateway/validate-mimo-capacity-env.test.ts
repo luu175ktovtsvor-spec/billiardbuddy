@@ -18,16 +18,16 @@ function validate(env: string) {
 }
 
 describe('MiMo deployment capacity preflight', () => {
-  test('accepts the explicit 64 = 52 + 12 production reservation', () => {
-    const result = validate('GW_MIMO_CONC=64\nGW_MIMO_NATIVE_CONC=52\nGW_VISION_CONC=12\n')
+  test('accepts the explicit 64 = 48 + 16 production reservation', () => {
+    const result = validate('GW_MIMO_CONC=64\nGW_MIMO_NATIVE_CONC=48\nGW_VISION_CONC=16\n')
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('MiMo capacity validated: total=64 native=52 vision=12\n')
+    expect(result.stdout).toBe('MiMo capacity validated: total=64 native=48 vision=16\n')
   })
 
   test('accepts systemd-style quoted decimal values without evaluating the file', () => {
-    const result = validate('GW_MIMO_CONC="64"\nGW_MIMO_NATIVE_CONC=\'52\'\nGW_VISION_CONC="12"\n')
+    const result = validate('GW_MIMO_CONC="64"\nGW_MIMO_NATIVE_CONC=\'48\'\nGW_VISION_CONC="16"\n')
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('MiMo capacity validated: total=64 native=52 vision=12\n')
+    expect(result.stdout).toBe('MiMo capacity validated: total=64 native=48 vision=16\n')
   })
 
   test('derives the same valid legacy partition as the gateway when only total is set', () => {

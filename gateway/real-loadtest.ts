@@ -35,6 +35,27 @@ type Sample = {
 
 export type ThinkingMode = 'enabled' | 'disabled'
 
+/**
+ * `phase` means that a phase must observe every request as active at least once.
+ * A numeric value is capped at the current phase size so one high threshold can
+ * be reused safely while the runner works downward.
+ */
+export type MinimumObservedActive = 'phase' | number
+
+/**
+ * A two-stage barrier: every worker must be waiting before the caller can
+ * release any request. This avoids treating task construction as a burst.
+ */
+export type ConcurrentStartGate = {
+  readonly participantCount: number
+  readonly arrivedCount: number
+  readonly ready: boolean
+  readonly released: boolean
+  wait(): Promise<void>
+  waitUntilReady(): Promise<void>
+  release(): void
+}
+
 export type LoadTarget = {
   base: URL
   /** Used only to construct requests; never print this value. */
@@ -52,8 +73,11 @@ type PhaseSummary = {
   firstByteMs: { p50: number | null; p95: number | null }
   totalMs: { p50: number | null; p95: number | null }
   responsesWithReasoning: number
-  /** Observed through periodic /healthz samples; never use this as an exact peak proof. */
+  /** Observed through periodic /healthz samples and enforced as a lower bound. */
   observedGateway: { active: number; queued: number; oldestQueueMs: number; samples: number; unavailableSamples: number }
+  launch: { participants: number; arrived: number; released: boolean }
+  minimumObservedActive: { configured: MinimumObservedActive; required: number; met: boolean }
+  maximumObservedQueued: { configured: number; met: boolean }
   finalGateway: Capacity | null
   drained: boolean
 }
@@ -75,6 +99,10 @@ Options:
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
+  --min-observed-active=phase|n
+                              Required /healthz active peak (default: phase request count).
+                              0 is smoke-test only and cannot prove concurrent capacity.
+  --max-observed-queued=<n>   Largest acceptable /healthz queued peak (default: 0).
   --pause-ms=<n>              Cool-down between successful steps (default: 2500)
   --drain-timeout-ms=<n>      Wait for the sampled pool to drain (default: request timeout)
   --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
@@ -100,6 +128,79 @@ function integer(value: string | undefined, name: string, fallback: number): num
 function option(args: string[], name: string): string | undefined {
   const prefix = `${name}=`
   return args.find(arg => arg.startsWith(prefix))?.slice(prefix.length)
+}
+
+/**
+ * Defaulting to every request in the phase makes a passing production-capacity
+ * result evidence of an observed burst rather than merely fast serial responses.
+ * Use zero only for a deliberately non-capacity smoke test.
+ */
+export function parseMinimumObservedActive(value: string | undefined, total: number): MinimumObservedActive {
+  if (value === undefined || value === 'phase') return 'phase'
+  if (!/^\d+$/.test(value)) throw new Error('--min-observed-active must be phase or a non-negative integer')
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed > total) {
+    throw new Error(`--min-observed-active must be between 0 and ${total}`)
+  }
+  return parsed
+}
+
+export function requiredMinimumObservedActive(configured: MinimumObservedActive, requested: number): number {
+  return configured === 'phase' ? requested : Math.min(configured, requested)
+}
+
+/** A capacity pass is queue-free by default, matching the interactive UX target. */
+export function parseMaximumObservedQueued(value: string | undefined, total: number): number {
+  if (value === undefined) return 0
+  if (!/^\d+$/.test(value)) throw new Error('--max-observed-queued must be a non-negative integer')
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed > total) {
+    throw new Error(`--max-observed-queued must be between 0 and ${total}`)
+  }
+  return parsed
+}
+
+/**
+ * The caller constructs every worker first, waits for all of them to arrive,
+ * then releases them in the same event-loop turn. Timers begin after release,
+ * so staging at the barrier cannot manufacture request timeouts.
+ */
+export function createConcurrentStartGate(participantCount: number): ConcurrentStartGate {
+  if (!Number.isSafeInteger(participantCount) || participantCount < 1) {
+    throw new Error('concurrent start gate requires at least one participant')
+  }
+
+  let arrivedCount = 0
+  let released = false
+  let resolveReady: (() => void) | undefined
+  let resolveRelease: (() => void) | undefined
+  const readyPromise = new Promise<void>(resolve => { resolveReady = resolve })
+  const releasePromise = new Promise<void>(resolve => { resolveRelease = resolve })
+
+  return {
+    participantCount,
+    get arrivedCount() { return arrivedCount },
+    get ready() { return arrivedCount === participantCount },
+    get released() { return released },
+    async wait(): Promise<void> {
+      if (released) throw new Error('concurrent start gate cannot admit workers after release')
+      arrivedCount += 1
+      if (arrivedCount > participantCount) throw new Error('concurrent start gate received too many workers')
+      if (arrivedCount === participantCount) resolveReady?.()
+      await releasePromise
+    },
+    waitUntilReady(): Promise<void> {
+      return readyPromise
+    },
+    release(): void {
+      if (released) throw new Error('concurrent start gate was already released')
+      if (arrivedCount !== participantCount) {
+        throw new Error(`concurrent start gate is not ready (${arrivedCount}/${participantCount})`)
+      }
+      released = true
+      resolveRelease?.()
+    },
+  }
 }
 
 /** Keep test traffic on the two documented DeepSeek spellings. */
@@ -131,6 +232,15 @@ function sleep(ms: number): Promise<void> {
 
 function nonNegative(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0
+}
+
+/** A missing or too-small health observation must fail a capacity phase. */
+export function meetsMinimumObservedActive(peakActive: number, requiredActive: number): boolean {
+  return nonNegative(peakActive) >= requiredActive
+}
+
+export function meetsMaximumObservedQueued(peakQueued: number, maximumQueued: number): boolean {
+  return nonNegative(peakQueued) <= maximumQueued
 }
 
 function recordCount(target: Record<string, number>, key: string): void {
@@ -327,6 +437,8 @@ async function main(): Promise<void> {
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
   const phases = parsePhases(option(args, '--phases'), total)
+  const minimumObservedActive = parseMinimumObservedActive(option(args, '--min-observed-active'), total)
+  const maximumObservedQueued = parseMaximumObservedQueued(option(args, '--max-observed-queued'), total)
   // A high-to-low capacity run needs to continue after a failed upper bound in order
   // to locate the first viable lower bound. The explicit stop switch remains for
   // incident-style probes where any failure must halt traffic immediately.
@@ -368,7 +480,8 @@ async function main(): Promise<void> {
     return { snapshot, drained: isCapacityDrained(snapshot) }
   }
 
-  async function runOne(index: number): Promise<Sample> {
+  async function runOne(index: number, startGate: ConcurrentStartGate): Promise<Sample> {
+    await startGate.wait()
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
@@ -447,6 +560,8 @@ async function main(): Promise<void> {
     pool,
     maxTokens,
     thinking,
+    minimumObservedActive,
+    maximumObservedQueued,
   }))
 
   let highestSuccessfulPhase: number | null = null
@@ -475,7 +590,15 @@ async function main(): Promise<void> {
         await sleep(Math.max(0, healthIntervalMs - (performance.now() - sampledAt)))
       }
     })()
-    const samples = await Promise.all(Array.from({ length: requested }, (_, index) => runOne(index)))
+    const startGate = createConcurrentStartGate(requested)
+    const samplesTask = Promise.all(Array.from({ length: requested }, (_, index) => runOne(index, startGate)))
+    await startGate.waitUntilReady()
+    startGate.release()
+    // Yield once after the synchronized release so the worker fetch calls enter
+    // the runtime before this additional immediate health observation.
+    await Promise.resolve()
+    observeHealth(await health())
+    const samples = await samplesTask
     monitor = false
     await monitorTask
     const drain = await waitForDrain()
@@ -489,6 +612,9 @@ async function main(): Promise<void> {
     const firstBytes = samples.flatMap(sample => sample.firstByteMs === null ? [] : [sample.firstByteMs])
     const totals = samples.map(sample => sample.totalMs)
     const succeeded = samples.filter(sample => sample.completed).length
+    const requiredActive = requiredMinimumObservedActive(minimumObservedActive, requested)
+    const activeRequirementMet = meetsMinimumObservedActive(peakActive, requiredActive)
+    const queueRequirementMet = meetsMaximumObservedQueued(peakQueued, maximumObservedQueued)
     const summary: PhaseSummary = {
       requested,
       succeeded,
@@ -505,11 +631,28 @@ async function main(): Promise<void> {
         samples: healthSamples,
         unavailableSamples: unavailableHealthSamples,
       },
+      launch: {
+        participants: startGate.participantCount,
+        arrived: startGate.arrivedCount,
+        released: startGate.released,
+      },
+      minimumObservedActive: {
+        configured: minimumObservedActive,
+        required: requiredActive,
+        met: activeRequirementMet,
+      },
+      maximumObservedQueued: {
+        configured: maximumObservedQueued,
+        met: queueRequirementMet,
+      },
       finalGateway,
       drained: drain.drained,
     }
     console.log(JSON.stringify({ event: 'loadtest_phase', ...summary }))
-    const phasePassed = summary.failed === 0 && summary.drained
+    const phasePassed = summary.failed === 0
+      && summary.drained
+      && summary.minimumObservedActive.met
+      && summary.maximumObservedQueued.met
     if (phasePassed && highestSuccessfulPhase === null) highestSuccessfulPhase = requested
     if (!phasePassed) observedFailure = true
     if (!phasePassed && !continueAfterFailure) {
