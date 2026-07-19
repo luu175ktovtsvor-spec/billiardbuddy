@@ -83,14 +83,20 @@ const FALLBACK_VIDEO_ENCODER: VideoEncoderProfile = {
 
 /**
  * A desktop export owns the local encoder, rather than a shared gateway
- * worker. Keep one FFmpeg process active per desktop sidecar and retain just
- * enough waiting slots for the product's five-window burst assumption.
+ * worker. Keep one FFmpeg process active per desktop sidecar, but retain nine
+ * lightweight task records so a user's ten-window burst is accepted rather than
+ * rejected. This does not claim ten simultaneous encoders: video bytes and CPU
+ * remain local and exactly one export runs per desktop.
  */
-const DEFAULT_MAX_QUEUED_VIDEO_RENDERS = 4
-const MAX_QUEUED_VIDEO_RENDERS = 4
+const DEFAULT_MAX_QUEUED_VIDEO_RENDERS = 9
+const MAX_QUEUED_VIDEO_RENDERS = 9
 const MAX_CONCURRENT_VIDEO_PROBES = 2
-const DEFAULT_MAX_QUEUED_VIDEO_PROBES = 3
-const MAX_QUEUED_VIDEO_PROBES = 3
+// Match the ten-window export envelope while still serializing the actual
+// local metadata reads to two FFprobe processes. Eight lightweight waiters
+// means every window can import a source, without turning that burst into ten
+// disk scans at once.
+const DEFAULT_MAX_QUEUED_VIDEO_PROBES = 8
+const MAX_QUEUED_VIDEO_PROBES = 8
 
 function maxQueuedVideoRenders(env: Record<string, string | undefined>): number {
   const configured = env.BB_MEDIA_MAX_QUEUED_RENDERS?.trim()
@@ -472,8 +478,9 @@ export class MediaProjectService {
 
   /**
    * FFprobe is much lighter than an encoder, but concurrent metadata scans
-   * still compete for the user's local disk. Two scans plus three waiting
-   * admissions cover five windows without allowing an unbounded local burst.
+   * still compete for the user's local disk. Two scans plus eight waiting
+   * admissions cover a ten-window burst without allowing an unbounded local
+   * scan burst.
    */
   private async withVideoProbeAdmission<T>(action: () => Promise<T>): Promise<T> {
     if (this.activeVideoProbes < MAX_CONCURRENT_VIDEO_PROBES) {
