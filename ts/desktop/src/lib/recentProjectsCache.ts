@@ -1,4 +1,4 @@
-import type { RecentProject } from '../api/sessions'
+import type { RecentProject } from '../api/recentProjects'
 
 let cachedProjects: RecentProject[] | null = null
 let cacheTimestamp = 0

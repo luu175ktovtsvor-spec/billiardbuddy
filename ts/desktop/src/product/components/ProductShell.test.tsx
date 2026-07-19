@@ -11,17 +11,13 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   createTask: vi.fn(),
   continueTask: vi.fn(),
-  refreshSessions: vi.fn(),
   openTab: vi.fn(),
   openProductTaskTab: vi.fn(),
   openNewProductTask: vi.fn(),
   closeTab: vi.fn(),
-  connectToSession: vi.fn(),
-  sendMessage: vi.fn(),
   connectProductTask: vi.fn(),
   sendProductTaskMessage: vi.fn(),
   index: { projects: [], tasks: [], total: 0, capabilities: { createTask: true } } as Record<string, unknown>,
-  chatSessions: {} as Record<string, unknown>,
   taskRuntimes: {} as Record<string, unknown>,
   tabs: [] as Array<Record<string, unknown>>,
 }))
@@ -51,12 +47,6 @@ vi.mock('../stores/productTaskStore', () => ({
     archiveTask: vi.fn(),
     restoreTask: vi.fn(),
     continueTask: mocks.continueTask,
-  }),
-}))
-
-vi.mock('../../stores/sessionStore', () => ({
-  useSessionStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    fetchSessions: mocks.refreshSessions,
   }),
 }))
 
@@ -135,9 +125,6 @@ beforeEach(() => {
   mocks.continueTask.mockImplementation(async () => {
     mocks.events.push('continue')
     return makeTask({ id: 'task-2', title: '继续整理开球训练' })
-  })
-  mocks.refreshSessions.mockImplementation(async () => {
-    mocks.events.push('refresh-sessions')
   })
   mocks.openTab.mockImplementation(() => {
     mocks.events.push('open-tab')
@@ -234,7 +221,6 @@ describe('ProductShell', () => {
     })
 
     expect(mocks.continueTask).toHaveBeenCalledWith('task-1', {})
-    expect(mocks.refreshSessions).not.toHaveBeenCalled()
     expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-2', '继续整理开球训练')
     expect(mocks.events).toEqual(['continue', 'open-product-task'])
   })

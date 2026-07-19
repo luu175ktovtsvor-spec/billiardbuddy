@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RecentProject } from '../api/sessions'
+import type { RecentProject } from '../api/recentProjects'
 import {
   getCachedRecentProjects,
   invalidateRecentProjectsCache,

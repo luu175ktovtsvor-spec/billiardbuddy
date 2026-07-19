@@ -14,8 +14,7 @@ export type DesktopNotificationOptions = {
 }
 
 export type DesktopNotificationTarget =
-  | { type: 'session'; sessionId: string; title?: string }
-  | { type: 'scheduled' }
+  { type: 'scheduled' }
 
 type NativeNotificationPayload = {
   title: string
@@ -141,12 +140,7 @@ async function invokeMacNotificationPermissionRequest(): Promise<DesktopNotifica
 function isNotificationTarget(value: unknown): value is DesktopNotificationTarget {
   if (!value || typeof value !== 'object') return false
   const target = value as Partial<DesktopNotificationTarget>
-  if (target.type === 'scheduled') return true
-  if (target.type === 'session') {
-    return typeof target.sessionId === 'string' && target.sessionId.length > 0 &&
-      (target.title === undefined || typeof target.title === 'string')
-  }
-  return false
+  return target.type === 'scheduled'
 }
 
 function parseTargetJson(value: unknown): DesktopNotificationTarget | null {
