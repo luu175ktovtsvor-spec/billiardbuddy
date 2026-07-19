@@ -172,6 +172,59 @@ test('default one-slot MiMo/vision fairness serializes two distinct images from 
   expect(deepseekCalls[0]!.body).toContain('[图片理解结果 2]')
 })
 
+test('default one-slot fairness holds a second distinct image until the first real MiMo call releases', async () => {
+  const calls: Array<{ url: string; body: string }> = []
+  const usage = new MemoryUsageStore()
+  let allowVision = false
+  let releaseVision: (() => void) | undefined
+  const visionGate = new Promise<void>(resolve => { releaseVision = resolve })
+  let visionInFlight = 0
+  let peakVisionInFlight = 0
+  const fetch = createGatewayFetch({
+    env: env(),
+    usageStore: usage,
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      const body = typeof init?.body === 'string' ? init.body : ''
+      calls.push({ url, body })
+      if (url.includes('mimo.example') && url.endsWith('/chat/completions')) {
+        let parsedBody: Record<string, unknown> | null = null
+        try { parsedBody = JSON.parse(body) } catch { /* ignore */ }
+        const messages = Array.isArray(parsedBody?.messages) ? parsedBody.messages as Array<Record<string, unknown>> : []
+        if (parsedBody?.stream === false && Array.isArray(messages[0]?.content)) {
+          visionInFlight += 1
+          peakVisionInFlight = Math.max(peakVisionInFlight, visionInFlight)
+          if (!allowVision) await visionGate
+          visionInFlight -= 1
+          return Response.json({ choices: [{ message: { content: '图片理解结果：受控测试图。' } }] })
+        }
+      }
+      return new Response('data: deepseek-ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const distinctImages = ['held-one', 'held-two'].map(value => `data:image/png;base64,${Buffer.from(value).toString('base64')}`)
+  const responsePromise = fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'X-QF-Client-ID': 'held-desktop-one' },
+    body: withImagesBody('deepseek-v4-flash', distinctImages),
+  })))
+
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect(calls.filter(call => call.url.includes('mimo.example'))).toHaveLength(1)
+  expect(peakVisionInFlight).toBe(1)
+
+  allowVision = true
+  releaseVision!()
+  const response = await responsePromise
+  expect(response.status).toBe(200)
+  await response.text()
+  expect(calls.filter(call => call.url.includes('mimo.example'))).toHaveLength(2)
+  expect(calls.filter(call => call.url.includes('deepseek.example'))).toHaveLength(1)
+  expect((await healthzCapacity(fetch)).mimo).toMatchObject({ active: 0, queued: 0 })
+})
+
 test('Computer Use screenshot turns capability-route directly to native MiMo with pixels and tools intact', async () => {
   const { fetch, calls } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
