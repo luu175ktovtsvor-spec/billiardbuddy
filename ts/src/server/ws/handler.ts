@@ -1011,6 +1011,11 @@ async function restartSessionWithPermissionMode(
   try {
     const workDir = conversationService.getSessionWorkDir(sessionId)
     await persistSessionPermissionMode(sessionId, mode, workDir)
+    // The forwarding callback belongs to the old CLI process. Keep the map in
+    // sync before replacing that process so the next user turn binds a fresh
+    // callback to the restarted session instead of silently retaining a stale
+    // entry that can no longer receive SDK output.
+    removeSessionOutputCallback(sessionId)
     conversationService.stopSession(sessionId)
 
     // Rebuild runtime settings (will pick up the session-scoped mode)
@@ -1081,6 +1086,9 @@ async function restartSessionWithRuntimeConfig(
 ): Promise<void> {
   try {
     const workDir = conversationService.getSessionWorkDir(sessionId)
+    // See the permission-mode restart above: output callbacks are owned by a
+    // concrete CLI process, not merely by the public task/session identifier.
+    removeSessionOutputCallback(sessionId)
     conversationService.stopSession(sessionId)
 
     const runtimeSettings = await getRuntimeSettings(sessionId)
