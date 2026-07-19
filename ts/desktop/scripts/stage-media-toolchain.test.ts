@@ -22,6 +22,7 @@ function fixture(
   options: {
     ffprobeBuildConfiguration?: string
     licenseText?: string
+    lineWrappedBinaryLicense?: boolean
     manifestLicense?: 'LGPL-2.1-or-later' | 'LGPL-3.0-or-later'
   } = {},
 ): string {
@@ -35,7 +36,7 @@ function fixture(
 case "$*" in
   *-buildconf*) echo '${name} version 7.1-test'; echo 'configuration: ${configuration}' ;;
   *-version*) echo '${name} version 7.1-test'; echo 'configuration: ${configuration}' ;;
-  *-L*) echo 'This version of ${name} is licensed under the GNU Lesser General Public License.' ;;
+  *-L*) echo 'This version of ${name} is licensed under the GNU Lesser General${options.lineWrappedBinaryLicense ? '\\n' : ' '}Public License.' ;;
   *) exit 2 ;;
 esac
 `)
@@ -90,6 +91,14 @@ describe('media toolchain staging', () => {
     stageMediaToolchain({ sourceDir: source, destinationDir: destination, platform: 'darwin' })
     expect(() => stageMediaToolchain({ destinationDir: destination, platform: 'darwin', verifyOnly: true })).not.toThrow()
     expect(readFileSync(join(destination, 'media-toolchain-manifest.json'), 'utf8')).toContain('--enable-shared')
+  })
+
+  test('accepts FFmpeg license output that wraps at a line boundary', () => {
+    expect(() => stageMediaToolchain({
+      sourceDir: fixture('--enable-shared', { lineWrappedBinaryLicense: true }),
+      destinationDir: temp(),
+      platform: 'darwin',
+    })).not.toThrow()
   })
 
   test('rejects GPL/nonfree builds and changed binaries', () => {
