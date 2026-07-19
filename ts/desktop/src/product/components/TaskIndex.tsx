@@ -13,10 +13,10 @@ import { CopyButton } from '../../components/shared/CopyButton'
 import { agentsApi, type AgentCommand } from '../../api/agents'
 import { commandDiscoveryApi, type DiscoveredSlashCommand } from '../../api/commandDiscovery'
 import {
-  buildAgentSlashCommands,
-  resolveSlashCommandRuntimeValue,
-  type SlashCommandOption,
-} from '../../components/chat/composerUtils'
+  buildTaskComposerAgentCommands,
+  resolveTaskComposerRuntimeCommand,
+  type TaskComposerCommand,
+} from '../taskComposerCommands'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import {
   filesToInlineComposerAttachments,
@@ -124,7 +124,7 @@ function insertSlashCommand(value: string, commandName: string): string {
   return `/${commandName}${suffix || ' '}`
 }
 
-type TaskComposerSlashCommand = SlashCommandOption & {
+type TaskComposerSlashCommand = TaskComposerCommand & {
   key: string
 }
 
@@ -336,7 +336,7 @@ export function TaskComposer({
   }, [isSlashInput, normalizedWorkDir])
 
   const agentSlashCommands = useMemo(
-    () => buildAgentSlashCommands(discoverableAgents ?? []),
+    () => buildTaskComposerAgentCommands(discoverableAgents ?? []),
     [discoverableAgents],
   )
   const matchingCommands = useMemo<TaskComposerSlashCommand[]>(() => {
@@ -437,7 +437,7 @@ export function TaskComposer({
     }
     const initialAttachments = attachmentResult.attachments
     const initialMessage: ProductTaskInitialMessage = {
-      text: resolveSlashCommandRuntimeValue(initialText.trim(), agentSlashCommands),
+      text: resolveTaskComposerRuntimeCommand(initialText.trim(), agentSlashCommands),
       attachments: initialAttachments,
     }
     void (initialMessage.text || initialAttachments.length > 0
