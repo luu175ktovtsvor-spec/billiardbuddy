@@ -22,6 +22,9 @@ describe('vision real-loadtest safety guards', () => {
       ...permitsIdle,
       capacity: { ...permitsIdle.capacity, ingress_body: { reservedBytes: 1, maxBytes: 1024 } },
     })).toBe(false)
+    expect(isVisualCapacityDrained({
+      capacity: { vision: { active: 0, queued: 0 }, mimo: { active: 0, queued: 0 }, deepseek: { active: 0, queued: 0 } },
+    })).toBe(false)
   })
 
   test('only accepts explicit documented thinking values', () => {

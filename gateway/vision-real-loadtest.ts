@@ -149,9 +149,11 @@ export function isVisualCapacityDrained(snapshot: GatewayHealth | null): boolean
   const capacity = snapshot.capacity
   const permitDrained = capacityPools.every(pool => {
     const current = capacity?.[pool]
+    if (!current) return false
     return nonNegative(current?.active) === 0 && nonNegative(current?.queued) === 0
   })
-  return permitDrained && nonNegative(capacity?.ingress_body?.reservedBytes) === 0
+  const ingress = capacity?.ingress_body
+  return permitDrained && ingress !== undefined && nonNegative(ingress.reservedBytes) === 0
 }
 
 /** High-to-low continuation is default; an explicit safety stop always wins. */
