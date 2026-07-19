@@ -693,14 +693,16 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const pinAction = task.pinnedAt ? 'unpin' : 'pin'
   const lifecycleAction = isArchived ? 'restore' : 'archive'
   const canPinTask = task.actions.includes(pinAction)
-  const canChangeLifecycle = task.actions.includes(lifecycleAction)
+  const hasActiveRun = runtime?.runState === 'working'
+    || runtime?.runState === 'awaiting_approval'
+    || runtime?.pendingApproval != null
+  const canChangeLifecycle = task.actions.includes(lifecycleAction) && (isArchived || !hasActiveRun)
   const isTaskMutationPending = mutations[`${taskId}:archive`] || mutations[`${taskId}:restore`]
   const isPinMutationPending = mutations[`${taskId}:${pinAction}`]
   const isContinuationPending = mutations[`${taskId}:continue`] === true
   const isSideTaskCreationPending = sideTaskMutations[
     productSideTaskMutationKey(taskId, 'new', 'create')
   ] === true
-  const isRunning = runtime?.runState === 'working' || runtime?.runState === 'awaiting_approval'
 
   const closeReviewDock = () => {
     setIsReviewOpen(false)
@@ -991,7 +993,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                     <p className="truncate text-xs text-[var(--color-text-tertiary)]">按当前发送快捷键提交，Shift + Enter 换行。</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    {isRunning ? (
+                    {hasActiveRun ? (
                       <button type="button" onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">停止</button>
                     ) : null}
                     <button type="submit" className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">发送</button>

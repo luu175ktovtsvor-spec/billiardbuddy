@@ -12,6 +12,7 @@ const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
   NOT_FOUND: '请求的任务或资源已不可用。',
   PRODUCT_TASK_REVIEW_UNAVAILABLE: '当前任务审阅暂时不可用，请稍后重试。',
   PRODUCT_TASK_COMMANDS_UNAVAILABLE: '暂时无法读取可用命令，请稍后重试。',
+  PRODUCT_TASK_ACTIVE_RUN: '任务仍在运行或等待确认，请先停止任务后再归档。',
   PRODUCT_TASK_STORE_ERROR: '任务数据暂时无法读取，请稍后重试。',
   PRODUCT_TASK_THREAD_UNAVAILABLE: '当前任务记录暂时无法读取，请稍后重试。',
   VOICE_TRANSCRIPTION_CANCELLED: '语音转写已取消。',

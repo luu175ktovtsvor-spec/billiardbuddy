@@ -28,6 +28,11 @@ describe('ProductApiError', () => {
       error: 'PRODUCT_TASK_COMMANDS_UNAVAILABLE',
       message: 'plugin at /private/workspace could not be read',
     }).message).toBe('暂时无法读取可用命令，请稍后重试。')
+
+    expect(new ProductApiError(409, {
+      error: 'PRODUCT_TASK_ACTIVE_RUN',
+      message: 'private runtime state',
+    }).message).toBe('任务仍在运行或等待确认，请先停止任务后再归档。')
   })
 
   it('replaces unknown and transport errors with a recoverable generic message', () => {

@@ -562,6 +562,32 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
+  it('keeps the stop control but hides archive during a live task run', () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      runState: 'working',
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.getByRole('button', { name: '停止' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '归档' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '停止' }))
+    expect(mocks.stopTask).toHaveBeenCalledWith('task-1')
+  })
+
+  it('hides archive while a task is waiting for approval', () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      runState: 'awaiting_approval',
+      pendingApproval: { requestId: 'approval-archive-guard', kind: 'action' },
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.getByRole('button', { name: '停止' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '归档' })).toBeNull()
+  })
+
   it('only exposes page-header mutations declared by the current task action contract', () => {
     const [currentTask] = mocks.index.tasks as Array<Record<string, unknown>>
     mocks.index = {
