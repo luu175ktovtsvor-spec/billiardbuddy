@@ -187,7 +187,6 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Settings ──────────────────────────────────────
   'settings.title': '設定',
-  'settings.tab.permissions': '権限',
   'settings.tab.general': '一般',
   'settings.tab.terminal': 'ターミナル',
   'settings.tab.skills': 'スキル',
@@ -269,18 +268,6 @@ export const jp: Record<TranslationKey, string> = {
   'doctor.serverUnavailable': 'サーバー側の Doctor が利用できなかったため、ローカル修復のみ実行されました。',
   'errorBoundary.title': '問題が発生しました。',
   'errorBoundary.description': '問題は復旧のために記録されました。',
-
-  // Settings > Permissions
-  'settings.permissions.title': '権限モード',
-  'settings.permissions.description': 'ツール実行の権限の扱い方を制御します。',
-  'settings.permissions.default': '権限を確認',
-  'settings.permissions.defaultDesc': 'ツールを実行する前に確認します',
-  'settings.permissions.acceptEdits': '編集を承認',
-  'settings.permissions.acceptEditsDesc': 'ファイル編集は自動承認し、それ以外は確認します',
-  'settings.permissions.plan': 'プランモード',
-  'settings.permissions.planDesc': '実行せずに思考と計画を行います',
-  'settings.permissions.bypass': 'すべてバイパス',
-  'settings.permissions.bypassDesc': 'すべての権限チェックをスキップします（危険）',
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM アダプター',
@@ -1057,7 +1044,8 @@ export const jp: Record<TranslationKey, string> = {
   // ─── New Task Modal ──────────────────────────────────────
   'newTask.title': '新しいスケジュールタスク',
   'newTask.localWarning': 'ローカルタスクは、コンピューターが起動している間のみ実行されます。',
-  'newTask.fullPermissions': 'すべての権限',
+  'newTask.unattendedSafeMode': '無人実行の安全モード',
+  'newTask.unattendedSafeModeHint': 'スケジュールタスクは権限確認に応答できません。承認が必要な操作は拒否されます。選択したフォルダーは作業ディレクトリであり、サンドボックスではありません。',
   'newTask.name': '名前',
   'newTask.namePlaceholder': 'daily-code-review',
   'newTask.description': '説明',
@@ -1141,12 +1129,6 @@ export const jp: Record<TranslationKey, string> = {
   'tasks.outputHintSession': '「会話を表示」をクリックすると、セッションビューで出力全体を確認できます。',
   'tasks.noOutputText': '利用できる出力はありません。',
 
-  // ─── Prompt Editor ──────────────────────────────────────
-  'promptEditor.worktree': 'worktree',
-  'promptEditor.bypassWarning': 'バイパスモードはシステムへの完全なアクセスを許可します',
-  'promptEditor.within': '範囲:',
-  'promptEditor.selectFolder': '— スコープを限定するフォルダを選択',
-
   // ─── Model Selector ──────────────────────────────────────
   'model.selectModel': 'モデルを選択',
   'model.configuration': 'モデル設定',
@@ -1196,6 +1178,7 @@ export const jp: Record<TranslationKey, string> = {
   'scheduledPage.title': 'スケジュールタスク',
   'scheduledPage.subtitle': 'タスクをスケジュール実行したり、必要なときに実行したりします。既存のセッションで {code} を入力すると作成できます。',
   'scheduledPage.desktopNotice': 'スケジュールタスクは、デスクトップアプリが開いている間のみ実行されます。タスクが時間どおりに実行されるよう、アプリを起動したままにしてください。',
+  'scheduledPage.unattendedSafety': 'スケジュールタスクは権限をバイパスしません。無人実行中に承認が必要な操作は拒否されます。',
   'scheduledPage.oldSubtitle': '自動化された運用ルーチンとバックグラウンドメンテナンスを管理します。',
   'scheduledPage.executionMode': '実行モード',
   'scheduledPage.localMode': 'ローカルモード',

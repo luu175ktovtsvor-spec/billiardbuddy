@@ -16,6 +16,21 @@ export type TaskNotificationConfig = {
   channels: ('desktop')[]
 }
 
+/**
+ * Scheduled tasks are always unattended.  They must never inherit an
+ * interactive session's permission mode or opt into the Core bypass mode.
+ * `dontAsk` keeps ordinary read-only/allowed work available, while rejecting
+ * every action that would otherwise require an approval prompt.
+ */
+export const SCHEDULED_TASK_PERMISSION_MODE = 'dontAsk' as const
+export type ScheduledTaskPermissionMode = typeof SCHEDULED_TASK_PERMISSION_MODE
+
+export function isScheduledTaskPermissionMode(
+  value: unknown,
+): value is ScheduledTaskPermissionMode {
+  return value === SCHEDULED_TASK_PERMISSION_MODE
+}
+
 export type CronTask = {
   id: string
   name?: string
@@ -27,11 +42,10 @@ export type CronTask = {
   enabled?: boolean // allow disabling without deleting (default true)
   recurring?: boolean
   permanent?: boolean
-  permissionMode?: string
+  permissionMode?: ScheduledTaskPermissionMode
   model?: string
   providerId?: string | null
   folderPath?: string
-  useWorktree?: boolean
   notification?: TaskNotificationConfig
 }
 
@@ -56,10 +70,7 @@ export class CronService {
   /** 获取所有任务 */
   async listTasks(): Promise<CronTask[]> {
     const data = await this.readTasksFile()
-    return data.tasks.map((task) => ({
-      ...task,
-      permissionMode: 'bypassPermissions',
-    }))
+    return data.tasks
   }
 
   /** 创建新任务 */
@@ -71,9 +82,14 @@ export class CronService {
     }
 
     const data = await this.readTasksFile()
+    const {
+      permissionMode: _requestedPermissionMode,
+      useWorktree: _legacyUseWorktree,
+      ...safeTask
+    } = task as typeof task & { useWorktree?: unknown }
     const newTask: CronTask = {
-      ...task,
-      permissionMode: 'bypassPermissions',
+      ...safeTask,
+      permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
       id: crypto.randomBytes(4).toString('hex'),
       createdAt: Date.now(),
     }
@@ -91,11 +107,17 @@ export class CronService {
     }
 
     // 不允许修改 id 和 createdAt
-    const { id: _id, createdAt: _ca, ...safeUpdates } = updates
+    const {
+      id: _id,
+      createdAt: _ca,
+      permissionMode: _requestedPermissionMode,
+      useWorktree: _legacyUseWorktree,
+      ...safeUpdates
+    } = updates as typeof updates & { useWorktree?: unknown }
     data.tasks[index] = {
       ...data.tasks[index],
       ...safeUpdates,
-      permissionMode: 'bypassPermissions',
+      permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
     }
     await this.writeTasksFile(data)
     return data.tasks[index]
@@ -136,7 +158,21 @@ export class CronService {
       if (!Array.isArray(parsed.tasks)) {
         return { tasks: [] }
       }
-      return parsed
+      return {
+        tasks: parsed.tasks.map((task) => {
+          const { useWorktree: _legacyUseWorktree, ...safeTask } = task as CronTask & {
+            useWorktree?: unknown
+          }
+          return {
+            ...safeTask,
+            // Existing desktop builds persisted bypassPermissions. Normalize it
+            // on every read so it can never reach the scheduler again; the next
+            // write persists the migrated value. A scheduled task never had a
+            // worktree launcher, so discard that legacy no-op setting too.
+            permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+          }
+        }),
+      }
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return { tasks: [] }

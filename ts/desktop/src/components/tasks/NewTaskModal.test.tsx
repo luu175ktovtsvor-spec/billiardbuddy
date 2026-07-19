@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 describe('NewTaskModal', () => {
-  it('creates scheduled tasks without technical runtime overrides', async () => {
+  it('creates scheduled tasks in unattended safe mode', async () => {
     const createTask = vi.fn(async () => {})
     useTaskStore.setState({ createTask } as Partial<ReturnType<typeof useTaskStore.getState>>)
     useSettingsStore.setState({ locale: 'en' })
@@ -53,6 +53,12 @@ describe('NewTaskModal', () => {
 
     render(<NewTaskModal open onClose={vi.fn()} />)
 
+    expect(screen.getByText('Unattended safe mode')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Actions that need approval are rejected/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Full permissions')).not.toBeInTheDocument()
+
     fireEvent.change(screen.getByLabelText(/^Name/), {
       target: { value: 'provider cron' },
     })
@@ -71,10 +77,36 @@ describe('NewTaskModal', () => {
 
     await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1))
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      permissionMode: 'bypassPermissions',
+      permissionMode: 'dontAsk',
       enabled: true,
       recurring: true,
       folderPath: '/workspace/product-task',
     }))
+  })
+
+  it('keeps edited scheduled tasks in unattended safe mode', async () => {
+    const updateTask = vi.fn(async () => {})
+    useTaskStore.setState({ updateTask } as Partial<ReturnType<typeof useTaskStore.getState>>)
+    useSettingsStore.setState({ locale: 'en' })
+
+    render(<NewTaskModal open onClose={vi.fn()} editTask={{
+      id: 'scheduled-1',
+      name: 'daily review',
+      description: 'Review the daily operations',
+      cron: '0 9 * * *',
+      prompt: 'Review today’s operation log.',
+      enabled: true,
+      createdAt: 0,
+    }} />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(updateTask).toHaveBeenCalledWith(
+      'scheduled-1',
+      expect.objectContaining({ permissionMode: 'dontAsk' }),
+    ))
   })
 })

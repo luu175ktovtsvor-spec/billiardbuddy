@@ -14,6 +14,11 @@ import { fileURLToPath } from 'node:url'
 import { ConversationService, ConversationStartupError, conversationService } from '../services/conversationService.js'
 import { SessionService, sessionService } from '../services/sessionService.js'
 import { ProviderService } from '../services/providerService.js'
+import { SettingsService } from '../services/settingsService.js'
+
+async function setDefaultPermissionModeForIntegrationTests(mode: string): Promise<void> {
+  await new SettingsService().setPermissionMode(mode)
+}
 
 async function rmWithRetry(targetPath: string): Promise<void> {
   const attempts = process.platform === 'win32' ? 5 : 1
@@ -3376,11 +3381,7 @@ describe('WebSocket Chat Integration', () => {
 
   it('should defer bypass permission restarts until the active turn completes', async () => {
     await withMockStreamDelay(350, async () => {
-      await fetch(`${baseUrl}/api/permissions/mode`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'default' }),
-      })
+      await setDefaultPermissionModeForIntegrationTests('default')
 
       const createRes = await fetch(`${baseUrl}/api/sessions`, {
         method: 'POST',
@@ -3513,21 +3514,13 @@ describe('WebSocket Chat Integration', () => {
         ws.close()
         conversationService.startSession = originalStartSession
         conversationService.stopSession(sessionId)
-        await fetch(`${baseUrl}/api/permissions/mode`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'default' }),
-        })
+        await setDefaultPermissionModeForIntegrationTests('default')
       }
     })
   }, 20_000)
 
   it('should keep the session idle in the UI while restarting for a bypass permission switch', async () => {
-    await fetch(`${baseUrl}/api/permissions/mode`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'default' }),
-    })
+    await setDefaultPermissionModeForIntegrationTests('default')
 
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
@@ -3624,20 +3617,12 @@ describe('WebSocket Chat Integration', () => {
       ws.close()
       conversationService.startSession = originalStartSession
       conversationService.stopSession(sessionId)
-      await fetch(`${baseUrl}/api/permissions/mode`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'default' }),
-      })
+      await setDefaultPermissionModeForIntegrationTests('default')
     }
   }, 20_000)
 
   it('should persist permission changes made before the CLI starts', async () => {
-    await fetch(`${baseUrl}/api/permissions/mode`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'default' }),
-    })
+    await setDefaultPermissionModeForIntegrationTests('default')
 
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
@@ -3730,11 +3715,7 @@ describe('WebSocket Chat Integration', () => {
       ws.close()
       conversationService.startSession = originalStartSession
       conversationService.stopSession(sessionId)
-      await fetch(`${baseUrl}/api/permissions/mode`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'default' }),
-      })
+      await setDefaultPermissionModeForIntegrationTests('default')
     }
   }, 20_000)
 
@@ -4467,11 +4448,7 @@ describe('WebSocket Chat Integration', () => {
   }, 20_000)
 
   it('should wait for an in-flight permission restart before sending the next user turn', async () => {
-    await fetch(`${baseUrl}/api/permissions/mode`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'default' }),
-    })
+    await setDefaultPermissionModeForIntegrationTests('default')
 
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
@@ -4594,11 +4571,7 @@ describe('WebSocket Chat Integration', () => {
       conversationService.startSession = originalStartSession
       conversationService.sendMessage = originalSendMessage
       conversationService.stopSession(sessionId)
-      await fetch(`${baseUrl}/api/permissions/mode`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'default' }),
-      })
+      await setDefaultPermissionModeForIntegrationTests('default')
     }
   }, 20_000)
 })

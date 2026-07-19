@@ -66,6 +66,39 @@ describe('CronService', () => {
     expect(task.prompt).toBe('Review commits')
     expect(task.recurring).toBe(true)
     expect(task.createdAt).toBeGreaterThan(0)
+    expect(task.permissionMode).toBe('dontAsk')
+  })
+
+  it('migrates legacy bypass tasks to unattended safe mode on read and write', async () => {
+    const taskFile = path.join(tmpDir, 'scheduled_tasks.json')
+    await fs.writeFile(
+      taskFile,
+      JSON.stringify({
+        tasks: [{
+          id: 'legacy-task',
+          cron: '0 9 * * *',
+          prompt: 'Legacy scheduled task',
+          createdAt: Date.now(),
+          permissionMode: 'bypassPermissions',
+          useWorktree: true,
+        }],
+      }),
+      'utf-8',
+    )
+
+    const [task] = await service.listTasks()
+
+    expect(task?.permissionMode).toBe('dontAsk')
+    expect(task).not.toHaveProperty('useWorktree')
+    await service.updateTask('legacy-task', { name: 'Migrated task' })
+    const persisted = JSON.parse(await fs.readFile(taskFile, 'utf-8')) as {
+      tasks: Array<{ name?: string; permissionMode?: string; useWorktree?: boolean }>
+    }
+    expect(persisted.tasks[0]).toMatchObject({
+      name: 'Migrated task',
+      permissionMode: 'dontAsk',
+    })
+    expect(persisted.tasks[0]).not.toHaveProperty('useWorktree')
   })
 
   it('should persist tasks to file', async () => {
@@ -93,6 +126,7 @@ describe('CronService', () => {
     expect(updated.prompt).toBe('Updated prompt')
     expect(updated.recurring).toBe(true)
     expect(updated.createdAt).toBe(created.createdAt)
+    expect(updated.permissionMode).toBe('dontAsk')
   })
 
   it('should throw when updating a non-existent task', async () => {
@@ -236,13 +270,70 @@ describe('Scheduled Tasks API', () => {
       'scheduled-tasks',
     ])
     const body = (await resp.json()) as {
-      task: { id: string; prompt: string; model?: string; providerId?: string }
+      task: {
+        id: string
+        prompt: string
+        model?: string
+        providerId?: string
+        permissionMode?: string
+      }
     }
     expect(resp.status).toBe(201)
     expect(body.task.id).toBeDefined()
     expect(body.task.prompt).toBe('Daily review')
     expect(body.task.model).toBe('provider-fast')
     expect(body.task.providerId).toBe('provider-a')
+    expect(body.task.permissionMode).toBe('dontAsk')
+  })
+
+  it('rejects permission bypass requests instead of persisting them', async () => {
+    const createReq = new Request('http://localhost/api/scheduled-tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cron: '0 9 * * *',
+        prompt: 'Unsafe task',
+        permissionMode: 'bypassPermissions',
+      }),
+    })
+
+    const response = await handleScheduledTasksApi(
+      createReq,
+      new URL(createReq.url),
+      ['api', 'scheduled-tasks'],
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'BAD_REQUEST',
+      message: expect.stringContaining('never bypass permissions'),
+    })
+    expect(await new CronService().listTasks()).toEqual([])
+  })
+
+  it('rejects a bypass mode when updating an existing task', async () => {
+    const created = await new CronService().createTask({
+      cron: '0 9 * * *',
+      prompt: 'Safe task',
+    })
+    const updateReq = new Request(
+      `http://localhost/api/scheduled-tasks/${created.id}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permissionMode: 'bypassPermissions' }),
+      },
+    )
+
+    const response = await handleScheduledTasksApi(
+      updateReq,
+      new URL(updateReq.url),
+      ['api', 'scheduled-tasks', created.id],
+    )
+
+    expect(response.status).toBe(400)
+    const [task] = await new CronService().listTasks()
+    expect(task?.permissionMode).toBe('dontAsk')
   })
 
   it('should CRUD a full lifecycle', async () => {

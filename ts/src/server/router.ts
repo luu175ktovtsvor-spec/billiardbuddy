@@ -58,9 +58,6 @@ export async function handleApiRequest(
     case 'effort':
       return handleModelsApi(req, url, segments)
 
-    case 'permissions':
-      return handleSettingsApi(req, url, segments) // permissions under settings
-
     case 'scheduled-tasks':
       return handleScheduledTasksApi(req, url, segments)
 

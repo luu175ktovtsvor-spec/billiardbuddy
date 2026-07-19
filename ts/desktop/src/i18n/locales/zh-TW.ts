@@ -187,7 +187,6 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── Settings ──────────────────────────────────────
   'settings.title': '設定',
-  'settings.tab.permissions': '許可權',
   'settings.tab.general': '通用',
   'settings.tab.terminal': '終端',
   'settings.tab.skills': '技能',
@@ -269,18 +268,6 @@ export const zh: Record<TranslationKey, string> = {
   'doctor.serverUnavailable': '服務端 Doctor 不可用，因此只執行了本地修復。',
   'errorBoundary.title': '出現異常。',
   'errorBoundary.description': '問題已記錄，以便恢復。',
-
-  // Settings > Permissions
-  'settings.permissions.title': '許可權模式',
-  'settings.permissions.description': '控制工具執行許可權的處理方式。',
-  'settings.permissions.default': '詢問許可權',
-  'settings.permissions.defaultDesc': '執行工具前先詢問',
-  'settings.permissions.acceptEdits': '接受編輯',
-  'settings.permissions.acceptEditsDesc': '自動批准檔案編輯，其他操作仍詢問',
-  'settings.permissions.plan': '計劃模式',
-  'settings.permissions.planDesc': '僅思考和規劃，不執行操作',
-  'settings.permissions.bypass': '跳過全部',
-  'settings.permissions.bypassDesc': '跳過所有許可權檢查（危險）',
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM 接入',
@@ -1057,7 +1044,8 @@ export const zh: Record<TranslationKey, string> = {
   // ─── New Task Modal ──────────────────────────────────────
   'newTask.title': '新建定時任務',
   'newTask.localWarning': '本地任務僅在電腦喚醒時執行。',
-  'newTask.fullPermissions': '所有許可權',
+  'newTask.unattendedSafeMode': '無人值守安全模式',
+  'newTask.unattendedSafeModeHint': '定時任務無法回應權限確認。需要確認的操作會被拒絕；所選資料夾只是工作目錄，不是沙箱。',
   'newTask.name': '名稱',
   'newTask.namePlaceholder': 'daily-code-review',
   'newTask.description': '描述',
@@ -1141,12 +1129,6 @@ export const zh: Record<TranslationKey, string> = {
   'tasks.outputHintSession': '點選「檢視完整對話」可在會話中檢視完整輸出。',
   'tasks.noOutputText': '暫無輸出內容。',
 
-  // ─── Prompt Editor ──────────────────────────────────────
-  'promptEditor.worktree': '工作樹',
-  'promptEditor.bypassWarning': '跳過模式將授予完整系統訪問許可權',
-  'promptEditor.within': '範圍',
-  'promptEditor.selectFolder': '— 選擇資料夾以限制範圍',
-
   // ─── Model Selector ──────────────────────────────────────
   'model.selectModel': '選擇模型',
   'model.configuration': '模型配置',
@@ -1196,6 +1178,7 @@ export const zh: Record<TranslationKey, string> = {
   'scheduledPage.title': '定時任務',
   'scheduledPage.subtitle': '按計劃或在需要時執行任務。在任意會話中輸入 {code} 即可建立。',
   'scheduledPage.desktopNotice': '定時任務僅在桌面應用開啟時執行。請確保應用持續執行以按時觸發任務。',
+  'scheduledPage.unattendedSafety': '定時任務絕不跳過權限。無人值守執行時，需要確認的操作會被拒絕。',
   'scheduledPage.oldSubtitle': '管理自動化運維流程和後臺維護任務。',
   'scheduledPage.executionMode': '執行模式',
   'scheduledPage.localMode': '本地模式',

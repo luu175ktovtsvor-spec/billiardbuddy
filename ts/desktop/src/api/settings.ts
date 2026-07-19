@@ -2,7 +2,6 @@ import { api } from './client'
 import type {
   DesktopSettings,
   OutputStylesResponse,
-  PermissionMode,
   RuntimeSettings,
   UserSettings,
   UserSettingsUpdate,
@@ -48,13 +47,5 @@ export const settingsApi = {
       outputStyle,
       ...(workDir ? { workDir } : {}),
     })
-  },
-
-  getPermissionMode() {
-    return api.get<{ mode: PermissionMode }>('/api/permissions/mode')
-  },
-
-  setPermissionMode(mode: PermissionMode) {
-    return api.put<{ ok: true; mode: PermissionMode }>('/api/permissions/mode', { mode })
   },
 }

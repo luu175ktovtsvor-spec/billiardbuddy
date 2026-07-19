@@ -127,7 +127,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  useSettingsStore.setState({ permissionMode: 'default', chatSendBehavior: 'enter' })
+  useSettingsStore.setState({ chatSendBehavior: 'enter' })
 })
 
 describe('TaskIndex', () => {
@@ -551,7 +551,6 @@ describe('TaskIndex', () => {
   })
 
   it('starts with a safe product permission choice and forwards an explicit selection', async () => {
-    useSettingsStore.setState({ permissionMode: 'bypassPermissions' })
     const { onSubmit } = renderComposer()
     const permissionSelect = screen.getByLabelText('执行权限') as HTMLSelectElement
 

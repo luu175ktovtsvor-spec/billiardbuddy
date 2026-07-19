@@ -246,8 +246,8 @@ describe('cron scheduler launcher resolution', () => {
   })
 
   it('strips the product-gateway token/url/model from the scheduled-task CLI env', () => {
-    // Cron tasks run under bypassPermissions, so a leaked token would be readable via
-    // the Bash tool. The token must never reach the scheduled-task CLI subprocess.
+    // An unattended task can still execute rules that permit a shell command.
+    // The token must never reach the scheduled-task CLI subprocess.
     const env = {
       CLAUDECODE: '1',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456/proxy/providers/qf-gateway',
@@ -452,7 +452,7 @@ describe('cron scheduler launcher resolution', () => {
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('sdk-cli')
   })
 
-  unixOnly('executeTask launches scheduled tasks with full permissions', async () => {
+  unixOnly('executeTask launches scheduled tasks in unattended safe mode', async () => {
     const appRoot = path.join(tmpDir, 'app-root')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
     const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
@@ -477,49 +477,26 @@ describe('cron scheduler launcher resolution', () => {
 
     const cronService = new CronService()
     const scheduler = new CronScheduler(cronService)
-    const createSessionCalls: unknown[][] = []
-    const appendSessionMetadataCalls: unknown[][] = []
-    ;(scheduler as unknown as {
-      sessionService: {
-        createSession: (...args: unknown[]) => Promise<{ sessionId: string }>
-        deleteSessionFile: (sessionId: string) => Promise<void>
-        appendSessionMetadata: (...args: unknown[]) => Promise<void>
-      }
-    }).sessionService = {
-      createSession: async (...args: unknown[]) => {
-        createSessionCalls.push(args)
-        return { sessionId: 'scheduled-session' }
-      },
-      deleteSessionFile: async () => {},
-      appendSessionMetadata: async (...args: unknown[]) => {
-        appendSessionMetadataCalls.push(args)
-      },
-    }
     const task = await cronService.createTask({
       cron: '* * * * *',
       prompt: 'cron permission test',
       name: 'Permission Task',
       recurring: true,
       folderPath: tmpDir,
-      permissionMode: 'default',
     })
 
-    const run = await scheduler.executeTask(task, { createSession: true })
-    const canonicalTmpDir = await fs.realpath(tmpDir)
+    const run = await scheduler.executeTask(task)
 
     expect(run.status).toBe('completed')
-    expect(run.sessionId).toBe('scheduled-session')
-    expect(createSessionCalls).toEqual([[canonicalTmpDir, undefined, 'bypassPermissions']])
-    expect(appendSessionMetadataCalls).toEqual([
-      ['scheduled-session', { workDir: canonicalTmpDir, permissionMode: 'bypassPermissions' }],
-    ])
+    expect(run).not.toHaveProperty('sessionId')
     const sidecarArgs = (await fs.readFile(sidecarArgsPath, 'utf-8'))
       .trim()
       .split('\n')
-    expect(sidecarArgs).toContain('--dangerously-skip-permissions')
+    expect(sidecarArgs).not.toContain('--dangerously-skip-permissions')
+    expect(sidecarArgs).not.toContain('--session-id')
     expect(sidecarArgs).toContain('--permission-mode')
     expect(sidecarArgs[sidecarArgs.indexOf('--permission-mode') + 1]).toBe(
-      'bypassPermissions',
+      'dontAsk',
     )
   })
 

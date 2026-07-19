@@ -187,7 +187,6 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Settings ──────────────────────────────────────
   'settings.title': '설정',
-  'settings.tab.permissions': '권한',
   'settings.tab.general': '일반',
   'settings.tab.terminal': '터미널',
   'settings.tab.skills': '스킬',
@@ -269,18 +268,6 @@ export const kr: Record<TranslationKey, string> = {
   'doctor.serverUnavailable': '서버 측 Doctor를 사용할 수 없어 로컬 복구만 실행되었습니다.',
   'errorBoundary.title': '문제가 발생했습니다.',
   'errorBoundary.description': '문제가 복구를 위해 기록되었습니다.',
-
-  // Settings > Permissions
-  'settings.permissions.title': '권한 모드',
-  'settings.permissions.description': '도구 실행 권한을 처리하는 방식을 제어합니다.',
-  'settings.permissions.default': '권한 확인',
-  'settings.permissions.defaultDesc': '도구를 실행하기 전에 확인합니다',
-  'settings.permissions.acceptEdits': '편집 수락',
-  'settings.permissions.acceptEditsDesc': '파일 편집은 자동 승인하고 나머지는 확인합니다',
-  'settings.permissions.plan': '계획 모드',
-  'settings.permissions.planDesc': '실행하지 않고 사고와 계획만 합니다',
-  'settings.permissions.bypass': '모두 우회',
-  'settings.permissions.bypassDesc': '모든 권한 확인을 건너뜁니다 (위험)',
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM 어댑터',
@@ -1057,7 +1044,8 @@ export const kr: Record<TranslationKey, string> = {
   // ─── New Task Modal ──────────────────────────────────────
   'newTask.title': '새 예약 작업',
   'newTask.localWarning': '로컬 작업은 컴퓨터가 켜져 있는 동안에만 실행됩니다.',
-  'newTask.fullPermissions': '모든 권한',
+  'newTask.unattendedSafeMode': '무인 실행 안전 모드',
+  'newTask.unattendedSafeModeHint': '예약 작업은 권한 확인에 응답할 수 없습니다. 승인이 필요한 작업은 거부되며, 선택한 폴더는 작업 디렉터리일 뿐 샌드박스가 아닙니다.',
   'newTask.name': '이름',
   'newTask.namePlaceholder': 'daily-code-review',
   'newTask.description': '설명',
@@ -1141,12 +1129,6 @@ export const kr: Record<TranslationKey, string> = {
   'tasks.outputHintSession': '"대화 보기"를 클릭하면 세션 보기에서 전체 출력을 볼 수 있습니다.',
   'tasks.noOutputText': '사용할 수 있는 출력이 없습니다.',
 
-  // ─── Prompt Editor ──────────────────────────────────────
-  'promptEditor.worktree': 'worktree',
-  'promptEditor.bypassWarning': '우회 모드는 시스템에 대한 전체 액세스를 허용합니다',
-  'promptEditor.within': '범위:',
-  'promptEditor.selectFolder': '— 범위를 제한할 폴더 선택',
-
   // ─── Model Selector ──────────────────────────────────────
   'model.selectModel': '모델 선택',
   'model.configuration': '모델 구성',
@@ -1196,6 +1178,7 @@ export const kr: Record<TranslationKey, string> = {
   'scheduledPage.title': '예약 작업',
   'scheduledPage.subtitle': '작업을 예약 실행하거나 필요할 때 실행하세요. 기존 세션에서 {code}을(를) 입력하면 만들 수 있습니다.',
   'scheduledPage.desktopNotice': '예약 작업은 데스크톱 앱이 열려 있는 동안에만 실행됩니다. 작업이 제시간에 실행되도록 앱을 계속 실행해 두세요.',
+  'scheduledPage.unattendedSafety': '예약 작업은 권한을 우회하지 않습니다. 무인 실행 중 승인이 필요한 작업은 거부됩니다.',
   'scheduledPage.oldSubtitle': '자동화된 운영 루틴과 백그라운드 유지 관리를 관리합니다.',
   'scheduledPage.executionMode': '실행 모드',
   'scheduledPage.localMode': '로컬 모드',
