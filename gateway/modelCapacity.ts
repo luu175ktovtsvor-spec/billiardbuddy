@@ -101,6 +101,17 @@ export class FairCapacityScheduler {
     // request retains its parsed body and response promise. Refuse overflow before it
     // can turn a short burst into unbounded gateway memory/latency.
     if (this.queuedCount() >= this.queueMax) {
+      // A small per-installation cap can make an early desktop enqueue several
+      // follow-up windows while the global pool is still mostly idle.  The usual
+      // queue-first rule must not then turn those temporarily ineligible waiters
+      // into head-of-line blocking for a later desktop that could use an empty
+      // slot.  Drain first; if no already-queued identity can start, letting this
+      // newly arrived eligible identity through preserves every runnable waiter's
+      // priority while keeping the global pool utilized.
+      this.drain()
+      if (!this.hasRunnablePending() && this.canStart(user, tokenId)) {
+        return Promise.resolve(this.grant(user, tokenId))
+      }
       return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
     }
 
@@ -157,6 +168,18 @@ export class FairCapacityScheduler {
     return this.active < this.maxConcurrent
       && (this.activeByUser.get(user) ?? 0) < this.maxConcurrentPerUser
       && (this.activeByToken.get(tokenId) ?? 0) < this.maxConcurrentPerToken
+  }
+
+  /** Whether an already queued request can take a permit immediately. Used only
+   * when the bounded queue is full, so a temporarily blocked owner cannot leave
+   * globally idle capacity stranded while also ensuring an eligible waiter is never
+   * bypassed by a later arrival. */
+  private hasRunnablePending(): boolean {
+    for (const user of this.waitingUsers) {
+      const pending = this.pendingByUser.get(user)?.[0]
+      if (pending && this.canStart(user, pending.tokenId)) return true
+    }
+    return false
   }
 
   private grant(user: string, tokenId: string): CapacityPermit {
