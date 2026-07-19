@@ -23,7 +23,7 @@ type Sample = {
   status: number
   totalMs: number
   completed: boolean
-  failureKind?: 'timeout' | 'network' | 'response_too_large' | 'invalid_json' | 'invalid_completion' | `http_${number}`
+  failureKind?: 'timeout' | 'network' | 'response_too_large' | 'invalid_json' | 'reasoning_only' | 'reasoning_only_truncated' | 'invalid_completion' | `http_${number}`
 }
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])
@@ -346,14 +346,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-/** A 2xx transport result is useful only when it contains an actual chat completion. */
-export function hasCompletionJson(value: unknown): boolean {
-  if (!isRecord(value) || !Array.isArray(value.choices)) return false
-  return value.choices.some(choice => {
-    if (!isRecord(choice) || !isRecord(choice.message)) return false
+export type CompletionState = 'completed' | 'reasoning_only' | 'reasoning_only_truncated' | 'invalid_completion'
+
+/**
+ * A 2xx transport result is useful only when it contains an actual chat completion.
+ * DeepSeek can legitimately return reasoning_content before it has room for user-facing
+ * content. Keep that outcome unsuccessful for a user-facing load test, but report the
+ * token-limit case separately from malformed gateway output.
+ */
+export function classifyCompletionJson(value: unknown): CompletionState {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return 'invalid_completion'
+
+  let sawReasoningOnly = false
+  let sawTruncatedReasoning = false
+  for (const choice of value.choices) {
+    if (!isRecord(choice) || !isRecord(choice.message)) continue
     const content = choice.message.content
-    return typeof content === 'string' && content.trim().length > 0
-  })
+    if (typeof content === 'string' && content.trim().length > 0) return 'completed'
+
+    const reasoning = choice.message.reasoning_content
+    if (typeof reasoning === 'string' && reasoning.trim().length > 0) {
+      if (choice.finish_reason === 'length') sawTruncatedReasoning = true
+      else sawReasoningOnly = true
+    }
+  }
+  if (sawTruncatedReasoning) return 'reasoning_only_truncated'
+  if (sawReasoningOnly) return 'reasoning_only'
+  return 'invalid_completion'
+}
+
+export function hasCompletionJson(value: unknown): boolean {
+  return classifyCompletionJson(value) === 'completed'
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -518,12 +541,13 @@ async function main(): Promise<void> {
           failureKind: 'invalid_json',
         }
       }
-      const completed = hasCompletionJson(payload)
+      const completion = classifyCompletionJson(payload)
+      const completed = completion === 'completed'
       return {
         status: response.status,
         totalMs: Math.round(performance.now() - started),
         completed,
-        failureKind: completed ? undefined : 'invalid_completion',
+        failureKind: completed ? undefined : completion,
       }
     } catch {
       return {

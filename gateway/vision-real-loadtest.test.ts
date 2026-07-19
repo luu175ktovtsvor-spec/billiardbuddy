@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { generatedPng, hasCompletionJson, parseLoadTarget, parsePhases, validatePng } from './vision-real-loadtest'
+import { classifyCompletionJson, generatedPng, hasCompletionJson, parseLoadTarget, parsePhases, validatePng } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
   test('uses a bounded staged default instead of immediately testing the full 100 x 5 burst', () => {
@@ -41,5 +41,16 @@ describe('vision real-loadtest safety guards', () => {
     expect(hasCompletionJson({ choices: [{ message: { content: '   ' } }] })).toBe(false)
     expect(hasCompletionJson({ choices: [] })).toBe(false)
     expect(hasCompletionJson({ message: { content: 'OK' } })).toBe(false)
+  })
+
+  test('distinguishes thinking-only token truncation from a malformed completion without exposing text', () => {
+    expect(classifyCompletionJson({ choices: [{ message: { content: 'OK' } }] })).toBe('completed')
+    expect(classifyCompletionJson({
+      choices: [{ finish_reason: 'length', message: { reasoning_content: 'internal reasoning' } }],
+    })).toBe('reasoning_only_truncated')
+    expect(classifyCompletionJson({
+      choices: [{ finish_reason: 'stop', message: { reasoning_content: 'internal reasoning' } }],
+    })).toBe('reasoning_only')
+    expect(classifyCompletionJson({ choices: [{ message: { content: '' } }] })).toBe('invalid_completion')
   })
 })
