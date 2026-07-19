@@ -173,25 +173,6 @@ export function projectComputerUseApprovalForProductTask(
 }
 
 /**
- * Extract only the explicit question fields an AskUserQuestion card needs.
- * Unknown keys in the Agent Core tool input are intentionally discarded.
- */
-export function projectAskUserQuestions(input: unknown): ProductTaskQuestion[] {
-  if (!isRecord(input)) return []
-
-  const candidates = Array.isArray(input.questions)
-    ? input.questions
-    : [input]
-  const questions: ProductTaskQuestion[] = []
-  for (const candidate of candidates) {
-    if (questions.length >= MAX_QUESTION_COUNT) break
-    const question = projectQuestion(candidate)
-    if (question) questions.push(question)
-  }
-  return questions
-}
-
-/**
  * Use this variant for a live product approval. Every question key must be
  * reproduced exactly, otherwise the server cannot safely synthesize the Core
  * answers object from browser-provided ordered answers.
@@ -760,10 +741,4 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
     case 'pong':
       return []
   }
-}
-
-export function projectServerMessagesForProductTask(
-  messages: readonly ServerMessage[],
-): ProductTaskEvent[] {
-  return messages.flatMap(projectServerMessageForProductTask)
 }
