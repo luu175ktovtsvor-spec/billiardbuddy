@@ -14,7 +14,10 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_QWEN_CONC: '16', GW_QWEN_USER_CONC: '2', GW_QWEN_RPM: '1000000', GW_QWEN_QUEUE_MAX_WAIT: '30', GW_QWEN_MAX_RETRIES: '1',
     GW_QWEN_QUEUE_MAX: '512',
     GW_MIMO_KEY: 'mimo-secret', GW_MIMO_BASE: 'https://mimo.example/v1', GW_MIMO_MODEL: 'mimo-v2.5',
-    GW_MIMO_CONC: '16', GW_MIMO_USER_CONC: '2', GW_MIMO_RPM: '1000000', GW_MIMO_QUEUE_MAX_WAIT: '30', GW_MIMO_MAX_RETRIES: '1',
+    // This shared test fixture exercises the historic two-active-window profile. Keep
+    // its active + queued allowance explicit so production's stricter one-window MiMo
+    // fairness default does not change unrelated generic scheduler cases below.
+    GW_MIMO_CONC: '16', GW_MIMO_USER_CONC: '2', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_RPM: '1000000', GW_MIMO_QUEUE_MAX_WAIT: '30', GW_MIMO_MAX_RETRIES: '1',
     GW_MIMO_QUEUE_MAX: '512',
     GW_DEEPSEEK_KEY: 'deepseek-secret', GW_DEEPSEEK_BASE: 'https://deepseek.example', GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_DEEPSEEK_CONC: '32', GW_DEEPSEEK_USER_CONC: '2', GW_DEEPSEEK_RPM: '1000000', GW_DEEPSEEK_QUEUE_MAX_WAIT: '30', GW_DEEPSEEK_MAX_RETRIES: '1',
@@ -257,11 +260,12 @@ test('默认 DeepSeek profile:超过 800 在途+200 等待的突发会立即 429
   expect((await capacity(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('默认 MiMo profile:100 用户 × 5 窗口只接受64在途+64个五秒等待，剩余立即429而不隐藏成长队列', async () => {
+test('默认 MiMo profile:100 用户 × 5 窗口为100个不同安装各保留一席，64在途+36个五秒等待', async () => {
   const u = poolUpstream()
   const { fetch, usage } = makeGatewayWithUsage(u.fetchImpl, {
     GW_MIMO_CONC: undefined,
     GW_MIMO_USER_CONC: undefined,
+    GW_MIMO_INFLIGHT_PER_USER: undefined,
     GW_MIMO_TOKEN_CONC: undefined,
     GW_MIMO_QUEUE_MAX: undefined,
     GW_MIMO_QUEUE_MAX_WAIT: undefined,
@@ -275,19 +279,19 @@ test('默认 MiMo profile:100 用户 × 5 窗口只接受64在途+64个五秒等
   await waitFor(() => u.stats.mimo.inFlight === 64)
   const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   const body = await health.json()
-  expect(body.limits).toMatchObject({ mimo_conc: 64, mimo_user_conc: 1, mimo_token_conc: 64, mimo_queue_max: 64, mimo_queue_max_wait_seconds: 5 })
-  expect(body.capacity.mimo).toMatchObject({ active: 64, queued: 64, maxConcurrent: 64, maxConcurrentPerUser: 1, queueMax: 64 })
+  expect(body.limits).toMatchObject({ mimo_conc: 64, mimo_user_conc: 1, mimo_inflight_per_user: 1, mimo_token_conc: 64, mimo_queue_max: 64, mimo_queue_max_wait_seconds: 5 })
+  expect(body.capacity.mimo).toMatchObject({ active: 64, queued: 36, maxConcurrent: 64, maxConcurrentPerUser: 1, queueMax: 64 })
   expect(body.capacity.mimo.oldestQueueMs).toBeGreaterThanOrEqual(0)
   expect(u.stats.mimo.peak).toBe(64)
 
   u.open()
   const statuses = await Promise.all(reqs)
-  expect(statuses.filter(status => status === 200)).toHaveLength(128)
-  expect(statuses.filter(status => status === 429)).toHaveLength(372)
-  expect(u.stats.mimo.calls).toBe(128)
+  expect(statuses.filter(status => status === 200)).toHaveLength(100)
+  expect(statuses.filter(status => status === 429)).toHaveLength(400)
+  expect(u.stats.mimo.calls).toBe(100)
   expect(u.stats.mimo.peak).toBe(64)
-  expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(128)
-  expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(372)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(100)
+  expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(400)
   const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
   expect((await drained.json()).capacity.mimo).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })

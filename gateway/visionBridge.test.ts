@@ -253,6 +253,49 @@ test('VisionSemaphore limits one installation while allowing another installatio
   expect(sem.snapshot()).toMatchObject({ active: 0, queued: 0, perClientConc: 2, oldestQueueMs: 0 })
 })
 
+test('VisionSemaphore gives 12 active + 24 queued permits to 36 distinct clients in a sequential 100-install, five-window burst', async () => {
+  // The fifth argument is active + queued per client. This is the production visual
+  // envelope: later installations get the 24 short-wait permits instead of windows 2–5
+  // from the first twelve installations consuming them all.
+  const sem = new VisionSemaphore(12, 5_000, 24, 1, 1)
+  let open!: () => void
+  const gate = new Promise<void>(resolve => { open = resolve })
+  const admittedByClient = new Map<string, number>()
+  const outcomes: Array<Promise<number>> = []
+
+  for (let installation = 0; installation < 100; installation++) {
+    const clientId = `owner#install-${String(installation).padStart(3, '0')}`
+    for (let window = 0; window < 5; window++) {
+      outcomes.push(sem.run(async () => {
+        admittedByClient.set(clientId, (admittedByClient.get(clientId) ?? 0) + 1)
+        await gate
+      }, undefined, clientId).then(() => 200).catch(error => {
+        expect(error).toBeInstanceOf(VisionBridgeError)
+        return (error as VisionBridgeError).status
+      }))
+    }
+  }
+
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(sem.snapshot()).toMatchObject({
+    active: 12,
+    queued: 24,
+    limit: 12,
+    queueMax: 24,
+    perClientConc: 1,
+    maxInflightPerClient: 1,
+  })
+
+  open()
+  const statuses = await Promise.all(outcomes)
+  expect(statuses.filter(status => status === 200)).toHaveLength(36)
+  expect(statuses.filter(status => status === 429)).toHaveLength(464)
+  expect(admittedByClient.size).toBe(36)
+  expect([...admittedByClient.values()]).toEqual(Array.from({ length: 36 }, () => 1))
+  expect(sem.snapshot()).toMatchObject({ active: 0, queued: 0, maxInflightPerClient: 1, oldestQueueMs: 0 })
+})
+
 test('last subscriber cancellation removes a queued unique-image lookup before it can call MiMo', async () => {
   let calls = 0
   let releaseFirst!: () => void
@@ -393,7 +436,15 @@ test('VisionSemaphore: grant / timeout / abort settle exactly once each (mutuall
   expect(results.sort()).toEqual(['abort:499', 'timeout:429'])
 
   await holder
-  expect(sem.snapshot()).toEqual({ active: 0, queued: 0, limit: 1, queueMax: Infinity, perClientConc: Infinity, oldestQueueMs: 0 })
+  expect(sem.snapshot()).toEqual({
+    active: 0,
+    queued: 0,
+    limit: 1,
+    queueMax: Infinity,
+    perClientConc: Infinity,
+    maxInflightPerClient: Infinity,
+    oldestQueueMs: 0,
+  })
 })
 
 test('a single multi-image request is capped at caps.perRequestConc global vision slots, leaving room for a concurrently arriving request', async () => {

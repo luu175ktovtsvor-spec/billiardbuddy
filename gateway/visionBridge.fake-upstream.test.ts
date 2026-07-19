@@ -105,6 +105,19 @@ function withImageBody(model: string, url = PNG_DATA_URI) {
   })
 }
 
+function withImagesBody(model: string, urls: string[]) {
+  return JSON.stringify({
+    model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '这两张图分别是什么' },
+        ...urls.map(url => ({ type: 'image_url', image_url: { url } })),
+      ],
+    }],
+  })
+}
+
 function computerUseImageBody(model: string) {
   const parsed = JSON.parse(withImageBody(model)) as Record<string, unknown>
   parsed.tools = [
@@ -140,6 +153,23 @@ test('② DeepSeek + image bridges through MiMo exactly once, then DeepSeek exac
   expect(deepseekCalls).toHaveLength(1)
   expect(deepseekCalls[0]!.body).not.toContain('image_url')
   expect(deepseekCalls[0]!.body).toContain('图片理解结果')
+})
+
+test('default one-slot MiMo/vision fairness serializes two distinct images from one request instead of self-rejecting', async () => {
+  const { fetch, calls } = makeGateway()
+  const distinctImages = ['one', 'two'].map(value => `data:image/png;base64,${Buffer.from(value).toString('base64')}`)
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'X-QF-Client-ID': 'desktop-one' },
+    body: withImagesBody('deepseek-v4-flash', distinctImages),
+  })))
+  expect(res.status).toBe(200)
+  await res.text()
+  expect(calls.filter(c => c.url.includes('mimo.example'))).toHaveLength(2)
+  const deepseekCalls = calls.filter(c => c.url.includes('deepseek.example'))
+  expect(deepseekCalls).toHaveLength(1)
+  expect(deepseekCalls[0]!.body).toContain('[图片理解结果 1]')
+  expect(deepseekCalls[0]!.body).toContain('[图片理解结果 2]')
 })
 
 test('Computer Use screenshot turns capability-route directly to native MiMo with pixels and tools intact', async () => {
@@ -362,7 +392,11 @@ test('⑭ aborting the client request while its image is queued in the vision se
     webSearchImpl: null,
     fetchImpl,
   })
-  const busy = fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('deepseek-v4-flash') })))
+  const busy = fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    body: withImageBody('deepseek-v4-flash'),
+    headers: { 'X-QF-Client-ID': 'vision-abort-busy' },
+  })))
   await new Promise(r => setTimeout(r, 20))
 
   const ac = new AbortController()
@@ -371,6 +405,7 @@ test('⑭ aborting the client request while its image is queued in the vision se
     method: 'POST',
     body: withImageBody('deepseek-v4-flash', distinctImage),
     signal: ac.signal,
+    headers: { 'X-QF-Client-ID': 'vision-abort-queued' },
   })))
   await new Promise(r => setTimeout(r, 20))
   const start = Date.now()
