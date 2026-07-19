@@ -138,6 +138,13 @@ describe('requireProductGatewayConfig', () => {
     })
   })
 
+  it('accepts the verified direct mainland IPv4 gateway entry', () => {
+    expect(requireProductGatewayConfig({
+      url: 'http://39.106.214.21/gw',
+      token: 'app-token',
+    }).url).toBe('http://39.106.214.21/gw')
+  })
+
   it('fails closed instead of allowing desktop provider fallback', () => {
     expect(() => requireProductGatewayConfig({
       url: 'https://gw.example/gw',
@@ -147,10 +154,14 @@ describe('requireProductGatewayConfig', () => {
     expect(() => requireProductGatewayConfig({
       url: 'file:///tmp/gateway',
       token: 'app-token',
-    })).toThrow('gateway URL must use HTTPS')
+    })).toThrow('gateway URL must use HTTPS or a verified public IPv4 /gw endpoint')
     expect(() => requireProductGatewayConfig({
-      url: 'http://39.106.214.21/gw',
+      url: 'http://gateway.example/gw',
       token: 'app-token',
-    })).toThrow('gateway URL must use HTTPS')
+    })).toThrow('gateway URL must use HTTPS or a verified public IPv4 /gw endpoint')
+    expect(() => requireProductGatewayConfig({
+      url: 'http://127.0.0.1/gw',
+      token: 'app-token',
+    })).toThrow('gateway URL must use HTTPS or a verified public IPv4 /gw endpoint')
   })
 })

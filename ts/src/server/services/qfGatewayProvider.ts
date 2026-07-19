@@ -51,13 +51,32 @@ export function getQfGatewayUrl(): string {
 
 /**
  * The managed gateway carries an app token, conversations, attachments and audio.
- * Refuse clear-text URLs here as a second outbound choke point in case a caller did
- * not originate from Electron's packaged product-config validation.
+ * HTTPS is mandatory except for a verified public IPv4 `/gw` entry used while the
+ * mainland deployment has no domain. Keep the exception narrow so a clear-text
+ * hostname, private address, query, or credential can never activate the provider.
  */
-function isSecureQfGatewayUrl(value: string): boolean {
+function isPublicIpv4(hostname: string): boolean {
+  const parts = hostname.split('.')
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part))) return false
+  const [first, second, third, fourth] = parts.map(Number)
+  if ([first, second, third, fourth].some(part => part > 255)) return false
+  if (first === 0 || first === 10 || first === 127 || first >= 224) return false
+  if (first === 100 && second >= 64 && second <= 127) return false
+  if (first === 169 && second === 254) return false
+  if (first === 172 && second >= 16 && second <= 31) return false
+  if (first === 192 && second === 168) return false
+  return true
+}
+
+function isAllowedQfGatewayUrl(value: string): boolean {
   try {
     const url = new URL(value)
-    return url.protocol === 'https:' && url.hostname.length > 0
+    if (!url.hostname || url.username || url.password || url.search || url.hash) return false
+    if (url.protocol === 'https:') return true
+    return url.protocol === 'http:'
+      && (url.port === '' || url.port === '80')
+      && url.pathname.replace(/\/+$/, '') === '/gw'
+      && isPublicIpv4(url.hostname)
   } catch {
     return false
   }
@@ -89,7 +108,7 @@ export function getInstallationId(): string {
  * report authed, or emit an empty `Authorization: Bearer ` to the upstream.
  */
 export function qfGatewayConfigured(): boolean {
-  return isSecureQfGatewayUrl(getQfGatewayUrl()) && getQfGatewayToken().length > 0
+  return isAllowedQfGatewayUrl(getQfGatewayUrl()) && getQfGatewayToken().length > 0
 }
 
 /**
@@ -122,7 +141,7 @@ export function stripHostOnlyGatewayEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessE
  */
 export function resolveQfGatewayProxyTarget(): { baseUrl: string; apiKey: string } {
   const baseUrl = getQfGatewayUrl()
-  if (!isSecureQfGatewayUrl(baseUrl)) return { baseUrl: '', apiKey: '' }
+  if (!isAllowedQfGatewayUrl(baseUrl)) return { baseUrl: '', apiKey: '' }
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     apiKey: getQfGatewayToken(),
