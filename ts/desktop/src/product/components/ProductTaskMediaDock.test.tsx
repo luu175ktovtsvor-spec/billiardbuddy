@@ -14,6 +14,14 @@ const apiMocks = vi.hoisted(() => ({
   attachMediaProject: vi.fn(),
 }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
 vi.mock('../api/tasks', () => ({
   productTasksApi: apiMocks,
 }))
@@ -190,6 +198,66 @@ describe('ProductTaskMediaDock', () => {
     })
     expect(apiMocks.attachMediaProject).toHaveBeenCalledWith(taskId, 'img_12345678')
     expect(apiMocks.getMedia).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a pending association scoped to its original task after the dock switches tasks', async () => {
+    const firstTaskId = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
+    const secondTaskId = 'task_0123456789abcdef'
+    const attachableProject = {
+      id: 'img_task_one',
+      kind: 'image' as const,
+      title: '任务一海报',
+      state: 'draft' as const,
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    }
+    const secondTaskProject = {
+      id: 'img_task_two',
+      kind: 'image' as const,
+      title: '任务二海报',
+      state: 'ready' as const,
+      updatedAt: '2026-07-19T00:01:00.000Z',
+      mediaTask: null,
+      assets: [],
+    }
+    const attachedFirstTaskProject = {
+      ...attachableProject,
+      mediaTask: null,
+      assets: [],
+    }
+    const pendingAttachment = deferred<{ project: typeof attachedFirstTaskProject }>()
+    apiMocks.getMedia.mockImplementation(async (requestedTaskId: string) => (
+      requestedTaskId === firstTaskId
+        ? { taskId: firstTaskId, projects: [] }
+        : { taskId: secondTaskId, projects: [secondTaskProject] }
+    ))
+    apiMocks.getAttachableMedia.mockResolvedValue({
+      taskId: firstTaskId,
+      projects: [attachableProject],
+    })
+    apiMocks.attachMediaProject.mockReturnValue(pendingAttachment.promise)
+
+    const view = render(<ProductTaskMediaDock taskId={firstTaskId} onClose={vi.fn()} />)
+    await screen.findByText('当前任务没有已关联的媒体项目。')
+
+    fireEvent.click(screen.getByRole('button', { name: '关联已有项目' }))
+    await screen.findByTestId('product-task-media-attachable-img_task_one')
+    fireEvent.click(screen.getByRole('button', { name: '关联' }))
+
+    view.rerender(<ProductTaskMediaDock taskId={secondTaskId} onClose={vi.fn()} />)
+
+    expect(await screen.findByTestId('product-task-media-project-img_task_two')).toBeInTheDocument()
+    expect(screen.queryByText('任务一海报')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '关联已有项目' })).not.toBeDisabled()
+
+    await act(async () => {
+      pendingAttachment.resolve({ project: attachedFirstTaskProject })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(screen.getByTestId('product-task-media-project-img_task_two')).toBeInTheDocument()
+    expect(apiMocks.getMedia.mock.calls.filter(([requestedTaskId]) => requestedTaskId === firstTaskId)).toHaveLength(1)
+    expect(apiMocks.getMedia).toHaveBeenCalledWith(secondTaskId)
   })
 
   it('refreshes an active media task without clearing the current task-scoped view', async () => {
