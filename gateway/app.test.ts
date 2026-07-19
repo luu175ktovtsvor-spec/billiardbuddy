@@ -1127,11 +1127,14 @@ test('image task submit/poll/cancel proxy to relay tasks base with relay token w
   expect(submit.status).toBe(200)
   const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })))
   expect(poll.status).toBe(200)
+  const metadataPoll = await fetch(new Request('http://local/v1/images/tasks/task-1?metadata_only=1&ignored=client-value', authed({ method: 'GET' })))
+  expect(metadataPoll.status).toBe(200)
   const cancel = await fetch(new Request('http://local/v1/images/tasks/task-1/cancel', authed({ method: 'POST' })))
   expect(cancel.status).toBe(200)
   expect(calls.map(c => c.url)).toEqual([
     'https://relay.example/relay/imgtasks/images/tasks',
     'https://relay.example/relay/imgtasks/images/tasks/task-1',
+    'https://relay.example/relay/imgtasks/images/tasks/task-1?metadata_only=1',
     'https://relay.example/relay/imgtasks/images/tasks/task-1/cancel',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')

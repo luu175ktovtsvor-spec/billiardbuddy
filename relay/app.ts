@@ -665,14 +665,22 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     return undefined
   }
 
-  function pollResponse(rec: TaskRow): Response {
+  /**
+   * Status-only polling is used by controlled load runners. It deliberately omits
+   * b64_json output so observing a terminal task never materializes every image in
+   * the runner process. Normal desktop polling remains backward compatible.
+   */
+  function pollResponse(rec: TaskRow, metadataOnly = false): Response {
     const out = rec.status === 'succeeded' ? (blobs.get(rec.id, 'out') as { data?: unknown[] } | null) : null
+    const outputCount = Array.isArray(out?.data) ? out.data.length : 0
     let fidelity: InputFidelityCapability | null = null
     if (rec.input_fidelity) { try { fidelity = JSON.parse(rec.input_fidelity) } catch { fidelity = null } }
     const pollAfter = pollAfterSeconds(rec)
     return Response.json({
       status: rec.status,
-      data: out?.data,
+      ...(metadataOnly
+        ? { metadata_only: true, result_available: outputCount > 0, output_count: outputCount }
+        : { data: out?.data }),
       error: rec.error ?? undefined,
       created: rec.created,
       ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
@@ -788,7 +796,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         // 归属绑定:带 owner 的任务只有同 owner 能轮询(越权 403)。旧任务(owner='' 空哨兵)不设防,兼容期可轮询。
         const requester = readOwner(req)
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
-        return pollResponse(rec)
+        return pollResponse(rec, url.searchParams.get('metadata_only') === '1')
       }
       if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/cancel')) {
         auth(req)
