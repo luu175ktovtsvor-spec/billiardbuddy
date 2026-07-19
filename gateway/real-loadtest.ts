@@ -26,14 +26,22 @@ type Sample = {
   status: number
   firstByteMs: number | null
   totalMs: number
-  /** Metadata only: whether the successful OpenAI SSE stream included reasoning_content. */
+  /** Metadata only: whether streamed bytes included the reasoning_content field. */
   sawReasoning: boolean
   /** A 2xx response is not enough: the test request must finish its SSE protocol. */
   completed: boolean
-  failureKind?: 'timeout' | 'network' | 'empty_stream' | 'incomplete_sse'
+  failureKind?: 'timeout' | 'network' | 'unexpected_content_type' | 'empty_stream' | 'incomplete_sse'
 }
 
 export type ThinkingMode = 'enabled' | 'disabled'
+
+export type LoadTarget = {
+  base: URL
+  /** Used only to construct requests; never print this value. */
+  baseUrl: string
+  /** Safe to report in test metadata: it contains neither path nor credentials. */
+  targetOrigin: string
+}
 
 type PhaseSummary = {
   requested: number
@@ -134,11 +142,96 @@ function parsePhases(raw: string | undefined, total: number): number[] {
   return phases
 }
 
+function isHttpLoopback(url: URL): boolean {
+  if (url.protocol !== 'http:') return false
+  const host = url.hostname.toLowerCase()
+  if (host === 'localhost' || host === '[::1]' || host === '::1') return true
+  const octets = host.split('.')
+  return octets.length === 4
+    && octets[0] === '127'
+    && octets.every(octet => /^\d+$/.test(octet) && Number(octet) <= 255)
+}
+
 function isGatewayLoopback(url: URL): boolean {
-  return url.protocol === 'http:'
-    && ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)
+  return isHttpLoopback(url)
     && url.port === '8799'
     && url.pathname === '/'
+}
+
+/**
+ * An app token may be supplied to this runner, so an accidental plaintext
+ * external endpoint or URL-embedded secret is not acceptable. Keep the
+ * request path private as well: callers get only targetOrigin in the summary.
+ */
+export function parseLoadTarget(raw: string): LoadTarget {
+  let base: URL
+  try {
+    base = new URL(raw)
+  } catch {
+    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+  }
+  if (base.protocol !== 'http:' && base.protocol !== 'https:') {
+    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+  }
+  if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
+    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+  }
+  if (base.protocol === 'http:' && !isHttpLoopback(base)) {
+    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+  }
+  const path = base.pathname.replace(/\/+$/, '')
+  return {
+    base,
+    baseUrl: `${base.origin}${path === '/' ? '' : path}`,
+    targetOrigin: base.origin,
+  }
+}
+
+export function isSseContentType(contentType: string | null): boolean {
+  return contentType?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream'
+}
+
+/**
+ * Bounded incremental parser for the one terminal SSE event we need. It never
+ * retains model output beyond one event-sized buffer and accepts only an exact
+ * `data: [DONE]` line framed by an SSE blank-line event boundary.
+ */
+export class SseTerminalDetector {
+  private static readonly maxBufferedChars = 64 * 1024
+  private buffered = ''
+  private sawDone = false
+  private sawEventAfterDone = false
+  private overflowed = false
+
+  push(text: string): void {
+    if (!text) return
+    this.buffered += text
+    if (this.buffered.length > SseTerminalDetector.maxBufferedChars) {
+      this.overflowed = true
+      this.buffered = this.buffered.slice(-SseTerminalDetector.maxBufferedChars)
+    }
+
+    while (true) {
+      const boundary = /\r\n\r\n|\n\n|\r\r/.exec(this.buffered)
+      if (!boundary || boundary.index === undefined) return
+      const event = this.buffered.slice(0, boundary.index)
+      this.buffered = this.buffered.slice(boundary.index + boundary[0].length)
+      if (!event) continue
+      if (this.sawDone) {
+        this.sawEventAfterDone = true
+        continue
+      }
+      const dataLines = event.split(/\r\n|\r|\n/).filter(line => line.startsWith('data:'))
+      if (dataLines.length === 1 && dataLines[0] === 'data: [DONE]') this.sawDone = true
+    }
+  }
+
+  hasTerminalDone(): boolean {
+    return this.sawDone
+      && !this.sawEventAfterDone
+      && !this.overflowed
+      && this.buffered.trim().length === 0
+  }
 }
 
 /**
@@ -185,17 +278,9 @@ async function main(): Promise<void> {
 
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
-  let baseUrl: string
-  let base: URL
-  try {
-    base = new URL(rawBaseUrl)
-    if (!/^https?:$/.test(base.protocol)) throw new Error('unsupported protocol')
-    baseUrl = base.toString().replace(/\/+$/, '')
-  } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
-  }
+  const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
   const useServerAppToken = args.includes('--use-server-app-token')
-  if (useServerAppToken && !isGatewayLoopback(base!)) {
+  if (useServerAppToken && !isGatewayLoopback(base)) {
     throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
   }
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
@@ -235,7 +320,11 @@ async function main(): Promise<void> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), healthTimeoutMs)
     try {
-      const response = await fetch(`${baseUrl}/healthz`, { headers, signal: controller.signal })
+      const response = await fetch(`${baseUrl}/healthz`, {
+        headers,
+        redirect: 'error',
+        signal: controller.signal,
+      })
       if (!response.ok) return null
       const body = await response.json() as GatewayHealth
       return body.capacity?.[pool] ?? null
@@ -255,6 +344,7 @@ async function main(): Promise<void> {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { ...headers, 'X-QF-Client-ID': installation },
+        redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({
           model,
@@ -267,9 +357,10 @@ async function main(): Promise<void> {
       })
       let firstByteMs: number | null = null
       let sawChunk = false
-      let sawDone = false
       let sawReasoning = false
-      let sseTail = ''
+      const sse = new SseTerminalDetector()
+      let reasoningTail = ''
+      const hasSseContentType = isSseContentType(response.headers.get('content-type'))
       const decoder = new TextDecoder()
       const reader = response.body?.getReader()
       if (reader) {
@@ -279,16 +370,16 @@ async function main(): Promise<void> {
           if (next.value.byteLength === 0) continue
           sawChunk = true
           if (firstByteMs === null) firstByteMs = performance.now() - started
-          // `[DONE]` may be split across TCP chunks, so retain a tiny decoded tail.
-          sseTail = `${sseTail}${decoder.decode(next.value, { stream: true })}`.slice(-64)
-          if (sseTail.includes('data: [DONE]')) sawDone = true
-          if (sawReasoningInSse(sseTail)) sawReasoning = true
+          const decoded = decoder.decode(next.value, { stream: true })
+          if (sawReasoningInSse(`${reasoningTail}${decoded}`)) sawReasoning = true
+          reasoningTail = `${reasoningTail}${decoded}`.slice(-64)
+          if (hasSseContentType) sse.push(decoded)
         }
       }
-      sseTail = `${sseTail}${decoder.decode()}`.slice(-64)
-      if (sseTail.includes('data: [DONE]')) sawDone = true
-      if (sawReasoningInSse(sseTail)) sawReasoning = true
-      const completed = response.ok && sawChunk && sawDone
+      const finalText = decoder.decode()
+      if (sawReasoningInSse(`${reasoningTail}${finalText}`)) sawReasoning = true
+      if (hasSseContentType) sse.push(finalText)
+      const completed = response.ok && hasSseContentType && sawChunk && sse.hasTerminalDone()
       return {
         status: response.status,
         firstByteMs: firstByteMs === null ? null : Math.round(firstByteMs),
@@ -297,7 +388,7 @@ async function main(): Promise<void> {
         completed,
         failureKind: completed || !response.ok
           ? undefined
-          : sawChunk ? 'incomplete_sse' : 'empty_stream',
+          : !hasSseContentType ? 'unexpected_content_type' : sawChunk ? 'incomplete_sse' : 'empty_stream',
       }
     } catch {
       return {
@@ -315,7 +406,7 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     event: 'loadtest_start',
-    target: baseUrl,
+    targetOrigin,
     users,
     windows,
     phases,
@@ -370,7 +461,7 @@ async function main(): Promise<void> {
       failureKinds,
       firstByteMs: { p50: percentile(firstBytes, 0.5), p95: percentile(firstBytes, 0.95) },
       totalMs: { p50: percentile(totals, 0.5), p95: percentile(totals, 0.95) },
-      responsesWithReasoning: samples.filter(sample => sample.sawReasoning).length,
+      responsesWithReasoning: samples.filter(sample => sample.completed && sample.sawReasoning).length,
       observedGateway: {
         active: peakActive,
         queued: peakQueued,
