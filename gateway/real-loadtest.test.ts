@@ -7,6 +7,7 @@ import {
   parseThinkingMode,
   resolveLoadtestThinkingMode,
   sawReasoningInSse,
+  shouldContinueAfterFailure,
   SseTerminalDetector,
 } from './real-loadtest'
 
@@ -33,6 +34,13 @@ describe('real upstream loadtest thinking-mode guard', () => {
     expect(isCapacityDrained({ active: 1, queued: 0 })).toBe(false)
     expect(isCapacityDrained({ active: 0, queued: 1 })).toBe(false)
     expect(isCapacityDrained(null)).toBe(false)
+  })
+
+  test('lets an explicit safety stop win if legacy continuation is also supplied', () => {
+    expect(shouldContinueAfterFailure([])).toBe(true)
+    expect(shouldContinueAfterFailure(['--continue-after-failure'])).toBe(true)
+    expect(shouldContinueAfterFailure(['--stop-after-failure'])).toBe(false)
+    expect(shouldContinueAfterFailure(['--stop-after-failure', '--continue-after-failure'])).toBe(false)
   })
 
   test('counts only the reasoning protocol field and never parses or emits its value', () => {

@@ -156,6 +156,11 @@ export function isCapacityDrained(snapshot: Capacity | null): boolean {
   return snapshot !== null && nonNegative(snapshot.active) === 0 && nonNegative(snapshot.queued) === 0
 }
 
+/** High-to-low continuation is default; an explicit safety stop always wins. */
+export function shouldContinueAfterFailure(args: readonly string[]): boolean {
+  return !args.includes('--stop-after-failure')
+}
+
 function isHttpLoopback(url: URL): boolean {
   if (url.protocol !== 'http:') return false
   const host = url.hostname.toLowerCase()
@@ -325,9 +330,7 @@ async function main(): Promise<void> {
   // A high-to-low capacity run needs to continue after a failed upper bound in order
   // to locate the first viable lower bound. The explicit stop switch remains for
   // incident-style probes where any failure must halt traffic immediately.
-  // Continuing is the default. If both compatibility switches are accidentally
-  // supplied, the explicit safety stop must win.
-  const continueAfterFailure = !args.includes('--stop-after-failure')
+  const continueAfterFailure = shouldContinueAfterFailure(args)
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',

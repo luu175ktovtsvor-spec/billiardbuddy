@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { classifyCompletionJson, generatedPng, hasCompletionJson, isVisualCapacityDrained, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, validatePng } from './vision-real-loadtest'
+import { classifyCompletionJson, generatedPng, hasCompletionJson, isVisualCapacityDrained, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, resolveVisualThinkingMode, shouldContinueAfterFailure, validatePng } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
   test('maps the 100 x 10 visual envelope from high to low so failures reveal a lower ceiling', () => {
@@ -29,6 +29,19 @@ describe('vision real-loadtest safety guards', () => {
     expect(parseThinkingMode('enabled')).toBe('enabled')
     expect(parseThinkingMode('disabled')).toBe('disabled')
     expect(() => parseThinkingMode('adaptive')).toThrow('--thinking must be enabled or disabled')
+  })
+
+  test('matches product thinking defaults for the bridge and native visual routes', () => {
+    expect(resolveVisualThinkingMode(undefined, 'bridge')).toBe('enabled')
+    expect(resolveVisualThinkingMode(undefined, 'native')).toBe('disabled')
+    expect(resolveVisualThinkingMode('enabled', 'native')).toBe('enabled')
+  })
+
+  test('lets an explicit safety stop win if legacy continuation is also supplied', () => {
+    expect(shouldContinueAfterFailure([])).toBe(true)
+    expect(shouldContinueAfterFailure(['--continue-after-failure'])).toBe(true)
+    expect(shouldContinueAfterFailure(['--stop-after-failure'])).toBe(false)
+    expect(shouldContinueAfterFailure(['--stop-after-failure', '--continue-after-failure'])).toBe(false)
   })
 
   test('keeps a real visual request within the gateway image-count boundary', () => {
