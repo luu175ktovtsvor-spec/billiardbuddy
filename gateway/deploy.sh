@@ -19,10 +19,14 @@
 #     长 SSE/长上下文下的 qfgw CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
 #     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
 #   - Qwen 仍保守使用 16 实际流。MiMo 的真实短请求爬坡达到 64 槽但高尾延迟明显，不能承诺
-#     100 人多窗口无等待。因此固定 GW_MIMO_CONC=64 / GW_MIMO_USER_CONC=1 /
-#     GW_MIMO_INFLIGHT_PER_USER=1 / GW_MIMO_TOKEN_CONC=64，只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发
-#     吸收，不把 100 人多窗口变成多分钟的隐藏等待。MiMo 原生文本和图片桥接共用这一个 64 槽总闸；图片桥接只可占其中至多
-#     GW_VISION_CONC(12) 个槽并另有 GW_VISION_QUEUE_MAX(24) 的三秒短队列，不能据此宣称能承接 500 张图。
+#     100 人多窗口无等待。因此固定 GW_MIMO_CONC=64（账号级物理总上限）/
+#     GW_MIMO_NATIVE_CONC=52（原生 MiMo 文本/Computer Use 槽）/
+#     GW_VISION_CONC=12（DeepSeek→MiMo 图片桥接槽）的硬预留，52 + 12 = 64。原生路径不能借用
+#     视觉的 12 槽，视觉也不会在 64 条原生请求之后排队；任一数值调整时必须同时校验三者之和等于
+#     GW_MIMO_CONC。另固定 GW_MIMO_USER_CONC=1 / GW_MIMO_INFLIGHT_PER_USER=1 /
+#     GW_MIMO_TOKEN_CONC=64，只留 GW_MIMO_QUEUE_MAX=64、GW_MIMO_QUEUE_MAX_WAIT=5 的短突发吸收，
+#     不把 100 人多窗口变成多分钟的隐藏等待。视觉侧另有 GW_VISION_QUEUE_MAX=24 的三秒短队列，
+#     不能据此宣称能承接 500 张图。
 #   - 生图提交默认 GW_IMG_IPM=600，目的是让 100 人 × 5 次的短提交进入 relay 的幂等任务队列；
 #     它不是 OpenAI/GPT 生图并发，实际生成并发仍由 relay 控制。首个 burst 后最多只保留
 #     GW_IMG_QUEUE_MAX=100 个令牌桶等待者，且单次 relay 提交最多等 GW_RELAY_SUBMIT_TIMEOUT_MS=15000；
@@ -65,6 +69,16 @@ elif [ ! -f "$APPDIR/gw.env" ]; then
   echo "缺少 /tmp/gw.env，且现网不存在 $APPDIR/gw.env" >&2
   exit 1
 fi
+
+# 只在三项均缺失的新环境补入非敏感默认值。不能对旧的低容量 gw.env 单独塞入 52/12，
+# 否则会让原本有效的 GW_MIMO_CONC=16 变成不一致配置。已有总量由 app.ts 兼容推导；
+# 新的显式配置必须满足总 64 = 原生 52 + 视觉 12（或三项严格相等的其他分区）。
+if ! grep -Eq '^[[:space:]]*GW_MIMO_CONC=' "$APPDIR/gw.env" \
+  && ! grep -Eq '^[[:space:]]*GW_MIMO_NATIVE_CONC=' "$APPDIR/gw.env" \
+  && ! grep -Eq '^[[:space:]]*GW_VISION_CONC=' "$APPDIR/gw.env"; then
+  printf '\nGW_MIMO_CONC=64\nGW_MIMO_NATIVE_CONC=52\nGW_VISION_CONC=12\n' >> "$APPDIR/gw.env"
+fi
+
 chmod 600 "$APPDIR/gw.env"
 cd "$APPDIR"
 

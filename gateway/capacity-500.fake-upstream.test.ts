@@ -48,7 +48,10 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_MIMO_BASE: 'https://mimo.example/v1',
     GW_MIMO_MODEL: 'mimo-v2.5',
     GW_MIMO_RPM: '1000000',
-    GW_MIMO_CONC: '16',
+    // Explicit 16 native + 12 visual reservation. The generic test profile no longer
+    // relies on the pre-partition interpretation where all 16 slots were shared.
+    GW_MIMO_CONC: '28',
+    GW_MIMO_NATIVE_CONC: '16',
     GW_MIMO_USER_CONC: '16',
     GW_MIMO_INFLIGHT_PER_USER: '16',
     GW_MIMO_TOKEN_CONC: '16',
@@ -217,10 +220,13 @@ async function status(fetch: (request: Request) => Promise<Response>, request: R
 
 async function health(fetch: (request: Request) => Promise<Response>, gatewayToken = token(0)) {
   const response = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayToken}` } }))
-  const capacity = (await response.json()).capacity as Record<'deepseek' | 'mimo', { active: number; queued: number }>
+  const capacity = (await response.json()).capacity as Record<'deepseek' | 'mimo' | 'mimo_native' | 'mimo_total' | 'vision', { active: number; queued: number }>
   return {
     deepseek: { active: capacity.deepseek.active, queued: capacity.deepseek.queued },
     mimo: { active: capacity.mimo.active, queued: capacity.mimo.queued },
+    mimoNative: { active: capacity.mimo_native.active, queued: capacity.mimo_native.queued },
+    mimoTotal: { active: capacity.mimo_total.active, queued: capacity.mimo_total.queued },
+    vision: { active: capacity.vision.active, queued: capacity.vision.queued },
   }
 }
 
@@ -232,7 +238,7 @@ function countBy(values: readonly string[]): Map<string, number> {
 
 for (const profile of [
   { label: 'DeepSeek 文本池', model: 'deepseek-v4-flash', kind: 'deepseek' as const, env: { GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5' } },
-  { label: 'MiMo 原生文本池', model: 'mimo-v2.5', kind: 'mimoText' as const, env: { GW_MIMO_CONC: '500', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '5' } },
+  { label: 'MiMo 原生文本池', model: 'mimo-v2.5', kind: 'mimoText' as const, env: { GW_MIMO_CONC: '512', GW_MIMO_NATIVE_CONC: '500', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '5' } },
 ]) {
   test(`100 用户 × 5 窗口：${profile.label}在 500/5/5 配置下全部同时进入上游，可信身份各占 5 路`, async () => {
     const upstream = createFakeUpstream({ holdText: true })
@@ -297,14 +303,14 @@ test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 8 窗�
   expect((await health(fetch, sharedToken)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('100 用户 × 5 窗口：默认 MiMo 共享64槽下，视觉阀门只接纳 12 在途 + 24 排队，其余 464 立即429', async () => {
+test('100 用户 × 5 窗口：默认 MiMo 视觉预留只接纳 12 在途 + 24 排队，其余 464 立即429', async () => {
   const upstream = createFakeUpstream({ holdVision: true })
   const fetch = createGatewayFetch({
     env: env({
       GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5',
       // Explicitly clear the fixture's small test pool: this assertion locks the
-      // production 64/1/64/64/5 MiMo profile rather than a synthetic 16-slot one.
-      GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      // production 64=52+12 / 1 / 64 / 64 / 5 MiMo profile rather than a synthetic lane.
+      GW_MIMO_CONC: undefined, GW_MIMO_NATIVE_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
       GW_MIMO_INFLIGHT_PER_USER: undefined,
       GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
     }),
@@ -320,7 +326,9 @@ test('100 用户 × 5 窗口：默认 MiMo 共享64槽下，视觉阀门只接�
   }
 
   await eventually(() => upstream.stats.mimoVision.calls === 12, 'default 12 visual calls')
-  expect((await health(fetch)).mimo).toEqual({ active: 12, queued: 0 })
+  expect((await health(fetch)).mimo).toEqual({ active: 12, queued: 24 })
+  expect((await health(fetch)).mimoNative).toEqual({ active: 0, queued: 0 })
+  expect((await health(fetch)).vision).toEqual({ active: 12, queued: 24 })
   upstream.openVision()
   const statuses = await Promise.all(requests)
   expect(statuses.filter(value => value === 200)).toHaveLength(36)
@@ -328,18 +336,19 @@ test('100 用户 × 5 窗口：默认 MiMo 共享64槽下，视觉阀门只接�
   expect(upstream.stats.mimoVision.peak).toBe(12)
   expect(upstream.stats.deepseek.calls).toBe(36)
   expect((await health(fetch)).mimo).toEqual({ active: 0, queued: 0 })
+  expect((await health(fetch)).mimoNative).toEqual({ active: 0, queued: 0 })
   expect((await health(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('100 用户 × 5 窗口：显式扩大为 50 个共享 MiMo 槽 + 50/450 视觉阀门后，整批 500 可排空且单安装仍只占 1 槽', async () => {
+test('100 用户 × 5 窗口：显式 50 原生 + 50 视觉硬分区、50/450 视觉阀门后，整批 500 可排空', async () => {
   const upstream = createFakeUpstream({ holdVision: true })
   const fetch = createGatewayFetch({
     env: env({
       GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5',
       // This is an explicit canary profile, not the production default: capacity is
-      // widened consistently at both layers so the visual semaphore cannot promise
-      // more real MiMo calls than the shared account pool permits.
-      GW_MIMO_CONC: '50', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '50',
+      // widened consistently at both layers so the visual semaphore has 50 actual
+      // physical reservations instead of borrowing from native traffic.
+      GW_MIMO_CONC: '100', GW_MIMO_NATIVE_CONC: '50', GW_MIMO_USER_CONC: '5', GW_MIMO_INFLIGHT_PER_USER: '5', GW_MIMO_TOKEN_CONC: '50',
       GW_MIMO_QUEUE_MAX: '450', GW_MIMO_QUEUE_MAX_WAIT: '10',
       GW_VISION_CONC: '50', GW_VISION_QUEUE_MAX: '450', GW_VISION_QUEUE_MAX_WAIT_MS: '10000',
       GW_VISION_PER_CLIENT_CONC: '1', GW_VISION_MAX_INFLIGHT_PER_CLIENT: '5', GW_VISION_PER_REQUEST_CONC: '1',
@@ -365,13 +374,13 @@ test('100 用户 × 5 窗口：显式扩大为 50 个共享 MiMo 槽 + 50/450 �
   expect((await health(fetch)).deepseek).toEqual({ active: 0, queued: 0 })
 })
 
-test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥接共用64个总槽，真实上游合计从不超过64', async () => {
+test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥接硬分为52+12，真实上游合计为64', async () => {
   const upstream = createFakeUpstream({ holdText: true, holdVision: true })
   const sharedToken = 'shared-desktop-token'
   const fetch = createGatewayFetch({
     env: env({
       GW_APP_TOKENS: JSON.stringify({ [sharedToken]: 'shared-product-token' }),
-      GW_MIMO_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
+      GW_MIMO_CONC: undefined, GW_MIMO_NATIVE_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
       GW_MIMO_INFLIGHT_PER_USER: undefined,
       GW_MIMO_QUEUE_MAX: undefined, GW_MIMO_QUEUE_MAX_WAIT: undefined,
     }),
@@ -380,7 +389,7 @@ test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥�
     fetchImpl: upstream.fetchImpl,
   })
   // Reserve 52 native slots and 12 bridge slots across distinct installations. This
-  // proves the two paths share the same 64-slot account pool even under one app token.
+  // proves the physical hard partition still totals 64 under one shared app token.
   const text = Array.from({ length: 52 }, (_, index) => status(fetch, chatRequest('mimo-v2.5', index, 0, { gatewayToken: sharedToken })))
   const image = Array.from({ length: 12 }, (_, index) => status(fetch, chatRequest('deepseek-v4-flash', index + 52, 0, { image: true, gatewayToken: sharedToken })))
 
@@ -388,7 +397,10 @@ test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥�
   expect(upstream.stats.mimoText.peak).toBe(52)
   expect(upstream.stats.mimoVision.peak).toBe(12)
   expect(upstream.stats.mimoText.inFlight + upstream.stats.mimoVision.inFlight).toBe(64)
-  expect((await health(fetch, sharedToken)).mimo).toMatchObject({ active: 64, queued: 0 })
+  const busy = await health(fetch, sharedToken)
+  expect(busy.mimo).toMatchObject({ active: 64, queued: 0 })
+  expect(busy.mimoNative).toMatchObject({ active: 52, queued: 0 })
+  expect(busy.vision).toMatchObject({ active: 12, queued: 0 })
 
   upstream.openText()
   upstream.openVision()

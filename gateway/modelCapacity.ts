@@ -31,6 +31,281 @@ export interface AcquireOptions {
   tokenId?: string
 }
 
+export type MimoLane = 'native' | 'vision'
+
+export type MimoReservationConfig = {
+  /** Account-wide physical ceiling. It must exactly equal the two lane reservations. */
+  maxConcurrent: number
+  nativeConcurrent: number
+  visionConcurrent: number
+  /** All MiMo paths for an installation share this active-call cap. */
+  maxConcurrentPerUser: number
+  /** All MiMo paths for a token share this active-call cap. */
+  maxConcurrentPerToken: number
+  /** All MiMo paths for an installation share this active + queued cap. */
+  maxInflightPerUser: number
+  nativeQueueMax: number
+  visionQueueMax: number
+  /** Vision has its own stricter per-installation caps in addition to the shared ones. */
+  visionMaxConcurrentPerUser: number
+  visionMaxInflightPerUser: number
+}
+
+type MimoPending = {
+  lane: MimoLane
+  user: string
+  tokenId: string
+  queuedAt: number
+  resolve: (permit: CapacityPermit) => void
+  reject: (error: CapacityQueueError) => void
+  timer?: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+type MimoLaneLimits = Record<MimoLane, number>
+
+/**
+ * One atomic scheduler for an account that reserves physical capacity for two request
+ * classes. A grant checks the account, lane, token, installation and queue limits in
+ * one operation. This is deliberately not composed from separate native/vision gates:
+ * independently acquiring two queues can leave a request holding one physical slot
+ * while it waits for another, which defeats the visual reservation and can deadlock.
+ */
+export class MimoReservationScheduler {
+  private active = 0
+  private readonly activeByLane: Record<MimoLane, number> = { native: 0, vision: 0 }
+  private readonly activeByUser = new Map<string, number>()
+  private readonly activeVisionByUser = new Map<string, number>()
+  private readonly activeByToken = new Map<string, number>()
+  private readonly pendingByUser = new Map<string, MimoPending[]>()
+  private readonly waitingUsers: string[] = []
+  private readonly queuedByLane: Record<MimoLane, number> = { native: 0, vision: 0 }
+  private readonly laneLimits: MimoLaneLimits
+  private readonly laneQueueMax: MimoLaneLimits
+
+  constructor(private readonly config: MimoReservationConfig) {
+    this.laneLimits = { native: config.nativeConcurrent, vision: config.visionConcurrent }
+    this.laneQueueMax = { native: config.nativeQueueMax, vision: config.visionQueueMax }
+    for (const [name, value] of Object.entries({
+      maxConcurrent: config.maxConcurrent,
+      nativeConcurrent: config.nativeConcurrent,
+      visionConcurrent: config.visionConcurrent,
+      maxConcurrentPerUser: config.maxConcurrentPerUser,
+      maxConcurrentPerToken: config.maxConcurrentPerToken,
+      maxInflightPerUser: config.maxInflightPerUser,
+      visionMaxConcurrentPerUser: config.visionMaxConcurrentPerUser,
+      visionMaxInflightPerUser: config.visionMaxInflightPerUser,
+    })) {
+      if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`)
+    }
+    for (const [name, value] of Object.entries(this.laneQueueMax)) {
+      if (!Number.isInteger(value) || value < 0) throw new Error(`${name} queue max must be a non-negative integer`)
+    }
+    if (config.nativeConcurrent + config.visionConcurrent !== config.maxConcurrent) {
+      throw new Error('MiMo native and vision reservations must exactly equal the account capacity')
+    }
+  }
+
+  /** Adapter for native MiMo chat, whose generic handler expects FairCapacityScheduler's surface. */
+  forLane(lane: MimoLane): { acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit>; snapshot(): CapacitySnapshot } {
+    return {
+      acquire: (user, opts) => this.acquire(lane, user, opts),
+      snapshot: () => this.laneSnapshot(lane),
+    }
+  }
+
+  acquire(lane: MimoLane, user: string, opts: AcquireOptions): Promise<CapacityPermit> {
+    const tokenId = opts.tokenId ?? user
+    if (opts.signal?.aborted) return Promise.reject(new CapacityQueueError(499, '请求已取消'))
+    if (this.inflightForUser(user) >= this.config.maxInflightPerUser ||
+      (lane === 'vision' && this.inflightVisionForUser(user) >= this.config.visionMaxInflightPerUser)) {
+      return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，请稍后重试'))
+    }
+
+    if (this.waitingUsers.length === 0 && this.canStart(lane, user, tokenId)) {
+      return Promise.resolve(this.grant(lane, user, tokenId))
+    }
+    if (opts.maxWaitMs <= 0) return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，请稍后重试'))
+
+    if (this.queuedByLane[lane] >= this.laneQueueMax[lane]) {
+      this.drain()
+      if (!this.hasRunnablePending() && this.canStart(lane, user, tokenId)) {
+        return Promise.resolve(this.grant(lane, user, tokenId))
+      }
+      return Promise.reject(new CapacityQueueError(429, '当前使用人数较多，排队已满，请稍后重试'))
+    }
+
+    return new Promise<CapacityPermit>((resolve, reject) => {
+      const pending: MimoPending = { lane, user, tokenId, queuedAt: performance.now(), resolve, reject, signal: opts.signal }
+      let queue = this.pendingByUser.get(user)
+      if (!queue) {
+        queue = []
+        this.pendingByUser.set(user, queue)
+        this.waitingUsers.push(user)
+      }
+      queue.push(pending)
+      this.queuedByLane[lane] += 1
+
+      const removeAndReject = (error: CapacityQueueError) => {
+        if (!this.removePending(pending)) return
+        this.cleanupPending(pending)
+        reject(error)
+        this.drain()
+      }
+      pending.timer = setTimeout(
+        () => removeAndReject(new CapacityQueueError(429, '当前使用人数较多，排队等待超时，请稍后重试')),
+        opts.maxWaitMs,
+      )
+      pending.onAbort = () => removeAndReject(new CapacityQueueError(499, '请求已取消'))
+      opts.signal?.addEventListener('abort', pending.onAbort, { once: true })
+      this.drain()
+    })
+  }
+
+  snapshot(): CapacitySnapshot {
+    return this.makeSnapshot(undefined)
+  }
+
+  laneSnapshot(lane: MimoLane): CapacitySnapshot {
+    return this.makeSnapshot(lane)
+  }
+
+  private makeSnapshot(lane: MimoLane | undefined): CapacitySnapshot {
+    const queueMax = lane === undefined ? this.laneQueueMax.native + this.laneQueueMax.vision : this.laneQueueMax[lane]
+    const active = lane === undefined ? this.active : this.activeByLane[lane]
+    const queued = lane === undefined ? this.queuedByLane.native + this.queuedByLane.vision : this.queuedByLane[lane]
+    return {
+      active,
+      queued,
+      maxConcurrent: lane === undefined ? this.config.maxConcurrent : this.laneLimits[lane],
+      maxConcurrentPerUser: lane === 'vision'
+        ? Math.min(this.config.maxConcurrentPerUser, this.config.visionMaxConcurrentPerUser)
+        : this.config.maxConcurrentPerUser,
+      maxConcurrentPerToken: this.config.maxConcurrentPerToken,
+      queueMax,
+      oldestQueueMs: this.oldestQueueMs(lane),
+    }
+  }
+
+  private oldestQueueMs(lane: MimoLane | undefined): number {
+    let oldest = Infinity
+    for (const queue of this.pendingByUser.values()) {
+      for (const pending of queue) {
+        if (lane === undefined || pending.lane === lane) oldest = Math.min(oldest, pending.queuedAt)
+      }
+    }
+    return oldest === Infinity ? 0 : Math.max(0, Math.trunc(performance.now() - oldest))
+  }
+
+  private inflightForUser(user: string): number {
+    return (this.activeByUser.get(user) ?? 0) + (this.pendingByUser.get(user)?.length ?? 0)
+  }
+
+  private inflightVisionForUser(user: string): number {
+    return (this.activeVisionByUser.get(user) ?? 0) + (this.pendingByUser.get(user)?.filter(pending => pending.lane === 'vision').length ?? 0)
+  }
+
+  private canStart(lane: MimoLane, user: string, tokenId: string): boolean {
+    const perUser = lane === 'vision'
+      ? Math.min(this.config.maxConcurrentPerUser, this.config.visionMaxConcurrentPerUser)
+      : this.config.maxConcurrentPerUser
+    const laneUserActive = lane === 'vision' ? this.activeVisionByUser.get(user) ?? 0 : this.activeByUser.get(user) ?? 0
+    return this.active < this.config.maxConcurrent &&
+      this.activeByLane[lane] < this.laneLimits[lane] &&
+      (this.activeByUser.get(user) ?? 0) < this.config.maxConcurrentPerUser &&
+      laneUserActive < perUser &&
+      (this.activeByToken.get(tokenId) ?? 0) < this.config.maxConcurrentPerToken
+  }
+
+  private hasRunnablePending(): boolean {
+    for (const user of this.waitingUsers) {
+      const queue = this.pendingByUser.get(user)
+      if (queue?.some(pending => this.canStart(pending.lane, user, pending.tokenId))) return true
+    }
+    return false
+  }
+
+  private grant(lane: MimoLane, user: string, tokenId: string): CapacityPermit {
+    this.active += 1
+    this.activeByLane[lane] += 1
+    this.activeByUser.set(user, (this.activeByUser.get(user) ?? 0) + 1)
+    if (lane === 'vision') this.activeVisionByUser.set(user, (this.activeVisionByUser.get(user) ?? 0) + 1)
+    this.activeByToken.set(tokenId, (this.activeByToken.get(tokenId) ?? 0) + 1)
+    let released = false
+    return {
+      release: () => {
+        if (released) return
+        released = true
+        this.active = Math.max(0, this.active - 1)
+        this.activeByLane[lane] = Math.max(0, this.activeByLane[lane] - 1)
+        const nextUser = Math.max(0, (this.activeByUser.get(user) ?? 1) - 1)
+        if (nextUser === 0) this.activeByUser.delete(user)
+        else this.activeByUser.set(user, nextUser)
+        if (lane === 'vision') {
+          const nextVision = Math.max(0, (this.activeVisionByUser.get(user) ?? 1) - 1)
+          if (nextVision === 0) this.activeVisionByUser.delete(user)
+          else this.activeVisionByUser.set(user, nextVision)
+        }
+        const nextToken = Math.max(0, (this.activeByToken.get(tokenId) ?? 1) - 1)
+        if (nextToken === 0) this.activeByToken.delete(tokenId)
+        else this.activeByToken.set(tokenId, nextToken)
+        this.drain()
+      },
+    }
+  }
+
+  private drain(): void {
+    while (this.active < this.config.maxConcurrent && this.waitingUsers.length > 0) {
+      const candidates = this.waitingUsers.length
+      let granted = false
+      for (let i = 0; i < candidates; i++) {
+        const user = this.waitingUsers.shift()!
+        const queue = this.pendingByUser.get(user)
+        if (!queue || queue.length === 0) {
+          this.pendingByUser.delete(user)
+          continue
+        }
+        const pendingIndex = queue.findIndex(pending => this.canStart(pending.lane, user, pending.tokenId))
+        if (pendingIndex < 0) {
+          this.waitingUsers.push(user)
+          continue
+        }
+        const [pending] = queue.splice(pendingIndex, 1)
+        if (!pending) continue
+        this.queuedByLane[pending.lane] = Math.max(0, this.queuedByLane[pending.lane] - 1)
+        if (queue.length > 0) this.waitingUsers.push(user)
+        else this.pendingByUser.delete(user)
+        this.cleanupPending(pending)
+        pending.resolve(this.grant(pending.lane, user, pending.tokenId))
+        granted = true
+        break
+      }
+      if (!granted) return
+    }
+  }
+
+  private removePending(pending: MimoPending): boolean {
+    const queue = this.pendingByUser.get(pending.user)
+    if (!queue) return false
+    const index = queue.indexOf(pending)
+    if (index < 0) return false
+    queue.splice(index, 1)
+    this.queuedByLane[pending.lane] = Math.max(0, this.queuedByLane[pending.lane] - 1)
+    if (queue.length === 0) {
+      this.pendingByUser.delete(pending.user)
+      const userIndex = this.waitingUsers.indexOf(pending.user)
+      if (userIndex >= 0) this.waitingUsers.splice(userIndex, 1)
+    }
+    return true
+  }
+
+  private cleanupPending(pending: MimoPending): void {
+    if (pending.timer) clearTimeout(pending.timer)
+    if (pending.onAbort) pending.signal?.removeEventListener('abort', pending.onAbort)
+  }
+}
+
 type Pending = {
   user: string
   tokenId: string
