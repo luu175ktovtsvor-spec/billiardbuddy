@@ -93,6 +93,42 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
   }
 }
 
+type ProductTaskDockPanel = 'review' | 'terminal' | 'browser-preview'
+
+type OpenProductTaskDockPanels = Record<ProductTaskDockPanel, boolean>
+
+const PRODUCT_TASK_DOCK_PANEL_ORDER: readonly ProductTaskDockPanel[] = [
+  'review',
+  'terminal',
+  'browser-preview',
+]
+
+function firstOpenDockPanel(openPanels: OpenProductTaskDockPanels): ProductTaskDockPanel | null {
+  return PRODUCT_TASK_DOCK_PANEL_ORDER.find((panel) => openPanels[panel]) ?? null
+}
+
+function nextOpenDockPanel(
+  closedPanel: ProductTaskDockPanel,
+  openPanels: OpenProductTaskDockPanels,
+): ProductTaskDockPanel | null {
+  const index = PRODUCT_TASK_DOCK_PANEL_ORDER.indexOf(closedPanel)
+  for (let offset = 1; offset < PRODUCT_TASK_DOCK_PANEL_ORDER.length; offset += 1) {
+    const candidate = PRODUCT_TASK_DOCK_PANEL_ORDER[
+      (index + offset) % PRODUCT_TASK_DOCK_PANEL_ORDER.length
+    ]!
+    if (openPanels[candidate]) return candidate
+  }
+  return null
+}
+
+function resolveActiveDockPanel(
+  requestedPanel: ProductTaskDockPanel | null,
+  openPanels: OpenProductTaskDockPanels,
+): ProductTaskDockPanel | null {
+  if (requestedPanel && openPanels[requestedPanel]) return requestedPanel
+  return firstOpenDockPanel(openPanels)
+}
+
 type ProductTaskThreadEntryViewProps = {
   entry: ProductTaskThreadEntry
   streaming: boolean
@@ -420,9 +456,27 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [isReviewOpen, setIsReviewOpen] = useState(false)
   const [isTerminalOpen, setIsTerminalOpen] = useState(false)
+  const [activeDockPanel, setActiveDockPanel] = useState<ProductTaskDockPanel | null>(null)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const isBrowserOpen = browserPreviewPanel?.browserOpen ?? false
+  const isPreviewOpen = browserPreviewPanel?.previewOpen ?? false
+  const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
+  const openDockPanels: OpenProductTaskDockPanels = {
+    review: isReviewOpen,
+    terminal: isTerminalOpen,
+    'browser-preview': isBrowserPreviewOpen,
+  }
+  const resolvedActiveDockPanel = resolveActiveDockPanel(activeDockPanel, openDockPanels)
+  const isReviewActive = resolvedActiveDockPanel === 'review'
+  const isTerminalActive = resolvedActiveDockPanel === 'terminal'
+  const isBrowserPreviewActive = resolvedActiveDockPanel === 'browser-preview'
+
+  useEffect(() => {
+    if (resolvedActiveDockPanel === activeDockPanel) return
+    setActiveDockPanel(resolvedActiveDockPanel)
+  }, [activeDockPanel, resolvedActiveDockPanel])
 
   const task = useMemo(
     () => index.tasks.find((candidate) => candidate.id === taskId) ?? null,
@@ -527,21 +581,47 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
     productSideTaskMutationKey(taskId, 'new', 'create')
   ] === true
   const isRunning = runtime?.runState === 'working' || runtime?.runState === 'awaiting_approval'
-  const isBrowserOpen = browserPreviewPanel?.browserOpen ?? false
-  const isPreviewOpen = browserPreviewPanel?.previewOpen ?? false
-  const isBrowserPreviewOpen = isBrowserOpen || isPreviewOpen
+
+  const closeReviewDock = () => {
+    setIsReviewOpen(false)
+    setActiveDockPanel((current) => current === 'review'
+      ? nextOpenDockPanel('review', { ...openDockPanels, review: false })
+      : current)
+  }
+
+  const closeTerminalDock = () => {
+    setIsTerminalOpen(false)
+    setActiveDockPanel((current) => current === 'terminal'
+      ? nextOpenDockPanel('terminal', { ...openDockPanels, terminal: false })
+      : current)
+  }
+
+  const openReviewDock = () => {
+    setIsReviewOpen(true)
+    setActiveDockPanel('review')
+  }
+
+  const openTerminalDock = () => {
+    setIsTerminalOpen(true)
+    setActiveDockPanel('terminal')
+  }
 
   const closeBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
     closeBrowserPreviewPanel(task.id, mode)
+    const remainsOpen = mode === 'browser' ? isPreviewOpen : isBrowserOpen
+    setActiveDockPanel((current) => current === 'browser-preview' && !remainsOpen
+      ? nextOpenDockPanel('browser-preview', { ...openDockPanels, 'browser-preview': false })
+      : current)
   }
 
   const openBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
     const isOpen = mode === 'browser' ? isBrowserOpen : isPreviewOpen
     if (isOpen) {
       activateBrowserPreviewPanel(task.id, mode)
-      return
+    } else {
+      openBrowserPreviewPanel(task.id, mode)
     }
-    openBrowserPreviewPanel(task.id, mode)
+    setActiveDockPanel('browser-preview')
   }
 
   const continueFromEntry = async (
@@ -602,8 +682,8 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
         </button>
         <button
           type="button"
-          onClick={() => setIsReviewOpen((open) => !open)}
-          aria-pressed={isReviewOpen}
+          onClick={openReviewDock}
+          aria-pressed={isReviewActive}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           审阅
@@ -611,7 +691,7 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
         <button
           type="button"
           onClick={() => openBrowserPreviewMode('browser')}
-          aria-pressed={isBrowserOpen && browserPreviewPanel?.activeMode === 'browser'}
+          aria-pressed={isBrowserPreviewActive && isBrowserOpen && browserPreviewPanel?.activeMode === 'browser'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           浏览器
@@ -619,15 +699,15 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
         <button
           type="button"
           onClick={() => openBrowserPreviewMode('preview')}
-          aria-pressed={isPreviewOpen && browserPreviewPanel?.activeMode === 'preview'}
+          aria-pressed={isBrowserPreviewActive && isPreviewOpen && browserPreviewPanel?.activeMode === 'preview'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           预览
         </button>
         <button
           type="button"
-          onClick={() => setIsTerminalOpen((open) => !open)}
-          aria-pressed={isTerminalOpen}
+          onClick={openTerminalDock}
+          aria-pressed={isTerminalActive}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
           终端
@@ -756,37 +836,33 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
           </form>
         </section>
 
-        {isReviewOpen || isTerminalOpen || isBrowserPreviewOpen ? (
-          <aside className="flex w-[min(34rem,46vw)] min-w-[22rem] flex-col border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
+        {resolvedActiveDockPanel ? (
+          <aside className="flex min-h-0 w-[min(34rem,46vw)] min-w-[22rem] flex-col overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
             {isReviewOpen ? (
-              <div className={`flex min-h-0 flex-col overflow-hidden ${
-                isBrowserPreviewOpen
-                  ? 'flex-1 border-b border-[var(--color-border)]'
-                  : isTerminalOpen
-                    ? 'min-h-[16rem] flex-1 border-b border-[var(--color-border)]'
-                    : 'flex-1'
-              }`}>
-                <ProductTaskReviewDock taskId={task.id} onClose={() => setIsReviewOpen(false)} />
+              <div
+                data-testid="product-task-dock-panel-review"
+                data-active={isReviewActive ? 'true' : 'false'}
+                className={`min-h-0 flex-1 flex-col overflow-hidden ${isReviewActive ? 'flex' : 'hidden'}`}
+              >
+                <ProductTaskReviewDock taskId={task.id} onClose={closeReviewDock} />
               </div>
             ) : null}
             {isTerminalOpen ? (
-              <section className={`flex min-h-0 flex-col overflow-hidden ${
-                isBrowserPreviewOpen
-                  ? 'flex-1 border-b border-[var(--color-border)]'
-                  : isReviewOpen
-                    ? 'min-h-[16rem] flex-1'
-                    : 'flex-1'
-              }`} data-testid="product-task-terminal-dock">
+              <section
+                data-testid="product-task-terminal-dock"
+                data-active={isTerminalActive ? 'true' : 'false'}
+                className={`min-h-0 flex-1 flex-col overflow-hidden ${isTerminalActive ? 'flex' : 'hidden'}`}
+              >
                 <header className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
                   <div>
                     <h2 className="text-sm font-medium text-[var(--color-text-primary)]">终端</h2>
                     <p className="truncate text-xs text-[var(--color-text-tertiary)]">{task.workDir}</p>
                   </div>
-                  <button type="button" onClick={() => setIsTerminalOpen(false)} className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)]">关闭</button>
+                  <button type="button" onClick={closeTerminalDock} className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)]">关闭</button>
                 </header>
                 <div className="min-h-0 flex-1">
                   <TerminalSettings
-                    active
+                    active={isTerminalActive}
                     cwd={task.workDir}
                     runtimeId={`product-task-terminal-${task.id}`}
                     workspace
@@ -797,14 +873,21 @@ export function ProductTaskPage({ taskId }: ProductTaskPageProps) {
                 </div>
               </section>
             ) : null}
-            {isBrowserPreviewOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {isBrowserPreviewActive ? (
+              <div
+                data-testid="product-task-dock-panel-browser-preview"
+                data-active="true"
+                className="flex min-h-0 flex-1 flex-col overflow-hidden"
+              >
                 <ProductTaskBrowserPreviewDock
                   taskId={task.id}
                   browserOpen={isBrowserOpen}
                   previewOpen={isPreviewOpen}
                   activeMode={browserPreviewPanel?.activeMode ?? null}
-                  onActivate={(mode) => activateBrowserPreviewPanel(task.id, mode)}
+                  onActivate={(mode) => {
+                    activateBrowserPreviewPanel(task.id, mode)
+                    setActiveDockPanel('browser-preview')
+                  }}
                   onClose={closeBrowserPreviewMode}
                 />
               </div>

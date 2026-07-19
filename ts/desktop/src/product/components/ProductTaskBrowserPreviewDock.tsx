@@ -82,6 +82,7 @@ export function ProductTaskBrowserPreviewDock({
   if (!visibleMode || !meta || !browserKey) return null
 
   const handleClose = () => {
+    useBrowserPanelStore.getState().close(browserKey)
     onClose(visibleMode)
   }
 
