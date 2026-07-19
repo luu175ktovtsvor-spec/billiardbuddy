@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useTaskStore } from '../../stores/taskStore'
-import { useSessionStore } from '../../stores/sessionStore'
 import { Modal } from '../shared/Modal'
 import { Input } from '../shared/Input'
 import { Button } from '../shared/Button'
@@ -9,6 +8,7 @@ import { DayOfWeekPicker } from './DayOfWeekPicker'
 import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron, parseCron, type FrequencyKey } from '../../lib/cronDescribe'
 import type { CronTask } from '../../types/task'
+import { useCurrentProductTaskContext } from '../../product/currentProductTaskContext'
 
 type NotificationChannel = 'desktop'
 
@@ -56,10 +56,7 @@ function buildCron(
 export function NewTaskModal({ open, onClose, editTask }: Props) {
   const t = useTranslation()
   const { createTask, updateTask } = useTaskStore()
-  const sessions = useSessionStore((s) => s.sessions)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  const activeSession = sessions.find((s) => s.id === activeSessionId)
-  const defaultWorkDir = activeSession?.workDir || ''
+  const { workDir: defaultWorkDir = '' } = useCurrentProductTaskContext()
 
   const isEdit = !!editTask
   const parsed = editTask ? parseCron(editTask.cron) : null

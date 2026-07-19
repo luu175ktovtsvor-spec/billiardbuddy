@@ -562,7 +562,7 @@ describe('MCP API', () => {
     expect(listBody.servers.some((server: { name: string }) => server.name === 'context7')).toBe(false)
   })
 
-  it('syncs MCP toggles into the active CLI session control channel', async () => {
+  it('syncs MCP toggles through an opaque product task binding', async () => {
     const create = makeRequest('POST', '/api/mcp', {
       cwd: projectRoot,
       name: 'session-sync',
@@ -582,16 +582,132 @@ describe('MCP API', () => {
 
     const disable = makeRequest('POST', '/api/mcp/session-sync/toggle', {
       cwd: projectRoot,
-      sessionId: 'session-1',
+      taskId: 'task-mcp-sync',
     })
-    const disableRes = await handleMcpApi(disable.req, disable.url, disable.segments)
+    const resolveCoreSessionId = mock(async (taskId: string) => {
+      expect(taskId).toBe('task-mcp-sync')
+      return 'session-1'
+    })
+    const disableRes = await handleMcpApi(
+      disable.req,
+      disable.url,
+      disable.segments,
+      { resolveCoreSessionId },
+    )
 
     expect(disableRes.status).toBe(200)
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('task-mcp-sync')
     expect(requestControl).toHaveBeenCalledWith(
       'session-1',
       { subtype: 'mcp_toggle', serverName: 'session-sync', enabled: false },
       120_000,
     )
+  })
+
+  it('returns a safe task-context error without changing MCP config when the public task cannot resolve', async () => {
+    const create = makeRequest('POST', '/api/mcp', {
+      cwd: projectRoot,
+      name: 'task-context-guard',
+      scope: 'local',
+      config: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['task-context-guard'],
+        env: {},
+      },
+    })
+    expect((await handleMcpApi(create.req, create.url, create.segments)).status).toBe(201)
+
+    const toggle = makeRequest('POST', '/api/mcp/task-context-guard/toggle', {
+      cwd: projectRoot,
+      taskId: 'missing-task',
+    })
+    const resolveCoreSessionId = mock(async () => {
+      throw new Error('private product store detail')
+    })
+    const response = await handleMcpApi(
+      toggle.req,
+      toggle.url,
+      toggle.segments,
+      { resolveCoreSessionId },
+    )
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'PRODUCT_TASK_UNAVAILABLE' })
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('missing-task')
+
+    const list = makeRequest('GET', `/api/mcp?cwd=${encodeURIComponent(projectRoot)}`)
+    const listResponse = await handleMcpApi(list.req, list.url, list.segments)
+    const listBody = await listResponse.json() as { servers: Array<{ name: string; enabled: boolean }> }
+    expect(listBody.servers.find((server) => server.name === 'task-context-guard')).toMatchObject({
+      enabled: true,
+    })
+  })
+
+  it('does not treat an empty taskId as a global MCP toggle request', async () => {
+    const create = makeRequest('POST', '/api/mcp', {
+      cwd: projectRoot,
+      name: 'empty-task-context-guard',
+      scope: 'local',
+      config: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['empty-task-context-guard'],
+        env: {},
+      },
+    })
+    expect((await handleMcpApi(create.req, create.url, create.segments)).status).toBe(201)
+
+    const toggle = makeRequest('POST', '/api/mcp/empty-task-context-guard/toggle', {
+      cwd: projectRoot,
+      taskId: '',
+    })
+    const response = await handleMcpApi(toggle.req, toggle.url, toggle.segments)
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'PRODUCT_TASK_UNAVAILABLE' })
+
+    const list = makeRequest('GET', `/api/mcp?cwd=${encodeURIComponent(projectRoot)}`)
+    const listResponse = await handleMcpApi(list.req, list.url, list.segments)
+    const listBody = await listResponse.json() as { servers: Array<{ name: string; enabled: boolean }> }
+    expect(listBody.servers.find((server) => server.name === 'empty-task-context-guard')).toMatchObject({
+      enabled: true,
+    })
+  })
+
+  it('returns not_running only after a public task resolves to an inactive Core runtime', async () => {
+    const create = makeRequest('POST', '/api/mcp', {
+      cwd: projectRoot,
+      name: 'task-offline',
+      scope: 'local',
+      config: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['task-offline'],
+        env: {},
+      },
+    })
+    expect((await handleMcpApi(create.req, create.url, create.segments)).status).toBe(201)
+
+    conversationService.hasSession = (() => false) as typeof conversationService.hasSession
+    const toggle = makeRequest('POST', '/api/mcp/task-offline/toggle', {
+      cwd: projectRoot,
+      taskId: 'offline-task',
+    })
+    const resolveCoreSessionId = mock(async () => 'offline-core-session')
+    const response = await handleMcpApi(
+      toggle.req,
+      toggle.url,
+      toggle.segments,
+      { resolveCoreSessionId },
+    )
+
+    expect(response.status).toBe(200)
+    expect(resolveCoreSessionId).toHaveBeenCalledWith('offline-task')
+    expect(await response.json()).toMatchObject({
+      server: { enabled: false },
+      taskSync: { applied: false, reason: 'not_running' },
+    })
   })
 
   it('reconnects plugin-scoped MCP servers exposed via the merged server list', async () => {

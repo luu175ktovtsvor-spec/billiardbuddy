@@ -4,11 +4,11 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { DirectoryPicker } from '../components/shared/DirectoryPicker'
 import { Input } from '../components/shared/Input'
 import { useTranslation, type TranslationKey } from '../i18n'
-import { sessionsApi } from '../api/sessions'
 import { useMcpStore } from '../stores/mcpStore'
-import { useSessionStore } from '../stores/sessionStore'
 import { useUIStore } from '../stores/uiStore'
 import type { McpServerRecord, McpUpsertPayload, McpWritableScope } from '../types/mcp'
+import { useCurrentProductTaskContext } from '../product/currentProductTaskContext'
+import { useProductTaskStore } from '../product/stores/productTaskStore'
 
 type View =
   | { type: 'list' }
@@ -377,11 +377,9 @@ export function McpSettings() {
     selectServer,
   } = useMcpStore()
   const addToast = useUIStore((state) => state.addToast)
-  const sessions = useSessionStore((state) => state.sessions)
-  const activeSessionId = useSessionStore((state) => state.activeSessionId)
+  const { taskId: currentTaskId, workDir: currentWorkDir } = useCurrentProductTaskContext()
+  const productProjects = useProductTaskStore((state) => state.index.projects)
   const t = useTranslation()
-  const activeSession = sessions.find((session) => session.id === activeSessionId)
-  const currentWorkDir = activeSession?.workDir || undefined
   const [view, setView] = useState<View>({ type: 'list' })
   const [draft, setDraft] = useState<McpDraft>(() => createDraft(undefined, currentWorkDir))
   const [isInitialLoading, setIsInitialLoading] = useState(true)
@@ -398,15 +396,14 @@ export function McpSettings() {
     let cancelled = false
     setIsInitialLoading(useMcpStore.getState().servers.length === 0)
 
-    void sessionsApi.getRecentProjects(8)
-      .then(({ projects }) => {
-        if (cancelled) return
-        const paths = [currentWorkDir, ...projects.map((project) => project.realPath)]
-          .filter((path): path is string => Boolean(path))
-        projectPathsForFetchRef.current = Array.from(new Set(paths))
-        return fetchServers(projectPathsForFetchRef.current, currentWorkDir)
-      })
-      .catch(() => fetchServers(currentWorkDir ? [currentWorkDir] : undefined, currentWorkDir))
+    const paths = [currentWorkDir, ...productProjects.map((project) => project.workDir)]
+      .filter((path): path is string => Boolean(path))
+    projectPathsForFetchRef.current = Array.from(new Set(paths))
+
+    void fetchServers(
+      projectPathsForFetchRef.current.length > 0 ? projectPathsForFetchRef.current : undefined,
+      currentWorkDir,
+    )
       .finally(() => {
         if (!cancelled) setIsInitialLoading(false)
       })
@@ -414,7 +411,7 @@ export function McpSettings() {
     return () => {
       cancelled = true
     }
-  }, [currentWorkDir, fetchServers])
+  }, [currentWorkDir, fetchServers, productProjects])
 
   useEffect(() => {
     const pending = servers.filter((server) => (
@@ -475,7 +472,7 @@ export function McpSettings() {
   const handleToggle = async (server: McpServerRecord) => {
     setBusyServerKey(getServerIdentityKey(server))
     try {
-      const updated = await toggleServer(server, resolveOperationCwd(server), activeSessionId ?? undefined)
+      const updated = await toggleServer(server, resolveOperationCwd(server), currentTaskId)
       addToast({
         type: 'success',
         message: updated.enabled

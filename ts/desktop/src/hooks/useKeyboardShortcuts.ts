@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import { useChatStore } from '../stores/chatStore'
 import { useTabStore } from '../stores/tabStore'
 import { useUIStore } from '../stores/uiStore'
 import {
@@ -8,23 +7,33 @@ import {
 } from '../lib/appZoom'
 import { useSettingsStore } from '../stores/settingsStore'
 import { openProductTaskComposer } from '../product/openTaskComposer'
+import { useProductTaskRuntimeStore } from '../product/stores/productTaskRuntimeStore'
 
 export function useKeyboardShortcuts() {
   const openModal = useUIStore((s) => s.openModal)
   const closeModal = useUIStore((s) => s.closeModal)
   const activeModal = useUIStore((s) => s.activeModal)
-  const stopGeneration = useChatStore((s) => s.stopGeneration)
-  const activeTabId = useTabStore((s) => s.activeTabId)
-  const chatState = useChatStore((s) => activeTabId ? s.sessions[activeTabId]?.chatState ?? 'idle' : 'idle')
+  const activeProductTaskId = useTabStore((state) => {
+    const activeTab = state.tabs.find((tab) => tab.sessionId === state.activeTabId)
+    return activeTab?.type === 'product-task' ? activeTab.taskId ?? null : null
+  })
+  const activeProductTaskRunState = useProductTaskRuntimeStore((state) => (
+    activeProductTaskId ? state.tasks[activeProductTaskId]?.runState ?? 'idle' : 'idle'
+  ))
+  const stopTask = useProductTaskRuntimeStore((state) => state.stopTask)
   const uiZoom = useSettingsStore((s) => s.uiZoom)
   const setUiZoom = useSettingsStore((s) => s.setUiZoom)
 
   const activeModalRef = useRef(activeModal)
   activeModalRef.current = activeModal
-  const chatStateRef = useRef(chatState)
-  chatStateRef.current = chatState
-  const activeTabIdRef = useRef(activeTabId)
-  activeTabIdRef.current = activeTabId
+  const activeProductTaskRef = useRef({
+    taskId: activeProductTaskId,
+    runState: activeProductTaskRunState,
+  })
+  activeProductTaskRef.current = {
+    taskId: activeProductTaskId,
+    runState: activeProductTaskRunState,
+  }
   const appZoomLevelRef = useRef(uiZoom)
   appZoomLevelRef.current = uiZoom
 
@@ -60,16 +69,17 @@ export function useKeyboardShortcuts() {
         }
       }
 
-      // Cmd+. — Stop generation
+      // Cmd+. — Stop the active public product task only.
       if (meta && e.key === '.') {
-        if (chatStateRef.current !== 'idle' && activeTabIdRef.current) {
+        const { taskId, runState } = activeProductTaskRef.current
+        if (taskId && (runState === 'working' || runState === 'awaiting_approval')) {
           e.preventDefault()
-          stopGeneration(activeTabIdRef.current)
+          stopTask(taskId)
         }
       }
     }
 
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [closeModal, openModal, setUiZoom, stopGeneration])
+  }, [closeModal, openModal, setUiZoom, stopTask])
 }

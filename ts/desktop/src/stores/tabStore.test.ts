@@ -9,7 +9,7 @@ import {
 
 describe('tabStore', () => {
   beforeEach(() => {
-    useTabStore.setState({ tabs: [], activeTabId: null })
+    useTabStore.setState({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
     localStorage.clear()
   })
 
@@ -59,6 +59,7 @@ describe('tabStore', () => {
         },
       ],
       activeTabId: 'session-1',
+      lastActiveProductTaskId: 'session-1',
     })
 
     useTabStore.getState().saveTabs()
@@ -133,6 +134,7 @@ describe('tabStore', () => {
       taskId: 'task-1',
     }])
     expect(useTabStore.getState().activeTabId).toBe(tabId)
+    expect(useTabStore.getState().lastActiveProductTaskId).toBe('task-1')
     expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toEqual({
       openTabs: [{
         sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
@@ -141,6 +143,60 @@ describe('tabStore', () => {
         taskId: 'task-1',
       }],
       activeTabId: tabId,
+      lastActiveProductTaskId: 'task-1',
+    })
+  })
+
+  it('tracks the explicitly activated product task while a fixed product surface is active', () => {
+    const taskAId = useTabStore.getState().openProductTaskTab('task-a', '任务 A')
+    const taskBId = useTabStore.getState().openProductTaskTab('task-b', '任务 B')
+
+    expect(useTabStore.getState().lastActiveProductTaskId).toBe('task-b')
+
+    useTabStore.getState().setActiveTab(taskAId)
+    expect(useTabStore.getState().lastActiveProductTaskId).toBe('task-a')
+
+    useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: 'task-a',
+    })
+    expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === taskBId)?.taskId).toBe('task-b')
+  })
+
+  it('does not let tab order change the explicit product task context', () => {
+    useTabStore.getState().openProductTaskTab('task-a', '任务 A')
+    useTabStore.getState().openProductTaskTab('task-b', '任务 B')
+    useTabStore.getState().setActiveTab(`${PRODUCT_TASK_TAB_PREFIX}task-a`)
+    useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
+
+    useTabStore.getState().moveTab(0, 2)
+
+    expect(useTabStore.getState().tabs.map((tab) => tab.taskId ?? tab.sessionId)).toEqual([
+      'task-b',
+      SETTINGS_TAB_ID,
+      'task-a',
+    ])
+    expect(useTabStore.getState().lastActiveProductTaskId).toBe('task-a')
+  })
+
+  it('selects the active product task as a safe close fallback and clears a closed remembered task', () => {
+    const taskAId = useTabStore.getState().openProductTaskTab('task-a', '任务 A')
+    const taskBId = useTabStore.getState().openProductTaskTab('task-b', '任务 B')
+
+    useTabStore.getState().closeTab(taskBId)
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: taskAId,
+      lastActiveProductTaskId: 'task-a',
+    })
+
+    const reopenedTaskBId = useTabStore.getState().openProductTaskTab('task-b', '任务 B')
+    useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
+    useTabStore.getState().closeTab(reopenedTaskBId)
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: null,
     })
   })
 
@@ -236,6 +292,7 @@ describe('tabStore', () => {
 
     expect(useTabStore.getState()).toMatchObject({
       activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+      lastActiveProductTaskId: 'task-1',
       tabs: [{
         sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
         title: '整理开球训练',
@@ -243,6 +300,54 @@ describe('tabStore', () => {
         taskId: 'task-1',
       }],
     })
+  })
+
+  it('persists and restores a recorded product task while Settings is active', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-a`,
+          title: '任务 A',
+          type: 'product-task',
+          taskId: 'task-a',
+        },
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-b`,
+          title: '任务 B',
+          type: 'product-task',
+          taskId: 'task-b',
+        },
+        { sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings' },
+      ],
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: 'task-a',
+    }))
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: 'task-a',
+    })
+    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).toMatchObject({
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: 'task-a',
+    })
+  })
+
+  it('drops a persisted last task id that is not an open product task', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [{ sessionId: SETTINGS_TAB_ID, title: '设置', type: 'settings' }],
+      activeTabId: SETTINGS_TAB_ID,
+      lastActiveProductTaskId: 'core-session-1',
+    }))
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState().lastActiveProductTaskId).toBeNull()
+    expect(JSON.parse(localStorage.getItem('billiardbuddy-open-tabs') || '{}')).not.toHaveProperty(
+      'lastActiveProductTaskId',
+    )
   })
 
   it('discards retired trace tabs and raw sessions during restore', async () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import {
   ArrowLeft,
   Bot,
@@ -18,10 +18,8 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
-import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
+import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource, PermissionMode } from '../types/settings'
 import type { Locale } from '../i18n'
-import { useSessionStore } from '../stores/sessionStore'
 import { SkillList } from '../components/skills/SkillList'
 import { usePluginStore } from '../stores/pluginStore'
 import { PluginList } from '../components/plugins/PluginList'
@@ -35,6 +33,7 @@ import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { getDesktopHost } from '../lib/desktopHost'
 import { publicAssetPath } from '../lib/publicAsset'
+import { useCurrentProductTaskContext } from '../product/currentProductTaskContext'
 import {
   getDesktopNotificationPermission,
   notifyDesktop,
@@ -320,8 +319,7 @@ export function GeneralSettings() {
     uiZoom,
     setUiZoom,
   } = useSettingsStore()
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  const sessions = useSessionStore((s) => s.sessions)
+  const { workDir: outputStyleWorkDir } = useCurrentProductTaskContext()
   const t = useTranslation()
   const [networkDraft, setNetworkDraft] = useState(network)
   const [networkTimeoutInput, setNetworkTimeoutInput] = useState(String(Math.round(network.aiRequestTimeoutMs / 1000)))
@@ -331,6 +329,7 @@ export function GeneralSettings() {
   const [notificationActionRunning, setNotificationActionRunning] = useState(false)
   const [autoDreamConfirmOpen, setAutoDreamConfirmOpen] = useState(false)
   const [autoDreamActionRunning, setAutoDreamActionRunning] = useState(false)
+  const [pendingPermissionMode, setPendingPermissionMode] = useState<PermissionMode | null>(null)
   const [modeSwitchConfirmOpen, setModeSwitchConfirmOpen] = useState(false)
   const [pendingMode, setPendingMode] = useState<AppMode | null>(null)
   const [pendingPortableDir, setPendingPortableDir] = useState<string | null>(null)
@@ -346,15 +345,6 @@ export function GeneralSettings() {
   const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
   const configDirSource = appMode.configDirSource ?? (appMode.mode === 'portable' ? 'portable' : 'system')
   const isEnvironmentConfigDir = configDirSource === 'environment'
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId),
-    [activeSessionId, sessions],
-  )
-  const outputStyleWorkDir =
-    activeSession?.workDirExists === false
-      ? null
-      : activeSession?.workDir ?? activeSession?.projectRoot ?? null
-
   useEffect(() => {
     void fetchOutputStyles(outputStyleWorkDir)
   }, [fetchOutputStyles, outputStyleWorkDir])
@@ -423,6 +413,50 @@ export function GeneralSettings() {
     { value: 'swedish', label: 'Svenska (Swedish)' },
     { value: 'norwegian', label: 'Norsk (Norwegian)' },
   ]
+
+  const DEFAULT_PERMISSION_MODES: Array<{
+    value: PermissionMode
+    label: string
+    description: string
+  }> = [
+    {
+      value: 'default',
+      label: t('permMode.askPermissions'),
+      description: t('permMode.askPermDesc'),
+    },
+    {
+      value: 'acceptEdits',
+      label: t('permMode.autoAccept'),
+      description: t('permMode.autoAcceptDesc'),
+    },
+    {
+      value: 'plan',
+      label: t('permMode.planMode'),
+      description: t('permMode.planModeDesc'),
+    },
+    {
+      value: 'bypassPermissions',
+      label: t('permMode.bypass'),
+      description: t('permMode.bypassDesc'),
+    },
+  ]
+
+  const selectedPermissionMode = DEFAULT_PERMISSION_MODES.find((option) => option.value === permissionMode)
+
+  const handleDefaultPermissionModeChange = (mode: PermissionMode) => {
+    if (mode === 'bypassPermissions' && permissionMode !== 'bypassPermissions') {
+      setPendingPermissionMode(mode)
+      return
+    }
+    void setPermissionMode(mode)
+  }
+
+  const confirmDefaultPermissionMode = async () => {
+    const mode = pendingPermissionMode
+    if (!mode) return
+    setPendingPermissionMode(null)
+    await setPermissionMode(mode)
+  }
   const selectedResponseLanguageLabel =
     RESPONSE_LANGUAGES.find(({ value }) => value === responseLanguage)?.label ?? RESPONSE_LANGUAGES[0]!.label
   const outputStyleItems = outputStyles.map((style) => ({
@@ -949,11 +983,23 @@ export function GeneralSettings() {
                     {t('settings.general.defaultPermissionHint')}
                   </div>
                 </div>
-                <PermissionModeSelector
+                <Dropdown<PermissionMode>
+                  items={DEFAULT_PERMISSION_MODES}
                   value={permissionMode}
-                  onChange={(mode) => void setPermissionMode(mode)}
-                  workDir={t('settings.general.defaultPermissionScope')}
-                  menuPlacement="bottom"
+                  onChange={handleDefaultPermissionModeChange}
+                  width={320}
+                  align="right"
+                  trigger={
+                    <button
+                      type="button"
+                      aria-label={t('settings.general.defaultPermissionLabel')}
+                      className="flex min-h-9 items-center gap-2 rounded-full bg-[var(--color-surface-container-low)] px-3 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">verified_user</span>
+                      <span>{selectedPermissionMode?.label ?? t('permMode.label.default')}</span>
+                      <span className="material-symbols-outlined text-[12px]">expand_more</span>
+                    </button>
+                  }
                 />
               </div>
             </div>
@@ -1432,6 +1478,21 @@ export function GeneralSettings() {
         cancelLabel={t('common.cancel')}
         confirmVariant="primary"
         loading={autoDreamActionRunning}
+      />
+      <ConfirmDialog
+        open={pendingPermissionMode === 'bypassPermissions'}
+        onClose={() => setPendingPermissionMode(null)}
+        onConfirm={() => void confirmDefaultPermissionMode()}
+        title={t('permMode.enableBypassTitle')}
+        body={(
+          <div className="space-y-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+            <p>{t('permMode.enableBypassSubtitle')}</p>
+            <p>{t('settings.general.defaultPermissionScope')}</p>
+          </div>
+        )}
+        confirmLabel={t('permMode.enableBypassBtn')}
+        cancelLabel={t('common.cancel')}
+        confirmVariant="danger"
       />
     </div>
   )

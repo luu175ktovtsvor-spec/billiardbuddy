@@ -5,7 +5,7 @@ import type {
   PluginListResponse,
   PluginReloadSummary,
   PluginRequestErrorCode,
-  PluginSessionReloadSummary,
+  PluginTaskReloadSummary,
   PluginScope,
 } from '../types/plugin'
 
@@ -87,15 +87,15 @@ export const pluginsApi = {
   uninstall: (payload: PluginActionPayload) =>
     api.post<{ ok: true; action: PluginAction }>('/api/plugins/uninstall', payload),
 
-  reload: (cwd?: string, sessionId?: string) => {
+  reload: (cwd?: string, taskId?: string) => {
     const query = new URLSearchParams()
     if (cwd) query.set('cwd', cwd)
-    if (sessionId) query.set('sessionId', sessionId)
+    if (taskId) query.set('taskId', taskId)
     const suffix = query.size > 0 ? `?${query.toString()}` : ''
     return api.post<{
       ok: true
       summary: PluginReloadSummary
-      session?: PluginSessionReloadSummary
+      task?: PluginTaskReloadSummary
     }>(
       `/api/plugins/reload${suffix}`,
       undefined,

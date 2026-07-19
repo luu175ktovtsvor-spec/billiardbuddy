@@ -11,7 +11,7 @@ type McpStore = {
   createServer: (name: string, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
   updateServer: (server: McpServerRecord, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
   deleteServer: (server: McpServerRecord, cwd?: string) => Promise<void>
-  toggleServer: (server: McpServerRecord, cwd?: string, sessionId?: string) => Promise<McpServerRecord>
+  toggleServer: (server: McpServerRecord, cwd?: string, taskId?: string) => Promise<McpServerRecord>
   reconnectServer: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   refreshServerStatus: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   selectServer: (server: McpServerRecord | null) => void
@@ -138,8 +138,8 @@ export const useMcpStore = create<McpStore>((set) => ({
     }))
   },
 
-  toggleServer: async (server, cwd, sessionId) => {
-    const response = await mcpApi.toggle(server.name, cwd, sessionId)
+  toggleServer: async (server, cwd, taskId) => {
+    const response = await mcpApi.toggle(server.name, cwd, taskId)
     const updated = attachProjectPath(response.server, cwd ?? server.projectPath)
     set((state) => ({
       servers: replaceServer(state.servers, server, updated, cwd ?? server.projectPath),

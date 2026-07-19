@@ -55,7 +55,8 @@ export type PluginReloadSummary = {
   errors: number
 }
 
-export type PluginSessionReloadSummary = {
+/** Product-task scoped result of applying plugin changes to a running task. */
+export type PluginTaskReloadSummary = {
   applied: boolean
   reason?: 'not_running' | 'failed'
   commands: number

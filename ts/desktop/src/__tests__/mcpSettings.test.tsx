@@ -3,22 +3,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { McpSettings } from '../pages/McpSettings'
-import { sessionsApi } from '../api/sessions'
 import { useMcpStore } from '../stores/mcpStore'
-import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../stores/tabStore'
+import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../product/stores/productTaskStore'
 import type { McpServerRecord } from '../types/mcp'
-
-vi.mock('../api/sessions', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api/sessions')>()
-  return {
-    ...actual,
-    sessionsApi: {
-      ...actual.sessionsApi,
-      getRecentProjects: vi.fn(),
-    },
-  }
-})
 
 function makeServer(overrides: Partial<McpServerRecord> = {}): McpServerRecord {
   return {
@@ -46,39 +35,51 @@ async function renderLoadedMcpSettings() {
 
 describe('McpSettings', () => {
   beforeEach(() => {
-    vi.mocked(sessionsApi.getRecentProjects).mockResolvedValue({
-      projects: [{
-        projectPath: '/workspace/selected-project',
-        realPath: '/workspace/selected-project',
-        projectName: 'selected-project',
-        repoName: 'org/selected-project',
-        branch: 'main',
-        isGit: true,
-        modifiedAt: '2026-05-25T00:00:00.000Z',
-        sessionCount: 1,
-      }],
-    })
     useSettingsStore.setState({ locale: 'en' })
-    useSessionStore.setState({
-      sessions: [{
-        id: 'session-1',
-        title: 'Test Session',
-        createdAt: '',
-        modifiedAt: '',
-        messageCount: 0,
-        projectPath: '/workspace/project',
-        workDir: '/workspace/project',
-        workDirExists: true,
-      }],
-      activeSessionId: 'session-1',
-      isLoading: false,
-      error: null,
-      fetchSessions: vi.fn(),
-      createSession: vi.fn(),
-      deleteSession: vi.fn(),
-      renameSession: vi.fn(),
-      updateSessionTitle: vi.fn(),
-      setActiveSession: vi.fn(),
+    useTabStore.setState({
+      activeTabId: '__settings__',
+      lastActiveProductTaskId: 'task-1',
+      tabs: [
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+          title: 'Test task',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+        {
+          sessionId: '__settings__',
+          title: 'Settings',
+          type: 'settings',
+          status: 'idle',
+        },
+      ],
+    })
+    useProductTaskStore.setState({
+      index: {
+        ...EMPTY_PRODUCT_TASK_INDEX,
+        projects: [{
+          id: 'project-selected',
+          title: 'selected-project',
+          workDir: '/workspace/selected-project',
+          taskCount: 1,
+          archivedTaskCount: 0,
+          updatedAt: '2026-05-25T00:00:00.000Z',
+        }],
+        tasks: [{
+          id: 'task-1',
+          projectId: 'project-current',
+          workDir: '/workspace/project',
+          title: 'Test task',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-05-25T00:00:00.000Z',
+          updatedAt: '2026-05-25T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: ['rename'],
+        }],
+        total: 1,
+      },
     })
     useMcpStore.setState({
       servers: [],
@@ -96,7 +97,7 @@ describe('McpSettings', () => {
     })
   })
 
-  it('loads only the active and recent project contexts', async () => {
+  it('loads only the active product task and indexed project contexts', async () => {
     const fetchServers = vi.fn().mockResolvedValue(undefined)
     useMcpStore.setState({ fetchServers })
 
@@ -185,14 +186,14 @@ describe('McpSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Manage provider-managed' }))
     })
 
-    expect(screen.getByText('This connection is managed by its provider. Its implementation details are not shown here.')).toBeInTheDocument()
+    expect(screen.getByText('This connection is managed outside the app. Its implementation details are not shown here.')).toBeInTheDocument()
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Reconnect/ }))
     })
     expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
   })
 
-  it('uses the active session when toggling a connection', async () => {
+  it('uses the active product task when toggling a connection', async () => {
     const server = makeServer()
     const toggleServer = vi.fn().mockResolvedValue({ ...server, enabled: false })
     useMcpStore.setState({ servers: [server], toggleServer })
@@ -202,7 +203,7 @@ describe('McpSettings', () => {
       fireEvent.click(screen.getByRole('switch'))
     })
 
-    expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
+    expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'task-1')
   })
 
   it('creates a connection only after the user supplies the required advanced fields', async () => {
