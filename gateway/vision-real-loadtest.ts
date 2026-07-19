@@ -15,8 +15,18 @@ type Capacity = {
   oldestQueueMs?: number
 }
 
+type IngressBodyCapacity = {
+  reservedBytes?: number
+  maxBytes?: number
+}
+
 type GatewayHealth = {
-  capacity?: Partial<Record<'deepseek' | 'mimo' | 'vision' | 'ingress_body', Capacity>>
+  capacity?: {
+    deepseek?: Capacity
+    mimo?: Capacity
+    vision?: Capacity
+    ingress_body?: IngressBodyCapacity
+  }
 }
 
 type Sample = {
@@ -39,10 +49,11 @@ const MAX_USERS = 100
 const MAX_WINDOWS = 10
 const MAX_REQUESTS = MAX_USERS * MAX_WINDOWS
 const HIGH_TO_LOW_DEFAULT_PHASES = [1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1]
-const pools = ['vision', 'mimo', 'deepseek', 'ingress_body'] as const
+const capacityPools = ['vision', 'mimo', 'deepseek'] as const
 
-type Pool = typeof pools[number]
+type Pool = typeof capacityPools[number]
 type PoolObservation = { active: number; queued: number; oldestQueueMs: number }
+type IngressBodyObservation = { reservedBytes: number; maxBytes: number }
 type ValidPng = { bytes: Uint8Array; iendOffset: number }
 type LoadTarget = { base: URL; baseUrl: string; targetOrigin: string }
 export type ThinkingMode = 'enabled' | 'disabled'
@@ -125,6 +136,17 @@ export function parsePhases(raw: string | undefined, total: number): number[] {
     throw new Error(`--phases must contain values from 1 through ${total}`)
   }
   return phases
+}
+
+/** A visual phase is clean only once both permits and retained request bytes drain. */
+export function isVisualCapacityDrained(snapshot: GatewayHealth | null): boolean {
+  if (snapshot === null) return false
+  const capacity = snapshot.capacity
+  const permitDrained = capacityPools.every(pool => {
+    const current = capacity?.[pool]
+    return nonNegative(current?.active) === 0 && nonNegative(current?.queued) === 0
+  })
+  return permitDrained && nonNegative(capacity?.ingress_body?.reservedBytes) === 0
 }
 
 function percentile(values: number[], ratio: number): number | null {
@@ -490,7 +512,9 @@ async function main(): Promise<void> {
   const total = users * windows
   if (!Number.isSafeInteger(total) || total > MAX_REQUESTS) throw new Error(`--users * --windows must not exceed ${MAX_REQUESTS}`)
   const phases = parsePhases(option(args, '--phases'), total)
-  const continueAfterFailure = !args.includes('--stop-after-failure') || args.includes('--continue-after-failure')
+  // Continuing is the default. If both compatibility switches are accidentally
+  // supplied, the explicit safety stop must win.
+  const continueAfterFailure = !args.includes('--stop-after-failure')
   const generatedImageCount = phases.reduce((count, phase) => {
     const next = count + phase * imagesPerRequest
     if (!Number.isSafeInteger(next)) throw new Error('--images-per-request times total staged requests is too large')
@@ -533,10 +557,7 @@ async function main(): Promise<void> {
   async function waitForDrain(): Promise<{ snapshot: GatewayHealth | null; drained: boolean }> {
     const deadline = performance.now() + drainTimeoutMs
     let snapshot = await health()
-    const drained = () => snapshot !== null && pools.every(pool => {
-      const capacity = snapshot?.capacity?.[pool]
-      return nonNegative(capacity?.active) === 0 && nonNegative(capacity?.queued) === 0
-    })
+    const drained = () => isVisualCapacityDrained(snapshot)
     while (!drained() && performance.now() < deadline) {
       await sleep(Math.min(250, Math.max(1, deadline - performance.now())))
       snapshot = await health()
@@ -642,20 +663,26 @@ async function main(): Promise<void> {
   let observedFailure = false
   for (const requested of phases) {
     let monitoring = true
-    const observed: Record<Pool, PoolObservation> = Object.fromEntries(
-      pools.map(pool => [pool, { active: 0, queued: 0, oldestQueueMs: 0 }]),
-    ) as Record<Pool, PoolObservation>
+    const observed: Record<Pool, PoolObservation> & { ingress_body: IngressBodyObservation } = {
+      vision: { active: 0, queued: 0, oldestQueueMs: 0 },
+      mimo: { active: 0, queued: 0, oldestQueueMs: 0 },
+      deepseek: { active: 0, queued: 0, oldestQueueMs: 0 },
+      ingress_body: { reservedBytes: 0, maxBytes: 0 },
+    }
     let healthSamples = 0
     let unavailableHealthSamples = 0
     const observe = (snapshot: GatewayHealth | null) => {
       healthSamples += 1
       if (!snapshot) unavailableHealthSamples += 1
-      for (const pool of pools) {
+      for (const pool of capacityPools) {
         const capacity = snapshot?.capacity?.[pool]
         observed[pool].active = Math.max(observed[pool].active, nonNegative(capacity?.active))
         observed[pool].queued = Math.max(observed[pool].queued, nonNegative(capacity?.queued))
         observed[pool].oldestQueueMs = Math.max(observed[pool].oldestQueueMs, nonNegative(capacity?.oldestQueueMs))
       }
+      const ingress = snapshot?.capacity?.ingress_body
+      observed.ingress_body.reservedBytes = Math.max(observed.ingress_body.reservedBytes, nonNegative(ingress?.reservedBytes))
+      observed.ingress_body.maxBytes = Math.max(observed.ingress_body.maxBytes, nonNegative(ingress?.maxBytes))
     }
     observe(await health())
     const monitor = (async () => {

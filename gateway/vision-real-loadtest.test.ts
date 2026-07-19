@@ -1,11 +1,27 @@
 import { describe, expect, test } from 'bun:test'
-import { classifyCompletionJson, generatedPng, hasCompletionJson, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, validatePng } from './vision-real-loadtest'
+import { classifyCompletionJson, generatedPng, hasCompletionJson, isVisualCapacityDrained, parseImagesPerRequest, parseLoadTarget, parsePhases, parseThinkingMode, validatePng } from './vision-real-loadtest'
 
 describe('vision real-loadtest safety guards', () => {
   test('maps the 100 x 10 visual envelope from high to low so failures reveal a lower ceiling', () => {
     expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1])
     expect(parsePhases(undefined, 12)).toEqual([12, 1])
     expect(parsePhases('1,12,36', 100)).toEqual([36, 12, 1])
+  })
+
+  test('does not call a phase drained while retained ingress request bytes remain', () => {
+    const permitsIdle = {
+      capacity: {
+        vision: { active: 0, queued: 0 },
+        mimo: { active: 0, queued: 0 },
+        deepseek: { active: 0, queued: 0 },
+        ingress_body: { reservedBytes: 0, maxBytes: 1024 },
+      },
+    }
+    expect(isVisualCapacityDrained(permitsIdle)).toBe(true)
+    expect(isVisualCapacityDrained({
+      ...permitsIdle,
+      capacity: { ...permitsIdle.capacity, ingress_body: { reservedBytes: 1, maxBytes: 1024 } },
+    })).toBe(false)
   })
 
   test('only accepts explicit documented thinking values', () => {
