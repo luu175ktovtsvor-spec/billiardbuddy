@@ -10,13 +10,6 @@ const preferences = {
     avatarFile: null,
     avatarUpdatedAt: null,
   },
-  sidebar: {
-    projectOrder: [],
-    pinnedProjects: [],
-    hiddenProjects: [],
-    projectOrganization: 'recentProject',
-    projectSortBy: 'updatedAt',
-  },
 }
 
 describe('desktopUiPreferencesApi', () => {
