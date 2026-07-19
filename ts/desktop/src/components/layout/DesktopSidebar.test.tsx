@@ -68,7 +68,7 @@ describe('DesktopSidebar', () => {
 
   it('opens a product task through its dedicated product-task route', () => {
     const index: ProductTaskIndexResponse = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [{
         id: 'project-1',
         title: 'BilliardBuddy',
@@ -119,7 +119,7 @@ describe('DesktopSidebar', () => {
 
   it('shows a running marker from the product task runtime only for the active product task', () => {
     const index: ProductTaskIndexResponse = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [],
       directories: [],
       tasks: [{
@@ -161,7 +161,7 @@ describe('DesktopSidebar', () => {
 
   it('keeps an active pinned project and task first in the sidebar', () => {
     const index: ProductTaskIndexResponse = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [
         {
           id: 'project-newer',

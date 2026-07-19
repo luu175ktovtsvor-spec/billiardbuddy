@@ -50,7 +50,7 @@ describe('GeneralSettings output style', () => {
     })
     useProductTaskStore.setState({
       index: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: [],
         directories: [],
         tasks: [{

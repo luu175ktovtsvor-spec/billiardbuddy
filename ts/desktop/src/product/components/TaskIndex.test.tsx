@@ -59,7 +59,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
 
 function makeIndex(task = makeTask()): ProductTaskIndexResponse {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projects: [{
       id: 'project-1',
       title: 'BilliardBuddy',
@@ -194,7 +194,7 @@ describe('TaskIndex', () => {
       updatedAt: '2026-07-19T00:00:00.000Z',
     })
     renderIndex({
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [
         {
           id: 'project-newer',

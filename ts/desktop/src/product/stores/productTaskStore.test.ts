@@ -35,7 +35,7 @@ function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord
 
 function makeIndex(task = makeTask()): ProductTaskIndexResponse {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projects: [{
       id: 'project-1',
       title: 'BilliardBuddy',
@@ -112,7 +112,7 @@ describe('productTaskStore', () => {
       title: '新建训练计划',
     })
     const refreshed: ProductTaskIndexResponse = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projects: [{
         id: 'project-created',
         title: '新建项目',
@@ -204,7 +204,7 @@ describe('productTaskStore', () => {
     })
     useProductTaskStore.setState({
       index: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: [
           {
             id: 'project-newer',

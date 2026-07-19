@@ -96,6 +96,9 @@ type ProductProjectMetadata = Pick<
 type ProductProjectDirectoryMetadata = ProductProjectDirectory
 
 const PRODUCT_TASK_STORE_VERSION = 4 as const
+// Keep persisted v1 task metadata readable even when the public product
+// response schema advances independently.
+const LEGACY_PRODUCT_TASK_STORE_VERSION = 1 as const
 const DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 const MAX_RECENT_PRODUCT_PROJECTS = 500
 
@@ -686,7 +689,7 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
   // product id. Convert it in memory to stable opaque identifiers. Project
   // and directory bindings are backfilled from the registered Core sessions
   // before the v4 store is written.
-  if (value.version === PRODUCT_DOMAIN_VERSION) {
+  if (value.version === LEGACY_PRODUCT_TASK_STORE_VERSION) {
     const tasks: Record<string, ProductTaskMetadata> = {}
     for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
       const taskId = legacyProductTaskId(coreSessionId)
@@ -746,6 +749,7 @@ function requireTaskAction(task: ProductTaskRecord, action: ProductTaskAction): 
 }
 
 export class ProductTaskService {
+  private static readonly storeLocks = new Map<string, Promise<void>>()
   private readonly storagePath: string
   private readonly core: AgentCoreAdapter
 
@@ -754,7 +758,36 @@ export class ProductTaskService {
     this.core = options.core ?? agentCoreAdapter
   }
 
+  /**
+   * The registry is one JSON document. Serialize operations per storage path
+   * so migration and read-modify-write actions cannot overwrite each other.
+   */
+  private async withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
+    const key = path.resolve(this.storagePath)
+    const previous = ProductTaskService.storeLocks.get(key) ?? Promise.resolve()
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const queued = previous.then(() => gate)
+    ProductTaskService.storeLocks.set(key, queued)
+
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release?.()
+      if (ProductTaskService.storeLocks.get(key) === queued) {
+        ProductTaskService.storeLocks.delete(key)
+      }
+    }
+  }
+
   async listTasks(): Promise<ProductTaskIndexResponse> {
+    return this.withStoreLock(() => this.listTasksUnlocked())
+  }
+
+  private async listTasksUnlocked(): Promise<ProductTaskIndexResponse> {
     const { store, sessions } = await this.loadRegisteredStore()
     const sideTaskSessionIds = new Set(
       Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
@@ -842,6 +875,10 @@ export class ProductTaskService {
   }
 
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
+    return this.withStoreLock(() => this.createTaskUnlocked(input))
+  }
+
+  private async createTaskUnlocked(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
     if (!input || typeof input !== 'object') throw ApiError.badRequest('创建任务参数必须是对象')
     const title = validTitle(input.title)
     const permissionMode = productTaskPermissionMode(input.permissionMode)
@@ -879,7 +916,7 @@ export class ProductTaskService {
    * check instead of ever accepting a Core session id.
    */
   async getTask(taskId: string): Promise<ProductTaskRecord> {
-    return await this.requireTask(taskId)
+    return this.withStoreLock(() => this.requireTask(taskId))
   }
 
   /**
@@ -889,20 +926,26 @@ export class ProductTaskService {
    * binding stays in the private product store and never crosses this seam.
    */
   async resolveCoreSessionId(taskId: string): Promise<string> {
-    return (await this.requireTaskBinding(taskId)).metadata.coreSessionId
+    return this.withStoreLock(async () => (await this.requireTaskBinding(taskId)).metadata.coreSessionId)
   }
 
   async getTaskThread(taskId: string): Promise<ProductTaskThread> {
-    const getSessionMessages = this.core.getSessionMessages
-    if (!getSessionMessages) {
-      throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
-    }
-    const sessionId = await this.resolveCoreSessionId(taskId)
-    const messages = await getSessionMessages(sessionId)
-    return projectSessionTranscriptForProductTask(taskId, messages)
+    return this.withStoreLock(async () => {
+      const getSessionMessages = this.core.getSessionMessages
+      if (!getSessionMessages) {
+        throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+      }
+      const sessionId = (await this.requireTaskBinding(taskId)).metadata.coreSessionId
+      const messages = await getSessionMessages(sessionId)
+      return projectSessionTranscriptForProductTask(taskId, messages)
+    })
   }
 
   async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
+    return this.withStoreLock(() => this.updateTaskUnlocked(taskId, input))
+  }
+
+  private async updateTaskUnlocked(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
     const binding = await this.requireTaskBinding(taskId)
     const task = binding.task
     const title = validTitle(input.title)
@@ -934,6 +977,10 @@ export class ProductTaskService {
   }
 
   async setArchived(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
+    return this.withStoreLock(() => this.setArchivedUnlocked(taskId, archived))
+  }
+
+  private async setArchivedUnlocked(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
     if (typeof archived !== 'boolean') throw ApiError.badRequest('archived 必须是布尔值')
     const task = await this.requireTask(taskId)
     requireTaskAction(task, archived ? 'archive' : 'restore')
@@ -948,6 +995,13 @@ export class ProductTaskService {
   }
 
   async continueTask(taskId: string, input: ContinueProductTaskInput): Promise<ProductTaskRecord> {
+    return this.withStoreLock(() => this.continueTaskUnlocked(taskId, input))
+  }
+
+  private async continueTaskUnlocked(
+    taskId: string,
+    input: ContinueProductTaskInput,
+  ): Promise<ProductTaskRecord> {
     if (!input || typeof input !== 'object') {
       throw ApiError.badRequest('继续任务参数必须是对象')
     }
@@ -992,6 +1046,10 @@ export class ProductTaskService {
   }
 
   async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
+    return this.withStoreLock(() => this.listSideTasksUnlocked(taskId))
+  }
+
+  private async listSideTasksUnlocked(taskId: string): Promise<ProductSideTask[]> {
     await this.requireTask(taskId)
     const { store } = await this.loadRegisteredStore()
     return Object.values(store.sideTasks)
@@ -1004,6 +1062,13 @@ export class ProductTaskService {
   }
 
   async createSideTask(
+    taskId: string,
+    input: CreateProductSideTaskInput,
+  ): Promise<ProductSideTask> {
+    return this.withStoreLock(() => this.createSideTaskUnlocked(taskId, input))
+  }
+
+  private async createSideTaskUnlocked(
     taskId: string,
     input: CreateProductSideTaskInput,
   ): Promise<ProductSideTask> {
@@ -1062,6 +1127,10 @@ export class ProductTaskService {
   }
 
   async closeSideTask(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
+    return this.withStoreLock(() => this.closeSideTaskUnlocked(taskId, sideTaskId))
+  }
+
+  private async closeSideTaskUnlocked(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
     await this.requireTask(taskId)
     const { store } = await this.loadRegisteredStore()
     const sideTask = store.sideTasks[sideTaskId]
@@ -1498,7 +1567,7 @@ export class ProductTaskService {
 
   private async writeStore(store: ProductTaskStore): Promise<void> {
     await fs.mkdir(path.dirname(this.storagePath), { recursive: true })
-    const temporaryPath = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`
+    const temporaryPath = `${this.storagePath}.${process.pid}.${randomUUID()}.tmp`
     await fs.writeFile(temporaryPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
     await fs.rename(temporaryPath, this.storagePath)
   }

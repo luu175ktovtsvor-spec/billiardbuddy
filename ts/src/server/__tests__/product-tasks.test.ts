@@ -206,6 +206,7 @@ describe('ProductTaskService', () => {
     expect(core.getLastCreateInput()).toMatchObject({ workDir: sourceDir })
 
     const index = await service.listTasks()
+    expect(index.schemaVersion).toBe(2)
     expect(index.projects).toEqual([
       expect.objectContaining({
         id: task.projectId,
@@ -229,6 +230,49 @@ describe('ProductTaskService', () => {
       projectId: task.projectId,
       path: sourceDir,
     }))
+  })
+
+  it('serializes concurrent first task creation without losing registry bindings', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const originalCreateSession = core.createSession
+    let createCount = 0
+    let markFirstCreateStarted: (() => void) | undefined
+    let releaseFirstCreate: (() => void) | undefined
+    const firstCreateStarted = new Promise<void>((resolve) => {
+      markFirstCreateStarted = resolve
+    })
+    const firstCreateGate = new Promise<void>((resolve) => {
+      releaseFirstCreate = resolve
+    })
+    core.createSession = async (input) => {
+      const created = await originalCreateSession(input)
+      createCount += 1
+      if (createCount === 1) {
+        markFirstCreateStarted?.()
+        await firstCreateGate
+      }
+      return created
+    }
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    const first = service.createTask({ workDir: '/workspace/hall-operations' })
+    await firstCreateStarted
+    const second = service.createTask({ workDir: '/workspace/academy' })
+    releaseFirstCreate?.()
+    const [firstTask, secondTask] = await Promise.all([first, second])
+
+    expect(createCount).toBe(2)
+    const index = await service.listTasks()
+    expect(index.tasks.map((task) => task.id)).toEqual(
+      expect.arrayContaining([firstTask.id, secondTask.id]),
+    )
+    expect(index.total).toBe(2)
+    expect(index.projects).toHaveLength(2)
+    expect(index.directories).toHaveLength(2)
   })
 
   it('uses a registered project and directory pair instead of a conflicting raw workDir', async () => {

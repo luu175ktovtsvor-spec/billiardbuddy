@@ -1,4 +1,6 @@
-export const PRODUCT_DOMAIN_VERSION = 1 as const
+// Public task-index shape v2 adds persistent project-directory bindings and
+// distinguishes a project root from a task's live execution directory.
+export const PRODUCT_DOMAIN_VERSION = 2 as const
 
 export type ProductTaskLifecycle = 'active' | 'archived'
 export type ProductTaskKind = 'main' | 'continuation'
