@@ -413,14 +413,6 @@ export function TopBar() {
           >
             <Copy size={15} /> 复制整段对话
           </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setMenuAt(null)
-              void handleCopy(activeTabId)
-            }}
-          >
-            <Copy size={15} /> 复制会话 ID
-          </MenuItem>
           {sessionWorkDir && (
             <MenuItem
               onClick={() => {
