@@ -69,12 +69,20 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
   const treeLoadVersionRef = useRef(0)
   const selectionLoadVersionRef = useRef(0)
 
-  const loadTree = useCallback(async (path = '') => {
+  const loadTree = useCallback(async (path = ''): Promise<boolean> => {
     const requestVersion = treeLoadVersionRef.current + 1
     treeLoadVersionRef.current = requestVersion
-    const nextTree = await productTasksApi.getReviewTree(taskId, path)
-    if (treeLoadVersionRef.current === requestVersion) {
-      setTree(nextTree)
+    try {
+      const nextTree = await productTasksApi.getReviewTree(taskId, path)
+      if (treeLoadVersionRef.current === requestVersion) {
+        setTree(nextTree)
+      }
+      return true
+    } catch {
+      if (treeLoadVersionRef.current === requestVersion) {
+        setTree({ taskId, state: 'unavailable', path, entries: [] })
+      }
+      return false
     }
   }, [taskId])
 
@@ -94,11 +102,15 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
     setIsLoadingSelection(false)
     setVideoPreviewError(false)
     try {
-      const [nextStatus] = await Promise.all([
+      const [nextStatus, treeLoaded] = await Promise.all([
         productTasksApi.getReviewStatus(taskId),
         loadTree(''),
       ])
       if (initialLoadVersionRef.current !== requestVersion) return
+      if (!treeLoaded) {
+        setLoadState('error')
+        return
+      }
       setStatus(nextStatus)
       setLoadState('ready')
     } catch {
@@ -204,7 +216,18 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
                 <p className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-secondary)]">{currentTreePath || '项目文件'}</p>
               </div>
               <div className="shrink-0 border-b border-[var(--color-border)] px-2 py-2">
-                {tree?.state === 'ok' && tree.entries.length > 0 ? (
+                {tree?.state === 'unavailable' ? (
+                  <div className="px-1 py-2">
+                    <p className="text-xs text-[var(--color-text-tertiary)]">当前目录暂时无法读取。</p>
+                    <button
+                      type="button"
+                      onClick={() => void loadTree(currentTreePath)}
+                      className="mt-2 rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
+                    >
+                      重新读取当前目录
+                    </button>
+                  </div>
+                ) : tree?.state === 'ok' && tree.entries.length > 0 ? (
                   <div className="max-h-40 overflow-y-auto">
                     {tree.entries.map((entry) => (
                       <button

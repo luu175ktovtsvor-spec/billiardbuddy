@@ -211,6 +211,68 @@ describe('ProductTaskReviewService', () => {
     expect(calls).toEqual([])
   })
 
+  it('keeps version-control internals outside the product review surface', async () => {
+    const { calls, service } = createService()
+
+    await expect(service.getTree(taskId, '.git')).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'FORBIDDEN',
+    })
+    await expect(service.getFile(taskId, '.git/config')).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'FORBIDDEN',
+    })
+    await expect(service.getDiff(taskId, 'src/.SVN/entries')).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'FORBIDDEN',
+    })
+
+    expect(calls).toEqual([])
+  })
+
+  it('filters version-control metadata from product status and tree results', async () => {
+    const service = new ProductTaskReviewService(
+      { resolveCoreSessionId: async () => coreSessionId },
+      {
+        getStatus: async () => ({
+          state: 'ok' as const,
+          workDir: '/private/workspaces/hall-operations',
+          repoName: 'hall-operations',
+          branch: null,
+          isGitRepo: true,
+          changedFiles: [
+            { path: '.git', status: 'modified' as const, additions: 1, deletions: 0 },
+            { path: 'src/.hg/store', status: 'modified' as const, additions: 1, deletions: 0 },
+            { path: 'src/price.ts', status: 'modified' as const, additions: 4, deletions: 1 },
+          ],
+        }),
+        readTree: async () => ({
+          state: 'ok' as const,
+          path: '',
+          entries: [
+            { name: '.git', path: '.git', isDirectory: false },
+            { name: '.svn', path: '.svn', isDirectory: true },
+            { name: 'src', path: 'src', isDirectory: true },
+          ],
+        }),
+        readFile: async () => ({
+          state: 'missing' as const,
+          path: 'src/price.ts',
+          language: 'typescript',
+          size: 0,
+        }),
+        getDiff: async () => ({ state: 'missing' as const, path: 'src/price.ts' }),
+      },
+    )
+
+    await expect(service.getStatus(taskId)).resolves.toMatchObject({
+      changedFiles: [{ path: 'src/price.ts' }],
+    })
+    await expect(service.getTree(taskId)).resolves.toMatchObject({
+      entries: [{ name: 'src', path: 'src' }],
+    })
+  })
+
   it('turns internal workspace failures into a generic product state', async () => {
     const service = new ProductTaskReviewService(
       { resolveCoreSessionId: async () => coreSessionId },
