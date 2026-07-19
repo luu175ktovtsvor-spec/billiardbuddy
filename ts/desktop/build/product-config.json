@@ -1,5 +1,5 @@
 {
-  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The revocable app token is supplied separately via product-secrets.json (git-ignored, injected at build time) or the QF_GATEWAY_TOKEN env override. gatewayUrl is the verified public product gateway entry (nginx /gw on the mainland gateway; it currently has no domain), override per-env with QF_GATEWAY_URL.",
-  "gatewayUrl": "http://39.106.214.21/gw",
+  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The revocable app token is supplied separately via product-secrets.json (git-ignored, injected at build time) or the QF_GATEWAY_TOKEN env override. gatewayUrl is the verified HTTPS product gateway entry (mainland nginx /gw); override per-env with QF_GATEWAY_URL only when it is also HTTPS.",
+  "gatewayUrl": "https://data.zzyppz.cn/gw",
   "gatewayModel": "deepseek-v4-flash"
 }

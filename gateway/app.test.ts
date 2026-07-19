@@ -1338,3 +1338,14 @@ test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () 
   expect(cancel.status).toBe(503)
   expect(calls.length).toBe(0)
 })
+
+test('image task endpoints fail closed when GW_RELAY_TASKS_BASE is clear-text HTTP', async () => {
+  const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'http://relay.example/relay/imgtasks' })
+  const res = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: '台球馆海报' }),
+  })))
+  expect(res.status).toBe(503)
+  expect(calls).toHaveLength(0)
+})

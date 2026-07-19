@@ -96,8 +96,8 @@ export function requireProductGatewayConfig(
   } catch {
     throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL is invalid.')
   }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL must use HTTP or HTTPS.')
+  if (parsed.protocol !== 'https:') {
+    throw new ProductGatewayConfigError('Product gateway is not configured: gateway URL must use HTTPS.')
   }
   if (!config.token) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing app token.')

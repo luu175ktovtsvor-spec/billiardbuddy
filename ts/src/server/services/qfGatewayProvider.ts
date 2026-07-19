@@ -49,6 +49,20 @@ export function getQfGatewayUrl(): string {
   return readEnv('QF_GATEWAY_URL')
 }
 
+/**
+ * The managed gateway carries an app token, conversations, attachments and audio.
+ * Refuse clear-text URLs here as a second outbound choke point in case a caller did
+ * not originate from Electron's packaged product-config validation.
+ */
+function isSecureQfGatewayUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
 /** App token used to authenticate to the gateway. Lives only in process.env. */
 export function getQfGatewayToken(): string {
   return readEnv('QF_GATEWAY_TOKEN')
@@ -75,7 +89,7 @@ export function getInstallationId(): string {
  * report authed, or emit an empty `Authorization: Bearer ` to the upstream.
  */
 export function qfGatewayConfigured(): boolean {
-  return getQfGatewayUrl().length > 0 && getQfGatewayToken().length > 0
+  return isSecureQfGatewayUrl(getQfGatewayUrl()) && getQfGatewayToken().length > 0
 }
 
 /**
@@ -107,8 +121,10 @@ export function stripHostOnlyGatewayEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessE
  * place the token is read for outbound requests.
  */
 export function resolveQfGatewayProxyTarget(): { baseUrl: string; apiKey: string } {
+  const baseUrl = getQfGatewayUrl()
+  if (!isSecureQfGatewayUrl(baseUrl)) return { baseUrl: '', apiKey: '' }
   return {
-    baseUrl: getQfGatewayUrl().replace(/\/+$/, ''),
+    baseUrl: baseUrl.replace(/\/+$/, ''),
     apiKey: getQfGatewayToken(),
   }
 }

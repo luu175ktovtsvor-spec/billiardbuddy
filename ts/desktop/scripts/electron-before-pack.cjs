@@ -32,8 +32,8 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   } catch {
     throw new Error('Cannot package BilliardBuddy: product-config.json contains an invalid gatewayUrl')
   }
-  if (gatewayUrl.protocol !== 'https:' && gatewayUrl.protocol !== 'http:') {
-    throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTP or HTTPS')
+  if (gatewayUrl.protocol !== 'https:') {
+    throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTPS')
   }
   if (typeof secrets.gatewayToken !== 'string' || !secrets.gatewayToken.trim()) {
     throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing gatewayToken')

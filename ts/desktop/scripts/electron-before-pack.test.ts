@@ -53,4 +53,12 @@ describe('desktop product package config', () => {
       'gatewayToken must not be stored in public product-config.json',
     )
   })
+
+  it('blocks a package that would send the managed app token over HTTP', () => {
+    const desktopDir = createDesktopBuild(
+      { gatewayUrl: 'http://39.106.214.21/gw' },
+      { gatewayToken: 'revocable-app-token' },
+    )
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS')
+  })
 })
