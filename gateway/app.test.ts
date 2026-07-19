@@ -109,7 +109,27 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.features.chat_mimo).toBe(true)
   expect(body.features.vision_bridge).toBe(true)
   expect(body.capacity.qwen).toMatchObject({ active: 0, queued: 0, maxConcurrent: 16, maxConcurrentPerUser: 5, queueMax: 128, oldestQueueMs: 0 })
-  expect(body.capacity.mimo).toMatchObject({ active: 0, queued: 0, maxConcurrent: 64, maxConcurrentPerUser: 1, queueMax: 64, oldestQueueMs: 0 })
+  expect(body.capacity.mimo).toMatchObject({
+    active: 0,
+    queued: 0,
+    maxConcurrent: 64,
+    maxConcurrentPerUser: 1,
+    maxConcurrentPerToken: 64,
+    queueMax: 88,
+    nativeReserved: 52,
+    visionReserved: 12,
+  })
+  expect(body.capacity.mimo_native).toMatchObject({ active: 0, queued: 0, maxConcurrent: 52, maxConcurrentPerUser: 1, queueMax: 64, oldestQueueMs: 0 })
+  expect(body.capacity.mimo_total).toMatchObject({
+    active: 0,
+    queued: 0,
+    maxConcurrent: 64,
+    maxConcurrentPerUser: 1,
+    maxConcurrentPerToken: 64,
+    queueMax: 88,
+    nativeReserved: 52,
+    visionReserved: 12,
+  })
   expect(body.capacity.vision).toEqual({
     active: 0,
     queued: 0,
@@ -120,6 +140,14 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
     oldestQueueMs: 0,
   })
   expect(body.capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
+test('MiMo hard reservations must account for the whole account capacity', () => {
+  expect(() => makeGateway({
+    GW_MIMO_CONC: '64',
+    GW_MIMO_NATIVE_CONC: '51',
+    GW_VISION_CONC: '12',
+  })).toThrow('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
 })
 
 test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only credentials', async () => {

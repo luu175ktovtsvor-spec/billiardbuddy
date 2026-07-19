@@ -6,7 +6,7 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import { CapacityQueueError, FairCapacityScheduler, type CapacityPermit } from './modelCapacity'
+import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
 import {
   fetchQwenWithRetry,
   loadQwenAllowedModels,
@@ -56,6 +56,11 @@ interface ChatRequestError {
 
 type ChatRequestErrorCtor = new (status: number, publicMessage: string) => Error & ChatRequestError
 
+type CapacityPool = {
+  acquire(user: string, opts: { maxWaitMs: number; signal?: AbortSignal; tokenId?: string }): Promise<CapacityPermit>
+  snapshot(): CapacitySnapshot
+}
+
 type TokenBucketWaiter = {
   deadlineAt: number
   resolve: () => void
@@ -74,7 +79,7 @@ type ChatProvider = {
   defaultModel: string
   allowedModels: ReadonlySet<string>
   bucket: TokenBucket
-  capacity: FairCapacityScheduler
+  capacity: CapacityPool
   queueMaxWait: number
   retryMax: number
   retryBaseMs: number
@@ -125,6 +130,8 @@ type GatewayConfig = {
   mimoBase: string
   mimoModel: string
   mimoRpm: number
+  /** Native MiMo lane; the remaining total capacity is reserved for the visual bridge. */
+  mimoNativeConc: number
   mimoConc: number
   mimoUserConc: number
   mimoInflightPerUser: number
@@ -626,6 +633,21 @@ function httpsUrlOrEmpty(value: string | undefined): string {
 }
 
 function loadConfig(env: Env): GatewayConfig {
+  const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
+  // Old deployments may have only GW_MIMO_CONC. Derive a valid partition for those
+  // small canary profiles instead of injecting 12 visual slots into a two-slot pool.
+  // New or explicitly tuned profiles must name values whose sum exactly matches the
+  // account ceiling: unused capacity makes health misleading and is not a reservation.
+  const implicitVisionConc = Math.min(12, Math.max(1, mimoConc - 1))
+  const visionConc = Math.max(1, intEnv(env, 'GW_VISION_CONC', implicitVisionConc))
+  const implicitNativeConc = mimoConc - visionConc
+  if (implicitNativeConc < 1) {
+    throw new Error('GW_MIMO_CONC must leave at least one native and one visual MiMo slot')
+  }
+  const mimoNativeConc = Math.max(1, intEnv(env, 'GW_MIMO_NATIVE_CONC', implicitNativeConc))
+  if (mimoNativeConc + visionConc !== mimoConc) {
+    throw new Error('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
+  }
   return {
     // 真实上游密钥只在服务端读取,缺失时对应上游 handler 置空(路由到它会 503),绝不回退到另一家。
     qwenKey: env.GW_QWEN_KEY ?? '',
@@ -662,17 +684,18 @@ function loadConfig(env: Env): GatewayConfig {
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
-    // MiMo native chat and the image bridge share this exact account-wide pool. A real
-    // short-request ramp reached 64 active calls, but its tail latency was already
-    // noticeable, so this is a safety ceiling rather than an instant-response promise.
+    // MiMo has one account-wide ceiling, split into physical native + visual lanes.
+    // The 12 visual slots are hard-reserved so native/Computer Use traffic cannot make
+    // a DeepSeek→MiMo image bridge wait behind all 64 ordinary MiMo calls.
     // Admit only one active call and one total active-or-queued call per installation;
     // this keeps a sequential five-window burst from letting early desktops fill the
     // 64-entry queue before later installations are admitted. The queue remains only a
     // brief burst absorber, not a hidden multi-minute backlog for 100 users' windows.
-    mimoConc: Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64)),
+    mimoConc,
+    mimoNativeConc,
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
     mimoInflightPerUser: Math.max(1, intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1)),
-    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', intEnv(env, 'GW_MIMO_CONC', 64))),
+    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', mimoConc)),
     mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 64)),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 5)),
     // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
@@ -705,7 +728,7 @@ function loadConfig(env: Env): GatewayConfig {
     visionMaxImageBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGE_BYTES', 8 * 1024 * 1024)),
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
     visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
-    visionConc: Math.max(1, intEnv(env, 'GW_VISION_CONC', 12)),
+    visionConc,
     // A real 12-call vision ramp showed noticeable tail latency. Keep only 12-active +
     // 24-waiting as a short safety envelope, not a claim of 500-image throughput; shed
     // the remainder rather than turning it into stale work or unbounded request state.
@@ -910,7 +933,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
     // tokenId=user 让"同一 token 名下所有装机"合计受 maxConcurrentPerToken 约束:即使伪造任意多
     // client id,一个 token 也拿不到超过其 token 级上限的在途,防单 token 独占整池。
     const queuedStarted = performance.now()
-    let permit: CapacityPermit
+    let permit: CapacityPermit | undefined
     try {
       permit = await provider.capacity.acquire(schedId, {
         maxWaitMs: provider.queueMaxWait * 1000,
@@ -918,6 +941,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         tokenId: user,
       })
     } catch (error) {
+      permit?.release()
       // Queue-full / timeout / client-cancel used to return before usage logging, making
       // the only evidence of overload disappear. Record the bounded wait, without body
       // content or provider detail, so /admin/usage can be used to tune the pool safely.
@@ -964,7 +988,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
 
       if (!upstream.ok) {
         const upstreamDetail = await upstream.text().catch(() => '')
-        permit.release()
+        permit?.release()
         await logUsage(store, {
           user,
           model: provider.label,
@@ -980,12 +1004,12 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       const complete = async () => {
         if (completed) return
         completed = true
-        permit.release()
+        permit?.release()
         await logUsage(store, { user, model: provider.label, ok: true, status: upstream.status, ms: elapsedMs(started), note: usageNote(attempts) })
       }
       return withStreamLogging(upstream, complete)
     } catch (error) {
-      permit.release()
+      permit?.release()
       const known = error instanceof provider.RequestError
       const status = known ? error.status : 502
       const detail = known ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
@@ -1147,13 +1171,19 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const qwenBucket = new TokenBucket(config.qwenRpm)
   const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc, config.qwenQueueMax)
   const mimoBucket = new TokenBucket(config.mimoRpm)
-  const mimoCapacity = new FairCapacityScheduler(
-    config.mimoConc,
-    config.mimoUserConc,
-    config.mimoTokenConc,
-    config.mimoQueueMax,
-    config.mimoInflightPerUser,
-  )
+  const mimoReservations = new MimoReservationScheduler({
+    maxConcurrent: config.mimoConc,
+    nativeConcurrent: config.mimoNativeConc,
+    visionConcurrent: config.visionConc,
+    maxConcurrentPerUser: config.mimoUserConc,
+    maxConcurrentPerToken: config.mimoTokenConc,
+    maxInflightPerUser: config.mimoInflightPerUser,
+    nativeQueueMax: config.mimoQueueMax,
+    visionQueueMax: config.visionQueueMax,
+    visionMaxConcurrentPerUser: config.visionPerClientConc,
+    visionMaxInflightPerUser: config.visionMaxInflightPerClient,
+  })
+  const mimoNativeCapacity = mimoReservations.forLane('native')
   // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
   const qwenChat: ChatHandler | null = config.qwenKey
     ? createChatHandler({
@@ -1183,7 +1213,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       defaultModel: config.mimoModel,
       allowedModels: config.mimoAllowedModels,
       bucket: mimoBucket,
-      capacity: mimoCapacity,
+      capacity: mimoNativeCapacity,
       queueMaxWait: config.mimoQueueMaxWait,
       retryMax: config.mimoRetryMax,
       retryBaseMs: config.mimoRetryBaseMs,
@@ -1234,7 +1264,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       mimoBase: config.mimoBase,
       mimoKey: config.mimoKey,
       fetchImpl,
-      mimoCapacity,
+      mimoReservations,
       mimoRateLimiter: mimoBucket,
       // Keep a vision call's RPM wait inside its stricter three-second queue budget
       // instead of borrowing the ordinary MiMo chat path's five-second allowance.
@@ -1265,6 +1295,18 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
         if (!authenticatedUser(config, request)) return jsonResponse({ ok: true })
+        const mimo = mimoReservations.snapshot()
+        const nativeMimo = mimoReservations.laneSnapshot('native')
+        const reservedVision = mimoReservations.laneSnapshot('vision')
+        const vision = visionBridge?.snapshot() ?? {
+          active: reservedVision.active,
+          queued: reservedVision.queued,
+          limit: reservedVision.maxConcurrent,
+          queueMax: reservedVision.queueMax,
+          perClientConc: config.visionPerClientConc,
+          maxInflightPerClient: config.visionMaxInflightPerClient,
+          oldestQueueMs: 0,
+        }
         return jsonResponse({
           ok: true,
           limits: {
@@ -1276,6 +1318,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             qwen_queue_max_wait_seconds: config.qwenQueueMaxWait,
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
+            mimo_native_conc: config.mimoNativeConc,
             mimo_user_conc: config.mimoUserConc,
             mimo_inflight_per_user: config.mimoInflightPerUser,
             mimo_token_conc: config.mimoTokenConc,
@@ -1306,20 +1349,24 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           quota: {},
           capacity: {
             qwen: qwenCapacity.snapshot(),
-            mimo: mimoCapacity.snapshot(),
-            deepseek: deepseekCapacity.snapshot(),
-            // MiMo direct-chat and image bridge are separate guarded call paths. Expose
-            // the bridge semaphore too; otherwise a healthy text pool can hide a
-            // saturated image-understanding queue.
-            vision: visionBridge?.snapshot() ?? {
-              active: 0,
-              queued: 0,
-              limit: config.visionConc,
-              queueMax: config.visionQueueMax,
-              perClientConc: config.visionPerClientConc,
-              maxInflightPerClient: config.visionMaxInflightPerClient,
-              oldestQueueMs: 0,
+            // `mimo` remains the backwards-compatible aggregate seen by existing
+            // runners. `mimo_native` makes the partition observable without asking
+            // consumers to infer it from the total and visual snapshots.
+            mimo: {
+              ...mimo,
+              nativeReserved: config.mimoNativeConc,
+              visionReserved: config.visionConc,
             },
+            mimo_native: nativeMimo,
+            // Explicit alias for dashboards that want to distinguish the historic
+            // `mimo` name from the aggregate physical-account view.
+            mimo_total: {
+              ...mimo,
+              nativeReserved: config.mimoNativeConc,
+              visionReserved: config.visionConc,
+            },
+            deepseek: deepseekCapacity.snapshot(),
+            vision,
             ingress_body: ingressBodyBudget.snapshot(),
           },
           features: {

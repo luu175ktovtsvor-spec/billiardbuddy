@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { CapacityQueueError, type CapacityPermit, type FairCapacityScheduler } from './modelCapacity'
+import { CapacityQueueError, type CapacityPermit, type MimoReservationScheduler } from './modelCapacity'
 import { fetchMimoWithRetry } from './mimoChat'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -75,8 +75,8 @@ export interface VisionBridgeDeps {
   mimoKey: string
   fetchImpl: FetchLike
   caps: VisionBridgeCaps
-  /** 原生 MiMo 聊天与视觉桥接复用同一个账号级容量池。 */
-  mimoCapacity?: FairCapacityScheduler
+  /** Atomic account-wide native/vision reservation scheduler supplied by the gateway. */
+  mimoReservations?: MimoReservationScheduler
   /** 原生 MiMo 聊天与视觉桥接也复用同一个账号级 RPM 桶，不能绕过账户速率保护。 */
   mimoRateLimiter?: VisionRateLimiter
   /** Vision's short queue window caps how long it may wait for the shared RPM bucket. */
@@ -189,13 +189,18 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
     cacheTtlMs: Math.max(1, Math.floor(deps.caps.cacheTtlMs)),
   }
   const cache = deps.cache ?? new DefaultVisionCache(caps.cacheMax, caps.cacheTtlMs)
-  const semaphore = new VisionSemaphore(
-    caps.maxConcurrent,
-    caps.queueMaxWaitMs,
-    caps.queueMax,
-    caps.perClientConc,
-    caps.maxInflightPerClient,
-  )
+  // The gateway supplies one atomic MiMo scheduler that owns both the physical vision
+  // reservation and its per-client rules. Standalone bridge tests keep this semaphore
+  // as a compatibility fallback when no gateway scheduler is supplied.
+  const semaphore = deps.mimoReservations
+    ? undefined
+    : new VisionSemaphore(
+      caps.maxConcurrent,
+      caps.queueMaxWaitMs,
+      caps.queueMax,
+      caps.perClientConc,
+      caps.maxInflightPerClient,
+    )
   // 缓存只命中“已完成”结果时，多个窗口同一时刻上传同图仍会重复打 MiMo。实例级
   // singleflight 让相同 hash+promptVersion 复用一次真实识图；请求各自可以离开等待，
   // 但不能由一个取消动作中断其它窗口仍在等的共享上游调用。
@@ -217,7 +222,19 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 
   return {
     snapshot() {
-      return semaphore.snapshot()
+      const reserved = deps.mimoReservations?.laneSnapshot('vision')
+      if (reserved) {
+        return {
+          active: reserved.active,
+          queued: reserved.queued,
+          limit: reserved.maxConcurrent,
+          queueMax: reserved.queueMax,
+          perClientConc: caps.perClientConc,
+          maxInflightPerClient: caps.maxInflightPerClient,
+          oldestQueueMs: reserved.oldestQueueMs,
+        }
+      }
+      return semaphore!.snapshot()
     },
     async transform(rawBody, opts) {
       if (opts.signal?.aborted) throw new VisionBridgeError(499, '请求已取消')
@@ -276,13 +293,15 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
         let lookup = inFlightByKey.get(cacheKey)
         if (!lookup) {
           const controller = new AbortController()
-          const created = semaphore.run(() => callMimoVision(deps, url, {
+          const created = runVisionLookup(deps, semaphore, url, {
             schedulerId: opts.schedulerId,
             tokenId: opts.tokenId,
-          }, controller.signal), controller.signal, opts.schedulerId).then(text => {
-            cache.set(cacheKey, text)
-            return text
+            signal: controller.signal,
           })
+            .then(text => {
+              cache.set(cacheKey, text)
+              return text
+            })
           lookup = { promise: created, controller, subscribers: 0, settled: false }
           inFlightByKey.set(cacheKey, lookup)
           void created.then(
@@ -381,13 +400,39 @@ function decodeImageUrl(url: string, maxImageBytes: number): { hash: string; byt
   throw new VisionBridgeError(400, '不支持的图片 URL 格式')
 }
 
+/** Acquire exactly one atomic visual reservation around one real MiMo lookup. */
+async function runVisionLookup(
+  deps: VisionBridgeDeps,
+  semaphore: VisionSemaphore | undefined,
+  url: string,
+  opts: { schedulerId?: string; tokenId?: string; signal: AbortSignal },
+): Promise<string> {
+  let permit: CapacityPermit | undefined
+  try {
+    if (deps.mimoReservations) {
+      permit = await deps.mimoReservations.acquire('vision', opts.schedulerId ?? 'vision', {
+        maxWaitMs: deps.caps.queueMaxWaitMs,
+        signal: opts.signal,
+        tokenId: opts.tokenId ?? opts.schedulerId ?? 'vision',
+      })
+      return await callMimoVision(deps, url, opts.signal)
+    }
+    return await semaphore!.run(() => callMimoVision(deps, url, opts.signal), opts.signal, opts.schedulerId)
+  } catch (error) {
+    if (error instanceof CapacityQueueError) {
+      throw new VisionBridgeError(error.status, error.status === 499 ? '请求已取消' : '图片理解服务繁忙，请稍后重试')
+    }
+    throw error
+  } finally {
+    permit?.release()
+  }
+}
+
 async function callMimoVision(
   deps: VisionBridgeDeps,
   url: string,
-  identity: { schedulerId?: string; tokenId?: string },
   externalSignal?: AbortSignal,
 ): Promise<string> {
-  let permit: CapacityPermit | undefined
   const controller = new AbortController()
   let timedOut = false
   const abortForNoSubscribers = () => controller.abort()
@@ -401,14 +446,6 @@ async function callMimoVision(
         Math.max(0, deps.mimoRateLimitMaxWaitSeconds ?? deps.caps.queueMaxWaitMs / 1000),
         controller.signal,
       )
-    }
-    if (controller.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
-    if (deps.mimoCapacity) {
-      permit = await deps.mimoCapacity.acquire(identity.schedulerId ?? 'vision', {
-        maxWaitMs: deps.caps.queueMaxWaitMs,
-        signal: controller.signal,
-        tokenId: identity.tokenId ?? identity.schedulerId ?? 'vision',
-      })
     }
     if (controller.signal.aborted) throw new VisionBridgeError(499, '请求已取消')
     const body = JSON.stringify({
@@ -474,7 +511,6 @@ async function callMimoVision(
     }
     throw new VisionBridgeError(502, '图片理解服务暂时不可用，请稍后重试')
   } finally {
-    permit?.release()
     clearTimeout(timer)
     externalSignal?.removeEventListener('abort', abortForNoSubscribers)
   }

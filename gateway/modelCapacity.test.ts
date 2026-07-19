@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { CapacityQueueError, FairCapacityScheduler } from './modelCapacity'
+import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler } from './modelCapacity'
 
 test('capacity scheduler applies per-user limits without blocking other users', async () => {
   const scheduler = new FairCapacityScheduler(2, 1)
@@ -167,4 +167,84 @@ test('five-window profile caps one installation at five permits before later use
   sixthPermit.release()
   otherInstall.release()
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0 })
+})
+
+function mimoReservations(overrides: Partial<ConstructorParameters<typeof MimoReservationScheduler>[0]> = {}) {
+  return new MimoReservationScheduler({
+    maxConcurrent: 4,
+    nativeConcurrent: 2,
+    visionConcurrent: 2,
+    maxConcurrentPerUser: 2,
+    maxConcurrentPerToken: 4,
+    maxInflightPerUser: 2,
+    nativeQueueMax: 2,
+    visionQueueMax: 2,
+    visionMaxConcurrentPerUser: 2,
+    visionMaxInflightPerUser: 2,
+    ...overrides,
+  })
+}
+
+test('MiMo reservations atomically enforce the total and each hard lane without a second gate', async () => {
+  const scheduler = mimoReservations({ maxConcurrent: 64, nativeConcurrent: 52, visionConcurrent: 12, maxConcurrentPerToken: 64 })
+  const native = await Promise.all(Array.from({ length: 52 }, (_, index) => scheduler.acquire('native', `native-${index}`, {
+    tokenId: `token-n-${index}`,
+    maxWaitMs: 1000,
+  })))
+  const vision = await Promise.all(Array.from({ length: 12 }, (_, index) => scheduler.acquire('vision', `vision-${index}`, {
+    tokenId: `token-v-${index}`,
+    maxWaitMs: 1000,
+  })))
+
+  expect(scheduler.snapshot()).toMatchObject({ active: 64, queued: 0, maxConcurrent: 64 })
+  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 52, queued: 0, maxConcurrent: 52 })
+  expect(scheduler.laneSnapshot('vision')).toMatchObject({ active: 12, queued: 0, maxConcurrent: 12 })
+  await expect(scheduler.acquire('vision', 'overflow', { tokenId: 'overflow', maxWaitMs: 0 })).rejects.toMatchObject({ status: 429 })
+
+  for (const permit of [...native, ...vision]) permit.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
+test('MiMo reservations apply one token cap across native and visual calls without blocking another token', async () => {
+  const scheduler = mimoReservations({ maxConcurrentPerToken: 3 })
+  const nativeA = await Promise.all(['a-1', 'a-2'].map(user => scheduler.acquire('native', user, {
+    tokenId: 'token-a',
+    maxWaitMs: 1000,
+  })))
+  const visualA = await scheduler.acquire('vision', 'a-3', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const blockedA = scheduler.acquire('vision', 'a-4', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const visualB = await scheduler.acquire('vision', 'b-1', { tokenId: 'token-b', maxWaitMs: 1000 })
+
+  expect(scheduler.snapshot()).toMatchObject({ active: 4, queued: 1 })
+  expect(scheduler.laneSnapshot('vision')).toMatchObject({ active: 2, queued: 1 })
+
+  visualA.release()
+  const admittedA = await blockedA
+  expect(scheduler.snapshot()).toMatchObject({ active: 4, queued: 0 })
+
+  for (const permit of [...nativeA, visualB, admittedA]) permit.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0 })
+})
+
+test('MiMo reservations honor a widened installation allowance across both lanes and release cancelled waiters', async () => {
+  const scheduler = mimoReservations({ maxConcurrent: 3, nativeConcurrent: 2, visionConcurrent: 1 })
+  const native = await scheduler.acquire('native', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const vision = await scheduler.acquire('vision', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
+  await expect(scheduler.acquire('native', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })).rejects.toMatchObject({ status: 429 })
+
+  const held = await scheduler.acquire('native', 'other-install', { tokenId: 'token-b', maxWaitMs: 1000 })
+  const controller = new AbortController()
+  const cancelled = scheduler.acquire('native', 'waiting-install', { tokenId: 'token-c', maxWaitMs: 1000, signal: controller.signal })
+  controller.abort()
+  await expect(cancelled).rejects.toMatchObject({ status: 499 })
+  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 0 })
+
+  for (const permit of [native, vision, held]) permit.release()
+  expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
+})
+
+test('MiMo reservations reject a partition that cannot account for every physical slot', () => {
+  expect(() => mimoReservations({ nativeConcurrent: 3, visionConcurrent: 2, maxConcurrent: 4 })).toThrow(
+    'MiMo native and vision reservations must exactly equal the account capacity',
+  )
 })
