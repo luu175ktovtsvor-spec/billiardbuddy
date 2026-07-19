@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   DEFAULT_NATIVE_SLOTS,
   DEFAULT_VISION_SLOTS,
+  isMiMoCapacityDrained,
   parseLoadTarget,
   parseMixedShape,
   uniquePngDataUrl,
@@ -38,6 +39,34 @@ describe('controlled MiMo mixed real-loadtest guards', () => {
     expect(first.startsWith('data:image/png;base64,')).toBe(true)
     expect(next.startsWith('data:image/png;base64,')).toBe(true)
     expect(first).not.toBe(next)
+  })
+
+  test('requires every authenticated MiMo capacity view to explicitly drain before passing', () => {
+    const drained = {
+      capacity: {
+        mimo: { active: 0, queued: 0 },
+        mimo_native: { active: 0, queued: 0 },
+        mimo_total: { active: 0, queued: 0 },
+        vision: { active: 0, queued: 0 },
+      },
+    }
+    expect(isMiMoCapacityDrained(drained)).toBe(true)
+    expect(isMiMoCapacityDrained({
+      ...drained,
+      capacity: { ...drained.capacity, mimo_total: { active: 1, queued: 0 } },
+    })).toBe(false)
+    expect(isMiMoCapacityDrained({
+      ...drained,
+      capacity: { ...drained.capacity, vision: { active: 0, queued: 1 } },
+    })).toBe(false)
+    expect(isMiMoCapacityDrained({
+      capacity: {
+        mimo: { active: 0, queued: 0 },
+        mimo_native: { active: 0, queued: 0 },
+        mimo_total: { active: 0, queued: 0 },
+      },
+    })).toBe(false)
+    expect(isMiMoCapacityDrained(null)).toBe(false)
   })
 
 })

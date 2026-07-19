@@ -82,6 +82,7 @@ Options:
   --bridge-max-tokens=<n>     Bridge downstream token cap (default: 256, max: 512)
   --image-seed=<n>            Unique PNG seed (default: current time)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
+  --drain-timeout-ms=<n>      Wait for all MiMo views to drain (default: request timeout)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Health request deadline (default: 1000)
   --use-server-app-token      Only on http://127.0.0.1:8799; read the local app token
@@ -240,6 +241,19 @@ export function idleHealthErrors(health: GatewayHealth | null): string[] {
     }
   }
   return errors
+}
+
+/** A successful wave must leave every authenticated MiMo capacity view explicitly at zero. */
+export function isMiMoCapacityDrained(health: GatewayHealth | null): boolean {
+  const capacity = health?.capacity
+  return ['mimo', 'mimo_native', 'mimo_total', 'vision'].every(name => {
+    const snapshot = capacity?.[name as keyof NonNullable<GatewayHealth['capacity']>]
+    return snapshot !== undefined
+      && Number.isFinite(snapshot.active)
+      && Number.isFinite(snapshot.queued)
+      && Math.trunc(snapshot.active!) === 0
+      && Math.trunc(snapshot.queued!) === 0
+  })
 }
 
 /** A full same-wave reservation is only proven if health actually observed every lane at its target. */
@@ -423,6 +437,7 @@ async function main(): Promise<void> {
   const bridgeMaxTokens = positiveInteger(option(args, '--bridge-max-tokens'), '--bridge-max-tokens', 256, 512)
   const imageSeed = positiveInteger(option(args, '--image-seed'), '--image-seed', Date.now())
   const timeoutMs = positiveInteger(option(args, '--timeout-ms'), '--timeout-ms', 180_000, 600_000)
+  const drainTimeoutMs = positiveInteger(option(args, '--drain-timeout-ms'), '--drain-timeout-ms', timeoutMs, 600_000)
   const healthIntervalMs = positiveInteger(option(args, '--health-interval-ms'), '--health-interval-ms', 100, 10_000)
   const healthTimeoutMs = positiveInteger(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000, 30_000)
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
@@ -449,6 +464,16 @@ async function main(): Promise<void> {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  async function waitForDrain(): Promise<{ snapshot: GatewayHealth | null; drained: boolean }> {
+    const deadline = performance.now() + drainTimeoutMs
+    let snapshot = await health()
+    while (!isMiMoCapacityDrained(snapshot) && performance.now() < deadline) {
+      await sleep(Math.min(250, Math.max(1, deadline - performance.now())))
+      snapshot = await health()
+    }
+    return { snapshot, drained: isMiMoCapacityDrained(snapshot) }
   }
 
   const initialHealth = await health()
@@ -627,12 +652,13 @@ async function main(): Promise<void> {
   const [nativeResults, bridgeResults] = await Promise.all([Promise.all(nativeTasks), Promise.all(bridgeTasks)])
   monitoring = false
   await monitor
-  const finalHealth = await health()
+  const drain = await waitForDrain()
+  const finalHealth = drain.snapshot
 
   const allResults = [...nativeResults, ...bridgeResults]
   const errors = [
     ...observedReservationErrors(observed, shape),
-    ...idleHealthErrors(finalHealth).map(error => `final ${error}`),
+    ...(drain.drained ? [] : [`MiMo capacity did not drain within ${drainTimeoutMs}ms`]),
   ]
   if (unavailableHealthSamples > 0) errors.push(`health unavailable for ${unavailableHealthSamples} sample(s)`)
   if (allResults.some(result => !result.completed)) errors.push('one or more native or bridge requests did not complete')
@@ -657,7 +683,8 @@ async function main(): Promise<void> {
     observedHealth: observed,
     healthSamples,
     unavailableHealthSamples,
-    finalDrained: errors.filter(error => error.startsWith('final ')).length === 0,
+    finalGateway: finalHealth?.capacity ?? null,
+    drained: drain.drained,
     passed: errors.length === 0,
   }))
   if (errors.length > 0) {
