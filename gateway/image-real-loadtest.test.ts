@@ -15,6 +15,7 @@ function options(overrides: Partial<ImageLoadtestOptions> = {}): ImageLoadtestOp
     users: 1,
     windows: 1,
     total: 1,
+    mode: 'terminal',
     size: '1024x1024',
     submitConcurrency: 1,
     submitTimeoutMs: 1_000,
@@ -26,9 +27,9 @@ function options(overrides: Partial<ImageLoadtestOptions> = {}): ImageLoadtestOp
 }
 
 describe('image real-loadtest safety guards', () => {
-  test('requires explicit batch acknowledgement and maps windows onto one installation identity', () => {
-    expect(() => createImageLoadtestPlan(100, 5, false)).toThrow('confirm-billable-batch')
-    expect(createImageLoadtestPlan(100, 5, true)).toEqual({ users: 100, windows: 5, total: 500 })
+  test('requires explicit batch acknowledgement and accepts the 100-user × 10-window target', () => {
+    expect(() => createImageLoadtestPlan(100, 10, false)).toThrow('confirm-billable-batch')
+    expect(createImageLoadtestPlan(100, 10, true)).toEqual({ users: 100, windows: 10, total: 1_000 })
     expect(clientIdForTask(0, 2)).toBe(clientIdForTask(2, 2))
     expect(clientIdForTask(0, 2)).not.toBe(clientIdForTask(1, 2))
   })
@@ -110,5 +111,23 @@ describe('image real-loadtest safety guards', () => {
       .filter(call => call.url.endsWith('/v1/images/tasks'))
       .map(call => call.headers.get('X-QF-Client-ID'))
     expect(submitClientIds).toEqual(['image-loadtest-user-000', 'image-loadtest-user-000'])
+  })
+
+  test('admission mode reports a full burst as accepted and promptly attempts cancellation instead of waiting for paid outputs', async () => {
+    const calls: string[] = []
+    const summary = await runImageLoadtest(options({ mode: 'admission', users: 2, windows: 2, total: 4, submitConcurrency: 4 }), {
+      fetchImpl: async input => {
+        const url = String(input)
+        calls.push(url)
+        if (url.endsWith('/v1/images/tasks')) return Response.json({ task_id: `task-${calls.length}` }, { status: 202 })
+        if (url.endsWith('/cancel')) return Response.json({ status: 'cancelled' })
+        throw new Error('admission mode must not poll image output')
+      },
+      onEvent: () => {},
+    })
+    expect(summary).toMatchObject({ mode: 'admission', requested: 4, accepted: 4, succeeded: 4, failed: 0, cleanupAttempted: 4, exitCode: 0 })
+    expect(calls.filter(url => url.endsWith('/v1/images/tasks'))).toHaveLength(4)
+    expect(calls.filter(url => url.endsWith('/cancel'))).toHaveLength(4)
+    expect(calls.some(url => url.includes('metadata_only=1'))).toBe(false)
   })
 })
