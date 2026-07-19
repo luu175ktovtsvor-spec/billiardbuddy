@@ -136,6 +136,7 @@ describe('ProductTaskService', () => {
 
     const task = await service.createTask({ workDir: '/workspace/hall-operations' })
     expect(task).not.toHaveProperty('coreSessionId')
+    expect(await service.resolveCoreSessionId(task.id)).toBe(task.id)
 
     await service.updateTask(task.id, { title: '整理本周球房活动' })
     expect(core.getLastRenameInput()).toEqual({
