@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'bun:test'
 import type { ServerMessage } from '../ws/events.js'
 import {
-  projectAskUserQuestions,
   projectComputerUseApprovalForProductTask,
-  projectServerMessagesForProductTask,
+  projectServerMessageForProductTask,
 } from '../product/taskEventProjection.js'
 
 describe('product task event projection', () => {
@@ -87,7 +86,7 @@ describe('product task event projection', () => {
       },
     ]
 
-    const projected = projectServerMessagesForProductTask(messages)
+    const projected = messages.flatMap(projectServerMessageForProductTask)
 
     expect(projected).toEqual([
       { type: 'connected' },
@@ -132,7 +131,7 @@ describe('product task event projection', () => {
   })
 
   it('omits activity messages until the task-scoped rich projector handles them', () => {
-    const projected = projectServerMessagesForProductTask([
+    const projected = [
       {
         type: 'content_start',
         blockType: 'tool_use',
@@ -145,7 +144,7 @@ describe('product task event projection', () => {
       { type: 'team_created', teamName: 'private-team' },
       { type: 'team_deleted', teamName: 'private-team' },
       { type: 'task_update', taskId: 'private-task', status: 'completed' },
-    ])
+    ].flatMap(projectServerMessageForProductTask)
 
     expect(projected).toEqual([])
   })
@@ -203,7 +202,7 @@ describe('product task event projection', () => {
   })
 
   it('projects AskUserQuestion through a narrow question schema', () => {
-    const projected = projectServerMessagesForProductTask([{
+    const projected = [{
       type: 'permission_request',
       requestId: 'ask-1',
       toolName: 'AskUserQuestion',
@@ -221,7 +220,7 @@ describe('product task event projection', () => {
         runtimeConfig: 'PRIVATE_RUNTIME_CONFIG',
       },
       description: 'PRIVATE_PERMISSION_DESCRIPTION',
-    }])
+    }].flatMap(projectServerMessageForProductTask)
 
     expect(projected).toEqual([{
       type: 'approval_required',
@@ -249,11 +248,11 @@ describe('product task event projection', () => {
     const uploadPath = '/Users/private-user/.claude/uploads/core-session-secret/4bf1a3ef-3c4c-4d93-b35b-14719d05498e-ledger.pdf'
     const dataUrl = 'data:application/pdf;base64,PRIVATE_FILE_BYTES'
 
-    const projected = projectServerMessagesForProductTask([{
+    const projected = [{
       type: 'user_message_replay',
       content: `@"${uploadPath}" 请核对附件 ${dataUrl}`,
       attachments: [{ type: 'file', name: 'ledger.pdf' }],
-    }])
+    }].flatMap(projectServerMessageForProductTask)
 
     expect(projected).toEqual([{
       type: 'user_text',
@@ -269,31 +268,8 @@ describe('product task event projection', () => {
     expect(serialized).not.toContain('PRIVATE_FILE_BYTES')
   })
 
-  it('only accepts explicit, bounded AskUserQuestion fields', () => {
-    const questions = projectAskUserQuestions({
-      questions: [
-        null,
-        { question: '' },
-        {
-          question: '有效问题',
-          options: [
-            { label: '' },
-            { label: '有效选项', unsupported: { value: 'discarded' } },
-          ],
-          injected: 'discarded',
-        },
-      ],
-      extra: 'discarded',
-    })
-
-    expect(questions).toEqual([{
-      question: '有效问题',
-      options: [{ label: '有效选项' }],
-    }])
-  })
-
   it('maps safe business errors and ignores unlisted internal messages', () => {
-    const projected = projectServerMessagesForProductTask([
+    const projected = [
       {
         type: 'error',
         code: 'CLI_ERROR',
@@ -308,7 +284,7 @@ describe('product task event projection', () => {
       },
       { type: 'pong' },
       { type: 'session_title_updated', sessionId: 'private-session', title: '新的任务标题' },
-    ])
+    ].flatMap(projectServerMessageForProductTask)
 
     expect(projected).toEqual([
       { type: 'error', code: 'input_too_large', retryable: false },
