@@ -3,7 +3,7 @@ import { connect, type Socket } from 'node:net'
 import { createGatewayFetch, MemoryUsageStore } from './app'
 
 const USER_COUNT = 100
-const WINDOWS_PER_USER = 5
+const WINDOWS_PER_USER = 8
 const TARGET_CONCURRENCY = USER_COUNT * WINDOWS_PER_USER
 const LOOPBACK_ADMISSION_BATCH = 25
 
@@ -21,7 +21,8 @@ function env(): Record<string, string> {
     GW_DEEPSEEK_CONC: String(TARGET_CONCURRENCY),
     GW_DEEPSEEK_USER_CONC: String(WINDOWS_PER_USER),
     GW_DEEPSEEK_TOKEN_CONC: String(TARGET_CONCURRENCY),
-    GW_DEEPSEEK_QUEUE_MAX_WAIT: '30',
+    GW_DEEPSEEK_QUEUE_MAX: '200',
+    GW_DEEPSEEK_QUEUE_MAX_WAIT: '15',
     GW_DEEPSEEK_RPM: '1000000',
     GW_RELAY_TOKEN: 'relay-secret',
     GW_APP_TOKENS: JSON.stringify({ 'shared-desktop-token': 'shared-product-token' }),
@@ -141,7 +142,7 @@ async function consume(response: HeldResponse): Promise<void> {
   })
 }
 
-test('loopback HTTP: 100 installations × 5 windows holds 500 DeepSeek streams without scheduler loss', async () => {
+test('loopback HTTP: 100 installations × 8 windows holds 800 DeepSeek streams without scheduler loss', async () => {
   const upstream = makeHeldSseUpstream()
   const handler = createGatewayFetch({
     env: env(),
@@ -164,10 +165,10 @@ test('loopback HTTP: 100 installations × 5 windows holds 500 DeepSeek streams w
       )).flat()
     )
     const responses: HeldResponse[] = []
-    // The domain scheduler sees all 500 logical windows in the companion fake-upstream
+    // The domain scheduler sees all 800 logical windows in the companion fake-upstream
     // test. Here we deliberately use short 25-connection TCP batches: macOS's loopback
     // accept queue otherwise drops SYNs before Bun runs the handler, which would measure
-    // the test host's kernel backlog rather than 500 held gateway streams.
+    // the test host's kernel backlog rather than 800 held gateway streams.
     for (let start = 0; start < requests.length; start += LOOPBACK_ADMISSION_BATCH) {
       responses.push(...await Promise.all(requests.slice(start, start + LOOPBACK_ADMISSION_BATCH).map(request => request())))
     }

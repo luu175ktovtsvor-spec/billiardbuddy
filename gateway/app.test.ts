@@ -1035,19 +1035,20 @@ test('healthz reports chat_deepseek and deepseek capacity when configured', asyn
   const body = await res.json()
   expect(body.features.chat_deepseek).toBe(true)
   expect(body.capacity.deepseek).toBeDefined()
-  // 100 人 × 5 窗口 profile:256 路实际流 + 256 个有界等待位；真机跑通后才能用 env 扩容。
-  expect(body.limits.deepseek_conc).toBe(256)
-  expect(body.limits.deepseek_user_conc).toBe(5)
-  expect(body.limits.deepseek_token_conc).toBe(256)
-  expect(body.limits.deepseek_queue_max).toBe(256)
-  expect(body.limits.deepseek_queue_max_wait_seconds).toBe(120)
+  // 真实生产请求已验证 100 人 × 8 窗口：800 路直接进入实际 DeepSeek 流；
+  // 仅保留 200 个、最多 15 秒的短等待槽来吸收抖动，尾延迟上升时不会隐藏成长队列。
+  expect(body.limits.deepseek_conc).toBe(800)
+  expect(body.limits.deepseek_user_conc).toBe(8)
+  expect(body.limits.deepseek_token_conc).toBe(800)
+  expect(body.limits.deepseek_queue_max).toBe(200)
+  expect(body.limits.deepseek_queue_max_wait_seconds).toBe(15)
   expect(body.capacity.deepseek).toMatchObject({
     active: 0,
     queued: 0,
-    maxConcurrent: 256,
-    maxConcurrentPerUser: 5,
-    maxConcurrentPerToken: 256,
-    queueMax: 256,
+    maxConcurrent: 800,
+    maxConcurrentPerUser: 8,
+    maxConcurrentPerToken: 800,
+    queueMax: 200,
     oldestQueueMs: 0,
   })
 })
