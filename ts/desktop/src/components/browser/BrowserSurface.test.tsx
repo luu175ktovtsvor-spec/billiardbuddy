@@ -26,7 +26,6 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}
 import { BrowserSurface } from './BrowserSurface'
 import { getDefaultBaseUrl, setBaseUrl } from '../../api/client'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'
-import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useOverlayStore } from '../../stores/overlayStore'
 
 afterEach(() => {
@@ -34,8 +33,6 @@ afterEach(() => {
   vi.restoreAllMocks()
   Object.values(bridge).forEach((f) => f.mockReset())
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
-  // Reset the independently owned browser and file-panel state between cases.
-  useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
   useOverlayStore.setState(useOverlayStore.getInitialState(), true)
   setBaseUrl(getDefaultBaseUrl())
 })

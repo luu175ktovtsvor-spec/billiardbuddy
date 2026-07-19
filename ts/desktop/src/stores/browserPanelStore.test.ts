@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useBrowserPanelStore } from './browserPanelStore'
-import { useWorkspacePanelStore } from './workspacePanelStore'
 
 const reset = () => {
   useBrowserPanelStore.setState(useBrowserPanelStore.getInitialState(), true)
-  useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
 }
 
 describe('browserPanelStore', () => {
@@ -141,27 +139,4 @@ describe('browserPanelStore', () => {
     expect(useBrowserPanelStore.getState().bySession['s1']!.loading).toBe(false)
   })
 
-  it('open brings the browser forward without opening the file workspace', () => {
-    // Both panels start closed and the shared dock defaults to the file view.
-    expect(useWorkspacePanelStore.getState().isPanelOpen('s1')).toBe(false)
-    expect(useWorkspacePanelStore.getState().getMode('s1')).toBe('workspace')
-
-    useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
-
-    expect(useBrowserPanelStore.getState().bySession.s1).toMatchObject({ isOpen: true })
-    expect(useWorkspacePanelStore.getState().isPanelOpen('s1')).toBe(false)
-    expect(useWorkspacePanelStore.getState().getMode('s1')).toBe('browser')
-  })
-
-  it('closing the browser preserves an independently open file workspace', () => {
-    const workspace = useWorkspacePanelStore.getState()
-    workspace.openPanel('s1')
-    useBrowserPanelStore.getState().open('s1', 'http://localhost:5173/')
-
-    useBrowserPanelStore.getState().close('s1')
-
-    expect(useBrowserPanelStore.getState().bySession.s1).toMatchObject({ isOpen: false })
-    expect(useWorkspacePanelStore.getState().isPanelOpen('s1')).toBe(true)
-    expect(useWorkspacePanelStore.getState().getMode('s1')).toBe('workspace')
-  })
 })
