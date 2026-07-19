@@ -168,6 +168,131 @@ describe('product task runtime store', () => {
     expect(useProductTaskRuntimeStore.getState().tasks['task-run-tree']?.runActivities).toEqual([])
   })
 
+  it('replaces stale run state with a snapshot and accepts later activity updates', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    const staleId = `activity_${'a'.repeat(32)}`
+    const parentId = `activity_${'b'.repeat(32)}`
+    const activeId = `activity_${'c'.repeat(32)}`
+
+    store.handleEvent('task-run-snapshot', {
+      type: 'activity',
+      id: staleId,
+      kind: 'command',
+      phase: 'running',
+      summary: '正在处理任务操作',
+    })
+    store.handleEvent('task-run-snapshot', {
+      type: 'approval_required',
+      requestId: 'stale-approval',
+      kind: 'action',
+    })
+    expect(store.respondToApproval('task-run-snapshot', true)).toBe(true)
+
+    store.handleEvent('task-run-snapshot', {
+      type: 'run_snapshot',
+      state: 'working',
+      activities: [
+        {
+          id: parentId,
+          kind: 'workspace',
+          phase: 'completed',
+          summary: '已整理任务计划',
+        },
+        {
+          id: activeId,
+          parentId,
+          kind: 'subtask',
+          phase: 'running',
+          summary: '正在协同处理事项',
+          progress: { completed: 1, total: 2 },
+        },
+      ],
+    })
+
+    let runtime = useProductTaskRuntimeStore.getState().tasks['task-run-snapshot']!
+    expect(runtime).toEqual(expect.objectContaining({
+      runState: 'working',
+      runActivities: [
+        expect.objectContaining({ id: parentId, phase: 'completed' }),
+        expect.objectContaining({ id: activeId, parentId, phase: 'running' }),
+      ],
+      activeActivity: {
+        kind: 'subtask',
+        phase: 'running',
+        summary: '正在协同处理事项',
+      },
+      pendingApproval: null,
+      approvalResponsePending: false,
+    }))
+    expect(runtime.runActivities.some((activity) => activity.id === staleId)).toBe(false)
+
+    store.handleEvent('task-run-snapshot', {
+      type: 'activity',
+      id: activeId,
+      parentId,
+      kind: 'subtask',
+      phase: 'completed',
+      summary: '已完成协同事项',
+      progress: { completed: 2, total: 2 },
+    })
+    store.handleEvent('task-run-snapshot', {
+      type: 'approval_required',
+      requestId: 'replayed-approval',
+      kind: 'action',
+    })
+
+    runtime = useProductTaskRuntimeStore.getState().tasks['task-run-snapshot']!
+    expect(runtime.runActivities).toEqual([
+      expect.objectContaining({ id: parentId, phase: 'completed' }),
+      expect.objectContaining({
+        id: activeId,
+        phase: 'completed',
+        summary: '已完成协同事项',
+        progress: { completed: 2, total: 2 },
+      }),
+    ])
+    expect(runtime.pendingApproval).toEqual({ requestId: 'replayed-approval', kind: 'action' })
+    expect(runtime.approvalResponsePending).toBe(false)
+  })
+
+  it('keeps a socket run snapshot when the concurrent history request resolves', async () => {
+    const pendingThread = deferred<unknown>()
+    const activeId = `activity_${'d'.repeat(32)}`
+    apiMocks.getThread.mockReturnValue(pendingThread.promise)
+    wireTaskSocket()
+
+    const connecting = useProductTaskRuntimeStore.getState().connectTask('task-snapshot-history')
+    eventHandler?.({
+      type: 'run_snapshot',
+      state: 'working',
+      activities: [{
+        id: activeId,
+        kind: 'workspace',
+        phase: 'running',
+        summary: '正在整理工作内容',
+      }],
+    })
+    pendingThread.resolve({
+      taskId: 'task-snapshot-history',
+      entries: [threadEntry('thread-history', 'assistant_text', '历史内容')],
+    })
+    await connecting
+
+    expect(useProductTaskRuntimeStore.getState().tasks['task-snapshot-history']).toEqual(
+      expect.objectContaining({
+        historyStatus: 'ready',
+        entries: [threadEntry('thread-history', 'assistant_text', '历史内容')],
+        runState: 'working',
+        runActivities: [expect.objectContaining({ id: activeId, phase: 'running' })],
+        activeActivity: {
+          kind: 'workspace',
+          phase: 'running',
+          summary: '正在整理工作内容',
+        },
+      }),
+    )
+  })
+
   it('replaces completed live entries with the canonical thread snapshot', async () => {
     apiMocks.getThread
       .mockResolvedValueOnce({ taskId: 'task-complete', entries: [] })

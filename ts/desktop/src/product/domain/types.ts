@@ -50,6 +50,8 @@ export type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
   ProductTaskActivityProgress,
+  ProductTaskRunActivity,
+  ProductTaskRunSnapshot,
   ProductTaskAttachmentSummary,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
