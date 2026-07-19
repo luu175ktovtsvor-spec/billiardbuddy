@@ -16,7 +16,6 @@ import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
-import { handleOpenTargetsApi } from './api/open-targets.js'
 import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleMediaApi } from './api/media.js'
 import { handleVoiceApi } from './api/voice.js'
@@ -78,9 +77,6 @@ export async function handleApiRequest(
 
     case 'diagnostics':
       return handleDiagnosticsApi(req, url, segments)
-
-    case 'open-targets':
-      return handleOpenTargetsApi(req, url, segments)
 
     case 'desktop-ui':
       return handleDesktopUiApi(req, url, segments)
