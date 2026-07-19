@@ -56,6 +56,8 @@ export function ProductTaskTerminalDock({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const runtimeId = `product-task-terminal-${taskId}`
   const runtimeRef = useRef<TerminalRuntime | null>(null)
+  const mountedRef = useRef(false)
+  const lifecycleRef = useRef(0)
   if (!runtimeRef.current || runtimeRef.current.id !== runtimeId) {
     runtimeRef.current = getTerminalRuntime(runtimeId, terminalApi.isAvailable() ? 'idle' : 'unavailable')
   }
@@ -81,8 +83,9 @@ export function ProductTaskTerminalDock({
   }, [runtime])
 
   const startTerminal = useCallback(async () => {
-
-    if (runtime.status === 'starting') return
+    const lifecycle = lifecycleRef.current
+    const isCurrentLifecycle = () => mountedRef.current && lifecycleRef.current === lifecycle
+    if (!isCurrentLifecycle() || runtime.status === 'starting') return
 
     if (!terminalApi.isAvailable()) {
       updateTerminalRuntime(runtime, { status: 'unavailable' })
@@ -97,6 +100,7 @@ export function ProductTaskTerminalDock({
     const existing = runtime.nativeSessionId
     if (existing) {
       await terminalApi.kill(existing).catch(() => {})
+      if (!isCurrentLifecycle()) return
       runtime.nativeSessionId = null
     }
     runtime.dataDisposable?.dispose()
@@ -113,6 +117,7 @@ export function ProductTaskTerminalDock({
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
     ])
+    if (!isCurrentLifecycle()) return
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -155,6 +160,10 @@ export function ProductTaskTerminalDock({
         terminal.write(payload.data)
       }
     })
+    if (!isCurrentLifecycle()) {
+      outputUnlisten()
+      return
+    }
     const exitUnlisten = await terminalApi.onExit((payload) => {
       if (payload.session_id !== runtime.nativeSessionId) return
       updateTerminalRuntime(runtime, { status: 'exited' })
@@ -162,6 +171,11 @@ export function ProductTaskTerminalDock({
       terminal.writeln(`\r\n[process exited: ${payload.code}${signal}]`)
       updateTerminalRuntime(runtime, { nativeSessionId: null })
     })
+    if (!isCurrentLifecycle()) {
+      outputUnlisten()
+      exitUnlisten()
+      return
+    }
     runtime.unlisteners = [outputUnlisten, exitUnlisten]
 
     runtime.dataDisposable = terminal.onData((data) => {
@@ -182,6 +196,10 @@ export function ProductTaskTerminalDock({
         rows: terminal.rows,
         cwd: workDir,
       })
+      if (!isCurrentLifecycle()) {
+        void terminalApi.kill(result.session_id).catch(() => {})
+        return
+      }
       updateTerminalRuntime(runtime, {
         nativeSessionId: result.session_id,
         shellInfo: { shell: result.shell, cwd: result.cwd },
@@ -189,6 +207,7 @@ export function ProductTaskTerminalDock({
       })
       resizeSession()
     } catch (err) {
+      if (!isCurrentLifecycle()) return
       outputUnlisten()
       exitUnlisten()
       terminal.dispose()
@@ -202,21 +221,28 @@ export function ProductTaskTerminalDock({
   }, [resizeSession, runtime, workDir])
 
   useEffect(() => {
-    if (!terminalApi.isAvailable()) return
-    if (runtime.terminal) {
-      if (hostRef.current) {
-        attachTerminalRuntime(runtime, hostRef.current)
+    lifecycleRef.current += 1
+    mountedRef.current = true
+    let observer: ResizeObserver | null = null
+
+    if (terminalApi.isAvailable()) {
+      if (runtime.terminal) {
+        if (hostRef.current) {
+          attachTerminalRuntime(runtime, hostRef.current)
+        }
+        resizeSession()
+      } else {
+        void startTerminal()
       }
-      resizeSession()
-    } else {
-      void startTerminal()
+
+      observer = new ResizeObserver(() => resizeSession())
+      if (hostRef.current) observer.observe(hostRef.current)
     }
 
-    const observer = new ResizeObserver(() => resizeSession())
-    if (hostRef.current) observer.observe(hostRef.current)
-
     return () => {
-      observer.disconnect()
+      mountedRef.current = false
+      lifecycleRef.current += 1
+      observer?.disconnect()
       destroyTerminalRuntime(runtime.id)
     }
   }, [resizeSession, runtime, startTerminal])
