@@ -206,7 +206,6 @@ const productTaskAgentCoreAdapter = new ProductTaskAgentCoreAdapter({
   resolveComputerUseApproval: (sessionId, requestId, allowed) => (
     computerUseApprovalService.resolveProductTaskApproval(sessionId, requestId, allowed)
   ),
-  hasDirectCoreClient: hasDirectCoreClientForSession,
   isDesktopClearCommand,
   createSafeError: toSafeRuntimeError,
 })
@@ -2110,10 +2109,6 @@ function toStreamingFallbackServerMessage(cliMsg: any): ServerMessage {
       ? (cliMsg.cause as StreamingFallbackCause)
       : 'unknown'
   return { type: 'streaming_fallback', cause }
-}
-
-function hasDirectCoreClientForSession(sessionId: string): boolean {
-  return [...(activeSessions.get(sessionId) ?? [])].some((client) => client.data.channel === 'client')
 }
 
 function sendMessage(

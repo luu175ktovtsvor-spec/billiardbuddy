@@ -61,7 +61,6 @@ export type ProductTaskAgentCorePort = {
     updatedInput?: Record<string, unknown>,
   ): void
   resolveComputerUseApproval(sessionId: string, requestId: string, allowed: boolean): boolean
-  hasDirectCoreClient(sessionId: string): boolean
   isDesktopClearCommand(content: string): boolean
   createSafeError(code: string, retryable: boolean): Extract<ServerMessage, { type: 'error' }>
 }
@@ -179,9 +178,7 @@ export class ProductTaskAgentCoreAdapter {
     const events = projectedEventsByTask?.get(taskId) ?? this.projectTaskMessage(taskId, socket.data.sessionId, message)
 
     if (isUnanswerableAskUserQuestion(message, events)) {
-      if (!this.core.hasDirectCoreClient(socket.data.sessionId)) {
-        this.rejectUnanswerableAskUserQuestion(socket, message)
-      }
+      this.rejectUnanswerableAskUserQuestion(socket, message)
       return
     }
 
