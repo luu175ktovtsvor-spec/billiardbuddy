@@ -83,6 +83,73 @@ describe('ProductTaskReviewDock', () => {
     })
   })
 
+  it('renders a bounded task video preview without a workspace URL or Core session reference', async () => {
+    apiMocks.getReviewTree.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: '',
+      entries: [{ name: 'replay.webm', path: 'assets/replay.webm', isDirectory: false }],
+    })
+    apiMocks.getReviewFile.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: 'assets/replay.webm',
+      previewType: 'video',
+      dataUrl: 'data:video/webm;base64,AAAA',
+      mimeType: 'video/webm',
+      language: 'video',
+      size: 3,
+    })
+    apiMocks.getReviewDiff.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: 'assets/replay.webm',
+    })
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByText('replay.webm'))
+
+    const video = await screen.findByTestId('product-task-review-video')
+    expect(video.getAttribute('src')).toBe('data:video/webm;base64,AAAA')
+    expect(video.getAttribute('controls')).not.toBeNull()
+    expect(screen.getByText('视频预览仅读取当前任务工作区内不超过 16 MB 的 MP4、WebM、Ogg 或 MOV 文件。')).toBeTruthy()
+    expect(apiMocks.getReviewFile).toHaveBeenCalledWith('task-1', 'assets/replay.webm')
+    expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'assets/replay.webm')
+
+    fireEvent.error(video)
+    expect((await screen.findByRole('alert')).textContent).toBe('当前运行环境无法播放这个视频编码。')
+  })
+
+  it('identifies a video that exceeds the bounded preview limit', async () => {
+    apiMocks.getReviewTree.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: '',
+      entries: [{ name: 'long-replay.mp4', path: 'assets/long-replay.mp4', isDirectory: false }],
+    })
+    apiMocks.getReviewFile.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'too_large',
+      path: 'assets/long-replay.mp4',
+      mimeType: 'video/mp4',
+      language: 'video',
+      size: 16 * 1024 * 1024 + 1,
+    })
+    apiMocks.getReviewDiff.mockResolvedValue({
+      taskId: 'task-1',
+      state: 'ok',
+      path: 'assets/long-replay.mp4',
+    })
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByText('long-replay.mp4'))
+
+    expect(await screen.findByText('视频超过 16 MB 的安全预览限制，无法直接展示。')).toBeTruthy()
+    expect(screen.queryByTestId('product-task-review-video')).toBeNull()
+  })
+
   it('shows a controlled unavailable state instead of a workspace error payload', async () => {
     apiMocks.getReviewStatus.mockResolvedValueOnce({
       taskId: 'task-1',

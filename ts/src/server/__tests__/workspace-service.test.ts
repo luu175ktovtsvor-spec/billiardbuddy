@@ -485,6 +485,48 @@ describe('WorkspaceService', () => {
     })
   })
 
+  it('only returns bounded video data URLs when a caller opts into a video preview cap', async () => {
+    const workDir = await makeTempDir('workspace-service-video-preview-')
+    const service = new WorkspaceService(async () => workDir)
+    const videoBytes = Buffer.from([0, 0, 0, 18, 0x66, 0x74, 0x79, 0x70])
+
+    for (const [filename, mimeType] of [
+      ['clip.mp4', 'video/mp4'],
+      ['clip.webm', 'video/webm'],
+      ['clip.ogg', 'video/ogg'],
+      ['clip.mov', 'video/quicktime'],
+    ] as const) {
+      await fs.writeFile(path.join(workDir, filename), videoBytes)
+      await expect(service.readFile('session-1', filename, {
+        maxVideoPreviewBytes: ONE_MIB,
+      })).resolves.toEqual({
+        state: 'ok',
+        path: filename,
+        previewType: 'video',
+        dataUrl: `data:${mimeType};base64,${videoBytes.toString('base64')}`,
+        mimeType,
+        language: 'video',
+        size: videoBytes.length,
+      })
+    }
+
+    await fs.writeFile(path.join(workDir, 'large.mp4'), Buffer.alloc(ONE_MIB + 1, 0))
+    await expect(service.readFile('session-1', 'large.mp4', {
+      maxVideoPreviewBytes: ONE_MIB,
+    })).resolves.toEqual({
+      state: 'too_large',
+      path: 'large.mp4',
+      mimeType: 'video/mp4',
+      language: 'video',
+      size: ONE_MIB + 1,
+    })
+
+    await expect(service.readFile('session-1', 'clip.mp4')).resolves.toMatchObject({
+      state: 'binary',
+      path: 'clip.mp4',
+    })
+  })
+
   it('lists a single directory level with dotfiles included and directories first', async () => {
     const workDir = await makeTempDir('workspace-service-tree-')
     const service = new WorkspaceService(async () => workDir)
