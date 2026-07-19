@@ -123,6 +123,42 @@ describe('tabStore', () => {
     })
   })
 
+  it('updates only product task tabs when a restricted task stream supplies a new title', () => {
+    useTabStore.setState({
+      tabs: [
+        {
+          sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+          title: '旧任务标题',
+          type: 'product-task',
+          status: 'idle',
+          taskId: 'task-1',
+        },
+        {
+          sessionId: 'task-1',
+          title: '旧会话标题',
+          type: 'session',
+          status: 'idle',
+        },
+      ],
+      activeTabId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+    })
+
+    useTabStore.getState().updateProductTaskTitle('task-1', '  实时任务标题  ')
+
+    expect(useTabStore.getState().tabs).toEqual([
+      expect.objectContaining({
+        sessionId: `${PRODUCT_TASK_TAB_PREFIX}task-1`,
+        type: 'product-task',
+        title: '实时任务标题',
+      }),
+      expect.objectContaining({
+        sessionId: 'task-1',
+        type: 'session',
+        title: '旧会话标题',
+      }),
+    ])
+  })
+
   it('does not let async tab restore overwrite tabs opened while restore is in flight', async () => {
     let resolveSessions: (value: unknown) => void = () => {}
     vi.mocked(sessionsApi.list).mockReturnValueOnce(new Promise((resolve) => {

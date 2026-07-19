@@ -82,6 +82,25 @@ describe('productTaskStore', () => {
     })
   })
 
+  it('applies a streamed title to the indexed product task without changing lifecycle metadata', () => {
+    const original = makeTask({
+      lifecycle: 'archived',
+      archivedAt: '2026-07-19T01:00:00.000Z',
+      pinnedAt: '2026-07-19T00:30:00.000Z',
+      actions: ['restore'],
+    })
+    useProductTaskStore.setState({ index: makeIndex(original) })
+
+    useProductTaskStore.getState().applyRuntimeTaskTitle(original.id, '  自动整理开球训练  ')
+    useProductTaskStore.getState().applyRuntimeTaskTitle('task-missing', '不应新增')
+
+    expect(useProductTaskStore.getState().index.tasks).toEqual([{
+      ...original,
+      title: '自动整理开球训练',
+    }])
+    expect(useProductTaskStore.getState().index.total).toBe(1)
+  })
+
   it('reconciles lifecycle mutations with the server task returned by the endpoint', async () => {
     const original = makeTask()
     const archived = makeTask({

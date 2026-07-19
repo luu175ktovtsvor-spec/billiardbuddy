@@ -6,6 +6,8 @@ import {
   type ProductTaskSocketLifecycleEvent,
 } from '../api/taskSocket'
 import { parseProductTaskThread } from '../api/taskProtocol'
+import { useTabStore } from '../../stores/tabStore'
+import { useProductTaskStore } from './productTaskStore'
 import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
@@ -467,6 +469,15 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     refreshThread,
 
     handleEvent: (taskId, event) => {
+      if (event.type === 'title_updated') {
+        // The stream is the first place an Agent-generated task title arrives.
+        // Keep every product-owned title surface in sync without addressing a
+        // Core session or the legacy ChatStore.
+        useProductTaskStore.getState().applyRuntimeTaskTitle(taskId, event.title)
+        useTabStore.getState().updateProductTaskTitle(taskId, event.title)
+        return
+      }
+
       if (event.type === 'turn_complete') {
         updateTask(taskId, (runtime) => ({
           ...runtime,
@@ -556,9 +567,6 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
                 ? {}
                 : { runState: 'idle', activeActivity: null, pendingApproval: null }),
             }
-
-          case 'title_updated':
-            return runtime
         }
       })
     },
