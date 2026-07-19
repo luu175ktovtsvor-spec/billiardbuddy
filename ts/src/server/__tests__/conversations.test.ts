@@ -1203,29 +1203,6 @@ describe('WebSocket Chat Integration', () => {
     }
   }
 
-  async function withMockInitDelay<T>(
-    delayMs: number | undefined,
-    callback: () => Promise<T>,
-  ): Promise<T> {
-    const previousDelay = process.env.MOCK_SDK_INIT_DELAY_MS
-
-    if (delayMs && delayMs > 0) {
-      process.env.MOCK_SDK_INIT_DELAY_MS = String(delayMs)
-    } else {
-      delete process.env.MOCK_SDK_INIT_DELAY_MS
-    }
-
-    try {
-      return await callback()
-    } finally {
-      if (previousDelay === undefined) {
-        delete process.env.MOCK_SDK_INIT_DELAY_MS
-      } else {
-        process.env.MOCK_SDK_INIT_DELAY_MS = previousDelay
-      }
-    }
-  }
-
   async function withMockStreamDelay<T>(
     delayMs: number | undefined,
     callback: () => Promise<T>,
@@ -1245,29 +1222,6 @@ describe('WebSocket Chat Integration', () => {
         delete process.env.MOCK_SDK_STREAM_DELAY_MS
       } else {
         process.env.MOCK_SDK_STREAM_DELAY_MS = previousDelay
-      }
-    }
-  }
-
-  async function withMockMcpStatusDelay<T>(
-    delayMs: number | undefined,
-    callback: () => Promise<T>,
-  ): Promise<T> {
-    const previousDelay = process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
-
-    if (delayMs && delayMs > 0) {
-      process.env.MOCK_SDK_MCP_STATUS_DELAY_MS = String(delayMs)
-    } else {
-      delete process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
-    }
-
-    try {
-      return await callback()
-    } finally {
-      if (previousDelay === undefined) {
-        delete process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
-      } else {
-        process.env.MOCK_SDK_MCP_STATUS_DELAY_MS = previousDelay
       }
     }
   }
@@ -1939,128 +1893,6 @@ describe('WebSocket Chat Integration', () => {
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
   })
 
-  it('should expose structured session inspection data from the active CLI', async () => {
-    const sessionId = `chat-inspection-${crypto.randomUUID()}`
-    await runTurn(sessionId, 'hello before inspection')
-
-    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection`)
-    expect(res.status).toBe(200)
-    const body = await res.json() as any
-
-    expect(body.active).toBe(true)
-    expect(body.status.model).toBe('mock-opus')
-    expect(body.status.slashCommandCount).toBe(1)
-    expect(body.usage.costDisplay).toBe('$0.1234')
-    expect(body.usage.source).toBe('current_process')
-    expect(body.context.model).toBe('mock-opus')
-    expect(body.context.estimateOnly).toBe(true)
-    expect(body.status.mcpServers).toEqual([{ name: 'mock', status: 'connected' }])
-
-    const basicRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-    expect(basicRes.status).toBe(200)
-    const basicBody = await basicRes.json() as any
-    expect(basicBody.usage.source).toBe('current_process')
-    expect(basicBody.context).toBeUndefined()
-  })
-
-  it('should expose context-only inspection without waiting on mcp status', async () => {
-    await withMockMcpStatusDelay(2_000, async () => {
-      const sessionId = `chat-context-only-${crypto.randomUUID()}`
-      await runTurn(sessionId, 'hello before context-only inspection')
-
-      const startedAt = performance.now()
-      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=1&contextOnly=1`)
-      const elapsedMs = performance.now() - startedAt
-      expect(res.status).toBe(200)
-      const body = await res.json() as any
-
-      expect(body.context.model).toBe('mock-opus')
-      expect(body.context.estimateOnly).toBe(true)
-      expect(body.usage).toBeUndefined()
-      expect(elapsedMs).toBeLessThan(1_500)
-    })
-  })
-
-  it('should avoid transcript scans for active context-only inspection', async () => {
-    const usageSpy = spyOn(sessionService, 'getTranscriptUsage')
-    const estimateSpy = spyOn(sessionService, 'getTranscriptContextEstimate')
-    try {
-      const sessionId = `chat-context-only-fast-${crypto.randomUUID()}`
-      await runTurn(sessionId, 'hello before fast context-only inspection')
-
-      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=1&contextOnly=1`)
-      expect(res.status).toBe(200)
-      const body = await res.json() as any
-
-      expect(body.context.model).toBe('mock-opus')
-      expect(body.contextEstimate).toBeUndefined()
-      expect(body.usage).toBeUndefined()
-      expect(usageSpy).not.toHaveBeenCalled()
-      expect(estimateSpy).not.toHaveBeenCalled()
-    } finally {
-      usageSpy.mockRestore()
-      estimateSpy.mockRestore()
-    }
-  })
-
-  it('should return initial context for a prewarmed empty session on the first inspection request', async () => {
-    await withMockInitDelay(500, async () => {
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: process.cwd() }),
-      })
-      expect(createRes.status).toBe(201)
-      const { sessionId } = await createRes.json() as { sessionId: string }
-      const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            ws.close()
-            reject(new Error(`Timed out waiting for prewarm connection for ${sessionId}`))
-          }, 5_000)
-
-          ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data as string)
-            if (msg.type === 'connected') {
-              clearTimeout(timeout)
-              ws.send(JSON.stringify({ type: 'prewarm_session' }))
-              resolve()
-            }
-          }
-
-          ws.onerror = () => {
-            clearTimeout(timeout)
-            ws.close()
-            reject(new Error(`WebSocket error for prewarm context session ${sessionId}`))
-          }
-        })
-
-        await waitUntil(
-          () => conversationService.hasSession(sessionId),
-          `prewarmed CLI process for ${sessionId}`,
-        )
-
-        const startedAt = performance.now()
-        const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=1&contextOnly=1`)
-        const elapsedMs = performance.now() - startedAt
-        expect(res.status).toBe(200)
-        const body = await res.json() as any
-
-        expect(body.context.model).toBe('mock-opus')
-        expect(body.context.totalTokens).toBeGreaterThan(0)
-        expect(body.context.percentage).toBe(13)
-        expect(body.context.categories.some((category: any) => category.name === 'System prompt')).toBe(true)
-        expect(body.errors).toEqual({})
-        expect(elapsedMs).toBeLessThan(2_000)
-      } finally {
-        ws.close()
-        conversationService.stopSession(sessionId)
-      }
-    })
-  }, 10_000)
-
   it('should complete the client turn when the CLI exits after startup', async () => {
     const messages = await withMockExitAfterFirstUser(50, () =>
       runTurnUntilComplete(`chat-late-exit-${crypto.randomUUID()}`, 'trigger late exit'),
@@ -2273,10 +2105,8 @@ describe('WebSocket Chat Integration', () => {
     const body = await messagesRes.json() as { messages: unknown[] }
     expect(body.messages).toEqual([])
 
-    const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-    expect(inspectionRes.status).toBe(200)
-    const inspection = await inspectionRes.json() as { status?: { permissionMode?: string } }
-    expect(inspection.status?.permissionMode).toBe('acceptEdits')
+    const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
+    expect(launchInfo?.permissionMode).toBe('acceptEdits')
   })
 
   it('should preserve permission mode when clearing an inactive desktop session', async () => {
@@ -2297,10 +2127,8 @@ describe('WebSocket Chat Integration', () => {
     ).toBe(true)
     expect(clearTurn.some((m) => m.type === 'content_delta')).toBe(false)
 
-    const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-    expect(inspectionRes.status).toBe(200)
-    const inspection = await inspectionRes.json() as { status?: { permissionMode?: string } }
-    expect(inspection.status?.permissionMode).toBe('acceptEdits')
+    const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
+    expect(launchInfo?.permissionMode).toBe('acceptEdits')
   })
 
   it('should reject /clear arguments without clearing the desktop session', async () => {
@@ -3582,7 +3410,7 @@ describe('WebSocket Chat Integration', () => {
       let switchTriggered = false
       let turnComplete = false
       let modeConfirmedBeforeTurnComplete = false
-      let deferredInspectionChecked = false
+      let deferredModeChecked = false
       try {
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => {
@@ -3617,19 +3445,12 @@ describe('WebSocket Chat Integration', () => {
                 mode: 'bypassPermissions',
               }))
               await new Promise((resolve) => setTimeout(resolve, 25))
-              const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-              if (!inspectionRes.ok) {
+              deferredModeChecked = true
+              const activeMode = conversationService.getSessionPermissionMode(sessionId)
+              if (activeMode !== 'default') {
                 clearTimeout(timeout)
                 ws.close()
-                reject(new Error(`Inspection failed while permission switch was deferred: ${inspectionRes.status}`))
-                return
-              }
-              const inspectionBody = await inspectionRes.json() as { status?: { permissionMode?: string } }
-              deferredInspectionChecked = true
-              if (inspectionBody.status?.permissionMode !== 'default') {
-                clearTimeout(timeout)
-                ws.close()
-                reject(new Error(`Deferred permission switch was exposed before restart: ${inspectionBody.status?.permissionMode}`))
+                reject(new Error(`Deferred permission switch was applied before restart: ${activeMode}`))
                 return
               }
               return
@@ -3673,7 +3494,7 @@ describe('WebSocket Chat Integration', () => {
 
         expect(switchTriggered).toBe(true)
         expect(turnComplete).toBe(true)
-        expect(deferredInspectionChecked).toBe(true)
+        expect(deferredModeChecked).toBe(true)
         expect(modeConfirmedBeforeTurnComplete).toBe(false)
         expect(startCalls).toHaveLength(2)
         expect(startCalls[0]).toMatchObject({
@@ -3871,12 +3692,10 @@ describe('WebSocket Chat Integration', () => {
         }
       })
 
-      await waitUntil(async () => {
-        const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-        if (!res.ok) return false
-        const body = await res.json() as { status?: { permissionMode?: string } }
-        return body.status?.permissionMode === 'acceptEdits'
-      }, `persisted inactive permission switch for ${sessionId}`)
+      await waitUntil(
+        async () => (await sessionService.getSessionLaunchInfo(sessionId))?.permissionMode === 'acceptEdits',
+        `persisted inactive permission switch for ${sessionId}`,
+      )
       expect(messages.some((msg) =>
         msg.type === 'permission_mode_changed' &&
         msg.mode === 'acceptEdits'
@@ -3987,12 +3806,10 @@ describe('WebSocket Chat Integration', () => {
         mode: 'default',
       }))
 
-      await waitUntil(async () => {
-        const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-        if (!res.ok) return false
-        const body = await res.json() as { status?: { permissionMode?: string } }
-        return body.status?.permissionMode === 'default'
-      }, `persisted bypass-to-default permission switch for ${sessionId}`)
+      await waitUntil(
+        async () => (await sessionService.getSessionLaunchInfo(sessionId))?.permissionMode === 'default',
+        `persisted bypass-to-default permission switch for ${sessionId}`,
+      )
       expect(startCalls).toHaveLength(1)
       expect(conversationService.getSessionPermissionMode(sessionId)).toBe('default')
       expect(messages.slice(switchStartIndex).some((msg) => msg.type === 'error')).toBe(false)
@@ -4057,12 +3874,10 @@ describe('WebSocket Chat Integration', () => {
         `forwarded CLI permission broadcast for ${sessionId}`,
       )
       expect(conversationService.getSessionPermissionMode(sessionId)).toBe('acceptEdits')
-      await waitUntil(async () => {
-        const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-        if (!res.ok) return false
-        const body = await res.json() as { status?: { permissionMode?: string } }
-        return body.status?.permissionMode === 'acceptEdits'
-      }, `persisted CLI permission broadcast for ${sessionId}`)
+      await waitUntil(
+        async () => (await sessionService.getSessionLaunchInfo(sessionId))?.permissionMode === 'acceptEdits',
+        `persisted CLI permission broadcast for ${sessionId}`,
+      )
     } finally {
       ws.close()
       conversationService.stopSession(sessionId)

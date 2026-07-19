@@ -2471,25 +2471,9 @@ describe('Sessions API', () => {
     )
   })
 
-  it('GET /api/sessions/:id/inspection should report persisted permission mode for inactive sessions', async () => {
-    const workDir = await fs.mkdtemp(path.join(tmpDir, 'api-session-permission-'))
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir, permissionMode: 'bypassPermissions' }),
-    })
-    expect(createRes.status).toBe(201)
-
-    const { sessionId } = (await createRes.json()) as { sessionId: string }
-    const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
-    expect(inspectionRes.status).toBe(200)
-
-    const inspection = (await inspectionRes.json()) as {
-      active: boolean
-      status: { permissionMode?: string }
-    }
-    expect(inspection.active).toBe(false)
-    expect(inspection.status.permissionMode).toBe('bypassPermissions')
+  it('GET /api/sessions/:id/inspection should be retired', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/${crypto.randomUUID()}/inspection`)
+    expect(res.status).toBe(404)
   })
 
   it('GET /api/sessions/repository-context should return branch launch metadata', async () => {
