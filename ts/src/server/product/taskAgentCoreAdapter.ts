@@ -28,7 +28,7 @@ export type ProductTaskSocket = {
   data: {
     sessionId: string
     productTaskId?: string
-    channel: 'client' | 'product' | 'sdk'
+    channel: 'product' | 'sdk'
   }
   send(payload: string): unknown
 }

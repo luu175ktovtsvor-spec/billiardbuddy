@@ -7,41 +7,6 @@
 import type { ProductTaskAttachmentSummary } from '../../../shared/product/taskEvents.js'
 
 // ============================================================================
-// Client → Server
-// ============================================================================
-
-export type ClientMessage =
-  | { type: 'prewarm_session' }
-  | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
-  | {
-      type: 'permission_response'
-      requestId: string
-      allowed: boolean
-      rule?: string
-      updatedInput?: Record<string, unknown>
-      denyMessage?: string
-      permissionUpdates?: unknown[]
-    }
-  | {
-      type: 'computer_use_permission_response'
-      requestId: string
-      response: ComputerUsePermissionResponse
-    }
-  | { type: 'set_permission_mode'; mode: string }
-  | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string }
-  | { type: 'stop_generation' }
-  | { type: 'ping' }
-
-export type AttachmentRef = {
-  type: 'file' | 'image'
-  name?: string
-  path?: string
-  data?: string // base64 for images
-  mimeType?: string
-  isDirectory?: boolean
-}
-
-// ============================================================================
 // Server → Client
 // ============================================================================
 
@@ -151,21 +116,6 @@ export type ComputerUsePermissionRequest = {
   }
   willHide?: Array<{ bundleId: string; displayName: string }>
   autoUnhideEnabled?: boolean
-}
-
-export type ComputerUsePermissionResponse = {
-  granted: Array<{
-    bundleId: string
-    displayName: string
-    grantedAt: number
-    tier?: 'read' | 'click' | 'full'
-  }>
-  denied: Array<{
-    bundleId: string
-    reason: 'user_denied' | 'not_installed'
-  }>
-  flags: ComputerUseGrantFlags
-  userConsented?: boolean
 }
 
 // ============================================================================
