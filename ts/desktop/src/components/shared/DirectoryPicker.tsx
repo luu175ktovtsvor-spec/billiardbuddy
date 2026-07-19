@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { recentProjectsApi, type RecentProject } from '../../api/recentProjects'
+import {
+  productRecentProjectsApi,
+  type ProductRecentProject,
+} from '../../product/api/projects'
 import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 import {
@@ -31,7 +34,7 @@ function projectNameFromPath(filePath: string) {
 export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProject = false }: Props) {
   const t = useTranslation()
   const [isOpen, setIsOpen] = useState(false)
-  const [projects, setProjects] = useState<RecentProject[]>([])
+  const [projects, setProjects] = useState<ProductRecentProject[]>([])
   const [loading, setLoading] = useState(false)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; direction: 'up' | 'down' } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
@@ -90,7 +93,7 @@ export function DirectoryPicker({ value, onChange, variant = 'chip', isGitProjec
       return
     }
     setLoading(true)
-    recentProjectsApi.list()
+    productRecentProjectsApi.list()
       .then(({ projects: p }) => {
         setCachedRecentProjects(p)
         setProjects(p)

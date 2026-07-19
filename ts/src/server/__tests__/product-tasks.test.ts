@@ -162,6 +162,42 @@ function legacyProductTaskIdForTest(coreSessionId: string): string {
 }
 
 describe('ProductTaskService', () => {
+  it('derives recent picker projects from registered product tasks only', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+    const visibleWorkDir = path.join(tempDir, 'hall-operations')
+    const hiddenCoreWorkDir = path.join(tempDir, 'core-only')
+    await fs.mkdir(visibleWorkDir)
+    await fs.mkdir(hiddenCoreWorkDir)
+
+    // Complete the one-time legacy import before a later Core-only session
+    // appears; it must not silently become a product directory choice.
+    await service.listTasks()
+    const hiddenCore = await core.createSession({ workDir: hiddenCoreWorkDir })
+    await service.createTask({ workDir: visibleWorkDir })
+
+    const recent = await service.listRecentProjects(20)
+
+    expect(recent).toEqual({
+      projects: [{
+        projectPath: visibleWorkDir,
+        realPath: await fs.realpath(visibleWorkDir),
+        projectName: 'hall-operations',
+        isGit: false,
+        repoName: null,
+        branch: null,
+        modifiedAt: expect.any(String),
+        sessionCount: 1,
+      }],
+    })
+    expect(JSON.stringify(recent)).not.toContain(hiddenCore.sessionId)
+    expect(JSON.stringify(recent)).not.toContain(hiddenCoreWorkDir)
+  })
+
   it('does not expose the Core binding in public task records', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()

@@ -28,6 +28,19 @@ function createService() {
     calls.push({ name, args })
     return value
   }
+  const recentProjects = {
+    projects: [{
+      projectPath: '/workspace/hall-operations',
+      realPath: '/workspace/hall-operations',
+      projectName: 'hall-operations',
+      isGit: true,
+      repoName: 'BilliardBuddy/hall-operations',
+      branch: 'main',
+      modifiedAt: '2026-07-19T00:00:00.000Z',
+      sessionCount: 2,
+      coreSessionId: 'internal-session-1',
+    }],
+  }
 
   return {
     calls,
@@ -41,6 +54,7 @@ function createService() {
         total: 1,
         capabilities: { createTask: true },
       }),
+      listRecentProjects: record('listRecentProjects', recentProjects),
       createTask: record('createTask'),
       updateTask: record('updateTask'),
       setPinned: record('setPinned'),
@@ -75,6 +89,26 @@ async function request(
 }
 
 describe('Product tasks API', () => {
+  it('serves recent projects from the product task service without Core bindings', async () => {
+    const { service, calls } = createService()
+
+    const response = await request(service, 'GET', '/api/product/projects/recent?limit=20')
+
+    expect(response).toEqual({
+      status: 200,
+      body: {
+        projects: [expect.objectContaining({
+          projectPath: '/workspace/hall-operations',
+          projectName: 'hall-operations',
+          sessionCount: 2,
+        })],
+      },
+    })
+    expect(JSON.stringify(response.body)).not.toContain('internal-session-1')
+    expect(response.body.projects[0]).not.toHaveProperty('coreSessionId')
+    expect(calls).toEqual([{ name: 'listRecentProjects', args: [20] }])
+  })
+
   it('does not expose the legacy Core binding in ordinary task JSON', async () => {
     const { service } = createService()
 

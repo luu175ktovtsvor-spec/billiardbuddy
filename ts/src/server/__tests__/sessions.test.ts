@@ -2499,32 +2499,6 @@ describe('Sessions API', () => {
     expect(body.worktrees.some((worktree) => worktree.path === realWorkDir && worktree.current)).toBe(true)
   })
 
-  it('GET /api/sessions/recent-projects should keep pending repository launches on the source project', async () => {
-    const workDir = await createCleanGitRepo(tmpDir)
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        workDir,
-        repository: { branch: 'feature/rail', worktree: true },
-      }),
-    })
-    expect(createRes.status).toBe(201)
-
-    const created = (await createRes.json()) as { workDir: string }
-    const recentRes = await fetch(`${baseUrl}/api/sessions/recent-projects?limit=20`)
-    expect(recentRes.status).toBe(200)
-
-    const body = (await recentRes.json()) as {
-      projects: Array<{ realPath: string; projectName: string; branch: string | null }>
-    }
-    const project = body.projects.find((candidate) => candidate.realPath === created.workDir)
-    expect(project).toBeDefined()
-    expect(project?.projectName).toBe(path.basename(workDir))
-    expect(project?.branch).toBe('main')
-    expect(project?.realPath).toBe(await fs.realpath(workDir))
-  })
-
   it('GET /api/sessions/:id should return session detail', async () => {
     // Create a session file
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -2891,35 +2865,6 @@ describe('Sessions API', () => {
     // Verify it's gone
     const res2 = await fetch(`${baseUrl}/api/sessions/${sessionId}`)
     expect(res2.status).toBe(404)
-  })
-
-  it('DELETE /api/sessions/:id should invalidate recent projects cache', async () => {
-    const workDir = await fs.mkdtemp(path.join(tmpDir, 'recent-cache-delete-'))
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
-    const realWorkDir = await fs.realpath(workDir)
-
-    const firstRecentRes = await fetch(`${baseUrl}/api/sessions/recent-projects?limit=20`)
-    expect(firstRecentRes.status).toBe(200)
-    const firstRecent = await firstRecentRes.json() as {
-      projects: Array<{ realPath: string }>
-    }
-    expect(firstRecent.projects.some((project) => project.realPath === realWorkDir)).toBe(true)
-
-    const deleteRes = await fetch(`${baseUrl}/api/sessions/${sessionId}`, { method: 'DELETE' })
-    expect(deleteRes.status).toBe(200)
-
-    const secondRecentRes = await fetch(`${baseUrl}/api/sessions/recent-projects?limit=20`)
-    expect(secondRecentRes.status).toBe(200)
-    const secondRecent = await secondRecentRes.json() as {
-      projects: Array<{ realPath: string }>
-    }
-    expect(secondRecent.projects.some((project) => project.realPath === realWorkDir)).toBe(false)
   })
 
   it('DELETE /api/sessions/:id should roll back the deleted marker when file deletion fails', async () => {
