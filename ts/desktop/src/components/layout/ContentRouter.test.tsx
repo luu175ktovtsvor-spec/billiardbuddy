@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,14 +16,6 @@ vi.mock('../../product/components/ProductScheduledTasksPage', () => ({
 
 vi.mock('../../pages/Settings', () => ({
   Settings: () => <div data-testid="settings-page" />,
-}))
-
-vi.mock('../../pages/TerminalSettings', () => ({
-  TerminalSettings: ({ active, cwd, onNewTerminal, runtimeId, testId }: { active: boolean; cwd?: string; onNewTerminal: () => void; runtimeId?: string; testId: string }) => (
-    <div data-active={active ? 'true' : 'false'} data-cwd={cwd ?? ''} data-runtime-id={runtimeId ?? ''} data-testid={testId}>
-      <button type="button" onClick={onNewTerminal}>New Terminal</button>
-    </div>
-  ),
 }))
 
 vi.mock('../media/ImageWorkbench', () => ({
@@ -78,71 +70,6 @@ describe('ContentRouter tab surfaces', () => {
     expect(screen.getByTestId('product-shell')).toHaveAttribute('data-page', 'new-task')
     expect(screen.getByTestId('product-shell')).toHaveAttribute('data-work-dir', '/workspace/billiard')
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
-  })
-
-  it('renders the active terminal tab as main content', () => {
-    useTabStore.setState({
-      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', terminalCwd: '/tmp/project' }],
-      activeTabId: '__terminal__1',
-    })
-
-    render(<ContentRouter />)
-
-    expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-active', 'true')
-    expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-cwd', '/tmp/project')
-    expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-runtime-id', '__terminal__1')
-    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
-  })
-
-  it('uses a promoted docked runtime when rendering a terminal tab', () => {
-    useTabStore.setState({
-      tabs: [{
-        sessionId: '__terminal__1',
-        title: 'Terminal 1',
-        type: 'terminal',
-        terminalCwd: '/tmp/project',
-        terminalRuntimeId: '__session_terminal__session-1',
-      }],
-      activeTabId: '__terminal__1',
-    })
-
-    render(<ContentRouter />)
-
-    expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-runtime-id', '__session_terminal__session-1')
-  })
-
-  it('keeps terminal tabs mounted while a product task is active', () => {
-    useTabStore.setState({
-      tabs: [
-        { sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal' },
-        {
-          sessionId: '__product_task__task-1',
-          title: '任务',
-          type: 'product-task',
-          taskId: 'task-1',
-        },
-      ],
-      activeTabId: '__product_task__task-1',
-    })
-
-    render(<ContentRouter />)
-
-    expect(screen.getByTestId('terminal-host-__terminal__1')).toHaveAttribute('data-active', 'false')
-    expect(screen.getByTestId('product-task-page')).toHaveTextContent('task:task-1')
-  })
-
-  it('can open another terminal tab from a terminal page', () => {
-    useTabStore.setState({
-      tabs: [{ sessionId: '__terminal__1', title: 'Terminal 1', type: 'terminal', terminalCwd: '/tmp/project' }],
-      activeTabId: '__terminal__1',
-    })
-
-    render(<ContentRouter />)
-    fireEvent.click(screen.getByRole('button', { name: 'New Terminal' }))
-
-    expect(useTabStore.getState().tabs.filter((tab) => tab.type === 'terminal')).toHaveLength(2)
-    expect(useTabStore.getState().activeTabId).not.toBe('__terminal__1')
-    expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === useTabStore.getState().activeTabId)?.terminalCwd).toBe('/tmp/project')
   })
 
   it('renders the image workbench as a product surface', () => {

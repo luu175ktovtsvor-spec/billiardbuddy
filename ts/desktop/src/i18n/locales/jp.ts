@@ -24,7 +24,6 @@ export const jp: Record<TranslationKey, string> = {
   'sidebar.newTask': '新しいタスク',
   'sidebar.untitledTask': '無題のタスク',
   'sidebar.scheduled': 'スケジュール',
-  'sidebar.terminal': 'ターミナル',
   'sidebar.settings': '設定',
   'sidebar.searchPlaceholder': 'セッションを検索...',
   'sidebar.noSessions': 'セッションがありません',
@@ -196,11 +195,8 @@ export const jp: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': 'ターミナル',
-  'settings.terminal.description': 'プラグイン、スキル、MCP のセットアップ用にホストマシンのコマンドを実行します。',
-  'settings.terminal.infoLabel': 'ターミナルセットアップのヘルプ',
   'settings.terminal.clear': 'クリア',
   'settings.terminal.restart': '再起動',
-  'settings.terminal.windowTitle': 'ホストシェル',
   'settings.terminal.unavailableTitle': 'デスクトップランタイムが必要です',
   'settings.terminal.unavailableBody': 'インタラクティブなターミナルを開始するには、このページをパッケージ版デスクトップアプリで開いてください。',
   'settings.terminal.preferencesTitle': '起動シェル',
@@ -234,10 +230,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.terminal.bashPathReset': 'デフォルトにリセット',
   'settings.terminal.bashPathSaved': '保存しました',
   'settings.terminal.bashPathInvalid': 'パスが存在しません。有効な Bash 実行ファイルを選択してください。',
-  'terminal.newTab': '新しいターミナル',
-  'terminal.openInTab': 'タブで開く',
   'terminal.closePanel': 'ターミナルパネルを閉じる',
-  'terminal.resizePanel': 'ターミナルパネルのサイズを変更',
 
   // Recovery > Doctor
   'doctor.title': 'Doctor',

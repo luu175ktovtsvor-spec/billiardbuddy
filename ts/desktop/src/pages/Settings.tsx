@@ -25,7 +25,7 @@ import { PluginList } from '../components/plugins/PluginList'
 import { PluginDetail } from '../components/plugins/PluginDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
-import { TerminalSettings } from './TerminalSettings'
+import { ProductTerminalPreferences } from '../product/components/ProductTerminalPreferences'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
@@ -220,7 +220,7 @@ export function Settings() {
 
   const content = (() => {
     if (activeTab === 'general') return <GeneralSettings />
-    if (activeTab === 'terminal') return <TerminalSettings showPreferences />
+    if (activeTab === 'terminal') return <ProductTerminalPreferences />
     if (activeTab === 'mcp') return <McpSettings />
     if (activeTab === 'skills') return <SkillSettings />
     if (activeTab === 'plugins') return <PluginSettings />

@@ -113,8 +113,13 @@ vi.mock('../stores/productSideTaskStore', () => ({
   }),
 }))
 
-vi.mock('../../pages/TerminalSettings', () => ({
-  TerminalSettings: ({ cwd }: { cwd?: string }) => <div data-testid="terminal-settings">{cwd}</div>,
+vi.mock('./ProductTaskTerminalDock', () => ({
+  ProductTaskTerminalDock: ({ workDir, onClose }: { workDir: string; onClose?: () => void }) => (
+    <div data-testid="product-task-terminal-runtime">
+      {workDir}
+      {onClose ? <button type="button" onClick={onClose}>关闭</button> : null}
+    </div>
+  ),
 }))
 
 vi.mock('../../components/markdown/MarkdownRenderer', () => ({

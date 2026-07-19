@@ -24,7 +24,6 @@ export const kr: Record<TranslationKey, string> = {
   'sidebar.newTask': '새 작업',
   'sidebar.untitledTask': '제목 없는 작업',
   'sidebar.scheduled': '예약 작업',
-  'sidebar.terminal': '터미널',
   'sidebar.settings': '설정',
   'sidebar.searchPlaceholder': '세션 검색...',
   'sidebar.noSessions': '아직 세션이 없습니다',
@@ -196,11 +195,8 @@ export const kr: Record<TranslationKey, string> = {
 
   // Settings > Terminal
   'settings.terminal.title': '터미널',
-  'settings.terminal.description': '플러그인, 스킬, MCP 설정을 위해 호스트 컴퓨터의 명령을 실행합니다.',
-  'settings.terminal.infoLabel': '터미널 설정 도움말',
   'settings.terminal.clear': '지우기',
   'settings.terminal.restart': '다시 시작',
-  'settings.terminal.windowTitle': '호스트 셸',
   'settings.terminal.unavailableTitle': '데스크톱 런타임이 필요합니다',
   'settings.terminal.unavailableBody': '대화형 터미널을 시작하려면 이 페이지를 패키지된 데스크톱 앱에서 여세요.',
   'settings.terminal.preferencesTitle': '시작 셸',
@@ -234,10 +230,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.terminal.bashPathReset': '기본값으로 재설정',
   'settings.terminal.bashPathSaved': '저장됨',
   'settings.terminal.bashPathInvalid': '경로가 존재하지 않습니다. 유효한 Bash 실행 파일을 선택하세요.',
-  'terminal.newTab': '새 터미널',
-  'terminal.openInTab': '탭에서 열기',
   'terminal.closePanel': '터미널 패널 닫기',
-  'terminal.resizePanel': '터미널 패널 크기 조정',
 
   // Recovery > Doctor
   'doctor.title': 'Doctor',

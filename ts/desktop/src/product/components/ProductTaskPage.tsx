@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
-import { TerminalSettings } from '../../pages/TerminalSettings'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
@@ -26,6 +25,7 @@ import {
 } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskMediaDock } from './ProductTaskMediaDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
+import { ProductTaskTerminalDock } from './ProductTaskTerminalDock'
 import {
   ProductTaskRunPanel,
   productTaskActivityDisplayLabel,
@@ -911,24 +911,13 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 data-active={isTerminalActive ? 'true' : 'false'}
                 className={`min-h-0 flex-1 flex-col overflow-hidden ${isTerminalActive ? 'flex' : 'hidden'}`}
               >
-                <header className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2">
-                  <div>
-                    <h2 className="text-sm font-medium text-[var(--color-text-primary)]">终端</h2>
-                    <p className="truncate text-xs text-[var(--color-text-tertiary)]">{task.workDir}</p>
-                  </div>
-                  <button type="button" onClick={closeTerminalDock} className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)]">关闭</button>
-                </header>
-                <div className="min-h-0 flex-1">
-                  <TerminalSettings
-                    active={isTerminalActive}
-                    cwd={task.workDir}
-                    runtimeId={`product-task-terminal-${task.id}`}
-                    workspace
-                    docked
-                    showPreferences={false}
-                    testId={`product-task-terminal-${task.id}`}
-                  />
-                </div>
+                <ProductTaskTerminalDock
+                  taskId={task.id}
+                  workDir={task.workDir}
+                  active={isTerminalActive}
+                  onClose={closeTerminalDock}
+                  testId={`product-task-terminal-${task.id}`}
+                />
               </section>
             ) : null}
             {isBrowserPreviewActive ? (

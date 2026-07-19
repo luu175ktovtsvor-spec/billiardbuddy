@@ -1,12 +1,10 @@
 import { create } from 'zustand'
-import { destroyTerminalRuntime } from '../lib/terminalRuntime'
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
 let nextNewProductTaskRequestId = 0
 
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
-export const TERMINAL_TAB_PREFIX = '__terminal__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
@@ -16,7 +14,6 @@ export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 export type TabType =
   | 'settings'
   | 'scheduled'
-  | 'terminal'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
@@ -24,9 +21,9 @@ export type TabType =
   | 'product-task'
 
 /**
- * Fixed product surfaces may use the generic tab opener. Task and terminal
- * tabs have dedicated constructors so their required metadata cannot be
- * omitted, and legacy Core surfaces are deliberately excluded.
+ * Fixed product surfaces may use the generic tab opener. Product tasks have a
+ * dedicated constructor so their required metadata cannot be omitted, and
+ * legacy Core surfaces are deliberately excluded.
  */
 export type OpenTabType =
   | 'settings'
@@ -39,8 +36,6 @@ export type Tab = {
   sessionId: string
   title: string
   type: TabType
-  terminalCwd?: string
-  terminalRuntimeId?: string
   newTaskWorkDir?: string
   newTaskRequestId?: number
   taskId?: string
@@ -62,7 +57,6 @@ type TabStore = {
   lastActiveProductTaskId: string | null
 
   openTab: (sessionId: string, title: string, type: OpenTabType) => void
-  openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
   openNewProductTask: (workDir?: string) => void
   openProductTaskTab: (taskId: string, title: string) => string
   closeTab: (sessionId: string) => void
@@ -159,27 +153,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
     get().saveTabs()
   },
 
-  openTerminalTab: (cwd, terminalRuntimeId) => {
-    const { tabs, lastActiveProductTaskId } = get()
-    const nextIndex = Math.max(
-      0,
-      ...tabs
-        .filter((tab) => tab.type === 'terminal')
-        .map((tab) => {
-          const match = /^Terminal (\d+)$/.exec(tab.title)
-          return match ? Number(match[1]) : 0
-        }),
-    ) + 1
-    const sessionId = `${TERMINAL_TAB_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    set({
-      tabs: [...tabs, { sessionId, title: `Terminal ${nextIndex}`, type: 'terminal', terminalCwd: cwd, terminalRuntimeId }],
-      activeTabId: sessionId,
-      lastActiveProductTaskId: getOpenProductTaskId(tabs, lastActiveProductTaskId),
-    })
-    get().saveTabs()
-    return sessionId
-  },
-
   openNewProductTask: (workDir) => {
     const normalizedWorkDir = workDir?.trim() || undefined
     const requestId = ++nextNewProductTaskRequestId
@@ -254,10 +227,6 @@ export const useTabStore = create<TabStore>((set, get) => ({
       ),
     })
     get().saveTabs()
-    const closedTab = tabs[index]
-    if (closedTab?.type === 'terminal') {
-      destroyTerminalRuntime(closedTab.terminalRuntimeId ?? closedTab.sessionId)
-    }
   },
 
   setActiveTab: (sessionId) => {

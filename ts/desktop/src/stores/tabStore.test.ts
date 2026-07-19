@@ -76,21 +76,6 @@ describe('tabStore', () => {
     })
   })
 
-  it('stores a promoted terminal runtime id on new terminal tabs', () => {
-    const tabId = useTabStore.getState().openTerminalTab('/tmp/project', '__session_terminal__session-1')
-
-    expect(useTabStore.getState().tabs).toEqual([
-      {
-        sessionId: tabId,
-        title: 'Terminal 1',
-        type: 'terminal',
-        terminalCwd: '/tmp/project',
-        terminalRuntimeId: '__session_terminal__session-1',
-      },
-    ])
-    expect(useTabStore.getState().activeTabId).toBe(tabId)
-  })
-
   it('opens one ephemeral dedicated new-task tab and refreshes its work-directory request', () => {
     useTabStore.getState().openNewProductTask('  /workspace/billiard  ')
 
