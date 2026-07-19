@@ -272,8 +272,8 @@ export async function executeFilePersistence(
  * Check if file persistence is enabled.
  * Requires: feature flag ON, valid environment kind, session access token,
  * and CLAUDE_CODE_REMOTE_SESSION_ID.
- * This ensures only public-api/sessions users trigger file persistence,
- * not normal Claude Code CLI users.
+ * This distinguishes authenticated remote product sessions from normal
+ * Claude Code CLI users.
  */
 export function isFilePersistenceEnabled(): boolean {
   if (feature('FILE_PERSISTENCE')) {

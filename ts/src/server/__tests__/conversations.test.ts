@@ -15,6 +15,7 @@ import { ConversationService, ConversationStartupError, conversationService } fr
 import { SessionService, sessionService } from '../services/sessionService.js'
 import { ProviderService } from '../services/providerService.js'
 import { SettingsService } from '../services/settingsService.js'
+import { getSlashCommands } from '../ws/handler.js'
 import { createDirectCoreClient } from './helpers/coreClientHarness.js'
 
 async function setDefaultPermissionModeForIntegrationTests(mode: string): Promise<void> {
@@ -1157,7 +1158,6 @@ describe('Core handler and SDK integration', () => {
   const WebSocket: typeof globalThis.WebSocket =
     createDirectCoreClient as unknown as typeof globalThis.WebSocket
   let server: ReturnType<typeof Bun.serve>
-  let baseUrl: string
   let wsUrl: string
   let tmpDir: string
 
@@ -1288,6 +1288,18 @@ describe('Core handler and SDK integration', () => {
     }
   }
 
+  async function createCoreSession(
+    workDir: string,
+    permissionMode?: string,
+  ): Promise<string> {
+    const { sessionId } = await sessionService.createSession(
+      workDir,
+      undefined,
+      permissionMode,
+    )
+    return sessionId
+  }
+
   async function runTurn(sessionId: string, content: string, allowError = false): Promise<any[]> {
     const messages: any[] = []
     const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
@@ -1387,7 +1399,6 @@ describe('Core handler and SDK integration', () => {
 
     const { startServer } = await import('../index.js')
     server = startServer(0, '127.0.0.1')
-    baseUrl = `http://127.0.0.1:${server.port}`
     wsUrl = `ws://127.0.0.1:${server.port}`
   })
 
@@ -2027,14 +2038,8 @@ describe('Core handler and SDK integration', () => {
     expect(messages.some((m) => m.type === 'pong')).toBe(true)
   })
 
-  it('should start a placeholder REST session and continue it on a later reconnect', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+  it('should start a placeholder Core session and continue it on a later reconnect', async () => {
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const firstTurn = await runTurn(sessionId, 'reply with first')
     expect(firstTurn.some((m) => m.type === 'message_complete')).toBe(true)
@@ -2062,13 +2067,7 @@ describe('Core handler and SDK integration', () => {
         'export function greet(name: string) { return `hello ${name}` }\n',
       )
 
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: projectDir }),
-      })
-      expect(createRes.status).toBe(201)
-      ;({ sessionId } = await createRes.json() as { sessionId: string })
+      ;({ sessionId } = await createCoreSession(projectDir))
 
       const prompts = [
         'Inspect this TypeScript project and summarize what you see.',
@@ -2092,13 +2091,7 @@ describe('Core handler and SDK integration', () => {
   }, 20_000)
 
   it('should clear a desktop session without sending /clear to the CLI turn loop', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'acceptEdits' }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd(), 'acceptEdits')
 
     const firstTurn = await runTurn(sessionId, 'message before clear')
     expect(firstTurn.some((m) => m.type === 'message_complete')).toBe(true)
@@ -2111,23 +2104,14 @@ describe('Core handler and SDK integration', () => {
     ).toBe(true)
     expect(clearTurn.some((m) => m.type === 'content_delta')).toBe(false)
 
-    const messagesRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/messages`)
-    expect(messagesRes.status).toBe(200)
-    const body = await messagesRes.json() as { messages: unknown[] }
-    expect(body.messages).toEqual([])
+    expect(await sessionService.getSessionMessages(sessionId)).toEqual([])
 
     const launchInfo = await sessionService.getSessionLaunchInfo(sessionId)
     expect(launchInfo?.permissionMode).toBe('acceptEdits')
   })
 
   it('should preserve permission mode when clearing an inactive desktop session', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'acceptEdits' }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd(), 'acceptEdits')
     expect(conversationService.hasSession(sessionId)).toBe(false)
 
     const clearTurn = await runTurn(sessionId, '/clear')
@@ -2143,13 +2127,7 @@ describe('Core handler and SDK integration', () => {
   })
 
   it('should reject /clear arguments without clearing the desktop session', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     await runTurn(sessionId, 'message before invalid clear')
 
@@ -2172,13 +2150,7 @@ describe('Core handler and SDK integration', () => {
   it('should return a safe startup code without desktop diagnostics when CLI startup fails', async () => {
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-startup-missing-workdir-'))
     const canonicalWorkDir = await fs.realpath(workDir)
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const sessionId = await createCoreSession(workDir)
 
     await fs.rm(workDir, { recursive: true, force: true })
 
@@ -2215,13 +2187,7 @@ describe('Core handler and SDK integration', () => {
   }, 10_000)
 
   it('should prewarm the CLI before the first user turn and reuse that process', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{ sessionId: string; options?: Record<string, unknown> }> = []
@@ -2287,13 +2253,10 @@ describe('Core handler and SDK integration', () => {
         () => startCalls.length === 1 && conversationService.hasSession(sessionId),
         `prewarmed CLI process for ${sessionId}`,
       )
-      await waitUntil(async () => {
-        const commandsRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
-        if (!commandsRes.ok) return false
-        const { commands } = await commandsRes.json() as { commands?: Array<{ name: string }> }
-        if (!Array.isArray(commands)) return false
-        return commands.some((command) => command.name === 'help')
-      }, `prewarmed slash commands for ${sessionId}`)
+      await waitUntil(
+        () => getSlashCommands(sessionId).some((command) => command.name === 'help'),
+        `prewarmed slash commands for ${sessionId}`,
+      )
 
       preUserMessageCount = messages.length
       expect(
@@ -2356,13 +2319,7 @@ describe('Core handler and SDK integration', () => {
     })
     await providerService.activateProvider(provider.id)
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -2455,13 +2412,7 @@ describe('Core handler and SDK integration', () => {
     })
     await providerService.activateProvider(provider.id)
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -2530,13 +2481,7 @@ describe('Core handler and SDK integration', () => {
     })
 
     const createSession = async () => {
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: process.cwd() }),
-      })
-      expect(createRes.status).toBe(201)
-      const { sessionId } = await createRes.json() as { sessionId: string }
+      const { sessionId } = await createCoreSession(process.cwd())
       return sessionId
     }
     const [sessionA, sessionB] = await Promise.all([createSession(), createSession()])
@@ -2640,13 +2585,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -2749,13 +2688,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const originalSendMessage = conversationService.sendMessage.bind(conversationService)
@@ -2879,13 +2812,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -2933,12 +2860,10 @@ describe('Core handler and SDK integration', () => {
         () => startCalls.length === 1 && conversationService.hasSession(sessionId),
         `prewarmed CLI process for idle runtime switch ${sessionId}`,
       )
-      await waitUntil(async () => {
-        const commandsRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
-        if (!commandsRes.ok) return false
-        const { commands } = await commandsRes.json() as { commands?: Array<{ name: string }> }
-        return Array.isArray(commands) && commands.some((command) => command.name === 'help')
-      }, `prewarmed slash commands for idle runtime switch ${sessionId}`)
+      await waitUntil(
+        () => getSlashCommands(sessionId).some((command) => command.name === 'help'),
+        `prewarmed slash commands for idle runtime switch ${sessionId}`,
+      )
 
       const switchStartIndex = messages.length
       ws.send(JSON.stringify({
@@ -2990,13 +2915,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const originalSendMessage = conversationService.sendMessage.bind(conversationService)
@@ -3114,13 +3033,7 @@ describe('Core handler and SDK integration', () => {
         },
       })
 
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: process.cwd() }),
-      })
-      expect(createRes.status).toBe(201)
-      const { sessionId } = await createRes.json() as { sessionId: string }
+      const { sessionId } = await createCoreSession(process.cwd())
 
       const originalStartSession = conversationService.startSession.bind(conversationService)
       const startCalls: Array<{
@@ -3268,13 +3181,7 @@ describe('Core handler and SDK integration', () => {
         },
       })
 
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: process.cwd() }),
-      })
-      expect(createRes.status).toBe(201)
-      const { sessionId } = await createRes.json() as { sessionId: string }
+      const { sessionId } = await createCoreSession(process.cwd())
 
       const originalStartSession = conversationService.startSession.bind(conversationService)
       const startCalls: Array<{
@@ -3389,13 +3296,7 @@ describe('Core handler and SDK integration', () => {
     await withMockStreamDelay(350, async () => {
       await setDefaultPermissionModeForIntegrationTests('default')
 
-      const createRes = await fetch(`${baseUrl}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workDir: process.cwd() }),
-      })
-      expect(createRes.status).toBe(201)
-      const { sessionId } = await createRes.json() as { sessionId: string }
+      const { sessionId } = await createCoreSession(process.cwd())
 
       const originalStartSession = conversationService.startSession.bind(conversationService)
       const startCalls: Array<{
@@ -3528,13 +3429,7 @@ describe('Core handler and SDK integration', () => {
   it('should keep the session idle in the UI while restarting for a bypass permission switch', async () => {
     await setDefaultPermissionModeForIntegrationTests('default')
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -3582,12 +3477,10 @@ describe('Core handler and SDK integration', () => {
         () => startCalls.length === 1 && conversationService.hasSession(sessionId),
         `prewarmed CLI process for idle permission switch ${sessionId}`,
       )
-      await waitUntil(async () => {
-        const commandsRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
-        if (!commandsRes.ok) return false
-        const { commands } = await commandsRes.json() as { commands?: Array<{ name: string }> }
-        return Array.isArray(commands) && commands.some((command) => command.name === 'help')
-      }, `prewarmed slash commands for idle permission switch ${sessionId}`)
+      await waitUntil(
+        () => getSlashCommands(sessionId).some((command) => command.name === 'help'),
+        `prewarmed slash commands for idle permission switch ${sessionId}`,
+      )
 
       const switchStartIndex = messages.length
       ws.send(JSON.stringify({
@@ -3630,13 +3523,7 @@ describe('Core handler and SDK integration', () => {
   it('should persist permission changes made before the CLI starts', async () => {
     await setDefaultPermissionModeForIntegrationTests('default')
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'default' }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd(), 'default')
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -3726,13 +3613,7 @@ describe('Core handler and SDK integration', () => {
   }, 20_000)
 
   it('should switch from bypass permissions back to default without restarting', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'bypassPermissions' }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd(), 'bypassPermissions')
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -3808,13 +3689,7 @@ describe('Core handler and SDK integration', () => {
   }, 20_000)
 
   it('should persist CLI-originated permission-mode broadcasts', async () => {
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'default' }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd(), 'default')
 
     const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
     const messages: any[] = []
@@ -3888,13 +3763,7 @@ describe('Core handler and SDK integration', () => {
     })
     await providerService.activateProvider(activeProvider.id)
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const staleProviderId = crypto.randomUUID()
     const originalStartSession = conversationService.startSession.bind(conversationService)
@@ -3977,13 +3846,7 @@ describe('Core handler and SDK integration', () => {
     const providerService = new ProviderService()
     await providerService.activateProvider('openai-official')
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -4197,13 +4060,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -4347,13 +4204,7 @@ describe('Core handler and SDK integration', () => {
       },
     })
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const startCalls: Array<{
@@ -4456,13 +4307,7 @@ describe('Core handler and SDK integration', () => {
   it('should wait for an in-flight permission restart before sending the next user turn', async () => {
     await setDefaultPermissionModeForIntegrationTests('default')
 
-    const createRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
-    })
-    expect(createRes.status).toBe(201)
-    const { sessionId } = await createRes.json() as { sessionId: string }
+    const { sessionId } = await createCoreSession(process.cwd())
 
     const originalStartSession = conversationService.startSession.bind(conversationService)
     const originalSendMessage = conversationService.sendMessage.bind(conversationService)

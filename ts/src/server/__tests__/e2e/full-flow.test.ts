@@ -97,61 +97,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 2. Sessions CRUD
-  // =============================================
-
-  let sessionId: string
-
-  it('should start with empty session list', async () => {
-    const { data } = await api('GET', '/api/sessions')
-    expect(data.sessions).toEqual([])
-    expect(data.total).toBe(0)
-  })
-
-  it('should create a new session', async () => {
-    const { status, data } = await api('POST', '/api/sessions', { workDir: tmpDir })
-    expect(status).toBe(201)
-    expect(data.sessionId).toBeDefined()
-    expect(data.sessionId).toMatch(/^[0-9a-f-]{36}$/)
-    sessionId = data.sessionId
-  })
-
-  it('should list the created session', async () => {
-    const { data } = await api('GET', '/api/sessions')
-    expect(data.sessions.length).toBe(1)
-    expect(data.sessions[0].id).toBe(sessionId)
-  })
-
-  it('should get session detail', async () => {
-    const { status, data } = await api('GET', `/api/sessions/${sessionId}`)
-    expect(status).toBe(200)
-    expect(data.id).toBe(sessionId)
-  })
-
-  it('should rename session', async () => {
-    const { status } = await api('PATCH', `/api/sessions/${sessionId}`, { title: 'My Test Session' })
-    expect(status).toBe(200)
-
-    const { data } = await api('GET', `/api/sessions/${sessionId}`)
-    expect(data.title).toBe('My Test Session')
-  })
-
-  it('should get session messages', async () => {
-    const { status, data } = await api('GET', `/api/sessions/${sessionId}/messages`)
-    expect(status).toBe(200)
-    expect(Array.isArray(data.messages)).toBe(true)
-  })
-
-  it('should delete session', async () => {
-    const { status } = await api('DELETE', `/api/sessions/${sessionId}`)
-    expect(status).toBe(200)
-
-    const { data } = await api('GET', '/api/sessions')
-    expect(data.sessions.length).toBe(0)
-  })
-
-  // =============================================
-  // 3. Settings
+  // 2. Settings
   // =============================================
 
   it('should get empty settings initially', async () => {
@@ -172,7 +118,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 4. Scheduled Tasks
+  // 3. Scheduled Tasks
   // =============================================
 
   let taskId: string
@@ -219,7 +165,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 5. Agents
+  // 4. Agents
   // =============================================
 
   it('should start with safe Agent command descriptors', async () => {
@@ -238,7 +184,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 6. Task-scoped WebSocket
+  // 5. Task-scoped WebSocket
   // =============================================
 
   it('streams a product task without exposing its private Core session binding', async () => {
@@ -289,7 +235,7 @@ describe('E2E: Full Flow', () => {
   }, 20_000)
 
   // =============================================
-  // 7. CORS
+  // 6. CORS
   // =============================================
 
   // Loopback browser origins (local dev servers) are trusted without a token
@@ -311,7 +257,7 @@ describe('E2E: Full Flow', () => {
   })
 
   // =============================================
-  // 8. Error Handling
+  // 7. Error Handling
   // =============================================
 
   it('should return 404 for unknown API', async () => {
@@ -319,8 +265,4 @@ describe('E2E: Full Flow', () => {
     expect(status).toBe(404)
   })
 
-  it('should return 404 for unknown session', async () => {
-    const { status } = await api('GET', '/api/sessions/00000000-0000-0000-0000-000000000000')
-    expect(status).toBe(404)
-  })
 })
