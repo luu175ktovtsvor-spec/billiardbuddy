@@ -22,11 +22,25 @@ type GatewayHealth = {
 type Sample = {
   status: number
   totalMs: number
-  failureKind?: 'timeout' | 'network' | `http_${number}`
+  completed: boolean
+  failureKind?: 'timeout' | 'network' | 'response_too_large' | 'invalid_json' | 'invalid_completion' | `http_${number}`
 }
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])
 const encoder = new TextEncoder()
+const MAX_GATEWAY_IMAGE_BYTES = 8 * 1024 * 1024
+// Leave room for the per-request tEXt chunk so a valid source image cannot turn
+// into a gateway-oversize payload merely because this runner makes it unique.
+const MAX_IMAGE_FILE_BYTES = MAX_GATEWAY_IMAGE_BYTES - 256
+const MAX_IMAGE_PIXELS = 16 * 1024 * 1024
+const MAX_RESPONSE_BYTES = 1024 * 1024
+const SAFE_DEFAULT_PHASES = [1, 4, 8, 12, 24]
+const pools = ['vision', 'mimo', 'deepseek', 'ingress_body'] as const
+
+type Pool = typeof pools[number]
+type PoolObservation = { active: number; queued: number; oldestQueueMs: number }
+type ValidPng = { bytes: Uint8Array; iendOffset: number }
+type LoadTarget = { base: URL; baseUrl: string; targetOrigin: string }
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
@@ -38,7 +52,7 @@ function usage(exitCode = 2): never {
 Options:
   --users=<n>                 Simulated installation count (default: 1)
   --windows=<n>               Concurrent visual requests per installation (default: 1)
-  --phases=a,b,c              Concurrent request steps (default: total)
+  --phases=a,b,c              Concurrent request steps (default: 1,4,8,12,24; capped at total)
   --route=bridge|native       bridge=MiMo VisionBridge then DeepSeek (default)
                                native=direct MiMo v2.5 visual request
   --generate-image            Make a distinct, valid 64x64 PNG for each request
@@ -71,9 +85,9 @@ function option(args: string[], name: string): string | undefined {
   return args.find(arg => arg.startsWith(prefix))?.slice(prefix.length)
 }
 
-function parsePhases(raw: string | undefined, total: number): number[] {
+export function parsePhases(raw: string | undefined, total: number): number[] {
   const values = raw === undefined
-    ? [total]
+    ? [...SAFE_DEFAULT_PHASES.filter(value => value <= total), ...(total <= SAFE_DEFAULT_PHASES.at(-1)! ? [total] : [])]
     : raw.split(',').map(value => integer(value.trim(), '--phases', 0))
   const phases = [...new Set(values)].sort((a, b) => a - b)
   if (phases.length === 0 || phases.some(value => value > total)) {
@@ -96,11 +110,49 @@ function nonNegative(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0
 }
 
+function isHttpLoopback(url: URL): boolean {
+  if (url.protocol !== 'http:') return false
+  const host = url.hostname.toLowerCase()
+  if (host === 'localhost' || host === '[::1]' || host === '::1') return true
+  const octets = host.split('.')
+  return octets.length === 4
+    && octets[0] === '127'
+    && octets.every(octet => /^\d+$/.test(octet) && Number(octet) <= 255)
+}
+
 function isGatewayLoopback(url: URL): boolean {
-  return url.protocol === 'http:'
-    && ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)
+  return isHttpLoopback(url)
     && url.port === '8799'
     && url.pathname === '/'
+}
+
+/**
+ * An app token may be supplied to this runner, so an accidental plaintext
+ * external endpoint is not acceptable. The target string itself is never
+ * printed: callers get only its origin in the structured summary.
+ */
+export function parseLoadTarget(raw: string): LoadTarget {
+  let base: URL
+  try {
+    base = new URL(raw)
+  } catch {
+    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+  }
+  if (base.protocol !== 'http:' && base.protocol !== 'https:') {
+    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+  }
+  if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
+    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+  }
+  if (base.protocol === 'http:' && !isHttpLoopback(base)) {
+    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+  }
+  const path = base.pathname.replace(/\/+$/, '')
+  return {
+    base,
+    baseUrl: `${base.origin}${path === '/' ? '' : path}`,
+    targetOrigin: base.origin,
+  }
 }
 
 async function loadLocalGatewayAppToken(): Promise<string> {
@@ -170,7 +222,83 @@ function pngChunk(kind: string, data: Uint8Array): Uint8Array {
   return concatBytes([uint32(data.byteLength), tag, data, uint32(crc32(concatBytes([tag, data])))])
 }
 
-function generatedPng(index: number): Uint8Array {
+function loadTestText(index: number): Uint8Array {
+  // PNG tEXt uses a NUL-separated keyword and Latin-1 text. It makes otherwise
+  // identical image pixels distinct to the VisionBridge SHA-256 cache as well.
+  return encoder.encode(`qf-loadtest\0${index}`)
+}
+
+function pngChunkType(bytes: Uint8Array, offset: number): string {
+  const tag = bytes.subarray(offset, offset + 4)
+  if (tag.byteLength !== 4 || tag.some(value => !((value >= 65 && value <= 90) || (value >= 97 && value <= 122)))) {
+    throw new Error('--image-file has an invalid PNG chunk type')
+  }
+  return new TextDecoder().decode(tag)
+}
+
+/** Validate a small PNG without decoding its pixels or retaining unbounded input. */
+export function validatePng(bytes: Uint8Array): ValidPng {
+  if (bytes.byteLength > MAX_IMAGE_FILE_BYTES) {
+    throw new Error('--image-file exceeds the 8 MiB image limit')
+  }
+  if (!PNG_SIGNATURE.every((value, offset) => bytes[offset] === value)) {
+    throw new Error('--image-file must be a valid PNG')
+  }
+
+  let sawIhdr = false
+  let sawIdat = false
+  for (let offset = PNG_SIGNATURE.byteLength; offset < bytes.byteLength;) {
+    if (offset + 12 > bytes.byteLength) throw new Error('--image-file has a truncated PNG chunk')
+    const length = readUint32(bytes, offset)
+    const dataStart = offset + 8
+    const dataEnd = dataStart + length
+    const chunkEnd = dataEnd + 4
+    if (dataEnd > bytes.byteLength - 4 || chunkEnd > bytes.byteLength) {
+      throw new Error('--image-file has a truncated PNG chunk')
+    }
+    const kind = pngChunkType(bytes, offset + 4)
+    if (crc32(bytes.subarray(offset + 4, dataEnd)) !== readUint32(bytes, dataEnd)) {
+      throw new Error('--image-file has an invalid PNG checksum')
+    }
+    if (!sawIhdr) {
+      if (kind !== 'IHDR' || length !== 13) throw new Error('--image-file must begin with a PNG IHDR chunk')
+      const width = readUint32(bytes, dataStart)
+      const height = readUint32(bytes, dataStart + 4)
+      if (width === 0 || height === 0 || width > MAX_IMAGE_PIXELS || height > Math.floor(MAX_IMAGE_PIXELS / width)) {
+        throw new Error('--image-file exceeds the 16 megapixel PNG limit')
+      }
+      sawIhdr = true
+    } else if (kind === 'IHDR') {
+      throw new Error('--image-file has more than one PNG IHDR chunk')
+    }
+    if (kind === 'IDAT') sawIdat = true
+    if (kind === 'IEND') {
+      if (length !== 0 || !sawIdat || chunkEnd !== bytes.byteLength) {
+        throw new Error('--image-file has an invalid PNG IEND chunk')
+      }
+      return { bytes, iendOffset: offset }
+    }
+    offset = chunkEnd
+  }
+  throw new Error('--image-file has no PNG IEND chunk')
+}
+
+async function loadPngFile(path: string): Promise<ValidPng> {
+  const file = Bun.file(path)
+  if (!Number.isSafeInteger(file.size) || file.size < PNG_SIGNATURE.byteLength || file.size > MAX_IMAGE_FILE_BYTES) {
+    throw new Error('--image-file exceeds the 8 MiB image limit')
+  }
+  let bytes: Uint8Array
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer())
+  } catch {
+    throw new Error('--image-file could not be read')
+  }
+  if (bytes.byteLength !== file.size) throw new Error('--image-file changed while it was being read')
+  return validatePng(bytes)
+}
+
+export function generatedPng(index: number): Uint8Array {
   const width = 64
   const height = 64
   const raw = new Uint8Array(height * (1 + width * 3))
@@ -193,30 +321,75 @@ function generatedPng(index: number): Uint8Array {
     PNG_SIGNATURE,
     pngChunk('IHDR', ihdr),
     pngChunk('IDAT', new Uint8Array(deflateSync(raw))),
+    pngChunk('tEXt', loadTestText(index)),
     pngChunk('IEND', new Uint8Array()),
   ])
 }
 
-function uniquePngFile(bytes: Uint8Array, index: number): Uint8Array {
-  if (!PNG_SIGNATURE.every((value, offset) => bytes[offset] === value)) {
-    throw new Error('--image-file must be a valid PNG when using --unique-image-per-request')
+function uniquePngFile(source: ValidPng, index: number): Uint8Array {
+  const metadata = pngChunk('tEXt', loadTestText(index))
+  if (source.bytes.byteLength + metadata.byteLength > MAX_GATEWAY_IMAGE_BYTES) {
+    throw new Error('--image-file has no room for unique test metadata')
   }
-  for (let offset = PNG_SIGNATURE.byteLength; offset + 12 <= bytes.byteLength;) {
-    const length = readUint32(bytes, offset)
-    const dataEnd = offset + 12 + length
-    if (dataEnd > bytes.byteLength) break
-    const kind = new TextDecoder().decode(bytes.slice(offset + 4, offset + 8))
-    if (kind === 'IEND') {
-      const metadata = encoder.encode(`qf-loadtest=${index}`)
-      return concatBytes([bytes.slice(0, offset), pngChunk('tEXt', metadata), bytes.slice(offset)])
-    }
-    offset = dataEnd
-  }
-  throw new Error('--image-file has no PNG IEND chunk')
+  return concatBytes([
+    source.bytes.slice(0, source.iendOffset),
+    metadata,
+    source.bytes.slice(source.iendOffset),
+  ])
 }
 
 function dataUrl(bytes: Uint8Array): string {
   return `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** A 2xx transport result is useful only when it contains an actual chat completion. */
+export function hasCompletionJson(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return false
+  return value.choices.some(choice => {
+    if (!isRecord(choice) || !isRecord(choice.message)) return false
+    const content = choice.message.content
+    return typeof content === 'string' && content.trim().length > 0
+  })
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Error bodies are deliberately discarded and never surfaced in test output.
+  }
+}
+
+/** Read just enough successful JSON to validate it, never expose its contents. */
+async function readResponseText(response: Response): Promise<string | null> {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    await cancelResponseBody(response)
+    return null
+  }
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let length = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      if (length + next.value.byteLength > MAX_RESPONSE_BYTES) {
+        await reader.cancel()
+        return null
+      }
+      length += next.value.byteLength
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return new TextDecoder().decode(concatBytes(chunks))
 }
 
 async function main(): Promise<void> {
@@ -232,14 +405,7 @@ async function main(): Promise<void> {
 
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
-  let base: URL
-  try {
-    base = new URL(rawBaseUrl)
-    if (!/^https?:$/.test(base.protocol)) throw new Error('unsupported protocol')
-  } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
-  }
-  const baseUrl = base.toString().replace(/\/+$/, '')
+  const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
   const useServerAppToken = args.includes('--use-server-app-token')
   if (useServerAppToken && !isGatewayLoopback(base)) {
     throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
@@ -262,19 +428,14 @@ async function main(): Promise<void> {
   if (Number(generated) + Number(imagePath !== undefined) !== 1) {
     throw new Error('provide exactly one of --generate-image or --image-file=<png>')
   }
-  const sourceImage = imagePath === undefined ? null : new Uint8Array(await Bun.file(imagePath).arrayBuffer())
+  const sourceImage = imagePath === undefined ? null : await loadPngFile(imagePath)
   const imageSeed = integer(option(args, '--image-seed'), '--image-seed', Date.now())
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
+  if (!Number.isSafeInteger(imageSeed + total - 1)) throw new Error('--image-seed plus request count is too large')
   const phases = parsePhases(option(args, '--phases'), total)
   const model = route === 'bridge' ? 'deepseek-v4-flash' : 'mimo-v2.5'
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-  const pools = ['vision', 'mimo', 'deepseek', 'ingress_body'] as const
-  type Pool = typeof pools[number]
-  type PoolObservation = { active: number; queued: number; oldestQueueMs: number }
-  const observed: Record<Pool, PoolObservation> = Object.fromEntries(pools.map(pool => [pool, { active: 0, queued: 0, oldestQueueMs: 0 }])) as Record<Pool, PoolObservation>
-  let healthSamples = 0
-  let unavailableHealthSamples = 0
 
   function uniqueImage(index: number): string {
     const distinctIndex = imageSeed + index
@@ -286,23 +447,21 @@ async function main(): Promise<void> {
     const timer = setTimeout(() => controller.abort(), healthTimeoutMs)
     try {
       const response = await fetch(`${baseUrl}/healthz`, { headers, signal: controller.signal })
-      if (!response.ok) return null
-      return await response.json() as GatewayHealth
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        return null
+      }
+      const text = await readResponseText(response)
+      if (text === null) return null
+      try {
+        return JSON.parse(text) as GatewayHealth
+      } catch {
+        return null
+      }
     } catch {
       return null
     } finally {
       clearTimeout(timer)
-    }
-  }
-
-  function observe(snapshot: GatewayHealth | null): void {
-    healthSamples += 1
-    if (!snapshot) unavailableHealthSamples += 1
-    for (const pool of pools) {
-      const capacity = snapshot?.capacity?.[pool]
-      observed[pool].active = Math.max(observed[pool].active, nonNegative(capacity?.active))
-      observed[pool].queued = Math.max(observed[pool].queued, nonNegative(capacity?.queued))
-      observed[pool].oldestQueueMs = Math.max(observed[pool].oldestQueueMs, nonNegative(capacity?.oldestQueueMs))
     }
   }
 
@@ -330,16 +489,47 @@ async function main(): Promise<void> {
           }],
         }),
       })
-      await response.arrayBuffer()
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        return {
+          status: response.status,
+          totalMs: Math.round(performance.now() - started),
+          completed: false,
+          failureKind: `http_${response.status}`,
+        }
+      }
+      const text = await readResponseText(response)
+      if (text === null) {
+        return {
+          status: response.status,
+          totalMs: Math.round(performance.now() - started),
+          completed: false,
+          failureKind: 'response_too_large',
+        }
+      }
+      let payload: unknown
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        return {
+          status: response.status,
+          totalMs: Math.round(performance.now() - started),
+          completed: false,
+          failureKind: 'invalid_json',
+        }
+      }
+      const completed = hasCompletionJson(payload)
       return {
         status: response.status,
         totalMs: Math.round(performance.now() - started),
-        failureKind: response.ok ? undefined : `http_${response.status}`,
+        completed,
+        failureKind: completed ? undefined : 'invalid_completion',
       }
     } catch {
       return {
         status: 0,
         totalMs: Math.round(performance.now() - started),
+        completed: false,
         failureKind: controller.signal.aborted ? 'timeout' : 'network',
       }
     } finally {
@@ -349,7 +539,7 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     event: 'vision_loadtest_start',
-    target: baseUrl,
+    targetOrigin,
     users,
     windows,
     phases,
@@ -363,6 +553,21 @@ async function main(): Promise<void> {
   let imageSequence = 0
   for (const requested of phases) {
     let monitoring = true
+    const observed: Record<Pool, PoolObservation> = Object.fromEntries(
+      pools.map(pool => [pool, { active: 0, queued: 0, oldestQueueMs: 0 }]),
+    ) as Record<Pool, PoolObservation>
+    let healthSamples = 0
+    let unavailableHealthSamples = 0
+    const observe = (snapshot: GatewayHealth | null) => {
+      healthSamples += 1
+      if (!snapshot) unavailableHealthSamples += 1
+      for (const pool of pools) {
+        const capacity = snapshot?.capacity?.[pool]
+        observed[pool].active = Math.max(observed[pool].active, nonNegative(capacity?.active))
+        observed[pool].queued = Math.max(observed[pool].queued, nonNegative(capacity?.queued))
+        observed[pool].oldestQueueMs = Math.max(observed[pool].oldestQueueMs, nonNegative(capacity?.oldestQueueMs))
+      }
+    }
     observe(await health())
     const monitor = (async () => {
       while (monitoring) {
@@ -382,7 +587,7 @@ async function main(): Promise<void> {
       statuses[status] = (statuses[status] ?? 0) + 1
       if (sample.failureKind) failureKinds[sample.failureKind] = (failureKinds[sample.failureKind] ?? 0) + 1
     }
-    const succeeded = samples.filter(sample => sample.status >= 200 && sample.status < 300).length
+    const succeeded = samples.filter(sample => sample.completed).length
     console.log(JSON.stringify({
       event: 'vision_loadtest_phase',
       requested,
@@ -403,4 +608,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main()
+if (import.meta.main) await main()
