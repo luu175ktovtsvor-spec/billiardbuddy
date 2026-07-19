@@ -446,6 +446,29 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
+  it('only exposes page-header mutations declared by the current task action contract', () => {
+    const [currentTask] = mocks.index.tasks as Array<Record<string, unknown>>
+    mocks.index = {
+      ...mocks.index,
+      tasks: [{
+        ...currentTask,
+        lifecycle: 'archived',
+        actions: ['restore', 'continue'],
+      }],
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.queryByRole('button', { name: '置顶' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '取消置顶' })).toBeNull()
+    expect(screen.getByRole('button', { name: '恢复' })).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复' }))
+
+    expect(mocks.restoreTask).toHaveBeenCalledWith('task-1')
+    expect(mocks.pinTask).not.toHaveBeenCalled()
+    expect(mocks.unpinTask).not.toHaveBeenCalled()
+  })
+
   it('keeps review and terminal panels independently open in the same dock rail', () => {
     render(<ProductTaskPage taskId="task-1" />)
 

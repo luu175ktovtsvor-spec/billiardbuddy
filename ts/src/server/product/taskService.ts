@@ -566,6 +566,11 @@ function actionsFor(task: ProductTask): ProductTaskAction[] {
   ]
 }
 
+function requireTaskAction(task: ProductTaskRecord, action: ProductTaskAction): void {
+  if (task.actions.includes(action)) return
+  throw ApiError.conflict('该任务当前不能执行此操作')
+}
+
 export class ProductTaskService {
   private readonly storagePath: string
   private readonly core: AgentCoreAdapter
@@ -730,13 +735,24 @@ export class ProductTaskService {
     const binding = await this.requireTaskBinding(taskId)
     const task = binding.task
     const title = validTitle(input.title)
+    const pinned = input.pinned
+    const hasPinnedUpdate = pinned !== undefined
+    if (hasPinnedUpdate && typeof pinned !== 'boolean') {
+      throw ApiError.badRequest('pinned 必须是布尔值')
+    }
+    if (title === undefined && !hasPinnedUpdate) {
+      throw ApiError.badRequest('请提供要更新的任务字段')
+    }
+    if (title !== undefined) requireTaskAction(task, 'rename')
+    if (hasPinnedUpdate) requireTaskAction(task, pinned ? 'pin' : 'unpin')
+
     if (title) await this.core.renameSession(binding.metadata.coreSessionId, title)
     await this.updateMetadata(taskId, (metadata) => ({
       ...metadata,
       ...(title ? { title } : {}),
-      ...(input.pinned === undefined ? {} : input.pinned
+      ...(hasPinnedUpdate ? pinned
         ? { pinnedAt: new Date().toISOString() }
-        : { pinnedAt: undefined }),
+        : { pinnedAt: undefined } : {}),
       updatedAt: new Date().toISOString(),
     }))
     return this.requireTask(taskId)
@@ -747,7 +763,9 @@ export class ProductTaskService {
   }
 
   async setArchived(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
-    await this.requireTask(taskId)
+    if (typeof archived !== 'boolean') throw ApiError.badRequest('archived 必须是布尔值')
+    const task = await this.requireTask(taskId)
+    requireTaskAction(task, archived ? 'archive' : 'restore')
     const now = new Date().toISOString()
     await this.updateMetadata(taskId, (metadata) => ({
       ...metadata,
@@ -765,6 +783,7 @@ export class ProductTaskService {
     rejectCoreSourceTurnId(input)
     const sourceBinding = await this.requireTaskBinding(taskId)
     const source = sourceBinding.task
+    requireTaskAction(source, 'continue')
     const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
     const target = continuationTarget(input.target)
     const sourceEntryId = optionalSourceEntryId(input.sourceEntryId)
@@ -821,6 +840,9 @@ export class ProductTaskService {
     rejectCoreSourceTurnId(input)
     const sourceBinding = await this.requireTaskBinding(taskId)
     const source = sourceBinding.task
+    if (source.lifecycle !== 'active') {
+      throw ApiError.conflict('归档任务不能创建侧边任务')
+    }
     const sourceEntryId = requiredSourceEntryId(input.sourceEntryId)
     const sourceTurnId = await this.resolveSourceTurnIdForProductEntry(
       sourceBinding.metadata.coreSessionId,
