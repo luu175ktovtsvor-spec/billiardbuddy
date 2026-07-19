@@ -142,6 +142,27 @@ describe('TaskSearchModal', () => {
     expect(screen.getByText('已归档')).toBeInTheDocument()
   })
 
+  it('keeps an older pinned task ahead of a newer unpinned task in recent search', () => {
+    const pinnedTask = makeTask({
+      id: 'task-pinned',
+      title: '置顶任务',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+      pinnedAt: '2026-07-19T00:01:00.000Z',
+    })
+    const newerTask = makeTask({
+      id: 'task-newer',
+      projectId: 'project-b',
+      title: '较新任务',
+      workDir: '/workspace/beta',
+      updatedAt: '2026-07-19T02:00:00.000Z',
+    })
+    mocks.index = makeIndex([newerTask, pinnedTask])
+
+    render(<TaskSearchModal open onClose={vi.fn()} />)
+
+    expect(screen.getAllByRole('option')[0]).toHaveTextContent('置顶任务')
+  })
+
   it('filters by product project and working-directory metadata without querying transcripts', () => {
     render(<TaskSearchModal open onClose={vi.fn()} />)
 

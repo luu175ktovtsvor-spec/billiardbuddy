@@ -194,6 +194,28 @@ describe('ProductTaskService', () => {
     expect(index.total).toBe(2)
   })
 
+  it('keeps a project with an active pinned task ahead of a newer unpinned project', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const service = new ProductTaskService({
+      storagePath: path.join(tempDir, 'product-tasks.json'),
+      core,
+    })
+
+    const pinnedTask = await service.createTask({ workDir: '/workspace/pinned-hall' })
+    const newerTask = await service.createTask({ workDir: '/workspace/newer-hall' })
+
+    await service.setPinned(pinnedTask.id, true)
+    await service.updateTask(newerTask.id, { title: '最近更新但未置顶的任务' })
+
+    const index = await service.listTasks()
+    expect(index.tasks.map((task) => task.id)).toEqual([pinnedTask.id, newerTask.id])
+    expect(index.projects.map((project) => project.id)).toEqual([
+      pinnedTask.projectId,
+      newerTask.projectId,
+    ])
+  })
+
   it('keeps the continuation target fixed to the source session workspace', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()

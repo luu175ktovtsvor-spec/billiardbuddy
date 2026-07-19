@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   PanelLeft, Search, SquarePen, Clock, Puzzle,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
-  Sparkles, Zap, Plus, Loader2, ListTodo,
+  Sparkles, Zap, Plus, Loader2, ListTodo, Pin,
 } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import { useUIStore, resolveEffectiveTheme } from '../../stores/uiStore'
@@ -22,6 +22,7 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { useProductTaskStore } from '../../product/stores/productTaskStore'
 import type { ProductProject, ProductTaskRecord } from '../../product/domain/types'
 import { openProductTaskComposer } from '../../product/openTaskComposer'
+import { orderProductProjects, orderProductTasks } from '../../product/taskOrdering'
 
 const EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-projects'
 const PROJECT_TASKS_EXPANDED_KEY = 'billiardbuddy-sidebar-expanded-project-tasks'
@@ -66,16 +67,18 @@ function useSidebarData() {
 
   const t = useTranslation()
 
-  const { projects, ungrouped } = useMemo(() => {
-    const activeTasks = index.tasks.filter((task) => task.lifecycle !== 'archived')
-    const projectIds = new Set(index.projects.map((project) => project.id))
-    const groups: ProductProjectGroup[] = index.projects
+  const { activeTasks, projects, ungrouped } = useMemo(() => {
+    const activeTasks = orderProductTasks(index.tasks.filter((task) => task.lifecycle !== 'archived'))
+    const orderedProjects = orderProductProjects(index.projects, activeTasks)
+    const projectIds = new Set(orderedProjects.map((project) => project.id))
+    const groups: ProductProjectGroup[] = orderedProjects
       .map((project) => ({
         ...project,
         tasks: activeTasks.filter((task) => task.projectId === project.id),
       }))
       .filter((project) => project.tasks.length > 0)
     return {
+      activeTasks,
       projects: groups,
       ungrouped: activeTasks.filter((task) => !projectIds.has(task.projectId)),
     }
@@ -95,7 +98,7 @@ function useSidebarData() {
 
   return {
     t,
-    tasks: index.tasks,
+    tasks: activeTasks,
     activeId: activeTabId,
     activeTabType,
     runningActive,
@@ -225,6 +228,11 @@ export function DesktopSidebar() {
           <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
             {task.title || t('sidebar.newSession')}
           </span>
+          {task.pinnedAt ? (
+            <span title="已置顶" aria-label="已置顶" className="shrink-0 text-[var(--color-text-tertiary)]">
+              <Pin size={12} aria-hidden="true" />
+            </span>
+          ) : null}
           {runningHere && <Loader2 size={12} className="shrink-0 animate-spin text-[var(--color-text-tertiary)]" />}
         </button>
       </div>

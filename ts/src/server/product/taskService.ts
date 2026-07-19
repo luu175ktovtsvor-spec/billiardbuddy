@@ -253,6 +253,11 @@ export class ProductTaskService {
       return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
     })
 
+    const activePinnedProjectIds = new Set(
+      records
+        .filter((task) => task.lifecycle === 'active' && Boolean(task.pinnedAt))
+        .map((task) => task.projectId),
+    )
     const projects = new Map<string, ProductProject>()
     const sessionById = new Map(sessions.map((session) => [session.id, session]))
 
@@ -279,7 +284,12 @@ export class ProductTaskService {
 
     return {
       schemaVersion: PRODUCT_DOMAIN_VERSION,
-      projects: [...projects.values()].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)),
+      projects: [...projects.values()].sort((left, right) => {
+        if (activePinnedProjectIds.has(left.id) !== activePinnedProjectIds.has(right.id)) {
+          return activePinnedProjectIds.has(left.id) ? -1 : 1
+        }
+        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
+      }),
       tasks: records,
       total: records.length,
       capabilities: { createTask: true },

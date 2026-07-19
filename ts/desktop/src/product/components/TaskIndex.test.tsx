@@ -155,6 +155,53 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: '恢复' })).not.toBeInTheDocument()
   })
 
+  it('keeps a pinned task project ahead of a newer unpinned project', () => {
+    const pinnedTask = makeTask({
+      id: 'task-pinned',
+      projectId: 'project-pinned',
+      title: '置顶任务',
+      workDir: '/workspace/pinned',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+      pinnedAt: '2026-07-18T00:01:00.000Z',
+    })
+    const newerTask = makeTask({
+      id: 'task-newer',
+      projectId: 'project-newer',
+      title: '较新任务',
+      workDir: '/workspace/newer',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    })
+    renderIndex({
+      schemaVersion: 1,
+      projects: [
+        {
+          id: 'project-newer',
+          title: '较新项目',
+          workDir: '/workspace/newer',
+          taskCount: 1,
+          archivedTaskCount: 0,
+          updatedAt: newerTask.updatedAt,
+        },
+        {
+          id: 'project-pinned',
+          title: '置顶项目',
+          workDir: '/workspace/pinned',
+          taskCount: 1,
+          archivedTaskCount: 0,
+          updatedAt: pinnedTask.updatedAt,
+        },
+      ],
+      tasks: [newerTask, pinnedTask],
+      total: 2,
+      capabilities: { createTask: true },
+    })
+
+    const groups = screen.getAllByTestId(/product-project-/)
+    expect(groups[0]).toHaveTextContent('置顶项目')
+    expect(groups[0]).toHaveTextContent('置顶任务')
+    expect(groups[1]).toHaveTextContent('较新项目')
+  })
+
   it('copies the real task ID and Markdown details without inventing a link', async () => {
     renderIndex(makeIndex(makeTask({
       kind: 'continuation',
@@ -210,6 +257,16 @@ describe('TaskIndex', () => {
     const task = screen.getByTestId('product-task-task-1')
     expect(task).toHaveTextContent('已归档')
     expect(task).toHaveTextContent('运行中')
+  })
+
+  it('keeps archived-only indexes empty until the user chooses to reveal their restore action', () => {
+    renderIndex(makeIndex(makeTask({ lifecycle: 'archived', actions: ['restore'] })))
+
+    expect(screen.getByText('还没有可显示的任务。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '恢复' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示已归档任务' }))
+    expect(screen.getByRole('button', { name: '恢复' })).toBeInTheDocument()
   })
 
   it('routes creation to the dedicated page, then opens and continues the selected task', async () => {

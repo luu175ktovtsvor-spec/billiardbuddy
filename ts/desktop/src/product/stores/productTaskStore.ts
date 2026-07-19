@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { productTasksApi } from '../api/tasks'
 import { PRODUCT_DOMAIN_VERSION } from '../domain/types'
+import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -45,11 +46,15 @@ function errorMessage(error: unknown): string {
 
 function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): ProductTaskIndexResponse {
   const exists = index.tasks.some((current) => current.id === task.id)
-  const tasks = exists
+  const tasks = orderProductTasks(exists
     ? index.tasks.map((current) => current.id === task.id ? task : current)
-    : [task, ...index.tasks]
+    : [task, ...index.tasks])
   return {
     ...index,
+    projects: orderProductProjects(
+      index.projects,
+      tasks.filter((candidate) => candidate.lifecycle === 'active'),
+    ),
     tasks,
     total: tasks.length,
   }
