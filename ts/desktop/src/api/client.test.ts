@@ -32,8 +32,8 @@ describe('api diagnostics reporting', () => {
   it('resolves relative asset URLs against the configured API base URL', () => {
     setBaseUrl('http://127.0.0.1:49237')
 
-    expect(getApiUrl('/api/open-targets/icons/finder')).toBe(
-      'http://127.0.0.1:49237/api/open-targets/icons/finder',
+    expect(getApiUrl('/api/product/tasks/task-1')).toBe(
+      'http://127.0.0.1:49237/api/product/tasks/task-1',
     )
     expect(getApiUrl('https://example.com/icon.png')).toBe('https://example.com/icon.png')
   })
