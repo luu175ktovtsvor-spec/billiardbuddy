@@ -144,7 +144,7 @@ describe('ProductTaskBrowserPreviewDock', () => {
     expect(useBrowserPanelStore.getState().bySession[previewKey]).toMatchObject({ isOpen: false })
   })
 
-  it('accepts only explicit HTTP(S) navigation and never routes a product key through preview-fs', async () => {
+  it('accepts only explicit HTTP(S) navigation with a task-scoped browser key', async () => {
     renderDock({ browserOpen: false, previewOpen: true, activeMode: 'preview' })
     const previewKey = productTaskBrowserPreviewKey(TASK_ID, 'preview')
 
@@ -168,7 +168,6 @@ describe('ProductTaskBrowserPreviewDock', () => {
       expect(bridge.open).toHaveBeenCalledWith('http://localhost:3000', expect.any(Object))
     })
     expect(useBrowserPanelStore.getState().bySession[previewKey]!.url).toBe('http://localhost:3000')
-    expect(useBrowserPanelStore.getState().bySession[previewKey]!.url).not.toContain('/preview-fs/')
   })
 
   it('shows an explicit unavailable state instead of falling back to a legacy session browser', () => {

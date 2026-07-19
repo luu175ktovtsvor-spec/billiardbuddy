@@ -48,7 +48,7 @@ describe('BrowserAddressBar', () => {
     expect(onNavigate).toHaveBeenNthCalledWith(2, 'https://example.com')
   })
 
-  it('preserves typed local html paths for the browser surface to route', () => {
+  it('keeps typed local file references intact so the HTTP(S)-only surface can reject them', () => {
     const onNavigate = vi.fn()
     render(<BrowserAddressBar {...baseProps} url="" onNavigate={onNavigate} />)
     const input = screen.getByRole('textbox')

@@ -1,5 +1,4 @@
 import * as path from 'node:path'
-import * as os from 'node:os'
 import {
   isSameOrInsidePathForPlatform,
   normalizeDriveRootPathForPlatform,
@@ -18,12 +17,13 @@ export function registerFilesystemAccessRoot(rootPath: string | null | undefined
 
 /**
  * Register the directory of a file this session actually changed so it becomes
- * previewable, even when the user pointed the model at an absolute path outside
+ * reviewable, even when the user pointed the model at an absolute path outside
  * the session workdir (a different folder, or a different drive on Windows).
  *
  * Writing the file was already authorized via the permission system, so reading
- * it back for a preview is consistent. Files inside the workdir need nothing —
- * they are previewable already — so those are skipped to keep the root set tight.
+ * it back through the task review service is consistent. Files inside the
+ * workdir need nothing — they are already within the task scope — so those are
+ * skipped to keep the root set tight.
  */
 export function registerChangedFileAccessRoot(
   absoluteFilePath: string | null | undefined,
@@ -43,27 +43,6 @@ export function isWithinRegisteredFilesystemRoot(targetPath: string): boolean {
     if (isWithinRoot(targetPath, rootPath)) return true
   }
   return false
-}
-
-/**
- * Restrict local preview reads to user-controlled roots. Kept with the root
- * registry because both the default and dynamically registered roots are part
- * of the same preview access policy.
- */
-export function isAllowedFilesystemPath(targetPath: string): boolean {
-  const resolvedPath = path.resolve(normalizeDriveRootPathForPlatform(targetPath))
-  const homeDir = path.resolve(os.homedir())
-
-  if (isWithinRoot(resolvedPath, homeDir) || isWithinRoot(resolvedPath, '/tmp')) {
-    return true
-  }
-
-  if (isWithinRegisteredFilesystemRoot(resolvedPath)) {
-    return true
-  }
-
-  // macOS reports /tmp as /private/tmp via native folder pickers and realpath().
-  return process.platform === 'darwin' && isWithinRoot(resolvedPath, '/private/tmp')
 }
 
 export function clearFilesystemAccessRootsForTests(): void {

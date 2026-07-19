@@ -2,9 +2,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Camera, Loader2, Minus, MousePointer2, Plus, RotateCcw } from 'lucide-react'
 import { BrowserAddressBar } from './BrowserAddressBar'
 import { computeWebviewBounds } from './computeWebviewBounds'
-import { getServerBaseUrl, isLoopbackHostname } from '../../lib/desktopRuntime'
-import { classifyPreviewLink } from '../../lib/previewLinkRouter'
-import { isAbsoluteLocalPath, localFileUrl, previewFsUrl } from '../../lib/handlePreviewLink'
 import { previewBridge } from '../../lib/previewBridge'
 import {
   subscribePreviewEvents,
@@ -20,41 +17,8 @@ import {
 } from '../../stores/browserPanelStore'
 import { useOverlayStore } from '../../stores/overlayStore'
 
-const LOCAL_PREVIEW_PATH_PREFIXES = ['/preview-fs/', '/local-file/']
-const LOCAL_PREVIEW_READY_TIMEOUT_MS = 2500
-
-function shouldWaitForLocalPreview(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    return isLoopbackHostname(parsed.hostname) &&
-      LOCAL_PREVIEW_PATH_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))
-  } catch {
-    return false
-  }
-}
-
-async function waitForLocalPreview(url: string): Promise<void> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), LOCAL_PREVIEW_READY_TIMEOUT_MS)
-  try {
-    await fetch(url, {
-      method: 'HEAD',
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-  } catch {
-    // Best-effort warmup only. The native webview still navigates so users can
-    // see the server's own error page or use Reload if the first probe raced.
-  } finally {
-    window.clearTimeout(timeout)
-  }
-}
-
-export type BrowserNavigationPolicy = 'default' | 'http'
-
 type BrowserSurfaceProps = {
   sessionId: string
-  navigationPolicy?: BrowserNavigationPolicy
   unsupportedNavigationMessage?: string
   showPreviewActions?: boolean
   subscribeEvents?: BrowserPreviewEventSubscriber
@@ -69,32 +33,8 @@ export function isHttpBrowserUrl(value: string): boolean {
   }
 }
 
-function resolveBrowserNavigationUrl(
-  input: string,
-  sessionId: string,
-  navigationPolicy: BrowserNavigationPolicy,
-): string | null {
-  const value = input.trim()
-  if (!value) return ''
-
-  if (navigationPolicy === 'http') {
-    return isHttpBrowserUrl(value) ? value : null
-  }
-
-  const classified = classifyPreviewLink(value)
-  if (classified.kind === 'browser-file' && classified.path) {
-    const serverBaseUrl = getServerBaseUrl()
-    return isAbsoluteLocalPath(classified.path)
-      ? localFileUrl(serverBaseUrl, classified.path)
-      : previewFsUrl(serverBaseUrl, sessionId, classified.path)
-  }
-
-  return value
-}
-
 export function BrowserSurface({
   sessionId,
-  navigationPolicy = 'default',
   unsupportedNavigationMessage,
   showPreviewActions = true,
   subscribeEvents = subscribePreviewEvents,
@@ -125,9 +65,6 @@ export function BrowserSurface({
     const seq = loadSeqRef.current + 1
     loadSeqRef.current = seq
     void (async () => {
-      if (shouldWaitForLocalPreview(url)) {
-        await waitForLocalPreview(url)
-      }
       if (loadSeqRef.current !== seq) return
       await action()
     })().catch(() => {
@@ -141,7 +78,7 @@ export function BrowserSurface({
   }
 
   const requestNativePreview = (url: string, options?: { force?: boolean }) => {
-    if (!url) return
+    if (!url || !isHttpBrowserUrl(url)) return
     if (!options?.force && requestedUrlRef.current === url) return
 
     requestedUrlRef.current = url
@@ -183,6 +120,12 @@ export function BrowserSurface({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.url, session?.loading, sessionId])
 
+  useEffect(() => {
+    if (!session?.url || isHttpBrowserUrl(session.url)) return
+    setNavigationError(unsupportedNavigationMessage ?? '仅支持 HTTP(S) 地址。')
+    useBrowserPanelStore.getState().setLoading(sessionId, false)
+  }, [session?.url, sessionId, unsupportedNavigationMessage])
+
   // Visibility-sync: a fullscreen DOM overlay (e.g. ImageGalleryModal) would
   // otherwise be partially covered by the native child webview, which always
   // renders above the DOM. While overlayCount > 0 we hide the webview; when
@@ -210,14 +153,11 @@ export function BrowserSurface({
 
   useEffect(() => {
     let unsub: (() => void) | undefined
-    void subscribeEvents(sessionId, {
-      ...(navigationPolicy === 'http'
-        ? { isNavigationAllowed: isHttpBrowserUrl }
-        : {}),
-    }).then((u) => { unsub = u })
+    void subscribeEvents(sessionId, { isNavigationAllowed: isHttpBrowserUrl })
+      .then((u) => { unsub = u })
     return () => { unsub?.() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, subscribeEvents, navigationPolicy])
+  }, [sessionId, subscribeEvents])
 
   // 兜底：navigated/ready 依赖注入脚本，若外站 CSP 拦截则永不回灌。loading 变 true 后 ~15s 强制收尾。
   const isLoading = session?.loading ?? false
@@ -233,12 +173,11 @@ export function BrowserSurface({
   if (!session) return null
 
   const openOrNavigate = (inputUrl: string) => {
-    const url = resolveBrowserNavigationUrl(inputUrl, sessionId, navigationPolicy)
-    if (url === null) {
-      setNavigationError(unsupportedNavigationMessage ?? '仅支持可直接访问的网址。')
+    const url = inputUrl.trim()
+    if (!isHttpBrowserUrl(url)) {
+      setNavigationError(unsupportedNavigationMessage ?? '仅支持 HTTP(S) 地址。')
       return
     }
-    if (!url) return
     setNavigationError(null)
     store.navigate(sessionId, url)
     requestNativePreview(url)
