@@ -11,6 +11,7 @@
  * Run:
  *   cd ts
  *   QF_GATEWAY_URL=... QF_GATEWAY_TOKEN=... [QF_GATEWAY_MODEL=mimo-v2.5] \
+ *     [QF_LIVE_AUTO_APPROVE=1] \
  *     bun run src/server/__tests__/qf-gateway-cli-live.ts
  *
  * Skips (exit 0) when QF_GATEWAY_URL / QF_GATEWAY_TOKEN are not set, so it is safe to
@@ -20,11 +21,9 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import crypto from 'node:crypto'
 
 const SERVER_PORT = 19891
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`
-const WS_URL = `ws://127.0.0.1:${SERVER_PORT}`
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -32,22 +31,29 @@ function sleep(ms: number): Promise<void> {
 
 type ServerMsg = { type: string; [key: string]: any }
 
-function connect(sessionId: string): Promise<{
+function connect(taskId: string): Promise<{
   ws: WebSocket
   messages: ServerMsg[]
-  waitFor: (types: string[], timeoutMs?: number) => Promise<ServerMsg>
+  waitFor: (types: string[], timeoutMs?: number, fromIndex?: number) => Promise<ServerMsg>
   close: () => void
 }> {
   return new Promise((resolve, reject) => {
     const messages: ServerMsg[] = []
-    const waiters: Array<{ types: string[]; resolve: (m: ServerMsg) => void }> = []
-    const ws = new WebSocket(`${WS_URL}/ws/${sessionId}`)
+    const waiters: Array<{
+      types: string[]
+      fromIndex: number
+      resolve: (m: ServerMsg) => void
+    }> = []
+    const wsUrl = BASE_URL.replace('http://', 'ws://') +
+      `/ws/product/tasks/${encodeURIComponent(taskId)}`
+    const ws = new WebSocket(wsUrl)
     ws.onmessage = (event) => {
       let msg: ServerMsg
       try { msg = JSON.parse(event.data as string) } catch { return }
       messages.push(msg)
+      const messageIndex = messages.length - 1
       for (let i = waiters.length - 1; i >= 0; i--) {
-        if (waiters[i].types.includes(msg.type)) {
+        if (messageIndex >= waiters[i].fromIndex && waiters[i].types.includes(msg.type)) {
           waiters[i].resolve(msg)
           waiters.splice(i, 1)
         }
@@ -57,15 +63,19 @@ function connect(sessionId: string): Promise<{
     ws.onopen = () => resolve({
       ws,
       messages,
-      waitFor(types, timeoutMs = 120000) {
-        const existing = messages.find((m) => types.includes(m.type))
+      waitFor(types, timeoutMs = 120000, fromIndex = 0) {
+        const existing = messages.slice(fromIndex).find((m) => types.includes(m.type))
         if (existing) return Promise.resolve(existing)
         return new Promise((res, rej) => {
           const timer = setTimeout(
             () => rej(new Error(`Timeout waiting for [${types.join(', ')}]; got: ${messages.map((m) => m.type).join(', ')}`)),
             timeoutMs,
           )
-          waiters.push({ types, resolve: (m) => { clearTimeout(timer); res(m) } })
+          waiters.push({
+            types,
+            fromIndex,
+            resolve: (m) => { clearTimeout(timer); res(m) },
+          })
         })
       },
       close() { ws.close() },
@@ -77,9 +87,30 @@ function redact(text: string, token: string): string {
   return token ? text.split(token).join('«redacted-token»') : text
 }
 
+async function createProductTask(workDir: string): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/product/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workDir,
+      title: '网关真实链路验证',
+      permissionMode: 'allow_edits',
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`create product task failed: ${response.status} ${await response.text()}`)
+  }
+  const body = await response.json() as { task?: { id?: unknown } }
+  if (typeof body.task?.id !== 'string' || !body.task.id) {
+    throw new Error('create product task returned no public task id')
+  }
+  return body.task.id
+}
+
 async function main() {
   const gatewayUrl = (process.env.QF_GATEWAY_URL ?? '').trim()
   const gatewayToken = (process.env.QF_GATEWAY_TOKEN ?? '').trim()
+  const autoApprove = process.env.QF_LIVE_AUTO_APPROVE === '1'
   if (!gatewayUrl || !gatewayToken) {
     console.log('⏭️  SKIP: QF_GATEWAY_URL / QF_GATEWAY_TOKEN not set — live gateway E2E skipped.')
     process.exit(0)
@@ -105,31 +136,56 @@ async function main() {
       failures.push(`expected qf-gateway auto-active, got ${activeId}`)
     }
 
-    // 2. Drive the REAL CLI subprocess to complete a harmless tool call through the gateway.
-    const sessionId = crypto.randomUUID()
-    const client = await connect(sessionId)
+    // 2. Drive the REAL CLI through the same public product task transport as
+    // the desktop. The server retains the Core session binding privately.
+    const taskId = await createProductTask(tmpDir)
+    console.log(`product task: ${taskId}`)
+    const client = await connect(taskId)
     await client.waitFor(['connected'], 8000)
-    client.ws.send(JSON.stringify({ type: 'set_permission_mode', mode: 'bypassPermissions' }))
-    await client.waitFor(['permission_mode_changed'], 8000).catch(() => null)
     client.ws.send(JSON.stringify({
       type: 'user_message',
       content: 'Use the Bash tool to run exactly `echo billiardbuddy-live-ok` and then reply with only the command output. Do not ask for confirmation.',
     }))
 
-    // A real tool call surfaces as content_start(blockType tool_use) / tool_use_complete.
-    const toolEvt = await client.waitFor(['tool_use_complete', 'content_start', 'error'], 150000)
-    if (toolEvt.type === 'error') {
-      failures.push(`session error: ${redact(String(toolEvt.message ?? ''), gatewayToken)}`)
-    } else {
-      const sawTool = client.messages.some(
-        (m) => m.type === 'tool_use_complete' || (m.type === 'content_start' && m.blockType === 'tool_use'),
+    let cursor = client.messages.length
+    for (;;) {
+      const event = await client.waitFor(
+        ['approval_required', 'turn_complete', 'error'],
+        150000,
+        cursor,
       )
-      console.log(`tool_use observed through gateway: ${sawTool}`)
-      if (!sawTool) failures.push('no tool_use observed from the real CLI subprocess')
+      cursor = client.messages.indexOf(event) + 1
+      if (event.type === 'approval_required') {
+        if (event.kind !== 'action' || !autoApprove) {
+          failures.push(
+            autoApprove
+              ? `unsupported product approval kind: ${String(event.kind)}`
+              : 'task requires approval; rerun with QF_LIVE_AUTO_APPROVE=1 to approve this explicit echo check',
+          )
+          break
+        }
+        client.ws.send(JSON.stringify({
+          type: 'permission_response',
+          requestId: event.requestId,
+          allowed: true,
+        }))
+        continue
+      }
+      if (event.type === 'error') {
+        failures.push(`task error: ${redact(String(event.code ?? ''), gatewayToken)}`)
+      }
+      break
     }
-    await client.waitFor(['message_complete', 'result'], 60000).catch(() => null)
 
-    // 3. Token/key must never appear in the transcript we received.
+    // Product events deliberately expose only an opaque activity category,
+    // never raw tool input/output or a Core session identifier.
+    const sawCommand = client.messages.some(
+      (message) => message.type === 'activity' && message.kind === 'command',
+    )
+    console.log(`command activity observed through gateway: ${sawCommand}`)
+    if (!sawCommand) failures.push('no command activity observed from the real CLI subprocess')
+
+    // 3. Token/key must never appear in the product event stream we received.
     const transcript = JSON.stringify(client.messages)
     if (gatewayToken && transcript.includes(gatewayToken)) {
       failures.push('SECURITY: app token leaked into the WS transcript')
