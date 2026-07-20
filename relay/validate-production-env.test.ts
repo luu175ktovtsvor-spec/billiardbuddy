@@ -23,7 +23,7 @@ describe('1000-window relay production preflight', () => {
   test('accepts durable storage with the 1000-task admission profile', () => {
     const result = validate("RELAY_DB='/opt/qfrelay/relay.db'\nRELAY_BLOB_DIR=\"/opt/qfrelay/blobs\"\nRELAY_QUEUE_MAX=1200\nRELAY_USER_MAX=10\nRELAY_IMG_CONC=6\nRELAY_IMG_USER_CONC=1\n")
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('queue=1200 user=10 image_conc=6 image_user_conc=1')
+    expect(result.stdout).toContain('queue=1200 user=10 image_conc=6 image_user_conc=1 upstream_timeout_ms=300000')
   })
 
   test('returns the configured default blob directory for deployment without exposing other env values', () => {
@@ -43,6 +43,12 @@ describe('1000-window relay production preflight', () => {
     const result = validate('RELAY_DB=/opt/qfrelay/relay.db\nRELAY_BLOB_DIR=/opt/qfrelay/blobs\nRELAY_QUEUE_MAX=600\nRELAY_USER_MAX=5\n')
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('RELAY_QUEUE_MAX must be at least 1000')
+  })
+
+  test('rejects a production image deadline shorter than five minutes', () => {
+    const result = validate('RELAY_DB=/opt/qfrelay/relay.db\nRELAY_BLOB_DIR=/opt/qfrelay/blobs\nRELAY_UPSTREAM_TIMEOUT_MS=60000\n')
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('RELAY_UPSTREAM_TIMEOUT_MS must be at least 300000')
   })
 
   test('rejects in-memory storage and never evaluates EnvironmentFile content', () => {
