@@ -175,6 +175,6 @@ export class ElectronUpdaterService {
 
   quitAndInstallDownloadedUpdate() {
     this.stageDownloadedUpdate()
-    this.updater.quitAndInstall(false, true)
+    this.updater.quitAndInstall(true, true)
   }
 }

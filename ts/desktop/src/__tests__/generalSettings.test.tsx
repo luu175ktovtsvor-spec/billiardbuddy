@@ -885,6 +885,9 @@ describe('Settings > About tab', () => {
     expect(await screen.findByRole('heading', { name: 'BilliardBuddy' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /check now/i }))
 
-    expect(useUpdateStore.getState().checkForUpdates).toHaveBeenCalledWith({ autoDownload: true })
+    expect(useUpdateStore.getState().checkForUpdates).toHaveBeenCalledWith({
+      autoDownload: true,
+      autoInstall: true,
+    })
   })
 })

@@ -150,6 +150,16 @@ jobs:
           if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
+      - name: 保存 Windows 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: BilliardBuddy-Windows-x64
+          path: |
+            ts/desktop/build-artifacts/electron/*.exe
+            ts/desktop/build-artifacts/electron/*.blockmap
+            ts/desktop/build-artifacts/electron/latest.yml
+          if-no-files-found: error
+
       - name: 发布 Windows 安装包与更新清单
         shell: pwsh
         env:

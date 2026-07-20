@@ -164,6 +164,6 @@ describe('Electron updater service', () => {
     service.stageDownloadedUpdate()
     service.quitAndInstallDownloadedUpdate()
 
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true)
   })
 })

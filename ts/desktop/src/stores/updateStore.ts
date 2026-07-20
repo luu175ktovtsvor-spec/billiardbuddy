@@ -18,6 +18,7 @@ export type UpdateStatus =
 type CheckOptions = {
   silent?: boolean
   autoDownload?: boolean
+  autoInstall?: boolean
 }
 
 const DISMISSED_UPDATE_VERSION_KEY = 'billiardbuddy-dismissed-update-version'
@@ -181,7 +182,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     await startupCheckPromise
   },
 
-  checkForUpdates: async ({ silent = false, autoDownload = true } = {}) => {
+  checkForUpdates: async ({ silent = false, autoDownload = true, autoInstall = false } = {}) => {
     const host = getUpdateHost()
     if (!host) return null
     if (downloadPromise && get().status === 'downloading' && pendingUpdate) return pendingUpdate
@@ -254,7 +255,10 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
         shouldPrompt: false,
       }))
 
-      if (autoDownload && (shouldOffer || !silent)) {
+      if (autoInstall) {
+        await get().downloadUpdate()
+        await get().installUpdate()
+      } else if (autoDownload && (shouldOffer || !silent)) {
         void get().downloadUpdate().catch(() => {
           // The store records the failure and keeps the manual install path retryable.
         })

@@ -111,7 +111,7 @@ describe('updateStore', () => {
     expect(useUpdateStore.getState().shouldPrompt).toBe(false)
   })
 
-  it('checks, installs, and relaunches through an injected desktop host', async () => {
+  it('checks, downloads, installs, and relaunches through an injected desktop host in one action', async () => {
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: 'Started', data: { contentLength: 100 } })
@@ -148,8 +148,10 @@ describe('updateStore', () => {
     vi.resetModules()
     const { useUpdateStore } = await import('./updateStore')
 
-    const result = await useUpdateStore.getState().checkForUpdates()
-    await useUpdateStore.getState().installUpdate()
+    const result = await useUpdateStore.getState().checkForUpdates({
+      autoDownload: true,
+      autoInstall: true,
+    })
 
     expect(result?.version).toBe('0.4.0')
     expect(checkUpdate).toHaveBeenCalledWith(undefined)
