@@ -66,14 +66,14 @@ jobs:
       - name: 准备经审核的打包凭据与媒体工具链
         shell: pwsh
         env:
-          BB_GATEWAY_TOKEN: ${{ secrets.BB_GATEWAY_TOKEN }}
+          BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}
           BB_WINDOWS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_URL }}
           BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ([string]::IsNullOrWhiteSpace($env:BB_GATEWAY_TOKEN)) {
-            throw '缺少 GitHub Secret: BB_GATEWAY_TOKEN'
+          if ([string]::IsNullOrWhiteSpace($env:BB_RELEASE_UPLOAD_SSH_KEY_B64)) {
+            throw '缺少 GitHub Secret: BB_RELEASE_UPLOAD_SSH_KEY_B64'
           }
           if ([string]::IsNullOrWhiteSpace($env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL)) {
             throw '缺少 GitHub Secret: BB_WINDOWS_MEDIA_TOOLCHAIN_URL'
@@ -103,9 +103,33 @@ jobs:
             }
           }
 
+          $sshDir = Join-Path $env:USERPROFILE '.ssh'
+          $keyPath = Join-Path $sshDir 'billiardbuddy-release-upload'
+          $knownHostsPath = Join-Path $sshDir 'known_hosts'
+          New-Item -ItemType Directory -Force $sshDir | Out-Null
+          try {
+            [System.IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:BB_RELEASE_UPLOAD_SSH_KEY_B64))
+          } catch {
+            throw 'BB_RELEASE_UPLOAD_SSH_KEY_B64 不是有效的 Base64 私钥'
+          }
+          & icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          '39.106.214.21 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgaQWyo3iZcvWHsVpYf+Oncgf5RZhkpMdz7ap5Gbusc' |
+            Set-Content -LiteralPath $knownHostsPath -Encoding ascii
+
+          $tokenMapJson = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_APP_TOKENS=//p' /opt/qfgw/gw.env").Trim()
+          try {
+            $tokenMap = $tokenMapJson | ConvertFrom-Json
+            $gatewayToken = @($tokenMap.psobject.Properties.Name)[0]
+          } catch {
+            throw '无法从受控网关读取 app token 映射'
+          }
+          if ($gatewayToken -notmatch '^[A-Za-z0-9_-]{16,256}$') {
+            throw '受控网关未提供有效的 app token'
+          }
+
           $secretFile = 'ts/desktop/build/product-secrets.json'
           New-Item -ItemType Directory -Force (Split-Path $secretFile) | Out-Null
-          @{ gatewayToken = $env:BB_GATEWAY_TOKEN } |
+          @{ gatewayToken = $gatewayToken } |
             ConvertTo-Json -Compress |
             Set-Content -LiteralPath $secretFile -Encoding utf8NoBOM
 
