@@ -378,6 +378,67 @@ describe('MediaProjectService image projects', () => {
     expect(keys[1]).not.toBe(keys[0])
   })
 
+  test('bounds a stalled gateway result body while keeping the remote task pollable', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    let resultBodyAborted = false
+    const service = new MediaProjectService({
+      root: await root(),
+      imageResultTimeoutMs: 20,
+      fetchImpl: async (_input, init) => {
+        if (init?.method === 'POST') {
+          return Response.json({ task_id: 'remote-stalled-body', status: 'queued' }, { status: 202 })
+        }
+        init?.signal?.addEventListener('abort', () => { resultBodyAborted = true }, { once: true })
+        return new Response(new ReadableStream({ start() {} }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const project = await service.createImageProject({ prompt: '等待图片结果' })
+    const submitted = await service.submitImageProject(project.id)
+    const refreshed = await service.getTask(submitted.id)
+
+    expect(refreshed).toMatchObject({ status: 'queued', remote_task_id: 'remote-stalled-body' })
+    expect(resultBodyAborted).toBe(true)
+  })
+
+  test('deduplicates concurrent final image polls and materializes the result once', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    let resultPolls = 0
+    let releaseResult!: () => void
+    const resultReady = new Promise<void>(resolve => { releaseResult = resolve })
+    const service = new MediaProjectService({
+      root: await root(),
+      fetchImpl: async (_input, init) => {
+        if (init?.method === 'POST') {
+          return Response.json({ task_id: 'remote-deduplicated', status: 'running' }, { status: 202 })
+        }
+        resultPolls += 1
+        await resultReady
+        return Response.json({
+          status: 'succeeded',
+          data: [{ b64_json: Buffer.from('one-image-result').toString('base64') }],
+        })
+      },
+    })
+    const project = await service.createImageProject({ prompt: '只落盘一次' })
+    const submitted = await service.submitImageProject(project.id)
+    const first = service.getTask(submitted.id)
+    const second = service.getTask(submitted.id)
+    await Bun.sleep(5)
+    expect(resultPolls).toBe(1)
+    releaseResult()
+
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    expect(firstResult.result).toEqual(secondResult.result)
+    expect(resultPolls).toBe(1)
+    const ready = await service.getProject(project.id)
+    expect(ready).toMatchObject({ state: 'ready', outputs: [{ asset_path: expect.stringContaining('/api/media/assets/') }] })
+  })
+
   test('stores reference images as private assets and migrates legacy inline projects on read', async () => {
     const mediaRoot = await root()
     const reference = `data:image/png;base64,${Buffer.from('private-reference').toString('base64')}`

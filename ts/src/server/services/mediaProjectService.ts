@@ -117,6 +117,8 @@ function maxQueuedVideoProbes(env: Record<string, string | undefined>): number {
 export type MediaProjectServiceOptions = {
   root?: string
   fetchImpl?: FetchLike
+  /** Complete gateway response deadline; injectable only for deterministic timeout tests. */
+  imageResultTimeoutMs?: number
   runProcess?: MediaProcessRunner
   moveFile?: MoveFile
   now?: () => Date
@@ -305,6 +307,7 @@ export class MediaProjectService {
   private readonly tasksDir: string
   private readonly assetsDir: string
   private readonly fetchImpl: FetchLike
+  private readonly imageResultTimeoutMs: number
   private readonly runProcess: MediaProcessRunner
   private readonly moveFile: MoveFile
   private readonly now: () => Date
@@ -315,6 +318,7 @@ export class MediaProjectService {
   private readonly maxQueuedVideoRenders: number
   private readonly maxQueuedVideoProbes: number
   private readonly activeImageSubmissions = new Map<string, Promise<MediaTask>>()
+  private readonly activeImageRefreshes = new Map<string, Promise<MediaTask>>()
   private readonly videoProjectMutations = new Map<string, Promise<void>>()
   private videoRenderAdmissions: Promise<void> = Promise.resolve()
   private activeVideoProbes = 0
@@ -329,6 +333,7 @@ export class MediaProjectService {
     this.tasksDir = join(this.root, 'tasks')
     this.assetsDir = join(this.root, 'assets')
     this.fetchImpl = options.fetchImpl ?? fetch
+    this.imageResultTimeoutMs = Math.max(1, options.imageResultTimeoutMs ?? 5 * 60_000)
     this.runProcess = options.runProcess ?? defaultRunProcess
     this.moveFile = options.moveFile ?? rename
     this.now = options.now ?? (() => new Date())
@@ -340,6 +345,32 @@ export class MediaProjectService {
 
   private iso(): string {
     return this.now().toISOString()
+  }
+
+  private async fetchImageGatewayJson(
+    input: RequestInfo | URL,
+    init: RequestInit,
+  ): Promise<{ response: Response; body: RelayImageTask & { message?: string } }> {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        reject(new Error('image gateway response deadline exceeded'))
+      }, this.imageResultTimeoutMs)
+      ;(timer as unknown as { unref?: () => void }).unref?.()
+    })
+    const fetchAndRead = async () => {
+      const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
+      const text = await response.text()
+      const body = (text ? JSON.parse(text) : {}) as RelayImageTask & { message?: string }
+      return { response, body }
+    }
+    try {
+      return await Promise.race([fetchAndRead(), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   private async ensureDirs(): Promise<void> {
@@ -661,7 +692,7 @@ export class MediaProjectService {
         }
         return await this.submitPersistedImageTask(project, task)
       }
-      return await this.refreshImageTask(task)
+      return await this.refreshPersistedImageTask(task)
     }
     if (
       task.kind === 'video.render' &&
@@ -1143,6 +1174,15 @@ export class MediaProjectService {
     return submission
   }
 
+  private refreshPersistedImageTask(task: MediaTask): Promise<MediaTask> {
+    const active = this.activeImageRefreshes.get(task.id)
+    if (active) return active
+    const refresh = this.refreshImageTask(task)
+      .finally(() => this.activeImageRefreshes.delete(task.id))
+    this.activeImageRefreshes.set(task.id, refresh)
+    return refresh
+  }
+
   private async performImageSubmission(project: ImageWorkbenchProject, originalTask: MediaTask): Promise<MediaTask> {
     if (!qfGatewayConfigured()) {
       throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
@@ -1179,12 +1219,11 @@ export class MediaProjectService {
     if (installationId) headers['X-QF-Client-ID'] = installationId
 
     try {
-      const response = await this.fetchImpl(endpoint, {
+      const { response, body } = await this.fetchImageGatewayJson(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
       })
-      const body = await response.json().catch(() => ({})) as RelayImageTask & { message?: string }
       if (!response.ok || !body.task_id) {
         throw new ImageSubmissionAttemptError(
           boundedMessage(body.error ?? body.message ?? `生图网关返回 HTTP ${response.status}`),
@@ -1283,18 +1322,20 @@ export class MediaProjectService {
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId
     let response: Response
+    let body: RelayImageTask & { message?: string }
     try {
-      response = await this.fetchImpl(
+      const result = await this.fetchImageGatewayJson(
         `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
         { headers },
       )
+      response = result.response
+      body = result.body
     } catch (error) {
       // The remote task can still be running. Keep its persisted status rather
       // than inventing a terminal result from a transient status-read failure.
       recordMediaFailure('image_status', error)
       return task
     }
-    const body = await response.json().catch(() => ({})) as RelayImageTask & { message?: string }
     if (!response.ok) {
       recordMediaFailure('image_status', { status: response.status, body })
       if (response.status >= 500) return task

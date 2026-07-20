@@ -26,6 +26,7 @@ export type MediaToolchainStatus = {
 }
 
 const MEDIA_WORKBENCH_FALLBACK_ERROR = '媒体服务暂时不可用，请稍后重试。'
+export const MEDIA_RESULT_REQUEST_TIMEOUT_MS = 5 * 60_000
 
 function mediaErrorCode(error: unknown): unknown {
   if (error instanceof ApiError) {
@@ -61,7 +62,10 @@ export const mediaApi = {
   deleteProject: (projectId: string) =>
     api.delete<void>(`/api/media/project/${encodeURIComponent(projectId)}`),
   getTask: (taskId: string) =>
-    api.get<{ task: MediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}`),
+    api.get<{ task: MediaTask }>(
+      `/api/media/tasks/${encodeURIComponent(taskId)}`,
+      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
+    ),
   cancelTask: (taskId: string) =>
     api.post<{ task: MediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
   createImageProject: (input: CreateImageProjectInput) =>

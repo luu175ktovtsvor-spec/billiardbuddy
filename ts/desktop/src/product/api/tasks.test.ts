@@ -4,7 +4,7 @@ vi.mock('../../lib/desktopRuntime', () => ({
   getServerBaseUrl: () => 'http://127.0.0.1:49237',
 }))
 
-import { productTasksApi } from './tasks'
+import { PRODUCT_MEDIA_RESULT_TIMEOUT_MS, productTasksApi } from './tasks'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -16,6 +16,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('productTasksApi', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('uses the product task index endpoint as its list source', async () => {
@@ -124,6 +125,27 @@ describe('productTasksApi', () => {
       'http://127.0.0.1:49237/api/product/tasks/task%201/media',
       expect.objectContaining({ method: 'GET' }),
     )
+  })
+
+  it('keeps task-scoped final image materialization open for five minutes', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementation((_input, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'))
+        }, { once: true })
+      })
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = productTasksApi.getMedia('task 1').catch(error => error as Error)
+    const signal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal | undefined
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(PRODUCT_MEDIA_RESULT_TIMEOUT_MS - 30_000)
+    const outcome = await pending
+    expect(outcome).toMatchObject({ name: 'AbortError' })
+    expect(signal?.aborted).toBe(true)
   })
 
   it('uses task-scoped attach discovery and explicit attach endpoints', async () => {

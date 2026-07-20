@@ -6,7 +6,7 @@
 #   GW_DEEPSEEK_MODEL(默认 deepseek-v4-flash) / 可选 GW_DEEPSEEK_MODELS /
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
 #   GW_DEEPSEEK_QUEUE_MAX / GW_DEEPSEEK_QUEUE_MAX_WAIT / GW_DEEPSEEK_RPM
-#   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS / GW_SERVER_IDLE_TIMEOUT_SECONDS
+#   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS / GW_RELAY_RESULT_TIMEOUT_MS=300000 / GW_SERVER_IDLE_TIMEOUT_SECONDS
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
 #   - 受控假上游压测已验证网关能公平调度 DeepSeek 100 人 × 10 窗口的 1,000 个请求而不在网关排队；
@@ -34,6 +34,8 @@
 #     GW_INGRESS_INFLIGHT_BODY_BYTES(256MB，按读入/合并/解码/解析六倍预留)的大陆网关内存闸；
 #     GW_IMG_INFLIGHT_BODY_BYTES/GW_CHAT_INFLIGHT_BODY_BYTES 只保留为旧配置兼容别名。生产若调整图片
 #     输入大小或机器内存，应一起调整该全局闸，而不是只放大 IPM。
+#   - 生图最终状态可能携带完整 Base64 图片；GW_RELAY_RESULT_TIMEOUT_MS 默认且生产最低为 300000，
+#     覆盖大陆网关从美国 relay 接收响应头和完整正文的全过程。图片一旦可用会立即返回，不会固定等待五分钟。
 #   - 视觉桥接:带图请求经网关 MiMo 视觉桥接读成文本后再交默认模型 DeepSeek;可选 env(默认见 app.ts loadConfig):
 #     GW_VISION_MAX_IMAGES(8) / GW_VISION_MAX_IMAGE_BYTES(8MB) / GW_VISION_MAX_TOTAL_BYTES(24MB,兼作聊天请求体大小闸) /
 #     GW_VISION_TIMEOUT_MS(45000) / GW_VISION_CONC(16,视觉在途上限) / GW_VISION_QUEUE_MAX(48,排队硬上限,满则立即 429) /
