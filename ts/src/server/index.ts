@@ -19,6 +19,7 @@ import { enableConfigs } from '../utils/config.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
+import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
 import { productTaskService } from './product/taskService.js'
 import { ProductTaskMediaService } from './product/taskMediaService.js'
@@ -242,6 +243,12 @@ export function startServer(port = PORT, host = HOST) {
               return withCors(authError, cors)
             }
           }
+
+          // A media status read can materialize the completed Base64 image from the
+          // gateway before returning it to the renderer. Keep Bun's generic 60-second
+          // idle guard for ordinary APIs, but let these trusted loopback media routes
+          // use their own five-minute end-to-end response deadline.
+          if (isLongMediaRequestPath(url.pathname)) server.timeout(req, 0)
 
           try {
             const response = await handleApiRequest(req, url, {

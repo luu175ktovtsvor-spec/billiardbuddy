@@ -20,6 +20,8 @@ function taskPath(taskId: string): string {
   return `/api/product/tasks/${encodeURIComponent(taskId)}`
 }
 
+export const PRODUCT_MEDIA_RESULT_TIMEOUT_MS = 5 * 60_000
+
 function reviewPath(taskId: string, resource: 'status' | 'tree' | 'file' | 'diff', path?: string): string {
   const base = `${taskPath(taskId)}/review/${resource}`
   if (!path) return base
@@ -41,7 +43,10 @@ export const productTasksApi: ProductTaskApi = {
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
   getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
   getReviewDiff: (taskId, path) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path)),
-  getMedia: (taskId) => productApi.get<ProductTaskMediaList>(`${taskPath(taskId)}/media`),
+  getMedia: (taskId) => productApi.get<ProductTaskMediaList>(
+    `${taskPath(taskId)}/media`,
+    { timeout: PRODUCT_MEDIA_RESULT_TIMEOUT_MS },
+  ),
   getAttachableMedia: (taskId) => productApi.get<ProductTaskMediaAttachableList>(`${taskPath(taskId)}/media/attachable-projects`),
   attachMediaProject: (taskId, projectId) => productApi.post<{ project: ProductTaskMediaProject }>(
     `${taskPath(taskId)}/media/projects/${encodeURIComponent(projectId)}/attach`,

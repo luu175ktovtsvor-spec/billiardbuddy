@@ -113,6 +113,7 @@ type GatewayConfig = {
   relayToken: string
   relayTasksBase: string
   relaySubmitTimeoutMs: number
+  relayResultTimeoutMs: number
   adminToken: string
   db: string
   appTokens: Map<string, string>
@@ -658,6 +659,8 @@ function loadConfig(env: Env): GatewayConfig {
     relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
     // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
     relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
+    // 最终状态响应可能携带完整 Base64 图片；从美国 relay 读取响应头和正文共用五分钟截止时间。
+    relayResultTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_TIMEOUT_MS', 5 * 60_000)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
     appTokens: parseAppTokens(env.GW_APP_TOKENS),
@@ -1290,6 +1293,42 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const transcribeBucket = new TokenBucket(config.transcribeRpm)
   const transcribeSem = new AsyncSemaphore(config.transcribeConc)
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
+
+  async function proxyRelayImageResult(request: Request, input: string, headers: Record<string, string>): Promise<Response> {
+    const controller = new AbortController()
+    let timedOut = false
+    const abortForClient = () => controller.abort()
+    if (request.signal.aborted) abortForClient()
+    else request.signal.addEventListener('abort', abortForClient, { once: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+        reject(new HttpError(504, '生图结果读取超时，请稍后重试'))
+      }, config.relayResultTimeoutMs)
+      ;(timer as unknown as { unref?: () => void }).unref?.()
+    })
+    const fetchAndRead = async () => {
+      const upstream = await fetchImpl(input, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      })
+      return await proxyJsonOrRaw(upstream)
+    }
+    try {
+      return await Promise.race([fetchAndRead(), timeout])
+    } catch (error) {
+      if (timedOut) throw new HttpError(504, '生图结果读取超时，请稍后重试')
+      if (request.signal.aborted) throw new HttpError(499, '请求已取消')
+      throw error
+    } finally {
+      if (timer) clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortForClient)
+    }
+  }
+
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
     try {
@@ -1340,6 +1379,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             img_queue_max: config.imgQueueMax,
             img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
             relay_submit_timeout_ms: config.relaySubmitTimeoutMs,
+            relay_result_timeout_ms: config.relayResultTimeoutMs,
             ingress_inflight_body_bytes: config.ingressInflightBodyBytes,
             ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
@@ -1662,14 +1702,14 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // parameters from an app client to the internal relay.
         const metadataOnly = url.searchParams.get('metadata_only') === '1'
         const metadataQuery = metadataOnly ? '?metadata_only=1' : ''
-        const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`, {
-          method: 'GET',
-          headers: {
+        return await proxyRelayImageResult(
+          request,
+          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`,
+          {
             Authorization: `Bearer ${config.relayToken}`,
             'X-Relay-Owner': relayOwner(user, readClientId(request)),
           },
-        })
-        return await proxyJsonOrRaw(upstream)
+        )
       }
 
       return jsonError(404, 'not found')

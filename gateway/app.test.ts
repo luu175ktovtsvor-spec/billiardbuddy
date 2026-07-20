@@ -102,6 +102,7 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.vision_per_request_conc).toBe(1)
   expect(body.limits.img_queue_max).toBe(200)
   expect(body.limits.relay_submit_timeout_ms).toBe(15_000)
+  expect(body.limits.relay_result_timeout_ms).toBe(300_000)
   expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
   expect(body.quota).toEqual({})
   expect(body.features.transcription).toBe(false)
@@ -1337,6 +1338,30 @@ test('image gateway aborts a stalled relay submission at its bounded deadline an
   expect(usage.rows).toMatchObject([{ model: 'img', ok: false, status: 504, note: 'relay_submit_timeout' }])
   const health = await fetch(new Request('http://local/healthz', authed()))
   expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
+})
+
+test('image gateway bounds the complete relay result body without waiting a fixed five minutes', async () => {
+  let relayAborted = false
+  const fetch = createGatewayFetch({
+    env: env({
+      GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
+      GW_RELAY_RESULT_TIMEOUT_MS: '20',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async (_input, init) => {
+      init?.signal?.addEventListener('abort', () => { relayAborted = true }, { once: true })
+      return new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  const response = await fetch(new Request('http://local/v1/images/tasks/task-stalled', authed()))
+  expect(response.status).toBe(504)
+  expect(relayAborted).toBe(true)
+  expect(await response.json()).toEqual({ detail: '生图结果读取超时，请稍后重试' })
 })
 
 test('image gateway rejects a body-budget overflow before it can reach relay and releases after forward', async () => {

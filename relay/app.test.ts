@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createRelayFetch } from './app'
+import { createRelayFetch, withRelayRequestTimeout } from './app'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -55,6 +55,16 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
   })
   expect(metadata.data).toBeUndefined()
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
+})
+
+test('relay HTTP surface disables Bun idle timeout while sending completed image bytes', async () => {
+  const timeoutCalls: number[] = []
+  const handler = withRelayRequestTimeout(async () => Response.json({ ok: true }))
+  const response = await handler(new Request('http://relay/healthz'), {
+    timeout: (_request, seconds) => { timeoutCalls.push(seconds) },
+  })
+  expect(response.status).toBe(200)
+  expect(timeoutCalls).toEqual([0])
 })
 
 test('Seedream generate uses the native JSON contract and persists each returned image', async () => {

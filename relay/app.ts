@@ -985,12 +985,26 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
 }
 
+type RelayRequestTimeoutController = { timeout(request: Request, seconds: number): void }
+
+export function withRelayRequestTimeout(
+  handler: (request: Request) => Promise<Response>,
+): (request: Request, server?: RelayRequestTimeoutController) => Promise<Response> {
+  return (request, server) => {
+    // Task submission returns quickly, while a successful poll can send a large
+    // Base64 result. Disable Bun's short generic idle timer for the whole protected
+    // relay surface; upstream/result helpers retain their own bounded deadlines.
+    server?.timeout(request, 0)
+    return handler(request)
+  }
+}
+
 if (import.meta.main) {
   const port = Number(process.env.RELAY_PORT ?? 8790)
   // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 qfgw 出口 IP 放行;
   // 绝不把 relay 直接绑到公网口(否则绕过 nginx 允许名单,只剩 Bearer 一层)。
   const hostname = process.env.RELAY_HOST ?? '127.0.0.1'
   const handler = createRelayFetch({ env: process.env }) // 配置非法(缺 RELAY_TOKEN/RELAY_OPENAI_KEY)会在此抛错
-  Bun.serve({ hostname, port, fetch: handler })
+  Bun.serve({ hostname, port, fetch: withRelayRequestTimeout(handler) })
   console.log(`[relay] 生图异步任务服务监听 ${hostname}:${port}`)
 }
