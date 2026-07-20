@@ -49,6 +49,7 @@ const mocks = vi.hoisted(() => ({
   openTab: vi.fn(),
   openProductTaskTab: vi.fn(),
   attachMediaProject: vi.fn(),
+  getMedia: vi.fn(),
   selectImage: vi.fn(),
   selectVideo: vi.fn(),
   createSideTask: vi.fn(),
@@ -121,6 +122,7 @@ vi.mock('../../stores/mediaWorkbenchStore', () => ({
 vi.mock('../api/tasks', () => ({
   productTasksApi: {
     attachMediaProject: mocks.attachMediaProject,
+    getMedia: mocks.getMedia,
   },
 }))
 
@@ -226,6 +228,7 @@ beforeEach(() => {
   }
   mocks.isLoading = false
   mocks.error = null
+  mocks.getMedia.mockResolvedValue({ taskId: 'task-1', projects: [] })
   mocks.runtime = {
     connectionState: 'connected',
     historyStatus: 'ready',

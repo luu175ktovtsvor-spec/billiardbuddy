@@ -263,6 +263,50 @@ describe('MarkdownRenderer', () => {
     expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'))
   })
 
+  it('renders remote markdown images with privacy-safe attributes', () => {
+    render(<MarkdownRenderer content={'![Training poster](https://cdn.example.com/poster.png)'} />)
+
+    const image = screen.getByAltText('Training poster')
+    expect(image).toHaveAttribute('src', 'https://cdn.example.com/poster.png')
+    expect(image).toHaveAttribute('loading', 'lazy')
+    expect(image).toHaveAttribute('referrerpolicy', 'no-referrer')
+  })
+
+  it('blocks local paths and data URLs in assistant markdown images', () => {
+    const { container } = render(
+      <MarkdownRenderer
+        content={[
+          '![local](file:///Users/example/private.png)',
+          '![absolute](/Users/example/private.png)',
+          '![inline](data:image/png;base64,ZmFrZQ==)',
+        ].join('\n')}
+      />,
+    )
+
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.innerHTML).not.toContain('/Users/example')
+    expect(container.innerHTML).not.toContain('data:image')
+  })
+
+  it('lets a product surface resolve only its task-scoped media image URL', () => {
+    const resolveImageSrc = vi.fn((source: string) => (
+      source.startsWith('/api/product/tasks/task-1/media/')
+        ? `http://127.0.0.1:3457${source}`
+        : null
+    ))
+    render(
+      <MarkdownRenderer
+        content={'![result](/api/product/tasks/task-1/media/projects/img_1/assets/out_1)'}
+        resolveImageSrc={resolveImageSrc}
+      />,
+    )
+
+    expect(screen.getByAltText('result')).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:3457/api/product/tasks/task-1/media/projects/img_1/assets/out_1',
+    )
+  })
+
   it('strips style tags from assistant text before injecting markdown html', () => {
     const { container } = render(
       <MarkdownRenderer

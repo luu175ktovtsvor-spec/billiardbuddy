@@ -413,6 +413,7 @@ describe('Settings API', () => {
       desktopNotificationsEnabled: true,
       autoDreamEnabled: true,
       deepThinkingEnabled: false,
+      preventSleepWhileRunning: true,
       webSearch: { enabled: false },
     })
     const res = await handleProductSettingsApi(req, url, segments)
@@ -432,6 +433,7 @@ describe('Settings API', () => {
       desktopNotificationsEnabled: true,
       autoDreamEnabled: true,
       deepThinkingEnabled: false,
+      preventSleepWhileRunning: true,
       webSearch: { enabled: false },
     })
   })

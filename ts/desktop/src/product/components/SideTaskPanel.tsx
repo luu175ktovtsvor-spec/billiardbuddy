@@ -237,7 +237,11 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
             {runtime?.historyStatus === 'error' && runtime.entries.length === 0 ? <p role="alert" className="py-6 text-center text-xs text-[var(--color-error)]">侧边任务记录暂时无法读取。</p> : null}
             {runtime?.entries.map((entry) => (
               <div key={entry.id} className="mb-3">
-                <ProductTaskThreadEntryView entry={entry} streaming={entry.id === runtime.streamingEntryId} />
+                <ProductTaskThreadEntryView
+                  taskId={selectedTaskId}
+                  entry={entry}
+                  streaming={entry.id === runtime.streamingEntryId}
+                />
               </div>
             ))}
             {runtime?.pendingApproval ? (

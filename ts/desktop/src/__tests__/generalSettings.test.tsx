@@ -90,6 +90,7 @@ describe('Settings > General tab', () => {
       theme: 'light',
       autoDreamEnabled: false,
       deepThinkingEnabled: true,
+      preventSleepWhileRunning: false,
       skipWebFetchPreflight: true,
       desktopNotificationsEnabled: true,
       chatSendBehavior: 'enter',
@@ -122,6 +123,9 @@ describe('Settings > General tab', () => {
       }),
       setDeepThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ deepThinkingEnabled: enabled })
+      }),
+      setPreventSleepWhileRunning: vi.fn().mockImplementation(async (enabled: boolean) => {
+        useSettingsStore.setState({ preventSleepWhileRunning: enabled })
       }),
       setTheme: vi.fn().mockImplementation(async (theme: ThemeMode) => {
         useSettingsStore.setState({ theme })
@@ -259,6 +263,21 @@ describe('Settings > General tab', () => {
       expect(useSettingsStore.getState().setChatSendBehavior).toHaveBeenCalledWith('modifierEnter')
     })
     expect(screen.getByRole('button', { name: /Ctrl\/Cmd\+Enter sends/i })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('restores the prevent-sleep preference for running tasks', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    const toggle = screen.getByLabelText('Prevent sleep while tasks run')
+    expect(toggle).not.toBeChecked()
+
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(useSettingsStore.getState().setPreventSleepWhileRunning).toHaveBeenCalledWith(true)
+    })
+    expect(toggle).toBeChecked()
   })
 
   it('saves provider network timeout and manual proxy from General settings', async () => {

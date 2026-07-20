@@ -305,6 +305,8 @@ export function GeneralSettings() {
     setAutoDreamEnabled,
     deepThinkingEnabled,
     setDeepThinkingEnabled,
+    preventSleepWhileRunning,
+    setPreventSleepWhileRunning,
     locale,
     setLocale,
     theme,
@@ -961,6 +963,39 @@ export function GeneralSettings() {
           {locale === 'zh' ? '任务运行选项' : 'Task run options'}
         </summary>
         <div className="pl-1">
+          <div className="mt-6">
+            <h2 className="mb-1 text-base font-semibold text-[var(--color-text-primary)]">
+              {locale === 'zh' ? '运行任务时防止系统休眠' : 'Prevent sleep while tasks run'}
+            </h2>
+            <p className="mb-3 text-sm text-[var(--color-text-tertiary)]">
+              {locale === 'zh'
+                ? '在任务运行期间让电脑保持唤醒；任务结束或停止后会自动释放。'
+                : 'Keeps the computer awake while a task is running, then releases it when the task finishes or stops.'}
+            </p>
+            <label className="relative flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 transition-colors hover:border-[var(--color-border-focus)]">
+              <input
+                type="checkbox"
+                aria-label={locale === 'zh' ? '运行任务时防止系统休眠' : 'Prevent sleep while tasks run'}
+                checked={preventSleepWhileRunning}
+                onChange={(event) => void setPreventSleepWhileRunning(event.target.checked)}
+                className={SETTINGS_CHECKBOX_INPUT_CLASS}
+              />
+              <SettingsCheckboxMark checked={preventSleepWhileRunning} />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                  {preventSleepWhileRunning
+                    ? (locale === 'zh' ? '已开启' : 'Enabled')
+                    : (locale === 'zh' ? '已关闭' : 'Disabled')}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                  {locale === 'zh'
+                    ? '不会阻止显示器按系统设置熄屏。'
+                    : 'This does not stop the display from sleeping according to system settings.'}
+                </div>
+              </div>
+            </label>
+          </div>
+
           <div className="mt-6">
             <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.autoDreamTitle')}</h2>
             <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.autoDreamDescription')}</p>

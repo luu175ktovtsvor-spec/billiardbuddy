@@ -78,6 +78,8 @@ export type UserSettings = {
   autoDreamEnabled?: boolean
   /** Product-only preference for new managed DeepSeek task processes. */
   deepThinkingEnabled?: boolean
+  /** Keep the computer awake only while a task turn is actively running. */
+  preventSleepWhileRunning?: boolean
   theme?: ThemeMode
   chatSendBehavior?: ChatSendBehavior
   desktopNotificationsEnabled?: boolean

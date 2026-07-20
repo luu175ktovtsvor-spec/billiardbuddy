@@ -59,6 +59,7 @@ const USER_PREFERENCE_KEYS = [
   'webSearch',
   'autoDreamEnabled',
   'deepThinkingEnabled',
+  'preventSleepWhileRunning',
 ] as const
 const RUNTIME_SETTING_KEYS = [
   'skipWebFetchPreflight',
@@ -222,6 +223,9 @@ function projectUserPreferences(settings: Record<string, unknown>): Record<strin
   if (typeof settings.deepThinkingEnabled === 'boolean') {
     result.deepThinkingEnabled = settings.deepThinkingEnabled
   }
+  if (typeof settings.preventSleepWhileRunning === 'boolean') {
+    result.preventSleepWhileRunning = settings.preventSleepWhileRunning
+  }
   if (hasOwn(settings, 'webSearch')) {
     const webSearch = copyRecord(settings.webSearch)
     result.webSearch = {
@@ -267,6 +271,10 @@ function validateUserPreferenceUpdate(body: Record<string, unknown>): Record<str
   if (hasOwn(body, 'deepThinkingEnabled')) {
     assertBoolean(body.deepThinkingEnabled, 'deepThinkingEnabled')
     update.deepThinkingEnabled = body.deepThinkingEnabled
+  }
+  if (hasOwn(body, 'preventSleepWhileRunning')) {
+    assertBoolean(body.preventSleepWhileRunning, 'preventSleepWhileRunning')
+    update.preventSleepWhileRunning = body.preventSleepWhileRunning
   }
   if (hasOwn(body, 'webSearch')) {
     assertRecord(body.webSearch, 'webSearch')
