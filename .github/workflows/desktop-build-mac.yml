@@ -199,17 +199,6 @@ jobs:
             test -s "${file}"
           done
 
-      - name: 保存 macOS 安装包
-        uses: actions/upload-artifact@v4
-        with:
-          name: BilliardBuddy-macOS-arm64
-          path: |
-            ts/desktop/build-artifacts/electron/*.dmg
-            ts/desktop/build-artifacts/electron/*.zip
-            ts/desktop/build-artifacts/electron/*.blockmap
-            ts/desktop/build-artifacts/electron/latest-mac.yml
-          if-no-files-found: error
-
       - name: 发布 macOS 安装包与更新清单
         shell: bash
         run: |
