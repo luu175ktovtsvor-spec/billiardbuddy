@@ -1639,7 +1639,7 @@ function AboutSettings() {
               variant="secondary"
               disabled={!canCheck}
               className="shrink-0"
-              onClick={() => void checkForUpdates({ autoDownload: true })}
+              onClick={() => void checkForUpdates({ autoDownload: true, autoInstall: true })}
             >
               <RotateCw className={isChecking ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} aria-hidden="true" />
               {t('update.checkNow')}
