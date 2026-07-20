@@ -95,16 +95,18 @@ queue_max="$(read_nonnegative RELAY_QUEUE_MAX 1200)"
 user_max="$(read_nonnegative RELAY_USER_MAX 10)"
 image_conc="$(read_nonnegative RELAY_IMG_CONC 6)"
 image_user_conc="$(read_nonnegative RELAY_IMG_USER_CONC 1)"
+upstream_timeout_ms="$(read_nonnegative RELAY_UPSTREAM_TIMEOUT_MS 300000)"
 
 (( queue_max >= 1000 )) || die 'RELAY_QUEUE_MAX must be at least 1000 for the 100 x 10 small-task burst'
 (( user_max >= 10 )) || die 'RELAY_USER_MAX must be at least 10 for the 100 x 10 target'
 (( image_conc >= 1 )) || die 'RELAY_IMG_CONC must be at least 1'
 (( image_user_conc >= 1 )) || die 'RELAY_IMG_USER_CONC must be at least 1'
+(( upstream_timeout_ms >= 300000 )) || die 'RELAY_UPSTREAM_TIMEOUT_MS must be at least 300000 (5 minutes)'
 
 if [[ "$output_mode" == 'blob-dir' ]]; then
   printf '%s\n' "$blob_dir"
   exit 0
 fi
 
-printf '1000-window relay production configuration accepted: queue=%s user=%s image_conc=%s image_user_conc=%s\n' \
-  "$queue_max" "$user_max" "$image_conc" "$image_user_conc"
+printf '1000-window relay production configuration accepted: queue=%s user=%s image_conc=%s image_user_conc=%s upstream_timeout_ms=%s\n' \
+  "$queue_max" "$user_max" "$image_conc" "$image_user_conc" "$upstream_timeout_ms"

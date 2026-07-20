@@ -8,6 +8,7 @@
 #   RELAY_OPENAI_BASE      # 默认 https://api.openai.com/v1
 #   RELAY_ARK_KEY          # 真火山方舟 key,启用豆包 Seedream 时必填
 #   RELAY_ARK_BASE         # 默认 https://ark.cn-beijing.volces.com/api/v3
+#   RELAY_UPSTREAM_TIMEOUT_MS=300000        # OpenAI/Seedream 生成并完整读取结果的 5 分钟截止时间
 #   RELAY_DB=/opt/qfrelay/relay.db          # 100 用户生产部署必须配置；SQLite 持久化(重启恢复不能用 :memory:)
 #   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 100 用户生产部署必须配置；大体积输入/结果 blob(700 目录,应用会自建)
 #   RELAY_QUEUE_MAX=2000 RELAY_USER_MAX=20 RELAY_IMG_CONC=16 RELAY_IMG_USER_CONC=2 RELAY_SEEDREAM_CONC=6 RELAY_SEEDREAM_USER_CONC=1 RELAY_RETRY_AFTER_SECONDS=30
@@ -21,7 +22,8 @@
 #     client_max_body_size 32m;    # 与 RELAY_MAX_BODY_BYTES 对齐，避免 nginx 默认 1m 先行拒绝改图
 #     proxy_request_buffering off; # 流式交给 relay 的活跃输入预算，不让 nginx 先攒满大请求
 #     proxy_pass http://127.0.0.1:8790/;
-#     proxy_read_timeout 120s;
+#     proxy_read_timeout 300s;  # 允许完整图片结果从美国 relay 返回网关
+#     proxy_send_timeout 300s;
 #   }
 set -e
 APPDIR=/opt/qfrelay

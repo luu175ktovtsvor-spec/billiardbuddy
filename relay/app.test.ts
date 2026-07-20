@@ -239,6 +239,10 @@ test('connection loss, timeout and malformed success stay failed_unknown to prev
   const cases: Array<{ env?: Record<string, string>; fetchImpl: () => Promise<Response> }> = [
     { fetchImpl: async () => { throw new Error('socket reset') } },
     { env: { RELAY_UPSTREAM_TIMEOUT_MS: '10' }, fetchImpl: () => new Promise(() => {}) },
+    {
+      env: { RELAY_UPSTREAM_TIMEOUT_MS: '10' },
+      fetchImpl: async () => new Response(new ReadableStream({ start() {} }), { status: 200 }),
+    },
     { fetchImpl: async () => new Response('{broken', { status: 200 }) },
   ]
 

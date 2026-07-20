@@ -545,26 +545,62 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     })
   }
 
-  async function fetchUpstream(provider: 'OpenAI' | 'Seedream', input: string, init: RequestInit): Promise<Response> {
+  async function fetchUpstreamBody<T>(
+    provider: 'OpenAI' | 'Seedream',
+    input: string,
+    init: RequestInit,
+    readBody: (response: Response) => Promise<T>,
+  ): Promise<{ response: Response; body: T }> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutError = () => new UpstreamOutcomeUnknownError(
+      `${provider} 请求超过 5 分钟，无法确认是否已经生成或扣费`,
+    )
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         controller.abort()
-        reject(new UpstreamOutcomeUnknownError(`${provider} 请求超时，无法确认是否已经生成或扣费`))
+        reject(timeoutError())
       }, config.upstreamTimeoutMs)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
+    const requestAndRead = async () => {
+      let response: Response
+      try {
+        response = await fetchImpl(input, { ...init, signal: controller.signal })
+      } catch (error) {
+        if (controller.signal.aborted) throw timeoutError()
+        throw new UpstreamOutcomeUnknownError(`${provider} 连接中断，无法确认结果: ${String(error).slice(0, 160)}`)
+      }
+      try {
+        return { response, body: await readBody(response) }
+      } catch (error) {
+        if (controller.signal.aborted) throw timeoutError()
+        throw response.ok
+          ? new UpstreamOutcomeUnknownError(`${provider} 成功响应读取失败，无法确认结果: ${String(error).slice(0, 160)}`)
+          : new UpstreamResponseError(`${provider} ${response.status}: 响应读取失败`)
+      }
+    }
     try {
-      return await Promise.race([
-        fetchImpl(input, { ...init, signal: controller.signal }).catch(error => {
-          throw new UpstreamOutcomeUnknownError(`${provider} 连接中断，无法确认结果: ${String(error).slice(0, 160)}`)
-        }),
-        timeout,
-      ])
+      return await Promise.race([requestAndRead(), timeout])
     } finally {
       if (timer) clearTimeout(timer)
     }
+  }
+
+  function fetchUpstreamText(
+    provider: 'OpenAI' | 'Seedream',
+    input: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; body: string }> {
+    return fetchUpstreamBody(provider, input, init, response => response.text())
+  }
+
+  function fetchUpstreamBytes(
+    provider: 'OpenAI' | 'Seedream',
+    input: string,
+    init: RequestInit,
+  ): Promise<{ response: Response; body: ArrayBuffer }> {
+    return fetchUpstreamBody(provider, input, init, response => response.arrayBuffer())
   }
 
   async function seedreamDataItem(item: unknown): Promise<Record<string, unknown> | null> {
@@ -587,15 +623,13 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     if (assetUrl.protocol !== 'https:') {
       throw new UpstreamOutcomeUnknownError('Seedream 已返回成功状态，但图片地址不是安全链接')
     }
-    const imageResponse = await fetchUpstream('Seedream', assetUrl.toString(), { method: 'GET' })
+    const { response: imageResponse, body: bytes } = await fetchUpstreamBytes(
+      'Seedream',
+      assetUrl.toString(),
+      { method: 'GET' },
+    )
     if (!imageResponse.ok) {
       throw new UpstreamOutcomeUnknownError(`Seedream 已生成图片，但下载结果失败: HTTP ${imageResponse.status}`)
-    }
-    let bytes: ArrayBuffer
-    try {
-      bytes = await imageResponse.arrayBuffer()
-    } catch (error) {
-      throw new UpstreamOutcomeUnknownError(`Seedream 已生成图片，但下载结果中断: ${String(error).slice(0, 160)}`)
     }
     if (bytes.byteLength === 0) throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果为空')
     const contentType = imageResponse.headers.get('content-type')?.toLowerCase() ?? ''
@@ -630,7 +664,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         payload.image = images.length === 1 ? images[0] : images
         payload.sequential_image_generation = 'disabled'
       }
-      const response = await fetchUpstream('Seedream', `${config.arkBase}/images/generations`, {
+      const { response, body: text } = await fetchUpstreamText('Seedream', `${config.arkBase}/images/generations`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${config.arkKey}`,
@@ -638,14 +672,6 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         },
         body: JSON.stringify(payload),
       })
-      let text: string
-      try {
-        text = await response.text()
-      } catch (error) {
-        throw response.ok
-          ? new UpstreamOutcomeUnknownError(`Seedream 成功响应读取失败，无法确认结果: ${String(error).slice(0, 160)}`)
-          : new UpstreamResponseError(`Seedream ${response.status}: 响应读取失败`)
-      }
       if (!response.ok) throw new UpstreamResponseError(`Seedream ${response.status}:${text.slice(0, 300)}`)
       let parsed: unknown
       try {
@@ -701,7 +727,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const prompt = String(body.prompt ?? '')
         const n = clampCount(body.n)
         const size = body.size ? String(body.size) : undefined
-        const requestUpstream = async (): Promise<Response> => {
+        const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
           if (body.mode === 'edit') {
             const form = new FormData()
             form.set('model', model)
@@ -719,7 +745,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
               const mask = dataUriToFile(String(body.mask), 'mask.png')
               if (mask) form.set('mask', mask)
             }
-            return await fetchUpstream('OpenAI', `${config.openaiBase}/images/edits`, {
+            return await fetchUpstreamText('OpenAI', `${config.openaiBase}/images/edits`, {
               method: 'POST',
               headers: { authorization: `Bearer ${config.openaiKey}` },
               body: form,
@@ -727,22 +753,14 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           }
           const payload: Record<string, unknown> = { model, prompt, n }
           if (size) payload.size = size
-          return await fetchUpstream('OpenAI', `${config.openaiBase}/images/generations`, {
+          return await fetchUpstreamText('OpenAI', `${config.openaiBase}/images/generations`, {
             method: 'POST',
             headers: { authorization: `Bearer ${config.openaiKey}`, 'content-type': 'application/json' },
             body: JSON.stringify(payload),
           })
         }
 
-        const resp = await requestUpstream()
-        let text: string
-        try {
-          text = await resp.text()
-        } catch (error) {
-          throw resp.ok
-            ? new UpstreamOutcomeUnknownError(`OpenAI 成功响应读取失败，无法确认结果: ${String(error).slice(0, 160)}`)
-            : new UpstreamResponseError(`OpenAI ${resp.status}:响应读取失败`)
-        }
+        const { response: resp, body: text } = await requestUpstream()
         if (!resp.ok) throw new UpstreamResponseError(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
         let parsed: unknown
         try {
