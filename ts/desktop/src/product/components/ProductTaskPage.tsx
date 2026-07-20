@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
+import { getApiUrl } from '../../api/client'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
 import { useSettingsStore } from '../../stores/settingsStore'
 import {
@@ -45,6 +46,7 @@ import {
   type ProductTaskBrowserPreviewCapture,
 } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskMediaDock } from './ProductTaskMediaDock'
+import { ProductTaskInlineMedia } from './ProductTaskInlineMedia'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
 import { ProductTaskTerminalDock } from './ProductTaskTerminalDock'
 import {
@@ -104,6 +106,7 @@ type ProductTaskComposerSlashCommand = TaskComposerCommand & {
 }
 
 type ProductTaskThreadEntryViewProps = {
+  taskId?: string
   entry: ProductTaskThreadEntry
   streaming: boolean
   actionPending?: boolean
@@ -169,6 +172,7 @@ function ProductTaskThreadEntryActions({
 }
 
 export function ProductTaskThreadEntryView({
+  taskId,
   entry,
   streaming,
   actionPending,
@@ -225,34 +229,35 @@ export function ProductTaskThreadEntryView({
   }
 
   if (entry.type === 'media_draft') {
-    const mediaLabel = entry.draft.kind === 'image' ? '图片' : '视频'
     return (
-      <article
-        className="mx-auto max-w-2xl rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]"
-        data-testid={`product-task-media-draft-${entry.draft.kind}`}
-      >
-        <p className="font-medium text-[var(--color-text-primary)]">已准备{mediaLabel}草稿</p>
-        <p className="mt-1 text-xs leading-5">尚未生成或导出。关联后会打开对应工作台，后续操作仍需你确认。</p>
-        {onAttachMediaDraft ? (
-          <button
-            type="button"
-            disabled={mediaDraftActionPending}
-            onClick={() => onAttachMediaDraft(entry.draft)}
-            className="mt-3 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          >
-            {mediaDraftActionPending ? '关联中…' : '关联到当前任务并打开工作台'}
-          </button>
-        ) : (
-          <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">恢复任务后可以关联这个草稿。</p>
-        )}
-      </article>
+      <ProductTaskInlineMedia
+        taskId={taskId}
+        draft={entry.draft}
+        actionPending={mediaDraftActionPending}
+        onAttach={onAttachMediaDraft}
+      />
     )
+  }
+
+  const taskMediaPrefix = taskId
+    ? `/api/product/tasks/${encodeURIComponent(taskId)}/media/`
+    : null
+  const resolveImageSrc = (source: string): string | null => {
+    const trimmed = source.trim()
+    if (/^https?:\/\//i.test(trimmed)) return trimmed
+    return taskMediaPrefix && trimmed.startsWith(taskMediaPrefix)
+      ? getApiUrl(trimmed)
+      : null
   }
 
   return (
     <div className="max-w-3xl">
       <article className="rounded-2xl rounded-bl-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-sm leading-6 text-[var(--color-text-primary)]">
-        <MarkdownRenderer content={entry.text} streaming={streaming} />
+        <MarkdownRenderer
+          content={entry.text}
+          streaming={streaming}
+          resolveImageSrc={resolveImageSrc}
+        />
       </article>
       <ProductTaskThreadEntryActions
         entry={entry}
@@ -907,6 +912,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
               {runtime?.entries.map((entry) => (
                 <ProductTaskThreadEntryView
                   key={entry.id}
+                  taskId={taskId}
                   entry={entry}
                   streaming={entry.id === runtime.streamingEntryId}
                   actionPending={isContinuationPending || isSideTaskCreationPending}

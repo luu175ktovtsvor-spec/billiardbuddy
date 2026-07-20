@@ -15,6 +15,7 @@ type Props = {
   cache?: boolean
   streaming?: boolean
   onLinkClick?: (href: string, event: ReactMouseEvent<HTMLDivElement>) => boolean | void
+  resolveImageSrc?: (src: string) => string | null
 }
 
 type CodeBlock = {
@@ -272,10 +273,19 @@ function renderMath(block: MathBlock): string {
   }
 }
 
-function enhanceMarkdownHtml(html: string, mathBlocks: MathBlock[]): string {
+function safeRemoteImageSrc(src: string): string | null {
+  const trimmed = src.trim()
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null
+}
+
+function enhanceMarkdownHtml(
+  html: string,
+  mathBlocks: MathBlock[],
+  resolveImageSrc?: (src: string) => string | null,
+): string {
   const cleanHtml = DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG)
 
-  const needsDomEnhancement = mathBlocks.length > 0 || /<(?:a|table)\b/i.test(cleanHtml)
+  const needsDomEnhancement = mathBlocks.length > 0 || /<(?:a|table|img)\b/i.test(cleanHtml)
   if (!needsDomEnhancement) {
     return cleanHtml
   }
@@ -309,6 +319,20 @@ function enhanceMarkdownHtml(html: string, mathBlocks: MathBlock[]): string {
   container.querySelectorAll('a[href]').forEach((link) => {
     link.setAttribute('target', '_blank')
     link.setAttribute('rel', 'noreferrer noopener')
+  })
+
+  container.querySelectorAll<HTMLImageElement>('img').forEach((image) => {
+    const source = image.getAttribute('src') ?? ''
+    const resolved = resolveImageSrc
+      ? resolveImageSrc(source)
+      : safeRemoteImageSrc(source)
+    if (!resolved) {
+      image.remove()
+      return
+    }
+    image.setAttribute('src', resolved)
+    image.setAttribute('loading', 'lazy')
+    image.setAttribute('referrerpolicy', 'no-referrer')
   })
 
   return container.innerHTML
@@ -468,7 +492,7 @@ function getProseClasses(variant: 'default' | 'document' | 'compact', className?
     .join(' ')
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ content, variant = 'default', className, cache = true, streaming = false, onLinkClick }: Props) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, variant = 'default', className, cache = true, streaming = false, onLinkClick, resolveImageSrc }: Props) {
   const { html, codeBlocks, mathBlocks } = useMemo(
     () => cache ? getCachedMarkdownParse(content, streaming) : parseMarkdown(content),
     [cache, content, streaming],
@@ -480,7 +504,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
 
   const parts = useMemo(() => {
     if (codeBlocks.length === 0) {
-      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks) }]
+      return [{ type: 'html' as const, content: enhanceMarkdownHtml(html, mathBlocks, resolveImageSrc) }]
     }
 
     const result: MarkdownPart[] = []
@@ -493,18 +517,18 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, varian
 
       const before = remaining.slice(0, idx)
       if (before) {
-        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks) })
+        result.push({ type: 'html', content: enhanceMarkdownHtml(before, mathBlocks, resolveImageSrc) })
       }
       result.push({ type: 'code', block })
       remaining = remaining.slice(idx + marker.length)
     }
 
     if (remaining) {
-      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks) })
+      result.push({ type: 'html', content: enhanceMarkdownHtml(remaining, mathBlocks, resolveImageSrc) })
     }
 
     return result
-  }, [html, codeBlocks, mathBlocks])
+  }, [html, codeBlocks, mathBlocks, resolveImageSrc])
 
   const handleClick = useCallback(async (event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null

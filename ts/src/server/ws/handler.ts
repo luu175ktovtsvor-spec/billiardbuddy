@@ -48,6 +48,10 @@ import {
   shouldHideCommandMetadataContent,
 } from '../../utils/commandMetadata.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
+import {
+  startPreventSleep,
+  stopPreventSleep,
+} from '../../services/preventSleep.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -75,6 +79,40 @@ const sessionCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
  * once the result arrives. The remover is also cleared on reconnect/cleanup.
  */
 const sessionDisconnectWatchers = new Map<string, () => void>()
+const sleepPreventedSessions = new Set<string>()
+const pendingSleepPrevention = new Map<string, symbol>()
+
+function startPreventSleepForProductTask(
+  socket: ServerWebSocket<WebSocketData>,
+): void {
+  if (socket.data.channel !== 'product' || sleepPreventedSessions.has(socket.data.sessionId)) {
+    return
+  }
+  const sessionId = socket.data.sessionId
+  const request = Symbol(sessionId)
+  pendingSleepPrevention.set(sessionId, request)
+  void settingsService.getUserSettings().then((settings) => {
+    if (
+      pendingSleepPrevention.get(sessionId) !== request ||
+      settings.preventSleepWhileRunning !== true
+    ) {
+      return
+    }
+    pendingSleepPrevention.delete(sessionId)
+    sleepPreventedSessions.add(sessionId)
+    startPreventSleep()
+  }).catch(() => {
+    if (pendingSleepPrevention.get(sessionId) === request) {
+      pendingSleepPrevention.delete(sessionId)
+    }
+  })
+}
+
+function stopPreventSleepForSession(sessionId: string): void {
+  pendingSleepPrevention.delete(sessionId)
+  if (!sleepPreventedSessions.delete(sessionId)) return
+  stopPreventSleep()
+}
 
 /**
  * Track sessions where user requested stop — suppress the CLI_ERROR that
@@ -424,12 +462,20 @@ async function handleUserMessage(
   })
   const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(sessionId, activeTurn)
 
-  const sent = await conversationService.sendMessage(
-    sessionId,
-    message.content,
-    message.attachments
-  )
+  startPreventSleepForProductTask(ws)
+  let sent = false
+  try {
+    sent = await conversationService.sendMessage(
+      sessionId,
+      message.content,
+      message.attachments
+    )
+  } catch (error) {
+    stopPreventSleepForSession(sessionId)
+    throw error
+  }
   if (!sent) {
+    stopPreventSleepForSession(sessionId)
     removeActiveTurnOutputCallback()
     clearActiveUserTurn(sessionId, activeTurn)
     removeTitleOutputCallback?.()
@@ -454,7 +500,9 @@ function bindActiveUserTurnCompletion(
   activeTurn: ActiveUserTurnState,
 ): () => void {
   const callback = (cliMsg: any) => {
-    if (!activeTurn.messageSent || cliMsg?.type !== 'result') return
+    if (cliMsg?.type !== 'result') return
+    stopPreventSleepForSession(sessionId)
+    if (!activeTurn.messageSent) return
 
     conversationService.removeOutputCallback(sessionId, callback)
     clearActiveUserTurn(sessionId, activeTurn)
@@ -475,6 +523,7 @@ async function handleDesktopClearCommand(
     ? conversationService.getSessionPermissionMode(sessionId)
     : undefined
   conversationService.stopSession(sessionId)
+  stopPreventSleepForSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
   sessionOutputCallbacks.delete(sessionId)
   sessionSlashCommands.delete(sessionId)
@@ -527,6 +576,7 @@ function handleStopGeneration(ws: ServerWebSocket<WebSocketData>) {
   console.log(`[WS] Stop generation requested for session: ${sessionId}`)
 
   sessionStopRequested.add(sessionId)
+  stopPreventSleepForSession(sessionId)
 
   if (conversationService.hasSession(sessionId)) {
     // First try graceful interrupt via SDK control message
@@ -869,6 +919,7 @@ function cleanupStreamState(sessionId: string) {
 }
 
 function cleanupSessionRuntimeState(sessionId: string) {
+  stopPreventSleepForSession(sessionId)
   cancelSessionDisconnectWatcher(sessionId)
   productTaskAgentCoreAdapter.removeSession(sessionId)
   cleanupStreamState(sessionId)

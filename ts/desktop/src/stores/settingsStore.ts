@@ -47,6 +47,7 @@ function getStoredLocale(): Locale {
 type SettingsStore = {
   autoDreamEnabled: boolean
   deepThinkingEnabled: boolean
+  preventSleepWhileRunning: boolean
   locale: Locale
   theme: ThemeMode
   chatSendBehavior: ChatSendBehavior
@@ -73,6 +74,7 @@ type SettingsStore = {
   fetchAll: () => Promise<void>
   setAutoDreamEnabled: (enabled: boolean) => Promise<void>
   setDeepThinkingEnabled: (enabled: boolean) => Promise<void>
+  setPreventSleepWhileRunning: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
   setTheme: (theme: ThemeMode) => Promise<void>
   setChatSendBehavior: (behavior: ChatSendBehavior) => Promise<void>
@@ -125,6 +127,7 @@ const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   autoDreamEnabled: false,
   deepThinkingEnabled: true,
+  preventSleepWhileRunning: false,
   locale: getStoredLocale(),
   theme: useUIStore.getState().theme,
   chatSendBehavior: 'enter',
@@ -173,6 +176,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       set({
         autoDreamEnabled: userSettings.autoDreamEnabled === true,
         deepThinkingEnabled: userSettings.deepThinkingEnabled !== false,
+        preventSleepWhileRunning: userSettings.preventSleepWhileRunning === true,
         theme,
         chatSendBehavior: normalizeChatSendBehavior(userSettings.chatSendBehavior),
         skipWebFetchPreflight: runtimeSettings.skipWebFetchPreflight !== false,
@@ -211,6 +215,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await productSettingsApi.updateUser({ deepThinkingEnabled: enabled })
     } catch (error) {
       set({ deepThinkingEnabled: prev })
+      throw error
+    }
+  },
+
+  setPreventSleepWhileRunning: async (enabled) => {
+    const prev = get().preventSleepWhileRunning
+    set({ preventSleepWhileRunning: enabled })
+    try {
+      await productSettingsApi.updateUser({ preventSleepWhileRunning: enabled })
+    } catch (error) {
+      set({ preventSleepWhileRunning: prev })
       throw error
     }
   },
