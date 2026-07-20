@@ -56,6 +56,35 @@ export function deepseekOpaqueUserId(user: string, client: string): string {
 
 export type DeepSeekChatContext = { userId?: string }
 
+function normalizeDeepSeekFunctionTools(
+  value: unknown[],
+): { tools: unknown[]; changed: boolean } {
+  let changed = false
+  const tools = value.map((tool) => {
+    if (!isRecord(tool) || tool.type !== 'function' || !isRecord(tool.function)) {
+      return tool
+    }
+
+    const parameters = isRecord(tool.function.parameters)
+      ? tool.function.parameters
+      : {}
+    if (parameters.type === 'object') return tool
+
+    changed = true
+    return {
+      ...tool,
+      function: {
+        ...tool.function,
+        parameters: {
+          ...parameters,
+          type: 'object',
+        },
+      },
+    }
+  })
+  return { tools, changed }
+}
+
 /**
  * The desktop Core runtime represents its enabled setting as `adaptive`, while
  * DeepSeek's OpenAI-compatible endpoint accepts only `enabled` or `disabled`.
@@ -101,6 +130,9 @@ export function prepareDeepSeekChatBody(
   if (parsed.tools !== undefined && !Array.isArray(parsed.tools)) {
     throw new DeepSeekRequestError(400, '模型请求 tools 必须是数组')
   }
+  const normalizedTools = Array.isArray(parsed.tools)
+    ? normalizeDeepSeekFunctionTools(parsed.tools)
+    : { tools: [], changed: false }
 
   const requested = typeof parsed.model === 'string' ? parsed.model : ''
   const model = allowedModels.has(requested) ? requested : defaultModel
@@ -110,8 +142,11 @@ export function prepareDeepSeekChatBody(
   const hasThinkingInput = parsed.thinking !== undefined
   const thinking = normalizeDeepSeekThinking(parsed.thinking)
   // 无改写(model 不变、无 user_id 注入、无思考参数)时原样透传,避免多一次序列化。
-  if (model === requested && !userId && !hasThinkingInput) return { body: rawBody }
+  if (model === requested && !userId && !hasThinkingInput && !normalizedTools.changed) {
+    return { body: rawBody }
+  }
   const next: Record<string, unknown> = { ...parsed, model }
+  if (normalizedTools.changed) next.tools = normalizedTools.tools
   if (hasThinkingInput) {
     if (thinking) next.thinking = thinking
     else delete next.thinking

@@ -73,6 +73,40 @@ test('prepareBody rejects non-JSON and non-object and bad tools', () => {
   expect(() => prepareDeepSeekChatBody(JSON.stringify({ model: 'deepseek-v4-flash', tools: {} }), allowed, 'deepseek-v4-flash')).toThrow(DeepSeekRequestError)
 })
 
+test('prepareBody adds the object type required by DeepSeek while preserving union tool schemas', () => {
+  const raw = JSON.stringify({
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{
+      type: 'function',
+      function: {
+        name: 'MediaWorkbench',
+        description: 'Create media',
+        parameters: {
+          anyOf: [
+            { type: 'object', properties: { action: { const: 'image' } }, required: ['action'] },
+            { type: 'object', properties: { action: { const: 'video' } }, required: ['action'] },
+          ],
+        },
+      },
+    }],
+  })
+
+  const { body } = prepareDeepSeekChatBody(
+    raw,
+    new Set(['deepseek-v4-flash']),
+    'deepseek-v4-flash',
+  )
+  const parsed = JSON.parse(body)
+  expect(parsed.tools[0].function.parameters).toEqual({
+    anyOf: [
+      { type: 'object', properties: { action: { const: 'image' } }, required: ['action'] },
+      { type: 'object', properties: { action: { const: 'video' } }, required: ['action'] },
+    ],
+    type: 'object',
+  })
+})
+
 test('prepares only the native Anthropic web-search request and injects the trusted metadata user id', () => {
   const allowed = new Set(['deepseek-v4-flash'])
   const { body } = prepareDeepSeekAnthropicWebSearchBody(JSON.stringify({
