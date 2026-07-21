@@ -75,7 +75,8 @@
 - `[HARD]` **主代理不写产品代码**：主代理只负责读取和维护唯一施工合同、核对源码事实、拆分 Work Unit、指定修改边界、派实施子代理、审查 diff、独立运行验证、执行最终 Git 提交，并决定接受、退回或阻塞。主代理只能亲自修改本 Markdown 和 HTML 视觉参考，不能借“集成修复”直接改产品实现。
 - `[HARD]` **实施子代理写产品代码**：实施子代理只在指定 Work Unit 范围内修改产品代码、测试、fixture、manifest 和构建证据；不得修改本 Markdown，不得自行改变架构、模块依赖、状态所有权、失败语义、provider 路由或删除阶段。
 - `[HARD]` 主代理发现合同缺口或逻辑错误时，必须由主代理先修改本 Markdown、补齐所有受影响条款并形成新的 Spec-Commit；不得把架构裁决下放给实施子代理。HTML 只在视觉参考本身表述不准确时由主代理同步修改。
-- `[HARD]` 每个 Work Unit 只派一个拥有写权限的实施子代理；其他子代理只能做只读调查或对抗审查，不能并行修改同一工作树。实施子代理可在主代理指定的独立 worktree 创建候选提交，或在主工作树留下未提交变更；不得 push、合并或把候选提交自行标记为 accepted。主代理必须逐项复核范围、合同、测试和未验证项，不能把子代理的“完成”当作验收证据。
+- `[HARD]` 每个 Work Unit 只派一个拥有写权限的实施子代理，负责产出当前任务的完整代码变更；其他子代理只能做只读调查或对抗审查，不能并行写入。若子代理运行时可共享主工作树，它直接把未提交变更留在当前本地 `main`；若工具强制隔离，子代理只返回可机械应用的完整 patch，主代理可原样应用 patch，但不得自行设计、补写或调整产品代码。主代理必须先记录 `Base-Commit` 与开工前 `git status`，子代理不得触碰、清理或纳入既有修改。应用后由主代理复核范围、合同、diff、测试和未验证项。
+- `[HARD]` 用户可见的开发流程不创建或保留临时分支/worktree/候选提交，不 cherry-pick；本地 `main` 是唯一串行施工线和 accepted 集成线。工具内部强制的临时隔离只用于生成 patch，结束即清理，不构成项目施工分支。文档中 ProductTask/worktree 指最终产品给用户的任务隔离能力，不是开发 AI 的 Git 工作方式。
 - `[HARD]` 主代理发现的是产品代码缺陷而非合同缺陷时，不得亲自补代码；必须退回原实施子代理，或在原模块创建 repair Work Unit 并派新的实施子代理。
 - `[HARD]` **最终 BilliardBuddy 产品运行时**：保留 CC-Haha Core 原生 Agent loop、工具、权限、Skills、Hooks、MCP、子代理、后台任务、resume 和 compact。
 - `[HARD]` 模块 03 的 `agent-worker` 是产品运行时进程，不是开发施工的子代理工具。
@@ -100,7 +101,7 @@ Base-Commit SHA：
 完成条件：
 ```
 
-实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装为 accepted commit。若子代理提供候选提交，主代理必须先审查其 diff 和验证结果，再以 cherry-pick 或等价方式纳入当前集成线；若子代理留下未提交变更，主代理验证后创建提交。只有集成线上的主代理提交才是 accepted commit，是否 push 仍由用户或既有发布授权决定。
+实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。子代理把未提交变更留在当前 `main`，或在工具强制隔离时提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit。是否 push 仍由用户或既有发布授权决定。
 
 每个 accepted commit 的标题必须带 Work Unit ID，例如 `feat(bb-07a): persist accepted message submissions`。commit body 是唯一跨窗口文字交接，必须包含：
 
@@ -178,6 +179,11 @@ Next:
 | `DEC-023` | `[HARD]` 本机终端是用户 PTY | Electron IPC → `node-pty` → 当前用户 shell/canonical cwd；与 Agent Bash、worker 和公共 CLI/TUI 完全分开 |
 | `DEC-024` | `[HARD]` 只发两个 GUI 产品 | Windows x64 与 macOS arm64；ZIP、blockmap、latest manifest 只是更新附属文件；Chrome Web Store Extension 是模块 18 的浏览器伴随组件，不是第三个桌面产品/target，但其 ID、版本与协议必须纳入同一 release manifest；不交付 Linux/Tauri/公共 CLI/TUI |
 | `DEC-025` | `[HARD]` 数据迁移先冻结支持范围、再迁移、最后物理删除 | 模块 01 必须根据当前 reader、真实历史 fixture 和测试冻结 `legacy-support-matrix.json`；未登记或无正向 fixture 的旧格式不承诺自动迁移。最终升级包携带登记范围内的版本化迁移器和只读 reader；reader 不能与首个迁移发布同版删除 |
+| `DEC-026` | `[HARD]` 桌面进程拓扑固定 | Electron Main 是本机唯一生命周期 owner，只启动一个 local sidecar server；server supervisor 按 TaskRun 启动短生命周期 agent-worker child；renderer 不启动进程；gateway/relay 是部署系统启动的远程服务；Chrome 启动独立 Native Messaging host。第二应用实例只向第一 Main 转交受控 intent 后退出，不连接或另启 sidecar |
+| `DEC-027` | `[HARD]` MediaProject 迁库不复制或重绑 Asset | Asset 的出生 `owner_scope`、ID、route、hash 和 bytes 永久不可变；显式 transfer 只原子改变 MediaProject 的 library binding。历史引用保存 `{asset_id, asset_owner_scope}`，经项目授权读取；新 Operation/Asset 才归目标 library，不建立 library alias 或跨库枚举 |
+| `DEC-028` | `[HARD]` VoiceService 是转写真相源 | `VoiceOperation`、`Transcript`、不可变 `TranscriptRevision` 由 VoiceService 唯一写入；Composer 与视频 Evidence 只保存同一个 `transcript_revision_id` 的受控 binding，不复制转写正文成为第二真相源 |
+| `DEC-029` | `[HARD]` 项目指令冲突顺序固定但不重写自由文本 | 系统/工具/权限/安全合同永远优先；项目指令层内先按更近目录覆盖祖先目录，再按同目录 `BilliardBuddy.md > AGENTS.md > Claude 兼容源` 解释直接冲突。非冲突内容累加；resolver 保留来源和全部入选文本，不假装能对自由 Markdown 做结构化 merge |
+| `DEC-030` | `[HARD]` D4 前必须通过未删除版本纵向闸 | 模块 22 accepted 后，模块 23 的首个 Work Unit 只能运行 `G22_PRE_D4_VERTICAL_GOLDEN_GATE`，不得删除代码；核心新链路在 legacy execution fail-fast 条件下通过后才允许首行 D4 |
 
 ## 2. 术语、实体和唯一身份
 
@@ -213,11 +219,24 @@ Next:
 | `Asset` | 不可变文件身份，包含 hash、bytes、owned route 或受控外部路径 | MediaProjectService |
 | `Version` | 项目的不可变编辑快照，引用 Asset 和画布/时间线 revision | MediaProjectService |
 | `Candidate` | 生成阶段返回的 Asset 集合成员 | 不是独立存储系统，只是 Asset 在当前 Operation 中的角色 |
-| `Evidence` | 与 source、时间范围、fingerprint、revision 绑定的结构化证据 | MediaProjectService |
+| `Evidence` | 与 source、时间范围、fingerprint、revision 绑定的结构化证据；转写证据只引用 TranscriptRevision | MediaProjectService |
+
+所有 Asset 引用必须保存 `{asset_id, asset_owner_scope}`，不能只保存裸 `asset_id`。Asset 的 `owner_scope` 是不可变出生归属；MediaProject 转移 library 不改变历史 Asset、Version 或 Operation identity。
+
+### 2.3 语音与转写实体
+
+| 实体 | 含义 | 唯一写入者 |
+|---|---|---|
+| `VoiceOperation` | 一次受控音频转写意图；保存 installation、source owner/fingerprint、provider receipt、状态与 revision | VoiceService |
+| `Transcript` | 一个 VoiceOperation 的稳定转写身份和当前 confirmed revision | VoiceService |
+| `TranscriptRevision` | 不可变 raw 或 user_edited 文本/时间戳证据；含递增 revision、source fingerprint | VoiceService |
+| `TranscriptBinding` | 消费者对某个 TranscriptRevision 的受控引用；kind 为 composer_draft、thread_entry 或 video_evidence | 对应消费者 service；只能写 binding，不能写 Transcript正文 |
+
+Composer 和 MediaProjectService 只能通过 owner-checked binding 读取指定 `transcript_revision_id`；用户编辑必须创建新的 TranscriptRevision。已有 Composer/Video Evidence binding 不随 current revision 静默漂移。
 
 `artifact` 只用于 UI 的“成果”投影；`output` 只用于外部响应字段，不能作为持久身份。
 
-### 2.3 浏览器与招聘实体
+### 2.4 浏览器与招聘实体
 
 | 实体 | 含义 | 唯一写入者 |
 |---|---|---|
@@ -303,7 +322,8 @@ migration_running
 
 ### 4.1 路径与归属
 
-- 所有 task、附件、Diff、Preview、PTY 和媒体路径绑定 canonical workspace/owner；拒绝 `..`、符号链接逃逸、跨 worktree、任意 `file://`、Windows UNC/盘符越界和大小写混淆。
+- 所有 task、附件、Diff、Preview 和 PTY 路径绑定 canonical Workspace；媒体路径绑定 MediaLibrary/Asset immutable owner；语音源绑定 installation + source owner。统一拒绝 `..`、符号链接逃逸、跨 worktree/owner、任意 `file://`、Windows UNC/盘符越界和大小写混淆。
+- Asset 原始 route 只按其 immutable `asset_owner_scope` 授权。迁库后的项目读取历史 Asset 时，必须先校验请求者拥有当前 MediaProject，再校验当前 Version/Evidence 显式引用同一 `{asset_id, asset_owner_scope}`；禁止凭 source Asset ID 跨库枚举。
 - 外部导入的视频、图片、音频和用户项目文件永不因删除 ProductTask/MediaProject 被删除；只删除应用明确拥有且能由身份链证明的副本。
 - 正式桌面 sidecar 必须有每次启动生成的鉴权会话；不能仅依赖 loopback 或“ID 难猜”。
 
@@ -353,7 +373,59 @@ migration_running
 
 ### 4.7 开发窗口并发规则
 
-默认串行推进 accepted Work Unit。只有修改路径完全不重叠，且不共同修改 shared schema、IPC/API、数据库/文件迁移、事件协议、lockfile、构建配置或生成物时，主代理才可并行派只读调查；本轮产品代码实现始终每次只允许一个写入型实施子代理。共享合同、迁移、清理和发包必须串行。主代理必须保留开工前已有修改，不得让子代理覆盖、提交或清理不属于当前 Work Unit 的文件。
+默认在当前本地 `main` 串行推进 accepted Work Unit；任何时刻最多一个写入型实施子代理，其他子代理只能只读调查或审查。共享合同、迁移、清理和发包同样串行。主代理必须记录并保留开工前已有修改，不得让子代理覆盖、提交或清理不属于当前 Work Unit 的文件。用户不需要创建、切换或合并施工 worktree；工具若强制临时隔离，只把子代理 patch 原样落到 `main` 后立即结束隔离。最终产品功能本身需要的用户 worktree 仍按模块 09 合同实现。
+
+### 4.8 进程、部署、启动与鉴权拓扑
+
+```text
+用户设备（每个 OS 用户 / installation）
+└─ Electron Main【唯一桌面生命周期 owner】
+   ├─ requestSingleInstanceLock；第二实例只转交受控 task/deep-link intent 后退出
+   ├─ 拥有 userData/config root、installation_id、产品 secret、更新器和 OS 能力
+   ├─ spawn exactly one：统一 BilliardBuddy sidecar binary `server` mode
+   │  └─ Local Product Server【ProductTask/Media/Voice/Recruiting/Schedule/Migration 领域数据的唯一写入宿主】
+   │     ├─ loopback HTTP/WS：ProductTask、Media、Voice、Recruiting、Schedule
+   │     ├─ 校验 Main 在 spawn 前生成的 server_generation + 随机 local capability
+   │     ├─ Session Supervisor
+   │     │  └─ 按已持久化 TaskRun spawn：同一 sidecar binary `agent-worker` mode
+   │     │     └─ CoreSession / Tool loop；用一次性 run capability 回连 server
+   │     └─ HTTPS + managed app credential → Public Gateway
+   ├─ 受控 preload IPC → Renderer【无 Node、无产品 secret、不能 spawn】
+   │  └─ 携 Main 发放的当前 generation capability 调 local HTTP/WS
+   └─ 安装/更新 Native Messaging manifest；不常驻启动 Chrome host
+
+Chrome（用户启动、独立生命周期）
+└─ BilliardBuddy Chrome Web Store Extension
+   └─ 按需启动 Native Messaging host
+      └─ BilliardBuddy sidecar binary `native-host --app-root …`
+         └─ 本地 user-only socket/pipe → ChromeSessionBridge → Core MCP Tool
+
+远程部署（不由 Electron 启动）
+Public ingress/TLS
+└─ Gateway【部署系统/systemd 启动；desktop app credential 鉴权、策略与路由】
+   ├─ DeepSeek / MiMo / Fun-ASR / 图片 provider
+   └─ 独立 service credential + owner → Relay【部署系统启动；图片异步任务/结果】
+```
+
+固定生命周期与鉴权：
+
+1. Main 只启动/停止一个 server mode sidecar；renderer、第二实例、agent-worker 和 Native Messaging host 都不能另启 server。生产环境禁止绕过 single-instance lock；测试绕过必须使用隔离 data root。
+2. 第二应用实例不读取 sidecar URL/capability，不连接 sidecar或共享数据根；它只经 Electron single-instance channel 向第一 Main 发送 schema 校验后的 task/deep-link intent，然后退出。第一 Main 决定打开/聚焦窗口。
+3. Main 在 spawn server 前生成唯一 `server_generation` 和随机 local capability，只经一次性私有 bootstrap pipe/继承 FD 交给 server；禁止使用环境变量、argv、URL、文件或日志传递。server 完成握手后关闭 bootstrap FD，任何 child 都不能继承。Main 只通过受限 preload IPC 向可信 renderer 发放当前 generation capability。`/api/*`、`/proxy/*` 和 ProductTask WS 强制校验；CORS/loopback/端口难猜都不是鉴权。`/health` 只返回最小无敏感状态。server 启动失败或退出时该 capability 立即失效。
+4. server supervisor 只能为已 accepted 的 TaskRun 启动一个 worker child；worker spawn 使用显式环境 allowlist 和 close-on-exec FD，只注入独立、一次性、短期 run capability。worker 环境、argv 和可继承 FD 中必须证明不存在 renderer local capability、产品 secret 或 updater token；server 退出先停止全部 worker。
+5. 模块 03 的 `agent-worker` 是统一 sidecar binary 的内部 mode/entry，不是另一个监听端口、常驻 daemon、公开 CLI 产品或第二数据写入者。模块 03 完成前当前 `cli --print` child 是 `[FACT]` 兼容现状，迁移后必须由 `agent-worker` mode 替代。
+6. Main 与 Local Product Server 不互写领域存储：sidecar services 只写 ProductTask/Media/Voice/Recruiting/Schedule/Migration 数据；Main 只写隔离的 installation/bootstrap config、UpdateTransaction、PTY session 元数据和 OS capability 状态。各自使用独立路径与锁，Main 不直接打开领域数据文件，sidecar 不写 updater/PTY/bootstrap 状态。
+7. Native Messaging host 固定为统一 sidecar binary 的内部 `native-host` mode，由 Chrome 按需启动；不与公共 CLI/TUI 或 TaskRun worker 共用 entry、stdin/stdout、session 或 capability。模块 23 可删除全部 public CLI/bin/help/publish surface，但必须保留不可交互的 `native-host` 内部 mode。Extension/host 未握手只降低 BrowserCapability，不影响 local server。
+8. desktop app credential 只证明受管理客户端，在 Gateway 做轮换、撤销和限流；`X-QF-Client-ID` 只作公平调度/owner，不赋权。Gateway → Relay 使用不同的 service credential，relay owner 只能由 Gateway 派生。上游 key 只在 Gateway/Relay，renderer/worker/本地持久化均不可读取。
+9. Gateway、Relay、public ingress、路径 rewrite、TLS、secret 注入和 service unit 的交付责任固定：模块 04 冻结 gateway/ingress/service identity 与非图片 provider 部署 manifest；模块 14 冻结 relay/图片路由、容量、owner、secret 与 service unit manifest；模块 24 只消费并核对其版本/hash，不临时补建远程拓扑。开发模式可使用 Vite renderer 和本地构建 sidecar，但拓扑、鉴权、owner 和协议必须与 packaged 一致。
+
+### 4.9 D4 前纵向验证闸
+
+`G22_PRE_D4_VERTICAL_GOLDEN_GATE` 是模块 22 accepted 后、模块 23 首个物理删除前的共同硬闸。它在 legacy 源码仍在但其 execution entry 被 fail-fast 的条件下，使用实际 renderer、IPC、local sidecar、ProductTask/Media/Voice/Recruiting service、agent-worker 和公开合同运行；外部 provider/Chrome 可使用受控 fake adapter，但不得用直接 service 单测或 mock 新链本身替代。
+
+闸必须在干净数据根和升级 fixture 数据根各运行一次，覆盖：首次任务 accepted/stream/stop/重连、worker 崩溃与重复 dispatch、default→Workspace 媒体 transfer、Composer/视频共享 TranscriptRevision、图片/视频 partial/unknown/恢复、招聘 approval→intent→action→reobserve、支持矩阵旧数据升级。empty、loading/slow、offline、conflict、partial、failed、restoring 都必须有机器断言。
+
+Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5、安装包、签名或真实外部验证。每个 D4 Work Unit 后必须重跑受影响旅程；模块 24/25 仍分别执行 packaged/final 黄金旅程。证据进入机器可读 manifest 和测试输出，不新建 Markdown 报告。
 
 ---
 
@@ -393,8 +465,9 @@ migration_running
   01—21 → 22 版本化数据迁移与 legacy reader
 
 阶段 E：删除、发包和统一验收
-  01—22 → 23 死运行时与依赖物理清理
-  01—23 → 24 双平台发包、签名与自动更新
+  01—22 → 23.A `BB-23A / G22_PRE_D4_VERTICAL_GOLDEN_GATE`（只验证，不删除）
+  23.A → 23.B+ 死运行时与依赖物理清理
+  01—23.B+ → 24 双平台发包、签名与自动更新
   01—24 → 25 全链路验证与最终交接
 ```
 
@@ -609,6 +682,7 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 7. 由 Provider registry 唯一生成非密钥 `model-contract.json` 和 worker capability manifest：实际 model ID、provider、能力、worker env source、window、body cap、compact、resume 证据、contract version/hash 和核验日期；二者不允许手工配置独立值。
 8. 只有官方/账号/实际响应证据与 desktop→worker→provider→gateway→Core 全链均支持 1M，registry 才生成 1,000,000；否则生成真实最小值。
 9. 未知或被环境变量改写为未注册 model ID 时 worker 固定拒绝 ready，ProductTask 显示“模型配置无效”；不回退打包默认、不切 Qwen/Sonnet/Anthropic。已注册 provider 运行时不可用则显式失败；视觉不可用时要求用户查看/接管；图片生成能力不可用时不创建付费 Operation；语音不可用时保留录音草稿或显示转写失败。
+10. 模块 04 必须登记并冻结远程 Gateway deployment Work Unit：仓库内受控 ingress/path rewrite、TLS termination、gateway service unit、desktop app credential 注入/轮换、provider secret 注入、health/preflight、部署 manifest version/hash 和回滚。`https://…/gw` 到 gateway `/v1/*` 的 rewrite 必须有配置与契约测试；不能把仓库外现状当证据。模块 24 只消费该 manifest。
 
 ### 验收 Oracle
 
@@ -622,9 +696,11 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 | 长无图请求 | text body cap | 不被 vision cap 提前拒绝 |
 | 上下文证据不足 | 真实最小 window | UI/配置不得显示 1M |
 
+- Gateway deployment manifest 的 ingress `/gw` rewrite、TLS/service identity、app credential/provider secret 注入、health/preflight 与回滚 fixture 完整；缺任一项模块 04 不完成，外部服务器当前可访问不能替代。
+
 ### 交接物
 
-provider-neutral TextReasoning/VisualEvidence/ImageGeneration/SpeechTranscription interfaces、model manifest、body budget 和 legacy Qwen value mapping。
+provider-neutral TextReasoning/VisualEvidence/ImageGeneration/SpeechTranscription interfaces、model/worker manifest、body budget、Gateway deployment manifest 与 legacy Qwen value mapping。
 
 ---
 
@@ -653,20 +729,24 @@ provider-neutral TextReasoning/VisualEvidence/ImageGeneration/SpeechTranscriptio
 
 ### 实施合同
 
-1. 在原生 resolver 集中定义单层目录候选：Claude 兼容源 → `AGENTS.md` → `BilliardBuddy.md`。
-2. 启动、额外目录和 nested directory 使用同一 helper；复用 `processMemoryFile`、canonical path、去重、include、Hooks 和 load reason。
-3. 用户全局品牌文件只来自 BilliardBuddy 隔离产品数据根，不扫描其他 Agent 的 home 配置。
-4. `isMemoryFilePath`、`getAllMemoryFilePaths`、compact/诊断/设置消费者同时识别品牌文件；不新增 MemoryType 或附件协议。
-5. 对外层品牌注入链执行 `D2_MIGRATE_CONSUMERS`：品牌加载迁到原生 resolver 后停止 `productInstructions.ts → 临时 Markdown → --append-system-prompt-file` 的正式消费；本模块保留待删源码并在交接中证明消费者归零，统一由模块 23 执行 `D4_PHYSICAL_DELETE`；不建立替代临时文件。
-6. `/init` 默认在 canonical 项目根创建职责不重复的 `AGENTS.md` 与 `BilliardBuddy.md`；已有文件只给最小 patch；不改写 `CLAUDE.md`。
-7. “记住”必须选择唯一目标：项目约定、长期记忆或本次任务摘要。未指定时只生成 AutoMem 建议预览，用户确认后写入。
-8. AutoMem 使用 scope+关键词+更新时间的本地索引，不调用隐藏 Sonnet/Anthropic 侧模型；索引损坏不阻塞主任务。
-9. 敏感信息、网页 Cookie、候选人隐私、图片/音频 Base64 和绝对路径不进入长期记忆。
-10. 仅为模块 01 支持矩阵已登记的项目指令/记忆旧形态提供 `D3_LEGACY_READ_ONLY` adapter 与 immutable fixture；当前 memory 无版本和历史 fixture，默认 unsupported、原文件原位保留，不创建假迁移承诺。TeamMem 的设置、OAuth、watcher、endpoint 和发布消费者交给模块 23 的物理删除 Manifest；本模块先执行 `D1_STOP_WRITES`，模块 21 迁出普通设置消费者。
+1. 在原生 resolver 集中定义单层目录候选显示顺序：Claude 兼容源 → `AGENTS.md` → `BilliardBuddy.md`。冲突解释不是“全部并列让模型猜”：先服从系统/工具/权限/安全合同；项目指令层内，更近目录覆盖祖先目录，同目录 `BilliardBuddy.md > AGENTS.md > Claude 兼容源`；其他不冲突内容累加。
+2. resolver 不删除、改写或假装结构化合并自由 Markdown；所有入选来源保留 path/scope/order。检测不到的自然语言冲突仍按上述顺序解释，并在诊断中显示来源链；真正无法同时满足且会影响施工结果时必须要求用户修正文件，不能静默选择。
+3. 启动、额外目录和 nested directory 使用同一 helper；复用 `processMemoryFile`、canonical path、去重、include、Hooks 和 load reason。项目文件必须接入 Core 原生 target-file nested memory 触发：只有实际访问更深目录时才按 root→target 追加该目录链，且每个 canonical source 每个 scope 只注入一次；不得保留 launch-only 的第二 resolver。
+4. 字符预算不足时优先保留更近目录，再保留同目录 BilliardBuddy、AGENTS、Claude 兼容源；被截断/淘汰来源必须有诊断，不得因预算悄悄反转冲突优先级。
+5. 用户全局品牌文件只来自 BilliardBuddy 隔离产品数据根，不扫描其他 Agent 的 home 配置。
+6. `isMemoryFilePath`、`getAllMemoryFilePaths`、compact/诊断/设置消费者同时识别品牌文件；不新增 MemoryType 或附件协议。
+7. 对外层品牌注入链执行 `D2_MIGRATE_CONSUMERS`：品牌加载迁到原生 resolver 后停止 `productInstructions.ts → 临时 Markdown → --append-system-prompt-file` 的正式消费；本模块保留待删源码并在交接中证明消费者归零，统一由模块 23 执行 `D4_PHYSICAL_DELETE`；不建立替代临时文件。
+8. `/init` 默认在 canonical 项目根创建职责不重复的 `AGENTS.md` 与 `BilliardBuddy.md`；已有文件只给最小 patch；不改写 `CLAUDE.md`。
+9. “记住”必须选择唯一目标：项目约定、长期记忆或本次任务摘要。未指定时只生成 AutoMem 建议预览，用户确认后写入。
+10. AutoMem 使用 scope+关键词+更新时间的本地索引，不调用隐藏 Sonnet/Anthropic 侧模型；索引损坏不阻塞主任务。
+11. 敏感信息、网页 Cookie、候选人隐私、图片/音频 Base64 和绝对路径不进入长期记忆。
+12. 仅为模块 01 支持矩阵已登记的项目指令/记忆旧形态提供 `D3_LEGACY_READ_ONLY` adapter 与 immutable fixture；当前 memory 无版本和历史 fixture，默认 unsupported、原文件原位保留，不创建假迁移承诺。TeamMem 的设置、OAuth、watcher、endpoint 和发布消费者交给模块 23 的物理删除 Manifest；本模块先执行 `D1_STOP_WRITES`，模块 21 迁出普通设置消费者。
 
 ### 验收 Oracle
 
-- 同层三种文件严格按固定顺序加载；深层目录首次访问只注入一次。
+- 同层三种文件按 Claude 兼容源→AGENTS→BilliardBuddy 显示；冲突 fixture 证明同目录 BilliardBuddy 胜、近目录胜祖先，而所有入选原文和来源仍保留。
+- 真正无法同时满足的自由文本冲突显示来源并要求用户修正；不得随机服从或声称 resolver 已删除旧规则。
+- 深层目录只在首次访问目标文件时按原生 nested trigger 注入一次；launch、resume、compact 和额外目录使用同一 canonical 去重与 precedence。
 - 用户全局只读隔离 data root；worktree/软链接/无 Git workspace 不越界、不重复。
 - resume/compact 保留来源与去重；Session Memory 不复制品牌正文或 AutoMem 正文。
 - `/init` 二次执行不覆盖现有文件，`CLAUDE.md` 内容和时间戳不变。
@@ -946,15 +1026,17 @@ MediaProjectService 是唯一写入者；renderer 只保存 view state。正式�
 ### 实施合同
 
 1. 在现有文件型存储中扩展，不迁 SQLite、不建第二 media service。
-2. 服务端唯一派生 `owner_scope=installation_id + media_library_id`。用户选择 canonical Workspace 时使用 `workspace:<canonical workspace_id>`；从“创作”直接进入且尚未选择项目文件夹时使用该安装实例唯一的 `installation-default` 媒体库。所有 list/get/write/delete/cancel/asset/download 路由统一验证 owner scope + sidecar auth。媒体项目可以稍后显式迁入 Workspace library，但迁移必须复制/重绑定 owner 下的项目引用并保留 operation/asset identity，不得因当前 UI 目录变化自动改 owner。
-3. schema 定义 MediaLibrary、MediaProject、MediaOperation、MediaJob、Asset、Version、Evidence；每项明确 ID、parent、revision、created/updated、owner。
-4. 所有写 mutation 使用 `client_operation_id + expected_revision`；外部副作用前先固化 Operation intent。
-5. Asset 不可变：记录 kind、owned route 或受控外部 path、hash、bytes、source revision；外部视频不复制且永不删除。
-6. Version 是不可变完整快照；图片画布、视频时间线都引用明确 input/output revision。
-7. 使用跨进程数据根锁、临时文件、可用时 fsync、rename 和上一有效快照；启动时对账正文/索引/Job/Asset。
-8. 只为模块 01 `legacy-support-matrix.json` 已登记的 media schema/shape 提供 `D3_LEGACY_READ_ONLY` adapter 与 crash fixture；当前最低承诺仅包含 media v1 inline `reference_images` → private Asset。新增旧版支持必须先补 immutable fixture、正向迁移、current 写回和幂等测试；adapter 只读取和标准化，不执行旧 provider、旧 workflow 或外部副作用。
-9. 实现第 3.2 节状态机和 adapter 归一；renderer 不消费 relay 原始枚举。
-10. 删除项目先停止/拒绝活动 Job，列出只会删除的应用拥有资产；失败时项目不能从列表消失。
+2. 服务端唯一派生 `owner_scope=installation_id + media_library_id`。用户选择 canonical Workspace 时使用 `workspace:<canonical workspace_id>`；从“创作”直接进入且尚未选择项目文件夹时使用该安装实例唯一的 `installation-default` 媒体库。所有 list/get/write/delete/cancel/asset/download 路由统一验证 owner scope + sidecar auth。
+3. MediaProject 迁库只有一个显式 Operation：`media.project.transfer_library`，包含 source/target library、`client_operation_id`、`expected_revision`。存在 submitted/running/cancel_requested/outcome_unknown Job 时固定拒绝。成功时只在一次原子提交中改变项目 `media_library_id` 并推进 revision；失败/崩溃时项目仍完整属于 source，不能双归属。
+4. transfer 不复制 Asset、不修改 Asset/历史 Operation 的出生 owner、不重写历史 Version，也不建立 library alias。每个历史引用保存 `{asset_id, asset_owner_scope}`；目标 Workspace 只能经已迁入项目的 Version/Evidence/候选引用读取，不能按 asset ID 枚举 source library。迁入后的新 Operation、新 Version 输出和新 Asset 才归 target library。
+5. schema 定义 MediaLibrary、MediaProject、MediaOperation、MediaJob、Asset、Version、Evidence；每项明确 ID、parent、revision、created/updated、owner。
+6. 所有写 mutation 使用 `client_operation_id + expected_revision`；外部副作用前先固化 Operation intent。
+7. Asset 不可变：记录 kind、immutable owner scope、owned route 或受控外部 path、hash、bytes、source revision；外部视频不复制且永不删除。
+8. Version 是不可变完整快照；图片画布、视频时间线都引用明确 input/output revision，所有 Asset 引用含 owner scope。
+9. 使用跨进程数据根锁、临时文件、可用时 fsync、rename 和上一有效快照；启动时对账正文/索引/Job/Asset。
+10. 只为模块 01 `legacy-support-matrix.json` 已登记的 media schema/shape 提供 `D3_LEGACY_READ_ONLY` adapter 与 crash fixture；当前最低承诺仅包含 media v1 inline `reference_images` → private Asset。新增旧版支持必须先补 immutable fixture、正向迁移、current 写回和幂等测试；adapter 只读取和标准化，不执行旧 provider、旧 workflow 或外部副作用。
+11. 实现第 3.2 节状态机和 adapter 归一；renderer 不消费 relay 原始枚举。
+12. 删除项目先停止/拒绝活动 Job，列出只会删除的应用拥有资产；失败时项目不能从列表消失。历史跨库引用的 Asset 只有在全 installation 引用计数为零且属于应用拥有时才可清理。
 
 ### 验收 Oracle
 
@@ -962,7 +1044,8 @@ MediaProjectService 是唯一写入者；renderer 只保存 view state。正式�
 - 两窗口同 revision 写项目：一个成功，一个 conflict。
 - 崩溃在 intent、上游调用、结果下载、asset rename 各窗口重启后可对账，不重复副作用。
 - 猜 project ID、跨 MediaLibrary/Workspace、无 sidecar auth、外部路径删除全部被拒绝。
-- 未选择项目文件夹时可在 `installation-default` 创建、重启恢复和导出媒体项目；选择另一个 Workspace 不会隐藏、串用或自动改写其 owner。显式迁入 Workspace 后旧 owner 不再可写，但 Operation/Asset identity 与引用保持。
+- default 项目显式 transfer 到 Workspace A：project revision 原子前进；历史 `asset_id/asset_owner_scope`、route、hash、Version 和 Operation 不变且未复制。Workspace A 只能经项目路由读取历史 Asset；default 不再列出/写项目，Workspace B 与猜 ID 请求被拒绝。
+- transfer 有活动或 outcome_unknown Job 时拒绝；重复 operation 返回同一 receipt；崩溃后项目只属于 source 或 target 之一。迁入后编辑旧 Asset 时，输入仍属 default，新 Operation/输出 Asset 属 Workspace A。
 - 项目删除只移除应用拥有资产，不删除导入源文件或其他项目引用。
 
 ### 交接物
@@ -1033,6 +1116,7 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 7. 成功响应解析失败、下载失败、落盘失败和网络中断进入 `outcome_unknown` 并查询原 Operation；不自动指数重提付费任务。
 8. 容量报告分开写“受理能力、排队能力、provider 实际并发、完成吞吐”，禁止用“100 用户并发”一个数字概括。
 9. 冻结供模块 16 消费的跨媒体可靠性接口：deadline/timeout matrix、capacity preflight、owner/provider concurrency、total in-flight bytes 和 `outcome_unknown` 原 Operation 查询。该接口不包含图片候选数量、图片 UI 或图片 provider 路由。
+10. 模块 14 必须登记并冻结远程 Relay deployment Work Unit：仓库内受控 ingress/TLS/allowlist、relay service unit、Gateway→Relay 独立 service credential、owner 派生、provider secret/持久 DB/blob 注入、health/preflight、部署 manifest version/hash 和回滚。Relay 不接受桌面直连或客户端自报 owner；模块 24 只消费该 manifest。
 
 ### 验收 Oracle
 
@@ -1041,11 +1125,12 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 - 队列满返回 Retry-After，客户端使用有抖动有界退避，不立即重试。
 - fake upstream 在提交后断网：只出现一个付费 Operation，重启后查询同一 ID。
 - 小 Prompt 与参考图容量 fixture 不通过取消上限来“达标”。
-- 未读取真实线上配置时报告明确写“代码与配置模板已验收，线上未验证”。
+- Relay deployment manifest 的 ingress/TLS/allowlist、service identity、Gateway-only credential/owner、provider/DB/blob secret 注入、health/preflight 和回滚 fixture 完整；缺任一项模块 14 不完成。
+- 未读取真实线上配置时报告明确写“代码、受控部署 manifest 与配置模板已验收，线上未验证”。
 
 ### 交接物
 
-timeout matrix、capacity report、production preflight 和 unknown-outcome fixture。
+timeout matrix、capacity report、production preflight、Relay deployment manifest 和 unknown-outcome fixture。
 
 ---
 
@@ -1060,27 +1145,31 @@ timeout matrix、capacity report、production preflight 和 unknown-outcome fixt
 
 ### 权威状态
 
-Voice service 写 `voice_operation_id`、owner/task scope、transcript revision 和状态；Composer 只接收用户确认的 transcript。
+VoiceService 是 VoiceOperation、Transcript、TranscriptRevision 的唯一写入者。ProductTaskService 与 MediaProjectService 只写各自的 TranscriptBinding；Composer 只插入用户确认 binding 所指向的 revision，不复制转写正文为第二真相源。
 
 ### 实施合同
 
-1. 只实现 Fun-ASR-Flash provider-neutral SpeechTranscription adapter；对 Whisper/旧 ASR 执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`，保留 `D3_LEGACY_READ_ONLY` setting mapper 给模块 22，运行时源码由模块 23 `D4_PHYSICAL_DELETE`。
-2. 录音、上传、取消、迟到回执绑定 operation ID、task owner 和 transcript revision。
-3. 空音频、过大、不支持编码、权限拒绝和断网保留 Composer 文字与其他附件。
-4. 原始转写、用户修订和最终显示字幕分开；视频模块可引用原始/修订 transcript，不复制为另一真相源。
-5. 音频只在当前任务/媒体 evidence 生命周期内保存；不进入 AutoMem、普通日志或文本 prompt 二进制。
+1. 只实现 Fun-ASR-Flash provider-neutral SpeechTranscription adapter；对 Whisper/旧 ASR 执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`，保留支持矩阵登记的 setting mapper 给模块 22，运行时源码由模块 23 `D4_PHYSICAL_DELETE`。
+2. VoiceOperation 固定包含 `voice_operation_id`、installation、`client_operation_id`、受控 audio source/route、source owner/fingerprint、provider receipt、状态与 revision；录音、上传、取消和迟到回执只更新同一 Operation。
+3. 成功/部分结果创建稳定 Transcript；raw 与每次 user_edited 都创建不可变 TranscriptRevision，保存 `transcript_revision_id`、递增 revision、kind、文本/时间戳证据和 audio fingerprint。编辑不覆盖 raw 或已有 revision。
+4. Composer 确认、ThreadEntry 和 Video Evidence 分别创建 TranscriptBinding，保存 revision ID、consumer kind/ID/owner。跨 installation、猜 transcript ID 或 consumer owner 不匹配一律拒绝；没有“凭 transcript ID 直接读取”的公共接口。
+5. 空音频、过大、不支持编码、权限拒绝和断网保留 Composer 文字与其他附件。
+6. Composer 与视频可绑定同一个 TranscriptRevision。用户编辑产生新 revision 后，旧 Video Evidence 继续指向旧 revision；只有用户显式选择更新时，MediaProjectService 才创建新的 binding/Evidence revision，不复制文本。
+7. 原始音频只在 Operation/Binding 生命周期内保存；终态且没有未释放 binding 后按 owner 政策清理，不进入 AutoMem、普通日志或文本 prompt 二进制。
 
 ### 验收 Oracle
 
 - 取消 A 后开始 B，A 的迟到结果不得写入 B。
 - 麦克风拒绝后可重新授权；不会阻断文字任务。
 - fake Fun-ASR 返回空/错误/部分结果时状态真实，不把空文本标成功。
-- 转写编辑后 revision 前进；Composer 只插入当前确认版本。
+- 转写编辑后创建新 immutable revision；Composer/ThreadEntry 只保存当前确认的 `transcript_revision_id` binding，不复制正文作为权威状态。
+- 同一 revision 同时绑定 Composer 和 Video Evidence 时 ID 完全一致；Video Evidence 另校验 source/time/fingerprint。编辑 Composer 后旧 Evidence 不漂移，显式更新才创建新 Evidence binding。
+- 跨 installation、无 sidecar auth、猜 transcript ID 和 consumer owner 不匹配的绑定/读取全部拒绝。
 - 最终 provider graph 无 Whisper/第二 ASR 可执行路径。
 
 ### 交接物
 
-voice operation/transcript schema、provider fixture 和生命周期规则。
+VoiceOperation/Transcript/TranscriptRevision schema、consumer binding contract、provider fixture 和生命周期规则。
 
 ---
 
@@ -1101,7 +1190,7 @@ MediaProjectService 写 source manifest、Evidence、Timeline Version、Export O
 
 1. 工作台的视觉层级可以参考 HTML 和旧 VideoStudio；正式阶段、证据、时间线、锁定和导出行为只由本模块合同决定，不把 HTML 当作施工依据或完成 Oracle。
 2. `ingest`：源文件只读，记录 fingerprint、ffprobe、音轨、时长、尺寸、帧率、旋转和缺失状态。
-3. `evidence`：Fun-ASR transcript、本机 shot/quality、MiMo 代表帧证据分别绑定 source/time/fingerprint/revision/confidence；证据不可用明确 unchecked。
+3. `evidence`：Fun-ASR 结果必须以全局 `transcript_revision_id` binding 接入 Video Evidence，本机 shot/quality、MiMo 代表帧证据分别绑定 source/time/fingerprint/revision/confidence；不得复制 Transcript 正文成为媒体真相。证据不可用明确 unchecked。
 4. `plan`：DeepSeek 只读 Brief 与证据，输出引用真实 source ID/time range 的 timeline draft；确定性 validator 拒绝越界、缺源、重叠非法和未知素材。
 5. `edit/preview`：用户操作基于 timeline revision；锁定场景不被重新规划覆盖；字幕、Logo、CTA 和安全区由确定性图层处理。
 6. `export`：单实例 FFmpeg 导出新 Asset，不覆盖源文件；完成必须通过 ffprobe 和存在/hash 检查。
@@ -1113,6 +1202,7 @@ MediaProjectService 写 source manifest、Evidence、Timeline Version、Export O
 
 - source 文件移动后只能用 fingerprint/时长/尺寸重新定位，不按同名误连。
 - planner fixture 引用不存在 source 或越界 time range 时 validator 拒绝。
+- 同一 TranscriptRevision 被 Composer 与视频 Evidence 引用时 binding ID 指向完全相同的 revision；用户编辑产生新 revision 不改写既有 Evidence，显式更新后 Evidence revision 才前进。
 - evidence revision 改变后 AI draft stale，但用户编辑版本仍可打开。
 - locked scene 经重新规划保持不变；并发编辑返回 revision conflict。
 - export 失败不产生成功 Asset；源文件 hash 不变；输出可由 ffprobe 读取。
@@ -1178,7 +1268,7 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 ### 实施合同
 
 1. 定义 `BrowserCapability.observe/action/reobserve`；正式本机实现仅 `ChromeSessionBridge`，唯一 packaged transport 固定为 `BilliardBuddy Chrome Extension ↔ Chrome Native Messaging host ↔ 本地 bridge session`。MCP 只负责 Core Tool 到 BrowserCapability 的内部调用，不是浏览器 transport；禁止远程 WebSocket bridge、Playwright 第二 adapter或 Electron Preview 冒充用户 Chrome 会话。
-2. Extension 与 native host 是模块 18/24 必须验证的同一能力：固定 extension ID/版本协议/native host name；public package 只允许正式 extension origin；sidecar wrapper 必须使用 packaged sidecar 的 `cli --app-root <unpacked-root> --chrome-native-host` 模式，不允许缺失 sidecar mode；extension 未安装、host manifest 失败、版本不兼容或未握手时 capability 为 unavailable，BOSS 退化为人工交接，不展示可执行。
+2. Extension 与 native host 是模块 18/24 必须验证的同一能力：固定 extension ID/版本协议/native host name；public package 只允许正式 extension origin；sidecar wrapper 必须使用 packaged sidecar 的内部 `native-host --app-root <unpacked-root>` mode，不允许经过或恢复 public CLI entry；extension 未安装、host manifest 失败、版本不兼容或未握手时 capability 为 unavailable，BOSS 退化为人工交接，不展示可执行。
 3. Bridge 每次连接生成 `bridge_session_id`，每个调用携带 `request_id + owning_client_id + page_version` 并只回给发起者；不得广播 tool response。断线清除该 session 的短期 ref/pending request；读操作可在重连后重新 observe，写操作断线固定 `outcome_unknown`，必须 reobserve 对账，不能自动重发。
 4. observe 返回 URL/title/page version、稳定 ref、role/name/state/value、可见文字摘要和 visual_required；导航/刷新/分页/iframe 变化后旧 ref 失效。
 5. action 只引用当前 page version 的稳定 ref，不保存长期 CSS selector，不输出桌面像素坐标。
@@ -1195,7 +1285,7 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 ### 验收 Oracle
 
 - 固定 bridge/extension fixture 覆盖未安装、manifest/host 启动失败、版本不兼容、登录、站点权限、分页、ref 失效、多 client 路由、断线、弹窗、visual_required、验证码和页面改版；不同 session/client 的 response 不得交叉或广播。
-- packaged sidecar 的 native host wrapper 能实际进入 `cli --app-root … --chrome-native-host`，production capability discovery/ListTools 非空；public package 不包含 dev extension origin 或远程 bridge fallback。
+- packaged sidecar 的 native host wrapper 能实际进入内部 `native-host --app-root …` mode，production capability discovery/ListTools 非空；public CLI 不可达，public package 不包含 dev extension origin 或远程 bridge fallback。
 - 同一发送 operation 重放不产生第二次动作；页面未回读时不能显示已发送。
 - 两个门店的 Plan/Batch/候选 ref 不能串用；关闭计划先停止活动 batch。
 - 正式 packaged agent-worker 的 capability discovery 能发现 `recruiting-browser` Tool；只读 fixture 按 observe→checkpoint→投影执行且不产生 approval；副作用 fixture 严格按 approval→intent persisted→action→reobserve receipt→结果写入执行，未批准/intent 写入失败/页面未回读时分别为 rejected/未执行/outcome_unknown。不能只用协议类型或直接调用 bridge 的单测代替。
@@ -1363,7 +1453,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 | 项目指令、Session Memory、AutoMem、TeamMem legacy state | 05 | 当前 unsupported，保持原文件/只读隔离；未来只有支持矩阵登记后才按 scope 迁移，TeamMem 永不恢复同步运行时 |
 | media project/task/asset/version | 12 | 迁到统一 owner/Operation/Asset/Version |
 | image media draft、候选、unknown Job | 13 | 有有效 project/asset/job/durable ID 或已提交副作用时转独立图片项目；仅纯文本空 draft 本地只读归档 |
-| Whisper/旧 ASR setting 与 transcript | 15 | 映射 Fun-ASR setting；保留原始/修订 transcript 边界 |
+| Whisper/旧 ASR setting 与 transcript | 15 | 仅处理支持矩阵登记 shape：映射 setting；每份旧转写恰好创建一个 VoiceOperation/Transcript/TranscriptRevision，并以 binding 接入 Composer 或 Video Evidence，不复制正文 |
 | video media draft、source/evidence/timeline/unknown Job | 16 | 有有效 project/source/evidence/job/durable ID 或已提交副作用时转独立视频项目；仅纯文本空 draft 本地只读归档 |
 | scheduled task/logical run/notification | 17 | 迁 schedule 和历史，不补执行旧周期 |
 | recruiting plan/batch/checkpoint | 18 | 当前无旧持久化 schema，标 unsupported 且不创建假记录；未来只消费支持矩阵登记项 |
@@ -1371,7 +1461,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 | capability/settings/WebSearch key presence/TeamMem setting | 21 | 映射当前设置；不复制密钥值或恢复已删能力 |
 
 4. Qwen/Whisper/旧 provider 值只在矩阵登记的字段形态内通过纯 legacy mapper 转成当前合同或明确 unsupported；不恢复旧可执行 provider。
-5. 媒体迁移只处理矩阵登记形态，并分类为已关联项目、未关联 draft、运行中 Job、outcome_unknown、孤儿 Asset。已关联项目转到派生的 MediaLibrary owner 并保留身份；unknown 保留 durable ID 和查询入口。
+5. 媒体迁移只处理矩阵登记形态，并分类为已关联项目、未关联 draft、运行中 Job、outcome_unknown、孤儿 Asset。映射时为每个历史 Asset 固化 immutable `asset_owner_scope`，每个 Version/Evidence 引用写 `{asset_id, asset_owner_scope}`；不得通过迁移复制 Asset 或把 owner 改成当前 MediaProject library。已关联项目转到派生的 MediaLibrary；unknown 保留 durable ID 和查询入口。
 6. 媒体聊天中转按唯一规则迁移：凡是矩阵已登记且拥有有效 MediaProject、Asset、Job、远端 durable ID 或已提交/unknown 副作用的记录，迁为对应 MediaLibrary 下的独立图片/视频项目并保留身份与恢复入口；未登记格式保持只读隔离。不得让用户选择两套运行路线。
 7. 项目指令与记忆只有在矩阵登记具体历史形态后才自动迁移。当前 memory 无版本/历史 fixture，默认保持原文件原位且 unsupported，不由模块 22重写。若未来登记，仍必须遵守：既有 `CLAUDE.md`/兼容源正文、mtime、权限和路径不变，品牌文件不覆盖，Session/AutoMem scope 不提升，TeamMem 不恢复同步。
 8. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
@@ -1387,6 +1477,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 - 同一迁移运行两次结果一致，不复制 task/project/asset/operation。
 - media unknown、未关联 draft 和孤儿 Asset 均出现在 manifest 与用户可恢复入口；含项目/资产/Job/durable ID 的记录全部迁为独立项目，只有从未提交副作用的纯文本空 draft 进入只读归档。
 - 项目指令/记忆 fixture 证明：既有 `CLAUDE.md` 正文、mtime、权限不变；品牌文件不覆盖；AutoMem 不提升为项目指令；scope/source/freshness 保留；冲突进入隔离备份且可回滚。
+- 旧 ASR supported fixture 中每份转写只产生一个全局 Transcript/Revision；Composer/Video 通过 binding 接入，不生成第二份文本真相。
 - 新安装无 legacy data 时不创建虚假迁移或空备份。
 
 ### 交接物
@@ -1399,8 +1490,27 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的
 
 ## 模块 23：死运行时与依赖物理清理
 
-**依赖：** 01—22
+**依赖：** 01—22；首个 Work Unit 固定为 `BB-23A`，其唯一 Gate ID 为 `G22_PRE_D4_VERTICAL_GOLDEN_GATE`，通过前禁止任何 D4
 **模块主题前缀：** `refactor: remove dead product runtimes`
+
+### Work Unit 注册
+
+以下是模块 23 开工前冻结的完整顺序；每个条目仍必须在派工时填写第 0.6 节的 Spec/Base SHA、精确允许路径和验收命令，但不得重分组或临时新增删除范围：
+
+| Work Unit | 单一结果 / Manifest 范围 | 依赖与允许修改 | 明确禁止 / 完成条件 |
+|---|---|---|---|
+| `BB-23A` | 运行 `G22_PRE_D4_VERTICAL_GOLDEN_GATE` | 依赖 01—22；只允许 Gate 测试、fixture、机器 manifest、必要验证配置 | 禁止删除/修改产品运行时；干净/升级数据根全旅程通过并 accepted |
+| `BB-23B` | 删除第二 renderer、旧壳、旧业务 store/可执行旧 API | 依赖 A；只改该行 consumer graph 与删除路径 | 保留 ProductTask reader、Git 历史和许可证；受影响 Gate 旅程通过 |
+| `BB-23C` | 删除 `productInstructions` 外层注入 | 依赖 B；只改该注入链 | 保留原生 resolver/legacy 文件；指令冲突与 nested fixture 通过 |
+| `BB-23D` | 删除公共 CLI/TUI/Ink/REPL/Doctor/bin/help/publish | 依赖 C；只改公共 surface | 必须保留且仅内部可达 agent-worker、`native-host` mode、Core handler；package input 和 Gate 通过 |
+| `BB-23E` | 删除 Qwen 可执行 runtime | 依赖 D；只改 Qwen provider/route/config/runtime fixture | 保留纯 legacy mapper；模型/worker Gate 通过 |
+| `BB-23F` | 删除 Whisper/旧 ASR runtime | 依赖 E；只改旧 ASR runtime | 保留矩阵登记 mapper；Voice/Video binding Gate 通过 |
+| `BB-23G` | 删除通用桌面 Computer Use | 依赖 F；只改坐标/录屏/辅助功能/Python helper/runtime route | 保留 BrowserCapability、MiMo Evidence、Core通用 Tool/MCP；招聘 Gate 通过 |
+| `BB-23H` | 删除 WebSearch/Tavily/Brave/native search | 依赖 G；只改该搜索 runtime | 保留 WebFetch/BrowserCapability；工具 Gate 通过 |
+| `BB-23I` | 删除 TeamMem runtime | 依赖 H；只改 OAuth/watcher/endpoint/settings/diagnostics | 保留必要 migration mapping；记忆 Gate 通过 |
+| `BB-23J` | 删除媒体聊天中转 | 依赖 I；只改 mediaWorkbenches Skill/Tool、`media_draft` 新建/线程投影 | 保留独立 MediaProject/migrator；图片/视频 Gate 通过 |
+| `BB-23K` | 删除旧 workflow runtime/DSL 与重复 media route/service | 依赖 J；只改该行运行图 | 保留唯一 MediaProjectService；媒体 Gate 通过 |
+| `BB-23L` | 删除 Tauri/Linux target 与重复构建 workflow，汇总 D4 | 依赖 K；只改 target/workflow/package input | 保留 Windows/macOS Electron、全部 readers/licenses；全 Gate、本地 build、最终运行图通过 |
 
 ### 用户结果
 
@@ -1408,14 +1518,14 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的
 
 ### 物理删除 Manifest
 
-`D4_PHYSICAL_DELETE` 前每一行必须满足消费者归零。删除对象不得仅凭路径名或一次 `rg` 判断。
+`D4_PHYSICAL_DELETE` 前每一行必须满足消费者归零，并且 `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 已按第 4.9 节在干净/升级数据根通过。Gate Work Unit 只验证和产出机器证据，不删除任何源码；失败时回原模块 repair。删除对象不得仅凭路径名或一次 `rg` 判断。
 
 | 对象 | `D1_STOP_WRITES` / `D2_MIGRATE_CONSUMERS` 完成模块 | `D4_PHYSICAL_DELETE` 负责人 | 必须保留的 `D3_LEGACY_READ_ONLY` 内容 | `D5_PACKAGE_ABSENT` 负责人 |
 |---|---:|---:|---|---:|
 | 第二 renderer/旧壳/旧业务 store 与可执行旧 API | 01、06—11 | 23 | Git 历史、许可证；不包括下一行 ProductTask reader | 24 |
 | ProductTask `D3_LEGACY_READ_ONLY` reader/adapter/fixture | 02、22 | 不执行 D4；按第四部分未来触发条件单独处理 | 旧 ProductTask schema 读取、ID/revision/sequence 映射和回滚 fixture | 24 验证包内可达 |
 | `productInstructions` 外层注入 | 05 | 23 | 原生 resolver 与 legacy 文件兼容 | 24 |
-| 公共 CLI/TUI、Ink、REPL、Doctor、bin/help/publish entry | 03、17 | 23 | 内部 agent-worker 与 Core command handler | 24 |
+| 公共 CLI/TUI、Ink、REPL、Doctor、bin/help/publish entry | 03、17 | 23 | 内部 agent-worker、不可交互 `native-host` mode 与 Core command handler；三者不能被公共 bin/help 调用 | 24 |
 | Qwen 可执行 provider/route/config/test fixture | 04 | 23 | 模块 22 的纯 legacy value mapper | 24 |
 | Whisper/旧 ASR 运行时 | 15 | 23 | 模块 22 的 legacy value mapper | 24 |
 | 通用桌面 Computer Use、Python helper、专用 API/UI/vision routing | 18、21 | 23 | BrowserCapability、MiMo 普通视觉证据、Core 通用 Tool/MCP | 24 |
@@ -1433,18 +1543,20 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的
 legacy inventory
 → 新消费者接通
 → 对应 D3 reader/mapper/fixture 已由模块 22 编排验证
+→ G22_PRE_D4_VERTICAL_GOLDEN_GATE（未删除版本、legacy execution fail-fast）
 → build/package input graph 核对
 → runtime consumer graph 为零
 → D4_PHYSICAL_DELETE
-→ lockfile、类型、相关测试和本地 build 再验证
+→ lockfile、类型、相关测试、本地 build 与受影响 Gate 旅程再验证
 ```
 
 实施规则：
 
-1. 删除必须覆盖实现、注册、测试、依赖、环境变量、部署模板、帮助和用户文案；但不得删除 Manifest 明确保留的 reader、mapper、fixture、许可证或 Core 通用机制。
-2. `dist/`、`output/`、`electron-dist/` 等本地目录只有在能证明为当前构建拥有的 staging 时才清理；不得递归删除用户成果、旧数据备份或 migration manifest。
-3. 删除后的 import graph、route graph、worker graph、provider graph 和 package input graph 必须重新生成；不能用换名或 compatibility shim 保留第二实现。
-4. 若任一消费者、迁移 fixture、许可证或构建入口尚未归零，停止该行删除并记录阻塞项；不得影响其他已独立闭合的 Manifest 行。
+1. `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 的 machine manifest 必须记录 Spec/Base SHA、fixture hash、实际调用链版本、旅程/状态覆盖和短错误码；所有 legacy execution entry 在 Gate 中 fail-fast，调用任一旧路线立即失败。Gate 不能 skip，不能 mock 新链自身，不能以 service 单测替代。
+2. 删除必须覆盖实现、注册、测试、依赖、环境变量、部署模板、帮助和用户文案；但不得删除 Manifest 明确保留的 reader、mapper、fixture、许可证或 Core 通用机制。
+3. `dist/`、`output/`、`electron-dist/` 等本地目录只有在能证明为当前构建拥有的 staging 时才清理；不得递归删除用户成果、旧数据备份或 migration manifest。
+4. 删除后的 import graph、route graph、worker graph、provider graph 和 package input graph 必须重新生成；不能用换名或 compatibility shim 保留第二实现。
+5. 每个 D4 Work Unit 后必须重跑该行影响的 Gate 旅程；若失败，停止后续删除并回所属模块 repair。若任一消费者、迁移 fixture、许可证或构建入口尚未归零，记录阻塞项；不得影响其他已独立闭合的 Manifest 行。
 
 ### 验收 Oracle
 
@@ -1503,8 +1615,9 @@ available
 7. 下载可后台进行；进入 `waiting_for_safe_exit` 时读取 ProductTask/媒体/记忆/PTY 的统一 activity gate。可恢复写入先落盘，活动最终导出固定阻止安装，前台 PTY 固定要求用户确认，其他可恢复 TaskRun 保存 checkpoint 后才允许继续。
 8. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified` 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified`；进程退出后不得靠当前版本推测安装结果，目标版本首次启动核验 artifact version 和 transaction 后才写 confirmed。
 9. 更新不自动降级；回退通过重新发布完整上一版本完成。旧客户端或旧 sidecar遇到不支持 schema 时返回“需要更新/恢复”，不得写回旧格式。
-10. 源码接线、CI artifact 签名验证、真实安装/更新验证分成三个状态报告；前两档不能写成“真实更新成功”。
-11. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
+10. 模块 24 只消费模块 04/14 已冻结的 Gateway/Relay deployment manifest version/hash；若 ingress、service identity、secret 注入、health/preflight 或回滚证据缺失则阻断发布，不得在发包模块临时创建第二套远程部署配置。
+11. 源码接线、受控远程部署 manifest、CI artifact 签名验证、真实安装/更新验证分层报告；较低等级不能写成真实线上或真实更新成功。
+12. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
 
 ### 验收 Oracle
 
@@ -1542,10 +1655,12 @@ available
 |---|---|
 | 单一产品 | 一个 renderer、一个 ProductTask 产品 API/WS、一个 worker、一个媒体 service、两个桌面发布 target |
 | 目标前端 | 首页、任务对话、第 3/4 栏、终端、图片、视频、经营、已安排、设置符合模块 06/10/13/16/18/20/21 的明文信息架构和交互合同；1280×720/200%/深浅主题可用；HTML 只辅助理解方向 |
+| Process topology | 单一 Electron Main、单 local server sidecar、短生命周期 worker、按需 Native host、远程 gateway/relay；启动/退出、第二实例转交和各层 capability/credential 边界符合第 4.8 节 |
 | ProductTask | operation/revision/event/cursor、双窗口、重复提交、断线、停止、损坏数据和协议深链 |
 | Worker/Core | ready、stream、approval、stop、crash、backpressure、resume；Core 原生工具/Skills/Hooks/MCP/子代理未被削弱 |
 | 模型 | DeepSeek 文本、MiMo 证据、Fun-ASR；无 Qwen/Sonnet 隐式 fallback；window/body/compact 与 model manifest 一致 |
-| 指令/记忆 | 三类品牌/兼容文件顺序、nested、resume/compact、AutoMem 删除、本地索引、TeamMem 包内归零 |
+| 指令/记忆 | 三类文件 conflict precedence、来源诊断、target-file nested、resume/compact、AutoMem 删除、本地索引、TeamMem 包内归零 |
+| Voice | VoiceOperation/Transcript/immutable Revision、Composer/ThreadEntry/Video binding、编辑分叉、迟到结果、owner/lifecycle |
 | Review/Preview | 文件引用、Diff、行评论、DOM selection、导航失效、高 DPI、真实文件回执 |
 | 图片 | 三候选、路由、Operation kinds、unknown、mask/version/export、300 秒配置和容量 preflight |
 | 视频 | ingest/evidence/plan/edit/export、source fingerprint、ASR/MiMo、锁定场景、导出产物 |
@@ -1553,7 +1668,7 @@ available
 | Scheduled | DST、时区、休眠、logical run、通知深链 |
 | Terminal | owner/cwd/env、首输出、大输出、窗口关闭和更新闸 |
 | Migration | 全旧 schema fixture、备份、可重入、崩溃恢复、冷启动、migration reader 包内可达 |
-| Cleanup | D1—D5 逐行证据、保留 reader/许可证、无 compatibility shim 或第二运行时 |
+| Cleanup | `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 未删除版本通过；每个 D4 Work Unit 后重跑受影响旅程；D1—D5 逐行证据、保留 reader/许可证、无 compatibility shim 或第二运行时 |
 | Release | 类型、单测、集成、renderer/sidecar/worker build、双平台 package manifest、签名/更新分级报告 |
 | 隐私 | 日志、包、fixture 和错误 UI 无密钥、Cookie、正文、Base64、候选人隐私和绝对路径 |
 
@@ -1569,15 +1684,18 @@ available
 
 ```text
 BilliardBuddy Electron GUI
-  ├─ current React renderer
-  ├─ ProductTask service / API / WebSocket
-  ├─ internal agent-worker → CC-Haha Core
-  ├─ provider-neutral DeepSeek / MiMo / Fun-ASR adapters
-  ├─ MediaProjectService → gateway / relay / local FFmpeg
-  ├─ RecruitingService → BrowserCapability / ChromeSessionBridge
-  ├─ ScheduledTaskService
-  ├─ Electron PTY / updater / notifications
-  └─ versioned migration coordinator + legacy readers
+  ├─ Electron Main（单实例、本地 capability、sidecar/updater/PTY/OS 生命周期）
+  ├─ current React renderer（只经 preload IPC + authenticated local API/WS）
+  ├─ one Local Product Server sidecar
+  │  ├─ ProductTask service / API / WebSocket
+  │  ├─ MediaProjectService → provider-neutral ImageGeneration / local FFmpeg
+  │  ├─ VoiceService → SpeechTranscription + global TranscriptRevision
+  │  ├─ RecruitingService / ScheduledTaskService / migration coordinator
+  │  └─ Session Supervisor → ephemeral agent-worker → CC-Haha Core
+  ├─ provider-neutral DeepSeek / MiMo / GPT Image 2 / Seedream / Fun-ASR adapters
+  ├─ Chrome companion → Native Messaging host → ChromeSessionBridge
+  ├─ remote Gateway → Relay（独立部署，不由 Electron 启动）
+  └─ supported legacy readers + rollback
 ```
 
 这棵树只表示职责。默认沿用当前真实目录；不得为了让目录名看起来像示意图而整体搬迁 `server/services`、Core 或 media 文件。
