@@ -47,7 +47,7 @@
 | `D2_MIGRATE_CONSUMERS` | 把所有运行时消费者切到新合同 | 可删除无状态 UI/adapter，但保留 legacy reader |
 | `D3_LEGACY_READ_ONLY` | 旧实现只服务升级读取与恢复 | 不得执行旧业务副作用；必须进入最终升级包 |
 | `D4_PHYSICAL_DELETE` | 消费者、迁移前置和包入口均已核对后物理删除 | 删除实现、测试、依赖、配置和文案；不得删除仍受支持的 reader |
-| `D5_PACKAGE_ABSENT` | 证明最终包内没有已删除运行时 | 通过包清单和可达图验证，不以源码搜索代替 |
+| `D5_PACKAGE_ABSENT` | 证明最终包内没有已删除运行时 | 只由模块 24 在实际 package/ZIP/安装目录上通过包清单和可达图验证；模块 23 只能提供 D4 后的 package input 白名单，源码搜索不能代替 D5 |
 
 同一对象可以在不同模块推进不同阶段，但只能有一个 `D4_PHYSICAL_DELETE` 负责人。模块交接必须写明当前停在哪一阶段。
 
@@ -137,7 +137,7 @@ Next:
 
 不为施工交接新建额外 Markdown 报告。文字交接进入 commit body；机器证据进入测试、fixture、JSON/机器可读 manifest、构建输出或包清单。现有模块卡中的“交接物”表示需要进入 commit body 或机器证据索引的内容，不表示另建报告文件。
 
-## 0.7 Work Unit 注册与冻结规则
+### 0.7 Work Unit 注册与冻结规则
 
 每个可派发 Work Unit 必须在本 Markdown 的对应模块卡中登记。登记项至少包含 `Work Unit ID`、顺序、单一用户结果、依赖、允许/禁止路径、冻结合同、验收和完成条件；没有登记的 Work Unit 不得靠聊天临时派发。
 
@@ -160,24 +160,24 @@ Next:
 | `DEC-005` | `[HARD]` 主导航为“任务、创作、经营、已安排、设置” | 图片和视频从“创作”直接进入独立工作台；BOSS 与台球经营归“经营”；文件、Diff、Preview、终端按需展开，不占主导航 |
 | `DEC-006` | `[HARD]` ProductTask 是普通任务唯一产品真相源 | 普通任务只走 `/api/product/*`、ProductTask WebSocket、`ts/shared/product` 和当前数据根；不恢复旧 session/store/WebSocket |
 | `DEC-007` | `[HARD]` GUI 只通过内部 `agent-worker` 使用 Core | 先抽 worker 并以 `D2_MIGRATE_CONSUMERS` 迁移所有 GUI/定时消费者；公共 CLI/TUI 由模块 23 执行 `D4_PHYSICAL_DELETE`；worker 继续调用原生 Core，不重写 Agent loop |
-| `DEC-008` | `[HARD]` 文本主模型只保留 DeepSeek | MiMo 只输出显式视觉证据；Fun-ASR 只转写音频；Qwen/Sonnet/Anthropic 不作为隐藏 fallback；模型不可用时显式失败 |
+| `DEC-008` | `[HARD]` 文本、视觉理解、图片生成与语音能力分开 | DeepSeek 是唯一文本主模型；MiMo 只输出显式视觉证据；GPT Image 2 / Seedream 4.5 只通过 provider-neutral `ImageGeneration` 执行图片生成/编辑；Fun-ASR 只转写音频；Qwen/Sonnet/Anthropic 不作为隐藏 fallback；能力不可用时显式失败 |
 | `DEC-009` | `[HARD]` context window 使用已核实真实值 | 产品合同字段为 `verified_context_window`；只有整链证据均为 1,000,000 时才能显示 1M，否则使用最小已证实上限，不关闭 compact 伪造大窗口 |
 | `DEC-010` | `[HARD]` 项目指令复用 Core 原生 resolver | 同层加载顺序为 Claude 兼容源 → `AGENTS.md` → `BilliardBuddy.md`；品牌文件进入 user context/`nested_memory`，不升为临时 system prompt |
-| `DEC-011` | `[HARD]` 项目指令、Session Memory、AutoMem 分开 | TeamMem 在模块 05/21 执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`，模块 23 执行 `D4_PHYSICAL_DELETE` 与 `D5_PACKAGE_ABSENT`；项目指令不复制进 Session/AutoMem；记忆失败不阻塞主任务；敏感内容不进入长期记忆 |
+| `DEC-011` | `[HARD]` 项目指令、Session Memory、AutoMem 分开 | TeamMem 在模块 05/21 执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`，模块 23 只执行 `D4_PHYSICAL_DELETE`，模块 24 统一执行 `D5_PACKAGE_ABSENT`；项目指令不复制进 Session/AutoMem；记忆失败不阻塞主任务；敏感内容不进入长期记忆 |
 | `DEC-012` | `[HARD]` 三档产品权限固定 | `ask → default`、`allow_edits → acceptEdits`、`plan_only → plan`；权限是 TaskRun 创建时的不可变快照，修改只影响下一次 run |
 | `DEC-013` | `[HARD]` Preview 模块只处理 DOM/源码修改 | DOM selection → ProductTask → Core 修改源码；图片 mask/inpaint 只属于 MediaProject，不得出现“Core 或 Media”并列所有者 |
 | `DEC-014` | `[HARD]` 图片/视频不经过主聊天媒体草稿 | 工作台内部处理 Brief、追问、证据、进度、确认、版本和结果；跨工作台只传显式 immutable `asset_id`，不复制 Base64 |
 | `DEC-015` | `[HARD]` MediaProjectService 是唯一媒体写入者 | 文件型存储继续使用，但同一数据根只能有一个 sidecar 写者；项目、Operation、Job、Asset、Version 都由 MediaProjectService 持久化 |
-| `DEC-016` | `[HARD]` 媒体 owner 由服务端派生 | owner scope 固定为 `installation_id + canonical workspace_id`；`media_project_id` 是其子实体；客户端 `workspace_root` 或 ProductTask 关联不能替代 owner 校验 |
+| `DEC-016` | `[HARD]` 媒体 owner 由服务端派生且支持无 Workspace 创作 | owner scope 固定为 `installation_id + media_library_id`；选择 canonical Workspace 时 `media_library_id=workspace:<canonical workspace_id>`，未选择项目文件夹时使用唯一 `media_library_id=installation-default`。`media_project_id` 是其子实体；客户端路径、ProductTask 关联或显示名称不能替代 owner 校验 |
 | `DEC-017` | `[HARD]` 未知付费结果不能自动重放 | `outcome_unknown` 只能对账原 Operation；确认失败前不得创建新付费 Operation；UI 不直接消费 relay 内部枚举 |
 | `DEC-018` | `[HARD]` 图片模型路由在服务端 | 局部 mask/精确编辑 → GPT Image 2；中文海报/多参考/组图 → Seedream 4.5；其余普通单图 → GPT Image 2；目标上游失败不静默跨供应商 |
 | `DEC-019` | `[HARD]` 普通图片体验固定三候选 | UI 请求 `requested_count=3`；服务端内部兼容范围 `1..4`；15 仅是上游合法性上限，不是产品数量或默认值 |
 | `DEC-020` | `[HARD]` 视频采用五阶段证据流水线 | `ingest → evidence → plan → edit/preview → export`；源素材只读；模型只处理 Brief 和结构化证据，不直接生成 FFmpeg 命令 |
-| `DEC-021` | `[HARD]` BOSS 只使用受控浏览器能力 | 上层唯一协议是 `BrowserCapability`，正式实现是 `ChromeSessionBridge`；Skill 不绑定传输工具名；登录、扫码、验证码和人机验证交给用户 |
-| `DEC-022` | `[HARD]` 通用桌面 Computer Use 退出产品 | 模块 18/21 执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`，模块 23 执行 `D4_PHYSICAL_DELETE`/`D5_PACKAGE_ABSENT`；不保留 macOS/Windows 坐标控制、屏幕录制、辅助功能、Python helper 和隐式截图回合换模型；视觉状态无法映射浏览器 ref 时转用户接管 |
+| `DEC-021` | `[HARD]` BOSS 只使用受控浏览器能力和唯一 packaged transport | 上层协议是 `BrowserCapability`，本机实现是 `ChromeSessionBridge`；正式传输固定为 BilliardBuddy Chrome Extension + Chrome Native Messaging，MCP 仅是 Core 到 bridge 的内部 Tool 协议，不是另一 transport；不使用远程 WebSocket bridge 或 Electron Preview 冒充用户 Chrome 会话；登录、扫码、验证码和人机验证交给用户 |
+| `DEC-022` | `[HARD]` 通用桌面 Computer Use 退出产品 | 模块 18/21 执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`，模块 23 只执行 `D4_PHYSICAL_DELETE`，模块 24 统一执行 `D5_PACKAGE_ABSENT`；不保留 macOS/Windows 坐标控制、屏幕录制、辅助功能、Python helper 和隐式截图回合换模型；视觉状态无法映射浏览器 ref 时转用户接管 |
 | `DEC-023` | `[HARD]` 本机终端是用户 PTY | Electron IPC → `node-pty` → 当前用户 shell/canonical cwd；与 Agent Bash、worker 和公共 CLI/TUI 完全分开 |
-| `DEC-024` | `[HARD]` 只发两个 GUI 产品 | Windows x64 与 macOS arm64；ZIP、blockmap、latest manifest 只是更新附属文件；不交付 Linux/Tauri/公共 CLI/TUI |
-| `DEC-025` | `[HARD]` 数据迁移先于物理删除 | 最终升级包必须携带版本化迁移器和旧 schema 只读 reader；旧业务运行时可以删除，但迁移 reader 不能与首个迁移发布同版删除 |
+| `DEC-024` | `[HARD]` 只发两个 GUI 产品 | Windows x64 与 macOS arm64；ZIP、blockmap、latest manifest 只是更新附属文件；Chrome Web Store Extension 是模块 18 的浏览器伴随组件，不是第三个桌面产品/target，但其 ID、版本与协议必须纳入同一 release manifest；不交付 Linux/Tauri/公共 CLI/TUI |
+| `DEC-025` | `[HARD]` 数据迁移先冻结支持范围、再迁移、最后物理删除 | 模块 01 必须根据当前 reader、真实历史 fixture 和测试冻结 `legacy-support-matrix.json`；未登记或无正向 fixture 的旧格式不承诺自动迁移。最终升级包携带登记范围内的版本化迁移器和只读 reader；reader 不能与首个迁移发布同版删除 |
 
 ## 2. 术语、实体和唯一身份
 
@@ -187,7 +187,7 @@ Next:
 |---|---|---|---|---|
 | `Workspace` | canonical 项目文件夹身份 | 安装实例 | Product service | 显示为“项目文件夹” |
 | `ProductTask` | 用户可见任务容器 | Workspace | ProductTaskService | 显示为“任务” |
-| `TaskRun` | 一次 Agent 执行 | ProductTask | ProductTaskService 接收 worker receipt 后写入 | 显示为一次处理过程，不显示 ID |
+| `TaskRun` | 一次 Agent 执行；创建时已包含不可变 permission/provider snapshot 与 durable dispatch intent | ProductTask | ProductTaskService 在返回 accepted 前原子写入 | 显示为一次处理过程，不显示 ID |
 | `ThreadEntry` | 用户消息、助手回答、审批、结果投影 | ProductTask | ProductTaskService | 显示在对话中 |
 | `CoreSession` | worker 内部 Core 会话 | TaskRun | agent-worker/Core | 永不直接显示或作为产品外键 |
 | `ClientOperation` | 一次用户副作用意图 | Task/Project | 对应产品 service | 不显示 ID；用于幂等与恢复 |
@@ -206,6 +206,7 @@ Next:
 
 | 实体 | 含义 | 唯一写入者 |
 |---|---|---|
+| `MediaLibrary` | MediaProject 的稳定 owner 容器；类型为 installation-default 或 canonical Workspace library | MediaProjectService |
 | `MediaProject` | 图片或视频项目容器 | MediaProjectService |
 | `MediaOperation` | 一次用户有副作用的意图，例如生成、编辑、放大、导出 | MediaProjectService |
 | `MediaJob` | Operation 内部的可恢复执行阶段 | MediaProjectService（gateway/relay 只返回 adapter receipt，不直接写持久化状态） |
@@ -221,7 +222,7 @@ Next:
 | 实体 | 含义 | 唯一写入者 |
 |---|---|---|
 | `BrowserCapability` | observe/action/re-observe 的上层协议 | 协议，无持久状态 |
-| `ChromeSessionBridge` | 正式包唯一浏览器协议实现 | 只返回当前页面状态，不保存业务真相 |
+| `ChromeSessionBridge` | 本机单会话桥：Core/MCP Tool → request owner → Native Messaging host → BilliardBuddy Chrome Extension | 只保存短期 session/request 路由，不保存业务真相或 Cookie |
 | `RecruitingPlan` | 门店、岗位、筛选条件和允许动作 | RecruitingService |
 | `RecruitingBatch` | 一批候选人的可恢复处理单元 | RecruitingService |
 | `BrowserCheckpoint` | 当前 batch 的页面版本、候选 ref 和回读状态 | RecruitingService 根据 bridge 回执写入 |
@@ -237,14 +238,20 @@ Skill 只读业务数据并提供语义指导；Core 只拥有工具循环与审
 composer_draft
   → submit_intent_persisted
   → accepted(run_id, event_sequence)
+  → dispatch_pending
   → running
   → waiting_for_user | stopping
   → completed | stopped | failed
 ```
 
+`accepted` 的唯一含义是：ProductTaskService 已在同一个原子提交中持久化用户 ThreadEntry、TaskRun（含 immutable permission/provider snapshot）、`client_operation_id` receipt、首个 TaskEvent 和 durable dispatch record。任何一项写入失败都整体回滚，不返回 accepted，也不清空草稿。worker 不参与这个原子提交，且不得在提交成功前启动该 run。
+
+提交成功后 dispatcher 可重复投递同一 `run_id`；agent-worker 必须用 run ID 和 dispatch generation 做幂等 claim。只有 claim 成功的 worker 可以创建/恢复 CoreSession 并把 `dispatch_pending → running` receipt 交回 ProductTaskService。服务在 accepted 后、投递前崩溃时，重启扫描 durable dispatch record；重复投递或 worker 重启不得创建第二 TaskRun、第二用户消息或自动重放外部副作用。
+
 固定规则：
 
 - 未收到 `accepted` 回执时只能显示“尚未发送”，草稿不能清空；
+- `accepted` 后尚未被 worker claim 时显示“等待开始”，不得显示模型正在运行；
 - 同一 `client_operation_id` 重放必须返回同一个受理结果；
 - `stopping` 后等待 worker/Core 权威收尾；迟到 delta 不得进入已结束 run；
 - 重连使用 `resume_cursor`，并以权威 transcript 对账缺失内容。
@@ -324,7 +331,8 @@ migration_running
 2. 美国服务器反代、下载和结果查询的实际 300 秒媒体 deadline；
 3. DeepSeek 实际 model ID 与 context window；
 4. Windows 签名、macOS 签名/公证和真实更新安装；
-5. BOSS 当前页面结构、登录态和真实发送回读。
+5. BOSS 当前页面结构、登录态和真实发送回读；
+6. Chrome Web Store 正式 extension ID、审核发布、真实安装/升级和与 Native Messaging host 的版本握手。
 
 未验证时使用模块规定的 fail-closed 结果，并在交接记录中明确写“未做”，不得把静态代码存在写成真实成功。
 
@@ -380,8 +388,9 @@ migration_running
   04 + 05 + 07 + 08 + 12 + 13 + 16 + 17 + 18 → 19 台球经营 Skills
 
 阶段 D：产品收口
+  02 + 03 + 06 + 10 → 20 用户本机终端
   04—20 → 21 设置、能力快照与技术表面收口
-  02—21 → 22 版本化数据迁移与 legacy reader
+  01—21 → 22 版本化数据迁移与 legacy reader
 
 阶段 E：删除、发包和统一验收
   01—22 → 23 死运行时与依赖物理清理
@@ -389,7 +398,7 @@ migration_running
   01—24 → 25 全链路验证与最终交接
 ```
 
-模块 13、16、18 必须消费模块 04 已冻结的 provider-neutral 接口，不得各自新增 provider registry、fallback 或临时模型路由。
+模块 13 必须消费模块 04 已冻结的 `ImageGeneration`，并可消费 `TextReasoning`/`VisualEvidence`；模块 16 必须消费模块 04 的 `TextReasoning`/`VisualEvidence`/`SpeechTranscription`；模块 18 只通过 Core 文本能力和 `VisualEvidence` 获取模型结果。三者不得新增 provider registry、fallback 或临时模型路由。
 
 模块 16 对模块 14 的依赖只消费跨媒体可靠性合同：deadline/timeout matrix、capacity preflight 字段、owner/provider 并发边界和 `outcome_unknown` 原 Operation 查询语义。模块 16 不消费模块 14 的图片 UI、三候选数量或图片 provider 路由，也不得把视频逻辑写回图片工作台。
 
@@ -453,7 +462,8 @@ migration_running
 1. 生成 current renderer、sidecar、ProductTask、media、gateway、relay 的入口与消费者清单。
 2. 固定历史参考读取命令和允许提取的文件类型；不 checkout 旧提交开发。
 3. 标记 HTML 为非构建视觉/信息架构参考资产，确认不进入 Electron `files`、Vite entry、测试运行时或发布包；其脚本、假数据和内联 CSS 不得成为生产实现来源。
-4. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
+4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
+5. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
 
 ### 明确不改
 
@@ -467,10 +477,11 @@ migration_running
 | 历史引用 | `git show <commit>:<path>` | 不产生工作树中的第二 renderer 目录 |
 | HTML 原型 | 检查 build/package inputs | 不被正式构建引用 |
 | 删除候选 | consumer graph | 每项有迁移模块、物理删除模块和保留 reader 说明 |
+| 旧 schema 支持 | reader + immutable fixture + 正向/幂等测试 | 只有 `legacy-support-matrix.json` 登记项可称“受支持”；ProductTask v2 等 provisional 项不得进入迁移承诺 |
 
 ### 交接物
 
-`single-product-baseline.json` 或等价机器可读 manifest 保存入口、参考路径、消费者图和删除候选；文字说明进入 accepted commit body，不新建 Markdown 报告。
+`single-product-baseline.json` 和 `legacy-support-matrix.json`（或等价机器可读 manifest）保存入口、参考路径、消费者图、删除候选与开工前冻结的旧 schema 支持范围；文字说明进入 accepted commit body，不新建 Markdown 报告。
 
 ---
 
@@ -496,12 +507,13 @@ ProductTaskService 唯一写 `ProductTask`、`TaskRun`、`ThreadEntry`、`TaskEv
 ### 实施合同
 
 1. 为 ProductTask 和可变子实体增加 schema version、`revision` 与更新时间；定义哪些 mutation 必须使用 `expected_revision`。
-2. 所有副作用 mutation 接受 `client_operation_id`，并返回 `accepted | duplicate | conflict | rejected` durable receipt。
-3. TaskEvent 增加 `event_sequence`、`task_id`、必要的 `run_id`；WebSocket 支持 `resume_cursor`。
-4. list/detail 的本地请求版本只用于避免迟到 UI 覆盖，不得冒充服务端 revision。
-5. 定义少量产品错误码：revision conflict、owner mismatch、not found、storage unavailable、unsupported schema、operation unknown。
-6. 协议、通知和第二实例只转交受控 task ID/action，不接受任意路径、URL 或命令。
-7. 旧 ProductTask schema 的读取适配器和 fixture 由本模块随新 schema 一起定义并测试为 `D3_LEGACY_READ_ONLY`；模块 22 只调用该 adapter 做统一编排，不得重新推导字段映射。
+2. submit 使用单个 ProductTask 原子写入边界，同时持久化用户 ThreadEntry、TaskRun immutable snapshot、`client_operation_id` receipt、首个 TaskEvent 和 durable dispatch record；任何一项失败整体回滚且不返回 accepted。TaskRun 在 worker 启动前已经存在，worker 只 claim，不创建产品 run。
+3. 所有副作用 mutation 接受 `client_operation_id`，并返回 `accepted | duplicate | conflict | rejected` durable receipt；accepted 只在第 3.1 节原子写入提交后返回。
+4. TaskEvent 增加 `event_sequence`、`task_id`、必要的 `run_id`；WebSocket 支持 `resume_cursor`。
+5. list/detail 的本地请求版本只用于避免迟到 UI 覆盖，不得冒充服务端 revision。
+6. 定义少量产品错误码：revision conflict、owner mismatch、not found、storage unavailable、unsupported schema、operation unknown。
+7. 协议、通知和第二实例只转交受控 task ID/action，不接受任意路径、URL 或命令。
+8. 旧 ProductTask schema 的读取适配器和 fixture 由本模块随新 schema 一起定义并测试为 `D3_LEGACY_READ_ONLY`；只允许覆盖模块 01 `legacy-support-matrix.json` 已登记范围。ProductTask v2 必须先补成功迁移、写回 current、二次运行幂等 fixture 才能从 provisional 升为 supported；模块 22 只调用 adapter 做统一编排，不得重新推导字段映射。
 
 ### 明确不改
 
@@ -511,6 +523,9 @@ ProductTaskService 唯一写 `ProductTask`、`TaskRun`、`ThreadEntry`、`TaskEv
 
 | 场景 | 预期持久结果 | 预期客户端结果 |
 |---|---|---|
+| submit 任一原子成员写入失败 | ThreadEntry/TaskRun/receipt/event/dispatch 全部不出现 | 不返回 accepted，草稿和附件保留 |
+| accepted 后服务在 worker claim 前崩溃 | 同一 durable dispatch 重启后继续投递 | 仍显示同一 run“等待开始”，不创建第二消息/run |
+| 同一 dispatch 重复投递给两个 worker | 只有一个幂等 claim 成功 | 一个 run、一个 CoreSession；另一个 worker 得到 duplicate/no-op |
 | 同一 operation 重放两次 | 只写一次 mutation | 第二次返回同一 receipt |
 | 两窗口以同一旧 revision 改标题 | 只允许一个 revision 前进 | 另一窗口收到 conflict 并重新读取 |
 | WebSocket 断线后携 cursor 重连 | 不复制事件 | sequence 单调且无重复 |
@@ -545,8 +560,8 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 ### 实施合同
 
 1. 从现有 headless CLI 路径抽出最小内部 worker entry，继续调用原生 Core。
-2. 定义 worker protocol：hello/version、ready、start、input、approval response、stop、event、terminal result、fatal、shutdown。
-3. 每个 run 绑定 task ID、run ID、CoreSession、permission snapshot、provider contract version 和 cancellation signal。
+2. 定义 worker protocol：hello/version、ready、start、claim receipt、input、approval response、stop、event、terminal result、fatal、shutdown。
+3. `start` 只能引用已经由 ProductTaskService 原子持久化的 task ID/run ID/dispatch generation，不得创建 ProductTask 或 TaskRun。worker 先幂等 claim；claim 成功后才创建/恢复 CoreSession，并绑定 permission snapshot、provider contract version 和 cancellation signal。
 4. 实现背压、最大帧大小、未知消息拒绝、ready timeout、有界重启和优雅退出。
 5. ConversationService 与所有当前 GUI、定时任务消费者必须在本模块切换到 worker protocol adapter；公共 CLI 路径只作为待删除源码保留到模块 23。
 6. worker 崩溃不得自动重复用户消息；ProductTask 根据 durable run 状态显示失败或恢复查询。
@@ -560,7 +575,7 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 
 - 固定假 Core fixture：ready → delta → tool activity → complete，ProductTask 只得到一条 run。
 - stop：收到 stop 后进入 stopping，最终只有 stopped/complete 一个终态，迟到 delta 被拒绝。
-- crash before accepted：消息保持未受理；crash after accepted：不创建第二 run。
+- crash before accepted：整个 submit 原子写入不存在，消息保持未受理；crash after accepted/before claim：重启投递同一 durable dispatch；重复 start 只有一个 claim，均不创建第二 run。
 - 大帧、坏 JSON、协议版本不匹配和无 ready 均形成明确 run error，不无限重启。
 - GUI/cron consumer graph 已指向 worker adapter；公共 CLI 尚未删除并在 Manifest 标记模块 23。
 
@@ -577,7 +592,7 @@ worker protocol version、launcher 环境字段、run/CoreSession 映射和故�
 
 ### 用户结果
 
-普通用户不再选择模型；产品使用明确的文本、视觉和语音能力，能力不足时说真话，不隐藏切换其他模型。
+普通用户不再选择模型；产品使用明确的文本、视觉理解、图片生成/编辑和语音能力，能力不足时说真话，不隐藏切换其他模型。
 
 ### 权威状态
 
@@ -585,14 +600,15 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 
 ### 实施合同
 
-1. 固定 provider-neutral 接口：`TextReasoning`、`VisualEvidence`、`SpeechTranscription`；模块 13、15、16、18 只能消费这些接口。
-2. DeepSeek 是唯一文本主模型；MiMo 只接受受控图片输入并返回结构化视觉证据；Fun-ASR 只接受音频并返回 transcript。
-3. 对 Qwen 运行时执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`：移除正式路由、fallback 和模型选择；保留独立 `D3_LEGACY_READ_ONLY` model value mapper 给模块 22，不保留可执行 Qwen provider。
-4. 禁止 MiMo 隐式接管整个文本回合。带图输入先走 VisualEvidence，再把结构化证据交回 DeepSeek。
-5. 拆分 `CHAT_TEXT_BODY_MAX_BYTES` 与 `VISION_BODY_MAX_BYTES`；文本预算按已核实 token window、JSON/工具历史膨胀和安全余量计算，图片预算按数量和总字节限制。
-6. 由 Provider registry 唯一生成非密钥 `model-contract.json` 和 worker capability manifest：实际 model ID、provider、worker env source、window、body cap、compact、resume 证据、contract version/hash 和核验日期；二者不允许手工配置独立值。
-7. 只有官方/账号/实际响应证据与 desktop→worker→provider→gateway→Core 全链均支持 1M，registry 才生成 1,000,000；否则生成真实最小值。
-8. 未知或被环境变量改写为未注册 model ID 时 worker 固定拒绝 ready，ProductTask 显示“模型配置无效”；不回退打包默认、不切 Qwen/Sonnet/Anthropic。已注册 provider 运行时不可用则显式失败；视觉不可用时要求用户查看/接管；语音不可用时保留录音草稿或显示转写失败。
+1. 固定四个 provider-neutral 接口：`TextReasoning`、`VisualEvidence`、`ImageGeneration`、`SpeechTranscription`。模块 13 只通过 `ImageGeneration` 执行图片生成/编辑，并可消费 `TextReasoning`/`VisualEvidence` 整理 Brief 和检查结果；模块 15 只消费 `SpeechTranscription`；模块 16 消费 `TextReasoning`/`VisualEvidence`/`SpeechTranscription`；模块 18 只消费 `VisualEvidence`，文本规划仍走 Core 的 `TextReasoning`。
+2. `ImageGeneration` 的请求合同固定包含 operation kind、provider-neutral Brief、reference asset IDs、base asset/version、normalized mask、requested count、size/format、owner、`client_operation_id` 和 `expected_revision`；返回只包含 adapter receipt、upstream durable ID、标准状态、候选输出下载/字节描述、usage/错误分类，不生成产品 Asset ID，也不暴露 provider 原始枚举或密钥。MediaProjectService 校验 receipt 后才落盘不可变 Asset/Version。Provider registry 根据 `DEC-018` 在服务端把请求路由到 GPT Image 2 或 Seedream 4.5；renderer、Skill、Core Tool 和 MediaProjectService 均不得直接依赖供应商 SDK/schema。
+3. DeepSeek 是唯一文本主模型；MiMo 只接受受控图片输入并返回结构化视觉证据；GPT Image 2 / Seedream 4.5 只实现 `ImageGeneration` adapter；Fun-ASR 只接受音频并返回 transcript。
+4. 对 Qwen 运行时执行 `D1_STOP_WRITES` 与 `D2_MIGRATE_CONSUMERS`：移除正式路由、fallback 和模型选择；保留独立 `D3_LEGACY_READ_ONLY` model value mapper 给模块 22，不保留可执行 Qwen provider。
+5. 禁止 MiMo 隐式接管整个文本回合。带图输入先走 VisualEvidence，再把结构化证据交回 DeepSeek。
+6. 拆分 `CHAT_TEXT_BODY_MAX_BYTES`、`VISION_BODY_MAX_BYTES` 与 `IMAGE_GENERATION_BODY_MAX_BYTES`；文本预算按已核实 token window、JSON/工具历史膨胀和安全余量计算，视觉理解按受控图片数量/总字节限制，图片生成按参考资产、mask 和请求元数据限制。
+7. 由 Provider registry 唯一生成非密钥 `model-contract.json` 和 worker capability manifest：实际 model ID、provider、能力、worker env source、window、body cap、compact、resume 证据、contract version/hash 和核验日期；二者不允许手工配置独立值。
+8. 只有官方/账号/实际响应证据与 desktop→worker→provider→gateway→Core 全链均支持 1M，registry 才生成 1,000,000；否则生成真实最小值。
+9. 未知或被环境变量改写为未注册 model ID 时 worker 固定拒绝 ready，ProductTask 显示“模型配置无效”；不回退打包默认、不切 Qwen/Sonnet/Anthropic。已注册 provider 运行时不可用则显式失败；视觉不可用时要求用户查看/接管；图片生成能力不可用时不创建付费 Operation；语音不可用时保留录音草稿或显示转写失败。
 
 ### 验收 Oracle
 
@@ -600,6 +616,7 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 |---|---|---|
 | 纯文本 | DeepSeek | 不能命中视觉 cap 或 Qwen fallback |
 | 图片附件 | MiMo 证据 → DeepSeek 文本 | MiMo 不拥有文件写、发送或桌面动作权 |
+| 图片生成/编辑 | provider-neutral `ImageGeneration` → 服务端路由 GPT Image 2 / Seedream 4.5 | renderer/Skill/MediaProjectService 不直连供应商，不把 MiMo 当生图模型 |
 | 音频 | Fun-ASR | 不恢复 Whisper/第二 ASR |
 | 未知 model env override | worker 拒绝 ready，ProductTask 显示配置无效 | 不接受任意模型 ID，不回退打包默认 |
 | 长无图请求 | text body cap | 不被 vision cap 提前拒绝 |
@@ -607,7 +624,7 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 
 ### 交接物
 
-provider-neutral interfaces、model manifest、body budget 和 legacy Qwen value mapping。
+provider-neutral TextReasoning/VisualEvidence/ImageGeneration/SpeechTranscription interfaces、model manifest、body budget 和 legacy Qwen value mapping。
 
 ---
 
@@ -645,7 +662,7 @@ provider-neutral interfaces、model manifest、body budget 和 legacy Qwen value
 7. “记住”必须选择唯一目标：项目约定、长期记忆或本次任务摘要。未指定时只生成 AutoMem 建议预览，用户确认后写入。
 8. AutoMem 使用 scope+关键词+更新时间的本地索引，不调用隐藏 Sonnet/Anthropic 侧模型；索引损坏不阻塞主任务。
 9. 敏感信息、网页 Cookie、候选人隐私、图片/音频 Base64 和绝对路径不进入长期记忆。
-10. 为旧项目指令扫描结果、Session Memory、AutoMem 索引/主题文件和 TeamMem legacy state 提供各自的 `D3_LEGACY_READ_ONLY` adapter 与 fixture；本模块不迁数据，模块 22 统一编排。TeamMem 的设置、OAuth、watcher、endpoint 和发布消费者交给模块 23 的物理删除 Manifest；本模块先执行 `D1_STOP_WRITES`，模块 21 迁出普通设置消费者。
+10. 仅为模块 01 支持矩阵已登记的项目指令/记忆旧形态提供 `D3_LEGACY_READ_ONLY` adapter 与 immutable fixture；当前 memory 无版本和历史 fixture，默认 unsupported、原文件原位保留，不创建假迁移承诺。TeamMem 的设置、OAuth、watcher、endpoint 和发布消费者交给模块 23 的物理删除 Manifest；本模块先执行 `D1_STOP_WRITES`，模块 21 迁出普通设置消费者。
 
 ### 验收 Oracle
 
@@ -815,7 +832,7 @@ ProductTaskService 唯一写 `QueuedMessage`、`TaskReference`、`Checkpoint`、
 4. 本模块只实现文本消息引用；文件/代码引用由模块 10 定义并接入。模块 09 不引用、导入或等待模块 10 的 schema。
 5. fork/checkpoint 使用当前 ProductTask 和明确 worktree identity；创建失败回滚 task record 与应用拥有的 worktree，不删除源项目。
 6. 普通 UI 使用“排队、加入对话、在独立副本中继续、回到这里”，不显示 CoreSession/checkpoint/rewind 技术术语。
-7. 为旧 ProductTask/Core 中仍需保留的 queue、文本引用、checkpoint 和 fork 来源提供 `D3_LEGACY_READ_ONLY` adapter/fixture给模块 22；旧记录无法安全映射时逐项归档并在 manifest 说明，不能静默丢弃。
+7. 只为模块 01 支持矩阵登记的旧 ProductTask/Core queue、文本引用、checkpoint 和 fork shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；未登记记录保持只读隔离，不能由模块 09自行扩大支持或静默丢弃。
 
 ### 验收 Oracle
 
@@ -929,13 +946,13 @@ MediaProjectService 是唯一写入者；renderer 只保存 view state。正式�
 ### 实施合同
 
 1. 在现有文件型存储中扩展，不迁 SQLite、不建第二 media service。
-2. 服务端派生 `installation_id + canonical workspace_id` owner；所有 list/get/write/delete/cancel/asset/download 路由统一 owner + sidecar auth 校验。
-3. schema 定义 MediaProject、MediaOperation、MediaJob、Asset、Version、Evidence；每项明确 ID、parent、revision、created/updated、owner。
+2. 服务端唯一派生 `owner_scope=installation_id + media_library_id`。用户选择 canonical Workspace 时使用 `workspace:<canonical workspace_id>`；从“创作”直接进入且尚未选择项目文件夹时使用该安装实例唯一的 `installation-default` 媒体库。所有 list/get/write/delete/cancel/asset/download 路由统一验证 owner scope + sidecar auth。媒体项目可以稍后显式迁入 Workspace library，但迁移必须复制/重绑定 owner 下的项目引用并保留 operation/asset identity，不得因当前 UI 目录变化自动改 owner。
+3. schema 定义 MediaLibrary、MediaProject、MediaOperation、MediaJob、Asset、Version、Evidence；每项明确 ID、parent、revision、created/updated、owner。
 4. 所有写 mutation 使用 `client_operation_id + expected_revision`；外部副作用前先固化 Operation intent。
 5. Asset 不可变：记录 kind、owned route 或受控外部 path、hash、bytes、source revision；外部视频不复制且永不删除。
 6. Version 是不可变完整快照；图片画布、视频时间线都引用明确 input/output revision。
 7. 使用跨进程数据根锁、临时文件、可用时 fsync、rename 和上一有效快照；启动时对账正文/索引/Job/Asset。
-8. 为当前及受支持旧版的 media project/task/asset/version schema 提供 `D3_LEGACY_READ_ONLY` adapter 与 crash fixture给模块 22；adapter 只读取和标准化，不执行旧 provider、旧 workflow 或外部副作用。
+8. 只为模块 01 `legacy-support-matrix.json` 已登记的 media schema/shape 提供 `D3_LEGACY_READ_ONLY` adapter 与 crash fixture；当前最低承诺仅包含 media v1 inline `reference_images` → private Asset。新增旧版支持必须先补 immutable fixture、正向迁移、current 写回和幂等测试；adapter 只读取和标准化，不执行旧 provider、旧 workflow 或外部副作用。
 9. 实现第 3.2 节状态机和 adapter 归一；renderer 不消费 relay 原始枚举。
 10. 删除项目先停止/拒绝活动 Job，列出只会删除的应用拥有资产；失败时项目不能从列表消失。
 
@@ -944,12 +961,13 @@ MediaProjectService 是唯一写入者；renderer 只保存 view state。正式�
 - 两个进程竞争同一数据根：只有一个获得 writer lock；第二个 sidecar 固定拒绝启动该数据根并返回“已有实例正在使用”，不得进入另一个读写或只读 service 模式。
 - 两窗口同 revision 写项目：一个成功，一个 conflict。
 - 崩溃在 intent、上游调用、结果下载、asset rename 各窗口重启后可对账，不重复副作用。
-- 猜 project ID、跨 workspace、无 sidecar auth、外部路径删除全部被拒绝。
+- 猜 project ID、跨 MediaLibrary/Workspace、无 sidecar auth、外部路径删除全部被拒绝。
+- 未选择项目文件夹时可在 `installation-default` 创建、重启恢复和导出媒体项目；选择另一个 Workspace 不会隐藏、串用或自动改写其 owner。显式迁入 Workspace 后旧 owner 不再可写，但 Operation/Asset identity 与引用保持。
 - 项目删除只移除应用拥有资产，不删除导入源文件或其他项目引用。
 
 ### 交接物
 
-media schema、owner/auth contract、operation state machine、writer lock 和 crash fixtures。
+media library/schema、owner/auth contract、operation state machine、writer lock 和 crash fixtures。
 
 ---
 
@@ -972,7 +990,7 @@ MediaProjectService 持久化 Brief、reference roles、Operation、Job、Asset�
 2. 工作台提供“海报/宣传图”和“照片优化/修改”两条入口，共享同一数据模型。
 3. DeepSeek 只把文字整理为 provider-neutral Brief：用户原话、确定事实、必须保留、允许改变、待确认；不得补猜价格、日期、人数、品牌承诺。
 4. MiMo 只分析明确提交的参考图/候选图并返回结构化证据；不可用显示“尚未自动检查”。
-5. 服务端按 `DEC-018` 路由；renderer/shared create schema 不允许用户覆盖 model/provider。
+5. 所有 generate/edit/inpaint/upscale 只能由 MediaProjectService 根据 durable MediaOperation 调用模块 04 的 provider-neutral `ImageGeneration`；服务端 registry 按 `DEC-018` 路由。renderer/shared schema 不能提交 model/provider，MediaProjectService 不导入供应商 SDK/schema，gateway/relay 只返回 adapter receipt。
 6. 普通请求固定三候选；每个输出是独立 immutable Asset，可 partial success；失败不静默补发。
 7. 定义 Operation kind：`image.generate`、`image.edit`、`image.inpaint`、`image.upscale`、`image.export`。
 8. 精确中文、Logo、二维码优先用确定性画布图层；整图/局部编辑绑定 base asset/version 和 normalized mask。
@@ -984,7 +1002,7 @@ MediaProjectService 持久化 Brief、reference roles、Operation、Job、Asset�
 
 - 固定 Brief fixture 不凭空增加未输入价格/日期；用户修改后 revision 正确。
 - 三候选一次受控 Operation，返回 3 个 Asset 或显式 partial；不得拆成无提示多次付费。
-- model/provider 字段无法由 renderer 请求覆盖；目标上游失败不跨供应商。
+- model/provider 字段无法由 renderer 请求覆盖；MediaProjectService 只命中 `ImageGeneration`，目标上游失败不跨供应商。静态依赖图中 renderer/Skill/MediaProjectService 不导入 GPT/Seedream SDK 或供应商 request schema。
 - mask 与底图版本不一致时拒绝；inpaint/upscale/export 各有独立 operation identity。
 - 崩溃、取消、unknown、切项目和两窗口自动保存不丢 Version、不重复扣费。
 - 新图片项目不产生 ProductTask media draft 或聊天关联卡。
@@ -1159,22 +1177,25 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 
 ### 实施合同
 
-1. 定义 `BrowserCapability.observe/action/reobserve`；正式实现仅 `ChromeSessionBridge`。MCP/extension/native bridge 只是内部传输，不是第二 adapter。
-2. observe 返回 URL/title/page version、稳定 ref、role/name/state/value、可见文字摘要和 visual_required；导航/刷新/分页/iframe 变化后旧 ref 失效。
-3. action 只引用当前 page version 的稳定 ref，不保存长期 CSS selector，不输出桌面像素坐标。
-4. visual_required 时 MiMo 只生成视觉证据；无法映射当前 ref 就转用户接管，MiMo 不执行动作。
-5. 登录、扫码、验证码、人机验证由用户在可见浏览器处理；不导出 Cookie/storage state/profile，不调用私有接口 header。
-6. 正式只读链固定为：`agent-worker/Core capability discovery → boss-recruiting Skill → recruiting-browser Tool.observe/reobserve → BrowserCapability → ChromeSessionBridge → read receipt → RecruitingService 写 BrowserCheckpoint → ProductTask 结果投影`。observe/reobserve 不需要副作用审批，但仍校验 owner、plan/batch、当前 page version 和短期证据边界。
-7. 正式副作用链固定为：`Skill 提议受限 action → recruiting-browser Tool 请求 ProductTask/Core approval → 用户批准 → RecruitingService 先持久化 RecruitingOperation intent → Tool.action → BrowserCapability/ChromeSessionBridge → 页面 reobserve receipt → RecruitingService 写 succeeded/outcome_unknown → ProductTask 结果投影`。未批准或 intent 未成功持久化时不得调用 action；点击本身不是完成证据。
-8. Tool 通过 Core 现有工具注册边界暴露 `observe/action/reobserve`，只接收 plan/batch/operation ID 与受限 payload；不得让 Skill 直接写 RecruitingService 文件或调用 bridge 传输细节。`boss-recruiting` Skill 只读 RecruitingService 数据并调用 Tool；修复当前只允许 Read/Grep/Glob 且无法发现浏览器能力的接线，但 Skill 不硬编码 MCP/native/extension 名称。
-9. RecruitingPlan 保存门店、岗位事实、筛选条件、话术约束、允许动作；Batch/Operation 使用 revision、idempotency 和页面回读证据。
-10. 候选人完整简历、联系方式、截图和 HTML 只作短期受控证据，不进 AutoMem、普通日志或跨门店同步。
-11. 为旧招聘计划/批次/页面 checkpoint（若存在）提供 `D3_LEGACY_READ_ONLY` adapter 与隐私脱敏 fixture给模块 22；不存在旧数据时 adapter 明确返回 empty，不猜测迁移。
-12. 通用桌面 Computer Use 的消费者迁完后列入模块 23 `D4_PHYSICAL_DELETE`；本模块不接 Playwright 第二生产 adapter。
+1. 定义 `BrowserCapability.observe/action/reobserve`；正式本机实现仅 `ChromeSessionBridge`，唯一 packaged transport 固定为 `BilliardBuddy Chrome Extension ↔ Chrome Native Messaging host ↔ 本地 bridge session`。MCP 只负责 Core Tool 到 BrowserCapability 的内部调用，不是浏览器 transport；禁止远程 WebSocket bridge、Playwright 第二 adapter或 Electron Preview 冒充用户 Chrome 会话。
+2. Extension 与 native host 是模块 18/24 必须验证的同一能力：固定 extension ID/版本协议/native host name；public package 只允许正式 extension origin；sidecar wrapper 必须使用 packaged sidecar 的 `cli --app-root <unpacked-root> --chrome-native-host` 模式，不允许缺失 sidecar mode；extension 未安装、host manifest 失败、版本不兼容或未握手时 capability 为 unavailable，BOSS 退化为人工交接，不展示可执行。
+3. Bridge 每次连接生成 `bridge_session_id`，每个调用携带 `request_id + owning_client_id + page_version` 并只回给发起者；不得广播 tool response。断线清除该 session 的短期 ref/pending request；读操作可在重连后重新 observe，写操作断线固定 `outcome_unknown`，必须 reobserve 对账，不能自动重发。
+4. observe 返回 URL/title/page version、稳定 ref、role/name/state/value、可见文字摘要和 visual_required；导航/刷新/分页/iframe 变化后旧 ref 失效。
+5. action 只引用当前 page version 的稳定 ref，不保存长期 CSS selector，不输出桌面像素坐标。
+6. visual_required 时 MiMo 只生成视觉证据；无法映射当前 ref 就转用户接管，MiMo 不执行动作。
+7. 登录、扫码、验证码、人机验证和 Chrome 站点权限由用户在可见浏览器处理；不导出 Cookie/storage state/profile，不调用私有接口 header。Extension 站点权限、产品审批与页面当前版本三者任一不满足都不执行 action。
+8. 正式只读链固定为：`agent-worker/Core capability discovery → boss-recruiting Skill → recruiting-browser Tool.observe/reobserve（MCP 内部协议）→ BrowserCapability → ChromeSessionBridge → Native Messaging host → BilliardBuddy Chrome Extension → read receipt → RecruitingService 写 BrowserCheckpoint → ProductTask 结果投影`。observe/reobserve 不需要副作用审批，但仍校验 owner、plan/batch、bridge session、当前 page version 和短期证据边界。
+9. 正式副作用链固定为：`Skill 提议受限 action → recruiting-browser Tool 请求 ProductTask/Core approval → 用户批准 → RecruitingService 先持久化 RecruitingOperation intent → Tool.action → BrowserCapability/ChromeSessionBridge → Extension 页面动作 → reobserve receipt → RecruitingService 写 succeeded/outcome_unknown → ProductTask 结果投影`。未批准、intent 未持久化、session/page version 不匹配时不得调用 action；点击本身不是完成证据。
+10. Tool 通过 Core 现有工具注册边界暴露 `observe/action/reobserve`，只接收 plan/batch/operation ID 与受限 payload；不得让 Skill 直接写 RecruitingService 文件或调用 MCP/native/extension 细节。生产构建不得继续使用 `BROWSER_TOOLS=[]` 的 no-op stub；capability manifest 与 ListTools 必须证明真实工具非空且版本一致。
+11. RecruitingPlan 保存门店、岗位事实、筛选条件、话术约束、允许动作；Batch/Operation 使用 revision、idempotency 和页面回读证据。
+12. 候选人完整简历、联系方式、截图和 HTML 只作短期受控证据，不进 AutoMem、普通日志或跨门店同步。
+13. 当前仓库没有可证明的旧 Recruiting 持久化 schema，因此模块 01 矩阵将其标为 unsupported，本模块不创建假 legacy adapter；将来发现真实旧数据时必须先更新矩阵、fixture 和 Spec-Commit。
+14. 通用桌面 Computer Use 的消费者迁完后列入模块 23 `D4_PHYSICAL_DELETE`；本模块不接 Playwright 第二生产 adapter。
 
 ### 验收 Oracle
 
-- 固定假页面覆盖登录、分页、ref 失效、弹窗、visual_required、验证码和页面改版。
+- 固定 bridge/extension fixture 覆盖未安装、manifest/host 启动失败、版本不兼容、登录、站点权限、分页、ref 失效、多 client 路由、断线、弹窗、visual_required、验证码和页面改版；不同 session/client 的 response 不得交叉或广播。
+- packaged sidecar 的 native host wrapper 能实际进入 `cli --app-root … --chrome-native-host`，production capability discovery/ListTools 非空；public package 不包含 dev extension origin 或远程 bridge fallback。
 - 同一发送 operation 重放不产生第二次动作；页面未回读时不能显示已发送。
 - 两个门店的 Plan/Batch/候选 ref 不能串用；关闭计划先停止活动 batch。
 - 正式 packaged agent-worker 的 capability discovery 能发现 `recruiting-browser` Tool；只读 fixture 按 observe→checkpoint→投影执行且不产生 approval；副作用 fixture 严格按 approval→intent persisted→action→reobserve receipt→结果写入执行，未批准/intent 写入失败/页面未回读时分别为 rejected/未执行/outcome_unknown。不能只用协议类型或直接调用 bridge 的单测代替。
@@ -1183,7 +1204,7 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 
 ### 交接物
 
-BrowserCapability、Recruiting schema、fake page suite、数据最小留存和 Computer Use 删除清单。
+BrowserCapability、Chrome Extension/Native Messaging transport contract、bridge session/request routing、Recruiting schema、fake extension/page suite、数据最小留存和 Computer Use 删除清单。
 
 ---
 
@@ -1228,7 +1249,9 @@ Skill payload schema、机器可读清洗 manifest、能力/工具映射和负�
 
 ## 模块 20：用户本机终端
 
-**依赖：** 02、03、06
+**依赖：** 02、03、06、10
+
+模块 20 只消费模块 10 冻结的 canonical workspace/path helper 和 owner 校验合同；不得复制第二套 realpath/UNC/盘符边界逻辑，也不得反向修改 Review 领域状态。
 **模块主题前缀：** `feat: secure the local terminal dock`
 
 ### 用户结果
@@ -1247,7 +1270,7 @@ Electron TerminalService 写 PTY session；每个 session 绑定 owner WebConten
 4. Terminal 与 Agent Bash/worker/CLI 不共享权限、输入、输出、history 或 session。
 5. 窗口关闭、task 切换、renderer reload、spawn failure 和 PTY exit 幂等清理；PTY 不伪装可恢复，重启后明确结束。
 6. 首输出在 renderer listener 建立前有界缓存；大输出有背压/截断，不耗尽 renderer 内存。
-7. 为旧 terminal preferences 提供 `D3_LEGACY_READ_ONLY` adapter 与 fixture给模块 22；旧 PTY session 和命令历史明确不迁移。
+7. terminal preferences 只有进入模块 01 支持矩阵并具备 fixture 时才提供 `D3_LEGACY_READ_ONLY` adapter；旧 PTY session 和命令历史固定不迁移，未登记偏好保持原位或明确 unsupported。
 8. 更新/退出时若有前台命令，给一次清楚确认，不自动重放最后命令。
 
 ### 验收 Oracle
@@ -1296,7 +1319,7 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 5. 对 WebSearch、Tavily/Brave key、DeepSeek native web-search 工具/路由/配置执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`；保留 WebFetch 和受控 BrowserCapability，死源码由模块 23执行 `D4_PHYSICAL_DELETE`。
 6. 对 Computer Use 设置、权限安装页和屏幕录制/辅助功能引导执行 `D2_MIGRATE_CONSUMERS`；通用桌面控制源码由模块 23 `D4_PHYSICAL_DELETE`。
 7. TeamMem 不出现在快照、设置或诊断；项目指令、Session Memory、AutoMem 使用业务化名称。
-8. 为旧 provider/model、WebSearch key presence（不复制密钥值）、capability settings、TeamMem setting 和用户设置提供 `D3_LEGACY_READ_ONLY` adapter/fixture给模块 22；本模块只移除普通运行时入口，不破坏迁移读取。
+8. 只为模块 01 支持矩阵登记的 provider/model、WebSearch key presence（不复制密钥值）、capability/TeamMem/user setting 旧 shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；普通无版本 settings 不承诺任意历史格式。本模块只移除普通运行时入口，不破坏已登记 reader。
 9. About 页显示版本、更新状态和许可，不显示内部 provider/model。
 
 ### 验收 Oracle
@@ -1320,7 +1343,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 
 ### 用户结果
 
-安装新版本后，旧任务、媒体项目、聊天媒体草稿、模型设置、记忆、计划任务和招聘数据可安全迁移；失败时旧数据保持只读可恢复，不出现空库。
+安装新版本后，只有模块 01 `legacy-support-matrix.json` 在对应 Spec-Commit 中明确登记、且具备 immutable fixture 与正向/幂等测试的旧数据会自动迁移；失败时旧数据保持只读可恢复，不出现空库。未登记、provisional 或 unsupported 格式必须明确提示并保持原数据，不得声称支持。
 
 ### 权威状态
 
@@ -1328,35 +1351,38 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 
 ### 实施合同
 
-1. 定义启动迁移顺序：检测 → 备份 → adapter 只读标准化 → 领域 service migration mutation → 重建索引 → 冷启动读取验证 → 开启新写入。Coordinator 不得直接写任何领域数据文件。
-2. 领域 adapter 必须按下表由所属模块提前定义并测试；模块 22 只编排，不重新推导字段映射。每类旧数据必须明确迁移、只读归档或按已声明政策丢弃，并写入 manifest。
+1. 读取并锁定模块 01 `legacy-support-matrix.json`；模块 22 不得新增、猜测或扩大支持范围。每个 supported input 必须有不可变历史 fixture、明确 reader/migration entry、迁到 current、写回 current、二次运行幂等和损坏/future-version 策略；provisional/unsupported 只隔离或保持只读。
+2. 定义启动迁移顺序：检测 → 备份 → adapter 只读标准化 → 领域 service migration mutation → 重建索引 → 冷启动读取验证 → 开启新写入。Coordinator 不得直接写任何领域数据文件。
+3. 领域 adapter 必须按下表由所属模块提前定义并测试，且只处理支持矩阵登记项；模块 22 只编排，不重新推导字段映射。每类探测到的旧数据必须按矩阵迁移、只读隔离或明确 unsupported，并写入 manifest。
 
 | Legacy 数据 | Adapter / fixture 负责人 | 模块 22 固定动作 |
 |---|---:|---|
 | ProductTask、TaskRun、ThreadEntry、事件 cursor | 02 | 迁到当前 schema 并校验 ID/revision/sequence |
 | QueuedMessage、文本 TaskReference、Checkpoint、ForkSource | 09 | 安全映射到 ProductTask 子实体；无法映射逐项只读归档并计入 manifest |
 | provider/model/Qwen context value | 04 | 映射到当前 model contract 或标 unsupported |
-| 项目指令、Session Memory、AutoMem、TeamMem legacy state | 05 | 按 scope 迁移/归档；TeamMem 不恢复同步运行时 |
+| 项目指令、Session Memory、AutoMem、TeamMem legacy state | 05 | 当前 unsupported，保持原文件/只读隔离；未来只有支持矩阵登记后才按 scope 迁移，TeamMem 永不恢复同步运行时 |
 | media project/task/asset/version | 12 | 迁到统一 owner/Operation/Asset/Version |
 | image media draft、候选、unknown Job | 13 | 有有效 project/asset/job/durable ID 或已提交副作用时转独立图片项目；仅纯文本空 draft 本地只读归档 |
 | Whisper/旧 ASR setting 与 transcript | 15 | 映射 Fun-ASR setting；保留原始/修订 transcript 边界 |
 | video media draft、source/evidence/timeline/unknown Job | 16 | 有有效 project/source/evidence/job/durable ID 或已提交副作用时转独立视频项目；仅纯文本空 draft 本地只读归档 |
 | scheduled task/logical run/notification | 17 | 迁 schedule 和历史，不补执行旧周期 |
-| recruiting plan/batch/checkpoint | 18 | 迁最小业务状态；敏感页面证据不长期复制 |
+| recruiting plan/batch/checkpoint | 18 | 当前无旧持久化 schema，标 unsupported 且不创建假记录；未来只消费支持矩阵登记项 |
 | terminal preferences | 20 | 只迁偏好，不迁 PTY session/命令历史 |
 | capability/settings/WebSearch key presence/TeamMem setting | 21 | 映射当前设置；不复制密钥值或恢复已删能力 |
 
-3. Qwen/Whisper/旧 provider 值通过纯 legacy mapper 转成当前合同或明确 unsupported；不恢复旧可执行 provider。
-4. 媒体迁移分类：已关联项目、未关联 draft、运行中 Job、outcome_unknown、孤儿 Asset。已关联项目转独立工作台并保留身份；unknown 保留 durable ID 和查询入口。
-5. 媒体聊天中转按唯一规则迁移：凡是拥有有效 MediaProject、Asset、Job、远端 durable ID 或已提交/unknown 副作用的记录，全部迁为同 owner 下的独立图片/视频项目并保留身份与恢复入口；只有不含资产、不含 Job、从未提交副作用的纯文本空 draft 才进入只读归档。不得让用户选择两套运行路线。
-6. 项目指令与记忆迁移遵守唯一边界：现有 `CLAUDE.md`/兼容源的正文、mtime、权限和路径保持不变；`AGENTS.md`/`BilliardBuddy.md` 已存在时不覆盖，只生成用户可确认的冲突建议；Session Memory 只迁当前会话摘要；AutoMem 保持原 scope/source/freshness，绝不自动提升为项目指令；TeamMem 只读归档或按 manifest 声明丢弃，不恢复同步。来源重叠、同名文件或索引冲突先复制到版本+hash 备份并隔离，用户未确认前不合并。
-7. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
-8. 正式升级包必须继续携带 coordinator、legacy reader、fixture 和回滚入口；本模块不得删除它们。
-9. 迁移 manifest 只记录 scope、版本、数量、状态、相对/脱敏标识和错误码，不记录用户正文、候选人隐私、密钥或绝对路径。
+4. Qwen/Whisper/旧 provider 值只在矩阵登记的字段形态内通过纯 legacy mapper 转成当前合同或明确 unsupported；不恢复旧可执行 provider。
+5. 媒体迁移只处理矩阵登记形态，并分类为已关联项目、未关联 draft、运行中 Job、outcome_unknown、孤儿 Asset。已关联项目转到派生的 MediaLibrary owner 并保留身份；unknown 保留 durable ID 和查询入口。
+6. 媒体聊天中转按唯一规则迁移：凡是矩阵已登记且拥有有效 MediaProject、Asset、Job、远端 durable ID 或已提交/unknown 副作用的记录，迁为对应 MediaLibrary 下的独立图片/视频项目并保留身份与恢复入口；未登记格式保持只读隔离。不得让用户选择两套运行路线。
+7. 项目指令与记忆只有在矩阵登记具体历史形态后才自动迁移。当前 memory 无版本/历史 fixture，默认保持原文件原位且 unsupported，不由模块 22重写。若未来登记，仍必须遵守：既有 `CLAUDE.md`/兼容源正文、mtime、权限和路径不变，品牌文件不覆盖，Session/AutoMem scope 不提升，TeamMem 不恢复同步。
+8. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
+9. 正式升级包必须继续携带 coordinator、支持矩阵登记的 legacy reader/fixture 和回滚入口；本模块不得删除它们。
+10. 迁移 manifest 只记录 storage ID、输入/目标版本或 shape ID、数量、状态、相对/脱敏标识和错误码，不记录用户正文、候选人隐私、密钥或绝对路径。
 
 ### 验收 Oracle
 
-- 从每个受支持旧 schema 冷启动最终安装目录：备份存在、数据数量一致、owner/revision/ID 映射可追踪。
+- 对 `legacy-support-matrix.json` 每个 supported input 从 immutable fixture 冷启动最终安装目录：备份存在、数据数量一致、owner/revision/ID 映射可追踪；provisional/unsupported 不进入自动迁移。
+- CI 对支持矩阵执行一一对应检查：每个 supported entry 都存在 fixture、reader/migration、正向、current 写回和幂等测试；任一缺失则阻断模块完成。
+- 当前初始矩阵必须如实标记 ProductTask v2 provisional，memory/recruiting/cron run log/普通 settings/desktop localStorage 历史版本 unsupported；不得因代码中有读取分支或 schemaVersion 常量就升级为 supported。
 - 在每个迁移阶段注入崩溃/磁盘满/权限失败：原数据保持、重启可继续、不会初始化空库。
 - 同一迁移运行两次结果一致，不复制 task/project/asset/operation。
 - media unknown、未关联 draft 和孤儿 Asset 均出现在 manifest 与用户可恢复入口；含项目/资产/Job/durable ID 的记录全部迁为独立项目，只有从未提交副作用的纯文本空 draft 进入只读归档。
@@ -1365,7 +1391,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 
 ### 交接物
 
-migration coordinator、领域 adapter、manifest、备份/回滚规则、legacy fixture 和受支持版本表。
+migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的领域 adapter/immutable fixture、manifest 和备份/回滚规则。
 
 ---
 
@@ -1454,26 +1480,28 @@ CI/feed 拥有 release artifact 与 release manifest；ElectronUpdaterService �
 idle
   → checking
   → up_to_date | available
+available
   → downloading
   → downloaded_verified
   → waiting_for_safe_exit
-  → installing
   → restart_pending
   → confirmed_on_target_version
 ```
 
-失败语义固定：检查/下载失败回到 `idle` 并保留当前版本；下载取消回到 `available`；校验失败删除当前模块拥有的损坏下载并回到 `available`；activity gate 拒绝时保持 `downloaded_verified`；调用安装前失败保持当前应用运行；调用 `quitAndInstall` 后以 durable transaction 标记 `restart_pending`，只有目标版本首次启动回写 version/transaction 才成为 `confirmed_on_target_version`。超时或重启未确认显示“更新结果待确认”，不得自动重复安装或标成功。
+不存在可由当前进程可靠观测的 `installing` 持久状态。`restart_pending` 必须在调用 `quitAndInstall` **之前**原子持久化，含 source version、target version、artifact hash、transaction ID 和 attempt ID；随后调用安装即可能立即退出。若调用在进程仍存活时同步失败，ElectronUpdaterService 以同一 attempt receipt 把状态恢复到 `downloaded_verified` 并保留错误；一旦进程退出，只有目标版本首次启动核验 transaction/artifact version 后才能写 `confirmed_on_target_version`。若重新启动后仍是旧版本或无法确认，显示“更新结果待确认”，不得自动再次安装。
+
+失败语义固定：检查/下载失败回到 `idle` 并保留当前版本；下载取消回到 `available`；校验失败删除当前模块拥有的损坏下载并回到 `available`；activity gate 拒绝时保持 `downloaded_verified`；调用安装前任一步失败保持当前应用运行。
 
 ### 发包合同
 
 1. 只构建 Windows x64 与 macOS arm64；不存在 Linux/Tauri/公共 CLI/TUI 产品 target。
 2. 图标由一个透明角母版生成 icns/ico/png，各尺寸检查无白底、裁切和旧品牌。
-3. package 白名单必须包含：renderer、sidecar、agent-worker、FFmpeg/ffprobe、node-pty、preview agent、migration coordinator、受支持 legacy readers/mappers、必要字体和许可证。
-4. 对模块 23 Manifest 执行 `D5_PACKAGE_ABSENT`：已删除运行时在 asar、unpacked resources、sidecar、更新 ZIP 和安装目录中均不存在。
+3. package 白名单必须包含：renderer、sidecar、agent-worker、FFmpeg/ffprobe、node-pty、preview agent、Chrome Native Messaging host/wrapper、migration coordinator、支持矩阵登记的 legacy readers/mappers、必要字体和许可证。BilliardBuddy Chrome Extension 固定为 Chrome Web Store 分发的**伴随组件**，不是第三个独立 BilliardBuddy 产品或桌面 target；模块 24 同一 release manifest 必须记录正式 extension ID、最低兼容版本、商店安装入口、native host protocol version 和兼容矩阵。桌面安装包不得静默旁载扩展；扩展未安装/未启用/版本不兼容时招聘浏览器能力固定 unavailable，并引导用户从唯一商店入口安装或更新。扩展发布和真实商店安装属于 `EXTERNALLY_VERIFIED`，未验证时不得宣称 BOSS 自动执行已交付。
+4. 模块 24 是所有删除对象 `D5_PACKAGE_ABSENT` 的唯一负责人：对模块 23 Manifest 逐行证明已删除运行时在 asar、unpacked resources、sidecar、更新 ZIP 和安装目录中均不存在；模块 23 的源码/输入图不能替代该证明。
 5. release artifact、hash、blockmap、签名元数据全部校验通过后才原子发布 manifest；任一不一致不进入 `downloaded_verified`、不提示安装、不退出当前版本。
 6. 更新 UI 提供检查、下载、进度、取消下载、稍后安装和现在安装；所有按钮只发送带 transaction ID 的 mutation，renderer 不直接调用 `quitAndInstall`。
 7. 下载可后台进行；进入 `waiting_for_safe_exit` 时读取 ProductTask/媒体/记忆/PTY 的统一 activity gate。可恢复写入先落盘，活动最终导出固定阻止安装，前台 PTY 固定要求用户确认，其他可恢复 TaskRun 保存 checkpoint 后才允许继续。
-8. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified` 且 activity gate 通过时调用 `quitAndInstall`；调用前持久化 `restart_pending`，目标版本首次启动核验 artifact version 和 transaction 后写 confirmed。
+8. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified` 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified`；进程退出后不得靠当前版本推测安装结果，目标版本首次启动核验 artifact version 和 transaction 后才写 confirmed。
 9. 更新不自动降级；回退通过重新发布完整上一版本完成。旧客户端或旧 sidecar遇到不支持 schema 时返回“需要更新/恢复”，不得写回旧格式。
 10. 源码接线、CI artifact 签名验证、真实安装/更新验证分成三个状态报告；前两档不能写成“真实更新成功”。
 11. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
@@ -1483,7 +1511,7 @@ idle
 - Windows/macOS package contents 与白名单逐项匹配；模块 23 每个 Manifest 行都完成 D5 证明，保留 migration reader 可从 packaged sidecar 冷启动。
 - Windows 按可用环境运行 `signtool verify`；macOS 运行 `codesign --verify`、`spctl` 和 notarization ticket 检查。缺平台或凭据时逐项标记 `NOT_VERIFIED_EXTERNALLY`，不得伪造通过。
 - manifest→artifact URL/hash/size/version/blockmap 一致；损坏、错签、旧版本和部分上传 fixture 均留在当前版本。
-- update transaction fixture 覆盖检查无更新、下载中断/继续、用户取消、artifact 校验失败、稍后安装、activity gate 拒绝、`quitAndInstall` 前失败、`restart_pending` 后重启以及目标版本首次启动确认；每个中断点符合唯一回退状态且不重复安装。
+- update transaction fixture 覆盖检查无更新、下载中断/继续、用户取消、artifact 校验失败、稍后安装、activity gate 拒绝、写 `restart_pending` 前失败、`restart_pending` 写入后 `quitAndInstall` 同步失败并回到 `downloaded_verified`、调用后进程退出、旧版本重启未确认以及目标版本首次启动确认；状态机中不存在持久 `installing`，每个中断点不重复安装。
 - 从旧 schema fixture 启动安装目录中的 sidecar，模块 22 migration 可达并保持备份/回滚。
 - 目标版本未真实启动时，报告只能写“包与更新接线已验证”，不能写“更新成功”。
 
