@@ -153,7 +153,7 @@ Next:
 - `[HARD]` 一个模块从首次派工到模块完成，只能有一个主代理窗口作为 Module Owner。该窗口负责登记和依次完成本模块全部 Work Unit、派子代理、修合同、审查、验证和提交；不得让两个主代理窗口同时负责同一模块。
 - 简单模块可以只有一个 Work Unit；复杂模块可以在同一主代理窗口内形成多个串行 accepted commit。上下文压缩不改变 Module Owner；窗口意外终止时，新的恢复窗口只能按第 0.9 节接管同一模块，不能另开平行实现。
 - 模块状态固定为 `planned → active → blocked | ready_for_completion → complete`。`blocked` 必须立即写入 lease，包含阻塞原因、复现证据和恢复条件；若需要跨窗口接管，主代理还必须修订对应 Work Unit 登记并创建 Spec-Commit 记录阻塞，但不得提交部分产品实现或伪造 accepted commit。最近一个已完成 Work Unit 的 accepted commit 可预先写下一依赖导致的 `Module-Status: blocked`；无法预知的中途阻塞不追改历史 commit。
-- 模块只有同时满足以下条件才成为 `complete`：所有登记 Work Unit 均有 accepted commit；模块卡全部 Oracle 与模块级纵向测试通过；交接物已进入 commit body/机器证据；工作树干净；没有未处理合同冲突；最后一个 accepted commit body 写入 `Module-Status: complete`、本模块全部 Work Unit SHA、Checks、Evidence、Known-Risks、External-Verification 和下一模块启动条件。
+- 模块只有同时满足以下条件才成为 `complete`：所有登记 Work Unit 均有 accepted commit；模块卡全部 Oracle 与模块级纵向测试通过；交接物已进入 commit body/机器证据；工作树干净；没有未处理合同冲突；最后一个 accepted commit body 写入 `Module-Status: complete`、此前全部 accepted Work Unit SHA、当前 Work Unit ID（当前提交 SHA 由提交完成后从 Git 读取，不写入自身 body）、Checks、Evidence、Known-Risks、External-Verification 和下一模块启动条件。提交后，lease/机器证据索引按 Git 实际 SHA 补齐本模块完整列表，不创建追写 commit。
 - 模块完成不创建空提交或额外 Markdown 报告。若最后一个 Work Unit 提交时尚不能满足模块完成条件，保持 `Module-Status: active|blocked`，通过原模块 repair Work Unit 补齐后，由该 repair commit 标记 complete。
 
 ### 0.9 本地 main 施工 lease、HEAD 与脏工作树
@@ -229,8 +229,9 @@ Next:
 | 实体 | 含义 | 父实体 | 唯一写入者 | UI 是否显示 |
 |---|---|---|---|---|
 | `Workspace` | 稳定 `workspace_id` 与可变 canonical root；保存根 file identity、revision 和 availability | 安装实例 | ProductTaskService | 显示为“项目文件夹”及可用/重新关联状态 |
+| `ComposerDraft` | 未 accepted 的持久草稿 owner；`draft_id` 由 ProductTaskService 在 installation scope 内签发，含 installation、可选 workspace/target_task、revision、last_activity 和 `active|consumed|expired`，不绑定窗口或虚构 task | 安装实例 | ProductTaskService；renderer 只投影正文与选择 | 不显示 ID |
 | `ProductTask` | 用户可见任务容器；保存独立于 TaskRun 的 lifecycle/revision | Workspace | ProductTaskService | 显示为“任务” |
-| `TaskAttachment` | 草稿或已发送任务附件；外部安全引用或应用拥有副本，含 owner/ref/TTL/inspection 状态 | ProductTask/draft owner | ProductTaskService 写身份与 binding；AttachmentStore 只执行受控字节操作 | 显示名称、类型、大小和安全/清理状态 |
+| `TaskAttachment` | 草稿或已发送任务附件；外部安全引用或应用拥有副本，含 owner/ref/TTL/inspection 状态 | `ComposerDraft` 或 ProductTask（二选一） | ProductTaskService 写身份与 binding；AttachmentStore 只执行受控字节操作 | 显示名称、类型、大小和安全/清理状态 |
 | `TaskRun` | 一次 Agent 执行；创建时已包含不可变 permission/provider snapshot 与 durable dispatch intent | ProductTask | ProductTaskService 在返回 accepted 前原子写入 | 显示为一次处理过程，不显示 ID |
 | `ThreadEntry` | 用户消息、助手回答、审批、结果投影 | ProductTask | ProductTaskService | 显示在对话中 |
 | `CoreSession` | worker 内部 Core 会话 | TaskRun | agent-worker/Core | 永不直接显示或作为产品外键 |
@@ -318,15 +319,16 @@ composer_draft
 
 ```text
 active ↔ archived
-archived → deleting → deleted | delete_failed
-delete_failed → deleting | archived
+archived → deleting → deleted | delete_failed_pre_purge | delete_failed_post_purge
+delete_failed_pre_purge → deleting | archived
+delete_failed_post_purge → deleting
 ```
 
 1. `archive/restore/delete/retry_delete/cancel_delete` 均由 ProductTaskService 以 `client_operation_id + expected_revision` 写 durable receipt；renderer 不乐观删除。archive 只接受所有 TaskRun 终态、QueuedMessage 为空且无活动 PTY/Preview/worker 的 active task，否则 `TASK_BUSY`，不得隐式 stop 或隐藏运行任务；成功后禁止新 submit/enqueue/fork，但不删除正文或附件。
 2. active task 不可永久删除；只有 archived 且所有 TaskRun 终态、QueuedMessage 为空、无活动 PTY/Preview/worker、无 Schedule/RecruitingBatch/ForkSource 等强引用时才能形成 immutable delete plan。存在引用返回 `TASK_DELETE_BLOCKED` 和逐项解除入口；不得隐式 stop、取消计划或删除 worktree。
 3. 用户确认后先原子写 `deleting + cleanup_plan hash + fencing token`。随后按计划幂等清理 ThreadEntry/TaskRun/Event/queue/checkpoint、task-owned 应用附件副本和明确由该 task 创建且用户另行确认删除的 managed fork worktree；Workspace、用户源文件/源仓库、外部附件、共享 Asset 和被其他实体引用的副本永不删除。
-4. 任一步失败进入 `delete_failed`，保留未完成 cleanup plan、失败项和重试入口；task 不从列表消失。删除采用两阶段：`deleting` 的可取消阶段只冻结引用并把正文、附件和 checkpoint 原子移入同一 owner-scoped 可恢复隔离区，不物理删除任何不可恢复 item；用户取消则完整原子还原。用户第二次确认关闭取消窗口并持久化 `purge_committed` 后才按 plan 物理删除，此后只能重试完成，不能回 archived。plan 对每项记录顺序、owner、ref count、recoverable/purged receipt；重启以同一 token/operation 续做，不重复副作用。
-5. `deleted` 只保留无正文、无路径、无原始业务 ID 的短期 tombstone/receipt hash 30 天，用于幂等和同步删除投影，之后清除。所有 task-bound API 在 deleting/delete_failed/deleted 分别返回稳定 `TASK_DELETING/TASK_DELETE_FAILED/TASK_DELETED`。
+4. 任一步失败按 `purge_committed` 分成 `delete_failed_pre_purge|delete_failed_post_purge`，均保留未完成 cleanup plan、失败项和重试入口，task 不从列表消失。删除采用两阶段：`deleting` 的可取消阶段只冻结引用并把正文、附件和 checkpoint 原子移入同一 owner-scoped 可恢复隔离区，不物理删除任何不可恢复 item；失败为 pre_purge，用户取消则完整原子还原。用户第二次确认关闭取消窗口并持久化 `purge_committed` 后才按 plan 物理删除；此后失败为 post_purge，只能重试完成，不能回 archived。plan 对每项记录顺序、owner、ref count、recoverable/purged receipt；重启以同一 token/operation 续做，不重复副作用。
+5. `deleted` 只保留无正文、无路径、无原始业务 ID 的短期 tombstone/receipt hash 30 天，用于幂等和同步删除投影，之后清除。所有 task-bound API 在 deleting/delete_failed_pre_purge/delete_failed_post_purge/deleted 分别返回稳定 `TASK_DELETING/TASK_DELETE_FAILED_PRE_PURGE/TASK_DELETE_FAILED_POST_PURGE/TASK_DELETED`。
 
 #### TaskAttachment 与临时文件
 
@@ -335,11 +337,12 @@ staged → inspecting → ready → accepted_bound
 staged | inspecting | ready → failed | cancelled | discarded
 ```
 
-1. TaskAttachment 记录 attachment/task/draft owner、source fingerprint、content hash、magic-byte verified media type、`external_reference|app_owned_copy`、byte size、state、ref graph、operation lease、created/last_activity/expires_at；ThreadEntry 不存二进制/Base64。
+1. TaskAttachment 记录 attachment ID、`owner_kind=composer_draft|product_task`、对应 `owner_id`、installation、source fingerprint、content hash、magic-byte verified media type、`external_reference|app_owned_copy`、byte size、state、ref graph、operation lease、created/last_activity/expires_at；ThreadEntry 不存二进制/Base64。首页无 ProductTask 时只能绑定 ProductTaskService 签发且 active 的 ComposerDraft；客户端自报/伪造 draft ID、跨 installation 或不存在/consumed/expired owner 一律拒绝。多个窗口可读取同 draft，但 mutation 必须 expected revision。
 2. 外部引用只保存受控相对 route/identity/hash，永不删除原文件。应用副本先进入 owner-scoped staging，安全检查通过后原子 rename；相同 content hash 只可去重字节，不能合并 owner/ref identity。
-3. 未绑定草稿附件自最后用户活动保留 7 天；failed/cancelled 的应用临时副本在 1 小时内清除；解析/转码临时目录在终态立即删，崩溃 orphan 最迟 24 小时后由 fenced sweeper 回收；accepted_bound 随 task 保留，永久删除时仅在 ref count 为零且 owner 可证时删除。
-4. `attachment-retention-policy.json` 冻结单文件、每草稿/任务、installation 总容量、最小保留磁盘、TTL 和清理 batch。达到软上限先阻止新复制并提供按大小/年龄的用户清理入口；低于硬磁盘余量只允许清理/导出，不接受新附件。sweeper 只按 identity/lease/ref graph 删除，失败保留记录并退避重试，不递归猜路径。
-5. 启动和每日 orphan scan 对账索引/字节/lease；不能证明 owner 的文件移入隔离清单而非删除。所有计时使用可注入时钟；policy 版本进入诊断和发布证据。
+3. submit 从首页 ComposerDraft 创建 ProductTask 时，必须在同一个 accepted 原子提交中：校验 draft revision/installation、创建 ProductTask、把指定 ready TaskAttachment owner 从该 draft 转为 ProductTask、写不可变 ThreadEntry/TaskRun binding，并消费该 draft receipt；失败全部保持原 draft/附件 owner，不能出现半迁移。已有 ProductTask 的 draft 只做同 task binding。相同 `client_operation_id` 重放返回同一 task/run/owner-transfer receipt。
+4. 未绑定 ComposerDraft 附件自最后用户活动保留 7 天；failed/cancelled 的应用临时副本在 1 小时内清除；解析/转码临时目录在终态立即删，崩溃 orphan 最迟 24 小时后由 fenced sweeper 回收；accepted_bound 随 task 保留，永久删除时仅在 ref count 为零且 owner 可证时删除。
+5. `attachment-retention-policy.json` 冻结单文件、每草稿/任务、installation 总容量、最小保留磁盘、TTL 和清理 batch。达到软上限先阻止新复制并提供按大小/年龄的用户清理入口；低于硬磁盘余量只允许清理/导出，不接受新附件。sweeper 只按 identity/lease/ref graph 删除，失败保留记录并退避重试，不递归猜路径。
+6. 启动和每日 orphan scan 对账索引/字节/lease；不能证明 owner 的文件移入隔离清单而非删除。所有计时使用可注入时钟；policy 版本进入诊断和发布证据。
 
 ### 3.2 外部副作用与付费媒体
 
@@ -399,7 +402,7 @@ migration_running
 - Workspace revision/identity 改变时，活动 TaskRun 的后续文件副作用、Preview selection、Diff reference 和 PTY 固定 `WORKSPACE_STALE`；只读 transcript 仍可查看。managed fork worktree 丢失标 `WORKTREE_MISSING`，保留 task/checkpoint 并提供重新创建或解除引用，不能重建后假装是同一 worktree。
 - Asset 原始 route 只按其 immutable `asset_owner_scope` 授权。迁库后的项目读取历史 Asset 时，必须先校验请求者拥有当前 MediaProject，再校验当前 Version/Evidence 显式引用同一 `{asset_id, asset_owner_scope}`；禁止凭 source Asset ID 跨库枚举。
 - 外部导入的视频、图片、音频和用户项目文件永不因删除 ProductTask/MediaProject 被删除；只删除应用明确拥有且能由身份链证明的副本。
-- 所有 policy 文件都必须由所属 registry 生成并有 schema/version/hash：模块 01 冻结结构；attachment 由模块 07 填充本机 retention/capacity 值，content safety 由 03/07/10/16 共同消费的受控 benchmark/profile 填充，Relay retention 由 04 定义最低合同、14 填充生产部署，diagnostic allowlist 由 21 填充。未登记/过期 policy fail-closed，不允许 renderer 或远程 flag 覆盖。
+- 所有 policy 文件都必须由唯一所属 registry 生成并有 schema/version/hash：模块 01 只冻结结构；`AttachmentRetentionPolicyRegistry`（模块 07/ProductTaskService）、`ContentSafetyPolicyRegistry`（模块 03/Local Product Server）、`RelayRetentionPolicyRegistry`（模块 04，模块 14 只提交生产部署证据）、`DiagnosticBundlePolicyRegistry`（模块 21/Electron Main）分别是唯一写入者。07/10/15/16 等消费者只能登记 parser/media requirement 与 benchmark evidence，ContentSafetyPolicyRegistry 取各字段最严格值、验证 toolchain/platform 后生成一个 profile，消费者不能直接改文件或各建 profile。未登记/过期 policy fail-closed，不允许 renderer 或远程 flag 覆盖。
 - 正式桌面 sidecar 必须有每次启动生成的鉴权会话；不能仅依赖 loopback 或“ID 难猜”。
 
 ### 4.2 多窗口和单写者
@@ -428,10 +431,12 @@ migration_running
 
 1. GPT Image 2 / Seedream 当前账号配额、429、Retry-After 和真实并发；
 2. 美国服务器反代、下载和结果查询的实际 300 秒媒体 deadline；
-3. DeepSeek 实际 model ID 与 context window；
-4. Windows 签名、macOS 签名/公证和真实更新安装；
-5. BOSS 当前页面结构、登录态和真实发送回读；
-6. Chrome Web Store 正式 extension ID、审核发布、真实安装/升级和与 Native Messaging host 的版本握手。
+3. DeepSeek 实际 model ID、context window、当前账号 rate/token/concurrency limit、429/Retry-After 和长上下文实际吞吐；
+4. MiMo 当前账号视觉请求并发、输入图片/字节限制、429/Retry-After 和实际吞吐；
+5. Fun-ASR 当前账号并发、单音频大小/时长限制、队列/429/Retry-After 和实际吞吐；
+6. Windows 签名、macOS 签名/公证和真实更新安装；
+7. BOSS 当前页面结构、登录态和真实发送回读；
+8. Chrome Web Store 正式 extension ID、审核发布、真实安装/升级和与 Native Messaging host 的版本握手。
 
 未验证时使用模块规定的 fail-closed 结果，并在交接记录中明确写“未做”，不得把静态代码存在写成真实成功。
 
@@ -499,7 +504,7 @@ Public ingress/TLS
 9. Gateway、Relay、public ingress、路径 rewrite、TLS、secret 注入和 service unit 的交付责任固定：模块 04 冻结 gateway/ingress/service identity 与非图片 provider 部署 manifest；模块 14 冻结 relay/图片路由、容量、owner、secret 与 service unit manifest；模块 24 只消费并核对其版本/hash，不临时补建远程拓扑。开发模式可使用 Vite renderer 和本地构建 sidecar，但拓扑、鉴权、owner 和协议必须与 packaged 一致。
 10. 所有 PDF/DOC/Office/HTML/图片/音视频/压缩包的检查、文本抽取、缩略图、probe 和转码都在一次性 extractor child 中执行，不在 Main/renderer/agent-worker 进程直接解析。child 只取得只读输入 FD 和空 owner-scoped 输出目录，无网络、无产品 secret/local capability、无 workspace 写权限、无 shell/再 spawn，使用最小环境与 OS 资源限制；平台无法证明隔离时返回 `SANDBOX_UNAVAILABLE`。
 11. 网页 Preview 使用独立 session/partition 和 sandboxed WebContents：`nodeIntegration=false`、`contextIsolation=true`、sandbox 开启。selection picker 完全驻留 isolated preload/world，不向 page world 暴露 `contextBridge` API、DOM event、capability 或可枚举产品 IPC；只有可信 picker overlay 捕获的 `event.isTrusted` 用户手势才能发起。capability 绑定 webContents/document/navigation/frame/task/workspace revision，单次消费且短期；页面只提供被读取的受限 DOM 数据，不能主动调用 bridge。页面自身脚本只能在隔离分区内运行并访问用户明确启动的本机开发 origin；wrapper CSP/permission policy 拒绝插件/object、混合内容、未登记远程 origin 和权限升级。新窗口、外部导航、下载、权限请求、自定义协议、`file:`/`javascript:`/`data:` 顶层导航全部拒绝或交给系统浏览器；页面不能访问 Electron/clipboard/文件系统/产品 IPC。
-12. `content-safety-profile.json` 由模块 01 冻结 schema、模块 03执行，至少包含 magic-byte allowlist、源/解压/entry/嵌套/页/帧/像素/字符上限、CPU/wall time、memory、temp/output bytes。压缩内容不递归执行；宏、脚本、可执行/未知二进制只显示元数据。profile 缺失/过期固定 `CONTENT_PROFILE_REQUIRED`；畸形、超限或 extractor 崩溃只隔离该输入并清理临时目录。FFmpeg/ffprobe/文档解析器不能绕过 Scheduler 或这些上限。
+12. `ContentSafetyPolicyRegistry` 是 `content-safety-profile.json` 的唯一写入者，由模块 03 随 Local Product Server 实现；模块 01 只冻结 schema，07/10/15/16 只提交需求/benchmark evidence。Registry 对每个平台/toolchain 取所有登记字段最严格值并生成单一 profile，至少包含 magic-byte allowlist、源/解压/entry/嵌套/页/帧/像素/字符上限、CPU/wall time、memory、temp/output bytes。压缩内容不递归执行；宏、脚本、可执行/未知二进制只显示元数据。profile 缺失/过期固定 `CONTENT_PROFILE_REQUIRED`；畸形、超限或 extractor 崩溃只隔离该输入并清理临时目录。FFmpeg/ffprobe/文档解析器不能绕过 Scheduler 或这些上限。
 
 ### 4.9 D4 前纵向验证闸
 
@@ -766,7 +771,8 @@ ProductTaskService 唯一写 `ProductTask`、`TaskRun`、`ThreadEntry`、`TaskEv
 - archive/restore/delete fixture 覆盖 active run、queue、Schedule/Recruiting/Fork/worktree 强引用阻塞，删除中崩溃、delete_failed 重试、重复 delete 和 tombstone TTL；Workspace/源文件/共享附件始终存在。
 - delete 两阶段 fixture 覆盖附件/正文/checkpoint 已进可恢复隔离后取消能完整还原；`purge_committed` 前无物理删除，之后任何失败只可重试，不能恢复成缺附件的 archived task。
 - Workspace fixture 覆盖同卷 rename 自动识别后用户确认 relocate、跨卷 copy/root replaced/relink、只读/断盘、两窗口 revision conflict；旧引用不能落到新根。
-- TaskAttachment 与 submit 同一原子边界：任一未 ready 或 binding 写失败均无 ThreadEntry/TaskRun；重复 operation 不产生第二 binding。
+- TaskAttachment 与 submit 同一原子边界：任一未 ready 或 binding/owner transfer 写失败均无 ThreadEntry/TaskRun；重复 operation 不产生第二 binding。
+- 首页尚无 task 时创建/恢复 installation-scoped ComposerDraft；伪造/过期/consumed draft ID、跨 installation 和两窗口同 revision submit 均安全拒绝/冲突。首次 accepted 将 draft→ProductTask 和全部附件 owner/binding 原子转移；任一失败原 draft/附件完整保留，成功把 draft 标 consumed，重放返回同一 task/run。
 
 ### 交接物
 
@@ -804,7 +810,7 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 7. 建立 desktop-host `ProductResourceScheduler` 基础：typed claim、持久队列、priority/owner fairness、resource profile、multi-resource atomic reservation、lease/fencing、byte accounting、cancel/drain/snapshot。所有 worker start 和 schedule dispatch 先取得 scheduler receipt；本模块迁移现有 GUI/定时 worker 消费者，不保留 fire-and-forget spawn。
 8. 输出 worker protocol/capability range 到 component compatibility registry；worker hello/ready 必须协商 accepted range/build/capabilities，不兼容时不 claim TaskRun。
 9. 输出交给模块 04 的 worker 环境 manifest；模型环境不得由不同 launcher 各自拼接。
-10. Scheduler 注册 `content.inspect/content.extract/content.thumbnail/storage.attachment-temp`，按 content-safety/attachment policy 对一次性 extractor、staging 和 orphan sweeper 做 multi-resource claim、lease/fencing、取消与字节核算；无 profile 不解析。
+10. Local Product Server 内建立唯一 `ContentSafetyPolicyRegistry` 并生成 `content-safety-profile.json`；Scheduler 注册 `content.inspect/content.extract/content.thumbnail/storage.attachment-temp`，按该 profile 和 attachment policy 对一次性 extractor、staging、orphan sweeper 做 multi-resource claim、lease/fencing、取消与字节核算。07/10/15/16 只能注册 requirement/evidence，不能写 profile；无有效 profile 不解析。
 
 ### 明确不改
 
@@ -958,7 +964,7 @@ provider-neutral interfaces、model/worker/component compatibility entries、Gat
 2. 主导航固定为五项；图片/视频卡直接打开工作台，经营卡进入经营页或把自然语言需求回填主 Composer。
 3. 普通首屏隐藏 project ID、Core ID、Provider、模型、MCP/Plugin、worktree 和复制 Markdown；需要文件时再选择项目文件夹。
 4. 统一产品名、窗口、通知、协议和助手自称为 BilliardBuddy；保留许可证和内部兼容符号。
-5. 任务列表保留搜索、置顶、重命名、归档、恢复和运行状态；永久删除只从归档区进入，且不删除用户项目文件。
+5. 任务列表保留搜索、置顶、重命名、归档、恢复和运行状态。archive busy/引用阻塞时保留任务并展示阻塞项与对应停止/解除入口；永久删除只从归档区进入，UI 必须逐步投影 `archived → deleting（可取消隔离）→ purge_committed（不可取消）→ deleted | delete_failed_pre_purge | delete_failed_post_purge`。第一次确认展示将隔离/保留/永不删除的对象，隔离完成后第二次确认才提交 purge；pre_purge 失败显示重试/完整取消，post_purge 失败只显示重试/诊断导出，均不隐藏任务。renderer 不自行拼 cleanup plan、改状态或隐藏失败任务，且任何阶段都不删除用户项目文件。
 6. 当前已有高级能力以渐进展示保留，不因简化 UI 删除 Core 能力。
 7. 完成键盘、读屏、长中文/英文、1280×720、200% 缩放和深浅主题检查。
 
@@ -972,6 +978,7 @@ provider-neutral interfaces、model/worker/component compatibility entries、Gat
 - 新用户不选模型/API Key/目录即可进入首页；点击具体任务后才申请所需能力。
 - 缩放到 200% 时输入、停止、审批和错误恢复按钮可达；空间不足按第 4 栏→第 3 栏顺序收起。
 - 正式 bundle 不引用 HTML 原型，且不存在第二 renderer/旧壳开关。
+- task lifecycle UI fixture 覆盖运行中 archive 拒绝、Schedule/Recruiting/Fork/worktree 引用阻塞、第一次确认后可取消完整恢复、第二次 `purge_committed` 后按钮不可取消、delete_failed 不消失且可重试/导出诊断、deleted tombstone 跨窗口同步；UI 不乐观删除或误删 Workspace。
 - 普通导航和设置中不出现 Claude/CC-Haha/Provider/模型技术品牌。
 
 ### 交接物
@@ -1918,7 +1925,7 @@ recovery_required
 3. 最终安装包仍包含模块 22 的 migration coordinator、支持矩阵登记的 legacy readers 和回滚入口。
 4. 所有 `REQUIRED_FOR_RELEASE` 外部项已绑定同一 candidate 真实验证；未验证能力只能在候选 policy 预先标为 `OUT_OF_SCOPE_DISABLED` 且包内入口确实禁用，否则 NO_GO。
 5. 有效 `USER_ACCEPTED` receipt、全部 candidate/gate/matrix/checklist/artifact digest 和正式 ReleaseDecision=GO 均可验证；正式 feed 只包含该候选。
-6. 最终 release-record-only accepted commit body 包含：`Release-Record-Only: true`、Module-Status、模块/Work Unit SHA、模块 24 的 source commit/tree、candidate/release decision ID、包清单、compatibility/migration 支持版本、resource profile、D1—D5、验证摘要和禁用范围；该提交只能索引已存在的受控机器证据，不得修改候选输入、正式 feed 或 receipt。机器细节保存在受控 manifest/receipt/build provenance 中，不另建 Markdown 报告。
+6. 最终 release-record-only accepted commit body 包含：`Release-Record-Only: true`、Module-Status、此前模块/Work Unit SHA、当前模块 25 Work Unit ID（当前 release-record commit SHA 提交后从 Git 读取，不写自身 body）、模块 24 的 source commit/tree、candidate/release decision ID、包清单、compatibility/migration 支持版本、resource profile、D1—D5、验证摘要和禁用范围；该提交只能索引已存在的受控机器证据，不得修改候选输入、正式 feed 或 receipt。提交后 lease/受控发布索引按实际 SHA 补齐，不创建追写 commit；机器细节保存在 manifest/receipt/build provenance 中，不另建 Markdown 报告。
 
 ### 最终代码形态（逻辑职责，不是强制目录迁移）
 
@@ -1942,7 +1949,7 @@ BilliardBuddy Electron GUI
 
 ### 交接物
 
-最终 release-record-only accepted commit body、ReleaseDecision、USER_ACCEPTED receipt、candidate/provenance/gate/checklist/component matrix digest、01—24 机器证据索引、模块/Work Unit SHA、包清单、migration/resource profile、D1—D5 和正式 feed manifest；commit body 必须绑定模块 24 的 source commit/tree 且不改变 candidate，不新建最终报告 Markdown。
+最终 release-record-only accepted commit body、ReleaseDecision、USER_ACCEPTED receipt、candidate/provenance/gate/checklist/component matrix digest、01—24 机器证据索引、此前模块/Work Unit SHA 与当前 Work Unit ID、包清单、migration/resource profile、D1—D5 和正式 feed manifest；commit body 必须绑定模块 24 的 source commit/tree 且不改变 candidate，当前提交 SHA 由提交后受控索引补齐，不新建最终报告 Markdown或追写 commit。
 ---
 
 # 第四部分：后续删除触发条件
