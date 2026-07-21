@@ -108,9 +108,11 @@ Base-Commit SHA：
 ```text
 BB-Task: BB-07A
 Module: 07
+Module-Status: active | blocked | complete
 Spec-Commit: <施工合同 SHA>
 Base-Commit: <开工父提交 SHA>
 Status: complete
+Lease-Recovery: none | <接管证据>
 
 Result:
 - <一句话用户结果>
@@ -145,6 +147,28 @@ Next:
 `Spec-Commit SHA` 和 `Base-Commit SHA` 是运行时值，不能预写当前提交自己的 SHA。主代理先把 Work Unit 定义提交为 Spec-Commit，派工时把该 SHA 与开工 HEAD 写入子代理任务；accepted commit body 再固化两者。若施工中合同变化，旧 Work Unit 立即失效，主代理必须更新登记并创建新的 Spec-Commit 后重新派发。
 
 当前 25 张模块卡是模块级 Work Unit registry 的初始定义：每个模块在首次开工前，由主代理依据真实消费者图把该模块卡细化为一个或多个 `BB-<模块号><序号>` 条目并提交。简单模块登记 `A` 一个 Work Unit；复杂模块必须先完整登记 A/B/C… 的顺序和边界，不能做完一半后才用聊天补编号。文档准备提交本身属于 `SPEC` 变更，不冒充模块 01 产品 Work Unit。
+
+### 0.8 一个主代理窗口负责一个模块
+
+- `[HARD]` 一个模块从首次派工到模块完成，只能有一个主代理窗口作为 Module Owner。该窗口负责登记和依次完成本模块全部 Work Unit、派子代理、修合同、审查、验证和提交；不得让两个主代理窗口同时负责同一模块。
+- 简单模块可以只有一个 Work Unit；复杂模块可以在同一主代理窗口内形成多个串行 accepted commit。上下文压缩不改变 Module Owner；窗口意外终止时，新的恢复窗口只能按第 0.9 节接管同一模块，不能另开平行实现。
+- 模块状态固定为 `planned → active → blocked | ready_for_completion → complete`。`blocked` 必须立即写入 lease，包含阻塞原因、复现证据和恢复条件；若需要跨窗口接管，主代理还必须修订对应 Work Unit 登记并创建 Spec-Commit 记录阻塞，但不得提交部分产品实现或伪造 accepted commit。最近一个已完成 Work Unit 的 accepted commit 可预先写下一依赖导致的 `Module-Status: blocked`；无法预知的中途阻塞不追改历史 commit。
+- 模块只有同时满足以下条件才成为 `complete`：所有登记 Work Unit 均有 accepted commit；模块卡全部 Oracle 与模块级纵向测试通过；交接物已进入 commit body/机器证据；工作树干净；没有未处理合同冲突；最后一个 accepted commit body 写入 `Module-Status: complete`、本模块全部 Work Unit SHA、Checks、Evidence、Known-Risks、External-Verification 和下一模块启动条件。
+- 模块完成不创建空提交或额外 Markdown 报告。若最后一个 Work Unit 提交时尚不能满足模块完成条件，保持 `Module-Status: active|blocked`，通过原模块 repair Work Unit 补齐后，由该 repair commit 标记 complete。
+
+### 0.9 本地 main 施工 lease、HEAD 与脏工作树
+
+本地 `main` 是唯一施工线。每个 Module Owner 开工前必须以原子独占方式创建 `.git/billiardbuddy-construction-lease.json`；该文件不提交，字段固定为：`version/module_id/current_work_unit/window_id/active_writer_ids/base_commit/spec_commit/accepted_head/status/blocked_target_module/blocked_reason/acquired_at/heartbeat_at/preexisting_status`。每次启动/结束写入型子代理都必须原子更新 `active_writer_ids`；非 blocked 状态的 `blocked_target_module/blocked_reason` 固定为 null。
+
+1. 取得 lease 前必须证明当前分支是 `main`、不存在其他 active lease，并记录 `git status --porcelain=v2 --untracked-files=all`。正常新模块只允许从干净工作树启动；发现用户修改、其他任务修改或来源不明文件时固定 `NO_START`，不得 stash、reset、clean、覆盖或顺手提交。
+2. 新 Work Unit 派工瞬间必须满足 `HEAD == Base-Commit == lease.accepted_head`，且 `Spec-Commit` 是该 HEAD 可达的最新适用合同。任一不等立即停止，先由主代理解释新增提交/合同变化并更新 lease；不得让子代理在漂移基线上继续。
+3. 子代理写入前后都检查实际修改路径。所有 diff 必须属于当前 Work Unit 允许范围；出现范围外修改立即阻塞，不能靠提交时排除来掩盖并发写入。
+4. 每个 accepted commit 后，主代理确认工作树干净，再把 lease 的 `accepted_head/base_commit/current_work_unit/heartbeat_at` 原子更新到新 HEAD。模块 complete 后只在工作树干净且 HEAD 等于最后 accepted commit 时删除 lease。
+5. 窗口异常退出留下 dirty tree 时，恢复窗口只能接管原模块：读取 lease、确认原 holder 已不存在、HEAD 等于 lease.accepted_head、diff 全部落在 current Work Unit 允许路径并通过补丁审查，然后写入新 `window_id`。任一项不能证明则 `NO_START`，不得猜测归属或自动清理。
+6. 若 accepted commit 已创建但窗口在推进 lease 前退出，恢复窗口只能走 `committed_not_advanced` 分支：确认旧 holder 已不存在、工作树干净、`lease.accepted_head` 是 `HEAD` 祖先，且从该值到 HEAD 恰好一个提交；该提交的 BB-Task、Module、Spec-Commit、Base-Commit 与 lease/current Work Unit 全匹配并通过独立审查。满足后原子把 `accepted_head/base_commit` 推进到 HEAD；多提交、字段不符或范围越界一律 `NO_START`。
+7. 若窗口在 `status=blocked`、工作树干净且 lease 已推进后退出，只允许 `clean_blocked_recovery`：恢复窗口证明旧 holder 已不存在、`HEAD == lease.accepted_head`、`active_writer_ids` 为空且经进程/任务清单确认没有仍运行的写入子代理；随后以原子 compare-and-swap 只接管同一 `module_id` 并更新 `window_id/heartbeat_at`。不得跨模块接管、直接删除 lease 或把 blocked 改成 complete；接管后的 Module Owner 才能按下一条执行 handoff。
+8. active lease 不因时间到期自动抢占；heartbeat 只用于诊断，不能单独证明 owner 已死亡。若旧窗口或任一写入子代理可能仍在运行，新窗口不得写入。接管证据和 lease 的 `blocked/recovery` 变化进入下一 accepted commit body 的 `Lease-Recovery`；若最终未形成 accepted 产品提交，则进入后续 Spec-Commit/恢复登记，不能为记录 lease 状态创建空产品提交。
+9. 模块 `blocked` 且必须让所属 repair 模块或模块 24 新候选先施工时，只允许受控 `blocked_handoff`：当前 owner 停止全部子代理并确认 `active_writer_ids=[]`，工作树干净，HEAD 等于 lease.accepted_head；主代理在本 Markdown 登记目标 repair/new-candidate Work Unit、阻塞证据与返回条件并创建 Spec-Commit，再把该控制提交及目标模块写入 lease。复核 holder 已退出且 HEAD 等于该 Spec-Commit 后才可删除旧 lease，由目标 Module Owner 从该 HEAD 申请新 lease。禁止直接删除/覆盖 lease；原模块恢复时必须重新申请 lease并消费 handoff 记录。
 
 ---
 
@@ -184,6 +208,11 @@ Next:
 | `DEC-028` | `[HARD]` VoiceService 是转写真相源 | `VoiceOperation`、`Transcript`、不可变 `TranscriptRevision` 由 VoiceService 唯一写入；Composer 与视频 Evidence 只保存同一个 `transcript_revision_id` 的受控 binding，不复制转写正文成为第二真相源 |
 | `DEC-029` | `[HARD]` 项目指令冲突顺序固定但不重写自由文本 | 系统/工具/权限/安全合同永远优先；项目指令层内先按更近目录覆盖祖先目录，再按同目录 `BilliardBuddy.md > AGENTS.md > Claude 兼容源` 解释直接冲突。非冲突内容累加；resolver 保留来源和全部入选文本，不假装能对自由 Markdown 做结构化 merge |
 | `DEC-030` | `[HARD]` D4 前必须通过未删除版本纵向闸 | 模块 22 accepted 后，模块 23 的首个 Work Unit 只能运行 `G22_PRE_D4_VERTICAL_GOLDEN_GATE`，不得删除代码；核心新链路在 legacy execution fail-fast 条件下通过后才允许首行 D4 |
+| `DEC-031` | `[HARD]` 一个模块只有一个 Module Owner 窗口 | 同一主代理窗口从模块 active 持有到 complete；复杂模块在同一窗口串行完成多个 Work Unit；异常恢复只能持 lease 接管，不允许平行模块实现 |
+| `DEC-032` | `[HARD]` 本地 main 施工必须持独占 lease | 开工时 `HEAD == Base-Commit == lease.accepted_head` 且工作树归属明确；脏树、HEAD 漂移、active lease 或无法证明的恢复一律 `NO_START`，禁止 stash/reset/clean 猜测处理 |
+| `DEC-033` | `[HARD]` 所有进程/部署组件按单一兼容矩阵握手 | `component-compatibility-matrix.json` 是 Main、renderer、server、worker、gateway、relay、extension、native-host、provider contract 和 migration capability 的唯一版本兼容源；未登记或不兼容 fail-closed，不靠“版本接近”猜测 |
+| `DEC-034` | `[HARD]` 所有重资源统一由 ProductResourceScheduler 准入 | worker、scheduled run、FFmpeg/ffprobe、ASR、视觉、图片生成、Browser batch、迁移与更新闸都先取得 typed permit；模块不得各建无关并发池或绕过全局内存/进程/字节预算 |
+| `DEC-035` | `[HARD]` 发布默认 NO_GO 且必须 USER_ACCEPTED | 机器门禁全部通过只能形成冻结 Release Candidate；只有用户本人对同一 candidate identity 完成人工验收并写入绑定 hash 的 `USER_ACCEPTED` receipt，ReleaseDecision 才能从 `NO_GO` 变为 `GO`；任何候选变化立即失效 |
 
 ## 2. 术语、实体和唯一身份
 
@@ -427,6 +456,77 @@ Public ingress/TLS
 
 Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5、安装包、签名或真实外部验证。每个 D4 Work Unit 后必须重跑受影响旅程；模块 24/25 仍分别执行 packaged/final 黄金旅程。证据进入机器可读 manifest 和测试输出，不新建 Markdown 报告。
 
+### 4.10 组件版本兼容矩阵与握手
+
+`component-compatibility-matrix.json` 是唯一兼容事实源，由构建/部署流水线从各组件 registry 生成，禁止手写平行版本。最小字段固定为：
+
+```text
+matrix_schema_version
+matrix_revision
+release_id
+candidate_id
+minimum_supported_release
+components[]:
+  component_name
+  artifact_version
+  build_id
+  platform / arch
+  protocols[{name, supported_ranges[{major, min_minor, max_minor}]}]
+  capabilities[] / required_capabilities[]
+  consumes[] / produces[]
+  schemas[{storage_id, current, min_readable, min_writable}]
+model_catalog_revision
+rollout{accepts_release_range, rollback_floor, retire_after}
+```
+
+`artifact_version`、不可变 `build_id`、协议版本、持久化 schema、capability contract 和 model catalog 必须分别编号，不能用一个“版本号”代替。
+
+1. Main 在加载 renderer 前校验安装包内 Main/renderer/sidecar 的 release/build/hash 属于同一 candidate；随后调用带 local capability 的 `/health/compatibility`。每个 protocol offer 必须按 major 分列完整 minor 闭区间；双方求完整版本集合交集，按确定规则选择最高 `(major, minor)` tuple，并在握手 receipt 回传 selected version。交集为空、range 非法/重叠歧义、缺字段、未知 major、required capabilities 不全或 build/candidate 不匹配，固定显示 `COMPONENT_INCOMPATIBLE`，Main 不向 renderer 开放 server URL/产品 IPC，也不继续空壳 UI。fixture 必须覆盖同 major minor 上限不相交、跨 major、缺字段和未知 major。
+2. Renderer REST/WS 在业务消息前提交自身 `renderer-api/product-task-ws` offer，server 对连接返回 selected protocol/capabilities 与兼容 receipt；拒绝连接时不发送业务数据、不回退旧 endpoint。server→worker 的 hello/ready、Extension→native-host→bridge 的 hello、Gateway/Relay service handshake 使用同一逐-major 完整交集和确定性 selected-version 算法。
+3. Gateway/Relay 启动必须带 `release_id/build_id/matrix_revision`；Gateway 先与 Relay 协商 `relay-image-task`，不兼容时图片能力为 unavailable 且不提交任务。sidecar 在创建 CoreSession 前取得 Gateway capability snapshot，含 gateway API、model catalog revision、每个模型 modality/tool/window/status；未知模型或能力不符返回 `UNSUPPORTED_MODEL`，绝不默认 Qwen或旧 provider。
+4. Extension 在任何 tool request 前发送 extension version/build/protocol range/capabilities；native-host 只接受矩阵登记且协议相交的 extension ID/build。Extension 作为外部商店伴随组件若尚无受控 artifact/hash，矩阵把 BrowserCapability 标 unsupported；不能假定商店最新版兼容。
+5. `legacy-support-matrix.json` 是数据迁移子矩阵，并由 component matrix 引用其 revision/hash。只执行显式 `from → to` 幂等迁移；future schema、downgrade 或不可读数据 fail-closed 并保留原始快照，不初始化空数据。writer 提升前必须存在兼容 reader。
+6. 远程滚动顺序固定：先发布同时接受 N-1/N 的 Gateway/Relay reader，再发布 Desktop N；观测窗口结束且仍有回滚路径后才能提高 minimum supported release。回滚只能到 `rollback_floor` 以上且可读取当前 schema 的版本，否则停止写入并前进修复。
+7. 模块 01 定义矩阵 schema；02/03/04/12/15/18/22 分别登记领域协议、worker/provider、数据和浏览器条目；14登记 Relay；24生成候选矩阵并验证所有 artifact/deployment manifest hash；25验证运行时握手。矩阵任一 required edge 没有双向 fixture/包内握手证据，候选 `NO_GO`。
+
+### 4.11 ProductResourceScheduler 全局资源合同
+
+所有会排队、启动、恢复、取消或独占重资源的工作，必须先调用统一合同 `ProductResourceScheduler.submit(claim)`；Cron、Media、Browser、worker、迁移和更新不得各自保留第二套无关调度真相。统一是指资源 key、claim、状态码、公平、预算、lease/fencing 和快照一致；不是错误地跨机器共享一个内存对象。权威 scope 固定为 `desktop-host`、`gateway-account`、`relay-account`，跨 scope 只传幂等 claim/receipt。
+
+资源 key 至少包括：
+
+```text
+agent.worker / agent.turn / schedule.dispatch
+browser.session / browser.batch
+media.ffprobe / media.ffmpeg.encode / media.local-io
+gateway.ingress-bytes / gateway.mimo.vision / gateway.funasr
+relay.image.openai / relay.image.seedream / relay.input-bytes / relay.blob-disk
+storage.migration / app.update
+```
+
+1. Claim 固定包含 job/owner/idempotency/scope、全部资源及单位、memory/input/temp/output byte budget、priority、deadline、cancel mode、resume policy 和 profile revision。多资源必须按稳定 key 排序做全有或全无的原子预留；拿不到全部就不占任何 permit。队列只存元数据和持久 blob reference，不存图片/音视频正文。
+2. 优先级固定 `interactive > recovery > scheduled > batch/prefetch`；同级按可信 owner 轮转，owner 内 FIFO，使用可注入单调时钟、全局 enqueue sequence 和固定 aging 防饥饿。owner 分别来自 installation+task/run、gateway auth+installation、Gateway 派生 relay owner，客户端 ID 不赋权。
+3. 每个 profile 固定 `maxActive/maxQueued/maxActivePerOwner/maxQueuedPerOwner` 及字节预算。没有已验证 profile 或 profile 过期/toolchain 不匹配时，重资源固定 `PROFILE_REQUIRED`，不猜并发。单例生命周期锁可固定 active=1/queued=0；本机 profile 只能由内存/磁盘/CPU/GPU和受控 benchmark 生成，上游模型/付费配额必须来自运维配置与真实账号证据。
+4. 在读取/解码每个 chunk 前预留 ingress bytes；memory、input、temp disk、output 分开记账。完成、取消、超时、崩溃和 lease 失效都必须恰好释放一次。queued 可直接取消；running 进入 cancelling 并传播 AbortSignal；已提交付费上游且取消结果不明固定 outcome_unknown。
+5. Scheduler lease 带 owner、process generation、heartbeat、expiry 和 fencing token；状态写入必须验证 token，旧进程恢复后不能覆盖新 owner。计划任务每个 occurrence 有稳定 ID 并原子 claim，任何重启/回拨/多 tick 至多执行一次。
+6. 休眠先停止 dispatch 并持久 checkpoint/lease；唤醒按 generation 恢复，只有幂等且未进入未知付费阶段的 job 可自动继续。迁移和更新先进入 `draining → checkpoint/cancel → quiesced`，再申请独占 lifecycle permit；截止时间内不静止则 blocked，不能直接 kill sidecar 安装。
+7. 快照统一输出 active/queued/bytes/oldest wait/owner rejects/profile revision/lease owner，以及 `ready/degraded/overloaded/draining/maintenance` 和稳定原因码：concurrency、queue、bytes、owner quota、profile missing、maintenance、upstream unavailable。UI、API、Gateway 和 Relay 使用同一产品枚举。
+8. 模块 03 建 desktop scheduler 基础和 worker claim；04 建 Gateway account executor，并在模块 13 前建立 Relay account 的图片付费任务准入基础；12/13/14/15/16/17/18 迁移媒体、图片、语音、计划和浏览器消费者；14 只强化 Relay 五分钟链路、容量 profile 与部署可靠性，不再后置创建 scheduler 真相；22/24 只申请 migration/update lifecycle claim。旧私有队列在模块 23 D4 前消费者归零。
+9. 验收使用 fake clock、可控 executor 和双进程 fixture，证明所有上限不越界、多资源无死锁、取消/超时/重启无泄漏或双释放、两个 scheduler 不重复 occurrence/付费任务、owner 公平、无 profile fail-closed，以及 sleep/update/migration 对运行 worker、FFmpeg和 outcome_unknown 的正确处理。不得 mock 掉 Scheduler 本身。
+
+### 4.12 Release Candidate、Go/No-Go 与 USER_ACCEPTED
+
+发布初始且默认状态永远为 `NO_GO`。Tag、`workflow_dispatch`、聊天确认、实现者自述、环境变量或单一布尔值都不是发布授权。
+
+1. 模块 24 只能构建不可变候选，不得更新正式 feed。候选身份固定为 `candidate_id + source_commit_sha + source_tree_sha + lockfile_sha256 + build-input/package-manifest/gate-policy/release-checklist/component-matrix digest + sorted artifacts[{platform,arch,filename,sha256}] + build run/provenance digest`；两个平台 artifact 的有序集合共同定义一个 candidate，不能把每个平台误建成同 ID 的不同身份。`source_commit_sha/source_tree_sha` 固定为模块 24 构建候选时的已接受源码基线；候选形成后、GO 前，任一候选输入、源码树、字段或重新构建产物变化都产生新 candidate，旧 gate 和验收失效。gate report 是对该身份执行检查后的不可变结果，不参与生成 candidate ID，但其 digest 必须进入 USER_ACCEPTED receipt；gate/checklist 结果变化要求重跑全部关联检查并生成新 gate report，不能修改旧 report。
+2. 版本化 `release-checklist.json` 每项包含 check_id、module、required、platform、candidate input、确定命令/人工步骤、PASS 条件、证据路径和 owner（machine/user）。结果仅 `PASS|FAIL|NOT_RUN|UNVERIFIED`；任何 required 项不是 PASS、证据 hash 不符、已知阻断测试、兼容矩阵 required edge 失败或 release policy 缺失，ReleaseDecision 固定 `NO_GO`。
+3. 外部项在候选创建前由版本化 policy 分类：`REQUIRED_FOR_RELEASE` 或 `OUT_OF_SCOPE_DISABLED`。前者未真实验证即 NO_GO；后者必须证明该候选已编译/配置禁用对应入口并向用户明确，不允许候选生成后临时豁免。`NOT_VERIFIED_EXTERNALLY` 不等于 PASS。
+4. 机器门禁全 PASS 只得到 `GO_READY_FOR_USER`。模块 25 向用户展示同一 candidate 的安装包、双平台核心旅程、视觉/交互、迁移、性能、已禁用范围和风险清单；用户拒绝产生 `USER_REJECTED` 并终结该 candidate，不能靠重跑局部检查复活。
+5. `USER_ACCEPTED` 是受保护发布环境写入的不可变 receipt，不是聊天文本。最小字段：schema/acceptance ID、decision、完整 candidate identity/digest、checklist/gate report/component matrix digest、各人工 check 的 `PASS|FAIL|NOT_RUN|UNVERIFIED` 与证据、被授权用户 identity/role/auth source、accepted_at/expires_at、签名/受保护 provenance。只有所有 required machine/user check 均为 PASS 时 decision 才可为 USER_ACCEPTED。只有用户本人可触发，CI/主代理/发布 workflow 不能自行创建或伪造。
+6. 新候选源码/树/lockfile/build script/artifact/hash/checklist/policy/matrix/gate result 任一变化、receipt 到期或受控撤销，立即使 USER_ACCEPTED 失效并回到 NO_GO。只追加发布审计记录、不改变 candidate 输入与产物的 release-record commit 不重定义 candidate，但必须绑定已经验证的 `source_commit_sha/source_tree_sha`，且不得进入该候选安装包；撤销记录 actor/time/reason。USER_REJECTED 必须创建新 candidate 才能重试。
+7. 只有 Release Orchestrator 在正式发布前重新验证：candidate 全 hash 未变、全部 required gate PASS、receipt 有效且 decision=USER_ACCEPTED，才可写 `GO` 并原子切换正式 manifest/feed。发布 workflow 只能读取证明，不能生成证明或通过参数覆盖失败。上传前再次计算 artifact SHA-256。
+8. 模块 24 负责 candidate、provenance、component matrix、机器 gate 和 `NO_GO|GO_READY_FOR_USER`，不能发布；模块 25 负责人工验收编排、receipt 验证、唯一 ReleaseDecision 和正式 feed 切换。当前 tag/manual 直发路径由 `BB-23L` 先完成 D1/D2 consumer 迁移、再 D4 删除旧脚本/权限；模块 24/25 必须消费该 Manifest 的 D4/D5 证据并验证无旁路。
+
 ---
 
 # 第二部分：模块依赖与交付阶段
@@ -438,7 +538,7 @@ Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5�
   01 单一基线
   01 → 02 ProductTask 身份、revision 与事件合同
   02 → 03 内部 agent-worker
-  03 → 04 模型与上下文合同
+  03 → 04 模型、Gateway 与 Relay 图片准入基础
   01 + 03 + 04 → 05 项目指令与记忆
 
 阶段 B：恢复目标任务前端
@@ -451,8 +551,8 @@ Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5�
 
 阶段 C：建立独立创作与业务工作台
   01 + 02 + 04 → 12 媒体领域基础
-  04 + 06 + 12 → 13 图片工作台
-  12 + 13 → 14 图片可靠性、容量与五分钟链路
+  04 + 06 + 12 → 13 图片工作台（消费模块 04 的 Relay 图片准入基础）
+  04 + 12 + 13 → 14 图片可靠性、容量与五分钟链路
   04 + 07 + 12 → 15 Fun-ASR
   04 + 06 + 12 + 14 + 15 → 16 视频五阶段工作台
   02 + 03 + 07 → 17 已安排与通知
@@ -536,7 +636,8 @@ Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5�
 2. 固定历史参考读取命令和允许提取的文件类型；不 checkout 旧提交开发。
 3. 标记 HTML 为非构建视觉/信息架构参考资产，确认不进入 Electron `files`、Vite entry、测试运行时或发布包；其脚本、假数据和内联 CSS 不得成为生产实现来源。
 4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
-5. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
+5. 冻结 `component-compatibility-matrix.json` 的 schema、组件命名、protocol range 判定算法和 required edge 清单；模块 01 只定义结构与生成入口，不猜具体后续协议版本。冻结 `release-checklist.json` 的 check schema 和 machine/user owner 枚举，交给模块 24/25 填充候选证据。
+6. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
 
 ### 明确不改
 
@@ -551,10 +652,11 @@ Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5�
 | HTML 原型 | 检查 build/package inputs | 不被正式构建引用 |
 | 删除候选 | consumer graph | 每项有迁移模块、物理删除模块和保留 reader 说明 |
 | 旧 schema 支持 | reader + immutable fixture + 正向/幂等测试 | 只有 `legacy-support-matrix.json` 登记项可称“受支持”；ProductTask v2 等 provisional 项不得进入迁移承诺 |
+| 组件兼容/发布检查 schema | 生成器 + schema fixture | artifact/build/protocol/schema/capability 分开；required edge 与 check owner 可机器校验，不含手写平行版本 |
 
 ### 交接物
 
-`single-product-baseline.json` 和 `legacy-support-matrix.json`（或等价机器可读 manifest）保存入口、参考路径、消费者图、删除候选与开工前冻结的旧 schema 支持范围；文字说明进入 accepted commit body，不新建 Markdown 报告。
+`single-product-baseline.json`、`legacy-support-matrix.json`、`component-compatibility-matrix` schema 和 `release-checklist` schema（或等价机器可读 manifest）保存入口、消费者图、支持范围与版本/发布检查结构；文字说明进入 accepted commit body，不新建 Markdown 报告。
 
 ---
 
@@ -638,7 +740,9 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 4. 实现背压、最大帧大小、未知消息拒绝、ready timeout、有界重启和优雅退出。
 5. ConversationService 与所有当前 GUI、定时任务消费者必须在本模块切换到 worker protocol adapter；公共 CLI 路径只作为待删除源码保留到模块 23。
 6. worker 崩溃不得自动重复用户消息；ProductTask 根据 durable run 状态显示失败或恢复查询。
-7. 输出交给模块 04 的 worker 环境 manifest；模型环境不得由不同 launcher 各自拼接。
+7. 建立 desktop-host `ProductResourceScheduler` 基础：typed claim、持久队列、priority/owner fairness、resource profile、multi-resource atomic reservation、lease/fencing、byte accounting、cancel/drain/snapshot。所有 worker start 和 schedule dispatch 先取得 scheduler receipt；本模块迁移现有 GUI/定时 worker 消费者，不保留 fire-and-forget spawn。
+8. 输出 worker protocol/capability range 到 component compatibility registry；worker hello/ready 必须协商 accepted range/build/capabilities，不兼容时不 claim TaskRun。
+9. 输出交给模块 04 的 worker 环境 manifest；模型环境不得由不同 launcher 各自拼接。
 
 ### 明确不改
 
@@ -650,11 +754,13 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 - stop：收到 stop 后进入 stopping，最终只有 stopped/complete 一个终态，迟到 delta 被拒绝。
 - crash before accepted：整个 submit 原子写入不存在，消息保持未受理；crash after accepted/before claim：重启投递同一 durable dispatch；重复 start 只有一个 claim，均不创建第二 run。
 - 大帧、坏 JSON、协议版本不匹配和无 ready 均形成明确 run error，不无限重启。
-- GUI/cron consumer graph 已指向 worker adapter；公共 CLI 尚未删除并在 Manifest 标记模块 23。
+- 双 scheduler/进程竞争同一 occurrence/run 时只有一个 fencing claim；资源 profile 缺失、owner/字节上限耗尽和 draining 分别返回稳定 reason code，不启动 worker。
+- fake clock 下 interactive/recovery/scheduled/batch 的优先级、owner轮转、aging、取消、超时、崩溃恢复无 permit 泄漏或饥饿。
+- GUI/cron consumer graph 已指向 worker adapter + ProductResourceScheduler；公共 CLI 尚未删除并在 Manifest 标记模块 23。
 
 ### 交接物
 
-worker protocol version、launcher 环境字段、run/CoreSession 映射和故障 fixture。
+worker protocol version、component compatibility entry、ProductResourceScheduler contract/profile/snapshot、launcher 环境字段、run/CoreSession 映射和故障 fixture。
 
 ---
 
@@ -683,6 +789,9 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 8. 只有官方/账号/实际响应证据与 desktop→worker→provider→gateway→Core 全链均支持 1M，registry 才生成 1,000,000；否则生成真实最小值。
 9. 未知或被环境变量改写为未注册 model ID 时 worker 固定拒绝 ready，ProductTask 显示“模型配置无效”；不回退打包默认、不切 Qwen/Sonnet/Anthropic。已注册 provider 运行时不可用则显式失败；视觉不可用时要求用户查看/接管；图片生成能力不可用时不创建付费 Operation；语音不可用时保留录音草稿或显示转写失败。
 10. 模块 04 必须登记并冻结远程 Gateway deployment Work Unit：仓库内受控 ingress/path rewrite、TLS termination、gateway service unit、desktop app credential 注入/轮换、provider secret 注入、health/preflight、部署 manifest version/hash 和回滚。`https://…/gw` 到 gateway `/v1/*` 的 rewrite 必须有配置与契约测试；不能把仓库外现状当证据。模块 24 只消费该 manifest。
+11. Gateway account scope 必须实现第 4.11 节 ProductResourceScheduler：ingress bytes、MiMo vision、Fun-ASR 和 provider request claim 使用统一 profile/fairness/owner/overload 枚举；删除当前互不知情的局部默认并发真相。上游配额无真实配置时 profile missing，能力 unavailable，不以代码默认值启动。
+12. 将 Gateway API、provider-proxy、model catalog、Relay 图片准入协议和各模型 capability range 登记进 component matrix；gateway/sidecar、Gateway/Relay 握手失败、catalog revision 不兼容或模型未登记时，不创建 CoreSession/上游图片提交。
+13. 在模块 13 前建立 Relay account scope 的最小完整图片准入 executor：`relay.image.openai/relay.image.seedream/relay.input-bytes/relay.blob-disk` typed claim、durable queue、owner fairness、profile、lease/fencing、幂等/unknown receipt；Gateway→Relay 使用受控 service identity。模块 13 不得绕过该前置能力执行真实图片 Operation；模块 14 只强化 deadline、容量、部署与 N-1/N 可靠性。
 
 ### 验收 Oracle
 
@@ -696,11 +805,13 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 | 长无图请求 | text body cap | 不被 vision cap 提前拒绝 |
 | 上下文证据不足 | 真实最小 window | UI/配置不得显示 1M |
 
+- Gateway 和 Relay 图片准入 scheduler 的 fake clock/双 executor fixture 证明 ingress/provider/input/blob bytes、profile/owner 上限、公平、取消、unknown 与过载状态统一；无 profile 不发上游请求，模块 13 前置图片调用不能绕过 Relay permit。
+- component matrix fixture 覆盖 Gateway N-1/N、model catalog revision、required capability、unknown model 与不兼容协议；全部 fail-closed 且不回退 Qwen。
 - Gateway deployment manifest 的 ingress `/gw` rewrite、TLS/service identity、app credential/provider secret 注入、health/preflight 与回滚 fixture 完整；缺任一项模块 04 不完成，外部服务器当前可访问不能替代。
 
 ### 交接物
 
-provider-neutral TextReasoning/VisualEvidence/ImageGeneration/SpeechTranscription interfaces、model/worker manifest、body budget、Gateway deployment manifest 与 legacy Qwen value mapping。
+provider-neutral interfaces、model/worker/component compatibility entries、Gateway resource profile/scheduler/deployment manifest、模块 13 前置 Relay 图片准入 executor/profile/receipt、body budget 与 legacy Qwen value mapping。
 
 ---
 
@@ -1037,10 +1148,12 @@ MediaProjectService 是唯一写入者；renderer 只保存 view state。正式�
 10. 只为模块 01 `legacy-support-matrix.json` 已登记的 media schema/shape 提供 `D3_LEGACY_READ_ONLY` adapter 与 crash fixture；当前最低承诺仅包含 media v1 inline `reference_images` → private Asset。新增旧版支持必须先补 immutable fixture、正向迁移、current 写回和幂等测试；adapter 只读取和标准化，不执行旧 provider、旧 workflow 或外部副作用。
 11. 实现第 3.2 节状态机和 adapter 归一；renderer 不消费 relay 原始枚举。
 12. 删除项目先停止/拒绝活动 Job，列出只会删除的应用拥有资产；失败时项目不能从列表消失。历史跨库引用的 Asset 只有在全 installation 引用计数为零且属于应用拥有时才可清理。
+13. MediaProjectService 不再维护独立 render/probe admission 真相；所有 FFprobe、FFmpeg、local I/O 和 byte-heavy MediaJob 一次声明完整 desktop-host typed claim，只有 ProductResourceScheduler receipt 后执行。Job 保存 claim/lease/fencing/profile revision；过载状态使用全局枚举。
 
 ### 验收 Oracle
 
 - 两个进程竞争同一数据根：只有一个获得 writer lock；第二个 sidecar 固定拒绝启动该数据根并返回“已有实例正在使用”，不得进入另一个读写或只读 service 模式。
+- FFprobe/FFmpeg/local-I/O 多资源 claim 在取消、超时、崩溃、双 sidecar、profile 失效下不越限、不死锁、不泄漏 permit；无 profile 不启动子进程。
 - 两窗口同 revision 写项目：一个成功，一个 conflict。
 - 崩溃在 intent、上游调用、结果下载、asset rename 各窗口重启后可对账，不重复副作用。
 - 猜 project ID、跨 MediaLibrary/Workspace、无 sidecar auth、外部路径删除全部被拒绝。
@@ -1098,7 +1211,7 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 
 ## 模块 14：图片可靠性、容量与五分钟链路
 
-**依赖：** 12、13
+**依赖：** 04、12、13
 **模块主题前缀：** `fix: harden image operations and capacity`
 
 ### 用户结果
@@ -1117,6 +1230,8 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 8. 容量报告分开写“受理能力、排队能力、provider 实际并发、完成吞吐”，禁止用“100 用户并发”一个数字概括。
 9. 冻结供模块 16 消费的跨媒体可靠性接口：deadline/timeout matrix、capacity preflight、owner/provider concurrency、total in-flight bytes 和 `outcome_unknown` 原 Operation 查询。该接口不包含图片候选数量、图片 UI 或图片 provider 路由。
 10. 模块 14 必须登记并冻结远程 Relay deployment Work Unit：仓库内受控 ingress/TLS/allowlist、relay service unit、Gateway→Relay 独立 service credential、owner 派生、provider secret/持久 DB/blob 注入、health/preflight、部署 manifest version/hash 和回滚。Relay 不接受桌面直连或客户端自报 owner；模块 24 只消费该 manifest。
+11. Relay account scope 消费模块 04 已建立的唯一 ProductResourceScheduler 图片准入基础；本模块补齐五分钟 deadline、生产容量 profile/preflight、N-1/N rolling compatibility、部署可靠性和 outcome_unknown 对账。OpenAI/Seedream、input bytes、blob disk 和付费任务继续使用同一 typed claim/durable queue/owner fairness/lease/fencing；不得新建第二 scheduler，当前独立 semaphore/数组队列必须迁成其 executor 或删除。
+12. Gateway↔Relay 的 `relay-image-task` protocol/build/capability 和 image provider profile revision 登记进 component matrix；部署遵守 N-1/N reader overlap，不兼容时 gateway 返回 `RELAY_INCOMPATIBLE` 且不创建 MediaOperation 上游提交。
 
 ### 验收 Oracle
 
@@ -1125,12 +1240,14 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 - 队列满返回 Retry-After，客户端使用有抖动有界退避，不立即重试。
 - fake upstream 在提交后断网：只出现一个付费 Operation，重启后查询同一 ID。
 - 小 Prompt 与参考图容量 fixture 不通过取消上限来“达标”。
+- Relay scheduler 双进程/fake clock fixture 证明 provider、bytes、blob disk、owner quota、取消/超时/lease fencing 无越限、重复付费、泄漏或饥饿；无账号 profile 固定 unavailable。
+- Gateway/Relay N-1/N protocol fixture 证明 reader overlap、rollback floor 和 `RELAY_INCOMPATIBLE` fail-closed。
 - Relay deployment manifest 的 ingress/TLS/allowlist、service identity、Gateway-only credential/owner、provider/DB/blob secret 注入、health/preflight 和回滚 fixture 完整；缺任一项模块 14 不完成。
 - 未读取真实线上配置时报告明确写“代码、受控部署 manifest 与配置模板已验收，线上未验证”。
 
 ### 交接物
 
-timeout matrix、capacity report、production preflight、Relay deployment manifest 和 unknown-outcome fixture。
+timeout/capacity matrix、Relay resource profile/scheduler/deployment manifest、Gateway/Relay compatibility entry、production preflight 和 unknown-outcome fixture。
 
 ---
 
@@ -1233,7 +1350,7 @@ ScheduledTaskService 写 schedule、`logical_run_id`、next occurrence 和 notif
 2. 同一时间窗口生成一个 logical run。系统休眠、关机或应用未运行导致错过时，默认写入 `missed` 记录且不补执行；只有用户对该计划显式启用 `run_once_after_wake` 时，唤醒后才为最近一个错过窗口补一次，绝不回放更早积压周期。
 3. 修改时区、系统时间或 schedule 后重新计算 next occurrence 并保留历史。
 4. 同时提供旧 schedule/logical run/notification 字段的 `D3_LEGACY_READ_ONLY` adapter 与时间 fixture给模块 22；统一迁移器不得重新推导 DST 或 missed-run 语义。
-5. 每次执行经 agent-worker，使用独立 TaskRun 与 permission snapshot；不得调用公共 CLI。
+5. 每次执行经 agent-worker，使用独立 TaskRun 与 permission snapshot；ScheduledTaskService 只持久化 occurrence/job，不自行 spawn。`schedule.dispatch + agent.worker` 必须作为一个 ProductResourceScheduler claim 原子准入；跨进程 fencing 保证每个 occurrence 至多一次，不得调用公共 CLI。
 6. 通知深链只携受控 task/logical run ID；目标不存在落安全页面。
 7. 网络错误不自动重复外部副作用；有界重试只用于读取/查询，发送动作沿原 Operation 对账。
 
@@ -1241,12 +1358,13 @@ ScheduledTaskService 写 schedule、`logical_run_id`、next occurrence 和 notif
 
 - DST 前进/回退、休眠跨多个周期、时区修改和重启 fixture：默认产生 missed 记录且不执行；显式 `run_once_after_wake` 时只补最近一个窗口；每个窗口最多一个 logical run。
 - worker 崩溃后不创建第二 run；状态可恢复。
+- 双 scheduler/多进程同时 tick 同一 occurrence 时只一个 fencing claim；profile/owner/队列过载产生统一 reason code且不 spawn。
 - 通知重复点击只打开一个安全窗口，不创建重复任务。
 - UI/日志不显示 cron 表达式、CLI 参数、provider 或 Core ID。
 
 ### 交接物
 
-schedule/logical run schema、missed-run policy、notification receipt 和时间 fixture。
+schedule/logical run/occurrence schema、ProductResourceScheduler claim/fencing、missed-run policy、notification receipt 和时间 fixture。
 
 ---
 
@@ -1281,6 +1399,7 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 12. 候选人完整简历、联系方式、截图和 HTML 只作短期受控证据，不进 AutoMem、普通日志或跨门店同步。
 13. 当前仓库没有可证明的旧 Recruiting 持久化 schema，因此模块 01 矩阵将其标为 unsupported，本模块不创建假 legacy adapter；将来发现真实旧数据时必须先更新矩阵、fixture 和 Spec-Commit。
 14. 通用桌面 Computer Use 的消费者迁完后列入模块 23 `D4_PHYSICAL_DELETE`；本模块不接 Playwright 第二生产 adapter。
+15. Browser session/batch 必须提交 desktop-host `browser.session/browser.batch` typed claim，声明 owner、页面/截图字节、deadline 和取消策略；bridge/Skill 不维护第二把业务锁。profile missing、draining 或 owner quota 耗尽时返回统一 reason code，不打开或继续页面动作。
 
 ### 验收 Oracle
 
@@ -1290,11 +1409,12 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 - 两个门店的 Plan/Batch/候选 ref 不能串用；关闭计划先停止活动 batch。
 - 正式 packaged agent-worker 的 capability discovery 能发现 `recruiting-browser` Tool；只读 fixture 按 observe→checkpoint→投影执行且不产生 approval；副作用 fixture 严格按 approval→intent persisted→action→reobserve receipt→结果写入执行，未批准/intent 写入失败/页面未回读时分别为 rejected/未执行/outcome_unknown。不能只用协议类型或直接调用 bridge 的单测代替。
 - 最终运行图无桌面坐标点击 fallback、Cookie 导出或私有 API header。
+- browser profile/owner/bytes 上限在双 session、批量任务、取消、断线和更新 draining 下不越限或泄漏；无 permit 时不调用 Extension action。
 - 真实 BOSS 发送未做时交接明确写“假页面合同已验证，真实平台未验证”。
 
 ### 交接物
 
-BrowserCapability、Chrome Extension/Native Messaging transport contract、bridge session/request routing、Recruiting schema、fake extension/page suite、数据最小留存和 Computer Use 删除清单。
+BrowserCapability、Chrome Extension/Native Messaging compatibility entry、bridge session/request routing、browser resource profile/claim、Recruiting schema、fake extension/page suite、数据最小留存和 Computer Use 删除清单。
 
 ---
 
@@ -1464,9 +1584,10 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 5. 媒体迁移只处理矩阵登记形态，并分类为已关联项目、未关联 draft、运行中 Job、outcome_unknown、孤儿 Asset。映射时为每个历史 Asset 固化 immutable `asset_owner_scope`，每个 Version/Evidence 引用写 `{asset_id, asset_owner_scope}`；不得通过迁移复制 Asset 或把 owner 改成当前 MediaProject library。已关联项目转到派生的 MediaLibrary；unknown 保留 durable ID 和查询入口。
 6. 媒体聊天中转按唯一规则迁移：凡是矩阵已登记且拥有有效 MediaProject、Asset、Job、远端 durable ID 或已提交/unknown 副作用的记录，迁为对应 MediaLibrary 下的独立图片/视频项目并保留身份与恢复入口；未登记格式保持只读隔离。不得让用户选择两套运行路线。
 7. 项目指令与记忆只有在矩阵登记具体历史形态后才自动迁移。当前 memory 无版本/历史 fixture，默认保持原文件原位且 unsupported，不由模块 22重写。若未来登记，仍必须遵守：既有 `CLAUDE.md`/兼容源正文、mtime、权限和路径不变，品牌文件不覆盖，Session/AutoMem scope 不提升，TeamMem 不恢复同步。
-8. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
-9. 正式升级包必须继续携带 coordinator、支持矩阵登记的 legacy reader/fixture 和回滚入口；本模块不得删除它们。
-10. 迁移 manifest 只记录 storage ID、输入/目标版本或 shape ID、数量、状态、相对/脱敏标识和错误码，不记录用户正文、候选人隐私、密钥或绝对路径。
+8. MigrationCoordinator 在任何写入前申请 `storage.migration` 独占 lifecycle claim，驱动 scheduler 进入 maintenance/draining 并取得跨进程 fencing lease；不能用进程内 Promise 当互斥。deadline 内不能 quiesce 则迁移不开始，旧数据保持只读。
+9. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
+10. 正式升级包必须继续携带 coordinator、支持矩阵登记的 legacy reader/fixture 和回滚入口；本模块不得删除它们。
+11. 迁移 manifest 只记录 storage ID、输入/目标版本或 shape ID、数量、状态、相对/脱敏标识和错误码，不记录用户正文、候选人隐私、密钥或绝对路径。
 
 ### 验收 Oracle
 
@@ -1474,6 +1595,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 - CI 对支持矩阵执行一一对应检查：每个 supported entry 都存在 fixture、reader/migration、正向、current 写回和幂等测试；任一缺失则阻断模块完成。
 - 当前初始矩阵必须如实标记 ProductTask v2 provisional，memory/recruiting/cron run log/普通 settings/desktop localStorage 历史版本 unsupported；不得因代码中有读取分支或 schemaVersion 常量就升级为 supported。
 - 在每个迁移阶段注入崩溃/磁盘满/权限失败：原数据保持、重启可继续、不会初始化空库。
+- 两个 coordinator/sidecar 同时迁移时只有一个 fencing lease；旧 lease owner 恢复后无法写入。active worker/FFmpeg/outcome_unknown 阻塞 quiesce 时明确不开始迁移。
 - 同一迁移运行两次结果一致，不复制 task/project/asset/operation。
 - media unknown、未关联 draft 和孤儿 Asset 均出现在 manifest 与用户可恢复入口；含项目/资产/Job/durable ID 的记录全部迁为独立项目，只有从未提交副作用的纯文本空 draft 进入只读归档。
 - 项目指令/记忆 fixture 证明：既有 `CLAUDE.md` 正文、mtime、权限不变；品牌文件不覆盖；AutoMem 不提升为项目指令；scope/source/freshness 保留；冲突进入隔离备份且可回滚。
@@ -1510,7 +1632,8 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的
 | `BB-23I` | 删除 TeamMem runtime | 依赖 H；只改 OAuth/watcher/endpoint/settings/diagnostics | 保留必要 migration mapping；记忆 Gate 通过 |
 | `BB-23J` | 删除媒体聊天中转 | 依赖 I；只改 mediaWorkbenches Skill/Tool、`media_draft` 新建/线程投影 | 保留独立 MediaProject/migrator；图片/视频 Gate 通过 |
 | `BB-23K` | 删除旧 workflow runtime/DSL 与重复 media route/service | 依赖 J；只改该行运行图 | 保留唯一 MediaProjectService；媒体 Gate 通过 |
-| `BB-23L` | 删除 Tauri/Linux target 与重复构建 workflow，汇总 D4 | 依赖 K；只改 target/workflow/package input | 保留 Windows/macOS Electron、全部 readers/licenses；全 Gate、本地 build、最终运行图通过 |
+| `BB-23L` | 先迁移、再删除旧 tag/manual→upload/feed 正式直发 workflow、脚本与发布权限 | 依赖 K；只改 release workflow/script/permission consumer graph；同一 Work Unit 先形成 D1/D2 machine checkpoint，再允许 D4 | 保留的 tag/manual trigger 只能构建候选且无正式 feed 写权限；consumer graph 归零、候选/发布旁路 fixture 通过 |
+| `BB-23M` | 删除 Tauri/Linux target 与重复构建 workflow，汇总 D4 | 依赖 L；只改 target/workflow/package input | 保留 Windows/macOS Electron 候选构建、全部 readers/licenses；全 Gate、本地 build、最终运行图通过 |
 
 ### 用户结果
 
@@ -1533,7 +1656,8 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、矩阵登记的
 | TeamMem OAuth/watcher/endpoint/settings/diagnostics | 05、21 | 23 | 无运行时；仅必要 migration mapping | 24 |
 | mediaWorkbenches Skill/Tool、`media_draft` 新建与线程投影 | 13、16、22 | 23 | 独立 MediaProject 与 legacy migrator | 24 |
 | 旧 workflow runtime/DSL、重复 media route/service | 12—16、22 | 23 | 当前 MediaProjectService | 24 |
-| Tauri/Linux target 与重复构建 workflow | 06、20—22 | 23 | Windows/macOS Electron 构建资产 | 24 |
+| 旧 tag/manual→upload/feed 正式直发 workflow、脚本与发布权限 | 23L 在同一 Work Unit 内先以独立 machine checkpoint 执行 D1/D2：trigger 迁为只生成不可变候选，正式 feed 只接受模块 25 Release Orchestrator；consumer graph 归零后才执行 D4 | 23 | 保留无 feed 写权限的候选构建 trigger 和受保护 Release Orchestrator | 24 验证候选包不含凭据/直发脚本；25 验证无旁路 |
+| Tauri/Linux target 与重复构建 workflow | 06、20—22 | 23 | Windows/macOS Electron 候选构建资产 | 24 |
 
 ### 删除闸
 
@@ -1569,7 +1693,7 @@ legacy inventory
 
 ### 交接物
 
-逐行 D4 删除 manifest、删除前后 consumer graph、保留 reader/mapper/fixture 清单、最终源码运行图、依赖/lockfile 变化、本地 build 结果和交给模块 24 的 package input 白名单；文字摘要进入 accepted commit body。
+逐行 D4 删除 manifest（`BB-23A`—`BB-23M`）、删除前后 consumer graph、保留 reader/mapper/fixture 清单、最终源码运行图、依赖/lockfile 变化、本地 build 结果和交给模块 24 的 package input 白名单；文字摘要进入 accepted commit body。
 
 ---
 
@@ -1610,27 +1734,32 @@ available
 2. 图标由一个透明角母版生成 icns/ico/png，各尺寸检查无白底、裁切和旧品牌。
 3. package 白名单必须包含：renderer、sidecar、agent-worker、FFmpeg/ffprobe、node-pty、preview agent、Chrome Native Messaging host/wrapper、migration coordinator、支持矩阵登记的 legacy readers/mappers、必要字体和许可证。BilliardBuddy Chrome Extension 固定为 Chrome Web Store 分发的**伴随组件**，不是第三个独立 BilliardBuddy 产品或桌面 target；模块 24 同一 release manifest 必须记录正式 extension ID、最低兼容版本、商店安装入口、native host protocol version 和兼容矩阵。桌面安装包不得静默旁载扩展；扩展未安装/未启用/版本不兼容时招聘浏览器能力固定 unavailable，并引导用户从唯一商店入口安装或更新。扩展发布和真实商店安装属于 `EXTERNALLY_VERIFIED`，未验证时不得宣称 BOSS 自动执行已交付。
 4. 模块 24 是所有删除对象 `D5_PACKAGE_ABSENT` 的唯一负责人：对模块 23 Manifest 逐行证明已删除运行时在 asar、unpacked resources、sidecar、更新 ZIP 和安装目录中均不存在；模块 23 的源码/输入图不能替代该证明。
-5. release artifact、hash、blockmap、签名元数据全部校验通过后才原子发布 manifest；任一不一致不进入 `downloaded_verified`、不提示安装、不退出当前版本。
-6. 更新 UI 提供检查、下载、进度、取消下载、稍后安装和现在安装；所有按钮只发送带 transaction ID 的 mutation，renderer 不直接调用 `quitAndInstall`。
-7. 下载可后台进行；进入 `waiting_for_safe_exit` 时读取 ProductTask/媒体/记忆/PTY 的统一 activity gate。可恢复写入先落盘，活动最终导出固定阻止安装，前台 PTY 固定要求用户确认，其他可恢复 TaskRun 保存 checkpoint 后才允许继续。
-8. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified` 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified`；进程退出后不得靠当前版本推测安装结果，目标版本首次启动核验 artifact version 和 transaction 后才写 confirmed。
-9. 更新不自动降级；回退通过重新发布完整上一版本完成。旧客户端或旧 sidecar遇到不支持 schema 时返回“需要更新/恢复”，不得写回旧格式。
-10. 模块 24 只消费模块 04/14 已冻结的 Gateway/Relay deployment manifest version/hash；若 ingress、service identity、secret 注入、health/preflight 或回滚证据缺失则阻断发布，不得在发包模块临时创建第二套远程部署配置。
-11. 源码接线、受控远程部署 manifest、CI artifact 签名验证、真实安装/更新验证分层报告；较低等级不能写成真实线上或真实更新成功。
-12. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
+5. 模块 24 只构建并保存不可变 Release Candidate artifact、hash、blockmap、签名元数据、provenance、component matrix 和 machine gate report；**不得**更新正式 manifest/feed 或退出任何已安装客户端。任一不一致使 candidate `NO_GO`。
+6. 候选身份严格按第 4.12 节生成；macOS/Windows 共享同一 candidate/source tree/lockfile/policy/checklist/matrix digest，两个平台 artifact 的有序集合整体进入身份，每个平台 hash 分别登记。任一平台重新构建即使源码相同也生成新 build/provenance 和新 candidate，并要求重新门禁/验收。
+7. `release-checklist.json` 的全部 machine-required 检查在候选 artifact 上执行；模块 24 只能输出 `NO_GO | GO_READY_FOR_USER`。tag push、workflow_dispatch 和上传目录切换只可使用 `BB-23L` 保留的无 feed 写权限候选 trigger；该 Work Unit 的 D4/D5 旁路证据缺失即 NO_GO，不能把 tag 当发布凭据。
+8. 更新 UI 提供检查、下载、进度、取消下载、稍后安装和现在安装；所有按钮只发送带 transaction ID 的 mutation，renderer 不直接调用 `quitAndInstall`。
+9. 下载可后台进行；进入 `waiting_for_safe_exit` 时通过 ProductResourceScheduler 申请 `app.update` lifecycle claim，执行 draining/checkpoint/cancel/quiesced。可恢复写入先落盘，活动最终导出和 outcome_unknown 付费任务固定阻止安装，前台 PTY要求用户确认；不能直接 stopAll/kill sidecar。
+10. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified`、scheduler quiesced 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified` 并解除 draining；目标版本首次启动核验 artifact version/transaction/component matrix 后才写 confirmed。
+11. 更新不自动降级；回退通过仍在 component matrix `rollback_floor` 内、且可读取当前 schema 的完整上一版本完成。不满足则停写并前进修复。
+12. 模块 24 只消费模块 04/14 已冻结的 Gateway/Relay deployment manifest version/hash；若 ingress、service identity、secret 注入、health/preflight、compatibility overlap 或回滚证据缺失则 candidate NO_GO。
+13. 源码接线、受控远程部署 manifest、candidate machine gate、USER_ACCEPTED 和真实正式发布/更新必须分层报告；模块 24 只记录前两类机器证据，不能生成或宣称 USER_ACCEPTED/GO/真实更新成功。
+14. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
 
 ### 验收 Oracle
 
 - Windows/macOS package contents 与白名单逐项匹配；模块 23 每个 Manifest 行都完成 D5 证明，保留 migration reader 可从 packaged sidecar 冷启动。
 - Windows 按可用环境运行 `signtool verify`；macOS 运行 `codesign --verify`、`spctl` 和 notarization ticket 检查。缺平台或凭据时逐项标记 `NOT_VERIFIED_EXTERNALLY`，不得伪造通过。
 - manifest→artifact URL/hash/size/version/blockmap 一致；损坏、错签、旧版本和部分上传 fixture 均留在当前版本。
-- update transaction fixture 覆盖检查无更新、下载中断/继续、用户取消、artifact 校验失败、稍后安装、activity gate 拒绝、写 `restart_pending` 前失败、`restart_pending` 写入后 `quitAndInstall` 同步失败并回到 `downloaded_verified`、调用后进程退出、旧版本重启未确认以及目标版本首次启动确认；状态机中不存在持久 `installing`，每个中断点不重复安装。
+- candidate identity/provenance fixture 覆盖 source commit/tree/lockfile/build input/package manifest/gate policy/release checklist/component matrix/platform/artifact 任一变化：生成新 candidate，旧 gate/acceptance 失效；gate report 作为不可变结果另行绑定且不能原地改写；tag/manual trigger 只生成候选，正式 feed 不变化。
+- `release-checklist.json` 每个 machine required check 有 PASS 和证据 digest；FAIL/NOT_RUN/UNVERIFIED/缺失均输出 NO_GO，模块 24 无发布权限。
+- component matrix 包内/运行时握手覆盖 Main-renderer-sidecar-worker、Gateway-Relay、Extension-native-host 和 migration schema；required edge 不兼容即 NO_GO。
+- update transaction fixture 覆盖 scheduler draining、running worker/FFmpeg、outcome_unknown 阻塞、quiesced 安装、同步失败解除 draining、旧版本重启和目标版本确认；不重复安装。
 - 从旧 schema fixture 启动安装目录中的 sidecar，模块 22 migration 可达并保持备份/回滚。
 - 目标版本未真实启动时，报告只能写“包与更新接线已验证”，不能写“更新成功”。
 
 ### 交接物
 
-双平台 artifact 清单、package contents、D5 package manifest、签名/公证机器输出、更新 manifest 校验、activity gate fixture、保留 migration reader 清单和真实外部未验证项；文字摘要进入 accepted commit body。
+冻结 Release Candidate identity/provenance、双平台 artifact/package contents、component matrix、release checklist 与 machine gate report、D5 package manifest、签名/公证机器输出、update scheduler/activity fixture；状态只允许 `NO_GO|GO_READY_FOR_USER`，不写正式 feed。
 
 ---
 
@@ -1641,11 +1770,11 @@ available
 
 ### 用户结果
 
-仓库和安装包形成一个可解释、可恢复、没有第二运行路线的 BilliardBuddy 产品；所有未做的真实外部验证被明确列出。
+仓库、受控部署和双平台候选形成一个可解释、可恢复、没有第二运行路线的 BilliardBuddy 产品。模块 25 只对模块 24 冻结的同一 candidate 执行最终机器重验、用户人工验收和 ReleaseDecision；没有有效 `USER_ACCEPTED` 时结果必须是 `NO_GO`。
 
 ### 模块边界
 
-本模块只执行统一验证、包内容核对、机器证据汇总和最终交接，不修改产品代码，也不做“最小集成修复”。
+本模块只执行同一 Release Candidate 的统一机器重验、用户人工验收、receipt 验证、ReleaseDecision 和唯一正式 feed 切换，不修改候选源码、产品代码、构建输入或 artifact，也不做“最小集成修复”。模块 25 不能生成或替换候选 artifact，不能自己写 `USER_ACCEPTED`，不能用 workflow 参数、聊天文本或环境变量覆盖 gate。模块 25 的 accepted commit 只能在 GO/NO_GO 决策后追加不进入候选的发布审计索引，必须明确标为 `Release-Record-Only: true` 并绑定模块 24 的 `source_commit_sha/source_tree_sha/candidate_id`；它不是新 candidate，也不得被误当成该候选的源码提交。
 
 若发现缺陷，主代理必须先判断缺陷属于哪个原模块或 Work Unit：合同逻辑、依赖或架构有缺口时，先由主代理修订本 Markdown 并创建新的 Spec-Commit；产品代码缺陷则回到所属原模块创建 repair Work Unit，由实施子代理修改、测试和提交。主代理接受 repair Work Unit 后重新运行受影响的验证矩阵。模块 25 不得跨域顺手修复，不得在最终验收提交中混入属于其他模块的产品代码或架构变更。
 
@@ -1669,16 +1798,28 @@ available
 | Terminal | owner/cwd/env、首输出、大输出、窗口关闭和更新闸 |
 | Migration | 全旧 schema fixture、备份、可重入、崩溃恢复、冷启动、migration reader 包内可达 |
 | Cleanup | `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 未删除版本通过；每个 D4 Work Unit 后重跑受影响旅程；D1—D5 逐行证据、保留 reader/许可证、无 compatibility shim 或第二运行时 |
-| Release | 类型、单测、集成、renderer/sidecar/worker build、双平台 package manifest、签名/更新分级报告 |
+| Compatibility | Main/renderer/sidecar/worker/Gateway/Relay/Extension/native-host/provider/migration required edge 均按同一 component matrix 握手；N-1/N rollout 与 rollback floor 可验证 |
+| Resources | ProductResourceScheduler 的 desktop/gateway/relay scope、profile、priority/fairness、bytes、lease/fencing、cancel/drain/overload；worker/schedule/FFmpeg/ASR/vision/image/browser/migration/update 无第二调度真相 |
+| Release decision | candidate identity/provenance 不变；required machine/user checklist 全 PASS；有效 USER_ACCEPTED receipt 绑定同一 artifact；无 tag/manual/feed 旁路 |
 | 隐私 | 日志、包、fixture 和错误 UI 无密钥、Cookie、正文、Base64、候选人隐私和绝对路径 |
+
+### USER_ACCEPTED 与正式发布步骤
+
+1. 先重新计算 candidate、artifact、gate report、component matrix 和 checklist digest；任何变化立即 `NO_GO`，返回模块 24创建新候选。
+2. 对 `release-checklist.json` 中所有 user-owned required 项逐项在对应候选安装包执行。至少覆盖 Windows/macOS 首次启动、核心黄金旅程、视觉/交互、升级/回滚、权限、性能阈值和候选 policy 声明的真实外部能力。结果与证据不能复用其他 candidate。
+3. 向用户展示 candidate ID、两个 artifact hash、machine gate 摘要、人工检查结果、`OUT_OF_SCOPE_DISABLED` 能力和已知风险。只有用户本人通过受保护验收入口明确选择 `USER_ACCEPTED`，才写不可变 receipt；聊天中的“看起来可以”“提交吧”不构成 receipt。
+4. 用户选择拒绝或任一人工 required 项 FAIL/NOT_RUN/UNVERIFIED，写 `USER_REJECTED`/NO_GO；该 candidate 终结，修复后创建新 candidate。
+5. Release Orchestrator 验证 receipt identity/role/signature/expiry 与全部 digest 后写唯一 `GO`，再次校验上传文件 SHA-256，原子切换正式 manifest/feed。发布中断时旧 feed 保持；不能出现部分平台先公开。
+6. 正式切换后保存 release decision/provenance/receipt/manifest digest，并执行目标版本真实启动确认。receipt 到期、撤销只影响尚未发布 candidate；已发布版本通过新的撤回/回滚决策处理，不篡改历史。
 
 ### 最终完成条件
 
-1. 所有受控检查通过；失败项有真实输出，不能删除测试或放宽断言换取绿色。
+1. `release-checklist.json` 的所有 required machine/user 检查均为 PASS，证据 digest 与同一 candidate 匹配；任何 FAIL/NOT_RUN/UNVERIFIED 都不得 complete/GO。
 2. 所有删除 Manifest 项完成 D4/D5，或因明确 reader/migration/许可证合同保留；不存在“以后可能复用”的正式运行时代码。
-3. 最终安装包仍包含模块 22 的 migration coordinator、受支持 legacy readers 和回滚入口。
-4. 真实付费生图、真实 BOSS 发送、真实双平台安装/签名/公证/更新若未执行，accepted commit body 逐项标记 `NOT_VERIFIED_EXTERNALLY`。
-5. 最终 accepted commit body 包含：模块/Work Unit SHA 表、架构交接、包清单、migration 支持版本、D1—D5 结果、验证命令摘要和外部未验证项；机器细节只保存在测试、fixture、manifest、包清单或构建输出中，不另建 Markdown 报告。
+3. 最终安装包仍包含模块 22 的 migration coordinator、支持矩阵登记的 legacy readers 和回滚入口。
+4. 所有 `REQUIRED_FOR_RELEASE` 外部项已绑定同一 candidate 真实验证；未验证能力只能在候选 policy 预先标为 `OUT_OF_SCOPE_DISABLED` 且包内入口确实禁用，否则 NO_GO。
+5. 有效 `USER_ACCEPTED` receipt、全部 candidate/gate/matrix/checklist/artifact digest 和正式 ReleaseDecision=GO 均可验证；正式 feed 只包含该候选。
+6. 最终 release-record-only accepted commit body 包含：`Release-Record-Only: true`、Module-Status、模块/Work Unit SHA、模块 24 的 source commit/tree、candidate/release decision ID、包清单、compatibility/migration 支持版本、resource profile、D1—D5、验证摘要和禁用范围；该提交只能索引已存在的受控机器证据，不得修改候选输入、正式 feed 或 receipt。机器细节保存在受控 manifest/receipt/build provenance 中，不另建 Markdown 报告。
 
 ### 最终代码形态（逻辑职责，不是强制目录迁移）
 
@@ -1702,7 +1843,7 @@ BilliardBuddy Electron GUI
 
 ### 交接物
 
-最终 accepted commit body、01—24 机器证据索引、模块/Work Unit SHA 表、最终逻辑架构、包清单、migration 支持版本、D1—D5 结果、验证命令摘要，以及逐项 `NOT_VERIFIED_EXTERNALLY` 清单；不新建最终报告 Markdown。
+最终 release-record-only accepted commit body、ReleaseDecision、USER_ACCEPTED receipt、candidate/provenance/gate/checklist/component matrix digest、01—24 机器证据索引、模块/Work Unit SHA、包清单、migration/resource profile、D1—D5 和正式 feed manifest；commit body 必须绑定模块 24 的 source commit/tree 且不改变 candidate，不新建最终报告 Markdown。
 ---
 
 # 第四部分：后续删除触发条件
