@@ -213,6 +213,14 @@ Next:
 | `DEC-033` | `[HARD]` 所有进程/部署组件按单一兼容矩阵握手 | `component-compatibility-matrix.json` 是 Main、renderer、server、worker、gateway、relay、extension、native-host、provider contract 和 migration capability 的唯一版本兼容源；未登记或不兼容 fail-closed，不靠“版本接近”猜测 |
 | `DEC-034` | `[HARD]` 所有重资源统一由 ProductResourceScheduler 准入 | worker、scheduled run、FFmpeg/ffprobe、ASR、视觉、图片生成、Browser batch、迁移与更新闸都先取得 typed permit；模块不得各建无关并发池或绕过全局内存/进程/字节预算 |
 | `DEC-035` | `[HARD]` 发布默认 NO_GO 且必须 USER_ACCEPTED | 机器门禁全部通过只能形成冻结 Release Candidate；只有用户本人对同一 candidate identity 完成人工验收并写入绑定 hash 的 `USER_ACCEPTED` receipt，ReleaseDecision 才能从 `NO_GO` 变为 `GO`；任何候选变化立即失效 |
+| `DEC-036` | `[HARD]` ProductTask 删除是可恢复状态机 | 只有已静止且无外部引用的 archived task 可进入 deleting；运行、队列、Schedule/Recruiting/Fork 引用先显式处理；删除按冻结 cleanup plan 幂等推进，失败进入 delete_failed，不删除 Workspace 或用户源文件 |
+| `DEC-037` | `[HARD]` TaskAttachment 与临时文件有统一生命周期 | 外部文件只引用不删除；应用副本以 owner/ref graph 管理；草稿、失败、解析临时和 orphan 按版本化 TTL/profile 回收，禁止按路径前缀或 content hash 猜测所有权 |
+| `DEC-038` | `[HARD]` 所有 Preview/解析/转码输入均不可信 | renderer/Main/worker 不直接解析；网页 Preview 无 Node/产品权限，文档/图片/媒体进入一次性无网络 sandbox；magic-byte、CSP/导航策略及 CPU/内存/页帧/解压/输出上限 fail-closed |
+| `DEC-039` | `[HARD]` Workspace 身份与路径分离 | `workspace_id` 不变、canonical root 可变；每次文件操作复核根 identity/revision 和文件 hash；移动、外部替换、只读、断盘或 worktree 删除进入明确 unavailable/stale/relink 状态，不静默重绑 |
+| `DEC-040` | `[HARD]` Relay 不是长期媒体库 | 输入/输出 blob 只按冻结 retention policy 加密短存；本地 durable asset ack 后有界清除，最长离线恢复 7 天；unknown 只保留脱敏 durable receipt 30 天并且绝不自动重放 |
+| `DEC-041` | `[HARD]` 招聘原始证据短存且不进模型/诊断 | 原始 HTML/截图/完整简历/联系方式不进入持久 checkpoint、prompt、日志、记忆或诊断包；按 15 分钟/7 天/30 天分级 TTL，计划关闭与用户删除触发有界清除，视觉不明转用户接管 |
+| `DEC-042` | `[HARD]` 更新成功必须达到健康启动里程碑 | 目标版本只在包/矩阵、sidecar 握手、存储读取和首个可交互 renderer 全通过后确认；10 分钟内连续两次未健康进入 recovery_required，回退受 rollback floor/schema 限制，否则只读恢复并导出 |
+| `DEC-043` | `[HARD]` 用户诊断包严格 allowlist 且不自动上传 | Main 只在用户显式操作时导出版本、握手、短错误码、任务状态、resource profile 与脱敏日志；正文、绝对路径、附件、媒体、Cookie、密钥、候选人信息和原始 crash dump 永不进入 |
 
 ## 2. 术语、实体和唯一身份
 
@@ -220,8 +228,9 @@ Next:
 
 | 实体 | 含义 | 父实体 | 唯一写入者 | UI 是否显示 |
 |---|---|---|---|---|
-| `Workspace` | canonical 项目文件夹身份 | 安装实例 | Product service | 显示为“项目文件夹” |
-| `ProductTask` | 用户可见任务容器 | Workspace | ProductTaskService | 显示为“任务” |
+| `Workspace` | 稳定 `workspace_id` 与可变 canonical root；保存根 file identity、revision 和 availability | 安装实例 | ProductTaskService | 显示为“项目文件夹”及可用/重新关联状态 |
+| `ProductTask` | 用户可见任务容器；保存独立于 TaskRun 的 lifecycle/revision | Workspace | ProductTaskService | 显示为“任务” |
+| `TaskAttachment` | 草稿或已发送任务附件；外部安全引用或应用拥有副本，含 owner/ref/TTL/inspection 状态 | ProductTask/draft owner | ProductTaskService 写身份与 binding；AttachmentStore 只执行受控字节操作 | 显示名称、类型、大小和安全/清理状态 |
 | `TaskRun` | 一次 Agent 执行；创建时已包含不可变 permission/provider snapshot 与 durable dispatch intent | ProductTask | ProductTaskService 在返回 accepted 前原子写入 | 显示为一次处理过程，不显示 ID |
 | `ThreadEntry` | 用户消息、助手回答、审批、结果投影 | ProductTask | ProductTaskService | 显示在对话中 |
 | `CoreSession` | worker 内部 Core 会话 | TaskRun | agent-worker/Core | 永不直接显示或作为产品外键 |
@@ -273,8 +282,9 @@ Composer 和 MediaProjectService 只能通过 owner-checked binding 读取指定
 | `ChromeSessionBridge` | 本机单会话桥：Core/MCP Tool → request owner → Native Messaging host → BilliardBuddy Chrome Extension | 只保存短期 session/request 路由，不保存业务真相或 Cookie |
 | `RecruitingPlan` | 门店、岗位、筛选条件和允许动作 | RecruitingService |
 | `RecruitingBatch` | 一批候选人的可恢复处理单元 | RecruitingService |
-| `BrowserCheckpoint` | 当前 batch 的页面版本、候选 ref 和回读状态 | RecruitingService 根据 bridge 回执写入 |
-| `RecruitingOperation` | 发送、标记、状态变更等副作用意图 | RecruitingService |
+| `BrowserCheckpoint` | 当前 batch 的页面版本、短期 ref hash、非识别性筛选结论和回读状态；不含原始候选证据 | RecruitingService 根据 bridge 回执写入 |
+| `RecruitingEphemeralEvidence` | 原始 HTML、截图、完整简历、联系方式等 session-scoped 加密短期数据；不是业务真相 | Extension/bridge 临时区按 TTL 写入和销毁，不进入 RecruitingService 长期存储 |
+| `RecruitingOperation` | 发送、标记、状态变更等副作用意图；正文只在 pending/unknown 有界加密保存 | RecruitingService |
 
 Skill 只读业务数据并提供语义指导；Core 只拥有工具循环与审批；ProductTask 只投影目标、审批和结果摘要。
 
@@ -292,7 +302,7 @@ composer_draft
   → completed | stopped | failed
 ```
 
-`accepted` 的唯一含义是：ProductTaskService 已在同一个原子提交中持久化用户 ThreadEntry、TaskRun（含 immutable permission/provider snapshot）、`client_operation_id` receipt、首个 TaskEvent 和 durable dispatch record。任何一项写入失败都整体回滚，不返回 accepted，也不清空草稿。worker 不参与这个原子提交，且不得在提交成功前启动该 run。
+`accepted` 的唯一含义是：ProductTaskService 已在同一个原子提交中持久化用户 ThreadEntry、TaskRun（含 immutable permission/provider snapshot）、`client_operation_id` receipt、首个 TaskEvent、durable dispatch record，以及请求中全部 `ready` TaskAttachment 到该 ThreadEntry/TaskRun 的不可变 binding。任何附件未 ready/owner 不符或任一写入失败都整体回滚，不返回 accepted，也不清空草稿。worker 不参与这个原子提交，且不得在提交成功前启动该 run。
 
 提交成功后 dispatcher 可重复投递同一 `run_id`；agent-worker 必须用 run ID 和 dispatch generation 做幂等 claim。只有 claim 成功的 worker 可以创建/恢复 CoreSession 并把 `dispatch_pending → running` receipt 交回 ProductTaskService。服务在 accepted 后、投递前崩溃时，重启扫描 durable dispatch record；重复投递或 worker 重启不得创建第二 TaskRun、第二用户消息或自动重放外部副作用。
 
@@ -303,6 +313,33 @@ composer_draft
 - 同一 `client_operation_id` 重放必须返回同一个受理结果；
 - `stopping` 后等待 worker/Core 权威收尾；迟到 delta 不得进入已结束 run；
 - 重连使用 `resume_cursor`，并以权威 transcript 对账缺失内容。
+
+#### ProductTask 生命周期与删除
+
+```text
+active ↔ archived
+archived → deleting → deleted | delete_failed
+delete_failed → deleting | archived
+```
+
+1. `archive/restore/delete/retry_delete/cancel_delete` 均由 ProductTaskService 以 `client_operation_id + expected_revision` 写 durable receipt；renderer 不乐观删除。archive 只接受所有 TaskRun 终态、QueuedMessage 为空且无活动 PTY/Preview/worker 的 active task，否则 `TASK_BUSY`，不得隐式 stop 或隐藏运行任务；成功后禁止新 submit/enqueue/fork，但不删除正文或附件。
+2. active task 不可永久删除；只有 archived 且所有 TaskRun 终态、QueuedMessage 为空、无活动 PTY/Preview/worker、无 Schedule/RecruitingBatch/ForkSource 等强引用时才能形成 immutable delete plan。存在引用返回 `TASK_DELETE_BLOCKED` 和逐项解除入口；不得隐式 stop、取消计划或删除 worktree。
+3. 用户确认后先原子写 `deleting + cleanup_plan hash + fencing token`。随后按计划幂等清理 ThreadEntry/TaskRun/Event/queue/checkpoint、task-owned 应用附件副本和明确由该 task 创建且用户另行确认删除的 managed fork worktree；Workspace、用户源文件/源仓库、外部附件、共享 Asset 和被其他实体引用的副本永不删除。
+4. 任一步失败进入 `delete_failed`，保留未完成 cleanup plan、失败项和重试入口；task 不从列表消失。删除采用两阶段：`deleting` 的可取消阶段只冻结引用并把正文、附件和 checkpoint 原子移入同一 owner-scoped 可恢复隔离区，不物理删除任何不可恢复 item；用户取消则完整原子还原。用户第二次确认关闭取消窗口并持久化 `purge_committed` 后才按 plan 物理删除，此后只能重试完成，不能回 archived。plan 对每项记录顺序、owner、ref count、recoverable/purged receipt；重启以同一 token/operation 续做，不重复副作用。
+5. `deleted` 只保留无正文、无路径、无原始业务 ID 的短期 tombstone/receipt hash 30 天，用于幂等和同步删除投影，之后清除。所有 task-bound API 在 deleting/delete_failed/deleted 分别返回稳定 `TASK_DELETING/TASK_DELETE_FAILED/TASK_DELETED`。
+
+#### TaskAttachment 与临时文件
+
+```text
+staged → inspecting → ready → accepted_bound
+staged | inspecting | ready → failed | cancelled | discarded
+```
+
+1. TaskAttachment 记录 attachment/task/draft owner、source fingerprint、content hash、magic-byte verified media type、`external_reference|app_owned_copy`、byte size、state、ref graph、operation lease、created/last_activity/expires_at；ThreadEntry 不存二进制/Base64。
+2. 外部引用只保存受控相对 route/identity/hash，永不删除原文件。应用副本先进入 owner-scoped staging，安全检查通过后原子 rename；相同 content hash 只可去重字节，不能合并 owner/ref identity。
+3. 未绑定草稿附件自最后用户活动保留 7 天；failed/cancelled 的应用临时副本在 1 小时内清除；解析/转码临时目录在终态立即删，崩溃 orphan 最迟 24 小时后由 fenced sweeper 回收；accepted_bound 随 task 保留，永久删除时仅在 ref count 为零且 owner 可证时删除。
+4. `attachment-retention-policy.json` 冻结单文件、每草稿/任务、installation 总容量、最小保留磁盘、TTL 和清理 batch。达到软上限先阻止新复制并提供按大小/年龄的用户清理入口；低于硬磁盘余量只允许清理/导出，不接受新附件。sweeper 只按 identity/lease/ref graph 删除，失败保留记录并退避重试，不递归猜路径。
+5. 启动和每日 orphan scan 对账索引/字节/lease；不能证明 owner 的文件移入隔离清单而非删除。所有计时使用可注入时钟；policy 版本进入诊断和发布证据。
 
 ### 3.2 外部副作用与付费媒体
 
@@ -315,7 +352,7 @@ draft
 
 submitted | running
   → outcome_unknown
-  → succeeded | confirmed_failed
+  → succeeded | confirmed_failed | result_expired | outcome_unresolvable
 
 intent_persisted
   → cancelled_before_submit
@@ -326,10 +363,15 @@ submitted | running
 
 固定规则：
 
-- `outcome_unknown` 只能查询原 Operation；
-- 只有 `confirmed_failed` 或上游确认未执行，才允许用户明确创建新 Operation；
+- `outcome_unknown` 只能查询原 Operation；Relay 仍有 durable 查询证据时不得人为终结；
+- `result_expired` 只表示 Relay 已知输出 blob 超过 7 天且本地从未 durable ack，`outcome_unresolvable` 只表示 Relay 的 30 天 resolution window 已结束仍无 terminal result；二者都必须由 Relay 当前签发、绑定 operation/owner/policy/server_time 的 idempotent terminal receipt 驱动。客户端 retention envelope/deadline 只用于 UI 预计与查询调度，任何 wall/monotonic clock 都不能自行终结付费 Operation。二者是不可重放终态，保留无正文解释并解除 transfer/update/delete 阻塞，但绝不等于 confirmed_failed或未扣费；
+- 只有 `confirmed_failed`、上游确认未执行，或用户看见费用/不可恢复警告后对 `result_expired|outcome_unresolvable` 明确创建**新** Operation，才允许再次付费；系统永不自动重提；
 - 网络恢复不自动发送、生成、删除、招聘沟通或执行终端命令；
 - relay 的 `failed_unknown` 在 media adapter 归一为产品 `outcome_unknown`，不进入 renderer。
+
+Relay 数据固定按 `relay-retention-policy.json` 加密保存并由模块 04 在首个可执行图片链路前实现、模块 14 生产化。Relay 在首次 accepted/submitted receipt 中返回签名 `retention_envelope`：operation/owner hash、submitted_at、blob expiry（7 天）、resolution deadline（30 天）、policy revision 和签名；MediaProjectService 必须与 Operation 原子持久化，缺失则不进入 submitted。该 envelope 只安排查询和显示预计期限，不能由本机时钟转换终态。输入/参考 blob 在 provider durable receipt 落库后立即清除，失败时最迟 24 小时；输出 blob 在 owner-scoped 本地 durable Asset ack 后立即清除，桌面离线时最多保留 7 天；terminal 脱敏 audit 最多 30 天。Relay 在整个 30 天 resolution window 内保留最小 expiry facts或确定性重建 receipt；第 7 天后查询返回当前签发的 `result_expired` terminal receipt。第 30 天后客户端即使长期离线，也可在原 Operation 查询中提交原始 signed envelope；Relay 无状态验证自身签名、operation/owner/policy 和当前 server time 后签发 `outcome_unresolvable` terminal receipt，不需要继续保存 blob、provider ID、正文或 PII。客户端只有验证 terminal receipt 的签名、owner、operation 和单调 Relay server_time 后才落终态；Relay 不可达、时钟前跳/回拨、签名异常时保持 `outcome_unknown` 和全部阻塞，不允许新付费 Operation。Relay 不是历史图库，不能把过期推断为 confirmed_failed 或自动重提。
+
+所有 blob 使用独立服务端加密密钥和 owner-scoped route；renderer 不能伪造 durable Asset ack。用户删除本地 MediaProject/Asset 时，经 MediaProjectService durable delete intent 向 Relay 发送幂等 purge，仍受 unknown 对账约束；purge sweeper 使用 typed claim/lease/fencing。到期或用户 purge 失败保留 `purge_failed` 元数据并告警/重试，不能先标已删；policy revision/hash 进入 Relay deployment manifest、component matrix 和 Release Candidate。
 
 ### 3.3 数据迁移
 
@@ -349,11 +391,15 @@ migration_running
 
 ## 4. 全局安全与非功能边界
 
-### 4.1 路径与归属
+### 4.1 路径、Workspace 与归属
 
-- 所有 task、附件、Diff、Preview 和 PTY 路径绑定 canonical Workspace；媒体路径绑定 MediaLibrary/Asset immutable owner；语音源绑定 installation + source owner。统一拒绝 `..`、符号链接逃逸、跨 worktree/owner、任意 `file://`、Windows UNC/盘符越界和大小写混淆。
+- 所有 task、附件、Diff、Preview 和 PTY 路径绑定稳定 `workspace_id`，不把绝对路径当身份或授权。Workspace 保存 mutable `canonical_root`、平台根 file identity（volume + file ID/inode 等价物）、`workspace_revision` 和 `available|missing|read_only|identity_changed|relink_required`；媒体路径绑定 MediaLibrary/Asset immutable owner；语音源绑定 installation + source owner。统一拒绝 `..`、符号链接逃逸、跨 worktree/owner、任意 `file://`、Windows UNC/盘符越界和大小写混淆。
+- 每个文件读写、Diff、Preview、PTY create/write 和 worker 工具边界都重新 realpath，核验 root identity/revision、owner 和目标 file hash；watcher 只用于提示，不能授权。外部单文件变化返回 `FILE_STALE` 并要求刷新；根消失/断盘/只读返回 `WORKSPACE_UNAVAILABLE|WORKSPACE_READ_ONLY`，写操作停止且不换路径。
+- 同卷移动且根 file identity 未变时，用户确认的 `workspace.relocate(client_operation_id,expected_revision)` 可原子更新 root/revision。跨卷复制、根被替换、identity 无法证明或 managed worktree 被手动删除时进入 `relink_required`；用户只能明确重绑或创建新 Workspace，不能自动猜目录。Git workspace 额外核验 repo/worktree common-dir 与 HEAD identity；非 Git workspace 使用根 identity + 用户确认，绝不伪造 Git 语义。
+- Workspace revision/identity 改变时，活动 TaskRun 的后续文件副作用、Preview selection、Diff reference 和 PTY 固定 `WORKSPACE_STALE`；只读 transcript 仍可查看。managed fork worktree 丢失标 `WORKTREE_MISSING`，保留 task/checkpoint 并提供重新创建或解除引用，不能重建后假装是同一 worktree。
 - Asset 原始 route 只按其 immutable `asset_owner_scope` 授权。迁库后的项目读取历史 Asset 时，必须先校验请求者拥有当前 MediaProject，再校验当前 Version/Evidence 显式引用同一 `{asset_id, asset_owner_scope}`；禁止凭 source Asset ID 跨库枚举。
 - 外部导入的视频、图片、音频和用户项目文件永不因删除 ProductTask/MediaProject 被删除；只删除应用明确拥有且能由身份链证明的副本。
+- 所有 policy 文件都必须由所属 registry 生成并有 schema/version/hash：模块 01 冻结结构；attachment 由模块 07 填充本机 retention/capacity 值，content safety 由 03/07/10/16 共同消费的受控 benchmark/profile 填充，Relay retention 由 04 定义最低合同、14 填充生产部署，diagnostic allowlist 由 21 填充。未登记/过期 policy fail-closed，不允许 renderer 或远程 flag 覆盖。
 - 正式桌面 sidecar 必须有每次启动生成的鉴权会话；不能仅依赖 loopback 或“ID 难猜”。
 
 ### 4.2 多窗口和单写者
@@ -362,9 +408,13 @@ migration_running
 - 同一媒体数据根最多一个 sidecar 写者，启动时取得跨进程锁；进程内 Promise 锁只能证明单实例串行，不能作为跨进程证据。
 - 更新、退出和休眠前停止新后台写入，在有界时间内完成或留下 durable intent，重启后对账。
 
-### 4.3 日志与隐私
+### 4.3 日志、隐私与用户诊断包
 
 普通日志不得记录：密钥、Authorization、Cookie、完整提示词/附件正文、截图/Base64、录音、候选人联系方式、完整 URL query、绝对用户路径或环境变量。开发诊断只记录脱敏 scope、operation ID hash、状态、耗时和短错误码。
+
+`DiagnosticBundleService` 只运行于 Electron Main。用户在设置/About 显式选择“导出诊断信息”和目标路径后才生成，绝不自动上传或调用支持端点。机器可读 `diagnostic-bundle-policy.json` 使用严格 allowlist：app/candidate/component matrix 版本/hash、组件握手 selected version/reason、ProductTask/Operation 的状态计数与短错误码、resource profile revision/聚合用量、脱敏 migration/update manifest、stack fingerprint，以及最近 7 天且总计最多 5 MiB 的结构化脱敏日志。
+
+每个包使用随机 salt 对 task/run/operation/installation ID 做 HMAC，使包内可关联、跨包不可追踪。永久排除聊天/提示词/ThreadEntry、工具 JSON/命令正文、绝对路径、附件/文档/媒体/HTML/截图/音频、简历/候选人字段、Cookie/Authorization/密钥/环境变量、URL query、原始日志和 crash dump。生成采用 allowlist schema，再做 deny-pattern/canary 二次扫描；任一字段或文件不合规即 `DIAGNOSTIC_REDACTION_FAILED`，删除 staging，不输出半包。成功包含 policy/schema revision、included file SHA-256、excluded counts 和 bundle SHA-256；应用不自动删除用户选定的最终包。
 
 ### 4.4 可访问性与尺寸
 
@@ -443,10 +493,13 @@ Public ingress/TLS
 3. Main 在 spawn server 前生成唯一 `server_generation` 和随机 local capability，只经一次性私有 bootstrap pipe/继承 FD 交给 server；禁止使用环境变量、argv、URL、文件或日志传递。server 完成握手后关闭 bootstrap FD，任何 child 都不能继承。Main 只通过受限 preload IPC 向可信 renderer 发放当前 generation capability。`/api/*`、`/proxy/*` 和 ProductTask WS 强制校验；CORS/loopback/端口难猜都不是鉴权。`/health` 只返回最小无敏感状态。server 启动失败或退出时该 capability 立即失效。
 4. server supervisor 只能为已 accepted 的 TaskRun 启动一个 worker child；worker spawn 使用显式环境 allowlist 和 close-on-exec FD，只注入独立、一次性、短期 run capability。worker 环境、argv 和可继承 FD 中必须证明不存在 renderer local capability、产品 secret 或 updater token；server 退出先停止全部 worker。
 5. 模块 03 的 `agent-worker` 是统一 sidecar binary 的内部 mode/entry，不是另一个监听端口、常驻 daemon、公开 CLI 产品或第二数据写入者。模块 03 完成前当前 `cli --print` child 是 `[FACT]` 兼容现状，迁移后必须由 `agent-worker` mode 替代。
-6. Main 与 Local Product Server 不互写领域存储：sidecar services 只写 ProductTask/Media/Voice/Recruiting/Schedule/Migration 数据；Main 只写隔离的 installation/bootstrap config、UpdateTransaction、PTY session 元数据和 OS capability 状态。各自使用独立路径与锁，Main 不直接打开领域数据文件，sidecar 不写 updater/PTY/bootstrap 状态。
+6. Main 与 Local Product Server 不互写领域存储：sidecar services 只写 ProductTask/Media/Voice/Recruiting/Schedule/Migration 数据；Main 只写隔离的 installation/bootstrap config、UpdateTransaction、PTY session 元数据和 OS capability 状态。各自使用独立路径；Main 不直接打开领域数据文件，sidecar 不写 updater/PTY/bootstrap 状态。正常 sidecar writer、migration coordinator 和 recovery reader 必须竞争覆盖全部领域根的同一个跨进程 `DomainDataLease`，带 mode/generation/fencing；`writer|migration|recovery_read_only` 互斥，任何 holder 恢复都校验 token。
 7. Native Messaging host 固定为统一 sidecar binary 的内部 `native-host` mode，由 Chrome 按需启动；不与公共 CLI/TUI 或 TaskRun worker 共用 entry、stdin/stdout、session 或 capability。模块 23 可删除全部 public CLI/bin/help/publish surface，但必须保留不可交互的 `native-host` 内部 mode。Extension/host 未握手只降低 BrowserCapability，不影响 local server。
 8. desktop app credential 只证明受管理客户端，在 Gateway 做轮换、撤销和限流；`X-QF-Client-ID` 只作公平调度/owner，不赋权。Gateway → Relay 使用不同的 service credential，relay owner 只能由 Gateway 派生。上游 key 只在 Gateway/Relay，renderer/worker/本地持久化均不可读取。
 9. Gateway、Relay、public ingress、路径 rewrite、TLS、secret 注入和 service unit 的交付责任固定：模块 04 冻结 gateway/ingress/service identity 与非图片 provider 部署 manifest；模块 14 冻结 relay/图片路由、容量、owner、secret 与 service unit manifest；模块 24 只消费并核对其版本/hash，不临时补建远程拓扑。开发模式可使用 Vite renderer 和本地构建 sidecar，但拓扑、鉴权、owner 和协议必须与 packaged 一致。
+10. 所有 PDF/DOC/Office/HTML/图片/音视频/压缩包的检查、文本抽取、缩略图、probe 和转码都在一次性 extractor child 中执行，不在 Main/renderer/agent-worker 进程直接解析。child 只取得只读输入 FD 和空 owner-scoped 输出目录，无网络、无产品 secret/local capability、无 workspace 写权限、无 shell/再 spawn，使用最小环境与 OS 资源限制；平台无法证明隔离时返回 `SANDBOX_UNAVAILABLE`。
+11. 网页 Preview 使用独立 session/partition 和 sandboxed WebContents：`nodeIntegration=false`、`contextIsolation=true`、sandbox 开启。selection picker 完全驻留 isolated preload/world，不向 page world 暴露 `contextBridge` API、DOM event、capability 或可枚举产品 IPC；只有可信 picker overlay 捕获的 `event.isTrusted` 用户手势才能发起。capability 绑定 webContents/document/navigation/frame/task/workspace revision，单次消费且短期；页面只提供被读取的受限 DOM 数据，不能主动调用 bridge。页面自身脚本只能在隔离分区内运行并访问用户明确启动的本机开发 origin；wrapper CSP/permission policy 拒绝插件/object、混合内容、未登记远程 origin 和权限升级。新窗口、外部导航、下载、权限请求、自定义协议、`file:`/`javascript:`/`data:` 顶层导航全部拒绝或交给系统浏览器；页面不能访问 Electron/clipboard/文件系统/产品 IPC。
+12. `content-safety-profile.json` 由模块 01 冻结 schema、模块 03执行，至少包含 magic-byte allowlist、源/解压/entry/嵌套/页/帧/像素/字符上限、CPU/wall time、memory、temp/output bytes。压缩内容不递归执行；宏、脚本、可执行/未知二进制只显示元数据。profile 缺失/过期固定 `CONTENT_PROFILE_REQUIRED`；畸形、超限或 extractor 崩溃只隔离该输入并清理临时目录。FFmpeg/ffprobe/文档解析器不能绕过 Scheduler 或这些上限。
 
 ### 4.9 D4 前纵向验证闸
 
@@ -499,6 +552,7 @@ rollout{accepts_release_range, rollback_floor, retire_after}
 agent.worker / agent.turn / schedule.dispatch
 browser.session / browser.batch
 media.ffprobe / media.ffmpeg.encode / media.local-io
+content.inspect / content.extract / content.thumbnail / storage.attachment-temp
 gateway.ingress-bytes / gateway.mimo.vision / gateway.funasr
 relay.image.openai / relay.image.seedream / relay.input-bytes / relay.blob-disk
 storage.migration / app.update
@@ -518,7 +572,7 @@ storage.migration / app.update
 
 发布初始且默认状态永远为 `NO_GO`。Tag、`workflow_dispatch`、聊天确认、实现者自述、环境变量或单一布尔值都不是发布授权。
 
-1. 模块 24 只能构建不可变候选，不得更新正式 feed。候选身份固定为 `candidate_id + source_commit_sha + source_tree_sha + lockfile_sha256 + build-input/package-manifest/gate-policy/release-checklist/component-matrix digest + sorted artifacts[{platform,arch,filename,sha256}] + build run/provenance digest`；两个平台 artifact 的有序集合共同定义一个 candidate，不能把每个平台误建成同 ID 的不同身份。`source_commit_sha/source_tree_sha` 固定为模块 24 构建候选时的已接受源码基线；候选形成后、GO 前，任一候选输入、源码树、字段或重新构建产物变化都产生新 candidate，旧 gate 和验收失效。gate report 是对该身份执行检查后的不可变结果，不参与生成 candidate ID，但其 digest 必须进入 USER_ACCEPTED receipt；gate/checklist 结果变化要求重跑全部关联检查并生成新 gate report，不能修改旧 report。
+1. 模块 24 只能构建不可变候选，不得更新正式 feed。候选身份固定为 `candidate_id + source_commit_sha + source_tree_sha + lockfile_sha256 + build-input/package-manifest/gate-policy/release-checklist/component-matrix/attachment-retention/content-safety/relay-retention/diagnostic-bundle-policy digest + sorted artifacts[{platform,arch,filename,sha256}] + build run/provenance digest`；两个平台 artifact 的有序集合共同定义一个 candidate，不能把每个平台误建成同 ID 的不同身份。`source_commit_sha/source_tree_sha` 固定为模块 24 构建候选时的已接受源码基线；候选形成后、GO 前，任一候选输入、源码树、字段或重新构建产物变化都产生新 candidate，旧 gate 和验收失效。gate report 是对该身份执行检查后的不可变结果，不参与生成 candidate ID，但其 digest 必须进入 USER_ACCEPTED receipt；gate/checklist 结果变化要求重跑全部关联检查并生成新 gate report，不能修改旧 report。
 2. 版本化 `release-checklist.json` 每项包含 check_id、module、required、platform、candidate input、确定命令/人工步骤、PASS 条件、证据路径和 owner（machine/user）。结果仅 `PASS|FAIL|NOT_RUN|UNVERIFIED`；任何 required 项不是 PASS、证据 hash 不符、已知阻断测试、兼容矩阵 required edge 失败或 release policy 缺失，ReleaseDecision 固定 `NO_GO`。
 3. 外部项在候选创建前由版本化 policy 分类：`REQUIRED_FOR_RELEASE` 或 `OUT_OF_SCOPE_DISABLED`。前者未真实验证即 NO_GO；后者必须证明该候选已编译/配置禁用对应入口并向用户明确，不允许候选生成后临时豁免。`NOT_VERIFIED_EXTERNALLY` 不等于 PASS。
 4. 机器门禁全 PASS 只得到 `GO_READY_FOR_USER`。模块 25 向用户展示同一 candidate 的安装包、双平台核心旅程、视觉/交互、迁移、性能、已禁用范围和风险清单；用户拒绝产生 `USER_REJECTED` 并终结该 candidate，不能靠重跑局部检查复活。
@@ -636,7 +690,7 @@ storage.migration / app.update
 2. 固定历史参考读取命令和允许提取的文件类型；不 checkout 旧提交开发。
 3. 标记 HTML 为非构建视觉/信息架构参考资产，确认不进入 Electron `files`、Vite entry、测试运行时或发布包；其脚本、假数据和内联 CSS 不得成为生产实现来源。
 4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
-5. 冻结 `component-compatibility-matrix.json` 的 schema、组件命名、protocol range 判定算法和 required edge 清单；模块 01 只定义结构与生成入口，不猜具体后续协议版本。冻结 `release-checklist.json` 的 check schema 和 machine/user owner 枚举，交给模块 24/25 填充候选证据。
+5. `release-checklist.json` machine/user owner、component compatibility、legacy support、attachment retention、content safety、Relay retention、diagnostic bundle policy 的 schema 与版本/hash 都在模块 01 冻结机器入口；模块 01 只定义结构/生成入口，不猜后续容量或协议值，分别由所属模块填充证据。
 6. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
 
 ### 明确不改
@@ -682,13 +736,15 @@ ProductTaskService 唯一写 `ProductTask`、`TaskRun`、`ThreadEntry`、`TaskEv
 ### 实施合同
 
 1. 为 ProductTask 和可变子实体增加 schema version、`revision` 与更新时间；定义哪些 mutation 必须使用 `expected_revision`。
-2. submit 使用单个 ProductTask 原子写入边界，同时持久化用户 ThreadEntry、TaskRun immutable snapshot、`client_operation_id` receipt、首个 TaskEvent 和 durable dispatch record；任何一项失败整体回滚且不返回 accepted。TaskRun 在 worker 启动前已经存在，worker 只 claim，不创建产品 run。
+2. submit 使用单个 ProductTask 原子写入边界，同时持久化用户 ThreadEntry、TaskRun immutable snapshot、`client_operation_id` receipt、首个 TaskEvent、durable dispatch record 和全部 ready TaskAttachment binding；任何一项失败整体回滚且不返回 accepted。TaskRun 在 worker 启动前已经存在，worker 只 claim，不创建产品 run。
 3. 所有副作用 mutation 接受 `client_operation_id`，并返回 `accepted | duplicate | conflict | rejected` durable receipt；accepted 只在第 3.1 节原子写入提交后返回。
 4. TaskEvent 增加 `event_sequence`、`task_id`、必要的 `run_id`；WebSocket 支持 `resume_cursor`。
 5. list/detail 的本地请求版本只用于避免迟到 UI 覆盖，不得冒充服务端 revision。
 6. 定义少量产品错误码：revision conflict、owner mismatch、not found、storage unavailable、unsupported schema、operation unknown。
 7. 协议、通知和第二实例只转交受控 task ID/action，不接受任意路径、URL 或命令。
 8. 旧 ProductTask schema 的读取适配器和 fixture 由本模块随新 schema 一起定义并测试为 `D3_LEGACY_READ_ONLY`；只允许覆盖模块 01 `legacy-support-matrix.json` 已登记范围。ProductTask v2 必须先补成功迁移、写回 current、二次运行幂等 fixture 才能从 provisional 升为 supported；模块 22 只调用 adapter 做统一编排，不得重新推导字段映射。
+9. 定义并实现第 3.1 节 ProductTask lifecycle/delete plan/tombstone：busy、queue、Schedule/Recruiting/Fork/worktree 引用阻塞，`delete_failed` 可重入且不隐藏 task；模块 02 只删除 task-owned 产品数据，不删除 Workspace、源文件或外部副本。
+10. 定义 Workspace immutable ID、root identity/revision/availability 与 relocate/relink receipt；path-only 历史记录不能自动授权。定义 TaskAttachment identity/state/ref graph/retention binding，具体 ingest/sweeper 由模块 07 消费。
 
 ### 明确不改
 
@@ -706,6 +762,11 @@ ProductTaskService 唯一写 `ProductTask`、`TaskRun`、`ThreadEntry`、`TaskEv
 | WebSocket 断线后携 cursor 重连 | 不复制事件 | sequence 单调且无重复 |
 | JSON 损坏/无权限/磁盘失败 | 原文件不被覆盖 | 显示可恢复错误，不返回空库成功 |
 | 未知协议 task ID | 不创建任务 | 安全落到任务页并解释 |
+
+- archive/restore/delete fixture 覆盖 active run、queue、Schedule/Recruiting/Fork/worktree 强引用阻塞，删除中崩溃、delete_failed 重试、重复 delete 和 tombstone TTL；Workspace/源文件/共享附件始终存在。
+- delete 两阶段 fixture 覆盖附件/正文/checkpoint 已进可恢复隔离后取消能完整还原；`purge_committed` 前无物理删除，之后任何失败只可重试，不能恢复成缺附件的 archived task。
+- Workspace fixture 覆盖同卷 rename 自动识别后用户确认 relocate、跨卷 copy/root replaced/relink、只读/断盘、两窗口 revision conflict；旧引用不能落到新根。
+- TaskAttachment 与 submit 同一原子边界：任一未 ready 或 binding 写失败均无 ThreadEntry/TaskRun；重复 operation 不产生第二 binding。
 
 ### 交接物
 
@@ -743,6 +804,7 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 7. 建立 desktop-host `ProductResourceScheduler` 基础：typed claim、持久队列、priority/owner fairness、resource profile、multi-resource atomic reservation、lease/fencing、byte accounting、cancel/drain/snapshot。所有 worker start 和 schedule dispatch 先取得 scheduler receipt；本模块迁移现有 GUI/定时 worker 消费者，不保留 fire-and-forget spawn。
 8. 输出 worker protocol/capability range 到 component compatibility registry；worker hello/ready 必须协商 accepted range/build/capabilities，不兼容时不 claim TaskRun。
 9. 输出交给模块 04 的 worker 环境 manifest；模型环境不得由不同 launcher 各自拼接。
+10. Scheduler 注册 `content.inspect/content.extract/content.thumbnail/storage.attachment-temp`，按 content-safety/attachment policy 对一次性 extractor、staging 和 orphan sweeper 做 multi-resource claim、lease/fencing、取消与字节核算；无 profile 不解析。
 
 ### 明确不改
 
@@ -791,7 +853,7 @@ Provider registry 是 model ID、能力、`verified_context_window`、body budge
 10. 模块 04 必须登记并冻结远程 Gateway deployment Work Unit：仓库内受控 ingress/path rewrite、TLS termination、gateway service unit、desktop app credential 注入/轮换、provider secret 注入、health/preflight、部署 manifest version/hash 和回滚。`https://…/gw` 到 gateway `/v1/*` 的 rewrite 必须有配置与契约测试；不能把仓库外现状当证据。模块 24 只消费该 manifest。
 11. Gateway account scope 必须实现第 4.11 节 ProductResourceScheduler：ingress bytes、MiMo vision、Fun-ASR 和 provider request claim 使用统一 profile/fairness/owner/overload 枚举；删除当前互不知情的局部默认并发真相。上游配额无真实配置时 profile missing，能力 unavailable，不以代码默认值启动。
 12. 将 Gateway API、provider-proxy、model catalog、Relay 图片准入协议和各模型 capability range 登记进 component matrix；gateway/sidecar、Gateway/Relay 握手失败、catalog revision 不兼容或模型未登记时，不创建 CoreSession/上游图片提交。
-13. 在模块 13 前建立 Relay account scope 的最小完整图片准入 executor：`relay.image.openai/relay.image.seedream/relay.input-bytes/relay.blob-disk` typed claim、durable queue、owner fairness、profile、lease/fencing、幂等/unknown receipt；Gateway→Relay 使用受控 service identity。模块 13 不得绕过该前置能力执行真实图片 Operation；模块 14 只强化 deadline、容量、部署与 N-1/N 可靠性。
+13. Relay 最小 executor 同时实现第 3.2 节 `relay-retention-policy.json`：encrypted owner-scoped blob、input/provider receipt、local durable Asset ack、7 天 output offline window、30 天 unknown/audit 和 fenced purge；policy/profile 缺失时图片能力 unavailable，模块 13 不得先产生无 retention 的真实付费任务。
 
 ### 验收 Oracle
 
@@ -948,6 +1010,8 @@ Composer
 6. 用户向上阅读时不抢滚动；切任务保留各自草稿、阅读位置和运行卡折叠状态。
 7. 外部附件进入受控任务附件或安全引用；PDF/DOC 等先提取可读内容，二进制不序列化为普通消息文本。
 8. 同一次拖拽/粘贴同时包含 file/HTML/bitmap 时去重；附件发送、失败、取消和清理绑定 task/operation identity。
+9. AttachmentStore 按第 3.1 节实现 staged/inspect/ready/bound、7 天草稿、1 小时失败临时副本、24 小时 orphan、ref graph 和 installation 容量；外部原文件永不删除。解析只能消费模块 03 的 sandbox/profile/typed claim，MIME 不只信扩展名。
+10. PDF/DOC/Office/HTML/图片的提取输出保存为有界、标来源的 immutable attachment derivative；宏/脚本/未知二进制不执行。发送失败或取消保留用户草稿但按状态清理应用临时 derivative；磁盘不足显式 `ATTACHMENT_CAPACITY_EXCEEDED` 并提供清理入口。
 
 ### 验收 Oracle
 
@@ -958,6 +1022,8 @@ Composer
 - 图片、外部文件、项目内文件、长文本和部分附件失败均有 fixture；有效内容不因一个附件失败而丢失。
 - 运行摘要来自真实事件；没有事件时不生成随机“正在思考”文案。
 - 原始 thinking/tool JSON/密钥在 UI、普通日志和 transcript 中均不可见。
+- 7 天草稿 TTL、1 小时失败清理、24 小时 orphan、共享 content hash 不同 owner/ref、磁盘软/硬阈值和 sweeper 崩溃 fixture 不误删外部/已绑定文件。
+- 伪 MIME、宏 Office、畸形/超大 PDF、archive bomb、超像素图片和 extractor timeout/OOM 均 fail-closed；无网络/secret/workspace write，临时目录回收且正常附件不受连带删除。
 
 ### 交接物
 
@@ -1023,7 +1089,8 @@ ProductTaskService 唯一写 `QueuedMessage`、`TaskReference`、`Checkpoint`、
 4. 本模块只实现文本消息引用；文件/代码引用由模块 10 定义并接入。模块 09 不引用、导入或等待模块 10 的 schema。
 5. fork/checkpoint 使用当前 ProductTask 和明确 worktree identity；创建失败回滚 task record 与应用拥有的 worktree，不删除源项目。
 6. 普通 UI 使用“排队、加入对话、在独立副本中继续、回到这里”，不显示 CoreSession/checkpoint/rewind 技术术语。
-7. 只为模块 01 支持矩阵登记的旧 ProductTask/Core queue、文本引用、checkpoint 和 fork shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；未登记记录保持只读隔离，不能由模块 09自行扩大支持或静默丢弃。
+7. ProductTask lifecycle 是本模块强引用前置：archived task 不派发 queue/fork/checkpoint mutation；删除 task 时每个 QueuedMessage、Checkpoint/ForkSource 和 managed worktree 都由本模块返回引用类别与解除/用户确认 cleanup operation，不由模块 02猜路径删除。worktree cleanup 有独立 ID、revision、owner/fingerprint 和 `cleanup_failed`，源 workspace/worktree 永不作为 managed fork 删除。
+8. 只为模块 01 支持矩阵登记的旧 ProductTask/Core queue、文本引用、checkpoint 和 fork shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；未登记记录保持只读隔离，不能由模块 09自行扩大支持或静默丢弃。
 
 ### 验收 Oracle
 
@@ -1061,6 +1128,8 @@ TaskReviewService 只读取并校验 canonical workspace 文件；review mutatio
 5. 大文件、长行、大 Diff 和大目录采用有界分页/截断/虚拟化，并明确“只显示部分”。
 6. Agent 完成后由真实文件和 revision 重新生成 Diff；临时 UI 文本不是完成证据。
 7. 当前只读 ReviewDock 被融合后移入模块 23 删除 Manifest；本模块先迁完消费者。
+8. Workspace root identity/revision 是所有 reference 的前置条件：同卷移动经 relocate receipt 继续；跨卷/替换/relink、外部 IDE 修改、只读/断盘返回统一 stale/unavailable，不刷新旧 Diff 为新真相。Git workspace 额外显示 branch/HEAD/worktree identity；非 Git 不展示伪 Diff base。
+9. file preview/图片缩略图/文档文本提取必须复用第 4.8 节 content sandbox 和模块 03 claim；ReviewDock 不导入第二解析器。
 
 ### 验收 Oracle
 
@@ -1104,6 +1173,8 @@ Electron short-lived selection capability
 5. ProductTask 后端将页面内容视为不可信数据，限制和转义字段；网页文字不能覆盖用户授权或系统指令。
 6. 跨域 iframe 无安全定位时只允许整页截图意见并标记 `unsubmitted`，不得猜 selector/坐标。
 7. “确认修改并发送”即用户提交；Agent 忙时进入模块 09 队列，不要求回 Composer 二次发送。
+8. Preview WebContents 严格使用第 4.8 节独立 sandbox/partition/CSP/navigation/download/protocol policy；selection picker 只在 isolated world 处理可信用户手势，不向页面 world 暴露 API/event/capability。页面脚本主动 IPC、iframe 冒充、导航竞态或 capability 重放必须被拒绝。选择截图进入同一 content profile/byte budget。
+9. preview_selection 绑定 workspace revision/root identity/file hash；Workspace relocate/relink/断盘、源码被 IDE 修改或 managed worktree 丢失立即失效，不能把旧 selector 应用到新根。
 
 ### 验收 Oracle
 
@@ -1230,8 +1301,9 @@ image Brief、Operation kinds、canvas/version、routing 和三候选 fixture。
 8. 容量报告分开写“受理能力、排队能力、provider 实际并发、完成吞吐”，禁止用“100 用户并发”一个数字概括。
 9. 冻结供模块 16 消费的跨媒体可靠性接口：deadline/timeout matrix、capacity preflight、owner/provider concurrency、total in-flight bytes 和 `outcome_unknown` 原 Operation 查询。该接口不包含图片候选数量、图片 UI 或图片 provider 路由。
 10. 模块 14 必须登记并冻结远程 Relay deployment Work Unit：仓库内受控 ingress/TLS/allowlist、relay service unit、Gateway→Relay 独立 service credential、owner 派生、provider secret/持久 DB/blob 注入、health/preflight、部署 manifest version/hash 和回滚。Relay 不接受桌面直连或客户端自报 owner；模块 24 只消费该 manifest。
-11. Relay account scope 消费模块 04 已建立的唯一 ProductResourceScheduler 图片准入基础；本模块补齐五分钟 deadline、生产容量 profile/preflight、N-1/N rolling compatibility、部署可靠性和 outcome_unknown 对账。OpenAI/Seedream、input bytes、blob disk 和付费任务继续使用同一 typed claim/durable queue/owner fairness/lease/fencing；不得新建第二 scheduler，当前独立 semaphore/数组队列必须迁成其 executor 或删除。
+11. Relay account scope 消费模块 04 已建立的唯一 ProductResourceScheduler 图片准入和 retention/ack 基础；本模块补齐五分钟 deadline、生产容量 profile/preflight、N-1/N rolling compatibility、加密 DB/blob 部署、TTL/purge sweeper 可靠性和 outcome_unknown 对账。OpenAI/Seedream、input bytes、blob disk 和 purge 继续使用同一 typed claim/durable queue/owner fairness/lease/fencing；不得新建第二 scheduler，当前独立 semaphore/数组队列必须迁成其 executor 或删除。
 12. Gateway↔Relay 的 `relay-image-task` protocol/build/capability 和 image provider profile revision 登记进 component matrix；部署遵守 N-1/N reader overlap，不兼容时 gateway 返回 `RELAY_INCOMPATIBLE` 且不创建 MediaOperation 上游提交。
+13. retention fixture 覆盖 accepted receipt 与本地 Operation 原子持久化 signed envelope；provider receipt 后 input 删除、local Asset ack 后 output 删除；桌面离线第 8/14/15/29/31 天恢复，Relay 重启后可幂等签发同一终态语义；重复查询/ack、提交后立即前跳 31 天、重启前跳、NTP 校时、回拨、Relay 不可达、坏签名、用户 purge、跨 owner 与 purge_failed 均有断言。只有有效 Relay server-time terminal receipt 转 `result_expired/outcome_unresolvable`；其余保持 unknown/阻塞且不产生新付费 Operation。
 
 ### 验收 Oracle
 
@@ -1314,6 +1386,7 @@ MediaProjectService 写 source manifest、Evidence、Timeline Version、Export O
 7. 每个阶段是 MediaJob，记录 operation/project/input/output revision；阶段失败保留 checkpoint，不跳阶段或假成功。
 8. 素材变化使相关 Evidence/旧 AI draft stale，但不删除用户当前 Timeline Version；由用户选择重新规划。
 9. 对视频聊天中转执行 `D1_STOP_WRITES`：停止创建 `kind=video` 的 media draft；提供视频 draft/project/source/evidence/unknown Job 的 `D3_LEGACY_READ_ONLY` adapter 与 fixture给模块 22；物理删除统一由模块 23。
+10. source ingest、FFprobe、代表帧抽取和 FFmpeg 全部视为不可信媒体解析，必须经 content safety profile + Scheduler claim；限制源/解码像素、帧/时长、CPU/wall、memory/temp/output。畸形媒体或超限只形成安全错误，不让 parser 崩溃 sidecar；外部源移动/断盘按 fingerprint 进入 missing/relink，不能按同名自动替换。
 
 ### 验收 Oracle
 
@@ -1353,6 +1426,7 @@ ScheduledTaskService 写 schedule、`logical_run_id`、next occurrence 和 notif
 5. 每次执行经 agent-worker，使用独立 TaskRun 与 permission snapshot；ScheduledTaskService 只持久化 occurrence/job，不自行 spawn。`schedule.dispatch + agent.worker` 必须作为一个 ProductResourceScheduler claim 原子准入；跨进程 fencing 保证每个 occurrence 至多一次，不得调用公共 CLI。
 6. 通知深链只携受控 task/logical run ID；目标不存在落安全页面。
 7. 网络错误不自动重复外部副作用；有界重试只用于读取/查询，发送动作沿原 Operation 对账。
+8. ScheduledTask 保存 target task strong reference 与 on-delete policy；ProductTask delete plan 遇到 enabled/active schedule 固定阻塞。用户必须先 disable 并选择“保留历史但解除 task 引用”或删除 schedule；occurrence running/outcome_unknown 时不能解除。任何策略都有 receipt，不由任务删除隐式取消。
 
 ### 验收 Oracle
 
@@ -1388,18 +1462,21 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 1. 定义 `BrowserCapability.observe/action/reobserve`；正式本机实现仅 `ChromeSessionBridge`，唯一 packaged transport 固定为 `BilliardBuddy Chrome Extension ↔ Chrome Native Messaging host ↔ 本地 bridge session`。MCP 只负责 Core Tool 到 BrowserCapability 的内部调用，不是浏览器 transport；禁止远程 WebSocket bridge、Playwright 第二 adapter或 Electron Preview 冒充用户 Chrome 会话。
 2. Extension 与 native host 是模块 18/24 必须验证的同一能力：固定 extension ID/版本协议/native host name；public package 只允许正式 extension origin；sidecar wrapper 必须使用 packaged sidecar 的内部 `native-host --app-root <unpacked-root>` mode，不允许经过或恢复 public CLI entry；extension 未安装、host manifest 失败、版本不兼容或未握手时 capability 为 unavailable，BOSS 退化为人工交接，不展示可执行。
 3. Bridge 每次连接生成 `bridge_session_id`，每个调用携带 `request_id + owning_client_id + page_version` 并只回给发起者；不得广播 tool response。断线清除该 session 的短期 ref/pending request；读操作可在重连后重新 observe，写操作断线固定 `outcome_unknown`，必须 reobserve 对账，不能自动重发。
-4. observe 返回 URL/title/page version、稳定 ref、role/name/state/value、可见文字摘要和 visual_required；导航/刷新/分页/iframe 变化后旧 ref 失效。
-5. action 只引用当前 page version 的稳定 ref，不保存长期 CSS selector，不输出桌面像素坐标。
-6. visual_required 时 MiMo 只生成视觉证据；无法映射当前 ref 就转用户接管，MiMo 不执行动作。
+4. observe 的通用 BrowserCapability 可以表达 URL/title/page version/ref/role/name/state/value；但招聘专用 adapter 必须在 Extension/bridge ephemeral 区内先做字段级 allowlist/redaction，只向 Tool/Core 返回去身份化筛选字段、非识别状态和绑定当前 session/page 的短期不透明 `candidate_action_token`。`visible_text_summary`、原始 ref/DOM 属性、姓名/电话/email/简历自由文本不得离开 ephemeral 区；导航/刷新/分页/iframe 变化使 token 失效。
+5. action 只引用当前 page version 的 `candidate_action_token`，Extension 在 ephemeral 区解析为当前 ref；Tool/Core 永不接收原始候选 ref，不保存长期 CSS selector，不输出桌面像素坐标。
+6. `visual_required` 时，普通非招聘视觉能力可由 MiMo 生成受控证据；招聘候选页面固定转用户接管，不能上传候选截图/DOM/简历。任何视觉结果无法映射当前 ref 时同样转用户接管，MiMo 不执行动作。
 7. 登录、扫码、验证码、人机验证和 Chrome 站点权限由用户在可见浏览器处理；不导出 Cookie/storage state/profile，不调用私有接口 header。Extension 站点权限、产品审批与页面当前版本三者任一不满足都不执行 action。
 8. 正式只读链固定为：`agent-worker/Core capability discovery → boss-recruiting Skill → recruiting-browser Tool.observe/reobserve（MCP 内部协议）→ BrowserCapability → ChromeSessionBridge → Native Messaging host → BilliardBuddy Chrome Extension → read receipt → RecruitingService 写 BrowserCheckpoint → ProductTask 结果投影`。observe/reobserve 不需要副作用审批，但仍校验 owner、plan/batch、bridge session、当前 page version 和短期证据边界。
 9. 正式副作用链固定为：`Skill 提议受限 action → recruiting-browser Tool 请求 ProductTask/Core approval → 用户批准 → RecruitingService 先持久化 RecruitingOperation intent → Tool.action → BrowserCapability/ChromeSessionBridge → Extension 页面动作 → reobserve receipt → RecruitingService 写 succeeded/outcome_unknown → ProductTask 结果投影`。未批准、intent 未持久化、session/page version 不匹配时不得调用 action；点击本身不是完成证据。
 10. Tool 通过 Core 现有工具注册边界暴露 `observe/action/reobserve`，只接收 plan/batch/operation ID 与受限 payload；不得让 Skill 直接写 RecruitingService 文件或调用 MCP/native/extension 细节。生产构建不得继续使用 `BROWSER_TOOLS=[]` 的 no-op stub；capability manifest 与 ListTools 必须证明真实工具非空且版本一致。
 11. RecruitingPlan 保存门店、岗位事实、筛选条件、话术约束、允许动作；Batch/Operation 使用 revision、idempotency 和页面回读证据。
-12. 候选人完整简历、联系方式、截图和 HTML 只作短期受控证据，不进 AutoMem、普通日志或跨门店同步。
-13. 当前仓库没有可证明的旧 Recruiting 持久化 schema，因此模块 01 矩阵将其标为 unsupported，本模块不创建假 legacy adapter；将来发现真实旧数据时必须先更新矩阵、fixture 和 Spec-Commit。
-14. 通用桌面 Computer Use 的消费者迁完后列入模块 23 `D4_PHYSICAL_DELETE`；本模块不接 Playwright 第二生产 adapter。
-15. Browser session/batch 必须提交 desktop-host `browser.session/browser.batch` typed claim，声明 owner、页面/截图字节、deadline 和取消策略；bridge/Skill 不维护第二把业务锁。profile missing、draining 或 owner quota 耗尽时返回统一 reason code，不打开或继续页面动作。
+12. 招聘隐私期限固定：原始 HTML/截图/完整简历/头像/姓名/电话/邮箱只在 Extension/bridge owner-scoped 加密临时区保留 15 分钟，session 断开、页面版本变化、浏览器关闭或用户删除即提前销毁；不得持久化进 BrowserCheckpoint。Checkpoint 只含 ref hash、page version、非识别筛选结论和状态。
+13. Core/Skill 只接收 RecruitingPlan 明确 allowlist 的去身份化结构字段；候选页面 `visual_required` 固定转用户接管，不能把截图/DOM/简历上传 MiMo 或其他模型。RecruitingOperation 待发送正文仅在 pending/outcome_unknown 加密保存，terminal 后立即删；unknown 最长 7 天用于同一 operation reobserve，之后删正文但不改成 failed或重发。计划/批次关闭立即清 ephemeral/pending；仅 operation hash/状态/时间的 audit 最长 30 天。清理失败进入 `privacy_purge_failed` 并阻止模块 complete。
+14. 用户可从计划/批次删除入口查看将清除的证据类别并发幂等 purge；Cookie/storage 永不进入产品存储。所有期限使用可注入时钟，且 diagnostics、AutoMem、普通日志、migration manifest、跨门店 API 静态拒绝这些字段。
+15. 当前仓库没有可证明的旧 Recruiting 持久化 schema，因此模块 01 矩阵将其标为 unsupported，本模块不创建假 legacy adapter；将来发现真实旧数据时必须先更新矩阵、fixture 和 Spec-Commit。
+16. 通用桌面 Computer Use 的消费者迁完后列入模块 23 `D4_PHYSICAL_DELETE`；本模块不接 Playwright 第二生产 adapter。
+17. Browser session/batch 必须提交 desktop-host `browser.session/browser.batch` typed claim，声明 owner、页面/截图字节、deadline 和取消策略；bridge/Skill 不维护第二把业务锁。profile missing、draining 或 owner quota 耗尽时返回统一 reason code，不打开或继续页面动作。
+18. RecruitingPlan/Batch 保存 ProductTask strong reference 时，task delete plan 在任何 active/pending/outcome_unknown batch/operation 下阻塞。用户先关闭计划并完成第 12—14 条 privacy purge，再以 receipt 选择保留脱敏 audit 并解除引用或删除计划；任务删除不得隐式关闭/发送/清候选数据。
 
 ### 验收 Oracle
 
@@ -1411,6 +1488,9 @@ RecruitingService 唯一写 Plan、Batch、Checkpoint、Operation。Skill、brid
 - 最终运行图无桌面坐标点击 fallback、Cookie 导出或私有 API header。
 - browser profile/owner/bytes 上限在双 session、批量任务、取消、断线和更新 draining 下不越限或泄漏；无 permit 时不调用 Extension action。
 - 真实 BOSS 发送未做时交接明确写“假页面合同已验证，真实平台未验证”。
+- 15 分钟 ephemeral、7 天 unknown payload、30 天 audit 使用 fake clock 准时清理；关闭计划/用户 purge 后无 HTML/截图/简历/姓名/电话/email，purge_failed 不谎称已删。
+- prompt、checkpoint、普通日志、AutoMem、diagnostic bundle、migration manifest、跨门店读取均以 canary PII 证明零泄漏；招聘 visual_required 必须人工接管且不调用 MiMo。
+- 招聘 observe canary fixture 在可见文本/DOM/ref 注入姓名、电话、email、简历句子：Extension/bridge 外只出现 allowlist 去身份化字段和短期 action token；Core Tool event、prompt、checkpoint、日志均无原文，过期/跨页 token 被拒绝。
 
 ### 交接物
 
@@ -1440,6 +1520,7 @@ Skill/reference 保存可复用流程和知识正文；门店差异保存于产�
 3. 删除错误、过期、违规和“工具不存在却声称已执行”的内容。
 4. 经营动作只能通过真实领域服务的公开合同执行：普通任务使用 ProductTaskService 的 task/run/receipt；自动事项使用 ScheduledTaskService 的 schedule/logical run/notification receipt；图片和视频使用 MediaProjectService 及模块 13/16 已冻结的 Operation/Asset/Version/Evidence；招聘使用 RecruitingService 的 Plan/Batch/Checkpoint/Operation。Skill 不得直接写领域文件、调用 cron/gateway/relay/FFmpeg 或 sidecar 内部存储，不得创建 `media_draft`，也不得把 toast、模型文字或 Skill 输出当成完成结果。
 5. 无工具、无实时证据或字段不足时明确“无法执行/需要确认”，不把模型文本当完成结果。
+6. 招聘 Skill 只能消费脱敏的计划事实、非识别筛选结论和 operation 状态；不得读取 RecruitingEphemeralEvidence、候选 ref 原文、简历、姓名或联系方式，也不得为了生成话术把这些字段复制进 ProductTask prompt。
 
 ### 验收 Oracle
 
@@ -1530,7 +1611,8 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 6. 对 Computer Use 设置、权限安装页和屏幕录制/辅助功能引导执行 `D2_MIGRATE_CONSUMERS`；通用桌面控制源码由模块 23 `D4_PHYSICAL_DELETE`。
 7. TeamMem 不出现在快照、设置或诊断；项目指令、Session Memory、AutoMem 使用业务化名称。
 8. 只为模块 01 支持矩阵登记的 provider/model、WebSearch key presence（不复制密钥值）、capability/TeamMem/user setting 旧 shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；普通无版本 settings 不承诺任意历史格式。本模块只移除普通运行时入口，不破坏已登记 reader。
-9. About 页显示版本、更新状态和许可，不显示内部 provider/model。
+9. About/设置提供“导出诊断信息”：展示允许类别、7 天/5 MiB 上限和“不自动上传”，经受限 IPC 只调用 Main `DiagnosticBundleService`。renderer/sidecar/worker 不传任意路径或文件清单给 collector；用户只选择最终保存路径。导出失败显示短错误码并不留下 staging。
+10. About 页显示版本、更新状态、`target_starting/recovery_required/recovery_read_only` 和许可，不显示内部 provider/model；健康与回退资格只投影 ElectronUpdaterService，不自行推断。
 
 ### 验收 Oracle
 
@@ -1539,6 +1621,7 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 - UI、API、环境模板和文案 consumer graph 中 WebSearch/Tavily/Brave/Computer Use/TeamMem 普通入口归零。
 - Core 的 MCP/Plugin/Hooks 执行机制未被删除，只从普通设置隐藏并移除无消费者产品管理表面。
 - 普通设置不出现 model/provider/API key/`tengu_*`/`CLAUDE_CONFIG_DIR`。
+- diagnostic bundle canary fixture 注入 prompt、Cookie、secret、绝对路径、URL query、附件正文/Base64、招聘姓名/电话/email 和原始 crash dump：任何一个进入候选字段都整体失败；合法包仅含 allowlist、随机盐 HMAC ID、manifest/hash，且无自动网络请求。
 
 ### 交接物
 
@@ -1588,6 +1671,7 @@ capability snapshot schema、设置 IA、技术表面删除候选和 fallback fi
 9. 迁移可重入，使用版本+hash 备份、checkpoint 和原子替换；同名冲突不覆盖；失败进入 `failed_read_only`。
 10. 正式升级包必须继续携带 coordinator、支持矩阵登记的 legacy reader/fixture 和回滚入口；本模块不得删除它们。
 11. 迁移 manifest 只记录 storage ID、输入/目标版本或 shape ID、数量、状态、相对/脱敏标识和错误码，不记录用户正文、候选人隐私、密钥或绝对路径。
+12. Workspace/TaskAttachment/ProductTask lifecycle 旧形态只按支持矩阵迁移：path-only Workspace 无法证明 root identity 时写 `relink_required`，不能自动授权；旧附件无法证明 owner/ref/bytes 时只读隔离，不进入 sweeper；不凭“记录缺失”创建 deleted tombstone。RecruitingEphemeralEvidence 和 Relay blob 永不作为迁移输入。
 
 ### 验收 Oracle
 
@@ -1721,10 +1805,15 @@ available
   → downloaded_verified
   → waiting_for_safe_exit
   → restart_pending
-  → confirmed_on_target_version
+  → target_starting
+  → confirmed_on_target_version | startup_unhealthy
+startup_unhealthy
+  → target_starting | recovery_required
+recovery_required
+  → target_starting | rollback_pending | recovery_read_only
 ```
 
-不存在可由当前进程可靠观测的 `installing` 持久状态。`restart_pending` 必须在调用 `quitAndInstall` **之前**原子持久化，含 source version、target version、artifact hash、transaction ID 和 attempt ID；随后调用安装即可能立即退出。若调用在进程仍存活时同步失败，ElectronUpdaterService 以同一 attempt receipt 把状态恢复到 `downloaded_verified` 并保留错误；一旦进程退出，只有目标版本首次启动核验 transaction/artifact version 后才能写 `confirmed_on_target_version`。若重新启动后仍是旧版本或无法确认，显示“更新结果待确认”，不得自动再次安装。
+不存在可由当前进程可靠观测的 `installing` 持久状态。`restart_pending` 必须在调用 `quitAndInstall` **之前**原子持久化，含 source version、target version、artifact hash、transaction ID 和 attempt ID；随后调用安装即可能立即退出。若调用在进程仍存活时同步失败，ElectronUpdaterService 以同一 attempt receipt 把状态恢复到 `downloaded_verified` 并保留错误。目标版本 Main 启动即写 `target_starting`，只有 package/version/hash/matrix、sidecar compatibility、领域存储只读检查和 renderer 首个可交互产品壳 health receipt 全部通过，才能写 `confirmed_on_target_version`。同一目标版本 10 分钟内连续两次在 health receipt 前异常退出/超时即 `recovery_required`；不得因进程曾出现就确认成功或自动再次安装。
 
 失败语义固定：检查/下载失败回到 `idle` 并保留当前版本；下载取消回到 `available`；校验失败删除当前模块拥有的损坏下载并回到 `available`；activity gate 拒绝时保持 `downloaded_verified`；调用安装前任一步失败保持当前应用运行。
 
@@ -1739,11 +1828,13 @@ available
 7. `release-checklist.json` 的全部 machine-required 检查在候选 artifact 上执行；模块 24 只能输出 `NO_GO | GO_READY_FOR_USER`。tag push、workflow_dispatch 和上传目录切换只可使用 `BB-23L` 保留的无 feed 写权限候选 trigger；该 Work Unit 的 D4/D5 旁路证据缺失即 NO_GO，不能把 tag 当发布凭据。
 8. 更新 UI 提供检查、下载、进度、取消下载、稍后安装和现在安装；所有按钮只发送带 transaction ID 的 mutation，renderer 不直接调用 `quitAndInstall`。
 9. 下载可后台进行；进入 `waiting_for_safe_exit` 时通过 ProductResourceScheduler 申请 `app.update` lifecycle claim，执行 draining/checkpoint/cancel/quiesced。可恢复写入先落盘，活动最终导出和 outcome_unknown 付费任务固定阻止安装，前台 PTY要求用户确认；不能直接 stopAll/kill sidecar。
-10. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified`、scheduler quiesced 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified` 并解除 draining；目标版本首次启动核验 artifact version/transaction/component matrix 后才写 confirmed。
+10. `ElectronUpdaterService` 只有在 transaction 为 `downloaded_verified`、scheduler quiesced 且 activity gate 通过时，才先原子写入 `restart_pending`，再立即调用 `quitAndInstall`。同步调用失败且进程仍存活时按同一 attempt 恢复 `downloaded_verified` 并解除 draining；目标版本按本节四项 health receipt 从 `target_starting` 到 `confirmed_on_target_version`，任何首次进程出现、单独 artifact version 或单独 compatibility 核验都不能确认。
 11. 更新不自动降级；回退通过仍在 component matrix `rollback_floor` 内、且可读取当前 schema 的完整上一版本完成。不满足则停写并前进修复。
 12. 模块 24 只消费模块 04/14 已冻结的 Gateway/Relay deployment manifest version/hash；若 ingress、service identity、secret 注入、health/preflight、compatibility overlap 或回滚证据缺失则 candidate NO_GO。
 13. 源码接线、受控远程部署 manifest、candidate machine gate、USER_ACCEPTED 和真实正式发布/更新必须分层报告；模块 24 只记录前两类机器证据，不能生成或宣称 USER_ACCEPTED/GO/真实更新成功。
 14. HTML 原型、验收截图、开发 secret、临时报告和未脱敏 fixture 不进入发布包。
+15. `recovery_required` 由 Main 启动最小恢复壳，不启动 worker、scheduled dispatch、媒体/浏览器写入、PTY 或自动 updater，只提供：重试目标版本、导出脱敏诊断、检查回退资格、只读打开并导出数据。上一版本安装包只保留到目标版本 healthy confirmed，且必须签名/hash/provenance 验证；回退仅在 rollback floor 内且上一版本可读当前 schema 时由用户明确触发。
+16. 若 schema 已提升且上一版本不可读，禁止回退，进入 `recovery_read_only`：Main 只启动统一 sidecar binary 的内部 `recovery-read-only` mode，不直接读领域文件。该 mode 与 normal server/migration 使用第 4.8 节同一原子 `DomainDataLease`，取得 mode=`recovery_read_only` 的独占 lease/fencing 后才读；normal writer 启动必须原子拒绝 active recovery lease，旧 holder 不能恢复写入。该 sidecar 禁止领域 mutation/worker/provider，只经窄 IPC 提供版本化数据导出；用户可另导出 Main 的脱敏诊断。任何 export 不覆盖原数据；恢复壳健康本身不把目标版本标 confirmed。
 
 ### 验收 Oracle
 
@@ -1755,7 +1846,9 @@ available
 - component matrix 包内/运行时握手覆盖 Main-renderer-sidecar-worker、Gateway-Relay、Extension-native-host 和 migration schema；required edge 不兼容即 NO_GO。
 - update transaction fixture 覆盖 scheduler draining、running worker/FFmpeg、outcome_unknown 阻塞、quiesced 安装、同步失败解除 draining、旧版本重启和目标版本确认；不重复安装。
 - 从旧 schema fixture 启动安装目录中的 sidecar，模块 22 migration 可达并保持备份/回滚。
-- 目标版本未真实启动时，报告只能写“包与更新接线已验证”，不能写“更新成功”。
+- 目标版本未完成 package/matrix、sidecar、storage-read 和首个可交互 renderer 四个 health receipt 时，报告只能写“包与更新接线已验证”，不能写“更新成功”。
+- StartupHealthRecord fixture 覆盖正常健康、renderer/sidecar 在 receipt 前崩溃、10 分钟两次失败、recovery shell 不启动写服务、有效 rollback、schema 不兼容禁止回退和 recovery_read_only 数据导出；normal writer/recovery 同时启动、导出期间 writer 尝试启动、旧 fencing holder 恢复都只有一个 DomainDataLease winner，Main 从不直接打开领域文件。
+- package 验证包含受控 extractor/content policy、attachment/Relay retention policy 和 DiagnosticBundleService；canary secret/PII/路径/正文无法进入诊断包，且无自动上传。
 
 ### 交接物
 
@@ -1802,6 +1895,12 @@ available
 | Resources | ProductResourceScheduler 的 desktop/gateway/relay scope、profile、priority/fairness、bytes、lease/fencing、cancel/drain/overload；worker/schedule/FFmpeg/ASR/vision/image/browser/migration/update 无第二调度真相 |
 | Release decision | candidate identity/provenance 不变；required machine/user checklist 全 PASS；有效 USER_ACCEPTED receipt 绑定同一 artifact；无 tag/manual/feed 旁路 |
 | 隐私 | 日志、包、fixture 和错误 UI 无密钥、Cookie、正文、Base64、候选人隐私和绝对路径 |
+| Task lifecycle & attachments | active/archive/restore/deleting/delete_failed/deleted、引用阻塞、崩溃续删；staged/ready/bound、7天/1小时/24小时 TTL、容量/orphan/ref graph、外部文件不删 |
+| Untrusted content | Preview CSP/partition/Node/导航/下载/协议；extractor 无网络/secret/write，ZIP bomb/巨大 PDF/畸形图片媒体、FFmpeg timeout/memory/temp/output 全 fail-closed |
+| Workspace | 同卷移动、跨卷/根替换/relink、Git/non-Git、IDE 外改 stale、只读/断盘、managed worktree 丢失；无旧引用落错根 |
+| Retention & privacy | Relay 24小时输入/7天输出/30天 unknown-audit 与 durable ack/purge；招聘 15分钟 evidence/7天 unknown payload/30天 audit，PII 不进 prompt/log/diagnostics |
+| Update recovery | target_starting 四项 health receipt、10分钟两次失败、最小 recovery shell、rollback floor/schema gate、不可回退只读导出 |
+| Diagnostics | 用户显式、无自动上传、7天/5MiB allowlist；HMAC ID、manifest/hash、canary prompt/path/Cookie/secret/attachment/PII 全排除 |
 
 ### USER_ACCEPTED 与正式发布步骤
 
