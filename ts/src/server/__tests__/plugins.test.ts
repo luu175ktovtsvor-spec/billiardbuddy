@@ -14,6 +14,7 @@ import { __resetWebSocketHandlerStateForTests, getSlashCommands } from '../ws/ha
 
 let tmpDir: string
 let originalConfigDir: string | undefined
+let originalSimpleMode: string | undefined
 let originalHasSession: typeof conversationService.hasSession
 let originalRequestControl: typeof conversationService.requestControl
 
@@ -40,7 +41,9 @@ describe('Plugins API', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-plugins-api-'))
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+    originalSimpleMode = process.env.CLAUDE_CODE_SIMPLE
     process.env.CLAUDE_CONFIG_DIR = tmpDir
+    delete process.env.CLAUDE_CODE_SIMPLE
     clearInstalledPluginsCache()
     clearPluginCache('plugins-api-test-setup')
     resetSettingsCache()
@@ -60,6 +63,11 @@ describe('Plugins API', () => {
       delete process.env.CLAUDE_CONFIG_DIR
     } else {
       process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+    }
+    if (originalSimpleMode === undefined) {
+      delete process.env.CLAUDE_CODE_SIMPLE
+    } else {
+      process.env.CLAUDE_CODE_SIMPLE = originalSimpleMode
     }
     await fs.rm(tmpDir, { recursive: true, force: true })
   })

@@ -15,6 +15,8 @@ describe('provider-aware thinking support', () => {
   let originalBedrock: string | undefined
   let originalVertex: string | undefined
   let originalFoundry: string | undefined
+  let originalAzureOpenAI: string | undefined
+  let originalUserType: string | undefined
   let originalExplicitDisabledThinking: string | undefined
 
   beforeEach(() => {
@@ -24,11 +26,15 @@ describe('provider-aware thinking support', () => {
     originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK
     originalVertex = process.env.CLAUDE_CODE_USE_VERTEX
     originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
+    originalAzureOpenAI = process.env.CLAUDE_CODE_USE_AZURE_OPENAI
+    originalUserType = process.env.USER_TYPE
     originalExplicitDisabledThinking = process.env.BB_SEND_DISABLED_THINKING
 
     delete process.env.CLAUDE_CODE_USE_BEDROCK
     delete process.env.CLAUDE_CODE_USE_VERTEX
     delete process.env.CLAUDE_CODE_USE_FOUNDRY
+    delete process.env.CLAUDE_CODE_USE_AZURE_OPENAI
+    delete process.env.USER_TYPE
   })
 
   afterEach(() => {
@@ -38,6 +44,8 @@ describe('provider-aware thinking support', () => {
     restoreEnv('CLAUDE_CODE_USE_BEDROCK', originalBedrock)
     restoreEnv('CLAUDE_CODE_USE_VERTEX', originalVertex)
     restoreEnv('CLAUDE_CODE_USE_FOUNDRY', originalFoundry)
+    restoreEnv('CLAUDE_CODE_USE_AZURE_OPENAI', originalAzureOpenAI)
+    restoreEnv('USER_TYPE', originalUserType)
     restoreEnv('BB_SEND_DISABLED_THINKING', originalExplicitDisabledThinking)
     clearCapabilityCache()
   })

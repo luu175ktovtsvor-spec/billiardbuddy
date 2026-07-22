@@ -24,6 +24,7 @@ import {
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { _setGlobalConfigCacheForTesting } from '../../utils/config.js'
 import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
 import { clearOutputStyleCaches } from '../../outputStyles/loadOutputStylesDir.js'
 
@@ -44,6 +45,37 @@ let originalAnthropicDefaultSonnetModel: string | undefined
 let originalAnthropicDefaultOpusModel: string | undefined
 let originalNativeFileSearch: string | undefined
 
+const MODEL_AND_AUTH_ENV_KEYS = [
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'OPENAI_CODEX_OAUTH_FILE',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'USER_TYPE',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_AZURE_OPENAI',
+  'BB_OPENAI_OAUTH_PROVIDER',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION',
+] as const
+
+let originalModelAndAuthEnv: Record<(typeof MODEL_AND_AUTH_ENV_KEYS)[number], string | undefined>
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
+
 async function setup() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-test-'))
   resetSettingsCache()
@@ -62,6 +94,9 @@ async function setup() {
   originalAnthropicDefaultSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   originalAnthropicDefaultOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   originalNativeFileSearch = process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
+  originalModelAndAuthEnv = Object.fromEntries(
+    MODEL_AND_AUTH_ENV_KEYS.map(key => [key, process.env[key]]),
+  ) as Record<(typeof MODEL_AND_AUTH_ENV_KEYS)[number], string | undefined>
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.HOME = tmpDir
   process.env.USERPROFILE = tmpDir
@@ -76,9 +111,11 @@ async function setup() {
   delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  for (const key of MODEL_AND_AUTH_ENV_KEYS) delete process.env[key]
   clearKeychainCache()
   primeKeychainCacheFromPrefetch(null)
   clearOpenAIOAuthTokenCache()
+  _setGlobalConfigCacheForTesting(null)
 }
 
 async function teardown() {
@@ -166,6 +203,17 @@ async function teardown() {
   } else {
     delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
+
+  for (const key of MODEL_AND_AUTH_ENV_KEYS) {
+    restoreEnv(key, originalModelAndAuthEnv[key])
+  }
+  clearKeychainCache()
+  primeKeychainCacheFromPrefetch(null)
+  clearOpenAIOAuthTokenCache()
+  resetSettingsCache()
+  clearAllOutputStylesCache()
+  clearOutputStyleCaches()
+  _setGlobalConfigCacheForTesting(null)
 
   await fs.rm(tmpDir, { recursive: true, force: true })
 }

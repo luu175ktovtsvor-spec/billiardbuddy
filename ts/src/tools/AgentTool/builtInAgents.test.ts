@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   setIsInteractive,
 } from '../../bootstrap/state.js'
@@ -10,6 +10,12 @@ import {
 const originalDisableBuiltIns =
   process.env.CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS
 const originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+let originalUserType: string | undefined
+
+beforeEach(() => {
+  originalUserType = process.env.USER_TYPE
+  delete process.env.USER_TYPE
+})
 
 afterEach(() => {
   if (originalDisableBuiltIns === undefined) {
@@ -23,6 +29,12 @@ afterEach(() => {
     delete process.env.CLAUDE_CODE_ENTRYPOINT
   } else {
     process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
+  }
+
+  if (originalUserType === undefined) {
+    delete process.env.USER_TYPE
+  } else {
+    process.env.USER_TYPE = originalUserType
   }
 
   setIsInteractive(false)
