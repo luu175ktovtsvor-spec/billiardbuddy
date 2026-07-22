@@ -78,6 +78,7 @@
 - `[HARD]` 每个 Work Unit 只派一个拥有写权限的实施子代理，负责产出当前任务的完整代码变更；其他子代理只能做只读调查或对抗审查，不能并行写入。若子代理运行时可共享主工作树，它直接把未提交变更留在当前本地 `main`；若工具强制隔离，子代理只返回可机械应用的完整 patch，主代理可原样应用 patch，但不得自行设计、补写或调整产品代码。主代理必须先记录 `Base-Commit` 与开工前 `git status`，子代理不得触碰、清理或纳入既有修改。应用后由主代理复核范围、合同、diff、测试和未验证项。
 - `[HARD]` 用户可见的开发流程不创建或保留临时分支/worktree/候选提交，不 cherry-pick；本地 `main` 是唯一串行施工线和 accepted 集成线。工具内部强制的临时隔离只用于生成 patch，结束即清理，不构成项目施工分支。文档中 ProductTask/worktree 指最终产品给用户的任务隔离能力，不是开发 AI 的 Git 工作方式。
 - `[HARD]` 主代理发现的是产品代码缺陷而非合同缺陷时，不得亲自补代码；必须退回原实施子代理，或在原模块创建 repair Work Unit 并派新的实施子代理。
+- `[HARD]` **服务器访问无需逐次申请**：用户对本轮施工持续授权当前 Module Owner 及其已登记实施子代理，直接使用机器上已经配置的服务器凭据连接、检查、上传、修改配置/代码、部署、重启服务和执行验证；不限制连接时段、次数或是否处于交互式终端，也不要求每条 SSH/SCP/部署命令再次向用户确认。只读事实核验可由任一当前 Work Unit 执行；远程写入必须服务于当前 Work Unit 的单一结果，并在允许范围、命令/版本、变更前状态、验证和回滚证据中留痕。该持续授权消除的是访问审批，不取消模块所有权、Work Unit 边界、备份/回滚、密钥保密和禁止无关破坏性操作的合同；若远程修改会改变模块 04/14 已冻结的 Gateway/Relay 拓扑或合同，先回对应模块登记 repair Work Unit，但无需重新申请服务器权限。
 - `[HARD]` **最终 BilliardBuddy 产品运行时**：保留 CC-Haha Core 原生 Agent loop、工具、权限、Skills、Hooks、MCP、子代理、后台任务、resume 和 compact。
 - `[HARD]` 模块 03 的 `agent-worker` 是产品运行时进程，不是开发施工的子代理工具。
 
@@ -735,6 +736,24 @@ storage.migration / app.update
 ## 模块 01：单一 GUI 基线与参考边界
 
 **模块主题前缀：** `refactor: establish the single gui baseline`
+
+### 已冻结 Work Unit：`BB-01A`
+
+这是模块 01 唯一 Work Unit；其 accepted commit 必须同时把模块状态写为 `complete`，不得拆出未登记的 `BB-01B` 或把运行时代码混入本提交。
+
+| 字段 | 冻结内容 |
+|---|---|
+| Work Unit ID | `BB-01A` |
+| 单一用户结果 | 仓库产生可重复生成/校验的单一产品基线、legacy 支持矩阵、兼容/发布/policy schema 和删除消费者图，使模块 02 可以只依赖机器合同开工；不改变任何当前运行行为 |
+| Spec/Base | 派工时填写最新适用 Spec-Commit SHA；`Base-Commit` 必须等于取得 lease 时干净 `main` 的 HEAD，且无前置 accepted Work Unit |
+| 依赖与顺序 | 无产品模块依赖；先取得模块 01 lease，再派一个写入型实施子代理；完成本 Work Unit 即完成模块 01 |
+| 允许修改路径 | 新建/修改 `ts/product-contracts/**`、`ts/scripts/product-contracts/**`、`ts/tests/product-contracts/**`；`ts/package.json` 只允许增加 `check:product-contracts` 脚本，不增加依赖 |
+| 只读输入 | `ts/desktop/index.html`、`ts/desktop/src/main.tsx`、`ts/desktop/vite.config.ts`、两级 package/build 配置、实际 renderer/sidecar/ProductTask/media/gateway/relay 入口与 consumer、`BilliardBuddy-frontend-restoration.html`、`git show 4fab121e`、`git show 30945a22` |
+| 禁止修改路径 | 除允许路径外的全部产品源码、测试、构建/发布配置和 lockfile；特别禁止修改 `ts/desktop/src/**`、`ts/desktop/electron/**`、`ts/src/**`、`ts/shared/**`、Gateway/Relay 运行时、本 Markdown、HTML 参考和任何服务器状态 |
+| 必须消费的冻结合同 | 第 0 节、DEC-001—004、DEC-024—026、DEC-030、DEC-033、D1—D5 术语、组件矩阵/候选 policy schema 与本模块卡；源码证据只能纠正 FACT，不能改变 TARGET/HARD |
+| 本 Work Unit 不负责 | UI/领域 schema/数据迁移实现、旧消费者切换、D1—D5 执行、依赖安装、服务器连接或部署、打包签名和任何外部能力验证 |
+| 验收命令与证据 | `bun run check:product-contracts`（schema、交叉引用、supported fixture/reader/test 一一对应、consumer/delete owner、确定性生成）；相同输入连续生成两次 hash 一致；`bun run check:desktop`；`git diff --check`；机器输出只落允许路径 |
+| 完成条件 | 下列全部模块 01 Oracle 通过；交接物可由脚本从当前树重新生成并校验；HTML/历史参考不进入 build/package input；无运行时行为和依赖变化；accepted commit body 符合第 0.6 节并写 `Module-Status: complete`、外部验证 `NOT_APPLICABLE`、Next=`BB-02A registration` |
 
 ### 用户结果
 
