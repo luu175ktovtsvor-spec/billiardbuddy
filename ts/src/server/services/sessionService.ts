@@ -55,6 +55,14 @@ export type SessionLaunchInfo = {
   effortLevel?: string
 }
 
+/** Server-only marker written with a Core mutation for durable replay. */
+export type DurableCoreSessionOperation = {
+  clientOperationId: string
+  canonicalInput: string
+  /** Canonical target retained for replay after a symlink/workdir disappears. */
+  resolvedWorkDir?: string
+}
+
 export type MessageUsage = {
   input_tokens?: number
   output_tokens?: number
@@ -114,6 +122,63 @@ type RawEntry = {
 }
 
 type RawMessageUsage = NonNullable<RawEntry['message']>['usage']
+
+function parseCompleteJsonl(content: string): RawEntry[] | null {
+  if (!content.endsWith('\n')) return null
+
+  const lines = content.slice(0, -1).split('\n')
+  const entries: RawEntry[] = []
+  try {
+    for (const line of lines) {
+      if (!line.trim()) return null
+      entries.push(JSON.parse(line) as RawEntry)
+    }
+  } catch {
+    return null
+  }
+  return entries
+}
+
+function isCompleteDurableSessionTranscript(
+  content: string,
+  operation: DurableCoreSessionOperation,
+  workDir: string,
+): boolean {
+  if (!content.endsWith('\n')) return false
+
+  const lines = content.slice(0, -1).split('\n')
+  if (lines.length < 2 || lines.some((line) => !line.trim())) return false
+
+  let entries: RawEntry[]
+  try {
+    entries = lines.map((line) => JSON.parse(line) as RawEntry)
+  } catch {
+    return false
+  }
+
+  const snapshot = entries[0]
+  const snapshotData = snapshot?.snapshot
+  if (
+    snapshot?.type !== 'file-history-snapshot' ||
+    typeof snapshot?.messageId !== 'string' ||
+    typeof snapshotData?.messageId !== 'string' ||
+    !snapshotData.trackedFileBackups ||
+    typeof snapshotData.trackedFileBackups !== 'object' ||
+    typeof snapshotData.timestamp !== 'string'
+  ) {
+    return false
+  }
+
+  const metadata = entries[1] as Record<string, unknown>
+  const storedOperation = metadata?.coreOperation as DurableCoreSessionOperation | undefined
+  return (
+    metadata?.type === 'session-meta' &&
+    metadata.isMeta === true &&
+    metadata.workDir === workDir &&
+    storedOperation?.clientOperationId === operation.clientOperationId &&
+    storedOperation.canonicalInput === operation.canonicalInput
+  )
+}
 
 function normalizeMessageUsage(usage: RawMessageUsage): MessageUsage | undefined {
   if (!usage) return undefined
@@ -204,6 +269,8 @@ export class SessionService {
     result: { sessions: SessionListItem[]; total: number }
   }>()
   private readonly sessionListSummaryCache = new Map<string, SessionListSummaryCacheEntry>()
+
+  constructor(private readonly configDir?: string) {}
 
   private sessionListCacheKey(options?: {
     project?: string
@@ -327,7 +394,7 @@ export class SessionService {
   // --------------------------------------------------------------------------
 
   private getConfigDir(): string {
-    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    return this.configDir ?? (process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'))
   }
 
   private getProjectsDir(): string {
@@ -1376,10 +1443,17 @@ export class SessionService {
     workDir?: string,
     repositoryOptions?: CreateSessionRepositoryOptions,
     permissionMode?: string,
+    durableOptions?: {
+      sessionId?: string
+      operation?: DurableCoreSessionOperation
+    },
   ): Promise<{ sessionId: string; workDir: string }> {
     // Default to user home directory when no workDir specified
     const resolvedWorkDir = workDir || os.homedir()
-    const sessionId = crypto.randomUUID()
+    const sessionId = durableOptions?.sessionId ?? crypto.randomUUID()
+    if (!this.isValidSessionId(sessionId)) {
+      throw ApiError.badRequest('sessionId 格式不正确')
+    }
 
     // Resolve to absolute path. NOTE: path.resolve() uses process.cwd() to
     // expand relative paths — in bundled sidecar mode the server's cwd is
@@ -1427,13 +1501,46 @@ export class SessionService {
       isMeta: true,
       workDir: absWorkDir,
       repository: preparedWorkspace.repository,
+      ...(durableOptions?.operation ? { coreOperation: { ...durableOptions.operation, resolvedWorkDir: absWorkDir } } : {}),
       ...(permissionMode && VALID_SESSION_PERMISSION_MODES.has(permissionMode)
         ? { permissionMode }
         : {}),
       timestamp: now,
     }
 
-    await fs.writeFile(filePath, JSON.stringify(initialEntry) + '\n' + JSON.stringify(metaEntry) + '\n', 'utf-8')
+    const initialContent = JSON.stringify(initialEntry) + '\n' + JSON.stringify(metaEntry) + '\n'
+    const temporaryPath = `${filePath}.${crypto.randomUUID()}.tmp`
+    let published = false
+    try {
+      // Complete the transcript in a private file, then atomically install it
+      // with a hard link. A target observed by replay is therefore complete.
+      await fs.writeFile(temporaryPath, initialContent, { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
+      await fs.link(temporaryPath, filePath)
+      published = true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !durableOptions?.operation) {
+        throw error
+      }
+      const existingTarget = await fs.lstat(filePath).catch(() => null)
+      const existingContent = existingTarget?.isFile()
+        ? await fs.readFile(filePath, 'utf8').catch(() => null)
+        : null
+      if (!existingContent || !isCompleteDurableSessionTranscript(
+        existingContent,
+        durableOptions.operation,
+        absWorkDir,
+      )) {
+        throw new ApiError(409, 'Core session identity is already bound to another operation', 'CORE_SESSION_OPERATION_CONFLICT')
+      }
+      published = true
+    } finally {
+      try {
+        await fs.rm(temporaryPath, { force: true })
+      } catch (error) {
+        if (!published) throw error
+        console.warn('[SessionService] durable create temporary cleanup failed')
+      }
+    }
     this.invalidateSessionListCache()
 
     return { sessionId, workDir: absWorkDir }
@@ -1442,7 +1549,11 @@ export class SessionService {
   /**
    * Rename a session by appending a custom-title entry to its JSONL file.
    */
-  async renameSession(sessionId: string, title: string): Promise<void> {
+  async renameSession(
+    sessionId: string,
+    title: string,
+    durableOperation?: DurableCoreSessionOperation,
+  ): Promise<void> {
     if (!title || typeof title !== 'string') {
       throw ApiError.badRequest('title is required')
     }
@@ -1452,9 +1563,33 @@ export class SessionService {
       throw ApiError.notFound(`Session not found: ${sessionId}`)
     }
 
+    if (durableOperation) {
+      const content = await fs.readFile(found.filePath, 'utf8')
+      const entries = parseCompleteJsonl(content)
+      if (!entries) {
+        throw ApiError.conflict('Core rename transcript is incomplete')
+      }
+      const existingOperation = entries.find((entry) => {
+        const operation = (entry as Record<string, unknown>).coreOperation
+        return entry.type === 'custom-title' && operation && typeof operation === 'object' &&
+          (operation as DurableCoreSessionOperation).clientOperationId === durableOperation.clientOperationId
+      })
+      if (existingOperation) {
+        const operation = (existingOperation as Record<string, unknown>).coreOperation as DurableCoreSessionOperation
+        if (
+          operation.canonicalInput !== durableOperation.canonicalInput ||
+          existingOperation.customTitle !== title
+        ) {
+          throw ApiError.conflict('Core rename operation conflicts with its durable record')
+        }
+        return
+      }
+    }
+
     const entry = {
       type: 'custom-title',
       customTitle: title,
+      ...(durableOperation ? { coreOperation: durableOperation } : {}),
       timestamp: new Date().toISOString(),
     }
 
@@ -1475,6 +1610,37 @@ export class SessionService {
       timestamp: new Date().toISOString(),
     })
     this.invalidateSessionListCache()
+  }
+
+  async inspectDurableCreateReplay(
+    sessionId: string,
+    operation: DurableCoreSessionOperation,
+  ): Promise<'missing' | 'matching' | 'conflict'> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return 'missing'
+    const existingTarget = await fs.lstat(found.filePath).catch(() => null)
+    if (!existingTarget?.isFile()) return 'conflict'
+    const content = await fs.readFile(found.filePath, 'utf8')
+    const entries = parseCompleteJsonl(content)
+    if (!entries || entries.length < 2) return 'conflict'
+    const storedOperation = (entries[1] as Record<string, unknown>).coreOperation as DurableCoreSessionOperation | undefined
+    if (
+      storedOperation?.clientOperationId !== operation.clientOperationId ||
+      storedOperation.canonicalInput !== operation.canonicalInput
+    ) return 'conflict'
+    let expectedWorkDir: string
+    try {
+      const canonical = JSON.parse(operation.canonicalInput) as { workDir?: unknown }
+      if (typeof canonical.workDir !== 'string' || !canonical.workDir) return 'conflict'
+      const workDir = canonical.workDir
+      // The durable marker captures the intended resolved target. A later
+      // symlink retarget must replay that target, never allocate a duplicate.
+      expectedWorkDir = storedOperation.resolvedWorkDir
+        ?? await fs.realpath(path.resolve(workDir)).catch(() => path.resolve(workDir))
+    } catch {
+      return 'conflict'
+    }
+    return isCompleteDurableSessionTranscript(content, operation, expectedWorkDir) ? 'matching' : 'conflict'
   }
 
   async getCustomTitle(sessionId: string): Promise<string | null> {
