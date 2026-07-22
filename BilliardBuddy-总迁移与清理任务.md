@@ -78,6 +78,8 @@
 - `[HARD]` 每个 Work Unit 只派一个拥有写权限的实施子代理，负责产出当前任务的完整代码变更；其他子代理只能做只读调查或对抗审查，不能并行写入。若子代理运行时可共享主工作树，它直接把未提交变更留在当前本地 `main`；若工具强制隔离，子代理只返回可机械应用的完整 patch，主代理可原样应用 patch，但不得自行设计、补写或调整产品代码。主代理必须先记录 `Base-Commit` 与开工前 `git status`，子代理不得触碰、清理或纳入既有修改。应用后由主代理复核范围、合同、diff、测试和未验证项。
 - `[HARD]` 用户可见的开发流程不创建或保留临时分支/worktree/候选提交，不 cherry-pick；本地 `main` 是唯一串行施工线和 accepted 集成线。工具内部强制的临时隔离只用于生成 patch，结束即清理，不构成项目施工分支。文档中 ProductTask/worktree 指最终产品给用户的任务隔离能力，不是开发 AI 的 Git 工作方式。
 - `[HARD]` 主代理发现的是产品代码缺陷而非合同缺陷时，不得亲自补代码；必须退回原实施子代理，或在原模块创建 repair Work Unit 并派新的实施子代理。
+- `[HARD]` **默认自主施工，不向用户索要常规裁决**：用户已持续授权各 Module Owner 及其登记子代理，在本仓库、本机开发环境、已有 Git remote、已配置服务器/服务/账号范围内，自主调查、创建/修改/删除 Work Unit 内文件、运行命令和测试、安装项目所需依赖、处理迁移、重启相关进程、提交 accepted commit，并在现有 remote 权限与分支策略允许时直接 push；以上均不需要逐项询问、二次确认或让用户在多个技术方案中选择。主代理必须先依据本文、实际代码、测试、Git 历史证据和最少复杂度原则自行裁决；合同存在可闭合缺口时由主代理直接修订本文、提交新 Spec-Commit 并继续，不把架构题退给用户。
+- `[HARD]` 自主施工遇到失败时先穷尽 Work Unit 范围内的安全诊断、替代命令、回滚和 repair 路径。只有现有环境中客观不存在必需凭据、第三方账号权限、签名材料或受保护人工动作，且无法通过 `OUT_OF_SCOPE_DISABLED` 或其他独立 Work Unit 继续时，才把该 Work Unit 写为 `blocked`；记录精确缺失项、已尝试证据和唯一恢复条件后停止该项，不向用户发送开放式问题、重复催促或技术选择题。其他不依赖该条件的 Work Unit 继续推进。该规则不允许伪造外部验证、越过模块 25 正式发布门禁或执行与当前施工无关的破坏性操作。
 - `[HARD]` **服务器访问无需逐次申请**：用户对本轮施工持续授权当前 Module Owner 及其已登记实施子代理，直接使用机器上已经配置的服务器凭据连接、检查、上传、修改配置/代码、部署、重启服务和执行验证；不限制连接时段、次数或是否处于交互式终端，也不要求每条 SSH/SCP/部署命令再次向用户确认。只读事实核验可由任一当前 Work Unit 执行；远程写入必须服务于当前 Work Unit 的单一结果，并在允许范围、命令/版本、变更前状态、验证和回滚证据中留痕。该持续授权消除的是访问审批，不取消模块所有权、Work Unit 边界、备份/回滚、密钥保密和禁止无关破坏性操作的合同；若远程修改会改变模块 04/14 已冻结的 Gateway/Relay 拓扑或合同，先回对应模块登记 repair Work Unit，但无需重新申请服务器权限。
 - `[HARD]` **最终 BilliardBuddy 产品运行时**：保留 CC-Haha Core 原生 Agent loop、工具、权限、Skills、Hooks、MCP、子代理、后台任务、resume 和 compact。
 - `[HARD]` 模块 03 的 `agent-worker` 是产品运行时进程，不是开发施工的子代理工具。
@@ -102,7 +104,7 @@ Base-Commit SHA：
 完成条件：
 ```
 
-实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。子代理把未提交变更留在当前 `main`，或在工具强制隔离时提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit。是否 push 仍由用户或既有发布授权决定。
+实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。子代理把未提交变更留在当前 `main`，或在工具强制隔离时提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit；已有 remote 权限与分支策略允许时可按第 0.5 节直接 push，不再等待聊天授权。正式发布、feed 切换和不可逆第三方动作仍只按模块 24/25 的候选与发布门禁执行。
 
 每个 accepted commit 的标题必须带 Work Unit ID，例如 `feat(bb-07a): persist accepted message submissions`。commit body 是唯一跨窗口文字交接，必须包含：
 
@@ -230,6 +232,7 @@ Next:
 | `DEC-049` | `[HARD]` Task 生命周期引用通过统一参与者合同 | 模块 02 冻结 `TaskLifecycleParticipant` 的 blocker/quiesce/cleanup/detach receipt；09/11/15/17/18/20 等后续模块注册参与者，模块 02 不反向导入后续服务或猜路径，删除 UI 只渲染权威 blocker/action descriptor |
 | `DEC-050` | `[HARD]` 更新静止状态必须从 Sidecar 交接给 Main | Sidecar 只有在 admission 关闭、活动 claim 对账为零且 durable checkpoint 完成后，才能签发绑定 scheduler generation/fencing/candidate/UpdateTransaction 的 `QuiesceReceipt`；Main 验证并持有该 receipt 后才可停 Sidecar 和安装，失效、重启或新活动一律回到等待状态 |
 | `DEC-051` | `[HARD]` USER_ACCEPTED 只能由受保护验收控制台生成 | 模块 25 提供不进入公开产品包的 Release Acceptance Console；用户以受保护身份逐项验收并签名，receipt 写入 append-only release store；CI/Agent/普通 workflow 只能验证，不能生成、代签、覆盖或通过命令参数绕过 |
+| `DEC-052` | `[HARD]` 施工代理默认拥有完整执行授权 | Module Owner 与登记子代理对 Work Unit 内的仓库、本机、Git remote 和已配置服务器操作自主负责，不向用户索要常规技术裁决或逐命令批准；主代理自行修合同和创建 repair Work Unit，客观缺少外部权限时只记录精确 blocker 并继续其他可独立工作，正式发布仍服从模块 24/25 门禁 |
 
 ## 2. 术语、实体和唯一身份
 
