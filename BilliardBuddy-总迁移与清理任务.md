@@ -882,6 +882,14 @@ ProductTask schema、operation receipt、错误码和 event/cursor contract。
 
 **模块 02 完成条件：** `BB-02A`—`BB-02D` 均有 accepted commit；模块卡全部 Oracle 与模块级 server/desktop/contract 测试通过；每个 accepted commit 的 body 记录前置 SHA、Spec/Base、Checks、Evidence、External-Verification 与风险；工作树干净后最后一个 accepted commit 标记 `Module-Status: complete`。
 
+### Module 03 → Module 02 controlled handoff
+
+- `BB-03A` accepted commit：`baf194946c2e73db47ea3040729381d7fdc439a4`；冻结 bridge focused tests 为 50 pass / 0 fail，`cd ts && bun run check:server` 为 1174 pass / 1 skip / 0 fail。
+- 目标 Work Unit：已登记的 `BB-02A`；其 Base-Commit 为本 handoff Spec-Commit，前置 accepted commit 为上述 `BB-03A`。
+- 阻塞解除条件：`BB-03A` 已交付并验收 `ensureCreate/ensureBranch/ensureRename` durable CoreOperationBridge；Module 02 可消费该唯一 Core 副作用入口。
+- 边界：Module 02 不得回改 `BB-03A`，不得迁移 worker/scheduler/CLI；Module 03 保持 active，待 Module 02 后续依赖闭合后重新申请 lease。
+- 返回条件：`BB-02A`—`BB-02D` 按登记顺序完成后，Module 03 才可从新的干净 accepted HEAD 继续其余 worker Work Unit。
+
 ---
 
 ## 模块 03：GUI 内部 agent-worker 与公共 CLI 解耦
