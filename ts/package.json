@@ -8,7 +8,8 @@
     "check:desktop": "cd desktop && bun run lint && bun run test -- --run && bun run build",
     "check:electron": "cd desktop && bun run check:electron",
     "check:adapters": "cd adapters && bun test",
-    "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir"
+    "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
+    "check:product-contracts": "bun scripts/product-contracts/check.ts && bun test tests/product-contracts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",

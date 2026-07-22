@@ -1,0 +1,466 @@
+{
+  "candidates": [
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/desktop/src/main.tsx",
+            "reference": {
+              "kind": "import",
+              "text": "import { initializeAppZoom } from './lib/appZoom'"
+            },
+            "symbol": "initializeAppZoom"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/desktop/src/lib/appZoom.ts",
+              "text": "export function initializeAppZoom(): Promise<number> {"
+            },
+            "id": "second-renderer-old-shell-old-store-api",
+            "symbol": "initializeAppZoom"
+          }
+        }
+      ],
+      "migration_modules": [
+        "01",
+        "06-11"
+      ],
+      "object_id": "second-renderer-old-shell-old-store-api",
+      "retained_reader": "Git history and licenses; ProductTask reader is separate"
+    },
+    {
+      "d4_owner_module": "none",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/server/product/taskService.ts",
+            "reference": {
+              "kind": "call",
+              "text": "return normalizeProductTaskStore(JSON.parse(raw) as unknown)"
+            },
+            "symbol": "readStore"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/server/product/taskService.ts",
+              "text": "function normalizeProductTaskStore(value: unknown): ProductTaskStore {"
+            },
+            "id": "product-task-legacy-reader",
+            "symbol": "normalizeProductTaskStore"
+          }
+        }
+      ],
+      "migration_modules": [
+        "02",
+        "22"
+      ],
+      "object_id": "product-task-legacy-reader",
+      "retained_reader": "reader, ID/revision/sequence mapping, and fixtures"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/server/services/conversationService.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import { prepareProductInstructionsFile } from './productInstructions.js'"
+            },
+            "symbol": "prepareProductInstructionsFile"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/server/services/productInstructions.ts",
+              "text": "export function prepareProductInstructionsFile(workDir: string): string | null {"
+            },
+            "id": "product-instructions-outer-injection",
+            "symbol": "prepareProductInstructionsFile"
+          }
+        }
+      ],
+      "migration_modules": [
+        "05"
+      ],
+      "object_id": "product-instructions-outer-injection",
+      "retained_reader": "native resolver and legacy files"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/entrypoints/cli.tsx",
+            "reference": {
+              "kind": "dynamic_import",
+              "text": "  const {\n    main: cliMain\n  } = await import('../main.js');"
+            },
+            "symbol": "cliMain"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/main.tsx",
+              "text": "export async function main() {"
+            },
+            "id": "public-cli-tui-ink-repl-doctor-bin-help-publish",
+            "symbol": "main"
+          }
+        }
+      ],
+      "migration_modules": [
+        "03",
+        "17"
+      ],
+      "object_id": "public-cli-tui-ink-repl-doctor-bin-help-publish",
+      "retained_reader": "internal agent-worker, native-host mode, Core handler"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "gateway/app.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import {\n  fetchQwenWithRetry,\n  loadQwenAllowedModels,\n  prepareQwenChatBody,\n  QwenRequestError,\n} from './qwenChat'"
+            },
+            "symbol": "QwenRequestError"
+          },
+          "object": {
+            "definition": {
+              "path": "gateway/qwenChat.ts",
+              "text": "export class QwenRequestError extends Error {"
+            },
+            "id": "qwen-executable-runtime",
+            "symbol": "QwenRequestError"
+          }
+        }
+      ],
+      "migration_modules": [
+        "04"
+      ],
+      "object_id": "qwen-executable-runtime",
+      "retained_reader": "pure legacy value mapper"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "gateway/app.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import {\n  createGatewayTranscriber,\n  GatewayTranscriptionError,\n  type GatewayTranscriber,\n} from './transcription'"
+            },
+            "symbol": "createGatewayTranscriber"
+          },
+          "object": {
+            "definition": {
+              "path": "gateway/transcription.ts",
+              "text": "export function createGatewayTranscriber(env: Env): GatewayTranscriber | null {"
+            },
+            "id": "whisper-old-asr-runtime",
+            "symbol": "createGatewayTranscriber"
+          }
+        }
+      ],
+      "migration_modules": [
+        "15"
+      ],
+      "object_id": "whisper-old-asr-runtime",
+      "retained_reader": "pure legacy value mapper"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/utils/computerUse/executor.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import type {\n  ComputerExecutor,\n  DisplayGeometry,\n  FrontmostApp,\n  InstalledApp,\n  ResolvePrepareCaptureResult,\n  RunningApp,\n  ScreenshotResult,\n} from '../../vendor/computer-use-mcp/index.js'"
+            },
+            "symbol": "ComputerExecutor"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/vendor/computer-use-mcp/executor.ts",
+              "text": "export interface ComputerExecutor {"
+            },
+            "id": "desktop-computer-use",
+            "symbol": "ComputerExecutor"
+          }
+        }
+      ],
+      "migration_modules": [
+        "18",
+        "21"
+      ],
+      "object_id": "desktop-computer-use",
+      "retained_reader": "BrowserCapability, MiMo visual evidence, Core Tool/MCP"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/tools.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'"
+            },
+            "symbol": "WebSearchTool"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/tools/WebSearchTool/WebSearchTool.ts",
+              "text": "export const WebSearchTool = buildTool({"
+            },
+            "id": "websearch-tavily-brave-native-search",
+            "symbol": "WebSearchTool"
+          }
+        }
+      ],
+      "migration_modules": [
+        "21"
+      ],
+      "object_id": "websearch-tavily-brave-native-search",
+      "retained_reader": "WebFetch and BrowserCapability"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/utils/backgroundHousekeeping.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import { initAutoDream } from '../services/autoDream/autoDream.js'"
+            },
+            "symbol": "initAutoDream"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/services/autoDream/autoDream.ts",
+              "text": "export function initAutoDream(): void {"
+            },
+            "id": "autodream-teammem",
+            "symbol": "initAutoDream"
+          }
+        },
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/tools/FileWriteTool/FileWriteTool.ts",
+            "reference": {
+              "kind": "import",
+              "text": "import { checkTeamMemSecrets } from '../../services/teamMemorySync/teamMemSecretGuard.js'"
+            },
+            "symbol": "checkTeamMemSecrets"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/services/teamMemorySync/teamMemSecretGuard.ts",
+              "text": "export function checkTeamMemSecrets("
+            },
+            "id": "autodream-teammem",
+            "symbol": "checkTeamMemSecrets"
+          }
+        }
+      ],
+      "migration_modules": [
+        "05",
+        "21"
+      ],
+      "object_id": "autodream-teammem",
+      "retained_reader": "necessary migration mapping only"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/desktop/src/product/components/ProductTaskPage.tsx",
+            "reference": {
+              "kind": "jsx",
+              "text": "<ProductTaskInlineMedia"
+            },
+            "symbol": "ProductTaskInlineMedia"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/desktop/src/product/components/ProductTaskInlineMedia.tsx",
+              "text": "export function ProductTaskInlineMedia({"
+            },
+            "id": "media-chat-bridge",
+            "symbol": "ProductTaskInlineMedia"
+          }
+        },
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/server/index.ts",
+            "reference": {
+              "kind": "new",
+              "text": "new ProductTaskMediaService(productTaskService, mediaService)"
+            },
+            "symbol": "ProductTaskMediaService"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/server/product/taskMediaService.ts",
+              "text": "export class ProductTaskMediaService {"
+            },
+            "id": "media-chat-bridge",
+            "symbol": "ProductTaskMediaService"
+          }
+        }
+      ],
+      "migration_modules": [
+        "13",
+        "16",
+        "22"
+      ],
+      "object_id": "media-chat-bridge",
+      "retained_reader": "independent MediaProject and legacy migrator"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/src/server/index.ts",
+            "reference": {
+              "kind": "new",
+              "text": "new MediaProjectService()"
+            },
+            "symbol": "MediaProjectService"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/src/server/services/mediaProjectService.ts",
+              "text": "export class MediaProjectService {"
+            },
+            "id": "legacy-workflow-runtime-and-duplicate-media-service",
+            "symbol": "MediaProjectService"
+          }
+        }
+      ],
+      "migration_modules": [
+        "12-16",
+        "22"
+      ],
+      "object_id": "legacy-workflow-runtime-and-duplicate-media-service",
+      "retained_reader": "current MediaProjectService"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": ".github/workflows/desktop-build-mac.yml",
+            "reference": {
+              "kind": "command",
+              "text": "SIDECAR_TARGET_TRIPLE=aarch64-apple-darwin bun run build:sidecars\n          bun run build\n          bun run build:electron"
+            },
+            "symbol": "build:electron"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/desktop/package.json",
+              "pointer": "/scripts/build:electron",
+              "text": "\"build:electron\":"
+            },
+            "id": "legacy-direct-release-workflow",
+            "symbol": "build:electron"
+          }
+        },
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": ".github/workflows/desktop-build-win.yml",
+            "reference": {
+              "kind": "command",
+              "text": "run: bun run electron:package"
+            },
+            "symbol": "electron:package"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/desktop/package.json",
+              "pointer": "/scripts/electron:package",
+              "text": "\"electron:package\":"
+            },
+            "id": "legacy-direct-release-workflow",
+            "symbol": "electron:package"
+          }
+        }
+      ],
+      "migration_modules": [
+        "23L"
+      ],
+      "object_id": "legacy-direct-release-workflow",
+      "retained_reader": "candidate-only trigger and protected Release Orchestrator"
+    },
+    {
+      "d4_owner_module": "23",
+      "d5_owner_module": "24",
+      "edges": [
+        {
+          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "consumer": {
+            "path": "ts/desktop/package.json",
+            "reference": {
+              "kind": "json_entry",
+              "pointer": "/build/files/3",
+              "text": "\"src-tauri/binaries/**\""
+            },
+            "symbol": "build.files[3]"
+          },
+          "object": {
+            "definition": {
+              "path": "ts/desktop/package.json",
+              "pointer": "/build/asarUnpack/2",
+              "text": "\"src-tauri/binaries/**\""
+            },
+            "id": "tauri-linux-and-duplicate-build-workflow",
+            "symbol": "src-tauri/binaries/**"
+          }
+        }
+      ],
+      "migration_modules": [
+        "06",
+        "20-22"
+      ],
+      "object_id": "tauri-linux-and-duplicate-build-workflow",
+      "retained_reader": "Windows x64 and macOS arm64 Electron candidate builds"
+    }
+  ],
+  "graph_schema_version": 1,
+  "source_sha256": "c491236b965c18c8d04eb7f2cfe1289e418fc5912f872ed455a947cb669ed421"
+}

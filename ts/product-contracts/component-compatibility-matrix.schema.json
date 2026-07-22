@@ -1,0 +1,240 @@
+{
+  "$id": "billiardbuddy/component-compatibility-matrix.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "components": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "arch": {
+            "type": "string"
+          },
+          "artifact_version": {
+            "type": "string"
+          },
+          "build_id": {
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "component_name": {
+            "type": "string"
+          },
+          "consumes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "produces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "protocols": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "supported_ranges": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "major": {
+                        "type": "integer"
+                      },
+                      "max_minor": {
+                        "type": "integer"
+                      },
+                      "min_minor": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "major",
+                      "min_minor",
+                      "max_minor"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "name",
+                "supported_ranges"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schemas": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "current": {
+                  "type": "string"
+                },
+                "min_readable": {
+                  "type": "string"
+                },
+                "min_writable": {
+                  "type": "string"
+                },
+                "storage_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "storage_id",
+                "current",
+                "min_readable",
+                "min_writable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "component_name",
+          "artifact_version",
+          "build_id",
+          "platform",
+          "arch",
+          "protocols",
+          "capabilities",
+          "required_capabilities",
+          "consumes",
+          "produces",
+          "schemas"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "legacy_support_matrix": {
+      "additionalProperties": false,
+      "properties": {
+        "matrix_revision": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "matrix_revision",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "matrix_revision": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "matrix_schema_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "minimum_supported_release": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "model_catalog_revision": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "release_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "required_edges": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "required_capability": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "protocol",
+          "required_capability"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "rollout": {
+      "additionalProperties": false,
+      "properties": {
+        "accepts_release_range": {
+          "type": "string"
+        },
+        "retire_after": {
+          "type": "string"
+        },
+        "rollback_floor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepts_release_range",
+        "rollback_floor",
+        "retire_after"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "matrix_schema_version",
+    "matrix_revision",
+    "release_id",
+    "candidate_id",
+    "minimum_supported_release",
+    "components",
+    "required_edges",
+    "model_catalog_revision",
+    "legacy_support_matrix",
+    "rollout"
+  ],
+  "title": "BilliardBuddy component compatibility matrix",
+  "type": "object",
+  "x-contract-source-sha256": "c491236b965c18c8d04eb7f2cfe1289e418fc5912f872ed455a947cb669ed421"
+}

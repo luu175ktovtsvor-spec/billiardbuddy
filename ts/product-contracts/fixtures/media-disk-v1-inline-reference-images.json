@@ -1,0 +1,27 @@
+{
+  "fixture_schema_version": 1,
+  "immutable": true,
+  "support_id": "media-disk-v1-inline-reference-images-to-private-asset",
+  "project": {
+    "schema_version": 1,
+    "id": "fixture-media-project",
+    "kind": "image",
+    "title": "Fixture media project",
+    "revision": 0,
+    "created_at": "2025-01-04T00:00:00.000Z",
+    "updated_at": "2025-01-04T00:00:00.000Z",
+    "state": "draft",
+    "mode": "edit",
+    "model": "gpt-image-2",
+    "prompt": "Fixture reference image migration",
+    "size": "1024x1024",
+    "count": 1,
+    "reference_images": [
+      "data:image/png;base64,cmVmZXJlbmNlLWltYWdl"
+    ],
+    "reference_image_count": 1,
+    "outputs": []
+  },
+  "expected_reference_images": [],
+  "expected_private_asset_count": 1
+}
