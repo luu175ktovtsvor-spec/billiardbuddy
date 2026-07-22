@@ -1,0 +1,97 @@
+{
+  "$id": "billiardbuddy/release-checklist.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "component_matrix_digest": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_input": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "evidence_path": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "machine",
+              "user"
+            ]
+          },
+          "pass_condition": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "procedure": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "NOT_RUN",
+              "UNVERIFIED"
+            ]
+          }
+        },
+        "required": [
+          "check_id",
+          "module",
+          "required",
+          "platform",
+          "candidate_input",
+          "procedure",
+          "pass_condition",
+          "evidence_path",
+          "owner",
+          "result"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "policy_digests": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "minProperties": 12,
+      "type": "object"
+    },
+    "schema_version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "component_matrix_digest",
+    "policy_digests",
+    "items"
+  ],
+  "title": "BilliardBuddy release checklist",
+  "type": "object",
+  "x-contract-source-sha256": "c491236b965c18c8d04eb7f2cfe1289e418fc5912f872ed455a947cb669ed421"
+}

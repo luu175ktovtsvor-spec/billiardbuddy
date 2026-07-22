@@ -1,0 +1,54 @@
+{
+  "fixture_schema_version": 1,
+  "immutable": true,
+  "support_id": "product-task-disk-v4-current",
+  "core_sessions": [
+    {
+      "id": "fixture-core-v4",
+      "title": "Current product task",
+      "createdAt": "2025-01-03T00:00:00.000Z",
+      "modifiedAt": "2025-01-03T00:00:00.000Z",
+      "projectRoot": "/workspace/fixture-v4",
+      "workDir": "/workspace/fixture-v4"
+    }
+  ],
+  "store": {
+    "version": 4,
+    "legacyCoreSessionsImportedAt": "2025-01-03T00:00:00.000Z",
+    "projects": {
+      "project-fixture-v4": {
+        "id": "project-fixture-v4",
+        "title": "Fixture v4",
+        "rootDir": "/workspace/fixture-v4",
+        "createdAt": "2025-01-03T00:00:00.000Z",
+        "updatedAt": "2025-01-03T00:00:00.000Z"
+      }
+    },
+    "directories": {
+      "directory-fixture-v4": {
+        "id": "directory-fixture-v4",
+        "projectId": "project-fixture-v4",
+        "path": "/workspace/fixture-v4",
+        "label": "\u9879\u76ee\u6839\u76ee\u5f55",
+        "createdAt": "2025-01-03T00:00:00.000Z",
+        "updatedAt": "2025-01-03T00:00:00.000Z"
+      }
+    },
+    "tasks": {
+      "task-fixture-v4": {
+        "coreSessionId": "fixture-core-v4",
+        "projectId": "project-fixture-v4",
+        "directoryId": "directory-fixture-v4",
+        "title": "Current product task",
+        "lifecycle": "active",
+        "kind": "main",
+        "createdAt": "2025-01-03T00:00:00.000Z",
+        "updatedAt": "2025-01-03T00:00:00.000Z",
+        "worktreeState": "not_requested",
+        "visibility": "main"
+      }
+    },
+    "sideTasks": {}
+  },
+  "expected_current_version": 4
+}

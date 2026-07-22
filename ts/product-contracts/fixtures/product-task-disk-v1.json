@@ -1,0 +1,30 @@
+{
+  "fixture_schema_version": 1,
+  "immutable": true,
+  "support_id": "product-task-disk-v1-to-v4",
+  "core_sessions": [
+    {
+      "id": "fixture-core-v1",
+      "title": "Legacy product task",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "modifiedAt": "2025-01-01T00:00:00.000Z",
+      "projectRoot": "/workspace/fixture-v1",
+      "workDir": "/workspace/fixture-v1"
+    }
+  ],
+  "store": {
+    "version": 1,
+    "tasks": {
+      "fixture-core-v1": {
+        "title": "Legacy product task",
+        "lifecycle": "active",
+        "kind": "main",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-01-01T00:00:00.000Z",
+        "worktreeState": "not_requested"
+      }
+    },
+    "sideTasks": {}
+  },
+  "expected_current_version": 4
+}
