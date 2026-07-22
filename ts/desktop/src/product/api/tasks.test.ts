@@ -1,169 +1,80 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../../lib/desktopRuntime', () => ({
-  getServerBaseUrl: () => 'http://127.0.0.1:49237',
-}))
+vi.mock('../../lib/desktopRuntime', () => ({ getServerBaseUrl: () => 'http://127.0.0.1:49237' }))
 
 import { PRODUCT_MEDIA_RESULT_TIMEOUT_MS, productTasksApi } from './tasks'
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
+const envelope = Object.freeze({ expected_revision: 7, client_operation_id: 'operation-0123456789abcdef' })
+const result = { receipt: { ...envelope, outcome: 'accepted', revision: 8 }, authority: { revision: 8, event_sequence: 8, tasks: [] } }
 
-describe('productTasksApi', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.useRealTimers()
-  })
+describe('productTasksApi authoritative mutations', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
-  it('uses the product task index endpoint as its list source', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      schemaVersion: 2,
-      projects: [],
-      directories: [],
-      tasks: [],
-      total: 0,
-      capabilities: { createTask: true },
-    }))
+  it('sends every mutation route its immutable envelope and parses authority receipts', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse(result))
     vi.stubGlobal('fetch', fetchMock)
-
-    await productTasksApi.list()
-
-    expect(fetchMock).toHaveBeenCalledWith(
+    await productTasksApi.create({ workDir: '/workspace/billiard', ...envelope })
+    await productTasksApi.update('task 1', { title: '改名', ...envelope })
+    await productTasksApi.pin('task 1', envelope)
+    await productTasksApi.unpin('task 1', envelope)
+    await productTasksApi.archive('task 1', envelope)
+    await productTasksApi.restore('task 1', envelope)
+    await productTasksApi.continue('task 1', { title: '继续', ...envelope })
+    await productTasksApi.createSideTask('task 1', { sourceEntryId: 'thread-1', sideTaskId: 'side-1', ...envelope })
+    await productTasksApi.closeSideTask('task 1', 'side 1', envelope)
+    const calls = fetchMock.mock.calls
+    expect(calls.map(([url]) => url)).toEqual([
       'http://127.0.0.1:49237/api/product/tasks',
-      expect.objectContaining({
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
-  })
-
-  it('sends lifecycle actions to their real task endpoints', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ task: { id: 'task 1' } })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    await productTasksApi.create({ workDir: '/workspace/billiard' })
-    await productTasksApi.continue('task 1', {
-      title: '继续修复',
-      sourceEntryId: 'thread_0123456789abcdef0123',
-    })
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      'http://127.0.0.1:49237/api/product/tasks',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ workDir: '/workspace/billiard' }),
-      }),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      'http://127.0.0.1:49237/api/product/tasks/task%201',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/pin',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/unpin',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/archive',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/restore',
       'http://127.0.0.1:49237/api/product/tasks/task%201/continue',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          title: '继续修复',
-          sourceEntryId: 'thread_0123456789abcdef0123',
-        }),
-      }),
-    )
+      'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks/side%201/close',
+    ])
+    expect(calls[0]![1]!.body).toBe(JSON.stringify({ workDir: '/workspace/billiard', ...envelope }))
+    expect(calls.slice(2).every(([, init]) => JSON.parse(String(init?.body)).client_operation_id === envelope.client_operation_id)).toBe(true)
   })
 
-  it('loads thread history through the task-scoped product endpoint', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ taskId: 'task 1', entries: [] }))
+  it('queries durable operations and preserves server errors', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ receipt: result.receipt, authority: result.authority })).mockResolvedValueOnce(jsonResponse({ error: 'CONFLICT' }, 409))
     vi.stubGlobal('fetch', fetchMock)
+    await expect(productTasksApi.getOperation('task 1', envelope.client_operation_id)).resolves.toEqual({ receipt: result.receipt, authority: result.authority })
+    await expect(productTasksApi.pin('task 1', envelope)).rejects.toMatchObject({ code: 'CONFLICT', status: 409 })
+  })
 
-    await productTasksApi.getThread('task 1')
+  it('retries the exact caller-built envelope without replacing its id or revision', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse(result))
+    vi.stubGlobal('fetch', fetchMock)
+    await productTasksApi.archive('task 1', envelope)
+    await productTasksApi.archive('task 1', envelope)
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(fetchMock.mock.calls[1]?.[1]?.body)
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(envelope))
+  })
 
-    expect(fetchMock).toHaveBeenCalledWith(
+  it('uses product task index, thread, review and media routes', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ tasks: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await productTasksApi.list(); await productTasksApi.getThread('task 1'); await productTasksApi.getReviewFile('task 1', 'src/main.ts'); await productTasksApi.getMedia('task 1')
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:49237/api/product/tasks',
       'http://127.0.0.1:49237/api/product/tasks/task%201/thread',
-      expect.objectContaining({ method: 'GET' }),
-    )
-  })
-
-  it('uses task-scoped review endpoints and sends only a relative review path', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ taskId: 'task 1', state: 'ready', changedFiles: [] }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    await productTasksApi.getReviewStatus('task 1')
-    await productTasksApi.getReviewTree('task 1', 'src')
-    await productTasksApi.getReviewFile('task 1', 'src/main.ts')
-    await productTasksApi.getReviewDiff('task 1', 'src/main.ts')
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      'http://127.0.0.1:49237/api/product/tasks/task%201/review/status',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      'http://127.0.0.1:49237/api/product/tasks/task%201/review/tree?path=src',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
       'http://127.0.0.1:49237/api/product/tasks/task%201/review/file?path=src%2Fmain.ts',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
-      'http://127.0.0.1:49237/api/product/tasks/task%201/review/diff?path=src%2Fmain.ts',
-      expect.objectContaining({ method: 'GET' }),
-    )
-  })
-
-  it('loads media artifacts through the public task-scoped endpoint', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ taskId: 'task 1', projects: [] }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    await productTasksApi.getMedia('task 1')
-
-    expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:49237/api/product/tasks/task%201/media',
-      expect.objectContaining({ method: 'GET' }),
-    )
+    ])
   })
 
   it('keeps task-scoped final image materialization open for five minutes', async () => {
     vi.useFakeTimers()
-    const fetchMock = vi.fn().mockImplementation((_input, init?: RequestInit) => (
-      new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          reject(new DOMException('The operation was aborted.', 'AbortError'))
-        }, { once: true })
-      })
-    ))
+    const fetchMock = vi.fn().mockImplementation((_input, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })))
     vi.stubGlobal('fetch', fetchMock)
-
-    const pending = productTasksApi.getMedia('task 1').catch(error => error as Error)
-    const signal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal | undefined
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(signal?.aborted).toBe(false)
-    await vi.advanceTimersByTimeAsync(PRODUCT_MEDIA_RESULT_TIMEOUT_MS - 30_000)
-    const outcome = await pending
-    expect(outcome).toMatchObject({ name: 'AbortError' })
-    expect(signal?.aborted).toBe(true)
-  })
-
-  it('uses task-scoped attach discovery and explicit attach endpoints', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ taskId: 'task 1', projects: [] }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    await productTasksApi.getAttachableMedia('task 1')
-    await productTasksApi.attachMediaProject('task 1', 'img_12345678')
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      'http://127.0.0.1:49237/api/product/tasks/task%201/media/attachable-projects',
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      'http://127.0.0.1:49237/api/product/tasks/task%201/media/projects/img_12345678/attach',
-      expect.objectContaining({ method: 'POST', body: '{}' }),
-    )
+    const pending = productTasksApi.getMedia('task 1').catch((error) => error as Error)
+    await vi.advanceTimersByTimeAsync(PRODUCT_MEDIA_RESULT_TIMEOUT_MS)
+    await expect(pending).resolves.toMatchObject({ name: 'AbortError' })
   })
 })

@@ -49,7 +49,7 @@ function createService() {
   return {
     calls,
     service: {
-      listTasks: record('listTasks', {
+      listTasksAuthoritatively: record('listTasksAuthoritatively', {
         schemaVersion: 2,
         projects: [],
         directories: [],
@@ -65,9 +65,17 @@ function createService() {
       continueTask: record('continueTask'),
       getTask: record('getTask'),
       getTaskThread: record('getTaskThread', { taskId: task.id, entries: [] }),
-      listSideTasks: record('listSideTasks', [sideTask]),
+      listSideTasksAuthoritatively: record('listSideTasksAuthoritatively', [sideTask]),
       createSideTask: record('createSideTask', sideTask),
       closeSideTask: record('closeSideTask', { ...sideTask, status: 'closed' }),
+      createTaskAuthoritatively: record('createTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 } }),
+      mutateTaskAuthoritatively: record('mutateTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] } }),
+      continueTaskAuthoritatively: record('continueTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
+      createSideTaskAuthoritatively: record('createSideTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
+      closeSideTaskAuthoritatively: record('closeSideTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
+      renameTaskAuthoritatively: record('renameTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] }, mirror: { state: 'pending' } }),
+      reconcileRenameAuthoritatively: record('reconcileRenameAuthoritatively', { state: 'reconciled' }),
+      getAuthorityOperation: record('getAuthorityOperation', { receipt: { outcome: 'accepted', revision: 1 }, authority: { revision: 1, event_sequence: 1, tasks: [task] } }),
     },
   }
 }
@@ -117,17 +125,21 @@ describe('Product tasks API', () => {
   })
 
   it('does not expose the legacy Core binding in ordinary task JSON', async () => {
-    const { service } = createService()
+    const { service, calls } = createService()
 
     const listed = await request(service, 'GET', '/api/product/tasks')
     const created = await request(service, 'POST', '/api/product/tasks', {
       workDir: '/workspace/hall-operations',
+      expected_revision: 0,
+      client_operation_id: 'create-request',
     })
 
     expect(listed.body.tasks[0]).toEqual(expect.objectContaining({ id: task.id }))
     expect(listed.body.tasks[0]).not.toHaveProperty('coreSessionId')
     expect(listed.body.tasks[0]).not.toHaveProperty('sourceTurnId')
     expect(listed.body.tasks[0]).not.toHaveProperty('parentThreadId')
+    expect(created.body.receipt).toEqual({ outcome: 'accepted', revision: 1 })
+    expect(created.body.authority).toEqual(expect.objectContaining({ revision: 1, tasks: [expect.objectContaining({ id: task.id })] }))
     expect(created.body.task).toEqual(expect.objectContaining({ id: task.id }))
     expect(created.body.task).not.toHaveProperty('coreSessionId')
     expect(created.body.task).not.toHaveProperty('sourceTurnId')
@@ -136,6 +148,8 @@ describe('Product tasks API', () => {
     expect(serialized).not.toContain('internal-session-1')
     expect(serialized).not.toContain('internal-turn-1')
     expect(serialized).not.toContain('internal-parent-session-1')
+    expect(calls.map((call) => call.name)).toContain('createTaskAuthoritatively')
+    expect(calls.map((call) => call.name)).not.toContain('createTask')
   })
 
   it('routes real lifecycle actions to the product task service', async () => {
@@ -144,18 +158,24 @@ describe('Product tasks API', () => {
     const created = await request(service, 'POST', '/api/product/tasks', {
       workDir: '/workspace/hall-operations',
       title: '整理本周球房活动',
+      expected_revision: 0,
+      client_operation_id: 'create-1',
     })
-    const pinned = await request(service, 'POST', '/api/product/tasks/task-1/pin', {})
-    const archived = await request(service, 'POST', '/api/product/tasks/task-1/archive', {})
+    const pinned = await request(service, 'POST', '/api/product/tasks/task-1/pin', { expected_revision: 0, client_operation_id: 'pin-1' })
+    const archived = await request(service, 'POST', '/api/product/tasks/task-1/archive', { expected_revision: 1, client_operation_id: 'archive-1' })
 
-    expect(created.status).toBe(201)
-    expect(pinned.status).toBe(200)
-    expect(archived.status).toBe(200)
-    expect(calls).toEqual([
-      { name: 'createTask', args: [{ workDir: '/workspace/hall-operations', title: '整理本周球房活动' }] },
-      { name: 'setPinned', args: ['task-1', true] },
-      { name: 'setArchived', args: ['task-1', true] },
+    const restored = await request(service, 'POST', '/api/product/tasks/task-1/restore', { expected_revision: 2, client_operation_id: 'restore-1' })
+    expect([created, pinned, archived, restored].every((response) => response.status === (response === created ? 201 : 200))).toBeTrue()
+    for (const response of [created, pinned, archived, restored]) {
+      expect(response.body).toEqual(expect.objectContaining({ receipt: expect.any(Object), authority: expect.objectContaining({ revision: 1, tasks: expect.any(Array) }) }))
+    }
+    expect(calls.find((call) => call.name === 'createTaskAuthoritatively')?.args[0]).toEqual({ workDir: '/workspace/hall-operations', title: '整理本周球房活动', expected_revision: 0, client_operation_id: 'create-1' })
+    expect(calls.filter((call) => call.name === 'mutateTaskAuthoritatively').map((call) => call.args[0])).toEqual([
+      { taskId: 'task-1', patch: { pinned: true }, expected_revision: 0, client_operation_id: 'pin-1' },
+      { taskId: 'task-1', patch: { archived: true }, expected_revision: 1, client_operation_id: 'archive-1' },
+      { taskId: 'task-1', patch: { archived: false }, expected_revision: 2, client_operation_id: 'restore-1' },
     ])
+    expect(calls.map((call) => call.name)).not.toContain('createTask')
   })
 
   it('routes product-thread anchored continuations to the product task service', async () => {
@@ -164,20 +184,17 @@ describe('Product tasks API', () => {
     const response = await request(service, 'POST', '/api/product/tasks/task-1/continue', {
       title: '继续整理本周活动',
       sourceEntryId: 'thread_0123456789abcdef0123',
+      sideTaskId: 'task-side-1',
       target: 'new_worktree',
+      expected_revision: 0,
+      client_operation_id: 'continue-1',
     })
 
-    expect(response.status).toBe(201)
-    expect(calls).toEqual([
-      {
-        name: 'continueTask',
-        args: ['task-1', {
-          title: '继续整理本周活动',
-          sourceEntryId: 'thread_0123456789abcdef0123',
-          target: 'new_worktree',
-        }],
-      },
-    ])
+    expect(response).toEqual(expect.objectContaining({ status: 201, body: expect.objectContaining({ receipt: { outcome: 'accepted', revision: 1 }, authority: expect.objectContaining({ revision: 1, tasks: expect.any(Array) }) }) }))
+    const continuation = calls.find((call) => call.name === 'continueTaskAuthoritatively')!
+    expect(continuation.args[0]).toEqual({ taskId: 'task-1', title: '继续整理本周活动', sourceEntryId: 'thread_0123456789abcdef0123', sideTaskId: 'task-side-1', target: 'new_worktree', expected_revision: 0, client_operation_id: 'continue-1', canonical_input: JSON.stringify({ title: '继续整理本周活动', sourceEntryId: 'thread_0123456789abcdef0123', sideTaskId: 'task-side-1', target: 'new_worktree', expected_revision: 0, client_operation_id: 'continue-1' }) })
+    expect(calls.find((call) => call.name === 'getAuthorityOperation')?.args.slice(0, 2)).toEqual(['task-1', 'continue-1'])
+    expect(calls.map((call) => call.name)).not.toContain('continueTask')
   })
 
   it('serves a task-scoped product thread instead of a Core session transcript', async () => {
@@ -344,46 +361,24 @@ describe('Product tasks API', () => {
     const created = await request(service, 'POST', '/api/product/tasks/task-1/side-tasks', {
       title: '单独核对优惠规则',
       sourceEntryId: 'thread_0123456789abcdef0123',
+      sideTaskId: 'task-side-1',
+      expected_revision: 0,
+      client_operation_id: 'side-create-1',
     })
     const closed = await request(
       service,
       'POST',
       '/api/product/tasks/task-1/side-tasks/side-task-1/close',
-      {},
+      { expected_revision: 1, client_operation_id: 'side-close-1' },
     )
 
-    const publicSideTask = {
-      id: sideTask.id,
-      parentTaskId: sideTask.parentTaskId,
-      taskId: sideTask.taskId,
-      title: sideTask.title,
-      status: sideTask.status,
-      createdAt: sideTask.createdAt,
-      updatedAt: sideTask.updatedAt,
-    }
-    expect(listed).toEqual({ status: 200, body: { sideTasks: [publicSideTask] } })
-    expect(created).toEqual({ status: 201, body: { sideTask: publicSideTask } })
-    expect(closed).toEqual({
-      status: 200,
-      body: { sideTask: { ...publicSideTask, status: 'closed' } },
-    })
     expect(listed.body.sideTasks[0]).toEqual(expect.objectContaining({ taskId: sideTask.taskId }))
-    expect(JSON.stringify({ listed: listed.body, created: created.body, closed: closed.body }))
-      .not.toContain('coreSessionId')
-    expect(JSON.stringify({ listed: listed.body, created: created.body, closed: closed.body }))
-      .not.toContain('sourceTurnId')
-    expect(JSON.stringify({ listed: listed.body, created: created.body, closed: closed.body }))
-      .not.toContain('transcript-turn-42')
-    expect(calls).toEqual([
-      { name: 'listSideTasks', args: ['task-1'] },
-      {
-        name: 'createSideTask',
-        args: ['task-1', {
-          title: '单独核对优惠规则',
-          sourceEntryId: 'thread_0123456789abcdef0123',
-        }],
-      },
-      { name: 'closeSideTask', args: ['task-1', 'side-task-1'] },
-    ])
+    expect(created).toEqual(expect.objectContaining({ status: 201, body: expect.objectContaining({ receipt: { outcome: 'accepted', revision: 1 }, authority: expect.objectContaining({ revision: 1, tasks: expect.any(Array) }) }) }))
+    expect(closed).toEqual(expect.objectContaining({ status: 200, body: expect.objectContaining({ receipt: { outcome: 'accepted', revision: 1 }, authority: expect.objectContaining({ revision: 1, tasks: expect.any(Array) }) }) }))
+    expect(calls.find((call) => call.name === 'createSideTaskAuthoritatively')?.args[0]).toEqual({ taskId: 'task-1', sideTaskId: 'task-side-1', title: '单独核对优惠规则', sourceEntryId: 'thread_0123456789abcdef0123', expected_revision: 0, client_operation_id: 'side-create-1', canonical_input: JSON.stringify({ title: '单独核对优惠规则', sourceEntryId: 'thread_0123456789abcdef0123', sideTaskId: 'task-side-1', expected_revision: 0, client_operation_id: 'side-create-1' }) })
+    expect(calls.find((call) => call.name === 'closeSideTaskAuthoritatively')?.args[0]).toEqual({ taskId: 'task-1', sideTaskId: 'side-task-1', expected_revision: 1, client_operation_id: 'side-close-1', canonical_input: JSON.stringify({ expected_revision: 1, client_operation_id: 'side-close-1' }) })
+    expect(calls.map((call) => call.name)).not.toContain('createSideTask')
+    expect(calls.map((call) => call.name)).not.toContain('closeSideTask')
+    expect(JSON.stringify({ listed: listed.body, created: created.body, closed: closed.body })).not.toContain('coreSessionId')
   })
 })

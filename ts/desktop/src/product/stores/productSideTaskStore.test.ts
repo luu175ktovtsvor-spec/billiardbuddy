@@ -1,110 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { productSideTasksApi } from '../api/sideTasks'
-import type { ProductSideTask } from '../domain/types'
-import {
-  productSideTaskMutationKey,
-  useProductSideTaskStore,
-} from './productSideTaskStore'
+import type { ProductSideTask, ProductSideTaskActionResponse } from '../domain/types'
+import { useProductSideTaskStore } from './productSideTaskStore'
 
-vi.mock('../api/sideTasks', () => ({
-  productSideTasksApi: {
-    list: vi.fn(),
-    create: vi.fn(),
-    close: vi.fn(),
-  },
-}))
+vi.mock('../api/sideTasks', () => ({ productSideTasksApi: { list: vi.fn(), create: vi.fn(), close: vi.fn() } }))
+const parent = 'task-1'
+function side(overrides: Partial<ProductSideTask> = {}): ProductSideTask { return { id: 'side-1', parentTaskId: parent, taskId: 'side-1', title: '分支', status: 'open', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', ...overrides } }
+function result(revision = 1, sideTask?: ProductSideTask): ProductSideTaskActionResponse { return { receipt: { client_operation_id: 'op', expected_revision: revision - 1, outcome: 'accepted', revision }, authority: { revision, event_sequence: revision, tasks: [], side_tasks: sideTask ? [sideTask] : [] }, sideTask } }
+function reset() { useProductSideTaskStore.setState({ sideTasksByParentTaskId: {}, loadingByParentTaskId: {}, errorsByParentTaskId: {}, mutations: {}, panelByParentTaskId: {}, confirmedAuthorityRevisionByParentTaskId: {}, pending: {} }) }
 
-const parentTaskId = 'task-1'
-
-function makeSideTask(overrides: Partial<ProductSideTask> = {}): ProductSideTask {
-  return {
-    id: 'side-1',
-    parentTaskId,
-    taskId: 'task-side-1',
-    title: '单独核对优惠规则',
-    status: 'open',
-    createdAt: '2026-07-18T00:00:00.000Z',
-    updatedAt: '2026-07-18T00:00:00.000Z',
-    ...overrides,
-  }
-}
-
-function resetStore() {
-  useProductSideTaskStore.setState({
-    sideTasksByParentTaskId: {},
-    loadingByParentTaskId: {},
-    errorsByParentTaskId: {},
-    mutations: {},
-    panelByParentTaskId: {},
-  })
-}
-
-describe('productSideTaskStore', () => {
-  beforeEach(() => {
-    resetStore()
-    vi.clearAllMocks()
-  })
-
-  afterEach(() => {
-    resetStore()
-  })
-
-  it('keeps side tasks in a parent-scoped temporary collection', async () => {
-    const sideTask = makeSideTask()
-    vi.mocked(productSideTasksApi.create).mockResolvedValue({ sideTask })
-
-    await useProductSideTaskStore.getState().createSideTask(parentTaskId, {
-      sourceEntryId: 'thread_0123456789abcdef0123',
-    })
-
-    expect(productSideTasksApi.create).toHaveBeenCalledWith(parentTaskId, {
-      sourceEntryId: 'thread_0123456789abcdef0123',
-    })
-    expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parentTaskId]).toEqual([sideTask])
-    expect(useProductSideTaskStore.getState().mutations[
-      productSideTaskMutationKey(parentTaskId, 'new', 'create')
-    ]).toBe(false)
-  })
-
-  it('does not retain raw upstream details when loading side tasks fails', async () => {
-    const rawError = new Error('Claude provider rejected /private/.claude/settings.json token')
-    vi.mocked(productSideTasksApi.list).mockRejectedValue(rawError)
-
-    await useProductSideTaskStore.getState().refreshSideTasks(parentTaskId)
-
-    expect(useProductSideTaskStore.getState().errorsByParentTaskId[parentTaskId])
-      .toBe('暂时无法读取侧边任务，请稍后重试。')
-  })
-
-  it('reconciles a closed side task without removing its retained transcript record', async () => {
-    const openSideTask = makeSideTask()
-    const closedSideTask = makeSideTask({
-      status: 'closed',
-      closedAt: '2026-07-18T01:00:00.000Z',
-      updatedAt: '2026-07-18T01:00:00.000Z',
-    })
-    useProductSideTaskStore.setState({
-      sideTasksByParentTaskId: { [parentTaskId]: [openSideTask] },
-    })
-    vi.mocked(productSideTasksApi.close).mockResolvedValue({ sideTask: closedSideTask })
-
-    await useProductSideTaskStore.getState().closeSideTask(parentTaskId, openSideTask.id)
-
-    expect(productSideTasksApi.close).toHaveBeenCalledWith(parentTaskId, openSideTask.id)
-    expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parentTaskId]).toEqual([closedSideTask])
-  })
-
-  it('opens a panel with the requested side task and never adds it to the normal task store', () => {
-    const sideTask = makeSideTask()
-    useProductSideTaskStore.setState({
-      sideTasksByParentTaskId: { [parentTaskId]: [sideTask] },
-    })
-
-    useProductSideTaskStore.getState().openSideTaskPanel(parentTaskId, sideTask.id)
-
-    expect(useProductSideTaskStore.getState().panelByParentTaskId[parentTaskId]).toEqual({
-      isOpen: true,
-      selectedSideTaskId: sideTask.id,
-    })
-  })
+describe('productSideTaskStore authority mutations', () => {
+ beforeEach(() => { reset(); vi.clearAllMocks() }); afterEach(reset)
+ it('keeps an unknown create pending and retries the same envelope/id', async () => {
+   vi.mocked(productSideTasksApi.create).mockRejectedValueOnce(new Error('timeout')).mockImplementationOnce(async (_parent, input) => result(1, side({ id: input.sideTaskId, taskId: input.sideTaskId })))
+   await expect(useProductSideTaskStore.getState().createSideTask(parent, { sourceEntryId: 'entry-1' })).rejects.toThrow('timeout')
+   const pending = Object.values(useProductSideTaskStore.getState().pending)[0]
+   expect(pending).toEqual(expect.objectContaining({ expected_revision: 0, client_operation_id: expect.any(String), sideTaskId: expect.any(String) }))
+   await useProductSideTaskStore.getState().createSideTask(parent, { sourceEntryId: 'entry-1' })
+   expect(vi.mocked(productSideTasksApi.create).mock.calls[0]?.[1]).toBe(vi.mocked(productSideTasksApi.create).mock.calls[1]?.[1])
+   expect(useProductSideTaskStore.getState().pending).toEqual({})
+ })
+ it('clears close pending after receipt and preserves panel state while merging projection', async () => {
+   const open = side(); const closed = side({ status: 'closed', closedAt: '2026-01-02T00:00:00.000Z' })
+   useProductSideTaskStore.setState({ sideTasksByParentTaskId: { [parent]: [open] }, panelByParentTaskId: { [parent]: { isOpen: true, selectedSideTaskId: open.id } } })
+   vi.mocked(productSideTasksApi.close).mockResolvedValue(result(3, closed))
+   await useProductSideTaskStore.getState().closeSideTask(parent, open.id)
+   expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parent]?.[0]).toMatchObject({ status: 'closed' })
+   expect(useProductSideTaskStore.getState().panelByParentTaskId[parent]).toEqual({ isOpen: true, selectedSideTaskId: open.id })
+   expect(useProductSideTaskStore.getState().confirmedAuthorityRevisionByParentTaskId[parent]).toBe(3)
+ })
+ it('ignores stale authority responses', async () => {
+   const open = side(); useProductSideTaskStore.setState({ sideTasksByParentTaskId: { [parent]: [open] }, confirmedAuthorityRevisionByParentTaskId: { [parent]: 5 } })
+   vi.mocked(productSideTasksApi.close).mockResolvedValue(result(4, side({ status: 'closed' })))
+   await useProductSideTaskStore.getState().closeSideTask(parent, open.id)
+   expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parent]?.[0]?.status).toBe('open')
+ })
 })

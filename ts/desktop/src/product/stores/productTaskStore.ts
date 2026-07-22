@@ -1,13 +1,17 @@
 import { create } from 'zustand'
-import { productApiUserFacingError } from '../api/client'
+import { ProductApiError, productApiUserFacingError } from '../api/client'
 import { productTasksApi } from '../api/tasks'
 import { PRODUCT_DOMAIN_VERSION } from '../domain/types'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import type {
+  AuthoritySnapshot,
   ContinueProductTaskInput,
   CreateProductTaskInput,
+  MutationEnvelope,
+  ProductTaskActionResponse,
   ProductTaskIndexResponse,
   ProductTaskRecord,
+  UpdateProductTaskInput,
 } from '../domain/types'
 
 export const EMPTY_PRODUCT_TASK_INDEX: ProductTaskIndexResponse = {
@@ -16,24 +20,27 @@ export const EMPTY_PRODUCT_TASK_INDEX: ProductTaskIndexResponse = {
   directories: [],
   tasks: [],
   total: 0,
-  capabilities: {
-    createTask: false,
-  },
+  capabilities: { createTask: false },
 }
 
 export function productTaskMutationKey(taskId: string, action: string): string {
   return `${taskId}:${action}`
 }
 
+type PendingMutation = MutationEnvelope<Record<string, unknown>>
+
 type ProductTaskStore = {
   index: ProductTaskIndexResponse
   isLoading: boolean
   error: string | null
   mutations: Record<string, boolean | undefined>
+  /** Last authority revision confirmed by a durable receipt, never a local request counter. */
+  confirmedAuthorityRevision: number
+  /** Durable-operation envelopes retained after unknown transport outcomes. */
+  pending: Record<string, PendingMutation | undefined>
 
   refresh: () => Promise<void>
   clearError: () => void
-  /** Apply a title received through the restricted product task stream. */
   applyRuntimeTaskTitle: (taskId: string, title: string) => void
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
@@ -53,17 +60,13 @@ function timestamp(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function reconcileProjectSummaries(
-  index: ProductTaskIndexResponse,
-  tasks: readonly ProductTaskRecord[],
-): ProductTaskIndexResponse['projects'] {
+function reconcileProjectSummaries(index: ProductTaskIndexResponse, tasks: readonly ProductTaskRecord[]): ProductTaskIndexResponse['projects'] {
   return index.projects.map((project) => {
     const projectTasks = tasks.filter((task) => task.projectId === project.id)
     let updatedAt = project.updatedAt
     let updatedTimestamp = timestamp(updatedAt)
     let taskCount = 0
     let archivedTaskCount = 0
-
     for (const task of projectTasks) {
       if (task.lifecycle === 'archived') archivedTaskCount += 1
       else taskCount += 1
@@ -73,13 +76,7 @@ function reconcileProjectSummaries(
         updatedTimestamp = taskTimestamp
       }
     }
-
-    return {
-      ...project,
-      taskCount,
-      archivedTaskCount,
-      updatedAt,
-    }
+    return { ...project, taskCount, archivedTaskCount, updatedAt }
   })
 }
 
@@ -89,48 +86,98 @@ function upsertTask(index: ProductTaskIndexResponse, task: ProductTaskRecord): P
     ? index.tasks.map((current) => current.id === task.id ? task : current)
     : [task, ...index.tasks])
   const projects = reconcileProjectSummaries(index, tasks)
-  return {
-    ...index,
-    projects: orderProductProjects(projects, tasks),
-    tasks,
-    total: tasks.length,
-  }
+  return { ...index, projects: orderProductProjects(projects, tasks), tasks, total: tasks.length }
+}
+
+/** Authority is not a full index projection. Keep renderer-owned actions, links and catalog bindings. */
+export function mergeAuthority(index: ProductTaskIndexResponse, authority: AuthoritySnapshot): ProductTaskIndexResponse {
+  const byId = new Map(authority.tasks.map((task) => [task.id, task]))
+  const tasks = index.tasks.map((current) => {
+    const incoming = byId.get(current.id)
+    if (!incoming) return current
+    const required = ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState'] as const
+    if (required.some((key) => incoming[key] === undefined || incoming[key] === null)) throw new Error('Incomplete authority task projection')
+    // Authority owns every ProductTask domain field. Renderer-only view fields
+    // remain intentionally outside the persisted authority schema.
+    return { ...current, id: incoming.id, projectId: incoming.projectId, directoryId: incoming.directoryId, workDir: incoming.workDir, title: incoming.title, lifecycle: incoming.lifecycle, kind: incoming.kind, pinnedAt: incoming.pinnedAt, archivedAt: incoming.archivedAt, parentTaskId: incoming.parentTaskId, createdAt: incoming.createdAt, updatedAt: incoming.updatedAt, worktreeState: incoming.worktreeState }
+  })
+  return { ...index, tasks: orderProductTasks(tasks), projects: orderProductProjects(reconcileProjectSummaries(index, tasks), tasks) }
+}
+
+function makeOperationId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `operation-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function createEnvelope<T extends object>(input: T, expected_revision: number): MutationEnvelope<T> {
+  return Object.freeze({ ...input, expected_revision, client_operation_id: makeOperationId() })
 }
 
 let latestRefreshRequest = 0
-let taskIndexRevision = 0
+let taskIndexRequestSequence = 0
 
 export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
   const runMutation = async (
-    key: string,
-    action: () => Promise<{ task: ProductTaskRecord }>,
+    intentKey: string,
+    input: Record<string, unknown>,
+    action: (envelope: PendingMutation) => Promise<ProductTaskActionResponse>,
   ): Promise<ProductTaskRecord> => {
+    const existing = get().pending[intentKey]
+    const envelope = existing ?? createEnvelope(input, get().confirmedAuthorityRevision)
     set((state) => ({
       error: null,
-      mutations: {
-        ...state.mutations,
-        [key]: true,
-      },
+      pending: { ...state.pending, [intentKey]: envelope },
+      mutations: { ...state.mutations, [intentKey]: true },
     }))
 
     try {
-      const { task } = await action()
-      taskIndexRevision += 1
-      set((state) => ({
-        index: upsertTask(state.index, task),
-        isLoading: false,
-      }))
+      const response = await action(envelope)
+      if (!response.receipt) throw new Error('Missing durable operation receipt')
+      let task: ProductTaskRecord | undefined
+      set((state) => {
+        if (response.authority.revision < state.confirmedAuthorityRevision) {
+          task = state.index.tasks.find((current) => current.id === (response.task?.id ?? input.taskId))
+          const pending = { ...state.pending }
+          delete pending[intentKey]
+          return {
+            mutations: { ...state.mutations, [intentKey]: false },
+            pending,
+          }
+        }
+        let index = mergeAuthority(state.index, response.authority)
+        const returned = response.task
+        if (returned && !index.tasks.some((current) => current.id === returned.id)) {
+          task = { ...returned, actions: returned.actions ?? [] }
+          index = upsertTask(index, task)
+        }
+        task ??= index.tasks.find((current) => current.id === (response.task?.id ?? ''))
+          ?? index.tasks.find((current) => current.id === input.taskId)
+        const pending = { ...state.pending }
+        delete pending[intentKey]
+        taskIndexRequestSequence += 1
+        return {
+          index,
+          isLoading: false,
+          confirmedAuthorityRevision: response.authority.revision,
+          pending,
+          mutations: { ...state.mutations, [intentKey]: false },
+        }
+      })
+      if (!task) throw new Error('Authority receipt did not identify a task projection')
       return task
     } catch (error) {
-      set({ error: errorMessage(error, '暂时无法完成任务操作，请稍后重试。') })
+      const knownTerminal = error instanceof ProductApiError
+      set((state) => {
+        const pending = { ...state.pending }
+        if (knownTerminal) delete pending[intentKey]
+        return {
+          error: errorMessage(error, '暂时无法完成任务操作，请稍后重试。'),
+          pending,
+          mutations: { ...state.mutations, [intentKey]: false },
+        }
+      })
       throw error
-    } finally {
-      set((state) => ({
-        mutations: {
-          ...state.mutations,
-          [key]: false,
-        },
-      }))
     }
   }
 
@@ -139,24 +186,20 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
     isLoading: false,
     error: null,
     mutations: {},
+    confirmedAuthorityRevision: 0,
+    pending: {},
 
     refresh: async () => {
       const requestId = ++latestRefreshRequest
-      const revisionAtRequestStart = taskIndexRevision
+      const sequenceAtRequestStart = taskIndexRequestSequence
       set({ isLoading: true, error: null })
       try {
         const index = await productTasksApi.list()
-        if (
-          requestId === latestRefreshRequest
-          && revisionAtRequestStart === taskIndexRevision
-        ) {
+        if (requestId === latestRefreshRequest && sequenceAtRequestStart === taskIndexRequestSequence) {
           set({ index, isLoading: false })
         }
       } catch (error) {
-        if (
-          requestId === latestRefreshRequest
-          && revisionAtRequestStart === taskIndexRevision
-        ) {
+        if (requestId === latestRefreshRequest && sequenceAtRequestStart === taskIndexRequestSequence) {
           set({ error: errorMessage(error, '暂时无法读取任务，请稍后重试。'), isLoading: false })
         }
       }
@@ -168,63 +211,31 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
       const normalizedTaskId = taskId.trim()
       const normalizedTitle = title.trim()
       if (!normalizedTaskId || !normalizedTitle) return
-
       set((state) => {
         const current = state.index.tasks.find((task) => task.id === normalizedTaskId)
         if (!current || current.title === normalizedTitle) return state
-
-        taskIndexRevision += 1
-
+        taskIndexRequestSequence += 1
         return {
-          index: {
-            ...state.index,
-            // A title event carries no trustworthy ordering timestamp, so keep
-            // lifecycle, actions, and updatedAt from the last task record.
-            tasks: state.index.tasks.map((task) => task.id === normalizedTaskId
-              ? { ...task, title: normalizedTitle }
-              : task),
-          },
+          index: { ...state.index, tasks: state.index.tasks.map((task) => task.id === normalizedTaskId ? { ...task, title: normalizedTitle } : task) },
           isLoading: false,
         }
       })
     },
 
     createTask: async (input) => {
-      const task = await runMutation('create', () => productTasksApi.create(input))
+      const task = await runMutation('create', input, (envelope) => productTasksApi.create(envelope as MutationEnvelope<CreateProductTaskInput>))
       await get().refresh()
       return task
     },
-
-    renameTask: (taskId, title) => runMutation(
-      productTaskMutationKey(taskId, 'rename'),
-      () => productTasksApi.update(taskId, { title }),
-    ),
-
-    pinTask: (taskId) => runMutation(
-      productTaskMutationKey(taskId, 'pin'),
-      () => productTasksApi.pin(taskId),
-    ),
-
-    unpinTask: (taskId) => runMutation(
-      productTaskMutationKey(taskId, 'unpin'),
-      () => productTasksApi.unpin(taskId),
-    ),
-
-    archiveTask: (taskId) => runMutation(
-      productTaskMutationKey(taskId, 'archive'),
-      () => productTasksApi.archive(taskId),
-    ),
-
-    restoreTask: (taskId) => runMutation(
-      productTaskMutationKey(taskId, 'restore'),
-      () => productTasksApi.restore(taskId),
-    ),
-
+    renameTask: (taskId, title) => runMutation(productTaskMutationKey(taskId, 'rename'), { taskId, title }, (envelope) =>
+      productTasksApi.update(taskId, envelope as MutationEnvelope<UpdateProductTaskInput>)),
+    pinTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'pin'), { taskId }, (envelope) => productTasksApi.pin(taskId, envelope)),
+    unpinTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'unpin'), { taskId }, (envelope) => productTasksApi.unpin(taskId, envelope)),
+    archiveTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'archive'), { taskId }, (envelope) => productTasksApi.archive(taskId, envelope)),
+    restoreTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'restore'), { taskId }, (envelope) => productTasksApi.restore(taskId, envelope)),
     continueTask: async (taskId, input) => {
-      const task = await runMutation(
-        productTaskMutationKey(taskId, 'continue'),
-        () => productTasksApi.continue(taskId, input),
-      )
+      const task = await runMutation(productTaskMutationKey(taskId, 'continue'), { taskId, ...input }, (envelope) =>
+        productTasksApi.continue(taskId, envelope as MutationEnvelope<ContinueProductTaskInput>))
       await get().refresh()
       return task
     },

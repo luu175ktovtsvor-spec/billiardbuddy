@@ -9,10 +9,12 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 
 let server: ReturnType<typeof Bun.serve>
 let baseUrl: string
 let tmpDir: string
+let productCreateOperationId: string
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalCliPath = process.env.CLAUDE_CLI_PATH
 const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
@@ -43,6 +45,7 @@ afterAll(() => {
 // Use dynamic import to avoid bundling issues
 async function startTestServer() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-e2e-'))
+  productCreateOperationId = `e2e-product-create-${randomUUID()}`
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.CLAUDE_CLI_PATH = mockSdkCliPath
   process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
@@ -193,8 +196,12 @@ describe('E2E: Full Flow', () => {
     const { status, data } = await api('POST', '/api/product/tasks', {
       workDir,
       title: '整理本周球房活动',
+      expected_revision: 0,
+      client_operation_id: productCreateOperationId,
     })
     expect(status).toBe(201)
+    expect(data.receipt).toEqual(expect.objectContaining({ outcome: 'accepted' }))
+    expect(data.authority).toEqual(expect.objectContaining({ revision: expect.any(Number), tasks: expect.any(Array) }))
     expect(typeof data.task?.id).toBe('string')
 
     const wsUrl = baseUrl.replace('http://', 'ws://') +

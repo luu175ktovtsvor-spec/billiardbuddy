@@ -41,6 +41,18 @@ import {
 } from './taskThreadProjection.js'
 import { productTaskRunProjection } from './taskRunProjection.js'
 import { findCanonicalGitRoot, findGitRoot } from '../../utils/git.js'
+import {
+  isRecord,
+  latestProductTimestamp,
+  legacyProductTaskId,
+  readStrictLegacyProductTasks,
+  normalizeLegacyV1SideTasks,
+  normalizeMetadata,
+  normalizeModernTaskStore,
+  optionalString,
+} from './legacyProductTaskReader.js'
+import { ProductTaskAuthorityRepository, readLegacyProductTasks } from './authorityRepository.js'
+import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -61,7 +73,7 @@ export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
   }
 }
 
-type ProductTaskMetadata = {
+export type ProductTaskMetadata = {
   id: string
   /** Private Agent Core binding. Never return this from a product API. */
   coreSessionId: string
@@ -82,19 +94,19 @@ type ProductTaskMetadata = {
   visibility?: 'main' | 'side_task'
 }
 
-type ProductSideTaskMetadata = ProductSideTask & {
+export type ProductSideTaskMetadata = ProductSideTask & {
   /** Private Agent Core binding for the temporary branch. */
   coreSessionId: string
   /** Private Core turn selected by the product-thread entry. */
   sourceTurnId: string
 }
 
-type ProductProjectMetadata = Pick<
+export type ProductProjectMetadata = Pick<
   ProductProject,
   'id' | 'title' | 'rootDir' | 'createdAt' | 'updatedAt'
 >
 
-type ProductProjectDirectoryMetadata = ProductProjectDirectory
+export type ProductProjectDirectoryMetadata = ProductProjectDirectory
 
 const PRODUCT_TASK_STORE_VERSION = 4 as const
 // Keep persisted v1 task metadata readable even when the public product
@@ -103,7 +115,7 @@ const LEGACY_PRODUCT_TASK_STORE_VERSION = 1 as const
 const DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 const MAX_RECENT_PRODUCT_PROJECTS = 500
 
-type ProductTaskStore = {
+export type ProductTaskStore = {
   version: typeof PRODUCT_TASK_STORE_VERSION
   projects: Record<string, ProductProjectMetadata>
   directories: Record<string, ProductProjectDirectoryMetadata>
@@ -248,14 +260,12 @@ function productStorePath(): string {
   return path.join(configDir, 'billiardbuddy', 'product-tasks.json')
 }
 
-function resourceId(prefix: string, value: string): string {
-  return `${prefix}_${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
+function authorityStorePath(storagePath: string): string {
+  return path.join(path.dirname(storagePath), 'product-task-authority.v1.json')
 }
 
-function legacyProductTaskId(coreSessionId: string): string {
-  // Old product metadata was keyed by the Core session id. Keep old tasks
-  // addressable without ever returning that id to a product renderer.
-  return resourceId('task', coreSessionId)
+function resourceId(prefix: string, value: string): string {
+  return `${prefix}_${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
 }
 
 function createProductTaskId(): string {
@@ -470,226 +480,11 @@ function publicSideTask(sideTask: ProductSideTaskMetadata): ProductSideTask {
   return result
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
-/**
- * Core transcript activity is the authoritative recency signal for a task.
- * Product metadata can also move independently for lifecycle actions, so keep
- * whichever valid timestamp is newer instead of letting the first stored
- * value permanently mask later Core work.
- */
-function latestProductTimestamp(...values: Array<string | undefined>): string {
-  let latest = ''
-  let latestTime = Number.NEGATIVE_INFINITY
-
-  for (const value of values) {
-    if (!value) continue
-    const timestamp = Date.parse(value)
-    if (!Number.isFinite(timestamp)) {
-      if (!latest) latest = value
-      continue
-    }
-    if (timestamp > latestTime) {
-      latest = value
-      latestTime = timestamp
-    }
-  }
-
-  return latest
-}
-
-function storedLifecycle(value: unknown): ProductTask['lifecycle'] {
-  return value === 'archived' ? 'archived' : 'active'
-}
-
-function storedKind(value: unknown): ProductTask['kind'] {
-  return value === 'continuation' ? 'continuation' : 'main'
-}
-
-function storedWorktreeState(value: unknown): ProductTask['worktreeState'] {
-  return value === 'planned' || value === 'materialized' ? value : 'not_requested'
-}
-
-function normalizeMetadata(
-  value: unknown,
-  fallback: { id: string; coreSessionId: string },
-): ProductTaskMetadata {
-  const record = isRecord(value) ? value : {}
-  return {
-    id: fallback.id,
-    coreSessionId: fallback.coreSessionId,
-    ...(optionalString(record.projectId) ? { projectId: optionalString(record.projectId) } : {}),
-    ...(optionalString(record.directoryId) ? { directoryId: optionalString(record.directoryId) } : {}),
-    ...(optionalString(record.title) ? { title: optionalString(record.title) } : {}),
-    lifecycle: storedLifecycle(record.lifecycle),
-    kind: storedKind(record.kind),
-    ...(optionalString(record.pinnedAt) ? { pinnedAt: optionalString(record.pinnedAt) } : {}),
-    ...(optionalString(record.archivedAt) ? { archivedAt: optionalString(record.archivedAt) } : {}),
-    ...(optionalString(record.parentTaskId) ? { parentTaskId: optionalString(record.parentTaskId) } : {}),
-    ...(optionalString(record.sourceTurnId) ? { sourceTurnId: optionalString(record.sourceTurnId) } : {}),
-    createdAt: optionalString(record.createdAt) ?? new Date(0).toISOString(),
-    updatedAt: optionalString(record.updatedAt) ?? new Date(0).toISOString(),
-    worktreeState: storedWorktreeState(record.worktreeState),
-    ...(record.visibility === 'side_task' ? { visibility: 'side_task' as const } : { visibility: 'main' as const }),
-  }
-}
-
-function normalizeSideTasks(value: unknown): Record<string, ProductSideTaskMetadata> {
-  const sideTasks: Record<string, ProductSideTaskMetadata> = {}
-  if (!isRecord(value)) return sideTasks
-
-  for (const [sideTaskId, rawSideTask] of Object.entries(value)) {
-    if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
-      continue
-    }
-    const taskId = typeof rawSideTask.taskId === 'string' && rawSideTask.taskId
-      ? rawSideTask.taskId
-      : legacyProductTaskId(rawSideTask.coreSessionId)
-    const parentTaskId = optionalString(rawSideTask.parentTaskId)
-    const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
-    const title = optionalString(rawSideTask.title)
-    const createdAt = optionalString(rawSideTask.createdAt)
-    const updatedAt = optionalString(rawSideTask.updatedAt)
-    if (!parentTaskId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
-    sideTasks[sideTaskId] = {
-      id: sideTaskId,
-      parentTaskId,
-      taskId,
-      sourceTurnId,
-      coreSessionId: rawSideTask.coreSessionId,
-      title,
-      status: rawSideTask.status === 'closed' ? 'closed' : 'open',
-      createdAt,
-      updatedAt,
-      ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
-    }
-  }
-  return sideTasks
-}
-
-function normalizeLegacyV1SideTasks(value: unknown): Record<string, ProductSideTaskMetadata> {
-  const sideTasks: Record<string, ProductSideTaskMetadata> = {}
-  if (!isRecord(value)) return sideTasks
-
-  for (const [sideTaskId, rawSideTask] of Object.entries(value)) {
-    if (!isRecord(rawSideTask) || typeof rawSideTask.coreSessionId !== 'string' || !rawSideTask.coreSessionId) {
-      continue
-    }
-    const parentCoreSessionId = optionalString(rawSideTask.parentTaskId)
-    const sourceTurnId = optionalString(rawSideTask.sourceTurnId)
-    const title = optionalString(rawSideTask.title)
-    const createdAt = optionalString(rawSideTask.createdAt)
-    const updatedAt = optionalString(rawSideTask.updatedAt)
-    if (!parentCoreSessionId || !sourceTurnId || !title || !createdAt || !updatedAt) continue
-    sideTasks[sideTaskId] = {
-      id: sideTaskId,
-      parentTaskId: legacyProductTaskId(parentCoreSessionId),
-      taskId: legacyProductTaskId(rawSideTask.coreSessionId),
-      sourceTurnId,
-      coreSessionId: rawSideTask.coreSessionId,
-      title,
-      status: rawSideTask.status === 'closed' ? 'closed' : 'open',
-      createdAt,
-      updatedAt,
-      ...(optionalString(rawSideTask.closedAt) ? { closedAt: optionalString(rawSideTask.closedAt) } : {}),
-    }
-  }
-  return sideTasks
-}
-
-function normalizeProjects(value: unknown): Record<string, ProductProjectMetadata> {
-  if (value === undefined) return {}
-  if (!isRecord(value)) {
-    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-  }
-
-  const projects: Record<string, ProductProjectMetadata> = {}
-  for (const [projectId, rawProject] of Object.entries(value)) {
-    if (!isRecord(rawProject)) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    const rootDir = optionalString(rawProject.rootDir)?.trim()
-    if (!projectId || !rootDir) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    projects[projectId] = {
-      id: projectId,
-      title: optionalString(rawProject.title)?.trim() || projectTitle(rootDir),
-      rootDir,
-      createdAt: optionalString(rawProject.createdAt) ?? new Date(0).toISOString(),
-      updatedAt: optionalString(rawProject.updatedAt) ?? new Date(0).toISOString(),
-    }
-  }
-  return projects
-}
-
-function normalizeDirectories(value: unknown): Record<string, ProductProjectDirectoryMetadata> {
-  if (value === undefined) return {}
-  if (!isRecord(value)) {
-    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-  }
-
-  const directories: Record<string, ProductProjectDirectoryMetadata> = {}
-  for (const [directoryId, rawDirectory] of Object.entries(value)) {
-    if (!isRecord(rawDirectory)) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    const projectId = optionalString(rawDirectory.projectId)?.trim()
-    const directoryPath = optionalString(rawDirectory.path)?.trim()
-    if (!directoryId || !projectId || !directoryPath) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    directories[directoryId] = {
-      id: directoryId,
-      projectId,
-      path: directoryPath,
-      label: optionalString(rawDirectory.label)?.trim() || path.basename(directoryPath) || directoryPath,
-      createdAt: optionalString(rawDirectory.createdAt) ?? new Date(0).toISOString(),
-      updatedAt: optionalString(rawDirectory.updatedAt) ?? new Date(0).toISOString(),
-    }
-  }
-  return directories
-}
-
-function normalizeModernTaskStore(value: Record<string, unknown>): ProductTaskStore {
-  const tasks: Record<string, ProductTaskMetadata> = {}
-  const taskIdByCoreSessionId = new Map<string, string>()
-  const rawTasks = value.tasks
-  if (!isRecord(rawTasks)) {
-    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-  }
-
-  for (const [taskId, rawMetadata] of Object.entries(rawTasks)) {
-    if (!isRecord(rawMetadata) || typeof rawMetadata.coreSessionId !== 'string' || !rawMetadata.coreSessionId) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    const existingTaskId = taskIdByCoreSessionId.get(rawMetadata.coreSessionId)
-    if (existingTaskId && existingTaskId !== taskId) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    taskIdByCoreSessionId.set(rawMetadata.coreSessionId, taskId)
-    tasks[taskId] = normalizeMetadata(rawMetadata, {
-      id: taskId,
-      coreSessionId: rawMetadata.coreSessionId,
-    })
-  }
-
-  return {
-    version: PRODUCT_TASK_STORE_VERSION,
-    projects: normalizeProjects(value.projects),
-    directories: normalizeDirectories(value.directories),
-    tasks,
-    sideTasks: normalizeSideTasks(value.sideTasks),
-    ...(optionalString(value.legacyCoreSessionsImportedAt)
-      ? { legacyCoreSessionsImportedAt: optionalString(value.legacyCoreSessionsImportedAt) }
-      : {}),
-  }
+function authorityPublicTask(value: unknown): ProductTaskRecord {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const task = record.task && typeof record.task === 'object' ? record.task as ProductTaskRecord : record as ProductTaskRecord
+  const { coreSessionId: _coreSessionId, binding: _binding, ...publicTask } = task as ProductTaskRecord & { coreSessionId?: unknown; binding?: unknown }
+  return publicTask as ProductTaskRecord
 }
 
 function normalizeProductTaskStore(value: unknown): ProductTaskStore {
@@ -770,6 +565,8 @@ function requireTaskAction(task: ProductTaskRecord, action: ProductTaskAction): 
 export class ProductTaskService {
   private static readonly storeLocks = new Map<string, Promise<void>>()
   private readonly storagePath: string
+  private readonly authorityPath: string
+  private readonly usesDefaultStoragePath: boolean
   private readonly core: AgentCoreAdapter
   private readonly runs: ProductTaskRunInspector
 
@@ -778,7 +575,9 @@ export class ProductTaskService {
     core?: AgentCoreAdapter
     runs?: ProductTaskRunInspector
   } = {}) {
+    this.usesDefaultStoragePath = !options.storagePath
     this.storagePath = options.storagePath ?? productStorePath()
+    this.authorityPath = options.storagePath ? authorityStorePath(options.storagePath) : authorityStorePath(productStorePath())
     this.core = options.core ?? agentCoreAdapter
     this.runs = options.runs ?? productTaskRunProjection
   }
@@ -809,8 +608,25 @@ export class ProductTaskService {
   }
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
-    return this.withStoreLock(() => this.listTasksUnlocked())
+    const legacy = await this.withStoreLock(() => this.listTasksUnlocked())
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const byId = new Map(legacy.tasks.map(task => [task.id, task]))
+    const sideTaskIds = new Set(Object.values(authority.side_tasks).map(side => (side as { taskId?: unknown }).taskId).filter((id): id is string => typeof id === 'string'))
+    for (const value of Object.values(authority.tasks)) {
+      const task = authorityPublicTask(value)
+      if (!task?.id || sideTaskIds.has(task.id) || (task as unknown as { kind?: unknown }).kind === 'side') continue
+      const runtime = byId.get(task.id)
+      // worktree state, action availability and transcript activity are live
+      // Core projections, not authority metadata mutations.
+      byId.set(task.id, runtime ? { ...task, workDir: runtime.workDir, worktreeState: runtime.worktreeState, updatedAt: runtime.updatedAt, actions: runtime.actions } : task)
+    }
+    const tasks = [...byId.values()]
+    return { ...legacy, tasks, total: tasks.length }
   }
+
+  async listTasksAuthoritatively(): Promise<ProductTaskIndexResponse> { return this.listTasks() }
+
+  async listSideTasksAuthoritatively(taskId: string): Promise<ProductSideTask[]> { return this.listSideTasks(taskId) }
 
   private async listTasksUnlocked(): Promise<ProductTaskIndexResponse> {
     const { store, sessions } = await this.loadRegisteredStore()
@@ -899,6 +715,287 @@ export class ProductTaskService {
     }
   }
 
+  async continueTaskAuthoritatively(input: { taskId: string; expected_revision: number; client_operation_id: string; canonical_input: string }, options: { authorityPath: string; bridge: Pick<CoreOperationBridge, 'ensureBranch'> }): Promise<{ outcome: string; revision: number }> {
+    await this.ensureAuthorityProjectionForLegacyTask(input.taskId, options)
+    return this.authoritativeBranch(input, options, 'continue')
+  }
+
+  async createSideTaskAuthoritatively(input: { taskId: string; sideTaskId: string; expected_revision: number; client_operation_id: string; canonical_input: string }, options: { authorityPath: string; bridge: Pick<CoreOperationBridge, 'ensureBranch'> }): Promise<{ outcome: string; revision: number }> {
+    await this.ensureAuthorityProjectionForLegacyTask(input.taskId, options)
+    return this.authoritativeBranch({ ...input, taskId: input.sideTaskId, canonical_input: JSON.stringify({ ...JSON.parse(input.canonical_input), taskId: input.taskId }) }, options, 'side')
+  }
+
+  async closeSideTaskAuthoritatively(input: { taskId: string; sideTaskId: string; expected_revision: number; client_operation_id: string; canonical_input: string }, options: { authorityPath: string }): Promise<{ outcome: string; revision: number }> {
+    await this.ensureAuthorityProjectionForLegacyTask(input.taskId, options)
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    const current = await authority.read()
+    // Side-task ownership is authority-only. A legacy or client-shaped record
+    // must never be promoted during a close mutation.
+    const side = current.side_tasks[input.sideTaskId] as ProductSideTask | undefined
+    if (!side || side.parentTaskId !== input.taskId) throw ApiError.notFound(`侧边任务不存在：${input.sideTaskId}`)
+    let reserved
+    try { reserved = await authority.reserve({ client_operation_id: input.client_operation_id, product_task_id: input.sideTaskId, kind: 'close', canonical_input: input.canonical_input, expected_revision: input.expected_revision }) } catch (error) {
+      if ((error as Error).message !== 'AUTHORITY_CONFLICT') throw error
+      return { outcome: 'conflict', revision: (await authority.read()).revision }
+    }
+    if (reserved.file.receipts[input.client_operation_id]) return { outcome: 'duplicate', revision: reserved.file.receipts[input.client_operation_id].revision }
+    const closed = { ...side, status: 'closed' as const, closedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+    const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, result: closed }, undefined, { sideTask: closed })
+    return { outcome: 'accepted', revision: final.revision }
+  }
+
+  private async authoritativeBranch(input: { taskId: string; expected_revision: number; client_operation_id: string; canonical_input: string }, options: { authorityPath: string; bridge: Pick<CoreOperationBridge, 'ensureBranch'> }, kind: string): Promise<{ outcome: string; revision: number }> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    // Public input never chooses a Core source. Resolve its product entry id
+    // against the authority-owned private parent binding before persisting the
+    // server-only branch plan.
+    let publicInput: Record<string, unknown> = {}
+    try { publicInput = JSON.parse(input.canonical_input) as Record<string, unknown> } catch { /* bridge records invalid input as terminal */ }
+    const sourceTaskId = typeof publicInput.taskId === 'string' ? publicInput.taskId : input.taskId
+    const current = await authority.read()
+    const source = current.tasks[sourceTaskId] as { task?: ProductTaskRecord; binding?: { coreSessionId?: string } } | undefined
+    let canonicalInput = input.canonical_input
+    if (source?.binding?.coreSessionId) {
+      const serverInput: Record<string, unknown> = { sourceSessionId: source.binding.coreSessionId, title: typeof publicInput.title === 'string' ? publicInput.title : source.task?.title ?? 'Continue task' }
+      if (typeof publicInput.sourceEntryId === 'string') serverInput.targetMessageId = await this.resolveSourceTurnIdForProductEntry(source.binding.coreSessionId, publicInput.sourceEntryId)
+      canonicalInput = JSON.stringify(serverInput)
+    }
+    let reserved
+    try { reserved = await authority.reserve({ client_operation_id: input.client_operation_id, product_task_id: input.taskId, kind: 'branch', canonical_input: canonicalInput, expected_revision: input.expected_revision }) } catch (error) {
+      if ((error as Error).message !== 'AUTHORITY_CONFLICT') throw error
+      return { outcome: 'conflict', revision: (await authority.read()).revision }
+    }
+    const prior = reserved.file.receipts[input.client_operation_id]
+    if (prior) return { outcome: 'duplicate', revision: prior.revision }
+    let binding: unknown
+    try {
+      binding = await options.bridge.ensureBranch(input.client_operation_id, input.taskId, canonicalInput)
+    } catch (error) {
+      if (!(error instanceof CoreOperationTerminalError)) throw error
+      const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'rejected', revision: reserved.file.revision, error: 'OPERATION_REJECTED' })
+      return { outcome: 'rejected', revision: final.revision }
+    }
+    const sideTask = kind === 'side' ? (() => {
+      const parsed = publicInput as { taskId?: string; sideTaskId?: string; title?: string }
+      const now = new Date().toISOString()
+      return { id: input.taskId, parentTaskId: parsed.taskId ?? '', taskId: input.taskId, title: parsed.title ?? '', status: 'open', createdAt: now, updatedAt: now }
+    })() : undefined
+    const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, ...(sideTask ? { result: sideTask } : {}) }, { id: input.taskId, kind, binding }, sideTask ? { sideTask } : {})
+    return { outcome: 'accepted', revision: final.revision }
+  }
+
+  /** Authority-backed create. The legacy registry is deliberately read-only. */
+  async createTaskAuthoritatively(input: CreateProductTaskInput, options: {
+    authorityPath: string
+    bridge: Pick<CoreOperationBridge, 'ensureCreate'>
+    afterEnsure?: () => void | Promise<void>
+  }): Promise<{ task: ProductTaskRecord; receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number } }> {
+    if (!isRecord(input) || !Number.isSafeInteger(input.expected_revision) || input.expected_revision! < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id.trim()) throw ApiError.badRequest('expected_revision 和 client_operation_id 必填')
+    if (typeof input.workDir !== 'string' || !input.workDir.trim()) throw ApiError.badRequest('workDir 必须是非空字符串')
+    const title = validTitle(input.title) ?? ''
+    const operationId = input.client_operation_id
+    const taskId = `task_${createHash('sha256').update(operationId).digest('hex').slice(0, 16)}`
+    const canonical = JSON.stringify({ workDir: input.workDir, title, permissionMode: input.permissionMode ?? 'ask', useWorktree: input.useWorktree === true })
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    try {
+      const reserved = await authority.reserve({ client_operation_id: operationId, product_task_id: taskId, kind: 'create', canonical_input: canonical, expected_revision: input.expected_revision })
+      const receipt = reserved.file.receipts[operationId]
+      if (receipt) return { task: authorityPublicTask(reserved.file.tasks[taskId]), receipt: { outcome: 'duplicate', revision: receipt.revision } }
+      const task = { id: taskId, projectId: '', directoryId: '', workDir: input.workDir, title, lifecycle: 'active' as const, kind: 'main' as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), worktreeState: input.useWorktree ? 'planned' as const : 'not_requested' as const, actions: ['pin', 'rename', 'continue', 'archive'] as ProductTaskAction[] }
+      let binding: unknown
+      try {
+        binding = await options.bridge.ensureCreate(operationId, taskId, canonical)
+      } catch (error) {
+        if (!(error instanceof CoreOperationTerminalError)) throw error
+        const final = await authority.finalize(operationId, { client_operation_id: operationId, expected_revision: input.expected_revision, outcome: 'rejected', revision: reserved.file.revision, error: 'OPERATION_REJECTED' })
+        return { task, receipt: { outcome: 'rejected', revision: final.revision } }
+      }
+      await options.afterEnsure?.()
+      const final = await authority.finalize(operationId, { client_operation_id: operationId, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, result: task }, { task, binding })
+      return { task, receipt: { outcome: 'accepted', revision: final.revision } }
+    } catch (error) {
+      if ((error as Error).message === 'AUTHORITY_CONFLICT') return { task: authorityPublicTask((await authority.read()).tasks[taskId]), receipt: { outcome: 'conflict', revision: (await authority.read()).revision } }
+      throw error
+    }
+  }
+
+  async getTaskAuthoritatively(taskId: string, options: { authorityPath: string }): Promise<ProductTaskRecord> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    let file = await authority.read()
+    if (!file.tasks[taskId]) await this.ensureAuthorityProjectionForLegacyTask(taskId, options)
+    file = await authority.read()
+    const value = file.tasks[taskId]
+    if (!value) throw ApiError.notFound(`任务不存在：${taskId}`)
+    const task = authorityPublicTask(value)
+    if (!task?.id) throw ApiError.notFound(`任务不存在：${taskId}`)
+    return task
+  }
+
+  async ensureAuthorityProjectionForLegacyTask(taskId: string, options: { authorityPath: string }): Promise<{ revision: number; task: ProductTaskRecord }> {
+    const raw = await fs.readFile(this.storagePath, 'utf8')
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) } catch { throw new Error('AUTHORITY_INVALID') }
+    const strict = readStrictLegacyProductTasks(parsed)
+    const task = strict.find((candidate) => candidate.id === taskId)
+    if (!task) throw ApiError.notFound(`任务不存在：${taskId}`)
+    const root = parsed as { version?: unknown; tasks?: Record<string, unknown> }
+    if (root.version === 2) throw new Error('UNSUPPORTED_SCHEMA')
+    const taskKey = root.version === 1
+      ? Object.keys(root.tasks ?? {}).find((key) => legacyProductTaskId(key) === taskId)
+      : taskId
+    if (!taskKey) throw ApiError.notFound(`任务不存在：${taskId}`)
+    const source = await readLegacyProductTasks(this.storagePath)
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    const record: ProductTaskRecord = { ...task, actions: task.lifecycle === 'archived' ? ['restore', 'continue'] : [task.pinnedAt ? 'unpin' : 'pin', 'rename', 'continue', 'archive'] }
+    const projected = await authority.ensureLegacyProjection(taskId, {
+      ...source,
+      recordDigest: () => source.recordDigest(taskKey),
+    }, { task: record, binding: { coreSessionId: task.coreSessionId } })
+    return { revision: projected.revision, task: authorityPublicTask((projected.tasks[taskId] as { task: ProductTaskRecord }).task) }
+  }
+
+  async mutateTaskAuthoritatively(input: {
+    taskId: string
+    patch: { pinned?: boolean; archived?: boolean; title?: string }
+    expected_revision: number
+    client_operation_id: string
+  }, options: { authorityPath: string }): Promise<{
+    task: ProductTaskRecord
+    receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number }
+    snapshot: { revision: number; event_sequence: number; tasks: ProductTaskRecord[] }
+  }> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    await this.ensureAuthorityProjectionForLegacyTask(input.taskId, options)
+    const canonical = JSON.stringify({ taskId: input.taskId, patch: input.patch })
+    try {
+      const before = await authority.read()
+      const stored = before.tasks[input.taskId] as { task?: ProductTaskRecord; binding?: unknown } | undefined
+      if (!stored?.task) throw ApiError.notFound(`任务不存在：${input.taskId}`)
+      const reserved = await authority.reserve({ client_operation_id: input.client_operation_id, product_task_id: input.taskId, kind: 'metadata', canonical_input: canonical, expected_revision: input.expected_revision })
+      const prior = reserved.file.receipts[input.client_operation_id]
+      if (prior) {
+        const current = await authority.read()
+        const task = authorityPublicTask((current.tasks[input.taskId] as { task: ProductTaskRecord }).task)
+        return { task, receipt: { outcome: 'duplicate', revision: prior.revision }, snapshot: this.authoritySnapshot(current) }
+      }
+      const now = new Date().toISOString()
+      const task: ProductTaskRecord = {
+        ...stored.task,
+        ...(input.patch.title !== undefined ? { title: validTitle(input.patch.title) } : {}),
+        ...(input.patch.pinned !== undefined ? input.patch.pinned ? { pinnedAt: now } : { pinnedAt: undefined } : {}),
+        ...(input.patch.archived !== undefined ? input.patch.archived ? { lifecycle: 'archived' as const, archivedAt: now } : { lifecycle: 'active' as const, archivedAt: undefined } : {}),
+        updatedAt: now,
+      }
+      const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, result: task }, { ...stored, task })
+      return { task: authorityPublicTask(task), receipt: { outcome: 'accepted', revision: final.revision }, snapshot: this.authoritySnapshot(final) }
+    } catch (error) {
+      if ((error as Error).message === 'AUTHORITY_CONFLICT') {
+        const current = await authority.read()
+        return { task: authorityPublicTask((current.tasks[input.taskId] as { task?: ProductTaskRecord } | undefined)?.task), receipt: { outcome: 'conflict', revision: current.revision }, snapshot: this.authoritySnapshot(current) }
+      }
+      throw error
+    }
+  }
+
+  async renameTaskAuthoritatively(input: {
+    taskId: string
+    title: string
+    expected_revision: number
+    client_operation_id: string
+  }, options: {
+    authorityPath: string
+    bridge: Pick<CoreOperationBridge, 'ensureRename'>
+  }): Promise<{
+    task: ProductTaskRecord
+    receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number }
+    snapshot: { revision: number; event_sequence: number; tasks: ProductTaskRecord[] }
+    mirror: { state: 'pending' | 'reconciled' | 'failed'; error?: string }
+  }> {
+    const title = validTitle(input.title)
+    if (!title) throw ApiError.badRequest('任务标题不能为空')
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    await this.ensureAuthorityProjectionForLegacyTask(input.taskId, options)
+    const canonical = JSON.stringify({ taskId: input.taskId, title })
+    try {
+      const before = await authority.read()
+      const stored = before.tasks[input.taskId] as { task?: ProductTaskRecord; binding?: { coreSessionId?: string } } | undefined
+      if (!stored?.task || !stored.binding?.coreSessionId) throw ApiError.notFound(`任务不存在：${input.taskId}`)
+      const reserved = await authority.reserve({
+        client_operation_id: input.client_operation_id,
+        product_task_id: input.taskId,
+        kind: 'rename',
+        canonical_input: canonical,
+        expected_revision: input.expected_revision,
+      })
+      const prior = reserved.file.receipts[input.client_operation_id]
+      if (prior) {
+        const current = await authority.read()
+        const task = authorityPublicTask((current.tasks[input.taskId] as { task: ProductTaskRecord }).task)
+        return { task, receipt: { outcome: 'duplicate', revision: prior.revision }, snapshot: this.authoritySnapshot(current), mirror: current.outbox[input.client_operation_id] ?? { state: 'pending' } }
+      }
+      const task = { ...stored.task, title, updatedAt: new Date().toISOString() }
+      // The product mutation is authoritative before Core is touched. The
+      // reconciler reads this durable outbox after a crash as well.
+      const final = await authority.finalize(
+        input.client_operation_id,
+        { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, result: task },
+        { ...stored, task },
+        { outbox: { state: 'pending' } },
+      )
+      return { task: authorityPublicTask(task), receipt: { outcome: 'accepted', revision: final.revision }, snapshot: this.authoritySnapshot(final), mirror: final.outbox[input.client_operation_id]! }
+    } catch (error) {
+      if ((error as Error).message === 'AUTHORITY_CONFLICT') {
+        const current = await authority.read()
+        return { task: authorityPublicTask((current.tasks[input.taskId] as { task?: ProductTaskRecord } | undefined)?.task), receipt: { outcome: 'conflict', revision: current.revision }, snapshot: this.authoritySnapshot(current), mirror: { state: 'failed', error: 'AUTHORITY_CONFLICT' } }
+      }
+      throw error
+    }
+  }
+
+  async reconcileRenameAuthoritatively(operationId: string, options: {
+    authorityPath: string
+    bridge: Pick<CoreOperationBridge, 'ensureRename'>
+  }): Promise<{ state: 'reconciled' | 'failed'; error?: string }> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    const file = await authority.read()
+    const event = file.events[operationId]
+    const stored = event ? file.tasks[(JSON.parse(event.canonical_input ?? '{}') as { taskId?: string }).taskId ?? ''] as { task?: ProductTaskRecord; binding?: { coreSessionId?: string } } | undefined : undefined
+    if (!event || event.kind !== 'rename' || !stored?.task || !stored.binding?.coreSessionId) {
+      throw new Error('AUTHORITY_INVALID')
+    }
+    try {
+      await options.bridge.ensureRename(operationId, stored.task.id, JSON.stringify({ sessionId: stored.binding.coreSessionId, title: stored.task.title }))
+      await authority.setOutbox(operationId, 'reconciled')
+      return { state: 'reconciled' }
+    } catch {
+      await authority.setOutbox(operationId, 'failed', 'OPERATION_REJECTED')
+      return { state: 'failed', error: 'OPERATION_REJECTED' }
+    }
+  }
+
+  async getAuthorityOperation(taskId: string, operationId: string, options: { authorityPath: string }): Promise<{
+    receipt: { outcome: string; revision: number }
+    authority: { revision: number; event_sequence: number; tasks: ProductTaskRecord[]; side_tasks: ProductSideTask[] }
+    mirror?: { state: 'pending' | 'reconciled' | 'failed'; error?: string }
+  }> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    const file = await authority.read()
+    const receipt = file.receipts[operationId]
+    if (!receipt) throw ApiError.notFound('操作不存在')
+    const tasks = this.authoritySnapshot(file).tasks
+    if (!tasks.some((task) => task.id === taskId || task.parentTaskId === taskId)) throw ApiError.notFound('操作不存在')
+    return { receipt: { outcome: receipt.outcome, revision: receipt.revision }, authority: this.authoritySnapshot(file), ...(file.outbox[operationId] ? { mirror: file.outbox[operationId] } : {}) }
+  }
+
+  private authoritySnapshot(file: Awaited<ReturnType<ProductTaskAuthorityRepository['read']>>): { revision: number; event_sequence: number; tasks: ProductTaskRecord[]; side_tasks: ProductSideTask[] } {
+    return {
+      revision: file.revision,
+      event_sequence: file.event_sequence,
+      tasks: Object.values(file.tasks).map(authorityPublicTask),
+      side_tasks: Object.values(file.side_tasks).map((sideTask) => publicSideTask(sideTask as ProductSideTaskMetadata)),
+    }
+  }
+
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
     return this.withStoreLock(() => this.createTaskUnlocked(input))
   }
@@ -952,7 +1049,16 @@ export class ProductTaskService {
    * binding stays in the private product store and never crosses this seam.
    */
   async resolveCoreSessionId(taskId: string): Promise<string> {
-    return this.withStoreLock(async () => (await this.requireTaskBinding(taskId)).metadata.coreSessionId)
+    return this.withStoreLock(async () => {
+      const authorityPath = this.usesDefaultStoragePath ? authorityStorePath(productStorePath()) : this.authorityPath
+      let authority = await new ProductTaskAuthorityRepository(authorityPath).read()
+      const record = authority.tasks[taskId] as { binding?: { coreSessionId?: unknown } } | undefined
+      if (typeof record?.binding?.coreSessionId === 'string' && record.binding.coreSessionId) return record.binding.coreSessionId
+      // Owner lookup is a strict, read-only D3 legacy projection. It must not
+      // bootstrap an authority file; the first authoritative mutation does so.
+      await readLegacyProductTasks(this.storagePath)
+      return (await this.requireTaskBinding(taskId)).metadata.coreSessionId
+    })
   }
 
   async getTaskThread(taskId: string): Promise<ProductTaskThread> {
@@ -1081,7 +1187,14 @@ export class ProductTaskService {
   }
 
   async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
-    return this.withStoreLock(() => this.listSideTasksUnlocked(taskId))
+    const legacy = await this.withStoreLock(() => this.listSideTasksUnlocked(taskId))
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const byId = new Map(legacy.map(task => [task.id, task]))
+    for (const value of Object.values(authority.side_tasks)) {
+      const side = publicSideTask(value as ProductSideTaskMetadata)
+      if (side.parentTaskId === taskId) byId.set(side.id, side)
+    }
+    return [...byId.values()]
   }
 
   private async listSideTasksUnlocked(taskId: string): Promise<ProductSideTask[]> {
@@ -1561,6 +1674,57 @@ export class ProductTaskService {
         : 'planned'
     } catch {
       return 'planned'
+    }
+  }
+
+  /**
+   * Durable authority-only operation used by the BB-02A mutation path.  It
+   * intentionally does not touch product-tasks.json: callers reserve before
+   * Core and may safely replay the same envelope after a crash.
+   */
+  async executeAuthorityOperation(input: {
+    authorityPath: string
+    client_operation_id: string
+    product_task_id: string
+    kind: 'create' | 'branch' | 'close'
+    canonical_input: string
+    expected_revision: number
+    ensure: () => Promise<unknown>
+  }): Promise<{ outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number }> {
+    const authority = new ProductTaskAuthorityRepository(input.authorityPath)
+    try {
+      const reserved = await authority.reserve({
+        client_operation_id: input.client_operation_id,
+        product_task_id: input.product_task_id,
+        kind: input.kind,
+        canonical_input: input.canonical_input,
+        expected_revision: input.expected_revision,
+      })
+      const prior = reserved.file.receipts[input.client_operation_id]
+      if (prior) return { outcome: 'duplicate', revision: prior.revision }
+      try {
+        const binding = await input.ensure()
+        const final = await authority.finalize(input.client_operation_id, {
+          client_operation_id: input.client_operation_id,
+          expected_revision: input.expected_revision,
+          outcome: 'accepted',
+          revision: reserved.file.revision,
+        }, binding)
+        return { outcome: 'accepted', revision: final.revision }
+      } catch (error) {
+        const final = await authority.finalize(input.client_operation_id, {
+          client_operation_id: input.client_operation_id,
+          expected_revision: input.expected_revision,
+          outcome: 'rejected',
+          revision: reserved.file.revision,
+          error: 'OPERATION_REJECTED',
+        })
+        void final
+        throw error
+      }
+    } catch (error) {
+      if ((error as Error).message === 'AUTHORITY_CONFLICT') return { outcome: 'conflict', revision: (await authority.read()).revision }
+      throw error
     }
   }
 
