@@ -43,6 +43,8 @@ async function setup(): Promise<void> {
     'QF_GATEWAY_TOKEN',
     'QF_GATEWAY_MODEL',
     'BB_INSTALLATION_ID',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
   ]) {
     stashEnv(key)
   }
@@ -51,6 +53,8 @@ async function setup(): Promise<void> {
   process.env.QF_GATEWAY_TOKEN = GATEWAY_TOKEN
   delete process.env.QF_GATEWAY_MODEL
   delete process.env.BB_INSTALLATION_ID
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_AUTH_TOKEN
   // ProviderService.serverPort is a process-wide static — snapshot and restore it
   // so this suite never leaks its port into other files' runtime-env assertions.
   savedServerPort = ProviderService.getServerPort()

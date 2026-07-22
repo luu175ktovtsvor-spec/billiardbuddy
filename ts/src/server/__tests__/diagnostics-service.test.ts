@@ -41,7 +41,7 @@ function makeRequest(
   return { req, url, segments }
 }
 
-async function getPort(): Promise<number> {
+async function getPort(): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
   return await new Promise((resolve, reject) => {
     const server = createServer()
     server.on('error', reject)
@@ -51,25 +51,9 @@ async function getPort(): Promise<number> {
         server.close(() => reject(new Error('Failed to allocate a local port')))
         return
       }
-      server.close(() => resolve(address.port))
+      resolve({ server, port: address.port })
     })
   })
-}
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  let lastError = ''
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url)
-      if (response.ok) return
-      lastError = `HTTP ${response.status}`
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
-    }
-    await Bun.sleep(100)
-  }
-  throw new Error(`Timed out waiting for ${url}${lastError ? ` (${lastError})` : ''}`)
 }
 
 describe('DiagnosticsService', () => {
@@ -133,23 +117,15 @@ describe('DiagnosticsService', () => {
   })
 
   test('keeps fatal startup errors visible on stderr while recording diagnostics', async () => {
-    const port = await getPort()
+    const { server: blocker, port } = await getPort()
     const serverArgs = ['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)]
     const env = {
       ...process.env,
       CLAUDE_CONFIG_DIR: tmpDir,
     }
     delete (env as Record<string, string | undefined>).NODE_ENV
-    const server = Bun.spawn(serverArgs, {
-      cwd: process.cwd(),
-      env,
-      stdout: 'ignore',
-      stderr: 'ignore',
-    })
 
     try {
-      await waitForHttp(`http://127.0.0.1:${port}/health`, 10_000)
-
       const duplicate = Bun.spawn(serverArgs, {
         cwd: process.cwd(),
         env,
@@ -171,8 +147,9 @@ describe('DiagnosticsService', () => {
       expect(raw).toContain('server_uncaught_exception')
       expect(raw).toContain(`Failed to start server. Is port ${port} in use?`)
     } finally {
-      server.kill()
-      await server.exited.catch(() => undefined)
+      await new Promise<void>((resolve, reject) => {
+        blocker.close(error => (error ? reject(error) : resolve()))
+      })
     }
   }, 15_000)
 })

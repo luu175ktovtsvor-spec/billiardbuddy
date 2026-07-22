@@ -14,6 +14,7 @@ let tmpHome: string
 let originalHome: string | undefined
 let originalUserProfile: string | undefined
 let originalClaudeConfigDir: string | undefined
+let originalSimpleMode: string | undefined
 let originalNativeFileSearch: string | undefined
 let originalCwdState: string
 
@@ -23,12 +24,14 @@ describe('agent definition cache invalidation', () => {
     originalHome = process.env.HOME
     originalUserProfile = process.env.USERPROFILE
     originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+    originalSimpleMode = process.env.CLAUDE_CODE_SIMPLE
     originalNativeFileSearch = process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
     originalCwdState = getCwdState()
 
     process.env.HOME = tmpHome
     process.env.USERPROFILE = tmpHome
     process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude')
+    delete process.env.CLAUDE_CODE_SIMPLE
     // Discover agents via the native fs walk instead of a ripgrep binary, so the test is
     // deterministic on hosts without a system/vendored rg (product-supported fallback).
     process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = '1'
@@ -52,6 +55,12 @@ describe('agent definition cache invalidation', () => {
       delete process.env.CLAUDE_CONFIG_DIR
     } else {
       process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
+    }
+
+    if (originalSimpleMode === undefined) {
+      delete process.env.CLAUDE_CODE_SIMPLE
+    } else {
+      process.env.CLAUDE_CODE_SIMPLE = originalSimpleMode
     }
 
     if (originalNativeFileSearch === undefined) {

@@ -16,6 +16,7 @@ let originalConfigDir: string | undefined
 let originalHome: string | undefined
 let originalUserProfile: string | undefined
 let originalSimpleMode: string | undefined
+let originalNativeFileSearch: string | undefined
 let originalCwdState: string
 
 function makeRequest(
@@ -73,11 +74,13 @@ describe('product task Agent command discovery', () => {
     originalHome = process.env.HOME
     originalUserProfile = process.env.USERPROFILE
     originalSimpleMode = process.env.CLAUDE_CODE_SIMPLE
+    originalNativeFileSearch = process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH
     originalCwdState = getCwdState()
     process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude')
     process.env.HOME = tmpHome
     process.env.USERPROFILE = tmpHome
     delete process.env.CLAUDE_CODE_SIMPLE
+    process.env.CLAUDE_CODE_USE_NATIVE_FILE_SEARCH = '1'
     setCwdState(workspace)
     clearAgentDefinitionsCache()
     clearInstalledPluginsCache()
@@ -95,6 +98,7 @@ describe('product task Agent command discovery', () => {
     restoreEnv('HOME', originalHome)
     restoreEnv('USERPROFILE', originalUserProfile)
     restoreEnv('CLAUDE_CODE_SIMPLE', originalSimpleMode)
+    restoreEnv('CLAUDE_CODE_USE_NATIVE_FILE_SEARCH', originalNativeFileSearch)
     await fs.rm(tmpHome, { recursive: true, force: true })
   })
 

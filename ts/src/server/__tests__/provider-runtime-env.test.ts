@@ -11,6 +11,14 @@ import {
 import { buildQfGatewayProvider } from '../services/qfGatewayProvider.js'
 
 let tmpDir: string
+let originalQfGatewayUrl: string | undefined
+let originalQfGatewayToken: string | undefined
+let originalQfGatewayModel: string | undefined
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true })
@@ -20,9 +28,18 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 describe('providerRuntimeEnv', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-runtime-env-'))
+    originalQfGatewayUrl = process.env.QF_GATEWAY_URL
+    originalQfGatewayToken = process.env.QF_GATEWAY_TOKEN
+    originalQfGatewayModel = process.env.QF_GATEWAY_MODEL
+    delete process.env.QF_GATEWAY_URL
+    delete process.env.QF_GATEWAY_TOKEN
+    delete process.env.QF_GATEWAY_MODEL
   })
 
   afterEach(async () => {
+    restoreEnv('QF_GATEWAY_URL', originalQfGatewayUrl)
+    restoreEnv('QF_GATEWAY_TOKEN', originalQfGatewayToken)
+    restoreEnv('QF_GATEWAY_MODEL', originalQfGatewayModel)
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
