@@ -1,3 +1,5 @@
+import * as os from 'node:os'
+import * as path from 'node:path'
 import type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -11,6 +13,8 @@ import {
   productTaskReviewService,
   type ProductTaskReviewService,
 } from '../product/taskReviewService.js'
+import { assertOperationEnvelope } from '../../../shared/product/authority.js'
+import { CoreOperationBridge, SessionCoreOperationBackend } from '../product/coreOperationBridge.js'
 import { productTaskService, type ProductTaskService } from '../product/taskService.js'
 import {
   ProductTaskMediaService,
@@ -30,6 +34,21 @@ type ProductTaskReviewApi = Pick<
   'getStatus' | 'getTree' | 'getFile' | 'getDiff'
 >
 
+function authorityPath(): string {
+  return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'billiardbuddy', 'product-task-authority.v1.json')
+}
+
+const authorityBridge = new CoreOperationBridge(new SessionCoreOperationBackend())
+
+function authoritativeEnvelope(value: unknown): { expected_revision: number; client_operation_id: string } {
+  try {
+    assertOperationEnvelope(value)
+    return value
+  } catch {
+    throw ApiError.badRequest('expected_revision 和 client_operation_id 必填且格式正确')
+  }
+}
+
 export async function handleProductApi(
   req: Request,
   url: URL,
@@ -48,6 +67,14 @@ export async function handleProductApi(
     | 'listSideTasks'
     | 'createSideTask'
     | 'closeSideTask'
+    | 'createTaskAuthoritatively'
+    | 'continueTaskAuthoritatively'
+    | 'createSideTaskAuthoritatively'
+    | 'closeSideTaskAuthoritatively'
+    | 'renameTaskAuthoritatively'
+    | 'reconcileRenameAuthoritatively'
+    | 'mutateTaskAuthoritatively'
+    | 'getAuthorityOperation'
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
   media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
@@ -88,12 +115,21 @@ export async function handleProductApi(
     const action = segments[4]
 
     if (!taskId) {
-      if (req.method === 'GET') return Response.json(publicTaskIndex(await tasks.listTasks()))
+      if (req.method === 'GET') return Response.json(publicTaskIndex(await tasks.listTasksAuthoritatively()))
       if (req.method === 'POST') {
         const input = await readJson<CreateProductTaskInput>(req)
-        return Response.json({ task: publicTask(await tasks.createTask(input)) }, { status: 201 })
+        const envelope = authoritativeEnvelope(input)
+        const result = await tasks.createTaskAuthoritatively({ ...input, ...envelope }, { authorityPath: authorityPath(), bridge: authorityBridge })
+        const operation = await tasks.getAuthorityOperation(result.task.id, envelope.client_operation_id, { authorityPath: authorityPath() })
+        return Response.json({ receipt: result.receipt, authority: publicAuthority(operation.authority), task: publicTask(result.task) }, { status: 201 })
       }
       return methodNotAllowed(req.method)
+    }
+
+    if (action === 'operations') {
+      const operationId = segments[5]
+      if (req.method !== 'GET' || !operationId || segments[6]) return methodNotAllowed(req.method)
+      return Response.json(await tasks.getAuthorityOperation(taskId, operationId, { authorityPath: authorityPath() }))
     }
 
     if (action === 'thread') {
@@ -138,21 +174,26 @@ export async function handleProductApi(
 
       if (!sideTaskId) {
         if (req.method === 'GET') {
-          return Response.json({ sideTasks: (await tasks.listSideTasks(taskId)).map(publicTask) })
+          return Response.json({ sideTasks: (await tasks.listSideTasksAuthoritatively(taskId)).map(publicTask) })
         }
         if (req.method === 'POST') {
-          const input = await readJson<CreateProductSideTaskInput>(req)
-          return Response.json(
-            { sideTask: publicTask(await tasks.createSideTask(taskId, input)) },
-            { status: 201 },
-          )
+          const input = await readJson<CreateProductSideTaskInput & { sideTaskId?: string }>(req)
+          const envelope = authoritativeEnvelope(input)
+          if (!input.sideTaskId) throw ApiError.badRequest('sideTaskId 必填')
+          const result = await tasks.createSideTaskAuthoritatively({ taskId, sideTaskId: input.sideTaskId, ...envelope, canonical_input: JSON.stringify(input) }, { authorityPath: authorityPath(), bridge: authorityBridge })
+          const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
+          return Response.json({ receipt: operation.receipt, authority: publicAuthority(operation.authority), sideTask: operation.authority.side_tasks?.find((sideTask) => sideTask.id === input.sideTaskId) }, { status: 201 })
         }
         return methodNotAllowed(req.method)
       }
 
       if (sideTaskAction === 'close') {
         if (req.method !== 'POST') return methodNotAllowed(req.method)
-        return Response.json({ sideTask: publicTask(await tasks.closeSideTask(taskId, sideTaskId)) })
+        const input = await readJson<Record<string, unknown>>(req)
+        const envelope = authoritativeEnvelope(input)
+        const result = await tasks.closeSideTaskAuthoritatively({ taskId, sideTaskId, ...envelope, canonical_input: JSON.stringify(input) }, { authorityPath: authorityPath() })
+        const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
+        return Response.json({ receipt: operation.receipt, authority: publicAuthority(operation.authority), sideTask: operation.authority.side_tasks?.find((sideTask) => sideTask.id === sideTaskId) })
       }
 
       throw ApiError.notFound(
@@ -165,22 +206,38 @@ export async function handleProductApi(
     if (!action) {
       if (req.method !== 'PATCH') return methodNotAllowed(req.method)
       const input = await readJson<UpdateProductTaskInput>(req)
-      return Response.json({ task: publicTask(await tasks.updateTask(taskId, input)) })
+      const envelope = authoritativeEnvelope(input)
+      if (input.title !== undefined) {
+        const result = await tasks.renameTaskAuthoritatively({ taskId, title: input.title, ...envelope }, { authorityPath: authorityPath(), bridge: authorityBridge })
+        let mirror = result.mirror
+        try {
+          mirror = await tasks.reconcileRenameAuthoritatively(envelope.client_operation_id, { authorityPath: authorityPath(), bridge: authorityBridge })
+        } catch {
+          mirror = { state: 'failed', error: 'OPERATION_REJECTED' }
+        }
+        return Response.json({ receipt: result.receipt, authority: publicAuthority(result.snapshot), mirror, task: publicTask(result.task) })
+      }
+      const result = await tasks.mutateTaskAuthoritatively({ taskId, patch: { pinned: input.pinned }, ...envelope }, { authorityPath: authorityPath() })
+      return Response.json({ receipt: result.receipt, authority: result.snapshot, task: publicTask(result.task) })
     }
 
     if (req.method !== 'POST') return methodNotAllowed(req.method)
+    const input = await readJson<Record<string, unknown>>(req)
+    const envelope = authoritativeEnvelope(input)
     switch (action) {
       case 'pin':
-        return Response.json({ task: publicTask(await tasks.setPinned(taskId, true)) })
       case 'unpin':
-        return Response.json({ task: publicTask(await tasks.setPinned(taskId, false)) })
       case 'archive':
-        return Response.json({ task: publicTask(await tasks.setArchived(taskId, true)) })
-      case 'restore':
-        return Response.json({ task: publicTask(await tasks.setArchived(taskId, false)) })
+      case 'restore': {
+        const patch = action === 'pin' ? { pinned: true } : action === 'unpin' ? { pinned: false } : { archived: action === 'archive' }
+        const result = await tasks.mutateTaskAuthoritatively({ taskId, patch, ...envelope }, { authorityPath: authorityPath() })
+        return Response.json({ receipt: result.receipt, authority: result.snapshot, task: publicTask(result.task) })
+      }
       case 'continue': {
-        const input = await readJson<ContinueProductTaskInput>(req)
-        return Response.json({ task: publicTask(await tasks.continueTask(taskId, input)) }, { status: 201 })
+        const body = input as ContinueProductTaskInput
+        const result = await tasks.continueTaskAuthoritatively({ taskId, ...envelope, canonical_input: JSON.stringify(body) }, { authorityPath: authorityPath(), bridge: authorityBridge })
+        const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
+        return Response.json({ receipt: { outcome: result.outcome, revision: result.revision }, authority: publicAuthority(operation.authority) }, { status: 201 })
       }
       default:
         throw ApiError.notFound(`未知任务操作：${action}`)
@@ -255,6 +312,10 @@ function publicTask<T extends object>(task: T): T {
     parentThreadId?: unknown
   }
   return publicTask as T
+}
+
+function publicAuthority<T extends { tasks: object[] }>(authority: T): T {
+  return { ...authority, tasks: authority.tasks.map(publicTask) }
 }
 
 function publicTaskIndex<T extends { tasks: object[] }>(index: T): T {

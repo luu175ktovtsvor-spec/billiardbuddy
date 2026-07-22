@@ -119,7 +119,14 @@ export type ProductTaskIndex = {
   total: number
 }
 
-export type CreateProductTaskInput = {
+export type ProductTaskMutationEnvelope = {
+  /** CAS revision used by every metadata mutation. */
+  expected_revision?: number
+  /** Durable client idempotency key for this mutation. */
+  client_operation_id?: string
+}
+
+export type CreateProductTaskInput = ProductTaskMutationEnvelope & {
   /**
    * A previously registered project/directory pair. Both values are required
    * together and the server resolves the actual path from its own registry.
@@ -141,12 +148,12 @@ export type CreateProductTaskInput = {
   permissionMode?: ProductTaskPermissionMode
 }
 
-export type UpdateProductTaskInput = {
+export type UpdateProductTaskInput = ProductTaskMutationEnvelope & {
   title?: string
   pinned?: boolean
 }
 
-export type ContinueProductTaskInput = {
+export type ContinueProductTaskInput = ProductTaskMutationEnvelope & {
   title?: string
   /**
    * Optional opaque product-thread entry anchor. When omitted, continuation
@@ -161,7 +168,7 @@ export type ContinueProductTaskInput = {
   target?: ProductContinuationTarget
 }
 
-export type CreateProductSideTaskInput = {
+export type CreateProductSideTaskInput = ProductTaskMutationEnvelope & {
   /** A product-thread entry id; the server resolves the private Core turn. */
   sourceEntryId: string
   title?: string

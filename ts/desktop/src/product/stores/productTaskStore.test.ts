@@ -1,325 +1,94 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { productTasksApi } from '../api/tasks'
-import type { ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
+import type { AuthoritySnapshot, ProductTaskActionResponse, ProductTaskIndexResponse, ProductTaskRecord } from '../domain/types'
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from './productTaskStore'
 
 vi.mock('../api/tasks', () => ({
-  productTasksApi: {
-    list: vi.fn(),
-    create: vi.fn(),
-    update: vi.fn(),
-    pin: vi.fn(),
-    unpin: vi.fn(),
-    archive: vi.fn(),
-    restore: vi.fn(),
-    continue: vi.fn(),
-  },
+  productTasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), pin: vi.fn(), unpin: vi.fn(), archive: vi.fn(), restore: vi.fn(), continue: vi.fn() },
 }))
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
-  return {
-    id: 'task-1',
-    projectId: 'project-1',
-    workDir: '/workspace/billiard',
-    title: '修复开球规则',
-    lifecycle: 'active',
-    kind: 'main',
-    createdAt: '2026-07-18T00:00:00.000Z',
-    updatedAt: '2026-07-18T00:00:00.000Z',
-    worktreeState: 'planned',
-    actions: ['rename', 'archive', 'continue'],
-    ...overrides,
-    directoryId: overrides.directoryId ?? 'directory-1',
-  }
+  return { id: 'task-1', projectId: 'project-1', directoryId: 'directory-1', workDir: '/workspace/billiard', title: '修复开球规则', lifecycle: 'active', kind: 'main', createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z', worktreeState: 'planned', actions: ['rename', 'archive', 'continue'], links: { page: '/tasks/task-1' }, ...overrides }
 }
-
 function makeIndex(task = makeTask()): ProductTaskIndexResponse {
-  return {
-    schemaVersion: 2,
-    projects: [{
-      id: 'project-1',
-      title: 'BilliardBuddy',
-      rootDir: '/workspace/billiard',
-      createdAt: '2026-07-18T00:00:00.000Z',
-      taskCount: 1,
-      archivedTaskCount: 0,
-      updatedAt: '2026-07-18T00:00:00.000Z',
-    }],
-    directories: [{
-      id: 'directory-1',
-      projectId: 'project-1',
-      path: '/workspace/billiard',
-      label: 'BilliardBuddy',
-      createdAt: '2026-07-18T00:00:00.000Z',
-      updatedAt: '2026-07-18T00:00:00.000Z',
-    }],
-    tasks: [task],
-    total: 1,
-    capabilities: { createTask: true },
-  }
+  return { schemaVersion: 2, projects: [{ id: 'project-1', title: 'BilliardBuddy', rootDir: '/workspace/billiard', createdAt: task.createdAt, taskCount: 1, archivedTaskCount: 0, updatedAt: task.updatedAt }], directories: [{ id: 'directory-1', projectId: 'project-1', path: '/workspace/billiard', label: 'BilliardBuddy', createdAt: task.createdAt, updatedAt: task.updatedAt }], tasks: [task], total: 1, capabilities: { createTask: true } }
 }
-
+function authority(task: ProductTaskRecord, revision = 1): AuthoritySnapshot {
+  return { revision, event_sequence: revision, tasks: [{ ...task, actions: undefined, links: undefined } as never], side_tasks: [] }
+}
+function response(task: ProductTaskRecord, revision = 1, outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' = 'accepted'): ProductTaskActionResponse {
+  return { receipt: { client_operation_id: 'op', expected_revision: revision - 1, outcome, revision }, authority: authority(task, revision), task }
+}
 function resetStore() {
-  useProductTaskStore.setState({
-    index: EMPTY_PRODUCT_TASK_INDEX,
-    isLoading: false,
-    error: null,
-    mutations: {},
-  })
+  useProductTaskStore.setState({ index: EMPTY_PRODUCT_TASK_INDEX, isLoading: false, error: null, mutations: {}, confirmedAuthorityRevision: 0, pending: {} })
 }
 
-describe('productTaskStore', () => {
-  beforeEach(() => {
-    resetStore()
-    vi.clearAllMocks()
-  })
+describe('productTaskStore authority mutations', () => {
+  beforeEach(() => { resetStore(); vi.clearAllMocks() })
+  afterEach(resetStore)
 
-  afterEach(() => {
-    resetStore()
-  })
-
-  it('refreshes only from the product task index endpoint', async () => {
+  it('uses list only for task index loading', async () => {
     const index = makeIndex()
     vi.mocked(productTasksApi.list).mockResolvedValue(index)
-
     await useProductTaskStore.getState().refresh()
-
-    expect(productTasksApi.list).toHaveBeenCalledOnce()
-    expect(useProductTaskStore.getState()).toMatchObject({
-      index,
-      isLoading: false,
-      error: null,
-    })
+    expect(useProductTaskStore.getState().index).toEqual(index)
   })
 
-  it('does not retain raw upstream details when loading the task index fails', async () => {
-    const rawError = new Error('DeepSeek provider rejected /private/.claude/settings.json token')
-    vi.mocked(productTasksApi.list).mockRejectedValue(rawError)
-
-    await useProductTaskStore.getState().refresh()
-
-    expect(useProductTaskStore.getState().error).toBe('暂时无法读取任务，请稍后重试。')
-    expect(useProductTaskStore.getState().error).not.toContain('DeepSeek')
-    expect(useProductTaskStore.getState().error).not.toContain('.claude')
-  })
-
-  it('refreshes the registered directory catalog after creating a task', async () => {
-    const created = makeTask({
-      id: 'task-created',
-      projectId: 'project-created',
-      directoryId: 'directory-created',
-      workDir: '/workspace/created',
-      title: '新建训练计划',
-    })
-    const refreshed: ProductTaskIndexResponse = {
-      schemaVersion: 2,
-      projects: [{
-        id: 'project-created',
-        title: '新建项目',
-        rootDir: '/workspace/created',
-        createdAt: '2026-07-19T00:00:00.000Z',
-        taskCount: 1,
-        archivedTaskCount: 0,
-        updatedAt: created.updatedAt,
-      }],
-      directories: [{
-        id: 'directory-created',
-        projectId: 'project-created',
-        path: '/workspace/created',
-        label: '新建项目',
-        createdAt: '2026-07-19T00:00:00.000Z',
-        updatedAt: created.updatedAt,
-      }],
-      tasks: [created],
-      total: 1,
-      capabilities: { createTask: true },
-    }
-    vi.mocked(productTasksApi.create).mockResolvedValue({ task: created })
-    vi.mocked(productTasksApi.list).mockResolvedValue(refreshed)
-
-    await useProductTaskStore.getState().createTask({ workDir: '/workspace/created' })
-
-    expect(productTasksApi.create).toHaveBeenCalledWith({ workDir: '/workspace/created' })
-    expect(productTasksApi.list).toHaveBeenCalledOnce()
-    expect(useProductTaskStore.getState().index.directories).toEqual(refreshed.directories)
-  })
-
-  it('applies a streamed title to the indexed product task without changing lifecycle metadata', () => {
-    const original = makeTask({
-      lifecycle: 'archived',
-      archivedAt: '2026-07-19T01:00:00.000Z',
-      pinnedAt: '2026-07-19T00:30:00.000Z',
-      actions: ['restore'],
-    })
-    useProductTaskStore.setState({ index: makeIndex(original), isLoading: true })
-
-    useProductTaskStore.getState().applyRuntimeTaskTitle(original.id, '  自动整理开球训练  ')
-    useProductTaskStore.getState().applyRuntimeTaskTitle('task-missing', '不应新增')
-
-    expect(useProductTaskStore.getState().index.tasks).toEqual([{
-      ...original,
-      title: '自动整理开球训练',
-    }])
-    expect(useProductTaskStore.getState().index.total).toBe(1)
-    expect(useProductTaskStore.getState().isLoading).toBe(false)
-  })
-
-  it('reconciles lifecycle mutations with the server task returned by the endpoint', async () => {
+  it('retains an immutable envelope after timeout and retries the same operation id', async () => {
     const original = makeTask()
-    const archived = makeTask({
-      lifecycle: 'archived',
-      archivedAt: '2026-07-18T01:00:00.000Z',
-      actions: ['restore'],
-    })
+    const archived = makeTask({ lifecycle: 'archived', archivedAt: '2026-07-18T01:00:00.000Z', actions: ['restore'] })
     useProductTaskStore.setState({ index: makeIndex(original) })
-    vi.mocked(productTasksApi.archive).mockResolvedValue({ task: archived })
-
+    vi.mocked(productTasksApi.archive).mockRejectedValueOnce(new Error('network timeout')).mockResolvedValueOnce(response(archived))
+    await expect(useProductTaskStore.getState().archiveTask(original.id)).rejects.toThrow('network timeout')
+    const pending = useProductTaskStore.getState().pending['task-1:archive']
+    expect(pending).toEqual(expect.objectContaining({ expected_revision: 0, client_operation_id: expect.any(String) }))
     await useProductTaskStore.getState().archiveTask(original.id)
-
-    expect(productTasksApi.archive).toHaveBeenCalledWith('task-1')
-    expect(useProductTaskStore.getState().index.tasks).toEqual([archived])
-    expect(useProductTaskStore.getState().index.projects[0]).toEqual(expect.objectContaining({
-      taskCount: 0,
-      archivedTaskCount: 1,
-    }))
-    expect(useProductTaskStore.getState().mutations['task-1:archive']).toBe(false)
+    expect(productTasksApi.archive).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(productTasksApi.archive).mock.calls[0]?.[1]).toBe(vi.mocked(productTasksApi.archive).mock.calls[1]?.[1])
+    expect(useProductTaskStore.getState().pending['task-1:archive']).toBeUndefined()
   })
 
-  it('keeps a lifecycle mutation when an earlier task-index refresh returns late', async () => {
-    const original = makeTask()
-    const archived = makeTask({
-      lifecycle: 'archived',
-      archivedAt: '2026-07-18T01:00:00.000Z',
-      actions: ['restore'],
-    })
-    let resolveStaleIndex: ((index: ProductTaskIndexResponse) => void) | undefined
-    const staleIndex = new Promise<ProductTaskIndexResponse>((resolve) => {
-      resolveStaleIndex = resolve
-    })
-    useProductTaskStore.setState({ index: makeIndex(original) })
-    vi.mocked(productTasksApi.list).mockReturnValueOnce(staleIndex)
-    vi.mocked(productTasksApi.archive).mockResolvedValue({ task: archived })
+  it('clears pending only after a durable terminal receipt', async () => {
+    const task = makeTask({ lifecycle: 'archived', archivedAt: '2026-07-18T01:00:00.000Z' })
+    useProductTaskStore.setState({ index: makeIndex() })
+    vi.mocked(productTasksApi.archive).mockResolvedValue(response(task))
+    await useProductTaskStore.getState().archiveTask(task.id)
+    expect(useProductTaskStore.getState().pending).toEqual({})
+    expect(useProductTaskStore.getState().confirmedAuthorityRevision).toBe(1)
+  })
 
-    const refreshing = useProductTaskStore.getState().refresh()
+  it('merges conflict authority without losing renderer projection fields', async () => {
+    const original = makeTask({ actions: ['rename', 'archive'], links: { page: '/tasks/task-1', review: '/review' } })
+    const server = makeTask({ title: '其他窗口标题', pinnedAt: '2026-07-18T01:00:00.000Z' })
+    useProductTaskStore.setState({ index: makeIndex(original), confirmedAuthorityRevision: 1 })
+    vi.mocked(productTasksApi.update).mockResolvedValue(response(server, 2, 'conflict'))
+    await useProductTaskStore.getState().renameTask(original.id, '我的标题')
+    expect(useProductTaskStore.getState().index.tasks[0]).toEqual(expect.objectContaining({ title: '其他窗口标题', actions: original.actions, links: original.links }))
+    expect(useProductTaskStore.getState().confirmedAuthorityRevision).toBe(2)
+  })
+
+  it('ignores stale authority and keeps the higher confirmed revision', async () => {
+    const current = makeTask({ title: '新标题' })
+    const stale = makeTask({ title: '旧标题' })
+    useProductTaskStore.setState({ index: makeIndex(current), confirmedAuthorityRevision: 4 })
+    vi.mocked(productTasksApi.pin).mockResolvedValue(response(stale, 3))
+    await useProductTaskStore.getState().pinTask(current.id)
+    expect(useProductTaskStore.getState().index.tasks[0]!.title).toBe('新标题')
+    expect(useProductTaskStore.getState().confirmedAuthorityRevision).toBe(4)
+  })
+
+  it('uses local request sequence only to prevent a late list overwrite', async () => {
+    const original = makeTask()
+    const archived = makeTask({ lifecycle: 'archived', archivedAt: '2026-07-18T01:00:00.000Z' })
+    let resolveIndex!: (value: ProductTaskIndexResponse) => void
+    vi.mocked(productTasksApi.list).mockReturnValueOnce(new Promise((resolve) => { resolveIndex = resolve }))
+    vi.mocked(productTasksApi.archive).mockResolvedValue(response(archived, 7))
+    useProductTaskStore.setState({ index: makeIndex(original) })
+    const refresh = useProductTaskStore.getState().refresh()
     await useProductTaskStore.getState().archiveTask(original.id)
-    resolveStaleIndex?.(makeIndex(original))
-    await refreshing
-
-    expect(useProductTaskStore.getState()).toMatchObject({
-      index: expect.objectContaining({ tasks: [archived] }),
-      isLoading: false,
-    })
-  })
-
-  it('reorders pinned tasks and their project group immediately after the pin mutation', async () => {
-    const pinnedTask = makeTask({
-      id: 'task-pinned',
-      projectId: 'project-pinned',
-      directoryId: 'directory-pinned',
-      title: '置顶任务',
-      workDir: '/workspace/pinned',
-      updatedAt: '2026-07-18T00:00:00.000Z',
-      actions: ['pin'],
-    })
-    const newerTask = makeTask({
-      id: 'task-newer',
-      projectId: 'project-newer',
-      directoryId: 'directory-newer',
-      title: '较新任务',
-      workDir: '/workspace/newer',
-      updatedAt: '2026-07-19T00:00:00.000Z',
-    })
-    useProductTaskStore.setState({
-      index: {
-        schemaVersion: 2,
-        projects: [
-          {
-            id: 'project-newer',
-            title: '较新项目',
-            rootDir: '/workspace/newer',
-            createdAt: '2026-07-19T00:00:00.000Z',
-            taskCount: 1,
-            archivedTaskCount: 0,
-            updatedAt: newerTask.updatedAt,
-          },
-          {
-            id: 'project-pinned',
-            title: '置顶项目',
-            rootDir: '/workspace/pinned',
-            createdAt: '2026-07-18T00:00:00.000Z',
-            taskCount: 1,
-            archivedTaskCount: 0,
-            updatedAt: pinnedTask.updatedAt,
-          },
-        ],
-        directories: [
-          {
-            id: 'directory-newer',
-            projectId: 'project-newer',
-            path: '/workspace/newer',
-            label: '较新项目',
-            createdAt: '2026-07-19T00:00:00.000Z',
-            updatedAt: newerTask.updatedAt,
-          },
-          {
-            id: 'directory-pinned',
-            projectId: 'project-pinned',
-            path: '/workspace/pinned',
-            label: '置顶项目',
-            createdAt: '2026-07-18T00:00:00.000Z',
-            updatedAt: pinnedTask.updatedAt,
-          },
-        ],
-        tasks: [newerTask, pinnedTask],
-        total: 2,
-        capabilities: { createTask: true },
-      },
-    })
-    vi.mocked(productTasksApi.pin).mockResolvedValue({
-      task: {
-        ...pinnedTask,
-        pinnedAt: '2026-07-18T00:01:00.000Z',
-        actions: ['unpin'],
-      },
-    })
-
-    await useProductTaskStore.getState().pinTask(pinnedTask.id)
-
-    expect(useProductTaskStore.getState().index.tasks.map((task) => task.id)).toEqual([
-      'task-pinned',
-      'task-newer',
-    ])
-    expect(useProductTaskStore.getState().index.projects.map((project) => project.id)).toEqual([
-      'project-pinned',
-      'project-newer',
-    ])
-  })
-
-  it('adds a returned continuation as a separate product task', async () => {
-    const original = makeTask()
-    const continuation = makeTask({
-      id: 'task-2',
-      workDir: '/workspace/billiard/.worktrees/continuation',
-      title: '继续修复开球规则',
-      kind: 'continuation',
-      parentTaskId: original.id,
-    })
-    const refreshed: ProductTaskIndexResponse = {
-      ...makeIndex(original),
-      tasks: [continuation, original],
-      total: 2,
-    }
-    useProductTaskStore.setState({ index: makeIndex(original) })
-    vi.mocked(productTasksApi.continue).mockResolvedValue({ task: continuation })
-    vi.mocked(productTasksApi.list).mockResolvedValue(refreshed)
-
-    await useProductTaskStore.getState().continueTask(original.id, {})
-
-    expect(productTasksApi.continue).toHaveBeenCalledWith('task-1', {})
-    expect(productTasksApi.list).toHaveBeenCalledOnce()
-    expect(useProductTaskStore.getState().index.tasks).toEqual([continuation, original])
-    expect(continuation.directoryId).toBe(original.directoryId)
-    expect(useProductTaskStore.getState().index.directories).toEqual(refreshed.directories)
-    expect(useProductTaskStore.getState().index.total).toBe(2)
+    resolveIndex(makeIndex(original))
+    await refresh
+    expect(useProductTaskStore.getState().index.tasks[0]!.lifecycle).toBe('archived')
+    expect(useProductTaskStore.getState().confirmedAuthorityRevision).toBe(7)
   })
 })

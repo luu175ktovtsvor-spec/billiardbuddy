@@ -7,6 +7,11 @@ import type {
   ProductTaskIndex,
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'
+import type {
+  ProductTaskAuthoritySnapshot,
+  ProductTaskOperationEnvelope,
+  ProductTaskOperationReceipt,
+} from '../../../../shared/product/authority'
 import type { ProductTaskThread } from '../../../../shared/product/taskEvents'
 import type {
   ProductTaskReviewDiff,
@@ -103,7 +108,14 @@ export type ProductTaskAction =
 
 export type ProductTaskRecord = ProductTask & {
   actions: ProductTaskAction[]
+  links?: Record<string, string>
 }
+
+/** Immutable idempotency/CAS payload created at the renderer intent boundary. */
+export type MutationEnvelope<T extends object = object> = T & Required<ProductTaskOperationEnvelope>
+export type OperationReceipt<T = unknown> = ProductTaskOperationReceipt<T>
+/** The authority is deliberately partial; it never replaces a full index projection. */
+export type AuthoritySnapshot = ProductTaskAuthoritySnapshot<ProductTask, ProductSideTask>
 
 export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
   tasks: ProductTaskRecord[]
@@ -112,8 +124,12 @@ export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
   }
 }
 
+/** All authoritative mutations use this response shape. Core identities are never public. */
 export type ProductTaskActionResponse = {
-  task: ProductTaskRecord
+  receipt: OperationReceipt
+  authority: AuthoritySnapshot
+  task?: ProductTaskRecord
+  mirror?: { state: 'pending' | 'reconciled' | 'failed'; error?: string }
 }
 
 export type ProductTaskThreadResponse = ProductTaskThread
@@ -122,19 +138,27 @@ export type ProductSideTaskListResponse = {
   sideTasks: ProductSideTask[]
 }
 
-export type ProductSideTaskActionResponse = {
-  sideTask: ProductSideTask
-}
+export type ProductSideTaskActionResponse =
+  | {
+    receipt: OperationReceipt
+    authority: AuthoritySnapshot
+    /** The authority HTTP response may omit the list projection. */
+    sideTask?: ProductSideTask
+  }
+  | { sideTask: ProductSideTask }
 
 export type ProductTaskApi = {
   list: () => Promise<ProductTaskIndexResponse>
-  create: (input: CreateProductTaskInput) => Promise<ProductTaskActionResponse>
-  update: (taskId: string, input: UpdateProductTaskInput) => Promise<ProductTaskActionResponse>
-  pin: (taskId: string) => Promise<ProductTaskActionResponse>
-  unpin: (taskId: string) => Promise<ProductTaskActionResponse>
-  archive: (taskId: string) => Promise<ProductTaskActionResponse>
-  restore: (taskId: string) => Promise<ProductTaskActionResponse>
-  continue: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskActionResponse>
+  create: (input: MutationEnvelope<CreateProductTaskInput>) => Promise<ProductTaskActionResponse>
+  update: (taskId: string, input: MutationEnvelope<UpdateProductTaskInput>) => Promise<ProductTaskActionResponse>
+  pin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  unpin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  archive: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  restore: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) => Promise<ProductTaskActionResponse>
+  createSideTask: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) => Promise<ProductTaskActionResponse>
+  closeSideTask: (taskId: string, sideTaskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  getOperation: (taskId: string, operationId: string) => Promise<{ receipt: OperationReceipt; authority: AuthoritySnapshot }>
   getThread: (taskId: string) => Promise<ProductTaskThreadResponse>
   getReviewStatus: (taskId: string) => Promise<ProductTaskReviewStatus>
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
@@ -147,21 +171,13 @@ export type ProductTaskApi = {
 
 export type ProductSideTaskApi = {
   list: (taskId: string) => Promise<ProductSideTaskListResponse>
-  create: (taskId: string, input: CreateProductSideTaskInput) => Promise<ProductSideTaskActionResponse>
-  close: (taskId: string, sideTaskId: string) => Promise<ProductSideTaskActionResponse>
+  create: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) => Promise<ProductSideTaskActionResponse>
+  close: (taskId: string, sideTaskId: string, input: MutationEnvelope) => Promise<ProductSideTaskActionResponse>
 }
 
-export type ProductScheduledTaskListResponse = {
-  tasks: ProductScheduledTask[]
-}
-
-export type ProductScheduledTaskResponse = {
-  task: ProductScheduledTask
-}
-
-export type ProductScheduledTaskRunsResponse = {
-  runs: ProductScheduledTaskRun[]
-}
+export type ProductScheduledTaskListResponse = { tasks: ProductScheduledTask[] }
+export type ProductScheduledTaskResponse = { task: ProductScheduledTask }
+export type ProductScheduledTaskRunsResponse = { runs: ProductScheduledTaskRun[] }
 
 export type ProductScheduledTaskApi = {
   list: () => Promise<ProductScheduledTaskListResponse>

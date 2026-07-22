@@ -168,7 +168,11 @@ describe('SideTaskPanel', () => {
       },
     })
     vi.mocked(productSideTasksApi.list).mockResolvedValue({ sideTasks: [firstSideTask, secondSideTask] })
-    vi.mocked(productSideTasksApi.close).mockResolvedValue({ sideTask: closedFirstSideTask })
+    vi.mocked(productSideTasksApi.close).mockResolvedValue({
+      sideTask: closedFirstSideTask,
+      receipt: { client_operation_id: 'side-close', expected_revision: 0, outcome: 'accepted', revision: 1 },
+      authority: { revision: 1, event_sequence: 1, tasks: [], side_tasks: [closedFirstSideTask, secondSideTask] },
+    })
 
     render(<SideTaskPanel parentTask={makeParentTask()} />)
 
@@ -177,7 +181,11 @@ describe('SideTaskPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: `Close side task ${firstSideTask.title}` }))
 
-    await waitFor(() => expect(productSideTasksApi.close).toHaveBeenCalledWith(parentTaskId, firstSideTask.id))
+    await waitFor(() => expect(productSideTasksApi.close).toHaveBeenCalledWith(
+      parentTaskId,
+      firstSideTask.id,
+      expect.objectContaining({ expected_revision: 0, client_operation_id: expect.any(String), sideTaskId: firstSideTask.id }),
+    ))
     expect(mocks.disconnectTask).toHaveBeenCalledWith(firstSideTask.taskId)
     await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith(secondSideTask.taskId))
     expect(useProductSideTaskStore.getState().panelByParentTaskId[parentTaskId]).toEqual({
