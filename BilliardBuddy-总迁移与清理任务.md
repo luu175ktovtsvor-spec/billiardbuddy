@@ -951,6 +951,19 @@ worker protocol version、component compatibility entry、ProductResourceSchedul
 | 验收命令、行为断言与机器证据 | `cd ts && bun run check:server`、bridge/product tests、`git diff --check` 全 PASS；fake durable Core backend 覆盖 create/branch/rename 在 crash 前后、重复请求、input 复用冲突、并发与 terminal failure；每个成功 operation 返回同一私有 binding，产品 HTTP/renderer 永不包含该 binding。机器证据进入 bridge tests/fixture。 |
 | 完成条件 | 产出并测试 `ensureCreate/ensureBranch/ensureRename` durable bridge contract；`BB-02A` 可将其作为唯一 Core 副作用入口；不得迁移 GUI consumer 到 agent-worker 或删除公共 CLI。 |
 
+### 已冻结 Repair Work Unit：`BB-03B`
+
+| 字段 | 内容 |
+|---|---|
+| Work Unit ID | `BB-03B` |
+| 单一用户结果 | 完整 server suite 的既有业务断言在宿主凭据、provider/model 环境、ripgrep 可用性与 simple mode 变化时保持确定；不改变任何产品行为或验收标准。 |
+| 依赖 | `BB-03A` 的未提交五路径实现必须原样保留并排除在本 Work Unit 的暂存/提交范围外；Base-Commit `7cf29f6991f09c4172238fd8d48d13557924c189` 已以相同依赖副本复现 qf gateway×2、Agent、legacy command 与 Settings 五项失败。 |
+| 允许修改路径 | `ts/src/server/__tests__/qf-gateway-provider.test.ts`；`ts/src/server/__tests__/agents.test.ts`；`ts/src/server/__tests__/skills.test.ts`；`ts/src/server/__tests__/settings.test.ts`。 |
+| 禁止修改路径 | `ts/scripts/pr/run-server-tests.ts`、根合同在本 Spec-Commit 后不得再改、所有产品实现、业务断言、Core/worker/scheduler/CLI、ProductTask/API/desktop、lockfile，以及 `BB-03A` 的 `sessionService.ts`、`sessionBranching.ts`、bridge contract/implementation/测试五路径。 |
+| 必须消费的冻结合同 | 第 0.5—0.9 节；现有完整 `check:server` 仍是唯一验收入口；fixture 必须自行 snapshot/clear/restore 其所有影响输入并失效相应 cache，不能通过 runner 过滤、skip、宽松断言或依赖宿主 `rg`/凭据。 |
+| 验收命令、行为断言与机器证据 | 受污染宿主环境下注入的 qf 凭据、simple/native-search、OAuth/provider/model label 输入不能改变四个既有测试文件的原断言；`cd ts && bun run check:server` 连续三次均 0 fail；`git diff --check` 全 PASS；所有 `BB-03A` 预存五路径的 SHA-256 在 repair 前后相同。机器证据进入现有 fixture 与 accepted commit body。 |
+| 完成条件 | `BB-03B` accepted commit 只包含四个允许测试路径；不得把 `BB-03A` dirty diff 暂存、修改或提交。通过后重新执行 `BB-03A` 全部冻结验收；只有其独立复审和验收均绿才可接受 `BB-03A`。 |
+
 ---
 
 ## 模块 04：模型、视觉、语音与上下文合同
