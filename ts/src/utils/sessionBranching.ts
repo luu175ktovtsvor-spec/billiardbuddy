@@ -1,5 +1,5 @@
-import { randomUUID, type UUID } from 'crypto'
-import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
+import { createHash, randomUUID, type UUID } from 'crypto'
+import { link, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises'
 import * as path from 'node:path'
 import type {
   AttributionSnapshotMessage,
@@ -90,6 +90,19 @@ export type SessionBranchResult = {
   contentReplacementRecords: ContentReplacementRecord[]
 }
 
+export type DurableBranchPlan = {
+  targetSessionId: UUID
+  sourceSessionId: string
+  sourceTranscriptPath: string
+  sourceMessageIds: string[]
+  forkPath: string
+  projectDirPath: string
+  targetMessageId?: string
+  title: string
+  body: string
+  sha256: string
+}
+
 export type CreateSessionBranchOptions = {
   sourceSessionId: string
   sourceTranscriptPath: string
@@ -109,6 +122,12 @@ export type CreateSessionBranchOptions = {
    */
   targetWorkDir?: string
   targetRepository?: unknown
+  /** Server-only operation marker for a bridge-reserved branch identity. */
+  durableOperation?: {
+    clientOperationId: string
+    canonicalInput: string
+  }
+  durablePlan?: DurableBranchPlan
 }
 
 export class SessionBranchingError extends Error {
@@ -376,6 +395,72 @@ function ensureSyntheticWorktreeState(
   }, ...preservedMetadataEntries]
 }
 
+type CreateSessionBranchInternalOptions = CreateSessionBranchOptions & {
+  buildDurablePlanOnly?: (plan: DurableBranchPlan) => void
+}
+
+export async function buildDurableBranchPlan(
+  options: CreateSessionBranchOptions & {
+    durableOperation: NonNullable<CreateSessionBranchOptions['durableOperation']>
+    targetSessionId: UUID
+  },
+): Promise<DurableBranchPlan> {
+  let plan: DurableBranchPlan | undefined
+  await createSessionBranch({
+    ...options,
+    buildDurablePlanOnly: (candidate) => {
+      plan = candidate
+    },
+  } as CreateSessionBranchInternalOptions)
+  if (!plan) throw new Error('Durable branch plan was not built')
+  return plan
+}
+
+export async function installDurableBranchPlan(
+  forkPath: string,
+  plan: DurableBranchPlan,
+): Promise<void> {
+  const digest = createHash('sha256').update(plan.body).digest('hex')
+  if (digest !== plan.sha256) {
+    throw new SessionBranchingError('INVALID_TARGET', 'durable branch plan digest is invalid')
+  }
+  const temporaryPath = `${forkPath}.${randomUUID()}.tmp`
+  let primaryError: unknown
+  let installationComplete = false
+  try {
+    await writeFile(temporaryPath, plan.body, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    try {
+      // link publishes the completely-written temporary inode without allowing
+      // a competing operation to replace an existing transcript.
+      await link(temporaryPath, forkPath)
+      installationComplete = true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const existingTarget = await lstat(forkPath).catch(() => null)
+      if (!existingTarget?.isFile()) {
+        throw new SessionBranchingError('INVALID_TARGET', 'branch identity is already in use')
+      }
+      const existingBody = await readFile(forkPath, 'utf8')
+      if (existingBody !== plan.body) {
+        throw new SessionBranchingError('INVALID_TARGET', 'branch identity is already in use')
+      }
+      installationComplete = true
+    }
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    try {
+      await unlink(temporaryPath)
+    } catch (error) {
+      console.warn('[SessionBranching] durable branch temporary cleanup failed')
+      // Publication is already durable. Reporting this as a terminal failure
+      // would make a successfully installed branch unrecoverable on replay.
+      if (!primaryError && !installationComplete) throw error
+    }
+  }
+}
+
 export async function createSessionBranch(
   options: CreateSessionBranchOptions,
 ): Promise<SessionBranchResult> {
@@ -390,9 +475,38 @@ export async function createSessionBranch(
     targetSessionId,
     targetWorkDir,
     targetRepository,
+    durableOperation,
+    durablePlan,
   } = options
+  const buildDurablePlanOnly = (options as CreateSessionBranchInternalOptions).buildDurablePlanOnly
 
   const projectDirPath = path.dirname(sourceTranscriptPath)
+  const forkSessionId = targetSessionId ?? randomUUID() as UUID
+  const forkPath = path.join(projectDirPath, `${forkSessionId}.jsonl`)
+
+  if (durableOperation && !title) {
+    throw new SessionBranchingError('INVALID_TARGET', 'durable branches require an explicit title')
+  }
+  if (durablePlan) {
+    if (
+      durablePlan.targetSessionId !== forkSessionId ||
+      path.basename(durablePlan.forkPath) !== `${forkSessionId}.jsonl` ||
+      !path.isAbsolute(durablePlan.forkPath) ||
+      (targetMessageId !== undefined && durablePlan.targetMessageId !== targetMessageId)
+    ) {
+      throw new SessionBranchingError('INVALID_TARGET', 'durable branch plan does not match its target')
+    }
+    await installDurableBranchPlan(durablePlan.forkPath, durablePlan)
+    return {
+      sessionId: forkSessionId,
+      title: durablePlan.title,
+      forkPath: durablePlan.forkPath,
+      workDir: targetWorkDir ?? sourceWorkDir ?? null,
+      serializedMessages: [],
+      contentReplacementRecords: [],
+    }
+  }
+
   const sourceEntries = await readRawEntries(sourceTranscriptPath).catch((error) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new SessionBranchingError(
@@ -473,8 +587,6 @@ export async function createSessionBranch(
     transcript.contentReplacements.get(sourceSessionId as UUID) ?? []
   ).filter((record) => copiedToolResultIds.has(record.toolUseId))
 
-  const forkSessionId = targetSessionId ?? randomUUID() as UUID
-  const forkPath = path.join(projectDirPath, `${forkSessionId}.jsonl`)
   await mkdir(projectDirPath, { recursive: true, mode: 0o700 })
 
   const serializedMessages: SerializedMessage[] = []
@@ -507,7 +619,9 @@ export async function createSessionBranch(
         message.type === 'user',
     ),
   )
-  const effectiveTitle = await getUniqueForkName(title ?? firstPrompt, projectDirPath)
+  const effectiveTitle = durableOperation && title
+    ? title
+    : await getUniqueForkName(title ?? firstPrompt, projectDirPath)
 
   let metadataEntries = buildPreservedMetadataEntries(
     sourceEntries,
@@ -534,6 +648,14 @@ export async function createSessionBranch(
       forkSessionId,
       sourceWorktreeSession,
     )
+  }
+  if (durableOperation) {
+    metadataEntries = [{
+      type: 'session-meta',
+      isMeta: true,
+      coreOperation: durableOperation,
+      timestamp: new Date().toISOString(),
+    }, ...metadataEntries]
   }
 
   // Put this after copied messages so it is authoritative even for legacy
@@ -568,10 +690,31 @@ export async function createSessionBranch(
     customTitle: effectiveTitle,
   }))
 
-  await writeFile(forkPath, `${lines.join('\n')}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  })
+  const body = `${lines.join('\n')}\n`
+  if (durableOperation) {
+    const plan: DurableBranchPlan = {
+      targetSessionId: forkSessionId,
+      sourceSessionId,
+      sourceTranscriptPath: path.resolve(sourceTranscriptPath),
+      sourceMessageIds: branchMessageEntries.map((entry) => entry.uuid),
+      forkPath,
+      projectDirPath,
+      targetMessageId: copiedMessages.at(-1)!.uuid,
+      title: effectiveTitle,
+      body,
+      sha256: createHash('sha256').update(body).digest('hex'),
+    }
+    if (buildDurablePlanOnly) {
+      buildDurablePlanOnly(plan)
+    } else {
+      await installDurableBranchPlan(forkPath, plan)
+    }
+  } else {
+    await writeFile(forkPath, body, {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+  }
 
   const workDirFromMetadata =
     targetWorkDir ??
