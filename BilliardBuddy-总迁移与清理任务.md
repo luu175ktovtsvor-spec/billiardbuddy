@@ -833,6 +833,8 @@ ProductTaskService 唯一写 `Workspace`、`TaskScope`、`ComposerDraft`、`Prod
 11. 定义 TaskScope 与 `task.bind_workspace` CAS mutation；installation-default task 不得调用任何文件/Preview/PTY/Agent Bash contract。绑定、换根和 relink 推进 task/workspace revision并使旧引用 stale，不复制用户目录。
 12. 定义 ConversationLineage、head/parent/fork checkpoint/compact generation 和 opaque resume binding identity；同一 ProductTask 的新 run 默认继续当前 lineage，模块 09 fork 才创建 child lineage。ProductTask 数据不保存可被 renderer 使用的 CoreSession ID或私有 resume payload。
 13. 冻结并实现 TaskLifecycleParticipant registry/聚合 receipt；本模块只使用 fake participant 验证未知/超时/阻塞/解除/cleanup 语义，后续模块注册真实参与者，不形成反向依赖。
+14. 在模块 03 的 `agent-worker` accepted 前，`BB-02C` 可以把当前唯一 ProductTask→Core 路径封装为临时 `legacy-core-dispatcher`：它只消费已原子持久化的 TaskRun/dispatch record，以 `run_id + dispatch_generation` 取得单一 execution claim，禁止创建 ThreadEntry、TaskRun、lineage 或第二条产品事件流。该 adapter 是模块 03 的 `D2_MIGRATE_CONSUMERS` 对象；模块 03 必须以 agent-worker 替换并使其消费者归零，模块 23 执行 `D4_PHYSICAL_DELETE`。除这条已登记的过渡 adapter 外，任何执行者仍只能 claim 已存在的 run，且不得绕过 durable dispatch。
+15. `BB-02C` 起提交只接受已处于 `ready` 状态且具有权威 owner 的 TaskAttachment ID；当前 WebSocket 的 raw `data/mimeType/name` 附件输入固定拒绝为 `ATTACHMENT_INGEST_UNAVAILABLE`，不写 Base64、临时文件或半绑定。模块 07 是唯一恢复 attachment ingest、inspection、容量、retention 与 sweeper 的 owner；它必须先产出 ready attachment，再消费本模块的 submit/binding 合同。
 
 ### 明确不改
 
@@ -862,6 +864,19 @@ ProductTaskService 唯一写 `Workspace`、`TaskScope`、`ComposerDraft`、`Prod
 ### 交接物
 
 ProductTask schema、operation receipt、错误码和 event/cursor contract。
+
+### 已冻结 Work Unit（模块 02）
+
+以下 Work Unit 只能按 `A → B → C → D` 串行执行。每一项的 `Spec-Commit SHA` 与 `Base-Commit SHA` 均在派工时填写：首次派工的二者均为本节登记 Spec 提交；每个 accepted commit 后，下一项以该 accepted HEAD 为 `Base-Commit`，仍须消费最新可达 Spec。除下表允许路径外，实施者不得修改根合同、`ts/product-contracts/**`、lockfile、Core/CLI/worker、媒体/语音/计划/招聘/Preview/Terminal 实现或未列出的 renderer UI。
+
+| Work Unit | 顺序与单一用户结果 | 前置 accepted commit | 允许修改路径 | 必须消费的冻结合同 | 验收命令、行为断言与完成条件 |
+|---|---|---|---|---|---|
+| `BB-02A` | 1。服务端拥有版本化 ProductTask 权威存储、CAS revision、operation receipt、稳定错误码及模块 01 已登记范围内的 D3 legacy reader；旧公开形状不泄露 Core 私有身份。 | `BB-01A` `3ca8b509712da3c6771a5183a68d680eae20e288` | `ts/shared/product/domain.ts`；`ts/shared/product/taskEvents.ts`；新增 `ts/shared/product/**` 中仅 schema/receipt/error；`ts/src/server/product/taskService.ts`；新增 `ts/src/server/product/**` 中仅 persistence/legacy adapter；`ts/src/server/__tests__/product-*.test.ts`；`ts/tests/product-contracts/**` | 第 2.1、3.1、4.1、4.10；`legacy-support-matrix.json` 的 ProductTask v1/v3/v4 supported 与 v2 provisional；`revision/event_sequence/resume_cursor/client_operation_id/run_id` 不互代。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、相关 Bun tests、`git diff --check` 全 PASS；同 revision 只有一个 mutation 前进；重复 operation 返回同一 durable receipt；损坏/无权限/写失败不覆盖原文件或初始化空库；v1/v3/v4 fixture 正向与幂等，v2 不升为 supported。 |
+| `BB-02B` | 2。普通任务获得稳定 Workspace/TaskScope、ComposerDraft、TaskAttachment identity 与 ConversationLineage 合同；installation-default 可纯文本使用且不以 cwd 授权文件能力。 | `BB-02A` | `BB-02A` 允许路径；`ts/src/server/api/product.ts`；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；对应 server/desktop contract tests | 第 2.1、3.1、4.1、4.2；`task.bind_workspace` CAS；外部文件不删；lineage 私有 resume material 不公开；模块 07 才拥有 ingest/sweeper。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；伪造/跨 installation/过期/consumed draft 拒绝；active run/queue/PTY/Preview/write lease 时 bind 拒绝；relocate/relink/只读/断盘/CAS fixture 通过；旧引用不能跨新根。 |
+| `BB-02C` | 3。一次提交以单原子边界持久化 accepted 结果、TaskRun、dispatch 与 event ledger；客户端用 cursor 重连且无重复。模块 03 前仅由已登记 `legacy-core-dispatcher` 消费 claim，不创建新 run。 | `BB-02B` | `BB-02A/B` 允许路径；`ts/src/server/index.ts`；`ts/src/server/ws/handler.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/product/taskEventProjection.ts`；`ts/src/server/product/taskRunProjection.ts`；`ts/desktop/src/product/api/taskSocket.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/stores/productTaskRuntimeStore.ts`；上述 tests | 第 3.1 accepted 原子边界、dispatch/claim、event/cursor；本模块第 14、15 条过渡 dispatcher 与 raw attachment 拒绝；模块 03 拥有 worker/scheduler 与最终 consumer 迁移。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；任一 atomic member 失败时无 ThreadEntry/TaskRun/receipt/event/dispatch；accepted 后 claim 前重启投递同一 run；重复 operation/dispatch 仅一个消息/run/claim；cursor 重连无重复；raw bytes 附件获得 `ATTACHMENT_INGEST_UNAVAILABLE` 且无持久副作用。 |
+| `BB-02D` | 4。任务 archive/delete 是两阶段、可恢复且可重入的权威 lifecycle；fake participant registry 给出权威 blocker/action/cleanup receipt，不导入下游服务。 | `BB-02C` | `BB-02A/B/C` 的 shared ProductTask/service/API/transport/test 路径；新增仅 ProductTask registry、cleanup-plan、tombstone、fake participant fixture | 第 3.1 lifecycle/delete 与 TaskLifecycleParticipant；第 4.1 owner/path；未知/超时/不可达/不兼容 participant 均 blocker；09/11/15/17/18/20 自行注册真实参与者。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；active run 与 fake queue/Schedule/Recruiting/Fork/worktree 阻塞；pre-purge cancel 完整还原；post-purge 只 retry；崩溃/重复 delete/tombstone TTL 幂等；Workspace/用户源文件/外部附件/共享 Asset 不被删除。 |
+
+**模块 02 完成条件：** `BB-02A`—`BB-02D` 均有 accepted commit；模块卡全部 Oracle 与模块级 server/desktop/contract 测试通过；每个 accepted commit 的 body 记录前置 SHA、Spec/Base、Checks、Evidence、External-Verification 与风险；工作树干净后最后一个 accepted commit 标记 `Module-Status: complete`。
 
 ---
 
