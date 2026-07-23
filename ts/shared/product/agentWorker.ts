@@ -27,7 +27,7 @@ export type AgentWorkerOutbound =
   | { type: 'claim_receipt'; outcome: 'claimed' | 'duplicate' | 'recovery_required' | 'rejected'; run_id: string; code?: string }
   | { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string }
   | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }
-  | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
+  | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'MODEL_CONFIGURATION_INVALID' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
   | { type: 'shutdown' }
 
 export function intersectsAgentWorkerVersions(left: AgentWorkerVersionRange, right: AgentWorkerVersionRange): boolean {

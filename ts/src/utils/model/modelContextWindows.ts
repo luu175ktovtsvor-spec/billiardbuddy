@@ -1,3 +1,5 @@
+import { providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
+
 export const MODEL_CONTEXT_WINDOWS_ENV_KEY = 'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS'
 export const MODEL_CONTEXT_WINDOW_MIN = 16_000
 export const MODEL_CONTEXT_WINDOW_MAX = 10_000_000
@@ -7,7 +9,6 @@ const DIRECT_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-sonnet-4-6': 200_000,
   'claude-haiku-4-5': 200_000,
   'deepseek-v4-pro': 1_000_000,
-  'deepseek-v4-flash': 1_000_000,
   'deepseek-chat': 1_000_000,
   'deepseek-reasoner': 1_000_000,
   'kimi-k2.7-code': 262_144,
@@ -143,6 +144,8 @@ function getConfiguredModelContextWindow(model: string): number | undefined {
 }
 
 function getBuiltInModelContextWindow(model: string): number | undefined {
+  const registered = providerRegistryEntry(model)
+  if (registered) return registered.verified_context_window
   const normalizedModel = normalizeModelContextKey(model)
   const exact = DIRECT_MODEL_CONTEXT_WINDOWS[normalizedModel]
   if (exact !== undefined) {

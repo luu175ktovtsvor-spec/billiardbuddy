@@ -1,4 +1,5 @@
 import type { AgentWorkerStart, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
+import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration } from '../../../../gateway/providerRegistry.js'
 import type { ProductResourceReceipt } from '../../../shared/product/resourceScheduler.js'
 import { verifyAgentWorkerChildStartCapability, verifyPermissionExecutionEnvelope, type AgentWorkerChildStartCapability } from './permissionExecutionEnvelope.js'
 
@@ -18,7 +19,13 @@ export type AgentWorkerBootstrap = { capability: AgentWorkerChildStartCapability
 export class AgentWorkerService {
   private core?: AgentWorkerCore
   private runId?: string
-  constructor(private readonly bootstrap: AgentWorkerBootstrap, private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly bootstrap: AgentWorkerBootstrap, private readonly now: () => Date = () => new Date(), private readonly runtimeEnv: Record<string, string | undefined> = { ...buildProviderRegistryRuntimeEnv(undefined), ...process.env }) {}
+  /** Called before worker ready, so an invalid model can never create a Core session. */
+  validateReady(): AgentWorkerOutbound | undefined {
+    return validateProviderRuntimeConfiguration(this.runtimeEnv)
+      ? { type: 'fatal', code: 'MODEL_CONFIGURATION_INVALID' }
+      : undefined
+  }
 
   async start(input: AgentWorkerStart): Promise<AgentWorkerOutbound> {
     if (this.core || !verifyPermissionExecutionEnvelope(input.envelope) || !verifyAgentWorkerChildStartCapability(this.bootstrap.capability, this.bootstrap.capability_key)) return { type: 'fatal', code: 'ENVELOPE_DENIED' }

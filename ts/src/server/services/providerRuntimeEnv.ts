@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { buildProviderRegistryRuntimeEnv, providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
 
 import { MODEL_CONTEXT_WINDOWS_ENV_KEY } from '../../utils/model/modelContextWindows.js'
 import { PROVIDER_PRESETS } from '../config/providerPresets.js'
@@ -284,8 +285,8 @@ function getCustomProviderModelCapabilities(
   return CUSTOM_PROVIDER_MODEL_CAPABILITIES
 }
 
-function isDeepSeekModel(model: string): boolean {
-  return /^deepseek(?:[-_]|$)/i.test(model.trim())
+function supportsGatewayTextReasoning(model: string): boolean {
+  return providerRegistryEntry(model)?.capabilities.includes('TextReasoning') === true
 }
 
 /**
@@ -301,13 +302,13 @@ function getQfGatewayCapabilityEnv(
   if (!isQfGatewayProviderId(provider.id)) return {}
 
   return {
-    ...(isDeepSeekModel(models.haiku) && {
+    ...(supportsGatewayTextReasoning(models.haiku) && {
       ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
     }),
-    ...(isDeepSeekModel(models.sonnet) && {
+    ...(supportsGatewayTextReasoning(models.sonnet) && {
       ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
     }),
-    ...(isDeepSeekModel(models.opus) && {
+    ...(supportsGatewayTextReasoning(models.opus) && {
       ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: CUSTOM_PROVIDER_MODEL_CAPABILITIES,
     }),
   }
@@ -369,10 +370,15 @@ export function buildProviderManagedEnv(
 
   const models = normalizeModelMapping(provider.models)
   const runtimeModels = applyModel1mSupportMapping(models, provider.model1mSupport)
-  const modelContextWindows = {
-    ...getPresetModelContextWindows(provider.presetId),
-    ...(provider.modelContextWindows ?? {}),
-  }
+  const gatewayRegistryEnv = isQfGatewayProviderId(provider.id)
+    ? buildProviderRegistryRuntimeEnv(runtimeModels.main)
+    : {}
+  const modelContextWindows = isQfGatewayProviderId(provider.id)
+    ? {}
+    : {
+        ...getPresetModelContextWindows(provider.presetId),
+        ...(provider.modelContextWindows ?? {}),
+      }
 
   const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)
   const customProviderCapabilities = getCustomProviderModelCapabilities(provider, models)
@@ -388,6 +394,7 @@ export function buildProviderManagedEnv(
 
   return {
     ...omitAuthEnv(presetDefaultEnv),
+    ...gatewayRegistryEnv,
     ...customProviderCapabilityEnv,
     ...qfGatewayCapabilityEnv,
     ...(provider.autoCompactWindow !== undefined && {

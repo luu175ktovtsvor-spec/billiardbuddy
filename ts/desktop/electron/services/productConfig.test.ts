@@ -119,6 +119,11 @@ describe('applyGatewayConfigToEnv', () => {
     expect(out.PATH).toBe('/usr/bin')
   })
 
+  it('injects the registry default when packaged config leaves the model unset', () => {
+    const out = applyGatewayConfigToEnv({ PATH: '/usr/bin' }, { url: 'https://gw/gw', token: 'app-token' })
+    expect(out.QF_GATEWAY_MODEL).toBe('deepseek-v4-flash')
+  })
+
   it('never overrides an existing shell/ops value', () => {
     const out = applyGatewayConfigToEnv(
       { QF_GATEWAY_URL: 'https://ops-override/gw', QF_GATEWAY_TOKEN: 'ops-token' },

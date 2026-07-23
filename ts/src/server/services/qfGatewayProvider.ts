@@ -21,6 +21,7 @@
  */
 
 import { QF_GATEWAY_PROVIDER_ID, type SavedProvider } from '../types/provider.js'
+import { defaultProviderModel } from '../../../../gateway/providerRegistry.js'
 import type { ProviderService } from './providerService.js'
 
 export { QF_GATEWAY_PROVIDER_ID }
@@ -31,7 +32,7 @@ export const QF_GATEWAY_PROVIDER_NAME = 'QF Gateway'
 // (默认模型带图时,网关先用 MiMo 读图成结构化文本再交 DeepSeek 续工具循环),MiMo 不再作为
 // 产品默认文本模型。显式请求 qwen3-coder-plus / mimo-v2.5 时由网关按 model 固定路由到对应家,
 // 不跨供应商回退。
-const QF_GATEWAY_DEFAULT_MODEL = 'deepseek-v4-flash'
+const QF_GATEWAY_DEFAULT_MODEL = defaultProviderModel()
 
 /** The provider-scoped local proxy path the gateway routes through. */
 export const QF_GATEWAY_PROXY_PATH = `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`

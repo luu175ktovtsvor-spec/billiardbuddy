@@ -1,10 +1,21 @@
 import type { AgentWorkerChild, AgentWorkerChildLauncher } from '../product/agentWorkerSupervisor.js'
+import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration } from '../../../../gateway/providerRegistry.js'
 import type { AgentWorkerCore, AgentWorkerCoreFactory } from '../product/agentWorkerService.js'
 import { stripHostOnlyGatewayEnv } from '../services/gatewayEnv.js'
 
 type PrivateIdentity = { task_id: string; lineage_id: string; resume_binding_id: string }
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
 type CoreBinding = { session_id: string; work_dir: string }
+const PROVIDER_RUNTIME_ENV_KEYS = [
+  'QF_GATEWAY_MODEL',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'BB_PROVIDER_CONTRACT_VERSION',
+  'BB_PROVIDER_REGISTRY_SHA256',
+  'BB_PROVIDER_WORKER_MANIFEST_SHA256',
+] as const
 export type TaskRunCoreBindingResolver = { resolveTaskRunCoreBinding(runId: string, generation: number): Promise<CoreBinding> }
 export type ServerPrivateCoreFactory = { start(identity: PrivateIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<AgentWorkerCore> }
 
@@ -13,12 +24,32 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
   constructor(private readonly bindings: TaskRunCoreBindingResolver, private readonly cores: ServerPrivateCoreFactory, private readonly command: string[] = [process.execPath, new URL('../../entrypoints/agent-worker.ts', import.meta.url).pathname]) {}
   async launch(input: LaunchInput): Promise<AgentWorkerChild> {
     const state: { core?: AgentWorkerCore; unsubscribe?: () => void; starting?: Promise<AgentWorkerCore> } = {}
-    const proc = Bun.spawn(this.command, {
+    // Snapshot all non-secret model inputs before normalizing the child env.  An
+    // explicit invalid override must remain invalid; only a wholly absent model
+    // configuration is allowed to receive the registry default.
+    const inheritedEnv = stripHostOnlyGatewayEnv(process.env)
+    const configured = Object.fromEntries(PROVIDER_RUNTIME_ENV_KEYS.flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]))
+    const providerEnv = { ...buildProviderRegistryRuntimeEnv(configured.QF_GATEWAY_MODEL), ...configured }
+    const configurationError = validateProviderRuntimeConfiguration(providerEnv)
+    const workerEnv = { ...inheritedEnv }
+    for (const key of PROVIDER_RUNTIME_ENV_KEYS) delete workerEnv[key]
+    let configurationFatalSent = false
+    let proc!: ReturnType<typeof Bun.spawn>
+    const failConfiguration = () => {
+      if (configurationFatalSent) return
+      configurationFatalSent = true
+      input.onMessage({ type: 'fatal', code: 'MODEL_CONFIGURATION_INVALID' })
+      proc.kill()
+    }
+    proc = Bun.spawn(this.command, {
       stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', serialization: 'advanced',
-      env: stripHostOnlyGatewayEnv(process.env),
+      env: { ...workerEnv, ...providerEnv },
       ipc: (message, child) => {
         const record = message && typeof message === 'object' ? message as Record<string, unknown> : undefined
-        if (record?.type === 'worker_outbound') { input.onMessage(record.message as never); return }
+        if (record?.type === 'worker_outbound') {
+          if (configurationError) return failConfiguration()
+          input.onMessage(record.message as never); return
+        }
         if (record?.type !== 'core_request' || typeof record.id !== 'string' || typeof record.operation !== 'string') return
         void this.handleCoreRequest(state, record, input, (outbound) => child.send(outbound)).then((next) => { child.send({ type: 'core_result', id: record.id, ok: next.ok }) })
       },

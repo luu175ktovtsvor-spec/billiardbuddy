@@ -1,0 +1,47 @@
+{
+  "invalid": [
+    {
+      "name": "unknown-model",
+      "env": {
+        "BB_PROVIDER_CONTRACT_VERSION": "1",
+        "BB_PROVIDER_REGISTRY_SHA256": "314e2003defffd6f3649ec576f4c67c79fca5ef526fdfa68efdb581c85fddf97",
+        "BB_PROVIDER_WORKER_MANIFEST_SHA256": "e3e76ca37c1569eb72a232880bbd089d13a6c9ba450f480e8b1da2e2cf9f3908",
+        "QF_GATEWAY_MODEL": "qwen3-coder-plus"
+      },
+      "expected": "MODEL_CONFIGURATION_INVALID"
+    },
+    {
+      "name": "slot-alias-override",
+      "env": {
+        "BB_PROVIDER_CONTRACT_VERSION": "1",
+        "BB_PROVIDER_REGISTRY_SHA256": "314e2003defffd6f3649ec576f4c67c79fca5ef526fdfa68efdb581c85fddf97",
+        "BB_PROVIDER_WORKER_MANIFEST_SHA256": "e3e76ca37c1569eb72a232880bbd089d13a6c9ba450f480e8b1da2e2cf9f3908",
+        "ANTHROPIC_MODEL": "unknown-model"
+      },
+      "expected": "MODEL_CONFIGURATION_INVALID"
+    },
+    {
+      "name": "hash-mismatch",
+      "env": {
+        "BB_PROVIDER_CONTRACT_VERSION": "1",
+        "BB_PROVIDER_REGISTRY_SHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "BB_PROVIDER_WORKER_MANIFEST_SHA256": "e3e76ca37c1569eb72a232880bbd089d13a6c9ba450f480e8b1da2e2cf9f3908"
+      },
+      "expected": "MODEL_CONTRACT_HASH_MISMATCH"
+    },
+    {
+      "name": "version-mismatch",
+      "env": {
+        "BB_PROVIDER_CONTRACT_VERSION": "2",
+        "BB_PROVIDER_REGISTRY_SHA256": "314e2003defffd6f3649ec576f4c67c79fca5ef526fdfa68efdb581c85fddf97",
+        "BB_PROVIDER_WORKER_MANIFEST_SHA256": "e3e76ca37c1569eb72a232880bbd089d13a6c9ba450f480e8b1da2e2cf9f3908"
+      },
+      "expected": "MODEL_CONTRACT_VERSION_MISMATCH"
+    }
+  ],
+  "unsupported": {
+    "stale": { "verification_date": "2020-01-01" },
+    "one_megabyte_window": { "verified_context_window": 1000000 },
+    "body_caps": { "CHAT_TEXT_BODY_MAX_BYTES": 0, "VISION_BODY_MAX_BYTES": 0, "IMAGE_GENERATION_BODY_MAX_BYTES": 0 }
+  }
+}
