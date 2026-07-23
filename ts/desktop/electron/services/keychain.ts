@@ -2,7 +2,6 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-type ElectronAppWithCommandLine = { commandLine: { appendSwitch(name: string, value?: string): void } }
 export type SafeStorageLike = { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string }
 
 export class SecureSessionStore {
@@ -22,10 +21,4 @@ export class SecureSessionStore {
     try { chmodSync(this.file, 0o600) } catch { /* Windows DPAPI applies user-scoped encryption */ }
   }
   clear(): void { if (existsSync(this.file)) unlinkSync(this.file) }
-}
-
-export function installMacOsChromiumKeychainPromptGuard(app: ElectronAppWithCommandLine, platform: NodeJS.Platform = process.platform): boolean {
-  if (platform !== 'darwin') return false
-  app.commandLine.appendSwitch('use-mock-keychain')
-  return true
 }
