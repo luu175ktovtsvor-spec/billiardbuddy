@@ -71,6 +71,7 @@ test('local Bun HTTP relay accepts and polls a 500-task burst over 64 HTTP clien
           'x-relay-owner': owner,
           'idempotency-key': `window-${index % 5}`,
           'x-relay-data-egress-consent': 'a'.repeat(64),
+          'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
         },
         body: JSON.stringify(GEN),
       })
@@ -86,7 +87,7 @@ test('local Bun HTTP relay accepts and polls a 500-task burst over 64 HTTP clien
 
     const polls = await mapWithClientConcurrency(submitted, async task => {
       const response = await fetch(`${base}/images/tasks/${task.taskId}`, {
-        headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner },
+        headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner, 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' },
       })
       expect(response.status).toBe(200)
       return await response.json() as { status?: string }

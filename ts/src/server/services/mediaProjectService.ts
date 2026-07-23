@@ -37,6 +37,10 @@ import {
   type VideoSource,
   type VideoStudioProject,
 } from '../../../shared/contracts/media.js'
+import {
+  PROVIDER_GATEWAY_PROTOCOL,
+  PROVIDER_GATEWAY_PROTOCOL_HEADER,
+} from '../../../shared/product/dataEgress.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import {
   getInstallationId,
@@ -1256,6 +1260,7 @@ export class MediaProjectService {
       'Content-Type': 'application/json',
       'Idempotency-Key': originalTask.idempotency_key,
       'X-BB-Data-Egress-Consent': originalTask.data_egress_consent.receipt_id,
+      [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId
@@ -1360,6 +1365,7 @@ export class MediaProjectService {
     if (!qfGatewayConfigured()) return task
     const headers: Record<string, string> = {
       Authorization: `Bearer ${getQfGatewayToken()}`,
+      [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId
@@ -2025,6 +2031,7 @@ export class MediaProjectService {
     }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${getQfGatewayToken()}`,
+      [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId

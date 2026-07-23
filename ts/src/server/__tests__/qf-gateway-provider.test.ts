@@ -390,6 +390,42 @@ describe('qf-gateway credential boundary', () => {
 describe('qf-gateway proxy round-trip', () => {
   beforeEach(setup)
   afterEach(teardown)
+  const consentDeps = {
+    activeConsentReceipt: async () => ({ receipt_id: 'a'.repeat(64) }),
+  }
+
+  test('rejects managed remote work before fetch when no consent receipt is active', async () => {
+    const originalFetch = globalThis.fetch
+    let fetchCount = 0
+    globalThis.fetch = mock(async () => {
+      fetchCount += 1
+      throw new Error('remote fetch must not run without consent')
+    }) as typeof fetch
+
+    try {
+      const req = new Request(
+        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: TEXT_REASONING_MODEL,
+            max_tokens: 8,
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        },
+      )
+
+      const res = await handleProxyRequest(req, new URL(req.url), {
+        activeConsentReceipt: async () => null,
+      })
+      expect(res.status).toBe(428)
+      expect(fetchCount).toBe(0)
+      expect(await res.json()).toMatchObject({ error: { type: 'permission_error' } })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 
   test('forwards an Anthropic request to the gateway as OpenAI Chat with the app token', async () => {
     const originalFetch = globalThis.fetch
@@ -429,13 +465,15 @@ describe('qf-gateway proxy round-trip', () => {
         },
       )
 
-      const res = await handleProxyRequest(req, new URL(req.url))
+      const res = await handleProxyRequest(req, new URL(req.url), consentDeps)
       expect(res.status).toBe(200)
 
       // Upstream request assertions.
       expect(calls).toHaveLength(1)
       expect(calls[0].url).toBe(`${GATEWAY_URL}/v1/chat/completions`)
       expect(calls[0].headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
+      expect(calls[0].headers['X-BB-Provider-Protocol']).toBe('bb-provider-gateway/1.0')
+      expect(calls[0].headers['X-BB-Data-Egress-Consent']).toBe('a'.repeat(64))
       expect(calls[0].body.model).toBe(TEXT_REASONING_MODEL)
       // No install id set → no X-QF-Client-ID header (falls back to token-only scheduling).
       expect(calls[0].headers['X-QF-Client-ID']).toBeUndefined()
@@ -488,13 +526,15 @@ describe('qf-gateway proxy round-trip', () => {
         },
       )
 
-      const res = await handleProxyRequest(req, new URL(req.url))
+      const res = await handleProxyRequest(req, new URL(req.url), consentDeps)
       expect(res.status).toBe(200)
       expect(await res.text()).toContain('web_search_tool_result')
       expect(calls).toHaveLength(1)
       expect(calls[0]?.url).toBe(`${GATEWAY_URL}/v1/messages`)
       expect(calls[0]?.headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
       expect(calls[0]?.headers.Authorization).not.toBe('Bearer forged-cli-token')
+      expect(calls[0]?.headers['X-BB-Provider-Protocol']).toBe('bb-provider-gateway/1.0')
+      expect(calls[0]?.headers['X-BB-Data-Egress-Consent']).toBe('a'.repeat(64))
       expect(calls[0]?.headers['X-QF-Client-ID']).toBe('bb-install-abcdef12')
       expect(calls[0]?.headers['anthropic-beta']).toBe('web-search-2025-03-05')
       expect(calls[0]?.body.tools).toEqual([
@@ -530,7 +570,7 @@ describe('qf-gateway proxy round-trip', () => {
           body: JSON.stringify({ model: TEXT_REASONING_MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
         },
       )
-      const res = await handleProxyRequest(req, new URL(req.url))
+      const res = await handleProxyRequest(req, new URL(req.url), consentDeps)
       expect(res.status).toBe(200)
       expect(calls[0].headers['X-QF-Client-ID']).toBe('bb-install-abcdef12')
     } finally {
@@ -583,7 +623,7 @@ describe('qf-gateway proxy round-trip', () => {
           }),
         },
       )
-      const res = await handleProxyRequest(req, new URL(req.url))
+      const res = await handleProxyRequest(req, new URL(req.url), consentDeps)
       expect(res.status).toBe(200)
       expect(calls).toHaveLength(1)
       expect(calls[0].body.model).toBe(TEXT_REASONING_MODEL)
@@ -625,7 +665,7 @@ describe('qf-gateway proxy round-trip', () => {
         },
       )
 
-      const res = await handleProxyRequest(req, new URL(req.url))
+      const res = await handleProxyRequest(req, new URL(req.url), consentDeps)
       expect(res.status).toBe(200)
       expect(res.body).not.toBeNull()
 

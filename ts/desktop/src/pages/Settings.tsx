@@ -41,6 +41,7 @@ import {
   requestDesktopNotificationPermission,
   type DesktopNotificationPermission,
 } from '../lib/desktopNotifications'
+import { RemoteDataEgressSettings } from '../product/components/RemoteDataEgressConsent'
 
 const NETWORK_TIMEOUT_MIN_SECONDS = 30
 const NETWORK_TIMEOUT_MAX_SECONDS = 1800
@@ -957,6 +958,8 @@ export function GeneralSettings() {
           </div>
         </label>
       </div>
+
+      <RemoteDataEgressSettings />
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">
         <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">

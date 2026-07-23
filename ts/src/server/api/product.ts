@@ -28,6 +28,7 @@ import {
 import { handleProductSettingsApi } from './productSettings.js'
 import { handleProductTaskCommandsApi } from './productTaskCommands.js'
 import { handleProductVoiceApi } from './productVoice.js'
+import { handleProductDataEgressConsentApi } from './productDataEgressConsent.js'
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
@@ -114,6 +115,10 @@ export async function handleProductApi(
   scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
 ): Promise<Response> {
   try {
+    if (segments[2] === 'data-egress-consent') {
+      return await handleProductDataEgressConsentApi(req, segments)
+    }
+
     if (segments[2] === 'voice') {
       return await handleProductVoiceApi(req, segments)
     }

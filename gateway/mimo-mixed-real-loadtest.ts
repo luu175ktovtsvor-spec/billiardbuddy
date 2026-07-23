@@ -15,6 +15,7 @@ export const DEFAULT_VISION_SLOTS = 16
 const MAX_TOTAL_REQUESTS = 64
 const MAX_VISION_REQUESTS = 16
 const MAX_RESPONSE_BYTES = 1024 * 1024
+const PROVIDER_GATEWAY_PROTOCOL = 'bb-provider-gateway/1.0'
 
 type Capacity = {
   active?: number
@@ -72,6 +73,7 @@ function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=https://gateway.example/gw \\
   QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/mimo-mixed-real-loadtest.ts --execute [options]
 
 Options:
@@ -430,6 +432,10 @@ async function main(): Promise<void> {
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
     ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
+  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
+    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
+  }
 
   const shape = parseMixedShape(option(args, '--native-slots'), option(args, '--vision-slots'))
   const thinking = parseThinkingMode(option(args, '--thinking'))
@@ -440,7 +446,12 @@ async function main(): Promise<void> {
   const drainTimeoutMs = positiveInteger(option(args, '--drain-timeout-ms'), '--drain-timeout-ms', timeoutMs, 600_000)
   const healthIntervalMs = positiveInteger(option(args, '--health-interval-ms'), '--health-interval-ms', 100, 10_000)
   const healthTimeoutMs = positiveInteger(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000, 30_000)
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'X-BB-Data-Egress-Consent': consentReceiptId,
+    'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
+  }
   const bridgeImages = Array.from({ length: shape.visionSlots }, (_, index) => uniquePngDataUrl(imageSeed, index))
 
   async function health(): Promise<GatewayHealth | null> {

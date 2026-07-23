@@ -33,6 +33,7 @@ function authed(init: RequestInit = {}): RequestInit {
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
       'X-BB-Data-Egress-Consent': 'a'.repeat(64),
+      'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
       ...(init.headers as Record<string, string> | undefined),
     },
   }
@@ -87,7 +88,15 @@ function oneRequestPolicy(): UsageBudgetPolicy {
 test('healthz exposes capacity limits and an empty legacy quota object', async () => {
   const { fetch } = makeGateway()
   const publicRes = await fetch(new Request('http://local/healthz'))
-  expect(await publicRes.json()).toEqual({ ok: true })
+  expect(await publicRes.json()).toEqual({
+    ok: true,
+    component_manifest: {
+      component: 'qf-gateway',
+      protocol: 'bb-provider-gateway/1.0',
+      requires_data_egress_consent: true,
+      relay_protocol: 'bb-provider-gateway/1.0',
+    },
+  })
   const res = await fetch(new Request('http://local/healthz', authed()))
   expect(res.status).toBe(200)
   const body = await res.json()
@@ -363,6 +372,8 @@ test('separate installations of one principal share the principal capacity ceili
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       'X-BB-Operation-ID': operation,
+      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
+      'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
     },
     body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, messages: [] }),
   })
@@ -984,7 +995,7 @@ test('image task submission requires trusted consent and an operation id before 
   const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' })
   const missingConsent = await fetch(new Request('http://local/v1/images/tasks', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'image-operation' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'image-operation', 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
     body: JSON.stringify({ prompt: '海报' }),
   }))
   expect(missingConsent.status).toBe(428)
@@ -994,6 +1005,22 @@ test('image task submission requires trusted consent and an operation id before 
   })))
   expect(missingOperation.status).toBe(428)
   expect(await missingOperation.json()).toEqual({ detail: 'OPERATION_ID_REQUIRED' })
+  expect(calls).toEqual([])
+})
+
+test('provider routes reject an authenticated old component before any paid work', async () => {
+  const { fetch, calls } = makeGateway()
+  const response = await fetch(new Request('http://local/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${gatewayTestAccessToken}`,
+      'Content-Type': 'application/json',
+      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
+    },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
+  }))
+  expect(response.status).toBe(426)
+  expect(await response.json()).toEqual({ detail: 'PROVIDER_PROTOCOL_INCOMPATIBLE' })
   expect(calls).toEqual([])
 })
 

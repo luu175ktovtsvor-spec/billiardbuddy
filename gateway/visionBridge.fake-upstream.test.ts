@@ -33,6 +33,8 @@ function authed(init: RequestInit = {}): RequestInit {
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
+      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
+      'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
       ...(init.headers as Record<string, string> | undefined),
     },
   }

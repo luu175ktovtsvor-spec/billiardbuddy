@@ -29,6 +29,7 @@ describe('product voice API', () => {
       voiceRequest(new File(['audio'], 'voice.webm', { type: 'audio/webm' }), '  zh-Hans-CN-very-long  '),
       productVoiceSegments,
       {
+        consentReceiptId: 'a'.repeat(64),
         transcribe: async (file: File, opts: VoiceTranscriptionOptions = {}) => {
           received = { name: file.name, language: opts.language, signal: opts.signal }
           return { text: '今天晚上八点开赛' }
@@ -93,7 +94,7 @@ describe('product voice API', () => {
     const response = await handleProductVoiceApi(
       voiceRequest(new File(['audio'], 'voice.webm')),
       productVoiceSegments,
-      { env: {} },
+      { env: {}, consentReceiptId: 'a'.repeat(64) },
     )
 
     expect(response.status).toBe(503)
@@ -106,6 +107,7 @@ describe('product voice API', () => {
       voiceRequest(new File(['audio'], 'voice.webm')),
       productVoiceSegments,
       {
+        consentReceiptId: 'a'.repeat(64),
         transcribe: async () => {
           throw new VoiceTranscriptionError('DeepSeek rejected a private gateway token', 503)
         },
@@ -124,6 +126,7 @@ describe('product voice API', () => {
       voiceRequest(new File(['audio'], 'voice.webm')),
       productVoiceSegments,
       {
+        consentReceiptId: 'a'.repeat(64),
         transcribe: async () => {
           throw new VoiceTranscriptionError('gateway request aborted', 499)
         },
@@ -133,6 +136,27 @@ describe('product voice API', () => {
     expect(await cancelled.json()).toEqual({
       error: 'VOICE_TRANSCRIPTION_CANCELLED',
       message: '语音转写已取消。',
+    })
+  })
+
+  it('stops before transcription when remote data consent is absent', async () => {
+    let called = false
+    const response = await handleProductVoiceApi(
+      voiceRequest(new File(['audio'], 'voice.webm')),
+      productVoiceSegments,
+      {
+        consentReceiptId: null,
+        transcribe: async () => {
+          called = true
+          return { text: 'should not run' }
+        },
+      },
+    )
+    expect(response.status).toBe(428)
+    expect(called).toBe(false)
+    expect(await response.json()).toEqual({
+      error: 'REMOTE_DATA_EGRESS_REQUIRED',
+      message: '请先确认远程数据使用范围',
     })
   })
 

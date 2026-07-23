@@ -63,6 +63,7 @@ test('100 users × 5 moderate edit uploads persist as bounded disk queue input i
         'x-relay-owner': owner,
         'idempotency-key': `window-${index % 5}`,
         'x-relay-data-egress-consent': 'a'.repeat(64),
+        'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
       },
       body: JSON.stringify(body),
     }))
@@ -82,14 +83,14 @@ test('100 users × 5 moderate edit uploads persist as bounded disk queue input i
 
   const queued = await Promise.all(submitted.map(async task => {
     const response = await fetch(new Request(`http://relay/images/tasks/${task.taskId}`, {
-      headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner },
+      headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner, 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' },
     }))
     const record = await response.json() as { status: string }
     return { ...task, status: record.status }
   }))
   await Promise.all(queued.filter(task => task.status === 'queued').map(task => fetch(new Request(
     `http://relay/images/tasks/${task.taskId}/cancel`,
-    { method: 'POST', headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner } },
+    { method: 'POST', headers: { authorization: 'Bearer relay-secret', 'x-relay-owner': task.owner, 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' } },
   ))))
 
   release?.()

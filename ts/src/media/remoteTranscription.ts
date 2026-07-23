@@ -28,6 +28,8 @@ export type RemoteTranscriptionOptions = {
   signal?: AbortSignal
   timeoutMs?: number
   fetchImpl?: RemoteTranscriptionFetch
+  consentReceiptId?: string
+  providerProtocol?: string
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -99,6 +101,8 @@ export async function transcribeRemoteFile(
       Authorization: `Bearer ${config.token}`,
     }
     if (config.clientId) headers['X-QF-Client-ID'] = config.clientId
+    if (opts.consentReceiptId) headers['X-BB-Data-Egress-Consent'] = opts.consentReceiptId
+    if (opts.providerProtocol) headers['X-BB-Provider-Protocol'] = opts.providerProtocol
 
     const response = await (opts.fetchImpl ?? fetch)(config.endpoint, {
       method: 'POST',

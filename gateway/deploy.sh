@@ -147,7 +147,9 @@ sleep 3
 echo "=== 服务状态 ==="
 systemctl is-active qfgw || (journalctl -u qfgw -n 20 --no-pager; exit 1)
 echo "=== /healthz ==="
-curl -fsS --max-time 8 http://127.0.0.1:8799/healthz; echo
+health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8799/healthz)"
+HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="qf-gateway"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_data_egress_consent!==true||value.component_manifest?.relay_protocol!=="bb-provider-gateway/1.0")throw new Error("qf-gateway component manifest incompatible")'
+echo "$health_json"
 chmod 600 "$APPDIR"/usage.db* 2>/dev/null || true
 echo "=== 内存占用 ==="
 free -h | head -2

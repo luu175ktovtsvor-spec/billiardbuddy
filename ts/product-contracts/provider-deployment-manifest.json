@@ -1,0 +1,62 @@
+{
+  "manifest_schema_version": 1,
+  "manifest_revision": "bb-04f-provider-deployment-v1",
+  "owner_module": "04",
+  "protocol": {
+    "name": "bb-provider-gateway",
+    "major": 1,
+    "minor": 0,
+    "header_value": "bb-provider-gateway/1.0"
+  },
+  "components": [
+    {
+      "name": "desktop-sidecar",
+      "role": "consent authority and trusted provider client",
+      "sends_protocol": "bb-provider-gateway/1.0",
+      "requires_active_consent_for": [
+        "TextReasoning",
+        "VisualEvidence",
+        "SpeechTranscription"
+      ]
+    },
+    {
+      "name": "qf-gateway",
+      "role": "authenticated capability router, budget authority and relay client",
+      "accepts_protocol": "bb-provider-gateway/1.0",
+      "requires_consent": true,
+      "health_manifest": "/healthz"
+    },
+    {
+      "name": "qf-relay",
+      "role": "durable paid image operation runner",
+      "accepts_protocol": "bb-provider-gateway/1.0",
+      "requires_protocol_for_owned_tasks": true,
+      "health_manifest": "/healthz"
+    }
+  ],
+  "required_edges": [
+    {
+      "from": "desktop-sidecar",
+      "to": "qf-gateway",
+      "protocol": "bb-provider-gateway/1.0",
+      "failure_status": 426
+    },
+    {
+      "from": "qf-gateway",
+      "to": "qf-relay",
+      "protocol": "bb-provider-gateway/1.0",
+      "failure_status": 426
+    }
+  ],
+  "policy_hashes": {
+    "data-egress-policy": "8ce4f703bb10a47196d5b6203f1a3f3f48807b77a107f9551b2446a0638164f7",
+    "relay-retention-policy": "e77ef5618db5f3a68cd414e0033ff8e2c33f65fe47e44b1ee5c769e8f7115524",
+    "usage-budget-policy": "571b7efcce80811c98b67b2472123bb22e6cd98aa13d4fcbadf8113321297ffc",
+    "auth-entitlement-policy": "59f30eb653e6f7de7fb64bd8c2217f73a2a9afb49a44a2c246434207f30d91d3"
+  },
+  "deployment_gates": [
+    "gateway/deploy.sh validates qf-gateway component_manifest after restart",
+    "relay/deploy.sh validates qf-relay component_manifest after restart"
+  ],
+  "sha256": "e82a7fb9515e4bc44b9cbfd02ec6445459f8aed4d6e282abcc11c396d41eb3cb"
+}

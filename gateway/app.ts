@@ -39,6 +39,16 @@ type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
 
+export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
+const PROVIDER_GATEWAY_PROTOCOL_HEADER = 'x-bb-provider-protocol'
+const DATA_EGRESS_CONSENT_HEADER = 'x-bb-data-egress-consent'
+const COMPONENT_MANIFEST = {
+  component: 'qf-gateway',
+  protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
+  requires_data_egress_consent: true,
+  relay_protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
+} as const
+
 type ChatRetryOptions = {
   maxRetries: number
   baseDelayMs: number
@@ -199,6 +209,18 @@ export class HttpError extends Error {
   constructor(readonly status: number, readonly detail: string) {
     super(detail)
   }
+}
+
+function requireProviderProtocol(request: Request): void {
+  if (request.headers.get(PROVIDER_GATEWAY_PROTOCOL_HEADER)?.trim() !== PROVIDER_GATEWAY_PROTOCOL_VALUE) {
+    throw new HttpError(426, 'PROVIDER_PROTOCOL_INCOMPATIBLE')
+  }
+}
+
+function requireRemoteConsent(request: Request): string {
+  const receipt = request.headers.get(DATA_EGRESS_CONSENT_HEADER)?.trim() ?? ''
+  if (!/^[a-f0-9]{64}$/.test(receipt)) throw new HttpError(428, 'DATA_EGRESS_CONSENT_REQUIRED')
+  return receipt
 }
 
 class TokenBucket {
@@ -1326,7 +1348,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     const url = new URL(request.url)
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
-        if (!hasInstallationAccess(authority, request)) return jsonResponse({ ok: true })
+        if (!hasInstallationAccess(authority, request)) return jsonResponse({ ok: true, component_manifest: COMPONENT_MANIFEST })
         const mimo = mimoReservations.snapshot()
         const nativeMimo = mimoReservations.laneSnapshot('native')
         const reservedVision = mimoReservations.laneSnapshot('vision')
@@ -1341,6 +1363,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
         return jsonResponse({
           ok: true,
+          component_manifest: COMPONENT_MANIFEST,
           limits: {
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
@@ -1460,6 +1483,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // DeepSeek's native Messages route remains narrow and registry-gated.
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        requireRemoteConsent(request)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
         // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
@@ -1491,6 +1516,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        requireRemoteConsent(request)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
         // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
@@ -1563,8 +1590,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
-        server?.timeout(request, 0)
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        requireRemoteConsent(request)
+        server?.timeout(request, 0)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
         if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
@@ -1641,6 +1670,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // 生图异步任务:提交短请求到 relay；relay 再按模型调用 GPT Image 或豆包 Seedream。
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
         const user = identity.owner
         // Relay forwarding can cross the default Bun 10 s idle window even though image
         // generation itself is asynchronous. Disable it before buffering/rate waiting.
@@ -1648,8 +1678,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
-        const consentHash = request.headers.get('x-bb-data-egress-consent')?.trim() ?? ''
-        if (!/^[a-f0-9]{64}$/.test(consentHash)) throw new HttpError(428, 'DATA_EGRESS_CONSENT_REQUIRED')
+        const consentHash = requireRemoteConsent(request)
         const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? ''
         if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(428, 'OPERATION_ID_REQUIRED')
         try {
@@ -1666,6 +1695,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               'Content-Type': 'application/json',
               'X-Relay-Owner': relayOwner(user),
               'X-Relay-Data-Egress-Consent': consentHash,
+              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
             }
             submitHeaders['Idempotency-Key'] = idempotencyKey
             const relayController = new AbortController()
@@ -1716,6 +1746,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         && url.pathname.endsWith('/cancel')
       ) {
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
         const user = identity.owner
         // Cancellation still crosses the mainland/US relay boundary. Disable Bun's
         // 10 s idle timeout before that request so a slow relay acknowledgement is
@@ -1731,6 +1762,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             headers: {
               Authorization: `Bearer ${config.relayToken}`,
               'X-Relay-Owner': relayOwner(user),
+              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
             },
           },
         )
@@ -1741,6 +1773,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // 拿别人的 task id 轮询会被 relay 返 403。
       if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
         const identity = auth(authority, request)
+        requireProviderProtocol(request)
         const user = identity.owner
         // A status poll also waits on the cross-border relay. Apply this before
         // forwarding so Bun's default 10 s idle timeout cannot reset the client
@@ -1760,6 +1793,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           {
             Authorization: `Bearer ${config.relayToken}`,
             'X-Relay-Owner': relayOwner(user),
+            'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
           },
         )
       }

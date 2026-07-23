@@ -6,7 +6,7 @@ type Capacity = { active: number; queued: number }
 function request(label: string, index: number, signal?: AbortSignal): Request {
   return new Request('http://local/v1/chat/completions', {
     method: 'POST', signal,
-    headers: { Authorization: `Bearer ${gatewayTestAccessTokenFor(`${label}-${index}`)}`, 'Content-Type': 'application/json', 'X-QF-Client-ID': `${label}-client-${index}` },
+    headers: { Authorization: `Bearer ${gatewayTestAccessTokenFor(`${label}-${index}`)}`, 'Content-Type': 'application/json', 'X-QF-Client-ID': `${label}-client-${index}`, 'X-BB-Data-Egress-Consent': 'a'.repeat(64), 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true }),
   })
 }

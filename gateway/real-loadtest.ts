@@ -8,6 +8,7 @@
  * Example on the gateway host (the token should be populated locally there):
  *   QF_LOADTEST_URL=http://127.0.0.1:8799 \
  *   QF_LOADTEST_TOKEN=... \
+ *   QF_LOADTEST_CONSENT_RECEIPT=... \
  *   bun gateway/real-loadtest.ts --execute --users=100 --windows=10 \
  *     --phases=1000,800,600,400,200,100 --scenario=stream --thinking=enabled
  */
@@ -32,6 +33,8 @@ type Sample = {
   completed: boolean
   failureKind?: 'timeout' | 'network' | 'unexpected_content_type' | 'empty_stream' | 'incomplete_sse'
 }
+
+const PROVIDER_GATEWAY_PROTOCOL = 'bb-provider-gateway/1.0'
 
 export type ThinkingMode = 'enabled' | 'disabled'
 
@@ -86,6 +89,7 @@ function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=https://gateway.example/gw \\
   QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/real-loadtest.ts --execute [options]
 
 Options:
@@ -415,6 +419,10 @@ async function main(): Promise<void> {
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
     ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
+  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
+    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
+  }
 
   const users = integer(option(args, '--users'), '--users', 100)
   const windows = integer(option(args, '--windows'), '--windows', 10)
@@ -446,6 +454,8 @@ async function main(): Promise<void> {
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
+    'X-BB-Data-Egress-Consent': consentReceiptId,
+    'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
   const prompt = scenario === 'short'
     ? '请只回复 OK。'
