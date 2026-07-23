@@ -120,9 +120,7 @@ function renderComposer(overrides: Partial<{
   const onCancel = vi.fn()
   render(
     <TaskComposer
-      projects={makeIndex().projects}
-      directories={makeIndex().directories}
-      initialWorkDir={overrides.initialWorkDir}
+      initialWorkDir={'initialWorkDir' in overrides ? overrides.initialWorkDir : '/workspace/billiard'}
       isSubmitting={false}
       onCancel={onCancel}
       onSubmit={onSubmit}
@@ -360,6 +358,16 @@ describe('TaskIndex', () => {
     expect(screen.getByRole('button', { name: '恢复' })).toBeInTheDocument()
   })
 
+  it('explains and retries an unavailable task-creation capability', () => {
+    const index = { ...makeIndex(), projects: [], directories: [], tasks: [], total: 0, capabilities: { createTask: false } }
+    const props = renderIndex(index)
+
+    expect(screen.getByText('当前无法创建任务。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新建任务' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重新检查' }))
+    expect(props.onRefresh).toHaveBeenCalledOnce()
+  })
+
   it('routes creation to the dedicated page, then opens and continues the selected task', async () => {
     const props = renderIndex()
 
@@ -412,65 +420,39 @@ describe('TaskIndex', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('internal renderer path')
   })
 
-  it('does not show the native folder chooser outside the desktop app', () => {
+  it('keeps the ordinary new-task surface free of technical selectors', () => {
     renderComposer()
 
     expect(screen.queryByRole('button', { name: '选择文件夹' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('工作目录')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('选择项目')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('任务标题')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('模型')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Provider')).not.toBeInTheDocument()
   })
 
-  it('writes the desktop native folder selection back to the work directory', async () => {
-    mocks.isDesktop = true
-    mocks.openDirectory.mockResolvedValue('/workspace/selected-project')
-    renderComposer()
-
-    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
-
-    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledWith({
-      directory: true,
-      multiple: false,
-      title: '选择任务工作目录',
-    }))
-    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/selected-project'))
-  })
-
-  it('keeps form input and offers a retry when native folder selection fails', async () => {
-    mocks.isDesktop = true
-    mocks.openDirectory
-      .mockRejectedValueOnce(new Error('private host dialog failure'))
-      .mockResolvedValueOnce('/workspace/retried-project')
-    renderComposer()
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/keep-manual-input' } })
-    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '保留的任务标题' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '保留的初始目标' } })
-    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }))
-
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('无法打开文件夹选择器，请重试或手动填写工作目录。')
-    expect(alert).not.toHaveTextContent('private host dialog failure')
-    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/keep-manual-input')
-    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留的任务标题')
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('保留的初始目标')
-
-    fireEvent.click(screen.getByRole('button', { name: '重试选择' }))
-
-    await waitFor(() => expect(mocks.openDirectory).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/retried-project'))
-    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留的任务标题')
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('保留的初始目标')
-  })
-
-  it('uses the requested work directory in the dedicated new-task composer', async () => {
+  it('uses the requested project context for command discovery without rendering its path', async () => {
     renderComposer({ initialWorkDir: '/workspace/billiard' })
 
-    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard')
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/' } })
+    await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/billiard'))
+    expect(screen.queryByText('/workspace/billiard')).not.toBeInTheDocument()
+  })
+
+  it('does not borrow command context from another project when none was requested', () => {
+    renderComposer({ initialWorkDir: '' })
+
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/' } })
+    expect(screen.getByText('当前没有可用的项目命令；仍可直接描述目标。')).toBeInTheDocument()
+    expect(mocks.listSkillCommands).not.toHaveBeenCalled()
+    expect(mocks.listAgents).not.toHaveBeenCalled()
   })
 
   it('submits only the text and attachment IDs accepted by the atomic homepage route', async () => {
     const { onSubmit } = renderComposer()
 
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '  请列出本周的训练安排  ' } })
-    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '  请列出本周的训练安排  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       text: '请列出本周的训练安排',
@@ -480,7 +462,7 @@ describe('TaskIndex', () => {
 
   it('uses the configured Enter shortcut for the initial task goal', async () => {
     const { onSubmit } = renderComposer()
-    const initialGoal = screen.getByLabelText('初始目标（可选）')
+    const initialGoal = screen.getByLabelText('你想完成什么？')
 
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
 
@@ -500,7 +482,7 @@ describe('TaskIndex', () => {
   it('uses Ctrl or Command Enter for the initial goal when that preference is selected', async () => {
     useSettingsStore.setState({ chatSendBehavior: 'modifierEnter' })
     const { onSubmit } = renderComposer()
-    const initialGoal = screen.getByLabelText('初始目标（可选）')
+    const initialGoal = screen.getByLabelText('你想完成什么？')
 
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
 
@@ -517,7 +499,7 @@ describe('TaskIndex', () => {
 
   it('does not submit the initial goal while an IME composition is active', async () => {
     const { onSubmit } = renderComposer()
-    const initialGoal = screen.getByLabelText('初始目标（可选）')
+    const initialGoal = screen.getByLabelText('你想完成什么？')
 
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
     fireEvent.compositionStart(initialGoal)
@@ -536,17 +518,16 @@ describe('TaskIndex', () => {
     })
     const { onSubmit } = renderComposer()
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/复盘' } })
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/复盘' } })
 
-    await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/new-table'))
+    await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/billiard'))
     const command = await screen.findByRole('button', { name: /\/复盘今天经营/ })
     expect(command).toHaveTextContent('把球房营业数据和当天情况整理成经营复盘。')
     expect(command).not.toHaveTextContent('venue-daily-review')
     fireEvent.click(command)
 
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/复盘今天经营 ')
-    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
+    expect(screen.getByLabelText('你想完成什么？')).toHaveValue('/复盘今天经营 ')
+    fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/venue-daily-review', attachment_ids: [] }))
   })
@@ -561,15 +542,14 @@ describe('TaskIndex', () => {
     })
     const { onSubmit } = renderComposer()
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/custom' } })
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/custom' } })
 
     const command = await screen.findByRole('button', { name: /\/custom-report/ })
     expect(command).toHaveTextContent('当前环境提供的扩展命令。')
     fireEvent.click(command)
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/custom-report ')
+    expect(screen.getByLabelText('你想完成什么？')).toHaveValue('/custom-report ')
 
-    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/custom-report', attachment_ids: [] }))
   })
 
@@ -584,16 +564,15 @@ describe('TaskIndex', () => {
     })
     const { onSubmit } = renderComposer()
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/agent' } })
 
-    await waitFor(() => expect(mocks.listAgents).toHaveBeenCalledWith('/workspace/new-table'))
+    await waitFor(() => expect(mocks.listAgents).toHaveBeenCalledWith('/workspace/billiard'))
     fireEvent.click(await screen.findByRole('button', { name: /\/agent assistant-1/ }))
 
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/agent assistant-1 ')
+    expect(screen.getByLabelText('你想完成什么？')).toHaveValue('/agent assistant-1 ')
     expect(screen.queryByText('分析球房运营数据。')).not.toBeInTheDocument()
     expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent venue-analyst', attachment_ids: [] }))
   })
@@ -608,8 +587,7 @@ describe('TaskIndex', () => {
     })
     renderComposer()
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/agent' } })
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/agent' } })
 
     expect(await screen.findByRole('button', { name: /\/agent assistant-1/ })).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -622,8 +600,7 @@ describe('TaskIndex', () => {
     }))
     renderComposer()
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '/' } })
+    fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/' } })
 
     expect(await screen.findByRole('status')).toHaveTextContent('正在读取可用命令')
     expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
@@ -637,6 +614,6 @@ describe('TaskIndex', () => {
   it('removes the retired permission selector before module 08 defines the final profiles', () => {
     renderComposer()
     expect(screen.queryByLabelText('执行权限')).not.toBeInTheDocument()
-    expect(screen.getByText('当前阶段仅提交文本；附件会在附件导入能力完成后开放。')).toBeInTheDocument()
+    expect(screen.getByText('直接描述目标；输入 / 可使用当前项目的可用命令。')).toBeInTheDocument()
   })
 })

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type {
   ContinueProductTaskInput,
   ProductProject,
-  ProductProjectDirectory,
   ProductTaskAction,
   ProductTaskIndexResponse,
   ProductTaskRecord,
@@ -191,7 +190,18 @@ export function TaskIndex({
         ) : null}
 
         {!isLoading && visibleProjects.length === 0 && looseTasks.length === 0 ? (
-          <p className="py-12 text-center text-sm text-[var(--color-text-secondary)]">还没有可显示的任务。</p>
+          <div className="py-12 text-center text-sm text-[var(--color-text-secondary)]">
+            <p>{index.capabilities.createTask ? '还没有可显示的任务。' : '当前无法创建任务。'}</p>
+            {!index.capabilities.createTask ? (
+              <button
+                type="button"
+                onClick={() => void onRefresh()}
+                className="mt-3 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+              >
+                重新检查
+              </button>
+            ) : null}
+          </div>
         ) : null}
 
         <div className="space-y-5">
@@ -235,26 +245,17 @@ export function TaskIndex({
 }
 
 export function TaskComposer({
-  projects,
-  directories,
   initialWorkDir,
   isSubmitting,
   onCancel,
   onSubmit,
 }: {
-  projects: ProductProject[]
-  directories: ProductProjectDirectory[]
   initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
   onSubmit: (input: { text: string; attachment_ids: string[] }) => Promise<void>
 }) {
-  const [projectId, setProjectId] = useState('')
-  const [directoryId, setDirectoryId] = useState('')
-  const [workDir, setWorkDir] = useState(() => initialWorkDir ?? '')
-  const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
-  const [workDirPickerError, setWorkDirPickerError] = useState<string | null>(null)
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
@@ -262,24 +263,12 @@ export function TaskComposer({
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const composingRef = useRef(false)
-  const desktopHost = getDesktopHost()
-  const canChooseWorkDir = desktopHost.isDesktop && desktopHost.capabilities.dialogs
-  const normalizedWorkDir = workDir.trim()
+  const commandWorkDir = initialWorkDir?.trim() ?? ''
   const isSlashInput = initialText.startsWith('/')
   const query = slashQuery(initialText)
 
   useEffect(() => {
-    if (directoryId) return
-
-    const matchingDirectory = directories.find((directory) => directory.path === normalizedWorkDir)
-    if (!matchingDirectory) return
-
-    setProjectId(matchingDirectory.projectId)
-    setDirectoryId(matchingDirectory.id)
-  }, [directories, directoryId, normalizedWorkDir])
-
-  useEffect(() => {
-    if (!isSlashInput || !normalizedWorkDir) {
+    if (!isSlashInput || !commandWorkDir) {
       setDiscoverableSkills(null)
       setDiscoverableAgents(null)
       setAgentDiscoveryWorkDir(null)
@@ -291,11 +280,11 @@ export function TaskComposer({
     let cancelled = false
     setDiscoverableSkills(null)
     setDiscoverableAgents(null)
-    setAgentDiscoveryWorkDir(normalizedWorkDir)
+    setAgentDiscoveryWorkDir(commandWorkDir)
     setSkillDiscoveryError(null)
     setAgentDiscoveryError(null)
 
-    productTaskCommandsApi.listSkills(normalizedWorkDir)
+    productTaskCommandsApi.listSkills(commandWorkDir)
       .then(({ commands }) => {
         if (cancelled) return
         setDiscoverableSkills(commands)
@@ -306,7 +295,7 @@ export function TaskComposer({
         setSkillDiscoveryError('暂时无法读取可用命令')
       })
 
-    productTaskCommandsApi.listAgents(normalizedWorkDir)
+    productTaskCommandsApi.listAgents(commandWorkDir)
       .then(({ agents }) => {
         if (cancelled) return
         setDiscoverableAgents(agents)
@@ -320,7 +309,7 @@ export function TaskComposer({
     return () => {
       cancelled = true
     }
-  }, [isSlashInput, normalizedWorkDir])
+  }, [commandWorkDir, isSlashInput])
 
   const taskComposerCommands = useMemo(
     () => buildTaskComposerCommands(discoverableSkills ?? [], discoverableAgents ?? []),
@@ -335,7 +324,7 @@ export function TaskComposer({
       command.name.toLocaleLowerCase().startsWith(query)
     ))
   }, [query, taskComposerCommands])
-  const hasAgentDiscoveryForCurrentWorkDir = agentDiscoveryWorkDir === normalizedWorkDir
+  const hasAgentDiscoveryForCurrentWorkDir = agentDiscoveryWorkDir === commandWorkDir
   const visibleCommands = hasAgentDiscoveryForCurrentWorkDir ? matchingCommands : []
   const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
   const visibleDiscoveryError = hasAgentDiscoveryForCurrentWorkDir
@@ -343,75 +332,11 @@ export function TaskComposer({
       ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
       : null
     : null
-  const isAgentDiscoveryLoading = Boolean(normalizedWorkDir) && (
+  const isAgentDiscoveryLoading = Boolean(commandWorkDir) && (
     !hasAgentDiscoveryForCurrentWorkDir || (
       hasPendingCommandDiscovery && visibleCommands.length === 0 && visibleDiscoveryError === null
     )
   )
-
-  const setRegisteredWorkDir = (nextWorkDir: string) => {
-    const matchingDirectory = directories.find((directory) => directory.path === nextWorkDir.trim())
-    setWorkDir(nextWorkDir)
-    setProjectId(matchingDirectory?.projectId ?? '')
-    setDirectoryId(matchingDirectory?.id ?? '')
-    setWorkDirPickerError(null)
-  }
-
-  const selectProject = (nextProjectId: string) => {
-    setWorkDirPickerError(null)
-    if (!nextProjectId) {
-      setProjectId('')
-      setDirectoryId('')
-      return
-    }
-
-    const project = projects.find((entry) => entry.id === nextProjectId)
-    const projectDirectories = directories.filter((directory) => directory.projectId === nextProjectId)
-    const rootDirectory = projectDirectories.find((directory) => directory.path === project?.rootDir)
-    const directory = rootDirectory ?? projectDirectories[0]
-
-    setProjectId(nextProjectId)
-    setDirectoryId(directory?.id ?? '')
-    if (directory) {
-      setWorkDir(directory.path)
-    } else if (project) {
-      setWorkDir(project.rootDir)
-    }
-  }
-
-  const selectDirectory = (nextDirectoryId: string) => {
-    setWorkDirPickerError(null)
-    if (!nextDirectoryId) {
-      setDirectoryId('')
-      return
-    }
-
-    const directory = directories.find((entry) => entry.id === nextDirectoryId)
-    if (!directory) return
-
-    setProjectId(directory.projectId)
-    setDirectoryId(directory.id)
-    setWorkDir(directory.path)
-  }
-
-  const chooseWorkDir = async () => {
-    if (!canChooseWorkDir) return
-
-    setWorkDirPickerError(null)
-    try {
-      const selected = await desktopHost.dialogs.open({
-        directory: true,
-        multiple: false,
-        title: '选择任务工作目录',
-      })
-      const nextWorkDir = Array.isArray(selected) ? selected[0] : selected
-      if (!nextWorkDir) return
-
-      setRegisteredWorkDir(nextWorkDir)
-    } catch {
-      setWorkDirPickerError('无法打开文件夹选择器，请重试或手动填写工作目录。')
-    }
-  }
 
   const submitTask = () => {
     if (isSubmitting) return
@@ -430,70 +355,31 @@ export function TaskComposer({
 
   return (
     <form
-      className="grid gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-5 py-4 md:grid-cols-2"
+      className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-5 py-6"
       onSubmit={(event) => {
         event.preventDefault()
         submitTask()
       }}
     >
-      {projects.length > 0 ? (
-        <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-          项目
-          <select aria-label="选择项目" value={projectId} onChange={(event) => selectProject(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]">
-            <option value="">手动填写工作目录</option>
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.title} · {project.rootDir}</option>)}
-          </select>
-        </label>
-      ) : null}
-      {projectId ? (
-        <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-          项目目录
-          <select aria-label="选择项目目录" value={directoryId} onChange={(event) => selectDirectory(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]">
-            <option value="">手动填写工作目录</option>
-            {directories.filter((directory) => directory.projectId === projectId).map((directory) => (
-              <option key={directory.id} value={directory.id}>{directory.label} · {directory.path}</option>
-            ))}
-          </select>
-        </label>
-      ) : null}
       <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-        <label htmlFor="product-task-work-dir">工作目录</label>
-        <div className="flex gap-2">
-          <input id="product-task-work-dir" aria-label="工作目录" value={workDir} onChange={(event) => setRegisteredWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
-          {canChooseWorkDir ? (
-            <button type="button" onClick={() => void chooseWorkDir()} className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">选择文件夹</button>
-          ) : null}
-        </div>
-        {workDirPickerError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-error)]">
-            <span>{workDirPickerError}</span>
-            <button type="button" onClick={() => void chooseWorkDir()} className="underline underline-offset-2">重试选择</button>
-          </div>
-        ) : null}
-      </div>
-      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-        任务标题（可选）
-        <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
-      </label>
-      <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
         <label className="flex flex-col gap-1">
-          初始目标（可选）
+          你想完成什么？
           <textarea
-            aria-label="初始目标（可选）"
+            aria-label="你想完成什么？"
             value={initialText}
             onChange={(event) => setInitialText(event.target.value)}
             onKeyDown={handleInitialGoalKeyDown}
             onCompositionStart={() => { composingRef.current = true }}
             onCompositionEnd={() => { composingRef.current = false }}
             placeholder="描述这项任务希望完成什么…"
-            rows={3}
+            rows={5}
             className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
         </label>
-        <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">当前阶段仅提交文本；附件会在附件导入能力完成后开放。</p>
+        <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">直接描述目标；输入 / 可使用当前项目的可用命令。</p>
         {query !== null ? (
           <TaskComposerSlashPicker
-            workDir={normalizedWorkDir}
+            workDir={commandWorkDir}
             commands={visibleCommands}
             isLoading={isAgentDiscoveryLoading}
             error={visibleDiscoveryError}
@@ -501,8 +387,8 @@ export function TaskComposer({
           />
         ) : null}
       </div>
-      <div className="flex gap-2 md:col-span-2">
-        <button type="submit" disabled={isSubmitting || !initialText.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在提交…' : '提交任务'}</button>
+      <div className="flex gap-2">
+        <button type="submit" disabled={isSubmitting || !initialText.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在开始…' : '开始任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
       </div>
     </form>
@@ -523,7 +409,7 @@ function TaskComposerSlashPicker({
   onSelect: (command: TaskComposerSlashCommand) => void
 }) {
   if (!workDir) {
-    return <p className="text-xs text-[var(--color-text-tertiary)]">填写工作目录后，才能读取当前可用命令。</p>
+    return <p className="text-xs text-[var(--color-text-tertiary)]">当前没有可用的项目命令；仍可直接描述目标。</p>
   }
 
   if (isLoading) {
@@ -535,7 +421,7 @@ function TaskComposerSlashPicker({
   }
 
   if (commands.length === 0) {
-    return <p className="text-xs text-[var(--color-text-tertiary)]">当前工作目录没有匹配的可用命令。</p>
+    return <p className="text-xs text-[var(--color-text-tertiary)]">当前项目没有匹配的可用命令。</p>
   }
 
   return (

@@ -186,7 +186,9 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
 
   return {
     index: EMPTY_PRODUCT_TASK_INDEX,
-    isLoading: false,
+    // The empty projection is not a capability snapshot until the first list
+    // request settles.
+    isLoading: true,
     error: null,
     mutations: {},
     confirmedAuthorityRevision: 0,
