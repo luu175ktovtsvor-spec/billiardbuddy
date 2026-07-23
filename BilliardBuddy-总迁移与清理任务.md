@@ -13,7 +13,7 @@
 
 ### 0.1 如何使用本文
 
-每个模块是一个架构里程碑；每个 Work Unit 是一个实施窗口内可独立审查、验证、回滚和提交的一窗任务。简单模块可以只有一个 Work Unit；复杂模块必须由主代理拆成多个有序 Work Unit，不得为了“一窗做完模块”制造巨大提交。
+每个模块是一个架构里程碑；每个 Work Unit 是可独立审查、验证、回滚和提交的最小施工单元，不等于一个 AI 窗口。一个持续主代理窗口负责整轮迁移的编排、合同裁决和集成；它可以按实际依赖和修改边界，拆分并行或串行的 Work Unit。简单模块可以只有一个 Work Unit；复杂模块可以拆成多个有序或并行 Work Unit，但不得为了“一窗做完模块”制造巨大提交。
 
 每个新窗口的主代理必须读取：
 
@@ -75,12 +75,12 @@
 - `[HARD]` **主代理不写产品代码**：主代理只负责读取和维护唯一施工合同、核对源码事实、拆分 Work Unit、指定修改边界、派实施子代理、审查 diff、独立运行验证、执行最终 Git 提交，并决定接受、退回或阻塞。主代理只能亲自修改本 Markdown 和 HTML 视觉参考，不能借“集成修复”直接改产品实现。
 - `[HARD]` **实施子代理写产品代码**：实施子代理只在指定 Work Unit 范围内修改产品代码、测试、fixture、manifest 和构建证据；不得修改本 Markdown，不得自行改变架构、模块依赖、状态所有权、失败语义、provider 路由或删除阶段。
 - `[HARD]` 主代理发现合同缺口或逻辑错误时，必须由主代理先修改本 Markdown、补齐所有受影响条款并形成新的 Spec-Commit；不得把架构裁决下放给实施子代理。HTML 只在视觉参考本身表述不准确时由主代理同步修改。
-- `[HARD]` 每个 Work Unit 只派一个拥有写权限的实施子代理，负责产出当前任务的完整代码变更；其他子代理只能做只读调查或对抗审查，不能并行写入。若子代理运行时可共享主工作树，它直接把未提交变更留在当前本地 `main`；若工具强制隔离，子代理只返回可机械应用的完整 patch，主代理可原样应用 patch，但不得自行设计、补写或调整产品代码。主代理必须先记录 `Base-Commit` 与开工前 `git status`，子代理不得触碰、清理或纳入既有修改。应用后由主代理复核范围、合同、diff、测试和未验证项。
-- `[HARD]` 用户可见的开发流程不创建或保留临时分支/worktree/候选提交，不 cherry-pick；本地 `main` 是唯一串行施工线和 accepted 集成线。工具内部强制的临时隔离只用于生成 patch，结束即清理，不构成项目施工分支。文档中 ProductTask/worktree 指最终产品给用户的任务隔离能力，不是开发 AI 的 Git 工作方式。
+- `[HARD]` 主代理可自行派多个实施子代理并行施工，只要它已判断它们的修改、依赖和冻结合同不会冲突。每个子代理只负责其登记范围内的完整变更，不得自行改变架构、合并冲突或裁决公共合同。主代理必须先记录 `Base-Commit` 与开工前 `git status`；并行结果逐一进入 `main` 前，由主代理复核范围、合同、diff、测试和未验证项。发现冲突、patch 失效或合同漂移时，主代理停止受影响任务、决定串行 repair 或先修合同，不把集成判断下放给子代理。
+- `[HARD]` 用户可见的开发流程不创建或保留临时分支/worktree/候选提交，不 cherry-pick；本地 `main` 是唯一 accepted 集成线，不是实施子代理的并行写入空间。工具内部隔离只用于生成 patch，结束即清理，不构成项目施工分支。文档中 ProductTask/worktree 指最终产品给用户的任务隔离能力，不是开发 AI 的 Git 工作方式。
 - `[HARD]` 主代理发现的是产品代码缺陷而非合同缺陷时，不得亲自补代码；必须退回原实施子代理，或在原模块创建 repair Work Unit 并派新的实施子代理。
-- `[HARD]` **默认自主施工，不向用户索要常规裁决**：用户已持续授权各 Module Owner 及其登记子代理，在本仓库、本机开发环境、已有 Git remote、已配置服务器/服务/账号范围内，自主调查、创建/修改/删除 Work Unit 内文件、运行命令和测试、安装项目所需依赖、处理迁移、重启相关进程、提交 accepted commit，并在现有 remote 权限与分支策略允许时直接 push；以上均不需要逐项询问、二次确认或让用户在多个技术方案中选择。主代理必须先依据本文、实际代码、测试、Git 历史证据和最少复杂度原则自行裁决；合同存在可闭合缺口时由主代理直接修订本文、提交新 Spec-Commit 并继续，不把架构题退给用户。
+- `[HARD]` **默认自主施工，不向用户索要常规裁决**：用户已持续授权 Migration Owner 及其登记子代理，在本仓库、本机开发环境、已有 Git remote、已配置服务器/服务/账号范围内，自主调查、创建/修改/删除 Work Unit 内文件、运行命令和测试、安装项目所需依赖、处理迁移、重启相关进程、提交 accepted commit，并在现有 remote 权限与分支策略允许时直接 push；以上均不需要逐项询问、二次确认或让用户在多个技术方案中选择。主代理必须先依据本文、实际代码、测试、Git 历史证据和最少复杂度原则自行裁决；合同存在可闭合缺口时由主代理直接修订本文、提交新 Spec-Commit 并继续，不把架构题退给用户。
 - `[HARD]` 自主施工遇到失败时先穷尽 Work Unit 范围内的安全诊断、替代命令、回滚和 repair 路径。只有现有环境中客观不存在必需凭据、第三方账号权限、签名材料或受保护人工动作，且无法通过 `OUT_OF_SCOPE_DISABLED` 或其他独立 Work Unit 继续时，才把该 Work Unit 写为 `blocked`；记录精确缺失项、已尝试证据和唯一恢复条件后停止该项，不向用户发送开放式问题、重复催促或技术选择题。其他不依赖该条件的 Work Unit 继续推进。该规则不允许伪造外部验证、越过模块 25 正式发布门禁或执行与当前施工无关的破坏性操作。
-- `[HARD]` **服务器访问无需逐次申请**：用户对本轮施工持续授权当前 Module Owner 及其已登记实施子代理，直接使用机器上已经配置的服务器凭据连接、检查、上传、修改配置/代码、部署、重启服务和执行验证；不限制连接时段、次数或是否处于交互式终端，也不要求每条 SSH/SCP/部署命令再次向用户确认。只读事实核验可由任一当前 Work Unit 执行；远程写入必须服务于当前 Work Unit 的单一结果，并在允许范围、命令/版本、变更前状态、验证和回滚证据中留痕。该持续授权消除的是访问审批，不取消模块所有权、Work Unit 边界、备份/回滚、密钥保密和禁止无关破坏性操作的合同；若远程修改会改变模块 04/14 已冻结的 Gateway/Relay 拓扑或合同，先回对应模块登记 repair Work Unit，但无需重新申请服务器权限。
+- `[HARD]` **服务器访问无需逐次申请**：用户对本轮施工持续授权当前 Migration Owner 及其登记实施子代理，直接使用机器上已经配置的服务器凭据连接、检查、上传、修改配置/代码、部署、重启服务和执行验证；不限制连接时段、次数或是否处于交互式终端，也不要求每条 SSH/SCP/部署命令再次向用户确认。只读事实核验可由任一当前 Work Unit 执行；远程写入必须服务于当前 Work Unit 的单一结果，并在允许范围、命令/版本、变更前状态、验证和回滚证据中留痕。该持续授权消除的是访问审批，不取消模块所有权、Work Unit 边界、备份/回滚、密钥保密和禁止无关破坏性操作的合同；若远程修改会改变模块 04/14 已冻结的 Gateway/Relay 拓扑或合同，先回对应模块登记 repair Work Unit，但无需重新申请服务器权限。
 - `[HARD]` **最终 BilliardBuddy 产品运行时**：保留 CC-Haha Core 原生 Agent loop、工具、权限、Skills、Hooks、MCP、子代理、后台任务、resume 和 compact。
 - `[HARD]` 模块 03 的 `agent-worker` 是产品运行时进程，不是开发施工的子代理工具。
 
@@ -104,12 +104,12 @@ Base-Commit SHA：
 完成条件：
 ```
 
-实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。子代理把未提交变更留在当前 `main`，或在工具强制隔离时提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit；已有 remote 权限与分支策略允许时可按第 0.5 节直接 push，不再等待聊天授权。正式发布、feed 切换和不可逆第三方动作仍只按模块 24/25 的候选与发布门禁执行。
+实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。并行子代理在隔离环境提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit；已有 remote 权限与分支策略允许时可按第 0.5 节直接 push，不再等待聊天授权。正式发布、feed 切换和不可逆第三方动作仍只按模块 24/25 的候选与发布门禁执行。
 
-- `[HARD]` Module Owner 对工程质量负最终责任，不能把生产代码审查委托给实施/审查子代理后只读取摘要、测试数字或审查结论。每个 accepted commit 前，Module Owner 必须亲自阅读最终生产 diff，并沿本 Work Unit 的关键入口、权威状态、写入者、外部/进程边界、当前消费者和失败/恢复路径追踪实际调用链；逐项核对冻结合同、允许/禁止范围、身份与 owner、并发/幂等/资源释放、兼容/迁移和 secrets/data-egress 边界。无法说明生产代码如何实现单一用户结果时不得接受。
+- `[HARD]` Migration Owner 对工程质量负最终责任，不能把生产代码审查委托给实施/审查子代理后只读取摘要、测试数字或审查结论。每个 accepted commit 前，Migration Owner 必须亲自阅读最终生产 diff，并沿本 Work Unit 的关键入口、权威状态、写入者、外部/进程边界、当前消费者和失败/恢复路径追踪实际调用链；逐项核对冻结合同、允许/禁止范围、身份与 owner、并发/幂等/资源释放、兼容/迁移和 secrets/data-egress 边界。无法说明生产代码如何实现单一用户结果时不得接受。
 - `[HARD]` 代码与测试的增加、删除和简化按语义判断，不按行数、文件数或测试数量判断。最小代码完整实现合同是优点；删除项必须区分为已冻结退休能力、重复/不可达实现、仍存通用行为或当前消费者。退休能力应删除运行时消费者并改为 fail-closed/迁移证据，不得为了保留数量恢复；仍存行为不得因路由或模块收敛而丢失保护。测试名称必须与真实 fixture、身份、并发规模和断言一致。
-- `[HARD]` 全量测试通过、覆盖率、`git diff --check`、静态检查、独立审查和子代理自述都只是支持 Module Owner 判断的证据，任何一项都不能单独证明工程质量；反之，合理删除退休实现或测试也不能仅凭 diff 规模被判为低质量。Module Owner 必须基于最终生产代码给出接受或 repair 判断。
-- accepted commit body 必须新增 `Owner-Review` 段，列出 Module Owner 亲自审阅的关键生产路径/调用链、删除或简化的语义归类，以及确认仍存消费者和失败路径已闭合的结论；不得写“已审查”而无路径和判断。若 accepted 后发现主审遗漏，必须立即回到合同所属模块登记 repair Work Unit/Spec，亲自复核修复，不以既有测试绿或提交已合并为理由掩盖。
+- `[HARD]` 全量测试通过、覆盖率、`git diff --check`、静态检查、独立审查和子代理自述都只是支持 Migration Owner 判断的证据，任何一项都不能单独证明工程质量；反之，合理删除退休实现或测试也不能仅凭 diff 规模被判为低质量。Migration Owner 必须基于最终生产代码给出接受或 repair 判断。
+- accepted commit body 必须新增 `Owner-Review` 段，列出 Migration Owner 亲自审阅的关键生产路径/调用链、删除或简化的语义归类，以及确认仍存消费者和失败路径已闭合的结论；不得写“已审查”而无路径和判断。若 accepted 后发现主审遗漏，必须立即回到合同所属模块登记 repair Work Unit/Spec，亲自复核修复，不以既有测试绿或提交已合并为理由掩盖。
 
 每个 accepted commit 的标题必须带 Work Unit ID，例如 `feat(bb-07a): persist accepted message submissions`。commit body 是唯一跨窗口文字交接，必须包含：
 
@@ -133,7 +133,7 @@ Checks:
 Evidence:
 - <测试/fixture/JSON manifest/包清单等仓库路径>
 Owner-Review:
-- <Module Owner 亲自审阅的关键生产路径/调用链、删除/简化语义分类、仍存消费者与失败路径闭合结论>
+- <Migration Owner 亲自审阅的关键生产路径/调用链、删除/简化语义分类、仍存消费者与失败路径闭合结论>
 External-Verification:
 - <项目> — VERIFIED | NOT_VERIFIED_EXTERNALLY | NOT_APPLICABLE
 Known-Risks:
@@ -158,27 +158,27 @@ Next:
 
 当前 25 张模块卡是模块级 Work Unit registry 的初始定义：每个模块在首次开工前，由主代理依据真实消费者图把该模块卡细化为一个或多个 `BB-<模块号><序号>` 条目并提交。简单模块登记 `A` 一个 Work Unit；复杂模块必须先完整登记 A/B/C… 的顺序和边界，不能做完一半后才用聊天补编号。文档准备提交本身属于 `SPEC` 变更，不冒充模块 01 产品 Work Unit。
 
-### 0.8 一个主代理窗口负责一个模块
+### 0.8 一个持续主代理窗口负责整轮迁移
 
-- `[HARD]` 一个模块从首次派工到模块完成，只能有一个主代理窗口作为 Module Owner。该窗口负责登记和依次完成本模块全部 Work Unit、派子代理、修合同、审查、验证和提交；不得让两个主代理窗口同时负责同一模块。
-- 简单模块可以只有一个 Work Unit；复杂模块可以在同一主代理窗口内形成多个串行 accepted commit。上下文压缩不改变 Module Owner；窗口意外终止时，新的恢复窗口只能按第 0.9 节接管同一模块，不能另开平行实现。
+- `[HARD]` 整轮迁移只有一个持续主代理窗口作为 Migration Owner。它维护唯一施工合同、登记 Work Unit、决定并行或串行、派子代理、处理合同缺口、审查、验证、集成和提交；模块仍是产品边界与验收边界，不再是主代理窗口边界。
+- Migration Owner 可以在同一阶段并行推进它判断为不冲突的多个 Work Unit；依赖、公共合同、共享状态、迁移、删除、打包和发布的先后关系仍以本文为准。上下文压缩或窗口意外终止时，新的恢复窗口只能按第 0.9 节接管整轮迁移，不得另开平行的编排者或猜测未整合变更。
 - 模块状态固定为 `planned → active → blocked | ready_for_completion → complete`。`blocked` 必须立即写入 lease，包含阻塞原因、复现证据和恢复条件；若需要跨窗口接管，主代理还必须修订对应 Work Unit 登记并创建 Spec-Commit 记录阻塞，但不得提交部分产品实现或伪造 accepted commit。最近一个已完成 Work Unit 的 accepted commit 可预先写下一依赖导致的 `Module-Status: blocked`；无法预知的中途阻塞不追改历史 commit。
 - 模块只有同时满足以下条件才成为 `complete`：所有登记 Work Unit 均有 accepted commit；模块卡全部 Oracle 与模块级纵向测试通过；交接物已进入 commit body/机器证据；工作树干净；没有未处理合同冲突；最后一个 accepted commit body 写入 `Module-Status: complete`、此前全部 accepted Work Unit SHA、当前 Work Unit ID（当前提交 SHA 由提交完成后从 Git 读取，不写入自身 body）、Checks、Evidence、Known-Risks、External-Verification 和下一模块启动条件。提交后，lease 按 Git 实际 SHA 推进，最后 accepted commit body 的 `Previous-Accepted` 与 `Evidence` 分别是本模块 SHA 列表和机器证据索引；不为补记自身 SHA 创建追写 commit。
 - 模块完成不创建空提交或额外 Markdown 报告。若最后一个 Work Unit 提交时尚不能满足模块完成条件，保持 `Module-Status: active|blocked`，通过原模块 repair Work Unit 补齐后，由该 repair commit 标记 complete。
 
 ### 0.9 本地 main 施工 lease、HEAD 与脏工作树
 
-本地 `main` 是唯一施工线。每个 Module Owner 开工前必须以原子独占方式创建 `.git/billiardbuddy-construction-lease.json`；该文件不提交，字段固定为：`version/module_id/current_work_unit/window_id/active_writer_ids/base_commit/spec_commit/accepted_head/status/blocked_target_module/blocked_reason/acquired_at/heartbeat_at/preexisting_status`。每次启动/结束写入型子代理都必须原子更新 `active_writer_ids`；非 blocked 状态的 `blocked_target_module/blocked_reason` 固定为 null。
+本地 `main` 是唯一 accepted 集成线。Migration Owner 开工前必须以原子独占方式创建 `.git/billiardbuddy-construction-lease.json`；该文件不提交，字段固定为：`version/module_id/current_work_unit/window_id/active_writer_ids/base_commit/spec_commit/accepted_head/status/blocked_target_module/blocked_reason/acquired_at/heartbeat_at/preexisting_status`。`module_id/current_work_unit` 可记录当前集成目标或并行组；每次启动/结束写入型子代理都必须原子更新 `active_writer_ids`。非 blocked 状态的 `blocked_target_module/blocked_reason` 固定为 null。
 
 1. 取得 lease 前必须证明当前分支是 `main`、不存在其他 active lease，并记录 `git status --porcelain=v2 --untracked-files=all`。正常新模块只允许从干净工作树启动；发现用户修改、其他任务修改或来源不明文件时固定 `NO_START`，不得 stash、reset、clean、覆盖或顺手提交。
-2. 新 Work Unit 派工瞬间必须满足 `HEAD == Base-Commit == lease.accepted_head`，且 `Spec-Commit` 是该 HEAD 可达的最新适用合同。任一不等立即停止，先由主代理解释新增提交/合同变化并更新 lease；不得让子代理在漂移基线上继续。
-3. 子代理写入前后都检查实际修改路径。所有 diff 必须属于当前 Work Unit 允许范围；出现范围外修改立即阻塞，不能靠提交时排除来掩盖并发写入。
-4. 每个 accepted commit 后，主代理确认工作树干净，再把 lease 的 `accepted_head/base_commit/current_work_unit/heartbeat_at` 原子更新到新 HEAD。模块 complete 后只在工作树干净且 HEAD 等于最后 accepted commit 时删除 lease。
-5. 窗口异常退出留下 dirty tree 时，恢复窗口只能接管原模块：读取 lease、确认原 holder 已不存在、HEAD 等于 lease.accepted_head、diff 全部落在 current Work Unit 允许路径并通过补丁审查，然后写入新 `window_id`。任一项不能证明则 `NO_START`，不得猜测归属或自动清理。
+2. 派工瞬间必须满足 `HEAD == Base-Commit == lease.accepted_head`，且 `Spec-Commit` 是该 HEAD 可达的最新适用合同。并行任务共享同一 Base-Commit；任一 accepted commit 落到 `main` 后，尚未整合的结果必须重新由主代理复核。任一不等立即停止，先由主代理解释新增提交/合同变化并更新 lease；不得让子代理在漂移基线上继续。
+3. 子代理写入前后都检查实际修改路径。所有 diff 必须属于当前 Work Unit 允许范围；并行任务出现范围外修改、共同文件或共同公共合同，主代理立即停止受影响任务，不能靠提交时排除来掩盖冲突。
+4. 每个 accepted commit 后，主代理确认工作树干净，再把 lease 的 `accepted_head/base_commit/current_work_unit/heartbeat_at` 原子更新到新 HEAD。整轮迁移 complete 后只在工作树干净且 HEAD 等于最后 accepted commit 时删除 lease。
+5. 窗口异常退出留下 dirty tree 时，恢复窗口只能接管整轮迁移：读取 lease、确认原 holder 已不存在、HEAD 等于 lease.accepted_head、diff 全部落在已整合的 current Work Unit 允许路径并通过补丁审查。任一项不能证明则 `NO_START`，不得猜测归属或自动清理。
 6. 若 accepted commit 已创建但窗口在推进 lease 前退出，恢复窗口只能走 `committed_not_advanced` 分支：确认旧 holder 已不存在、工作树干净、`lease.accepted_head` 是 `HEAD` 祖先，且从该值到 HEAD 恰好一个提交；该提交的 BB-Task、Module、Spec-Commit、Base-Commit 与 lease/current Work Unit 全匹配并通过独立审查。满足后原子把 `accepted_head/base_commit` 推进到 HEAD；多提交、字段不符或范围越界一律 `NO_START`。
-7. 若窗口在 `status=blocked`、工作树干净且 lease 已推进后退出，只允许 `clean_blocked_recovery`：恢复窗口证明旧 holder 已不存在、`HEAD == lease.accepted_head`、`active_writer_ids` 为空且经进程/任务清单确认没有仍运行的写入子代理；随后以原子 compare-and-swap 只接管同一 `module_id` 并更新 `window_id/heartbeat_at`。不得跨模块接管、直接删除 lease 或把 blocked 改成 complete；接管后的 Module Owner 才能按下一条执行 handoff。
+7. 若窗口在 `status=blocked`、工作树干净且 lease 已推进后退出，只允许 `clean_blocked_recovery`：恢复窗口证明旧 holder 已不存在、`HEAD == lease.accepted_head`、`active_writer_ids` 为空且经进程/任务清单确认没有仍运行的写入子代理；随后以原子 compare-and-swap 接管同一整轮迁移并更新 `window_id/heartbeat_at`。不得直接删除 lease 或把 blocked 改成 complete；接管后的 Migration Owner 才能按下一条执行 handoff。
 8. active lease 不因时间到期自动抢占；heartbeat 只用于诊断，不能单独证明 owner 已死亡。若旧窗口或任一写入子代理可能仍在运行，新窗口不得写入。接管证据和 lease 的 `blocked/recovery` 变化进入下一 accepted commit body 的 `Lease-Recovery`；若最终未形成 accepted 产品提交，则进入后续 Spec-Commit/恢复登记，不能为记录 lease 状态创建空产品提交。
-9. 模块 `blocked` 且必须让所属 repair 模块或模块 24 新候选先施工时，只允许受控 `blocked_handoff`：当前 owner 停止全部子代理并确认 `active_writer_ids=[]`，工作树干净，HEAD 等于 lease.accepted_head；主代理在本 Markdown 登记目标 repair/new-candidate Work Unit、阻塞证据与返回条件并创建 Spec-Commit，再把该控制提交及目标模块写入 lease。复核 holder 已退出且 HEAD 等于该 Spec-Commit 后才可删除旧 lease，由目标 Module Owner 从该 HEAD 申请新 lease。禁止直接删除/覆盖 lease；原模块恢复时必须重新申请 lease并消费 handoff 记录。
+9. 当前 Work Unit `blocked` 且必须先完成 repair 模块或模块 24 新候选时，只允许受控 `blocked_handoff`：Migration Owner 停止全部子代理并确认 `active_writer_ids=[]`，工作树干净，HEAD 等于 lease.accepted_head；主代理在本 Markdown 登记目标 repair/new-candidate Work Unit、阻塞证据与返回条件并创建 Spec-Commit，再把该控制提交及目标 Work Unit 写入 lease。若必须恢复窗口，复核原 holder 已退出且 HEAD 等于该 Spec-Commit 后才可接管；禁止直接删除/覆盖 lease，恢复后必须消费 handoff 记录。
 
 ---
 
@@ -218,7 +218,7 @@ Next:
 | `DEC-028` | `[HARD]` VoiceService 是转写真相源 | `VoiceOperation`、`Transcript`、不可变 `TranscriptRevision` 由 VoiceService 唯一写入；Composer 与视频 Evidence 只保存同一个 `transcript_revision_id` 的受控 binding，不复制转写正文成为第二真相源 |
 | `DEC-029` | `[HARD]` 项目指令冲突顺序固定但不重写自由文本 | 系统/工具/权限/安全合同永远优先；项目指令层内先按更近目录覆盖祖先目录，再按同目录 `BilliardBuddy.md > AGENTS.md > Claude 兼容源` 解释直接冲突。非冲突内容累加；resolver 保留来源和全部入选文本，不假装能对自由 Markdown 做结构化 merge |
 | `DEC-030` | `[HARD]` D4 前必须通过未删除版本纵向闸 | 模块 22 accepted 后，模块 23 的首个 Work Unit 只能运行 `G22_PRE_D4_VERTICAL_GOLDEN_GATE`，不得删除代码；核心新链路在 legacy execution fail-fast 条件下通过后才允许首行 D4 |
-| `DEC-031` | `[HARD]` 一个模块只有一个 Module Owner 窗口 | 同一主代理窗口从模块 active 持有到 complete；复杂模块在同一窗口串行完成多个 Work Unit；异常恢复只能持 lease 接管，不允许平行模块实现 |
+| `DEC-031` | `[HARD]` 整轮迁移只有一个 Migration Owner | 同一主代理窗口从迁移开始持有到完成，统一编排、合同裁决、集成和最终审核；它可自行拆分和并行不冲突的 Work Unit，异常恢复只能持 lease 接管，不能出现平行编排者 |
 | `DEC-032` | `[HARD]` 本地 main 施工必须持独占 lease | 开工时 `HEAD == Base-Commit == lease.accepted_head` 且工作树归属明确；脏树、HEAD 漂移、active lease 或无法证明的恢复一律 `NO_START`，禁止 stash/reset/clean 猜测处理 |
 | `DEC-033` | `[HARD]` 所有进程/部署组件按单一兼容矩阵握手 | `component-compatibility-matrix.json` 是 Main、renderer、server、worker、gateway、relay、extension、native-host、provider contract 和 migration capability 的唯一版本兼容源；未登记或不兼容 fail-closed，不靠“版本接近”猜测 |
 | `DEC-034` | `[HARD]` 所有重资源统一由 ProductResourceScheduler 准入 | worker、scheduled run、FFmpeg/ffprobe、ASR、视觉、图片生成、Browser batch、迁移与更新闸都先取得 typed permit；模块不得各建无关并发池或绕过全局内存/进程/字节预算 |
@@ -239,7 +239,7 @@ Next:
 | `DEC-049` | `[HARD]` Task 生命周期引用通过统一参与者合同 | 模块 02 冻结 `TaskLifecycleParticipant` 的 blocker/quiesce/cleanup/detach receipt；09/11/15/17/18/20 等后续模块注册参与者，模块 02 不反向导入后续服务或猜路径，删除 UI 只渲染权威 blocker/action descriptor |
 | `DEC-050` | `[HARD]` 更新静止状态必须从 Sidecar 交接给 Main | Sidecar 只有在 admission 关闭、活动 claim 对账为零且 durable checkpoint 完成后，才能签发绑定 scheduler generation/fencing/candidate/UpdateTransaction 的 `QuiesceReceipt`；Main 验证并持有该 receipt 后才可停 Sidecar 和安装，失效、重启或新活动一律回到等待状态 |
 | `DEC-051` | `[HARD]` USER_ACCEPTED 只能由受保护验收控制台生成 | 模块 25 提供不进入公开产品包的 Release Acceptance Console；用户以受保护身份逐项验收并签名，receipt 写入 append-only release store；CI/Agent/普通 workflow 只能验证，不能生成、代签、覆盖或通过命令参数绕过 |
-| `DEC-052` | `[HARD]` 施工代理默认拥有完整执行授权 | Module Owner 与登记子代理对 Work Unit 内的仓库、本机、Git remote 和已配置服务器操作自主负责，不向用户索要常规技术裁决或逐命令批准；主代理自行修合同和创建 repair Work Unit，客观缺少外部权限时只记录精确 blocker 并继续其他可独立工作，正式发布仍服从模块 24/25 门禁 |
+| `DEC-052` | `[HARD]` 施工代理默认拥有完整执行授权 | Migration Owner 与登记子代理对 Work Unit 内的仓库、本机、Git remote 和已配置服务器操作自主负责，不向用户索要常规技术裁决或逐命令批准；主代理自行修合同和创建 repair Work Unit，客观缺少外部权限时只记录精确 blocker 并继续其他可独立工作，正式发布仍服从模块 24/25 门禁 |
 
 ## 2. 术语、实体和唯一身份
 
@@ -516,7 +516,7 @@ migration_running
 
 ### 4.7 开发窗口并发规则
 
-默认在当前本地 `main` 串行推进 accepted Work Unit；任何时刻最多一个写入型实施子代理，其他子代理只能只读调查或审查。共享合同、迁移、清理和发包同样串行。主代理必须记录并保留开工前已有修改，不得让子代理覆盖、提交或清理不属于当前 Work Unit 的文件。用户不需要创建、切换或合并施工 worktree；工具若强制临时隔离，只把子代理 patch 原样落到 `main` 后立即结束隔离。最终产品功能本身需要的用户 worktree 仍按模块 09 合同实现。
+Migration Owner 自行决定哪些 Work Unit 可以并行，并对不冲突和最终集成负责；共享合同、同一状态写入者、迁移、清理、发包和发布仍按依赖串行。主代理必须记录并保留开工前已有修改，不得让子代理覆盖、提交或清理不属于当前 Work Unit 的文件。`main` 只接收经主代理审核、验证后的 accepted 集成；工具需要隔离时，子代理提交可机械应用的 patch，由主代理逐一审查和整合。最终产品功能本身需要的用户 worktree 仍按模块 09 合同实现。
 
 ### 4.8 进程、部署、启动与鉴权拓扑
 
@@ -1025,7 +1025,7 @@ worker protocol version、ProductResourceScheduler、PermissionExecutionEnvelope
 | `BB-03E` | 6。所有当前 GUI、ProductTask 和定时消费者改走 `agent-worker` adapter + `ProductResourceScheduler`，公共 CLI 只保留模块 23 的待删源码路线；依赖 `BB-03DR3` accepted。本项由 `9c23294` 后的范围修订重启：此前 entrypoint 无 event bridge、只有 mock Core factory，cron 也没有 TaskRun 身份，故未产生产品 diff 或 accepted commit。 | `ts/src/server/services/conversationService.ts` 及测试；`ts/src/server/ws/handler.ts` 及测试；`ts/src/server/product/taskAgentCoreAdapter.ts`、`taskRunProjection.ts`、`taskEventProjection.ts`、`taskService.ts`、`scheduledTaskService.ts`、`activeCoreRunRegistry.ts` 及相关测试；`ts/src/server/services/cronScheduler.ts` 及测试；`ts/src/entrypoints/agent-worker.ts`；`ts/src/entrypoints/cli.tsx`、`ts/src/main.tsx`、`ts/src/cli/print.ts` 仅抽出不可由公共 argv 调用的 server-private native Core runner/port；`ts/src/server/agent-worker/**`、`ts/src/server/product/agentWorkerService.ts`、`agentWorkerSupervisor.ts`、`resourceScheduler.ts`、`resourceProfiles.ts` 仅为消费者接线；`ts/product-contracts/contract-source.json`、`deletion-consumer-graph.json` 仅登记 public CLI 的模块 23 保留状态。 | 消费模块 03 第 3—9、12—14 条及 `BB-02C` durable TaskRun/dispatch；Local Product Server 必须构造唯一真实 Core factory，factory 只接受 DR3 resolver 返回的私有 binding，复用原生 Core loop 而不走 `entrypoints/cli.tsx --print`、不暴露新的 public CLI flag/API。child↔server IPC 新增的 Core activity 只能是 server-private typed event/terminal port；worker stdout 仍只为 framed protocol，进程间消息、ProductTask projection、GUI/cron/WS 都不得得到 session/resume/workdir。supervisor 必须消费这些 event 并在 terminal 后拒绝迟到 delta，且只向既有 ProductTask event/projection 写安全投影。GUI 的 ProductTask submit 只提交既有 durable intent并由 server dispatch；不得把 raw `user_message`、session id 或 receipt 伪造成 worker input。cron 必须先由 server-private `submitScheduledTaskRun` 从受控 schedule identity 建立或重放一个 TaskRun，再以 `schedule.dispatch` 与 `agent.worker` 原子 scheduler claim dispatch；不得保留 CLI spawn、home/cwd fallback 或没有 TaskRun 的 cron Core。baseline profile 必须含 `schedule.dispatch`。验收覆盖 fake native Core 的 ready/delta/tool/complete、一条 run、stop 唯一终态/迟到 delta、accepted 前/claim 前 crash、重复 start 单 claim、bounded restart、GUI 与 cron consumer graph、兼容协商拒绝不兼容 worker；`bun run check:server`、`bun run check:desktop`、`bun run check:product-contracts`、`git diff --check` 全 PASS。不得删除 public CLI、重写 Core Agent loop/Tools/Skills/Hooks/MCP/子代理/resume/compact，或改模块 04 provider/Gateway 合同。 |
 | `BB-03F` | 5。完成 Local Product Server 的唯一 `ContentSafetyPolicyRegistry`、`content-safety-profile.json` 与 scheduler content resource 注册，执行模块级纵向验收并标记模块 complete；依赖 `BB-03C`、`BB-03D`、`BB-03DR`、`BB-03E` accepted。 | 新增 `ts/shared/product/contentSafety.ts`；新增 `ts/src/server/product/contentSafetyPolicyRegistry.ts`、`contentSafetyPolicyRegistry.test.ts`；`ts/src/server/product/resourceScheduler.ts`、`resourceProfiles.ts` 仅注册/验证 `content.inspect/content.extract/content.thumbnail/storage.attachment-temp`；`ts/product-contracts/**` 仅消费模块 01 已冻结 content schema 并生成 runtime profile；`ts/src/server/__tests__/product-contentSafetyPolicyRegistry.test.ts`。 | 消费第 4.8 第 10、12 条、第 4.11 节与模块 03 第 10 条；Registry 是 profile 唯一写入者，聚合所有已登记字段的最严格限制。profile 缺失/过期固定 `CONTENT_PROFILE_REQUIRED`，无有效 profile 不解析；malformed/over-limit/extractor crash 清理 owner-scoped temp 且只隔离输入。不得实现模块 07/10/15/16 的具体 extractor、attachment ingest、媒体或语音业务。验收必须覆盖 profile 签名/schema、平台/toolchain/expiry、最严格合并、scheduler multi-resource/fencing/cancel/byte release 与 worker/GUI/cron 全链 fixture；`bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS。该 accepted commit 必须写 `Module-Status: complete`、`Previous-Accepted: baf194…、2f384f…、BB-03C/03D/03DR/03E` 的实际 SHA 与模块 04 启动条件。 |
 
-共同禁止：各 Work Unit 不得修改根合同、lockfile、desktop renderer、ProductTask 公共 schema/API（除上表明示的当前消费者接线）、模块 04+ 的 provider/Gateway/Relay/媒体/语音/招聘/Preview/Terminal 所有权，也不得删除 public CLI。任一新增路径或冻结合同变化先由 Module Owner 更新本登记并提交新的 Spec-Commit；不得以代码绕过。
+共同禁止：各 Work Unit 不得修改根合同、lockfile、desktop renderer、ProductTask 公共 schema/API（除上表明示的当前消费者接线）、模块 04+ 的 provider/Gateway/Relay/媒体/语音/招聘/Preview/Terminal 所有权，也不得删除 public CLI。任一新增路径或冻结合同变化先由 Migration Owner 更新本登记并提交新的 Spec-Commit；不得以代码绕过。
 
 ---
 
