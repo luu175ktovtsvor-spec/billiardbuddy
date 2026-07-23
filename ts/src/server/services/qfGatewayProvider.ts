@@ -1,16 +1,14 @@
 /**
  * QF Gateway Provider — product-managed provider routed through our gateway.
  *
- * The gateway speaks OpenAI Chat Completions and fans out to Qwen/MiMo upstreams.
- * It is configured entirely from process.env (QF_GATEWAY_URL / QF_GATEWAY_TOKEN /
- * QF_GATEWAY_MODEL) so the desktop/server can auto-route the agent WITHOUT the
- * user entering any Base URL, provider, or upstream key.
+ * The gateway is configured entirely from process.env (QF_GATEWAY_URL / QF_GATEWAY_TOKEN)
+ * and its registry-owned TextReasoning model, so the desktop/server cannot select an upstream.
  *
  * Credential boundary:
- *  - The app token lives ONLY in process.env (QF_GATEWAY_TOKEN). It is overlaid
- *    onto the proxy target at request time (resolveQfGatewayProxyTarget) inside
- *    getProviderForProxy — it is NEVER written to providers.json, never synced to
- *    settings.json, and never handed to the CLI subprocess.
+ *  - The short-lived installation access bearer lives ONLY in process.env
+ *    (QF_GATEWAY_TOKEN). It is overlaid onto the proxy target at request time
+ *    (resolveQfGatewayProxyTarget) inside getProviderForProxy — it is NEVER written
+ *    to providers.json, never synced to settings.json, and never handed to the CLI subprocess.
  *  - The synthetic SavedProvider carries an empty apiKey placeholder. Because
  *    apiFormat is 'openai_chat', the managed env the CLI receives is only
  *    ANTHROPIC_API_KEY='proxy-managed' + ANTHROPIC_BASE_URL=<local proxy>.
@@ -27,11 +25,8 @@ import type { ProviderService } from './providerService.js'
 export { QF_GATEWAY_PROVIDER_ID }
 export const QF_GATEWAY_PROVIDER_NAME = 'QF Gateway'
 
-// BilliardBuddy 产品默认模型 = DeepSeek V4 Flash(Agent 推理 / 工具选择 / 完整工具循环主模型,
-// 扛并发)。MiMo v2.5 仍是唯一真实多模态上游,但图片理解改由服务端网关的视觉桥接按需调用
-// (默认模型带图时,网关先用 MiMo 读图成结构化文本再交 DeepSeek 续工具循环),MiMo 不再作为
-// 产品默认文本模型。显式请求 qwen3-coder-plus / mimo-v2.5 时由网关按 model 固定路由到对应家,
-// 不跨供应商回退。
+// BilliardBuddy 的唯一文本运行时模型是 registry 中的 TextReasoning；视觉证据仅由 Gateway
+// 内部的 Registry-owned VisualEvidence bridge 调用，不能作为桌面/worker 的模型选择。
 const QF_GATEWAY_DEFAULT_MODEL = defaultProviderModel()
 
 /** The provider-scoped local proxy path the gateway routes through. */
@@ -70,20 +65,21 @@ function isSecureQfGatewayUrl(value: string): boolean {
   }
 }
 
-/** App token used to authenticate to the gateway. Lives only in process.env. */
+/** Short-lived installation access bearer used to authenticate to the gateway. Lives only in process.env. */
 export function getQfGatewayToken(): string {
   return readEnv('QF_GATEWAY_TOKEN')
 }
 
-/** Model the gateway forwards to (Qwen/MiMo/DeepSeek). Defaults to deepseek-v4-flash. */
+// The registry owns the sole selectable runtime model. Historical values are read only
+// by the D3 mapper during Module 22 migration, never by a live provider selector.
 export function getQfGatewayModel(): string {
-  return readEnv('QF_GATEWAY_MODEL') || QF_GATEWAY_DEFAULT_MODEL
+  return QF_GATEWAY_DEFAULT_MODEL
 }
 
 /**
- * Per-install id (X-QF-Client-ID). Injected by Electron into the SERVER sidecar env only
- * (BB_INSTALLATION_ID). Empty when unset (single-token dev / old build) — the gateway then
- * falls back to token-only scheduling. Never sent to a non-gateway provider.
+ * Legacy observability value injected into the SERVER sidecar only. The Gateway
+ * does not authorize or schedule from this header; verified access-token claims
+ * are the sole owner identity. Never sent to a non-gateway provider.
  */
 export function getInstallationId(): string {
   return readEnv('BB_INSTALLATION_ID')

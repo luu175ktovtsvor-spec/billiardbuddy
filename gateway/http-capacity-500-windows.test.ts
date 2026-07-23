@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { connect, type Socket } from 'node:net'
 import { createGatewayFetch, MemoryUsageStore } from './app'
-import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
+import { gatewayTestAccessToken, gatewayTestAccessTokenFor, gatewayTestAuthority } from './auth/testFixture'
 
 const USER_COUNT = 100
 const WINDOWS_PER_USER = 10
@@ -104,7 +104,7 @@ function chatRequest(port: number, installation: number, window: number, sockets
       'POST /v1/chat/completions HTTP/1.1',
       `Host: 127.0.0.1:${port}`,
       'Connection: close',
-      `Authorization: Bearer ${gatewayTestAccessToken}`,
+      `Authorization: Bearer ${gatewayTestAccessTokenFor(`http-capacity-${installation}`)}`,
       'Content-Type: application/json',
       `Content-Length: ${Buffer.byteLength(payload)}`,
       `X-QF-Client-ID: desktop-${String(installation).padStart(4, '0')}`,

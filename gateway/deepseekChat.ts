@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto'
 
-type Env = Record<string, string | undefined>
-
 export interface DeepSeekRetryOptions {
   maxRetries: number
   baseDelayMs: number
@@ -19,7 +17,6 @@ export class DeepSeekRequestError extends Error {
 }
 
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
-const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash'
 
 /**
  * Anthropic's native server-side web search schema. The QF gateway handles
@@ -29,29 +26,11 @@ const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash'
 export const DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE = 'web_search_20250305'
 
 /**
- * 服务器允许的 DeepSeek 模型集合:`GW_DEEPSEEK_MODEL` 为主模型(默认 deepseek-v4-flash),
- * `GW_DEEPSEEK_MODELS`(逗号分隔)可追加更多。与 MiMo 一样,即使没配 `GW_DEEPSEEK_KEY` 也始终
- * 含默认模型 —— 这样网关能识别 DeepSeek 目标模型并在缺 key 时 fail closed(503),而不是静默改投千问。
+ * Derive a stable, privacy-free opaque user ID solely from the verified owner.
+ * It never accepts a caller-controlled installation header or participates in authorization.
  */
-export function loadDeepSeekAllowedModels(env: Env): ReadonlySet<string> {
-  const set = new Set<string>()
-  const primary = (env.GW_DEEPSEEK_MODEL ?? '').trim()
-  if (MODEL_PATTERN.test(primary)) set.add(primary)
-  for (const model of (env.GW_DEEPSEEK_MODELS ?? '').split(',').map(m => m.trim()).slice(0, 16)) {
-    if (MODEL_PATTERN.test(model)) set.add(model)
-  }
-  if (set.size === 0) set.add(DEFAULT_DEEPSEEK_MODEL)
-  return set
-}
-
-/**
- * 由 token 归属 + 装机身份派生出一个稳定、不含隐私的 opaque user_id 传给 DeepSeek。
- * 用途:调度 / KVCache 命中 / 内容安全隔离。它是单向哈希,既不暴露原始 installationId,
- * 也不参与鉴权或提权 —— 伪造它最多改变自己的 KVCache 分桶,拿不到任何额外权限或额度。
- */
-export function deepseekOpaqueUserId(user: string, client: string): string {
-  const seed = client ? `${user}#${client}` : user
-  return `bb_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`
+export function deepseekOpaqueUserId(owner: string): string {
+  return `bb_${createHash('sha256').update(owner).digest('hex').slice(0, 32)}`
 }
 
 export type DeepSeekChatContext = { userId?: string }

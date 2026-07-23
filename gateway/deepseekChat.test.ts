@@ -5,17 +5,10 @@ import {
   deepseekOpaqueUserId,
   fetchDeepSeekWithRetry,
   isDeepSeekNativeWebSearchRequest,
-  loadDeepSeekAllowedModels,
   prepareDeepSeekAnthropicWebSearchBody,
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
-
-test('allowed models always include the default deepseek-v4-flash even without a key', () => {
-  expect(loadDeepSeekAllowedModels({}).has('deepseek-v4-flash')).toBe(true)
-  const set = loadDeepSeekAllowedModels({ GW_DEEPSEEK_MODEL: 'deepseek-v4-flash', GW_DEEPSEEK_MODELS: 'deepseek-chat, deepseek-reasoner' })
-  expect([...set].sort()).toEqual(['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash'])
-})
 
 test('prepareBody coerces an off-whitelist model to the default (no cross-provider escape)', () => {
   const allowed = new Set(['deepseek-v4-flash'])
@@ -161,14 +154,14 @@ test('builds the official DeepSeek Anthropic Messages endpoint without double ap
   )
 })
 
-test('opaque user id is stable, prefixed, privacy-free, and differs per install', () => {
-  const a1 = deepseekOpaqueUserId('beta', 'install-0001')
-  const a2 = deepseekOpaqueUserId('beta', 'install-0001')
-  const b = deepseekOpaqueUserId('beta', 'install-0002')
-  expect(a1).toBe(a2) // stable
+test('opaque user id is stable, prefixed, privacy-free, and keyed only by verified owner', () => {
+  const a1 = deepseekOpaqueUserId('beta:install-0001')
+  const a2 = deepseekOpaqueUserId('beta:install-0001')
+  const b = deepseekOpaqueUserId('beta:install-0002')
+  expect(a1).toBe(a2)
   expect(a1).toStartWith('bb_')
-  expect(a1).not.toContain('install-0001') // one-way hash, no raw id
-  expect(a1).not.toBe(b) // per-install isolation
+  expect(a1).not.toContain('install-0001')
+  expect(a1).not.toBe(b)
 })
 
 test('does not retry 429 — surfaces the rate limit immediately', async () => {

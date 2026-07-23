@@ -1,0 +1,18 @@
+{
+  "fixture_id": "provider-legacy-qwen-model-values-v1",
+  "immutable": true,
+  "values": [
+    {
+      "legacy_model": "qwen3-coder-plus",
+      "result": "deepseek-v4-flash"
+    },
+    {
+      "legacy_model": "QWEN3-CODER-PLUS",
+      "result": null
+    },
+    {
+      "legacy_model": "mimo-v2.5",
+      "result": null
+    }
+  ]
+}

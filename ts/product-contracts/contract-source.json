@@ -293,6 +293,20 @@
       "storage_id": "desktop-localstorage",
       "layer": "localStorage",
       "reason": "No versioned immutable fixture is registered."
+    },
+    {
+      "id": "provider-model-qwen-value-v1-to-text-reasoning",
+      "status": "current_only",
+      "storage_id": "provider-model-value",
+      "layer": "disk",
+      "physical_location": "legacy provider model value",
+      "from": "qwen3-coder-plus",
+      "to": "deepseek-v4-flash",
+      "reader_entry": "gateway/qwenLegacyModelMapper.ts",
+      "migration_owner_module": "22",
+      "fixture": "ts/product-contracts/fixtures/provider-legacy-qwen-model-values-v1.json",
+      "backup_strategy": "module-22-versioned-backup-before-write",
+      "release_association": "module-22-versioned-migration"
     }
   ],
   "policy_schemas": [
@@ -486,21 +500,22 @@
             }
           },
           "consumer": {
-            "path": "gateway/app.ts",
+            "path": "gateway/qwenChat.test.ts",
             "symbol": "QwenRequestError",
             "reference": {
               "kind": "import",
               "text": "import {\n  fetchQwenWithRetry,\n  loadQwenAllowedModels,\n  prepareQwenChatBody,\n  QwenRequestError,\n} from './qwenChat'"
             }
           },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
+          "condition": "BB-04C leaves only this test-only executable consumer; Gateway runtime consumers are zero and the D3 mapper remains reachable for Module 22."
         }
       ],
       "migration_modules": [
-        "04"
+        "04",
+        "22"
       ],
       "d4_owner_module": "23",
-      "retained_reader": "pure legacy value mapper"
+      "retained_reader": "gateway/qwenLegacyModelMapper.ts (pure D3 value mapper)"
     },
     {
       "object_id": "whisper-old-asr-runtime",

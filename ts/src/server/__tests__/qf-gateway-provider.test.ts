@@ -4,10 +4,11 @@
  * Covers: startup auto-enable (without overwriting a user's choice), the
  * credential boundary (token stays in process.env, never on disk / never in the
  * CLI subprocess env), the full Anthropic → OpenAI Chat proxy round-trip through
- * the local proxy, streaming tool_use, and MiMo model selection.
+ * the local proxy, streaming tool_use, and Registry-owned VisualEvidence handoff.
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { defaultProviderModel } from '../../../../gateway/providerRegistry.js'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
@@ -26,6 +27,7 @@ import {
 const GATEWAY_URL = 'https://gateway.example.com/gw'
 const GATEWAY_TOKEN = 'qf-app-token-SECRET-value'
 const TEST_SERVER_PORT = 4599
+const TEXT_REASONING_MODEL = defaultProviderModel()
 
 let tmpDir: string
 let savedServerPort: number
@@ -377,7 +379,7 @@ describe('qf-gateway credential boundary', () => {
     expect(env.ANTHROPIC_BASE_URL).toBe(
       `http://127.0.0.1:${TEST_SERVER_PORT}/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
     )
-    expect(env.ANTHROPIC_MODEL).toBe('deepseek-v4-flash') // BilliardBuddy product default = DeepSeek V4 Flash
+    expect(env.ANTHROPIC_MODEL).toBe(TEXT_REASONING_MODEL)
     // The real app token must appear nowhere in the subprocess env.
     expect(JSON.stringify(env)).not.toContain(GATEWAY_TOKEN)
   })
@@ -403,7 +405,7 @@ describe('qf-gateway proxy round-trip', () => {
           id: 'chatcmpl-qf',
           object: 'chat.completion',
           created: 0,
-          model: 'qwen3-coder-plus',
+          model: TEXT_REASONING_MODEL,
           choices: [
             { index: 0, message: { role: 'assistant', content: 'ok from gateway' }, finish_reason: 'stop' },
           ],
@@ -420,7 +422,7 @@ describe('qf-gateway proxy round-trip', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'qwen3-coder-plus',
+            model: TEXT_REASONING_MODEL,
             max_tokens: 64,
             messages: [{ role: 'user', content: 'hello gateway' }],
           }),
@@ -434,7 +436,7 @@ describe('qf-gateway proxy round-trip', () => {
       expect(calls).toHaveLength(1)
       expect(calls[0].url).toBe(`${GATEWAY_URL}/v1/chat/completions`)
       expect(calls[0].headers.Authorization).toBe(`Bearer ${GATEWAY_TOKEN}`)
-      expect(calls[0].body.model).toBe('qwen3-coder-plus')
+      expect(calls[0].body.model).toBe(TEXT_REASONING_MODEL)
       // No install id set → no X-QF-Client-ID header (falls back to token-only scheduling).
       expect(calls[0].headers['X-QF-Client-ID']).toBeUndefined()
 
@@ -478,7 +480,7 @@ describe('qf-gateway proxy round-trip', () => {
             'X-QF-Client-ID': 'forged-client-id-1234',
           },
           body: JSON.stringify({
-            model: 'deepseek-v4-flash',
+            model: TEXT_REASONING_MODEL,
             stream: true,
             messages: [{ role: 'user', content: 'search current billiards rules' }],
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
@@ -511,7 +513,7 @@ describe('qf-gateway proxy round-trip', () => {
       calls.push({ headers: (init?.headers ?? {}) as Record<string, string> })
       return new Response(
         JSON.stringify({
-          id: 'c', object: 'chat.completion', created: 0, model: 'qwen3-coder-plus',
+          id: 'c', object: 'chat.completion', created: 0, model: TEXT_REASONING_MODEL,
           choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
@@ -525,7 +527,7 @@ describe('qf-gateway proxy round-trip', () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'qwen3-coder-plus', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+          body: JSON.stringify({ model: TEXT_REASONING_MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
         },
       )
       const res = await handleProxyRequest(req, new URL(req.url))
@@ -554,15 +556,13 @@ describe('qf-gateway proxy round-trip', () => {
     expect(stripped.PATH).toBe('/x')
   })
 
-  test('allows an image request for a non-multimodal gateway model (Qwen) — reaches the gateway as image_url', async () => {
-    // The gateway now owns the vision decision: Qwen is text-only itself, but the server-side
-    // MiMo vision bridge reads the image first, so the local proxy must never 400 or drop it.
+  test('forwards a Registry TextReasoning Anthropic image block as OpenAI image_url for the Gateway VisualEvidence bridge', async () => {
     const originalFetch = globalThis.fetch
     const calls: Array<{ body: Record<string, unknown> }> = []
     globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
       return new Response(
-        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'qwen3-coder-plus',
+        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: TEXT_REASONING_MODEL,
           choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -575,45 +575,7 @@ describe('qf-gateway proxy round-trip', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'qwen3-coder-plus', max_tokens: 16,
-            messages: [{ role: 'user', content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
-              { type: 'text', text: 'what is in this image?' },
-            ] }],
-          }),
-        },
-      )
-      const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(200)
-      expect(calls).toHaveLength(1) // reached the gateway (not rejected)
-      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url') // image preserved, gateway decides how to read it
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('allows an image request for mimo-v2.5-pro (text-only reasoning model) — reaches the gateway as image_url', async () => {
-    // Same reasoning as the Qwen case above: mimo-v2.5-pro can't read images itself, but the
-    // gateway's vision bridge can, so the local proxy still forwards the image untouched.
-    const originalFetch = globalThis.fetch
-    const calls: Array<{ body: Record<string, unknown> }> = []
-    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
-      return new Response(
-        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'mimo-v2.5-pro',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )
-    }) as typeof fetch
-    try {
-      const req = new Request(
-        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'mimo-v2.5-pro', max_tokens: 16, // -pro is text-only per MiMo docs
+            model: TEXT_REASONING_MODEL, max_tokens: 16,
             messages: [{ role: 'user', content: [
               { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
               { type: 'text', text: 'what is in this image?' },
@@ -624,43 +586,9 @@ describe('qf-gateway proxy round-trip', () => {
       const res = await handleProxyRequest(req, new URL(req.url))
       expect(res.status).toBe(200)
       expect(calls).toHaveLength(1)
-      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url')
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('allows an image request for MiMo (the multimodal upstream) — reaches the gateway as image_url', async () => {
-    const originalFetch = globalThis.fetch
-    const calls: Array<{ body: Record<string, unknown> }> = []
-    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
-      return new Response(
-        JSON.stringify({ id: 'c', object: 'chat.completion', created: 0, model: 'mimo-v2.5',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )
-    }) as typeof fetch
-    try {
-      const req = new Request(
-        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'mimo-v2.5', max_tokens: 16,
-            messages: [{ role: 'user', content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
-              { type: 'text', text: 'what is in this image?' },
-            ] }],
-          }),
-        },
-      )
-      const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(200)
-      expect(calls).toHaveLength(1) // reached the gateway (not rejected)
-      expect(JSON.stringify(calls[0].body.messages)).toContain('image_url') // image preserved in vision mode
+      expect(calls[0].body.model).toBe(TEXT_REASONING_MODEL)
+      const content = ((calls[0].body.messages as Array<Record<string, unknown>>)[0]?.content as Array<Record<string, unknown>>)
+      expect(content).toContainEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } })
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -670,10 +598,10 @@ describe('qf-gateway proxy round-trip', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () => {
       const sseChunks = [
-        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
-        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n',
-        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"NYC\\"}"}}]},"finish_reason":null}]}\n\n',
-        'data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3-coder-plus","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        `data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"${TEXT_REASONING_MODEL}","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n`,
+        `data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"${TEXT_REASONING_MODEL}","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n`,
+        `data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"${TEXT_REASONING_MODEL}","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"NYC\\"}"}}]},"finish_reason":null}]}\n\n`,
+        `data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"${TEXT_REASONING_MODEL}","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n`,
         'data: [DONE]\n\n',
       ]
       return new Response(makeStream(sseChunks), {
@@ -689,7 +617,7 @@ describe('qf-gateway proxy round-trip', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'qwen3-coder-plus',
+            model: TEXT_REASONING_MODEL,
             max_tokens: 64,
             stream: true,
             messages: [{ role: 'user', content: 'weather in NYC?' }],
@@ -719,59 +647,20 @@ describe('qf-gateway proxy round-trip', () => {
   })
 })
 
-// ─── MiMo model selection ───────────────────────────────────────────────────
+// ─── Registry-fixed model selection ─────────────────────────────────────────
 
-describe('qf-gateway MiMo selection', () => {
+describe('qf-gateway registry model selection', () => {
   beforeEach(setup)
   afterEach(teardown)
 
-  test('QF_GATEWAY_MODEL flows to ANTHROPIC_MODEL and the forwarded upstream model', async () => {
-    const mimoModel = 'mimo-7b-rl'
-    process.env.QF_GATEWAY_MODEL = mimoModel
-
-    // Subprocess env picks the mimo id.
-    const env = buildProviderManagedEnv(buildQfGatewayProvider(), {
-      proxyPath: `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
-      serverPort: TEST_SERVER_PORT,
-    })
-    expect(env.ANTHROPIC_MODEL).toBe(mimoModel)
-
-    // And the proxy forwards that same model id upstream.
-    const originalFetch = globalThis.fetch
-    const calls: Array<{ body: Record<string, unknown> }> = []
-    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
-      return new Response(
-        JSON.stringify({
-          id: 'chatcmpl-mimo',
-          object: 'chat.completion',
-          created: 0,
-          model: mimoModel,
-          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )
-    }) as typeof fetch
-
-    try {
-      const req = new Request(
-        `http://localhost:3456/proxy/providers/${QF_GATEWAY_PROVIDER_ID}/v1/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: env.ANTHROPIC_MODEL,
-            max_tokens: 64,
-            messages: [{ role: 'user', content: 'hi' }],
-          }),
-        },
-      )
-      const res = await handleProxyRequest(req, new URL(req.url))
-      expect(res.status).toBe(200)
-      expect(calls[0].body.model).toBe(mimoModel)
-    } finally {
-      globalThis.fetch = originalFetch
+  test('QF_GATEWAY_MODEL cannot select retired MiMo or Qwen values for the managed provider', () => {
+    for (const retiredModel of ['mimo-7b-rl', 'qwen3-coder-plus']) {
+      process.env.QF_GATEWAY_MODEL = retiredModel
+      const env = buildProviderManagedEnv(buildQfGatewayProvider(), {
+        proxyPath: `/proxy/providers/${QF_GATEWAY_PROVIDER_ID}`,
+        serverPort: TEST_SERVER_PORT,
+      })
+      expect(env.ANTHROPIC_MODEL).toBe(TEXT_REASONING_MODEL)
     }
   })
 })

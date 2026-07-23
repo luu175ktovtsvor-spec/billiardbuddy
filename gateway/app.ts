@@ -9,33 +9,20 @@ import {
 } from './transcription'
 import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
 import {
-  fetchQwenWithRetry,
-  loadQwenAllowedModels,
-  prepareQwenChatBody,
-  QwenRequestError,
-} from './qwenChat'
-import {
-  fetchMimoWithRetry,
-  loadMimoAllowedModels,
-  prepareMimoChatBody,
-  MimoRequestError,
-} from './mimoChat'
-import {
   deepSeekAnthropicMessagesUrl,
   deepseekOpaqueUserId,
   fetchDeepSeekWithRetry,
-  loadDeepSeekAllowedModels,
   prepareDeepSeekAnthropicWebSearchBody,
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
 import {
-  containsComputerUseContext,
   containsImageContent,
   createVisionBridge,
   VisionBridgeError,
   type VisionBridge,
 } from './visionBridge'
+import { PROVIDER_REGISTRY, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -71,10 +58,10 @@ type TokenBucketWaiter = {
   timeout?: ReturnType<typeof setTimeout>
 }
 
-// 一个可路由的聊天上游(千问 / MiMo / DeepSeek)。每个上游各自持有独立的凭据、白名单、限速、
-// 并发、重试与用量标签;共享的代理逻辑由 createChatHandler 消费本结构,互不串台。
+// 唯一可路由的文本上游是 DeepSeek TextReasoning；视觉证据由 Registry-owned
+// VisualEvidence bridge 单独调用。
 type ChatProvider = {
-  label: 'qwen' | 'mimo' | 'deepseek'
+  label: 'deepseek'
   base: string
   key: string
   defaultModel: string
@@ -86,8 +73,8 @@ type ChatProvider = {
   retryBaseMs: number
   retryMaxMs: number
   prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string, ctx?: { userId?: string }) => { body: string }
-  // 可选:由受信身份(token#client)派生出传给上游的 opaque user_id(仅 DeepSeek 用)。
-  deriveUserId?: (user: string, client: string) => string | undefined
+  /** A verified owner-derived opaque user ID is passed to the sole TextReasoning provider. */
+  deriveUserId?: (user: string) => string | undefined
   fetchWithRetry: (
     doRequest: (attempt: number) => Promise<Response>,
     opts: ChatRetryOptions,
@@ -97,20 +84,16 @@ type ChatProvider = {
   retryRandom?: () => number
 }
 
-// user = token 归属(用量/额度按 token 记账);client = 装机身份(X-QF-Client-ID,格式校验后)。
-// 公平调度身份 = user#client(每个装机各占一份单用户公平额度),缺 client 时退回按 token 调度。
-type ChatHandler = (request: Request, rawBody: string, user: string, client: string) => Promise<Response>
+// Owner is exclusively the verified principal + registration for usage, scheduling, and
+// upstream opaque identity. Untrusted client headers never influence those boundaries.
+type ChatHandler = (request: Request, rawBody: string, user: string) => Promise<Response>
 type NativeAnthropicWebSearchHandler = (
   request: Request,
   rawBody: string,
   user: string,
-  client: string,
 ) => Promise<Response>
 
 type GatewayConfig = {
-  qwenKey: string
-  qwenBase: string
-  qwenModel: string
   relayToken: string
   relayTasksBase: string
   relaySubmitTimeoutMs: number
@@ -118,21 +101,10 @@ type GatewayConfig = {
   adminToken: string
   db: string
   bootstrapCredentials: Set<string>
-  qwenRpm: number
-  qwenConc: number
-  qwenUserConc: number
-  qwenTokenConc: number
-  qwenQueueMax: number
-  qwenQueueMaxWait: number
-  qwenRetryMax: number
-  qwenRetryBaseMs: number
-  qwenRetryMaxMs: number
-  qwenAllowedModels: ReadonlySet<string>
   mimoKey: string
   mimoBase: string
-  mimoModel: string
   mimoRpm: number
-  /** Native MiMo lane; the remaining total capacity is reserved for the visual bridge. */
+  /** Retained scheduler lane; BB-04C submits only VisualEvidence work. */
   mimoNativeConc: number
   mimoConc: number
   mimoUserConc: number
@@ -143,7 +115,6 @@ type GatewayConfig = {
   mimoRetryMax: number
   mimoRetryBaseMs: number
   mimoRetryMaxMs: number
-  mimoAllowedModels: ReadonlySet<string>
   deepseekKey: string
   deepseekBase: string
   deepseekModel: string
@@ -157,7 +128,7 @@ type GatewayConfig = {
   deepseekRetryBaseMs: number
   deepseekRetryMaxMs: number
   deepseekAllowedModels: ReadonlySet<string>
-  // 视觉桥接(非原生多模态文本模型 + 带图请求时,先用 MiMo v2.5 把图读成结构化文本再转给文本模型)。
+  // 视觉桥接：带图请求先由 Registry-owned VisualEvidence 转为结构化证据，再交给 TextReasoning。
   visionMaxImages: number
   visionMaxImageBytes: number
   // 同时也是 /v1/chat/completions 的整体请求体大小闸(在任何路由/解析/许可之前生效)。
@@ -204,8 +175,6 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   transcribeImpl?: GatewayTranscriber | null
-  qwenRetrySleep?: (ms: number) => Promise<void>
-  qwenRetryRandom?: () => number
   mimoRetrySleep?: (ms: number) => Promise<void>
   mimoRetryRandom?: () => number
   /** Explicit authority injection is for tests and controlled embedding only. */
@@ -651,6 +620,7 @@ function bootstrapCredentials(env: Env): Set<string> {
 }
 
 function loadConfig(env: Env): GatewayConfig {
+  const textModel = textReasoningRegistryEntry()
   const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
   // Old deployments may have only GW_MIMO_CONC. Derive a valid partition for those
   // small canary profiles instead of injecting 12 visual slots into a two-slot pool.
@@ -667,10 +637,6 @@ function loadConfig(env: Env): GatewayConfig {
     throw new Error('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
   }
   return {
-    // 真实上游密钥只在服务端读取,缺失时对应上游 handler 置空(路由到它会 503),绝不回退到另一家。
-    qwenKey: env.GW_QWEN_KEY ?? '',
-    qwenBase: (env.GW_QWEN_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
-    qwenModel: env.GW_QWEN_MODEL ?? 'qwen3-coder-plus',
     relayToken: required(env, 'GW_RELAY_TOKEN'),
     // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
     relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
@@ -681,36 +647,11 @@ function loadConfig(env: Env): GatewayConfig {
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
     bootstrapCredentials: bootstrapCredentials(env),
-    // RPM 默认值抬到不再卡正常文字流量(本地令牌桶曾是"80 并发 p95 17s"的元凶);GW_*_CONC 仍是
-    // 保护上游的高水位紧急总闸,真正收紧限速请调小对应 env,不靠这个默认值节流。
-    qwenRpm: intEnv(env, 'GW_QWEN_RPM', 100_000),
-    qwenConc: Math.max(1, intEnv(env, 'GW_QWEN_CONC', 16)),
-    // 产品按“每人最多开 5 个窗口”建模：单装机默认最多同时占 5 个槽，既不把正常多窗口
-    // 用户卡成 1 路，也不让先到的一个安装吞掉整池。仍可由 gw.env 对特殊客户显式调整。
-    qwenUserConc: Math.max(1, intEnv(env, 'GW_QWEN_USER_CONC', Math.min(5, intEnv(env, 'GW_QWEN_CONC', 16)))),
-    // 单 token 名下所有装机合计在途上限:默认=全局并发(共享私测 token 需用满整池)。发独立用户
-    // token 后设为低于全局以在 token 间预留 headroom;是防"单 token 伪造多装机独占池"的二级闸。
-    qwenTokenConc: Math.max(1, intEnv(env, 'GW_QWEN_TOKEN_CONC', intEnv(env, 'GW_QWEN_CONC', 16))),
-    // 有界等待队列与 active 槽分开计数；0 表示池满即 429，不允许无界排队。
-    qwenQueueMax: Math.max(0, intEnv(env, 'GW_QWEN_QUEUE_MAX', 128)),
-    qwenQueueMaxWait: Math.max(0, floatEnv(env, 'GW_QWEN_QUEUE_MAX_WAIT', 120)),
-    // 一次逻辑调用最多只额外尝试一次(连接错误/可重试 5xx),硬夹在 [0,1]:CC CLI 自己也会重试,
-    // 网关再叠加多次会把一次调用放大成对上游的多次请求。429 由 isRetryableStatus 直接不重试。
-    qwenRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_QWEN_MAX_RETRIES', 1))),
-    qwenRetryBaseMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_BASE_MS', 500)),
-    qwenRetryMaxMs: Math.max(1, intEnv(env, 'GW_QWEN_RETRY_MAX_MS', 8000)),
-    qwenAllowedModels: loadQwenAllowedModels(env),
     mimoKey: env.GW_MIMO_KEY ?? '',
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
-    mimoModel: env.GW_MIMO_MODEL ?? 'mimo-v2.5',
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
-    // MiMo has one account-wide ceiling, split into physical native + visual lanes.
-    // The 12 visual slots are hard-reserved so native/Computer Use traffic cannot make
-    // a DeepSeek→MiMo image bridge wait behind all 64 ordinary MiMo calls.
-    // Admit only one active call and one total active-or-queued call per installation;
-    // this keeps a sequential five-window burst from letting early desktops fill the
-    // 64-entry queue before later installations are admitted. The queue remains only a
-    // brief burst absorber, not a hidden multi-minute backlog for 100 users' windows.
+    // The retained scheduler partition remains internally consistent while BB-04C
+    // submits only Registry-owned VisualEvidence work through the visual lane.
     mimoConc,
     mimoNativeConc,
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
@@ -718,31 +659,32 @@ function loadConfig(env: Env): GatewayConfig {
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', mimoConc)),
     mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 64)),
     mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 5)),
-    // 同 qwen:最多额外一次,硬夹在 [0,1],避免与 CC CLI 重试相乘。
+    // Retained account retry budget allows at most one extra attempt and remains
+    // independently bounded.
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
-    mimoAllowedModels: loadMimoAllowedModels(env),
     // DeepSeek V4 Flash:真 key 只在服务器。受控假上游验证覆盖 100 人 × 10 窗口的 1,000 路
     // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、共享 app token
     // 最多 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
     // CPU 余量与真实混合负载的渐进式验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
-    // 2500；缺 key 时路由到它会 503，绝不改投千问/MiMo。
+    // 2500；缺 key 时路由显式 503，绝不回退到未登记 provider。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
-    deepseekModel: env.GW_DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
+    deepseekModel: textModel.model_id,
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
     deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
     deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(10, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
     deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
     deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
     deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
-    // 同 qwen/mimo:最多额外一次,硬夹在 [0,1]。
+    // DeepSeek retries permit at most one extra attempt and are independently bounded
+    // to avoid multiplying client retries.
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
     deepseekRetryMaxMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_MAX_MS', 8000)),
-    deepseekAllowedModels: loadDeepSeekAllowedModels(env),
-    // 视觉桥接上限:超限在调用 MiMo 之前就失败关闭。visionMaxTotalBytes 同时也是整个聊天请求体
+    deepseekAllowedModels: new Set([textModel.model_id]),
+    // 视觉桥接上限：超限在调用 Registry-owned VisualEvidence 之前失败关闭。visionMaxTotalBytes 同时也是整个聊天请求体
     // (含非图片请求)的大小闸,在任何路由/许可之前生效——图片 base64 是拖垮请求体积的主因。
     visionMaxImages: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGES', 8)),
     visionMaxImageBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGE_BYTES', 8 * 1024 * 1024)),
@@ -753,16 +695,16 @@ function loadConfig(env: Env): GatewayConfig {
     // 24-waiting as a short safety envelope, not a claim of 500-image throughput; shed
     // the remainder rather than turning it into stale work or unbounded request state.
     visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 24)),
-    // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证 MiMo
-    // 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
+    // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证
+    // VisualEvidence 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
     visionQueueMaxWaitMs: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX_WAIT_MS', 3_000)),
-    // Unlike plain text, image understanding is a conservative, unverified MiMo path:
+    // Unlike plain text, image understanding is a conservative, unverified VisualEvidence path:
     // one installation gets one active visual slot by default so 12 distinct desktops can
     // make progress. The total active-or-queued cap below is also one, so its follow-up
     // windows cannot fill all 24 brief wait slots before later installations arrive.
     visionPerClientConc: Math.max(1, intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1)),
     visionMaxInflightPerClient: Math.max(1, intEnv(env, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', 1)),
-    // 一次多图聊天可并发处理的图片数，必须同时服从视觉和共享 MiMo 池的单安装额度。
+    // 一次多图聊天可并发处理的图片数，必须同时服从视觉和账号级 VisualEvidence 调度的单安装额度。
     // 否则默认 "每安装 1 槽" 下，一个两图请求的第二张会被自己的第一张挤成 429。
     // 运营侧若同时把这四项公平额度提高，才可把 GW_VISION_PER_REQUEST_CONC 提高到 2+。
     visionPerRequestConc: Math.max(1, Math.min(
@@ -867,21 +809,8 @@ function bootstrapCredential(config: GatewayConfig, request: Request): boolean {
   return !!token && config.bootstrapCredentials.has(token)
 }
 
-const CLIENT_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/
-
-/**
- * 装机身份(X-QF-Client-ID = 桌面端持久化的 installationId)。只做格式校验:
- * 合法则返回,非法/缺失返回空串(退回按 token 调度,老客户端不破)。装机身份只用于细分
- * 单用户公平与用量归属,不参与鉴权、不提权,伪造它也拿不到超过全局上限的额度。
- */
-function readClientId(request: Request): string {
-  const raw = (request.headers.get('x-qf-client-id') ?? '').trim()
-  return CLIENT_ID_PATTERN.test(raw) ? raw : ''
-}
-
-/** 传给美国 relay 的受信任务归属身份 = user#client(缺 client 时退回 user)。 */
-function relayOwner(owner: string, _client: string): string {
-  // Owner is exclusively the verified principal + registration. Client headers are untrusted metadata.
+/** 传给美国 relay 的受信任务归属身份只来自已验证 owner。 */
+function relayOwner(owner: string): string {
   return owner
 }
 
@@ -944,30 +873,52 @@ function parseChatModel(rawBody: string): string {
   return ''
 }
 
+function containsNativeMessageImageContent(rawBody: string): boolean {
+  try {
+    const parsed = JSON.parse(rawBody)
+    if (!isRecord(parsed) || !Array.isArray(parsed.messages)) return false
+    return parsed.messages.some(message => {
+      if (!isRecord(message)) return false
+      const parts = Array.isArray(message.content) ? message.content : [message.content]
+      return parts.some(part => isRecord(part)
+        && (part.type === 'image' || part.type === 'image_url' || 'image_url' in part))
+    })
+  } catch {
+    return false
+  }
+}
+
+function textReasoningBodyCaps() {
+  return textReasoningRegistryEntry().body_caps
+}
+
+function requireTextReasoningModel(rawBody: string): string {
+  const model = parseChatModel(rawBody).trim()
+  if (!model || !textReasoningRegistryEntry(model)) {
+    throw new HttpError(400, '仅支持已登记的 DeepSeek 文本模型')
+  }
+  return model
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
- * 把单个聊天上游(千问 / MiMo)的代理逻辑收敛成一个 handler:鉴权后的容量许可、令牌桶限速、
- * 带重试的上游 fetch、SSE 原样透传、上游错误脱敏、用量落库都走同一套,只由传入的 provider 参数化。
- * 关键:handler 只会用 provider 自己的凭据/白名单/限速/重试,永不跨上游回退。
+ * The sole chat handler routes the registry-selected DeepSeek TextReasoning provider.
+ * It owns authenticated capacity, rate limits, retries, SSE passthrough, redacted upstream
+ * errors, and usage logging without any provider fallback.
  */
 function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
-  return async function chatHandler(request: Request, rawBody: string, user: string, client: string): Promise<Response> {
+  return async function chatHandler(request: Request, rawBody: string, user: string): Promise<Response> {
     // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
-    // DeepSeek 在这里注入受信 opaque user_id;千问/MiMo 无 deriveUserId,ctx 被忽略。
-    const userId = provider.deriveUserId?.(user, client)
+    // The sole DeepSeek TextReasoning provider derives its trusted opaque user ID here.
+    const userId = provider.deriveUserId?.(user)
     const prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel, { userId })
-    // 公平调度按装机身份细分:同一 token 的不同装机各占一份单用户额度。装机身份只细分单用户
-    // 公平,永远受同一个 provider 全局并发上限约束,伪造装机 id 也无法放大全局额度或提权。
-    const schedId = client ? `${user}#${client}` : user
-    // tokenId=user 让"同一 token 名下所有装机"合计受 maxConcurrentPerToken 约束:即使伪造任意多
-    // client id,一个 token 也拿不到超过其 token 级上限的在途,防单 token 独占整池。
     const queuedStarted = performance.now()
     let permit: CapacityPermit | undefined
     try {
-      permit = await provider.capacity.acquire(schedId, {
+      permit = await provider.capacity.acquire(user, {
         maxWaitMs: provider.queueMaxWait * 1000,
         signal: request.signal,
         tokenId: user,
@@ -989,7 +940,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       throw error
     }
     const queueMs = elapsedMs(queuedStarted)
-    const usageNote = (attempts: number) => `queue_ms=${queueMs};attempts=${attempts}${client ? `;client=${client}` : ''}`
+    const usageNote = (attempts: number) => `queue_ms=${queueMs};attempts=${attempts}`
     const started = performance.now()
     try {
       const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
@@ -1060,8 +1011,8 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
 
 /**
  * Narrow native Anthropic route for Claude Code's WebSearchTool. Normal agent
- * chat deliberately remains on the OpenAI-compatible path so Qwen/MiMo
- * routing and the server-side image bridge keep their existing contracts.
+ * chat deliberately remains on the OpenAI-compatible path so the server-side
+ * image-evidence bridge remains mandatory.
  */
 function createNativeAnthropicWebSearchHandler(
   provider: ChatProvider,
@@ -1072,20 +1023,18 @@ function createNativeAnthropicWebSearchHandler(
     request: Request,
     rawBody: string,
     user: string,
-    client: string,
   ): Promise<Response> {
-    const userId = provider.deriveUserId?.(user, client)
+    const userId = provider.deriveUserId?.(user)
     const prepared = prepareDeepSeekAnthropicWebSearchBody(
       rawBody,
       provider.allowedModels,
       provider.defaultModel,
       { userId },
     )
-    const schedulerId = client ? `${user}#${client}` : user
     const queuedStarted = performance.now()
     let permit: CapacityPermit
     try {
-      permit = await provider.capacity.acquire(schedulerId, {
+      permit = await provider.capacity.acquire(user, {
         maxWaitMs: provider.queueMaxWait * 1000,
         signal: request.signal,
         tokenId: user,
@@ -1105,7 +1054,7 @@ function createNativeAnthropicWebSearchHandler(
     }
     const queueMs = elapsedMs(queuedStarted)
     const started = performance.now()
-    const usageNote = (attempts: number) => `queue_ms=${queueMs};native_web_search;attempts=${attempts}${client ? `;client=${client}` : ''}`
+    const usageNote = (attempts: number) => `queue_ms=${queueMs};native_web_search;attempts=${attempts}`
 
     try {
       const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
@@ -1201,8 +1150,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const authority = deps.authority ?? createAuthorityFromEnv(env)
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
-  const qwenBucket = new TokenBucket(config.qwenRpm)
-  const qwenCapacity = new FairCapacityScheduler(config.qwenConc, config.qwenUserConc, config.qwenTokenConc, config.qwenQueueMax)
   const mimoBucket = new TokenBucket(config.mimoRpm)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
@@ -1216,48 +1163,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     visionMaxConcurrentPerUser: config.visionPerClientConc,
     visionMaxInflightPerUser: config.visionMaxInflightPerClient,
   })
-  const mimoNativeCapacity = mimoReservations.forLane('native')
-  // 每个上游各自的 handler:缺对应密钥则为 null,路由到它时直接 503,绝不静默改投另一家。
-  const qwenChat: ChatHandler | null = config.qwenKey
-    ? createChatHandler({
-      label: 'qwen',
-      base: config.qwenBase,
-      key: config.qwenKey,
-      defaultModel: config.qwenModel,
-      allowedModels: config.qwenAllowedModels,
-      bucket: qwenBucket,
-      capacity: qwenCapacity,
-      queueMaxWait: config.qwenQueueMaxWait,
-      retryMax: config.qwenRetryMax,
-      retryBaseMs: config.qwenRetryBaseMs,
-      retryMaxMs: config.qwenRetryMaxMs,
-      prepareBody: prepareQwenChatBody,
-      fetchWithRetry: fetchQwenWithRetry,
-      RequestError: QwenRequestError,
-      retrySleep: deps.qwenRetrySleep,
-      retryRandom: deps.qwenRetryRandom,
-    }, fetchImpl, store)
-    : null
-  const mimoChat: ChatHandler | null = config.mimoKey
-    ? createChatHandler({
-      label: 'mimo',
-      base: config.mimoBase,
-      key: config.mimoKey,
-      defaultModel: config.mimoModel,
-      allowedModels: config.mimoAllowedModels,
-      bucket: mimoBucket,
-      capacity: mimoNativeCapacity,
-      queueMaxWait: config.mimoQueueMaxWait,
-      retryMax: config.mimoRetryMax,
-      retryBaseMs: config.mimoRetryBaseMs,
-      retryMaxMs: config.mimoRetryMaxMs,
-      prepareBody: prepareMimoChatBody,
-      fetchWithRetry: fetchMimoWithRetry,
-      RequestError: MimoRequestError,
-      retrySleep: deps.mimoRetrySleep,
-      retryRandom: deps.mimoRetryRandom,
-    }, fetchImpl, store)
-    : null
   const deepseekBucket = new TokenBucket(config.deepseekRpm)
   const deepseekCapacity = new FairCapacityScheduler(
     config.deepseekConc,
@@ -1290,17 +1195,18 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const deepseekNativeWebSearch: NativeAnthropicWebSearchHandler | null = deepseekProvider
     ? createNativeAnthropicWebSearchHandler(deepseekProvider, fetchImpl, store)
     : null
-  // 视觉桥接:唯一视觉上游是 MiMo v2.5(config.mimoBase/config.mimoKey),绝不用 ARK。只在
-  // mimoKey 存在时可用;缺 key 时带图且非原生多模态的请求在路由处显式 503,不把图丢给文本模型猜。
+  // The registry-selected VisualEvidence provider is available only with its server key.
+  // Missing credentials make image requests fail closed rather than reaching TextReasoning.
   const visionBridge: VisionBridge | null = config.mimoKey
     ? createVisionBridge({
       mimoBase: config.mimoBase,
       mimoKey: config.mimoKey,
+      modelId: visualEvidenceRegistryEntry().model_id,
       fetchImpl,
       mimoReservations,
       mimoRateLimiter: mimoBucket,
       // Keep a vision call's RPM wait inside its stricter three-second queue budget
-      // instead of borrowing the ordinary MiMo chat path's five-second allowance.
+      // instead of extending it to the retained account setting's five-second allowance.
       mimoRateLimitMaxWaitSeconds: Math.min(config.mimoQueueMaxWait, config.visionQueueMaxWaitMs / 1000),
       caps: {
         maxImages: config.visionMaxImages,
@@ -1379,12 +1285,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         return jsonResponse({
           ok: true,
           limits: {
-            qwen_rpm: config.qwenRpm,
-            qwen_conc: config.qwenConc,
-            qwen_user_conc: config.qwenUserConc,
-            qwen_token_conc: config.qwenTokenConc,
-            qwen_queue_max: config.qwenQueueMax,
-            qwen_queue_max_wait_seconds: config.qwenQueueMaxWait,
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
             mimo_native_conc: config.mimoNativeConc,
@@ -1418,10 +1318,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           // Kept for old clients that already read this field. Product-level daily quotas are disabled.
           quota: {},
           capacity: {
-            qwen: qwenCapacity.snapshot(),
-            // `mimo` remains the backwards-compatible aggregate seen by existing
-            // runners. `mimo_native` makes the partition observable without asking
-            // consumers to infer it from the total and visual snapshots.
+            // `mimo` remains the backwards-compatible account aggregate seen by existing
+            // runners. `mimo_native` exposes the retained scheduler reservation separately.
             mimo: {
               ...mimo,
               nativeReserved: config.mimoNativeConc,
@@ -1441,8 +1339,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           },
           features: {
             transcription: transcribe !== null,
-            chat_qwen: qwenChat !== null,
-            chat_mimo: mimoChat !== null,
             chat_deepseek: deepseekChat !== null,
             vision_bridge: visionBridge !== null,
           },
@@ -1489,23 +1385,16 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
-      // 鉴权后的模型目录:只列出当前真正可路由的上游(缺 key 的上游不出现在目录里),
-      // 每项标 owned_by=qwen|mimo 供客户端做"显式 Qwen/MiMo 目录 + 会话级切换"。切换本身复用
-      // Agent 的 set_runtime_config → CLI --model,模型名随请求体 model 到网关按上面的路由分流。
+      // 目录只投影 registry 中用户可选的 TextReasoning capability。
       if (request.method === 'GET' && url.pathname === '/v1/models') {
         auth(authority, request)
-        const data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> = []
-        if (qwenChat) for (const id of config.qwenAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'qwen' })
-        if (mimoChat) for (const id of config.mimoAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'mimo' })
-        if (deepseekChat) for (const id of config.deepseekAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'deepseek' })
+        const data = PROVIDER_REGISTRY
+          .filter(entry => entry.capabilities.includes('TextReasoning'))
+          .map(entry => ({ id: entry.model_id, object: 'model' as const, created: 0, owned_by: entry.provider }))
         return jsonResponse({ object: 'list', data })
       }
 
-      // DeepSeek officially supports Claude Code's native WebSearchTool over
-      // its Anthropic Messages endpoint. This route is intentionally narrow:
-      // it accepts only that server-side tool protocol, while ordinary agent
-      // chat remains on /v1/chat/completions so the existing Qwen/MiMo routing
-      // and image bridge are not bypassed.
+      // DeepSeek's native Messages route remains narrow and registry-gated.
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const identity = auth(authority, request)
         const user = identity.owner
@@ -1516,11 +1405,15 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (contentType && !isJsonContentType(contentType)) {
           throw new HttpError(415, '联网检索请求需要 JSON')
         }
-        return await withBufferedBodyReservation(request, config.visionMaxTotalBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+        return await withBufferedBodyReservation(request, textReasoningBodyCaps().CHAT_TEXT_BODY_MAX_BYTES, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+          requireTextReasoningModel(rawBody)
+          if (containsNativeMessageImageContent(rawBody)) {
+            throw new HttpError(400, '图片消息仅支持 /v1/chat/completions')
+          }
           if (!deepseekNativeWebSearch) {
             throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
           }
-          return await deepseekNativeWebSearch(request, rawBody, user, readClientId(request))
+          return await deepseekNativeWebSearch(request, rawBody, user)
         })
       }
 
@@ -1537,76 +1430,35 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // (常规场景零额外开销);真正兜底的上限由 readRequestBodyBounded 按流式真实字节数强制,
         // 不信任可被伪造的头或 chunked 编码。复用视觉桥接的 maxTotalBytes 上限,对所有聊天请求
         // 生效(不止带图请求)。
-        return await withBufferedBodyReservation(request, config.visionMaxTotalBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
-        // 路由规则(按 model 显式分流,绝不自动跨供应商回退):
-        //   命中 DeepSeek 白名单 → 只能走 DeepSeek;命中 MiMo 白名单 → 只能走 MiMo;
-        //   两者未配置对应 key 时各自显式 503,绝不改投千问。未命中任何白名单(未知或千问模型)
-        //   → 默认千问,千问把白名单外 model 改写为 GW_QWEN_MODEL(供应商内归一,非跨供应商回退)。
-        //   DeepSeek/MiMo 白名单都独立于各自 key 加载(始终含默认模型),缺 key 时仍能识别目标并 fail closed。
-        const client = readClientId(request)
-        // 一次权威路由决策:model 只 trim 一次,native 多模态判定与三家 allowlist 路由共用同一个
-        // trim 后的字符串、同一套精确匹配规则,不再各自判断——修复旧 bug(isNativeMultimodal 曾用
-        // /i + trim,路由 allowlist 精确匹配、不 trim,"MIMO-V2.5"这类大小写不同的输入会被误判为
-        // 原生多模态从而跳过桥接,但 allowlist 又不认,最终落到 Qwen 时带着原始 image_url 发给
-        // 纯文本模型)。
-        const requestedModel = parseChatModel(rawBody).trim()
-        const routesToDeepseek = config.deepseekAllowedModels.has(requestedModel)
-        const routesToMimo = !routesToDeepseek && config.mimoAllowedModels.has(requestedModel)
-        // mimo-v2.5-pro 等其它 MiMo 白名单模型不算原生多模态,仍需先桥接去图。
-        const isNativeMultimodal = routesToMimo && requestedModel === 'mimo-v2.5'
-        // 视觉桥接:请求带图且路由到的不是原生多模态(精确的 mimo-v2.5)时,先用 MiMo v2.5 把每张图
-        // 读成结构化文本、替换掉 image_url,再把去图后的请求体交给下面按 routesToDeepseek/routesToMimo
-        // 路由到的模型。桥接跑在路由/许可之前,调 MiMo 视觉时不占目标文本模型的聊天许可名额。MiMo
-        // 失败/超时/429 一律失败关闭(不丢图给文本模型猜、不改投 Qwen);缺 GW_MIMO_KEY 时同样失败关闭为 503。
-        const hasImages = containsImageContent(rawBody)
-        // Computer Use must read pixel coordinates from the original screenshot. The generic
-        // OCR/layout bridge intentionally discards pixels, so screenshot-bearing CU turns are
-        // capability-routed to the native multimodal MiMo model. This is an explicit tool
-        // capability route, not a failure fallback; ordinary image questions keep the normal
-        // MiMo-description -> requested text-model path below.
-        if (hasImages && containsComputerUseContext(rawBody)) {
-          if (!mimoChat) throw new HttpError(503, 'Computer Use 视觉服务未配置（缺 GW_MIMO_KEY）')
-          return await mimoChat(request, rawBody, user, client)
-        }
-
-        let effectiveBody = rawBody
-        if (!isNativeMultimodal && hasImages) {
-          if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
-          const bridgeStarted = performance.now()
-          try {
-            const schedulerId = client ? `${user}#${client}` : user
-            const { body, metrics } = await visionBridge.transform(rawBody, {
-              signal: request.signal,
-              schedulerId,
-              tokenId: user,
-            })
-            effectiveBody = body
-            await logUsage(store, {
-              user,
-              model: 'vision',
-              ok: true,
-              status: 200,
-              ms: elapsedMs(bridgeStarted),
-              note: `cache_hit=${metrics.cacheHits > 0 ? 1 : 0};img=${metrics.imageCount}`,
-            })
-          } catch (error) {
-            const known = error instanceof VisionBridgeError
-            const status = known ? error.status : 502
-            const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
-            await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
-            throw new HttpError(status, detail)
+        return await withBufferedBodyReservation(request, textReasoningBodyCaps().CHAT_TEXT_BODY_MAX_BYTES, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+          requireTextReasoningModel(rawBody)
+          const hasImages = containsImageContent(rawBody)
+          if (hasImages && Buffer.byteLength(rawBody, 'utf8') > textReasoningBodyCaps().VISION_BODY_MAX_BYTES) {
+            throw new HttpError(413, '请求体过大')
           }
-        }
-        if (routesToDeepseek) {
+          let effectiveBody = rawBody
+          if (hasImages) {
+            if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
+            const bridgeStarted = performance.now()
+            try {
+              const schedulerId = user
+              const { body, metrics } = await visionBridge.transform(rawBody, {
+                signal: request.signal,
+                schedulerId,
+                tokenId: user,
+              })
+              effectiveBody = body
+              await logUsage(store, { user, model: 'vision', ok: true, status: 200, ms: elapsedMs(bridgeStarted), note: `cache_hit=${metrics.cacheHits > 0 ? 1 : 0};img=${metrics.imageCount}` })
+            } catch (error) {
+              const known = error instanceof VisionBridgeError
+              const status = known ? error.status : 502
+              const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
+              await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
+              throw new HttpError(status, detail)
+            }
+          }
           if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
-          return await deepseekChat(request, effectiveBody, user, client)
-        }
-        if (routesToMimo) {
-          if (!mimoChat) throw new HttpError(503, 'MiMo 模型服务未配置（缺 GW_MIMO_KEY）')
-          return await mimoChat(request, effectiveBody, user, client)
-        }
-        if (!qwenChat) throw new HttpError(503, '千问模型服务未配置（缺 GW_QWEN_KEY）')
-        return await qwenChat(request, effectiveBody, user, client)
+          return await deepseekChat(request, effectiveBody, user)
         })
       }
 
@@ -1678,7 +1530,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             const submitHeaders: Record<string, string> = {
               Authorization: `Bearer ${config.relayToken}`,
               'Content-Type': 'application/json',
-              'X-Relay-Owner': relayOwner(user, readClientId(request)),
+              'X-Relay-Owner': relayOwner(user),
             }
             const idempotencyKey = request.headers.get('idempotency-key')
             if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
@@ -1744,7 +1596,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${config.relayToken}`,
-              'X-Relay-Owner': relayOwner(user, readClientId(request)),
+              'X-Relay-Owner': relayOwner(user),
             },
           },
         )
@@ -1773,7 +1625,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`,
           {
             Authorization: `Bearer ${config.relayToken}`,
-            'X-Relay-Owner': relayOwner(user, readClientId(request)),
+            'X-Relay-Owner': relayOwner(user),
           },
         )
       }
@@ -1781,7 +1633,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof CapacityQueueError || err instanceof QwenRequestError || err instanceof MimoRequestError || err instanceof DeepSeekRequestError) {
+      if (err instanceof CapacityQueueError || err instanceof DeepSeekRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
       console.error('[qfgw] request failed', err)
