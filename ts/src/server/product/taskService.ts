@@ -1273,6 +1273,16 @@ export class ProductTaskService {
     return result
   }
 
+  /** Server-private BB-03D lookup; it reads the durable hand-off only. */
+  async readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<{ task_id: string; lineage_id: string; resume_binding_id: string }> {
+    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown } | undefined
+    const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
+    const lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
+    if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
+    return { task_id: run.task_id, lineage_id: run.lineage_id, resume_binding_id: lineage.resume_binding_id }
+  }
+
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
   async mutateTaskDeletion(
     taskId: string,
