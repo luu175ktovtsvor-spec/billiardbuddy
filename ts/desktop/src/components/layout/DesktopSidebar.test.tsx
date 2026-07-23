@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { DesktopSidebar } from './DesktopSidebar'
 import {
+  CREATION_TAB_ID,
   NEW_PRODUCT_TASK_TAB_ID,
+  OPERATIONS_TAB_ID,
   PRODUCT_TASK_TAB_PREFIX,
   PRODUCT_TASKS_TAB_ID,
   useTabStore,
@@ -51,10 +53,17 @@ describe('DesktopSidebar', () => {
     useProductTaskRuntimeStore.setState({ tasks: {} })
   })
 
-  it('opens the product task index through the desktop navigation', () => {
+  it('presents only the five product navigation entries and opens the task index', () => {
     render(<DesktopSidebar />)
 
-    fireEvent.click(screen.getByRole('button', { name: '任务中心' }))
+    const navigation = screen.getByRole('navigation', { name: '产品导航' })
+    expect(navigation).toHaveTextContent('任务创作经营已安排')
+    expect(navigation).not.toHaveTextContent('生成图片')
+    expect(navigation).not.toHaveTextContent('剪视频')
+    expect(navigation).not.toHaveTextContent('插件')
+    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
+
+    fireEvent.click(within(navigation).getByRole('button', { name: '任务' }))
 
     expect(useTabStore.getState()).toMatchObject({
       activeTabId: PRODUCT_TASKS_TAB_ID,
@@ -63,6 +72,25 @@ describe('DesktopSidebar', () => {
         title: '任务中心',
         type: 'product-tasks',
       }],
+    })
+  })
+
+  it('routes creation and operations through stable product-area tabs', () => {
+    render(<DesktopSidebar />)
+
+    fireEvent.click(screen.getByRole('button', { name: '创作' }))
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: CREATION_TAB_ID,
+      tabs: [expect.objectContaining({ type: 'creation', title: '创作' })],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '经营' }))
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: OPERATIONS_TAB_ID,
+      tabs: [
+        expect.objectContaining({ type: 'creation' }),
+        expect.objectContaining({ type: 'operations', title: '经营' }),
+      ],
     })
   })
 

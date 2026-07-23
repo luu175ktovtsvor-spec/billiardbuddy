@@ -5,6 +5,8 @@ let nextNewProductTaskRequestId = 0
 
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
+export const CREATION_TAB_ID = '__creation__'
+export const OPERATIONS_TAB_ID = '__operations__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
@@ -14,6 +16,8 @@ export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 export type TabType =
   | 'settings'
   | 'scheduled'
+  | 'creation'
+  | 'operations'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
@@ -27,6 +31,8 @@ export type TabType =
 export type OpenTabType =
   | 'settings'
   | 'scheduled'
+  | 'creation'
+  | 'operations'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
@@ -69,6 +75,8 @@ type TabStore = {
 function isOpenTabType(value: unknown): value is OpenTabType {
   return value === 'settings'
     || value === 'scheduled'
+    || value === 'creation'
+    || value === 'operations'
     || value === 'image-workbench'
     || value === 'video-studio'
     || value === 'product-tasks'
@@ -336,6 +344,8 @@ function isPersistableTab(tab: Tab): boolean {
   return (
     tab.type === 'settings'
     || tab.type === 'scheduled'
+    || tab.type === 'creation'
+    || tab.type === 'operations'
     || tab.type === 'image-workbench'
     || tab.type === 'video-studio'
     || tab.type === 'product-tasks'
@@ -349,6 +359,8 @@ function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
   if (
     tab.type === 'settings'
     || tab.type === 'scheduled'
+    || tab.type === 'creation'
+    || tab.type === 'operations'
     || tab.type === 'image-workbench'
     || tab.type === 'video-studio'
     || tab.type === 'product-tasks'

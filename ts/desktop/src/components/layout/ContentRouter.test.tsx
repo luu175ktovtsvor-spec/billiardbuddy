@@ -15,6 +15,11 @@ vi.mock('../../product/components/ProductScheduledTasksPage', () => ({
   ProductScheduledTasksPage: () => <div data-testid="product-scheduled-tasks" />,
 }))
 
+vi.mock('../../product/components/ProductAreaPages', () => ({
+  ProductCreationPage: () => <div data-testid="product-creation-page" />,
+  ProductOperationsPage: () => <div data-testid="product-operations-page" />,
+}))
+
 vi.mock('../../pages/Settings', () => ({
   Settings: () => <div data-testid="settings-page" />,
 }))
@@ -89,6 +94,26 @@ describe('ContentRouter tab surfaces', () => {
     render(<ContentRouter />)
 
     expect(screen.getByTestId('image-workbench')).toBeInTheDocument()
+    expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
+  })
+
+  it('routes the two product areas without mounting a task runtime', () => {
+    useTabStore.setState({
+      tabs: [{ sessionId: '__creation__', title: '创作', type: 'creation' }],
+      activeTabId: '__creation__',
+    })
+
+    const { rerender } = render(<ContentRouter />)
+    expect(screen.getByTestId('product-creation-page')).toBeInTheDocument()
+
+    act(() => {
+      useTabStore.setState({
+        tabs: [{ sessionId: '__operations__', title: '经营', type: 'operations' }],
+        activeTabId: '__operations__',
+      })
+    })
+    rerender(<ContentRouter />)
+    expect(screen.getByTestId('product-operations-page')).toBeInTheDocument()
     expect(screen.queryByTestId('active-session')).not.toBeInTheDocument()
   })
 

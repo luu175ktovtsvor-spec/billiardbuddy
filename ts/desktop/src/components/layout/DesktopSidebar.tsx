@@ -2,17 +2,17 @@
 // restricted product-task runtime.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  PanelLeft, Search, SquarePen, Clock, Puzzle,
+  PanelLeft, Search, Clock, Store,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
-  Sparkles, Zap, Plus, Loader2, ListTodo, Pin,
+  Palette, Plus, Loader2, ListTodo, Pin,
 } from 'lucide-react'
 import { useUIStore, resolveEffectiveTheme } from '../../stores/uiStore'
 import {
   useTabStore,
   SETTINGS_TAB_ID,
   SCHEDULED_TAB_ID,
-  IMAGE_WORKBENCH_TAB_ID,
-  VIDEO_STUDIO_TAB_ID,
+  CREATION_TAB_ID,
+  OPERATIONS_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
   type OpenTabType,
 } from '../../stores/tabStore'
@@ -111,13 +111,12 @@ function useSidebarData() {
     openNewTask,
     openScheduled: () => openTabView(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled'),
     openProductTasks,
-    openImageWorkbench: () => openTabView(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench'),
-    openVideoStudio: () => openTabView(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio'),
+    openCreation: () => openTabView(CREATION_TAB_ID, '创作', 'creation'),
+    openOperations: () => openTabView(OPERATIONS_TAB_ID, '经营', 'operations'),
     openSettings: () => {
       setActiveSettingsTab('general')
       openTabView(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
     },
-    openPlugins: () => { openTabView(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings'); setActiveSettingsTab('plugins') },
   }
 }
 
@@ -277,14 +276,22 @@ export function DesktopSidebar() {
         </div>
       )}
 
-      {/* 主导航：新建任务 / 任务中心 / 生成图片 / 剪视频 / 已安排 / 插件 */}
-      <nav className="px-2 pb-1">
-        <NavItem icon={<SquarePen size={17} />} label={t('sidebar.newTask')} onClick={() => d.openNewTask()} />
-        <NavItem icon={<ListTodo size={17} />} label="任务中心" active={d.activeTabType === 'product-tasks'} onClick={d.openProductTasks} />
-        <NavItem icon={<Sparkles size={17} />} label="生成图片" active={d.activeTabType === 'image-workbench'} onClick={d.openImageWorkbench} />
-        <NavItem icon={<Zap size={17} />} label="剪视频" active={d.activeTabType === 'video-studio'} onClick={d.openVideoStudio} />
+      {/* 一级导航严格对应产品的五个用户入口；具体工具只在入口页面内出现。 */}
+      <nav className="px-2 pb-1" aria-label="产品导航">
+        <NavItem
+          icon={<ListTodo size={17} />}
+          label="任务"
+          active={d.activeTabType === 'product-tasks' || d.activeTabType === 'new-product-task' || d.activeTabType === 'product-task'}
+          onClick={d.openProductTasks}
+        />
+        <NavItem
+          icon={<Palette size={17} />}
+          label="创作"
+          active={d.activeTabType === 'creation' || d.activeTabType === 'image-workbench' || d.activeTabType === 'video-studio'}
+          onClick={d.openCreation}
+        />
+        <NavItem icon={<Store size={17} />} label="经营" active={d.activeTabType === 'operations'} onClick={d.openOperations} />
         <NavItem icon={<Clock size={17} />} label={t('sidebar.scheduled')} active={d.activeTabType === 'scheduled'} onClick={d.openScheduled} />
-        <NavItem icon={<Puzzle size={17} />} label="插件" active={d.activeTabType === 'settings'} onClick={d.openPlugins} />
       </nav>
 
       {/* 项目 + 任务 */}
@@ -385,7 +392,9 @@ export function DesktopSidebar() {
         <button
           type="button"
           onClick={d.openSettings}
+          aria-current={d.activeTabType === 'settings' ? 'page' : undefined}
           className="flex h-9 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          style={{ background: d.activeTabType === 'settings' ? 'var(--color-surface-selected)' : undefined }}
         >
           <span className="shrink-0 text-[var(--color-text-secondary)]"><SettingsIcon size={17} /></span>
           <span className="text-[13.5px]">{t('sidebar.settings')}</span>
