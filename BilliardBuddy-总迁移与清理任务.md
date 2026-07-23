@@ -195,7 +195,7 @@ Next:
 | `DEC-005` | `[HARD]` 主导航为“任务、创作、经营、已安排、设置” | 图片和视频从“创作”直接进入独立工作台；BOSS 与台球经营归“经营”；文件、Diff、Preview、终端按需展开，不占主导航 |
 | `DEC-006` | `[HARD]` ProductTask 是普通任务唯一产品真相源 | 普通任务只走 `/api/product/*`、ProductTask WebSocket、`ts/shared/product` 和当前数据根；不恢复旧 session/store/WebSocket |
 | `DEC-007` | `[HARD]` GUI 只通过内部 `agent-worker` 使用 Core | 先抽 worker 并以 `D2_MIGRATE_CONSUMERS` 迁移所有 GUI/定时消费者；公共 CLI/TUI 由模块 23 执行 `D4_PHYSICAL_DELETE`；worker 继续调用原生 Core，不重写 Agent loop |
-| `DEC-008` | `[HARD]` 文本、视觉理解、图片生成与语音能力分开 | DeepSeek 是唯一文本主模型；MiMo 只输出显式视觉证据；GPT Image 2 / Seedream 4.5 只通过 provider-neutral `ImageGeneration` 执行图片生成/编辑；Fun-ASR 只转写音频；Qwen/Sonnet/Anthropic 不作为隐藏 fallback；能力不可用时显式失败 |
+| `DEC-008` | `[HARD]` 文本、视觉理解、图片生成与语音能力分开 | DeepSeek 是唯一文本主模型；DeepSeek API 通过 Anthropic-compatible Messages 接口原生兼容 Anthropic 定义的 Web Search server-tool 协议，当前产品固定保留基础版 `web_search_20250305`，由 DeepSeek 服务端执行搜索并返回 `server_tool_use` / `web_search_tool_result`；MiMo 只输出显式视觉证据；GPT Image 2 / Seedream 4.5 只通过 provider-neutral `ImageGeneration` 执行图片生成/编辑；Fun-ASR 只转写音频；Qwen/Sonnet/Anthropic 不作为隐藏 fallback；能力不可用时显式失败 |
 | `DEC-009` | `[HARD]` context window 使用已核实真实值 | 产品合同字段为 `verified_context_window`；只有整链证据均为 1,000,000 时才能显示 1M，否则使用最小已证实上限，不关闭 compact 伪造大窗口 |
 | `DEC-010` | `[HARD]` 项目指令复用 Core 原生 resolver | 同层加载顺序为 Claude 兼容源 → `AGENTS.md` → `BilliardBuddy.md`；品牌文件进入 user context/`nested_memory`，不升为临时 system prompt |
 | `DEC-011` | `[HARD]` 项目指令、Session Memory、AutoMem 分开 | TeamMem 在模块 05/21 执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`，模块 23 只执行 `D4_PHYSICAL_DELETE`，模块 24 统一执行 `D5_PACKAGE_ABSENT`；项目指令不复制进 Session/AutoMem；记忆失败不阻塞主任务；敏感内容不进入长期记忆 |
@@ -1937,10 +1937,10 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 2. 每项正式能力按上述真值表输出四态与固定退化；构建 feature、产品设置、部署环境、权限/登录、provider health 和 active operation 分别提供证据，不能用“代码存在”代替 available/running。
 3. 本地产品配置与部署环境是权威；远程 flag 只能建议未设置用户的默认/灰度，网络不可达使用打包明确默认，不静默关闭核心能力。快照在启动、配置/权限变化、sidecar 重启和 freshness deadline 到期时刷新，旧快照过期只降低 available，不猜测 running。
 4. 对普通用户 Provider、模型、API Key、MCP/Plugin/Python 管理页与 routes 执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`；保留 Core 内部机制和必要开发诊断，死源码由模块 23 `D4_PHYSICAL_DELETE`。
-5. 对 WebSearch、Tavily/Brave key、DeepSeek native web-search 工具/路由/配置执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`；保留 WebFetch 和受控 BrowserCapability，死源码由模块 23 执行 `D4_PHYSICAL_DELETE`。
+5. 对 Tavily/Brave key 与旧自建搜索工具/路由/配置执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`；保留 DeepSeek Anthropic-compatible API 原生 WebSearchTool、WebFetch 和受控 BrowserCapability，不向普通用户暴露搜索 Provider/API Key；模块 23 只对前述第三方与旧自建搜索链执行 `D4_PHYSICAL_DELETE`。
 6. 对 Computer Use 设置、权限安装页和屏幕录制/辅助功能引导执行 `D2_MIGRATE_CONSUMERS`；通用桌面控制源码由模块 23 `D4_PHYSICAL_DELETE`。
 7. TeamMem 不出现在快照、设置或诊断；项目指令、Session Memory、AutoMem 使用业务化名称。
-8. 只为模块 01 支持矩阵登记的 provider/model、WebSearch key presence（不复制密钥值）、capability/TeamMem/user setting 旧 shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；普通无版本 settings 不承诺任意历史格式。本模块只移除普通运行时入口，不破坏已登记 reader。
+8. 只为模块 01 支持矩阵登记的 provider/model、第三方 WebSearch key presence（不复制密钥值）、capability/TeamMem/user setting 旧 shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；普通无版本 settings 不承诺任意历史格式。本模块只移除普通运行时入口，不破坏已登记 reader。
 9. About/设置提供“导出诊断信息”：展示允许类别、7 天/5 MiB 上限和“不自动上传”，经受限 IPC 只调用 Main `DiagnosticBundleService`。renderer/sidecar/worker 不传任意路径或文件清单给 collector；用户只选择最终保存路径。导出失败显示短错误码并不留下 staging。
 10. About 页显示版本、更新状态、`target_starting/recovery_required/recovery_read_only` 和许可，不显示内部 provider/model；健康与回退资格只投影 ElectronUpdaterService，不自行推断。
 11. capability snapshot 必须同时投影 AccessPrincipal、Entitlement、InstallationRegistration、UsageBudget、data-egress consent 和设备 profile 的状态，但不得暴露 token、密钥、原始配额凭据或 provider 账户。`available=true` 必须满足该能力实际需要的全部前置条件；授权过期、同意撤销、预算不足和 profile 未建立使用不同 reason code。
@@ -1955,7 +1955,7 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 
 - 正式普通包在非内部 USER_TYPE 下仍有项目约定、长期记忆、Session 摘要和必要业务能力。
 - GrowthBook/网络不可达、provider health 过期、系统权限拒绝、浏览器未登录和真实 Job active 五类 fixture 分别产生符合真值表的四态、reason code 与恢复入口。
-- UI、API、环境模板和文案 consumer graph 中 WebSearch/Tavily/Brave/Computer Use/TeamMem 普通入口归零。
+- UI、API、环境模板和文案 consumer graph 中 Tavily/Brave/旧自建搜索、Computer Use、TeamMem 普通入口归零；Core WebSearchTool 仅通过托管 DeepSeek Anthropic-compatible 路由可达。
 - Core 的 MCP/Plugin/Hooks 执行机制未被删除，只从普通设置隐藏并移除无消费者产品管理表面。
 - 普通设置不出现 model/provider/API key/`tengu_*`/`CLAUDE_CONFIG_DIR`。
 - diagnostic bundle canary fixture 注入 prompt、Cookie、secret、绝对路径、URL query、附件正文/Base64、招聘姓名/电话/email 和原始 crash dump：任何一个进入候选字段都整体失败；合法包仅含 allowlist、随机盐 HMAC ID、manifest/hash，且无自动网络请求。
@@ -2004,7 +2004,7 @@ capability snapshot schema、首次使用/账号/权益/存储与隐私设置 IA
 | scheduled task/logical run/notification | 17 | 迁 schedule 和历史，不补执行旧周期 |
 | recruiting plan/batch/checkpoint | 18 | 当前无旧持久化 schema，标 unsupported 且不创建假记录；未来只消费支持矩阵登记项 |
 | terminal preferences | 20 | 只迁偏好，不迁 PTY session/命令历史 |
-| capability/settings/WebSearch key presence/TeamMem setting | 21 | 映射当前设置；不复制密钥值或恢复已删能力 |
+| capability/settings/第三方 WebSearch key presence/TeamMem setting | 21 | 映射当前设置；不复制密钥值或恢复已删能力 |
 | 账号、许可证、设备注册、权益与用量记录 | 04 | 当前旧 shape 未被支持矩阵登记时一律不迁；不从旧 provider key、环境变量或本地偏好推导 AccessPrincipal/Entitlement/UsageBudget |
 | 门店资料 | 18 | 只有登记的旧 shape 才迁为 StoreProfile revision；来源冲突逐项隔离，不复制到 settings 或 RecruitingPlan |
 
@@ -2063,7 +2063,7 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、`migration-back
 | `BB-23E` | 删除 Qwen 可执行 runtime | 依赖 D；只改 Qwen provider/route/config/runtime fixture | 保留纯 legacy mapper；模型/worker Gate 通过 |
 | `BB-23F` | 删除 Whisper/旧 ASR runtime | 依赖 E；只改旧 ASR runtime | 保留矩阵登记 mapper；Voice/Video binding Gate 通过 |
 | `BB-23G` | 删除通用桌面 Computer Use | 依赖 F；只改坐标/录屏/辅助功能/Python helper/runtime route | 保留 BrowserCapability、MiMo Evidence、Core通用 Tool/MCP；招聘 Gate 通过 |
-| `BB-23H` | 删除 WebSearch/Tavily/Brave/native search | 依赖 G；只改该搜索 runtime | 保留 WebFetch/BrowserCapability；工具 Gate 通过 |
+| `BB-23H` | 删除 Tavily/Brave 与旧自建搜索链 | 依赖 G；先从机器删除对象中排除 DeepSeek 原生 WebSearchTool，再只改第三方/旧搜索 runtime | 保留 DeepSeek `web_search_20250305` 托管路由、WebFetch 与 BrowserCapability；工具 Gate 通过 |
 | `BB-23I` | 删除 AutoDream 与 TeamMem runtime | 依赖 H；只改 AutoDream 后台生成链及 TeamMem OAuth/watcher/endpoint/settings/diagnostics | 保留必要 migration mapping；记忆 Gate 通过 |
 | `BB-23J` | 删除媒体聊天中转 | 依赖 I；只改 mediaWorkbenches Skill/Tool、`media_draft` 新建/线程投影 | 保留独立 MediaProject/migrator；图片/视频 Gate 通过 |
 | `BB-23K` | 删除旧 workflow runtime/DSL 与重复 media route/service | 依赖 J；只改该行运行图 | 保留唯一 MediaProjectService；媒体 Gate 通过 |
@@ -2087,7 +2087,7 @@ migration coordinator、冻结的 `legacy-support-matrix.json`、`migration-back
 | Qwen 可执行 provider/route/config/test fixture | 04 | 23 | 模块 22 的纯 legacy value mapper | 24 |
 | Whisper/旧 ASR 运行时 | 15 | 23 | 模块 22 的 legacy value mapper | 24 |
 | 通用桌面 Computer Use、Python helper、专用 API/UI/vision routing | 18、21 | 23 | BrowserCapability、MiMo 普通视觉证据、Core 通用 Tool/MCP | 24 |
-| WebSearch、Tavily/Brave、native search route | 21 | 23 | WebFetch 与 BrowserCapability | 24 |
+| Tavily/Brave key 与旧自建搜索 route | 21 | 23 | DeepSeek Anthropic-compatible 原生 WebSearchTool、WebFetch 与 BrowserCapability | 24 |
 | AutoDream 后台生成/调度/写入入口与 TeamMem OAuth/watcher/endpoint/settings/diagnostics | 05、21 | 23 | 无正式运行时；仅必要 migration mapping | 24 |
 | mediaWorkbenches Skill/Tool、`media_draft` 新建与线程投影 | 13、16、22 | 23 | 独立 MediaProject 与 legacy migrator | 24 |
 | 旧 workflow runtime/DSL、重复 media route/service | 12—16、22 | 23 | 当前 MediaProjectService | 24 |
@@ -2122,7 +2122,7 @@ legacy inventory
 - 每个 Manifest 行都有删除前 consumer graph、实际删除路径和删除后 graph；保留项有可达原因。
 - renderer、server、sidecar、worker、gateway、relay 的类型/相关测试和本地 build 通过。
 - migration coordinator、受支持 legacy readers/mappers、旧 schema fixture 和回滚入口仍可达。
-- Qwen、Whisper、桌面 Computer Use、WebSearch、AutoDream、TeamMem、公共 CLI/TUI 和媒体聊天中转没有正式运行时入口。
+- Qwen、Whisper、桌面 Computer Use、Tavily/Brave 与旧自建搜索、AutoDream、TeamMem、公共 CLI/TUI 和媒体聊天中转没有正式运行时入口；DeepSeek 原生 WebSearchTool 仍可通过托管 Anthropic-compatible 路由使用。
 - Core 的工具、Skills、Hooks、MCP、子代理、权限、resume/compact 仍有消费者和回归证据。
 - 删除不触及用户数据目录、迁移备份、Git 历史或许可文件。
 
@@ -2354,6 +2354,8 @@ BilliardBuddy Electron GUI
 
 - OpenAI 图片模型与 rate limit：<https://developers.openai.com/api/docs/models>、<https://developers.openai.com/api/docs/guides/rate-limits>
 - Seedream 模型能力：<https://www.volcengine.com/docs/6492/2172373?lang=zh>
+- DeepSeek Anthropic-compatible API 与 Claude Code 原生 Web Search：<https://api-docs.deepseek.com/guides/anthropic_api/>、<https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/>
+- Anthropic Web Search server-tool 协议（基础版 `web_search_20250305`）：<https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
 - Electron 安全清单：<https://www.electronjs.org/docs/latest/tutorial/security>
 - OpenAI Computer Use：<https://developers.openai.com/api/docs/guides/tools-computer-use>
 - OpenAI Codex Permission modes（2026-07-23 核对三档语义、Settings enablement 与 Composer selection 分离）：<https://learn.chatgpt.com/docs/permission-modes>
