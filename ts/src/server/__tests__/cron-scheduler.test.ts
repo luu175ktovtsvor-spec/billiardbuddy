@@ -180,7 +180,9 @@ describe('CronScheduler', () => {
     process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
     process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
-    scheduler = new CronScheduler(cronService)
+    scheduler = new CronScheduler(cronService, {
+      submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+    })
   })
 
   afterEach(async () => {
@@ -236,6 +238,7 @@ describe('CronScheduler', () => {
       prompt: 'echo test',
       name: 'Test Task',
       recurring: true,
+      folderPath: tmpDir,
     })
 
     // We can't easily mock Bun.spawn in bun:test, so we'll check the log
@@ -269,6 +272,7 @@ describe('CronScheduler', () => {
       cron: '* * * * *',
       prompt: 'one-shot task',
       recurring: false,
+      folderPath: tmpDir,
     })
 
     try {
@@ -307,6 +311,7 @@ describe('CronScheduler', () => {
       cron: '* * * * *',
       prompt: 'fire test',
       recurring: true,
+      folderPath: tmpDir,
     })
 
     const beforeExec = new Date().toISOString()
@@ -347,6 +352,7 @@ describe('CronScheduler', () => {
       cron: '* * * * *',
       prompt: 'multi run',
       recurring: true,
+      folderPath: tmpDir,
     })
 
     // Execute twice
@@ -404,7 +410,9 @@ describe('Execution log trimming', () => {
     process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
     process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
-    scheduler = new CronScheduler(cronService)
+    scheduler = new CronScheduler(cronService, {
+      submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+    })
   })
 
   afterEach(async () => {
@@ -451,6 +459,7 @@ describe('Execution log trimming', () => {
       cron: '* * * * *',
       prompt: 'trigger trim',
       recurring: true,
+      folderPath: tmpDir,
     })
 
     try {

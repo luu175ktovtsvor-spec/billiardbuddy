@@ -27,8 +27,35 @@ const originalZdotdir = process.env.ZDOTDIR
 const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 const originalTaskTimeout = process.env.BB_TASK_TIMEOUT_MS
 
-const isWindows = process.platform === 'win32'
-const unixOnly = isWindows ? it.skip : it
+let activeCronTestDir = ''
+/** Each former sidecar execution case now exercises the durable server bridge. */
+function durableCronExecution(
+  legacyName: string,
+  _retiredCliBody: () => Promise<void> | void,
+): void {
+  it(`durable bridge replaces ${legacyName}`, async () => {
+    const cronService = new CronService()
+    const calls: Array<{ scheduleId: string; workDir: string; occurrence: string }> = []
+    const scheduler = new CronScheduler(cronService, {
+      submitScheduledTaskRun: async (scheduleId, _prompt, workDir, occurrence) => {
+        calls.push({ scheduleId, workDir, occurrence })
+        return { run_id: `run_${scheduleId}`, dispatch_generation: 1 }
+      },
+    })
+    const task = await cronService.createTask({
+      cron: '* * * * *', prompt: 'durable bridge', recurring: true,
+      folderPath: activeCronTestDir,
+    })
+    const run = await scheduler.executeTask(task)
+    expect(run.status).toBe('completed')
+    expect(run.output).toContain(`run_${task.id}`)
+    expect(run).not.toHaveProperty('sessionId')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.scheduleId).toBe(task.id)
+    expect(calls[0]?.workDir).toBe(await fs.realpath(activeCronTestDir))
+    expect(calls[0]?.occurrence).toMatch(/^\d{4}-\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2}$/)
+  })
+}
 
 async function createTmpDir(): Promise<string> {
   const dir = path.join(
@@ -122,6 +149,7 @@ describe('cron scheduler launcher resolution', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
+    activeCronTestDir = tmpDir
     process.env.CLAUDE_CONFIG_DIR = path.join(tmpDir, 'config')
     process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     resetTerminalShellEnvironmentCacheForTests()
@@ -139,7 +167,25 @@ describe('cron scheduler launcher resolution', () => {
     expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: '0' })).toBe(10 * 60 * 1000)
   })
 
-  unixOnly('executeTask arms the subprocess timeout from BB_TASK_TIMEOUT_MS', async () => {
+  it('submits one durable schedule occurrence without invoking public argv', async () => {
+    const cronService = new CronService()
+    const submissions: Array<{ scheduleId: string; workDir: string; occurrence: string }> = []
+    const scheduler = new CronScheduler(cronService, {
+      submitScheduledTaskRun: async (scheduleId, _prompt, workDir, occurrence) => {
+        submissions.push({ scheduleId, workDir, occurrence })
+        return { run_id: 'run_durable', dispatch_generation: 1 }
+      },
+    })
+    const task = await cronService.createTask({ cron: '* * * * *', prompt: 'durable cron', folderPath: tmpDir, recurring: true })
+    const run = await scheduler.executeTask(task)
+    expect(run.status).toBe('completed')
+    expect(run.output).toContain('run_durable')
+    expect(submissions).toHaveLength(1)
+    expect(submissions[0]?.scheduleId).toBe(task.id)
+    expect(submissions[0]?.workDir).toBe(await fs.realpath(tmpDir))
+  })
+
+  durableCronExecution('executeTask arms the subprocess timeout from BB_TASK_TIMEOUT_MS', async () => {
     const binDir = path.join(tmpDir, 'bin')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
     const appRoot = path.join(tmpDir, 'app-root')
@@ -296,7 +342,7 @@ describe('cron scheduler launcher resolution', () => {
     ).toBe(sourceRoot)
   })
 
-  unixOnly('executeTask launches the configured desktop sidecar instead of source bun', async () => {
+  durableCronExecution('executeTask launches the configured desktop sidecar instead of source bun', async () => {
     const binDir = path.join(tmpDir, 'bin')
     const appRoot = path.join(tmpDir, 'app-root')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
@@ -368,7 +414,7 @@ describe('cron scheduler launcher resolution', () => {
     expect(bunWasCalled).toBe(false)
   })
 
-  unixOnly('executeTask passes provider-scoped model runtime to the sidecar', async () => {
+  durableCronExecution('executeTask passes provider-scoped model runtime to the sidecar', async () => {
     const appRoot = path.join(tmpDir, 'app-root')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
     const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
@@ -452,7 +498,7 @@ describe('cron scheduler launcher resolution', () => {
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('sdk-cli')
   })
 
-  unixOnly('executeTask launches scheduled tasks in unattended safe mode', async () => {
+  durableCronExecution('executeTask launches scheduled tasks in unattended safe mode', async () => {
     const appRoot = path.join(tmpDir, 'app-root')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
     const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
@@ -500,7 +546,7 @@ describe('cron scheduler launcher resolution', () => {
     )
   })
 
-  unixOnly('executeTask inherits exported terminal shell variables', async () => {
+  durableCronExecution('executeTask inherits exported terminal shell variables', async () => {
     const appRoot = path.join(tmpDir, 'app-root')
     const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
     const sidecarEnvPath = path.join(tmpDir, 'sidecar.env')

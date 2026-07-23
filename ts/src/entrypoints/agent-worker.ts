@@ -2,6 +2,7 @@
 import { createInterface } from 'node:readline'
 import { AgentWorkerProtocol } from '../server/agent-worker/framedProtocol.js'
 import { AgentWorkerService, type AgentWorkerBootstrap, type AgentWorkerCore } from '../server/product/agentWorkerService.js'
+import type { AgentWorkerOutbound } from '../shared/product/agentWorker.js'
 
 type CoreRequest = { type: 'core_request'; id: string; operation: 'start' | 'input' | 'approval' | 'stop' | 'shutdown'; value?: unknown }
 let sequence = 0; const pending = new Map<string, { resolve(): void; reject(): void }>()
@@ -22,6 +23,10 @@ process.on('message', (message: unknown) => {
   }
   if (record?.type === 'core_result' && typeof record.id === 'string') {
     const pendingRequest = pending.get(record.id); if (!pendingRequest) return; pending.delete(record.id); record.ok === true ? pendingRequest.resolve() : pendingRequest.reject(new Error('CORE_PORT_DENIED'))
+    return
+  }
+  if (record?.type === 'core_message' && protocol) {
+    protocol.relayCoreMessage(record.message as AgentWorkerOutbound)
   }
 })
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => protocol ? protocol.receive(line) : emit({ type: 'fatal', code: 'ENVELOPE_DENIED' }))

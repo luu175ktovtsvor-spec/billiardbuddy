@@ -86,3 +86,35 @@ test('scheduler completion errors cannot hide the durable settlement attempt', a
   const supervisor = new AgentWorkerSupervisor(runs, scheduler, { launch: async () => { throw new Error('launch') } })
   expect(await supervisor.dispatch('run', 1)).toBe('recovery_required'); expect(claims).toBe(1); expect(completedFences).toEqual([1]); expect(settled).toEqual(['recovery_required:LAUNCH_FAILED'])
 })
+
+test('scheduled dispatch atomically claims schedule.dispatch with agent.worker', async () => {
+  const f = await fixture()
+  let claim: { resources: unknown; priority: unknown } | undefined
+  const submit = f.scheduler.submit.bind(f.scheduler)
+  f.scheduler.submit = async (input) => { claim = { resources: input.resources, priority: input.priority }; return submit(input) }
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher)
+  expect(await supervisor.dispatch('scheduled-run', 1, 'scheduled')).toBe('started')
+  await Bun.sleep(10)
+  expect(claim?.resources).toEqual([{ key: 'schedule.dispatch', units: 1 }, { key: 'agent.worker', units: 1 }])
+  expect(claim?.priority).toBe('scheduled')
+})
+
+test('terminal projection closes the relay before a late Core delta', async () => {
+  const f = await fixture()
+  let onMessage: ((message: any) => void) | undefined
+  const sink: string[] = []
+  const launcher = { launch: async (input: { onMessage: (message: any) => void }) => {
+    onMessage = input.onMessage
+    const child = { send: () => {}, stop: async () => {} }
+    setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
+    return child
+  } }
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher, 5_000, { record: async (_run, _generation, message) => { sink.push(message.type === 'event' ? `event:${message.event}` : `terminal:${message.state}`); await Bun.sleep(5) } })
+  expect(await supervisor.dispatch('run', 1)).toBe('started')
+  await Bun.sleep(10)
+  onMessage?.({ type: 'terminal', state: 'completed', run_id: 'run' })
+  onMessage?.({ type: 'event', event: 'delta', data: 'late' })
+  await Bun.sleep(15)
+  expect(sink).toEqual(['terminal:completed'])
+  expect(f.settled).toEqual(['terminal:TERMINAL'])
+})
