@@ -19,6 +19,8 @@ import {
   windowOptionsFromState,
   windowStatePath,
   writeWindowState,
+  MIN_WINDOW_WIDTH,
+  MIN_WINDOW_HEIGHT,
 } from './windows'
 
 const fakeApp = (userData: string) => ({
@@ -52,6 +54,24 @@ describe('Electron window service', () => {
       { x: 100, y: 100, width: 1280, height: 820, maximized: false },
       [{ bounds: { x: 0, y: 0, width: 1440, height: 900 }, workArea: { x: 0, y: 0, width: 1440, height: 860 } }],
     )).toBe(true)
+  })
+
+  it('accepts the supported narrow-window boundary', () => {
+    expect(MIN_WINDOW_WIDTH).toBe(720)
+    expect(isPersistableWindowState({
+      x: 0,
+      y: 0,
+      width: MIN_WINDOW_WIDTH,
+      height: MIN_WINDOW_HEIGHT,
+      maximized: false,
+    })).toBe(true)
+    expect(isPersistableWindowState({
+      x: 0,
+      y: 0,
+      width: MIN_WINDOW_WIDTH - 1,
+      height: MIN_WINDOW_HEIGHT,
+      maximized: false,
+    })).toBe(false)
   })
 
   it('reads only valid visible window state', () => {
