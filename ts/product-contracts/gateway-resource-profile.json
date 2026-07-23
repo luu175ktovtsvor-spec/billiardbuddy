@@ -1,0 +1,44 @@
+{
+  "profile_schema_version": 1,
+  "profile_revision": "bb-04d-gateway-v1",
+  "owner_module": "04",
+  "scope": "gateway-account",
+  "status": "local_fake_verified",
+  "resources": {
+    "gateway.ingress-bytes": {
+      "max_active_bytes": 268435456
+    },
+    "TextReasoning": {
+      "max_active": 1000,
+      "max_active_per_installation": 10,
+      "max_queued": 200
+    },
+    "VisualEvidence": {
+      "max_active": 12,
+      "max_active_per_installation": 1,
+      "max_queued": 24
+    },
+    "SpeechTranscription": {
+      "max_active": 1,
+      "max_active_per_installation": 1,
+      "max_queued": 12
+    }
+  },
+  "evidence": [
+    {
+      "path": "gateway/capacity-500.fake-upstream.test.ts",
+      "status": "local_fake_verified"
+    },
+    {
+      "path": "gateway/visionBridge.fake-upstream.test.ts",
+      "status": "local_fake_verified"
+    },
+    {
+      "path": "gateway/app.test.ts",
+      "test_id": "audio transcription authenticates, validates uploads and records successful usage",
+      "status": "local_fake_verified"
+    }
+  ],
+  "production_capacity": "NOT_VERIFIED_EXTERNALLY",
+  "sha256": "06dd6d33fb8e41b90f30ea91a8710625479902f6c5e0717ddb00de52fddd2895"
+}

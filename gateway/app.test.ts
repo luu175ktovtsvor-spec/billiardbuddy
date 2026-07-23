@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { createGatewayFetch, gatewayServerIdleTimeoutSeconds, MemoryUsageStore } from './app'
 import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 import type { GatewayTranscriber } from './transcription'
+import { SqliteUsageBudgetService, type UsageBudgetPolicy } from './usageBudget'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -70,6 +71,18 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, transcr
   return { fetch, calls, usage }
 }
 
+function oneRequestPolicy(): UsageBudgetPolicy {
+  const one = { requests: 1, input_bytes: 1024 * 1024, output_units: 100_000 }
+  return {
+    revision: 'test-one-request', period: 'utc_day',
+    capabilities: {
+      TextReasoning: { principal: one, installation: one },
+      VisualEvidence: { principal: one, installation: one },
+      SpeechTranscription: { principal: one, installation: one },
+    },
+  }
+}
+
 test('healthz exposes capacity limits and an empty legacy quota object', async () => {
   const { fetch } = makeGateway()
   const publicRes = await fetch(new Request('http://local/healthz'))
@@ -101,6 +114,10 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.limits.relay_result_timeout_ms).toBe(300_000)
   expect(body.limits.ingress_inflight_body_bytes).toBe(256 * 1024 * 1024)
   expect(body.quota).toEqual({})
+  expect(body.usage_budget).toEqual({
+    policy_revision: 'bb-04d-gateway-v1',
+    metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
+  })
   expect(body.features.transcription).toBe(false)
   expect(body.features.vision_bridge).toBe(true)
   expect(body.capacity.mimo).toMatchObject({
@@ -314,6 +331,49 @@ test('untrusted client headers cannot split a verified owner capacity or opaque 
   expect(String(upstreamBodies[0].user_id)).toBe(String(upstreamBodies[1].user_id))
 })
 
+test('separate installations of one principal share the principal capacity ceiling', async () => {
+  const secondToken = gatewayTestAuthority.activate({
+    licenseKey: 'test-license',
+    installationId: 'test-installation-2',
+  }).accessToken
+  let firstController: ReadableStreamDefaultController<Uint8Array> | undefined
+  let calls = 0
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env({
+      GW_DEEPSEEK_CONC: '2',
+      GW_DEEPSEEK_USER_CONC: '1',
+      GW_DEEPSEEK_TOKEN_CONC: '1',
+      GW_DEEPSEEK_QUEUE_MAX: '0',
+      GW_DEEPSEEK_QUEUE_MAX_WAIT: '0',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async () => {
+      calls += 1
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { firstController = controller },
+      }), { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const request = (token: string, operation: string) => new Request('http://local/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-BB-Operation-ID': operation,
+    },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, messages: [] }),
+  })
+
+  const first = await fetch(request(gatewayTestAccessToken, 'operation-install-one'))
+  const blocked = await fetch(request(secondToken, 'operation-install-two'))
+  expect(blocked.status).toBe(429)
+  expect(calls).toBe(1)
+  firstController!.close()
+  await first.text()
+})
+
 test('native Anthropic endpoint rejects non-search tools and fails closed without DeepSeek', async () => {
   const { fetch, calls } = makeGateway()
   const nonSearch = await fetch(new Request('http://local/v1/messages', authed({
@@ -367,6 +427,91 @@ test('audio transcription authenticates, validates uploads and records successfu
   expect(usage.rows).toMatchObject([{ user: 'test-principal:test-installation', model: 'transcribe', ok: true, status: 200 }])
   expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;run_ms=\d+;bytes=5;audio_seconds=1\.2$/)
   expect(usage.rows[0]?.note).not.toContain('今天检查台球桌')
+})
+
+test('gateway rejects a duplicate metered operation without a second upstream call', async () => {
+  let calls = 0
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    usageBudgetService: new SqliteUsageBudgetService(':memory:'),
+    transcribeImpl: null,
+    fetchImpl: async () => {
+      calls += 1
+      return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const request = () => new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BB-Operation-ID': 'operation-chat-0001' },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: '开台' }] }),
+  }))
+
+  const first = await fetch(request())
+  expect(first.status).toBe(200)
+  expect(first.headers.get('x-bb-usage-operation')).toBe('operation-chat-0001')
+  await first.text()
+  const duplicate = await fetch(request())
+  expect(duplicate.status).toBe(409)
+  expect(await duplicate.json()).toEqual({ detail: 'OPERATION_ALREADY_RESERVED' })
+  expect(calls).toBe(1)
+})
+
+test('budget rejection and invalid input both happen before paid upstream work', async () => {
+  let calls = 0
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    usageBudgetService: new SqliteUsageBudgetService(':memory:', oneRequestPolicy()),
+    transcribeImpl: null,
+    fetchImpl: async () => {
+      calls += 1
+      return new Response('data: done\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const malformed = await fetch(new Request('http://local/v1/chat/completions', authed({
+    method: 'POST', headers: { 'X-BB-Operation-ID': 'operation-malformed' }, body: '{',
+  })))
+  expect(malformed.status).toBe(400)
+  expect(calls).toBe(0)
+
+  const validRequest = (operation: string) => new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BB-Operation-ID': operation },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
+  }))
+  const accepted = await fetch(validRequest('operation-accepted'))
+  await accepted.text()
+  const limited = await fetch(validRequest('operation-over-limit'))
+  expect(limited.status).toBe(429)
+  expect(await limited.json()).toEqual({ detail: 'USAGE_LIMIT_REACHED' })
+  expect(calls).toBe(1)
+})
+
+test('Fun-ASR uses the same operation receipt and does not repeat a settled transcription', async () => {
+  let calls = 0
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env(),
+    usageStore: new MemoryUsageStore(),
+    usageBudgetService: new SqliteUsageBudgetService(':memory:'),
+    transcribeImpl: async () => { calls += 1; return { text: '开台', duration: 0.5 } },
+  })
+  const request = () => {
+    const form = new FormData()
+    form.set('file', new File(['audio'], 'voice.webm', { type: 'audio/webm' }))
+    return new Request('http://local/v1/audio/transcriptions', authed({
+      method: 'POST', headers: { 'X-BB-Operation-ID': 'operation-speech-0001' }, body: form,
+    }))
+  }
+  const first = await fetch(request())
+  expect(first.status).toBe(200)
+  expect(first.headers.get('x-bb-usage-operation')).toBe('operation-speech-0001')
+  const duplicate = await fetch(request())
+  expect(duplicate.status).toBe(409)
+  expect(calls).toBe(1)
 })
 
 test('audio transcription disables the request idle timeout for long-running ASR', async () => {
