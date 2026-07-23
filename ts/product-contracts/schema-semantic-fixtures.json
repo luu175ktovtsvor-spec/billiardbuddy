@@ -91,10 +91,15 @@
         "data-egress-policy": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "auth-entitlement-policy": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "usage-budget-policy": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "production-load-profile": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "production-load-profile": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "permission-profile-policy": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "automatic-reviewer-policy": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "items": [{ "check_id": "contract", "module": "01A", "required": true, "platform": "all", "candidate_input": "fixture", "procedure": "validate", "pass_condition": "schema accepts", "evidence_path": "fixture", "owner": "machine", "result": "PASS" }]
     },
-    "invalid": { "items": [], "policy_digests": {} }
+    "invalid": { "items": [], "policy_digests": {} },
+    "invalid_missing_policy_digest": "permission-profile-policy",
+    "invalid_unknown_policy_digest": "unregistered-policy",
+    "invalid_wrong_policy_digest": "automatic-reviewer-policy"
   }
 }

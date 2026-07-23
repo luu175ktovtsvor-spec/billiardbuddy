@@ -103,7 +103,7 @@ function componentSchema(sourceDigest: string): Json {
   }
 }
 
-function releaseChecklistSchema(sourceDigest: string): Json {
+function releaseChecklistSchema(sourceDigest: string, policyIds: string[]): Json {
   return {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     $id: 'billiardbuddy/release-checklist.schema.json',
@@ -115,7 +115,12 @@ function releaseChecklistSchema(sourceDigest: string): Json {
       schema_version: { type: 'integer', minimum: 1 },
       candidate_id: { type: 'string', minLength: 1 },
       component_matrix_digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
-      policy_digests: { type: 'object', minProperties: 12, additionalProperties: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
+      policy_digests: {
+        type: 'object',
+        additionalProperties: false,
+        required: policyIds,
+        properties: Object.fromEntries(policyIds.map((policyId) => [policyId, { type: 'string', pattern: '^[a-f0-9]{64}$' }])),
+      },
       items: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['check_id', 'module', 'required', 'platform', 'candidate_input', 'procedure', 'pass_condition', 'evidence_path', 'owner', 'result'], properties: { check_id: { type: 'string' }, module: { type: 'string' }, required: { type: 'boolean' }, platform: { type: 'string' }, candidate_input: { type: 'string' }, procedure: { type: 'string' }, pass_condition: { type: 'string' }, evidence_path: { type: 'string' }, owner: { enum: ['machine', 'user'] }, result: { enum: ['PASS', 'FAIL', 'NOT_RUN', 'UNVERIFIED'] } } } },
     },
     'x-contract-source-sha256': sourceDigest,
@@ -148,7 +153,7 @@ export function render(source: Source): Record<string, Json> {
     },
     'legacy-support-matrix.schema.json': legacySupportMatrixSchema(digest),
     'component-compatibility-matrix.schema.json': componentSchema(digest),
-    'release-checklist.schema.json': releaseChecklistSchema(digest),
+    'release-checklist.schema.json': releaseChecklistSchema(digest, source.policy_schemas.map(([policyId]) => policyId)),
     'policy-schemas.json': { manifest_schema_version: 1, source_sha256: digest, policies },
     'deletion-consumer-graph.json': {
       graph_schema_version: 1,
@@ -213,6 +218,15 @@ function validateSchemaSemantics(source: Source, artifacts: Record<string, Json>
   requireCondition(validateRelease(fixtures.release.valid), `valid release fixture fails formal schema: ${ajv.errorsText(validateRelease.errors)}`)
   requireCondition(fixtures.release.valid.items.length > 0 && source.policy_schemas.every(([policy]) => /^[a-f0-9]{64}$/.test(fixtures.release.valid.policy_digests[policy] ?? '')), 'valid release semantic fixture rejected')
   requireCondition(!validateRelease(fixtures.release.invalid), 'invalid release fixture accepted by formal schema')
+  const missingPolicyDigest = structuredClone(fixtures.release.valid)
+  delete missingPolicyDigest.policy_digests[fixtures.release.invalid_missing_policy_digest]
+  requireCondition(!validateRelease(missingPolicyDigest), 'release fixture missing a required policy digest accepted by formal schema')
+  const unknownPolicyDigest = structuredClone(fixtures.release.valid)
+  unknownPolicyDigest.policy_digests[fixtures.release.invalid_unknown_policy_digest] = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  requireCondition(!validateRelease(unknownPolicyDigest), 'release fixture with an unknown policy digest accepted by formal schema')
+  const wrongPolicyDigest = structuredClone(fixtures.release.valid)
+  wrongPolicyDigest.policy_digests[fixtures.release.invalid_wrong_policy_digest] = 'not-a-sha256-digest'
+  requireCondition(!validateRelease(wrongPolicyDigest), 'release fixture with an invalid policy digest accepted by formal schema')
 }
 
 function jsonPointer(value: unknown, pointer: string): unknown {
@@ -316,14 +330,18 @@ export function validate(source: Source, artifacts = render(source)): void {
   }
   requireCondition(source.legacy_support.some((entry) => entry.id === 'product-task-wire-v2-current-only' && entry.layer === 'wire' && entry.status === 'current_only'), 'wire v2 must remain current-only and separate from disk migration')
   validateDeletionGraph(source)
-  requireCondition(source.policy_schemas.length === 12, 'all initial policy schemas must be registered')
+  requireCondition(source.policy_schemas.length === 14, 'all initial policy schemas must be registered')
+  for (const policy of ['permission-profile-policy', 'automatic-reviewer-policy']) {
+    requireCondition(source.policy_schemas.some(([policyId, ownerModule]) => policyId === policy && ownerModule === '08'), `${policy} must remain owned by module 08`)
+  }
   requireCondition(Object.keys(artifacts).length === 7, 'all seven generated artifacts are required')
   const legacyMatrixSchemaArtifact = artifacts['legacy-support-matrix.schema.json'] as any
   const componentSchemaArtifact = artifacts['component-compatibility-matrix.schema.json'] as any
   const releaseSchemaArtifact = artifacts['release-checklist.schema.json'] as any
   requireCondition(legacyMatrixSchemaArtifact.properties.entries.items.properties.fixture_sha256.pattern === '^[a-f0-9]{64}$', 'legacy matrix schema must bind fixture hashes')
   requireCondition(componentSchemaArtifact.required.includes('required_edges'), 'component schema must require edges')
-  requireCondition(releaseSchemaArtifact.properties.policy_digests.minProperties === source.policy_schemas.length, 'release schema must require every policy digest')
+  const policyDigestSchema = releaseSchemaArtifact.properties.policy_digests
+  requireCondition(policyDigestSchema.additionalProperties === false && JSON.stringify(policyDigestSchema.required) === JSON.stringify(source.policy_schemas.map(([policyId]) => policyId)), 'release schema must require exactly every policy digest')
   const twice = render(source)
   for (const [name, artifact] of Object.entries(artifacts)) requireCondition(sha256(stringify(artifact)) === sha256(stringify(twice[name])), `non-deterministic generation: ${name}`)
 }
