@@ -609,3 +609,73 @@ describe('BB-02C revision 3 upgrade', () => {
     const repository = new ProductTaskAuthorityRepository(authorityPath); await repository.mutateCapabilities(state => { state.task_scopes.task = { kind: 'installation-default' } }); const written = JSON.parse(await fs.readFile(authorityPath, 'utf8')); expect(written.authority_schema_revision).toBe(2); for (const key of ['thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings']) expect(written).not.toHaveProperty(key)
   })
 })
+
+describe('BB-02D recoverable task deletion', () => {
+  test('blocks registered consumers, supports pre-purge cancel, and only retries after durable purge commit', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02d-delete-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    let blockers: Array<{ participant: string; code: 'ACTIVE_RUN' | 'QUEUE' | 'SCHEDULE' | 'RECRUITING' | 'FORK' | 'WORKTREE'; action: 'stop' | 'detach' | 'disable' | 'resolve' }> = []
+    let unavailable = false
+    let failPrepare = false
+    let failPurge = false
+    const service = new ProductTaskService({
+      storagePath,
+      installationId: 'install',
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+      lifecycleParticipants: [{
+        id: 'fake_lifecycle',
+        inspectBlockers: async () => { if (unavailable) throw new Error('offline'); return blockers },
+        prepareCleanup: async () => { if (failPrepare) throw new Error('pre-purge failure') },
+        purgeCleanup: async () => { if (failPurge) throw new Error('post-purge failure') },
+      }],
+    })
+    const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1_000, client_operation_id: 'draft' })
+    const submitted = await service.createAndSubmitTask({ draft_id: draft.draft.draft_id as string, expected_draft_revision: 0, client_operation_id: 'submit', text: 'delete me', attachment_ids: [] })
+    const taskId = submitted.result!.task_id
+    const repository = new ProductTaskAuthorityRepository(authorityPath)
+    await repository.transactSubmit((state) => {
+      const stored = state.tasks[taskId] as { task: Record<string, unknown>; binding: unknown }
+      state.tasks[taskId] = { ...stored, task: { ...stored.task, lifecycle: 'archived', archivedAt: '2026-01-01T00:00:00.000Z', actions: ['restore', 'continue'], revision: 2 } }
+    })
+
+    for (const blocker of [
+      { participant: 'active', code: 'ACTIVE_RUN' as const, action: 'stop' as const },
+      { participant: 'queue', code: 'QUEUE' as const, action: 'detach' as const },
+      { participant: 'schedule', code: 'SCHEDULE' as const, action: 'disable' as const },
+      { participant: 'recruiting', code: 'RECRUITING' as const, action: 'resolve' as const },
+      { participant: 'fork', code: 'FORK' as const, action: 'detach' as const },
+      { participant: 'worktree', code: 'WORKTREE' as const, action: 'resolve' as const },
+    ]) {
+      blockers = [blocker]
+      expect(await service.mutateTaskDeletion(taskId, { action: 'begin', expected_revision: 2, client_operation_id: `delete-${blocker.code}` })).toMatchObject({ outcome: 'rejected', blockers: [blocker] })
+    }
+    blockers = []
+    unavailable = true
+    expect(await service.mutateTaskDeletion(taskId, { action: 'begin', expected_revision: 2, client_operation_id: 'delete-unavailable' })).toMatchObject({ outcome: 'rejected', blockers: [{ participant: 'fake_lifecycle', code: 'BLOCKER_UNAVAILABLE', action: 'resolve' }] })
+    unavailable = false
+    failPrepare = true
+    expect(await service.mutateTaskDeletion(taskId, { action: 'begin', expected_revision: 2, client_operation_id: 'delete-pre-fail' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'delete_failed_pre_purge', revision: 3, deletion: { failed_items: ['fake_lifecycle'] } } })
+    failPrepare = false
+    expect(await service.mutateTaskDeletion(taskId, { action: 'cancel', expected_revision: 3, client_operation_id: 'delete-cancel-failed-pre' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'archived', revision: 4 } })
+    blockers = []
+    expect(await service.mutateTaskDeletion(taskId, { action: 'begin', expected_revision: 4, client_operation_id: 'delete-begin-2' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'deleting', revision: 5 } })
+    expect(await service.mutateTaskDeletion(taskId, { action: 'begin', expected_revision: 4, client_operation_id: 'delete-begin-2' })).toMatchObject({ outcome: 'duplicate', task: { lifecycle: 'deleting', revision: 5 } })
+    expect(await service.mutateTaskDeletion(taskId, { action: 'commit_purge', expected_revision: 5, client_operation_id: 'delete-commit' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'purge_committed', revision: 6 } })
+    const committed = await repository.read()
+    expect(Object.keys(committed.thread_entries)).toHaveLength(1)
+    expect(await service.mutateTaskDeletion(taskId, { action: 'cancel', expected_revision: 6, client_operation_id: 'delete-too-late' })).toMatchObject({ outcome: 'rejected', task: { lifecycle: 'purge_committed' } })
+    failPurge = true
+    expect(await service.mutateTaskDeletion(taskId, { action: 'retry', expected_revision: 6, client_operation_id: 'delete-post-fail' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'delete_failed_post_purge', revision: 7, deletion: { failed_items: ['fake_lifecycle'] } } })
+    failPurge = false
+    expect(await service.mutateTaskDeletion(taskId, { action: 'retry', expected_revision: 7, client_operation_id: 'delete-retry' })).toMatchObject({ outcome: 'accepted', task: { lifecycle: 'deleted', revision: 8, workDir: '', title: '', deletion: { phase: 'deleted', tombstone_expires_at: expect.any(String) } } })
+    const deleted = await repository.read()
+    expect(Object.keys(deleted.thread_entries)).toHaveLength(0)
+    expect(Object.keys(deleted.task_runs)).toHaveLength(0)
+    expect(Object.keys(deleted.dispatch_records)).toHaveLength(0)
+    expect(Object.keys(deleted.task_events)).toHaveLength(0)
+    expect(Object.keys(deleted.conversation_lineages)).toHaveLength(0)
+    expect(await service.mutateTaskDeletion(taskId, { action: 'retry', expected_revision: 7, client_operation_id: 'delete-retry' })).toMatchObject({ outcome: 'duplicate', task: { lifecycle: 'deleted', revision: 8 } })
+  })
+})

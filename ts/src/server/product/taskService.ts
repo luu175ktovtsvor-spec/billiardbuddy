@@ -74,6 +74,20 @@ export type ProductTaskRecord = ProductTask & {
   actions: ProductTaskAction[]
 }
 
+export type TaskLifecycleBlocker = {
+  participant: string
+  code: 'ACTIVE_RUN' | 'QUEUE' | 'SCHEDULE' | 'RECRUITING' | 'FORK' | 'WORKTREE' | 'BLOCKER_UNKNOWN' | 'BLOCKER_UNAVAILABLE'
+  action: 'stop' | 'detach' | 'disable' | 'resolve'
+}
+
+export type TaskLifecycleParticipant = {
+  id: string
+  inspectBlockers: (taskId: string, revision: number) => Promise<TaskLifecycleBlocker[]>
+  prepareCleanup?: (taskId: string, revision: number, fencingToken: string) => Promise<void>
+  cancelCleanup?: (taskId: string, revision: number, fencingToken: string) => Promise<void>
+  purgeCleanup?: (taskId: string, revision: number, fencingToken: string) => Promise<void>
+}
+
 export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
   tasks: ProductTaskRecord[]
   capabilities: {
@@ -592,6 +606,7 @@ function normalizeProductTaskStore(value: unknown): ProductTaskStore {
 
 function actionsFor(task: ProductTask, hasActiveRun: boolean): ProductTaskAction[] {
   if (task.lifecycle === 'archived') return ['restore', 'continue']
+  if (task.lifecycle !== 'active') return []
   const actions: ProductTaskAction[] = [
     task.pinnedAt ? 'unpin' : 'pin',
     'rename',
@@ -619,6 +634,7 @@ export class ProductTaskService {
   private readonly workspaceBindBlockers: WorkspaceBindBlockerPort
   private readonly admissionBarrier: SessionAdmissionBarrier
   private readonly authorityRepositoryDeps: ProductTaskAuthorityRepositoryDeps
+  private readonly lifecycleParticipants: readonly TaskLifecycleParticipant[]
   private readonly now: () => Date
   private readonly installationId: string
 
@@ -631,6 +647,7 @@ export class ProductTaskService {
     admissionBarrier?: SessionAdmissionBarrier
     /** Test-only authority write seam. */
     authorityRepositoryDeps?: ProductTaskAuthorityRepositoryDeps
+    lifecycleParticipants?: readonly TaskLifecycleParticipant[]
     now?: () => Date
     installationId?: string
   } = {}) {
@@ -644,6 +661,15 @@ export class ProductTaskService {
     // are explicitly out-of-scope disabled participants, not synthetic unknowns.
     this.admissionBarrier = options.admissionBarrier ?? sessionAdmissionBarrier
     this.authorityRepositoryDeps = options.authorityRepositoryDeps ?? {}
+    this.lifecycleParticipants = options.lifecycleParticipants ?? [{
+      id: 'active_core_run',
+      inspectBlockers: async (taskId) => {
+        const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
+        return sessionId && (this.runs.hasActiveRunForSession(sessionId) || activeCoreRunRegistry.hasActive(sessionId))
+          ? [{ participant: 'active_core_run', code: 'ACTIVE_RUN', action: 'stop' }]
+          : []
+      },
+    }]
     this.workspaceBindBlockers = options.workspaceBindBlockers ?? {
       inspect: async (taskId) => {
         const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
@@ -689,10 +715,16 @@ export class ProductTaskService {
     for (const value of Object.values(authority.tasks)) {
       const task = authorityPublicTask(value)
       if (!task?.id || sideTaskIds.has(task.id) || (task as unknown as { kind?: unknown }).kind === 'side') continue
+      if (task.lifecycle === 'deleted') {
+        byId.delete(task.id)
+        continue
+      }
       const runtime = byId.get(task.id)
       // worktree state, action availability and transcript activity are live
       // Core projections, not authority metadata mutations.
-      byId.set(task.id, runtime ? { ...task, workDir: runtime.workDir, worktreeState: runtime.worktreeState, updatedAt: runtime.updatedAt, actions: runtime.actions } : task)
+      byId.set(task.id, runtime
+        ? { ...task, workDir: runtime.workDir, worktreeState: runtime.worktreeState, updatedAt: runtime.updatedAt, actions: task.lifecycle === 'active' ? runtime.actions : task.actions }
+        : task)
     }
     const tasks = [...byId.values()]
     return { ...legacy, tasks, total: tasks.length }
@@ -986,7 +1018,10 @@ export class ProductTaskService {
         ...stored.task,
         ...(input.patch.title !== undefined ? { title: validTitle(input.patch.title) } : {}),
         ...(input.patch.pinned !== undefined ? input.patch.pinned ? { pinnedAt: now } : { pinnedAt: undefined } : {}),
-        ...(input.patch.archived !== undefined ? input.patch.archived ? { lifecycle: 'archived' as const, archivedAt: now } : { lifecycle: 'active' as const, archivedAt: undefined } : {}),
+        ...(input.patch.archived !== undefined ? input.patch.archived
+          ? { lifecycle: 'archived' as const, archivedAt: now, actions: ['restore', 'continue'] as ProductTaskAction[] }
+          : { lifecycle: 'active' as const, archivedAt: undefined, actions: [stored.task.pinnedAt ? 'unpin' : 'pin', 'rename', 'continue', 'archive'] as ProductTaskAction[] }
+          : {}),
         updatedAt: now,
         revision: (stored.task.revision ?? 0) + 1,
       }
@@ -1236,6 +1271,116 @@ export class ProductTaskService {
       return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
     })
     return result
+  }
+
+  /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
+  async mutateTaskDeletion(
+    taskId: string,
+    input: { action: 'begin' | 'cancel' | 'commit_purge' | 'retry'; expected_revision: number; client_operation_id: string },
+  ): Promise<{ task: ProductTaskRecord; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; blockers: TaskLifecycleBlocker[] }> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const canonical = JSON.stringify({ task_id: taskId, action: input.action, expected_revision: input.expected_revision })
+    try {
+      const { result } = await authority.transactSubmitAsync(async (state) => {
+        const prior = state.receipts[input.client_operation_id]
+        const stored = state.tasks[taskId] as { task?: ProductTaskRecord; binding?: unknown } | undefined
+        if (!stored?.task) throw new Error('AUTHORITY_INVALID')
+        if (prior) {
+          if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
+          return { changed: false as const, value: { task: authorityPublicTask(stored.task), outcome: 'duplicate' as const, blockers: [] as TaskLifecycleBlocker[] } }
+        }
+        if (stored.task.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT')
+        const blockers = input.action === 'begin' || input.action === 'commit_purge'
+          ? await this.inspectLifecycleBlockers(taskId, input.expected_revision)
+          : []
+        const now = this.now().toISOString()
+        const deletion = stored.task.deletion
+        const reject = (rejectedBlockers: TaskLifecycleBlocker[]) => {
+          const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'rejected' as const, revision: state.revision + 1, error: 'OPERATION_REJECTED' as const }
+          state.receipts[input.client_operation_id] = receipt
+          state.event_sequence += 1
+          state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: `task_delete_${input.action}_rejected`, revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
+          return { task: authorityPublicTask(stored.task), outcome: 'rejected' as const, blockers: rejectedBlockers }
+        }
+        let next: ProductTaskRecord
+        if (input.action === 'begin') {
+          if (stored.task.lifecycle !== 'archived' || blockers.length) return reject(blockers)
+          const cleanup_plan_hash = createHash('sha256').update(JSON.stringify({ task_id: taskId, thread_entries: Object.values(state.thread_entries).filter((entry: any) => entry.task_id === taskId).map((entry: any) => entry.entry_id).sort(), task_events: Object.values(state.task_events).filter((event: any) => event.task_id === taskId).map((event: any) => event.event_sequence).sort() })).digest('hex')
+          const prepared = { phase: 'deleting' as const, fencing_token: randomUUID(), cleanup_plan_hash, started_at: now }
+          const failedItems = await this.runLifecycleCleanup('prepareCleanup', taskId, input.expected_revision, prepared.fencing_token)
+          next = { ...stored.task, lifecycle: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...prepared, phase: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', ...(failedItems.length ? { failed_items: failedItems } : {}) } }
+        } else if (input.action === 'cancel') {
+          if (!deletion || !['deleting', 'delete_failed_pre_purge'].includes(deletion.phase)) return reject(blockers)
+          const failedItems = await this.runLifecycleCleanup('cancelCleanup', taskId, input.expected_revision, deletion.fencing_token)
+          if (failedItems.length) {
+            next = { ...stored.task, lifecycle: 'delete_failed_pre_purge', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...deletion, phase: 'delete_failed_pre_purge', failed_items: failedItems } }
+          } else {
+            next = { ...stored.task, lifecycle: 'archived', actions: ['restore', 'continue'], updatedAt: now, revision: input.expected_revision + 1, deletion: undefined }
+          }
+        } else if (input.action === 'commit_purge') {
+          if (!deletion || deletion.phase !== 'deleting' || blockers.length) return reject(blockers)
+          next = { ...stored.task, lifecycle: 'purge_committed', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...deletion, phase: 'purge_committed' } }
+        } else {
+          if (!deletion) return reject(blockers)
+          if (deletion.phase === 'delete_failed_pre_purge') {
+            const retryBlockers = await this.inspectLifecycleBlockers(taskId, input.expected_revision)
+            if (retryBlockers.length) return reject(retryBlockers)
+            const failedItems = await this.runLifecycleCleanup('prepareCleanup', taskId, input.expected_revision, deletion.fencing_token)
+            next = { ...stored.task, lifecycle: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...deletion, phase: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', ...(failedItems.length ? { failed_items: failedItems } : {}) } }
+          } else {
+            if (!['purge_committed', 'delete_failed_post_purge'].includes(deletion.phase)) return reject(blockers)
+            const failedItems = await this.runLifecycleCleanup('purgeCleanup', taskId, input.expected_revision, deletion.fencing_token)
+            if (failedItems.length) {
+              next = { ...stored.task, lifecycle: 'delete_failed_post_purge', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...deletion, phase: 'delete_failed_post_purge', failed_items: failedItems } }
+            } else {
+          for (const [key, entry] of Object.entries(state.thread_entries)) if ((entry as { task_id?: string }).task_id === taskId) delete state.thread_entries[key]
+          for (const [key, event] of Object.entries(state.task_events)) if ((event as { task_id?: string }).task_id === taskId) delete state.task_events[key]
+          for (const [key, run] of Object.entries(state.task_runs)) if ((run as { task_id?: string }).task_id === taskId) { delete state.task_runs[key]; delete state.dispatch_records[key] }
+          for (const [key, binding] of Object.entries(state.attachment_bindings)) if ((binding as { task_id?: string }).task_id === taskId) delete state.attachment_bindings[key]
+          for (const [key, lineage] of Object.entries(state.conversation_lineages)) if ((lineage as { product_task_id?: string }).product_task_id === taskId) delete state.conversation_lineages[key]
+          delete state.task_scopes[taskId]
+          for (const [key, draft] of Object.entries(state.composer_drafts)) if ((draft as { target_task_id?: string }).target_task_id === taskId) delete state.composer_drafts[key]
+          next = {
+            ...stored.task,
+            projectId: '', directoryId: '', workDir: '', title: '', parentTaskId: undefined, task_scope: undefined, current_lineage_id: undefined,
+            lifecycle: 'deleted', actions: [], updatedAt: now, revision: input.expected_revision + 1,
+            deletion: { ...deletion, phase: 'deleted', tombstone_expires_at: deletion.tombstone_expires_at ?? new Date(this.now().getTime() + 30 * 24 * 60 * 60 * 1000).toISOString() },
+          }
+            }
+          }
+        }
+        state.tasks[taskId] = { ...stored, task: next }
+        const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: next }
+        state.receipts[input.client_operation_id] = receipt
+        state.event_sequence += 1
+        state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: `task_delete_${input.action}`, revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
+        return { task: authorityPublicTask(next), outcome: 'accepted' as const, blockers: [] as TaskLifecycleBlocker[] }
+      })
+      return result
+    } catch (error) {
+      if (['AUTHORITY_CONFLICT', 'OPERATION_INPUT_CONFLICT'].includes((error as Error).message)) {
+        const current = await authority.read(); const stored = current.tasks[taskId] as { task?: ProductTaskRecord } | undefined
+        if (!stored?.task) throw ApiError.notFound('任务不存在')
+        return { task: authorityPublicTask(stored.task), outcome: 'conflict', blockers: [] }
+      }
+      throw error
+    }
+  }
+
+  private async inspectLifecycleBlockers(taskId: string, revision: number): Promise<TaskLifecycleBlocker[]> {
+    const collected = await Promise.all(this.lifecycleParticipants.map(async (participant) => {
+      try { return await participant.inspectBlockers(taskId, revision) } catch { return [{ participant: participant.id, code: 'BLOCKER_UNAVAILABLE' as const, action: 'resolve' as const }] }
+    }))
+    return collected.flat()
+  }
+
+  private async runLifecycleCleanup(step: 'prepareCleanup' | 'cancelCleanup' | 'purgeCleanup', taskId: string, revision: number, fencingToken: string): Promise<string[]> {
+    const results = await Promise.all(this.lifecycleParticipants.map(async (participant) => {
+      const operation = participant[step]
+      if (!operation) return undefined
+      try { await operation(taskId, revision, fencingToken); return undefined } catch { return participant.id }
+    }))
+    return results.filter((id): id is string => typeof id === 'string')
   }
 
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {

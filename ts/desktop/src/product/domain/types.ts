@@ -215,6 +215,13 @@ export type ProductTaskActionResponse = {
   mirror?: { state: 'pending' | 'reconciled' | 'failed'; error?: string }
 }
 
+export type ProductTaskDeletionPhase = 'begin' | 'cancel' | 'commit_purge' | 'retry'
+export type ProductTaskDeletionResponse = {
+  task: ProductTaskRecord
+  receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }
+  blockers: Array<{ participant: string; code: string; action: string }>
+}
+
 export type ProductTaskThreadResponse = ProductTaskThread
 
 export type ProductSideTaskListResponse = {
@@ -238,6 +245,7 @@ export type ProductTaskApi = {
   unpin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   archive: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   restore: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  delete: (taskId: string, input: { phase: ProductTaskDeletionPhase; expected_revision: number; client_operation_id: string }) => Promise<ProductTaskDeletionResponse>
   continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) => Promise<ProductTaskActionResponse>
   createSideTask: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) => Promise<ProductTaskActionResponse>
   closeSideTask: (taskId: string, sideTaskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>

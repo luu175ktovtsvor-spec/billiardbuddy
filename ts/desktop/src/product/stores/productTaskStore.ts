@@ -9,6 +9,7 @@ import type {
   CreateProductTaskInput,
   MutationEnvelope,
   ProductTaskActionResponse,
+  ProductTaskDeletionPhase,
   ProductTaskIndexResponse,
   ProductTaskRecord,
   UpdateProductTaskInput,
@@ -49,6 +50,7 @@ type ProductTaskStore = {
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
   archiveTask: (taskId: string) => Promise<ProductTaskRecord>
   restoreTask: (taskId: string) => Promise<ProductTaskRecord>
+  mutateTaskDeletion: (taskId: string, phase: ProductTaskDeletionPhase) => Promise<ProductTaskRecord>
   continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
 
@@ -270,6 +272,34 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
     unpinTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'unpin'), { taskId }, (envelope) => productTasksApi.unpin(taskId, envelope)),
     archiveTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'archive'), { taskId }, (envelope) => productTasksApi.archive(taskId, envelope)),
     restoreTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'restore'), { taskId }, (envelope) => productTasksApi.restore(taskId, envelope)),
+    mutateTaskDeletion: async (taskId, phase) => {
+      const current = get().index.tasks.find((task) => task.id === taskId)
+      if (!current) throw new Error('任务不存在或已删除')
+      const intentKey = productTaskMutationKey(taskId, `delete-${phase}`)
+      const existing = get().pending[intentKey]
+      const envelope = existing ?? createEnvelope({ phase }, current.revision ?? 0)
+      set((state) => ({ error: null, pending: { ...state.pending, [intentKey]: envelope }, mutations: { ...state.mutations, [intentKey]: true } }))
+      try {
+        const response = await productTasksApi.delete(taskId, envelope as { phase: ProductTaskDeletionPhase; expected_revision: number; client_operation_id: string })
+        if (response.receipt.outcome === 'conflict' || response.receipt.outcome === 'rejected') throw new Error('任务删除当前不可继续')
+        const index = await productTasksApi.list()
+        taskIndexRequestSequence += 1
+        set((state) => {
+          const pending = { ...state.pending }
+          delete pending[intentKey]
+          return { index, isLoading: false, pending, mutations: { ...state.mutations, [intentKey]: false } }
+        })
+        return response.task
+      } catch (error) {
+        const knownTerminal = error instanceof ProductApiError
+        set((state) => {
+          const pending = { ...state.pending }
+          if (knownTerminal) delete pending[intentKey]
+          return { error: errorMessage(error, '暂时无法完成任务删除，请稍后重试。'), pending, mutations: { ...state.mutations, [intentKey]: false } }
+        })
+        throw error
+      }
+    },
     continueTask: async (taskId, input) => {
       const task = await runMutation(productTaskMutationKey(taskId, 'continue'), { taskId, ...input }, (envelope) =>
         productTasksApi.continue(taskId, envelope as MutationEnvelope<ContinueProductTaskInput>))

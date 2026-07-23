@@ -139,17 +139,22 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[], opti
 function requiredString(value: unknown): value is string { return typeof value === 'string' && value.length > 0 }
 function taskRecord(value: unknown): void {
   const task = object(value)
-  exactKeys(task, ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState', 'actions'], ['pinnedAt', 'archivedAt', 'parentTaskId', 'coreSessionId', 'revision', 'task_scope', 'current_lineage_id'])
+  exactKeys(task, ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState', 'actions'], ['pinnedAt', 'archivedAt', 'parentTaskId', 'coreSessionId', 'revision', 'task_scope', 'current_lineage_id', 'deletion'])
   for (const key of ['id', 'createdAt', 'updatedAt', 'worktreeState']) if (!requiredString(task[key])) invalid()
   if (typeof task.projectId !== 'string' || typeof task.directoryId !== 'string' || typeof task.workDir !== 'string') invalid()
   if (typeof task.title !== 'string') invalid()
-  if (!['active', 'archived'].includes(task.lifecycle as string) || !['main', 'continuation'].includes(task.kind as string) || !['not_requested', 'planned', 'materialized'].includes(task.worktreeState as string) || !isTimestamp(task.createdAt) || !isTimestamp(task.updatedAt) || !Array.isArray(task.actions) || task.actions.some(action => !['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'].includes(action as string))) invalid()
+  if (!['active', 'archived', 'deleting', 'delete_failed_pre_purge', 'purge_committed', 'delete_failed_post_purge', 'deleted'].includes(task.lifecycle as string) || !['main', 'continuation'].includes(task.kind as string) || !['not_requested', 'planned', 'materialized'].includes(task.worktreeState as string) || !isTimestamp(task.createdAt) || !isTimestamp(task.updatedAt) || !Array.isArray(task.actions) || task.actions.some(action => !['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'].includes(action as string))) invalid()
   for (const key of ['pinnedAt', 'archivedAt'] as const) if (task[key] !== undefined && !isTimestamp(task[key])) invalid()
   if (task.parentTaskId !== undefined && !requiredString(task.parentTaskId)) invalid()
   if (task.coreSessionId !== undefined && !requiredString(task.coreSessionId)) invalid()
   if (task.revision !== undefined && (!Number.isSafeInteger(task.revision) || (task.revision as number) < 0)) invalid()
   if (task.task_scope !== undefined && typeof task.task_scope !== 'string') invalid()
   if (task.current_lineage_id !== undefined && !requiredString(task.current_lineage_id)) invalid()
+  if (task.deletion !== undefined) {
+    const deletion = object(task.deletion)
+    exactKeys(deletion, ['phase', 'fencing_token', 'cleanup_plan_hash', 'started_at'], ['failed_items', 'tombstone_expires_at'])
+    if (!['deleting', 'delete_failed_pre_purge', 'purge_committed', 'delete_failed_post_purge', 'deleted'].includes(deletion.phase as string) || !requiredString(deletion.fencing_token) || !/^[a-f0-9]{64}$/.test(deletion.cleanup_plan_hash as string) || !isTimestamp(deletion.started_at) || (deletion.failed_items !== undefined && (!Array.isArray(deletion.failed_items) || deletion.failed_items.some(item => !requiredString(item))) || (deletion.tombstone_expires_at !== undefined && !isTimestamp(deletion.tombstone_expires_at)))) invalid()
+  }
 }
 function bindingRecord(value: unknown): void {
   const binding = object(value)
@@ -338,6 +343,17 @@ export class ProductTaskAuthorityRepository {
     return this.lock(async () => {
       const file = await this.read()
       const raw = mutate(file)
+      if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }
+      file.revision += 1
+      return { file: await this.write(file, false, true), result: raw as T }
+    })
+  }
+
+  /** Submit transaction that retains the authority lease while participants inspect state. */
+  async transactSubmitAsync<T>(mutate: (file: AuthorityFile) => Promise<T | { changed: false; value: T }>): Promise<{ file: AuthorityFile; result: T }> {
+    return this.lock(async () => {
+      const file = await this.read()
+      const raw = await mutate(file)
       if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }
       file.revision += 1
       return { file: await this.write(file, false, true), result: raw as T }

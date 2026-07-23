@@ -82,6 +82,7 @@ export async function handleProductApi(
     | 'renameTaskAuthoritatively'
     | 'reconcileRenameAuthoritatively'
     | 'mutateTaskAuthoritatively'
+    | 'mutateTaskDeletion'
     | 'getAuthorityOperation'
     | 'getConversationLineage'
     | 'getConversationLineageRoot'
@@ -279,6 +280,21 @@ export async function handleProductApi(
       const after = url.searchParams.get('after') ?? '0'
       if (!/^(0|[1-9][0-9]*)$/.test(after)) throw ApiError.badRequest('事件游标无效')
       return Response.json(await tasks.listTaskEvents(taskId, Number(after)))
+    }
+
+    if (action === 'delete' && !segments[5]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      if (!assertPlainExactObject(input, ['phase', 'expected_revision', 'client_operation_id'])
+        || !['begin', 'cancel', 'commit_purge', 'retry'].includes(input.phase as string)
+        || !Number.isSafeInteger(input.expected_revision) || (input.expected_revision as number) < 0
+        || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('删除阶段、revision 和 operation 必填')
+      const result = await tasks.mutateTaskDeletion(taskId, {
+        action: input.phase as 'begin' | 'cancel' | 'commit_purge' | 'retry',
+        expected_revision: input.expected_revision,
+        client_operation_id: input.client_operation_id,
+      })
+      return Response.json({ task: publicTask(result.task), receipt: { outcome: result.outcome }, blockers: result.blockers }, { status: result.outcome === 'conflict' ? 409 : result.outcome === 'rejected' ? 422 : 200 })
     }
 
     if (action === 'operations') {

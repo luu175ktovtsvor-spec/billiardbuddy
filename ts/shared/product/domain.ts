@@ -2,7 +2,14 @@
 // distinguishes a project root from a task's live execution directory.
 export const PRODUCT_DOMAIN_VERSION = 2 as const
 
-export type ProductTaskLifecycle = 'active' | 'archived'
+export type ProductTaskLifecycle =
+  | 'active'
+  | 'archived'
+  | 'deleting'
+  | 'delete_failed_pre_purge'
+  | 'purge_committed'
+  | 'delete_failed_post_purge'
+  | 'deleted'
 export type ProductTaskKind = 'main' | 'continuation'
 export type ProductWorktreeState = 'not_requested' | 'planned' | 'materialized'
 export type ProductSideTaskStatus = 'open' | 'closed'
@@ -111,6 +118,14 @@ export type ProductTask = {
   kind: ProductTaskKind
   pinnedAt?: string
   archivedAt?: string
+  deletion?: {
+    phase: Exclude<ProductTaskLifecycle, 'active' | 'archived'>
+    fencing_token: string
+    cleanup_plan_hash: string
+    started_at: string
+    failed_items?: string[]
+    tombstone_expires_at?: string
+  }
   parentTaskId?: string
   createdAt: string
   updatedAt: string
