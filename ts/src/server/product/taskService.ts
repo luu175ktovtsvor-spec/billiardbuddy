@@ -62,6 +62,7 @@ import {
 } from './legacyProductTaskReader.js'
 import { ProductTaskAuthorityRepository, readLegacyProductTasks, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
+import { ProductSessionMemoryRepository } from '../services/productSessionMemory.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -673,15 +674,22 @@ export class ProductTaskService {
     this.admissionBarrier = options.admissionBarrier ?? sessionAdmissionBarrier
     this.authorityRepositoryDeps = options.authorityRepositoryDeps ?? {}
     this.sessionBindingPort = options.sessionBindingPort ?? sessionService
-    this.lifecycleParticipants = options.lifecycleParticipants ?? [{
-      id: 'active_core_run',
-      inspectBlockers: async (taskId) => {
-        const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
-        return sessionId && (this.runs.hasActiveRunForSession(sessionId) || activeCoreRunRegistry.hasActive(sessionId))
-          ? [{ participant: 'active_core_run', code: 'ACTIVE_RUN', action: 'stop' }]
-          : []
+    this.lifecycleParticipants = options.lifecycleParticipants ?? [
+      {
+        id: 'active_core_run',
+        inspectBlockers: async (taskId) => {
+          const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
+          return sessionId && (this.runs.hasActiveRunForSession(sessionId) || activeCoreRunRegistry.hasActive(sessionId))
+            ? [{ participant: 'active_core_run', code: 'ACTIVE_RUN', action: 'stop' }]
+            : []
+        },
       },
-    }]
+      {
+        id: 'product_session_memory',
+        inspectBlockers: async () => [],
+        purgeCleanup: async taskId => new ProductSessionMemoryRepository().purgeTask(this.sessionMemoryStorageDir(), taskId),
+      },
+    ]
     this.workspaceBindBlockers = options.workspaceBindBlockers ?? {
       inspect: async (taskId) => {
         const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
@@ -1252,6 +1260,9 @@ export class ProductTaskService {
   /** Server-private scheduler state never crosses a product API boundary. */
   workerSchedulerStatePath(): string { return path.join(path.dirname(this.storagePath), 'product-agent-worker-scheduler.json') }
 
+  /** Private BB-05B state lives beside, not inside, ProductTask authority. */
+  private sessionMemoryStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-session-memory') }
+
   /** Cron uses the same durable TaskRun dispatcher, but only after it owns a run. */
   dispatchScheduledTaskRun(runId: string, generation: number): void { this.dispatchAcceptedRun(runId, generation, 'scheduled') }
 
@@ -1348,14 +1359,40 @@ export class ProductTaskService {
     return result
   }
 
-  /** Server-private BB-03D lookup; it reads the durable hand-off only. */
-  async readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<{ task_id: string; lineage_id: string; resume_binding_id: string }> {
+  /** Server-private BB-03D/BB-05B lookup; it reads the durable hand-off only. */
+  async readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<{
+    task_id: string
+    lineage_id: string
+    resume_binding_id: string
+    session_memory: {
+      storage_dir: string
+      entry_id: string
+      ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }>
+    }
+  }> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown } | undefined
+    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown } | undefined
     const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
-    const lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
-    if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
-    return { task_id: run.task_id, lineage_id: run.lineage_id, resume_binding_id: lineage.resume_binding_id }
+    let lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as Record<string, unknown> | undefined : undefined
+    if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || typeof run.entry_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || lineage.product_task_id !== run.task_id || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
+    const resumeBindingId = lineage.resume_binding_id
+    const ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }> = []
+    const seen = new Set([run.lineage_id])
+    while (typeof lineage.parent_lineage_id === 'string') {
+      const parentId = lineage.parent_lineage_id
+      if (seen.has(parentId)) throw new Error('AUTHORITY_INVALID')
+      seen.add(parentId)
+      const parent = state.conversation_lineages[parentId] as Record<string, unknown> | undefined
+      if (!parent || parent.product_task_id !== run.task_id || typeof parent.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
+      ancestors.push({ lineage_id: parentId, resume_binding_id: parent.resume_binding_id, ...(typeof lineage.fork_checkpoint_id === 'string' ? { inherit_through_entry_id: lineage.fork_checkpoint_id } : {}) })
+      lineage = parent
+    }
+    return {
+      task_id: run.task_id,
+      lineage_id: run.lineage_id,
+      resume_binding_id: resumeBindingId,
+      session_memory: { storage_dir: this.sessionMemoryStorageDir(), entry_id: run.entry_id, ancestors },
+    }
   }
 
   /** The only server-private resolver for a run's durable Core launch target. */

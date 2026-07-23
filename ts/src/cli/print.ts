@@ -92,6 +92,7 @@ import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
 import { getLocalISODate } from 'src/constants/common.js'
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
+import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -436,15 +437,23 @@ export type ServerPrivateNativeCorePort = {
   subscribe(listener: (message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void): () => void
 }
 
-export async function createServerPrivateNativeCorePort(input: { run_id: string; session_id: string; work_dir: string }): Promise<ServerPrivateNativeCorePort> {
+export async function createServerPrivateNativeCorePort(input: {
+  run_id: string
+  session_id: string
+  work_dir: string
+  session_memory?: ProductSessionMemoryBinding & { entry_id: string }
+}): Promise<ServerPrivateNativeCorePort> {
   let state = getDefaultAppState()
   const commands = await getCommands(input.work_dir)
   const tools = getTools(state.toolPermissionContext)
   const instructionSnapshot = createProductInstructionSnapshot(input.work_dir)
-  const productUserContext = {
+  const sessionMemoryRepository = input.session_memory ? new ProductSessionMemoryRepository() : undefined
+  let productSessionMemory = input.session_memory ? await sessionMemoryRepository!.load(input.session_memory) : ''
+  const productUserContext = () => ({
     ...(instructionSnapshot.prompt ? { claudeMd: instructionSnapshot.prompt } : {}),
+    ...(productSessionMemory ? { sessionMemory: productSessionMemory } : {}),
     currentDate: `Today's date is ${getLocalISODate()}.`,
-  }
+  })
   let cache = createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
   let controller: AbortController | undefined
   let terminal = false
@@ -460,6 +469,7 @@ export async function createServerPrivateNativeCorePort(input: { run_id: string;
       controller = createAbortController()
       emit({ type: 'event', event: 'started' })
       try {
+        let completedResult: string | undefined
         for await (const message of ask({
           commands,
           prompt: text,
@@ -470,7 +480,7 @@ export async function createServerPrivateNativeCorePort(input: { run_id: string;
           setAppState: update => { state = update(state) },
           getReadFileCache: () => cache,
           setReadFileCache: next => { cache = next },
-          contextOverride: { userContext: productUserContext, systemContext: {} },
+          contextOverride: { userContext: productUserContext(), systemContext: {} },
           disableMemoryDiscovery: true,
           abortController: controller,
           canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
@@ -486,7 +496,9 @@ export async function createServerPrivateNativeCorePort(input: { run_id: string;
         })) {
           if (message.type === 'assistant') emit({ type: 'event', event: 'delta' })
           else if (message.type === 'system' && message.subtype === 'init') emit({ type: 'event', event: 'tool' })
+          else if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
         }
+        if (completedResult !== undefined && input.session_memory) productSessionMemory = await sessionMemoryRepository!.appendCompletedTurn(input.session_memory, { entry_id: input.session_memory.entry_id, user: text, assistant: completedResult })
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch {
         finish(controller.signal.aborted ? 'stopped' : 'recovery_required')
