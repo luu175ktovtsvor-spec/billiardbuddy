@@ -33,6 +33,12 @@ import {
   type TraceProviderInfo,
 } from '../services/traceCaptureService.js'
 import { isQfGatewayProviderId } from '../services/qfGatewayProvider.js'
+import { remoteDataEgressConsentService } from '../services/remoteDataEgressConsent.js'
+import {
+  DATA_EGRESS_CONSENT_HEADER,
+  PROVIDER_GATEWAY_PROTOCOL,
+  PROVIDER_GATEWAY_PROTOCOL_HEADER,
+} from '../../../shared/product/dataEgress.js'
 
 const providerService = new ProviderService()
 
@@ -156,7 +162,15 @@ export function withStreamIdleTimeout(
   })
 }
 
-export async function handleProxyRequest(req: Request, url: URL): Promise<Response> {
+export type ProxyHandlerDependencies = {
+  activeConsentReceipt?: () => Promise<{ receipt_id: string } | null>
+}
+
+export async function handleProxyRequest(
+  req: Request,
+  url: URL,
+  deps: ProxyHandlerDependencies = {},
+): Promise<Response> {
   const providerMatch = url.pathname.match(/^\/proxy\/providers\/([^/]+)\/v1\/messages$/)
   const providerId = providerMatch ? decodeURIComponent(providerMatch[1]!) : undefined
   const isActiveProxyPath = url.pathname === '/proxy/v1/messages'
@@ -224,6 +238,21 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
   // (先用 MiMo 把图读成结构化文本再交给原文本模型)处理。本地绝不 400、绝不静默丢图或改投别家 ——
   // 是否能看图、怎么看图完全由网关决定。
   const isManagedGateway = isQfGatewayProviderId(config.id)
+  const managedHeaders: Record<string, string> = {}
+  if (isManagedGateway) {
+    const consent = await (deps.activeConsentReceipt ?? (() => remoteDataEgressConsentService.activeReceipt()))()
+    if (!consent) {
+      return Response.json({
+        type: 'error',
+        error: {
+          type: 'permission_error',
+          message: '请先在 BilliardBuddy 中确认远程数据使用范围',
+        },
+      }, { status: 428 })
+    }
+    managedHeaders[PROVIDER_GATEWAY_PROTOCOL_HEADER] = PROVIDER_GATEWAY_PROTOCOL.headerValue
+    managedHeaders[DATA_EGRESS_CONSENT_HEADER] = consent.receipt_id
+  }
 
   const isStream = body.stream === true
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
@@ -241,6 +270,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
       req,
       networkSettings,
       config.clientId,
+      managedHeaders,
     )
   }
 
@@ -249,7 +279,7 @@ export async function handleProxyRequest(req: Request, url: URL): Promise<Respon
 
   try {
     if (config.apiFormat === 'openai_chat') {
-      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, isManagedGateway, config.clientId)
+      return await handleOpenaiChat(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, isManagedGateway, config.clientId, managedHeaders)
     } else {
       return await handleOpenaiResponses(body, baseUrl, config.apiKey, isStream, networkSettings, traceContext, promptCacheKey)
     }
@@ -300,6 +330,7 @@ async function forwardManagedNativeWebSearch(
   request: Request,
   networkSettings: NetworkSettings,
   clientId?: string,
+  managedHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const url = `${baseUrl}/v1/messages`
   const headers: Record<string, string> = {
@@ -312,6 +343,7 @@ async function forwardManagedNativeWebSearch(
   const accept = request.headers.get('accept')?.trim()
   if (accept) headers.Accept = accept
   if (clientId) headers['X-QF-Client-ID'] = clientId
+  Object.assign(headers, managedHeaders)
 
   const proxyOptions = getNetworkProxyFetchOptions(networkSettings, url)
   const upstream = await fetchUpstreamWithTimeout(url, {
@@ -355,6 +387,7 @@ async function handleOpenaiChat(
   traceContext: ProxyTraceContext | null,
   isManagedGateway: boolean,
   clientId?: string,
+  managedHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const transformed = anthropicToOpenaiChat(body, resolveOpenaiChatCompatOptions(baseUrl, body.model, isManagedGateway))
   const url = `${baseUrl}/v1/chat/completions`
@@ -366,8 +399,8 @@ async function handleOpenaiChat(
   // wire but is deliberately kept OUT of the traced headers so the install id never lands in
   // the local proxy trace/logs. A user's own OpenAI-compat provider has no clientId → no header.
   const fetchHeaders = clientId
-    ? { ...upstreamRequestHeaders, 'X-QF-Client-ID': clientId }
-    : upstreamRequestHeaders
+    ? { ...upstreamRequestHeaders, 'X-QF-Client-ID': clientId, ...managedHeaders }
+    : { ...upstreamRequestHeaders, ...managedHeaders }
   const proxyOptions = getNetworkProxyFetchOptions(networkSettings, url)
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()

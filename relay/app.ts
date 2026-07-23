@@ -31,6 +31,14 @@ import { join } from 'node:path'
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
+export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
+
+function requireGatewayProtocol(req: Request, owner: string): void {
+  if (owner && req.headers.get('x-bb-provider-protocol')?.trim() !== PROVIDER_GATEWAY_PROTOCOL_VALUE) {
+    throw new HttpError(426, 'relay: PROVIDER_PROTOCOL_INCOMPATIBLE')
+  }
+}
+
 export type RelayConfig = {
   relayToken: string
   openaiKey: string
@@ -902,6 +910,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const currentActiveInputBytes = refreshActiveInputBytes()
         return Response.json({
           ok: true,
+          component_manifest: {
+            component: 'qf-relay',
+            protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
+            requires_gateway_protocol_for_owned_tasks: true,
+          },
           active,
           queued: counts.queued,
           running: counts.running,
@@ -926,6 +939,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         auth(req)
         sweep()
         const owner = readOwner(req)
+        requireGatewayProtocol(req, owner)
         const idempotencyKey = (req.headers.get('idempotency-key') ?? '').trim() || null
         const consentReceiptHash = (req.headers.get('x-relay-data-egress-consent') ?? '').trim() || null
         if (owner && (!idempotencyKey || idempotencyKey.length > 160)) {
@@ -1019,6 +1033,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
         // 归属绑定:带 owner 的任务只有同 owner 能轮询(越权 403)。旧任务(owner='' 空哨兵)不设防,兼容期可轮询。
         const requester = readOwner(req)
+        requireGatewayProtocol(req, requester)
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         return pollResponse(rec, url.searchParams.get('metadata_only') === '1')
       }
@@ -1030,6 +1045,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const rec = store.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
         const requester = readOwner(req)
+        requireGatewayProtocol(req, requester)
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'queued') throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
         store.setStatus(id, 'cancelled', '任务已在请求上游前取消')

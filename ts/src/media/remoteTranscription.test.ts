@@ -36,6 +36,8 @@ test('transcribeRemoteFile forwards audio with server-side auth', async () => {
         QF_GATEWAY_TOKEN: 'app-token',
         BB_INSTALLATION_ID: 'install-001',
       },
+      consentReceiptId: 'a'.repeat(64),
+      providerProtocol: 'bb-provider-gateway/1.0',
       fetchImpl: async (input, init) => {
         requestUrl = String(input)
         request = init
@@ -47,6 +49,8 @@ test('transcribeRemoteFile forwards audio with server-side auth', async () => {
   expect(requestUrl).toBe('https://gateway.example/gw/v1/audio/transcriptions')
   expect(new Headers(request?.headers).get('authorization')).toBe('Bearer app-token')
   expect(new Headers(request?.headers).get('x-qf-client-id')).toBe('install-001')
+  expect(new Headers(request?.headers).get('x-bb-data-egress-consent')).toBe('a'.repeat(64))
+  expect(new Headers(request?.headers).get('x-bb-provider-protocol')).toBe('bb-provider-gateway/1.0')
   expect(request?.body).toBeInstanceOf(FormData)
   expect(result).toEqual({ text: '开台检查' })
 })

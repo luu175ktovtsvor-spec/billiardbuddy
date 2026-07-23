@@ -48,6 +48,7 @@ const MAX_RESPONSE_BYTES = 1024 * 1024
 const MAX_USERS = 100
 const MAX_WINDOWS = 10
 const MAX_REQUESTS = MAX_USERS * MAX_WINDOWS
+const PROVIDER_GATEWAY_PROTOCOL = 'bb-provider-gateway/1.0'
 const HIGH_TO_LOW_DEFAULT_PHASES = [1_000, 800, 600, 400, 200, 100, 64, 36, 24, 12, 1]
 const capacityPools = ['vision', 'mimo', 'deepseek'] as const
 
@@ -63,6 +64,7 @@ function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=http://127.0.0.1:8799 \\
   QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/vision-real-loadtest.ts --execute --generate-image \\
     --unique-image-per-request [options]
 
@@ -587,6 +589,10 @@ async function main(): Promise<void> {
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
     ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
+  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
+    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
+  }
 
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
@@ -622,7 +628,12 @@ async function main(): Promise<void> {
     throw new Error('--image-seed plus total staged image count is too large')
   }
   const model = route === 'bridge' ? 'deepseek-v4-flash' : 'mimo-v2.5'
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'X-BB-Data-Egress-Consent': consentReceiptId,
+    'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
+  }
 
   function uniqueImage(index: number): string {
     const distinctIndex = imageSeed + index

@@ -46,6 +46,7 @@ export type ImageLoadtestOptions = ImageLoadtestPlan & {
   baseUrl: string
   targetOrigin: string
   token: string
+  consentReceiptId: string
   /** `admission` verifies the gateway/relay burst envelope, then cancels queued work. */
   mode: 'terminal' | 'admission'
   size: '1024x1024' | '1536x1024' | '1024x1536'
@@ -89,6 +90,7 @@ const MAX_TASKS = MAX_USERS * MAX_WINDOWS
 // load-test-only ceiling; relay still limits paid upstream work independently.
 const MAX_SUBMIT_CONCURRENCY = MAX_TASKS
 const MAX_METADATA_RESPONSE_BYTES = 64 * 1024
+const PROVIDER_GATEWAY_PROTOCOL = 'bb-provider-gateway/1.0'
 const IMAGE_SIZES = new Set(['1024x1024', '1536x1024', '1024x1536'])
 const TERMINAL_STATES = new Set<TerminalState>(['succeeded', 'failed', 'failed_unknown', 'cancelled'])
 
@@ -96,6 +98,7 @@ function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=http://127.0.0.1:8799 \\
   QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/image-real-loadtest.ts --execute [options]
 
 Options:
@@ -401,6 +404,8 @@ async function submitTask(index: number, options: ImageLoadtestOptions, deps: Re
         'Content-Type': 'application/json',
         'X-QF-Client-ID': clientId,
         'Idempotency-Key': `loadtest-${crypto.randomUUID()}-${index}`,
+        'X-BB-Data-Egress-Consent': options.consentReceiptId,
+        'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
       },
       body: JSON.stringify({
         mode: 'generate',
@@ -439,7 +444,7 @@ async function cancelTask(task: SubmittedTask, options: ImageLoadtestOptions, fe
     `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}/cancel`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId },
+      headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL },
     },
     undefined,
     options.pollRequestTimeoutMs,
@@ -500,7 +505,7 @@ async function pollTask(
       const attempt = await fetchAttempt(
         deps.fetchImpl,
         `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}?metadata_only=1`,
-        { headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId } },
+        { headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL } },
         controller.signal,
         options.pollRequestTimeoutMs,
       )
@@ -691,6 +696,10 @@ async function main(): Promise<void> {
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
     ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
   if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
+  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
+    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
+  }
 
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
@@ -704,6 +713,7 @@ async function main(): Promise<void> {
     baseUrl,
     targetOrigin,
     token,
+    consentReceiptId,
     mode,
     size: size as ImageLoadtestOptions['size'],
     submitConcurrency: boundedInteger(

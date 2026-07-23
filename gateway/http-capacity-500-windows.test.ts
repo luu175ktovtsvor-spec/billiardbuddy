@@ -108,6 +108,8 @@ function chatRequest(port: number, installation: number, window: number, sockets
       'Content-Type: application/json',
       `Content-Length: ${Buffer.byteLength(payload)}`,
       `X-QF-Client-ID: desktop-${String(installation).padStart(4, '0')}`,
+      `X-BB-Data-Egress-Consent: ${'a'.repeat(64)}`,
+      'X-BB-Provider-Protocol: bb-provider-gateway/1.0',
       '',
       payload,
     ].join('\r\n')

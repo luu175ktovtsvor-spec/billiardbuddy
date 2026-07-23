@@ -12,11 +12,14 @@ import {
   transcribeVoiceFile,
   type VoiceTranscriptionOptions,
 } from '../services/voiceTranscription.js'
+import { remoteDataEgressConsentService } from '../services/remoteDataEgressConsent.js'
+import { PROVIDER_GATEWAY_PROTOCOL } from '../../../shared/product/dataEgress.js'
 
 const DEFAULT_MAX_AUDIO_BYTES = 96 * 1024 * 1024
 
 type ProductVoiceApiDependencies = Pick<VoiceTranscriptionOptions, 'env' | 'fetchImpl'> & {
   transcribe?: typeof transcribeVoiceFile
+  consentReceiptId?: string | null
 }
 
 function maxAudioBytes(env: Record<string, string | undefined>): number {
@@ -96,11 +99,20 @@ export async function handleProductVoiceApi(
       ? languageValue.trim().slice(0, 16)
       : undefined
 
+    const consentReceiptId = deps.consentReceiptId === undefined
+      ? (await remoteDataEgressConsentService.activeReceipt())?.receipt_id ?? null
+      : deps.consentReceiptId
+    if (!consentReceiptId) {
+      throw new ApiError(428, '请先确认远程数据使用范围', 'REMOTE_DATA_EGRESS_REQUIRED')
+    }
+
     const result = await (deps.transcribe ?? transcribeVoiceFile)(file, {
       env,
       fetchImpl: deps.fetchImpl,
       language,
       signal: req.signal,
+      consentReceiptId,
+      providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     })
     return Response.json(voiceTranscriptionResponseSchema.parse(result))
   } catch (error) {

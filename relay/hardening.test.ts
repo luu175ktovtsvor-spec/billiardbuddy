@@ -21,6 +21,7 @@ function protectedHeaders(headers: Record<string, string>): Record<string, strin
   return {
     'idempotency-key': `test-operation-${++operationSequence}`,
     'x-relay-data-egress-consent': 'a'.repeat(64),
+    'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
     ...headers,
   }
 }
@@ -54,12 +55,12 @@ function chunkedSubmit(raw: string, headers: Record<string, string> = {}) {
   })
 }
 function poll(id: string, headers: Record<string, string> = {}) {
-  return new Request(`http://relay/images/tasks/${id}`, { headers: { authorization: 'Bearer relay-secret', ...headers } })
+  return new Request(`http://relay/images/tasks/${id}`, { headers: { authorization: 'Bearer relay-secret', ...(headers['x-relay-owner'] ? { 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' } : {}), ...headers } })
 }
 function cancel(id: string, headers: Record<string, string> = {}) {
   return new Request(`http://relay/images/tasks/${id}/cancel`, {
     method: 'POST',
-    headers: { authorization: 'Bearer relay-secret', ...headers },
+    headers: { authorization: 'Bearer relay-secret', ...(headers['x-relay-owner'] ? { 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' } : {}), ...headers },
   })
 }
 const tick = (ms = 5) => new Promise(r => setTimeout(r, ms))
@@ -93,6 +94,28 @@ test('capacity defaults admit the 100 users × 10 windows burst without increasi
   expect(malformed.imgUserConc).toBe(1)
   expect(malformed.retryAfterSeconds).toBe(1)
   expect(malformed.pendingInputBytesMax).toBe(64 * 1024 * 1024)
+})
+
+test('owned relay work rejects an old gateway protocol before task persistence', async () => {
+  let upstreamCalls = 0
+  const fetch = createRelayFetch({
+    env: baseEnv(),
+    fetchImpl: async () => { upstreamCalls++; return Response.json({ data: [{ b64_json: B64 }] }) },
+  })
+  const response = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer relay-secret',
+      'content-type': 'application/json',
+      'x-relay-owner': 'old-gateway',
+      'idempotency-key': 'old-operation',
+      'x-relay-data-egress-consent': 'a'.repeat(64),
+    },
+    body: JSON.stringify(GEN),
+  }))
+  expect(response.status).toBe(426)
+  expect(upstreamCalls).toBe(0)
+  expect((await (await fetch(new Request('http://relay/healthz'))).json()).active).toBe(0)
 })
 
 test('relay accepts a 100-user × 10 small-image burst while retaining six paid upstream slots', async () => {

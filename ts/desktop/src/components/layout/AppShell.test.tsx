@@ -77,6 +77,10 @@ vi.mock('../../product/components/TaskSearchModal', () => ({
   ),
 }))
 
+vi.mock('../../product/components/RemoteDataEgressConsent', () => ({
+  RemoteDataEgressConsentGate: () => <div data-testid="remote-data-egress-gate" />,
+}))
+
 import { AppShell } from './AppShell'
 
 describe('AppShell desktop boot flow', () => {

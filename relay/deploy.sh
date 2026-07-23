@@ -94,5 +94,7 @@ sleep 3
 echo "=== 服务状态 ==="
 systemctl is-active qfrelay || (journalctl -u qfrelay -n 20 --no-pager; exit 1)
 echo "=== /healthz ==="
-curl -s --max-time 8 http://127.0.0.1:8790/healthz; echo
+health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8790/healthz)"
+HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="qf-relay"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_gateway_protocol_for_owned_tasks!==true)throw new Error("qf-relay component manifest incompatible")'
+echo "$health_json"
 echo "DEPLOY_DONE"

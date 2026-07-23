@@ -55,6 +55,9 @@ test('account retention overrides and production invoice reconciliation remain e
   expect(egress.external_verification).toEqual({
     openai_account_retention_override: 'NOT_VERIFIED_EXTERNALLY',
     ark_account_retention_term: 'NOT_VERIFIED_EXTERNALLY',
+    deepseek_account_api_retention_term: 'NOT_VERIFIED_EXTERNALLY',
+    mimo_account_api_retention_term: 'NOT_VERIFIED_EXTERNALLY',
+    fun_asr_account_retention_term: 'NOT_VERIFIED_EXTERNALLY',
   })
   const relay = json('ts/product-contracts/relay-retention-policy.json')
   expect(relay.external_verification).toEqual({

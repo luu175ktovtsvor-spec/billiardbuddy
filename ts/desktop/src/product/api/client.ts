@@ -19,6 +19,9 @@ const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
   VOICE_TRANSCRIPTION_INVALID_AUDIO: '请先录制一段有效音频后重试。',
   VOICE_TRANSCRIPTION_TOO_LARGE: '录音文件过大，请缩短后重试。',
   VOICE_TRANSCRIPTION_UNAVAILABLE: '语音转写暂时不可用，请稍后重试。',
+  REMOTE_DATA_EGRESS_REQUIRED: '请先确认远程数据使用范围。',
+  REMOTE_DATA_EGRESS_UNAVAILABLE: '远程能力暂时不可用。',
+  REMOTE_DATA_EGRESS_INVALID: '数据使用说明已更新，请重新确认。',
 }
 
 function readProductApiErrorCode(body: unknown): string | null {

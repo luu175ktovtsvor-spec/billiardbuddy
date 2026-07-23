@@ -12,6 +12,18 @@ function env(overrides: Record<string, string | undefined> = {}) {
 
 const B64 = Buffer.from('png-bytes').toString('base64')
 
+test('healthz publishes the relay compatibility manifest', async () => {
+  const fetch = createRelayFetch({ env: env() })
+  expect(await (await fetch(new Request('http://relay/healthz'))).json()).toMatchObject({
+    ok: true,
+    component_manifest: {
+      component: 'qf-relay',
+      protocol: 'bb-provider-gateway/1.0',
+      requires_gateway_protocol_for_owned_tasks: true,
+    },
+  })
+})
+
 async function pollUntilDone(fetch: (r: Request) => Promise<Response>, id: string): Promise<any> {
   for (let i = 0; i < 50; i++) {
     const res = await fetch(new Request(`http://relay/images/tasks/${id}`, { headers: { authorization: 'Bearer relay-secret' } }))
