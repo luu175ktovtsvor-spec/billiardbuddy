@@ -78,6 +78,8 @@ export type ProductResourceSchedulerOptions = {
   processId?: string
   processGeneration?: string
   leaseMs?: number
+  /** Content claims are fail-closed unless Module 03's runtime profile validates. */
+  contentSafetyProfile?: { valid(): Promise<boolean> }
 }
 
 /**
@@ -101,6 +103,9 @@ export class ProductResourceScheduler {
   }
 
   async submit(claim: ProductResourceClaim): Promise<ProductResourceReceipt> {
+    if (claim.resources.some(resource => ['content.inspect', 'content.extract', 'content.thumbnail', 'storage.attachment-temp'].includes(resource.key)) && !(await this.options.contentSafetyProfile?.valid())) {
+      return { job_id: claim.job_id, outcome: 'rejected', profile_revision: this.profiles.current().profile.revision, resource_keys: stableProductResourceKeys(claim.resources), reason_code: 'CONTENT_PROFILE_REQUIRED' }
+    }
     return this.mutate(state => {
       this.reapExpired(state)
       const profile = this.profiles.current()

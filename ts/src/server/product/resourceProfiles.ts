@@ -10,7 +10,7 @@ function limit(maxActive = 1): ProductResourceProfileLimit {
 /** Safe, shipped baseline.  Expired device measurements always fall back here. */
 export function conservativeDesktopResourceProfile(now = new Date(), platform = process.platform, toolchain = process.version, hardware: ProductResourceHardwareIdentity = defaultHardwareIdentity()): ProductResourceProfile {
   const limits: Partial<Record<ProductResourceKey, ProductResourceProfileLimit>> = {}
-  for (const key of ['agent.worker', 'agent.turn', 'schedule.dispatch', 'filesystem.write.workspace', 'filesystem.write.external', 'content.inspect', 'content.thumbnail', 'storage.attachment-temp'] as const) limits[key] = limit()
+  for (const key of ['agent.worker', 'agent.turn', 'schedule.dispatch', 'filesystem.write.workspace', 'filesystem.write.external', 'content.inspect', 'content.extract', 'content.thumbnail', 'storage.attachment-temp'] as const) limits[key] = limit()
   return { scope: 'desktop-host', revision: 'conservative-desktop-v1', expires_at: new Date(now.getTime() + 365 * 24 * HOUR).toISOString(), platform, toolchain, hardware, limits }
 }
 
