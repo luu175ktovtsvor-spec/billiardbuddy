@@ -22,12 +22,12 @@ async function withProviderRuntimeEnv<T>(values: Partial<Record<(typeof provider
 test('empty worker model configuration receives the Registry TextReasoning binding and invokes one private Core factory', async () => {
   await withProviderRuntimeEnv({}, async () => {
     let claims = 0; let starts = 0; const settled: string[] = []
-    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string) => { settled.push(state) } }
+    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string) => { settled.push(state) } }
     const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
     let resolves = 0
     const launcher = new IpcAgentWorkerLauncher(
       { resolveTaskRunCoreBinding: async (run, generation) => { resolves++; expect([run, generation]).toEqual(['run', 1]); return { session_id: 'session', work_dir: process.cwd() } } },
-      { start: async (identity, binding) => { starts++; expect(identity).toEqual({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }); expect(binding.session_id).toBe('session'); return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
+      { start: async (identity, binding) => { starts++; expect(identity).toEqual({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }); expect(binding.session_id).toBe('session'); return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
     )
     const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
     expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
@@ -51,7 +51,7 @@ test('server-owned IPC launcher rejects unknown, stale, non-text, and mixed mode
   for (const env of invalidCases) {
     await withProviderRuntimeEnv(env, async () => {
       let starts = 0; let resolves = 0; const settled: string[] = []
-      const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+      const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
       const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
       const launcher = new IpcAgentWorkerLauncher(
         { resolveTaskRunCoreBinding: async () => { resolves++; return { session_id: 'session', work_dir: process.cwd() } } },
@@ -73,7 +73,7 @@ test('complete explicit TextReasoning binding reaches one real child Core start'
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
   }, async () => {
     let starts = 0; const settled: string[] = []
-    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
     const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
     const launcher = new IpcAgentWorkerLauncher(
       { resolveTaskRunCoreBinding: async () => ({ session_id: 'session', work_dir: process.cwd() }) },

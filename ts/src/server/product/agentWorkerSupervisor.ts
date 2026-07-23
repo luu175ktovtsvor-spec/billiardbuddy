@@ -7,6 +7,7 @@ export type AgentWorkerCoreIdentity = {
   task_id: string
   lineage_id: string
   resume_binding_id: string
+  initial_input: string
   session_memory?: {
     storage_dir: string
     entry_id: string
@@ -49,7 +50,7 @@ export class AgentWorkerSupervisor {
     if (receipt.outcome !== 'admitted' || !receipt.fencing_token) return this.fail(runId, generation, undefined, 'SCHEDULER_DENIED')
     const claim = await this.runs.claimTaskRunDispatch(runId, generation)
     if (claim.outcome !== 'claimed') return this.fail(runId, generation, receipt.fencing_token, claim.outcome)
-    let child: AgentWorkerChild | undefined; let hello = false; let ready = false
+    let child: AgentWorkerChild | undefined; let hello = false; let ready = false; let inputSent = false
     const envelope = createLegacyDeferredEnvelope()
     const bootstrap = { capability: createAgentWorkerChildStartCapability({ run_id: runId, dispatch_generation: generation, fencing_token: receipt.fencing_token, envelope_digest: envelope.digest }, this.childCapabilityKey), capability_key: this.childCapabilityKey }
     const timeout = setTimeout(() => void this.fail(runId, generation, receipt.fencing_token, 'READY_TIMEOUT'), this.readyTimeoutMs)
@@ -61,6 +62,12 @@ export class AgentWorkerSupervisor {
         if (this.settled.has(key) || this.terminalPending.has(key)) return
         if (message.type === 'hello') { if (!intersectsAgentWorkerVersions(message.versions, { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION })) return void this.fail(runId, generation, receipt.fencing_token, 'CAPABILITY_MISMATCH'); hello = true; child?.send({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: ['framed'] }); return }
         if (message.type === 'ready') { if (!hello || ready) return void this.fail(runId, generation, receipt.fencing_token, 'READY_INVALID'); ready = true; clearTimeout(timeout); this.readyTimers.delete(key); child?.send({ type: 'ready' }); child?.send({ type: 'start', run_id: runId, dispatch_generation: generation, scheduler_receipt: receipt, envelope }); return }
+        if (message.type === 'claim_receipt') {
+          if (!ready || inputSent || message.outcome !== 'claimed' || message.run_id !== runId) return void this.fail(runId, generation, receipt.fencing_token, 'CLAIM_RECEIPT_INVALID')
+          inputSent = true
+          child?.send({ type: 'input', text: identity.initial_input })
+          return
+        }
         if (message.type === 'event') { void this.messages?.record(runId, generation, message); return }
         if (message.type === 'terminal') {
           // Close the relay synchronously, then persist the final safe
