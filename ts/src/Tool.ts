@@ -213,6 +213,8 @@ export type ToolUseContext = {
     notificationType: string
   }) => void
   nestedMemoryAttachmentTriggers?: Set<string>
+  /** Disable global/nested discovery and legacy automatic memory jobs. */
+  disableMemoryDiscovery?: boolean
   /**
    * CLAUDE.md paths already injected as nested_memory attachments this
    * session. Dedup for memoryFilesToAttachments — readFileState is an LRU

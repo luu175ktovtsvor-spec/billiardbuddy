@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type { PromptCommand } from '../commands.js'
 import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
-import { prepareForkedCommandContext } from './forkedAgent.js'
+import { createFileStateCacheWithSizeLimit } from './fileStateCache.js'
+import { createSubagentContext, prepareForkedCommandContext } from './forkedAgent.js'
 
 const makeAgent = (agentType: string): AgentDefinition => ({
   agentType,
@@ -10,6 +11,33 @@ const makeAgent = (agentType: string): AgentDefinition => ({
   source: 'built-in',
   baseDir: 'built-in',
   getSystemPrompt: () => `${agentType} prompt`,
+})
+
+test('project memory isolation propagates to subagents', () => {
+  const parent = {
+    abortController: new AbortController(),
+    readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => ({
+      toolPermissionContext: {
+        alwaysAllowRules: { command: [] },
+        shouldAvoidPermissionPrompts: true,
+      },
+    }),
+    setAppState: () => {},
+    setInProgressToolUseIDs: () => {},
+    setResponseLength: () => {},
+    updateFileHistoryState: () => {},
+    updateAttributionState: () => {},
+    options: {},
+    messages: [],
+    disableMemoryDiscovery: true,
+  } as unknown as ToolUseContext
+
+  const child = createSubagentContext(parent)
+
+  expect(child.disableMemoryDiscovery).toBe(true)
+  expect(child.nestedMemoryAttachmentTriggers).toBeUndefined()
+  expect(child.loadedNestedMemoryPaths).toBeUndefined()
 })
 
 function makeContext(activeAgents: AgentDefinition[]): ToolUseContext {

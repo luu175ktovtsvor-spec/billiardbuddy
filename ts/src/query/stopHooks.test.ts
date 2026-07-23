@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   formatGoalContinuationStatusOutput,
   shouldLetGoalPromptHookContinue,
+  shouldRunLegacyMemoryAutomation,
 } from './stopHooks.js'
 
 describe('stop hook goal continuation', () => {
@@ -46,4 +47,15 @@ describe('stop hook goal continuation', () => {
       ),
     ).toBe('Goal continuing: finish release verify')
   })
+})
+
+test('project-isolated ProductTask contexts never run legacy memory automation', () => {
+  expect(shouldRunLegacyMemoryAutomation({
+    agentId: undefined,
+    disableMemoryDiscovery: true,
+  })).toBe(false)
+  expect(shouldRunLegacyMemoryAutomation({
+    agentId: undefined,
+    disableMemoryDiscovery: false,
+  })).toBe(true)
 })

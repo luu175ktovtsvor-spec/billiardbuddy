@@ -47,12 +47,20 @@ export async function fetchSystemPromptParts({
   additionalWorkingDirectories,
   mcpClients,
   customSystemPrompt,
+  userContextOverride,
+  systemContextOverride,
+  disableMemoryDiscovery = false,
+  workingDirectoryOverride,
 }: {
   tools: Tools
   mainLoopModel: string
   additionalWorkingDirectories: string[]
   mcpClients: MCPServerConnection[]
   customSystemPrompt: string | undefined
+  userContextOverride?: { [k: string]: string }
+  systemContextOverride?: { [k: string]: string }
+  disableMemoryDiscovery?: boolean
+  workingDirectoryOverride?: string
 }): Promise<{
   defaultSystemPrompt: string[]
   userContext: { [k: string]: string }
@@ -66,9 +74,16 @@ export async function fetchSystemPromptParts({
           mainLoopModel,
           additionalWorkingDirectories,
           mcpClients,
+          { disableMemoryDiscovery, cwd: workingDirectoryOverride },
         ),
-    getUserContext(),
-    customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
+    userContextOverride !== undefined
+      ? Promise.resolve(userContextOverride)
+      : getUserContext(),
+    customSystemPrompt !== undefined
+      ? Promise.resolve({})
+      : systemContextOverride !== undefined
+        ? Promise.resolve(systemContextOverride)
+        : getSystemContext(),
   ])
   return { defaultSystemPrompt, userContext, systemContext }
 }

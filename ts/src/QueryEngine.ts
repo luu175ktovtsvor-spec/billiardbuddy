@@ -143,6 +143,11 @@ export type QueryEngineConfig = {
   readFileCache: FileStateCache
   customSystemPrompt?: string
   appendSystemPrompt?: string
+  contextOverride?: {
+    userContext: { [k: string]: string }
+    systemContext: { [k: string]: string }
+  }
+  disableMemoryDiscovery?: boolean
   userSpecifiedModel?: string
   fallbackModel?: string
   thinkingConfig?: ThinkingConfig
@@ -226,6 +231,8 @@ export class QueryEngine {
       canUseTool,
       customSystemPrompt,
       appendSystemPrompt,
+      contextOverride,
+      disableMemoryDiscovery = false,
       userSpecifiedModel,
       fallbackModel,
       jsonSchema,
@@ -300,6 +307,10 @@ export class QueryEngine {
       ),
       mcpClients,
       customSystemPrompt: customPrompt,
+      userContextOverride: contextOverride?.userContext,
+      systemContextOverride: contextOverride?.systemContext,
+      disableMemoryDiscovery,
+      workingDirectoryOverride: contextOverride ? cwd : undefined,
     })
     headlessProfilerCheckpoint('after_getSystemPrompt')
     const userContext = {
@@ -370,8 +381,13 @@ export class QueryEngine {
       setAppState,
       abortController: this.abortController,
       readFileState: this.readFileState,
-      nestedMemoryAttachmentTriggers: new Set<string>(),
-      loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
+      nestedMemoryAttachmentTriggers: disableMemoryDiscovery
+        ? undefined
+        : new Set<string>(),
+      loadedNestedMemoryPaths: disableMemoryDiscovery
+        ? undefined
+        : this.loadedNestedMemoryPaths,
+      disableMemoryDiscovery,
       dynamicSkillDirTriggers: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
       setInProgressToolUseIDs: () => {},
@@ -518,8 +534,13 @@ export class QueryEngine {
       setAppState,
       abortController: this.abortController,
       readFileState: this.readFileState,
-      nestedMemoryAttachmentTriggers: new Set<string>(),
-      loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
+      nestedMemoryAttachmentTriggers: disableMemoryDiscovery
+        ? undefined
+        : new Set<string>(),
+      loadedNestedMemoryPaths: disableMemoryDiscovery
+        ? undefined
+        : this.loadedNestedMemoryPaths,
+      disableMemoryDiscovery,
       dynamicSkillDirTriggers: new Set<string>(),
       discoveredSkillNames: this.discoveredSkillNames,
       setInProgressToolUseIDs: () => {},
@@ -535,7 +556,7 @@ export class QueryEngine {
     // (headlessPluginInstall) or CLAUDE_CODE_PLUGIN_SEED_DIR before this runs;
     // SDK callers that need fresh source can call /reload-plugins.
     const [skills, { enabled: enabledPlugins }] = await Promise.all([
-      getSlashCommandToolSkills(getCwd()),
+      getSlashCommandToolSkills(cwd),
       loadAllPluginsCacheOnly(),
     ])
     headlessProfilerCheckpoint('after_skills_plugins')
@@ -1283,6 +1304,8 @@ export async function* ask({
   setReadFileCache,
   customSystemPrompt,
   appendSystemPrompt,
+  contextOverride,
+  disableMemoryDiscovery,
   userSpecifiedModel,
   fallbackModel,
   jsonSchema,
@@ -1312,6 +1335,8 @@ export async function* ask({
   mutableMessages?: Message[]
   customSystemPrompt?: string
   appendSystemPrompt?: string
+  contextOverride?: QueryEngineConfig['contextOverride']
+  disableMemoryDiscovery?: boolean
   userSpecifiedModel?: string
   fallbackModel?: string
   jsonSchema?: Record<string, unknown>
@@ -1340,6 +1365,8 @@ export async function* ask({
     readFileCache: cloneFileStateCache(getReadFileCache()),
     customSystemPrompt,
     appendSystemPrompt,
+    contextOverride,
+    disableMemoryDiscovery,
     userSpecifiedModel,
     fallbackModel,
     thinkingConfig,
