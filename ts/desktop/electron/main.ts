@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -38,7 +38,8 @@ import {
   setAppMode,
   type PortableDetection,
 } from './services/appMode'
-import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
+import { installMacOsChromiumKeychainPromptGuard, SecureSessionStore } from './services/keychain'
+import { InstallationSessionManager } from './services/installationSession'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
   installMainWindowNavigationGuards,
@@ -72,6 +73,7 @@ const mediaUiCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
+let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
@@ -230,13 +232,32 @@ function registerProductTaskProtocol() {
   app.setAsDefaultProtocolClient(PRODUCT_TASK_LINK_SCHEME)
 }
 
+function getInstallationSessionManager() {
+  installationSessionManager ??= (() => {
+    const config = requireProductGatewayConfig(resolveProductGatewayConfig({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      devBuildDir: path.join(unpackedRoot(), 'build'),
+      env: process.env,
+    }))
+    return new InstallationSessionManager({
+      gatewayUrl: config.url,
+      bootstrapCredential: config.token,
+      licenseKey: config.licenseKey,
+      installationId: ensureInstallationId(process.env.CLAUDE_CONFIG_DIR || app.getPath('userData')),
+      onTokenChanged: () => serverRuntime?.reconfigureServer(),
+      onSessionFailure: () => serverRuntime?.stopServer(),
+    }, new SecureSessionStore(path.join(app.getPath('userData'), 'installation-session'), safeStorage))
+  })()
+  return installationSessionManager
+}
+
 function getServerRuntime() {
   serverRuntime ??= new ElectronServerRuntime({
     desktopRoot: unpackedRoot(),
     appRoot: appRoot(),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
-    // Packaged product gateway config for the server sidecar (env override wins).
-    // The app token reaches only the server env here — the CLI subprocess is stripped.
+    // Public packaged routing config; its bootstrap credential remains Main-only.
     resolveGatewayConfig: () => requireProductGatewayConfig(
       resolveProductGatewayConfig({
         isPackaged: app.isPackaged,
@@ -245,10 +266,9 @@ function getServerRuntime() {
         env: process.env,
       }),
     ),
-    // Per-install id persisted in the product data root (active CLAUDE_CONFIG_DIR).
-    // Injected into the SERVER sidecar only → attached as X-QF-Client-ID upstream; the CLI
-    // subprocess, adapters, renderer and providers.json never see it.
-    resolveInstallationId: () => ensureInstallationId(process.env.CLAUDE_CONFIG_DIR || app.getPath('userData')),
+    // Only a short-lived access bearer reaches the server sidecar. Bootstrap,
+    // license, refresh proof and installation identity remain in Main.
+    resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     mediaUiCapability,
   })
   return serverRuntime
@@ -633,6 +653,7 @@ app.on('before-quit', () => {
   trayController = null
   terminalService?.killAll()
   previewService?.close()
+  installationSessionManager?.dispose()
   // Synchronous on quit so the Windows taskkill completes before the process
   // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.
   getServerRuntime().stopAll(true)

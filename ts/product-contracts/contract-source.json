@@ -801,5 +801,50 @@
       "d4_owner_module": "23",
       "retained_reader": "Windows x64 and macOS arm64 Electron candidate builds"
     }
-  ]
+  ],
+  "auth_entitlement_policy": {
+    "path": "ts/product-contracts/auth-entitlement-policy.json",
+    "required_evidence": [
+      {
+        "constraint": "cross_process_transaction",
+        "path": "ts/shared/product/authEntitlement.test.ts",
+        "test_id": "a healthy multi-process lock survives longer than staleLockMs and a killed owner is reclaimed"
+      },
+      {
+        "constraint": "lock_owner_identity",
+        "path": "ts/shared/product/authEntitlement.test.ts",
+        "test_id": "an old holder finally cannot delete a replacement lock owner record"
+      },
+      {
+        "constraint": "provisioning_revision",
+        "path": "ts/shared/product/authEntitlement.test.ts",
+        "test_id": "newer inactive provisioning revokes access and refresh across restart"
+      },
+      {
+        "constraint": "session_revocation",
+        "path": "ts/shared/product/authEntitlement.test.ts",
+        "test_id": "refresh and installation revocation serialize without resurrecting a session"
+      },
+      {
+        "constraint": "sidecar_rotation",
+        "path": "ts/desktop/electron/services/serverRuntime.test.ts",
+        "test_id": "waits for the old child exit before spawning exactly one replacement"
+      },
+      {
+        "constraint": "host_env_scrub",
+        "path": "ts/src/server/agent-worker/ipcLauncher.test.ts",
+        "test_id": "actual agent-worker child receives no host gateway credentials while retaining IPC-safe environment"
+      },
+      {
+        "constraint": "refresh_proof_logout",
+        "path": "ts/desktop/electron/services/installationSession.test.ts",
+        "test_id": "uses the rotated refresh proof when logout races an in-flight refresh without updating the sidecar"
+      },
+      {
+        "constraint": "strict_device_limit",
+        "path": "ts/shared/product/authEntitlement.test.ts",
+        "test_id": "two durable instances atomically enforce device limit and issue a usable winner token"
+      }
+    ]
+  }
 }

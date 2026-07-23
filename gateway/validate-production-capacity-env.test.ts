@@ -48,3 +48,4 @@ describe('1000-window gateway deployment capacity preflight', () => {
     expect(result.stderr).toContain('GW_DEEPSEEK_CONC must be a non-negative decimal integer')
   })
 })
+import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'

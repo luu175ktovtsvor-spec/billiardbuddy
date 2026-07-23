@@ -24,7 +24,10 @@ import path from 'node:path'
  */
 export type ProductGatewayConfig = {
   url?: string
+  /** Managed-build bootstrap credential; it can only call /v1/auth/activate. */
   token?: string
+  /** Provisioned License key, never sent to the sidecar. */
+  licenseKey?: string
   model?: string
 }
 
@@ -94,7 +97,8 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
   return {
     url: trimmed(env.QF_GATEWAY_URL) ?? trimmed(publicCfg?.gatewayUrl),
     // The token is only ever env or the git-ignored secrets file — never public config.
-    token: trimmed(env.QF_GATEWAY_TOKEN) ?? trimmed(secretCfg?.gatewayToken),
+    token: trimmed(env.QF_GATEWAY_BOOTSTRAP_CREDENTIAL) ?? trimmed(secretCfg?.gatewayBootstrapCredential),
+    licenseKey: trimmed(env.QF_LICENSE_KEY) ?? trimmed(secretCfg?.licenseKey),
     model: trimmed(env.QF_GATEWAY_MODEL) ?? trimmed(publicCfg?.gatewayModel),
   }
 }
@@ -105,7 +109,7 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
  */
 export function requireProductGatewayConfig(
   config: ProductGatewayConfig,
-): ProductGatewayConfig & { url: string; token: string } {
+): ProductGatewayConfig & { url: string; token: string; licenseKey: string } {
   if (!config.url) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing gateway URL.')
   }
@@ -121,16 +125,18 @@ export function requireProductGatewayConfig(
     )
   }
   if (!config.token) {
-    throw new ProductGatewayConfigError('Product gateway is not configured: missing app token.')
+    throw new ProductGatewayConfigError('Product gateway is not configured: missing bootstrap credential.')
+  }
+  if (!config.licenseKey) {
+    throw new ProductGatewayConfigError('Product gateway is not configured: missing License key.')
   }
 
-  return { ...config, url: config.url, token: config.token }
+  return { ...config, url: config.url, token: config.token, licenseKey: config.licenseKey }
 }
 
 /**
- * Overlay resolved gateway config onto a SERVER sidecar env. A value already present
- * (shell/ops override) always wins over the injected default. Returns a new object;
- * pass `undefined` gateway (e.g. for adapter sidecars) to get the base env untouched.
+ * Overlay public gateway routing config onto a SERVER sidecar env. The bootstrap
+ * credential is deliberately not propagated; Main exchanges it for an access token.
  */
 export function applyGatewayConfigToEnv(
   baseEnv: NodeJS.ProcessEnv,
@@ -139,7 +145,6 @@ export function applyGatewayConfigToEnv(
   if (!gateway) return baseEnv
   const env: NodeJS.ProcessEnv = { ...baseEnv }
   if (gateway.url && !env.QF_GATEWAY_URL) env.QF_GATEWAY_URL = gateway.url
-  if (gateway.token && !env.QF_GATEWAY_TOKEN) env.QF_GATEWAY_TOKEN = gateway.token
   if (gateway.model && !env.QF_GATEWAY_MODEL) env.QF_GATEWAY_MODEL = gateway.model
   return env
 }

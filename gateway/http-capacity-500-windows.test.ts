@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { connect, type Socket } from 'node:net'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 
 const USER_COUNT = 100
 const WINDOWS_PER_USER = 10
@@ -103,7 +104,7 @@ function chatRequest(port: number, installation: number, window: number, sockets
       'POST /v1/chat/completions HTTP/1.1',
       `Host: 127.0.0.1:${port}`,
       'Connection: close',
-      'Authorization: Bearer shared-desktop-token',
+      `Authorization: Bearer ${gatewayTestAccessToken}`,
       'Content-Type: application/json',
       `Content-Length: ${Buffer.byteLength(payload)}`,
       `X-QF-Client-ID: desktop-${String(installation).padStart(4, '0')}`,
@@ -145,6 +146,7 @@ async function consume(response: HeldResponse): Promise<void> {
 test('loopback HTTP: 100 installations × 10 windows holds 1,000 DeepSeek streams without scheduler loss', async () => {
   const upstream = makeHeldSseUpstream()
   const handler = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -180,7 +182,7 @@ test('loopback HTTP: 100 installations × 10 windows holds 1,000 DeepSeek stream
     upstream.release()
     await Promise.all(responses.map(consume))
 
-    const health = await fetch(`${baseUrl}/healthz`, { headers: { Authorization: 'Bearer shared-desktop-token' } })
+    const health = await fetch(`${baseUrl}/healthz`, { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } })
     const state = await health.json() as { capacity: { deepseek: { active: number; queued: number } } }
     expect(state.capacity.deepseek).toMatchObject({ active: 0, queued: 0 })
     expect(upstream.stats()).toEqual({ active: 0, peak: TARGET_CONCURRENCY })

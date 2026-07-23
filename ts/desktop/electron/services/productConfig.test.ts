@@ -34,12 +34,13 @@ describe('resolveProductGatewayConfig', () => {
       gatewayUrl: 'https://gw.example/gw',
       gatewayModel: 'qwen3-coder-plus',
     })
-    writeJson(dir, 'product-secrets.json', { gatewayToken: 'packaged-app-token' })
+    writeJson(dir, 'product-secrets.json', { gatewayBootstrapCredential: 'packaged-bootstrap', licenseKey: 'license-001' })
 
     const cfg = resolveProductGatewayConfig({ isPackaged: true, resourcesPath: dir, env: {} })
     expect(cfg).toEqual({
       url: 'https://gw.example/gw',
-      token: 'packaged-app-token',
+      token: 'packaged-bootstrap',
+      licenseKey: 'license-001',
       model: 'qwen3-coder-plus',
     })
   })
@@ -56,14 +57,23 @@ describe('resolveProductGatewayConfig', () => {
   it('lets env override the packaged config for every field (dev/ops override)', () => {
     const dir = tempDir()
     writeJson(dir, 'product-config.json', { gatewayUrl: 'https://packaged/gw', gatewayModel: 'packaged-model' })
-    writeJson(dir, 'product-secrets.json', { gatewayToken: 'packaged-token' })
+    writeJson(dir, 'product-secrets.json', { gatewayBootstrapCredential: 'packaged-bootstrap', licenseKey: 'packaged-license' })
 
     const cfg = resolveProductGatewayConfig({
       isPackaged: true,
       resourcesPath: dir,
-      env: { QF_GATEWAY_URL: 'https://override/gw', QF_GATEWAY_TOKEN: 'env-token', QF_GATEWAY_MODEL: 'env-model' },
+      env: { QF_GATEWAY_URL: 'https://override/gw', QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'env-bootstrap', QF_LICENSE_KEY: 'env-license', QF_GATEWAY_MODEL: 'env-model' },
     })
-    expect(cfg).toEqual({ url: 'https://override/gw', token: 'env-token', model: 'env-model' })
+    expect(cfg).toEqual({ url: 'https://override/gw', token: 'env-bootstrap', licenseKey: 'env-license', model: 'env-model' })
+  })
+
+  it('does not treat legacy QF_GATEWAY_TOKEN as a bootstrap credential', () => {
+    const cfg = resolveProductGatewayConfig({
+      isPackaged: false,
+      env: { QF_GATEWAY_URL: 'https://gw.example/gw', QF_GATEWAY_TOKEN: 'legacy-access' },
+    })
+    expect(cfg.token).toBeUndefined()
+    expect(() => requireProductGatewayConfig(cfg)).toThrow('missing bootstrap credential')
   })
 
   it('never reads the token from public product-config.json', () => {
@@ -82,7 +92,7 @@ describe('resolveProductGatewayConfig', () => {
   it('returns undefined fields when no config files and no env are present', () => {
     const dir = tempDir()
     const cfg = resolveProductGatewayConfig({ isPackaged: true, resourcesPath: dir, env: {} })
-    expect(cfg).toEqual({ url: undefined, token: undefined, model: undefined })
+    expect(cfg).toEqual({ url: undefined, token: undefined, licenseKey: undefined, model: undefined })
   })
 
   it('tolerates malformed JSON without throwing', () => {
@@ -104,7 +114,7 @@ describe('applyGatewayConfigToEnv', () => {
       { url: 'https://gw/gw', token: 'app-token', model: 'qwen3-coder-plus' },
     )
     expect(out.QF_GATEWAY_URL).toBe('https://gw/gw')
-    expect(out.QF_GATEWAY_TOKEN).toBe('app-token')
+    expect(out.QF_GATEWAY_TOKEN).toBeUndefined()
     expect(out.QF_GATEWAY_MODEL).toBe('qwen3-coder-plus')
     expect(out.PATH).toBe('/usr/bin')
   })
@@ -130,10 +140,12 @@ describe('requireProductGatewayConfig', () => {
     expect(requireProductGatewayConfig({
       url: 'https://gw.example/gw',
       token: 'app-token',
+      licenseKey: 'license-001',
       model: 'deepseek-v4-flash',
     })).toEqual({
       url: 'https://gw.example/gw',
       token: 'app-token',
+      licenseKey: 'license-001',
       model: 'deepseek-v4-flash',
     })
   })
@@ -142,7 +154,7 @@ describe('requireProductGatewayConfig', () => {
     expect(() => requireProductGatewayConfig({
       url: 'https://gw.example/gw',
     })).toThrow(new ProductGatewayConfigError(
-      'Product gateway is not configured: missing app token.',
+      'Product gateway is not configured: missing bootstrap credential.',
     ))
     expect(() => requireProductGatewayConfig({
       url: 'file:///tmp/gateway',

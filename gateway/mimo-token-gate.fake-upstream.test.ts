@@ -4,6 +4,7 @@
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 
 type MimoLane = 'native' | 'vision'
 
@@ -138,7 +139,7 @@ function nativeRequest(client: string): Request {
   return new Request('http://local/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer shared-app-token',
+      Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
       'X-QF-Client-ID': client,
     },
@@ -155,7 +156,7 @@ function bridgeRequest(client: string, imageIndex: number): Request {
   return new Request('http://local/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer shared-app-token',
+      Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
       'X-QF-Client-ID': client,
     },
@@ -204,6 +205,7 @@ async function expectRejectedWithoutSixthMimoCall(
 test('GW_MIMO_TOKEN_CONC=5 caps five distinct-client native calls plus a bridge call for the same app token', async () => {
   const upstream = makeHeldMimoUpstream()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -244,6 +246,7 @@ test('GW_MIMO_TOKEN_CONC=5 caps five distinct-client native calls plus a bridge 
 test('GW_MIMO_TOKEN_CONC=5 caps five distinct-client bridge calls plus a native call for the same app token', async () => {
   const upstream = makeHeldMimoUpstream()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,

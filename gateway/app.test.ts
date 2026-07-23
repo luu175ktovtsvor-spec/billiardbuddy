@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, gatewayServerIdleTimeoutSeconds, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 import type { GatewayTranscriber } from './transcription'
 
 function env(overrides: Record<string, string | undefined> = {}) {
@@ -15,7 +16,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_RELAY_BASE: 'https://relay.example/relay/openai/v1',
     GW_RELAY_TOKEN: 'relay-secret',
-    GW_APP_TOKENS: JSON.stringify({ 'app-token': 'owner-a' }),
+    GW_APP_TOKENS: JSON.stringify({ gatewayTestAccessToken: 'test-principal:test-installation' }),
     GW_ADMIN_TOKEN: 'admin-secret',
     GW_Q_CHAT: '2',
     GW_Q_IMG: '1',
@@ -29,7 +30,7 @@ function authed(init: RequestInit = {}): RequestInit {
   return {
     ...init,
     headers: {
-      Authorization: 'Bearer app-token',
+      Authorization: `Bearer ${gatewayTestAccessToken}`,
       ...(init.headers as Record<string, string> | undefined),
     },
   }
@@ -39,6 +40,7 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, transcr
   const calls: Array<{ url: string; init?: RequestInit; body?: string }> = []
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(overrides),
     usageStore: usage,
     transcribeImpl,
@@ -161,6 +163,7 @@ test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only 
   const usage = new MemoryUsageStore()
   const calls: Array<{ url: string; init?: RequestInit; body: Record<string, unknown> }> = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_DEEPSEEK_BASE: 'https://api.deepseek.com' }),
     usageStore: usage,
     transcribeImpl: null,
@@ -214,7 +217,7 @@ test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only 
   })
   expect((calls[0]?.body.metadata as Record<string, string>).user_id).toMatch(/^bb_[a-f0-9]{32}$/)
   expect(JSON.stringify(calls[0]?.body)).not.toContain('forged-user')
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'deepseek_web_search', ok: true, status: 200 }])
+  expect(usage.rows).toMatchObject([{ user: 'test-principal:test-installation', model: 'deepseek_web_search', ok: true, status: 200 }])
   expect(JSON.stringify(usage.rows)).not.toContain('deepseek-secret')
 })
 
@@ -268,7 +271,7 @@ test('audio transcription authenticates, validates uploads and records successfu
   expect(response.status).toBe(200)
   expect(await response.json()).toMatchObject({ text: '今天检查台球桌', segments: [{ start: 0, end: 1.2 }] })
   expect(received).toEqual([{ name: 'voice.webm', language: 'zh', format: 'verbose_json' }])
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'transcribe', ok: true, status: 200 }])
+  expect(usage.rows).toMatchObject([{ user: 'test-principal:test-installation', model: 'transcribe', ok: true, status: 200 }])
   expect(usage.rows[0]?.note).toMatch(/^queue_ms=\d+;run_ms=\d+;bytes=5;audio_seconds=1\.2$/)
   expect(usage.rows[0]?.note).not.toContain('今天检查台球桌')
 })
@@ -276,6 +279,7 @@ test('audio transcription authenticates, validates uploads and records successfu
 test('audio transcription disables the request idle timeout for long-running ASR', async () => {
   const timeoutCalls: number[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: async () => ({ text: 'ok' }),
@@ -293,6 +297,7 @@ test('audio transcription disables the request idle timeout for long-running ASR
 test('long-lived chat, native Messages, and every relay image task operation disable Bun idle timeout before forwarding', async () => {
   const timeoutCalls: number[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -362,7 +367,7 @@ test('chat completions stream is proxied to Qwen with the server key and logged 
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     body: rawBody,
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
   })))
   expect(res.status).toBe(200)
   const text = await res.text()
@@ -370,7 +375,7 @@ test('chat completions stream is proxied to Qwen with the server key and logged 
   expect(calls[0]?.url).toBe('https://qwen.example/v1/chat/completions')
   expect(calls[0]?.body).toBe(rawBody)
   expect((calls[0]?.init?.headers as Record<string, string>).Authorization).toBe('Bearer qwen-secret')
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'qwen', ok: true, status: 200 }])
+  expect(usage.rows).toMatchObject([{ user: 'test-principal:test-installation', model: 'qwen', ok: true, status: 200 }])
   // 服务器密钥只出现在给上游的 Authorization 头,绝不进入客户端响应或用量日志。
   expect(text).not.toContain('qwen-secret')
   expect(JSON.stringify(usage.rows)).not.toContain('qwen-secret')
@@ -409,7 +414,7 @@ test('chat completions routes an allowlisted MiMo model to the MiMo upstream wit
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     body: rawBody,
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
   })))
   expect(res.status).toBe(200)
   const text = await res.text()
@@ -426,7 +431,7 @@ test('chat completions routes an allowlisted MiMo model to the MiMo upstream wit
     { type: 'function', function: { name: 'Read', parameters: { type: 'object' } } },
     { type: 'web_search' },
   ])
-  expect(usage.rows).toMatchObject([{ user: 'owner-a', model: 'mimo', ok: true, status: 200 }])
+  expect(usage.rows).toMatchObject([{ user: 'test-principal:test-installation', model: 'mimo', ok: true, status: 200 }])
   // MiMo 密钥只在给上游的 Authorization 头,绝不进入响应或用量日志。
   expect(text).not.toContain('mimo-secret')
   expect(JSON.stringify(usage.rows)).not.toContain('mimo-secret')
@@ -436,6 +441,7 @@ test('a MiMo upstream 5xx failure never falls back to the Qwen upstream', async 
   const usage = new MemoryUsageStore()
   const calls: string[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_MIMO_MAX_RETRIES: '0' }),
     usageStore: usage,
     transcribeImpl: null,
@@ -449,7 +455,7 @@ test('a MiMo upstream 5xx failure never falls back to the Qwen upstream', async 
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
   })))
   expect(res.status).toBe(500)
@@ -465,6 +471,7 @@ test('MiMo does not retry a 429 even when retries are configured — it surfaces
   const usage = new MemoryUsageStore()
   const bodies: string[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     // Even with a retry budget, a 429 is never retried (no amplification with the CC CLI).
     env: env({ GW_MIMO_MAX_RETRIES: '1' }),
     usageStore: usage,
@@ -476,7 +483,7 @@ test('MiMo does not retry a 429 even when retries are configured — it surfaces
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
   })))
   expect(res.status).toBe(429)
@@ -491,6 +498,7 @@ test('MiMo retries a transient 5xx at most once then succeeds, logging the attem
   const bodies: string[] = []
   const sleeps: number[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_MIMO_MAX_RETRIES: '2' }), // clamps to 1 → exactly one extra attempt
     usageStore: usage,
     transcribeImpl: null,
@@ -504,7 +512,7 @@ test('MiMo retries a transient 5xx at most once then succeeds, logging the attem
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', stream: true }),
   })))
   expect(res.status).toBe(200)
@@ -518,6 +526,7 @@ test('MiMo retries a transient 5xx at most once then succeeds, logging the attem
 
 test('MiMo distinguishes upstream account exhaustion from concurrency limits and redacts detail', async () => {
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_MIMO_MAX_RETRIES: '0' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -527,7 +536,7 @@ test('MiMo distinguishes upstream account exhaustion from concurrency limits and
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', messages: [] }),
   })))
   expect(res.status).toBe(429)
@@ -540,7 +549,7 @@ test('an out-of-list default model routes to Qwen and is coerced to the Qwen ser
   const { fetch, calls, usage } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'unapproved-expensive-model', messages: [{ role: 'user', content: 'hi' }] }),
   })))
   expect(res.status).toBe(200)
@@ -555,7 +564,7 @@ test('a MiMo-allowlisted model with MiMo unconfigured fails closed with 503 and 
   const { fetch, calls, usage } = makeGateway({ GW_MIMO_KEY: '' })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'mimo-v2.5', messages: [{ role: 'user', content: 'hi' }] }),
   })))
   // 命中 MiMo 白名单但 MiMo 未配置 → 显式 503,绝不改投千问;上游一次都没碰,用量也不记。
@@ -566,7 +575,7 @@ test('a MiMo-allowlisted model with MiMo unconfigured fails closed with 503 and 
 
 test('healthz reports chat_mimo=false but chat_qwen=true when only the MiMo key is missing', async () => {
   const { fetch } = makeGateway({ GW_MIMO_KEY: '' })
-  const res = await fetch(new Request('http://local/healthz', authed({ headers: { Authorization: 'Bearer app-token' } })))
+  const res = await fetch(new Request('http://local/healthz', authed({ headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } })))
   expect(res.status).toBe(200)
   const body = await res.json() as { features: { chat_qwen: boolean; chat_mimo: boolean } }
   expect(body.features.chat_qwen).toBe(true)
@@ -577,7 +586,7 @@ test('when the routed default provider (Qwen) is unconfigured, chat fails closed
   const { fetch, calls } = makeGateway({ GW_QWEN_KEY: '' })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'qwen3-coder-plus', messages: [] }),
   })))
   expect(res.status).toBe(503)
@@ -586,6 +595,7 @@ test('when the routed default provider (Qwen) is unconfigured, chat fails closed
 
 test('non-stream JSON responses are proxied through unchanged', async () => {
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -611,6 +621,7 @@ test('SSE tool_call deltas are streamed through byte-for-byte (tool call increme
     + 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ath\\":1}"}}]},"finish_reason":"tool_calls"}]}\n\n'
     + 'data: [DONE]\n\n'
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -792,6 +803,7 @@ test('Qwen retries a transient 5xx at most once and records the attempt count wi
   const calls: string[] = []
   const sleeps: number[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_Q_CHAT: '10', GW_QWEN_MAX_RETRIES: '2' }), // clamps to 1
     usageStore: usage,
     transcribeImpl: null,
@@ -820,6 +832,7 @@ test('Qwen does not retry a 429 even with a retry budget — surfaces it in one 
   const usage = new MemoryUsageStore()
   const calls: string[] = []
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_QWEN_MAX_RETRIES: '1' }),
     usageStore: usage,
     transcribeImpl: null,
@@ -840,6 +853,7 @@ test('Qwen does not retry a 429 even with a retry budget — surfaces it in one 
 
 test('Qwen distinguishes upstream account exhaustion from temporary concurrency limits and redacts detail', async () => {
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_QWEN_MAX_RETRIES: '0' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -864,6 +878,7 @@ test('Qwen concurrency permit is held until the proxied stream completes', async
   let firstController: ReadableStreamDefaultController<Uint8Array> | undefined
   let upstreamCalls = 0
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_Q_CHAT: '10',
       GW_QWEN_CONC: '1',
@@ -909,6 +924,7 @@ test('bounded model queue rejects overflow, exposes its wait state, and records 
   let upstreamCalls = 0
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_QWEN_CONC: '1',
       GW_QWEN_USER_CONC: '1',
@@ -963,6 +979,7 @@ test('bounded model queue rejects overflow, exposes its wait state, and records 
 test('client cancellation aborts the upstream request and fails closed (no hung request)', async () => {
   const controller = new AbortController()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -1020,14 +1037,14 @@ test('admin usage requires admin token and returns recent rows', async () => {
   await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
     body: JSON.stringify({ prompt: 'poster' }),
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
   })))
   expect((await fetch(new Request('http://local/admin/usage?token=bad'))).status).toBe(403)
   const res = await fetch(new Request('http://local/admin/usage?token=admin-secret&n=5'))
   expect(res.status).toBe(200)
   const body = await res.json()
   expect(body.today_by_model).toMatchObject([{ model: 'img', total: 1, ok: 1 }])
-  expect(body.recent[0]).toMatchObject({ user: 'owner-a', model: 'img', ok: 1 })
+  expect(body.recent[0]).toMatchObject({ user: 'test-principal:test-installation', model: 'img', ok: 1 })
 })
 
 test('GET /v1/models requires auth and lists explicit Qwen/MiMo/DeepSeek catalog for configured upstreams', async () => {
@@ -1058,7 +1075,7 @@ test('deepseek-v4-flash routes to the DeepSeek upstream and injects a trusted op
   const { fetch, calls, usage } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json', 'X-QF-Client-ID': 'install-0001' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'X-QF-Client-ID': 'install-0001' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }], stream: true }),
   })))
   expect(res.status).toBe(200)
@@ -1076,7 +1093,7 @@ test('a deepseek model with no GW_DEEPSEEK_KEY returns 503 and never falls back 
   const { fetch, calls } = makeGateway({ GW_DEEPSEEK_KEY: '' })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
   })))
   expect(res.status).toBe(503)
@@ -1112,7 +1129,7 @@ test('after relaxing default RPM/concurrency, plain-text chat completions still 
   const { fetch, calls, usage } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: '普通文字请求，不带图片' }] }),
   })))
   expect(res.status).toBe(200)
@@ -1137,7 +1154,7 @@ test('a DeepSeek request carrying an image is bridged through MiMo before reachi
   })
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
     body: rawBody,
   })))
   expect(res.status).toBe(200)
@@ -1157,7 +1174,7 @@ test('image task submit/poll/cancel proxy to relay tasks base with relay token w
   const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
     body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'x', input_fidelity: 'high' }),
-    headers: { Authorization: 'Bearer app-token', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
   })))
   expect(submit.status).toBe(200)
   const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })))
@@ -1214,6 +1231,7 @@ test('image gateway admits a 100-user × 10-submit burst to relay while the body
   const gate = new Promise<void>(resolve => { openGate = resolve })
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
     usageStore: usage,
     transcribeImpl: null,
@@ -1259,6 +1277,7 @@ test('image gateway bounds exhausted-IPM waiters and releases a cancelled waiter
   let relayCalls = 0
   let releaseRelay!: () => void
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
       GW_IMG_IPM: '1',
@@ -1312,6 +1331,7 @@ test('image gateway aborts a stalled relay submission at its bounded deadline an
   let relayAborted = false
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
       GW_RELAY_SUBMIT_TIMEOUT_MS: '20',
@@ -1343,6 +1363,7 @@ test('image gateway aborts a stalled relay submission at its bounded deadline an
 test('image gateway bounds the complete relay result body without waiting a fixed five minutes', async () => {
   let relayAborted = false
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
       GW_RELAY_RESULT_TIMEOUT_MS: '20',
@@ -1369,6 +1390,7 @@ test('image gateway rejects a body-budget overflow before it can reach relay and
   let openGate!: () => void
   const gate = new Promise<void>(resolve => { openGate = resolve })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
       GW_IMG_TASK_MAX_BODY_BYTES: '64',

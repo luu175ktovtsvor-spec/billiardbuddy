@@ -279,8 +279,25 @@ export function windowsPowerShellOverride(
   return base === 'pwsh' || base === 'powershell' ? trimmed : null
 }
 
-export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export const SIDE_CAR_SECRET_ENV_KEYS = [
+  'QF_GATEWAY_BOOTSTRAP_CREDENTIAL',
+  'QF_LICENSE_KEY',
+  'QF_GATEWAY_REFRESH_TOKEN',
+  'QF_GATEWAY_SESSION',
+  'QF_GATEWAY_SESSION_PROOF',
+  'QF_GATEWAY_TOKEN',
+  'BB_INSTALLATION_ID',
+] as const
+
+/** Start from a clean credential boundary before injecting a single access bearer. */
+export function stripSidecarSecretEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv }
+  for (const key of SIDE_CAR_SECRET_ENV_KEYS) delete env[key]
+  return env
+}
+
+export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = stripSidecarSecretEnv(baseEnv)
   const configDir = baseEnv.CLAUDE_CONFIG_DIR
   if (configDir) {
     const cacheDir = path.join(configDir, 'Cache')
@@ -297,17 +314,22 @@ export function createServerPlan({
   port,
   bindHost = SERVER_BIND_HOST,
   env = process.env,
+  accessToken,
 }: {
   desktopRoot: string
   appRoot: string
   port: number
   bindHost?: string
   env?: NodeJS.ProcessEnv
+  /** Current short-lived access bearer, injected after all inherited secrets are stripped. */
+  accessToken?: string
 }): SidecarPlan {
+  const cleanEnv = buildSidecarEnv(env)
+  if (accessToken) cleanEnv.QF_GATEWAY_TOKEN = accessToken
   return {
     command: resolveSidecarExecutable(desktopRoot),
     args: ['server', '--app-root', appRoot, '--host', bindHost, '--port', String(port)],
-    env: buildSidecarEnv(env),
+    env: cleanEnv,
   }
 }
 
@@ -327,6 +349,23 @@ export type KillSidecarDeps = {
   platform?: NodeJS.Platform
   spawnAsync?: typeof spawn
   spawnSyncFn?: typeof spawnSync
+}
+
+function waitForSidecarExit(child: SidecarChild): Promise<void> {
+  const bunChild = child as SidecarChild & { exited?: Promise<unknown> }
+  if (bunChild.exited) return bunChild.exited.then(() => undefined)
+  if (typeof child.exitCode === 'number') return Promise.resolve()
+  return new Promise(resolve => child.once('exit', () => resolve()))
+}
+
+/** Stop a sidecar and wait for the child (or Windows process tree) to exit. */
+export async function stopSidecar(child: SidecarChild, deps: KillSidecarDeps = {}): Promise<void> {
+  const platform = deps.platform ?? process.platform
+  if (platform === 'win32' && child.pid) {
+    const taskkill = (deps.spawnAsync ?? spawn)('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
+    await new Promise<void>((resolve, reject) => { taskkill.once('error', reject); taskkill.once('close', () => resolve()) })
+  } else child.kill()
+  await waitForSidecarExit(child)
 }
 
 /**

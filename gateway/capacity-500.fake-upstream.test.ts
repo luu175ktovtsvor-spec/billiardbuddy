@@ -7,6 +7,7 @@
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAccessTokenFor, gatewayTestAuthority } from './auth/testFixture'
 
 const USERS = 100
 const WINDOWS_PER_USER = 5
@@ -179,7 +180,7 @@ function createFakeUpstream(options: { holdText?: boolean; holdVision?: boolean 
 }
 
 function token(user: number): string {
-  return `token-${String(user).padStart(3, '0')}`
+  return gatewayTestAccessTokenFor(`load-install-${user}`)
 }
 
 function installation(user: number): string {
@@ -242,7 +243,8 @@ for (const profile of [
 ]) {
   test(`100 用户 × 5 窗口：${profile.label}在 500/5/5 配置下全部同时进入上游，可信身份各占 5 路`, async () => {
     const upstream = createFakeUpstream({ holdText: true })
-    const fetch = createGatewayFetch({ env: env(profile.env), usageStore: new MemoryUsageStore(), transcribeImpl: null, fetchImpl: upstream.fetchImpl })
+    const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority, env: env(profile.env), usageStore: new MemoryUsageStore(), transcribeImpl: null, fetchImpl: upstream.fetchImpl })
     const requests: Array<Promise<number>> = []
     for (let user = 0; user < USERS; user++) {
       for (let window = 0; window < WINDOWS_PER_USER; window++) {
@@ -265,9 +267,10 @@ for (const profile of [
 }
 
 test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 10 窗口为 1,000 实际在途、零网关排队，全部可排空', async () => {
-  const sharedToken = 'shared-desktop-token'
+  const sharedToken = gatewayTestAccessToken
   const upstream = createFakeUpstream({ holdText: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     // Deliberately leave DeepSeek capacity variables unset to lock the production default
     // profile rather than smuggling an explicit demonstration profile into this assertion.
     env: env({
@@ -306,6 +309,7 @@ test('当前默认 DeepSeek 配置：共享产品 token 下 100 用户 × 10 窗
 test('100 用户 × 5 窗口：默认 MiMo 视觉预留只接纳 12 在途 + 24 排队，其余 464 立即429', async () => {
   const upstream = createFakeUpstream({ holdVision: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5',
       // Explicitly clear the fixture's small test pool: this assertion locks the
@@ -343,6 +347,7 @@ test('100 用户 × 5 窗口：默认 MiMo 视觉预留只接纳 12 在途 + 24 
 test('100 用户 × 5 窗口：显式 50 原生 + 50 视觉硬分区、50/450 视觉阀门后，整批 500 可排空', async () => {
   const upstream = createFakeUpstream({ holdVision: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_DEEPSEEK_CONC: '500', GW_DEEPSEEK_USER_CONC: '5', GW_DEEPSEEK_TOKEN_CONC: '5',
       // This is an explicit canary profile, not the production default: capacity is
@@ -376,8 +381,9 @@ test('100 用户 × 5 窗口：显式 50 原生 + 50 视觉硬分区、50/450 �
 
 test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥接硬分为52+12，真实上游合计为64', async () => {
   const upstream = createFakeUpstream({ holdText: true, holdVision: true })
-  const sharedToken = 'shared-desktop-token'
+  const sharedToken = gatewayTestAccessToken
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_APP_TOKENS: JSON.stringify({ [sharedToken]: 'shared-product-token' }),
       GW_MIMO_CONC: undefined, GW_MIMO_NATIVE_CONC: undefined, GW_MIMO_USER_CONC: undefined, GW_MIMO_TOKEN_CONC: undefined,
@@ -412,6 +418,7 @@ test('默认 MiMo profile:同一共享产品 token 的原生文本与视觉桥�
 test('500 路 DeepSeek 峰值中，100 个排队请求取消后不进入上游、其余 400 路完成且许可归零', async () => {
   const upstream = createFakeUpstream({ holdText: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_DEEPSEEK_CONC: '100',
       GW_DEEPSEEK_USER_CONC: '5',

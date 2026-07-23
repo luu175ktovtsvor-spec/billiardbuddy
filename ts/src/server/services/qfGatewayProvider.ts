@@ -98,28 +98,8 @@ export function qfGatewayConfigured(): boolean {
   return isSecureQfGatewayUrl(getQfGatewayUrl()) && getQfGatewayToken().length > 0
 }
 
-/**
- * Env keys the SERVER sidecar holds but NO CLI subprocess — and no adapter sidecar — may
- * inherit: the product-gateway credential/config plus the per-install id. The agent reaches
- * the gateway through the local provider proxy, never these vars. They MUST be stripped at
- * every process spawn chokepoint (interactive CLI, cron/scheduled-task CLI, adapter sidecars)
- * so a single missed path can't leak the token — or the install id — via e.g. `printenv`
- * under bypassPermissions.
- */
-export const HOST_ONLY_GATEWAY_ENV_KEYS = [
-  'QF_GATEWAY_TOKEN',
-  'QF_GATEWAY_URL',
-  'QF_GATEWAY_MODEL',
-  'BB_INSTALLATION_ID',
-  'BB_MEDIA_UI_CAPABILITY',
-] as const
-
-/** Return a copy of `env` with the host-only gateway keys removed (never mutates input). */
-export function stripHostOnlyGatewayEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env }
-  for (const key of HOST_ONLY_GATEWAY_ENV_KEYS) delete out[key]
-  return out
-}
+import { HOST_ONLY_GATEWAY_ENV_KEYS, stripHostOnlyGatewayEnv } from './gatewayEnv.js'
+export { HOST_ONLY_GATEWAY_ENV_KEYS, stripHostOnlyGatewayEnv }
 
 /**
  * Resolve the upstream proxy target from process.env at request time.

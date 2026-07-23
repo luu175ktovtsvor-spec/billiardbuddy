@@ -1,5 +1,6 @@
 import type { AgentWorkerChild, AgentWorkerChildLauncher } from '../product/agentWorkerSupervisor.js'
 import type { AgentWorkerCore, AgentWorkerCoreFactory } from '../product/agentWorkerService.js'
+import { stripHostOnlyGatewayEnv } from '../services/gatewayEnv.js'
 
 type PrivateIdentity = { task_id: string; lineage_id: string; resume_binding_id: string }
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
@@ -14,6 +15,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
     const state: { core?: AgentWorkerCore; unsubscribe?: () => void; starting?: Promise<AgentWorkerCore> } = {}
     const proc = Bun.spawn(this.command, {
       stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', serialization: 'advanced',
+      env: stripHostOnlyGatewayEnv(process.env),
       ipc: (message, child) => {
         const record = message && typeof message === 'object' ? message as Record<string, unknown> : undefined
         if (record?.type === 'worker_outbound') { input.onMessage(record.message as never); return }
