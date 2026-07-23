@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { LEGACY_DEFERRED_ENVELOPE, type PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 
 function digest(value: Omit<PermissionExecutionEnvelope, 'digest'>): string {
@@ -7,6 +7,25 @@ function digest(value: Omit<PermissionExecutionEnvelope, 'digest'>): string {
 
 export function createLegacyDeferredEnvelope(): PermissionExecutionEnvelope {
   return { ...LEGACY_DEFERRED_ENVELOPE, digest: digest(LEGACY_DEFERRED_ENVELOPE) }
+}
+
+export type AgentWorkerChildStartCapability = { run_id: string; dispatch_generation: number; fencing_token: number; envelope_digest: string; signature: string }
+
+function childStartPayload(value: Omit<AgentWorkerChildStartCapability, 'signature'>): string {
+  return JSON.stringify([value.run_id, value.dispatch_generation, value.fencing_token, value.envelope_digest])
+}
+
+/** Server-private, signed hand-off. Its four bound values are all a child may use. */
+export function createAgentWorkerChildStartCapability(value: Omit<AgentWorkerChildStartCapability, 'signature'>, key: Buffer): AgentWorkerChildStartCapability {
+  return { ...value, signature: createHmac('sha256', key).update(childStartPayload(value)).digest('hex') }
+}
+
+export function verifyAgentWorkerChildStartCapability(value: unknown, key: Buffer): value is AgentWorkerChildStartCapability {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const capability = value as Record<string, unknown>
+  if (Object.keys(capability).sort().join(',') !== 'dispatch_generation,envelope_digest,fencing_token,run_id,signature' || typeof capability.run_id !== 'string' || !Number.isSafeInteger(capability.dispatch_generation) || (capability.dispatch_generation as number) < 1 || !Number.isSafeInteger(capability.fencing_token) || (capability.fencing_token as number) < 1 || typeof capability.envelope_digest !== 'string' || !/^[a-f0-9]{64}$/.test(capability.envelope_digest) || typeof capability.signature !== 'string' || !/^[a-f0-9]{64}$/.test(capability.signature)) return false
+  const expected = Buffer.from(createHmac('sha256', key).update(childStartPayload(capability as AgentWorkerChildStartCapability)).digest('hex'), 'hex'); const actual = Buffer.from(capability.signature, 'hex')
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
 
 /** Module 08 owns any non-legacy policy mapping; this boundary only verifies it. */

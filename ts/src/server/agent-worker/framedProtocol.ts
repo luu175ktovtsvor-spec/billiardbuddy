@@ -5,6 +5,12 @@ export class AgentWorkerProtocol {
   private hello = false
   private ready = false
   constructor(private readonly service: AgentWorkerService, private readonly emit: (message: AgentWorkerOutbound) => void) {}
+  announce(): void {
+    if (this.hello || this.ready) return
+    this.hello = true; this.ready = true
+    this.emit({ type: 'hello', versions: { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION }, capabilities: ['framed', 'permission-envelope'] })
+    this.emit({ type: 'ready' })
+  }
   receive(frame: string): void {
     if (Buffer.byteLength(frame) > AGENT_WORKER_MAX_FRAME_BYTES) return this.emit({ type: 'fatal', code: 'FRAME_TOO_LARGE' })
     let message: unknown
@@ -14,8 +20,8 @@ export class AgentWorkerProtocol {
   }
   private async handle(message: AgentWorkerInbound): Promise<void> {
     if (!message || typeof message !== 'object' || !('type' in message)) return this.emit({ type: 'fatal', code: 'PROTOCOL_INVALID' })
-    if (message.type === 'hello') { if (!intersectsAgentWorkerVersions(message.versions, { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION })) return this.emit({ type: 'fatal', code: 'CAPABILITY_MISMATCH' }); this.hello = true; return this.emit({ type: 'hello', versions: { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION }, capabilities: ['framed', 'permission-envelope'] }) }
-    if (message.type === 'ready') { if (!this.hello) return this.emit({ type: 'fatal', code: 'NOT_READY' }); this.ready = true; return this.emit({ type: 'ready' }) }
+    if (message.type === 'hello') { if (!intersectsAgentWorkerVersions(message.versions, { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION })) return this.emit({ type: 'fatal', code: 'CAPABILITY_MISMATCH' }); if (this.hello) return; this.hello = true; return this.emit({ type: 'hello', versions: { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION }, capabilities: ['framed', 'permission-envelope'] }) }
+    if (message.type === 'ready') { if (!this.hello) return this.emit({ type: 'fatal', code: 'NOT_READY' }); if (this.ready) return; this.ready = true; return this.emit({ type: 'ready' }) }
     if (!this.ready) return this.emit({ type: 'fatal', code: 'NOT_READY' })
     if (message.type === 'start') return this.emit(await this.service.start(message))
     if (message.type === 'input') { const result = await this.service.input(message.text); if (result) this.emit(result); return }

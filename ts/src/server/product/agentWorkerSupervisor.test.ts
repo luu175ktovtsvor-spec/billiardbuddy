@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { AgentWorkerSupervisor } from './agentWorkerSupervisor.js'
+import { AgentWorkerService } from './agentWorkerService.js'
 import { ProductResourceScheduler } from './resourceScheduler.js'
 import { DesktopResourceProfiles, conservativeDesktopResourceProfile } from './resourceProfiles.js'
 
@@ -35,6 +36,19 @@ test('concurrent dispatch calls share one startup before the first durable await
   const f = await fixture(); const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher)
   expect(await Promise.all([supervisor.dispatch('run', 1), supervisor.dispatch('run', 1), supervisor.dispatch('run', 1)])).toEqual(['started', 'started', 'started']); await Bun.sleep(10)
   expect(f.submits).toBe(1); expect(f.claims).toBe(1); expect(f.launches).toBe(1); expect(f.settled).toEqual([])
+})
+
+test('supervisor claim and child bootstrap start one private Core without a second claim', async () => {
+  const f = await fixture(); let coreStarts = 0
+  const launcher = { launch: async (input: any) => {
+    const service = new AgentWorkerService({ ...input.bootstrap, cores: { start: async () => { coreStarts++; return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } } }, () => new Date('2026-01-01T00:00:00.000Z'))
+    const child = { send: (message: any) => { if (message.type === 'start') void service.start(message) }, stop: async () => {} }
+    setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
+    return child
+  } }
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher)
+  expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
+  expect(f.claims).toBe(1); expect(coreStarts).toBe(1); expect(f.settled).toEqual([])
 })
 
 test('launch failure after the durable claim settles and releases exactly once', async () => {
