@@ -166,9 +166,24 @@
       "reason": "No versioned immutable fixture is registered.",
       "status": "unsupported",
       "storage_id": "desktop-localstorage"
+    },
+    {
+      "backup_strategy": "module-22-versioned-backup-before-write",
+      "fixture": "ts/product-contracts/fixtures/provider-legacy-qwen-model-values-v1.json",
+      "fixture_sha256": "3235c598b4e2c520cf6fbe71caed829ac054c5612e08770959f6cecc8fa8d3a5",
+      "from": "qwen3-coder-plus",
+      "id": "provider-model-qwen-value-v1-to-text-reasoning",
+      "layer": "disk",
+      "migration_owner_module": "22",
+      "physical_location": "legacy provider model value",
+      "reader_entry": "gateway/qwenLegacyModelMapper.ts",
+      "release_association": "module-22-versioned-migration",
+      "status": "current_only",
+      "storage_id": "provider-model-value",
+      "to": "deepseek-v4-flash"
     }
   ],
   "matrix_revision": "bb-01a-initial",
   "matrix_schema_version": 1,
-  "source_sha256": "a37dfaffec5d240000004a2360bc19b7cbd636f17c450fc458fdb7fd043daf3e"
+  "source_sha256": "c8468cb6bb343b34dcd3e8e017cbb46792b524bd7f2f54cc0c65021d023a602b"
 }

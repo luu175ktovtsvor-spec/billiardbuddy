@@ -1,5 +1,3 @@
-type Env = Record<string, string | undefined>
-
 export interface MimoRetryOptions {
   maxRetries: number
   baseDelayMs: number
@@ -14,64 +12,6 @@ export class MimoRequestError extends Error {
     super(publicMessage)
     this.name = 'MimoRequestError'
   }
-}
-
-const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
-const DEFAULT_MIMO_MODEL = 'mimo-v2.5'
-
-/**
- * 服务器允许的 MiMo 模型集合:`GW_MIMO_MODEL` 为主模型,`GW_MIMO_MODELS`(逗号分隔)可追加更多。
- * 都没配时回落到默认 `mimo-v2.5`。客户端请求的 model 若不在集合内会被强制改写为主模型,
- * 客户端无法绕过白名单。
- */
-export function loadMimoAllowedModels(env: Env): ReadonlySet<string> {
-  const set = new Set<string>()
-  const primary = (env.GW_MIMO_MODEL ?? '').trim()
-  if (MODEL_PATTERN.test(primary)) set.add(primary)
-  for (const model of (env.GW_MIMO_MODELS ?? '').split(',').map(m => m.trim()).slice(0, 16)) {
-    if (MODEL_PATTERN.test(model)) set.add(model)
-  }
-  if (set.size === 0) set.add(DEFAULT_MIMO_MODEL)
-  return set
-}
-
-/**
- * 归一化 MiMo 聊天请求体:
- * - 只允许服务器配置的模型;客户端 model 不在白名单时强制改写为 `defaultModel`,客户端不能绕过。
- * - **默认关闭 MiMo 思考模式**(`thinking:{type:'disabled'}`),除非客户端已显式带 `thinking`。
- *   原因(官方核实):MiMo 默认思考开,对普通/Agent 请求会先思考几分钟再答(实测单请求 ~360s),
- *   且官方明确"思考 + 工具调用不稳定,tool_calls 会混进 reasoning_content"。MiMo 是产品默认模型、
- *   Agent 工具循环高频调用,所以默认关思考保证快而稳;需要思考时客户端显式传 `thinking:{type:'enabled'}`。
- * - 不做任何原生 web_search 注入 —— 原生联网检索由受限的 DeepSeek Anthropic 路由处理，
- *   其它模型不会收到伪造或跨供应商的搜索工具。
- * 其余字段(messages / tools / tool_choice / stream / temperature …)原样透传,保持 OpenAI
- * Chat Completions 请求契约。
- */
-export function prepareMimoChatBody(
-  rawBody: string,
-  allowedModels: ReadonlySet<string>,
-  defaultModel: string,
-): { body: string } {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(rawBody)
-  } catch {
-    throw new MimoRequestError(400, '模型请求不是合法 JSON')
-  }
-  if (!isRecord(parsed)) throw new MimoRequestError(400, '模型请求必须是 JSON 对象')
-
-  if (parsed.tools !== undefined && !Array.isArray(parsed.tools)) {
-    throw new MimoRequestError(400, '模型请求 tools 必须是数组')
-  }
-
-  const requested = typeof parsed.model === 'string' ? parsed.model : ''
-  const model = allowedModels.has(requested) ? requested : defaultModel
-  if (!MODEL_PATTERN.test(model)) throw new MimoRequestError(503, '模型服务未配置')
-  const injectThinkingOff = parsed.thinking === undefined
-  if (model === requested && !injectThinkingOff) return { body: rawBody }
-  const next: Record<string, unknown> = { ...parsed, model }
-  if (injectThinkingOff) next.thinking = { type: 'disabled' }
-  return { body: JSON.stringify(next) }
 }
 
 export async function fetchMimoWithRetry(
@@ -100,10 +40,6 @@ export async function fetchMimoWithRetry(
       await sleep(jitteredBackoff(attempt, opts, random))
     }
   }
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 // 网关只重试"明确可重试的 5xx"。429 一律不重试(直接把限流回传给客户端),避免与 CC CLI

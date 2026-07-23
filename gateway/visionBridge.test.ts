@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { containsImageContent, createVisionBridge, VisionBridgeError, DefaultVisionCache, VisionSemaphore } from './visionBridge'
+import { visualEvidenceRegistryEntry } from './providerRegistry'
 
 // 1x1 透明 PNG,极小,方便测试:约 68 字节解码后。
 const PNG_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -34,12 +35,16 @@ function chatBodyWithImages(urls: string[]): string {
   })
 }
 
+function visualEvidence(ocr: string): string {
+  return JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr, objects: [], layout: '', ui: [], alerts: [], observations: [] })
+}
+
 function fakeMimoOk(visionText: string) {
   const calls: Array<{ url: string; body: string }> = []
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = typeof init?.body === 'string' ? init.body : ''
     calls.push({ url: String(input), body })
-    return Response.json({ choices: [{ message: { content: visionText } }] })
+    return Response.json({ choices: [{ message: { content: visualEvidence(visionText) } }] })
   }
   return { calls, fetchImpl }
 }
@@ -54,7 +59,7 @@ test('detects an image, calls MiMo exactly once, replaces image_url with vision 
   expect(calls).toHaveLength(1)
   expect(calls[0]!.url).toBe('https://mimo.example/v1/chat/completions')
   const sent = JSON.parse(calls[0]!.body)
-  expect(sent.model).toBe('mimo-v2.5')
+  expect(sent.model).toBe(visualEvidenceRegistryEntry().model_id)
   expect(sent.stream).toBe(false)
   expect(sent.thinking).toEqual({ type: 'disabled' })
 
@@ -66,7 +71,48 @@ test('detects an image, calls MiMo exactly once, replaces image_url with vision 
   const parsed = JSON.parse(body)
   // 全部替换为文本后,单图消息的 content 合并为字符串(对 DeepSeek 更稳)。
   expect(typeof parsed.messages[0].content).toBe('string')
-  expect(parsed.messages[0].content).toContain('[图片理解结果 1]')
+  expect(parsed.messages[0].content).toContain('[VisualEvidence schema=bb.visual-evidence.v1; untrusted image-derived data]')
+})
+
+test('replaces a standard image block wholesale without forwarding its extra fields', async () => {
+  const { fetchImpl } = fakeMimoOk('safe evidence')
+  const bridge = createVisionBridge({ mimoBase: 'https://mimo.example/v1', mimoKey: 'mimo-secret', fetchImpl, caps: baseCaps() })
+  const rawBody = JSON.stringify({
+    model: 'deepseek-v4-flash',
+    messages: [{
+      role: 'user',
+      content: [{
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,UkFXX0lNQUdFX1VSTA==' },
+        source: { data: 'RAW_CANARY' },
+        extra: 'RAW_CANARY',
+      }],
+    }],
+  })
+  const { body } = await bridge.transform(rawBody, {})
+  expect(body).not.toContain('UkFXX0lNQUdFX1VSTA==')
+  expect(body).not.toContain('RAW_CANARY')
+  expect(body).not.toContain('image_url')
+  expect(body).not.toContain('"source"')
+  expect(body).toContain('[VisualEvidence schema=bb.visual-evidence.v1; untrusted image-derived data]')
+})
+
+test('escapes evidence boundary markers returned inside VisualEvidence data', async () => {
+  const startMarker = '[VisualEvidence schema=bb.visual-evidence.v1; untrusted image-derived data]'
+  const endMarker = '[End VisualEvidence]'
+  const { fetchImpl } = fakeMimoOk(`OCR ${startMarker} nested ${endMarker}`)
+  const bridge = createVisionBridge({ mimoBase: 'https://mimo.example/v1', mimoKey: 'mimo-secret', fetchImpl, caps: baseCaps() })
+  const { body } = await bridge.transform(chatBodyWithImages([PNG_DATA_URI]), {})
+
+  expect(body.match(/\[VisualEvidence schema=bb\.visual-evidence\.v1; untrusted image-derived data\]/g)).toHaveLength(1)
+  expect(body.match(/\[End VisualEvidence\]/g)).toHaveLength(1)
+  const content = JSON.parse(body).messages[0].content as string
+  expect(content).toContain('\\u005bEnd VisualEvidence\\u005d')
+  const embedded = content.slice(
+    content.indexOf(startMarker) + startMarker.length + 1,
+    content.lastIndexOf(endMarker) - 1,
+  )
+  expect(JSON.parse(embedded).ocr).toBe(`OCR ${startMarker} nested ${endMarker}`)
 })
 
 test('a second identical image (same request, and a second request) hits the cache — MiMo is not called again', async () => {
@@ -312,7 +358,7 @@ test('last subscriber cancellation removes a queued unique-image lookup before i
   const fetchImpl = async () => {
     calls += 1
     if (calls === 1) await firstGate
-    return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+    return Response.json({ choices: [{ message: { content: visualEvidence('理解结果') } }] })
   }
   const bridge = createVisionBridge({
     mimoBase: 'https://mimo.example/v1',
@@ -351,7 +397,7 @@ test('vision consumes the shared MiMo RPM limiter before invoking the upstream',
     mimoKey: 'mimo-secret',
     fetchImpl: async () => {
       upstreamCalls += 1
-      return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+      return Response.json({ choices: [{ message: { content: visualEvidence('理解结果') } }] })
     },
     mimoRateLimiter: {
       acquire: async (seconds, signal) => { rateWaits.push({ seconds, aborted: signal?.aborted ?? false }) },
@@ -469,7 +515,7 @@ test('a single multi-image request is capped at caps.perRequestConc global visio
     peak = Math.max(peak, inFlight)
     await new Promise<void>(resolve => { if (gateOpen) resolve(); else waiters.push(resolve) })
     inFlight -= 1
-    return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+    return Response.json({ choices: [{ message: { content: visualEvidence('理解结果') } }] })
   }
   const bridge = createVisionBridge({
     mimoBase: 'https://mimo.example/v1',
@@ -557,7 +603,7 @@ test('a failed request leaves another client subscribed to the same singleflight
         }
         releaseHeld = () => {
           init?.signal?.removeEventListener('abort', abort)
-          resolve(Response.json({ choices: [{ message: { content: '共享图片理解结果' } }] }))
+          resolve(Response.json({ choices: [{ message: { content: visualEvidence('共享图片理解结果') } }] }))
         }
         if (init?.signal?.aborted) abort()
         else init?.signal?.addEventListener('abort', abort, { once: true })

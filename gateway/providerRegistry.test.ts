@@ -4,10 +4,13 @@ import {
   buildProviderRegistryRuntimeEnv,
   defaultProviderModel,
   providerManifestSha256,
+  providerRegistryEntryForCapability,
   providerRegistrySha256,
   renderProviderContractArtifacts,
   stableProviderJson,
+  textReasoningRegistryEntry,
   validateProviderRuntimeConfiguration,
+  visualEvidenceRegistryEntry,
   workerTextReasoningEntry,
 } from './providerRegistry'
 
@@ -19,6 +22,8 @@ test('registry provides the four neutral capabilities from one conservative sour
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.CHAT_TEXT_BODY_MAX_BYTES === 24 * 1024 * 1024)).toBe(true)
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.VISION_BODY_MAX_BYTES === 24 * 1024 * 1024)).toBe(true)
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.IMAGE_GENERATION_BODY_MAX_BYTES === 32 * 1024 * 1024)).toBe(true)
+  expect(textReasoningRegistryEntry()).toBe(providerRegistryEntryForCapability('TextReasoning'))
+  expect(visualEvidenceRegistryEntry()).toBe(providerRegistryEntryForCapability('VisualEvidence'))
 })
 
 test('both generated artifacts share and cross-reference the canonical digest', () => {
@@ -56,6 +61,7 @@ test('runtime configuration binds every Core model slot to the unique TextReason
   const slots = ['QF_GATEWAY_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL'] as const
   expect(slots.map(slot => valid[slot])).toEqual([textModel, textModel, textModel, textModel, textModel])
   expect(validateProviderRuntimeConfiguration(valid)).toBeUndefined()
+  expect(validateProviderRuntimeConfiguration(buildProviderRegistryRuntimeEnv(nonText.model_id))).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, ANTHROPIC_DEFAULT_OPUS_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: textModel, ANTHROPIC_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')

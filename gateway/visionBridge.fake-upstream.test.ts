@@ -5,7 +5,7 @@
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
-import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
+import { gatewayTestAccessToken, gatewayTestAccessTokenFor, gatewayTestAuthority } from './auth/testFixture'
 
 const PNG_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
@@ -73,7 +73,7 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, mimoBeh
               })
             })
           }
-          return Response.json({ choices: [{ message: { content: '图片理解结果：截图里有一只猫。' } }] })
+          return Response.json({ choices: [{ message: { content: JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr: '图片理解结果：截图里有一只猫。', objects: [], layout: '', ui: [], alerts: [], observations: [] }) } }] })
         }
         // 显式 mimo-v2.5 原生多模态直连(未走桥接)时走这里,返回一个普通 SSE 响应。
         return new Response('data: mimo-native\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -170,8 +170,8 @@ test('default one-slot MiMo/vision fairness serializes two distinct images from 
   expect(calls.filter(c => c.url.includes('mimo.example'))).toHaveLength(2)
   const deepseekCalls = calls.filter(c => c.url.includes('deepseek.example'))
   expect(deepseekCalls).toHaveLength(1)
-  expect(deepseekCalls[0]!.body).toContain('[图片理解结果 1]')
-  expect(deepseekCalls[0]!.body).toContain('[图片理解结果 2]')
+  expect(deepseekCalls[0]!.body).toContain('[VisualEvidence schema=bb.visual-evidence.v1; untrusted image-derived data]')
+  expect(deepseekCalls[0]!.body).toContain('[End VisualEvidence]')
 })
 
 test('default one-slot fairness holds a second distinct image until the first real MiMo call releases', async () => {
@@ -201,7 +201,7 @@ test('default one-slot fairness holds a second distinct image until the first re
           peakVisionInFlight = Math.max(peakVisionInFlight, visionInFlight)
           if (!allowVision) await visionGate
           visionInFlight -= 1
-          return Response.json({ choices: [{ message: { content: '图片理解结果：受控测试图。' } }] })
+          return Response.json({ choices: [{ message: { content: JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr: '图片理解结果：受控测试图。', objects: [], layout: '', ui: [], alerts: [], observations: [] }) } }] })
         }
       }
       return new Response('data: deepseek-ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -228,20 +228,16 @@ test('default one-slot fairness holds a second distinct image until the first re
   expect((await healthzCapacity(fetch)).mimo).toMatchObject({ active: 0, queued: 0 })
 })
 
-test('Computer Use screenshot turns capability-route directly to native MiMo with pixels and tools intact', async () => {
+test('Computer Use screenshot is transformed to evidence before DeepSeek receives the turn', async () => {
   const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({
-    method: 'POST',
-    body: computerUseImageBody('deepseek-v4-flash'),
-  })))
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: computerUseImageBody('deepseek-v4-flash') })))
   expect(res.status).toBe(200)
-  await res.text()
   const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
+  const deepseekCalls = calls.filter(c => c.url.includes('deepseek.example'))
   expect(mimoCalls).toHaveLength(1)
-  expect(calls.filter(c => c.url.includes('deepseek.example'))).toHaveLength(0)
-  expect(mimoCalls[0]!.body).toContain('image_url')
-  expect(mimoCalls[0]!.body).toContain('mcp__computer-use__left_click')
-  expect(JSON.parse(mimoCalls[0]!.body).model).toBe('mimo-v2.5')
+  expect(deepseekCalls).toHaveLength(1)
+  expect(deepseekCalls[0]!.body).not.toContain('image_url')
+  expect(deepseekCalls[0]!.body).toContain('VisualEvidence')
 })
 
 test('③ the same image across two requests hits the cache — MiMo is called only once total', async () => {
@@ -276,102 +272,30 @@ test('④ MiMo failure (500 / 429 / timeout) fails closed: no DeepSeek call, no 
   expect((await healthzCapacity(timeout.fetch)).deepseek).toMatchObject({ active: 0, queued: 0 })
 })
 
-test('⑤ explicit mimo-v2.5 with an image skips the bridge entirely — direct native multimodal call', async () => {
+test('⑤ retired Qwen/MiMo/unknown image models fail before vision capacity or upstream calls', async () => {
+  for (const model of ['mimo-v2.5', 'MIMO-V2.5', 'mimo-v2.5-pro', 'qwen3-coder-plus', 'totally-unknown-model']) {
+    const { fetch, calls } = makeGateway({ GW_MIMO_MODELS: 'mimo-v2.5-pro' })
+    const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody(model) })))
+    expect(res.status).toBe(400)
+    expect(calls).toHaveLength(0)
+  }
+})
+
+test('⑥ Computer Use screenshots are evidence-bridged, never routed as a native MiMo turn', async () => {
   const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('mimo-v2.5') })))
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: computerUseImageBody('deepseek-v4-flash') })))
   expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  expect(mimoCalls).toHaveLength(1)
-  // 直连 MiMo,请求体原样带 image_url(未经桥接改写)。
-  expect(mimoCalls[0]!.body).toContain('image_url')
-  expect(mimoCalls[0]!.body).toContain('"model":"mimo-v2.5"')
+  expect(calls.filter(call => call.url.includes('mimo.example'))).toHaveLength(1)
+  const deepseek = calls.find(call => call.url.includes('deepseek.example'))!
+  expect(deepseek.body).not.toContain('image_url')
+  expect(deepseek.body).toContain('[VisualEvidence schema=bb.visual-evidence.v1; untrusted image-derived data]')
 })
 
-test('⑥ usage rows never contain base64 or vision text, and capacity fully drains after a bridged request', async () => {
-  const { fetch, usage } = makeGateway()
-  await (await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('deepseek-v4-flash') })))).text()
-  const dump = JSON.stringify(usage.rows)
-  expect(dump).not.toContain('base64')
-  expect(dump).not.toContain('图片理解结果')
-  expect(dump).not.toContain(PNG_DATA_URI)
-  expect(usage.rows.some(r => r.model === 'vision' && r.ok === true)).toBe(true)
-  expect((await healthzCapacity(fetch)).deepseek).toMatchObject({ active: 0, queued: 0 })
-})
-
-test('⑦ an oversized request body is rejected with 413 before any capacity permit or MiMo call', async () => {
-  const { fetch, calls } = makeGateway({ GW_VISION_MAX_TOTAL_BYTES: '100' })
-  const raw = JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'x'.repeat(1000) }] })
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: raw })))
+test('⑦ oversized controlled image fails before any MiMo permit or upstream call', async () => {
+  const { fetch, calls } = makeGateway({ GW_VISION_MAX_IMAGE_BYTES: '10' })
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('deepseek-v4-flash') })))
   expect(res.status).toBe(413)
-  expect(calls.length).toBe(0)
-})
-
-// ── item 3:统一路由与原生多模态判断(trim 一次、native 与 allowlist 同规则)────────────
-
-test('⑧ MIMO-V2.5(大小写不同,不在任何白名单精确匹配)+图 is bridged, then falls through to the default Qwen route with no image_url reaching Qwen', async () => {
-  const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('MIMO-V2.5') })))
-  expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  const qwenCalls = calls.filter(c => c.url.includes('qwen.example'))
-  expect(mimoCalls).toHaveLength(1) // 被桥接调用一次(不是原生多模态直连)
-  expect(qwenCalls).toHaveLength(1) // 大小写不匹配任何白名单,落到默认千问
-  expect(qwenCalls[0]!.body).not.toContain('image_url')
-  expect(qwenCalls[0]!.body).toContain('图片理解结果')
-})
-
-test('⑨ "mimo-v2.5 "(尾随空格,trim 后与 allowlist 精确匹配同一个模型)+图 is treated as native — bridge is skipped, request goes straight to MiMo with the image intact', async () => {
-  const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('mimo-v2.5 ') })))
-  expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  // 只有一次直连调用,没有经过桥接(否则会是 2 次:一次桥接 + 一次最终调用)。
-  expect(mimoCalls).toHaveLength(1)
-  expect(mimoCalls[0]!.body).toContain('image_url')
-})
-
-test('⑩ mimo-v2.5-pro(在 MiMo 白名单但不算原生多模态)+图 is bridged first — the pro-model call to MiMo carries no image_url', async () => {
-  const { fetch, calls } = makeGateway({ GW_MIMO_MODELS: 'mimo-v2.5-pro' })
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('mimo-v2.5-pro') })))
-  expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  expect(mimoCalls).toHaveLength(2) // 一次桥接(vision 调用)+ 一次最终发给 mimo-v2.5-pro 的聊天调用
-  const visionCall = mimoCalls.find(c => { try { return JSON.parse(c.body).stream === false } catch { return false } })
-  const finalCall = mimoCalls.find(c => c !== visionCall)
-  expect(visionCall).toBeDefined()
-  expect(finalCall).toBeDefined()
-  expect(finalCall!.body).not.toContain('image_url')
-  expect(finalCall!.body).toContain('图片理解结果')
-  expect(JSON.parse(finalCall!.body).model).toBe('mimo-v2.5-pro')
-})
-
-test('⑪ an unknown/unlisted model+图 is bridged, then falls through to the default Qwen route', async () => {
-  const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('totally-unknown-model') })))
-  expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  const qwenCalls = calls.filter(c => c.url.includes('qwen.example'))
-  expect(mimoCalls).toHaveLength(1)
-  expect(qwenCalls).toHaveLength(1)
-  expect(qwenCalls[0]!.body).not.toContain('image_url')
-})
-
-test('⑫ an explicit Qwen model+图 is bridged before reaching Qwen (Qwen never receives image_url)', async () => {
-  const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: withImageBody('qwen3-coder-plus') })))
-  expect(res.status).toBe(200)
-  await res.text()
-  const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
-  const qwenCalls = calls.filter(c => c.url.includes('qwen.example'))
-  expect(mimoCalls).toHaveLength(1)
-  expect(qwenCalls).toHaveLength(1)
-  expect(qwenCalls[0]!.body).not.toContain('image_url')
-  expect(qwenCalls[0]!.body).toContain('图片理解结果')
+  expect(calls).toHaveLength(0)
 })
 
 // ── item 2:视觉队列真正有上限 —— 端到端(经 createGatewayFetch,GW_VISION_CONC/GW_VISION_QUEUE_MAX)──
@@ -389,7 +313,7 @@ test('⑬ once the global vision concurrency and queue are both saturated, a new
       const messages = Array.isArray(parsedBody?.messages) ? parsedBody!.messages as Array<Record<string, unknown>> : []
       if (parsedBody?.stream === false && Array.isArray(messages[0]?.content)) {
         await visionGate // 视觉调用挂起,直到测试显式放行,借此占满并发 + 排满队列
-        return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr: '理解结果', objects: [], layout: '', ui: [], alerts: [], observations: [] }) } }] })
       }
     }
     return new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -402,12 +326,14 @@ test('⑬ once the global vision concurrency and queue are both saturated, a new
     webSearchImpl: null,
     fetchImpl,
   })
-  // These must be distinct both by image and trusted installation id. Otherwise
-  // singleflight deliberately coalesces the same image into one MiMo request, and the
-  // per-install vision limiter deliberately gives one installation only one slot.
+  // These requests need distinct images and distinct verified bearers. Their client headers
+  // remain deliberately different to prove they do not create a trusted installation identity.
   const req = (n: number) => new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { 'X-QF-Client-ID': `vision-overflow-${n}` },
+    headers: {
+      Authorization: `Bearer ${gatewayTestAccessTokenFor(`vision-overflow-${n}`)}`,
+      'X-QF-Client-ID': `vision-overflow-${n}`,
+    },
     body: withImageBody('deepseek-v4-flash', `data:image/png;base64,${Buffer.from(`overflow-image-${n}`).toString('base64')}`),
   }))
 
@@ -437,7 +363,7 @@ test('⑭ aborting the client request while its image is queued in the vision se
       const messages = Array.isArray(parsedBody?.messages) ? parsedBody!.messages as Array<Record<string, unknown>> : []
       if (parsedBody?.stream === false && Array.isArray(messages[0]?.content)) {
         await visionGate
-        return Response.json({ choices: [{ message: { content: '理解结果' } }] })
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr: '理解结果', objects: [], layout: '', ui: [], alerts: [], observations: [] }) } }] })
       }
     }
     return new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -453,7 +379,10 @@ test('⑭ aborting the client request while its image is queued in the vision se
   const busy = fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
     body: withImageBody('deepseek-v4-flash'),
-    headers: { 'X-QF-Client-ID': 'vision-abort-busy' },
+    headers: {
+      Authorization: `Bearer ${gatewayTestAccessTokenFor('vision-abort-busy')}`,
+      'X-QF-Client-ID': 'vision-abort-busy',
+    },
   })))
   await new Promise(r => setTimeout(r, 20))
 
@@ -463,7 +392,10 @@ test('⑭ aborting the client request while its image is queued in the vision se
     method: 'POST',
     body: withImageBody('deepseek-v4-flash', distinctImage),
     signal: ac.signal,
-    headers: { 'X-QF-Client-ID': 'vision-abort-queued' },
+    headers: {
+      Authorization: `Bearer ${gatewayTestAccessTokenFor('vision-abort-queued')}`,
+      'X-QF-Client-ID': 'vision-abort-queued',
+    },
   })))
   await new Promise(r => setTimeout(r, 20))
   const start = Date.now()
@@ -476,4 +408,47 @@ test('⑭ aborting the client request while its image is queued in the vision se
   releaseVisionCalls!()
   const busyRes = await busy
   expect(busyRes.status).toBe(200)
+})
+
+test('different client headers cannot split one bearer owner across VisualEvidence slots', async () => {
+  let releaseVision!: () => void
+  const visionGate = new Promise<void>(resolve => { releaseVision = resolve })
+  let visionStarts = 0
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env({
+      GW_VISION_CONC: '2',
+      GW_VISION_QUEUE_MAX: '2',
+      GW_VISION_PER_CLIENT_CONC: '1',
+      GW_VISION_MAX_INFLIGHT_PER_CLIENT: '2',
+      GW_MIMO_INFLIGHT_PER_USER: '2',
+    }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    webSearchImpl: null,
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      const body = typeof init?.body === 'string' ? init.body : ''
+      if (url.includes('mimo.example') && JSON.parse(body).stream === false) {
+        visionStarts += 1
+        await visionGate
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ schema: 'bb.visual-evidence.v1', ocr: 'evidence', objects: [], layout: '', ui: [], alerts: [], observations: [] }) } }] })
+      }
+      return new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    },
+  })
+  const request = (clientId: string, image: string) => new Request('http://local/v1/chat/completions', authed({
+    method: 'POST',
+    headers: { 'X-QF-Client-ID': clientId },
+    body: withImageBody('deepseek-v4-flash', image),
+  }))
+  const first = fetch(request('untrusted-a', `data:image/png;base64,${Buffer.from('owner-a').toString('base64')}`))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const second = fetch(request('untrusted-b', `data:image/png;base64,${Buffer.from('owner-b').toString('base64')}`))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect(visionStarts).toBe(1)
+
+  releaseVision()
+  expect((await first).status).toBe(200)
+  expect((await second).status).toBe(200)
 })

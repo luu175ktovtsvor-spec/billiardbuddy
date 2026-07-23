@@ -129,6 +129,29 @@ export function providerRegistryEntry(model: string | undefined): ProviderRegist
   return normalized ? PROVIDER_REGISTRY.find(candidate => candidate.model_id === normalized) : undefined
 }
 
+export function providerRegistryEntryForCapability(capability: ProviderRegistryEntry['capabilities'][number]): ProviderRegistryEntry {
+  const entries = PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes(capability))
+  if (entries.length !== 1) throw new Error(`provider registry must contain exactly one ${capability} entry`)
+  return entries[0]!
+}
+
+export function textReasoningRegistryEntry(): ProviderRegistryEntry
+export function textReasoningRegistryEntry(model: string): ProviderRegistryEntry | undefined
+export function textReasoningRegistryEntry(model?: string): ProviderRegistryEntry | undefined {
+  const defaultEntry = workerTextReasoningEntry()
+  if (!defaultEntry) {
+    if (model === undefined) throw new Error('provider registry has no unique TextReasoning default model')
+    return undefined
+  }
+  if (model === undefined) return providerRegistryEntryForCapability('TextReasoning')
+  const entry = providerRegistryEntry(model)
+  return entry?.capabilities.includes('TextReasoning') ? entry : undefined
+}
+
+export function visualEvidenceRegistryEntry(): ProviderRegistryEntry {
+  return providerRegistryEntryForCapability('VisualEvidence')
+}
+
 export type ProviderContractArtifacts = {
   'model-contract.json': Json
   'worker-capability-manifest.json': Json
@@ -181,16 +204,16 @@ export function providerManifestSha256(): string {
 
 export function buildProviderRegistryRuntimeEnv(model: string | undefined): Record<string, string> {
   const selected = model?.trim() || defaultProviderModel()
-  const entry = providerRegistryEntry(selected)
+  const entry = textReasoningRegistryEntry(selected)
   const contract = {
     [PROVIDER_RUNTIME_CONTRACT_VERSION_ENV]: String(PROVIDER_REGISTRY_CONTRACT_VERSION),
     [PROVIDER_RUNTIME_REGISTRY_SHA256_ENV]: providerRegistrySha256(),
     [PROVIDER_RUNTIME_MANIFEST_SHA256_ENV]: providerManifestSha256(),
+    QF_GATEWAY_MODEL: selected,
   }
   if (!entry) return contract
   return {
     ...contract,
-    [entry.worker_env_source.variable]: selected,
     ...Object.fromEntries(entry.worker_env_source.slot_aliases.map(alias => [alias, selected])),
     CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [selected]: entry.verified_context_window }),
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(entry.compact_threshold),

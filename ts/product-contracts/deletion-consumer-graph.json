@@ -128,9 +128,9 @@
       "d5_owner_module": "24",
       "edges": [
         {
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable.",
+          "condition": "BB-04C leaves only this test-only executable consumer; Gateway runtime consumers are zero and the D3 mapper remains reachable for Module 22.",
           "consumer": {
-            "path": "gateway/app.ts",
+            "path": "gateway/qwenChat.test.ts",
             "reference": {
               "kind": "import",
               "text": "import {\n  fetchQwenWithRetry,\n  loadQwenAllowedModels,\n  prepareQwenChatBody,\n  QwenRequestError,\n} from './qwenChat'"
@@ -148,10 +148,11 @@
         }
       ],
       "migration_modules": [
-        "04"
+        "04",
+        "22"
       ],
       "object_id": "qwen-executable-runtime",
-      "retained_reader": "pure legacy value mapper"
+      "retained_reader": "gateway/qwenLegacyModelMapper.ts (pure D3 value mapper)"
     },
     {
       "d4_owner_module": "23",
@@ -462,5 +463,5 @@
     }
   ],
   "graph_schema_version": 1,
-  "source_sha256": "a37dfaffec5d240000004a2360bc19b7cbd636f17c450fc458fdb7fd043daf3e"
+  "source_sha256": "c8468cb6bb343b34dcd3e8e017cbb46792b524bd7f2f54cc0c65021d023a602b"
 }
