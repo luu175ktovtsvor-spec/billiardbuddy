@@ -359,7 +359,7 @@ test('vision consumes the shared MiMo RPM limiter before invoking the upstream',
     mimoRateLimitMaxWaitSeconds: 0.75,
     caps: baseCaps(),
   })
-  await bridge.transform(chatBodyWithImages([PNG_DATA_URI]), { schedulerId: 'owner-a#desktop-a', tokenId: 'owner-a' })
+  await bridge.transform(chatBodyWithImages([PNG_DATA_URI]), { schedulerId: 'owner-a#desktop-a', tokenId: 'test-principal:test-installation' })
   expect(rateWaits).toEqual([{ seconds: 0.75, aborted: false }])
   expect(upstreamCalls).toBe(1)
 })

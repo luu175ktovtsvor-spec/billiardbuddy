@@ -536,18 +536,21 @@ describe('qf-gateway proxy round-trip', () => {
     }
   })
 
-  test('the install id and media UI capability are host-only keys stripped from CLI subprocesses', () => {
-    expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain('BB_INSTALLATION_ID')
-    expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain('BB_MEDIA_UI_CAPABILITY')
+  test('access, bootstrap, license, refresh, installation and media material are host-only', () => {
+    for (const key of ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_BOOTSTRAP_CREDENTIAL', 'QF_LICENSE_KEY', 'QF_GATEWAY_REFRESH_TOKEN', 'QF_GATEWAY_SESSION_PROOF', 'BB_INSTALLATION_ID', 'BB_MEDIA_UI_CAPABILITY']) {
+      expect(HOST_ONLY_GATEWAY_ENV_KEYS).toContain(key)
+    }
     const stripped = stripHostOnlyGatewayEnv({
       PATH: '/x',
       BB_INSTALLATION_ID: 'bb-1',
       BB_MEDIA_UI_CAPABILITY: 'media-secret',
       QF_GATEWAY_TOKEN: 't',
+      QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap',
+      QF_LICENSE_KEY: 'license',
+      QF_GATEWAY_REFRESH_TOKEN: 'refresh',
+      QF_GATEWAY_SESSION_PROOF: 'proof',
     })
-    expect(stripped.BB_INSTALLATION_ID).toBeUndefined()
-    expect(stripped.BB_MEDIA_UI_CAPABILITY).toBeUndefined()
-    expect(stripped.QF_GATEWAY_TOKEN).toBeUndefined()
+    for (const key of HOST_ONLY_GATEWAY_ENV_KEYS) expect(stripped[key]).toBeUndefined()
     expect(stripped.PATH).toBe('/x')
   })
 

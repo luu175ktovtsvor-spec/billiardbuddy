@@ -7,6 +7,7 @@
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAccessTokenFor, gatewayTestAuthority } from './auth/testFixture'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -23,7 +24,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_DEEPSEEK_CONC: '32', GW_DEEPSEEK_USER_CONC: '2', GW_DEEPSEEK_RPM: '1000000', GW_DEEPSEEK_QUEUE_MAX_WAIT: '30', GW_DEEPSEEK_MAX_RETRIES: '1',
     GW_DEEPSEEK_QUEUE_MAX: '512',
     GW_RELAY_BASE: 'https://relay.example/v1', GW_RELAY_TOKEN: 'relay-secret',
-    GW_APP_TOKENS: JSON.stringify({ 'app-token': 'beta' }),
+    GW_APP_TOKENS: JSON.stringify({ gatewayTestAccessToken: 'beta' }),
     ...overrides,
   }
 }
@@ -68,23 +69,24 @@ function makeGateway(fetchImpl: (input: RequestInfo | URL) => Promise<Response>,
 function makeGatewayWithUsage(fetchImpl: (input: RequestInfo | URL) => Promise<Response>, overrides: Record<string, string | undefined> = {}) {
   const usage = new MemoryUsageStore()
   return {
-    fetch: createGatewayFetch({ env: env(overrides), usageStore: usage, transcribeImpl: null, fetchImpl }),
+    fetch: createGatewayFetch({
+    authority: gatewayTestAuthority, env: env(overrides), usageStore: usage, transcribeImpl: null, fetchImpl }),
     usage,
   }
 }
 
-function chatReq(model: string, client: string | null, token = 'app-token', signal?: AbortSignal): Request {
-  const headers: Record<string, string> = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+function chatReq(model: string, client: string | null, token = gatewayTestAccessToken, signal?: AbortSignal): Request {
+  const headers: Record<string, string> = { Authorization: `Bearer ${gatewayTestAccessTokenFor(`capacity-${token}`)}`, 'Content-Type': 'application/json' }
   if (client) headers['X-QF-Client-ID'] = client
   return new Request('http://local/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model, stream: true }), signal })
 }
 
-function fire(fetch: (r: Request) => Promise<Response>, model: string, client: string | null, token = 'app-token'): Promise<number> {
+function fire(fetch: (r: Request) => Promise<Response>, model: string, client: string | null, token = gatewayTestAccessToken): Promise<number> {
   return fetch(chatReq(model, client, token)).then(async res => { await res.text(); return res.status })
 }
 
 async function capacity(fetch: (r: Request) => Promise<Response>): Promise<Record<Pool, { active: number; queued: number }>> {
-  const res = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const res = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   const cap = (await res.json()).capacity as Record<Pool, { active: number; queued: number }>
   // project just active/queued (snapshot also carries the static max* fields)
   return {
@@ -197,7 +199,7 @@ test('默认 DeepSeek profile:100 用户 × 10 窗口=1,000 请求，全部直�
   }
 
   await waitFor(() => u.stats.deepseek.inFlight === 1_000, 10_000)
-  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   const body = await health.json()
   expect(body.limits).toMatchObject({
     deepseek_conc: 1_000,
@@ -226,7 +228,7 @@ test('默认 DeepSeek profile:100 用户 × 10 窗口=1,000 请求，全部直�
   expect(u.stats.deepseek.peak).toBe(1_000)
   expect(usage.rows).toHaveLength(1_000)
   expect(usage.rows.every(row => row.model === 'deepseek' && row.ok && /^queue_ms=\d+;attempts=1;client=/.test(row.note ?? ''))).toBe(true)
-  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   expect((await drained.json()).capacity.deepseek).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
@@ -248,7 +250,7 @@ test('默认 DeepSeek profile:超过 1,000 在途+200 等待的突发会立即 4
   }
 
   await waitFor(() => u.stats.deepseek.inFlight === 1_000, 10_000)
-  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   expect((await health.json()).capacity.deepseek).toMatchObject({ active: 1_000, queued: 200, queueMax: 200 })
   expect(u.stats.deepseek.peak).toBe(1_000)
 
@@ -278,7 +280,7 @@ test('默认 MiMo profile:100 用户 × 5 窗口为100个不同安装各保留�
   }
 
   await waitFor(() => u.stats.mimo.inFlight === 52)
-  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const health = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   const body = await health.json()
   expect(body.limits).toMatchObject({ mimo_conc: 64, mimo_native_conc: 52, mimo_user_conc: 1, mimo_inflight_per_user: 1, mimo_token_conc: 64, mimo_queue_max: 64, mimo_queue_max_wait_seconds: 5 })
   expect(body.capacity.mimo).toMatchObject({
@@ -304,7 +306,7 @@ test('默认 MiMo profile:100 用户 × 5 窗口为100个不同安装各保留�
   expect(u.stats.mimo.peak).toBe(52)
   expect(usage.rows.filter(row => row.model === 'mimo' && row.ok)).toHaveLength(100)
   expect(usage.rows.filter(row => row.model === 'mimo' && row.status === 429 && /queue_rejected=1/.test(row.note ?? ''))).toHaveLength(400)
-  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: 'Bearer app-token' } }))
+  const drained = await fetch(new Request('http://local/healthz', { headers: { Authorization: `Bearer ${gatewayTestAccessToken}` } }))
   const drainedCapacity = (await drained.json()).capacity
   expect(drainedCapacity.mimo).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
   expect(drainedCapacity.mimo_native).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
@@ -437,7 +439,7 @@ test('客户端 abort 排队中的请求:出队释放,active/queued 回落', asy
   const held = [fire(fetch, 'mimo-v2.5', 'a-1'), fire(fetch, 'mimo-v2.5', 'a-2')] // 占满
   await tick()
   const ac = new AbortController()
-  const aborted = fetch(chatReq('mimo-v2.5', 'a-queued', 'app-token', ac.signal)).then(r => r.status).catch(() => 'aborted')
+  const aborted = fetch(chatReq('mimo-v2.5', 'a-queued', gatewayTestAccessToken, ac.signal)).then(r => r.status).catch(() => 'aborted')
   await tick()
   expect((await capacity(fetch)).mimo.queued).toBe(1) // 已排队
   ac.abort()

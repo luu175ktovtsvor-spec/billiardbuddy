@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { AuthAuthority, AuthError, FileAuthorityStore, parseLicenseProvisioning, type LicenseProvisioning } from './auth/authority'
 import {
   createGatewayTranscriber,
   GatewayTranscriptionError,
@@ -116,7 +117,7 @@ type GatewayConfig = {
   relayResultTimeoutMs: number
   adminToken: string
   db: string
-  appTokens: Map<string, string>
+  bootstrapCredentials: Set<string>
   qwenRpm: number
   qwenConc: number
   qwenUserConc: number
@@ -207,6 +208,8 @@ export interface GatewayDeps {
   qwenRetryRandom?: () => number
   mimoRetrySleep?: (ms: number) => Promise<void>
   mimoRetryRandom?: () => number
+  /** Explicit authority injection is for tests and controlled embedding only. */
+  authority?: AuthAuthority
 }
 
 export class HttpError extends Error {
@@ -615,11 +618,6 @@ function required(env: Env, name: string): string {
   return value
 }
 
-function parseAppTokens(raw: string | undefined): Map<string, string> {
-  if (!raw) return new Map()
-  const parsed = JSON.parse(raw)
-  return new Map(Object.entries(parsed).map(([token, user]) => [token, String(user)]))
-}
 
 /** Relay submissions carry an internal relay credential and potentially source images. */
 function httpsUrlOrEmpty(value: string | undefined): string {
@@ -631,6 +629,25 @@ function httpsUrlOrEmpty(value: string | undefined): string {
   } catch {
     return ''
   }
+}
+
+function bootstrapCredentials(env: Env): Set<string> {
+  const current = env.GW_APP_CREDENTIALS?.trim()
+  if (current) return new Set(current.split(',').map(value => value.trim()).filter(Boolean))
+  const legacy = env.GW_APP_TOKENS?.trim() ?? ''
+  if (!legacy) return new Set()
+  // Old deployments stored token->owner JSON. Owner text no longer grants model
+  // access: retain only JSON keys as activation bootstrap credentials during migration.
+  if (legacy.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(legacy)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Object.values(parsed).every(value => typeof value === 'string')) throw new Error('invalid')
+      return new Set(Object.keys(parsed).map(value => value.trim()).filter(Boolean))
+    } catch {
+      throw new Error('GW_APP_TOKENS JSON must be an object of bootstrap credentials; migrate to GW_APP_CREDENTIALS')
+    }
+  }
+  return new Set(legacy.split(',').map(value => value.trim()).filter(Boolean))
 }
 
 function loadConfig(env: Env): GatewayConfig {
@@ -663,7 +680,7 @@ function loadConfig(env: Env): GatewayConfig {
     relayResultTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_TIMEOUT_MS', 5 * 60_000)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/qfgw/usage.db',
-    appTokens: parseAppTokens(env.GW_APP_TOKENS),
+    bootstrapCredentials: bootstrapCredentials(env),
     // RPM 默认值抬到不再卡正常文字流量(本地令牌桶曾是"80 并发 p95 17s"的元凶);GW_*_CONC 仍是
     // 保护上游的高水位紧急总闸,真正收紧限速请调小对应 env,不靠这个默认值节流。
     qwenRpm: intEnv(env, 'GW_QWEN_RPM', 100_000),
@@ -822,21 +839,32 @@ async function proxyJsonOrRaw(resp: Response): Promise<Response> {
   return jsonResponse({ raw: (await resp.text()).slice(0, 500) }, { status: resp.status })
 }
 
-function auth(config: GatewayConfig, request: Request): string {
-  const user = authenticatedUser(config, request)
-  if (!user) {
-    const header = request.headers.get('authorization') ?? ''
-    if (!header.toLowerCase().startsWith('bearer ')) throw new HttpError(401, '缺少 app 令牌')
-    throw new HttpError(401, 'app 令牌无效')
-  }
-  return user
+type VerifiedInstallation = { principalId: string; installationId: string; owner: string }
+
+function bearer(request: Request): string | undefined {
+  const header = request.headers.get('authorization') ?? ''
+  return header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() || undefined : undefined
 }
 
-function authenticatedUser(config: GatewayConfig, request: Request): string | undefined {
-  const header = request.headers.get('authorization') ?? ''
-  if (!header.toLowerCase().startsWith('bearer ')) return undefined
-  const token = header.slice(7).trim()
-  return config.appTokens.get(token)
+function auth(authority: AuthAuthority, request: Request): VerifiedInstallation {
+  const token = bearer(request)
+  if (!token) throw new HttpError(401, 'missing_installation_access_token')
+  try {
+    const verified = authority.verifyAccess(token)
+    return { principalId: verified.pid, installationId: verified.iid, owner: `${verified.pid}:${verified.iid}` }
+  } catch (error) {
+    if (error instanceof AuthError) throw new HttpError(error.status, error.code)
+    throw error
+  }
+}
+
+function hasInstallationAccess(authority: AuthAuthority, request: Request): boolean {
+  try { auth(authority, request); return true } catch { return false }
+}
+
+function bootstrapCredential(config: GatewayConfig, request: Request): boolean {
+  const token = bearer(request)
+  return !!token && config.bootstrapCredentials.has(token)
 }
 
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/
@@ -852,8 +880,9 @@ function readClientId(request: Request): string {
 }
 
 /** 传给美国 relay 的受信任务归属身份 = user#client(缺 client 时退回 user)。 */
-function relayOwner(user: string, client: string): string {
-  return client ? `${user}#${client}` : user
+function relayOwner(owner: string, _client: string): string {
+  // Owner is exclusively the verified principal + registration. Client headers are untrusted metadata.
+  return owner
 }
 
 async function logUsage(store: UsageStore, entry: UsageEntry): Promise<void> {
@@ -1169,6 +1198,7 @@ function createNativeAnthropicWebSearchHandler(
 export function createGatewayFetch(deps: GatewayDeps = {}) {
   const env = deps.env ?? process.env
   const config = loadConfig(env)
+  const authority = deps.authority ?? createAuthorityFromEnv(env)
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const qwenBucket = new TokenBucket(config.qwenRpm)
@@ -1333,7 +1363,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     const url = new URL(request.url)
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
-        if (!authenticatedUser(config, request)) return jsonResponse({ ok: true })
+        if (!hasInstallationAccess(authority, request)) return jsonResponse({ ok: true })
         const mimo = mimoReservations.snapshot()
         const nativeMimo = mimoReservations.laneSnapshot('native')
         const reservedVision = mimoReservations.laneSnapshot('vision')
@@ -1419,6 +1449,36 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
+      if (request.method === 'POST' && (url.pathname === '/v1/auth/activate' || url.pathname === '/v1/auth/refresh' || url.pathname === '/v1/auth/logout')) {
+        const contentType = request.headers.get('content-type')
+        if (!contentType || !isJsonContentType(contentType)) throw new HttpError(415, 'auth_content_type_required')
+        const rawBody = await readRequestBodyBounded(request, 4096, undefined, 5_000)
+        let body: Record<string, unknown>
+        try {
+          const parsed: unknown = JSON.parse(rawBody)
+          if (!isRecord(parsed)) throw new Error('not object')
+          body = parsed
+        } catch { throw new HttpError(400, 'invalid_auth_body') }
+        if (url.pathname === '/v1/auth/activate') {
+          if (!bootstrapCredential(config, request)) throw new HttpError(401, 'invalid_bootstrap_credential')
+          const licenseKey = typeof body.license_key === 'string' ? body.license_key : ''
+          const installationId = typeof body.installation_id === 'string' ? body.installation_id : ''
+          const replaceInstallationId = typeof body.replace_installation_id === 'string' ? body.replace_installation_id : undefined
+          try { return jsonResponse(authTokensResponse(authority.activate({ licenseKey, installationId, replaceInstallationId }))) }
+          catch (error) { if (error instanceof AuthError) throw new HttpError(error.status, error.code); throw error }
+        }
+        if (url.pathname === '/v1/auth/refresh') {
+          const refreshToken = typeof body.refresh_token === 'string' ? body.refresh_token : ''
+          try { return jsonResponse(authTokensResponse(authority.refresh(refreshToken))) }
+          catch (error) { if (error instanceof AuthError) throw new HttpError(error.status, error.code); throw error }
+        }
+        const access = bearer(request)
+        const refreshToken = typeof body.refresh_token === 'string' ? body.refresh_token : undefined
+        if (!access && !refreshToken) throw new HttpError(401, 'missing_session_proof')
+        try { authority.logout(access, refreshToken); return new Response(null, { status: 204 }) }
+        catch (error) { if (error instanceof AuthError) throw new HttpError(error.status, error.code); throw error }
+      }
+
       if (request.method === 'GET' && url.pathname === '/admin/usage') {
         if (url.searchParams.get('token') !== config.adminToken) throw new HttpError(403, '无权')
         const n = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('n') ?? '50', 10) || 50))
@@ -1433,7 +1493,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // 每项标 owned_by=qwen|mimo 供客户端做"显式 Qwen/MiMo 目录 + 会话级切换"。切换本身复用
       // Agent 的 set_runtime_config → CLI --model,模型名随请求体 model 到网关按上面的路由分流。
       if (request.method === 'GET' && url.pathname === '/v1/models') {
-        auth(config, request)
+        auth(authority, request)
         const data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> = []
         if (qwenChat) for (const id of config.qwenAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'qwen' })
         if (mimoChat) for (const id of config.mimoAllowedModels) data.push({ id, object: 'model', created: 0, owned_by: 'mimo' })
@@ -1447,7 +1507,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // chat remains on /v1/chat/completions so the existing Qwen/MiMo routing
       // and image bridge are not bypassed.
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
         // in the same DeepSeek pool as chat, so disable it before body read/queue wait.
         server?.timeout(request, 0)
@@ -1464,7 +1525,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
         // this before buffering/vision admission so Bun's 10 s default cannot sever it.
         server?.timeout(request, 0)
@@ -1550,7 +1612,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
         server?.timeout(request, 0)
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
         const contentType = request.headers.get('content-type') ?? ''
         if (!contentType.toLowerCase().startsWith('multipart/form-data')) throw new HttpError(415, '需要上传音频文件')
@@ -1595,7 +1658,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       // 生图异步任务:提交短请求到 relay；relay 再按模型调用 GPT Image 或豆包 Seedream。
       if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         // Relay forwarding can cross the default Bun 10 s idle window even though image
         // generation itself is asynchronous. Disable it before buffering/rate waiting.
         server?.timeout(request, 0)
@@ -1665,7 +1729,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         && url.pathname.startsWith('/v1/images/tasks/')
         && url.pathname.endsWith('/cancel')
       ) {
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         // Cancellation still crosses the mainland/US relay boundary. Disable Bun's
         // 10 s idle timeout before that request so a slow relay acknowledgement is
         // not turned into a client-side socket reset.
@@ -1689,7 +1754,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       // 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",
       // 拿别人的 task id 轮询会被 relay 返 403。
       if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
-        const user = auth(config, request)
+        const identity = auth(authority, request)
+        const user = identity.owner
         // A status poll also waits on the cross-border relay. Apply this before
         // forwarding so Bun's default 10 s idle timeout cannot reset the client
         // socket while the relay is still responding.
@@ -1724,6 +1790,17 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   }
 
   return fetchHandler
+}
+
+function authTokensResponse(tokens: { accessToken: string; refreshToken: string; expiresAt: number; principalId: string; installationId: string }) {
+  return { access_token: tokens.accessToken, refresh_token: tokens.refreshToken, expires_at: tokens.expiresAt, token_type: 'Bearer' }
+}
+
+function createAuthorityFromEnv(env: Env): AuthAuthority {
+  const signingKey = env.GW_AUTH_SIGNING_KEY
+  const authorityFile = env.GW_AUTHORITY_FILE
+  if (!signingKey || !authorityFile) throw new Error('Gateway authorization requires GW_AUTH_SIGNING_KEY and GW_AUTHORITY_FILE')
+  return new AuthAuthority({ store: new FileAuthorityStore(authorityFile), signingKey, licenses: parseLicenseProvisioning(env.GW_LICENSE_PROVISIONING) })
 }
 
 function elapsedMs(started: number): number {

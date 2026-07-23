@@ -5,6 +5,7 @@ import {
   formatStartupDiagnostic,
   formatStartupError,
   killSidecar,
+  stopSidecar,
   mergeProxyEnv,
   POWERSHELL_PATH_OVERRIDE_ENV,
   preferredServerPorts,
@@ -15,6 +16,7 @@ import {
   SERVER_CONTROL_HOST,
   SERVER_STARTUP_TIMEOUT_MS,
   spawnSidecar,
+  stripSidecarSecretEnv,
   waitForServer,
   windowsPowerShellOverride,
   writeLastServerPort,
@@ -22,7 +24,6 @@ import {
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
 import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
-import { applyInstallationIdToEnv } from './installationId'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
@@ -30,8 +31,8 @@ type ServerRuntimeOptions = {
   resolveSystemProxy?: (url: string) => Promise<string>
   /** Product gateway config injected into the SERVER sidecar only (never adapters). */
   resolveGatewayConfig?: () => ProductGatewayConfig
-  /** Per-install id injected into the SERVER sidecar only (X-QF-Client-ID upstream). */
-  resolveInstallationId?: () => string
+  /** Main-process session manager returns only a current installation access bearer. */
+  resolveInstallationAccessToken?: () => Promise<string>
   /** Electron-owned capability for paid/final media actions. Never inherited by Agent CLI processes. */
   mediaUiCapability?: string
 }
@@ -41,37 +42,35 @@ export class ElectronServerRuntime {
   private readonly appRoot: string
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
-  private readonly resolveInstallationId?: () => string
+  private readonly resolveInstallationAccessToken?: () => Promise<string>
   private readonly mediaUiCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private startupError: string | null = null
   private startPromise: Promise<string> | null = null
+  private restartPromise: Promise<void> | null = null
+  private closing = false
+  private generation = 0
 
   constructor(options: ServerRuntimeOptions) {
     this.desktopRoot = options.desktopRoot
     this.appRoot = options.appRoot ?? options.desktopRoot
     this.resolveSystemProxy = options.resolveSystemProxy
     this.resolveGatewayConfig = options.resolveGatewayConfig
-    this.resolveInstallationId = options.resolveInstallationId
+    this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
   }
 
-  /**
-   * The SERVER sidecar env is the base env plus the product gateway config AND the
-   * per-install id. Both go ONLY here — adapter sidecars keep the plain base env, and
-   * the CLI subprocess strips them again. A value already present (shell/ops override)
-   * always wins over the injected default.
-   */
-  private buildServerEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const withGateway = applyGatewayConfigToEnv({
+  /** Build a sidecar base env after removing inherited credential material. */
+  private async buildServerEnv(baseEnv: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+    const cleanBase = stripSidecarSecretEnv({
       ...baseEnv,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-    }, this.resolveGatewayConfig?.())
-    const withInstallation = applyInstallationIdToEnv(withGateway, this.resolveInstallationId?.())
+    })
+    const withGateway = applyGatewayConfigToEnv(cleanBase, this.resolveGatewayConfig?.())
     const withMediaCapability = this.mediaUiCapability
-      ? { ...withInstallation, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
-      : withInstallation
+      ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
+      : withGateway
     if (withMediaCapability.BB_MEDIA_BIN_DIR) return withMediaCapability
 
     const mediaBinDir = path.join(this.desktopRoot, 'src-tauri', 'binaries')
@@ -85,6 +84,7 @@ export class ElectronServerRuntime {
   }
 
   async startServer(): Promise<string> {
+    if (this.closing) throw new Error('Desktop server runtime is closing')
     if (this.server) return this.server.url
     if (this.startPromise) return this.startPromise
 
@@ -102,36 +102,66 @@ export class ElectronServerRuntime {
     return await this.startServer()
   }
 
-  stopAll(sync = false) {
-    if (this.server) {
-      killSidecar(this.server.child, sync)
-      this.server = null
+  async stopServer(sync = false): Promise<void> {
+    this.generation += 1
+    const server = this.server
+    this.server = null
+    if (!server) return
+    if (sync) killSidecar(server.child, true)
+    else await stopSidecar(server.child)
+  }
+
+  /** Permanently stop this runtime; token timers must not revive a closing app. */
+  async stopAll(sync = false): Promise<void> {
+    this.closing = true
+    await this.stopServer(sync)
+  }
+
+  /** Replace the running child after a rotated access bearer, never overlap children. */
+  async reconfigureServer(): Promise<void> {
+    if (this.closing || !this.server) return
+    if (this.restartPromise) return await this.restartPromise
+    this.restartPromise = (async () => {
+      if (this.closing || !this.server) return
+      await this.stopServer()
+      if (!this.closing) await this.startServer()
+    })()
+    try {
+      await this.restartPromise
+    } finally {
+      this.restartPromise = null
     }
   }
 
   private async startServerOnce(): Promise<string> {
+    const generation = this.generation
     // Reuse the previous local port when available; otherwise let the OS choose
     // one, so renderer and preview URLs remain local to this desktop runtime.
     const port = await reserveServerPort(SERVER_BIND_HOST, preferredServerPorts())
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
-    const env = this.buildServerEnv(await this.resolveSidecarBaseEnv())
+    const env = await this.buildServerEnv(await this.resolveSidecarBaseEnv())
+    const accessToken = this.resolveInstallationAccessToken ? await this.resolveInstallationAccessToken() : undefined
     const plan = createServerPlan({
       desktopRoot: this.desktopRoot,
       appRoot: this.appRoot,
       port,
       env,
+      accessToken,
     })
 
+    let child: SidecarChild | null = null
     try {
-      const child = spawnSidecar(plan)
+      child = spawnSidecar(plan)
       this.captureLogs(child, 'claude-server', logs)
       await waitForServer(SERVER_CONTROL_HOST, port, SERVER_STARTUP_TIMEOUT_MS)
+      if (this.closing || generation !== this.generation) throw new Error('Desktop server runtime is closing')
       writeLastServerPort(port)
       this.server = { url, child }
       this.startupError = null
       return url
     } catch (error) {
+      if (child && !this.server) await stopSidecar(child).catch(() => undefined)
       const message = error instanceof Error ? error.message : String(error)
       console.error('[desktop] local server startup failed', formatStartupDiagnostic(message, logs))
       this.startupError = formatStartupError(message, logs)

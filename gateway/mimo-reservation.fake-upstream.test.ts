@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAccessTokenFor, gatewayTestAuthority } from './auth/testFixture'
 
 type Lane = 'native' | 'vision' | 'deepseek'
 type LaneStat = { calls: number; inFlight: number; peak: number }
@@ -114,7 +115,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_DEEPSEEK_QUEUE_MAX: '0',
     GW_DEEPSEEK_QUEUE_MAX_WAIT: '1',
     GW_RELAY_TOKEN: 'relay-secret',
-    GW_APP_TOKENS: JSON.stringify({ 'app-token': 'shared-owner' }),
+    GW_APP_TOKENS: JSON.stringify({ gatewayTestAccessToken: 'shared-owner' }),
     GW_VISION_MAX_IMAGES: '1',
     GW_VISION_MAX_IMAGE_BYTES: '2000000',
     GW_VISION_MAX_TOTAL_BYTES: '5000000',
@@ -131,11 +132,11 @@ function env(overrides: Record<string, string | undefined> = {}) {
   }
 }
 
-function nativeRequest(client: string, gatewayToken = 'app-token'): Request {
+function nativeRequest(client: string, gatewayToken = gatewayTestAccessToken): Request {
   return new Request('http://local/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer ' + gatewayToken,
+      Authorization: 'Bearer ' + gatewayTestAccessTokenFor(gatewayToken),
       'Content-Type': 'application/json',
       'X-QF-Client-ID': client,
     },
@@ -147,12 +148,12 @@ function nativeRequest(client: string, gatewayToken = 'app-token'): Request {
   })
 }
 
-function bridgeRequest(client: string, imageIndex: number, gatewayToken = 'app-token'): Request {
+function bridgeRequest(client: string, imageIndex: number, gatewayToken = gatewayTestAccessToken): Request {
   const image = Buffer.from('bridge-image-' + imageIndex).toString('base64')
   return new Request('http://local/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer ' + gatewayToken,
+      Authorization: 'Bearer ' + gatewayTestAccessTokenFor(gatewayToken),
       'Content-Type': 'application/json',
       'X-QF-Client-ID': client,
     },
@@ -178,7 +179,7 @@ async function status(fetch: (request: Request) => Promise<Response>, request: R
 
 async function health(fetch: (request: Request) => Promise<Response>) {
   const response = await fetch(new Request('http://local/healthz', {
-    headers: { Authorization: 'Bearer app-token' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}` },
   }))
   expect(response.status).toBe(200)
   return await response.json() as {
@@ -204,6 +205,7 @@ function client(prefix: string, index: number): string {
 test('MiMo reserves 52 native slots and 12 bridge slots: a native flood cannot consume the visual lane', async () => {
   const upstream = makeUpstream({ holdNative: true, holdVision: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -258,6 +260,7 @@ test('MiMo reserves 52 native slots and 12 bridge slots: a native flood cannot c
 test('default one-slot installation limit spans native and bridge MiMo without occupying the other lane', async () => {
   const upstream = makeUpstream({ holdNative: true, holdVision: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
@@ -298,6 +301,7 @@ test('default one-slot installation limit spans native and bridge MiMo without o
 test('an explicit two-slot installation allowance admits one native and one bridge call, then rejects the third', async () => {
   const upstream = makeUpstream({ holdNative: true, holdVision: true })
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
       GW_MIMO_CONC: '3',
       GW_MIMO_NATIVE_CONC: '2',
@@ -342,8 +346,9 @@ test('one token cannot bypass its MiMo account ceiling by mixing native and brid
   const tokenA = 'token-a'
   const tokenB = 'token-b'
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({
-      GW_APP_TOKENS: JSON.stringify({ [tokenA]: 'owner-a', [tokenB]: 'owner-b' }),
+      GW_APP_TOKENS: JSON.stringify({ [tokenA]: 'test-principal:test-installation', [tokenB]: 'owner-b' }),
       GW_MIMO_CONC: '4',
       GW_MIMO_NATIVE_CONC: '2',
       GW_VISION_CONC: '2',

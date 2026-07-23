@@ -20,6 +20,7 @@ import {
   reserveServerPort,
   resolveHostTriple,
   spawnSidecar,
+  stripSidecarSecretEnv,
   waitForServer,
   windowsPowerShellOverride,
   writeLastServerPort,
@@ -103,6 +104,20 @@ describe('Electron sidecar manager', () => {
     } finally {
       rmSync(configDir, { recursive: true, force: true })
     }
+  })
+
+  it('strips bootstrap, license, refresh material and old access before injecting only current access', () => {
+    const inherited = {
+      QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap',
+      QF_LICENSE_KEY: 'license',
+      QF_GATEWAY_REFRESH_TOKEN: 'refresh',
+      QF_GATEWAY_SESSION_PROOF: 'proof',
+      QF_GATEWAY_TOKEN: 'old-access',
+      BB_INSTALLATION_ID: 'installation',
+    }
+    expect(stripSidecarSecretEnv(inherited)).toEqual({})
+    const plan = createServerPlan({ desktopRoot: '/desktop', appRoot: '/app', port: 49321, env: inherited, accessToken: 'current-access' })
+    expect(plan.env).toEqual({ QF_GATEWAY_TOKEN: 'current-access' })
   })
 
   it('converts Electron system proxy rules into sidecar proxy env', () => {

@@ -25,6 +25,8 @@ type DeletionCandidate = {
   d4_owner_module: string
   retained_reader: string
 }
+type AuthPolicyEvidence = { constraint: string, path: string, test_id: string }
+type AuthPolicyRegistration = { path: string, required_evidence: AuthPolicyEvidence[] }
 type Source = {
   contract_version: number
   generated_by: string
@@ -32,6 +34,7 @@ type Source = {
   legacy_support: Array<Record<string, Json>>
   policy_schemas: Array<[string, string]>
   deletion_candidates: DeletionCandidate[]
+  auth_entitlement_policy: AuthPolicyRegistration
 }
 
 const root = resolve(import.meta.dir, '../../..')
@@ -295,6 +298,51 @@ function validateDeletionGraph(source: Source): void {
   }
 }
 
+export const REQUIRED_AUTH_POLICY_CONSTRAINTS = [
+  'cross_process_transaction',
+  'lock_owner_identity',
+  'provisioning_revision',
+  'session_revocation',
+  'sidecar_rotation',
+  'host_env_scrub',
+  'refresh_proof_logout',
+  'strict_device_limit',
+] as const
+
+export function validateAuthEntitlementPolicy(policy: Record<string, Json>, registration: AuthPolicyRegistration): void {
+  requireCondition(policy.policy_schema_version === 1 && policy.policy_revision === 'bb-04a-license-activation', 'auth entitlement policy schema is invalid')
+  requireCondition(policy.owner_module === '04', 'auth entitlement policy owner is invalid')
+  requireCondition(policy.authorization && (policy.authorization as Record<string, Json>).sole_activation_route === 'license', 'auth entitlement policy must select License activation')
+  requireCondition((policy.authorization as Record<string, Json>).owner === 'verified_principal_and_installation', 'auth entitlement policy owner is invalid')
+  requireCondition((policy.authorization as Record<string, Json>).bootstrap_credential === 'activation_only', 'auth entitlement bootstrap policy is invalid')
+  const constraints = policy.constraints as Record<string, Json> | undefined
+  for (const constraint of REQUIRED_AUTH_POLICY_CONSTRAINTS) {
+    requireCondition(constraints?.[constraint] === true, `auth entitlement policy missing constraint: ${constraint}`)
+  }
+  requireCondition(Array.isArray(policy.evidence), 'auth entitlement policy evidence is invalid')
+  const evidence = policy.evidence as unknown as AuthPolicyEvidence[]
+  requireCondition(evidence.length === registration.required_evidence.length, 'auth entitlement policy evidence drift')
+  for (const expected of registration.required_evidence) {
+    const actual = evidence.find((entry) => entry.constraint === expected.constraint)
+    requireCondition(actual && actual.path === expected.path && actual.test_id === expected.test_id, `auth entitlement policy behavior evidence drift: ${expected.constraint}`)
+    const evidencePath = resolve(root, expected.path)
+    requireCondition(existsSync(evidencePath), `missing auth entitlement evidence: ${expected.path}`)
+    requireCondition(readFileSync(evidencePath, 'utf8').includes(expected.test_id), `missing auth entitlement test ID: ${expected.constraint}`)
+  }
+  requireCondition(new Set(evidence.map((entry) => entry.constraint)).size === evidence.length, 'auth entitlement policy evidence duplicates a constraint')
+  for (const constraint of REQUIRED_AUTH_POLICY_CONSTRAINTS) {
+    requireCondition(evidence.some((entry) => entry.constraint === constraint), `auth entitlement policy missing behavior evidence: ${constraint}`)
+  }
+  const unsignedPolicy = { ...policy }
+  delete unsignedPolicy.sha256
+  requireCondition(policy.sha256 === sha256(stringify(unsignedPolicy)), 'auth entitlement policy hash mismatch')
+}
+
+export function validateAuthEntitlementPolicyFile(registration: AuthPolicyRegistration, file = resolve(root, registration.path)): void {
+  requireCondition(existsSync(file), 'missing auth entitlement policy')
+  validateAuthEntitlementPolicy(parseJson(file) as Record<string, Json>, registration)
+}
+
 export function validate(source: Source, artifacts = render(source)): void {
   requireCondition(source.contract_version === 1, 'contract_version must be 1')
   validateSchemaSemantics(source, artifacts)
@@ -329,6 +377,11 @@ export function validate(source: Source, artifacts = render(source)): void {
     if (status === 'provisional' || status === 'unsupported') requireCondition(!entry.fixture, `${entry.id} must not imply support with a fixture`)
   }
   requireCondition(source.legacy_support.some((entry) => entry.id === 'product-task-wire-v2-current-only' && entry.layer === 'wire' && entry.status === 'current_only'), 'wire v2 must remain current-only and separate from disk migration')
+  const authPolicyRegistration = source.auth_entitlement_policy
+  requireCondition(authPolicyRegistration?.path === 'ts/product-contracts/auth-entitlement-policy.json', 'auth entitlement policy path is invalid')
+  requireCondition(Array.isArray(authPolicyRegistration.required_evidence) && authPolicyRegistration.required_evidence.length === REQUIRED_AUTH_POLICY_CONSTRAINTS.length, 'auth entitlement policy evidence is invalid')
+  const authPolicyPath = resolve(root, authPolicyRegistration.path)
+  validateAuthEntitlementPolicyFile(authPolicyRegistration, authPolicyPath)
   validateDeletionGraph(source)
   requireCondition(source.policy_schemas.length === 14, 'all initial policy schemas must be registered')
   for (const policy of ['permission-profile-policy', 'automatic-reviewer-policy']) {

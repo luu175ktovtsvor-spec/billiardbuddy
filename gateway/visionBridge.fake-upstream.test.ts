@@ -5,6 +5,7 @@
 
 import { expect, test } from 'bun:test'
 import { createGatewayFetch, MemoryUsageStore } from './app'
+import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 
 const PNG_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
@@ -14,7 +15,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
     GW_MIMO_KEY: 'mimo-secret', GW_MIMO_BASE: 'https://mimo.example/v1', GW_MIMO_MODEL: 'mimo-v2.5',
     GW_DEEPSEEK_KEY: 'deepseek-secret', GW_DEEPSEEK_BASE: 'https://deepseek.example', GW_DEEPSEEK_MODEL: 'deepseek-v4-flash',
     GW_RELAY_BASE: 'https://relay.example/v1', GW_RELAY_TOKEN: 'relay-secret',
-    GW_APP_TOKENS: JSON.stringify({ 'app-token': 'owner-a' }),
+    GW_APP_TOKENS: JSON.stringify({ gatewayTestAccessToken: 'test-principal:test-installation' }),
     GW_VISION_MAX_IMAGES: '4',
     GW_VISION_MAX_IMAGE_BYTES: '2000000',
     GW_VISION_MAX_TOTAL_BYTES: '5000000',
@@ -30,7 +31,7 @@ function authed(init: RequestInit = {}): RequestInit {
   return {
     ...init,
     headers: {
-      Authorization: 'Bearer app-token',
+      Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
       ...(init.headers as Record<string, string> | undefined),
     },
@@ -45,6 +46,7 @@ function makeGateway(overrides: Record<string, string | undefined> = {}, mimoBeh
   const calls: Array<{ url: string; body: string }> = []
   const usage = new MemoryUsageStore()
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(overrides),
     usageStore: usage,
     transcribeImpl: null,
@@ -181,6 +183,7 @@ test('default one-slot fairness holds a second distinct image until the first re
   let visionInFlight = 0
   let peakVisionInFlight = 0
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env(),
     usageStore: usage,
     transcribeImpl: null,
@@ -392,6 +395,7 @@ test('⑬ once the global vision concurrency and queue are both saturated, a new
     return new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
   }
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_VISION_CONC: '1', GW_VISION_QUEUE_MAX: '1' }),
     usageStore: usage,
     transcribeImpl: null,
@@ -439,6 +443,7 @@ test('⑭ aborting the client request while its image is queued in the vision se
     return new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } })
   }
   const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
     env: env({ GW_VISION_CONC: '1', GW_VISION_QUEUE_MAX: '4' }),
     usageStore: usage,
     transcribeImpl: null,
