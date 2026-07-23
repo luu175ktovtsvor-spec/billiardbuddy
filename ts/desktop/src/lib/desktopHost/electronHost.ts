@@ -103,9 +103,9 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       save: options => invoke(ELECTRON_IPC_CHANNELS.dialogSave, options),
     },
     media: {
-      submitImageProject: (projectId, confirmUnknownRetry = false) => invoke(
+      submitImageProject: (projectId, confirmUnknownRetry = false, confirmedDataEgress = false) => invoke(
         ELECTRON_IPC_CHANNELS.mediaSubmitImage,
-        { projectId, confirmUnknownRetry },
+        { projectId, confirmUnknownRetry, confirmedDataEgress },
       ),
       updateUnknownImageProject: (projectId, input) => invoke(
         ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage,

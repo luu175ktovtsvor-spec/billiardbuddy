@@ -16,14 +16,20 @@ describe('ElectronMediaActions', () => {
       fetchImpl,
     })
 
-    await actions.submitImageProject('img_project01', true)
+    await actions.submitImageProject('img_project01', true, true)
     await actions.renderVideo('vid_project01', { revision: 2, output_path: '/tmp/final.mp4' })
     await actions.saveImageOutput('img_project01', { output_id: 'out_result001', output_path: '/tmp/final.png' })
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/submit')
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
+    const submitBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))
+    expect(submitBody).toMatchObject({
       confirm_unknown_retry: true,
+      data_egress_consent: {
+        policy_revision: 'bb-04e-image-v1',
+        acknowledged: true,
+      },
     })
+    expect(Number.isNaN(Date.parse(submitBody.data_egress_consent.acknowledged_at))).toBe(false)
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/render')
     expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual({
       revision: 2,

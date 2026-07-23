@@ -1,4 +1,5 @@
 import {
+  IMAGE_DATA_EGRESS_POLICY_REVISION,
   MEDIA_UI_CAPABILITY_HEADER,
   mediaSafeError,
   type MediaTask,
@@ -27,9 +28,17 @@ export class ElectronMediaActions {
   submitImageProject(
     projectId: string,
     confirmUnknownRetry = false,
+    confirmedDataEgress = false,
   ): Promise<{ task: MediaTask }> {
     return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/submit`, {
       confirm_unknown_retry: confirmUnknownRetry,
+      ...(confirmedDataEgress ? {
+        data_egress_consent: {
+          policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
+          acknowledged: true,
+          acknowledged_at: new Date().toISOString(),
+        },
+      } : {}),
     })
   }
 

@@ -32,6 +32,7 @@ function authed(init: RequestInit = {}): RequestInit {
     ...init,
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
+      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
       ...(init.headers as Record<string, string> | undefined),
     },
   }
@@ -554,7 +555,7 @@ test('long-lived chat, native Messages, and every relay image task operation dis
   expect(messages.status).toBe(400)
 
   const image = await fetch(new Request('http://local/v1/images/tasks', authed({
-    method: 'POST', body: JSON.stringify({ prompt: '台球海报' }),
+    method: 'POST', headers: { 'Idempotency-Key': 'timeout-image-operation' }, body: JSON.stringify({ prompt: '台球海报' }),
   })), server)
   expect(image.status).toBe(200)
 
@@ -845,7 +846,7 @@ test('admin usage requires admin token and returns recent rows', async () => {
   await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
     body: JSON.stringify({ prompt: 'poster' }),
-    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'usage-image-operation' },
   })))
   expect((await fetch(new Request('http://local/admin/usage?token=bad'))).status).toBe(403)
   const res = await fetch(new Request('http://local/admin/usage?token=admin-secret&n=5'))
@@ -959,7 +960,7 @@ test('image task submit/poll/cancel proxy to relay tasks base with relay token w
   const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
     body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'x', input_fidelity: 'high' }),
-    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'proxy-image-operation' },
   })))
   expect(submit.status).toBe(200)
   const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })))
@@ -975,7 +976,25 @@ test('image task submit/poll/cancel proxy to relay tasks base with relay token w
     'https://relay.example/relay/imgtasks/images/tasks/task-1/cancel',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
+  expect((calls[0].init?.headers as Record<string, string>)['X-Relay-Data-Egress-Consent']).toBe('a'.repeat(64))
   expect(JSON.parse(calls[0].body ?? '{}')).toMatchObject({ input_fidelity: 'high' })
+})
+
+test('image task submission requires trusted consent and an operation id before relay work', async () => {
+  const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' })
+  const missingConsent = await fetch(new Request('http://local/v1/images/tasks', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'image-operation' },
+    body: JSON.stringify({ prompt: '海报' }),
+  }))
+  expect(missingConsent.status).toBe(428)
+  expect(await missingConsent.json()).toEqual({ detail: 'DATA_EGRESS_CONSENT_REQUIRED' })
+  const missingOperation = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: '海报' }),
+  })))
+  expect(missingOperation.status).toBe(428)
+  expect(await missingOperation.json()).toEqual({ detail: 'OPERATION_ID_REQUIRED' })
+  expect(calls).toEqual([])
 })
 
 test('image task submit enforces its body limit before forwarding declared or streamed bytes', async () => {
@@ -984,7 +1003,7 @@ test('image task submit enforces its body limit before forwarding declared or st
   const declared = makeGateway(configured)
   const declaredRes = await declared.fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': '65' },
+    headers: { 'Content-Type': 'application/json', 'Content-Length': '65', 'Idempotency-Key': 'declared-image-operation' },
     body: JSON.stringify({ prompt: 'x' }),
   })))
   expect(declaredRes.status).toBe(413)
@@ -1001,7 +1020,7 @@ test('image task submit enforces its body limit before forwarding declared or st
   })
   const streamedRes = await streamed.fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'streamed-image-operation' },
     body,
     duplex: 'half',
   } as RequestInit & { duplex: 'half' })))
@@ -1135,7 +1154,7 @@ test('image gateway aborts a stalled relay submission at its bounded deadline an
   })
   const response = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'stalled-image-operation' },
     body: JSON.stringify({ mode: 'generate', prompt: 'stalled relay' }),
   })))
   expect(response.status).toBe(504)
@@ -1191,7 +1210,7 @@ test('image gateway rejects a body-budget overflow before it can reach relay and
   })
   const payload = JSON.stringify({ prompt: 'x'.repeat(20) })
   const submit = () => fetch(new Request('http://local/v1/images/tasks', authed({
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload,
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'body-budget-operation' }, body: payload,
   })))
 
   const accepted = submit()

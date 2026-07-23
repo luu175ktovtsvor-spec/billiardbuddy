@@ -103,7 +103,7 @@ describe('electron desktop host', () => {
       subscribe: vi.fn(),
     })
 
-    await host.media.submitImageProject('img_project01', true)
+    await host.media.submitImageProject('img_project01', true, true)
     await host.media.renderVideo({
       projectId: 'vid_project01',
       revision: 4,
@@ -113,7 +113,7 @@ describe('electron desktop host', () => {
     expect(invoke).toHaveBeenNthCalledWith(
       1,
       ELECTRON_IPC_CHANNELS.mediaSubmitImage,
-      { projectId: 'img_project01', confirmUnknownRetry: true },
+      { projectId: 'img_project01', confirmUnknownRetry: true, confirmedDataEgress: true },
     )
     expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',

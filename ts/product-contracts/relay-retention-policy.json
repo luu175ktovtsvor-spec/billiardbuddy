@@ -1,0 +1,49 @@
+{
+  "policy_schema_version": 1,
+  "policy_revision": "bb-04e-relay-v1",
+  "owner_module": "04",
+  "scope": "ImageGeneration Relay",
+  "operation": {
+    "identity": "owner plus idempotency key",
+    "input_binding": "sha256",
+    "duplicate_mismatch": "OPERATION_CONFLICT",
+    "unknown_outcome": "failed_unknown_no_automatic_resubmit"
+  },
+  "retention": {
+    "input": "deleted_at_terminal",
+    "result_and_metadata": "up_to_7_days_after_terminal",
+    "active_work": "never_swept_by_ttl"
+  },
+  "provider_receipt": {
+    "storage": "sha256_of_provider_request_id_and_response_digest",
+    "raw_response_logged": false,
+    "returned_on_owned_poll": true
+  },
+  "evidence": [
+    {
+      "constraint": "operation_input_binding",
+      "path": "relay/hardening.test.ts",
+      "test_id": "same (owner, Idempotency-Key) resubmit returns the original task_id and runs upstream only once"
+    },
+    {
+      "constraint": "terminal_input_deletion",
+      "path": "relay/hardening.test.ts",
+      "test_id": "terminal tasks delete sensitive input blobs while retaining pollable output"
+    },
+    {
+      "constraint": "provider_receipt",
+      "path": "relay/app.test.ts",
+      "test_id": "submit generate → background OpenAI call → poll succeeds with data"
+    },
+    {
+      "constraint": "restart_unknown_outcome",
+      "path": "relay/hardening.test.ts",
+      "test_id": "restart recovery: running → failed_unknown (no auto-resubmit); queued → resumes and succeeds"
+    }
+  ],
+  "external_verification": {
+    "production_relay_storage": "NOT_VERIFIED_EXTERNALLY",
+    "provider_invoice_reconciliation": "NOT_VERIFIED_EXTERNALLY"
+  },
+  "sha256": "e77ef5618db5f3a68cd414e0033ff8e2c33f65fe47e44b1ee5c769e8f7115524"
+}

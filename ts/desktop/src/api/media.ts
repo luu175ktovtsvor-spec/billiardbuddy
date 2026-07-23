@@ -70,8 +70,8 @@ export const mediaApi = {
     api.post<{ task: MediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
   createImageProject: (input: CreateImageProjectInput) =>
     api.post<{ project: ImageWorkbenchProject }>('/api/media/images/projects', input),
-  submitImageProject: (projectId: string, confirmUnknownRetry = false) =>
-    getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry),
+  submitImageProject: (projectId: string, confirmUnknownRetry = false, confirmedDataEgress = false) =>
+    getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry, confirmedDataEgress),
   saveImageOutput: (projectId: string, input: SaveImageOutputInput) =>
     getDesktopHost().media.saveImageOutput(projectId, input),
   updateImageProject: (projectId: string, input: UpdateImageProjectInput) =>

@@ -235,7 +235,7 @@ describe('mediaWorkbenchStore', () => {
     useMediaWorkbenchStore.setState({ imageProjects: [draft], activeImageId: draft.id })
 
     await expect(useMediaWorkbenchStore.getState().submitImage(draft.id, true)).rejects.toThrow(safeMessage)
-    expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(draft.id, true)
+    expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(draft.id, true, false)
     expect(useMediaWorkbenchStore.getState()).toMatchObject({
       imageProjects: [failed],
       activeImageId: failed.id,

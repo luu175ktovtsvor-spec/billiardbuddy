@@ -8,6 +8,19 @@ import { MediaProjectService, MediaServiceError, type MediaProcessRunner } from 
 const roots: string[] = []
 const originalGatewayUrl = process.env.QF_GATEWAY_URL
 const originalGatewayToken = process.env.QF_GATEWAY_TOKEN
+const DATA_EGRESS_CONSENT = {
+  policy_revision: 'bb-04e-image-v1' as const,
+  acknowledged: true as const,
+  acknowledged_at: '2026-07-24T00:00:00.000Z',
+}
+
+function submitImage(
+  service: MediaProjectService,
+  projectId: string,
+  input: { confirm_unknown_retry?: boolean } = {},
+) {
+  return service.submitImageProject(projectId, { ...input, data_egress_consent: DATA_EGRESS_CONSENT })
+}
 
 async function root(): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), 'billiardbuddy-media-'))
@@ -27,7 +40,7 @@ describe('MediaProjectService image projects', () => {
   test('uses one idempotent GPT edit task without legacy parameters and persists local image bytes', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
-    const calls: Array<{ url: string; key: string | null; body?: Record<string, unknown> }> = []
+    const calls: Array<{ url: string; key: string | null; consent: string | null; body?: Record<string, unknown> }> = []
     let polls = 0
     const mediaRoot = await root()
     const service = new MediaProjectService({
@@ -38,7 +51,7 @@ describe('MediaProjectService image projects', () => {
         const body = init?.method === 'POST' && typeof init.body === 'string'
           ? JSON.parse(init.body) as Record<string, unknown>
           : undefined
-        calls.push({ url: requestUrl, key: headers.get('idempotency-key'), body })
+        calls.push({ url: requestUrl, key: headers.get('idempotency-key'), consent: headers.get('x-bb-data-egress-consent'), body })
         if (init?.method === 'POST') return Response.json({ task_id: 'remote-1', status: 'queued' }, { status: 202 })
         polls += 1
         return Response.json(polls === 1
@@ -56,11 +69,17 @@ describe('MediaProjectService image projects', () => {
       mode: 'edit',
       reference_images: [`data:image/png;base64,${Buffer.from('reference-image').toString('base64')}`],
     })
-    const first = await service.submitImageProject(project.id)
-    const duplicate = await service.submitImageProject(project.id)
+    const first = await submitImage(service, project.id)
+    const duplicate = await submitImage(service, project.id)
     expect(duplicate.id).toBe(first.id)
     expect(calls.filter(call => call.url.endsWith('/v1/images/tasks'))).toHaveLength(1)
     expect(calls[0]?.key).toMatch(/^bb-media-[a-f0-9]{64}$/)
+    expect(calls[0]?.consent).toMatch(/^[a-f0-9]{64}$/)
+    expect(first.data_egress_consent).toMatchObject({
+      purpose: 'image_generation', capability: 'ImageGeneration', receiver: 'OpenAI',
+      relay_region: 'United States', retention: 'input-until-terminal;result-up-to-7-days',
+      billable: true, revocable_until: 'provider_submission',
+    })
     expect(calls[0]?.body).toMatchObject({ mode: 'edit', model: 'gpt-image-2' })
     expect(calls[0]?.body?.response_format).toBeUndefined()
     expect(calls[0]?.body?.input_fidelity).toBeUndefined()
@@ -123,7 +142,7 @@ describe('MediaProjectService image projects', () => {
       model: 'doubao-seedream-4-5-251128',
       size: '1600x2848',
     })
-    const task = await service.submitImageProject(project.id)
+    const task = await submitImage(service, project.id)
     await service.getTask(task.id)
     await service.getTask(task.id)
 
@@ -197,10 +216,24 @@ describe('MediaProjectService image projects', () => {
     delete process.env.QF_GATEWAY_TOKEN
     const service = new MediaProjectService({ root: await root() })
     const project = await service.createImageProject({ prompt: '活动海报' })
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+    await expect(submitImage(service, project.id)).rejects.toMatchObject({
       code: 'GATEWAY_NOT_CONFIGURED',
       status: 503,
     })
+  })
+
+  test('requires an explicit data egress acknowledgement before persisting or forwarding a paid image task', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    let calls = 0
+    const service = new MediaProjectService({ root: await root(), fetchImpl: async () => { calls++; return Response.json({}) } })
+    const project = await service.createImageProject({ prompt: '需要确认的活动海报' })
+    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+      code: 'DATA_EGRESS_CONSENT_REQUIRED',
+      status: 428,
+    })
+    expect(calls).toBe(0)
+    expect((await service.getProject(project.id)).state).toBe('draft')
   })
 
   test('persists a safe image failure instead of the upstream response detail', async () => {
@@ -213,7 +246,7 @@ describe('MediaProjectService image projects', () => {
     })
     const project = await service.createImageProject({ prompt: '安全失败海报' })
 
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+    await expect(submitImage(service, project.id)).rejects.toMatchObject({
       code: 'IMAGE_SUBMIT_FAILED',
       message: '图片生成暂时不可用，请稍后重试。',
     })
@@ -249,7 +282,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '第一版海报' })
-    await expect(service.submitImageProject(project.id)).rejects.toBeInstanceOf(MediaServiceError)
+    await expect(submitImage(service, project.id)).rejects.toBeInstanceOf(MediaServiceError)
     const failed = await service.getProject(project.id)
     if (failed.kind !== 'image') throw new Error('wrong kind')
     expect(failed.state).toBe('failed')
@@ -274,7 +307,7 @@ describe('MediaProjectService image projects', () => {
       confirm_unknown_retry: true,
     })
     expect(edited).toMatchObject({ state: 'draft', task_id: undefined })
-    const retry = await service.submitImageProject(edited.id)
+    const retry = await submitImage(service, edited.id)
     expect(retry.remote_task_id).toBe('remote-retry')
     expect(keys).toHaveLength(2)
     expect(keys[0]).not.toBe(keys[1])
@@ -295,10 +328,10 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '只生成一次' })
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({ code: 'IMAGE_SUBMIT_UNKNOWN' })
+    await expect(submitImage(service, project.id)).rejects.toMatchObject({ code: 'IMAGE_SUBMIT_UNKNOWN' })
     const failed = await service.getProject(project.id)
     if (failed.kind !== 'image') throw new Error('wrong kind')
-    const recovered = await service.submitImageProject(project.id)
+    const recovered = await submitImage(service, project.id)
 
     expect(recovered).toMatchObject({ remote_task_id: 'remote-recovered', outcome_unknown: false })
     expect(keys).toHaveLength(2)
@@ -318,7 +351,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await interrupted.createImageProject({ prompt: '崩溃恢复' })
-    void interrupted.submitImageProject(project.id).catch(() => undefined)
+    void submitImage(interrupted, project.id).catch(() => undefined)
 
     let persisted = await interrupted.getProject(project.id)
     for (let index = 0; index < 50 && (!persisted.task_id || !firstKey); index += 1) {
@@ -361,7 +394,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '活动海报' })
-    const task = await service.submitImageProject(project.id)
+    const task = await submitImage(service, project.id)
     const failed = await service.getTask(task.id)
     expect(failed.status).toBe('failed')
     expect(failed.outcome_unknown).toBe(true)
@@ -369,10 +402,10 @@ describe('MediaProjectService image projects', () => {
     const failedProject = await service.getProject(project.id)
     expect(failedProject).toMatchObject({ state: 'failed' })
 
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+    await expect(submitImage(service, project.id)).rejects.toMatchObject({
       code: 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED',
     })
-    const retried = await service.submitImageProject(project.id, { confirm_unknown_retry: true })
+    const retried = await submitImage(service, project.id, { confirm_unknown_retry: true })
     expect(retried.remote_task_id).toBe('remote-confirmed-retry')
     expect(keys).toHaveLength(2)
     expect(keys[1]).not.toBe(keys[0])
@@ -397,7 +430,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '等待图片结果' })
-    const submitted = await service.submitImageProject(project.id)
+    const submitted = await submitImage(service, project.id)
     const refreshed = await service.getTask(submitted.id)
 
     expect(refreshed).toMatchObject({ status: 'queued', remote_task_id: 'remote-stalled-body' })
@@ -425,7 +458,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '只落盘一次' })
-    const submitted = await service.submitImageProject(project.id)
+    const submitted = await submitImage(service, project.id)
     const first = service.getTask(submitted.id)
     const second = service.getTask(submitted.id)
     await Bun.sleep(5)
@@ -491,7 +524,7 @@ describe('MediaProjectService image projects', () => {
     await rm(referencePath)
     await symlink(outsidePath, referencePath)
 
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
+    await expect(submitImage(service, project.id)).rejects.toMatchObject({
       code: 'ASSET_OUTSIDE_PROJECT',
       status: 403,
     })
@@ -511,7 +544,7 @@ describe('MediaProjectService image projects', () => {
           }),
     })
     const created = await service.createImageProject({ prompt: '恢复图片' })
-    const task = await service.submitImageProject(created.id)
+    const task = await submitImage(service, created.id)
     await service.getTask(task.id)
     const ready = await service.getProject(created.id)
     if (ready.kind !== 'image') throw new Error('wrong kind')
@@ -542,7 +575,7 @@ describe('MediaProjectService image projects', () => {
           }),
     })
     const project = await service.createImageProject({ prompt: '旧版海报' })
-    const task = await service.submitImageProject(project.id)
+    const task = await submitImage(service, project.id)
     const replacementTaskId = 'task_replacement001'
     const persisted = await service.getProject(project.id)
     if (persisted.kind !== 'image') throw new Error('wrong kind')
@@ -576,7 +609,7 @@ describe('MediaProjectService image projects', () => {
       },
     })
     const project = await service.createImageProject({ prompt: '排队图片' })
-    const task = await service.submitImageProject(project.id)
+    const task = await submitImage(service, project.id)
     expect((await service.cancelTask(task.id)).status).toBe('cancelled')
     expect(await service.getProject(project.id)).toMatchObject({
       state: 'failed',

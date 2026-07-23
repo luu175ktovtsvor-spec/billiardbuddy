@@ -25,6 +25,7 @@
 // 鉴权:Bearer <RELAY_TOKEN>(= 网关注入的 GW_RELAY_TOKEN)。真 OpenAI/ARK key 只在本服务环境变量,绝不下发。
 
 import { Database } from 'bun:sqlite'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -304,6 +305,10 @@ type TaskRow = {
   error: string | null
   input_fidelity: string | null // JSON of InputFidelityCapability, or null
   input_bytes: number
+  input_fingerprint: string | null
+  consent_receipt_hash: string | null
+  provider: string | null
+  provider_receipt_hash: string | null
   created: number
   updated: number
 }
@@ -317,22 +322,27 @@ class TaskStore {
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS tasks(' +
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
-      'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
+      'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, ' +
+      'input_fingerprint TEXT, consent_receipt_hash TEXT, provider TEXT, provider_receipt_hash TEXT, ' +
+      'created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
     // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
     const columns = this.db.query('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
     if (!columns.some(column => column.name === 'input_bytes')) {
       this.db.exec('ALTER TABLE tasks ADD COLUMN input_bytes INTEGER NOT NULL DEFAULT 0')
     }
+    for (const column of ['input_fingerprint', 'consent_receipt_hash', 'provider', 'provider_receipt_hash']) {
+      if (!columns.some(existing => existing.name === column)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`)
+    }
     // (owner, key) 唯一 —— 幂等去重;key 为 NULL 的行不参与(旧请求无幂等键,不去重)。
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(owner, idempotency_key) WHERE idempotency_key IS NOT NULL')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
   }
 
-  insert(id: string, owner: string, key: string | null, inputBytes: number): void {
+  insert(id: string, owner: string, key: string | null, inputBytes: number, inputFingerprint: string, consentReceiptHash: string | null, provider: string): void {
     const ts = this.now()
-    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,created,updated) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(id, owner, key, 'queued', null, null, inputBytes, ts, ts)
+    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,consent_receipt_hash,provider,provider_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, owner, key, 'queued', null, null, inputBytes, inputFingerprint, consentReceiptHash, provider, null, ts, ts)
   }
 
   setInputBytes(id: string, inputBytes: number): void {
@@ -356,6 +366,14 @@ class TaskStore {
   setStatus(id: string, status: TaskState, error?: string, inputFidelity?: InputFidelityCapability): void {
     this.db.query('UPDATE tasks SET status=?, error=?, input_fidelity=?, updated=? WHERE id=?')
       .run(status, error ?? null, inputFidelity ? JSON.stringify(inputFidelity) : null, this.now(), id)
+  }
+
+  appendProviderReceipt(id: string, receiptHash: string): void {
+    const current = this.get(id)?.provider_receipt_hash
+    const aggregate = current
+      ? createHash('sha256').update(`${current}\0${receiptHash}`).digest('hex')
+      : receiptHash
+    this.db.query('UPDATE tasks SET provider_receipt_hash=?, updated=? WHERE id=?').run(aggregate, this.now(), id)
   }
 
   markRunning(id: string): void {
@@ -491,6 +509,18 @@ function readOwner(req: Request): string {
   return raw ? raw.slice(0, 256) : ''
 }
 
+function sha256(value: string | Uint8Array): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function taskProvider(body: SubmitBody): 'OpenAI' | 'ByteDance Ark' {
+  return isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'ByteDance Ark' : 'OpenAI'
+}
+
+function sameOperationBinding(row: TaskRow, fingerprint: string, consentReceiptHash: string | null): boolean {
+  return row.input_fingerprint === fingerprint && row.consent_receipt_hash === consentReceiptHash
+}
+
 export type RelayDeps = { env: Env; fetchImpl?: FetchLike; now?: () => number }
 
 export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Response> {
@@ -603,6 +633,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     return fetchUpstreamBody(provider, input, init, response => response.arrayBuffer())
   }
 
+  function upstreamReceiptHash(provider: 'OpenAI' | 'Seedream', response: Response, body: string): string {
+    const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-tt-logid') ?? ''
+    return sha256(`${provider}\0${requestId}\0${sha256(body)}`)
+  }
+
   async function seedreamDataItem(item: unknown): Promise<Record<string, unknown> | null> {
     if (!item || typeof item !== 'object') return null
     const source = item as Record<string, unknown>
@@ -645,7 +680,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     }
   }
 
-  async function runSeedream(body: SubmitBody): Promise<unknown[]> {
+  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void): Promise<unknown[]> {
     const model = String(body.model ?? SEEDREAM_IMAGE_MODEL)
     const prompt = String(body.prompt ?? '')
     const size = String(body.size ?? '2048x2048')
@@ -672,7 +707,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         },
         body: JSON.stringify(payload),
       })
-      if (!response.ok) throw new UpstreamResponseError(`Seedream ${response.status}:${text.slice(0, 300)}`)
+      if (!response.ok) throw new UpstreamResponseError(`Seedream 请求未被接受: HTTP ${response.status}`)
+      recordReceipt(upstreamReceiptHash('Seedream', response, text))
       let parsed: unknown
       try {
         parsed = text ? JSON.parse(text) : {}
@@ -715,7 +751,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         }
         store.markRunning(id)
         if (isSeedreamModel(model)) {
-          const data = await runSeedream(body)
+          const data = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
           try {
             blobs.put(id, 'out', { data })
           } catch (error) {
@@ -761,7 +797,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         }
 
         const { response: resp, body: text } = await requestUpstream()
-        if (!resp.ok) throw new UpstreamResponseError(`OpenAI ${resp.status}:${text.slice(0, 300)}`)
+        if (!resp.ok) throw new UpstreamResponseError(`OpenAI 请求未被接受: HTTP ${resp.status}`)
+        store.appendProviderReceipt(id, upstreamReceiptHash('OpenAI', resp, text))
         let parsed: unknown
         try {
           parsed = text ? JSON.parse(text) : {}
@@ -843,6 +880,10 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         : { data: out?.data }),
       error: rec.error ?? undefined,
       created: rec.created,
+      operation_id: rec.id,
+      provider: rec.provider ?? undefined,
+      data_egress_consent_hash: rec.consent_receipt_hash ?? undefined,
+      provider_receipt_hash: rec.provider_receipt_hash ?? undefined,
       ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
       ...(fidelity ? {
         input_fidelity_requested: fidelity.requested,
@@ -886,6 +927,13 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         sweep()
         const owner = readOwner(req)
         const idempotencyKey = (req.headers.get('idempotency-key') ?? '').trim() || null
+        const consentReceiptHash = (req.headers.get('x-relay-data-egress-consent') ?? '').trim() || null
+        if (owner && (!idempotencyKey || idempotencyKey.length > 160)) {
+          throw new HttpError(428, 'relay: 缺少有效的付费 operation id')
+        }
+        if (owner && !/^[a-f0-9]{64}$/.test(consentReceiptHash ?? '')) {
+          throw new HttpError(428, 'relay: 缺少有效的数据出境同意回执')
+        }
         // 请求体大小上限:先看 content-length 快速拒,再按实际字节校验。
         const declared = Number(req.headers.get('content-length') ?? '')
         if (Number.isFinite(declared) && declared > config.maxBodyBytes) throw new HttpError(413, 'relay: 请求体过大')
@@ -903,16 +951,23 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           if (!body || typeof body !== 'object') throw new HttpError(400, 'relay: 请求体必须是对象')
           if (!String(body.prompt ?? '').trim()) throw new HttpError(400, 'relay: 缺少 prompt')
           validateSubmitBody(body, Boolean(config.arkKey))
+          const inputFingerprint = sha256(raw)
+          const provider = taskProvider(body)
 
           // 幂等:同 (owner, key) 已存在 → 返回原 task_id,不再跑第二次真实上游。
           if (idempotencyKey) {
             const existing = store.findByIdempotency(owner, idempotencyKey)
-            if (existing) return Response.json({
-              task_id: existing.id,
-              status: existing.status,
-              reused: true,
-              ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
-            }, { status: 202 })
+            if (existing) {
+              if (!sameOperationBinding(existing, inputFingerprint, consentReceiptHash)) {
+                throw new HttpError(409, 'relay: operation 已绑定不同输入或同意回执')
+              }
+              return Response.json({
+                task_id: existing.id,
+                status: existing.status,
+                reused: true,
+                ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
+              }, { status: 202 })
+            }
           }
           // 队列上限:全局在途 + 单 owner 在途。
           if (store.countActive() >= config.queueMax) throw queueFull('relay: 生图队列已满,请稍后重试')
@@ -920,18 +975,23 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
           const id = crypto.randomUUID()
           try {
-            store.insert(id, owner, idempotencyKey, raw.byteLength)
+            store.insert(id, owner, idempotencyKey, raw.byteLength, inputFingerprint, consentReceiptHash, provider)
             activeInputBytes += raw.byteLength
           } catch (err) {
             // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
             if (idempotencyKey) {
               const existing = store.findByIdempotency(owner, idempotencyKey)
-              if (existing) return Response.json({
-                task_id: existing.id,
-                status: existing.status,
-                reused: true,
-                ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
-              }, { status: 202 })
+              if (existing) {
+                if (!sameOperationBinding(existing, inputFingerprint, consentReceiptHash)) {
+                  throw new HttpError(409, 'relay: operation 已绑定不同输入或同意回执')
+                }
+                return Response.json({
+                  task_id: existing.id,
+                  status: existing.status,
+                  reused: true,
+                  ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
+                }, { status: 202 })
+              }
             }
             throw err
           }

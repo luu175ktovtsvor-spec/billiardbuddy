@@ -15,10 +15,20 @@ function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return { RELAY_TOKEN: 'relay-secret', RELAY_OPENAI_KEY: 'sk-real', RELAY_OPENAI_BASE: 'https://api.openai.example/v1', ...overrides }
 }
 
+let operationSequence = 0
+function protectedHeaders(headers: Record<string, string>): Record<string, string> {
+  if (!headers['x-relay-owner']) return headers
+  return {
+    'idempotency-key': `test-operation-${++operationSequence}`,
+    'x-relay-data-egress-consent': 'a'.repeat(64),
+    ...headers,
+  }
+}
+
 function submit(body: unknown, headers: Record<string, string> = {}) {
   return new Request('http://relay/images/tasks', {
     method: 'POST',
-    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json', ...headers },
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json', ...protectedHeaders(headers) },
     body: JSON.stringify(body),
   })
 }
@@ -39,7 +49,7 @@ function chunkedSubmit(raw: string, headers: Record<string, string> = {}) {
   })
   return new Request('http://relay/images/tasks', {
     method: 'POST',
-    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json', ...headers },
+    headers: { authorization: 'Bearer relay-secret', 'content-type': 'application/json', ...protectedHeaders(headers) },
     body,
   })
 }
@@ -124,6 +134,7 @@ test('same (owner, Idempotency-Key) resubmit returns the original task_id and ru
   const second = await (await fetch(submit(GEN, h))).json()
   expect(second.task_id).toBe(first.task_id)
   expect(second.reused).toBe(true)
+  expect((await fetch(submit({ ...GEN, prompt: 'different input' }, h))).status).toBe(409)
   expect(calls).toBe(1) // 重复提交只跑一次真实上游、只扣一次费
 })
 

@@ -122,11 +122,15 @@ describe('ImageWorkbench unknown paid result', () => {
     const retry = await screen.findByRole('button', { name: '确认后重新生成' })
     fireEvent.click(retry)
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('可能再次扣费'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('美国 Relay'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('OpenAI'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('最多保留 7 天'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('可能产生费用'))
     expect(mediaApiMock.submitImageProject).not.toHaveBeenCalled()
 
     fireEvent.click(retry)
     await waitFor(() => {
-      expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(project.id, true)
+      expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(project.id, true, true)
     })
   })
 
