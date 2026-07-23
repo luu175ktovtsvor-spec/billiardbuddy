@@ -1,10 +1,11 @@
 import { AGENT_WORKER_PROTOCOL_VERSION, intersectsAgentWorkerVersions, type AgentWorkerInbound, type AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
+import { randomBytes } from 'node:crypto'
 import type { ProductResourceScheduler } from './resourceScheduler.js'
-import { createLegacyDeferredEnvelope } from './permissionExecutionEnvelope.js'
+import { createAgentWorkerChildStartCapability, createLegacyDeferredEnvelope } from './permissionExecutionEnvelope.js'
 
 type DispatchStore = { readTaskRunDispatchIdentity(run: string, generation: number): Promise<{ task_id: string; lineage_id: string; resume_binding_id: string }>; claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }>; settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> }
 export type AgentWorkerChild = { send(message: AgentWorkerInbound): void; stop(): Promise<void> }
-export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: { task_id: string; lineage_id: string; resume_binding_id: string }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
+export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: { task_id: string; lineage_id: string; resume_binding_id: string }; bootstrap: { capability: ReturnType<typeof createAgentWorkerChildStartCapability>; capability_key: Buffer }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
 
 /** Single Local Product Server owner of durable TaskRun → child-worker launch. */
 export class AgentWorkerSupervisor {
@@ -12,6 +13,7 @@ export class AgentWorkerSupervisor {
   private readonly starting = new Map<string, Promise<'started' | 'recovery_required'>>()
   private readonly settled = new Set<string>()
   private readonly readyTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly childCapabilityKey = randomBytes(32)
   constructor(private readonly runs: DispatchStore, private readonly scheduler: ProductResourceScheduler, private readonly launcher: AgentWorkerChildLauncher, private readonly readyTimeoutMs = 5_000) {}
   async dispatch(runId: string, generation: number): Promise<'started' | 'recovery_required'> {
     const key = `${runId}:${generation}`; if (this.settled.has(key)) return 'recovery_required'; if (this.active.has(key)) return 'started'
@@ -30,12 +32,14 @@ export class AgentWorkerSupervisor {
     const claim = await this.runs.claimTaskRunDispatch(runId, generation)
     if (claim.outcome !== 'claimed') return this.fail(runId, generation, receipt.fencing_token, claim.outcome)
     let child: AgentWorkerChild | undefined; let hello = false; let ready = false
+    const envelope = createLegacyDeferredEnvelope()
+    const bootstrap = { capability: createAgentWorkerChildStartCapability({ run_id: runId, dispatch_generation: generation, fencing_token: receipt.fencing_token, envelope_digest: envelope.digest }, this.childCapabilityKey), capability_key: this.childCapabilityKey }
     const timeout = setTimeout(() => void this.fail(runId, generation, receipt.fencing_token, 'READY_TIMEOUT'), this.readyTimeoutMs)
     this.readyTimers.set(key, timeout)
     try {
-      child = await this.launcher.launch({ run_id: runId, core: identity, onExit: () => void this.fail(runId, generation, receipt.fencing_token, 'CHILD_EXIT'), onMessage: message => {
+      child = await this.launcher.launch({ run_id: runId, core: identity, bootstrap, onExit: () => void this.fail(runId, generation, receipt.fencing_token, 'CHILD_EXIT'), onMessage: message => {
         if (message.type === 'hello') { if (!intersectsAgentWorkerVersions(message.versions, { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION })) return void this.fail(runId, generation, receipt.fencing_token, 'CAPABILITY_MISMATCH'); hello = true; child?.send({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: ['framed'] }); return }
-        if (message.type === 'ready') { if (!hello || ready) return void this.fail(runId, generation, receipt.fencing_token, 'READY_INVALID'); ready = true; clearTimeout(timeout); this.readyTimers.delete(key); child?.send({ type: 'ready' }); child?.send({ type: 'start', run_id: runId, dispatch_generation: generation, scheduler_receipt: receipt, envelope: createLegacyDeferredEnvelope() }); return }
+        if (message.type === 'ready') { if (!hello || ready) return void this.fail(runId, generation, receipt.fencing_token, 'READY_INVALID'); ready = true; clearTimeout(timeout); this.readyTimers.delete(key); child?.send({ type: 'ready' }); child?.send({ type: 'start', run_id: runId, dispatch_generation: generation, scheduler_receipt: receipt, envelope }); return }
         if (message.type === 'terminal' || message.type === 'fatal') void this.fail(runId, generation, receipt.fencing_token, message.type === 'terminal' ? 'TERMINAL' : message.code)
       } })
       if (this.settled.has(key)) { await child.stop(); return 'recovery_required' }
