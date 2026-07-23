@@ -41,14 +41,10 @@ import {
   useProductTaskWorkspaceStore,
   type ProductTaskBrowserPreviewMode,
 } from '../stores/productTaskWorkspaceStore'
-import {
-  ProductTaskBrowserPreviewDock,
-  type ProductTaskBrowserPreviewCapture,
-} from './ProductTaskBrowserPreviewDock'
 import { ProductTaskMediaDock } from './ProductTaskMediaDock'
 import { ProductTaskInlineMedia } from './ProductTaskInlineMedia'
+import type { ProductTaskBrowserPreviewCapture } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
-import { ProductTaskTerminalDock } from './ProductTaskTerminalDock'
 import {
   ProductTaskRunPanel,
   productTaskActivityDisplayLabel,
@@ -488,7 +484,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     () => index.tasks.find((candidate) => candidate.id === taskId) ?? null,
     [index.tasks, taskId],
   )
-  const normalizedWorkDir = task?.workDir.trim() ?? ''
+  const workspaceAvailable = task?.workspace_capability?.available === true
+  const normalizedWorkDir = workspaceAvailable ? task?.workDir.trim() ?? '' : ''
   const isSlashInput = draft.startsWith('/')
   const commandQuery = slashQuery(draft)
   const resolvedTaskId = task?.id
@@ -711,7 +708,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const openReviewDock = () => {
-    openWorkspacePanel(task.id, 'review')
+    openWorkspacePanel(task.id, 'review', workspaceAvailable)
   }
 
   const openMediaDock = () => {
@@ -719,7 +716,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const openTerminalDock = () => {
-    openWorkspacePanel(task.id, 'terminal')
+    openWorkspacePanel(task.id, 'terminal', workspaceAvailable)
   }
 
   const toggleReviewDock = () => {
@@ -751,7 +748,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const openBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
-    openWorkspacePanel(task.id, mode)
+    openWorkspacePanel(task.id, mode, workspaceAvailable)
   }
 
   const toggleBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
@@ -809,6 +806,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
+  void activateWorkspacePanel
+  void addBrowserPreviewCapture
+
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-task-page">
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -821,7 +821,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{task.title}</h1>
-          <p className="truncate text-xs text-[var(--color-text-tertiary)]">{task.workDir}</p>
+          <p className="truncate text-xs text-[var(--color-text-tertiary)]">{workspaceAvailable ? task.workDir : '需先关联工作区'}</p>
         </div>
         <span className={`hidden rounded-full px-2.5 py-1 text-xs sm:inline ${runtime?.runState === 'awaiting_approval' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : runtime?.runState === 'working' ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]' : 'bg-[var(--color-surface-container)] text-[var(--color-text-secondary)]'}`}>
           {runStateLabel(runtime?.runState ?? 'idle')}
@@ -849,6 +849,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={toggleReviewDock}
+          disabled={!workspaceAvailable}
           aria-pressed={isReviewActive}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -865,6 +866,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={() => toggleBrowserPreviewMode('browser')}
+          disabled
           aria-pressed={isBrowserPreviewActive && isBrowserOpen && activeBrowserPreviewMode === 'browser'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -873,6 +875,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={() => toggleBrowserPreviewMode('preview')}
+          disabled
           aria-pressed={isBrowserPreviewActive && isPreviewOpen && activeBrowserPreviewMode === 'preview'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -881,6 +884,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={toggleTerminalDock}
+          disabled
           aria-pressed={isTerminalOpen}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -1042,7 +1046,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
         {activeRightDockPanel ? (
           <aside className="flex min-h-0 w-[min(34rem,46vw)] min-w-[22rem] flex-col overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
-            {isReviewOpen ? (
+            {workspaceAvailable && isReviewOpen ? (
               <div
                 data-testid="product-task-dock-panel-review"
                 data-active={isReviewActive ? 'true' : 'false'}
@@ -1060,41 +1064,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 <ProductTaskMediaDock taskId={task.id} onClose={closeMediaDock} />
               </div>
             ) : null}
-            {isBrowserPreviewActive ? (
-              <div
-                data-testid="product-task-dock-panel-browser-preview"
-                data-active="true"
-                className="flex min-h-0 flex-1 flex-col overflow-hidden"
-              >
-                <ProductTaskBrowserPreviewDock
-                  taskId={task.id}
-                  browserOpen={isBrowserOpen}
-                  previewOpen={isPreviewOpen}
-                  activeMode={activeBrowserPreviewMode}
-                  onActivate={(mode) => activateWorkspacePanel(task.id, mode)}
-                  onClose={closeBrowserPreviewMode}
-                  onCapture={addBrowserPreviewCapture}
-                />
-              </div>
-            ) : null}
           </aside>
         ) : null}
       </div>
-      {isTerminalOpen ? (
-        <section
-          data-testid="product-task-terminal-dock"
-          data-active="true"
-          className="flex h-[min(24rem,42vh)] min-h-48 shrink-0 flex-col overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-surface)]"
-        >
-          <ProductTaskTerminalDock
-            taskId={task.id}
-            workDir={task.workDir}
-            active
-            onClose={closeTerminalDock}
-            testId={`product-task-terminal-${task.id}`}
-          />
-        </section>
-      ) : null}
     </main>
   )
 }

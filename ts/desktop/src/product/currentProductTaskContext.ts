@@ -48,7 +48,13 @@ export function resolveCurrentProductTaskContext(
   const taskId = resolveCurrentProductTaskId(tabs, activeTabId, lastActiveProductTaskId)
   if (!taskId) return {}
 
-  const workDir = tasks.find((task) => task.id === taskId)?.workDir.trim()
+  const task = tasks.find((candidate) => candidate.id === taskId)
+  // A task's historical workDir is not a workspace capability. Never give a
+  // renderer surface a cwd until the server's public projection says it is
+  // currently available.
+  const workDir = task?.workspace_capability?.available === true
+    ? task.workDir.trim()
+    : undefined
   return {
     taskId,
     ...(workDir ? { workDir } : {}),

@@ -49,6 +49,9 @@ export type {
   ProductTaskKind,
   ProductTaskLifecycle,
   ProductTaskPermissionMode,
+  ProductTaskScope,
+  ProductTaskWorkspaceCapability,
+  ProductWorkspaceAvailability,
   ProductWorktreeState,
   UpdateProductTaskInput,
 } from '../../../../shared/product/domain'
@@ -97,6 +100,86 @@ export type {
   ProductScheduledTaskRunStatus,
   UpdateProductScheduledTaskInput,
 } from '../../../../shared/product/scheduledTasks'
+
+export type ProductPublicWorkspace = {
+  workspace_id: string
+  revision: number
+  availability: import('../../../../shared/product/domain').ProductWorkspaceAvailability
+  created_at: string
+  updated_at: string
+}
+
+export type ProductPublicOperationReceipt = {
+  outcome: 'accepted' | 'replayed'
+  revision: number
+}
+
+export type ProductPublicComposerDraft = {
+  draft_id: string
+  target_task_id: string
+  workspace_id?: string
+  revision: number
+  state: 'active' | 'consumed' | 'expired'
+  last_activity: string
+  created_at: string
+  expires_at: string
+}
+
+export type ProductPublicAttachment = {
+  attachment_id: string
+  owner_kind: 'composer_draft' | 'product_task'
+  owner_id: string
+  revision: number
+  state: 'staged' | 'inspecting' | 'ready' | 'accepted_bound' | 'failed' | 'cancelled' | 'discarded'
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type ProductPublicConversationLineage = {
+  lineage_id: string
+  product_task_id: string
+  parent_lineage_id?: string
+  fork_checkpoint_id?: string
+  head_entry_id?: string
+  revision: number
+  compact_generation: number
+  state: 'active' | 'parked' | 'recovery_required'
+  created_at: string
+  updated_at: string
+}
+
+export type ProductWorkspaceApi = {
+  register: (input: { root: string; expected_revision: number; client_operation_id: string }) => Promise<{ workspace: ProductPublicWorkspace; receipt: ProductPublicOperationReceipt }>
+  inspect: (workspaceId: string) => Promise<{ workspace: ProductPublicWorkspace }>
+  relocate: (workspaceId: string, input: { root: string; expected_workspace_revision: number; client_operation_id: string }) => Promise<{ workspace: ProductPublicWorkspace; receipt: ProductPublicOperationReceipt }>
+  relink: (workspaceId: string, input: { root: string; expected_workspace_revision: number; client_operation_id: string }) => Promise<{ workspace: ProductPublicWorkspace; receipt: ProductPublicOperationReceipt }>
+}
+
+export type ProductComposerDraftApi = {
+  create: (input: { target_task_id: string; workspace_id?: string; ttl_ms: number; client_operation_id: string }) => Promise<{ draft: ProductPublicComposerDraft; receipt: ProductPublicOperationReceipt }>
+  get: (draftId: string) => Promise<{ draft: ProductPublicComposerDraft }>
+  mutate: (draftId: string, action: 'update' | 'consume' | 'expire', input: { expected_draft_revision: number; client_operation_id: string }) => Promise<{ receipt: ProductPublicOperationReceipt }>
+}
+
+export type ProductAttachmentOperationResult = {
+  authority_revision: number
+  attachment_revision: number
+  outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
+}
+export type ProductAttachmentApi = {
+  transition: (attachmentId: string, input: { expected_revision: number; target_state: 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded'; client_operation_id: string; error?: string }) => Promise<ProductAttachmentOperationResult>
+  bind: (attachmentId: string, input: { expected_revision: number; owner: { kind: 'composer_draft' | 'product_task'; id: string }; client_operation_id: string }) => Promise<ProductAttachmentOperationResult>
+}
+
+export type ProductConversationLineageApi = {
+  create: (input: { task_id: string; expected_task_revision: number; parent_lineage_id: null; fork_checkpoint_id: null; client_operation_id: string }) => Promise<{ lineage: ProductPublicConversationLineage; receipt: ProductPublicOperationReceipt }>
+  get: (lineageId: string) => Promise<{ lineage: ProductPublicConversationLineage }>
+  root: (lineageId: string) => Promise<{ lineage: ProductPublicConversationLineage }>
+  mutate: (lineageId: string, action: 'advance' | 'park' | 'recovery' | 'compact', input: { expected_lineage_revision: number; client_operation_id: string; head_entry_id?: string }) => Promise<{ receipt: ProductPublicOperationReceipt }>
+  current: (taskId: string) => Promise<{ lineage: ProductPublicConversationLineage | null }>
+  setCurrent: (taskId: string, input: { lineage_id: string; expected_task_revision: number; expected_lineage_revision: number; client_operation_id: string }) => Promise<{ receipt: ProductPublicOperationReceipt }>
+}
 
 export type ProductTaskAction =
   | 'pin'

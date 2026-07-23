@@ -90,11 +90,12 @@ function createService() {
     },
   }
   const service = new ProductTaskReviewService(
-    { resolveCoreSessionId: async (id) => {
+    { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async (id) => {
       expect(id).toBe(taskId)
       return coreSessionId
     } },
     workspace,
+    async () => '/private/workspaces/hall-operations',
   )
 
   return { calls, service }
@@ -230,9 +231,31 @@ describe('ProductTaskReviewService', () => {
     expect(calls).toEqual([])
   })
 
+  it('rejects a missing Core cwd before invoking the review workspace', async () => {
+    let calls = 0
+    const service = new ProductTaskReviewService(
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
+      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }) },
+      async () => undefined,
+    )
+    await expect(service.getStatus(taskId)).rejects.toMatchObject({ code: 'WORKSPACE_REQUIRED' })
+    expect(calls).toBe(0)
+  })
+
+  it('rejects an old Core cwd from another workspace before review downstream', async () => {
+    let calls = 0
+    const service = new ProductTaskReviewService(
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
+      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }) },
+      async () => '/workspace/old',
+    )
+    await expect(service.getStatus(taskId)).rejects.toMatchObject({ code: 'WORKSPACE_REQUIRED' })
+    expect(calls).toBe(0)
+  })
+
   it('filters version-control metadata from product status and tree results', async () => {
     const service = new ProductTaskReviewService(
-      { resolveCoreSessionId: async () => coreSessionId },
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
         getStatus: async () => ({
           state: 'ok' as const,
@@ -263,6 +286,7 @@ describe('ProductTaskReviewService', () => {
         }),
         getDiff: async () => ({ state: 'missing' as const, path: 'src/price.ts' }),
       },
+      async () => '/private/workspaces/hall-operations',
     )
 
     await expect(service.getStatus(taskId)).resolves.toMatchObject({
@@ -275,7 +299,7 @@ describe('ProductTaskReviewService', () => {
 
   it('turns internal workspace failures into a generic product state', async () => {
     const service = new ProductTaskReviewService(
-      { resolveCoreSessionId: async () => coreSessionId },
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
         getStatus: async () => ({
           state: 'error' as const,
@@ -300,6 +324,7 @@ describe('ProductTaskReviewService', () => {
           error: '/private/diff',
         }),
       },
+      async () => '/private/workspaces/hall-operations',
     )
 
     const [status, tree, file, diff] = await Promise.all([
@@ -325,7 +350,7 @@ describe('ProductTaskReviewService', () => {
 
   it('keeps a workspace-boundary failure forbidden even when diff generation reports it as a result', async () => {
     const service = new ProductTaskReviewService(
-      { resolveCoreSessionId: async () => coreSessionId },
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
         getStatus: async () => ({
           state: 'ok' as const,
@@ -348,6 +373,7 @@ describe('ProductTaskReviewService', () => {
           error: 'Path is outside workspace: src/price.ts',
         }),
       },
+      async () => '/private/workspaces/hall-operations',
     )
 
     await expect(service.getDiff(taskId, 'src/price.ts')).rejects.toMatchObject({

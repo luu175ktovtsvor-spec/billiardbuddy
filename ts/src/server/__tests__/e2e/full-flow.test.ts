@@ -190,7 +190,7 @@ describe('E2E: Full Flow', () => {
   // 5. Task-scoped WebSocket
   // =============================================
 
-  it('streams a product task without exposing its private Core session binding', async () => {
+  it('rejects an installation-default product task before its Core can receive a cwd-enabled turn', async () => {
     const workDir = path.join(tmpDir, 'task-scoped-socket-project')
     await fs.mkdir(workDir, { recursive: true })
     const { status, data } = await api('POST', '/api/product/tasks', {
@@ -222,7 +222,7 @@ describe('E2E: Full Flow', () => {
         if (msg.type === 'connected') {
           ws.send(JSON.stringify({ type: 'user_message', content: '整理本周球房活动' }))
         }
-        if (msg.type === 'turn_complete') {
+        if (msg.type === 'error') {
           clearTimeout(timeout)
           ws.close()
           resolve()
@@ -236,8 +236,8 @@ describe('E2E: Full Flow', () => {
     })
 
     expect(messages[0]).toEqual({ type: 'connected' })
-    expect(messages).toContainEqual({ type: 'assistant_text_delta', text: 'Echo: 整理本周球房活动' })
-    expect(messages).toContainEqual({ type: 'turn_complete' })
+    expect(messages).toContainEqual({ type: 'error', code: 'task_failed', retryable: false })
+    expect(messages).not.toContainEqual({ type: 'turn_complete' })
     expect(messages.every((message) => !Object.prototype.hasOwnProperty.call(message, 'sessionId'))).toBe(true)
   }, 20_000)
 

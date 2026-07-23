@@ -75,6 +75,18 @@ export async function handleProductApi(
     | 'reconcileRenameAuthoritatively'
     | 'mutateTaskAuthoritatively'
     | 'getAuthorityOperation'
+    | 'getConversationLineage'
+    | 'getConversationLineageRoot'
+    | 'getConversationLineageCurrent'
+    | 'createConversationLineage'
+    | 'setConversationLineageCurrent'
+    | 'registerWorkspaceOperation'
+    | 'relocateWorkspaceOperation'
+    | 'relinkWorkspaceOperation'
+    | 'mutateConversationLineage'
+    | 'registerAttachmentIdentity'
+    | 'transitionAttachment'
+    | 'bindAttachment'
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
   media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
@@ -107,6 +119,98 @@ export async function handleProductApi(
       )
     }
 
+    if (segments[2] === 'lineages') {
+      const lineageId = segments[3]
+      const action = segments[4]
+      if (!lineageId) {
+        if (req.method !== 'POST' || segments[3]) throw ApiError.notFound('未知会话谱系资源')
+        const input = await readJson<{ task_id?: unknown; expected_task_revision?: unknown; parent_lineage_id?: unknown; fork_checkpoint_id?: unknown; client_operation_id?: unknown }>(req)
+        if (!exactKeys(input, ['task_id', 'expected_task_revision', 'parent_lineage_id', 'fork_checkpoint_id', 'client_operation_id']) || typeof input.task_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || typeof input.client_operation_id !== 'string' || input.parent_lineage_id !== null || input.fork_checkpoint_id !== null) throw ApiError.badRequest('lineage create 参数无效')
+        const result = await tasks.createConversationLineage({ task_id: input.task_id, expected_task_revision: input.expected_task_revision, client_operation_id: input.client_operation_id })
+        return Response.json({ lineage: publicLineage(result.lineage), receipt: { outcome: result.outcome, revision: result.authority_revision } }, { status: result.outcome === 'accepted' ? 201 : 200 })
+      }
+      if (!action && req.method === 'GET') {
+        return Response.json({ lineage: publicLineage(await tasks.getConversationLineage(lineageId)) })
+      }
+      if (action === 'root' && !segments[5] && req.method === 'GET') {
+        return Response.json({ lineage: publicLineage(await tasks.getConversationLineageRoot(lineageId)) })
+      }
+      // Child lineage construction is intentionally not an HTTP capability.
+      // These mutations only advance an already-public opaque lineage id.
+      if (!action || segments[5] || req.method !== 'POST' || !['advance', 'park', 'recovery', 'compact'].includes(action)) {
+        throw ApiError.notFound('未知会话谱系资源')
+      }
+      const input = await readJson<{ expected_lineage_revision?: unknown; client_operation_id?: unknown; head_entry_id?: unknown }>(req)
+      if (!assertPlainExactObject(input, ['expected_lineage_revision', 'client_operation_id'], ['head_entry_id']) || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0 || typeof input.client_operation_id !== 'string' || (action === 'advance' && typeof input.head_entry_id !== 'string')) {
+        throw ApiError.badRequest('lineage revision 和 operation 必填')
+      }
+      const receipt = await tasks.mutateConversationLineage({ lineage_id: lineageId, expected_revision: input.expected_lineage_revision, client_operation_id: input.client_operation_id, action: action as 'advance' | 'park' | 'recovery' | 'compact', ...(typeof input.head_entry_id === 'string' ? { head_entry_id: input.head_entry_id } : {}) })
+      return Response.json({ receipt })
+    }
+
+    if (segments[2] === 'composer-drafts') {
+      const draftId = segments[3]
+      if (!draftId) {
+        if (req.method !== 'POST') return methodNotAllowed(req.method)
+        const input = await readJson<{ target_task_id?: unknown; workspace_id?: unknown; ttl_ms?: unknown; client_operation_id?: unknown }>(req)
+        if (!assertPlainExactObject(input, ['target_task_id', 'ttl_ms', 'client_operation_id'], ['workspace_id']) || typeof input.target_task_id !== 'string' || (input.workspace_id !== undefined && typeof input.workspace_id !== 'string') || !Number.isSafeInteger(input.ttl_ms) || (input.ttl_ms as number) < 1 || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('draft 参数无效')
+        const created = await tasks.createComposerDraft({ target_task_id: input.target_task_id, ...(typeof input.workspace_id === 'string' ? { workspace_id: input.workspace_id } : {}), ttl_ms: input.ttl_ms, client_operation_id: input.client_operation_id })
+        return Response.json({ ...created, draft: publicDraft(created.draft) }, { status: 201 })
+      }
+      if (draftId && !segments[4] && req.method === 'GET') return Response.json({ draft: await tasks.getComposerDraft(draftId) })
+      if (req.method !== 'POST' || !segments[4]) return methodNotAllowed(req.method)
+      const action = segments[4]
+      if (!['update', 'consume', 'expire'].includes(action)) throw ApiError.notFound('未知草稿操作')
+      const input = await readJson<{ expected_draft_revision?: unknown; client_operation_id?: unknown }>(req)
+      if (!assertPlainExactObject(input, ['expected_draft_revision', 'client_operation_id']) || !Number.isSafeInteger(input.expected_draft_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('draft revision 和 operation 必填')
+      return Response.json({ receipt: await tasks.mutateComposerDraft({ draft_id: draftId, expected_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, action: action as 'update' | 'consume' | 'expire' }) })
+    }
+
+    if (segments[2] === 'attachments') {
+      const attachmentId = segments[3]
+      if (!attachmentId) {
+        // Attachment verification and registration are an internal Module-07
+        // verifier capability. Renderer input can never assert verified hashes.
+        throw new ApiError(409, '附件登记当前不可用', 'OUT_OF_SCOPE_DISABLED')
+      }
+      const action = segments[4]
+      if (req.method !== 'POST' || !action || segments[5] || !['transition', 'bind'].includes(action)) return methodNotAllowed(req.method)
+      if (action === 'transition') {
+        const input = await readJson<{ expected_revision?: unknown; target_state?: unknown; client_operation_id?: unknown; error?: unknown }>(req)
+        if (!assertPlainExactObject(input, ['expected_revision', 'target_state', 'client_operation_id'], ['error']) || !Number.isSafeInteger(input.expected_revision) || !['inspecting', 'ready', 'failed', 'cancelled', 'discarded'].includes(input.target_state as string) || typeof input.client_operation_id !== 'string' || (input.error !== undefined && typeof input.error !== 'string')) throw ApiError.badRequest('attachment transition 参数无效')
+        return Response.json(await tasks.transitionAttachment({ attachment_id: attachmentId, expected_revision: input.expected_revision, target_state: input.target_state as 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded', client_operation_id: input.client_operation_id, ...(typeof input.error === 'string' ? { error: input.error } : {}) }))
+      }
+      const input = await readJson<{ expected_revision?: unknown; owner?: unknown; client_operation_id?: unknown }>(req)
+      const owner = input.owner as Record<string, unknown> | undefined
+      if (!exactKeys(input, ['expected_revision', 'owner', 'client_operation_id']) || !Number.isSafeInteger(input.expected_revision) || !owner || !exactKeys(owner, ['kind', 'id']) || (owner.kind !== 'composer_draft' && owner.kind !== 'product_task') || typeof owner.id !== 'string' || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('attachment bind 参数无效')
+      return Response.json(await tasks.bindAttachment(attachmentId, input.expected_revision, { kind: owner.kind, id: owner.id }, input.client_operation_id))
+    }
+
+    if (segments[2] === 'workspaces') {
+      const workspaceId = segments[3]
+      if (!workspaceId) {
+        if (req.method !== 'POST') return methodNotAllowed(req.method)
+        const input = await readJson<{ root?: unknown; expected_revision?: unknown; client_operation_id?: unknown }>(req)
+        if (!exactKeys(input, ['root', 'expected_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_revision) || (input.expected_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace operation 参数无效')
+        const result = await tasks.registerWorkspaceOperation({ root: input.root, expected_revision: input.expected_revision, client_operation_id: input.client_operation_id })
+        return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt }, { status: result.receipt.outcome === 'accepted' ? 201 : 200 })
+      }
+      if (segments[4] === 'inspect' && req.method === 'POST') return Response.json({ workspace: publicWorkspace(await tasks.inspectWorkspace(workspaceId)) })
+      if (segments[4] === 'relocate' && req.method === 'POST') {
+        const input = await readJson<{ root?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
+        if (!exactKeys(input, ['root', 'expected_workspace_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_workspace_revision) || (input.expected_workspace_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace relocate 参数无效')
+        const result = await tasks.relocateWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id })
+        return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt })
+      }
+      if (segments[4] === 'relink' && req.method === 'POST') {
+        const input = await readJson<{ root?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
+        if (!exactKeys(input, ['root', 'expected_workspace_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_workspace_revision) || (input.expected_workspace_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace relink 参数无效')
+        const result = await tasks.relinkWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id })
+        return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt })
+      }
+      throw ApiError.notFound('未知工作区资源')
+    }
+
     if (segments[2] !== 'tasks') {
       throw ApiError.notFound('未知产品资源')
     }
@@ -135,6 +239,19 @@ export async function handleProductApi(
     if (action === 'thread') {
       if (req.method !== 'GET') return methodNotAllowed(req.method)
       return Response.json(await tasks.getTaskThread(taskId))
+    }
+
+    if (action === 'lineage' && segments[5] === 'current' && !segments[6]) {
+      if (req.method === 'GET') {
+        const lineage = await tasks.getConversationLineageCurrent(taskId)
+        return Response.json({ lineage: lineage ? publicLineage(lineage) : null })
+      }
+      if (req.method === 'POST') {
+        const input = await readJson<{ lineage_id?: unknown; expected_task_revision?: unknown; expected_lineage_revision?: unknown; client_operation_id?: unknown }>(req)
+        if (!exactKeys(input, ['lineage_id', 'expected_task_revision', 'expected_lineage_revision', 'client_operation_id']) || typeof input.lineage_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || !Number.isSafeInteger(input.expected_lineage_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('lineage current 参数无效')
+        return Response.json({ receipt: await tasks.setConversationLineageCurrent({ task_id: taskId, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, client_operation_id: input.client_operation_id }) })
+      }
+      return methodNotAllowed(req.method)
     }
 
     if (action === 'review') {
@@ -201,6 +318,13 @@ export async function handleProductApi(
           ? `未知侧边任务操作：${sideTaskAction}`
           : `未知侧边任务资源：${sideTaskId}`,
       )
+    }
+
+    if (action === 'bind_workspace') {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<{ workspace_id?: unknown; expected_task_revision?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
+      if (!assertPlainExactObject(input, ['workspace_id', 'expected_task_revision', 'expected_workspace_revision', 'client_operation_id']) || typeof input.workspace_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || !Number.isSafeInteger(input.expected_workspace_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('workspace_id、双 revision 和 client_operation_id 必填')
+      return Response.json({ receipt: await tasks.bindTaskWorkspace({ task_id: taskId, workspace_id: input.workspace_id, expected_task_revision: input.expected_task_revision, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id }) })
     }
 
     if (!action) {
@@ -285,6 +409,29 @@ function requireReviewPath(url: URL): string {
   return filePath
 }
 
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+function isPlainValue(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+function hasDangerousKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasDangerousKey)
+  if (!value || typeof value !== 'object') return false
+  if (!isPlainValue(value)) return true
+  for (const key of Object.keys(value)) if (DANGEROUS_KEYS.has(key) || hasDangerousKey(value[key])) return true
+  return false
+}
+/** Exact plain-object contract gate for all BB-02B public mutations. */
+function assertPlainExactObject(value: unknown, required: readonly string[], optional: readonly string[] = []): value is Record<string, unknown> {
+  if (!isPlainValue(value) || hasDangerousKey(value)) return false
+  const keys = Object.keys(value)
+  return required.every(key => Object.hasOwn(value, key)) && keys.every(key => required.includes(key) || optional.includes(key))
+}
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return assertPlainExactObject(value, keys)
+}
+
 async function readJson<T>(req: Request): Promise<T> {
   try {
     return await req.json() as T
@@ -300,25 +447,64 @@ function methodNotAllowed(method: string): Response {
   )
 }
 
-function publicTask<T extends object>(task: T): T {
+function publicDraft(draft: Record<string, unknown>): PublicDraft {
+  return { draft_id: String(draft.draft_id), ...(typeof draft.workspace_id === 'string' ? { workspace_id: draft.workspace_id } : {}), target_task_id: String(draft.target_task_id), revision: Number(draft.revision), last_activity: String(draft.last_activity), state: String(draft.state), created_at: String(draft.created_at), expires_at: String(draft.expires_at) }
+}
+
+function publicLineage(lineage: Record<string, unknown>): PublicLineage {
+  const { lineage_id, product_task_id, parent_lineage_id, fork_checkpoint_id, head_entry_id, revision, compact_generation, state, created_at, updated_at } = lineage
+  return { ...(typeof lineage_id === 'string' ? { lineage_id } : {}), ...(typeof product_task_id === 'string' ? { product_task_id } : {}), ...(typeof parent_lineage_id === 'string' ? { parent_lineage_id } : {}), ...(typeof fork_checkpoint_id === 'string' ? { fork_checkpoint_id } : {}), ...(typeof head_entry_id === 'string' ? { head_entry_id } : {}), ...(typeof revision === 'number' ? { revision } : {}), ...(typeof compact_generation === 'number' ? { compact_generation } : {}), ...(typeof state === 'string' ? { state } : {}), ...(typeof created_at === 'string' ? { created_at } : {}), ...(typeof updated_at === 'string' ? { updated_at } : {}) }
+}
+
+function publicWorkspace(workspace: Record<string, unknown>): PublicWorkspace {
+  const { workspace_id, revision, availability, created_at, updated_at } = workspace
+  return { workspace_id: String(workspace_id), revision: Number(revision), availability: String(availability), created_at: String(created_at), updated_at: String(updated_at) }
+}
+
+type PublicProductTask = {
+  id?: string
+  revision?: number
+  task_scope?: unknown
+  workspace_capability?: unknown
+  current_lineage_id?: string
+  projectId?: string
+  directoryId?: string
+  title?: string
+  lifecycle?: string
+  kind?: string
+  pinnedAt?: string
+  archivedAt?: string
+  parentTaskId?: string
+  createdAt?: string
+  updatedAt?: string
+  worktreeState?: string
+  actions?: unknown
+}
+type PublicWorkspace = { workspace_id: string; revision: number; availability: string; created_at: string; updated_at: string }
+type PublicDraft = { draft_id: string; workspace_id?: string; target_task_id: string; revision: number; last_activity: string; state: string; created_at: string; expires_at: string }
+type PublicLineage = { lineage_id?: string; product_task_id?: string; parent_lineage_id?: string; fork_checkpoint_id?: string; head_entry_id?: string; revision?: number; compact_generation?: number; state?: string; created_at?: string; updated_at?: string }
+type PublicReceipt = { client_operation_id?: string; expected_revision?: number; outcome: string; revision: number; error?: string }
+type PublicOperationResponse = { receipt: PublicReceipt }
+type PublicAuthoritySnapshot = { revision: number; event_sequence?: number; tasks: PublicProductTask[]; side_tasks?: PublicProductTask[] }
+
+function publicTask(task: Record<string, unknown>): PublicProductTask {
   const {
     coreSessionId: _legacyCoreSessionId,
     sourceTurnId: _privateCoreSourceTurnId,
     parentThreadId: _legacyCoreParentThreadId,
+    workDir: _workDir,
+    binding: _binding,
+    resume_binding_id: _resumeBindingId,
     ...publicTask
-  } = task as T & {
-    coreSessionId?: unknown
-    sourceTurnId?: unknown
-    parentThreadId?: unknown
-  }
-  return publicTask as T
+  } = task
+  return publicTask
 }
 
-function publicAuthority<T extends { tasks: object[] }>(authority: T): T {
-  return { ...authority, tasks: authority.tasks.map(publicTask) }
+function publicAuthority(authority: { revision: number; event_sequence?: number; tasks: Record<string, unknown>[]; side_tasks?: Record<string, unknown>[] }): PublicAuthoritySnapshot {
+  return { ...authority, tasks: authority.tasks.map(publicTask), ...(authority.side_tasks ? { side_tasks: authority.side_tasks.map(publicTask) } : {}) }
 }
 
-function publicTaskIndex<T extends { tasks: object[] }>(index: T): T {
+function publicTaskIndex(index: { tasks: Record<string, unknown>[] } & Record<string, unknown>): Record<string, unknown> {
   return {
     ...index,
     tasks: index.tasks.map(publicTask),

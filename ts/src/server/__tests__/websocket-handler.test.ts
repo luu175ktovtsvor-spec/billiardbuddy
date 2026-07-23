@@ -386,7 +386,7 @@ describe('WebSocket handler product error projection', () => {
     expect(messages).toContainEqual({
       type: 'error',
       code: 'task_failed',
-      retryable: true,
+      retryable: false,
     })
     expect(JSON.stringify(messages)).not.toContain(privateError)
   })
@@ -883,16 +883,10 @@ describe('WebSocket handler product task inbound boundary', () => {
     }))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(sendMessage).toHaveBeenCalledWith(
-      productSessionId,
-      '/goal 整理本周球房活动安排',
-      [{
-        type: 'image',
-        name: 'table.png',
-        mimeType: 'image/png',
-        data: 'data:image/png;base64,aGVsbG8=',
-      }],
-    )
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(productWs.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: 'error', code: 'task_failed', retryable: false,
+    })
 
     productWs.sent.length = 0
     spyOn(conversationService, 'hasSession').mockReturnValue(false)
@@ -923,7 +917,6 @@ describe('WebSocket handler product task inbound boundary', () => {
         code: 'task_failed',
         retryable: false,
       },
-      { type: 'status', state: 'idle' },
     ])
     expect(JSON.stringify(events)).not.toContain(privateCommand)
     expect(JSON.stringify(events)).not.toContain('private-provider')
@@ -941,11 +934,10 @@ describe('WebSocket handler product task inbound boundary', () => {
     }))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(sendUserMessage).toHaveBeenCalledWith(
-      ws.data.sessionId,
-      '整理今天球房的营业数据，并列出待确认问题',
-      undefined,
-    )
+    expect(sendUserMessage).not.toHaveBeenCalled()
+    expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: 'error', code: 'task_failed', retryable: false,
+    })
   })
 })
 

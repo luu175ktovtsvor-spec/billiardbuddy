@@ -21,6 +21,10 @@ export type PreparedIntent = {
   kind: 'create' | 'branch' | 'close' | 'rename' | 'metadata'
   canonical_input: string
   expected_revision: number
+  /** Entity CAS for task-targeting operations; root revision remains a write fence only. */
+  expected_task_revision?: number
+  /** Source task owning entity CAS when product_task_id names a newly created branch/side entity. */
+  expected_task_id?: string
 }
 
 type OutboxRecord = {
@@ -28,8 +32,22 @@ type OutboxRecord = {
   error?: string
 }
 
+export type WorkspaceRootIdentity = { platform: string; volume_id: string; file_id: string }
+export type WorkspaceRecord = {
+  workspace_id: string
+  installation_id: string
+  canonical_root: string
+  root_identity: WorkspaceRootIdentity
+  revision: number
+  availability: 'available' | 'missing' | 'read_only' | 'identity_changed' | 'relink_required'
+  created_at: string
+  updated_at: string
+}
+
 export type AuthorityFile = {
   version: 1
+  /** v1 files predate the additive workspace capability maps. */
+  authority_schema_revision: 1 | 2
   revision: number
   event_sequence: number
   tasks: Record<string, unknown>
@@ -42,6 +60,9 @@ export type AuthorityFile = {
     kind: string
     revision: number
     canonical_input?: string
+    entity_id?: string
+    participant_receipts?: unknown
+    blocker_error?: unknown
   }>
   outbox: Record<string, OutboxRecord>
   prepared: Record<string, PreparedIntent>
@@ -50,6 +71,11 @@ export type AuthorityFile = {
     store_digest: string
     record_digest: string
   }>
+  workspaces: Record<string, WorkspaceRecord>
+  task_scopes: Record<string, unknown>
+  composer_drafts: Record<string, unknown>
+  task_attachments: Record<string, unknown>
+  conversation_lineages: Record<string, unknown>
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -65,6 +91,7 @@ function map(value: unknown): Record<string, unknown> {
 function empty(): AuthorityFile {
   return {
     version: 1,
+    authority_schema_revision: 2,
     revision: 0,
     event_sequence: 0,
     tasks: Object.create(null),
@@ -75,6 +102,11 @@ function empty(): AuthorityFile {
     outbox: Object.create(null),
     prepared: Object.create(null),
     provenance: Object.create(null),
+    workspaces: Object.create(null),
+    task_scopes: Object.create(null),
+    composer_drafts: Object.create(null),
+    task_attachments: Object.create(null),
+    conversation_lineages: Object.create(null),
   }
 }
 
@@ -96,7 +128,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[], opti
 function requiredString(value: unknown): value is string { return typeof value === 'string' && value.length > 0 }
 function taskRecord(value: unknown): void {
   const task = object(value)
-  exactKeys(task, ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState', 'actions'], ['pinnedAt', 'archivedAt', 'parentTaskId', 'coreSessionId'])
+  exactKeys(task, ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState', 'actions'], ['pinnedAt', 'archivedAt', 'parentTaskId', 'coreSessionId', 'revision', 'task_scope', 'current_lineage_id'])
   for (const key of ['id', 'createdAt', 'updatedAt', 'worktreeState']) if (!requiredString(task[key])) invalid()
   if (typeof task.projectId !== 'string' || typeof task.directoryId !== 'string' || typeof task.workDir !== 'string') invalid()
   if (typeof task.title !== 'string') invalid()
@@ -104,6 +136,9 @@ function taskRecord(value: unknown): void {
   for (const key of ['pinnedAt', 'archivedAt'] as const) if (task[key] !== undefined && !isTimestamp(task[key])) invalid()
   if (task.parentTaskId !== undefined && !requiredString(task.parentTaskId)) invalid()
   if (task.coreSessionId !== undefined && !requiredString(task.coreSessionId)) invalid()
+  if (task.revision !== undefined && (!Number.isSafeInteger(task.revision) || (task.revision as number) < 0)) invalid()
+  if (task.task_scope !== undefined && typeof task.task_scope !== 'string') invalid()
+  if (task.current_lineage_id !== undefined && !requiredString(task.current_lineage_id)) invalid()
 }
 function bindingRecord(value: unknown): void {
   const binding = object(value)
@@ -124,31 +159,72 @@ function sideValue(value: unknown, key: string): void {
   if (side.id !== key || !requiredString(side.parentTaskId) || !requiredString(side.taskId) || typeof side.title !== 'string' || !['open', 'closed'].includes(side.status as string) || !isTimestamp(side.createdAt) || !isTimestamp(side.updatedAt) || (side.closedAt !== undefined && !isTimestamp(side.closedAt))) invalid()
 }
 
+function validateParticipantReceipts(value: unknown): void {
+  if (!Array.isArray(value) || value.length !== 5) invalid()
+  const expected = ['active_core_run', 'queue', 'pty', 'preview', 'workspace_write']
+  for (let i = 0; i < expected.length; i++) { const receipt = object(value[i]); if (receipt.participant !== expected[i]) invalid(); if (expected[i] === 'active_core_run') { exactKeys(receipt, ['participant', 'status'], ['code']); if ((receipt.status !== 'CLEAR' && receipt.status !== 'BLOCKED') || (receipt.status === 'BLOCKED' && receipt.code !== 'ACTIVE_RUN') || (receipt.status === 'CLEAR' && receipt.code !== undefined)) invalid() } else { exactKeys(receipt, ['participant', 'status', 'owner_module']); if (receipt.status !== 'OUT_OF_SCOPE_DISABLED' || receipt.owner_module !== 'BB-02C') invalid() } }
+}
+
 function validateReceipt(value: unknown, key: string): void {
   const receipt = object(value)
   exactKeys(receipt, ['client_operation_id', 'expected_revision', 'outcome', 'revision'], ['result', 'error'])
   if (receipt.client_operation_id !== key || !Number.isSafeInteger(receipt.expected_revision) || (receipt.expected_revision as number) < 0 || !Number.isSafeInteger(receipt.revision) || (receipt.revision as number) < 0 || !['accepted', 'duplicate', 'conflict', 'rejected'].includes(receipt.outcome as string)) invalid()
   if (receipt.error !== undefined && !['AUTHORITY_INVALID', 'AUTHORITY_CONFLICT', 'LEGACY_SOURCE_CHANGED', 'OPERATION_REJECTED'].includes(receipt.error as string)) invalid()
-  if (receipt.result !== undefined) { const result = object(receipt.result); if (receipt.outcome === 'accepted') { if ('status' in result) sideValue(result, result.id as string); else taskRecord(result) } else exactKeys(result, []) }
+  if (receipt.result !== undefined) { const result = object(receipt.result); if ('participant_receipts' in result) { exactKeys(result, ['participant_receipts'], ['blocker_error']); validateParticipantReceipts(result.participant_receipts); if (result.blocker_error !== undefined && !['ACTIVE_RUN', 'QUEUE', 'PTY', 'PREVIEW', 'WORKSPACE_WRITE', 'BLOCKER_UNKNOWN', 'BLOCKER_UNAVAILABLE'].includes(result.blocker_error as string)) invalid() } else if ('entity_id' in result) { exactKeys(result, ['entity_id']); if (!requiredString(result.entity_id)) invalid() } else if (receipt.outcome === 'accepted') { if ('status' in result) sideValue(result, result.id as string); else taskRecord(result) } else exactKeys(result, []) }
 }
 
 function validateIntent(value: unknown, key: string): void {
   const intent = object(value)
-  exactKeys(intent, ['client_operation_id', 'product_task_id', 'kind', 'canonical_input', 'expected_revision'])
-  if (intent.client_operation_id !== key || typeof intent.product_task_id !== 'string' || !intent.product_task_id || typeof intent.canonical_input !== 'string' || !['create', 'branch', 'close', 'rename', 'metadata'].includes(intent.kind as string) || !Number.isSafeInteger(intent.expected_revision) || (intent.expected_revision as number) < 0) invalid()
+  exactKeys(intent, ['client_operation_id', 'product_task_id', 'kind', 'canonical_input', 'expected_revision'], ['expected_task_revision', 'expected_task_id'])
+  if (intent.client_operation_id !== key || typeof intent.product_task_id !== 'string' || !intent.product_task_id || typeof intent.canonical_input !== 'string' || !['create', 'branch', 'close', 'rename', 'metadata'].includes(intent.kind as string) || !Number.isSafeInteger(intent.expected_revision) || (intent.expected_revision as number) < 0 || (intent.expected_task_revision !== undefined && (!Number.isSafeInteger(intent.expected_task_revision) || (intent.expected_task_revision as number) < 0)) || (intent.expected_task_id !== undefined && !requiredString(intent.expected_task_id))) invalid()
   assertAuthorityMapKey(intent.product_task_id)
+}
+
+function validateWorkspace(value: unknown, key: string): void {
+  const workspace = object(value)
+  exactKeys(workspace, ['workspace_id', 'installation_id', 'canonical_root', 'root_identity', 'revision', 'availability', 'created_at', 'updated_at'])
+  const identity = object(workspace.root_identity)
+  exactKeys(identity, ['platform', 'volume_id', 'file_id'])
+  if (workspace.workspace_id !== key || !requiredString(workspace.installation_id) || !requiredString(workspace.canonical_root)
+    || !requiredString(identity.platform) || !requiredString(identity.volume_id) || !requiredString(identity.file_id)
+    || !Number.isSafeInteger(workspace.revision) || (workspace.revision as number) < 0
+    || !isTimestamp(workspace.created_at) || !isTimestamp(workspace.updated_at)
+    || !['available', 'missing', 'read_only', 'identity_changed', 'relink_required'].includes(workspace.availability as string)) invalid()
+}
+
+function validateDraft(value: unknown, key: string): void {
+  const draft = object(value); exactKeys(draft, ['draft_id', 'installation_id', 'target_task_id', 'revision', 'last_activity', 'state', 'created_at', 'expires_at'], ['workspace_id'])
+  if (draft.draft_id !== key || !requiredString(draft.installation_id) || !requiredString(draft.target_task_id) || !Number.isSafeInteger(draft.revision) || (draft.revision as number) < 0 || !['active', 'consumed', 'expired'].includes(draft.state as string) || !isTimestamp(draft.last_activity) || !isTimestamp(draft.created_at) || !isTimestamp(draft.expires_at) || (draft.workspace_id !== undefined && !requiredString(draft.workspace_id))) invalid()
+}
+function validateAttachment(value: unknown, key: string): void {
+  const attachment = object(value); exactKeys(attachment, ['attachment_id', 'installation_id', 'owner_kind', 'owner_id', 'source_fingerprint', 'content_hash', 'verified_media_type', 'storage_kind', 'byte_size', 'state', 'refs', 'created_at', 'last_activity', 'expires_at', 'revision'])
+  if (attachment.attachment_id !== key || !requiredString(attachment.installation_id) || !['composer_draft', 'product_task'].includes(attachment.owner_kind as string) || !requiredString(attachment.owner_id) || !/^[a-f0-9]{64}$/.test(attachment.source_fingerprint as string) || !/^[a-f0-9]{64}$/.test(attachment.content_hash as string) || !requiredString(attachment.verified_media_type) || !['external_reference', 'app_owned_copy'].includes(attachment.storage_kind as string) || !Number.isSafeInteger(attachment.byte_size) || (attachment.byte_size as number) < 0 || !['staged', 'inspecting', 'ready', 'accepted_bound', 'failed', 'cancelled', 'discarded'].includes(attachment.state as string) || !Array.isArray(attachment.refs) || attachment.refs.some(ref => !requiredString(ref)) || !isTimestamp(attachment.created_at) || !isTimestamp(attachment.last_activity) || !isTimestamp(attachment.expires_at) || !Number.isSafeInteger(attachment.revision) || (attachment.revision as number) < 0) invalid()
+}
+
+function validateLineage(value: unknown, key: string): void {
+  const lineage = object(value); exactKeys(lineage, ['lineage_id', 'product_task_id', 'revision', 'compact_generation', 'resume_binding_id', 'state', 'created_at', 'updated_at'], ['parent_lineage_id', 'fork_checkpoint_id', 'head_entry_id'])
+  if (lineage.lineage_id !== key || !requiredString(lineage.product_task_id) || !Number.isSafeInteger(lineage.revision) || (lineage.revision as number) < 0 || !Number.isSafeInteger(lineage.compact_generation) || (lineage.compact_generation as number) < 0 || !requiredString(lineage.resume_binding_id) || !['active', 'parked', 'recovery_required'].includes(lineage.state as string) || !isTimestamp(lineage.created_at) || !isTimestamp(lineage.updated_at) || (lineage.parent_lineage_id !== undefined && !requiredString(lineage.parent_lineage_id)) || (lineage.fork_checkpoint_id !== undefined && !requiredString(lineage.fork_checkpoint_id)) || (lineage.head_entry_id !== undefined && !requiredString(lineage.head_entry_id))) invalid()
 }
 
 function validate(file: AuthorityFile): AuthorityFile {
   if (file.version !== 1 || !Number.isSafeInteger(file.revision) || file.revision < 0 || !Number.isSafeInteger(file.event_sequence) || file.event_sequence < 0) invalid()
+  if (file.authority_schema_revision !== 1 && file.authority_schema_revision !== 2) throw new Error('UNSUPPORTED_SCHEMA')
   const maps = ['tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'] as const
   for (const name of maps) map(file[name])
+  if (file.authority_schema_revision === 2) {
+    for (const name of ['workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages'] as const) map(file[name])
+    for (const [key, value] of Object.entries(file.workspaces)) { assertAuthorityMapKey(key); validateWorkspace(value, key) }
+    for (const [key, value] of Object.entries(file.task_scopes)) { const scope = object(value); assertAuthorityMapKey(key); if (scope.kind === 'installation-default') exactKeys(scope, ['kind']); else { exactKeys(scope, ['kind', 'workspace_id', 'generation']); if (scope.kind !== 'workspace' || !requiredString(scope.workspace_id) || !Number.isSafeInteger(scope.generation) || (scope.generation as number) < 0) invalid() } }
+    for (const [key, value] of Object.entries(file.composer_drafts)) { assertAuthorityMapKey(key); validateDraft(value, key) }
+    for (const [key, value] of Object.entries(file.task_attachments)) { assertAuthorityMapKey(key); validateAttachment(value, key) }
+    for (const [key, value] of Object.entries(file.conversation_lineages)) { assertAuthorityMapKey(key); validateLineage(value, key) }
+  }
   for (const [key, value] of Object.entries(file.tasks)) { assertAuthorityMapKey(key); taskValue(value) }
   for (const [key, value] of Object.entries(file.side_tasks)) { assertAuthorityMapKey(key); sideValue(value, key) }
   for (const [key, value] of Object.entries(file.bindings)) { assertAuthorityMapKey(key); const record = object(value); if ('coreSessionId' in record) bindingRecord(record); else taskValue(record) }
   for (const [key, value] of Object.entries(file.receipts)) validateReceipt(value, key)
   for (const [key, value] of Object.entries(file.prepared)) validateIntent(value, key)
-  for (const [key, value] of Object.entries(file.events)) { const event = object(value); exactKeys(event, ['event_sequence', 'client_operation_id', 'kind', 'revision'], ['canonical_input']); if (event.client_operation_id !== key || !Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || !Number.isSafeInteger(event.revision) || (event.revision as number) < 0 || typeof event.kind !== 'string' || !event.kind || (event.canonical_input !== undefined && typeof event.canonical_input !== 'string')) invalid() }
+  for (const [key, value] of Object.entries(file.events)) { const event = object(value); exactKeys(event, ['event_sequence', 'client_operation_id', 'kind', 'revision'], ['canonical_input', 'entity_id', 'participant_receipts', 'blocker_error']); if (event.client_operation_id !== key || !Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || !Number.isSafeInteger(event.revision) || (event.revision as number) < 0 || typeof event.kind !== 'string' || !event.kind || (event.canonical_input !== undefined && typeof event.canonical_input !== 'string') || (event.entity_id !== undefined && !requiredString(event.entity_id)) || (event.participant_receipts !== undefined && (() => { try { validateParticipantReceipts(event.participant_receipts); return false } catch { return true } })()) || (event.blocker_error !== undefined && !['ACTIVE_RUN', 'QUEUE', 'PTY', 'PREVIEW', 'WORKSPACE_WRITE', 'BLOCKER_UNKNOWN', 'BLOCKER_UNAVAILABLE'].includes(event.blocker_error as string))) invalid() }
   for (const [key, value] of Object.entries(file.outbox)) { const outbox = object(value); exactKeys(outbox, ['state'], ['error']); if (!['pending', 'reconciled', 'failed'].includes(outbox.state as string) || (outbox.error !== undefined && typeof outbox.error !== 'string')) invalid(); assertAuthorityMapKey(key) }
   for (const [key, value] of Object.entries(file.provenance)) { const provenance = object(value); exactKeys(provenance, ['version', 'store_digest', 'record_digest']); if (![1, 3, 4].includes(provenance.version as number) || !/^[a-f0-9]{64}$/.test(provenance.store_digest as string) || !/^[a-f0-9]{64}$/.test(provenance.record_digest as string)) invalid(); assertAuthorityMapKey(key) }
   return file
@@ -189,12 +265,44 @@ export class ProductTaskAuthorityRepository {
     try {
       const parsed = JSON.parse(await fs.readFile(this.authorityPath, 'utf8')) as Partial<AuthorityFile>
       const root = object(parsed)
-      exactKeys(root, ['version', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'])
+      const revision = root.authority_schema_revision
+      if (revision !== undefined && revision !== 1 && revision !== 2) throw new Error('UNSUPPORTED_SCHEMA')
+      if (revision === 2) {
+        exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages'])
+      } else {
+        exactKeys(root, ['version', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'], ['authority_schema_revision'])
+        // Capability-reader projection only: never write this shape on reads.
+        Object.assign(root, {
+          authority_schema_revision: 1,
+          workspaces: Object.create(null), task_scopes: Object.create(null), composer_drafts: Object.create(null),
+          task_attachments: Object.create(null), conversation_lineages: Object.create(null),
+        })
+      }
       return validate(root as AuthorityFile)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return empty()
       throw error
     }
+  }
+
+  /** BB-02B capability transaction. Root revision fences disk writes only. */
+  async mutateCapabilities<T>(mutate: (file: AuthorityFile) => T): Promise<{ file: AuthorityFile; result: T }> {
+    return this.lock(async () => {
+      const file = await this.read()
+      const result = mutate(file)
+      file.revision += 1
+      return { file: await this.write(file, true), result }
+    })
+  }
+
+  /** Runs capability identity lookup and mutation under one cross-process lease. */
+  async transactCapabilities<T>(mutate: (file: AuthorityFile) => T | { changed: false; value: T }): Promise<{ file: AuthorityFile; result: T }> {
+    return this.lock(async () => { const file = await this.read(); const raw = mutate(file); if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }; file.revision += 1; return { file: await this.write(file, true), result: raw as T } })
+  }
+
+  /** Capability transaction that keeps the cross-process authority lease while awaiting inspection. */
+  async transactCapabilitiesAsync<T>(mutate: (file: AuthorityFile) => Promise<T | { changed: false; value: T }>): Promise<{ file: AuthorityFile; result: T }> {
+    return this.lock(async () => { const file = await this.read(); const raw = await mutate(file); if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }; file.revision += 1; return { file: await this.write(file, true), result: raw as T } })
   }
 
   async compareAndWrite(expected: number, mutate: (file: AuthorityFile) => void): Promise<AuthorityFile> {
@@ -226,7 +334,12 @@ export class ProductTaskAuthorityRepository {
         }
         return { file, duplicate: true }
       }
-      if (file.revision !== intent.expected_revision) throw new Error('AUTHORITY_CONFLICT')
+      if (intent.expected_task_revision !== undefined) {
+        const entityTaskId = intent.expected_task_id ?? intent.product_task_id
+        const stored = file.tasks[entityTaskId] as { task?: { revision?: unknown } } | undefined
+        const taskRevision = typeof stored?.task?.revision === 'number' ? stored.task.revision : 0
+        if (taskRevision !== intent.expected_task_revision) throw new Error('AUTHORITY_CONFLICT')
+      } else if (file.revision !== intent.expected_revision) throw new Error('AUTHORITY_CONFLICT')
       file.prepared[intent.client_operation_id] = intent
       file.revision += 1
       return { file: await this.write(file), duplicate: false }
@@ -317,13 +430,22 @@ export class ProductTaskAuthorityRepository {
     })
   }
 
-  private async write(file: AuthorityFile): Promise<AuthorityFile> {
-    validate(file)
+  private async write(file: AuthorityFile, upgradeToCapabilities = false): Promise<AuthorityFile> {
+    // Rev1 remains byte-compatible for legacy/BB-02A-only writes. Only a real
+    // BB-02B entity transaction may persist the additive capability maps.
+    const output: AuthorityFile | Record<string, unknown> = file.authority_schema_revision === 1 && !upgradeToCapabilities
+      ? (() => {
+          const { authority_schema_revision: _revision, workspaces: _workspaces, task_scopes: _scopes, composer_drafts: _drafts, task_attachments: _attachments, conversation_lineages: _lineages, ...legacy } = file
+          return legacy
+        })()
+      : file
+    if (upgradeToCapabilities && file.authority_schema_revision === 1) file.authority_schema_revision = 2
+    if (file.authority_schema_revision === 2) validate(file)
     await fs.mkdir(path.dirname(this.authorityPath), { recursive: true })
     const temporaryPath = `${this.authorityPath}.${process.pid}.${randomUUID()}.tmp`
     const handle = await fs.open(temporaryPath, 'wx', 0o600)
     try {
-      await handle.writeFile(`${JSON.stringify(file)}\n`, 'utf8')
+      await handle.writeFile(`${JSON.stringify(output)}\n`, 'utf8')
       await handle.sync()
     } finally { await handle.close() }
     await fs.rename(temporaryPath, this.authorityPath)

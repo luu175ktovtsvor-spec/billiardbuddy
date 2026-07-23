@@ -29,6 +29,9 @@ import { projectProductTaskUserContent } from '../product/taskAttachmentProjecti
 import {
   ProductTaskAgentCoreAdapter,
 } from '../product/taskAgentCoreAdapter.js'
+import { productTaskService } from '../product/taskService.js'
+import { sessionAdmissionBarrier } from '../product/sessionAdmissionBarrier.js'
+import { activeCoreRunRegistry } from '../product/activeCoreRunRegistry.js'
 import {
   buildConversationTitleInput,
   deriveTitle,
@@ -235,7 +238,7 @@ const productTaskAgentCoreAdapter = new ProductTaskAgentCoreAdapter({
   ),
   isDesktopClearCommand,
   createSafeError: toSafeRuntimeError,
-})
+}, undefined, productTaskService)
 
 export const handleWebSocket = {
   open(ws: ServerWebSocket<WebSocketData>) {
@@ -374,6 +377,16 @@ async function handleUserMessage(
   ws: ServerWebSocket<WebSocketData>,
   message: CoreUserMessage,
 ) {
+  return sessionAdmissionBarrier.withRunStart(
+    ws.data.sessionId,
+    () => handleUserMessageAdmitted(ws, message),
+  )
+}
+
+async function handleUserMessageAdmitted(
+  ws: ServerWebSocket<WebSocketData>,
+  message: CoreUserMessage,
+) {
   const { sessionId } = ws.data
 
   // Clear any stale stop flag from a previous turn
@@ -399,7 +412,7 @@ async function handleUserMessage(
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
 
   const activeTurn: ActiveUserTurnState = { messageSent: false }
-  activeUserTurns.set(sessionId, activeTurn)
+  setActiveUserTurn(sessionId, activeTurn)
 
   // Track and emit the first placeholder title before CLI startup/streaming.
   let titleState = sessionTitleState.get(sessionId)
@@ -489,9 +502,18 @@ async function handleUserMessage(
   activeTurn.messageSent = true
 }
 
+function setActiveUserTurn(sessionId: string, activeTurn: ActiveUserTurnState): void {
+  // The map models one generic Core turn per session. Replacement must not
+  // leak a registry reference for the overwritten turn.
+  if (activeUserTurns.has(sessionId)) activeCoreRunRegistry.markInactive(sessionId)
+  activeUserTurns.set(sessionId, activeTurn)
+  activeCoreRunRegistry.markActive(sessionId)
+}
+
 function clearActiveUserTurn(sessionId: string, activeTurn: ActiveUserTurnState): void {
   if (activeUserTurns.get(sessionId) === activeTurn) {
     activeUserTurns.delete(sessionId)
+    activeCoreRunRegistry.markInactive(sessionId)
   }
 }
 
@@ -925,7 +947,8 @@ function cleanupSessionRuntimeState(sessionId: string) {
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
-  activeUserTurns.delete(sessionId)
+  const activeTurn = activeUserTurns.get(sessionId)
+  if (activeTurn) clearActiveUserTurn(sessionId, activeTurn)
   sessionStartupPromises.delete(sessionId)
 }
 
@@ -2326,5 +2349,5 @@ export function __resetWebSocketHandlerStateForTests(): void {
 
 /** Test hook: mark a session as mid-turn so disconnect keeps the CLI alive. */
 export function __markActiveTurnForTests(sessionId: string): void {
-  activeUserTurns.set(sessionId, { messageSent: true })
+  setActiveUserTurn(sessionId, { messageSent: true })
 }

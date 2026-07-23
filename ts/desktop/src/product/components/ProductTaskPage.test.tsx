@@ -1,3 +1,4 @@
+import '@testing-library/jest-dom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
       updatedAt: '2026-07-19T00:00:00.000Z',
       worktreeState: 'not_requested',
       actions: ['pin', 'archive'],
+      workspace_capability: { scope: { kind: 'workspace', workspace_id: 'workspace-1', generation: 1 }, workspace_revision: 1, availability: 'available', available: true },
     }],
     total: 1,
     capabilities: { createTask: true },
@@ -222,6 +224,7 @@ beforeEach(() => {
       updatedAt: '2026-07-19T00:00:00.000Z',
       worktreeState: 'not_requested',
       actions: ['pin', 'archive'],
+      workspace_capability: { scope: { kind: 'workspace', workspace_id: 'workspace-1', generation: 1 }, workspace_revision: 1, availability: 'available', available: true },
     }],
     total: 1,
     capabilities: { createTask: true },
@@ -450,24 +453,16 @@ describe('ProductTaskPage', () => {
     }])
   })
 
-  it('keeps a native Browser capture as a pending narrow attachment until the user sends it', () => {
+  it('keeps Browser capture unavailable while native transport is disabled', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-    fireEvent.click(screen.getByRole('button', { name: '模拟原生截图' }))
+    const browser = screen.getByRole('button', { name: '浏览器' })
+    expect(browser).toBeDisabled()
+    fireEvent.click(browser)
 
-    expect(screen.getByText('浏览器截图.png')).toBeTruthy()
-    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
+    expect(screen.queryByRole('button', { name: '模拟原生截图' })).toBeNull()
     expect(mocks.sendMessage).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: '发送' }))
-
-    expect(mocks.sendMessage).toHaveBeenCalledWith('task-1', '', [{
-      type: 'image',
-      name: '浏览器截图.png',
-      mimeType: 'image/png',
-      data: 'data:image/png;base64,TkFUSVZF',
-    }])
   })
 
   it('submits only a narrow allow or deny response for an action approval', () => {
@@ -609,18 +604,17 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByRole('button', { name: '创建侧边任务' })).toBeNull()
   })
 
-  it('uses task actions and closes the task-scoped terminal dock', () => {
+  it('keeps task actions available but disables native terminal opening', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '置顶' }))
     fireEvent.click(screen.getByRole('button', { name: '归档' }))
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
+    const terminal = screen.getByRole('button', { name: '终端' })
 
     expect(mocks.pinTask).toHaveBeenCalledWith('task-1')
     expect(mocks.archiveTask).toHaveBeenCalledWith('task-1')
-    expect(screen.getByTestId('product-task-terminal-runtime').textContent).toContain('/workspace/billiard')
-
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(terminal).toBeDisabled()
+    fireEvent.click(terminal)
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
@@ -673,145 +667,82 @@ describe('ProductTaskPage', () => {
     expect(mocks.unpinTask).not.toHaveBeenCalled()
   })
 
-  it('keeps a right-side review panel open while opening a task-scoped terminal', () => {
+  it('keeps the available Review panel usable while terminal remains disabled', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '审阅' }))
-    expect(screen.getByTestId('product-task-dock-rail')).toBeTruthy()
     expect(screen.getByTestId('product-task-review-dock').textContent).toContain('review:task-1')
 
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
-
-    expect(screen.getByTestId('product-task-review-dock').textContent).toContain('review:task-1')
-    const terminalDock = screen.getByTestId('product-task-terminal-dock')
-    expect(terminalDock.parentElement).toBe(screen.getByTestId('product-task-page'))
-    expect(screen.getByTestId('product-task-terminal-runtime').textContent).toContain('/workspace/billiard')
-  })
-
-  it('switches Browser and Preview in the right area without hiding the terminal', () => {
-    render(<ProductTaskPage taskId="task-1" />)
-
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
-    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
-    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(false)
-    expect(screen.getByTestId('product-task-dock-panel-browser-preview').getAttribute('data-active')).toBe('true')
-    expect(screen.getByRole('button', { name: '浏览器' }).getAttribute('aria-pressed')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: '预览' }))
-
-    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
-      browserOpen: true,
-      previewOpen: true,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'preview',
-    })
-    expect(screen.getByRole('button', { name: '预览' }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByTestId('product-task-terminal-dock').getAttribute('data-active')).toBe('true')
-    expect(screen.getByTestId('product-task-terminal-dock').classList.contains('hidden')).toBe(false)
-  })
-
-  it('closes each panel axis without closing the other one', () => {
-    render(<ProductTaskPage taskId="task-1" />)
-
-    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
-
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    const terminal = screen.getByRole('button', { name: '终端' })
+    expect(terminal).toBeDisabled()
+    fireEvent.click(terminal)
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
-    expect(screen.getByTestId('product-task-dock-panel-review').getAttribute('data-active')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: '终端' }))
-    fireEvent.click(screen.getByRole('button', { name: '关闭审阅' }))
-    expect(screen.queryByTestId('product-task-dock-panel-review')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
+    expect(screen.getByTestId('product-task-review-dock')).toBeTruthy()
   })
 
-  it('toggles each task panel from its matching header control without affecting other panel axes', () => {
+  it('does not open Browser or Preview through disabled header controls', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    const browser = screen.getByRole('button', { name: '浏览器' })
+    const preview = screen.getByRole('button', { name: '预览' })
+    expect(browser).toBeDisabled()
+    expect(preview).toBeDisabled()
+    fireEvent.click(browser)
+    fireEvent.click(preview)
+
+    expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
+    expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
+  })
+
+  it('closes the available review axis without creating a disabled terminal dock', () => {
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '审阅' }))
+    fireEvent.click(screen.getByRole('button', { name: '关闭审阅' }))
+
+    expect(screen.queryByTestId('product-task-dock-panel-review')).toBeNull()
+    expect(screen.getByRole('button', { name: '终端' })).toBeDisabled()
+    expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
+  })
+
+  it('toggles only available review and media panels from header controls', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     const review = screen.getByRole('button', { name: '审阅' })
     const media = screen.getByRole('button', { name: '媒体' })
-    const browser = screen.getByRole('button', { name: '浏览器' })
-    const terminal = screen.getByRole('button', { name: '终端' })
+    expect(screen.getByRole('button', { name: '浏览器' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '预览' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '终端' })).toBeDisabled()
 
     fireEvent.click(review)
-    fireEvent.click(terminal)
-    expect(review.getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-
+    expect(review).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(review)
-    expect(review.getAttribute('aria-pressed')).toBe('false')
-    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-
+    expect(review).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(media)
-    expect(media.getAttribute('aria-pressed')).toBe('true')
+    expect(media).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(media)
-    expect(media.getAttribute('aria-pressed')).toBe('false')
-    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-
-    fireEvent.click(browser)
-    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
-      browserOpen: true,
-      previewOpen: false,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'browser',
-    })
-    fireEvent.click(browser)
+    expect(media).toHaveAttribute('aria-pressed', 'false')
     expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
       browserOpen: false,
       previewOpen: false,
-      activePanel: null,
-      activeBrowserPreviewMode: null,
+      terminalOpen: false,
     })
-    expect(screen.queryByTestId('product-task-dock-rail')).toBeNull()
-    expect(screen.getByTestId('product-task-terminal-dock')).toBeTruthy()
-
-    fireEvent.click(terminal)
-    expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
-  it('opens Browser and Preview only through the product task scoped panel store', () => {
+  it('does not mount disabled native docks from header clicks or keyboard activation', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器' }))
-    expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({
-      'task-1': {
-        reviewOpen: false,
-        mediaOpen: false,
-        browserOpen: true,
-        previewOpen: false,
-        terminalOpen: false,
-        activePanel: 'browser-preview',
-        activeBrowserPreviewMode: 'browser',
-      },
-    })
-    expect(screen.getByTestId('product-task-browser-preview-dock')).toBeTruthy()
+    for (const name of ['浏览器', '预览', '终端']) {
+      const control = screen.getByRole('button', { name })
+      expect(control).toBeDisabled()
+      fireEvent.click(control)
+      fireEvent.keyDown(control, { key: 'Enter' })
+      fireEvent.keyDown(control, { key: ' ' })
+    }
 
-    fireEvent.click(screen.getByRole('button', { name: '预览' }))
-    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toEqual({
-      reviewOpen: false,
-      mediaOpen: false,
-      browserOpen: true,
-      previewOpen: true,
-      terminalOpen: false,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'preview',
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }))
-    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toEqual({
-      reviewOpen: false,
-      mediaOpen: false,
-      browserOpen: true,
-      previewOpen: false,
-      terminalOpen: false,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'browser',
-    })
+    expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
+    expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
+    expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
   it('uses a real stop action only while the task is running', () => {

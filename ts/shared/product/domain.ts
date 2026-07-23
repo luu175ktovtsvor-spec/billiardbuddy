@@ -73,8 +73,36 @@ export type ProductRecentProjectList = {
   projects: ProductRecentProject[]
 }
 
+export type ProductWorkspaceAvailability = 'available' | 'missing' | 'read_only' | 'identity_changed' | 'relink_required'
+export type ProductWorkspaceRootIdentity = { platform: string; volume_id: string; file_id: string }
+export type ProductTaskScope = { kind: 'installation-default' } | { kind: 'workspace'; workspace_id: string; generation: number }
+/** Public, path-free workspace state used solely for renderer affordances. */
+export type ProductTaskWorkspaceCapability = {
+  scope: ProductTaskScope
+  workspace_revision?: number
+  availability?: ProductWorkspaceAvailability
+  available: boolean
+}
+export type ProductWorkspace = {
+  workspace_id: string
+  installation_id: string
+  /** Server-only: bind callers never supply or need this path. */
+  canonical_root: string
+  root_identity: ProductWorkspaceRootIdentity
+  revision: number
+  availability: ProductWorkspaceAvailability
+  created_at: string
+  updated_at: string
+}
+
 export type ProductTask = {
   id: string
+  /** Entity CAS revision; never the repository authority revision. */
+  revision?: number
+  task_scope?: ProductTaskScope
+  /** Public capability projection: never contains canonical roots or cwd. */
+  workspace_capability?: ProductTaskWorkspaceCapability
+  current_lineage_id?: string
   projectId: string
   directoryId: string
   workDir: string

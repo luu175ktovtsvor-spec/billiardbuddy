@@ -23,7 +23,7 @@ export type ProductTaskWorkspaceState = {
 
 type ProductTaskWorkspaceStore = {
   byTaskId: Record<string, ProductTaskWorkspaceState | undefined>
-  openPanel: (taskId: string, panel: ProductTaskWorkspacePanel) => void
+  openPanel: (taskId: string, panel: ProductTaskWorkspacePanel, workspaceAvailable?: boolean) => void
   closePanel: (taskId: string, panel: ProductTaskWorkspacePanel) => void
   activatePanel: (taskId: string, panel: ProductTaskWorkspacePanel) => void
 }
@@ -121,35 +121,23 @@ export function productTaskBrowserPreviewKey(
 export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((set) => ({
   byTaskId: {},
 
-  openPanel: (taskId, panel) => set((state) => {
+  openPanel: (taskId, panel, workspaceAvailable = true) => set((state) => {
+    // Browser/preview surfaces need a real workspace; a renderer cannot turn a
+    // stale UI state into that capability by opening a panel.
+    if (!workspaceAvailable && panel === 'review') return state
     const current = currentState(state.byTaskId, taskId)
     let next: ProductTaskWorkspaceState
 
     switch (panel) {
+      case 'browser':
+      case 'preview':
+      case 'terminal':
+        return state
       case 'review':
         next = { ...current, reviewOpen: true, activePanel: 'review' }
         break
       case 'media':
         next = { ...current, mediaOpen: true, activePanel: 'media' }
-        break
-      case 'browser':
-        next = {
-          ...current,
-          browserOpen: true,
-          activePanel: 'browser-preview',
-          activeBrowserPreviewMode: 'browser',
-        }
-        break
-      case 'preview':
-        next = {
-          ...current,
-          previewOpen: true,
-          activePanel: 'browser-preview',
-          activeBrowserPreviewMode: 'preview',
-        }
-        break
-      case 'terminal':
-        next = { ...current, terminalOpen: true }
         break
     }
 

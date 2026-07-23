@@ -83,12 +83,19 @@ function isUnanswerableAskUserQuestion(
  * task and can advance a bounded reconnect snapshot even while no product
  * window is attached.
  */
+export type ProductTaskWorkspaceGuard = {
+  requireWorkspaceCapability(taskId: string, capability: 'agent' | 'skill' | 'bash'): Promise<unknown>
+}
+
 export class ProductTaskAgentCoreAdapter {
   private readonly rejectedAskRequests = new Set<string>()
 
   constructor(
     private readonly core: ProductTaskAgentCorePort,
     private readonly runs: ProductTaskRunProjection = productTaskRunProjection,
+    private readonly workspaceGuard: ProductTaskWorkspaceGuard = {
+      requireWorkspaceCapability: async () => { throw new Error('WORKSPACE_REQUIRED') },
+    },
   ) {}
 
   isProductSocket(socket: ProductTaskSocket): boolean {
@@ -208,6 +215,10 @@ export class ProductTaskAgentCoreAdapter {
       this.sendSafeError(socket, 'PRODUCT_MESSAGE_NOT_ALLOWED')
       return
     }
+    // BB-02C has no Agent/Core execution capability. This rejection is
+    // unconditional: a bound or available workspace must not become a bypass.
+    this.sendSafeError(socket, 'WORKSPACE_REQUIRED')
+    return
 
     // Attachment-only product turns have no slash command to validate; their
     // narrow input shape was already checked by taskInboundPolicy.
