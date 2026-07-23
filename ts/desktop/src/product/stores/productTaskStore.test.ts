@@ -4,7 +4,7 @@ import type { AuthoritySnapshot, ProductTaskActionResponse, ProductTaskIndexResp
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from './productTaskStore'
 
 vi.mock('../api/tasks', () => ({
-  productTasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), pin: vi.fn(), unpin: vi.fn(), archive: vi.fn(), restore: vi.fn(), continue: vi.fn() },
+  productTasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), pin: vi.fn(), unpin: vi.fn(), archive: vi.fn(), restore: vi.fn(), delete: vi.fn(), continue: vi.fn() },
 }))
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
@@ -90,5 +90,16 @@ describe('productTaskStore authority mutations', () => {
     await refresh
     expect(useProductTaskStore.getState().index.tasks[0]!.lifecycle).toBe('archived')
     expect(useProductTaskStore.getState().confirmedAuthorityRevision).toBe(7)
+  })
+
+  it('uses the task revision for a two-confirmation deletion and refreshes away a tombstone', async () => {
+    const archived = makeTask({ lifecycle: 'archived', revision: 4, actions: ['restore', 'continue'] })
+    const deleted = makeTask({ lifecycle: 'deleted', revision: 5, projectId: '', directoryId: '', workDir: '', title: '', actions: [] })
+    useProductTaskStore.setState({ index: makeIndex(archived) })
+    vi.mocked(productTasksApi.delete).mockResolvedValue({ task: deleted, receipt: { outcome: 'accepted' }, blockers: [] })
+    vi.mocked(productTasksApi.list).mockResolvedValue({ ...makeIndex(archived), tasks: [], total: 0 })
+    await expect(useProductTaskStore.getState().mutateTaskDeletion(archived.id, 'retry')).resolves.toEqual(deleted)
+    expect(productTasksApi.delete).toHaveBeenCalledWith(archived.id, expect.objectContaining({ phase: 'retry', expected_revision: 4, client_operation_id: expect.any(String) }))
+    expect(useProductTaskStore.getState().index.tasks).toEqual([])
   })
 })

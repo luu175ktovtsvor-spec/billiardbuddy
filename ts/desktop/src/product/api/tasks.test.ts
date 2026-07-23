@@ -22,6 +22,7 @@ describe('productTasksApi authoritative mutations', () => {
     await productTasksApi.unpin('task 1', envelope)
     await productTasksApi.archive('task 1', envelope)
     await productTasksApi.restore('task 1', envelope)
+    await productTasksApi.delete('task 1', { phase: 'begin', ...envelope })
     await productTasksApi.continue('task 1', { title: '继续', ...envelope })
     await productTasksApi.createSideTask('task 1', { sourceEntryId: 'thread-1', sideTaskId: 'side-1', ...envelope })
     await productTasksApi.closeSideTask('task 1', 'side 1', envelope)
@@ -33,6 +34,7 @@ describe('productTasksApi authoritative mutations', () => {
       'http://127.0.0.1:49237/api/product/tasks/task%201/unpin',
       'http://127.0.0.1:49237/api/product/tasks/task%201/archive',
       'http://127.0.0.1:49237/api/product/tasks/task%201/restore',
+      'http://127.0.0.1:49237/api/product/tasks/task%201/delete',
       'http://127.0.0.1:49237/api/product/tasks/task%201/continue',
       'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks',
       'http://127.0.0.1:49237/api/product/tasks/task%201/side-tasks/side%201/close',

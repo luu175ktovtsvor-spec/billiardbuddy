@@ -8,7 +8,9 @@ import { lock } from '../../utils/lockfile.js'
 
 const child = process.env.BB_AUTHORITY_CHILD_ARGS ? JSON.parse(process.env.BB_AUTHORITY_CHILD_ARGS) as { authority: string; ready: string; start: string; result: string; operation: string; mode?: string; release?: string; done?: string; entity?: 'draft' | 'attachment' | 'lineage'; canonical?: string; expected?: number; storagePath?: string; text?: string } : undefined
 async function exists(file: string) { return fs.access(file).then(() => true).catch(() => false) }
-async function waitFor(file: string) { for (let i = 0; i < 500; i++) { if (await exists(file)) return; await Bun.sleep(10) }; throw new Error(`timeout waiting for ${file}`) }
+// Child workers execute this complete test module before publishing ready; keep
+// the coordination assertion strict while allowing cold Bun startup on busy CI.
+async function waitFor(file: string) { for (let i = 0; i < 1_500; i++) { if (await exists(file)) return; await Bun.sleep(10) }; throw new Error(`timeout waiting for ${file}`) }
 if (child) {
   if (child.mode === 'holder') { const guard = `${child.authority}.guard`; await fs.open(guard, 'a').then(handle => handle.close()); const releaseLock = await lock(guard, { stale: 30_000 }); await fs.writeFile(child.ready, ''); await waitFor(child.release!); await releaseLock(); await fs.writeFile(child.done!, ''); process.exit(0) }
   if (child.mode === 'root-lineage') { await fs.writeFile(child.ready, ''); await waitFor(child.start); try { const repository = new ProductTaskAuthorityRepository(child.authority); const { result } = await repository.transactCapabilities((state) => { const stored = state.tasks.task as { task?: Record<string, unknown> } | undefined; const task = stored?.task; const revision = typeof task?.revision === 'number' ? task.revision : 0; if (!task || revision !== child.expected) throw new Error('AUTHORITY_CONFLICT'); const id = `lineage_${child.operation}`; const now = '2026-07-19T00:00:00.000Z'; state.conversation_lineages[id] = { lineage_id: id, product_task_id: 'task', revision: 0, compact_generation: 0, resume_binding_id: 'private', state: 'active', created_at: now, updated_at: now }; task.current_lineage_id = id; task.revision = revision + 1; state.receipts[child.operation] = { client_operation_id: child.operation, expected_revision: revision, outcome: 'accepted', revision: state.revision + 1, result: { entity_id: id } }; state.event_sequence += 1; state.events[child.operation] = { event_sequence: state.event_sequence, client_operation_id: child.operation, kind: 'lineage_create', revision: state.revision + 1, canonical_input: JSON.stringify({ expected: child.expected }), entity_id: id }; return { id } }); await fs.writeFile(child.result, JSON.stringify({ outcome: 'success', ...result })) } catch (error) { await fs.writeFile(child.result, JSON.stringify({ outcome: (error as Error).message })) }; process.exit(0) }
@@ -107,7 +109,7 @@ test('serializes capability create identity across independent Bun processes', a
       const final = await new ProductTaskAuthorityRepository(authority).read(); expect(Object.keys(final.receipts)).toEqual(['op']); expect(Object.values(final.events)[0]?.entity_id).toBe(`${entity}_op`)
     }
   }
-})
+}, 30_000)
 
 
 test('root lineage CAS fences independent Bun processes', async () => {

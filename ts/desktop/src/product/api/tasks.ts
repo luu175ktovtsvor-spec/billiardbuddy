@@ -7,6 +7,7 @@ import type {
   MutationEnvelope,
   OperationReceipt,
   ProductTaskActionResponse,
+  ProductTaskDeletionResponse,
   ProductTaskApi,
   ProductTaskIndexResponse,
   ProductTaskMediaAttachableList,
@@ -74,6 +75,7 @@ export const productTasksApi: ProductTaskApi = {
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/archive`, input),
   restore: (taskId: string, input: MutationEnvelope) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/restore`, input),
+  delete: (taskId, input) => productApi.post<ProductTaskDeletionResponse>(`${taskPath(taskId)}/delete`, input),
   continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/continue`, input),
   createSideTask: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) =>
