@@ -1283,6 +1283,17 @@ export class ProductTaskService {
     return { task_id: run.task_id, lineage_id: run.lineage_id, resume_binding_id: lineage.resume_binding_id }
   }
 
+  /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
+  async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    await authority.transactSubmit((file) => {
+      const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown } | undefined
+      if (!dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') return { changed: false as const, value: undefined }
+      dispatch.state = state; dispatch.completed_at = this.now().toISOString(); if (error) dispatch.error = error
+    })
+  }
+
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
   async mutateTaskDeletion(
     taskId: string,

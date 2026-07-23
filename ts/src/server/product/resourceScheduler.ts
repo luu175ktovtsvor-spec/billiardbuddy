@@ -119,6 +119,9 @@ export class ProductResourceScheduler {
     })
   }
 
+  /** Server-private claim builder input; consumers never select a profile revision. */
+  profileRevision(): string { return this.profiles.current().profile.revision }
+
   async heartbeat(jobId: string, fencingToken: number): Promise<ProductResourceReceipt> {
     return this.mutate(state => {
       this.reapExpired(state)
