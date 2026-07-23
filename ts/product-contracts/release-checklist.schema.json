@@ -72,11 +72,81 @@
       "type": "array"
     },
     "policy_digests": {
-      "additionalProperties": {
-        "pattern": "^[a-f0-9]{64}$",
-        "type": "string"
+      "additionalProperties": false,
+      "properties": {
+        "attachment-retention-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "auth-entitlement-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "automatic-reviewer-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "content-safety-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "data-egress-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "diagnostic-bundle-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "media-storage-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "migration-backup-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "permission-profile-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "production-load-profile": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "relay-retention-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "system-support-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "usage-budget-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "voice-retention-policy": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        }
       },
-      "minProperties": 12,
+      "required": [
+        "attachment-retention-policy",
+        "voice-retention-policy",
+        "media-storage-policy",
+        "migration-backup-policy",
+        "content-safety-policy",
+        "relay-retention-policy",
+        "diagnostic-bundle-policy",
+        "system-support-policy",
+        "data-egress-policy",
+        "auth-entitlement-policy",
+        "usage-budget-policy",
+        "production-load-profile",
+        "permission-profile-policy",
+        "automatic-reviewer-policy"
+      ],
       "type": "object"
     },
     "schema_version": {
@@ -93,5 +163,5 @@
   ],
   "title": "BilliardBuddy release checklist",
   "type": "object",
-  "x-contract-source-sha256": "c491236b965c18c8d04eb7f2cfe1289e418fc5912f872ed455a947cb669ed421"
+  "x-contract-source-sha256": "bc7ef84b3940e5b0408dc94ae920510882f737c1f71d834ac4dd91597327efa7"
 }

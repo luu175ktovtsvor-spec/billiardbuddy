@@ -201,7 +201,39 @@
         "evidence"
       ],
       "schema_version": 1
+    },
+    {
+      "hash_scope": "canonical policy document excluding its sha256 field",
+      "owner_module": "08",
+      "policy_id": "permission-profile-policy",
+      "required_evidence": [
+        "owner-module-evidence"
+      ],
+      "required_fields": [
+        "policy_schema_version",
+        "policy_revision",
+        "owner_module",
+        "sha256",
+        "evidence"
+      ],
+      "schema_version": 1
+    },
+    {
+      "hash_scope": "canonical policy document excluding its sha256 field",
+      "owner_module": "08",
+      "policy_id": "automatic-reviewer-policy",
+      "required_evidence": [
+        "owner-module-evidence"
+      ],
+      "required_fields": [
+        "policy_schema_version",
+        "policy_revision",
+        "owner_module",
+        "sha256",
+        "evidence"
+      ],
+      "schema_version": 1
     }
   ],
-  "source_sha256": "c491236b965c18c8d04eb7f2cfe1289e418fc5912f872ed455a947cb669ed421"
+  "source_sha256": "bc7ef84b3940e5b0408dc94ae920510882f737c1f71d834ac4dd91597327efa7"
 }

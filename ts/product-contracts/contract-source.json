@@ -343,6 +343,14 @@
     [
       "production-load-profile",
       "14"
+    ],
+    [
+      "permission-profile-policy",
+      "08"
+    ],
+    [
+      "automatic-reviewer-policy",
+      "08"
     ]
   ],
   "deletion_candidates": [
