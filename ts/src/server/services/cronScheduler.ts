@@ -26,6 +26,7 @@ import {
 } from '../../utils/desktopBundledCli.js'
 import { getProcessEnvWithTerminalShellEnvironment } from '../../utils/terminalShellEnvironment.js'
 import { attributionHeaderEnvForModel } from './attributionHeaderPolicy.js'
+import { productTaskService } from '../product/taskService.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,10 @@ export type TaskRun = {
   // Old installations can still have this field in persisted run logs. It is
   // never created by the scheduler and is stripped from the product API.
   sessionId?: string
+}
+
+export type ScheduledTaskRunBridge = {
+  submitScheduledTaskRun(scheduleId: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }>
 }
 
 export function buildCronTaskSpawnOptions(
@@ -368,17 +373,16 @@ export function buildCronCliArgs(
 
 export class CronScheduler {
   private intervalId: Timer | null = null
-  private runningTasks = new Map<
-    string,
-    { proc: ReturnType<typeof Bun.spawn>; startedAt: number; runId: string }
-  >()
+  private runningTasks = new Map<string, { startedAt: number; runId: string }>()
   /** Track which minute each task last fired (prevents same-process duplicate within a minute). */
   private lastFiredMinuteKey = new Map<string, string>()
   private cronService: CronService
   private providerService = new ProviderService()
+  private readonly taskRuns: ScheduledTaskRunBridge
 
-  constructor(cronService?: CronService) {
+  constructor(cronService?: CronService, taskRuns: ScheduledTaskRunBridge = productTaskService) {
     this.cronService = cronService || new CronService()
+    this.taskRuns = taskRuns
   }
 
   /** Return a string key representing the calendar minute of `date`. */
@@ -408,14 +412,7 @@ export class CronScheduler {
       clearInterval(this.intervalId)
       this.intervalId = null
     }
-    for (const [taskId, entry] of this.runningTasks) {
-      try {
-        entry.proc.kill()
-      } catch {
-        // process may have already exited
-      }
-      this.runningTasks.delete(taskId)
-    }
+    for (const taskId of this.runningTasks.keys()) this.runningTasks.delete(taskId)
     console.log('[CronScheduler] Stopped')
   }
 
@@ -480,11 +477,10 @@ export class CronScheduler {
 
     const runId = crypto.randomBytes(6).toString('hex')
     const startedAt = new Date().toISOString()
-    let workDir = task.folderPath || os.homedir()
-    if (task.folderPath && (!existsSync(task.folderPath) || !statSync(task.folderPath).isDirectory())) {
-      console.warn(`[cron] task ${task.id}: folderPath "${task.folderPath}" is not a valid directory, falling back to homedir`)
-      workDir = os.homedir()
+    if (!task.folderPath || !existsSync(task.folderPath) || !statSync(task.folderPath).isDirectory()) {
+      throw new Error('SCHEDULE_WORKDIR_UNAVAILABLE')
     }
+    let workDir = task.folderPath
     workDir = this.resolveCanonicalWorkDir(workDir)
 
     const run: TaskRun = {
@@ -503,32 +499,39 @@ export class CronScheduler {
     // Persist the "running" state
     await appendRun(run)
 
-    const inputPayload = JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: task.prompt }],
-      },
-      parent_tool_use_id: null,
-      session_id: '',
-    }) + '\n'
+    // The scheduled occurrence is now a durable ProductTask TaskRun.  Do not
+    // spawn the public CLI or synthesize an empty Core session here.
+    this.runningTasks.set(task.id, { startedAt: Date.now(), runId })
+    try {
+      const durable = await this.taskRuns.submitScheduledTaskRun(
+        task.id,
+        task.prompt,
+        workDir,
+        CronScheduler.minuteKey(new Date(startedAt)),
+      )
+      this.runningTasks.delete(task.id)
+      const completedAt = new Date().toISOString()
+      const completedRun: TaskRun = {
+        ...run,
+        completedAt,
+        status: 'completed',
+        output: `已提交到 ProductTask 运行 ${durable.run_id}`,
+        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+      }
+      await updateRun(completedRun)
+      if (!task.recurring) await this.cronService.updateTask(task.id, { enabled: false }).catch(() => {})
+      return completedRun
+    } catch (error) {
+      this.runningTasks.delete(task.id)
+      const completedAt = new Date().toISOString()
+      const failedRun: TaskRun = { ...run, completedAt, status: 'failed', error: (error as Error).message, durationMs: Date.parse(completedAt) - Date.parse(startedAt) }
+      await updateRun(failedRun)
+      return failedRun
+    }
 
-    const cliArgs = buildCronCliArgs([
-      '--print',
-      '--verbose',
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-      ...this.getRuntimeArgs(task),
-    ])
-
-    const childEnv = await this.buildTaskChildEnv(workDir, task)
-    const taskTimeoutMs = resolveCronTaskTimeoutMs()
-    const proc = Bun.spawn(
-      cliArgs,
-      buildCronTaskSpawnOptions(workDir, childEnv),
-    )
+    // Deliberately no fallback execution path: the public CLI and its argv
+    // transport are retired from cron. The return above is the only route.
+    throw new Error('SCHEDULE_DISPATCH_UNREACHABLE')
 
     this.runningTasks.set(task.id, { proc, startedAt: Date.now(), runId })
 

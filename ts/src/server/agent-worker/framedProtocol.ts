@@ -4,6 +4,7 @@ import { AgentWorkerService } from '../product/agentWorkerService.js'
 export class AgentWorkerProtocol {
   private hello = false
   private ready = false
+  private terminal = false
   constructor(private readonly service: AgentWorkerService, private readonly emit: (message: AgentWorkerOutbound) => void) {}
   announce(): void {
     if (this.hello || this.ready) return
@@ -18,15 +19,24 @@ export class AgentWorkerProtocol {
     if (!validInbound(message)) return this.emit({ type: 'fatal', code: 'PROTOCOL_INVALID' })
     void this.handle(message).catch(() => this.emit({ type: 'fatal', code: 'CORE_FAILED' }))
   }
+  /** Only sanitized activity/terminal records may traverse private IPC. */
+  relayCoreMessage(message: AgentWorkerOutbound): void {
+    if (this.terminal || !this.ready || (message.type !== 'event' && message.type !== 'terminal')) return
+    const safe = this.service.relayCoreMessage(message)
+    if (!safe) return
+    if (safe.type === 'terminal') this.terminal = true
+    this.emit(safe)
+  }
   private async handle(message: AgentWorkerInbound): Promise<void> {
     if (!message || typeof message !== 'object' || !('type' in message)) return this.emit({ type: 'fatal', code: 'PROTOCOL_INVALID' })
     if (message.type === 'hello') { if (!intersectsAgentWorkerVersions(message.versions, { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION })) return this.emit({ type: 'fatal', code: 'CAPABILITY_MISMATCH' }); if (this.hello) return; this.hello = true; return this.emit({ type: 'hello', versions: { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION }, capabilities: ['framed', 'permission-envelope'] }) }
     if (message.type === 'ready') { if (!this.hello) return this.emit({ type: 'fatal', code: 'NOT_READY' }); if (this.ready) return; this.ready = true; return this.emit({ type: 'ready' }) }
     if (!this.ready) return this.emit({ type: 'fatal', code: 'NOT_READY' })
+    if (this.terminal) return
     if (message.type === 'start') return this.emit(await this.service.start(message))
     if (message.type === 'input') { const result = await this.service.input(message.text); if (result) this.emit(result); return }
     if (message.type === 'approval_response') { const result = await this.service.approval(message.request_id, message.approved); if (result) this.emit(result); return }
-    if (message.type === 'stop') return this.emit(await this.service.stop())
+    if (message.type === 'stop') { this.terminal = true; return this.emit(await this.service.stop()) }
     if (message.type === 'shutdown') { await this.service.shutdown(); return this.emit({ type: 'shutdown' }) }
     this.emit({ type: 'fatal', code: 'PROTOCOL_INVALID' })
   }

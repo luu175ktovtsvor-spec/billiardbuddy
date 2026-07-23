@@ -13,12 +13,13 @@ import {
   type Command,
   formatDescriptionWithSource,
   getCommandName,
+  getCommands,
 } from 'src/commands.js'
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
 import type { ThinkingConfig } from 'src/utils/thinking.js'
-import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
+import { assembleToolPool, filterToolsByDenyRules, getTools } from 'src/tools.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { uniq } from 'src/utils/array.js'
 import { mergeAndFilterTools } from 'src/utils/toolPool.js'
@@ -303,7 +304,7 @@ import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import type { AppState } from 'src/state/AppStateStore.js'
+import { getDefaultAppState, type AppState } from 'src/state/AppStateStore.js'
 import {
   fileHistoryRewind,
   fileHistoryCanRestore,
@@ -417,6 +418,75 @@ function trackReceivedMessageUuid(uuid: UUID): boolean {
     }
   }
   return true // new UUID
+}
+
+/**
+ * Server-private Native Core port.  This reuses the QueryEngine `ask` loop
+ * directly instead of re-entering the public argv/`--print` transport.  The
+ * server worker only receives coarse activity records; Core messages, paths,
+ * session IDs and tool arguments stay inside this module.
+ */
+export type ServerPrivateNativeCorePort = {
+  input(text: string): Promise<void>
+  approve(requestId: string, approved: boolean): Promise<void>
+  stop(): Promise<void>
+  shutdown(): Promise<void>
+  subscribe(listener: (message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void): () => void
+}
+
+export async function createServerPrivateNativeCorePort(input: { run_id: string; session_id: string; work_dir: string }): Promise<ServerPrivateNativeCorePort> {
+  let state = getDefaultAppState()
+  const commands = await getCommands(input.work_dir)
+  const tools = getTools(state.toolPermissionContext)
+  let cache = createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
+  let controller: AbortController | undefined
+  let terminal = false
+  const approvals = new Map<string, (approved: boolean) => void>()
+  const listeners = new Set<(message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void>()
+  const emit = (message: Parameters<(typeof listeners)['add']>[0] extends (message: infer Message) => void ? Message : never) => listeners.forEach(listener => listener(message))
+  const finish = (state: 'completed' | 'stopped' | 'recovery_required') => { if (terminal) return; terminal = true; emit({ type: 'terminal', state, run_id: input.run_id }) }
+
+  return {
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    async input(text) {
+      if (!text || terminal || controller) return
+      controller = createAbortController()
+      emit({ type: 'event', event: 'started' })
+      try {
+        for await (const message of ask({
+          commands,
+          prompt: text,
+          cwd: input.work_dir,
+          tools,
+          mcpClients: state.mcp.clients,
+          getAppState: () => state,
+          setAppState: update => { state = update(state) },
+          getReadFileCache: () => cache,
+          setReadFileCache: next => { cache = next },
+          abortController: controller,
+          canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
+            const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)
+            if (decision.behavior !== 'ask') return decision
+            emit({ type: 'event', event: 'approval', data: toolUseId })
+            const approved = await new Promise<boolean>(resolve => approvals.set(toolUseId, resolve))
+            approvals.delete(toolUseId)
+            return approved
+              ? { behavior: 'allow', updatedInput: toolInput, decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode } }
+              : { behavior: 'deny', message: 'Product approval denied', decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode }, toolUseID: toolUseId }
+          },
+        })) {
+          if (message.type === 'assistant') emit({ type: 'event', event: 'delta' })
+          else if (message.type === 'system' && message.subtype === 'init') emit({ type: 'event', event: 'tool' })
+        }
+        finish(controller.signal.aborted ? 'stopped' : 'completed')
+      } catch {
+        finish(controller.signal.aborted ? 'stopped' : 'recovery_required')
+      } finally { controller = undefined }
+    },
+    async approve(requestId, approved) { approvals.get(requestId)?.(approved) },
+    async stop() { if (terminal) return; emit({ type: 'event', event: 'stopping' }); controller?.abort(); for (const resolve of approvals.values()) resolve(false); finish('stopped') },
+    async shutdown() { await this.stop() },
+  }
 }
 
 type PromptValue = string | ContentBlockParam[]
