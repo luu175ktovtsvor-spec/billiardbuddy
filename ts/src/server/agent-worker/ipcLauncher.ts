@@ -3,11 +3,13 @@ import type { AgentWorkerCore, AgentWorkerCoreFactory } from '../product/agentWo
 
 type PrivateIdentity = { task_id: string; lineage_id: string; resume_binding_id: string }
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
-export type ServerPrivateCoreFactory = { start(identity: PrivateIdentity, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<AgentWorkerCore> }
+type CoreBinding = { session_id: string; work_dir: string }
+export type TaskRunCoreBindingResolver = { resolveTaskRunCoreBinding(runId: string, generation: number): Promise<CoreBinding> }
+export type ServerPrivateCoreFactory = { start(identity: PrivateIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<AgentWorkerCore> }
 
 /** Bun IPC is the only transport carrying a child bootstrap; stdout remains framed protocol only. */
 export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
-  constructor(private readonly cores: ServerPrivateCoreFactory, private readonly command: string[] = [process.execPath, new URL('../../entrypoints/agent-worker.ts', import.meta.url).pathname]) {}
+  constructor(private readonly bindings: TaskRunCoreBindingResolver, private readonly cores: ServerPrivateCoreFactory, private readonly command: string[] = [process.execPath, new URL('../../entrypoints/agent-worker.ts', import.meta.url).pathname]) {}
   async launch(input: LaunchInput): Promise<AgentWorkerChild> {
     const state: { core?: AgentWorkerCore; starting?: Promise<AgentWorkerCore> } = {}
     const proc = Bun.spawn(this.command, {
@@ -28,7 +30,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
       if (request.operation === 'start' && !state.core) {
         const value = request.value as { run_id?: unknown; dispatch_generation?: unknown; envelope_digest?: unknown; scheduler_receipt?: { fencing_token?: unknown } } | undefined
         if (!value || value.run_id !== input.bootstrap.capability.run_id || value.dispatch_generation !== input.bootstrap.capability.dispatch_generation || value.envelope_digest !== input.bootstrap.capability.envelope_digest || value.scheduler_receipt?.fencing_token !== input.bootstrap.capability.fencing_token) return { ok: false }
-        state.starting ??= this.cores.start(input.core, value as Parameters<AgentWorkerCoreFactory['start']>[0])
+        state.starting ??= this.bindings.resolveTaskRunCoreBinding(value.run_id as string, value.dispatch_generation as number).then(binding => this.cores.start(input.core, binding, value as Parameters<AgentWorkerCoreFactory['start']>[0]))
         try { state.core = await state.starting } finally { state.starting = undefined }
         return { ok: true }
       }

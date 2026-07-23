@@ -32,6 +32,7 @@ import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
   type MessageEntry,
+  type SessionService,
   type SessionListItem,
 } from '../services/sessionService.js'
 import {
@@ -634,6 +635,7 @@ export class ProductTaskService {
   private readonly workspaceBindBlockers: WorkspaceBindBlockerPort
   private readonly admissionBarrier: SessionAdmissionBarrier
   private readonly authorityRepositoryDeps: ProductTaskAuthorityRepositoryDeps
+  private readonly sessionBindingPort: Pick<SessionService, 'createSession' | 'getSessionLaunchInfo'>
   private readonly lifecycleParticipants: readonly TaskLifecycleParticipant[]
   private readonly now: () => Date
   private readonly installationId: string
@@ -647,6 +649,8 @@ export class ProductTaskService {
     admissionBarrier?: SessionAdmissionBarrier
     /** Test-only authority write seam. */
     authorityRepositoryDeps?: ProductTaskAuthorityRepositoryDeps
+    /** Server-private Core binding persistence seam. */
+    sessionBindingPort?: Pick<SessionService, 'createSession' | 'getSessionLaunchInfo'>
     lifecycleParticipants?: readonly TaskLifecycleParticipant[]
     now?: () => Date
     installationId?: string
@@ -661,6 +665,7 @@ export class ProductTaskService {
     // are explicitly out-of-scope disabled participants, not synthetic unknowns.
     this.admissionBarrier = options.admissionBarrier ?? sessionAdmissionBarrier
     this.authorityRepositoryDeps = options.authorityRepositoryDeps ?? {}
+    this.sessionBindingPort = options.sessionBindingPort ?? sessionService
     this.lifecycleParticipants = options.lifecycleParticipants ?? [{
       id: 'active_core_run',
       inspectBlockers: async (taskId) => {
@@ -1180,7 +1185,8 @@ export class ProductTaskService {
         state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }
         const scope = state.task_scopes[taskId] as { kind?: unknown } | undefined
         const execution_capability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
-        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: null, provider: null, model: null }
+        const workspace = scope?.kind === 'workspace' && typeof (scope as { workspace_id?: unknown }).workspace_id === 'string' ? state.workspaces[(scope as { workspace_id: string }).workspace_id] as { canonical_root?: unknown } | undefined : undefined
+        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: null, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath), dispatch_generation: 1 } }
         state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
         state.event_sequence += 1
         state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
@@ -1214,8 +1220,8 @@ export class ProductTaskService {
       const attachments = input.attachment_ids.map(id => { const a = state.task_attachments[id] as Record<string, unknown> | undefined; if (!a || a.installation_id !== this.installationId || a.owner_kind !== 'composer_draft' || a.owner_id !== input.draft_id || a.state !== 'ready' || Date.parse(a.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED'); return [id, a] as const })
       const now = this.now().toISOString(), lineageId = `lineage_${randomUUID()}`, runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
       const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
-      state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
-      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: null, provider: null, model: null }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
+      const resumeBindingId = `resume_${randomUUID()}`; state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: resumeBindingId, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
+      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: null, provider: null, model: null, core_binding: { resume_binding_id: resumeBindingId, session_id: randomUUID(), work_dir: path.dirname(this.storagePath), dispatch_generation: 1 } }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
       for (const [id, a] of attachments) { state.task_attachments[id] = { ...a, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...a.refs as string[], taskId], revision: (a.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
       state.composer_drafts[input.draft_id] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }; const entity_revisions: Record<string, number> = { task: 1, lineage: 1, draft: (state.composer_drafts[input.draft_id] as { revision: number }).revision }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_draft_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1, authority_revision: state.revision + 1, entity_revisions } }; state.receipts[input.client_operation_id] = receipt; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_create_submit', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }; return { duplicate: false, receipt }
     }); const receipt = result.receipt; const snapshot = receipt.result as { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; authority_revision: number; entity_revisions: Record<string, number> }; return { client_operation_id: input.client_operation_id, outcome: result.duplicate ? 'duplicate' : 'accepted', authority_revision: snapshot.authority_revision, entity_revisions: snapshot.entity_revisions, result: { task_id: snapshot.task_id, run_id: snapshot.run_id, entry_id: snapshot.entry_id, dispatch_generation: snapshot.dispatch_generation } } } catch (error) { const file = await authority.read(); return { client_operation_id: input.client_operation_id, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', authority_revision: file.revision, entity_revisions: {}, error: (error as Error).message } }
@@ -1281,6 +1287,25 @@ export class ProductTaskService {
     const lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
     if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
     return { task_id: run.task_id, lineage_id: run.lineage_id, resume_binding_id: lineage.resume_binding_id }
+  }
+
+  /** The only server-private resolver for a run's durable Core launch target. */
+  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string }> {
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const run = file.task_runs[runId] as { lineage_id?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
+    const binding = run?.core_binding
+    if (!binding || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
+    if (binding.resume_binding_id !== lineage?.resume_binding_id) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const workDir = await fs.realpath(binding.work_dir).catch(() => undefined); if (!workDir || !await fs.stat(workDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('CORE_BINDING_UNAVAILABLE')
+    try {
+      await this.sessionBindingPort.createSession(workDir, undefined, undefined, { sessionId: binding.session_id, operation: { clientOperationId: runId, canonicalInput: binding.resume_binding_id } })
+      const launch = await this.sessionBindingPort.getSessionLaunchInfo(binding.session_id)
+      if (!launch || launch.workDir !== workDir) throw new Error('CORE_BINDING_UNAVAILABLE')
+    } catch {
+      throw new Error('CORE_BINDING_UNAVAILABLE')
+    }
+    return { session_id: binding.session_id, work_dir: workDir }
   }
 
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
