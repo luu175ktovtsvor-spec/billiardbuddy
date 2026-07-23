@@ -493,14 +493,14 @@ describe('settingsStore desktop notification persistence', () => {
   })
 })
 
-describe('settingsStore Auto-dream persistence', () => {
+describe('settingsStore Product AutoMem persistence', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.clearAllMocks()
     window.localStorage.clear()
   })
 
-  it('keeps Auto-dream off unless user settings opt in', async () => {
+  it('defaults project memory on until the user opts out', async () => {
     vi.doMock('../product/api/settings', () => ({
       productSettingsApi: {
         getUser: vi.fn().mockResolvedValue({}),
@@ -511,17 +511,17 @@ describe('settingsStore Auto-dream persistence', () => {
     }))
     const { useSettingsStore } = await import('./settingsStore')
 
-    expect(useSettingsStore.getState().autoDreamEnabled).toBe(false)
+    expect(useSettingsStore.getState().productAutoMemoryEnabled).toBe(true)
     await useSettingsStore.getState().fetchAll()
-    expect(useSettingsStore.getState().autoDreamEnabled).toBe(false)
+    expect(useSettingsStore.getState().productAutoMemoryEnabled).toBe(true)
   })
 
-  it('hydrates and persists Auto-dream explicitly', async () => {
+  it('hydrates and persists the independent Product AutoMem switch', async () => {
     const updateUser = vi.fn().mockResolvedValue({})
 
     vi.doMock('../product/api/settings', () => ({
       productSettingsApi: {
-        getUser: vi.fn().mockResolvedValue({ autoDreamEnabled: true }),
+        getUser: vi.fn().mockResolvedValue({ productAutoMemoryEnabled: false }),
         getRuntime: vi.fn().mockResolvedValue({}),
         getDesktop: vi.fn().mockResolvedValue({}),
         updateUser,
@@ -530,12 +530,12 @@ describe('settingsStore Auto-dream persistence', () => {
     const { useSettingsStore } = await import('./settingsStore')
 
     await useSettingsStore.getState().fetchAll()
-    expect(useSettingsStore.getState().autoDreamEnabled).toBe(true)
+    expect(useSettingsStore.getState().productAutoMemoryEnabled).toBe(false)
 
-    await useSettingsStore.getState().setAutoDreamEnabled(false)
+    await useSettingsStore.getState().setProductAutoMemoryEnabled(true)
 
-    expect(updateUser).toHaveBeenCalledWith({ autoDreamEnabled: false })
-    expect(useSettingsStore.getState().autoDreamEnabled).toBe(false)
+    expect(updateUser).toHaveBeenCalledWith({ productAutoMemoryEnabled: true })
+    expect(useSettingsStore.getState().productAutoMemoryEnabled).toBe(true)
   })
 })
 

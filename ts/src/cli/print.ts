@@ -93,6 +93,7 @@ import { ask } from 'src/QueryEngine.js'
 import { getLocalISODate } from 'src/constants/common.js'
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
+import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from 'src/server/services/productAutoMemory.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -441,16 +442,18 @@ export async function createServerPrivateNativeCorePort(input: {
   run_id: string
   session_id: string
   work_dir: string
+  auto_memory?: ProductAutoMemoryBinding & { task_id: string; entry_id: string }
   session_memory?: ProductSessionMemoryBinding & { entry_id: string }
 }): Promise<ServerPrivateNativeCorePort> {
   let state = getDefaultAppState()
-  const commands = await getCommands(input.work_dir)
-  const tools = getTools(state.toolPermissionContext)
   const instructionSnapshot = createProductInstructionSnapshot(input.work_dir)
+  const autoMemoryRepository = input.auto_memory ? new ProductAutoMemoryRepository() : undefined
+  let productAutoMemory = input.auto_memory ? await autoMemoryRepository!.load(input.auto_memory) : ''
   const sessionMemoryRepository = input.session_memory ? new ProductSessionMemoryRepository() : undefined
   let productSessionMemory = input.session_memory ? await sessionMemoryRepository!.load(input.session_memory) : ''
   const productUserContext = () => ({
     ...(instructionSnapshot.prompt ? { claudeMd: instructionSnapshot.prompt } : {}),
+    ...(productAutoMemory ? { autoMemory: productAutoMemory } : {}),
     ...(productSessionMemory ? { sessionMemory: productSessionMemory } : {}),
     currentDate: `Today's date is ${getLocalISODate()}.`,
   })
@@ -468,7 +471,17 @@ export async function createServerPrivateNativeCorePort(input: {
       if (!text || terminal || controller) return
       controller = createAbortController()
       emit({ type: 'event', event: 'started' })
+      if (text.trim() === '/init' && input.auto_memory) {
+        try {
+          const initialized = await autoMemoryRepository!.initialize(input.auto_memory)
+          emit({ type: 'event', event: 'delta', data: initialized.created || initialized.instruction_created ? '项目已初始化。' : '项目已经初始化，无需更改。' })
+          finish('completed')
+        } catch { finish('recovery_required') } finally { controller = undefined }
+        return
+      }
       try {
+        const commands = await getCommands(input.work_dir)
+        const tools = getTools(state.toolPermissionContext)
         let completedResult: string | undefined
         for await (const message of ask({
           commands,
@@ -499,6 +512,7 @@ export async function createServerPrivateNativeCorePort(input: {
           else if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
         }
         if (completedResult !== undefined && input.session_memory) productSessionMemory = await sessionMemoryRepository!.appendCompletedTurn(input.session_memory, { entry_id: input.session_memory.entry_id, user: text, assistant: completedResult })
+        if (completedResult !== undefined && input.auto_memory) productAutoMemory = await autoMemoryRepository!.appendCompletedTurn(input.auto_memory, { task_id: input.auto_memory.task_id, entry_id: input.auto_memory.entry_id, user: text, assistant: completedResult })
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch {
         finish(controller.signal.aborted ? 'stopped' : 'recovery_required')

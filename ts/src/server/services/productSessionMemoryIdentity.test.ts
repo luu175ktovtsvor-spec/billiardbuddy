@@ -10,7 +10,7 @@ test('durable TaskRun identity carries its exact lineage checkpoint only to the 
     const storagePath = path.join(root, 'product-tasks.json')
     const now = '2026-01-01T00:00:00.000Z'
     await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now } } }))
-    const service = new ProductTaskService({ storagePath, now: () => new Date(now) })
+    const service = new ProductTaskService({ storagePath, now: () => new Date(now), autoMemoryEnabled: async () => false })
     await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath: path.join(root, 'product-task-authority.v1.json') })
     const parent = await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'parent' })
     const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'parent turn', attachment_ids: [] })
@@ -21,6 +21,12 @@ test('durable TaskRun identity carries its exact lineage checkpoint only to the 
     expect(identity).toMatchObject({
       task_id: 'task',
       lineage_id: child.lineage.lineage_id,
+      initial_input: 'child turn',
+      auto_memory: {
+        storage_dir: path.join(root, 'product-auto-memory'),
+        enabled: false,
+        entry_id: second.result!.entry_id,
+      },
       session_memory: {
         storage_dir: path.join(root, 'product-session-memory'),
         entry_id: second.result!.entry_id,
@@ -29,6 +35,7 @@ test('durable TaskRun identity carries its exact lineage checkpoint only to the 
     })
     expect(JSON.stringify(await service.getConversationLineage(child.lineage.lineage_id as string))).not.toContain(identity.resume_binding_id)
     expect(JSON.stringify(await service.listTaskEvents('task'))).not.toContain(identity.session_memory.storage_dir)
+    expect(JSON.stringify(await service.listTaskEvents('task'))).not.toContain(identity.auto_memory.storage_dir)
 
     const cleared = await service.createConversationLineage({ task_id: 'task', expected_task_revision: 4, client_operation_id: 'clear-root' })
     const third = await service.submitTaskRun('task', { expected_task_revision: 5, expected_lineage_revision: 0, client_operation_id: 'third', text: 'fresh root', attachment_ids: [] })

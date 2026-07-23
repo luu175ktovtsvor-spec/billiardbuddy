@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -88,7 +88,7 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       locale: 'en',
       theme: 'light',
-      autoDreamEnabled: false,
+      productAutoMemoryEnabled: false,
       deepThinkingEnabled: true,
       preventSleepWhileRunning: false,
       skipWebFetchPreflight: true,
@@ -118,8 +118,8 @@ describe('Settings > General tab', () => {
       setOutputStyle: vi.fn().mockImplementation(async (outputStyle: string) => {
         useSettingsStore.setState({ outputStyle })
       }),
-      setAutoDreamEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
-        useSettingsStore.setState({ autoDreamEnabled: enabled })
+      setProductAutoMemoryEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
+        useSettingsStore.setState({ productAutoMemoryEnabled: enabled })
       }),
       setDeepThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ deepThinkingEnabled: enabled })
@@ -649,44 +649,35 @@ describe('Settings > General tab', () => {
     expect(outputStyle).not.toHaveTextContent(/Claude|DeepSeek|Provider|model|\.claude|hidden system prompt|tokens/i)
   })
 
-  it('keeps background memory consolidation inside collapsed task run options and confirms before enabling it', async () => {
+  it('keeps project long-term memory inside collapsed task run options without a background-task confirmation', async () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    expect(screen.getByLabelText('Enable background memory consolidation')).not.toBeVisible()
+    expect(screen.getByLabelText('Enable project long-term memory')).not.toBeVisible()
 
     fireEvent.click(screen.getByText('Task run options'))
 
-    const toggle = screen.getByLabelText('Enable background memory consolidation')
+    const toggle = screen.getByLabelText('Enable project long-term memory')
     expect(toggle).toBeVisible()
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
 
-    expect(useSettingsStore.getState().setAutoDreamEnabled).not.toHaveBeenCalled()
-    const dialog = screen.getByRole('dialog', { name: 'Enable background memory consolidation?' })
-    expect(within(dialog).getByText(/Keep the desktop app running/i)).toBeInTheDocument()
-    expect(dialog.textContent).not.toContain('tokens')
-
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Enable background memory consolidation' }))
-    })
-
-    expect(useSettingsStore.getState().setAutoDreamEnabled).toHaveBeenCalledWith(true)
-    expect(screen.getByLabelText('Enable background memory consolidation')).toBeChecked()
+    expect(useSettingsStore.getState().setProductAutoMemoryEnabled).toHaveBeenCalledWith(true)
+    expect(screen.queryByText(/background memory consolidation/i)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Enable project long-term memory')).toBeChecked()
   })
 
-  it('lets the user disable background memory consolidation without a confirmation dialog', async () => {
-    useSettingsStore.setState({ autoDreamEnabled: true })
+  it('lets the user disable project long-term memory without changing task session context', async () => {
+    useSettingsStore.setState({ productAutoMemoryEnabled: true })
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
     fireEvent.click(screen.getByText('Task run options'))
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Enable background memory consolidation'))
+      fireEvent.click(screen.getByLabelText('Enable project long-term memory'))
     })
 
-    expect(screen.queryByRole('dialog', { name: 'Enable background memory consolidation?' })).not.toBeInTheDocument()
-    expect(useSettingsStore.getState().setAutoDreamEnabled).toHaveBeenCalledWith(false)
+    expect(useSettingsStore.getState().setProductAutoMemoryEnabled).toHaveBeenCalledWith(false)
   })
 
   it('keeps General checkbox inputs anchored inside their visible rows', () => {
@@ -696,7 +687,7 @@ describe('Settings > General tab', () => {
     fireEvent.click(screen.getByText('Task run options'))
 
     for (const label of [
-      'Enable background memory consolidation',
+      'Enable project long-term memory',
       'Enable system notifications',
       'Skip WebFetch domain preflight',
     ]) {

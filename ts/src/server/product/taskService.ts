@@ -63,6 +63,7 @@ import {
 import { ProductTaskAuthorityRepository, readLegacyProductTasks, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
 import { ProductSessionMemoryRepository } from '../services/productSessionMemory.js'
+import { SettingsService } from '../services/settingsService.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -645,6 +646,7 @@ export class ProductTaskService {
   private readonly now: () => Date
   private readonly installationId: string
   private readonly dispatcher?: ProductTaskRunDispatcher
+  private readonly autoMemoryEnabled: () => Promise<boolean>
 
   constructor(options: {
     storagePath?: string
@@ -662,6 +664,8 @@ export class ProductTaskService {
     installationId?: string
     /** Server-private dispatch seam. Accepted durable receipts are never rolled back on launch failure. */
     dispatcher?: ProductTaskRunDispatcher
+    /** Product AutoMem preference seam; independent from legacy Claude auto-memory. */
+    autoMemoryEnabled?: () => Promise<boolean>
   } = {}) {
     this.usesDefaultStoragePath = !options.storagePath
     this.storagePath = options.storagePath ?? productStorePath()
@@ -701,6 +705,9 @@ export class ProductTaskService {
     this.now = options.now ?? (() => new Date())
     this.installationId = options.installationId ?? 'installation-default'
     this.dispatcher = options.dispatcher
+    this.autoMemoryEnabled = options.autoMemoryEnabled ?? (this.usesDefaultStoragePath
+      ? async () => (await new SettingsService().getUserSettings()).productAutoMemoryEnabled !== false
+      : async () => true)
   }
 
   /**
@@ -1263,6 +1270,9 @@ export class ProductTaskService {
   /** Private BB-05B state lives beside, not inside, ProductTask authority. */
   private sessionMemoryStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-session-memory') }
 
+  /** Private BB-05C project memory; never aliases legacy ~/.claude memory. */
+  private autoMemoryStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-auto-memory') }
+
   /** Cron uses the same durable TaskRun dispatcher, but only after it owns a run. */
   dispatchScheduledTaskRun(runId: string, generation: number): void { this.dispatchAcceptedRun(runId, generation, 'scheduled') }
 
@@ -1365,6 +1375,11 @@ export class ProductTaskService {
     lineage_id: string
     resume_binding_id: string
     initial_input: string
+    auto_memory: {
+      storage_dir: string
+      enabled: boolean
+      entry_id: string
+    }
     session_memory: {
       storage_dir: string
       entry_id: string
@@ -1394,6 +1409,7 @@ export class ProductTaskService {
       lineage_id: run.lineage_id,
       resume_binding_id: resumeBindingId,
       initial_input: entry.text,
+      auto_memory: { storage_dir: this.autoMemoryStorageDir(), enabled: await this.autoMemoryEnabled(), entry_id: run.entry_id },
       session_memory: { storage_dir: this.sessionMemoryStorageDir(), entry_id: run.entry_id, ancestors },
     }
   }
