@@ -3,9 +3,19 @@ import { randomBytes } from 'node:crypto'
 import type { ProductResourceScheduler } from './resourceScheduler.js'
 import { createAgentWorkerChildStartCapability, createLegacyDeferredEnvelope } from './permissionExecutionEnvelope.js'
 
-type DispatchStore = { readTaskRunDispatchIdentity(run: string, generation: number): Promise<{ task_id: string; lineage_id: string; resume_binding_id: string }>; claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }>; settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> }
+export type AgentWorkerCoreIdentity = {
+  task_id: string
+  lineage_id: string
+  resume_binding_id: string
+  session_memory?: {
+    storage_dir: string
+    entry_id: string
+    ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }>
+  }
+}
+type DispatchStore = { readTaskRunDispatchIdentity(run: string, generation: number): Promise<AgentWorkerCoreIdentity>; claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }>; settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> }
 export type AgentWorkerChild = { send(message: AgentWorkerInbound): void; stop(): Promise<void> }
-export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: { task_id: string; lineage_id: string; resume_binding_id: string }; bootstrap: { capability: ReturnType<typeof createAgentWorkerChildStartCapability>; capability_key: Buffer }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
+export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: AgentWorkerCoreIdentity; bootstrap: { capability: ReturnType<typeof createAgentWorkerChildStartCapability>; capability_key: Buffer }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
 export type AgentWorkerSafeMessageSink = {
   record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): Promise<void>
 }
@@ -29,7 +39,7 @@ export class AgentWorkerSupervisor {
   }
   private async startDispatch(runId: string, generation: number, kind: AgentWorkerDispatchKind): Promise<'started' | 'recovery_required'> {
     const key = `${runId}:${generation}`
-    let identity: { task_id: string; lineage_id: string; resume_binding_id: string }
+    let identity: AgentWorkerCoreIdentity
     try { identity = await this.runs.readTaskRunDispatchIdentity(runId, generation) } catch { return 'recovery_required' }
     let receipt: Awaited<ReturnType<ProductResourceScheduler['submit']>>
     const resources = kind === 'scheduled'

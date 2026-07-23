@@ -1,9 +1,8 @@
-import type { AgentWorkerChild, AgentWorkerChildLauncher } from '../product/agentWorkerSupervisor.js'
+import type { AgentWorkerChild, AgentWorkerChildLauncher, AgentWorkerCoreIdentity } from '../product/agentWorkerSupervisor.js'
 import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration } from '../../../../gateway/providerRegistry.js'
 import type { AgentWorkerCore, AgentWorkerCoreFactory } from '../product/agentWorkerService.js'
 import { stripHostOnlyGatewayEnv } from '../services/gatewayEnv.js'
 
-type PrivateIdentity = { task_id: string; lineage_id: string; resume_binding_id: string }
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
 type CoreBinding = { session_id: string; work_dir: string }
 const PROVIDER_RUNTIME_ENV_KEYS = [
@@ -17,7 +16,7 @@ const PROVIDER_RUNTIME_ENV_KEYS = [
   'BB_PROVIDER_WORKER_MANIFEST_SHA256',
 ] as const
 export type TaskRunCoreBindingResolver = { resolveTaskRunCoreBinding(runId: string, generation: number): Promise<CoreBinding> }
-export type ServerPrivateCoreFactory = { start(identity: PrivateIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<AgentWorkerCore> }
+export type ServerPrivateCoreFactory = { start(identity: AgentWorkerCoreIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<AgentWorkerCore> }
 
 /** Bun IPC is the only transport carrying a child bootstrap; stdout remains framed protocol only. */
 export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {

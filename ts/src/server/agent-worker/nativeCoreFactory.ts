@@ -10,5 +10,16 @@ export const serverPrivateNativeCoreFactory: ServerPrivateCoreFactory = {
     run_id: input.run_id,
     session_id: binding.session_id,
     work_dir: binding.work_dir,
+    ...(identity.session_memory ? {
+      session_memory: {
+        storage_dir: identity.session_memory.storage_dir,
+        task_id: identity.task_id,
+        lineage_id: identity.lineage_id,
+        resume_binding_id: identity.resume_binding_id,
+        work_dir: binding.work_dir,
+        entry_id: identity.session_memory.entry_id,
+        ancestors: identity.session_memory.ancestors,
+      },
+    } : {}),
   }),
 }
