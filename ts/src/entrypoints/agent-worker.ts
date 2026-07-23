@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline'
 import { AgentWorkerProtocol } from '../server/agent-worker/framedProtocol.js'
 import { AgentWorkerService, type AgentWorkerBootstrap, type AgentWorkerCore } from '../server/product/agentWorkerService.js'
-import type { AgentWorkerOutbound } from '../shared/product/agentWorker.js'
+import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 
 type CoreRequest = { type: 'core_request'; id: string; operation: 'start' | 'input' | 'approval' | 'stop' | 'shutdown'; value?: unknown }
 let sequence = 0; const pending = new Map<string, { resolve(): void; reject(): void }>()
