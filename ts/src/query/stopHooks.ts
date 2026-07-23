@@ -91,6 +91,12 @@ export function formatGoalContinuationStatusOutput(reason: string): string {
     : 'Goal continuing: more work is required'
 }
 
+export function shouldRunLegacyMemoryAutomation(
+  context: Pick<ToolUseContext, 'agentId' | 'disableMemoryDiscovery'>,
+): boolean {
+  return !context.disableMemoryDiscovery && !context.agentId
+}
+
 export async function* handleStopHooks(
   messagesForQuery: Message[],
   assistantMessages: AssistantMessage[],
@@ -163,13 +169,16 @@ export async function* handleStopHooks(
   // memory extraction, auto-dream). Scripted -p calls don't want auto-memory
   // or forked agents contending for resources during shutdown.
   if (!isBareMode()) {
+    const runLegacyMemoryAutomation = shouldRunLegacyMemoryAutomation(
+      toolUseContext,
+    )
     // Inline env check for dead code elimination in external builds
     if (!isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION)) {
       void executePromptSuggestion(stopHookContext)
     }
     if (
       feature('EXTRACT_MEMORIES') &&
-      !toolUseContext.agentId &&
+      runLegacyMemoryAutomation &&
       isExtractModeActive()
     ) {
       // Fire-and-forget in both interactive and non-interactive. For -p/SDK,
@@ -180,7 +189,7 @@ export async function* handleStopHooks(
         toolUseContext.appendSystemMessage,
       )
     }
-    if (!toolUseContext.agentId) {
+    if (runLegacyMemoryAutomation) {
       void executeAutoDream(stopHookContext, toolUseContext.appendSystemMessage)
     }
   }

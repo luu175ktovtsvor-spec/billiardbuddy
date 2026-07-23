@@ -90,6 +90,8 @@ import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
 import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
+import { getLocalISODate } from 'src/constants/common.js'
+import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -438,6 +440,11 @@ export async function createServerPrivateNativeCorePort(input: { run_id: string;
   let state = getDefaultAppState()
   const commands = await getCommands(input.work_dir)
   const tools = getTools(state.toolPermissionContext)
+  const instructionSnapshot = createProductInstructionSnapshot(input.work_dir)
+  const productUserContext = {
+    ...(instructionSnapshot.prompt ? { claudeMd: instructionSnapshot.prompt } : {}),
+    currentDate: `Today's date is ${getLocalISODate()}.`,
+  }
   let cache = createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
   let controller: AbortController | undefined
   let terminal = false
@@ -463,6 +470,8 @@ export async function createServerPrivateNativeCorePort(input: { run_id: string;
           setAppState: update => { state = update(state) },
           getReadFileCache: () => cache,
           setReadFileCache: next => { cache = next },
+          contextOverride: { userContext: productUserContext, systemContext: {} },
+          disableMemoryDiscovery: true,
           abortController: controller,
           canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
             const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)

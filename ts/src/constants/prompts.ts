@@ -1,7 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { type as osType, version as osVersion, release as osRelease } from 'os'
 import { env } from '../utils/env.js'
-import { getIsGit } from '../utils/git.js'
+import { findGitRoot, getIsGit } from '../utils/git.js'
 import { getCwd } from '../utils/cwd.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { getCurrentWorktreeSession } from '../utils/worktree.js'
@@ -446,18 +446,19 @@ export async function getSystemPrompt(
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
+  options: { disableMemoryDiscovery?: boolean; cwd?: string } = {},
 ): Promise<string[]> {
+  const cwd = options.cwd ?? getCwd()
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
-      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
+      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${cwd}\nDate: ${getSessionStartDate()}`,
     ]
   }
 
-  const cwd = getCwd()
   const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
     getOutputStyleConfig(),
-    computeSimpleEnvInfo(model, additionalWorkingDirectories),
+    computeSimpleEnvInfo(model, additionalWorkingDirectories, options.cwd),
   ])
 
   const settings = getInitialSettings()
@@ -473,7 +474,7 @@ export async function getSystemPrompt(
 
 ${CYBER_RISK_INSTRUCTION}`,
       getSystemRemindersSection(),
-      await loadMemoryPrompt(),
+      options.disableMemoryDiscovery ? null : await loadMemoryPrompt(),
       envInfo,
       getLanguageSection(settings.language),
       // When delta enabled, instructions are announced via persisted
@@ -492,12 +493,14 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection('session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
-    systemPromptSection('memory', () => loadMemoryPrompt()),
+    ...(options.disableMemoryDiscovery
+      ? []
+      : [systemPromptSection('memory', () => loadMemoryPrompt())]),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),
     systemPromptSection('env_info_simple', () =>
-      computeSimpleEnvInfo(model, additionalWorkingDirectories),
+      computeSimpleEnvInfo(model, additionalWorkingDirectories, options.cwd),
     ),
     systemPromptSection('language', () =>
       getLanguageSection(settings.language),
@@ -651,8 +654,12 @@ ${modelDescription}${knowledgeCutoffMessage}`
 export async function computeSimpleEnvInfo(
   modelId: string,
   additionalWorkingDirectories?: string[],
+  cwdOverride?: string,
 ): Promise<string> {
-  const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
+  const [isGit, unameSR] = await Promise.all([
+    cwdOverride ? Promise.resolve(findGitRoot(cwdOverride) !== null) : getIsGit(),
+    getUnameSR(),
+  ])
 
   // Undercover: strip all model name/ID references. See computeEnvInfo.
   // DCE: inline the USER_TYPE check at each site — do NOT hoist to a const.
@@ -671,8 +678,8 @@ export async function computeSimpleEnvInfo(
     ? `Assistant knowledge cutoff is ${cutoff}.`
     : null
 
-  const cwd = getCwd()
-  const isWorktree = getCurrentWorktreeSession() !== null
+  const cwd = cwdOverride ?? getCwd()
+  const isWorktree = cwdOverride ? false : getCurrentWorktreeSession() !== null
 
   const envItems = [
     `Primary working directory: ${cwd}`,

@@ -2166,6 +2166,7 @@ async function getNestedMemoryAttachments(
   // Check triggers first — getAppState() waits for a React render cycle,
   // and the common case is an empty trigger set.
   if (
+    toolUseContext.disableMemoryDiscovery ||
     !toolUseContext.nestedMemoryAttachmentTriggers ||
     toolUseContext.nestedMemoryAttachmentTriggers.size === 0
   ) {
@@ -2359,6 +2360,7 @@ export function startRelevantMemoryPrefetch(
   toolUseContext: ToolUseContext,
 ): MemoryPrefetch | undefined {
   if (
+    toolUseContext.disableMemoryDiscovery ||
     !isAutoMemoryEnabled() ||
     !getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
   ) {
