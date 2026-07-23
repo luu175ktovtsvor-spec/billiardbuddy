@@ -6,23 +6,76 @@ import { IpcAgentWorkerLauncher } from './ipcLauncher.js'
 import { AgentWorkerSupervisor } from '../product/agentWorkerSupervisor.js'
 
 const receipt = { job_id: 'agent-worker:run:1', outcome: 'admitted' as const, profile_revision: 'p', resource_keys: ['agent.worker'] as const, fencing_token: 1, lease: { owner_id: 'owner', process_id: 'p', process_generation: 'g', fencing_token: 1, expires_at: '2027-01-01T00:00:00.000Z' } }
+const providerRuntimeKeys = ['QF_GATEWAY_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'BB_PROVIDER_CONTRACT_VERSION', 'BB_PROVIDER_REGISTRY_SHA256', 'BB_PROVIDER_WORKER_MANIFEST_SHA256'] as const
+
+async function withProviderRuntimeEnv<T>(values: Partial<Record<(typeof providerRuntimeKeys)[number], string>>, action: () => Promise<T>): Promise<T> {
+  const original = Object.fromEntries(providerRuntimeKeys.map(key => [key, process.env[key]]))
+  try {
+    for (const key of providerRuntimeKeys) delete process.env[key]
+    Object.assign(process.env, values)
+    return await action()
+  } finally {
+    for (const key of providerRuntimeKeys) { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key] }
+  }
+}
 
 test('server-owned IPC launcher reaches child bootstrap and invokes one private Core factory', async () => {
-  let claims = 0; let starts = 0; const settled: string[] = []
-  const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string) => { settled.push(state) } }
-  const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
-  let resolves = 0
-  const launcher = new IpcAgentWorkerLauncher(
-    { resolveTaskRunCoreBinding: async (run, generation) => { resolves++; expect([run, generation]).toEqual(['run', 1]); return { session_id: 'session', work_dir: process.cwd() } } },
-    { start: async (identity, binding) => { starts++; expect(identity).toEqual({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }); expect(binding.session_id).toBe('session'); return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
-  )
-  const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
-  expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
-  expect(claims).toBe(1); expect(resolves).toBe(1); expect(starts).toBe(1); expect(settled).toEqual([]); await supervisor.stop('run', 1)
+  await withProviderRuntimeEnv({}, async () => {
+    let claims = 0; let starts = 0; const settled: string[] = []
+    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string) => { settled.push(state) } }
+    const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
+    let resolves = 0
+    const launcher = new IpcAgentWorkerLauncher(
+      { resolveTaskRunCoreBinding: async (run, generation) => { resolves++; expect([run, generation]).toEqual(['run', 1]); return { session_id: 'session', work_dir: process.cwd() } } },
+      { start: async (identity, binding) => { starts++; expect(identity).toEqual({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }); expect(binding.session_id).toBe('session'); return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
+    )
+    const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
+    expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
+    expect(claims).toBe(1); expect(resolves).toBe(1); expect(starts).toBe(1); expect(settled).toEqual([]); await supervisor.stop('run', 1)
+  })
+})
+
+test('server-owned IPC launcher rejects explicit invalid registry values before any Core start', async () => {
+  const invalidCases: Array<Partial<Record<(typeof providerRuntimeKeys)[number], string>>> = [
+    { QF_GATEWAY_MODEL: 'unknown-model' },
+    { ANTHROPIC_DEFAULT_OPUS_MODEL: 'unknown-model' },
+    { BB_PROVIDER_REGISTRY_SHA256: '0'.repeat(64) },
+    { BB_PROVIDER_CONTRACT_VERSION: '999' },
+  ]
+  for (const env of invalidCases) {
+    await withProviderRuntimeEnv(env, async () => {
+      let starts = 0; const settled: string[] = []
+      const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+      const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
+      const launcher = new IpcAgentWorkerLauncher(
+        { resolveTaskRunCoreBinding: async () => ({ session_id: 'session', work_dir: process.cwd() }) },
+        { start: async () => { starts++; return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
+      )
+      const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
+      expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
+      expect(starts, JSON.stringify(env)).toBe(0); expect(settled).toEqual(['recovery_required:模型配置无效'])
+    })
+  }
+})
+
+test('registered explicit registry model reaches one real child Core start', async () => {
+  await withProviderRuntimeEnv({ QF_GATEWAY_MODEL: 'deepseek-v4-flash' }, async () => {
+    let starts = 0; const settled: string[] = []
+    const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+    const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
+    const launcher = new IpcAgentWorkerLauncher(
+      { resolveTaskRunCoreBinding: async () => ({ session_id: 'session', work_dir: process.cwd() }) },
+      { start: async () => { starts++; return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
+    )
+    const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
+    expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
+    expect(starts).toBe(1); expect(settled).toEqual([]); await supervisor.stop('run', 1)
+  })
 })
 
 test('actual agent-worker child receives no host gateway credentials while retaining IPC-safe environment', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'bb-agent-worker-env-'))
+  await withProviderRuntimeEnv({}, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'bb-agent-worker-env-'))
   const output = join(directory, 'env.json')
   const keys = ['QF_GATEWAY_TOKEN', 'QF_GATEWAY_BOOTSTRAP_CREDENTIAL', 'QF_LICENSE_KEY', 'QF_GATEWAY_REFRESH_TOKEN', 'QF_GATEWAY_SESSION', 'QF_GATEWAY_SESSION_PROOF', 'BB_INSTALLATION_ID', 'QF_GATEWAY_URL'] as const
   const original = Object.fromEntries(keys.map(key => [key, process.env[key]]))
@@ -48,6 +101,7 @@ test('actual agent-worker child receives no host gateway credentials while retai
     if (originalIpc === undefined) delete process.env.BB_AGENT_WORKER_IPC_SAFE; else process.env.BB_AGENT_WORKER_IPC_SAFE = originalIpc
     rmSync(directory, { recursive: true, force: true })
   }
+})
 })
 
 test('entrypoint without IPC bootstrap fails closed with framed output', async () => {

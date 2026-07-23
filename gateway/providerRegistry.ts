@@ -1,0 +1,208 @@
+import { createHash } from 'node:crypto'
+import type {
+  ProviderRegistryEntry,
+  ProviderRuntimeConfigurationError,
+} from '../ts/shared/product/providerContracts.js'
+
+export const PROVIDER_REGISTRY_CONTRACT_VERSION = 1 as const
+export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-07-23'
+export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSION'
+export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
+export const PROVIDER_RUNTIME_MANIFEST_SHA256_ENV = 'BB_PROVIDER_WORKER_MANIFEST_SHA256'
+
+const SLOT_ALIASES = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+] as const
+
+/**
+ * The one canonical, non-secret model registry.  Windows are deliberately the
+ * project-wide lower bound (16k): repository evidence records larger advertised
+ * limits but no end-to-end worker verification of them.
+ */
+export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
+  {
+    model_id: 'deepseek-v4-flash',
+    provider: 'deepseek',
+    capabilities: ['TextReasoning'],
+    worker_env_source: { variable: 'QF_GATEWAY_MODEL', slot_aliases: [...SLOT_ALIASES], default_model: true },
+    verified_context_window: 16_000,
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    compact_threshold: 12_000,
+    resume_evidence: { path: 'ts/src/server/product/agentWorkerSupervisor.ts', status: 'verified' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+  {
+    model_id: 'mimo-v2.5',
+    provider: 'mimo',
+    capabilities: ['VisualEvidence'],
+    worker_env_source: { variable: 'GW_MIMO_MODEL', slot_aliases: [] },
+    verified_context_window: 16_000,
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    compact_threshold: 12_000,
+    resume_evidence: { path: 'gateway/visionBridge.ts', status: 'conservative' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+  {
+    model_id: 'gpt-image-2',
+    provider: 'openai',
+    capabilities: ['ImageGeneration'],
+    worker_env_source: { variable: 'RELAY_IMAGE_MODEL', slot_aliases: [] },
+    verified_context_window: 16_000,
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    compact_threshold: 12_000,
+    resume_evidence: { path: 'relay/app.ts', status: 'verified' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+  {
+    model_id: 'fun-asr-flash-2026-06-15',
+    provider: 'dashscope',
+    capabilities: ['SpeechTranscription'],
+    worker_env_source: { variable: 'GW_FUNASR_MODEL', slot_aliases: [] },
+    verified_context_window: 16_000,
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    compact_threshold: 12_000,
+    resume_evidence: { path: 'gateway/transcription.ts', status: 'verified' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+] as const
+
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+
+function stable(value: Json): Json {
+  if (Array.isArray(value)) return value.map(stable)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key]!)]))
+  return value
+}
+
+export function stableProviderJson(value: Json): string {
+  return `${JSON.stringify(stable(value), null, 2)}\n`
+}
+
+export function providerRegistrySha256(): string {
+  return createHash('sha256').update(stableProviderJson(PROVIDER_REGISTRY as unknown as Json)).digest('hex')
+}
+
+export function defaultProviderModel(): string {
+  const entry = PROVIDER_REGISTRY.find(candidate => candidate.worker_env_source.default_model)
+  if (!entry) throw new Error('provider registry has no default model')
+  return entry.model_id
+}
+
+export function providerRegistryEntry(model: string | undefined): ProviderRegistryEntry | undefined {
+  const normalized = model?.trim()
+  return normalized ? PROVIDER_REGISTRY.find(candidate => candidate.model_id === normalized) : undefined
+}
+
+export type ProviderContractArtifacts = {
+  'model-contract.json': Json
+  'worker-capability-manifest.json': Json
+}
+
+/** Both public artifacts are projections of the exact same canonical registry. */
+export function renderProviderContractArtifacts(): ProviderContractArtifacts {
+  const registry_sha256 = providerRegistrySha256()
+  const models = PROVIDER_REGISTRY.map(entry => ({ ...entry, registry_sha256 })) as unknown as Json[]
+  return {
+    'model-contract.json': {
+      schema_version: 1,
+      contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+      registry_sha256,
+      worker_capability_manifest: {
+        path: 'ts/product-contracts/worker-capability-manifest.json',
+        contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+        registry_sha256,
+      },
+      models,
+    },
+    'worker-capability-manifest.json': {
+      schema_version: 1,
+      contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+      registry_sha256,
+      model_contract: {
+        path: 'ts/product-contracts/model-contract.json',
+        contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+        registry_sha256,
+      },
+      capabilities: PROVIDER_REGISTRY.map(entry => ({
+        model_id: entry.model_id,
+        provider: entry.provider,
+        capabilities: entry.capabilities,
+        worker_env_source: entry.worker_env_source,
+        verified_context_window: entry.verified_context_window,
+        body_caps: entry.body_caps,
+        compact_threshold: entry.compact_threshold,
+        resume_evidence: entry.resume_evidence,
+        contract_version: entry.contract_version,
+        verification_date: entry.verification_date,
+      })) as unknown as Json[],
+    },
+  }
+}
+
+export function providerManifestSha256(): string {
+  return createHash('sha256').update(stableProviderJson(renderProviderContractArtifacts()['worker-capability-manifest.json'])).digest('hex')
+}
+
+export function buildProviderRegistryRuntimeEnv(model: string | undefined): Record<string, string> {
+  const selected = model?.trim() || defaultProviderModel()
+  const entry = providerRegistryEntry(selected)
+  const contract = {
+    [PROVIDER_RUNTIME_CONTRACT_VERSION_ENV]: String(PROVIDER_REGISTRY_CONTRACT_VERSION),
+    [PROVIDER_RUNTIME_REGISTRY_SHA256_ENV]: providerRegistrySha256(),
+    [PROVIDER_RUNTIME_MANIFEST_SHA256_ENV]: providerManifestSha256(),
+  }
+  if (!entry) return contract
+  return {
+    ...contract,
+    [entry.worker_env_source.variable]: selected,
+    ...Object.fromEntries(entry.worker_env_source.slot_aliases.map(alias => [alias, selected])),
+    CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [selected]: entry.verified_context_window }),
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(entry.compact_threshold),
+  }
+}
+
+export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'verified_context_window' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
+  if (!entry.resume_evidence.path || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE || entry.verified_context_window >= 1_000_000) return 'MODEL_CONTRACT_STALE'
+  const caps = entry.body_caps
+  if (caps.CHAT_TEXT_BODY_MAX_BYTES <= 0 || caps.VISION_BODY_MAX_BYTES <= 0 || caps.IMAGE_GENERATION_BODY_MAX_BYTES <= 0) return 'MODEL_CONTRACT_STALE'
+  return undefined
+}
+
+export function validateProviderRuntimeConfiguration(env: Record<string, string | undefined>): ProviderRuntimeConfigurationError | undefined {
+  if (env[PROVIDER_RUNTIME_CONTRACT_VERSION_ENV] !== String(PROVIDER_REGISTRY_CONTRACT_VERSION)) return 'MODEL_CONTRACT_VERSION_MISMATCH'
+  if (env[PROVIDER_RUNTIME_REGISTRY_SHA256_ENV] !== providerRegistrySha256() || env[PROVIDER_RUNTIME_MANIFEST_SHA256_ENV] !== providerManifestSha256()) return 'MODEL_CONTRACT_HASH_MISMATCH'
+  for (const entry of PROVIDER_REGISTRY) {
+    const error = validateProviderRegistryEntry(entry)
+    if (error) return error
+  }
+  const selected = env.QF_GATEWAY_MODEL?.trim() || defaultProviderModel()
+  if (!providerRegistryEntry(selected)) return 'MODEL_CONFIGURATION_INVALID'
+  for (const alias of SLOT_ALIASES) {
+    const value = env[alias]?.trim()
+    if (value && !providerRegistryEntry(value)) return 'MODEL_CONFIGURATION_INVALID'
+  }
+  return undefined
+}

@@ -8,6 +8,8 @@ export class AgentWorkerProtocol {
   constructor(private readonly service: AgentWorkerService, private readonly emit: (message: AgentWorkerOutbound) => void) {}
   announce(): void {
     if (this.hello || this.ready) return
+    const configurationError = this.service.validateReady()
+    if (configurationError) return this.emit(configurationError)
     this.hello = true; this.ready = true
     this.emit({ type: 'hello', versions: { min: AGENT_WORKER_PROTOCOL_VERSION, max: AGENT_WORKER_PROTOCOL_VERSION }, capabilities: ['framed', 'permission-envelope'] })
     this.emit({ type: 'ready' })

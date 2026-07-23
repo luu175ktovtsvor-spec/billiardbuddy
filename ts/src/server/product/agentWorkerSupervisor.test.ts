@@ -32,6 +32,18 @@ test('supervisor fences stop and protocol mismatch into one durable settlement',
   const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, badLauncher); expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10); expect(f.settled).toEqual(['recovery_required:CAPABILITY_MISMATCH']); expect((await f.scheduler.snapshot()).active).toBe(0)
 })
 
+test('invalid model configuration settles before Core startup with stable product projection', async () => {
+  const f = await fixture()
+  const launcher = { launch: async (input: { onMessage: (message: any) => void }) => {
+    const child = { send: () => {}, stop: async () => {} }
+    setTimeout(() => input.onMessage({ type: 'fatal', code: 'MODEL_CONFIGURATION_INVALID' }), 0)
+    return child
+  } }
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher)
+  expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
+  expect(f.sent).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'start' })])); expect(f.settled).toEqual(['recovery_required:模型配置无效'])
+})
+
 test('concurrent dispatch calls share one startup before the first durable await', async () => {
   const f = await fixture(); const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher)
   expect(await Promise.all([supervisor.dispatch('run', 1), supervisor.dispatch('run', 1), supervisor.dispatch('run', 1)])).toEqual(['started', 'started', 'started']); await Bun.sleep(10)

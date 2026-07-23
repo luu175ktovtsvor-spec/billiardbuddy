@@ -72,7 +72,7 @@ export class AgentWorkerSupervisor {
     const key = `${run}:${generation}`
     if (this.settled.has(key)) return 'recovery_required'
     this.settled.add(key); this.terminalPending.delete(key); this.active.delete(key); const timer = this.readyTimers.get(key); if (timer) clearTimeout(timer); this.readyTimers.delete(key)
-    try { await this.runs.settleTaskRunDispatch(run, generation, state, error) } catch {}
+    try { await this.runs.settleTaskRunDispatch(run, generation, state, error === 'MODEL_CONFIGURATION_INVALID' ? '模型配置无效' : error) } catch {}
     // Durable terminal/recovery state is the fence for all later child IPC;
     // scheduler journal I/O must not delay that transition.
     try { if (fencing) await this.scheduler.complete(`agent-worker:${run}:${generation}`, fencing) } catch {}

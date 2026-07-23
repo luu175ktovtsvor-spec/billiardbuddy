@@ -18,6 +18,10 @@ describe('model context windows', () => {
     expect(getConfiguredOrBuiltInModelContextWindow('qwen3-coder-next')).toBe(262_144)
   })
 
+  test('reads registered gateway model windows conservatively', () => {
+    expect(getConfiguredOrBuiltInModelContextWindow('deepseek-v4-flash')).toBe(16_000)
+  })
+
   test('matches configured base model windows for Claude Code 1m aliases', () => {
     expect(getModelContextWindowFromEnvValue(
       'MiniMax-M3[1m]',

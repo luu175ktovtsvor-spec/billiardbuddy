@@ -2,6 +2,7 @@ import Ajv2020 from 'ajv/dist/2020.js'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { PROVIDER_REGISTRY, providerManifestSha256, providerRegistrySha256, renderProviderContractArtifacts, stableProviderJson, validateProviderRegistryEntry, validateProviderRuntimeConfiguration } from '../../../gateway/providerRegistry.js'
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 type SourceReference = {
@@ -163,6 +164,7 @@ export function render(source: Source): Record<string, Json> {
       source_sha256: digest,
       candidates: source.deletion_candidates.map((candidate) => ({ ...candidate, d5_owner_module: '24' })),
     },
+    ...renderProviderContractArtifacts(),
   }
 }
 
@@ -343,6 +345,41 @@ export function validateAuthEntitlementPolicyFile(registration: AuthPolicyRegist
   validateAuthEntitlementPolicy(parseJson(file) as Record<string, Json>, registration)
 }
 
+type ProviderFixture = { name: string, env: Record<string, string>, expected: string }
+
+function validateProviderRegistryArtifacts(artifacts: Record<string, Json>): void {
+  const generated = renderProviderContractArtifacts()
+  const contract = artifacts['model-contract.json'] as Record<string, any>
+  const manifest = artifacts['worker-capability-manifest.json'] as Record<string, any>
+  requireCondition(stableProviderJson(contract) === stableProviderJson(generated['model-contract.json']), 'model contract is not generated from provider registry')
+  requireCondition(stableProviderJson(manifest) === stableProviderJson(generated['worker-capability-manifest.json']), 'worker capability manifest is not generated from provider registry')
+  requireCondition(contract.registry_sha256 === providerRegistrySha256() && manifest.registry_sha256 === providerRegistrySha256(), 'provider artifacts must share canonical registry hash')
+  requireCondition(contract.worker_capability_manifest?.registry_sha256 === manifest.registry_sha256 && manifest.model_contract?.registry_sha256 === contract.registry_sha256, 'provider artifacts must cross-reference canonical registry hash')
+  requireCondition(providerManifestSha256() === sha256(stableProviderJson(manifest)), 'worker capability manifest hash mismatch')
+  const secret = /(?:api[_-]?key|token|secret|password|credential)/i
+  const serialized = stableProviderJson({ contract, manifest } as unknown as Json)
+  requireCondition(!secret.test(serialized), 'provider artifacts must not contain secrets')
+  requireCondition(PROVIDER_REGISTRY.length > 0 && PROVIDER_REGISTRY.every(entry => entry.verified_context_window >= 16_000 && entry.verified_context_window < 1_000_000), 'provider registry has unsupported context window')
+  requireCondition(PROVIDER_REGISTRY.every(entry => entry.resume_evidence.path && existsSync(resolve(root, entry.resume_evidence.path))), 'provider registry evidence path is missing')
+  for (const entry of PROVIDER_REGISTRY) {
+    const caps = entry.body_caps
+    requireCondition(caps.CHAT_TEXT_BODY_MAX_BYTES > 0 && caps.VISION_BODY_MAX_BYTES > 0 && caps.IMAGE_GENERATION_BODY_MAX_BYTES > 0, `invalid body caps for ${entry.model_id}`)
+  }
+  const fixtures = parseJson(resolve(root, 'ts/product-contracts/fixtures/provider-registry-fixtures.json')) as unknown as {
+    invalid: ProviderFixture[]
+    unsupported: {
+      stale: { verification_date: string }
+      one_megabyte_window: { verified_context_window: number }
+      body_caps: { CHAT_TEXT_BODY_MAX_BYTES: number, VISION_BODY_MAX_BYTES: number, IMAGE_GENERATION_BODY_MAX_BYTES: number }
+    }
+  }
+  for (const fixture of fixtures.invalid) requireCondition(validateProviderRuntimeConfiguration(fixture.env) === fixture.expected, `provider fixture rejected incorrectly: ${fixture.name}`)
+  const baseline = PROVIDER_REGISTRY[0]!
+  requireCondition(validateProviderRegistryEntry({ ...baseline, ...fixtures.unsupported.stale }) === 'MODEL_CONTRACT_STALE', 'stale provider fixture accepted')
+  requireCondition(validateProviderRegistryEntry({ ...baseline, ...fixtures.unsupported.one_megabyte_window }) === 'MODEL_CONTRACT_STALE', '1M unsupported provider fixture accepted')
+  requireCondition(validateProviderRegistryEntry({ ...baseline, body_caps: fixtures.unsupported.body_caps }) === 'MODEL_CONTRACT_STALE', 'invalid body cap fixture accepted')
+}
+
 export function validate(source: Source, artifacts = render(source)): void {
   requireCondition(source.contract_version === 1, 'contract_version must be 1')
   validateSchemaSemantics(source, artifacts)
@@ -382,12 +419,13 @@ export function validate(source: Source, artifacts = render(source)): void {
   requireCondition(Array.isArray(authPolicyRegistration.required_evidence) && authPolicyRegistration.required_evidence.length === REQUIRED_AUTH_POLICY_CONSTRAINTS.length, 'auth entitlement policy evidence is invalid')
   const authPolicyPath = resolve(root, authPolicyRegistration.path)
   validateAuthEntitlementPolicyFile(authPolicyRegistration, authPolicyPath)
+  validateProviderRegistryArtifacts(artifacts)
   validateDeletionGraph(source)
   requireCondition(source.policy_schemas.length === 14, 'all initial policy schemas must be registered')
   for (const policy of ['permission-profile-policy', 'automatic-reviewer-policy']) {
     requireCondition(source.policy_schemas.some(([policyId, ownerModule]) => policyId === policy && ownerModule === '08'), `${policy} must remain owned by module 08`)
   }
-  requireCondition(Object.keys(artifacts).length === 7, 'all seven generated artifacts are required')
+  requireCondition(Object.keys(artifacts).length === 9, 'all nine generated artifacts are required')
   const legacyMatrixSchemaArtifact = artifacts['legacy-support-matrix.schema.json'] as any
   const componentSchemaArtifact = artifacts['component-compatibility-matrix.schema.json'] as any
   const releaseSchemaArtifact = artifacts['release-checklist.schema.json'] as any

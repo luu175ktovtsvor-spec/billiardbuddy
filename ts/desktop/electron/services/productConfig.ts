@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { defaultProviderModel } from '../../../../gateway/providerRegistry.js'
 
 /**
  * Product gateway configuration source for the SERVER sidecar.
@@ -145,6 +146,6 @@ export function applyGatewayConfigToEnv(
   if (!gateway) return baseEnv
   const env: NodeJS.ProcessEnv = { ...baseEnv }
   if (gateway.url && !env.QF_GATEWAY_URL) env.QF_GATEWAY_URL = gateway.url
-  if (gateway.model && !env.QF_GATEWAY_MODEL) env.QF_GATEWAY_MODEL = gateway.model
+  if (!env.QF_GATEWAY_MODEL) env.QF_GATEWAY_MODEL = gateway.model ?? defaultProviderModel()
   return env
 }
