@@ -106,6 +106,11 @@ Base-Commit SHA：
 
 实施子代理交付后，主代理只接受同时满足以下条件的 Work Unit：范围没有越界；当前已有消费者全部闭合；类型、协议、失败语义和测试一致；工作树中没有混入开工前修改；所有跳过的真实外部验证均明确记录。部分完成或阻塞不得伪装成 accepted commit。子代理把未提交变更留在当前 `main`，或在工具强制隔离时提供由主代理原样应用的 patch；主代理不能在应用时自行修产品代码。独立审查/验证通过后，主代理直接在 `main` 创建唯一 accepted commit；已有 remote 权限与分支策略允许时可按第 0.5 节直接 push，不再等待聊天授权。正式发布、feed 切换和不可逆第三方动作仍只按模块 24/25 的候选与发布门禁执行。
 
+- `[HARD]` Module Owner 对工程质量负最终责任，不能把生产代码审查委托给实施/审查子代理后只读取摘要、测试数字或审查结论。每个 accepted commit 前，Module Owner 必须亲自阅读最终生产 diff，并沿本 Work Unit 的关键入口、权威状态、写入者、外部/进程边界、当前消费者和失败/恢复路径追踪实际调用链；逐项核对冻结合同、允许/禁止范围、身份与 owner、并发/幂等/资源释放、兼容/迁移和 secrets/data-egress 边界。无法说明生产代码如何实现单一用户结果时不得接受。
+- `[HARD]` 代码与测试的增加、删除和简化按语义判断，不按行数、文件数或测试数量判断。最小代码完整实现合同是优点；删除项必须区分为已冻结退休能力、重复/不可达实现、仍存通用行为或当前消费者。退休能力应删除运行时消费者并改为 fail-closed/迁移证据，不得为了保留数量恢复；仍存行为不得因路由或模块收敛而丢失保护。测试名称必须与真实 fixture、身份、并发规模和断言一致。
+- `[HARD]` 全量测试通过、覆盖率、`git diff --check`、静态检查、独立审查和子代理自述都只是支持 Module Owner 判断的证据，任何一项都不能单独证明工程质量；反之，合理删除退休实现或测试也不能仅凭 diff 规模被判为低质量。Module Owner 必须基于最终生产代码给出接受或 repair 判断。
+- accepted commit body 必须新增 `Owner-Review` 段，列出 Module Owner 亲自审阅的关键生产路径/调用链、删除或简化的语义归类，以及确认仍存消费者和失败路径已闭合的结论；不得写“已审查”而无路径和判断。若 accepted 后发现主审遗漏，必须立即回到合同所属模块登记 repair Work Unit/Spec，亲自复核修复，不以既有测试绿或提交已合并为理由掩盖。
+
 每个 accepted commit 的标题必须带 Work Unit ID，例如 `feat(bb-07a): persist accepted message submissions`。commit body 是唯一跨窗口文字交接，必须包含：
 
 ```text
@@ -127,6 +132,8 @@ Checks:
 - <命令> — PASS | FAIL | SKIPPED: <原因>
 Evidence:
 - <测试/fixture/JSON manifest/包清单等仓库路径>
+Owner-Review:
+- <Module Owner 亲自审阅的关键生产路径/调用链、删除/简化语义分类、仍存消费者与失败路径闭合结论>
 External-Verification:
 - <项目> — VERIFIED | NOT_VERIFIED_EXTERNALLY | NOT_APPLICABLE
 Known-Risks:
