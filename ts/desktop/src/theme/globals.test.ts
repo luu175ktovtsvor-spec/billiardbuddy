@@ -92,4 +92,13 @@ describe('desktop theme tokens', () => {
     expect(css).toContain('background: var(--color-surface-hover);')
     expect(css).toContain('--line-numbers-foreground: var(--color-text-tertiary);')
   })
+
+  it('turns the sidebar into an overlay for narrow and highly zoomed viewports', () => {
+    expect(css).toContain('@media (max-width: 760px)')
+    expect(css).toContain('.sidebar-shell[data-state="open"]')
+    expect(css).toContain('position: absolute;')
+    expect(css).toContain('width: min(var(--sidebar-width), 82vw);')
+    expect(css).toContain('@media (max-width: 520px)')
+    expect(css).toContain('width: min(220px, 88vw);')
+  })
 })

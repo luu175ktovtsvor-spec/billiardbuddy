@@ -5,7 +5,7 @@ import type { App, BrowserWindow, BrowserWindowConstructorOptions, Display } fro
 export const WINDOW_STATE_FILE = 'window-state.json'
 export const DEFAULT_WINDOW_WIDTH = 1280
 export const DEFAULT_WINDOW_HEIGHT = 820
-export const MIN_WINDOW_WIDTH = 960
+export const MIN_WINDOW_WIDTH = 720
 export const MIN_WINDOW_HEIGHT = 640
 const MIN_VISIBLE_PIXELS = 80
 

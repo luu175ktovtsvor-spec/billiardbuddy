@@ -805,6 +805,25 @@ button, input, textarea, select, a, [role="button"] {
   width: 0;
 }
 
+/* A narrow or highly zoomed viewport keeps the task surface at full width.
+   The open sidebar becomes a dismissible overlay instead of squeezing the
+   active task below its usable width. */
+@media (max-width: 760px) {
+  .sidebar-shell[data-state="open"] {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(var(--sidebar-width), 82vw);
+    box-shadow: var(--shadow-dropdown);
+  }
+}
+
+@media (max-width: 520px) {
+  .sidebar-shell[data-state="open"] {
+    width: min(220px, 88vw);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar-shell {
     transition-duration: 0.01ms !important;
