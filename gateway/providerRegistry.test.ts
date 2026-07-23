@@ -8,6 +8,7 @@ import {
   renderProviderContractArtifacts,
   stableProviderJson,
   validateProviderRuntimeConfiguration,
+  workerTextReasoningEntry,
 } from './providerRegistry'
 
 test('registry provides the four neutral capabilities from one conservative source', () => {
@@ -31,9 +32,33 @@ test('both generated artifacts share and cross-reference the canonical digest', 
   expect(stableProviderJson(artifacts['model-contract.json'])).toBe(stableProviderJson(renderProviderContractArtifacts()['model-contract.json']))
 })
 
-test('runtime configuration rejects unknown aliases and stale contract bindings before ready', () => {
+test('TextReasoning default selection requires one text entry, one default entry, and matching model IDs', () => {
+  const entry = (model_id: string, capabilities: string[], default_model = false) => ({ model_id, capabilities, worker_env_source: default_model ? { default_model: true } : {} })
+  const invalidRegistries = [
+    [entry('visual', ['VisualEvidence'], true)],
+    [entry('text-a', ['TextReasoning'], true), entry('text-b', ['TextReasoning'])],
+    [entry('text', ['TextReasoning']), entry('visual', ['VisualEvidence'])],
+    [entry('text', ['TextReasoning'], true), entry('visual', ['VisualEvidence'], true)],
+    [entry('text', ['TextReasoning']), entry('visual', ['VisualEvidence'], true)],
+  ]
+  for (const registry of invalidRegistries) {
+    expect(workerTextReasoningEntry(registry)).toBeUndefined()
+    expect(() => defaultProviderModel(registry)).toThrow('provider registry has no unique TextReasoning default model')
+  }
+})
+
+test('runtime configuration binds every Core model slot to the unique TextReasoning entry before ready', () => {
+  const textReasoning = PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes('TextReasoning'))
+  const nonText = PROVIDER_REGISTRY.find(entry => !entry.capabilities.includes('TextReasoning'))!
+  expect(textReasoning).toHaveLength(1)
+  const textModel = textReasoning[0]!.model_id
   const valid = buildProviderRegistryRuntimeEnv(defaultProviderModel())
+  const slots = ['QF_GATEWAY_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL'] as const
+  expect(slots.map(slot => valid[slot])).toEqual([textModel, textModel, textModel, textModel, textModel])
   expect(validateProviderRuntimeConfiguration(valid)).toBeUndefined()
+  expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, ANTHROPIC_DEFAULT_OPUS_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: textModel, ANTHROPIC_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: 'qwen3-coder-plus' })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, ANTHROPIC_DEFAULT_OPUS_MODEL: 'unknown' })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, BB_PROVIDER_REGISTRY_SHA256: '0'.repeat(64) })).toBe('MODEL_CONTRACT_HASH_MISMATCH')

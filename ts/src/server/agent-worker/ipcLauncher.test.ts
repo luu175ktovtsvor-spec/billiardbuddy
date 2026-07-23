@@ -19,7 +19,7 @@ async function withProviderRuntimeEnv<T>(values: Partial<Record<(typeof provider
   }
 }
 
-test('server-owned IPC launcher reaches child bootstrap and invokes one private Core factory', async () => {
+test('empty worker model configuration receives the Registry TextReasoning binding and invokes one private Core factory', async () => {
   await withProviderRuntimeEnv({}, async () => {
     let claims = 0; let starts = 0; const settled: string[] = []
     const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string) => { settled.push(state) } }
@@ -35,31 +35,43 @@ test('server-owned IPC launcher reaches child bootstrap and invokes one private 
   })
 })
 
-test('server-owned IPC launcher rejects explicit invalid registry values before any Core start', async () => {
+test('server-owned IPC launcher rejects unknown, stale, non-text, and mixed model bindings before any Core start', async () => {
   const invalidCases: Array<Partial<Record<(typeof providerRuntimeKeys)[number], string>>> = [
     { QF_GATEWAY_MODEL: 'unknown-model' },
     { ANTHROPIC_DEFAULT_OPUS_MODEL: 'unknown-model' },
+    { QF_GATEWAY_MODEL: 'mimo-v2.5' },
+    { QF_GATEWAY_MODEL: 'gpt-image-2' },
+    { QF_GATEWAY_MODEL: 'fun-asr-flash-2026-06-15' },
+    { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mimo-v2.5' },
+    { QF_GATEWAY_MODEL: 'deepseek-v4-flash', ANTHROPIC_MODEL: 'mimo-v2.5' },
     { BB_PROVIDER_REGISTRY_SHA256: '0'.repeat(64) },
+    { BB_PROVIDER_WORKER_MANIFEST_SHA256: '0'.repeat(64) },
     { BB_PROVIDER_CONTRACT_VERSION: '999' },
   ]
   for (const env of invalidCases) {
     await withProviderRuntimeEnv(env, async () => {
-      let starts = 0; const settled: string[] = []
+      let starts = 0; let resolves = 0; const settled: string[] = []
       const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
       const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
       const launcher = new IpcAgentWorkerLauncher(
-        { resolveTaskRunCoreBinding: async () => ({ session_id: 'session', work_dir: process.cwd() }) },
+        { resolveTaskRunCoreBinding: async () => { resolves++; return { session_id: 'session', work_dir: process.cwd() } } },
         { start: async () => { starts++; return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } },
       )
       const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
       expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(100)
-      expect(starts, JSON.stringify(env)).toBe(0); expect(settled).toEqual(['recovery_required:模型配置无效'])
+      expect(resolves, JSON.stringify(env)).toBe(0); expect(starts, JSON.stringify(env)).toBe(0); expect(settled).toEqual(['recovery_required:模型配置无效'])
     })
   }
 })
 
-test('registered explicit registry model reaches one real child Core start', async () => {
-  await withProviderRuntimeEnv({ QF_GATEWAY_MODEL: 'deepseek-v4-flash' }, async () => {
+test('complete explicit TextReasoning binding reaches one real child Core start', async () => {
+  await withProviderRuntimeEnv({
+    QF_GATEWAY_MODEL: 'deepseek-v4-flash',
+    ANTHROPIC_MODEL: 'deepseek-v4-flash',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
+  }, async () => {
     let starts = 0; const settled: string[] = []
     const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
     const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
