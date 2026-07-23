@@ -465,6 +465,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [validationMessage, setValidationMessage] = useState<string | null>(null)
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
   const [mediaDraftActionProjectId, setMediaDraftActionProjectId] = useState<string | null>(null)
   const composingRef = useRef(false)
@@ -580,16 +581,23 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
   const returnLabel = onReturnToTaskIndex ? '关闭窗口' : '返回任务'
 
-  const submit = () => {
+  const submit = async () => {
+    if (isSubmitting) return
     if (!canSendProductTaskMessage(draft, attachments)) {
       setValidationMessage('请输入任务内容，或添加不超过 4 个附件。')
       return
     }
 
     const message = resolveTaskComposerRuntimeCommand(draft, taskComposerCommands)
-    const accepted = attachments.length > 0
-      ? sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment))
-      : sendText(taskId, message)
+    setIsSubmitting(true)
+    let accepted = false
+    try {
+      accepted = await (attachments.length > 0
+        ? sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment))
+        : sendText(taskId, message))
+    } finally {
+      setIsSubmitting(false)
+    }
     if (!accepted) {
       setValidationMessage('暂时无法发送这条内容，请检查后重试。')
       return
@@ -650,14 +658,14 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return
     if (!shouldSubmitOnEnter(event, chatSendBehavior)) return
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   if (!task) {
@@ -1036,7 +1044,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                     {hasActiveRun ? (
                       <button type="button" onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">停止</button>
                     ) : null}
-                    <button type="submit" className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">发送</button>
+                    <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : '发送'}</button>
                   </div>
                 </div>
               </>

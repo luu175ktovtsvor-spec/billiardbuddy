@@ -61,6 +61,16 @@ export type AtomicTaskSubmitResponse = {
   }
 }
 
+export type ProductTaskRunSubmitInput = {
+  client_operation_id: string
+  expected_task_revision: number
+  expected_lineage_revision: number
+  text: string
+  attachment_ids: string[]
+  draft_id?: string
+  expected_draft_revision?: number
+}
+
 export const productTasksApi: ProductTaskApi = {
   list: () => productApi.get<ProductTaskIndexResponse>('/api/product/tasks'),
   create: (input: MutationEnvelope<CreateProductTaskInput>) =>
@@ -107,6 +117,13 @@ export const productAtomicTaskSubmitApi = {
   ),
   submit: (input: AtomicTaskSubmitInput) => productApi.post<AtomicTaskSubmitResponse>(
     '/api/product/tasks',
+    input,
+  ),
+}
+
+export const productTaskRunSubmitApi = {
+  submit: (taskId: string, input: ProductTaskRunSubmitInput) => productApi.post<AtomicTaskSubmitResponse>(
+    `${taskPath(taskId)}/runs`,
     input,
   ),
 }

@@ -370,7 +370,7 @@ describe('ProductTaskPage', () => {
     expect(mocks.disconnectTask).toHaveBeenCalledWith('task-1')
   })
 
-  it('sends a validated task message and clears the composer only after the real queue accepts it', () => {
+  it('sends a validated task message and clears the composer only after the durable submit accepts it', async () => {
     render(<ProductTaskPage taskId="task-1" />)
     const input = screen.getByLabelText('任务输入') as HTMLTextAreaElement
 
@@ -378,7 +378,7 @@ describe('ProductTaskPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
     expect(mocks.sendText).toHaveBeenCalledWith('task-1', '  /skill ball-hall-daily-review 整理今天订单  ')
-    expect(input.value).toBe('')
+    await waitFor(() => expect(input.value).toBe(''))
   })
 
   it('shows bundled Skills in Chinese and sends their runtime command only after selection', async () => {
