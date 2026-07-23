@@ -93,4 +93,12 @@ describe('ProductResourceScheduler', () => {
     await expect(subject.complete('active', admitted.fencing_token!)).rejects.toThrow('SCHEDULER_STATE_INVALID')
     expect(await fs.readFile(fixture.statePath, 'utf8')).toBe(malformed)
   })
+
+  test('rejects all content resources until the Module 03 runtime profile validates', async () => {
+    const fixture = await scheduler()
+    const subject = new ProductResourceScheduler({ statePath: fixture.statePath, contentSafetyProfile: { valid: async () => false } })
+    const result = await subject.submit(claim('content', 'owner', { resources: [{ key: 'content.inspect', units: 1 }, { key: 'content.extract', units: 1 }, { key: 'content.thumbnail', units: 1 }, { key: 'storage.attachment-temp', units: 1 }] }))
+    expect(result.outcome).toBe('rejected')
+    expect(result.reason_code).toBe('CONTENT_PROFILE_REQUIRED')
+  })
 })

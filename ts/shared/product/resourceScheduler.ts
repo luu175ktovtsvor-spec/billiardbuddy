@@ -21,6 +21,7 @@ export type ProductResourceReasonCode =
   | 'CONCURRENCY_LIMIT' | 'QUEUE_LIMIT' | 'BYTES_LIMIT' | 'OWNER_QUOTA'
   | 'PROFILE_REQUIRED' | 'PROFILE_DEGRADED' | 'MAINTENANCE' | 'DRAINING'
   | 'UPSTREAM_UNAVAILABLE' | 'STALE_FENCING' | 'NOT_FOUND' | 'CANCELLED'
+  | 'CONTENT_PROFILE_REQUIRED'
 
 export type ProductResourceClaim = {
   job_id: string
