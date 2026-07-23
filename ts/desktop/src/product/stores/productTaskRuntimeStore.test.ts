@@ -4,6 +4,8 @@ import type { ProductTaskSocketLifecycleEvent } from '../api/taskSocket'
 const apiMocks = vi.hoisted(() => ({
   getThread: vi.fn(),
   list: vi.fn(),
+  currentLineage: vi.fn(),
+  submitRun: vi.fn(),
 }))
 const socketMocks = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -15,6 +17,12 @@ vi.mock('../api/tasks', () => ({
   productTasksApi: {
     getThread: apiMocks.getThread,
     list: apiMocks.list,
+  },
+  productConversationLineageApi: {
+    current: apiMocks.currentLineage,
+  },
+  productTaskRunSubmitApi: {
+    submit: apiMocks.submitRun,
   },
 }))
 
@@ -87,6 +95,8 @@ describe('product task runtime store', () => {
     useTabStore.setState({ tabs: [], activeTabId: null })
     apiMocks.getThread.mockReset()
     apiMocks.list.mockReset()
+    apiMocks.currentLineage.mockReset()
+    apiMocks.submitRun.mockReset()
     socketMocks.connect.mockReset()
     socketMocks.disconnect.mockReset()
     socketMocks.send.mockReset()
@@ -132,7 +142,7 @@ describe('product task runtime store', () => {
     ])
   })
 
-  it('keeps a bounded opaque run activity tree separate from the message transcript', () => {
+  it('keeps a bounded opaque run activity tree separate from the message transcript', async () => {
     const store = useProductTaskRuntimeStore.getState()
     const parentId = `activity_${'a'.repeat(32)}`
     const childId = `activity_${'b'.repeat(32)}`
@@ -175,7 +185,7 @@ describe('product task runtime store', () => {
     ])
     expect(runtime.entries).toEqual([])
 
-    expect(store.sendText('task-run-tree', '开始下一项')).toBe(false)
+    await expect(store.sendText('task-run-tree', '开始下一项')).resolves.toBe(false)
     expect(useProductTaskRuntimeStore.getState().tasks['task-run-tree']?.runActivities).toHaveLength(2)
   })
 
@@ -446,15 +456,70 @@ describe('product task runtime store', () => {
     expect(runtime.entries).toEqual([])
   })
 
-  it('does not turn the task socket into a second text-submit transport', () => {
+  it('submits text through the durable run API without turning the socket into a second transport', async () => {
     const store = useProductTaskRuntimeStore.getState()
 
-    expect(store.sendText('task-2', '   ')).toBe(false)
+    await expect(store.sendText('task-2', '   ')).resolves.toBe(false)
     expect(socketMocks.send).not.toHaveBeenCalled()
 
-    expect(store.sendText('task-2', '  /skill ball-hall-daily-review 整理今天订单  ')).toBe(false)
+    useProductTaskStore.setState({
+      index: {
+        ...EMPTY_PRODUCT_TASK_INDEX,
+        tasks: [{
+          id: 'task-2',
+          revision: 3,
+          current_lineage_id: 'lineage-2',
+          projectId: 'project-2',
+          directoryId: 'directory-2',
+          workDir: '/workspace/two',
+          title: '整理订单',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: '2026-07-19T00:00:00.000Z',
+          updatedAt: '2026-07-19T00:00:00.000Z',
+          worktreeState: 'not_requested',
+          actions: [],
+        }],
+        total: 1,
+      },
+    })
+    apiMocks.currentLineage.mockResolvedValue({
+      lineage: {
+        lineage_id: 'lineage-2',
+        product_task_id: 'task-2',
+        revision: 2,
+        compact_generation: 0,
+        state: 'active',
+        created_at: '2026-07-19T00:00:00.000Z',
+        updated_at: '2026-07-19T00:00:00.000Z',
+      },
+    })
+    apiMocks.submitRun.mockResolvedValue({
+      receipt: {
+        outcome: 'accepted',
+        authority_revision: 9,
+        result: {
+          task_id: 'task-2',
+          run_id: 'run-2',
+          entry_id: 'entry-2',
+          dispatch_generation: 1,
+        },
+      },
+    })
+    apiMocks.list.mockResolvedValue(useProductTaskStore.getState().index)
+
+    await expect(store.sendText('task-2', '  /skill ball-hall-daily-review 整理今天订单  ')).resolves.toBe(true)
     expect(socketMocks.send).not.toHaveBeenCalled()
-    expect(useProductTaskRuntimeStore.getState().tasks['task-2']).toBeUndefined()
+    expect(apiMocks.submitRun).toHaveBeenCalledWith('task-2', expect.objectContaining({
+      expected_task_revision: 3,
+      expected_lineage_revision: 2,
+      text: '/skill ball-hall-daily-review 整理今天订单',
+      attachment_ids: [],
+    }))
+    expect(useProductTaskRuntimeStore.getState().tasks['task-2']).toMatchObject({
+      runState: 'working',
+      entries: [expect.objectContaining({ type: 'user_text', text: '/skill ball-hall-daily-review 整理今天订单' })],
+    })
   })
 
   it('matches the product text boundary before creating optimistic task state', () => {

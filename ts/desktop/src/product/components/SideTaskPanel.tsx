@@ -54,6 +54,7 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const [draft, setDraft] = useState('')
   const [sendError, setSendError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const isOpen = panel?.isOpen === true
 
   const openSideTasks = useMemo(
@@ -101,6 +102,7 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
   useEffect(() => {
     setDraft('')
     setSendError(null)
+    setIsSubmitting(false)
   }, [selectedTaskId])
 
   if (!isOpen) return null
@@ -127,12 +129,20 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
     }
   }
 
-  const submit = () => {
+  const submit = async () => {
+    if (isSubmitting) return
     if (!selectedTaskId || !canSendProductTaskText(draft)) {
       setSendError('请输入要继续处理的内容。')
       return
     }
-    if (!sendText(selectedTaskId, draft)) {
+    setIsSubmitting(true)
+    let accepted = false
+    try {
+      accepted = await sendText(selectedTaskId, draft)
+    } finally {
+      setIsSubmitting(false)
+    }
+    if (!accepted) {
       setSendError('暂时无法发送这条内容，请稍后重试。')
       return
     }
@@ -142,14 +152,14 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
     if (!shouldSubmitOnEnter(event, chatSendBehavior)) return
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   return (
@@ -268,7 +278,7 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
             />
             {sendError ? <p role="alert" className="mt-1 text-xs text-[var(--color-error)]">{sendError}</p> : null}
             <div className="mt-2 flex justify-end">
-              <button type="submit" className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white">发送</button>
+              <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : '发送'}</button>
             </div>
           </form>
         </div>

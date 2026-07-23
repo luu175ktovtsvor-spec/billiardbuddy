@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { productTasksApi } from '../api/tasks'
+import {
+  productConversationLineageApi,
+  productTaskRunSubmitApi,
+  productTasksApi,
+} from '../api/tasks'
 import {
   productTaskSocket,
   type ProductTaskAttachment,
@@ -254,6 +258,7 @@ function activeActivityFromRunActivities(
 
 const socketUnsubscribers = new Map<string, () => void>()
 const historyRequestVersions = new Map<string, number>()
+const submitRequests = new Set<string>()
 
 type ThreadRefreshReason = 'initial' | 'reconnect' | 'turn_complete' | 'manual'
 type UpdateTask = (
@@ -297,8 +302,8 @@ type ProductTaskRuntimeStore = {
   tasks: Record<string, ProductTaskRuntime | undefined>
   connectTask: (taskId: string) => Promise<void>
   disconnectTask: (taskId: string) => void
-  sendText: (taskId: string, text: string) => boolean
-  sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[]) => boolean
+  sendText: (taskId: string, text: string) => Promise<boolean>
+  sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[]) => Promise<boolean>
   stopTask: (taskId: string) => void
   respondToApproval: (taskId: string, allowed: boolean) => boolean
   respondToQuestions: (taskId: string, answers: string[]) => boolean
@@ -352,6 +357,66 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     }
   }
 
+  const submitMessage = async (
+    taskId: string,
+    text: string,
+    attachments: ProductTaskAttachment[] = [],
+  ): Promise<boolean> => {
+    const content = text.trim()
+    if (!canSendProductTaskMessage(content, attachments) || attachments.length > 0) return false
+
+    const runtime = get().tasks[taskId]
+    if ((runtime && runtime.runState !== 'idle') || submitRequests.has(taskId)) return false
+    const task = useProductTaskStore.getState().index.tasks.find((candidate) => candidate.id === taskId)
+    if (!task) return false
+
+    const operationId = `task-submit-${crypto.randomUUID()}`
+    submitRequests.add(taskId)
+    try {
+      const { lineage } = await productConversationLineageApi.current(taskId)
+      const response = await productTaskRunSubmitApi.submit(taskId, {
+        client_operation_id: operationId,
+        expected_task_revision: task.revision ?? 0,
+        expected_lineage_revision: lineage?.revision ?? 0,
+        text: content,
+        attachment_ids: [],
+      })
+      if (!response.receipt.result || !['accepted', 'duplicate'].includes(response.receipt.outcome)) {
+        void useProductTaskStore.getState().refresh()
+        return false
+      }
+
+      updateTask(taskId, (current) => {
+        const duplicate = current.entries.some((entry) => (
+          entry.type === 'user_text'
+          && entry.id.startsWith('live_')
+          && entry.text === content
+          && !entry.attachments?.length
+        ))
+        return {
+          ...current,
+          runState: 'working',
+          error: null,
+          ...(duplicate ? {} : {
+            entries: [...current.entries, {
+              id: liveEntryId(taskId, 'submitted-user'),
+              type: 'user_text',
+              text: content,
+              createdAt: createdAt(),
+            }],
+          }),
+        }
+      })
+      void useProductTaskStore.getState().refresh()
+      return true
+    } catch {
+      void useProductTaskStore.getState().refresh()
+      return false
+    } finally {
+      submitRequests.delete(taskId)
+    }
+  }
+
   return {
     tasks: {},
 
@@ -383,11 +448,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
       }))
     },
 
-    // BB-02C accepts new user text only through the durable HTTP submit
-    // receipt.  A task socket never becomes a second submit transport.
-    sendText: () => false,
+    // BB-02C accepts user text only through the durable HTTP submit receipt.
+    // A task socket never becomes a second submit transport.
+    sendText: (taskId, text) => submitMessage(taskId, text),
 
-    sendMessage: () => false,
+    sendMessage: (taskId, text, attachments) => submitMessage(taskId, text, attachments),
 
     stopTask: (taskId) => {
       productTaskSocket.send(taskId, { type: 'stop_generation' })

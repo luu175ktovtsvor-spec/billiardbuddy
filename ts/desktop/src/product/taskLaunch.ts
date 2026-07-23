@@ -11,7 +11,7 @@ export type ProductTaskLaunchDependencies = {
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
   openTask: (task: ProductTaskRecord) => void
   connectTask: (taskId: string) => void | Promise<void>
-  sendMessage: (taskId: string, content: string, attachments?: ProductTaskAttachment[]) => boolean
+  sendMessage: (taskId: string, content: string, attachments?: ProductTaskAttachment[]) => boolean | Promise<boolean>
 }
 
 export type ProductTaskContinuationDependencies = {
@@ -31,7 +31,7 @@ export async function launchProductTask(
   const message = initialMessage?.text?.trim() ?? ''
   const attachments = initialMessage?.attachments ?? []
   if (message || attachments.length > 0) {
-    dependencies.sendMessage(task.id, message, attachments)
+    await dependencies.sendMessage(task.id, message, attachments)
   }
 
   return task
