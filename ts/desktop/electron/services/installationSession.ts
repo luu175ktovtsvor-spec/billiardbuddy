@@ -168,12 +168,13 @@ function parseSession(encoded: string): InstallationSession {
 function parseAuthResponse(value: unknown): InstallationSession {
   if (!value || typeof value !== 'object') throw new Error('Installation session response is invalid')
   const tokens = value as Partial<AuthResponse>
+  const expiresAt = tokens.expires_at
   if (typeof tokens.access_token !== 'string' || !tokens.access_token.trim()
     || typeof tokens.refresh_token !== 'string' || !tokens.refresh_token.trim()
-    || !Number.isSafeInteger(tokens.expires_at) || tokens.expires_at <= 0) {
+    || typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
     throw new Error('Installation session response is invalid')
   }
-  return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: tokens.expires_at }
+  return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt }
 }
 
 function positiveDuration(value: number, name: string): number {

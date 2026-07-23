@@ -48,9 +48,9 @@ describe('InstallationSessionManager', () => {
 
   it('fails closed on refresh failure and never falls back to bootstrap activation', async () => {
     const store = stored({ access_token: 'old-access', refresh_token: 'old-refresh', expires_at: now + 60_000 })
-    const fetchFn = vi.fn(async () => new Response('', { status: 401 })) as unknown as typeof fetch
+    const fetchFn = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('', { status: 401 }))
     const unavailable = vi.fn()
-    const sessions = manager(store, fetchFn, { onSessionFailure: unavailable })
+    const sessions = manager(store, fetchFn as unknown as typeof fetch, { onSessionFailure: unavailable })
 
     await expect(sessions.accessToken()).rejects.toThrow('refresh failed (401)')
     expect(unavailable).toHaveBeenCalledTimes(1)
