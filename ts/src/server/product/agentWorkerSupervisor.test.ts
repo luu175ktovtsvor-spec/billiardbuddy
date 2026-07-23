@@ -11,7 +11,7 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-supervisor-')); const now = new Date('2026-01-01T00:00:00.000Z'); const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json'), now: () => now, profiles: new DesktopResourceProfiles(conservativeDesktopResourceProfile(now, 'test', 'toolchain'), () => now, 'test', 'toolchain') })
   let submits = 0; const submit = scheduler.submit.bind(scheduler); scheduler.submit = async claim => { submits++; return submit(claim) }
   const settled: string[] = []; let claims = 0; let launches = 0; const sent: unknown[] = []
-  const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+  const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable user turn' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
   const launcher = { launch: async (input: { onMessage: (message: any) => void }) => { launches++; const child = { send: (message: unknown) => sent.push(message), stop: async () => {} }; setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0); return child } }
   return { scheduler, runs, launcher, settled, sent, get submits() { return submits }, get claims() { return claims }, get launches() { return launches } }
 }
@@ -51,16 +51,16 @@ test('concurrent dispatch calls share one startup before the first durable await
 })
 
 test('supervisor claim and child bootstrap start one private Core without a second claim', async () => {
-  const f = await fixture(); let coreStarts = 0
+  const f = await fixture(); let coreStarts = 0; const inputs: string[] = []
   const launcher = { launch: async (input: any) => {
-    const service = new AgentWorkerService({ ...input.bootstrap, cores: { start: async () => { coreStarts++; return { input: async () => {}, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } } }, () => new Date('2026-01-01T00:00:00.000Z'))
-    const child = { send: (message: any) => { if (message.type === 'start') void service.start(message) }, stop: async () => {} }
+    const service = new AgentWorkerService({ ...input.bootstrap, cores: { start: async () => { coreStarts++; return { input: async (text: string) => { inputs.push(text) }, approve: async () => {}, stop: async () => {}, shutdown: async () => {} } } } }, () => new Date('2026-01-01T00:00:00.000Z'))
+    const child = { send: (message: any) => { if (message.type === 'start') void service.start(message).then(input.onMessage); if (message.type === 'input') void service.input(message.text) }, stop: async () => {} }
     setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
     return child
   } }
   const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher)
   expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
-  expect(f.claims).toBe(1); expect(coreStarts).toBe(1); expect(f.settled).toEqual([])
+  expect(f.claims).toBe(1); expect(coreStarts).toBe(1); expect(inputs).toEqual(['durable user turn']); expect(f.settled).toEqual([])
 })
 
 test('launch failure after the durable claim settles and releases exactly once', async () => {
@@ -94,7 +94,7 @@ test('child exit and stop/shutdown settle their fencing claim once', async () =>
 test('scheduler completion errors cannot hide the durable settlement attempt', async () => {
   const completedFences: number[] = []; const settled: string[] = []; let claims = 0
   const scheduler = { profileRevision: () => 'test', submit: async () => ({ outcome: 'admitted', job_id: 'agent-worker:run:1', fencing_token: 1 }), complete: async (_job: string, fencing: number) => { completedFences.push(fencing); throw new Error('journal unavailable') } } as unknown as ProductResourceScheduler
-  const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+  const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable user turn' }), claimTaskRunDispatch: async () => { claims++; return { outcome: 'claimed' as const, task_id: 'task' } }, settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
   const supervisor = new AgentWorkerSupervisor(runs, scheduler, { launch: async () => { throw new Error('launch') } })
   expect(await supervisor.dispatch('run', 1)).toBe('recovery_required'); expect(claims).toBe(1); expect(completedFences).toEqual([1]); expect(settled).toEqual(['recovery_required:LAUNCH_FAILED'])
 })

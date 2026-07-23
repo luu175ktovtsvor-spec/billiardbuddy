@@ -1364,6 +1364,7 @@ export class ProductTaskService {
     task_id: string
     lineage_id: string
     resume_binding_id: string
+    initial_input: string
     session_memory: {
       storage_dir: string
       entry_id: string
@@ -1374,7 +1375,8 @@ export class ProductTaskService {
     const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown } | undefined
     const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
     let lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as Record<string, unknown> | undefined : undefined
-    if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || typeof run.entry_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || lineage.product_task_id !== run.task_id || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
+    const entry = typeof run?.entry_id === 'string' ? state.thread_entries[run.entry_id] as { task_id?: unknown; run_id?: unknown; text?: unknown } | undefined : undefined
+    if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || typeof run.entry_id !== 'string' || !entry || entry.task_id !== run.task_id || entry.run_id !== runId || typeof entry.text !== 'string' || !entry.text || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || lineage.product_task_id !== run.task_id || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
     const resumeBindingId = lineage.resume_binding_id
     const ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }> = []
     const seen = new Set([run.lineage_id])
@@ -1391,6 +1393,7 @@ export class ProductTaskService {
       task_id: run.task_id,
       lineage_id: run.lineage_id,
       resume_binding_id: resumeBindingId,
+      initial_input: entry.text,
       session_memory: { storage_dir: this.sessionMemoryStorageDir(), entry_id: run.entry_id, ancestors },
     }
   }
