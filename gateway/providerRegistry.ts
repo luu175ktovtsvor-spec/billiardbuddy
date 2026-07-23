@@ -105,9 +105,22 @@ export function providerRegistrySha256(): string {
   return createHash('sha256').update(stableProviderJson(PROVIDER_REGISTRY as unknown as Json)).digest('hex')
 }
 
-export function defaultProviderModel(): string {
-  const entry = PROVIDER_REGISTRY.find(candidate => candidate.worker_env_source.default_model)
-  if (!entry) throw new Error('provider registry has no default model')
+type WorkerModelRegistryEntry = {
+  model_id: string
+  capabilities: readonly string[]
+  worker_env_source: { default_model?: boolean }
+}
+
+export function workerTextReasoningEntry(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): WorkerModelRegistryEntry | undefined {
+  const textReasoning = registry.filter(candidate => candidate.capabilities.includes('TextReasoning'))
+  const defaults = registry.filter(candidate => candidate.worker_env_source.default_model === true)
+  if (textReasoning.length !== 1 || defaults.length !== 1 || textReasoning[0]!.model_id !== defaults[0]!.model_id) return undefined
+  return textReasoning[0]
+}
+
+export function defaultProviderModel(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): string {
+  const entry = workerTextReasoningEntry(registry)
+  if (!entry) throw new Error('provider registry has no unique TextReasoning default model')
   return entry.model_id
 }
 
@@ -198,11 +211,11 @@ export function validateProviderRuntimeConfiguration(env: Record<string, string 
     const error = validateProviderRegistryEntry(entry)
     if (error) return error
   }
-  const selected = env.QF_GATEWAY_MODEL?.trim() || defaultProviderModel()
-  if (!providerRegistryEntry(selected)) return 'MODEL_CONFIGURATION_INVALID'
+  const textReasoning = workerTextReasoningEntry()
+  if (!textReasoning) return 'MODEL_CONFIGURATION_INVALID'
+  if (env.QF_GATEWAY_MODEL?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
   for (const alias of SLOT_ALIASES) {
-    const value = env[alias]?.trim()
-    if (value && !providerRegistryEntry(value)) return 'MODEL_CONFIGURATION_INVALID'
+    if (env[alias]?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
   }
   return undefined
 }
