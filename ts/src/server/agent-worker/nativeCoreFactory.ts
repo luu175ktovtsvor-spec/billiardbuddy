@@ -10,6 +10,15 @@ export const serverPrivateNativeCoreFactory: ServerPrivateCoreFactory = {
     run_id: input.run_id,
     session_id: binding.session_id,
     work_dir: binding.work_dir,
+    ...(identity.auto_memory ? {
+      auto_memory: {
+        storage_dir: identity.auto_memory.storage_dir,
+        work_dir: binding.work_dir,
+        enabled: identity.auto_memory.enabled,
+        task_id: identity.task_id,
+        entry_id: identity.auto_memory.entry_id,
+      },
+    } : {}),
     ...(identity.session_memory ? {
       session_memory: {
         storage_dir: identity.session_memory.storage_dir,

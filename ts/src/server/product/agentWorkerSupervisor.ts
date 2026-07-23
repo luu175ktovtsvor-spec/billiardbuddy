@@ -8,6 +8,11 @@ export type AgentWorkerCoreIdentity = {
   lineage_id: string
   resume_binding_id: string
   initial_input: string
+  auto_memory?: {
+    storage_dir: string
+    enabled: boolean
+    entry_id: string
+  }
   session_memory?: {
     storage_dir: string
     entry_id: string

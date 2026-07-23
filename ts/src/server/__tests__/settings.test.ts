@@ -459,7 +459,7 @@ describe('Settings API', () => {
       chatSendBehavior: 'modifierEnter',
       language: 'chinese',
       desktopNotificationsEnabled: true,
-      autoDreamEnabled: true,
+      productAutoMemoryEnabled: true,
       deepThinkingEnabled: false,
       preventSleepWhileRunning: true,
       webSearch: { enabled: false },
@@ -479,7 +479,7 @@ describe('Settings API', () => {
       chatSendBehavior: 'modifierEnter',
       language: 'chinese',
       desktopNotificationsEnabled: true,
-      autoDreamEnabled: true,
+      productAutoMemoryEnabled: true,
       deepThinkingEnabled: false,
       preventSleepWhileRunning: true,
       webSearch: { enabled: false },
@@ -534,11 +534,13 @@ describe('Settings API', () => {
 
   it('rejects malformed and unknown ordinary preferences', async () => {
     const invalidTheme = makeRequest('PATCH', '/api/product/settings/user', { theme: 'white' })
+    const retiredAutoDream = makeRequest('PATCH', '/api/product/settings/user', { autoDreamEnabled: true })
     const providerInput = makeRequest('PATCH', '/api/product/settings/user', {
       webSearch: { enabled: true, provider: 'unexpected' },
     })
 
     expect((await handleProductSettingsApi(invalidTheme.req, invalidTheme.url, invalidTheme.segments)).status).toBe(400)
+    expect((await handleProductSettingsApi(retiredAutoDream.req, retiredAutoDream.url, retiredAutoDream.segments)).status).toBe(400)
     expect((await handleProductSettingsApi(providerInput.req, providerInput.url, providerInput.segments)).status).toBe(400)
   })
 
