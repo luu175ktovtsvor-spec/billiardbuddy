@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseProductTaskEvent, parseProductTaskThread } from './taskProtocol'
+import { parseProductAttachmentOperationResult, parseProductPublicComposerDraft, parseProductPublicConversationLineage, parseProductPublicWorkspace, parseProductTaskEvent, parseProductTaskThread } from './taskProtocol'
 
 const safeAttachment = {
   type: 'image',
@@ -331,5 +331,30 @@ describe('product task protocol Computer Use approvals', () => {
         computerUse,
       })).toBeNull()
     }
+  })
+})
+
+
+describe('public workspace capability protocol', () => {
+  it('accepts only path-free exact workspace records', () => {
+    const workspace = { workspace_id: 'workspace-1', revision: 2, availability: 'available', created_at: '2026-07-19T00:00:00.000Z', updated_at: '2026-07-20T00:00:00.000Z' }
+    expect(parseProductPublicWorkspace(workspace)).toEqual(workspace)
+    expect(parseProductPublicWorkspace({ ...workspace, canonical_root: '/private/project' })).toBeNull()
+    expect(parseProductPublicWorkspace({ ...workspace, revision: 1.5 })).toBeNull()
+  })
+
+  it('rejects private draft and lineage data while accepting exact public projections', () => {
+    expect(parseProductPublicComposerDraft({ draft_id: 'draft-1', target_task_id: 'task-1', revision: 0, last_activity: '2026-07-19T00:00:00.000Z', state: 'active', created_at: '2026-07-19T00:00:00.000Z', expires_at: '2026-07-20T00:00:00.000Z' })).not.toBeNull()
+    expect(parseProductPublicComposerDraft({ draft_id: 'draft-1', target_task_id: 'task-1', revision: 0, last_activity: '2026-07-19T00:00:00.000Z', state: 'active', created_at: '2026-07-19T00:00:00.000Z', expires_at: '2026-07-20T00:00:00.000Z', workDir: '/private/project' })).toBeNull()
+    expect(parseProductPublicConversationLineage({ lineage_id: 'lineage-1', product_task_id: 'task-1', revision: 1, compact_generation: 0, state: 'active', created_at: '2026-07-19T00:00:00.000Z', updated_at: '2026-07-20T00:00:00.000Z' })).not.toBeNull()
+    expect(parseProductPublicConversationLineage({ lineage_id: 'lineage-1', product_task_id: 'task-1', revision: 1, compact_generation: 0, state: 'active', created_at: '2026-07-19T00:00:00.000Z', updated_at: '2026-07-20T00:00:00.000Z', resume_binding_id: 'secret' })).toBeNull()
+  })
+})
+
+
+describe('attachment operation protocol', () => {
+  it('accepts exact opaque operation results and rejects private metadata', () => {
+    expect(parseProductAttachmentOperationResult({ authority_revision: 1, attachment_revision: 2, outcome: 'accepted' })).toEqual({ authority_revision: 1, attachment_revision: 2, outcome: 'accepted' })
+    expect(parseProductAttachmentOperationResult({ authority_revision: 1, attachment_revision: 2, outcome: 'accepted', content_hash: 'secret' })).toBeNull()
   })
 })

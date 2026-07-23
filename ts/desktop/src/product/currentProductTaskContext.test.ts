@@ -18,6 +18,7 @@ function task(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
     updatedAt: '2026-07-19T00:00:00.000Z',
     worktreeState: 'not_requested',
     actions: ['rename'],
+    workspace_capability: { scope: { kind: 'workspace', workspace_id: 'workspace-current', generation: 1 }, workspace_revision: 1, availability: 'available', available: true },
     ...overrides,
     directoryId: overrides.directoryId ?? 'directory-current',
   }
@@ -78,6 +79,12 @@ describe('current product task context', () => {
       taskId: 'task-settings',
       workDir: '/workspace/settings',
     })
+  })
+
+  it('does not expose cwd when the server capability is absent or unavailable', () => {
+    const tab = productTaskTab()
+    expect(resolveCurrentProductTaskContext([tab], tab.sessionId, [task({ workspace_capability: undefined })])).toEqual({ taskId: 'task-current' })
+    expect(resolveCurrentProductTaskContext([tab], tab.sessionId, [task({ workspace_capability: { scope: { kind: 'installation-default' }, available: false } })])).toEqual({ taskId: 'task-current' })
   })
 
   it('does not infer a task from tab order when product navigation has no public context', () => {

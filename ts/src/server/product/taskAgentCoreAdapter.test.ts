@@ -71,35 +71,37 @@ describe('ProductTaskAgentCoreAdapter', () => {
     }])
   })
 
-  it('starts a task run before handing accepted product text to the Core port', async () => {
+  it('rejects a missing workspace cwd before Core send', async () => {
+    const sendUserMessage = mock(async () => {})
+    const adapter = new ProductTaskAgentCoreAdapter(makePort({ sendUserMessage, getSessionWorkDir: async () => undefined }), new ProductTaskRunProjection(), { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }) })
+    const socket = makeSocket('private-core-session', 'public-task-id')
+    await adapter.handleIncoming(socket, { type: 'user_message', content: 'hello' })
+    expect(sendUserMessage).not.toHaveBeenCalled()
+    expect(events(socket)).toEqual([expect.objectContaining({ code: 'task_failed' })])
+  })
+
+  it('rejects an old Core cwd from another workspace before Core send', async () => {
+    const sendUserMessage = mock(async () => {})
+    const adapter = new ProductTaskAgentCoreAdapter(makePort({ sendUserMessage, getSessionWorkDir: async () => '/workspace/old' }), new ProductTaskRunProjection(), { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }) })
+    const socket = makeSocket('private-core-session', 'public-task-id')
+    await adapter.handleIncoming(socket, { type: 'user_message', content: 'hello' })
+    expect(sendUserMessage).not.toHaveBeenCalled()
+    expect(events(socket)).toEqual([expect.objectContaining({ code: 'task_failed' })])
+  })
+
+  it('rejects even an available bound workspace before any Core call', async () => {
     const sendUserMessage = mock(async () => {})
     const adapter = new ProductTaskAgentCoreAdapter(
-      makePort({ sendUserMessage }),
+      makePort({ sendUserMessage, getSessionWorkDir: async () => '/workspace/task' }),
       new ProductTaskRunProjection(),
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/task' }) },
     )
     const socket = makeSocket('private-core-session', 'public-task-id')
-    const reconnected = makeSocket('private-core-session', 'public-task-id')
 
-    expect(adapter.attach(socket)).toBe(true)
-    await adapter.handleIncoming(socket, {
-      type: 'user_message',
-      content: '整理本周球房活动安排',
-    })
+    await adapter.handleIncoming(socket, { type: 'user_message', content: '整理本周球房活动安排' })
 
-    expect(sendUserMessage).toHaveBeenCalledWith(socket, {
-      type: 'user_message',
-      content: '整理本周球房活动安排',
-    })
-
-    expect(adapter.attach(reconnected)).toBe(true)
-    adapter.sendCoreMessage(reconnected, { type: 'connected', sessionId: 'private-core-session' })
-    adapter.sendRunSnapshot(reconnected)
-
-    expect(events(reconnected)).toEqual([
-      { type: 'connected' },
-      { type: 'run_snapshot', state: 'working', activities: [] },
-    ])
-    expect(JSON.stringify(events(reconnected))).not.toContain('private-core-session')
+    expect(sendUserMessage).not.toHaveBeenCalled()
+    expect(events(socket)).toEqual([expect.objectContaining({ code: 'task_failed', retryable: false })])
   })
 
   it('rejects an unrenderable question once at the product boundary', () => {

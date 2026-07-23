@@ -14,79 +14,35 @@ beforeEach(() => {
 })
 
 describe('useProductTaskWorkspaceStore', () => {
-  it('keeps Browser and Preview open states independent for one public task id', () => {
+  it('rejects Browser and Preview opens while native transport is disabled', () => {
     const store = useProductTaskWorkspaceStore.getState()
     store.openPanel(TASK_ID, 'browser')
     store.openPanel(TASK_ID, 'preview')
 
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
-      browserOpen: true,
-      previewOpen: true,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'preview',
-    })
-
-    useProductTaskWorkspaceStore.getState().closePanel(TASK_ID, 'preview')
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
-      browserOpen: true,
-      previewOpen: false,
-      activePanel: 'browser-preview',
-      activeBrowserPreviewMode: 'browser',
-    })
+    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toBeUndefined()
   })
 
-  it('coordinates the right dock while keeping the terminal as an independent axis', () => {
+  it('keeps Review and Media open while terminal open is disabled', () => {
     const store = useProductTaskWorkspaceStore.getState()
-    store.openPanel(TASK_ID, 'review')
+    store.openPanel(TASK_ID, 'review', true)
     store.openPanel(TASK_ID, 'media')
-    store.openPanel(TASK_ID, 'terminal')
+    store.openPanel(TASK_ID, 'terminal', true)
 
     expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
       reviewOpen: true,
       mediaOpen: true,
-      terminalOpen: true,
+      terminalOpen: false,
       activePanel: 'media',
-    })
-
-    useProductTaskWorkspaceStore.getState().closePanel(TASK_ID, 'media')
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
-      reviewOpen: true,
-      mediaOpen: false,
-      terminalOpen: true,
-      activePanel: 'review',
-    })
-
-    useProductTaskWorkspaceStore.getState().openPanel(TASK_ID, 'browser')
-    useProductTaskWorkspaceStore.getState().closePanel(TASK_ID, 'browser')
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
-      reviewOpen: true,
-      browserOpen: false,
-      terminalOpen: true,
-      activePanel: 'review',
-      activeBrowserPreviewMode: null,
     })
   })
 
-  it('does not activate a closed panel and isolates workspace chrome by public task id', () => {
+  it('does not create disabled native panel state for any task id', () => {
     const store = useProductTaskWorkspaceStore.getState()
+    store.openPanel(TASK_ID, 'browser', true)
+    store.openPanel('task_public_other', 'terminal', true)
     store.activatePanel(TASK_ID, 'preview')
+
     expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
-
-    store.openPanel(TASK_ID, 'browser')
-    store.openPanel('task_public_other', 'terminal')
-    store.activatePanel(TASK_ID, 'preview')
-
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
-      browserOpen: true,
-      previewOpen: false,
-      terminalOpen: false,
-      activeBrowserPreviewMode: 'browser',
-    })
-    expect(useProductTaskWorkspaceStore.getState().byTaskId.task_public_other).toMatchObject({
-      browserOpen: false,
-      terminalOpen: true,
-      activePanel: null,
-    })
   })
 
   it('derives browser store keys only from the public task id and selected mode', () => {

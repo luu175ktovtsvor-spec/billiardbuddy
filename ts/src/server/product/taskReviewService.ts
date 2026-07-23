@@ -22,7 +22,8 @@ const MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES = 16 * 1024 * 1024
 const VCS_METADATA_PATH_SEGMENTS = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 
-type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId'>
+type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId' | 'requireWorkspaceCapability'>
+type CoreWorkDirResolver = (sessionId: string) => Promise<string | undefined>
 type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff'> & {
   readFile(
     sessionId: string,
@@ -42,6 +43,7 @@ export class ProductTaskReviewService {
   constructor(
     private readonly tasks: TaskResolver,
     private readonly workspace: TaskReviewWorkspace,
+    private readonly getSessionWorkDir: CoreWorkDirResolver,
   ) {}
 
   async getStatus(taskId: string): Promise<ProductTaskReviewStatus> {
@@ -87,7 +89,12 @@ export class ProductTaskReviewService {
   ): Promise<T> {
     let sessionId: string
     try {
+      // This is the sole Review boundary: never resolve a Core session/cwd
+      // before the ProductTask-owned workspace capability is accepted.
+      const workspace = await this.tasks.requireWorkspaceCapability(taskId, 'review')
       sessionId = await this.tasks.resolveCoreSessionId(taskId)
+      const cwd = await this.getSessionWorkDir(sessionId)
+      if (!cwd || path.resolve(cwd) !== path.resolve(workspace.canonical_root)) throw new ApiError(409, '任务工作区不可用', 'WORKSPACE_REQUIRED')
     } catch (error) {
       throw reviewApiError(error)
     }
@@ -112,6 +119,7 @@ const workspaceService = new WorkspaceService(
 export const productTaskReviewService = new ProductTaskReviewService(
   productTaskService,
   workspaceService,
+  async (sessionId) => conversationService.getSessionWorkDir(sessionId) || await sessionService.getSessionWorkDir(sessionId),
 )
 
 function projectStatus(taskId: string, status: WorkspaceStatusResult): ProductTaskReviewStatus {
@@ -253,6 +261,7 @@ function isVcsMetadataPath(value: string): boolean {
 
 function reviewApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
+    if (error.code === 'WORKSPACE_REQUIRED' || error.code === 'WORKSPACE_RELINK_REQUIRED') return error
     if (error.statusCode === 400 || error.statusCode === 403) return error
     if (error.statusCode === 404) return ApiError.notFound('任务或其工作区不存在')
   }

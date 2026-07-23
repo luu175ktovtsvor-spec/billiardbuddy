@@ -16,6 +16,11 @@ import type {
   ProductTaskSafeErrorCode,
   ProductTaskThread,
   ProductTaskThreadEntry,
+  ProductPublicWorkspace,
+  ProductPublicComposerDraft,
+  ProductPublicConversationLineage,
+  ProductPublicOperationReceipt,
+  ProductAttachmentOperationResult,
 } from '../domain/types'
 
 const MAX_PRODUCT_TEXT_LENGTH = 100_000
@@ -127,12 +132,24 @@ const PRODUCT_TASK_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentS
 
 type RecordValue = Record<string, unknown>
 
+const DANGEROUS_PROTOCOL_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 function isRecord(value: unknown): value is RecordValue {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return false
+  return !hasDangerousProtocolKey(value)
+}
+function hasDangerousProtocolKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasDangerousProtocolKey)
+  if (!value || typeof value !== 'object') return false
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return true
+  for (const key of Object.keys(value as RecordValue)) if (DANGEROUS_PROTOCOL_KEYS.has(key) || hasDangerousProtocolKey((value as RecordValue)[key])) return true
+  return false
 }
 
 function hasOnlyKeys(value: RecordValue, keys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key))
+  return !hasDangerousProtocolKey(value) && Object.keys(value).every((key) => keys.includes(key))
 }
 
 function isEnumValue<T extends string>(value: unknown, allowed: ReadonlySet<T>): value is T {
@@ -607,4 +624,53 @@ export function parseProductTaskThread(value: unknown, taskId: string): ProductT
   if (ids.size !== typedEntries.length) return null
 
   return { taskId, entries: typedEntries }
+}
+
+
+const WORKSPACE_AVAILABILITY = new Set<ProductPublicWorkspace['availability']>([
+  'available', 'missing', 'read_only', 'identity_changed', 'relink_required',
+])
+const DRAFT_STATES = new Set<ProductPublicComposerDraft['state']>(['active', 'consumed', 'expired'])
+const LINEAGE_STATES = new Set<ProductPublicConversationLineage['state']>(['active', 'parked', 'recovery_required'])
+const OPERATION_OUTCOMES = new Set<ProductPublicOperationReceipt['outcome']>(['accepted', 'replayed'])
+
+function isNonNegativeRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** Parses the path-free renderer workspace projection and rejects server internals. */
+export function parseProductPublicWorkspace(value: unknown): ProductPublicWorkspace | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['workspace_id', 'revision', 'availability', 'created_at', 'updated_at']) ||
+    !isVisibleString(value.workspace_id, 200) || !isNonNegativeRevision(value.revision) ||
+    !isEnumValue(value.availability, WORKSPACE_AVAILABILITY) || !isTimestamp(value.created_at) || !isTimestamp(value.updated_at)) return null
+  return { workspace_id: value.workspace_id, revision: value.revision, availability: value.availability, created_at: value.created_at, updated_at: value.updated_at }
+}
+
+export function parseProductPublicOperationReceipt(value: unknown): ProductPublicOperationReceipt | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['outcome', 'revision']) || !isEnumValue(value.outcome, OPERATION_OUTCOMES) || !isNonNegativeRevision(value.revision)) return null
+  return { outcome: value.outcome, revision: value.revision }
+}
+
+export function parseProductPublicComposerDraft(value: unknown): ProductPublicComposerDraft | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['draft_id', 'workspace_id', 'target_task_id', 'revision', 'last_activity', 'state', 'created_at', 'expires_at']) ||
+    !isVisibleString(value.draft_id, 200) || !isVisibleString(value.target_task_id, 200) || !isNonNegativeRevision(value.revision) ||
+    !isTimestamp(value.last_activity) || !isEnumValue(value.state, DRAFT_STATES) || !isTimestamp(value.created_at) || !isTimestamp(value.expires_at) ||
+    ('workspace_id' in value && !isVisibleString(value.workspace_id, 200))) return null
+  return { draft_id: value.draft_id, target_task_id: value.target_task_id, ...(typeof value.workspace_id === 'string' ? { workspace_id: value.workspace_id } : {}), revision: value.revision, last_activity: value.last_activity, state: value.state, created_at: value.created_at, expires_at: value.expires_at }
+}
+
+export function parseProductPublicConversationLineage(value: unknown): ProductPublicConversationLineage | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['lineage_id', 'product_task_id', 'parent_lineage_id', 'fork_checkpoint_id', 'head_entry_id', 'revision', 'compact_generation', 'state', 'created_at', 'updated_at']) ||
+    !isVisibleString(value.lineage_id, 200) || !isVisibleString(value.product_task_id, 200) || !isNonNegativeRevision(value.revision) || !isNonNegativeRevision(value.compact_generation) ||
+    !isEnumValue(value.state, LINEAGE_STATES) || !isTimestamp(value.created_at) || !isTimestamp(value.updated_at) ||
+    ['parent_lineage_id', 'fork_checkpoint_id', 'head_entry_id'].some((key) => key in value && !isVisibleString(value[key], 200))) return null
+  return { lineage_id: value.lineage_id, product_task_id: value.product_task_id, ...(typeof value.parent_lineage_id === 'string' ? { parent_lineage_id: value.parent_lineage_id } : {}), ...(typeof value.fork_checkpoint_id === 'string' ? { fork_checkpoint_id: value.fork_checkpoint_id } : {}), ...(typeof value.head_entry_id === 'string' ? { head_entry_id: value.head_entry_id } : {}), revision: value.revision, compact_generation: value.compact_generation, state: value.state, created_at: value.created_at, updated_at: value.updated_at }
+}
+
+
+const ATTACHMENT_OUTCOMES = new Set<ProductAttachmentOperationResult['outcome']>(['accepted', 'duplicate', 'conflict', 'rejected'])
+/** Validates only opaque attachment operation outcomes; content metadata never enters renderer state. */
+export function parseProductAttachmentOperationResult(value: unknown): ProductAttachmentOperationResult | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['authority_revision', 'attachment_revision', 'outcome']) || !isNonNegativeRevision(value.authority_revision) || !isNonNegativeRevision(value.attachment_revision) || !isEnumValue(value.outcome, ATTACHMENT_OUTCOMES)) return null
+  return { authority_revision: value.authority_revision, attachment_revision: value.attachment_revision, outcome: value.outcome }
 }

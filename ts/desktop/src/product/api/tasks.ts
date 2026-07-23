@@ -18,6 +18,10 @@ import type {
   ProductTaskReviewTree,
   ProductTaskThreadResponse,
   UpdateProductTaskInput,
+  ProductWorkspaceApi,
+  ProductComposerDraftApi,
+  ProductConversationLineageApi,
+  ProductAttachmentApi,
 } from '../domain/types'
 
 function taskPath(taskId: string): string {
@@ -70,4 +74,39 @@ export const productTasksApi: ProductTaskApi = {
     `${taskPath(taskId)}/media/projects/${encodeURIComponent(projectId)}/attach`,
     {},
   ),
+}
+
+
+function workspacePath(workspaceId?: string): string {
+  return workspaceId
+    ? `/api/product/workspaces/${encodeURIComponent(workspaceId)}`
+    : '/api/product/workspaces'
+}
+
+export const productWorkspaceApi: ProductWorkspaceApi = {
+  register: (input) => productApi.post(workspacePath(), input),
+  inspect: (workspaceId) => productApi.post(`${workspacePath(workspaceId)}/inspect`, {}),
+  relocate: (workspaceId, input) => productApi.post(`${workspacePath(workspaceId)}/relocate`, input),
+  relink: (workspaceId, input) => productApi.post(`${workspacePath(workspaceId)}/relink`, input),
+}
+
+export const productComposerDraftApi: ProductComposerDraftApi = {
+  create: (input) => productApi.post('/api/product/composer-drafts', input),
+  get: (draftId) => productApi.get(`/api/product/composer-drafts/${encodeURIComponent(draftId)}`),
+  mutate: (draftId, action, input) => productApi.post(`/api/product/composer-drafts/${encodeURIComponent(draftId)}/${action}`, input),
+}
+
+export const productConversationLineageApi: ProductConversationLineageApi = {
+  create: (input) => productApi.post('/api/product/lineages', input),
+  get: (lineageId) => productApi.get(`/api/product/lineages/${encodeURIComponent(lineageId)}`),
+  root: (lineageId) => productApi.get(`/api/product/lineages/${encodeURIComponent(lineageId)}/root`),
+  mutate: (lineageId, action, input) => productApi.post(`/api/product/lineages/${encodeURIComponent(lineageId)}/${action}`, input),
+  current: (taskId) => productApi.get(`${taskPath(taskId)}/lineage/current`),
+  setCurrent: (taskId, input) => productApi.post(`${taskPath(taskId)}/lineage/current`, input),
+}
+
+
+export const productAttachmentApi: ProductAttachmentApi = {
+  transition: (attachmentId, input) => productApi.post(`/api/product/attachments/${encodeURIComponent(attachmentId)}/transition`, input),
+  bind: (attachmentId, input) => productApi.post(`/api/product/attachments/${encodeURIComponent(attachmentId)}/bind`, input),
 }

@@ -98,6 +98,7 @@ describe('McpSettings', () => {
           updatedAt: '2026-05-25T00:00:00.000Z',
           worktreeState: 'not_requested',
           actions: ['rename'],
+          workspace_capability: { scope: { kind: 'workspace', workspace_id: 'workspace-1', generation: 1 }, workspace_revision: 1, availability: 'available', available: true },
         }],
         total: 1,
       },
