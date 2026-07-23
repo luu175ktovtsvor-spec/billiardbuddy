@@ -23,9 +23,11 @@ import {
   type ProductTaskScope,
   type ProductWorkspace,
   type ProductWorkspaceAvailability,
+  type SubmitTaskRunInput,
+  type SubmitTaskRunReceipt,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskThread } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskThread, TaskEvent } from '../../../shared/product/taskEvents.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
@@ -57,7 +59,7 @@ import {
   normalizeModernTaskStore,
   optionalString,
 } from './legacyProductTaskReader.js'
-import { ProductTaskAuthorityRepository, readLegacyProductTasks } from './authorityRepository.js'
+import { ProductTaskAuthorityRepository, readLegacyProductTasks, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
 
 export type ProductTaskAction =
@@ -616,6 +618,7 @@ export class ProductTaskService {
   private readonly workspaceFs: WorkspaceFilesystemPort
   private readonly workspaceBindBlockers: WorkspaceBindBlockerPort
   private readonly admissionBarrier: SessionAdmissionBarrier
+  private readonly authorityRepositoryDeps: ProductTaskAuthorityRepositoryDeps
   private readonly now: () => Date
   private readonly installationId: string
 
@@ -626,6 +629,8 @@ export class ProductTaskService {
     workspaceFs?: WorkspaceFilesystemPort
     workspaceBindBlockers?: WorkspaceBindBlockerPort
     admissionBarrier?: SessionAdmissionBarrier
+    /** Test-only authority write seam. */
+    authorityRepositoryDeps?: ProductTaskAuthorityRepositoryDeps
     now?: () => Date
     installationId?: string
   } = {}) {
@@ -638,6 +643,7 @@ export class ProductTaskService {
     // BB-02B can observe active product runs. Queue/PTY/preview/write leases
     // are explicitly out-of-scope disabled participants, not synthetic unknowns.
     this.admissionBarrier = options.admissionBarrier ?? sessionAdmissionBarrier
+    this.authorityRepositoryDeps = options.authorityRepositoryDeps ?? {}
     this.workspaceBindBlockers = options.workspaceBindBlockers ?? {
       inspect: async (taskId) => {
         const sessionId = await this.resolveCoreSessionId(taskId).catch(() => undefined)
@@ -677,7 +683,7 @@ export class ProductTaskService {
 
   async listTasks(): Promise<ProductTaskIndexResponse> {
     const legacy = await this.withStoreLock(() => this.listTasksUnlocked())
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const byId = new Map(legacy.tasks.map(task => [task.id, task]))
     const sideTaskIds = new Set(Object.values(authority.side_tasks).map(side => (side as { taskId?: unknown }).taskId).filter((id): id is string => typeof id === 'string'))
     for (const value of Object.values(authority.tasks)) {
@@ -694,7 +700,7 @@ export class ProductTaskService {
 
   async listTasksAuthoritatively(): Promise<ProductTaskIndexResponse> {
     const index = await this.listTasks()
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     return {
       ...index,
       tasks: index.tasks.map((task) => {
@@ -1080,10 +1086,12 @@ export class ProductTaskService {
     const authority = new ProductTaskAuthorityRepository(options.authorityPath)
     const file = await authority.read()
     const receipt = file.receipts[operationId]
-    if (!receipt) throw ApiError.notFound('操作不存在')
-    const tasks = this.authoritySnapshot(file).tasks
-    if (!tasks.some((task) => task.id === taskId || task.parentTaskId === taskId)) throw ApiError.notFound('操作不存在')
-    return { receipt: { outcome: receipt.outcome, revision: receipt.revision }, authority: this.authoritySnapshot(file), ...(file.outbox[operationId] ? { mirror: file.outbox[operationId] } : {}) }
+    const event = file.events[operationId]
+    if (!receipt || !event || event.product_task_id !== taskId) throw ApiError.notFound('操作不存在')
+    const snapshot = this.authoritySnapshot(file)
+    const task = snapshot.tasks.find(item => item.id === taskId)
+    if (!task) throw ApiError.notFound('操作不存在')
+    return { receipt: { outcome: receipt.outcome, revision: receipt.revision }, authority: { revision: snapshot.revision, event_sequence: snapshot.event_sequence, tasks: [task], side_tasks: snapshot.side_tasks.filter(side => side.parentTaskId === taskId || side.taskId === taskId) }, ...(file.outbox[operationId] ? { mirror: file.outbox[operationId] } : {}) }
   }
 
   private authoritySnapshot(file: Awaited<ReturnType<ProductTaskAuthorityRepository['read']>>): { revision: number; event_sequence: number; tasks: ProductTaskRecord[]; side_tasks: ProductSideTask[] } {
@@ -1093,6 +1101,141 @@ export class ProductTaskService {
       tasks: Object.values(file.tasks).map(authorityPublicTask),
       side_tasks: Object.values(file.side_tasks).map((sideTask) => publicSideTask(sideTask as ProductSideTaskMetadata)),
     }
+  }
+
+  async submitTaskRun(taskId: string, input: SubmitTaskRunInput): Promise<SubmitTaskRunReceipt> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const canonical = JSON.stringify({ task_id: taskId, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, text: input.text, attachment_ids: input.attachment_ids, draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision })
+    try {
+      const { file, result } = await authority.transactSubmit((state) => {
+        const prior = state.receipts[input.client_operation_id]
+        if (prior) {
+          if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
+          return { changed: false as const, value: { duplicate: true, receipt: prior } }
+        }
+        if ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined) || (input.draft_id !== undefined && (!input.draft_id || !Number.isSafeInteger(input.expected_draft_revision) || input.expected_draft_revision! < 0)) || !input.text || !Array.isArray(input.attachment_ids) || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+        const stored = state.tasks[taskId] as { task?: Record<string, unknown> } | undefined
+        const task = stored?.task
+        if (!task || (task.revision ?? 0) !== input.expected_task_revision) throw new Error('AUTHORITY_CONFLICT')
+        let lineageId = task.current_lineage_id as string | undefined
+        if (!lineageId) {
+          if (input.expected_lineage_revision !== 0) throw new Error('AUTHORITY_CONFLICT')
+          lineageId = `lineage_${randomUUID()}`
+          state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 0, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, state: 'active', created_at: this.now().toISOString(), updated_at: this.now().toISOString() }
+          task.current_lineage_id = lineageId
+        }
+        const lineage = state.conversation_lineages[lineageId] as Record<string, unknown> | undefined
+        if (!lineage || lineage.product_task_id !== taskId || lineage.revision !== input.expected_lineage_revision || lineage.state !== 'active') throw new Error('AUTHORITY_CONFLICT')
+        const now = this.now().toISOString()
+        const attachments = input.attachment_ids.map(id => {
+          const attachment = state.task_attachments[id] as Record<string, unknown> | undefined
+          if (!attachment || attachment.installation_id !== this.installationId || attachment.state !== 'ready' || Date.parse(attachment.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED')
+          if ((attachment.owner_kind === 'product_task' && attachment.owner_id !== taskId) || (attachment.owner_kind === 'composer_draft' && attachment.owner_id !== input.draft_id)) throw new Error('ATTACHMENT_REJECTED')
+          return [id, attachment] as const
+        })
+        let draft: Record<string, unknown> | undefined
+        if (input.draft_id) {
+          draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
+          if (!draft || draft.installation_id !== this.installationId || draft.target_task_id !== taskId || draft.revision !== input.expected_draft_revision || draft.state !== 'active' || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
+        }
+        const runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
+        task.revision = input.expected_task_revision + 1
+        task.current_lineage_id = lineageId
+        lineage.head_entry_id = entryId; lineage.revision = input.expected_lineage_revision + 1; lineage.updated_at = now
+        state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }
+        const scope = state.task_scopes[taskId] as { kind?: unknown } | undefined
+        const execution_capability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
+        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: null, provider: null, model: null }
+        state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
+        state.event_sequence += 1
+        state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
+        for (const [id, attachment] of attachments) { state.task_attachments[id] = { ...attachment, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...attachment.refs as string[], taskId], revision: (attachment.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
+        if (draft) state.composer_drafts[input.draft_id!] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }
+        const entity_revisions: Record<string, number> = { task: task.revision as number, lineage: lineage.revision as number }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; if (draft) entity_revisions.draft = (state.composer_drafts[input.draft_id!] as { revision: number }).revision
+        const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1, authority_revision: state.revision + 1, entity_revisions } }
+        state.receipts[input.client_operation_id] = receipt
+        state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_submit', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
+        return { duplicate: false, receipt }
+      })
+      const receipt = result.receipt
+      const snapshot = receipt.result as { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; authority_revision: number; entity_revisions: Record<string, number> }
+      return { client_operation_id: input.client_operation_id, outcome: result.duplicate ? 'duplicate' : 'accepted', authority_revision: snapshot.authority_revision, entity_revisions: snapshot.entity_revisions, result: { task_id: snapshot.task_id, run_id: snapshot.run_id, entry_id: snapshot.entry_id, dispatch_generation: snapshot.dispatch_generation } }
+    } catch (error) {
+      const file = await authority.read()
+      return { client_operation_id: input.client_operation_id, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', authority_revision: file.revision, entity_revisions: {}, error: (error as Error).message }
+    }
+  }
+
+  async createAndSubmitTask(input: import('../../../shared/product/domain.js').CreateAndSubmitTaskInput): Promise<import('../../../shared/product/domain.js').SubmitTaskRunReceipt> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const canonical = JSON.stringify({ draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, text: input.text, attachment_ids: input.attachment_ids })
+    try { const { file, result } = await authority.transactSubmit(state => {
+      const prior = state.receipts[input.client_operation_id]
+      if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); return { changed: false as const, value: { duplicate: true, receipt: prior } } }
+      if (!input.text || !Array.isArray(input.attachment_ids) || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+      const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
+      if (!draft || draft.installation_id !== this.installationId || draft.target_state !== 'pending_task' || draft.state !== 'active' || draft.revision !== input.expected_draft_revision || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
+      const taskId = draft.target_task_id as string; if (state.tasks[taskId]) throw new Error('AUTHORITY_CONFLICT')
+      const attachments = input.attachment_ids.map(id => { const a = state.task_attachments[id] as Record<string, unknown> | undefined; if (!a || a.installation_id !== this.installationId || a.owner_kind !== 'composer_draft' || a.owner_id !== input.draft_id || a.state !== 'ready' || Date.parse(a.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED'); return [id, a] as const })
+      const now = this.now().toISOString(), lineageId = `lineage_${randomUUID()}`, runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
+      const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
+      state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
+      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: null, provider: null, model: null }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
+      for (const [id, a] of attachments) { state.task_attachments[id] = { ...a, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...a.refs as string[], taskId], revision: (a.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
+      state.composer_drafts[input.draft_id] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }; const entity_revisions: Record<string, number> = { task: 1, lineage: 1, draft: (state.composer_drafts[input.draft_id] as { revision: number }).revision }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_draft_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1, authority_revision: state.revision + 1, entity_revisions } }; state.receipts[input.client_operation_id] = receipt; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_create_submit', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }; return { duplicate: false, receipt }
+    }); const receipt = result.receipt; const snapshot = receipt.result as { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; authority_revision: number; entity_revisions: Record<string, number> }; return { client_operation_id: input.client_operation_id, outcome: result.duplicate ? 'duplicate' : 'accepted', authority_revision: snapshot.authority_revision, entity_revisions: snapshot.entity_revisions, result: { task_id: snapshot.task_id, run_id: snapshot.run_id, entry_id: snapshot.entry_id, dispatch_generation: snapshot.dispatch_generation } } } catch (error) { const file = await authority.read(); return { client_operation_id: input.client_operation_id, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', authority_revision: file.revision, entity_revisions: {}, error: (error as Error).message } }
+  }
+
+  /**
+   * Read the durable BB-02C user-event ledger.  The operation audit map is
+   * intentionally not visible here: reconnect cursors are keyed only by the
+   * permanent task-event sequence.
+   */
+  async listTaskEvents(taskId: string, afterEventSequence = 0): Promise<{ events: TaskEvent[]; cursor: number }> {
+    if (!Number.isSafeInteger(afterEventSequence) || afterEventSequence < 0) {
+      throw ApiError.badRequest('事件游标无效')
+    }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const state = await authority.read()
+    if (!state.tasks[taskId]) throw ApiError.notFound('任务不存在')
+    const events = Object.values(state.task_events)
+      .map((event) => event as TaskEvent)
+      .filter((event) => event.task_id === taskId && event.event_sequence > afterEventSequence)
+      .sort((left, right) => left.event_sequence - right.event_sequence)
+      .map((event) => ({ ...event, attachment_ids: [...event.attachment_ids] }))
+    return { events, cursor: state.event_sequence }
+  }
+
+  /**
+   * The only durable execution hand-off for a BB-02C TaskRun.  Claiming is
+   * idempotent and never creates entries, runs, lineages or product events.
+   */
+  async claimTaskRunDispatch(runId: string, dispatchGeneration: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1) {
+      throw ApiError.badRequest('运行派发参数无效')
+    }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as {
+        dispatch_generation?: unknown
+        state?: unknown
+        claimed_at?: unknown
+      } | undefined
+      if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) {
+        throw new Error('AUTHORITY_INVALID')
+      }
+      if (dispatch.state === 'pending') {
+        dispatch.state = 'claimed'
+        dispatch.claimed_at = this.now().toISOString()
+        return { outcome: 'claimed' as const, task_id: run.task_id }
+      }
+      if (dispatch.state === 'claimed' || dispatch.state === 'started') {
+        return { changed: false as const, value: { outcome: 'duplicate' as const, task_id: run.task_id } }
+      }
+      return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
+    })
+    return result
   }
 
   async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
@@ -1157,7 +1300,7 @@ export class ProductTaskService {
     capability: 'review' | 'diff' | 'preview' | 'pty' | 'agent' | 'skill' | 'bash',
     expectedWorkspaceRevision?: number,
   ): Promise<ProductWorkspace> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const file = await authority.read()
     const scope = file.task_scopes[taskId] as ProductTaskScope | undefined
     if (!scope || scope.kind === 'installation-default') {
@@ -1183,9 +1326,9 @@ export class ProductTaskService {
     if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0 || !input.client_operation_id) throw ApiError.badRequest('workspace operation 无效')
     const inspected = await this.workspaceFs.inspect(input.root)
     if (inspected.availability === 'missing') throw ApiError.badRequest('工作区根目录不存在')
-    const id = `workspace_${createHash('sha256').update(`${this.installationId} ${inspected.identity.volume_id} ${inspected.identity.file_id}`).digest('hex').slice(0, 16)}`
+    const id = `workspace_${createHash('sha256').update(`${this.installationId}\u0000${inspected.identity.volume_id}\u0000${inspected.identity.file_id}`).digest('hex').slice(0, 16)}`
     const canonical = JSON.stringify({ kind: 'workspace_register', workspace_id: id, root: inspected.canonical_root, expected_revision: input.expected_revision })
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const before = await authority.read()
     const prior = before.receipts[input.client_operation_id]
     if (prior) {
@@ -1214,7 +1357,7 @@ export class ProductTaskService {
     const inspected = await this.workspaceFs.inspect(root)
     if (inspected.availability === 'missing') throw ApiError.badRequest('工作区根目录不存在')
     const id = `workspace_${createHash('sha256').update(`${this.installationId}\u0000${inspected.identity.volume_id}\u0000${inspected.identity.file_id}`).digest('hex').slice(0, 16)}`
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const existing = await authority.read()
     const prior = existing.workspaces[id] as ProductWorkspace | undefined
     if (prior) return prior
@@ -1226,7 +1369,7 @@ export class ProductTaskService {
   }
 
   async inspectWorkspace(workspaceId: string): Promise<ProductWorkspace> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const current = await authority.read()
     const workspace = current.workspaces[workspaceId] as ProductWorkspace | undefined
     if (!workspace || workspace.installation_id !== this.installationId) throw ApiError.notFound('工作区不存在')
@@ -1243,7 +1386,7 @@ export class ProductTaskService {
   async relocateWorkspaceOperation(input: { workspace_id: string; root: string; expected_workspace_revision: number; client_operation_id: string }): Promise<{ workspace: ProductWorkspace; receipt: { outcome: 'accepted' | 'duplicate' | 'conflict'; revision: number } }> {
     if (!Number.isSafeInteger(input.expected_workspace_revision) || input.expected_workspace_revision < 0 || !input.client_operation_id || !input.root.trim()) throw ApiError.badRequest('workspace relocate 参数无效')
     const inspected = await this.workspaceFs.inspect(input.root)
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const before = await authority.read()
     const existing = before.workspaces[input.workspace_id] as ProductWorkspace | undefined
     if (!existing || existing.installation_id !== this.installationId) throw ApiError.notFound('工作区不存在')
@@ -1272,7 +1415,7 @@ export class ProductTaskService {
   }
 
   async relocateWorkspace(workspaceId: string, expectedRevision: number, root: string): Promise<ProductWorkspace> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const inspected = await this.workspaceFs.inspect(root)
     const { file } = await authority.mutateCapabilities((state) => {
       const workspace = state.workspaces[workspaceId] as ProductWorkspace | undefined
@@ -1288,7 +1431,7 @@ export class ProductTaskService {
   async relinkWorkspaceOperation(input: { workspace_id: string; root: string; expected_workspace_revision: number; client_operation_id: string }): Promise<{ workspace: ProductWorkspace; receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number } }> {
     if (!Number.isSafeInteger(input.expected_workspace_revision) || input.expected_workspace_revision < 0 || !input.client_operation_id || !input.root.trim()) throw ApiError.badRequest('workspace relink 参数无效')
     const inspected = await this.workspaceFs.inspect(input.root)
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const before = await authority.read()
     const existing = before.workspaces[input.workspace_id] as ProductWorkspace | undefined
     if (!existing || existing.installation_id !== this.installationId) throw ApiError.notFound('工作区不存在')
@@ -1317,7 +1460,7 @@ export class ProductTaskService {
   async relinkWorkspace(workspaceId: string, expectedRevision: number, root: string): Promise<ProductWorkspace> {
     const inspected = await this.workspaceFs.inspect(root)
     if (inspected.availability === 'missing') throw ApiError.badRequest('工作区根目录不存在')
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { file } = await authority.mutateCapabilities((state) => {
       const workspace = state.workspaces[workspaceId] as ProductWorkspace | undefined
       if (!workspace || workspace.installation_id !== this.installationId || workspace.revision !== expectedRevision) throw new Error('AUTHORITY_CONFLICT')
@@ -1327,7 +1470,7 @@ export class ProductTaskService {
   }
 
   async bindTaskWorkspace(input: { task_id: string; workspace_id: string; expected_task_revision: number; expected_workspace_revision: number; client_operation_id: string }): Promise<{ authority_revision: number; entity_revisions: { task: number; workspace: number }; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; error?: WorkspaceBindBlockerCode; receipt?: unknown; participant_receipts?: WorkspaceBindParticipantReceipt[] }> {
-    const prior = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const prior = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     if (prior.receipts[input.client_operation_id]) {
       const canonical = JSON.stringify({ task_id: input.task_id, workspace_id: input.workspace_id, expected_task_revision: input.expected_task_revision, expected_workspace_revision: input.expected_workspace_revision })
       if (prior.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT')
@@ -1339,7 +1482,7 @@ export class ProductTaskService {
   }
 
   private async bindTaskWorkspaceUnlocked(input: { task_id: string; workspace_id: string; expected_task_revision: number; expected_workspace_revision: number; client_operation_id: string }): Promise<{ authority_revision: number; entity_revisions: { task: number; workspace: number }; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; error?: WorkspaceBindBlockerCode; receipt?: unknown; participant_receipts?: WorkspaceBindParticipantReceipt[] }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const canonicalInput = JSON.stringify({ task_id: input.task_id, workspace_id: input.workspace_id, expected_task_revision: input.expected_task_revision, expected_workspace_revision: input.expected_workspace_revision })
     try {
       const { file, result } = await authority.transactCapabilitiesAsync(async (state) => {
@@ -1364,14 +1507,14 @@ export class ProductTaskService {
   }
 
   async getComposerDraft(draftId: string): Promise<Record<string, unknown>> {
-    const draft = (await new ProductTaskAuthorityRepository(this.authorityPath).read()).composer_drafts[draftId] as Record<string, unknown> | undefined
+    const draft = (await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()).composer_drafts[draftId] as Record<string, unknown> | undefined
     if (!draft || draft.installation_id !== this.installationId) throw ApiError.notFound('草稿不存在')
     return { draft_id: draft.draft_id, workspace_id: draft.workspace_id, target_task_id: draft.target_task_id, revision: draft.revision, last_activity: draft.last_activity, state: draft.state, created_at: draft.created_at, expires_at: draft.expires_at }
   }
 
   async createComposerDraft(input: { target_task_id: string; workspace_id?: string; ttl_ms: number; client_operation_id: string }): Promise<{ draft: Record<string, unknown>; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
     if (!Number.isSafeInteger(input.ttl_ms) || input.ttl_ms < 1) throw new ApiError(400, '草稿 TTL 无效', 'AUTHORITY_INVALID')
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const canonical = JSON.stringify({ kind: 'composer_draft_create', target_task_id: input.target_task_id, workspace_id: input.workspace_id ?? null, ttl_ms: input.ttl_ms })
     const { file, result } = await authority.transactCapabilities((state) => {
       const prior = state.receipts[input.client_operation_id]
@@ -1386,22 +1529,37 @@ export class ProductTaskService {
       const workspace = input.workspace_id ? state.workspaces[input.workspace_id] as ProductWorkspace | undefined : undefined
       if (!target?.task || (input.workspace_id && (!workspace || workspace.installation_id !== this.installationId || workspace.availability !== 'available'))) throw new ApiError(400, '草稿目标无效', 'AUTHORITY_INVALID')
       const now = this.now(); const draftId = `draft_${randomUUID()}`
-      const draft = { draft_id: draftId, installation_id: this.installationId, target_task_id: input.target_task_id, ...(input.workspace_id ? { workspace_id: input.workspace_id } : {}), revision: 0, last_activity: now.toISOString(), state: 'active', created_at: now.toISOString(), expires_at: new Date(now.getTime() + input.ttl_ms).toISOString() }
+      const draft = { draft_id: draftId, installation_id: this.installationId, target_task_id: input.target_task_id, target_state: 'existing_task', ...(input.workspace_id ? { workspace_id: input.workspace_id } : {}), revision: 0, last_activity: now.toISOString(), state: 'active', created_at: now.toISOString(), expires_at: new Date(now.getTime() + input.ttl_ms).toISOString() }
       state.composer_drafts[draftId] = draft; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result: { entity_id: draftId } }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'composer_draft_create', revision: state.revision + 1, canonical_input: canonical, entity_id: draftId }
       return { draft, outcome: 'accepted' as const }
     })
     return { draft: result.draft, authority_revision: file.revision, outcome: result.outcome }
   }
 
+  async createNewTaskComposerDraft(input: { ttl_ms: number; client_operation_id: string }): Promise<{ draft: Record<string, unknown>; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const canonical = JSON.stringify({ kind: 'new_task_draft', ttl_ms: input.ttl_ms })
+    const { file, result } = await authority.transactCapabilities((state) => {
+      const prior = state.receipts[input.client_operation_id]
+      if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); const id = (prior.result as { entity_id?: string } | undefined)?.entity_id; const draft = id ? state.composer_drafts[id] as Record<string, unknown> : undefined; if (!draft) throw new Error('AUTHORITY_INVALID'); return { changed: false as const, value: { draft, outcome: 'duplicate' as const } } }
+      if (!Number.isSafeInteger(input.ttl_ms) || input.ttl_ms < 1) throw new Error('AUTHORITY_INVALID')
+      const now = this.now().toISOString(), id = `draft_${randomUUID()}`, target = `task_${randomUUID()}`
+      const draft = { draft_id: id, installation_id: this.installationId, target_task_id: target, target_state: 'pending_task', revision: 0, last_activity: now, state: 'active', created_at: now, expires_at: new Date(this.now().getTime() + input.ttl_ms).toISOString() }
+      state.composer_drafts[id] = draft; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result: { entity_id: id } }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'new_task_draft', revision: state.revision + 1, canonical_input: canonical, entity_id: id }
+      return { draft, outcome: 'accepted' as const }
+    })
+    return { draft: result.draft, authority_revision: file.revision, outcome: result.outcome }
+  }
+
   async mutateComposerDraft(input: { draft_id: string; expected_revision: number; client_operation_id: string; action: 'update' | 'consume' | 'expire' }): Promise<{ authority_revision: number; draft_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const initial = await authority.read(); const prior = initial.receipts[input.client_operation_id]
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const initial = await authority.read(); const prior = initial.receipts[input.client_operation_id]
     if (prior) return { authority_revision: initial.revision, draft_revision: (initial.composer_drafts[input.draft_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' }
     try { const { file } = await authority.mutateCapabilities((state) => { const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined; if (!draft || draft.installation_id !== this.installationId || draft.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT'); const expired = this.now().getTime() >= Date.parse(draft.expires_at as string); if (expired && input.action !== 'expire') throw new Error('DRAFT_REJECTED'); if (draft.state !== 'active' && input.action !== 'expire') throw new Error('DRAFT_REJECTED'); const nextState = input.action === 'consume' ? 'consumed' : input.action === 'expire' ? 'expired' : 'active'; state.composer_drafts[input.draft_id] = { ...draft, state: nextState, revision: (draft.revision as number) + 1, last_activity: this.now().toISOString() }; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: state.revision + 1 } }); return { authority_revision: file.revision, draft_revision: (file.composer_drafts[input.draft_id] as { revision: number }).revision, outcome: 'accepted' } } catch (error) { const current = await authority.read(); return { authority_revision: current.revision, draft_revision: (current.composer_drafts[input.draft_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
   }
 
   async registerAttachmentIdentity(owner: { kind: 'composer_draft' | 'product_task'; id: string }, metadata: VerifiedAttachmentMetadata, ttlMs: number, operationId: string): Promise<{ attachment_id: string; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
     if (!/^[a-f0-9]{64}$/.test(metadata.source_fingerprint) || !/^[a-f0-9]{64}$/.test(metadata.content_hash) || !metadata.verified_media_type || !Number.isSafeInteger(metadata.byte_size) || metadata.byte_size < 0 || !Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new ApiError(400, '附件验证元数据无效', 'AUTHORITY_INVALID')
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const canonical = JSON.stringify({ kind: 'attachment_create', owner, metadata, ttl_ms: ttlMs })
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const canonical = JSON.stringify({ kind: 'attachment_create', owner, metadata, ttl_ms: ttlMs })
     const { file, result } = await authority.transactCapabilities((state) => {
       const prior = state.receipts[operationId]
       if (prior) { if (state.events[operationId]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); const id = (prior.result as { entity_id?: string } | undefined)?.entity_id ?? state.events[operationId]?.entity_id; if (!id || !state.task_attachments[id]) throw new Error('AUTHORITY_INVALID'); return { changed: false as const, value: { id, outcome: 'duplicate' as const } } }
@@ -1412,26 +1570,26 @@ export class ProductTaskService {
   }
 
   async setAttachmentReadyForTest(attachmentId: string, expectedRevision: number): Promise<void> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[attachmentId] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== expectedRevision || attachment.state !== 'staged') throw new Error('AUTHORITY_CONFLICT'); state.task_attachments[attachmentId] = { ...attachment, state: 'ready', revision: expectedRevision + 1, last_activity: this.now().toISOString() } })
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[attachmentId] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== expectedRevision || attachment.state !== 'staged') throw new Error('AUTHORITY_CONFLICT'); state.task_attachments[attachmentId] = { ...attachment, state: 'ready', revision: expectedRevision + 1, last_activity: this.now().toISOString() } })
   }
 
   async transitionAttachment(input: { attachment_id: string; expected_revision: number; target_state: 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded'; client_operation_id: string; error?: string }): Promise<{ authority_revision: number; attachment_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'attachment_transition', attachment_id: input.attachment_id, expected_revision: input.expected_revision, target_state: input.target_state, error: input.error ?? null }); if (initial.receipts[input.client_operation_id]) { if (initial.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, attachment_revision: (initial.task_attachments[input.attachment_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'attachment_transition', attachment_id: input.attachment_id, expected_revision: input.expected_revision, target_state: input.target_state, error: input.error ?? null }); if (initial.receipts[input.client_operation_id]) { if (initial.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, attachment_revision: (initial.task_attachments[input.attachment_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[input.attachment_id] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT'); const allowed: Record<string, readonly string[]> = { staged: ['inspecting', 'failed', 'cancelled', 'discarded'], inspecting: ['ready', 'failed', 'cancelled', 'discarded'], ready: ['failed', 'discarded'], failed: [], cancelled: [], discarded: [], accepted_bound: [] }; if (this.now().getTime() >= Date.parse(attachment.expires_at as string) && input.target_state !== 'discarded') throw new Error('ATTACHMENT_REJECTED'); if (!allowed[attachment.state as string]?.includes(input.target_state)) throw new Error('ATTACHMENT_REJECTED'); state.task_attachments[input.attachment_id] = { ...attachment, state: input.target_state, revision: input.expected_revision + 1, last_activity: this.now().toISOString() }; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'attachment_transition', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[input.attachment_id] as { revision: number }).revision, outcome: 'accepted' } } catch (error) { const file = await authority.read(); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[input.attachment_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
   }
 
   async bindAttachment(attachmentId: string, expectedRevision: number, owner: { kind: 'composer_draft' | 'product_task'; id: string }, operationId: string): Promise<{ authority_revision: number; attachment_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'attachment_bind', attachment_id: attachmentId, expected_revision: expectedRevision, owner }); if (initial.receipts[operationId]) { if (initial.events[operationId]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, attachment_revision: (initial.task_attachments[attachmentId] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'attachment_bind', attachment_id: attachmentId, expected_revision: expectedRevision, owner }); if (initial.receipts[operationId]) { if (initial.events[operationId]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, attachment_revision: (initial.task_attachments[attachmentId] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[attachmentId] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== expectedRevision) throw new Error('AUTHORITY_CONFLICT'); if (attachment.state !== 'ready' || this.now().getTime() >= Date.parse(attachment.expires_at as string)) throw new Error('ATTACHMENT_REJECTED'); const sameOwner = attachment.owner_kind === owner.kind && attachment.owner_id === owner.id; const draft = attachment.owner_kind === 'composer_draft' ? state.composer_drafts[attachment.owner_id as string] as Record<string, unknown> | undefined : undefined; const legalTransfer = owner.kind === 'product_task' && draft?.target_task_id === owner.id && state.tasks[owner.id]; if (!sameOwner && !legalTransfer) throw new Error('ATTACHMENT_REJECTED'); state.task_attachments[attachmentId] = { ...attachment, owner_kind: owner.kind, owner_id: owner.id, state: 'accepted_bound', refs: [...attachment.refs as string[], owner.id], revision: expectedRevision + 1, last_activity: this.now().toISOString() }; state.receipts[operationId] = { client_operation_id: operationId, expected_revision: expectedRevision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[operationId] = { event_sequence: state.event_sequence, client_operation_id: operationId, kind: 'attachment_bind', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[attachmentId] as { revision: number }).revision, outcome: 'accepted' } } catch (error) { const file = await authority.read(); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[attachmentId] as { revision?: number } | undefined)?.revision ?? 0, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
   }
 
   async consumeDraftWithAttachments(input: { draft_id: string; expected_draft_revision: number; attachment_ids: string[]; target_task_id: string; client_operation_id: string }): Promise<{ authority_revision: number; entity_revisions: Record<string, number>; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'composer_draft_consume', draft_id: input.draft_id, target_task_id: input.target_task_id, expected_draft_revision: input.expected_draft_revision, attachment_ids: input.attachment_ids }); if (initial.receipts[input.client_operation_id]) { if (initial.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, entity_revisions: {}, outcome: 'duplicate' } }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'composer_draft_consume', draft_id: input.draft_id, target_task_id: input.target_task_id, expected_draft_revision: input.expected_draft_revision, attachment_ids: input.attachment_ids }); if (initial.receipts[input.client_operation_id]) { if (initial.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, entity_revisions: {}, outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined; if (!draft || draft.installation_id !== this.installationId || draft.revision !== input.expected_draft_revision || draft.target_task_id !== input.target_task_id || !(state.tasks[input.target_task_id] as { task?: unknown } | undefined)?.task || draft.state !== 'active' || this.now().getTime() >= Date.parse(draft.expires_at as string) || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('DRAFT_REJECTED'); const attachments = input.attachment_ids.map(id => { const item = state.task_attachments[id] as Record<string, unknown> | undefined; if (!item || item.installation_id !== this.installationId || item.owner_kind !== 'composer_draft' || item.owner_id !== input.draft_id || item.state !== 'ready' || this.now().getTime() >= Date.parse(item.expires_at as string)) throw new Error('ATTACHMENT_REJECTED'); return [id, item] as const }); const at = this.now().toISOString(); for (const [id, item] of attachments) state.task_attachments[id] = { ...item, owner_kind: 'product_task', owner_id: input.target_task_id, state: 'accepted_bound', refs: [...item.refs as string[], input.target_task_id], revision: (item.revision as number) + 1, last_activity: at }; state.composer_drafts[input.draft_id] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: at }; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_draft_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'composer_draft_consume', revision: state.revision + 1, canonical_input: canonical } }); const revisions: Record<string, number> = { draft: (file.composer_drafts[input.draft_id] as { revision: number }).revision }; for (const id of input.attachment_ids) revisions[id] = (file.task_attachments[id] as { revision: number }).revision; return { authority_revision: file.revision, entity_revisions: revisions, outcome: 'accepted' } } catch (error) { const file = await authority.read(); return { authority_revision: file.revision, entity_revisions: {}, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
   }
 
   async createConversationLineage(input: { task_id: string; expected_task_revision?: number; client_operation_id: string; parent_lineage_id?: string; fork_checkpoint_id?: string }): Promise<{ lineage: Record<string, unknown>; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const canonical = JSON.stringify({ kind: 'lineage_create', task_id: input.task_id, expected_task_revision: input.expected_task_revision ?? null, parent_lineage_id: input.parent_lineage_id ?? null, fork_checkpoint_id: input.fork_checkpoint_id ?? null })
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const canonical = JSON.stringify({ kind: 'lineage_create', task_id: input.task_id, expected_task_revision: input.expected_task_revision ?? null, parent_lineage_id: input.parent_lineage_id ?? null, fork_checkpoint_id: input.fork_checkpoint_id ?? null })
     const { file, result } = await authority.transactCapabilities((state) => {
       const prior = state.receipts[input.client_operation_id]
       if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); const id = (prior.result as { entity_id?: string } | undefined)?.entity_id ?? state.events[input.client_operation_id]?.entity_id; const stored = id ? state.conversation_lineages[id] as Record<string, unknown> | undefined : undefined; if (!stored) throw new Error('AUTHORITY_INVALID'); const { resume_binding_id: _private, ...lineage } = stored; return { changed: false as const, value: { lineage, outcome: 'duplicate' as const } } }
@@ -1440,17 +1598,17 @@ export class ProductTaskService {
   }
 
   async mutateConversationLineage(input: { lineage_id: string; expected_revision: number; client_operation_id: string; action: 'advance' | 'park' | 'recovery' | 'compact'; head_entry_id?: string }): Promise<{ authority_revision: number; lineage_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const before = await authority.read(); const canonical = JSON.stringify({ kind: 'lineage_mutate', lineage_id: input.lineage_id, expected_revision: input.expected_revision, action: input.action, head_entry_id: input.head_entry_id ?? null }); if (before.receipts[input.client_operation_id]) { if (before.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: before.revision, lineage_revision: (before.conversation_lineages[input.lineage_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const before = await authority.read(); const canonical = JSON.stringify({ kind: 'lineage_mutate', lineage_id: input.lineage_id, expected_revision: input.expected_revision, action: input.action, head_entry_id: input.head_entry_id ?? null }); if (before.receipts[input.client_operation_id]) { if (before.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: before.revision, lineage_revision: (before.conversation_lineages[input.lineage_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const lineage = state.conversation_lineages[input.lineage_id] as Record<string, unknown> | undefined; if (!lineage || lineage.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT'); if (input.action === 'advance' && (!input.head_entry_id || lineage.state !== 'active')) throw new Error('LINEAGE_REJECTED'); const next = { ...lineage, ...(input.action === 'advance' ? { head_entry_id: input.head_entry_id } : {}), ...(input.action === 'park' ? { state: 'parked' } : {}), ...(input.action === 'recovery' ? { state: 'recovery_required' } : {}), ...(input.action === 'compact' ? { compact_generation: (lineage.compact_generation as number) + 1 } : {}), revision: (lineage.revision as number) + 1, updated_at: this.now().toISOString() }; state.conversation_lineages[input.lineage_id] = next; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'lineage_mutate', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, lineage_revision: (file.conversation_lineages[input.lineage_id] as { revision: number }).revision, outcome: 'accepted' } } catch (error) { const file = await authority.read(); return { authority_revision: file.revision, lineage_revision: (file.conversation_lineages[input.lineage_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
   }
 
   async setConversationLineageCurrent(input: { task_id: string; lineage_id: string; expected_task_revision: number; expected_lineage_revision: number; client_operation_id: string }): Promise<{ authority_revision: number; task_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' }> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath); const before = await authority.read(); const canonical = JSON.stringify({ kind: 'lineage_set_current', task_id: input.task_id, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision }); if (before.receipts[input.client_operation_id]) { if (before.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: before.revision, task_revision: ((before.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'duplicate' } }
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const before = await authority.read(); const canonical = JSON.stringify({ kind: 'lineage_set_current', task_id: input.task_id, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision }); if (before.receipts[input.client_operation_id]) { if (before.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: before.revision, task_revision: ((before.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const stored = state.tasks[input.task_id] as { task?: Record<string, unknown> } | undefined; const lineage = state.conversation_lineages[input.lineage_id] as Record<string, unknown> | undefined; const revision = typeof stored?.task?.revision === 'number' ? stored.task.revision : 0; if (!stored?.task || !lineage || lineage.product_task_id !== input.task_id || revision !== input.expected_task_revision || lineage.revision !== input.expected_lineage_revision) throw new Error('AUTHORITY_CONFLICT'); stored.task.current_lineage_id = input.lineage_id; stored.task.revision = revision + 1; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'lineage_set_current', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } }).task?.revision ?? 0), outcome: 'accepted' } } catch { const file = await authority.read(); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'conflict' } }
   }
 
   async getConversationLineageRoot(lineageId: string): Promise<Record<string, unknown>> {
-    const file = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     let lineage = file.conversation_lineages[lineageId] as Record<string, unknown> | undefined
     if (!lineage) throw ApiError.notFound('会话谱系不存在')
     const seen = new Set<string>()
@@ -1465,14 +1623,14 @@ export class ProductTaskService {
   }
 
   async getConversationLineageCurrent(taskId: string): Promise<Record<string, unknown> | null> {
-    const file = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const task = (file.tasks[taskId] as { task?: { current_lineage_id?: unknown } } | undefined)?.task
     if (typeof task?.current_lineage_id !== 'string') return null
     return this.getConversationLineage(task.current_lineage_id)
   }
 
   async getConversationLineage(lineageId: string): Promise<Record<string, unknown>> {
-    const lineage = (await new ProductTaskAuthorityRepository(this.authorityPath).read()).conversation_lineages[lineageId] as Record<string, unknown> | undefined; if (!lineage) throw ApiError.notFound('会话谱系不存在'); const { resume_binding_id: _private, ...publicLineage } = lineage; return publicLineage
+    const lineage = (await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()).conversation_lineages[lineageId] as Record<string, unknown> | undefined; if (!lineage) throw ApiError.notFound('会话谱系不存在'); const { resume_binding_id: _private, ...publicLineage } = lineage; return publicLineage
   }
 
   async resolveCoreSessionId(taskId: string): Promise<string> {
@@ -1615,7 +1773,7 @@ export class ProductTaskService {
 
   async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
     const legacy = await this.withStoreLock(() => this.listSideTasksUnlocked(taskId))
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath).read()
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const byId = new Map(legacy.map(task => [task.id, task]))
     for (const value of Object.values(authority.side_tasks)) {
       const side = publicSideTask(value as ProductSideTaskMetadata)
@@ -2202,4 +2360,14 @@ export class ProductTaskService {
   }
 }
 
-export const productTaskService = new ProductTaskService()
+/**
+ * Server tests (and Electron restarts) may change the configured data root
+ * after this module has been imported.  Keep the live binding replaceable so
+ * each sidecar start owns exactly the data root it was started with.
+ */
+export let productTaskService = new ProductTaskService()
+
+export function resetProductTaskServiceForServer(): ProductTaskService {
+  productTaskService = new ProductTaskService()
+  return productTaskService
+}

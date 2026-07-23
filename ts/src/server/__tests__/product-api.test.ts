@@ -69,6 +69,7 @@ function createService() {
       createSideTask: record('createSideTask', sideTask),
       closeSideTask: record('closeSideTask', { ...sideTask, status: 'closed' }),
       createTaskAuthoritatively: record('createTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 } }),
+      createAndSubmitTask: record('createAndSubmitTask', { client_operation_id: 'create-request', outcome: 'accepted', authority_revision: 1, entity_revisions: {}, result: { task_id: task.id, run_id: 'run-1', entry_id: 'entry-1', dispatch_generation: 1 } }),
       mutateTaskAuthoritatively: record('mutateTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] } }),
       continueTaskAuthoritatively: record('continueTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
       createSideTaskAuthoritatively: record('createSideTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
@@ -128,48 +129,35 @@ describe('Product tasks API', () => {
     const { service, calls } = createService()
 
     const listed = await request(service, 'GET', '/api/product/tasks')
-    const created = await request(service, 'POST', '/api/product/tasks', {
-      workDir: '/workspace/hall-operations',
-      expected_revision: 0,
-      client_operation_id: 'create-request',
-    })
+    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-request', text: '首页提交', attachment_ids: [] })
 
     expect(listed.body.tasks[0]).toEqual(expect.objectContaining({ id: task.id }))
     expect(listed.body.tasks[0]).not.toHaveProperty('coreSessionId')
     expect(listed.body.tasks[0]).not.toHaveProperty('sourceTurnId')
     expect(listed.body.tasks[0]).not.toHaveProperty('parentThreadId')
-    expect(created.body.receipt).toEqual({ outcome: 'accepted', revision: 1 })
-    expect(created.body.authority).toEqual(expect.objectContaining({ revision: 1, tasks: [expect.objectContaining({ id: task.id })] }))
-    expect(created.body.task).toEqual(expect.objectContaining({ id: task.id }))
-    expect(created.body.task).not.toHaveProperty('coreSessionId')
-    expect(created.body.task).not.toHaveProperty('sourceTurnId')
-    expect(created.body.task).not.toHaveProperty('parentThreadId')
+    expect(created.body.receipt).toEqual(expect.objectContaining({ outcome: 'accepted', result: expect.objectContaining({ task_id: task.id, run_id: 'run-1' }) }))
     const serialized = JSON.stringify({ listed: listed.body, created: created.body })
     expect(serialized).not.toContain('internal-session-1')
     expect(serialized).not.toContain('internal-turn-1')
     expect(serialized).not.toContain('internal-parent-session-1')
-    expect(calls.map((call) => call.name)).toContain('createTaskAuthoritatively')
+    expect(calls.map((call) => call.name)).toContain('createAndSubmitTask')
     expect(calls.map((call) => call.name)).not.toContain('createTask')
   })
 
   it('routes real lifecycle actions to the product task service', async () => {
     const { service, calls } = createService()
 
-    const created = await request(service, 'POST', '/api/product/tasks', {
-      workDir: '/workspace/hall-operations',
-      title: '整理本周球房活动',
-      expected_revision: 0,
-      client_operation_id: 'create-1',
-    })
+    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-1', text: '整理本周球房活动', attachment_ids: [] })
     const pinned = await request(service, 'POST', '/api/product/tasks/task-1/pin', { expected_revision: 0, client_operation_id: 'pin-1' })
     const archived = await request(service, 'POST', '/api/product/tasks/task-1/archive', { expected_revision: 1, client_operation_id: 'archive-1' })
 
     const restored = await request(service, 'POST', '/api/product/tasks/task-1/restore', { expected_revision: 2, client_operation_id: 'restore-1' })
     expect([created, pinned, archived, restored].every((response) => response.status === (response === created ? 201 : 200))).toBeTrue()
-    for (const response of [created, pinned, archived, restored]) {
+    expect(created.body).toEqual(expect.objectContaining({ receipt: expect.objectContaining({ outcome: 'accepted' }) }))
+    for (const response of [pinned, archived, restored]) {
       expect(response.body).toEqual(expect.objectContaining({ receipt: expect.any(Object), authority: expect.objectContaining({ revision: 1, tasks: expect.any(Array) }) }))
     }
-    expect(calls.find((call) => call.name === 'createTaskAuthoritatively')?.args[0]).toEqual({ workDir: '/workspace/hall-operations', title: '整理本周球房活动', expected_revision: 0, client_operation_id: 'create-1' })
+    expect(calls.find((call) => call.name === 'createAndSubmitTask')?.args[0]).toEqual(expect.objectContaining({ draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-1', text: '整理本周球房活动' }))
     expect(calls.filter((call) => call.name === 'mutateTaskAuthoritatively').map((call) => call.args[0])).toEqual([
       { taskId: 'task-1', patch: { pinned: true }, expected_revision: 0, client_operation_id: 'pin-1' },
       { taskId: 'task-1', patch: { archived: true }, expected_revision: 1, client_operation_id: 'archive-1' },
@@ -380,5 +368,24 @@ describe('Product tasks API', () => {
     expect(calls.map((call) => call.name)).not.toContain('createSideTask')
     expect(calls.map((call) => call.name)).not.toContain('closeSideTask')
     expect(JSON.stringify({ listed: listed.body, created: created.body, closed: closed.body })).not.toContain('coreSessionId')
+  })
+})
+
+describe('BB-02C strict submit envelopes', () => {
+  const valid = { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'submit-1', text: 'hello', attachment_ids: [] }
+  for (const [name, path, body] of [
+    ['homepage rejects empty operation', '/api/product/tasks', { ...valid, client_operation_id: '' }],
+    ['homepage rejects extra key', '/api/product/tasks', { ...valid, extra: true }],
+    ['run rejects negative revision', '/api/product/tasks/task-1/runs', { client_operation_id: 'run-1', expected_task_revision: -1, expected_lineage_revision: 0, text: 'x', attachment_ids: [] }],
+    ['run rejects draft without expected draft revision', '/api/product/tasks/task-1/runs', { client_operation_id: 'run-1', expected_task_revision: 0, expected_lineage_revision: 0, draft_id: 'draft-1', text: 'x', attachment_ids: [] }],
+    ['run rejects expected draft revision without draft', '/api/product/tasks/task-1/runs', { client_operation_id: 'run-1', expected_task_revision: 0, expected_lineage_revision: 0, expected_draft_revision: 0, text: 'x', attachment_ids: [] }],
+    ['new draft rejects dangerous operation', '/api/product/composer-drafts/new-task', { ttl_ms: 1, client_operation_id: 'constructor' }],
+  ] as const) it(name, async () => { const { service, calls } = createService(); const response = await request(service, 'POST', path, body); expect(response.status).toBe(400); expect(calls).toHaveLength(0) })
+
+  it('does not expose verifier attachment transitions to the renderer', async () => {
+    for (const target_state of ['inspecting', 'ready']) {
+      const { service, calls } = createService(); const response = await request(service, 'POST', '/api/product/attachments/attachment-1/transition', { expected_revision: 0, target_state, client_operation_id: `transition-${target_state}` })
+      expect(response).toEqual({ status: 409, body: { error: 'OUT_OF_SCOPE_DISABLED', message: '附件验证状态当前不可用' } }); expect(calls).toHaveLength(0)
+    }
   })
 })

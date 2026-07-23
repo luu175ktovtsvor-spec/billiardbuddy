@@ -466,44 +466,15 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/billiard')
   })
 
-  it('submits stable project and directory identities for registered paths, then drops them for a manual path', async () => {
+  it('submits only the text and attachment IDs accepted by the atomic homepage route', async () => {
     const { onSubmit } = renderComposer()
 
-    fireEvent.change(screen.getByLabelText('选择项目'), { target: { value: 'project-1' } })
-    fireEvent.change(screen.getByLabelText('选择项目目录'), { target: { value: 'directory-1' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/billiard',
-      projectId: 'project-1',
-      directoryId: 'directory-1',
-      permissionMode: 'ask',
-    }))
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/manual-path' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-
-    await waitFor(() => expect(onSubmit).toHaveBeenLastCalledWith({
-      workDir: '/workspace/manual-path',
-      permissionMode: 'ask',
-    }))
-  })
-
-  it('keeps the optional initial goal out of the product task fields', async () => {
-    const { onSubmit } = renderComposer()
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '整理球台配置' } })
     fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '  请列出本周的训练安排  ' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      title: '整理球台配置',
-      permissionMode: 'ask',
-    }, {
       text: '请列出本周的训练安排',
-      attachments: [],
+      attachment_ids: [],
     }))
   })
 
@@ -511,7 +482,6 @@ describe('TaskIndex', () => {
     const { onSubmit } = renderComposer()
     const initialGoal = screen.getByLabelText('初始目标（可选）')
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
 
     fireEvent.keyDown(initialGoal, { key: 'Enter', shiftKey: true })
@@ -522,11 +492,8 @@ describe('TaskIndex', () => {
     fireEvent.keyDown(initialGoal, { key: 'Enter' })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
       text: '整理球台配置',
-      attachments: [],
+      attachment_ids: [],
     }))
   })
 
@@ -535,7 +502,6 @@ describe('TaskIndex', () => {
     const { onSubmit } = renderComposer()
     const initialGoal = screen.getByLabelText('初始目标（可选）')
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
 
     fireEvent.keyDown(initialGoal, { key: 'Enter' })
@@ -553,7 +519,6 @@ describe('TaskIndex', () => {
     const { onSubmit } = renderComposer()
     const initialGoal = screen.getByLabelText('初始目标（可选）')
 
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
     fireEvent.change(initialGoal, { target: { value: '整理球台配置' } })
     fireEvent.compositionStart(initialGoal)
     fireEvent.keyDown(initialGoal, { key: 'Enter' })
@@ -563,116 +528,6 @@ describe('TaskIndex', () => {
     fireEvent.keyDown(initialGoal, { key: 'Enter' })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
-  })
-
-  it('uses the existing browser picker for initial image attachments, lets the user remove them, and keeps refs out of the task payload', async () => {
-    const { onSubmit } = renderComposer()
-    const pickerClick = vi.spyOn(HTMLInputElement.prototype, 'click')
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
-
-    await waitFor(() => expect(pickerClick).toHaveBeenCalled())
-    const fileInput = document.querySelector('input[type="file"]')
-    expect(fileInput).not.toBeNull()
-
-    const image = new File(['table-layout'], '球台布局.png', { type: 'image/png' })
-    fireEvent.change(fileInput!, { target: { files: [image] } })
-
-    expect(await screen.findByRole('button', { name: 'Remove 球台布局.png' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Remove 球台布局.png' }))
-    expect(screen.queryByRole('button', { name: 'Remove 球台布局.png' })).not.toBeInTheDocument()
-
-    fireEvent.change(fileInput!, { target: { files: [image] } })
-    expect(await screen.findByRole('button', { name: 'Remove 球台布局.png' })).toBeInTheDocument()
-
-    fireEvent.keyDown(screen.getByLabelText('初始目标（可选）'), { key: 'Enter' })
-
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
-      text: '',
-      attachments: [expect.objectContaining({
-        type: 'image',
-        name: '球台布局.png',
-        mimeType: 'image/png',
-        data: expect.stringMatching(/^data:image\/png;base64,/),
-      })],
-    }))
-  })
-
-  it('uses inline browser file data for initial attachments even in the desktop renderer', async () => {
-    mocks.isDesktop = true
-    const { onSubmit } = renderComposer()
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.click(screen.getByRole('button', { name: '添加初始附件' }))
-
-    expect(mocks.openDirectory).not.toHaveBeenCalled()
-    const fileInput = document.querySelector('input[type="file"]')
-    const record = new File(['date,score\n2026-07-19,8'], '训练记录.csv', { type: 'text/csv' })
-    fireEvent.change(fileInput!, { target: { files: [record] } })
-    expect(await screen.findByRole('button', { name: 'Remove 训练记录.csv' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
-      text: '',
-      attachments: [expect.objectContaining({
-        type: 'file',
-        name: '训练记录.csv',
-        mimeType: 'text/csv',
-        data: expect.stringMatching(/^data:text\/csv;base64,/),
-      })],
-    }))
-  })
-
-  it('keeps task input and retries the same attachment after its browser read fails', async () => {
-    class RetriableFileReader {
-      static reads = 0
-      result: string | null = null
-      error: DOMException | null = null
-      onload: ((event: Event) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      readAsDataURL() {
-        RetriableFileReader.reads += 1
-        if (RetriableFileReader.reads === 1) {
-          this.error = new DOMException('attachment storage denied')
-          this.onerror?.(new Event('error'))
-          return
-        }
-
-        this.result = 'data:text/plain;base64,dHJhaW5pbmc='
-        this.onload?.(new Event('load'))
-      }
-    }
-
-    vi.stubGlobal('FileReader', RetriableFileReader)
-    renderComposer()
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/keep-attachment-input' } })
-    fireEvent.change(screen.getByLabelText('任务标题（可选）'), { target: { value: '保留附件任务' } })
-    fireEvent.change(screen.getByLabelText('初始目标（可选）'), { target: { value: '读取失败后继续保留' } })
-    const fileInput = document.querySelector('input[type="file"]')
-    const record = new File(['training'], '训练记录.txt', { type: 'text/plain' })
-    fireEvent.change(fileInput!, { target: { files: [record] } })
-
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('无法读取所选附件，请重试或重新选择文件。')
-    expect(alert).not.toHaveTextContent('attachment storage denied')
-    expect(screen.getByLabelText('工作目录')).toHaveValue('/workspace/keep-attachment-input')
-    expect(screen.getByLabelText('任务标题（可选）')).toHaveValue('保留附件任务')
-    expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('读取失败后继续保留')
-    expect(screen.queryByRole('button', { name: 'Remove 训练记录.txt' })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '重试读取' }))
-
-    expect(await screen.findByRole('button', { name: 'Remove 训练记录.txt' })).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows a bundled Skill in Chinese and submits only its runtime command', async () => {
@@ -691,15 +546,9 @@ describe('TaskIndex', () => {
     fireEvent.click(command)
 
     expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/复盘今天经营 ')
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
-      text: '/venue-daily-review',
-      attachments: [],
-    }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/venue-daily-review', attachment_ids: [] }))
   })
 
   it('keeps an external Skill selectable without exposing its private description', async () => {
@@ -720,14 +569,8 @@ describe('TaskIndex', () => {
     fireEvent.click(command)
     expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/custom-report ')
 
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
-      text: '/custom-report',
-      attachments: [],
-    }))
+    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/custom-report', attachment_ids: [] }))
   })
 
   it('offers discovered agents in the initial task composer and sends their runtime command', async () => {
@@ -750,15 +593,9 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('初始目标（可选）')).toHaveValue('/agent assistant-1 ')
     expect(screen.queryByText('分析球房运营数据。')).not.toBeInTheDocument()
     expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交任务' }))
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'ask',
-    }, {
-      text: '/agent venue-analyst',
-      attachments: [],
-    }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent venue-analyst', attachment_ids: [] }))
   })
 
   it('keeps Agent discovery usable when Skill command discovery is unavailable', async () => {
@@ -797,25 +634,9 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
   })
 
-  it('starts with a safe product permission choice and forwards an explicit selection', async () => {
-    const { onSubmit } = renderComposer()
-    const permissionSelect = screen.getByLabelText('执行权限') as HTMLSelectElement
-
-    expect(permissionSelect).toHaveValue('ask')
-    expect(Array.from(permissionSelect.options).map((option) => option.value)).toEqual([
-      'ask',
-      'allow_edits',
-      'plan_only',
-    ])
-    expect(screen.queryByRole('option', { name: /跳过权限/i })).not.toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('工作目录'), { target: { value: '/workspace/new-table' } })
-    fireEvent.change(permissionSelect, { target: { value: 'allow_edits' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
-
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
-      workDir: '/workspace/new-table',
-      permissionMode: 'allow_edits',
-    }))
+  it('removes the retired permission selector before module 08 defines the final profiles', () => {
+    renderComposer()
+    expect(screen.queryByLabelText('执行权限')).not.toBeInTheDocument()
+    expect(screen.getByText('当前阶段仅提交文本；附件会在附件导入能力完成后开放。')).toBeInTheDocument()
   })
 })

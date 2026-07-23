@@ -7,12 +7,8 @@ import {
   useTabStore,
 } from '../../stores/tabStore'
 import { useProductTaskRuntimeStore } from '../stores/productTaskRuntimeStore'
-import {
-  continueProductTask,
-  launchProductTask,
-  type ProductTaskInitialMessage,
-} from '../taskLaunch'
-import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
+import { continueProductTask } from '../taskLaunch'
+import type { ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeStateFromStream } from '../taskRuntime'
 
 type ProductShellProps = {
@@ -26,7 +22,7 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
   const error = useProductTaskStore((state) => state.error)
   const mutations = useProductTaskStore((state) => state.mutations)
   const refresh = useProductTaskStore((state) => state.refresh)
-  const createTask = useProductTaskStore((state) => state.createTask)
+  const submitNewTask = useProductTaskStore((state) => state.submitNewTask)
   const renameTask = useProductTaskStore((state) => state.renameTask)
   const pinTask = useProductTaskStore((state) => state.pinTask)
   const unpinTask = useProductTaskStore((state) => state.unpinTask)
@@ -51,14 +47,12 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
 
   const openExistingTask = (task: ProductTaskRecord) => openTaskTab(task)
 
-  const createAndOpenTask = async (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => (
-    launchProductTask({
-      createTask,
-      openTask: openTaskTab,
-      connectTask: (taskId) => useProductTaskRuntimeStore.getState().connectTask(taskId),
-      sendMessage: (taskId, content, attachments) => useProductTaskRuntimeStore.getState().sendMessage(taskId, content, attachments),
-    }, input, initialMessage)
-  )
+  const createAndOpenTask = async (input: { text: string; attachment_ids: string[] }) => {
+    const task = await submitNewTask(input)
+    openTaskTab(task)
+    void useProductTaskRuntimeStore.getState().connectTask(task.id)
+    return task
+  }
 
   const continueAndOpenTask = async (...args: Parameters<typeof continueTask>) => continueProductTask({
     continueTask,
@@ -79,7 +73,7 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
       <main className="flex h-full min-h-0 flex-col overflow-y-auto bg-[var(--color-app-main)]" data-testid="new-product-task-page">
         <header className="border-b border-[var(--color-border)] px-5 py-4">
           <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">新建任务</h1>
-          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">选择项目或工作目录后，说明希望完成的事情。</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">提交目标后，服务端会原子创建任务与首个运行记录。</p>
         </header>
         {error ? <div role="alert" className="mx-5 mt-4 rounded-lg border border-[var(--color-error)]/30 px-3 py-2 text-sm text-[var(--color-error)]">{error}</div> : null}
         <TaskComposer
@@ -89,9 +83,9 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
           initialWorkDir={initialWorkDir}
           isSubmitting={mutations.create === true}
           onCancel={cancelNewTask}
-          onSubmit={async (input, initialMessage) => {
+          onSubmit={async (input) => {
             try {
-              await createAndOpenTask(input, initialMessage)
+              await createAndOpenTask(input)
               closeTab(NEW_PRODUCT_TASK_TAB_ID)
             } catch {
               // The product store exposes the server error in this page.

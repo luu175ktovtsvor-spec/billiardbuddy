@@ -369,7 +369,7 @@ describe('WebSocket handler product error projection', () => {
     expect(JSON.stringify(messages)).not.toContain(privatePayload)
   })
 
-  it('does not expose transcript-clear failures over the renderer socket', async () => {
+  it('rejects retired raw transcript commands before they reach transcript handling', async () => {
     const ws = makeClientSocket(`clear-error-${crypto.randomUUID()}`)
     const privateError = 'failed to clear /Users/test/.claude/private-transcript.json token=secret'
     spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/Users/test/project')
@@ -385,7 +385,7 @@ describe('WebSocket handler product error projection', () => {
     const messages = ws.sent.map((payload) => JSON.parse(payload))
     expect(messages).toContainEqual({
       type: 'error',
-      code: 'task_failed',
+      code: 'attachment_ingest_unavailable',
       retryable: false,
     })
     expect(JSON.stringify(messages)).not.toContain(privateError)
@@ -736,11 +736,11 @@ describe('WebSocket handler product task inbound boundary', () => {
     expect(sendUserMessage).not.toHaveBeenCalled()
 
     const events = ws.sent.map((payload) => JSON.parse(payload))
-    expect(events).toEqual(Array.from({ length: 8 }, () => ({
-      type: 'error',
-      code: 'task_failed',
-      retryable: false,
-    })))
+    expect(events).toEqual([
+      ...Array.from({ length: 5 }, () => ({ type: 'error', code: 'task_failed', retryable: false })),
+      ...Array.from({ length: 2 }, () => ({ type: 'error', code: 'attachment_ingest_unavailable', retryable: false })),
+      { type: 'error', code: 'task_failed', retryable: false },
+    ])
     expect(JSON.stringify(events)).not.toContain(privateCommand)
     expect(JSON.stringify(events)).not.toContain('private-provider')
   })
@@ -862,7 +862,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     }])
   })
 
-  it('allows controlled product attachments, task-local stop, and ping', async () => {
+  it('rejects retired raw attachments while preserving task-local stop and ping', async () => {
     const productSessionId = `product-safe-${crypto.randomUUID()}`
     const productWs = makeClientSocket(productSessionId, 'product')
     const sendMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
@@ -885,7 +885,7 @@ describe('WebSocket handler product task inbound boundary', () => {
 
     expect(sendMessage).not.toHaveBeenCalled()
     expect(productWs.sent.map((payload) => JSON.parse(payload))).toContainEqual({
-      type: 'error', code: 'task_failed', retryable: false,
+      type: 'error', code: 'attachment_ingest_unavailable', retryable: false,
     })
 
     productWs.sent.length = 0
@@ -898,7 +898,7 @@ describe('WebSocket handler product task inbound boundary', () => {
 
   })
 
-  it('blocks /model while preserving ordinary product task text', async () => {
+  it('rejects every retired raw product text payload without exposing it', async () => {
     const ws = makeClientSocket(`product-command-${crypto.randomUUID()}`, 'product')
     const sendUserMessage = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
     const privateCommand = '/model private-model /Users/test/.claude/private-provider.json token=secret'
@@ -914,7 +914,7 @@ describe('WebSocket handler product task inbound boundary', () => {
     expect(events).toEqual([
       {
         type: 'error',
-        code: 'task_failed',
+        code: 'attachment_ingest_unavailable',
         retryable: false,
       },
     ])
@@ -936,7 +936,7 @@ describe('WebSocket handler product task inbound boundary', () => {
 
     expect(sendUserMessage).not.toHaveBeenCalled()
     expect(ws.sent.map((payload) => JSON.parse(payload))).toContainEqual({
-      type: 'error', code: 'task_failed', retryable: false,
+      type: 'error', code: 'attachment_ingest_unavailable', retryable: false,
     })
   })
 })
