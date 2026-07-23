@@ -303,15 +303,16 @@ export function ImageWorkbench() {
     if (!active) return
     const unknownOutcome = task?.outcome_unknown === true
     const createsNewPaidTask = unknownOutcome && (Boolean(task.remote_task_id) || hasDraftChanges)
-    if (unknownOutcome) {
-      const warning = createsNewPaidTask
+    const warnings = [
+      unknownOutcome ? (createsNewPaidTask
         ? '上一次任务的结果无法确认，可能已经产生费用。继续会创建一个新的生图任务，可能再次扣费。确认继续吗？'
-        : '上一次提交的结果无法确认，可能已经产生费用。继续只会使用原来的提交编号确认状态，不会主动创建第二个任务。确认继续吗？'
-      if (!window.confirm(warning)) return
-    }
+        : '上一次提交的结果无法确认，可能已经产生费用。继续只会使用原来的提交编号确认状态，不会主动创建第二个任务。') : '',
+      `将把提示词${active.mode === 'edit' ? '和参考图片' : ''}发送到美国 Relay，再交给${active.model === 'gpt-image-2' ? ' OpenAI（默认滥用监测日志最多保留 30 天，账号级 ZDR 未核验）' : '火山方舟的豆包 Seedream（按主协议的必要期限处理，账号具体期限未核验）'}执行 ImageGeneration。Relay 在任务终态删除输入，结果最多保留 7 天；本次可能产生费用。进入供应商后无法撤销，确认继续吗？`,
+    ].filter(Boolean).join('\n\n')
+    if (!window.confirm(warnings)) return
     const project = await saveActiveDraft(createsNewPaidTask)
     if (!project) return
-    await submitImage(project.id, createsNewPaidTask)
+    await submitImage(project.id, createsNewPaidTask, true)
   }
 
   const downloadOutput = async () => {

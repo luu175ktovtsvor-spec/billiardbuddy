@@ -28,7 +28,7 @@ type MediaWorkbenchStore = {
     project: ImageWorkbenchProject,
     confirmUnknownRetry?: boolean,
   ) => Promise<ImageWorkbenchProject>
-  submitImage: (projectId: string, confirmUnknownRetry?: boolean) => Promise<MediaTask>
+  submitImage: (projectId: string, confirmUnknownRetry?: boolean, confirmedDataEgress?: boolean) => Promise<MediaTask>
   createVideo: (input?: CreateVideoProjectInput) => Promise<VideoStudioProject>
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
@@ -181,10 +181,10 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  submitImage: async (projectId, confirmUnknownRetry = false) => {
+  submitImage: async (projectId, confirmUnknownRetry = false, confirmedDataEgress = false) => {
     const finishLoading = beginLoading(set)
     try {
-      const { task } = await mediaApi.submitImageProject(projectId, confirmUnknownRetry)
+      const { task } = await mediaApi.submitImageProject(projectId, confirmUnknownRetry, confirmedDataEgress)
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       await get().loadProjects('image')

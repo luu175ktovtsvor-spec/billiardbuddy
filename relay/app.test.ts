@@ -49,6 +49,9 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
   }))).json()
   expect(metadata).toMatchObject({
     status: 'succeeded',
+    operation_id: task_id,
+    provider: 'OpenAI',
+    provider_receipt_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     metadata_only: true,
     result_available: true,
     output_count: 1,

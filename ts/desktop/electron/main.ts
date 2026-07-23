@@ -412,8 +412,8 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.mediaSubmitImage, (_event, payload) => {
-    const input = payload as { projectId: string, confirmUnknownRetry: boolean }
-    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry)
+    const input = payload as { projectId: string, confirmUnknownRetry: boolean, confirmedDataEgress: boolean }
+    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry, input.confirmedDataEgress)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, (_event, payload) => {
     const update = payload as {

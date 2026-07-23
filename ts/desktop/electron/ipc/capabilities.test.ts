@@ -40,14 +40,17 @@ describe('Electron IPC capabilities', () => {
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: 'img_project01',
       confirmUnknownRetry: true,
+      confirmedDataEgress: true,
     })).toBe(true)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: '../escape',
       confirmUnknownRetry: false,
+      confirmedDataEgress: true,
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: 'img_project01',
       confirmUnknownRetry: false,
+      confirmedDataEgress: true,
       capability: 'must-not-cross-ipc',
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {

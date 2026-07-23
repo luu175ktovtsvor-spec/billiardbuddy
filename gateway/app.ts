@@ -1648,6 +1648,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
+        const consentHash = request.headers.get('x-bb-data-egress-consent')?.trim() ?? ''
+        if (!/^[a-f0-9]{64}$/.test(consentHash)) throw new HttpError(428, 'DATA_EGRESS_CONSENT_REQUIRED')
+        const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? ''
+        if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(428, 'OPERATION_ID_REQUIRED')
         try {
           return await withBufferedBodyReservation(request, config.imgTaskMaxBodyBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
             // Submission counts toward the short ingress rate guard, not relay's actual
@@ -1661,9 +1665,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               Authorization: `Bearer ${config.relayToken}`,
               'Content-Type': 'application/json',
               'X-Relay-Owner': relayOwner(user),
+              'X-Relay-Data-Egress-Consent': consentHash,
             }
-            const idempotencyKey = request.headers.get('idempotency-key')
-            if (idempotencyKey) submitHeaders['Idempotency-Key'] = idempotencyKey
+            submitHeaders['Idempotency-Key'] = idempotencyKey
             const relayController = new AbortController()
             let relayTimedOut = false
             const abortForClient = () => relayController.abort()

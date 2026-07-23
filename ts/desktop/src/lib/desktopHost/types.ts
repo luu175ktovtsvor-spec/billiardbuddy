@@ -191,6 +191,7 @@ export type DesktopHost = {
     submitImageProject(
       projectId: string,
       confirmUnknownRetry?: boolean,
+      confirmedDataEgress?: boolean,
     ): Promise<{ task: MediaTask }>
     updateUnknownImageProject(
       projectId: string,

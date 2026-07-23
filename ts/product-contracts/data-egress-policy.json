@@ -1,0 +1,63 @@
+{
+  "policy_schema_version": 1,
+  "policy_revision": "bb-04e-image-v1",
+  "owner_module": "04",
+  "scope": "ImageGeneration",
+  "disclosure": {
+    "purpose": "image_generation",
+    "data": [
+      "prompt",
+      "reference_images_when_editing"
+    ],
+    "path": [
+      "BilliardBuddy desktop",
+      "United States Relay",
+      "selected image provider"
+    ],
+    "billable": true,
+    "revocable_until": "provider_submission"
+  },
+  "consent_receipt": {
+    "per_operation": true,
+    "persisted_before_network": true,
+    "bound_to_input_fingerprint": true,
+    "gateway_fail_closed": true,
+    "relay_fail_closed": true
+  },
+  "provider_retention": {
+    "OpenAI": {
+      "status": "PUBLIC_DEFAULT_VERIFIED_ACCOUNT_OVERRIDE_NOT_VERIFIED",
+      "summary": "API image endpoints have no application-state retention; default abuse-monitoring logs may retain customer content for up to 30 days",
+      "source": "https://platform.openai.com/docs/models/default-usage-policies-by-endpoint",
+      "verified_at": "2026-07-24"
+    },
+    "ByteDance Ark": {
+      "status": "PUBLIC_CONTRACT_VERIFIED_ACCOUNT_TERM_NOT_VERIFIED",
+      "summary": "customer data is processed for the necessary contracted period; account-specific term is not verified",
+      "source": "https://www.volcengine.com/docs/undefined/67493?lang=zh",
+      "verified_at": "2026-07-24"
+    }
+  },
+  "evidence": [
+    {
+      "constraint": "user_disclosure_before_egress",
+      "path": "ts/desktop/src/components/media/ImageWorkbench.test.tsx",
+      "test_id": "warns before creating another paid task and forwards explicit confirmation"
+    },
+    {
+      "constraint": "host_receipt_before_forward",
+      "path": "ts/src/server/services/mediaProjectService.test.ts",
+      "test_id": "requires an explicit data egress acknowledgement before persisting or forwarding a paid image task"
+    },
+    {
+      "constraint": "gateway_fail_closed",
+      "path": "gateway/app.test.ts",
+      "test_id": "image task submission requires trusted consent and an operation id before relay work"
+    }
+  ],
+  "external_verification": {
+    "openai_account_retention_override": "NOT_VERIFIED_EXTERNALLY",
+    "ark_account_retention_term": "NOT_VERIFIED_EXTERNALLY"
+  },
+  "sha256": "f7071fd4ad59fc684643196ef02cad2e7049072a8120e4d2d1edff0f6926c6ed"
+}

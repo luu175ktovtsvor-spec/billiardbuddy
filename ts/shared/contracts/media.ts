@@ -45,6 +45,26 @@ export const IMAGE_GENERATION_MODELS = [
   'doubao-seedream-4-5-251128',
 ] as const
 export const imageGenerationModelSchema = z.enum(IMAGE_GENERATION_MODELS)
+export const IMAGE_DATA_EGRESS_POLICY_REVISION = 'bb-04e-image-v1'
+
+export const imageDataEgressAcknowledgementSchema = z.object({
+  policy_revision: z.literal(IMAGE_DATA_EGRESS_POLICY_REVISION),
+  acknowledged: z.literal(true),
+  acknowledged_at: mediaIsoDateSchema,
+})
+
+export const imageDataEgressConsentReceiptSchema = z.object({
+  receipt_id: z.string().regex(/^[a-f0-9]{64}$/),
+  policy_revision: z.literal(IMAGE_DATA_EGRESS_POLICY_REVISION),
+  purpose: z.literal('image_generation'),
+  capability: z.literal('ImageGeneration'),
+  receiver: z.enum(['OpenAI', 'ByteDance Ark']),
+  relay_region: z.literal('United States'),
+  retention: z.literal('input-until-terminal;result-up-to-7-days'),
+  billable: z.literal(true),
+  granted_at: mediaIsoDateSchema,
+  revocable_until: z.literal('provider_submission'),
+})
 
 export const GPT_IMAGE_CANVAS_SIZES = [
   '1024x1024',
@@ -211,6 +231,8 @@ export const mediaTaskSchema = z.object({
   poll_after_seconds: z.number().int().min(1).max(3600).optional(),
   idempotency_key: z.string().min(16).max(160).optional(),
   outcome_unknown: z.boolean().optional(),
+  data_egress_consent: imageDataEgressConsentReceiptSchema.optional(),
+  provider_receipt_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   result: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(2000).optional(),
   error_code: mediaSafeErrorCodeSchema.optional(),
@@ -281,6 +303,7 @@ export const updateImageProjectInputSchema = z.object({
 
 export const submitImageProjectInputSchema = z.object({
   confirm_unknown_retry: z.boolean().default(false),
+  data_egress_consent: imageDataEgressAcknowledgementSchema.optional(),
 })
 
 export const addVideoSourceInputSchema = z.object({

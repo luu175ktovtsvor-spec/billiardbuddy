@@ -7,6 +7,7 @@ import {
   addVideoSourceInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
+  IMAGE_DATA_EGRESS_POLICY_REVISION,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
   mediaSafeError,
@@ -142,6 +143,35 @@ type RelayImageTask = {
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
   input_fidelity_risk?: string
+  data_egress_consent_hash?: string
+  provider_receipt_hash?: string
+}
+
+function imageConsentReceipt(
+  project: ImageWorkbenchProject,
+  acknowledgement: NonNullable<SubmitImageProjectInput['data_egress_consent']>,
+  operationDigest: string,
+) {
+  const receiver = project.model === 'gpt-image-2' ? 'OpenAI' as const : 'ByteDance Ark' as const
+  const receiptId = createHash('sha256').update([
+    IMAGE_DATA_EGRESS_POLICY_REVISION,
+    project.id,
+    operationDigest,
+    receiver,
+    acknowledgement.acknowledged_at,
+  ].join('\0')).digest('hex')
+  return {
+    receipt_id: receiptId,
+    policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
+    purpose: 'image_generation' as const,
+    capability: 'ImageGeneration' as const,
+    receiver,
+    relay_region: 'United States' as const,
+    retention: 'input-until-terminal;result-up-to-7-days' as const,
+    billable: true as const,
+    granted_at: acknowledgement.acknowledged_at,
+    revocable_until: 'provider_submission' as const,
+  }
 }
 
 function relayPollAfterSeconds(value: unknown, fallbackSeconds: number): number {
@@ -1104,6 +1134,9 @@ export class MediaProjectService {
         && existing.idempotency_key
         && (['queued', 'running'].includes(existing.status) || existing.outcome_unknown)
       ) {
+        if (!existing.data_egress_consent) {
+          throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
+        }
         return await this.submitPersistedImageTask(project, existing)
       }
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
@@ -1125,6 +1158,10 @@ export class MediaProjectService {
     const digest = createHash('sha256')
       .update(`${project.id}:${nextRevision}:${JSON.stringify(payload)}`)
       .digest('hex')
+    if (!input.data_egress_consent) {
+      throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
+    }
+    const consent = imageConsentReceipt(project, input.data_egress_consent, digest)
     let task = mediaTaskSchema.parse({
       schema_version: 1,
       id: id('task'),
@@ -1134,6 +1171,7 @@ export class MediaProjectService {
       progress: 0,
       stage: '正在提交',
       idempotency_key: `bb-media-${digest}`,
+      data_egress_consent: consent,
       created_at: now,
       updated_at: now,
     })
@@ -1190,6 +1228,9 @@ export class MediaProjectService {
     if (!originalTask.idempotency_key) {
       throw new MediaServiceError('生图任务缺少幂等凭据', 500, 'IMAGE_SUBMISSION_CORRUPT')
     }
+    if (!originalTask.data_egress_consent) {
+      throw new MediaServiceError('生图任务缺少数据出境同意回执', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
+    }
     const payload = await this.imageSubmissionPayload(project)
     let task = await this.saveTask({
       ...originalTask,
@@ -1214,6 +1255,7 @@ export class MediaProjectService {
       Authorization: `Bearer ${getQfGatewayToken()}`,
       'Content-Type': 'application/json',
       'Idempotency-Key': originalTask.idempotency_key,
+      'X-BB-Data-Egress-Consent': originalTask.data_egress_consent.receipt_id,
     }
     const installationId = getInstallationId()
     if (installationId) headers['X-QF-Client-ID'] = installationId
@@ -1343,6 +1385,7 @@ export class MediaProjectService {
         task,
         body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
         body.status === 'failed_unknown',
+        body.provider_receipt_hash,
       )
     }
     if (body.status === 'cancelled') {
@@ -1355,6 +1398,7 @@ export class MediaProjectService {
         task,
         body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
         body.status === 'failed_unknown',
+        body.provider_receipt_hash,
       )
     }
     if (body.status !== 'succeeded') {
@@ -1380,6 +1424,7 @@ export class MediaProjectService {
         status: 'succeeded',
         progress: 100,
         stage: '生成完成（结果未附着到当前草稿）',
+        provider_receipt_hash: body.provider_receipt_hash,
         result: {
           output_count: body.data?.length ?? 0,
           ...(body.input_fidelity_requested ? { input_fidelity_requested: body.input_fidelity_requested } : {}),
@@ -1427,6 +1472,7 @@ export class MediaProjectService {
       status: 'succeeded',
       progress: 100,
       stage: '生成完成',
+      provider_receipt_hash: body.provider_receipt_hash,
       result: {
         output_count: outputs.length,
         outputs,
@@ -1467,6 +1513,7 @@ export class MediaProjectService {
     task: MediaTask,
     errorCode: MediaSafeErrorCode,
     outcomeUnknown = false,
+    providerReceiptHash?: string,
   ): Promise<MediaTask> {
     const failure = mediaSafeError(errorCode)
     const next = await this.saveTask({
@@ -1476,6 +1523,7 @@ export class MediaProjectService {
       error: failure.message,
       error_code: failure.code,
       outcome_unknown: outcomeUnknown,
+      provider_receipt_hash: providerReceiptHash,
       updated_at: this.iso(),
     })
     const project = await this.currentImageProjectForTask(task)

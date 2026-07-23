@@ -73,9 +73,10 @@ const mediaProjectId = (value: unknown): value is string =>
 
 const mediaSubmitImage: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
+  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry', 'confirmedDataEgress'])
   && mediaProjectId(value.projectId)
   && typeof value.confirmUnknownRetry === 'boolean'
+  && typeof value.confirmedDataEgress === 'boolean'
 
 const mediaUpdateUnknownImage: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
