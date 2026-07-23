@@ -38,7 +38,7 @@ import {
   setAppMode,
   type PortableDetection,
 } from './services/appMode'
-import { installMacOsChromiumKeychainPromptGuard, SecureSessionStore } from './services/keychain'
+import { SecureSessionStore } from './services/keychain'
 import { InstallationSessionManager } from './services/installationSession'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
@@ -83,8 +83,6 @@ let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
 const productTaskWindows = new Map<string, BrowserWindow>()
 let pendingProductTaskId: string | null = null
-
-installMacOsChromiumKeychainPromptGuard(app)
 
 function appRoot() {
   return app.isPackaged ? app.getAppPath() : process.cwd()
