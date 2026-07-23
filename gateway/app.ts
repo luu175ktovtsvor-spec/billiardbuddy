@@ -23,6 +23,17 @@ import {
   type VisionBridge,
 } from './visionBridge'
 import { PROVIDER_REGISTRY, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
+import {
+  fileUsageFingerprint,
+  SqliteUsageBudgetService,
+  UsageBudgetError,
+  usageFingerprint,
+  usageOperationId,
+  type MeteredCapability,
+  type UsageAmount,
+  type UsageBudgetService,
+  type UsageReceipt,
+} from './usageBudget'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -86,11 +97,12 @@ type ChatProvider = {
 
 // Owner is exclusively the verified principal + registration for usage, scheduling, and
 // upstream opaque identity. Untrusted client headers never influence those boundaries.
-type ChatHandler = (request: Request, rawBody: string, user: string) => Promise<Response>
+type ChatHandler = (request: Request, rawBody: string, user: string, principalId: string) => Promise<Response>
 type NativeAnthropicWebSearchHandler = (
   request: Request,
   rawBody: string,
   user: string,
+  principalId: string,
 ) => Promise<Response>
 
 type GatewayConfig = {
@@ -152,6 +164,7 @@ type GatewayConfig = {
   queueMaxWait: number
   transcribeRpm: number
   transcribeConc: number
+  transcribeQueueMax: number
   transcribeMaxBytes: number
 }
 
@@ -174,6 +187,7 @@ export interface GatewayDeps {
   env?: Env
   fetchImpl?: FetchLike
   usageStore?: UsageStore
+  usageBudgetService?: UsageBudgetService
   transcribeImpl?: GatewayTranscriber | null
   mimoRetrySleep?: (ms: number) => Promise<void>
   mimoRetryRandom?: () => number
@@ -284,43 +298,6 @@ class TokenBucket {
   }
 }
 
-class AsyncSemaphore {
-  private active = 0
-  private queue: Array<() => void> = []
-
-  constructor(limit: number) {
-    this.limit = Math.max(1, limit)
-  }
-
-  private readonly limit: number
-
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire()
-    try {
-      return await fn()
-    } finally {
-      this.release()
-    }
-  }
-
-  private async acquire(): Promise<void> {
-    if (this.active < this.limit) {
-      this.active += 1
-      return
-    }
-    await new Promise<void>(resolve => this.queue.push(resolve))
-  }
-
-  private release(): void {
-    const next = this.queue.shift()
-    if (next) {
-      next()
-      return
-    }
-    this.active = Math.max(0, this.active - 1)
-  }
-}
-
 /**
  * Tracks a process-wide reservation for image-task request bodies while qfgw reads,
  * merges, decodes and forwards them. Relay's task queue protects expensive image work,
@@ -365,6 +342,7 @@ export class SqliteUsageStore implements UsageStore {
     const dir = dirname(path)
     if (dir && dir !== '.') mkdirSync(dir, { recursive: true })
     this.db = new Database(path)
+    this.db.exec('PRAGMA busy_timeout=5000')
     this.db.exec('PRAGMA journal_mode=WAL')
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS usage(' +
@@ -739,6 +717,7 @@ function loadConfig(env: Env): GatewayConfig {
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
+    transcribeQueueMax: Math.max(0, intEnv(env, 'GW_TRANSCRIBE_QUEUE_MAX', 12)),
     transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
   }
 }
@@ -900,6 +879,15 @@ function requireTextReasoningModel(rawBody: string): string {
   return model
 }
 
+function requestedOutputUnits(rawBody: string): number {
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>
+    const requested = Number(parsed.max_tokens)
+    if (Number.isSafeInteger(requested) && requested >= 0) return requested
+  } catch { /* body validation remains owned by the provider adapter */ }
+  return Math.min(4_096, textReasoningRegistryEntry().verified_context_window)
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -910,7 +898,7 @@ function isRecord(value: unknown): value is Record<string, any> {
  * errors, and usage logging without any provider fallback.
  */
 function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
-  return async function chatHandler(request: Request, rawBody: string, user: string): Promise<Response> {
+  return async function chatHandler(request: Request, rawBody: string, user: string, principalId: string): Promise<Response> {
     // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
     // The sole DeepSeek TextReasoning provider derives its trusted opaque user ID here.
     const userId = provider.deriveUserId?.(user)
@@ -921,7 +909,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       permit = await provider.capacity.acquire(user, {
         maxWaitMs: provider.queueMaxWait * 1000,
         signal: request.signal,
-        tokenId: user,
+        tokenId: principalId,
       })
     } catch (error) {
       permit?.release()
@@ -1023,6 +1011,7 @@ function createNativeAnthropicWebSearchHandler(
     request: Request,
     rawBody: string,
     user: string,
+    principalId: string,
   ): Promise<Response> {
     const userId = provider.deriveUserId?.(user)
     const prepared = prepareDeepSeekAnthropicWebSearchBody(
@@ -1037,7 +1026,7 @@ function createNativeAnthropicWebSearchHandler(
       permit = await provider.capacity.acquire(user, {
         maxWaitMs: provider.queueMaxWait * 1000,
         signal: request.signal,
-        tokenId: user,
+        tokenId: principalId,
       })
     } catch (error) {
       const known = error instanceof CapacityQueueError
@@ -1150,6 +1139,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const authority = deps.authority ?? createAuthorityFromEnv(env)
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
+  const usageBudget = deps.usageBudgetService
+    ?? new SqliteUsageBudgetService(deps.usageStore ? ':memory:' : config.db)
   const mimoBucket = new TokenBucket(config.mimoRpm)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
@@ -1226,9 +1217,75 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   const imgBucket = new TokenBucket(config.imgIpm, config.imgQueueMax)
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
-  const transcribeBucket = new TokenBucket(config.transcribeRpm)
-  const transcribeSem = new AsyncSemaphore(config.transcribeConc)
+  const transcribeBucket = new TokenBucket(config.transcribeRpm, config.transcribeQueueMax)
+  const transcribeCapacity = new FairCapacityScheduler(
+    config.transcribeConc,
+    1,
+    config.transcribeConc,
+    config.transcribeQueueMax,
+    1,
+  )
   const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
+
+  function reserveMetered(
+    identity: VerifiedInstallation,
+    capability: MeteredCapability,
+    operationId: string,
+    fingerprint: string,
+    amount: UsageAmount,
+  ): UsageReceipt {
+    try {
+      const reservation = usageBudget.reserve({
+        operation_id: operationId,
+        principal_id: identity.principalId,
+        installation_id: identity.installationId,
+        capability,
+        fingerprint,
+        amount,
+      })
+      if (reservation.duplicate) throw new HttpError(409, 'OPERATION_ALREADY_RESERVED')
+      return reservation.receipt
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+      throw new HttpError(503, 'BUDGET_UNAVAILABLE')
+    }
+  }
+
+  function completeMetered(receipt: UsageReceipt, outcome: 'settled' | 'released' | 'outcome_unknown', actual = receipt.reserved): void {
+    if (outcome === 'settled') usageBudget.settle(receipt.operation_id, receipt.fencing_token, actual)
+    else if (outcome === 'released') usageBudget.release(receipt.operation_id, receipt.fencing_token)
+    else usageBudget.markOutcomeUnknown(receipt.operation_id, receipt.fencing_token)
+  }
+
+  function meteredFailure(receipt: UsageReceipt, status: number): void {
+    completeMetered(receipt, status === 499 || status >= 500 ? 'outcome_unknown' : 'released')
+  }
+
+  function withUsageOperationHeader(response: Response, operationId: string): Response {
+    const headers = new Headers(response.headers)
+    headers.set('X-BB-Usage-Operation', operationId)
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+  }
+
+  async function runMeteredStream(receipt: UsageReceipt, operationId: string, action: () => Promise<Response>): Promise<Response> {
+    try {
+      const response = await action()
+      if (!response.ok) {
+        meteredFailure(receipt, response.status)
+        return withUsageOperationHeader(response, operationId)
+      }
+      return withUsageOperationHeader(withStreamLogging(response, async () => {
+        completeMetered(receipt, 'settled')
+      }), operationId)
+    } catch (error) {
+      const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof DeepSeekRequestError
+        ? error.status
+        : 500
+      meteredFailure(receipt, status)
+      throw error
+    }
+  }
 
   async function proxyRelayImageResult(request: Request, input: string, headers: Record<string, string>): Promise<Response> {
     const controller = new AbortController()
@@ -1314,9 +1371,14 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
             transcribe_conc: config.transcribeConc,
+            transcribe_queue_max: config.transcribeQueueMax,
           },
-          // Kept for old clients that already read this field. Product-level daily quotas are disabled.
+          // Kept for old clients that already read this field; the authoritative policy is below.
           quota: {},
+          usage_budget: {
+            policy_revision: usageBudget.policyRevision(),
+            metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
+          },
           capacity: {
             // `mimo` remains the backwards-compatible account aggregate seen by existing
             // runners. `mimo_native` exposes the retained scheduler reservation separately.
@@ -1335,6 +1397,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             },
             deepseek: deepseekCapacity.snapshot(),
             vision,
+            transcription: transcribeCapacity.snapshot(),
             ingress_body: ingressBodyBudget.snapshot(),
           },
           features: {
@@ -1398,6 +1461,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const identity = auth(authority, request)
         const user = identity.owner
+        const usageOperation = usageOperationId(request)
         // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
         // in the same DeepSeek pool as chat, so disable it before body read/queue wait.
         server?.timeout(request, 0)
@@ -1413,13 +1477,22 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (!deepseekNativeWebSearch) {
             throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
           }
-          return await deepseekNativeWebSearch(request, rawBody, user)
+          const inputBytes = Buffer.byteLength(rawBody, 'utf8')
+          const receipt = reserveMetered(
+            identity,
+            'TextReasoning',
+            `${usageOperation}:text`,
+            usageFingerprint(`TextReasoning\0${rawBody}`),
+            { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
+          )
+          return await runMeteredStream(receipt, usageOperation, () => deepseekNativeWebSearch(request, rawBody, user, identity.principalId))
         })
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const identity = auth(authority, request)
         const user = identity.owner
+        const usageOperation = usageOperationId(request)
         // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
         // this before buffering/vision admission so Bun's 10 s default cannot sever it.
         server?.timeout(request, 0)
@@ -1436,29 +1509,56 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (hasImages && Buffer.byteLength(rawBody, 'utf8') > textReasoningBodyCaps().VISION_BODY_MAX_BYTES) {
             throw new HttpError(413, '请求体过大')
           }
+          if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
+          const inputBytes = Buffer.byteLength(rawBody, 'utf8')
+          const textReceipt = reserveMetered(
+            identity,
+            'TextReasoning',
+            `${usageOperation}:text`,
+            usageFingerprint(`TextReasoning\0${rawBody}`),
+            { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
+          )
           let effectiveBody = rawBody
           if (hasImages) {
-            if (!visionBridge) throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
+            if (!visionBridge) {
+              completeMetered(textReceipt, 'released')
+              throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
+            }
+            let visionReceipt: UsageReceipt
+            try {
+              visionReceipt = reserveMetered(
+                identity,
+                'VisualEvidence',
+                `${usageOperation}:vision`,
+                usageFingerprint(`VisualEvidence\0${rawBody}`),
+                { requests: 1, input_bytes: inputBytes, output_units: 4_096 },
+              )
+            } catch (error) {
+              completeMetered(textReceipt, 'released')
+              throw error
+            }
             const bridgeStarted = performance.now()
             try {
               const schedulerId = user
               const { body, metrics } = await visionBridge.transform(rawBody, {
                 signal: request.signal,
                 schedulerId,
-                tokenId: user,
+                tokenId: identity.principalId,
               })
               effectiveBody = body
+              completeMetered(visionReceipt, 'settled')
               await logUsage(store, { user, model: 'vision', ok: true, status: 200, ms: elapsedMs(bridgeStarted), note: `cache_hit=${metrics.cacheHits > 0 ? 1 : 0};img=${metrics.imageCount}` })
             } catch (error) {
               const known = error instanceof VisionBridgeError
               const status = known ? error.status : 502
               const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
+              meteredFailure(visionReceipt, status)
+              completeMetered(textReceipt, 'released')
               await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
               throw new HttpError(status, detail)
             }
           }
-          if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
-          return await deepseekChat(request, effectiveBody, user)
+          return await runMeteredStream(textReceipt, usageOperation, () => deepseekChat(request, effectiveBody, user, identity.principalId))
         })
       }
 
@@ -1466,6 +1566,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         server?.timeout(request, 0)
         const identity = auth(authority, request)
         const user = identity.owner
+        const usageOperation = usageOperationId(request)
         if (!transcribe) throw new HttpError(503, '语音识别服务暂不可用')
         const contentType = request.headers.get('content-type') ?? ''
         if (!contentType.toLowerCase().startsWith('multipart/form-data')) throw new HttpError(415, '需要上传音频文件')
@@ -1473,23 +1574,48 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (Number.isFinite(declaredSize) && declaredSize > config.transcribeMaxBytes + 1024 * 1024) {
           throw new HttpError(413, '音频文件过大')
         }
-        await transcribeBucket.acquire(config.queueMaxWait)
+        const form = await request.formData().catch(() => null)
+        const file = form?.get('file')
+        if (!(file instanceof File) || file.size === 0) throw new HttpError(400, '没有收到音频文件')
+        if (file.size > config.transcribeMaxBytes) throw new HttpError(413, '音频文件过大')
+        if (!supportedAudio(file)) throw new HttpError(415, '不支持这种音频格式')
+        const languageRaw = String(form?.get('language') ?? 'zh').trim().toLowerCase()
+        const language = /^[a-z]{2,8}$/.test(languageRaw) ? languageRaw : 'zh'
+        const formatRaw = String(form?.get('response_format') ?? 'json')
+        const responseFormat = formatRaw === 'verbose_json' ? 'verbose_json' : 'json'
+        const receipt = reserveMetered(
+          identity,
+          'SpeechTranscription',
+          `${usageOperation}:speech`,
+          usageFingerprint(`SpeechTranscription\0${await fileUsageFingerprint(file)}\0${language}\0${responseFormat}`),
+          { requests: 1, input_bytes: file.size, output_units: 0 },
+        )
         const started = performance.now()
-        return await transcribeSem.run(async () => {
+        const capacityPermit = await transcribeCapacity.acquire(user, {
+          maxWaitMs: config.queueMaxWait * 1_000,
+          signal: request.signal,
+          tokenId: identity.principalId,
+        }).catch(error => {
+          completeMetered(receipt, 'released')
+          throw error
+        })
+        try {
+          try {
+            await transcribeBucket.acquire(config.queueMaxWait, request.signal)
+          } catch (error) {
+            completeMetered(receipt, 'released')
+            throw error
+          }
           const queueMs = elapsedMs(started)
-          const form = await request.formData().catch(() => null)
-          const file = form?.get('file')
-          if (!(file instanceof File) || file.size === 0) throw new HttpError(400, '没有收到音频文件')
-          if (file.size > config.transcribeMaxBytes) throw new HttpError(413, '音频文件过大')
-          if (!supportedAudio(file)) throw new HttpError(415, '不支持这种音频格式')
-          const languageRaw = String(form?.get('language') ?? 'zh').trim().toLowerCase()
-          const language = /^[a-z]{2,8}$/.test(languageRaw) ? languageRaw : 'zh'
-          const formatRaw = String(form?.get('response_format') ?? 'json')
-          const responseFormat = formatRaw === 'verbose_json' ? 'verbose_json' : 'json'
           const runStarted = performance.now()
           try {
             const result = await transcribe(file, { language, responseFormat, signal: request.signal })
             const audioSeconds = Number(result.duration)
+            completeMetered(receipt, 'settled', {
+              requests: 1,
+              input_bytes: file.size,
+              output_units: Number.isFinite(audioSeconds) && audioSeconds >= 0 ? Math.round(audioSeconds * 1_000) : 0,
+            })
             const note = [
               `queue_ms=${queueMs}`,
               `run_ms=${elapsedMs(runStarted)}`,
@@ -1497,15 +1623,19 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               ...(Number.isFinite(audioSeconds) && audioSeconds >= 0 ? [`audio_seconds=${Math.round(audioSeconds * 1000) / 1000}`] : []),
             ].join(';')
             await logUsage(store, { user, model: 'transcribe', ok: true, status: 200, ms: elapsedMs(started), note })
-            return jsonResponse(result)
+            return withUsageOperationHeader(jsonResponse(result), usageOperation)
           } catch (error) {
             const status = error instanceof GatewayTranscriptionError ? error.status : 502
             const detail = error instanceof GatewayTranscriptionError ? error.publicMessage : '语音识别失败，请稍后重试'
+            if (status === 499 || status >= 500) completeMetered(receipt, 'outcome_unknown')
+            else completeMetered(receipt, 'settled')
             const note = `queue_ms=${queueMs};run_ms=${elapsedMs(runStarted)};bytes=${file.size}`
             await logUsage(store, { user, model: 'transcribe', ok: false, status, ms: elapsedMs(started), note })
             throw new HttpError(status, detail)
           }
-        })
+        } finally {
+          capacityPermit.release()
+        }
       }
 
       // 生图异步任务:提交短请求到 relay；relay 再按模型调用 GPT Image 或豆包 Seedream。

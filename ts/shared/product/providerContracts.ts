@@ -61,3 +61,31 @@ export type ProviderRuntimeConfigurationError =
   | 'MODEL_CONTRACT_VERSION_MISMATCH'
   | 'MODEL_CONTRACT_HASH_MISMATCH'
   | 'MODEL_CONTRACT_STALE'
+
+export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration'>
+export type ProviderUsageAmount = {
+  requests: number
+  input_bytes: number
+  output_units: number
+}
+export type ProviderUsageBudgetPolicy = {
+  revision: string
+  period: 'utc_day'
+  capabilities: Record<MeteredProviderCapability, {
+    principal: ProviderUsageAmount
+    installation: ProviderUsageAmount
+  }>
+}
+export type ProviderUsageReceipt = {
+  operation_id: string
+  principal_id: string
+  installation_id: string
+  capability: MeteredProviderCapability
+  policy_revision: string
+  period: string
+  state: 'reserved' | 'settled' | 'released' | 'outcome_unknown'
+  reserved: ProviderUsageAmount
+  actual: ProviderUsageAmount
+  fencing_token: number
+  upstream_receipt_hash?: string
+}

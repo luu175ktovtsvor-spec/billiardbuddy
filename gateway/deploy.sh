@@ -7,6 +7,7 @@
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
 #   GW_DEEPSEEK_QUEUE_MAX / GW_DEEPSEEK_QUEUE_MAX_WAIT / GW_DEEPSEEK_RPM
 #   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS / GW_RELAY_RESULT_TIMEOUT_MS=300000 / GW_SERVER_IDLE_TIMEOUT_SECONDS
+#   GW_TRANSCRIBE_RPM / GW_TRANSCRIBE_CONC / GW_TRANSCRIBE_QUEUE_MAX
 #
 # 产品默认模型翻转为 deepseek-v4-flash 后(Phase 2C):
 #   - 受控假上游压测已验证网关能公平调度 DeepSeek 100 人 × 10 窗口的 1,000 个请求而不在网关排队；
@@ -56,7 +57,7 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
+for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -67,6 +68,7 @@ install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
+install -m 644 /tmp/usageBudget.ts "$APPDIR/usageBudget.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
 install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
 # Upload these separately with the runtime files when a controlled live capacity
