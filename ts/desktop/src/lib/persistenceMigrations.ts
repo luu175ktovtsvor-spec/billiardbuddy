@@ -65,6 +65,8 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
         if (
           tab.type === 'settings'
           || tab.type === 'scheduled'
+          || tab.type === 'creation'
+          || tab.type === 'operations'
           || tab.type === 'image-workbench'
           || tab.type === 'video-studio'
           || tab.type === 'product-tasks'

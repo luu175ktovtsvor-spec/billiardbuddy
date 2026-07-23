@@ -29,6 +29,8 @@ describe('desktop persistence migrations', () => {
       openTabs: [
         { sessionId: '__settings__', title: '设置', type: 'settings' },
         { sessionId: '__scheduled__', title: '定时任务', type: 'scheduled' },
+        { sessionId: '__creation__', title: '创作', type: 'creation' },
+        { sessionId: '__operations__', title: '经营', type: 'operations' },
         { sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' },
         { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
         { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
@@ -51,6 +53,8 @@ describe('desktop persistence migrations', () => {
       openTabs: [
         { sessionId: '__settings__', title: '设置', type: 'settings' },
         { sessionId: '__scheduled__', title: '定时任务', type: 'scheduled' },
+        { sessionId: '__creation__', title: '创作', type: 'creation' },
+        { sessionId: '__operations__', title: '经营', type: 'operations' },
         { sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' },
         { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
         { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
