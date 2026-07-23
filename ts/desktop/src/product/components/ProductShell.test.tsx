@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProductTaskRecord } from '../domain/types'
 import type { TaskIndexProps } from './TaskIndex'
@@ -264,5 +264,14 @@ describe('ProductShell', () => {
 
     expect(mocks.openTab).toHaveBeenCalledWith('__product_tasks__', '任务中心', 'product-tasks')
     expect(mocks.closeTab).toHaveBeenCalledWith('__new_product_task__')
+  })
+
+  it('does not mount the composer when task creation is unavailable', () => {
+    mocks.index = { projects: [], directories: [], tasks: [], total: 0, capabilities: { createTask: false } }
+
+    render(<ProductShell page="new-task" />)
+
+    expect(mocks.taskComposerProps).toBeNull()
+    expect(screen.getByText('当前安装暂时无法创建任务。')).toBeTruthy()
   })
 })

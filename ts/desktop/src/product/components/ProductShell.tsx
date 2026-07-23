@@ -71,27 +71,40 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
   if (page === 'new-task') {
     return (
       <main className="flex h-full min-h-0 flex-col overflow-y-auto bg-[var(--color-app-main)]" data-testid="new-product-task-page">
-        <header className="border-b border-[var(--color-border)] px-5 py-4">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">新建任务</h1>
-          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">提交目标后，服务端会原子创建任务与首个运行记录。</p>
+        <header className="px-5 pb-1 pt-8 text-center">
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">今天想完成什么？</h1>
+          <p className="mt-2 text-sm text-[var(--color-text-secondary)]">描述目标，BilliardBuddy 会创建任务并开始处理。</p>
         </header>
         {error ? <div role="alert" className="mx-5 mt-4 rounded-lg border border-[var(--color-error)]/30 px-3 py-2 text-sm text-[var(--color-error)]">{error}</div> : null}
-        <TaskComposer
-          key={initialWorkDir ?? 'manual'}
-          projects={index.projects}
-          directories={index.directories}
-          initialWorkDir={initialWorkDir}
-          isSubmitting={mutations.create === true}
-          onCancel={cancelNewTask}
-          onSubmit={async (input) => {
-            try {
-              await createAndOpenTask(input)
-              closeTab(NEW_PRODUCT_TASK_TAB_ID)
-            } catch {
-              // The product store exposes the server error in this page.
-            }
-          }}
-        />
+        {isLoading && !index.capabilities.createTask ? (
+          <p role="status" className="py-12 text-center text-sm text-[var(--color-text-secondary)]">正在准备任务能力…</p>
+        ) : index.capabilities.createTask ? (
+          <TaskComposer
+            key={initialWorkDir ?? 'automatic'}
+            initialWorkDir={initialWorkDir}
+            isSubmitting={mutations.create === true}
+            onCancel={cancelNewTask}
+            onSubmit={async (input) => {
+              try {
+                await createAndOpenTask(input)
+                closeTab(NEW_PRODUCT_TASK_TAB_ID)
+              } catch {
+                // The product store exposes the server error in this page.
+              }
+            }}
+          />
+        ) : (
+          <div className="mx-auto w-full max-w-lg px-5 py-12 text-center">
+            <p className="text-sm text-[var(--color-text-secondary)]">当前安装暂时无法创建任务。</p>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="mt-4 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+            >
+              重新检查
+            </button>
+          </div>
+        )}
       </main>
     )
   }
