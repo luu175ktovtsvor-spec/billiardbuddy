@@ -192,7 +192,7 @@ Next:
 | `DEC-009` | `[HARD]` context window 使用已核实真实值 | 产品合同字段为 `verified_context_window`；只有整链证据均为 1,000,000 时才能显示 1M，否则使用最小已证实上限，不关闭 compact 伪造大窗口 |
 | `DEC-010` | `[HARD]` 项目指令复用 Core 原生 resolver | 同层加载顺序为 Claude 兼容源 → `AGENTS.md` → `BilliardBuddy.md`；品牌文件进入 user context/`nested_memory`，不升为临时 system prompt |
 | `DEC-011` | `[HARD]` 项目指令、Session Memory、AutoMem 分开 | TeamMem 在模块 05/21 执行 `D1_STOP_WRITES`/`D2_MIGRATE_CONSUMERS`，模块 23 只执行 `D4_PHYSICAL_DELETE`，模块 24 统一执行 `D5_PACKAGE_ABSENT`；项目指令不复制进 Session/AutoMem；记忆失败不阻塞主任务；敏感内容不进入长期记忆 |
-| `DEC-012` | `[HARD]` 三档产品权限固定 | `ask → default`、`allow_edits → acceptEdits`、`plan_only → plan`；权限是 TaskRun 创建时的不可变快照，修改只影响下一次 run |
+| `DEC-012` | `[HARD]` Model Permissions 三档固定 | 模块 08后的产品值固定为 `ask/approve_for_me/full_access`，分别展示 `Ask for approval/Approve for me/Full Access`；只有 Full Access 移除文件与网络边界。availability、enablement、selection 和 run snapshot 分离。BB-02C/03 的 `permission_mode=null` 只表示模块 08前的保守过渡态，不是第四档，不得提前实现或推导三档；模块 08是唯一切换点 |
 | `DEC-013` | `[HARD]` Preview 模块只处理 DOM/源码修改 | DOM selection → ProductTask → Core 修改源码；图片 mask/inpaint 只属于 MediaProject，不得出现“Core 或 Media”并列所有者 |
 | `DEC-014` | `[HARD]` 图片/视频不经过主聊天媒体草稿 | 工作台内部处理 Brief、追问、证据、进度、确认、版本和结果；跨工作台只传显式 immutable `asset_id`，不复制 Base64 |
 | `DEC-015` | `[HARD]` MediaProjectService 是唯一媒体写入者 | 文件型存储继续使用，但同一数据根只能有一个 sidecar 写者；项目、Operation、Job、Asset、Version 都由 MediaProjectService 持久化 |
@@ -224,10 +224,10 @@ Next:
 | `DEC-041` | `[HARD]` 招聘原始证据短存且不进模型/诊断 | 原始 HTML/截图/完整简历/联系方式不进入持久 checkpoint、prompt、日志、记忆或诊断包；按 15 分钟/7 天/30 天分级 TTL，计划关闭与用户删除触发有界清除，视觉不明转用户接管 |
 | `DEC-042` | `[HARD]` 更新成功必须达到健康启动里程碑 | 目标版本只在包/矩阵、sidecar 握手、存储读取和首个可交互 renderer 全通过后确认；10 分钟内连续两次未健康进入 recovery_required，回退受 rollback floor/schema 限制，否则只读恢复并导出 |
 | `DEC-043` | `[HARD]` 用户诊断包严格 allowlist 且不自动上传 | Main 只在用户显式操作时导出版本、握手、短错误码、任务状态、resource profile 与脱敏日志；正文、绝对路径、附件、媒体、Cookie、密钥、候选人信息和原始 crash dump 永不进入 |
-| `DEC-044` | `[HARD]` 普通任务不强制绑定项目文件夹 | ProductTask 的 `task_scope` 固定为 `installation-default` 或 `workspace:<workspace_id>`；普通聊天和经营咨询可在 installation-default 创建，文件、Diff、Preview、PTY 与源码修改必须先经显式 CAS mutation 绑定可用 Workspace，不得创建虚构目录或用 cwd 猜 scope |
+| `DEC-044` | `[HARD]` 普通任务不强制绑定项目文件夹 | ProductTask 的 `task_scope` 固定为 `installation-default` 或 `workspace:<workspace_id>`；普通聊天和经营咨询可在 installation-default 创建。任何 Model Permissions 档位都不能凭空创造 cwd，Agent 文件/命令执行和 Diff/Preview/PTY 必须先显式 CAS 绑定可用 Workspace；绑定后只有 Full Access 的 worker Tool 可按冻结 profile 越过该根，结构化 Workspace 功能仍不把外部路径冒充项目文件 |
 | `DEC-045` | `[HARD]` 多轮上下文由 ConversationLineage 串联 | ProductTask 拥有一条当前逻辑 lineage；每个 TaskRun 引用 lineage 和父 turn/checkpoint，同一任务续聊恢复同一 lineage，Fork 才创建子 lineage；CoreSession 仍是 worker 私有实例，产品记录不暴露其 ID；Core compact summary、Session Memory 和用户可见执行摘要不得互相替代 |
 | `DEC-046` | `[HARD]` 远程模型访问必须绑定授权与费用预算 | 发布前必须冻结 Account 或 License 方案；Gateway 只接受受保护激活流程签发的短期 installation token，并以 `Entitlement + UsageBudget + UsageReceipt` 做设备撤销、额度、费用硬上限和公平 owner；desktop app credential 只能证明客户端构建来源，不能单独授权模型或充当可计费用户身份 |
-| `DEC-047` | `[HARD]` 同一工作根的 Agent 写入必须隔离 | 同一 canonical workspace/worktree 同时最多一个持 fencing 的 `workspace.write` claim；只读任务可并发，Fork 使用 managed worktree；外部 IDE 修改、root revision/HEAD 漂移或旧 lease 恢复固定 stale/conflict，不允许两个 TaskRun 直接并写后再猜测合并 |
+| `DEC-047` | `[HARD]` 同一文件目标的 Agent 写入必须隔离 | 所有 Agent 文件副作用先取得 `filesystem.write` fencing claim；Workspace 内 key 为稳定 workspace/worktree identity，Full Access 的根外目标 key 为 installation + canonical external target identity。只读任务可并发，Fork 使用 managed worktree；外部修改、root/target revision 漂移或旧 lease 恢复固定 stale/conflict，不允许两个 TaskRun 直接并写后再猜测合并 |
 | `DEC-048` | `[HARD]` 首次安装有保守资源基线 | 支持平台必须随包提供签名的 conservative desktop profile，使基础 Agent 与受控解析可降级启动；benchmark 只能在取得 permit 后升级 device profile，失败/过期回退基线而非让整机永久 `PROFILE_REQUIRED`；远程账号配额仍必须来自真实运维证据，缺失只禁用对应远程能力 |
 | `DEC-049` | `[HARD]` Task 生命周期引用通过统一参与者合同 | 模块 02 冻结 `TaskLifecycleParticipant` 的 blocker/quiesce/cleanup/detach receipt；09/11/15/17/18/20 等后续模块注册参与者，模块 02 不反向导入后续服务或猜路径，删除 UI 只渲染权威 blocker/action descriptor |
 | `DEC-050` | `[HARD]` 更新静止状态必须从 Sidecar 交接给 Main | Sidecar 只有在 admission 关闭、活动 claim 对账为零且 durable checkpoint 完成后，才能签发绑定 scheduler generation/fencing/candidate/UpdateTransaction 的 `QuiesceReceipt`；Main 验证并持有该 receipt 后才可停 Sidecar 和安装，失效、重启或新活动一律回到等待状态 |
@@ -245,7 +245,10 @@ Next:
 | `TaskScope` | 普通任务作用域；kind 为 `installation-default` 或 `workspace`，workspace kind 保存稳定 workspace ID/revision | 安装实例 | ProductTaskService | 仅在需要文件能力时显示项目文件夹 |
 | `ProductTask` | 用户可见任务容器；保存独立于 TaskRun 的 lifecycle/revision 和 task_scope | TaskScope | ProductTaskService | 显示为“任务” |
 | `TaskAttachment` | 草稿或已发送任务附件；外部安全引用或应用拥有副本，含 owner/ref/TTL/inspection 状态 | `ComposerDraft` 或 ProductTask（二选一） | ProductTaskService 写身份与 binding；AttachmentStore 只执行受控字节操作 | 显示名称、类型、大小和安全/清理状态 |
-| `TaskRun` | 一次 Agent 执行；创建时已包含不可变 permission/provider snapshot 与 durable dispatch intent | ProductTask | ProductTaskService 在返回 accepted 前原子写入 | 显示为一次处理过程，不显示 ID |
+| `ModelPermissionEnablement` | 安装实例内用户允许出现在任务选择器中的档位；保存 `ask=true`、Approve/Full 开关、Full 风险确认版本、managed-policy digest 和 revision，不保存任务当前选择 | 安装实例 + AccessPrincipal | ProductPermissionService；只接受受信任的用户/本机/managed policy 来源，项目文件不能写 | 设置页只显示开关、白话原因和恢复入口，不显示内部字段 |
+| `ProductPermissionProfile` | 模块 08后一次 run 的完整权限合同；含产品 mode、sandbox、approval policy/reviewer、filesystem/network scope、策略版本及可用性证据 | ProductTask/TaskRun | ProductTaskService 按模块 08 固定映射派生；renderer/Core 不写产品值 | 菜单显示三档和不可用原因，不显示内部字段 |
+| `PermissionEscalationReceipt` | 一次越界动作的窄授权；绑定 run/operation、canonical target 或 network destination、动作摘要、reviewer decision、policy revision、expiry、single-use nonce 和结果 | TaskRun | ProductPermissionService 写决定；模块 03 host broker 原子消费 | 只显示“这次要做什么、风险、允许/拒绝/失败”，不显示 receipt/nonce |
+| `TaskRun` | 一次 Agent 执行；保存不可变 permission binding/provider snapshot 与 durable dispatch intent；模块 08后 binding 必须为 ProductPermissionProfile | ProductTask | ProductTaskService 在返回 accepted 前原子写入 | 显示为一次处理过程，不显示 ID |
 | `ThreadEntry` | 用户消息、助手回答、审批、结果投影 | ProductTask | ProductTaskService | 显示在对话中 |
 | `ConversationLineage` | ProductTask 的逻辑多轮上下文链；保存当前 head、父 lineage/fork checkpoint、compact generation 与受控 opaque resume binding，不保存公开 CoreSession ID | ProductTask | ProductTaskService 写产品 lineage/revision；agent-worker/Core 只写私有 resume material | 仅显示“继续/独立副本”，不显示 ID |
 | `CoreSession` | worker 内部 Core 会话实例，可按 ConversationLineage 的受控 resume binding 创建或恢复 | TaskRun/ConversationLineage | agent-worker/Core | 永不直接显示或作为产品外键 |
@@ -332,7 +335,7 @@ composer_draft
   → completed | stopped | failed
 ```
 
-`accepted` 的唯一含义是：ProductTaskService 已在同一个原子提交中持久化用户 ThreadEntry、TaskRun（含 immutable permission/provider snapshot）、`client_operation_id` receipt、首个 TaskEvent、durable dispatch record，以及请求中全部 `ready` TaskAttachment 到该 ThreadEntry/TaskRun 的不可变 binding。任何附件未 ready/owner 不符或任一写入失败都整体回滚，不返回 accepted，也不清空草稿。worker 不参与这个原子提交，且不得在提交成功前启动该 run。
+`accepted` 的唯一含义是：ProductTaskService 已在同一个原子提交中持久化用户 ThreadEntry、TaskRun、`client_operation_id` receipt、首个 TaskEvent、durable dispatch record 和全部 ready attachment binding；任一失败都整体回滚且不清草稿。BB-02C/03 阶段 TaskRun 固定保存 `permission_mode=null + execution_capability`，其唯一含义是保守 workspace sandbox、用户审批、网络默认拒绝、无自动越界、无 Full Access；模块 08后才改为先验证 availability/enablement/policy revision，再保存完整 ProductPermissionProfile。两种 binding 都不可在 run 内改写，worker 不得在 accepted 前启动。
 
 首次在首页提交时，同一原子提交还必须创建 `task_scope=installation-default` 的 ProductTask 与根 ConversationLineage，并完成 ComposerDraft/附件 owner transfer。已有 ProductTask 续聊时，TaskRun 固定引用当前 lineage head 和父 turn；worker 只能以该 run 的一次性 capability 读取 agent-worker 私有 resume binding。`waiting_for_user` 可将 worker 终止并把 lineage 标为 parked；下一条 accepted run 恢复同一 lineage。恢复材料损坏或 Core 不兼容时固定 `LINEAGE_RECOVERY_REQUIRED`，保留 transcript 并让用户选择从当前持久 checkpoint 建立子 lineage，不得静默当作全新对话。
 
@@ -436,9 +439,10 @@ migration_running
 
 ### 4.1 路径、Workspace 与归属
 
-- ProductTask 可以是 `task_scope=installation-default`，此时只能执行不需要项目文件的聊天、知识与受控业务能力；任何文件枚举、`@file`、Diff、Preview、PTY、Agent Bash 或源码修改都固定返回 `WORKSPACE_REQUIRED`。`task.bind_workspace(workspace_id,expected_task_revision,expected_workspace_revision,client_operation_id)` 是唯一绑定/更换入口；活动 run、queue、PTY、Preview 或 workspace write lease 存在时拒绝，成功后推进 task revision 并使旧文件引用 stale，不移动或复制用户文件。
-- 所有已绑定 Workspace 的 task、附件、Diff、Preview 和 PTY 路径绑定稳定 `workspace_id`，不把绝对路径当身份或授权。Workspace 保存 mutable `canonical_root`、平台根 file identity（volume + file ID/inode 等价物）、`workspace_revision` 和 `available|missing|read_only|identity_changed|relink_required`；媒体路径绑定 MediaLibrary/Asset immutable owner；语音源绑定 installation + source owner。统一拒绝 `..`、符号链接逃逸、跨 worktree/owner、任意 `file://`、Windows UNC/盘符越界和大小写混淆。
-- 每个文件读写、Diff、Preview、PTY create/write 和 worker 工具边界都重新 realpath，核验 root identity/revision、owner 和目标 file hash；watcher 只用于提示，不能授权。外部单文件变化返回 `FILE_STALE` 并要求刷新；根消失/断盘/只读返回 `WORKSPACE_UNAVAILABLE|WORKSPACE_READ_ONLY`，写操作停止且不换路径。
+- ProductTask 可以是 `task_scope=installation-default`，此时只能执行不需要项目文件的聊天、知识与受控业务能力；任何文件枚举、`@file`、Diff、Preview、PTY、Agent Bash 或源码修改都固定返回 `WORKSPACE_REQUIRED`，包括选择 Full Access。`task.bind_workspace(workspace_id,expected_task_revision,expected_workspace_revision,client_operation_id)` 是唯一绑定/更换入口；活动 run、queue、PTY、Preview 或 filesystem write lease 存在时拒绝，成功后推进 task revision 并使旧文件引用 stale，不移动或复制用户文件。
+- 所有 ProductTask、附件、Diff、Preview、PTY 与结构化文件引用绑定稳定 `workspace_id`，不把绝对路径当身份或授权。Workspace 保存 mutable `canonical_root`、平台根 file identity（volume + file ID/inode 等价物）、`workspace_revision` 和 `available|missing|read_only|identity_changed|relink_required`；媒体路径绑定 MediaLibrary/Asset immutable owner；语音源绑定 installation + source owner。`ask` 与 `approve_for_me` 的 worker 默认只能在该 canonical root/worktree 内读写；越过根、联网或扩大 capability 分别交给 user/automatic reviewer，批准只生成绑定 run、operation、canonical target、expiry 和 policy revision 的一次性 escalation receipt，不改 TaskScope、不永久扩 writable roots。拒绝 `..` 歧义、符号链接 TOCTOU、跨 owner、任意 `file://` 和大小写混淆。
+- `full_access` 只在已绑定 Workspace 的 worker/Core Tool 边界启用 unrestricted filesystem/network；它允许对 canonical root 外的本机目标执行用户请求，但外部目标不因此成为 Workspace 文件，不能进入 Review/Preview/PTY、不能被 ProductTask 删除器当 task-owned 数据，也不能绕过 OS ACL、owner/secret/data-egress/预算/正式外部副作用门禁。每次根外访问仍 realpath、记录脱敏 target identity，写入前取得 `filesystem.write.external` fencing；符号链接换靶、设备文件、无界递归删除和无法 canonicalize 的路径 fail-closed。
+- 每个文件读写、Diff、Preview、PTY create/write 和 worker 工具边界都重新 realpath，核验适用的 Workspace 或 external target identity/revision、owner 和目标 file hash；watcher 只用于提示，不能授权。外部单文件变化返回 `FILE_STALE` 并要求刷新；Workspace 根消失/断盘/只读返回 `WORKSPACE_UNAVAILABLE|WORKSPACE_READ_ONLY`，写操作停止且不换路径。
 - 同卷移动且根 file identity 未变时，用户确认的 `workspace.relocate(client_operation_id,expected_revision)` 可原子更新 root/revision。跨卷复制、根被替换、identity 无法证明或 managed worktree 被手动删除时进入 `relink_required`；用户只能明确重绑或创建新 Workspace，不能自动猜目录。Git workspace 额外核验 repo/worktree common-dir 与 HEAD identity；非 Git workspace 使用根 identity + 用户确认，绝不伪造 Git 语义。
 - Workspace revision/identity 改变时，活动 TaskRun 的后续文件副作用、Preview selection、Diff reference 和 PTY 固定 `WORKSPACE_STALE`；只读 transcript 仍可查看。managed fork worktree 丢失标 `WORKTREE_MISSING`，保留 task/checkpoint 并提供重新创建或解除引用，不能重建后假装是同一 worktree。
 - Asset 原始 route 只按其 immutable `asset_owner_scope` 授权。迁库后的项目读取历史 Asset 时，必须先校验请求者拥有当前 MediaProject，再校验当前 Version/Evidence 显式引用同一 `{asset_id, asset_owner_scope}`；禁止凭 source Asset ID 跨库枚举。
@@ -449,9 +453,9 @@ migration_running
 ### 4.2 多窗口和单写者
 
 - ProductTask 与媒体 mutation 都携带 owner、`client_operation_id` 和 `expected_revision`；冲突返回显式错误，不静默 last-write-wins。
-- Agent 文件副作用必须先申请 desktop-host `workspace.write` claim，key 为稳定 workspace ID + canonical worktree identity，保存 task/run、root revision、Git HEAD/非 Git root fingerprint、lease generation 和 fencing token。同一 key 最多一个 writer；只读 worker 不持写 claim并可并发。写入前后每个 Tool mutation 都复核 token/root/file revision；等待 claim 时不得预写临时文件到 Workspace。
+- Agent 文件副作用必须先申请 desktop-host `filesystem.write` claim。Workspace 子类 key 为稳定 workspace ID + canonical worktree identity，保存 task/run、root revision、Git HEAD/非 Git root fingerprint、lease generation 和 fencing token；Full Access 根外子类 key 为 installation + canonical external target identity，额外绑定 ProductPermissionProfile digest。同一 key 最多一个 writer；只读 worker 不持写 claim并可并发。写入前后每个 Tool mutation 都复核 token/profile/root-or-target/file revision；等待 claim 时不得预写临时文件到目标路径。
 - Fork 只写应用拥有的 managed worktree；普通任务默认写用户当前 canonical worktree并串行。用户项目已有脏修改时先冻结 preexisting snapshot，Agent 只能在不覆盖该 snapshot的前提下工作；外部 IDE/终端改动、HEAD 改变或 root relocation 使 lease stale，当前 run 停在 conflict 并展示 Diff/重新读取/转 managed worktree，不自动 stash、reset、merge 或覆盖。
-- worker 崩溃、停止、休眠和更新必须以 fencing 释放 `workspace.write`；旧 worker 恢复后不能写。申请、等待、取得、释放、stale 和 conflict 均形成 TaskEvent/诊断 receipt，ProductTask revision 不能替代真实文件写 lease。
+- worker 崩溃、停止、休眠和更新必须以 fencing 释放全部 `filesystem.write` 子类 claim；旧 worker 恢复后不能写。申请、等待、取得、释放、stale 和 conflict 均形成 TaskEvent/诊断 receipt，ProductTask revision 不能替代真实文件写 lease。
 - 同一媒体数据根最多一个 sidecar 写者，启动时取得跨进程锁；进程内 Promise 锁只能证明单实例串行，不能作为跨进程证据。
 - 更新、退出和休眠前停止新后台写入，在有界时间内完成或留下 durable intent，重启后对账。
 
@@ -560,7 +564,7 @@ Public ingress/TLS
 
 `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 是模块 22 accepted 后、模块 23 首个物理删除前的共同硬闸。它在 legacy 源码仍在但其 execution entry 被 fail-fast 的条件下，使用实际 renderer、IPC、local sidecar、ProductTask/Media/Voice/Recruiting service、agent-worker 和公开合同运行；外部 provider/Chrome 可使用受控 fake adapter，但不得用直接 service 单测或 mock 新链本身替代。
 
-闸必须在干净数据根和升级 fixture 数据根各运行一次，覆盖：installation-default 首次任务 accepted/stream/stop/重连、bind Workspace、同 lineage 续聊/fork/compact/recovery、worker 崩溃与重复 dispatch、双窗口 `workspace.write` 冲突、default→Workspace 媒体 transfer、Composer/视频共享 TranscriptRevision、图片/视频 partial/unknown/恢复、授权/预算/数据外发拒绝、计划 grant、招聘 approval→intent→action→reobserve、TaskLifecycleParticipant blocker 和支持矩阵旧数据升级。empty、loading/slow、offline、conflict、partial、failed、restoring 都必须有机器断言。
+闸必须在干净数据根和升级 fixture 数据根各运行一次，覆盖：installation-default 首次任务 accepted/stream/stop/重连、bind Workspace、同 lineage 续聊/fork/compact/recovery、worker 崩溃与重复 dispatch、三档 Model Permissions、双窗口 `filesystem.write.workspace|external` 冲突、default→Workspace 媒体 transfer、Composer/视频共享 TranscriptRevision、图片/视频 partial/unknown/恢复、授权/预算/数据外发拒绝、计划 grant、招聘 approval→intent→action→reobserve、TaskLifecycleParticipant blocker 和支持矩阵旧数据升级。empty、loading/slow、offline、conflict、partial、failed、restoring 都必须有机器断言。
 
 Gate 通过只授予 `LOCALLY_VERIFIED` 和“允许开始 D4”，不等同 D5、安装包、签名或真实外部验证。每个 D4 Work Unit 后必须重跑受影响旅程；模块 24/25 仍分别执行 packaged/final 黄金旅程。证据进入机器可读 manifest 和测试输出，不新建 Markdown 报告。
 
@@ -605,7 +609,7 @@ rollout{accepts_release_range, rollback_floor, retire_after}
 
 ```text
 agent.worker / agent.turn / schedule.dispatch
-workspace.write
+filesystem.write.workspace / filesystem.write.external
 browser.session / browser.batch
 media.ffprobe / media.ffmpeg.encode / media.local-io
 content.inspect / content.extract / content.thumbnail / storage.attachment-temp
@@ -622,7 +626,7 @@ storage.migration / app.update
 6. 休眠先停止 dispatch 并持久 checkpoint/lease；唤醒按 generation 恢复，只有幂等且未进入未知付费阶段的 job 可自动继续。迁移和更新先进入 `draining → checkpoint/cancel → quiesced`，再申请独占 lifecycle permit；更新额外要求 Sidecar 签发 `QuiesceReceipt`，包含 server/scheduler generation、fencing、active/queued/unknown 摘要 hash、candidate、UpdateTransaction、issued/expires。Main 先关闭 renderer 新 mutation admission并验证 receipt，随后才能停 Sidecar；receipt 过期、Sidecar generation 改变或任何新活动使安装退回 waiting。截止时间内不静止则 blocked，不能直接 kill sidecar 安装。
 7. 快照统一输出 active/queued/bytes/oldest wait/owner rejects/profile revision/lease owner，以及 `ready/degraded/overloaded/draining/maintenance` 和稳定原因码：concurrency、queue、bytes、owner quota、profile missing、maintenance、upstream unavailable。UI、API、Gateway 和 Relay 使用同一产品枚举。
 8. Gateway 每个远程 claim 在 provider submit 前还必须原子预留 UsageBudget；provider/Relay terminal usage receipt 结算或释放预留，unknown 保留有界 reserve 到对账终态。客户端重放、换 installation 或伪造 usage 不能扩大预算；预算不足返回稳定 `ENTITLEMENT_REQUIRED|USAGE_LIMIT_REACHED|BUDGET_UNAVAILABLE`，不先调用上游。
-9. 模块 03 建 desktop scheduler、保守基线/benchmark、worker 与 workspace.write claim；04 建 Auth/Entitlement/Usage Gateway executor，并在模块 13 前建立 Relay account 的图片付费任务准入基础；09/10/11/20 消费 workspace.write；12/13/14/15/16/17/18 迁移媒体、图片、语音、计划和浏览器消费者；14 只强化 Relay 五分钟链路、容量 profile 与部署可靠性，不再后置创建 scheduler 真相；22/24 只申请 migration/update lifecycle claim。旧私有队列在模块 23 D4 前消费者归零。
+9. 模块 03 建 desktop scheduler、保守基线/benchmark、worker 与 `filesystem.write.workspace|external` claim；模块 08 冻结哪个 ProductPermissionProfile 可申请 external 子类及一次性 escalation receipt；09/10/11 消费 workspace 子类，Full Access worker 才可消费 external 子类，模块 20 的用户 PTY 不消费 Agent claim；04 建 Auth/Entitlement/Usage Gateway executor，并在模块 13 前建立 Relay account 的图片付费任务准入基础；12/13/14/15/16/17/18 迁移媒体、图片、语音、计划和浏览器消费者；14 只强化 Relay 五分钟链路、容量 profile 与部署可靠性，不再后置创建 scheduler 真相；22/24 只申请 migration/update lifecycle claim。旧私有队列在模块 23 D4 前消费者归零。
 10. 验收使用 fake clock、可控 executor 和双进程 fixture，证明所有上限不越界、多资源无死锁、取消/超时/重启无泄漏或双释放、两个 scheduler 不重复 occurrence/付费任务、owner 公平、基线→benchmark→过期回退、UsageBudget 预留/结算/unknown，以及 sleep/update/migration 对运行 worker、Workspace writer、FFmpeg 和 outcome_unknown 的正确处理。不得 mock 掉 Scheduler 本身。
 
 ### 4.12 Release Candidate、Go/No-Go 与 USER_ACCEPTED
@@ -642,7 +646,7 @@ storage.migration / app.update
 ### 4.13 首次使用、平台支持与生产运行
 
 1. `system-support-policy.json` 是支持边界唯一来源。模块 01 冻结 schema、必需证据和初始声明；模块 24 的唯一 registry 再依据锁定的 Electron/Node/native modules/FFmpeg/Chrome protocol 与真实候选安装测试生成最低 Windows 版本/build、最低 macOS 版本、CPU 架构、最低 RAM/可用磁盘、文件系统要求和最低 Chrome/Extension 版本。未登记 OS/arch 只允许显示不支持并安全退出，不能进入“可能能跑”的发布承诺；模块 25 按同一 candidate policy 验收。
-2. 首次使用顺序固定为：本地壳可用 → 创建/恢复 ComposerDraft → 选择并完成 Account 或 License 激活 → 展示能力与数据出境说明 → 请求所需 OS 权限 → 载入 conservative profile → 后台 benchmark → 按 capability snapshot 渐进开放。项目文件夹、Chrome Extension、麦克风和远程创作均按需申请，不阻塞只需本地壳的查看、删除、导出和离线草稿。
+2. 首次使用顺序固定为：本地壳可用 → 创建/恢复 ComposerDraft → 选择并完成 Account 或 License 激活 → 展示能力与数据出境说明 → 请求所需 OS 权限 → 载入 conservative profile → 后台 benchmark → 按 capability snapshot 渐进开放。项目文件夹、Chrome Extension、麦克风和远程创作均按需申请，不阻塞只需本地壳的查看、删除、导出和离线草稿。首次进入需要 Agent 文件/命令能力的已绑定 Workspace 时解释三档 Model Permissions；`Ask for approval` 始终可选，`Approve for me/Full Access` 只有 capability snapshot 证明可用才可选，启用模式与选中模式分开，不能用首次引导做“一次同意永久全权限”。
 3. `production-load-profile.json` 不是“100 人同时并发”的宣传数字，而是版本化负载假设：registered/weekly active/peak active、文本 turn 分布、视觉/ASR/图片比例、平均/高分位字节和允许排队时长；必须同时记录测得的受理、排队、provider 并发、完成吞吐、费用预算和 overload 行为。没有真实 profile 只能报告已测容量，不能承诺用户数；达到预算/容量时公平排队或明确拒绝，不能让个人开发者账号无限透支。
 4. Gateway/Relay 生产 manifest 必须包含环境隔离、结构化日志轮换、metrics/alert、队列与 blob 水位、provider 429/费用异常、DB/receipt 备份恢复、密钥轮换 overlap、部署回滚和 incident maintenance mode。远程备份不保存已按 retention 删除的 blob/PII；恢复演练必须证明 UsageReceipt、unknown Operation 和 purge tombstone 不重复或丢失。
 5. 本机迁移备份、上一版本安装包、媒体缓存和应用日志分别进入容量/retention policy；低磁盘时先阻止新写和提供用户清理/导出，不能自动删除仍处于 rollback window、outcome_unknown、被引用或 owner 不明的数据。
@@ -669,7 +673,7 @@ storage.migration / app.update
   02 + 03 + 06 → 07 对话与 Composer
   02 + 03 + 07 → 08 三档权限
   02 + 07 + 08 → 09 队列、文本引用、分叉与恢复
-  02 + 06 + 07 + 09 → 10 文件、Diff 与文件引用
+  02 + 06 + 07 + 08 + 09 → 10 文件、Diff 与文件引用
   07 + 09 + 10 → 11 Preview DOM 修改
 
 阶段 C：建立独立创作与业务工作台
@@ -683,7 +687,7 @@ storage.migration / app.update
   04 + 05 + 07 + 08 + 12 + 13 + 16 + 17 + 18 → 19 台球经营 Skills
 
 阶段 D：产品收口
-  02 + 03 + 06 + 10 → 20 用户本机终端
+  02 + 03 + 06 + 08 + 10 → 20 用户本机终端
   04—20 → 21 设置、能力快照与技术表面收口
   01—21 → 22 版本化数据迁移与 legacy reader
 
@@ -698,7 +702,7 @@ storage.migration / app.update
 
 模块 16 对模块 14 的依赖只消费跨媒体可靠性合同：deadline/timeout matrix、capacity preflight 字段、owner/provider 并发边界和 `outcome_unknown` 原 Operation 查询语义。模块 16 不消费模块 14 的图片 UI、三候选数量或图片 provider 路由，也不得把视频逻辑写回图片工作台。
 
-模块 18 必须消费模块 08 的权限快照和审批合同，不得重新定义权限映射或绕过 ProductTask/Core approval。模块 19 只消费 ProductTask、MediaProject、图片/视频 Operation、ScheduledTask 和 Recruiting 的已冻结公开合同，不拥有这些领域的持久化状态。
+模块 18 必须消费模块 08 的 ProductPermissionProfile 与 `human_only` 审批合同，不得重新定义权限映射，也不得让 automatic reviewer/Full Access 绕过招聘正式副作用人工批准。模块 19 只消费 ProductTask、MediaProject、图片/视频 Operation、ScheduledTask 和 Recruiting 的已冻结公开合同，不拥有这些领域的持久化状态。
 
 ## 5.1 每个模块的最小开工定位
 
@@ -776,8 +780,8 @@ storage.migration / app.update
 1. 生成 current renderer、sidecar、ProductTask、media、gateway、relay 的入口与消费者清单。
 2. 固定历史参考读取命令和允许提取的文件类型；不 checkout 旧提交开发。
 3. 标记 HTML 为非构建视觉/信息架构参考资产，确认不进入 Electron `files`、Vite entry、测试运行时或发布包；其脚本、假数据和内联 CSS 不得成为生产实现来源。
-4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
-5. `release-checklist.json` machine/user owner、component compatibility、legacy support、attachment/voice/media/migration-backup retention、content safety、Relay retention、diagnostic bundle、system support、data egress、auth-entitlement、usage-budget、production-load policy 的 schema 与版本/hash 都在模块 01 冻结机器入口；模块 01 只定义结构/生成入口，不猜后续容量或协议值，分别由所属模块填充证据。
+4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；当前产品权限字段 `ask/allow_edits/plan_only` 登记为模块 08 的字段级迁移输入，但只有模块 08 补齐 immutable fixture、正向/幂等测试和 plan intent 保留证据后才从 provisional 升为 supported；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
+5. `release-checklist.json` machine/user owner、component compatibility、legacy support、permission profile/automatic reviewer policy、attachment/voice/media/migration-backup retention、content safety、Relay retention、diagnostic bundle、system support、data egress、auth-entitlement、usage-budget、production-load policy 的 schema 与版本/hash 都在模块 01 冻结机器入口；模块 01 只定义结构/生成入口，不猜后续容量或协议值，分别由所属模块填充证据。
 6. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
 
 ### 明确不改
@@ -841,13 +845,13 @@ ProductTaskService 唯一写 `Workspace`、`TaskScope`、`ComposerDraft`、`Prod
 17. 创建、继续与创建/关闭 side task 均是执行前必须先登记 durable intent 的 ProductTask operation；rename 则是 accepted metadata mutation 后由 durable mirror outbox 对账的 ProductTask operation。ProductTaskService 对 create/continue/create-side/close 必须先在 `product-task-authority.v1.json` 原子持久化内部 `prepared` intent（固定 `client_operation_id/product_task_id/kind/canonical_input/expected_revision`，不是公开 terminal receipt），提交成功后才能调用 CoreOperationBridge 的 `ensureCreate/ensureBranch/ensureRename`；bridge 成功或已知 terminal failure 后再将同一 authority intent 原子 finalize 为公开 `accepted | duplicate | conflict | rejected` durable receipt。进程在 bridge 返回后、authority finalize 前崩溃时，重启必须从 `prepared` intent 以同一参数重放 bridge并完成同一 receipt；不得生成新 operation ID、binding 或公开第二个结果。rename 先在同一 authority CAS 中提交新 metadata、`accepted` receipt 与 `pending` Core mirror outbox，reconciler 再以同一 operation 调用 `ensureRename`，并把 `reconciled|failed` 写回同一 receipt/关联记录；mirror 状态不反转已 accepted 的产品 mutation。要实现上述 crash-safe 重放，ProductTaskService 必须消费 CoreOperationBridge 的 `ensureCreate/ensureBranch/ensureRename(client_operation_id, product_task_id, canonical_input)`，同一 ID 在进程崩溃后仍返回同一 Core binding 或已知 terminal failure，且不向 renderer 暴露 Core identity。不得以 session title、列表扫描、临时文件或随机 session ID 猜测幂等结果，也不得在 authority durable intent/outbox 提交前执行 Core 副作用。CoreOperationBridge 是模块 03 的前置合同；在其 accepted 前，BB-02A 不得派发产品实现，模块 02 保持 blocked。
 18. `product-task-authority.v1.json` 在模块 02 内采用 version 1 的 additive capability reader，而不是隐式迁库：BB-02A 形状（无 `authority_schema_revision`）和显式 `authority_schema_revision=1` 均是合法 revision 1；BB-02B 新写形状固定 `authority_schema_revision=2` 并增加 `workspaces/task_scopes/composer_drafts/task_attachments/conversation_lineages` maps。reader 必须严格接受已存在的 revision 1 文件并只在内存中把缺失 maps 默认为空，读取/list/detail/owner lookup、legacy provenance verify 及任何仅属于 BB-02A 的 mutation不得升级 schema、不写回新增 maps、不创建 backup、不改变原文件 bytes；只有第一次实际创建或修改 BB-02B 的 Workspace/TaskScope/Draft/Attachment/Lineage entity 时，才在同一原子提交中写出 revision 2 完整形状。revision 2 对 root 和每个 entity record 继续 exact-key/危险键/语义 fail-closed；未知 schema revision 固定 `UNSUPPORTED_SCHEMA`。模块 22 才负责 package upgrade backup、migration orchestration 与 supported/current matrix 登记，BB-02B 不改模块 01 机器合同。
 19. authority root `revision` 只用于 repository 内部跨进程 read-check-write fencing、snapshot freshness 和原子文件提交，不是产品实体 CAS，也不由客户端猜测。BB-02B 起所有 task-targeting 公开 `expected_revision` 固定解释为 `ProductTask.revision`；Workspace、ComposerDraft、TaskAttachment、ConversationLineage 各有独立非负 entity revision。每个修改 ProductTask 领域字段的 accepted mutation（包括 BB-02A 的 rename/pin/archive/restore 与 BB-02B bind/current-lineage）都必须在同一 authority transaction 校验并推进 task entity revision；不得只推进 root revision。`task.bind_workspace` 同时要求 `expected_task_revision + expected_workspace_revision + client_operation_id`。服务端按 `client_operation_id + operation kind + owner/entity IDs + canonical input` 判定 duplicate；同 ID 同输入先于 blocker/CAS原样返回历史完整 receipt，不重新调用 filesystem/blocker；同 ID 异输入固定 `OPERATION_INPUT_CONFLICT`，不得当 duplicate。非 duplicate 再执行全部 entity CAS；conflict 返回当前 entity revisions/snapshot且不写 prepared/event。receipt 必须分开返回 `authority_revision` 与全部受影响 `entity_revisions`；`event_sequence/resume_cursor/client_operation_id/run_id` 均不得代替任何 entity revision。BB-02A 已存在 revision 1 task record 第一次由 BB-02B reader投影时 entity revision固定为0，只有第一次真实 entity mutation才随 additive revision 2 提交推进。无实体变化的 register/inspect不得推进 root或entity revision。
-20. installation-default 的 workspace 能力必须在真实消费者边界 fail-closed。ProductTaskService 是 `task_scope/workspace binding` 唯一真相并提供 typed `requireWorkspaceCapability(task_id, capability, expected_workspace_revision?)`；Review 的 status/tree/file/diff 在 `ProductTaskReviewService.withTaskWorkspace` 统一检查，进入当前 cwd-enabled Core/Agent/Skill/Bash 路径前在 `ProductTaskAgentCoreAdapter` 检查并由真实 WebSocket wiring 注入。两个 guard dependency 在所有构造路径均为必需且缺失即拒绝，不得 optional-chain放行。由于 BB-02C 前的 legacy Core launcher 无法证明纯文本回合不会选择文件 Tool，BB-02B 对 installation-default 的当前 Agent execution 固定返回 `WORKSPACE_REQUIRED`，不得以进程 cwd、Core session workDir 或隐藏工具白名单冒充无 workspace 纯文本执行；BB-02C 在 durable TaskRun/worker capability 能逐 Tool enforce 后恢复 installation-default 的纯文本 accepted/stream Oracle。
+20. installation-default 的 workspace 能力必须在真实消费者边界 fail-closed。ProductTaskService 是 `task_scope/workspace binding` 唯一真相并提供 typed `requireWorkspaceCapability(task_id, capability, expected_workspace_revision?)`；Review 的 status/tree/file/diff 在 `ProductTaskReviewService.withTaskWorkspace` 统一检查，进入当前 cwd-enabled Core/Agent/Skill/Bash 路径前在 `ProductTaskAgentCoreAdapter` 检查并由真实 WebSocket wiring 注入。两个 guard dependency 在所有构造路径均为必需且缺失即拒绝，不得 optional-chain放行。由于 BB-02C 前的 legacy Core launcher 无法证明纯文本回合不会选择文件 Tool，BB-02B 对 installation-default 的当前 Agent execution 固定返回 `WORKSPACE_REQUIRED`，不得以进程 cwd、Core session workDir 或隐藏工具白名单冒充无 workspace 纯文本执行；BB-02C 只建立 durable TaskRun/dispatch，模块 03 worker capability 能逐 Tool enforce 后才恢复 installation-default 的纯文本 accepted/stream Oracle。
 
 当前 Electron PTY 与 Preview 没有 task/workspace-scoped native owner、server-verifiable grant 或可供 bind 检查的 participant registry；BB-02B 不得用 renderer boolean/cwd伪造可信授权，也不得侵入模块20/11重写 native transport。故本 Work Unit 对 ProductTask 的 PTY 和 Browser/Preview 固定 `OUT_OF_SCOPE_DISABLED`：服务端 capability projection 永不宣称可用，TaskPage不提供open action，workspace panel store拒绝，Dock自身无capability时不mount/spawn；缺 `workspace_capability` 一律按不可用处理，authoritative public task在未绑定/不可用时不返回`workDir`。现有 Electron terminal/preview通用API保持不变但其ProductTask生产消费者归零。模块11/20在建立真实native owner/grant/participant后才恢复，并注册bind blocker。
 
 BB-02B production bind blocker固定由真实active Core run inspector加机器可验证的disabled participant receipts组成：本阶段queue/PTY/Preview/workspace-write均未产生相应资源且入口已disabled时返回`OUT_OF_SCOPE_DISABLED`，不是“已检查为空”；active run仍真实阻塞，任一未识别/超时 participant仍`BLOCKER_UNKNOWN|BLOCKER_UNAVAILABLE`拒绝。不得在`taskCommandPolicy/taskCommandDiscovery/taskSocket`重复或下沉授权，也不得提前重做worker、raw attachment ingest、TaskRun dispatch或媒体owner。
 
-21. `BB-02C` 第一次真实 submit/dispatch/event mutation 才把 `product-task-authority.v1.json` 原子写为 additive `authority_schema_revision=3`，新增严格的 `thread_entries/task_runs/dispatch_records/task_events/attachment_bindings` maps；revision 1/2 的 read/list/detail、legacy verify 与仅属于 BB-02A/B 的 mutation 均不得升级 schema、补写新 maps 或改变文件 bytes，未知 revision 仍固定 `UNSUPPORTED_SCHEMA`。现有 `events` 是 operation audit，新的 `task_events` 才是唯一用户可见 durable TaskEvent ledger，二者不得混用。公开 submit 继续走 Product API：`POST /api/product/tasks` 是首页首次原子 submit，`POST /api/product/tasks/:task_id/runs` 是已有任务 submit；Product WebSocket 只承载 typed receipt/event/resume/approval/stop，旧 raw `user_message` 与任何携带 `data/mimeType/name` 的 attachment 输入不得触发 submit/Core/filesystem，固定 `ATTACHMENT_INGEST_UNAVAILABLE` 且零持久副作用。TaskEvent 本 Work Unit 不做 prune，`event_sequence` cursor 在 ledger 内永久有效；retention owner 冻结 `CURSOR_EXPIRED` 与 snapshot reset 合同前不得清理。临时 `legacy-core-dispatcher` 只能在 durable claim 后消费已有 `run_id + dispatch_generation`：首次缺 Core binding 时只可复用已 accepted 的 `CoreOperationBridge.ensureCreate`，随后经 server-private `ProductTaskAgentCorePort` 进入现有 generic Core lifecycle；它不得扩展 `CoreOperationBridge` 为 worker/turn scheduler、不得创建产品 entry/run/lineage或第二事件流。claim 后 Core send 是否发生不确定时必须把同一 dispatch 标为 `recovery_required`，不得自动重发 user turn。BB-02C 不恢复 installation-default Agent execution：在模块 03 worker capability 能逐 Tool enforce 前继续固定 `WORKSPACE_REQUIRED`。
+21. `BB-02C` 第一次真实 submit/dispatch/event mutation 才把 `product-task-authority.v1.json` 原子写为 additive `authority_schema_revision=3`，新增严格的 `thread_entries/task_runs/dispatch_records/task_events/attachment_bindings` maps；revision 1/2 的 read/list/detail、legacy verify 与仅属于 BB-02A/B 的 mutation 均不得升级 schema、补写新 maps 或改变文件 bytes，未知 revision 仍固定 `UNSUPPORTED_SCHEMA`。现有 `events` 是 operation audit，新的 `task_events` 才是唯一用户可见 durable TaskEvent ledger，二者不得混用。公开 submit 继续走 Product API：`POST /api/product/tasks` 是首页首次原子 submit，`POST /api/product/tasks/:task_id/runs` 是已有任务 submit；Product WebSocket 只承载 typed receipt/event/resume/approval/stop，旧 raw `user_message` 与任何携带 `data/mimeType/name` 的 attachment 输入不得触发 submit/Core/filesystem，固定 `ATTACHMENT_INGEST_UNAVAILABLE` 且零持久副作用。TaskEvent 本 Work Unit 不做 prune，`event_sequence` cursor 在 ledger 内永久有效；retention owner 冻结 `CURSOR_EXPIRED` 与 snapshot reset 合同前不得清理。临时 `legacy-core-dispatcher` 只能在 durable claim 后消费已有 `run_id + dispatch_generation`：首次缺 Core binding 时只可复用已 accepted 的 `CoreOperationBridge.ensureCreate`，随后经 server-private `ProductTaskAgentCorePort` 进入现有 generic Core lifecycle；它不得扩展 `CoreOperationBridge` 为 worker/turn scheduler、不得创建产品 entry/run/lineage或第二事件流。claim 后 Core send 是否发生不确定时必须把同一 dispatch 标为 `recovery_required`，不得自动重发 user turn。`permission_mode=null` 是模块 08前的保守占位：只能 workspace sandbox + 用户审批，网络默认拒绝，不得自动越界或获得 Full Access。BB-02C 不实现三档或权限 UI，也不恢复 installation-default Agent execution：在模块 03 worker capability 能逐 Tool enforce 前继续固定 `WORKSPACE_REQUIRED`。
 
 ### 明确不改
 
@@ -885,8 +889,8 @@ ProductTask schema、operation receipt、错误码和 event/cursor contract。
 | Work Unit | 顺序与单一用户结果 | 前置 accepted commit | 允许修改路径 | 必须消费的冻结合同 | 验收命令、行为断言与完成条件 |
 |---|---|---|---|---|---|
 | `BB-02A` | 1。服务端拥有版本化 ProductTask authority overlay、CAS revision、operation receipt、稳定错误码及模块 01 已登记范围内的 D3 legacy reader；当前产品 API/桌面 client/view store 以同一 CAS/receipt 合同消费既有 metadata mutation，旧公开形状不泄露 Core 私有身份。 | `BB-03A`（CoreOperationBridge） | `ts/shared/product/domain.ts`；`ts/shared/product/taskEvents.ts`；新增 `ts/shared/product/**` 中仅 authority overlay schema/receipt/error；`ts/src/server/product/taskService.ts`；新增 `ts/src/server/product/**` 中仅 authority repository/legacy reader/outbox/reconciler；`ts/src/server/api/product.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/sideTasks.ts` 中仅 side create/close authority envelope/receipt 消费；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/stores/productTaskStore.ts`；`ts/desktop/src/product/stores/productSideTaskStore.ts` 中仅 side create/close authority envelope/receipt 与 projection 合并；`ts/desktop/src/product/api/tasks.test.ts`；`ts/desktop/src/product/api/sideTasks.test.ts`；`ts/desktop/src/product/stores/productTaskStore.test.ts`；`ts/desktop/src/product/stores/productSideTaskStore.test.ts`；`ts/desktop/src/product/components/SideTaskPanel.test.tsx` 中仅 side create/close authority envelope consumer mock 与调用断言；`ts/src/server/__tests__/product-*.test.ts`；`ts/src/server/__tests__/e2e/full-flow.test.ts` 中仅 ProductTask create HTTP fixture 的 authority envelope/receipt 断言；`ts/tests/product-contracts/**` | 第 2.1、3.1、4.1、4.10；第 821 条第 16—17 条；`legacy-support-matrix.json` 的 ProductTask v1/v3/v4 D3 reader 与 v2 provisional；独立 `product-task-authority.v1` 可写 root；API/client/store 必须传递、保存并消费可重发的客户端 `expected_revision + client_operation_id` envelope/authority receipt；authority snapshot 必须以独立 `tasks` 与 `side_tasks` collection 返回完整公开投影，side task 至少包含 `id/parent_task_id/task_id/title/status/created_at/updated_at/closed_at?`，不得把私有 branch binding 伪装成 task，也不得由 desktop 用请求字段、本地时钟或 fallback 构造 accepted side entity；receipt/event ledger 一切语义字段与 persistent map key 严格验证、任一非法均 fail-closed；CoreOperationBridge 消费者合同；`revision/event_sequence/resume_cursor/client_operation_id/run_id` 不互代。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；v1/v3/v4 fixture 的 read/list/detail 前后 legacy bytes/hash 不变；首次 legacy metadata mutation只写 authority overlay；同一 legacy revision 仅一个 CAS 前进；create/continue/side task/close 在 authority `prepared` intent 提交前不得调用 Core，bridge 返回前后任一 crash 点重启均以同一 intent 重放并只获得一个 Core binding/terminal receipt；真实 HTTP rename 在同一 accepted metadata CAS 中写入 `pending` mirror outbox，reconciler 以同 operation 调 bridge并写回 `reconciled|failed`，任何 mirror 错误可按同一 operation 查询且不使 accepted 结果与 HTTP/客户端结果分叉；side create 在 bridge 成功后把完整公开 side metadata 与私有 binding 分离后原子 finalize，side close 只从 authority side record 校验 owner并推进状态，list/receipt/operation query 均返回同一完整 `side_tasks` 投影；store 将 authority snapshot 按 revision 合并后，TaskIndex/TaskPage/SideTaskPanel 仍有完整 actions/links/view 投影且不猜造 accepted entity；损坏/无权限/写失败不覆盖原文件或初始化空库；所有 persistent map 与 receipt/event 字段拒绝危险键/非法语义；v2 不升为 supported。 |
-| `BB-02B` | 2。普通任务获得稳定 Workspace/TaskScope、ComposerDraft、TaskAttachment identity 与 ConversationLineage 合同；installation-default 不以 cwd 获得文件能力，BB-02C 前当前 cwd-enabled Agent 执行显式 `WORKSPACE_REQUIRED`。 | `BB-02A` | `BB-02A` 允许路径；`ts/src/server/product/taskReviewService.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/ws/handler.ts` 中仅 ProductTask workspace capability authorizer wiring；`ts/src/server/api/product.ts`；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/currentProductTaskContext.ts`；`ts/desktop/src/product/components/ProductTaskPage.tsx` 中仅 Review/Diff/Preview/Terminal capability gating 与 bind入口；`ts/desktop/src/product/stores/productTaskWorkspaceStore.ts` 中仅 workspace capability gate；`ts/desktop/src/product/components/ProductTaskBrowserPreviewDock.tsx` 中仅无 workspace mount 拒绝；`ts/desktop/src/product/components/ProductTaskTerminalDock.tsx` 中仅无 workspace spawn 拒绝；上述路径及 `ts/src/server/__tests__/product-*.test.ts`、`ts/src/server/__tests__/websocket-handler.test.ts`、`ts/src/server/__tests__/e2e/full-flow.test.ts` 中仅 workspace bind/capability/Agent拒绝与私有字段不泄露 Oracle、对应 desktop tests | 第 2.1、3.1、4.1、4.2；本模块第 18—20 条 additive authority reader、root/entity revision 分层与 workspace capability guard；`task.bind_workspace` task/workspace 双 CAS；external file 不删；lineage 私有 resume material不公开；TaskAttachment 本项只定义identity/owner/ref/ready binding，不实现raw ingest/inspection/sweeper；attachment register/bind必须验证owner实体存在、同installation、合法状态/正TTL与受控verified metadata，owner transfer只允许`composer_draft → 同draft持久target_task`或同owner ref binding，禁止任意task重绑；draft consume的`target_task_id`必须等于draft持久目标且目标task同installation，全部附件验证后才单事务转移；模块07才拥有ingest/sweeper，BB-02C 才拥有 raw attachment拒绝、TaskRun/dispatch/worker 与 installation-default 无 cwd 纯文本恢复。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；BB-02A authority revision 1 fixture（无schema字段与显式revision 1）bytes不变且read/list/detail/owner/legacy verify/BB-02A-only mutation不写回或升级，第一次真实B entity mutation原子写revision 2；root revision只做repository fencing，task/workspace/draft/attachment/lineage entity revisions独立CAS且所有task mutation推进task revision，duplicate按kind/owner/input完整匹配并先于blocker/CAS原样返回；伪造/跨installation/过期/consumed draft拒绝；active run/queue/PTY/Preview/write lease时bind拒绝；relocate/relink/只读/断盘/identity/CAS fixture通过，旧引用不能跨新根；installation-default 的 Review/tree/file/Diff、ProductTask Preview、ProductTask PTY、cwd-enabled Agent/Skill/Bash在真实入口均`WORKSPACE_REQUIRED|OUT_OF_SCOPE_DISABLED`且不调用下游，缺capability fail-closed，authoritative public task不泄露不可用workDir，current task context不输出cwd；ProductTask PTY/Preview生产consumer graph为零；绑定且available workspace的Review能力不退化，Agent仍按BB-02C前规则拒绝，PTY/Preview只由11/20恢复；项目指令/worker/raw attachment/media/下游 lifecycle participant不提前迁移。 |
-| `BB-02C` | 3。一次提交以单原子边界持久化 accepted 结果、TaskRun、dispatch 与 event ledger；客户端用 cursor 重连且无重复。模块 03 前仅由已登记 `legacy-core-dispatcher` 消费 claim，不创建新 run。 | `BB-02B` | `BB-02A/B` 允许路径；`ts/src/server/index.ts`；`ts/src/server/ws/handler.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/product/taskEventProjection.ts`；`ts/src/server/product/taskRunProjection.ts`；`ts/desktop/src/product/api/taskSocket.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/stores/productTaskRuntimeStore.ts`；上述 tests | 第 3.1 accepted 原子边界、dispatch/claim、event/cursor；本模块第 14、15 条过渡 dispatcher 与 raw attachment 拒绝；模块 03 拥有 worker/scheduler 与最终 consumer 迁移。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；任一 atomic member 失败时无 ThreadEntry/TaskRun/receipt/event/dispatch；accepted 后 claim 前重启投递同一 run；重复 operation/dispatch 仅一个消息/run/claim；cursor 重连无重复；raw bytes 附件获得 `ATTACHMENT_INGEST_UNAVAILABLE` 且无持久副作用。 |
+| `BB-02B` | 2。普通任务获得稳定 Workspace/TaskScope、ComposerDraft、TaskAttachment identity 与 ConversationLineage 合同；installation-default 不以 cwd 获得文件能力，BB-02C 前当前 cwd-enabled Agent 执行显式 `WORKSPACE_REQUIRED`。 | `BB-02A` | `BB-02A` 允许路径；`ts/src/server/product/taskReviewService.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/ws/handler.ts` 中仅 ProductTask workspace capability authorizer wiring；`ts/src/server/api/product.ts`；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/currentProductTaskContext.ts`；`ts/desktop/src/product/components/ProductTaskPage.tsx` 中仅 Review/Diff/Preview/Terminal capability gating 与 bind入口；`ts/desktop/src/product/stores/productTaskWorkspaceStore.ts` 中仅 workspace capability gate；`ts/desktop/src/product/components/ProductTaskBrowserPreviewDock.tsx` 中仅无 workspace mount 拒绝；`ts/desktop/src/product/components/ProductTaskTerminalDock.tsx` 中仅无 workspace spawn 拒绝；上述路径及 `ts/src/server/__tests__/product-*.test.ts`、`ts/src/server/__tests__/websocket-handler.test.ts`、`ts/src/server/__tests__/e2e/full-flow.test.ts` 中仅 workspace bind/capability/Agent拒绝与私有字段不泄露 Oracle、对应 desktop tests | 第 2.1、3.1、4.1、4.2；本模块第 18—20 条 additive authority reader、root/entity revision 分层与 workspace capability guard；`task.bind_workspace` task/workspace 双 CAS；external file 不删；lineage 私有 resume material不公开；TaskAttachment 本项只定义identity/owner/ref/ready binding，不实现raw ingest/inspection/sweeper；attachment register/bind必须验证owner实体存在、同installation、合法状态/正TTL与受控verified metadata，owner transfer只允许`composer_draft → 同draft持久target_task`或同owner ref binding，禁止任意task重绑；draft consume的`target_task_id`必须等于draft持久目标且目标task同installation，全部附件验证后才单事务转移；模块07才拥有ingest/sweeper，BB-02C 才拥有 raw attachment拒绝与 TaskRun/dispatch，模块03才迁 worker 并恢复 installation-default 无 cwd 纯文本执行。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；BB-02A authority revision 1 fixture（无schema字段与显式revision 1）bytes不变且read/list/detail/owner/legacy verify/BB-02A-only mutation不写回或升级，第一次真实B entity mutation原子写revision 2；root revision只做repository fencing，task/workspace/draft/attachment/lineage entity revisions独立CAS且所有task mutation推进task revision，duplicate按kind/owner/input完整匹配并先于blocker/CAS原样返回；伪造/跨installation/过期/consumed draft拒绝；active run/queue/PTY/Preview/write lease时bind拒绝；relocate/relink/只读/断盘/identity/CAS fixture通过，旧引用不能跨新根；installation-default 的 Review/tree/file/Diff、ProductTask Preview、ProductTask PTY、cwd-enabled Agent/Skill/Bash在真实入口均`WORKSPACE_REQUIRED|OUT_OF_SCOPE_DISABLED`且不调用下游，缺capability fail-closed，authoritative public task不泄露不可用workDir，current task context不输出cwd；ProductTask PTY/Preview生产consumer graph为零；绑定且available workspace的Review能力不退化，Agent仍按BB-02C前规则拒绝，PTY/Preview只由11/20恢复；项目指令/worker/raw attachment/media/下游 lifecycle participant不提前迁移。 |
+| `BB-02C` | 3。一次提交以单原子边界持久化 accepted 结果、TaskRun、dispatch 与 event ledger；客户端用 cursor 重连且无重复。模块 03 前仅由已登记 `legacy-core-dispatcher` 消费 claim，不创建新 run。 | `BB-02B` | `BB-02A/B` 允许路径；`ts/src/server/index.ts`；`ts/src/server/ws/handler.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/product/taskEventProjection.ts`；`ts/src/server/product/taskRunProjection.ts`；`ts/desktop/src/product/api/taskSocket.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/stores/productTaskRuntimeStore.ts`；上述 tests | 第 3.1 accepted 原子边界、dispatch/claim、event/cursor；本模块第 14、15、21 条；`permission_mode=null` 只作保守占位，不实现模块 08 三档；模块 03 迁 worker/scheduler，模块 08 切最终权限。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；任一 atomic member 失败时无 ThreadEntry/TaskRun/receipt/event/dispatch；accepted 后 claim 前重启投递同一 run；重复 operation/dispatch 仅一个消息/run/claim；cursor 重连无重复；raw bytes 附件获得 `ATTACHMENT_INGEST_UNAVAILABLE` 且无持久副作用；null permission 不得自动越界或获得 Full Access。 |
 | `BB-02D` | 4。任务 archive/delete 是两阶段、可恢复且可重入的权威 lifecycle；fake participant registry 给出权威 blocker/action/cleanup receipt，不导入下游服务。 | `BB-02C` | `BB-02A/B/C` 的 shared ProductTask/service/API/transport/test 路径；新增仅 ProductTask registry、cleanup-plan、tombstone、fake participant fixture | 第 3.1 lifecycle/delete 与 TaskLifecycleParticipant；第 4.1 owner/path；未知/超时/不可达/不兼容 participant 均 blocker；09/11/15/17/18/20 自行注册真实参与者。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；active run 与 fake queue/Schedule/Recruiting/Fork/worktree 阻塞；pre-purge cancel 完整还原；post-purge 只 retry；崩溃/重复 delete/tombstone TTL 幂等；Workspace/用户源文件/外部附件/共享 Asset 不被删除。 |
 
 **模块 02 完成条件：** `BB-02A`—`BB-02D` 均有 accepted commit；模块卡全部 Oracle 与模块级 server/desktop/contract 测试通过；每个 accepted commit 的 body 记录前置 SHA、Spec/Base、Checks、Evidence、External-Verification 与风险；工作树干净后最后一个 accepted commit 标记 `Module-Status: complete`。
@@ -924,7 +928,7 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 
 1. 从现有 headless CLI 路径抽出最小内部 worker entry，继续调用原生 Core。
 2. 定义 worker protocol：hello/version、ready、start、claim receipt、input、approval response、stop、event、terminal result、fatal、shutdown。
-3. `start` 只能引用已经由 ProductTaskService 原子持久化的 task ID/run ID/lineage binding/dispatch generation，不得创建 ProductTask、lineage 或 TaskRun。worker 先幂等 claim；claim 成功后才创建/恢复 CoreSession，并绑定 permission snapshot、provider contract version、compact generation 和 cancellation signal。waiting_for_user 可 park 后退出；恢复失败返回稳定 receipt，不静默新建无历史 session。
+3. `start` 只能引用已经由 ProductTaskService 原子持久化的 task ID/run ID/lineage binding/dispatch generation，不得创建 ProductTask、lineage 或 TaskRun。worker 先幂等 claim；claim 成功后才创建/恢复 CoreSession，并绑定不可变 PermissionExecutionEnvelope、provider contract version、compact generation 和 cancellation signal。envelope 在模块 08前只能是 BB-02C 的 `legacy_deferred`保守合同，模块 08后才能是 ProductPermissionProfile；launcher 不得从 Core mode 猜 sandbox/network/reviewer。waiting_for_user 可 park 后退出，恢复失败返回稳定 receipt，不静默新建无历史 session。
 4. 实现背压、最大帧大小、未知消息拒绝、ready timeout、有界重启和优雅退出。
 5. ConversationService 与所有当前 GUI、定时任务消费者必须在本模块切换到 worker protocol adapter；公共 CLI 路径只作为待删除源码保留到模块 23。
 6. worker 崩溃不得自动重复用户消息；ProductTask 根据 durable run 状态显示失败或恢复查询。
@@ -933,7 +937,9 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 9. 输出交给模块 04 的 worker 环境 manifest；模型环境不得由不同 launcher 各自拼接。
 10. Local Product Server 内建立唯一 `ContentSafetyPolicyRegistry` 并生成 `content-safety-profile.json`；Scheduler 注册 `content.inspect/content.extract/content.thumbnail/storage.attachment-temp`，按该 profile 和 attachment policy 对一次性 extractor、staging、orphan sweeper 做 multi-resource claim、lease/fencing、取消与字节核算。07/10/15/16 只能注册 requirement/evidence，不能写 profile；无有效 profile 不解析。
 11. 随包读取模块 01 冻结 schema 的签名 conservative desktop profile；在基线 permit 内运行受控 benchmark 并原子生成 device profile，记录硬件/toolchain/profile revision/expiry。benchmark 失败或 profile 过期回退兼容基线并输出 degraded reason，不让基础聊天永久 `PROFILE_REQUIRED`。
-12. Scheduler 实现 `workspace.write` keyed claim/fencing。worker 在第一个文件副作用前取得完整 root/HEAD/preexisting snapshot，所有文件 Tool mutation 验证 token；只读 run 不占写 lease，外部修改/旧 worker/双 run fixture 固定 stale/conflict。
+12. Scheduler 实现 `filesystem.write.workspace|external` keyed claim/fencing。worker 在第一个文件副作用前取得适用的 root-or-target/HEAD/preexisting snapshot，所有文件 Tool mutation 验证 token 与 PermissionExecutionEnvelope digest；`external` 子类在模块 08 前没有生产消费者。只读 run 不占写 lease，外部修改/旧 worker/双 run fixture 固定 stale/conflict。
+13. worker protocol/launcher 冻结通用 PermissionExecutionEnvelope：模块 08前 `legacy_deferred` 固定 workspace sandbox + user reviewer + network denied，无 automatic reviewer/external/Full Access；模块 08后才消费 `sandbox_profile + approval_policy + reviewer + network_scope + escalation_receipt`。本模块不定义或推导用户三档映射。缺失/不完整 envelope、digest 不符、requested Core mode 与 envelope 不匹配均拒绝 claim；不得因 Core 收到 `bypassPermissions` 就自行获得宿主 unrestricted filesystem/network。
+14. 建立唯一 `EscalatedActionBroker`：模块 08前无生产消费者；模块 08接管后 Ask/Approve 的长期 worker 始终保持 workspace sandbox，批准后的根外文件/联网动作只能由 broker 消费 single-use receipt，在仅开放冻结目标的短生命周期进程中执行一次。receipt 重放、参数/目标变化、过期或 fencing 不符均拒绝，不能把单次批准升级为 Full Access。
 
 ### 明确不改
 
@@ -948,12 +954,14 @@ GUI 对话与自动事项继续使用完整 Core，但不再依赖公开 CLI/TUI
 - 双 scheduler/进程竞争同一 occurrence/run 时只有一个 fencing claim；资源 profile 缺失、owner/字节上限耗尽和 draining 分别返回稳定 reason code，不启动 worker。
 - fake clock 下 interactive/recovery/scheduled/batch 的优先级、owner轮转、aging、取消、超时、崩溃恢复无 permit 泄漏或饥饿。
 - 首次无 device profile 使用 conservative baseline 完成基础文本 run；benchmark 成功升级，失败/过期回退 degraded；没有安全基线的单项资源单独 `PROFILE_REQUIRED`。
-- 两个 TaskRun 同写一个 worktree 只有一个取得 workspace.write；等待者无预写文件，IDE/Terminal 改动、HEAD 漂移、worker 崩溃与旧 fencing owner 恢复均不覆盖用户修改。
+- 两个 TaskRun 同写一个 worktree 只有一个取得 `filesystem.write.workspace`；两个 Full Access run 同写同一根外 canonical target 只有一个取得 `filesystem.write.external`。等待者无预写文件，IDE/Terminal 改动、HEAD/target 漂移、worker 崩溃与旧 fencing owner 恢复均不覆盖用户修改。
+- launcher fixture 覆盖 `legacy_deferred`、workspace + automatic reviewer、unrestricted + network 三类 synthetic envelope；后两类只验证通用输入，模块 08前不得成为产品档位。缺字段、伪造 digest、`bypassPermissions + workspace sandbox` 或 `legacy_deferred + unrestricted` 均 fail-closed，不启动 Core。
+- broker fixture 证明根外文件/联网批准只执行冻结 action 一次；重放 nonce、批准后替换参数、符号链接换目标、跨域重定向、过期 receipt 和 worker 直接越界全部无副作用。Ask/Approve 的长期 worker 在批准前后保持同一 sandbox digest，只有 Full Access worker 可以从启动时取得 unrestricted profile。
 - GUI/cron consumer graph 已指向 worker adapter + ProductResourceScheduler；公共 CLI 尚未删除并在 Manifest 标记模块 23。
 
 ### 交接物
 
-worker protocol version、component compatibility entry、ProductResourceScheduler contract/profile/snapshot、launcher 环境字段、run/CoreSession 映射和故障 fixture。
+worker protocol version、ProductResourceScheduler、PermissionExecutionEnvelope、EscalatedActionBroker、run/CoreSession 映射和故障 fixture。
 
 ### 已冻结 Work Unit：`BB-03A`
 
@@ -1129,6 +1137,7 @@ provider-neutral interfaces、model/worker/component compatibility entries、唯
 7. 完成键盘、读屏、长中文/英文、1280×720、200% 缩放和深浅主题检查。
 8. 首次使用按第 4.13 节渐进呈现：本地首页/草稿先可用；首次远程执行时进入唯一 Account/License 激活和数据出境确认；系统权限、Workspace、Chrome Extension、麦克风只在对应能力首次需要时请求。用户拒绝或离线仍能查看、编辑草稿、删除和导出本地数据。
 9. installation-default task 明确显示“尚未连接项目文件夹”，但不把它当错误；用户触发 `@file`、Diff、Preview、终端或源码修改时提供唯一“选择/连接项目文件夹”入口，消费模块 02 的 bind receipt 后再继续，不自动使用进程 cwd。
+10. 当前 ProductTask Composer 底部工具条固定为“附件 → 执行权限 → 弹性空白 → 语音/停止/发送”；普通界面不显示 Core、sandbox、reviewer 等内部字段。模块 06/07只负责栏位，三档状态和 mutation 全由模块 08拥有。
 
 ### 明确不改
 
@@ -1184,6 +1193,7 @@ Composer
 10. PDF/DOC/Office/HTML/图片的提取输出保存为有界、标来源的 immutable attachment derivative；宏/脚本/未知二进制不执行。发送失败或取消保留用户草稿但按状态清理应用临时 derivative；磁盘不足显式 `ATTACHMENT_CAPACITY_EXCEEDED` 并提供清理入口。
 11. 同一 ProductTask 的流式 UI 以 lineage + run/sequence 投影，三轮续聊不创建可见新会话；parked/waiting/recovery_required 使用真实 lineage receipt。Fork 只显示为独立副本，不能把 CoreSession ID 或 compact summary 暴露到消息。
 12. 第一次把聊天正文、图片 derivative 或文件提取内容发送到远程前验证 `data-egress-policy` consent revision；拒绝时保留草稿和附件，不创建 TaskRun/远程请求。policy 扩大数据类别时重新确认，普通 UI 不显示 provider 技术名但必须说明数据类型与远程处理目的。
+13. Composer 左下角只预留模块 08 的“执行权限”slot；模块 07不读取、保存或提交权限，不展示内部字段。模块 08再填充新任务与已有任务状态。
 
 ### 验收 Oracle
 
@@ -1210,35 +1220,88 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 **依赖：** 02、03、07
 **模块主题前缀：** `feat: align product permission flows`
 
+### 当前事实与入口
+
+- `[FACT]` `ts/shared/product/domain.ts` 当前产品枚举仍是 `ask/allow_edits/plan_only`；`ts/src/server/product/taskService.ts` 仍映射为 `default/acceptEdits/plan`；`ts/desktop/src/product/components/TaskIndex.tsx` 仍显示“每次确认/允许自动修改文件/先制定计划”。这些是待迁移现状，不是最终产品合同。
+- `[FACT]` 当前 Core 已有 `default/acceptEdits/plan/bypassPermissions`；`auto` 还依赖 build、模型、opt-in 和动态 gate，失败/重复拒绝语义也未与 OpenAI Auto-review 对齐，不能直接作为最终产品档。现有代码尚无 ProductPermissionProfile，也没有证明 Core mode、宿主 sandbox、network 和 reviewer 已原子绑定。
+- `[FACT]` 固定历史 `4fab121e:ts/desktop/renderer-react/src/components/chat/Composer.tsx` 已有左下角权限胶囊、三项 popover、Full Access 警示色/确认框；同提交 `SettingsPage.tsx` 已有权限显隐开关。`30945a22:ts/desktop/src/components/controls/PermissionModeSelector.tsx` 另有桌面/移动菜单、选中态和 Full Access 风险对话框。这些只提供交互证据；其中全局/会话 localStorage、`default/acceptEdits/plan/bypassPermissions` 旧值和“隐藏当前档就自动回落”不能恢复。
+- `[EXTERNAL]` 2026-07-23 已核对 OpenAI 官方文档：Settings 中 `Auto-review` 对应菜单里的 `Approve for me`；启用只使档位可选，不改变既有 chat。Ask/Approve 使用相同 sandbox 和 `on-request` approval，只有 reviewer 不同；Full Access 为 `danger-full-access + never`。官方来源见第 8 节。
+- `[TARGET]` 本模块只复用 Core 已有执行/分类能力，新增产品级 profile、availability、sandbox/approval 绑定和业务化 UI；不复制第二套 Agent loop，不把 Codex 配置文件或产品名直接嵌入 BilliardBuddy 运行时。
+
 ### 用户结果
 
-Composer 中只有“每次询问、自动修改、只做计划”三档；切换后从下一次执行可靠生效，当前执行不会被暗中改权限。
+普通界面以“执行权限”固定显示以下三档；`Model Permissions` 只作为内部合同名。启用某档只使其可选，选中后只影响下一次 run：
+
+| 产品值 / 展示名 | 用户可见说明 | 服务端唯一执行映射 |
+|---|---|---|
+| `ask` / **Ask for approval** | 在当前 Workspace 内工作；联网、访问 Workspace 外文件或受保护动作时询问用户 | `core_mode=acceptEdits`、`sandbox_mode=workspace-write`、`approval_policy=on-request`、`approvals_reviewer=user`、`network_scope=escalation-only` |
+| `approve_for_me` / **Approve for me** | 与 Ask 边界相同；越界申请先自动审核，拒绝后改走安全方案，无法继续时再询问用户 | `core_mode=auto`、`sandbox_mode=workspace-write`、`approval_policy=on-request`、`approvals_reviewer=auto_review`、`network_scope=escalation-only` |
+| `full_access` / **Full Access** | Agent 可访问 Workspace 外文件并联网，不再产生常规 Tool 审批；界面持续显示高风险状态 | `core_mode=bypassPermissions`、`sandbox_mode=danger-full-access`、`approval_policy=never`、`approvals_reviewer=none`、`network_scope=enabled` |
+
+`Approve for me` 是审批者替换，不是权限升级：它不能永久扩大 writable roots、默认打开网络或改写 Workspace。`Full Access` 取消的是 worker 文件系统/联网 sandbox 与常规 Core Tool 审批，不取消 OS ACL、owner/身份校验、密钥保护、数据外发 consent、费用上限、`filesystem.write` fencing、不可恢复删除保护、招聘/Computer Use 等 app-level 人工确认及模块 24/25 发布门禁。`Plan` 是独立的执行意图/工作流，不属于 Model Permissions，也不能占用三档中的一个位置。
+
+### 前端信息架构与交互合同
+
+普通界面只显示“执行权限”、三档名称、每档一句白话说明、不可选原因及“本轮/下轮”状态。`core_mode/sandbox/approval/reviewer/scope/revision/receipt/reason_code` 只留在服务端、测试和诊断中；UI 必须把 reason code 映射为“当前版本不支持、管理员未允许、暂时不可用”等用户文案，不展示工具 JSON 或工程术语。
+
+权限状态固定分四层，不能再用一个 `permissionMode` 或 localStorage 值包办：
+
+| 层次 | 权威来源 | 前端展示与修改规则 |
+|---|---|---|
+| 能力可用性 `compiled/configured/available + reason_code` | ProductCapabilityService | 只读；决定开关/菜单项是否可操作，并显示唯一恢复入口 |
+| 用户启用 `ask=true / approve_for_me / full_access` | ProductPermissionService | 设置 → 执行权限的开关；只决定档位能否在选择器中使用，不选择任务档位 |
+| 下次运行偏好 | ProductTask revision | Composer 胶囊/新任务表单选择；经模块 08 CAS mutation 修改，只影响下一 run |
+| 当前运行快照 | TaskRun.ProductPermissionProfile | 只读状态；运行中与下次偏好不同时显示“本轮 X · 下轮 Y”，绝不追改当前 run |
+
+派生规则固定为 `selectable = capability.available && enablement.enabled`；Ask 的 enablement 恒为 true。available、enabled、selectable 三者不得混名或互相写入。
+
+1. 设置 → 执行权限固定三行：`Ask for approval` 始终开启；`Auto-review（菜单中显示 Approve for me）`、`Full Access` 默认关闭。开关只写 enablement，不改 ProductTask/TaskRun；不可用时显示白话原因和唯一恢复入口。
+2. 首次开启 Full Access 必须确认“可访问项目外文件、可联网、常规操作不再逐次询问”；取消或保存失败保持关闭，成功后也不自动选中任务。Composer 持续以文字、图标和警示色标识该档。
+3. Composer 权限胶囊固定在附件之后，只显示下一 run 档名。菜单固定三行，每行只有标题、一句说明、选中态和白话不可选原因；不展示内部字段，也不隐藏被 policy 禁用的档位。
+4. 新任务页与已有任务共用同一受控菜单；已有任务用 `task_id + expected_revision + client_operation_id + product_mode` CAS 修改。pending/conflict/failure 均以服务端权威值恢复；运行中选择只更新“下轮”。
+5. 关闭已被任务选中的档位不静默回退；既有 run 不变，下一 run 进入 `PERMISSION_SELECTION_REQUIRED`，用户必须显式重选。
+6. Onboarding 只说明三档区别并链接设置，不自动开启高权限。菜单支持键盘、读屏、1280×720 和 200% 缩放，状态不能只靠颜色。
 
 ### 权威状态
 
+- ProductPermissionService 唯一写 ModelPermissionEnablement；项目文件、renderer localStorage 和 ProductCapabilityService 均不能写；
 - ProductTask 保存下一次 run 的产品权限偏好与 revision；
-- TaskRun 保存创建时不可变的 Core permission snapshot；
+- ProductTaskService 是 `ProductPermissionProfile` 的唯一派生者；profile 同时冻结产品值、Core mode、sandbox、approval policy/reviewer、filesystem/network scope、策略版本和 capability availability digest，renderer 不能拼装；
+- TaskRun 保存创建时不可变的完整 `ProductPermissionProfile` snapshot；
 - Core 拥有实际工具审批状态；renderer 不乐观伪造。
 
 ### 实施合同
 
-1. 新建任务和下一次 run 只接受三种产品值并映射固定 Core 值。
-2. 活动 run 的权限快照不可变。用户要求立即改变时，产品先停止/收尾当前 run，再用新 revision 创建下一 run。
-3. 新增 product-safe permission mutation route，使用 task ID、expected revision、client operation ID；当前 inbound policy 对任意 `set_permission_mode` 的拒绝保持，不能绕过白名单。
-4. mutation 经 ProductTask 持久化并在下一 run accepted receipt 中回显；失败恢复上一权威值。
-5. 审批、计划反馈和 AskUserQuestion 使用业务化卡片；Core 内部 `dontAsk/auto/bypassPermissions` 不进入普通 UI或持久产品值。
+1. 新建任务和下一次 run 只接受 `ask | approve_for_me | full_access`。ProductTaskService 在 accepted 前校验当前 capability、enablement 和 policy revision，再按上表派生 profile；renderer 只能提交产品值，不能提交 Core/sandbox/reviewer 字段。不可选时不创建 run、不清草稿。
+2. Ask/Approve 的长期 worker 使用同一 workspace sandbox。Core `auto` 只作为 reviewer engine；批准的越界动作必须生成 single-use receipt 并交模块 03 broker 执行，不能让 Core allow 直接解除 worker sandbox。deny 只能改走明显更安全路径或询问用户。
+3. Auto-review 必须 fail-closed，并区分拒绝、超时、不可用和中止；重复拒绝必须中止本轮。用户只能对精确 denied action 发起一次重试，不能批准同类未来动作。当前 Core 语义对齐并通过普通非内部包 fixture 后，`Approve for me` 才可 available。
+4. `Full Access` 必须同时满足 `bypassPermissions` Core mode、允许 bypass 的 worker 启动能力、unrestricted filesystem profile、enabled network profile 和 `approval_policy=never`；只改其中一个不算实现完成。该档在普通 Model Permissions 菜单中真实可见，首次选择和每次运行均有明确高风险标识，但不能用警示弹窗伪装尚未获得的运行时能力。
+5. 活动 run 的权限快照不可变。用户要求立即改变时，产品先停止/收尾当前 run，再用新 revision 创建下一 run；任何可用性变化、自动降级或用户批准的单次 escalation 都写 accepted receipt 和 TaskEvent，不暗改已运行中的 profile。worker 重启/resume 必须重验 snapshot 所需 capability；已不可用时进入 `PERMISSION_PROFILE_UNAVAILABLE` 等待恢复或由用户明确停止后改档，不能在同一 run 内降级。
+6. 新增 product-safe permission mutation route，使用 task ID、expected revision、client operation ID；当前 inbound policy 对任意原始 `set_permission_mode` 的拒绝保持，不能绕过白名单。mutation 经 ProductTask 持久化并在下一 run accepted receipt 中回显；失败恢复上一权威值。
+7. approval request/response、automatic review decision、human-only 卡片、AskUserQuestion、one-shot escalation 和 Full Access 警示均使用业务化投影；用户看到请求主体、目标、原因、风险和影响范围，renderer 不伪造决定，日志/诊断只留脱敏 receipt。
+8. 模块 08 接管当前 `[FACT]` 旧产品值 `ask/allow_edits/plan_only`：`ask → ask` 并升级为新 Workspace sandbox profile；`allow_edits → ask`，复用其 `acceptEdits` 的 Workspace 内编辑语义但补齐越界/联网审批；`plan_only → ask + next_run_intent=plan`，保留计划意图但不把它继续当权限。BB-02C/03 已完成或活动的 `permission_mode=null` run 保持不可变 `legacy_deferred`；活动 run 只能按保守 envelope 恢复至终态，切换后的新 run 必须显式生成三档 profile，绝不从 null 推断 Approve for me 或 Full Access。先为模块 01 已登记的 provisional 权限 shape 补 immutable fixture、正向/幂等测试并升为 supported，之后才允许迁移；迁移必须幂等并保留 revision/receipt。
+9. 落地边界固定：shared 定义产品 schema；ProductPermissionService 写 enablement/review receipt，ProductTaskService 写 selection/profile；模块 03执行 sandbox/broker；`TaskIndex.tsx` 与 `ProductTaskPage.tsx` 共用权限菜单，`Settings.tsx` 只接开关。可复用历史交互，不恢复旧 store/API/Core 枚举直写。
 
 ### 验收 Oracle
 
-- 当前 run 处于 `ask` 时切到 plan_only：当前 run 不被改写；停止后下一 run 为 plan snapshot。
+- 三档在 Composer/任务设置中均可见，展示名、说明、产品值和完整 profile 映射与上表逐项一致；新 UI 不再出现“允许自动修改文件/只做计划”两个旧权限项，disabled 模式显示权威原因。
+- 设置页三开关 fixture 证明 Ask 永远开启，另两档默认关闭；启用 Approve/Full 只改变 enablement/selectable，不改变 capability availability、ProductTask 或 TaskRun。首次启用 Full Access 必须完成风险确认。
+- 新任务页与续聊 Composer 使用同一三档菜单；鼠标、键盘、bottom sheet、200% 缩放、长中英文和读屏状态均可达。Full Access 以文字+图标+警示色持续可见；菜单关闭/重启后仍从权威服务恢复，不靠 renderer localStorage 猜值。
+- 当前 run 为 Ask、下次偏好改为 Full Access 时同时显示“本轮 Ask for approval · 下轮 Full Access”；关闭已选档产生 `PERMISSION_SELECTION_REQUIRED`，不静默回 Ask。CAS pending/conflict/network failure fixture 不丢草稿、不误改权限、不中断当前 run。
+- `Ask for approval` 下，Workspace 内常规操作可执行；联网或访问 Workspace 外文件产生用户审批，拒绝后无对应副作用。
+- `Ask for approval` 与 `Approve for me` 的 launcher sandbox/network/writable roots digest 完全一致；后者仅 reviewer 不同。安全越界 fixture 由 automatic reviewer 生成 allow receipt 后执行一次，危险/不确定/human_only fixture 拒绝或只询问用户一次；reviewer 失败/禁用固定 fail-closed，不能退化成全放行。
+- Auto-review fixture 覆盖拒绝、超时、不可用、中止、重复拒绝熔断和精确 action 单次重试；普通非内部包不得 fail-open。
+- `Full Access` 下，受控 fixture 证明 Workspace 外文件写入与联网无需审批且 receipt 记录 `full_access` snapshot；owner、数据外发、预算、fencing、不可恢复删除和发布门禁仍能独立拒绝越权动作。
+- 当前 run 处于 `ask` 时切到 `full_access`：当前 run 不被改写；停止后下一 run 才取得 full-access snapshot。只传 `bypassPermissions`、只开放网络或只取消审批的残缺组合全部拒绝启动。
 - 两窗口并发切换：一个 revision 成功，一个 conflict。
 - worker 重启：ProductTask 偏好和下一 run snapshot 一致。
 - 未知产品/Core 枚举：服务端拒绝，UI 恢复旧值。
-- 普通界面搜索不到第四档完全绕过权限入口。
+- 旧 `ask/allow_edits/plan_only` fixture 幂等迁移到新合同；`allow_edits` 不冒充 `Approve for me`，`plan_only` 的计划意图不丢失。
+- `permission_mode=null` 的历史与活动 run 不改写；活动 run 只以 `legacy_deferred` 恢复，新 run 无显式三档 profile 则拒绝。
 
 ### 交接物
 
-权限 mutation API、run snapshot 规则、审批事件和冲突 fixture。
+ProductPermissionService、ProductPermissionProfile、availability/enablement/selection API、automatic review/escalation receipt、旧值迁移和冲突 fixture。
 
 ---
 
@@ -1265,7 +1328,7 @@ ProductTaskService 唯一写 `QueuedMessage`、`TaskReference`、`Checkpoint`、
 6. 普通 UI 使用“排队、加入对话、在独立副本中继续、回到这里”，不显示 CoreSession/checkpoint/rewind 技术术语。
 7. ProductTask lifecycle 是本模块强引用前置：archived task 不派发 queue/fork/checkpoint mutation；删除 task 时每个 QueuedMessage、Checkpoint/ForkSource 和 managed worktree 都由本模块返回引用类别与解除/用户确认 cleanup operation，不由模块 02猜路径删除。worktree cleanup 有独立 ID、revision、owner/fingerprint 和 `cleanup_failed`，源 workspace/worktree 永不作为 managed fork 删除。
 8. 只为模块 01 支持矩阵登记的旧 ProductTask/Core queue、文本引用、checkpoint 和 fork shape 提供 `D3_LEGACY_READ_ONLY` adapter/fixture；未登记记录保持只读隔离，不能由模块 09自行扩大支持或静默丢弃。
-9. 注册 TaskLifecycleParticipant：返回 queue/checkpoint/fork/worktree blockers、detach/cleanup action descriptor 和 durable receipt。managed worktree 所有写入同样取得自身 `workspace.write` claim；cleanup 只有 owner/fingerprint/ref count 可证且用户确认时执行。
+9. 注册 TaskLifecycleParticipant：返回 queue/checkpoint/fork/worktree blockers、detach/cleanup action descriptor 和 durable receipt。managed worktree 所有写入同样取得自身 `filesystem.write.workspace` claim；cleanup 只有 owner/fingerprint/ref count 可证且用户确认时执行。
 
 ### 验收 Oracle
 
@@ -1284,7 +1347,7 @@ queue/reference/checkpoint/fork schema、operation API 和恢复 fixture。
 
 ## 模块 10：文件、Diff、选区与行评论
 
-**依赖：** 02、06、07、09
+**依赖：** 02、06、07、08、09
 **模块主题前缀：** `feat: connect structured review feedback`
 
 ### 用户结果
@@ -1306,7 +1369,7 @@ TaskReviewService 只读取并校验 canonical workspace 文件；review mutatio
 7. 当前只读 ReviewDock 被融合后移入模块 23 删除 Manifest；本模块先迁完消费者。
 8. Workspace root identity/revision 是所有 reference 的前置条件：同卷移动经 relocate receipt 继续；跨卷/替换/relink、外部 IDE 修改、只读/断盘返回统一 stale/unavailable，不刷新旧 Diff 为新真相。Git workspace 额外显示 branch/HEAD/worktree identity；非 Git 不展示伪 Diff base。
 9. file preview/图片缩略图/文档文本提取必须复用第 4.8 节 content sandbox 和模块 03 claim；ReviewDock 不导入第二解析器。
-10. 任何 Review 触发的 Agent 文件修改都消费模块 03 的 `workspace.write` receipt；TaskReviewService 本身保持只读。installation-default task 固定 `WORKSPACE_REQUIRED`；文件在等待写 lease期间变化则原 reference stale，不能把旧选区应用到新内容。
+10. 任何 Review 触发的 Agent 文件修改都消费模块 03 的 `filesystem.write.workspace` receipt；TaskReviewService 本身保持只读。installation-default task 固定 `WORKSPACE_REQUIRED`；即使 TaskRun 为 Full Access，根外文件也不能伪造为 ProductTaskReference 或进入 Workspace Diff/Preview，用户须先显式注册/绑定对应 Workspace。文件在等待写 lease 期间变化则原 reference stale，不能把旧选区应用到新内容。
 
 ### 验收 Oracle
 
@@ -1353,7 +1416,7 @@ Electron short-lived selection capability
 7. “确认修改并发送”即用户提交；Agent 忙时进入模块 09 队列，不要求回 Composer 二次发送。
 8. Preview WebContents 严格使用第 4.8 节独立 sandbox/partition/CSP/navigation/download/protocol policy；selection picker 只在 isolated world 处理可信用户手势，不向页面 world 暴露 API/event/capability。页面脚本主动 IPC、iframe 冒充、导航竞态或 capability 重放必须被拒绝。选择截图进入同一 content profile/byte budget。
 9. preview_selection 绑定 workspace revision/root identity/file hash；Workspace relocate/relink/断盘、源码被 IDE 修改或 managed worktree 丢失立即失效，不能把旧 selector 应用到新根。
-10. 注册 Preview TaskLifecycleParticipant，活动 webContents/selection/refresh 阻塞 archive/delete并提供关闭 receipt；源码修改必须取得 `workspace.write`，Preview 自身不持第二写锁或绕过 worker Tool mutation。
+10. 注册 Preview TaskLifecycleParticipant，活动 webContents/selection/refresh 阻塞 archive/delete并提供关闭 receipt；源码修改必须取得 `filesystem.write.workspace`，Preview 自身不持第二写锁或绕过 worker Tool mutation。
 
 ### 验收 Oracle
 
@@ -1622,8 +1685,8 @@ ScheduledTaskService 唯一写 ScheduledTask、ScheduledOccurrence、ScheduledAc
 6. 通知深链只携受控 task/logical run ID；目标不存在落安全页面。
 7. 网络错误不自动重复外部副作用；有界重试只用于读取/查询，发送动作沿原 Operation 对账。
 8. ScheduledTask 保存 target task strong reference 与 on-delete policy；ProductTask delete plan 遇到 enabled/active schedule 固定阻塞。用户必须先 disable 并选择“保留历史但解除 task 引用”或删除 schedule；occurrence running/outcome_unknown 时不能解除。任何策略都有 receipt，不由任务删除隐式取消。
-9. 普通 TaskRun permission snapshot 不能授权后台副作用。ScheduledActionGrant 必须由用户在计划详情显式创建，绑定 schedule、允许的 Tool/action kind、目标/Workspace/store、参数边界、有效期、最大次数/费用预算和撤销 revision；每个 occurrence 在 intent 前重新校验并把 grant snapshot 写入 TaskRun。无 grant、过期、范围扩大、预算不足或高风险动作固定 `waiting_for_user`。
-10. 登录/验证码、读取系统密钥、任意终端命令、不可恢复删除和未冻结收件人/候选人的发送永不接受长期 grant；招聘发送仍由模块 18 的 operation approval/reobserve 管理。文件写 grant 仍必须取得 `workspace.write` 并匹配稳定 Workspace/worktree；远程模型还必须通过当前类别的 data-egress consent、Entitlement 与 UsageBudget，后台 occurrence 不能弹窗代替预先明确授权。
+9. 普通 TaskRun 的任何 ProductPermissionProfile（包括 Full Access）都不能授权后台副作用。ScheduledActionGrant 必须由用户在计划详情显式创建，绑定 schedule、允许的 Tool/action kind、目标/Workspace/store、参数边界、有效期、最大次数/费用预算和撤销 revision；每个 occurrence 在 intent 前重新校验并把 grant snapshot 写入 TaskRun。无 grant、过期、范围扩大、预算不足或高风险动作固定 `waiting_for_user`。
+10. 登录/验证码、读取系统密钥、任意终端命令、不可恢复删除和未冻结收件人/候选人的发送永不接受长期 grant；招聘发送仍由模块 18 的 operation approval/reobserve 管理。文件写 grant 仍必须取得 `filesystem.write.workspace` 并匹配稳定 Workspace/worktree；远程模型还必须通过当前类别的 data-egress consent、Entitlement 与 UsageBudget，后台 occurrence 不能弹窗代替预先明确授权。
 11. 注册 TaskLifecycleParticipant，返回 enabled/active/unknown occurrence blockers、disable/detach/delete action descriptor 和 receipt；通知权限拒绝时仍保存运行历史并在应用内显示，不把 OS toast 当完成证据。
 
 ### 验收 Oracle
@@ -1646,7 +1709,7 @@ ScheduledTask/Occurrence/ActionGrant/NotificationReceipt schema、TaskLifecycleP
 
 **依赖：** 02、03、04、06、07、08
 
-模块 08 提供产品权限值、TaskRun 不可变 permission snapshot 和审批合同；模块 18 只能消费这些合同，不得重新定义权限映射或绕过 ProductTask/Core approval。
+模块 08 提供产品权限值、TaskRun 不可变 ProductPermissionProfile 和 `human_only` 审批合同；模块 18 只能消费这些合同，不得重新定义权限映射，也不得让 automatic reviewer/Full Access 绕过用户批准。
 **模块主题前缀：** `feat: integrate the recruiting workbench`
 
 ### 用户结果
@@ -1667,7 +1730,7 @@ BusinessProfileService 唯一写 StoreProfile；RecruitingService 唯一写 Plan
 6. `visual_required` 时，普通非招聘视觉能力可由 MiMo 生成受控证据；招聘候选页面固定转用户接管，不能上传候选截图/DOM/简历。任何视觉结果无法映射当前 ref 时同样转用户接管，MiMo 不执行动作。
 7. 登录、扫码、验证码、人机验证和 Chrome 站点权限由用户在可见浏览器处理；不导出 Cookie/storage state/profile，不调用私有接口 header。Extension 站点权限、产品审批与页面当前版本三者任一不满足都不执行 action。
 8. 正式只读链固定为：`agent-worker/Core capability discovery → boss-recruiting Skill → recruiting-browser Tool.observe/reobserve（MCP 内部协议）→ BrowserCapability → ChromeSessionBridge → Native Messaging host → BilliardBuddy Chrome Extension → read receipt → RecruitingService 写 BrowserCheckpoint → ProductTask 结果投影`。observe/reobserve 不需要副作用审批，但仍校验 owner、plan/batch、bridge session、当前 page version 和短期证据边界。
-9. 正式副作用链固定为：`Skill 提议受限 action → recruiting-browser Tool 请求 ProductTask/Core approval → 用户批准 → RecruitingService 先持久化 RecruitingOperation intent → Tool.action → BrowserCapability/ChromeSessionBridge → Extension 页面动作 → reobserve receipt → RecruitingService 写 succeeded/outcome_unknown → ProductTask 结果投影`。未批准、intent 未持久化、session/page version 不匹配时不得调用 action；点击本身不是完成证据。
+9. 正式副作用链固定为：`Skill 提议受限 action → recruiting-browser Tool 请求 ProductTask/Core human_only approval → 用户批准 → RecruitingService 先持久化 RecruitingOperation intent → Tool.action → BrowserCapability/ChromeSessionBridge → Extension 页面动作 → reobserve receipt → RecruitingService 写 succeeded/outcome_unknown → ProductTask 结果投影`。`Approve for me` 的 automatic reviewer 和 `Full Access` 都不能代批招聘正式副作用；未批准、intent 未持久化、session/page version 不匹配时不得调用 action，点击本身不是完成证据。
 10. Tool 通过 Core 现有工具注册边界暴露 `observe/action/reobserve`，只接收 plan/batch/operation ID 与受限 payload；不得让 Skill 直接写 RecruitingService 文件或调用 MCP/native/extension 细节。生产构建不得继续使用 `BROWSER_TOOLS=[]` 的 no-op stub；capability manifest 与 ListTools 必须证明真实工具非空且版本一致。
 11. 模块 18 先建立 BusinessProfileService：StoreProfile 使用稳定 `store_id + revision`，支持多门店 active/archive；RecruitingPlan 只保存 `store_id` 与创建时必要事实 snapshot，门店更新不静默改写活动 Plan。模块 19/21 只经公开 mutation/read contract 消费，不在 settings/Skill 内复制第二份门店真相。
 12. 招聘隐私期限固定：原始 HTML/截图/完整简历/头像/姓名/电话/邮箱只在 Extension/bridge owner-scoped 加密临时区保留 15 分钟，session 断开、页面版本变化、浏览器关闭或用户删除即提前销毁；不得持久化进 BrowserCheckpoint。Checkpoint 只含 ref hash、page version、非识别筛选结论和状态。
@@ -1749,7 +1812,7 @@ Skill payload schema、机器可读清洗 manifest、能力/工具映射和负�
 
 ## 模块 20：用户本机终端
 
-**依赖：** 02、03、06、10
+**依赖：** 02、03、06、08、10
 
 模块 20 只消费模块 10 冻结的 canonical workspace/path helper 和 owner 校验合同；不得复制第二套 realpath/UNC/盘符边界逻辑，也不得反向修改 Review 领域状态。
 **模块主题前缀：** `feat: secure the local terminal dock`
@@ -1767,12 +1830,12 @@ Electron TerminalService 写 PTY session；每个 session 绑定 owner WebConten
 1. BottomTerminalDock 的信息架构可以参考 HTML 和 `c2b1304b`；真实 PTY 权限、owner、cwd、环境和生命周期必须以本模块合同为准，不复制 HTML 脚本或假终端输出。
 2. create/write/resize/kill 每次验证 owner WebContents、task、canonical workspace/cwd 和 session state；客户端 session ID 不足以授权。
 3. 使用当前用户 shell；环境变量采用最小允许/明确剔除策略，移除 gateway/relay/provider/updater/server auth 等内部秘密。
-4. Terminal 与 Agent Bash/worker/CLI 不共享权限、输入、输出、history 或 session。
+4. Terminal 与 Agent Bash/worker/CLI 不共享权限、输入、输出、history 或 session；Model Permissions 三档只作用于 agent-worker，Full Access 不赋予 renderer 或 PTY 额外产品 capability，用户 PTY 仍按本模块自身 owner/cwd/确认合同运行。
 5. 窗口关闭、task 切换、renderer reload、spawn failure 和 PTY exit 幂等清理；PTY 不伪装可恢复，重启后明确结束。
 6. 首输出在 renderer listener 建立前有界缓存；大输出有背压/截断，不耗尽 renderer 内存。
 7. terminal preferences 只有进入模块 01 支持矩阵并具备 fixture 时才提供 `D3_LEGACY_READ_ONLY` adapter；旧 PTY session 和命令历史固定不迁移，未登记偏好保持原位或明确 unsupported。
 8. 更新/退出时若有前台命令，给一次清楚确认，不自动重放最后命令。
-9. installation-default task 不允许创建 PTY；create 前要求已绑定可用 Workspace。PTY 本身是用户直接控制，不申请 Agent `workspace.write`，但其输出引发的文件变化必须由 watcher/root/file revision 使 Agent 的旧 write lease/reference stale；不能把用户 Terminal 与 Agent writer 合并为同一 owner。
+9. installation-default task 不允许创建 PTY；create 前要求已绑定可用 Workspace。PTY 本身是用户直接控制，不申请 Agent `filesystem.write`，但其输出引发的文件变化必须由 watcher/root/file revision 使 Agent 的旧 write lease/reference stale；不能把用户 Terminal 与 Agent writer 合并为同一 owner。
 10. 注册 TaskLifecycleParticipant：活动 PTY 阻塞 archive/delete/update safe exit，提供用户确认 kill receipt；Terminal renderer 禁用 OSC52，OSC8/文件链接不自动打开，点击后重新校验 scheme、canonical path、owner 和用户确认。
 
 ### 验收 Oracle
@@ -1798,7 +1861,7 @@ TerminalSession schema、IPC auth、env policy、cleanup 与输出 fixture。
 
 ### 用户结果
 
-设置只展示外观、通知、项目约定、业务能力和安全状态；用户不再管理 Provider、模型、API Key、MCP/Plugin/Python/WebSearch 或通用桌面控制。
+设置只展示外观、通知、项目约定、业务能力和安全状态；“执行权限”用三个开关控制档位是否可选，实际档位仍在 Composer/新任务中选择。普通用户不看到 Provider、模型、API Key、Core mode、sandbox、reviewer、MCP/Plugin/Python/WebSearch 或通用桌面控制。
 
 ### 权威状态
 
@@ -1830,6 +1893,8 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 13. “存储与隐私”页投影附件、媒体、语音、诊断、Relay 与招聘数据的实际占用、保留规则、待清理/清理失败和用户可执行动作；统计来自各领域 service，设置页不扫描或直接删除数据。改变 data-egress consent 只影响未来请求，不伪造历史 purge；需要远端清除时展示可对账状态。
 14. 首次使用状态按第 4.13 节顺序投影并可继续：激活/设备注册、数据外发说明、按需系统权限、可选 Workspace 连接和设备 profile。用户可在 installation-default task 先聊天；只有触发文件、终端、浏览器、媒体或远程能力时才要求相应条件，不建立“一次同意全部权限”的总开关。
 15. AutoDream 与 TeamMem 一样不出现在正式设置、capability snapshot、诊断或 About；其 D1/D2 由模块 05 完成，源码和包内归零由模块 23/24 验证。Session Memory 与 AutoMem 必须分别显示 scope、来源、更新时间和清除入口，不能统称为一个不可解释的“记忆”开关。
+16. ProductCapabilityService 只输出三档 capability availability；ProductPermissionService 只写 enablement。菜单以 `selectable=available && enabled` 派生，设置页只显示白话原因，不能混写三个状态或暴露 reason code。
+17. Ask 开关固定开启；Approve/Full 独立开关并返回 revisioned receipt。Full 首次开启走模块 08 风险确认；关闭已被任务选中的档位只写 enablement，任务进入显式重选，不批量改 task。跨窗口同步，离线/冲突保留旧值。
 
 ### 验收 Oracle
 
@@ -1842,6 +1907,8 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 - 激活过期、设备解绑、额度耗尽、撤销一种 data-egress consent、profile 未完成和系统权限拒绝分别只降级受影响能力；本地任务历史与无需该权限的能力仍可用。
 - 多门店修改只产生 StoreProfile revision；settings store 中不存在门店第二副本。存储页的统计、清理和远端 purge 状态与领域 service receipt 一致，renderer 无任意路径删除接口。
 - 首次使用可中断并继续，installation-default task 不因未选 Workspace 而阻塞纯聊天；触发文件/PTY 时才出现唯一 connect-workspace 恢复入口。
+- Model Permissions capability fixture 分别移除 automatic reviewer、bypass launch capability、sandbox helper、network profile 和组织许可：只使对应档位 disabled 并显示稳定原因；重新满足条件后菜单恢复，既有 TaskRun snapshot 不变。启用 `Full Access` 但未在任务中选中时，下一 run 仍使用原档位。
+- 执行权限开关跨窗口、离线、CAS conflict 和重启 fixture 证明 availability、enablement、selection、run snapshot 分离；关闭档位不批量改任务、不改活动 run。
 
 ### 交接物
 
@@ -1871,6 +1938,7 @@ capability snapshot schema、首次使用/账号/权益/存储与隐私设置 IA
 | Legacy 数据 | Adapter / fixture 负责人 | 模块 22 固定动作 |
 |---|---:|---|
 | Workspace、TaskScope、ProductTask、ConversationLineage、TaskRun、ComposerDraft、ThreadEntry、事件 cursor | 02 | 迁到当前 schema 并校验 scope/lineage/owner/ID/revision/sequence；无法证明 Workspace identity 时保持 installation-default 或 `relink_required`，不猜路径授权 |
+| Model Permissions 偏好、TaskRun permission snapshot 与 plan intent | 08 | 仅迁移支持矩阵登记的旧 `ask/allow_edits/plan_only` shape：`ask` 保留，`allow_edits → ask`，`plan_only → ask + next_run_intent=plan`；BB-02C/03 的 `permission_mode=null` 历史/active run 保留不可变 `legacy_deferred`，只有切换后新 run 重建完整 profile；不从 Core 字符串或 null 猜 sandbox/network，不提升为 Approve for me/Full Access |
 | QueuedMessage、文本 TaskReference、Checkpoint、ForkSource | 09 | 安全映射到 ProductTask 子实体；无法映射逐项只读归档并计入 manifest |
 | provider/model/Qwen context value | 04 | 映射到当前 model contract 或标 unsupported |
 | 项目指令、Session Memory、AutoMem、AutoDream、TeamMem legacy state | 05 | 当前 unsupported，保持原文件/只读隔离；未来只有支持矩阵登记后才按 scope 迁移，AutoDream/TeamMem 永不恢复正式运行时 |
@@ -1911,6 +1979,7 @@ capability snapshot schema、首次使用/账号/权益/存储与隐私设置 IA
 - 旧 ASR supported fixture 中每份转写只产生一个全局 Transcript/Revision；Composer/Video 通过 binding 接入，不生成第二份文本真相。
 - 新安装无 legacy data 时不创建虚假迁移或空备份。
 - TaskScope/ConversationLineage fixture 证明 installation-default 任务不被猜测绑定目录，fork/compact/resume 的父子 lineage 不串写；旧无 owner 草稿只能隔离，不能挂到当前窗口。
+- 权限迁移 fixture 证明旧 `ask/allow_edits/plan_only` 分别得到模块 08 的安全结果，重复迁移 profile digest/revision 不漂移；未知、损坏或只有 Core `bypassPermissions/auto` 字符串而无支持矩阵 shape 的记录只读隔离，绝不推导 Full Access。
 - backup policy fixture 覆盖空间不足、迁移成功但未过 rollback window、目标启动不健康、用户提前清理和 GC 崩溃：唯一有效备份不被误删，删除均有 receipt；账号密钥/Cookie/绝对路径不进入 backup manifest。
 
 ### 交接物
@@ -2048,7 +2117,7 @@ recovery_required
 
 1. 只构建 Windows x64 与 macOS arm64；不存在 Linux/Tauri/公共 CLI/TUI 产品 target。
 2. 图标由一个透明角母版生成 icns/ico/png，各尺寸检查无白底、裁切和旧品牌。
-3. package 白名单必须包含：renderer、sidecar、agent-worker、FFmpeg/ffprobe、node-pty、preview agent、受控内容 extractor、DiagnosticBundleService、Chrome Native Messaging host/wrapper、migration coordinator、支持矩阵登记的 legacy readers/mappers、所有冻结 policy/schema manifest、必要字体和许可证。Release Acceptance Console、正式 feed 凭据、长期 Gateway/Relay/Provider 密钥、开发工具和测试数据明确不得进桌面包。BilliardBuddy Chrome Extension 固定为 Chrome Web Store 分发的**伴随组件**，不是第三个独立 BilliardBuddy 产品或桌面 target；模块 24 同一 release manifest 必须记录正式 extension ID、最低兼容版本、商店安装入口、native host protocol version 和兼容矩阵。桌面安装包不得静默旁载扩展；扩展未安装/未启用/版本不兼容时招聘浏览器能力固定 unavailable，并引导用户从唯一商店入口安装或更新。扩展发布和真实商店安装属于 `EXTERNALLY_VERIFIED`，未验证时不得宣称 BOSS 自动执行已交付。
+3. package 白名单必须包含：renderer、sidecar、agent-worker、permission profile schema/automatic reviewer policy/sandbox helper、FFmpeg/ffprobe、node-pty、preview agent、受控内容 extractor、DiagnosticBundleService、Chrome Native Messaging host/wrapper、migration coordinator、支持矩阵登记的 legacy readers/mappers、所有冻结 policy/schema manifest、必要字体和许可证。Release Acceptance Console、正式 feed 凭据、长期 Gateway/Relay/Provider 密钥、开发工具和测试数据明确不得进桌面包。BilliardBuddy Chrome Extension 固定为 Chrome Web Store 分发的**伴随组件**，不是第三个独立 BilliardBuddy 产品或桌面 target；模块 24 同一 release manifest 必须记录正式 extension ID、最低兼容版本、商店安装入口、native host protocol version 和兼容矩阵。桌面安装包不得静默旁载扩展；扩展未安装/未启用/版本不兼容时招聘浏览器能力固定 unavailable，并引导用户从唯一商店入口安装或更新。扩展发布和真实商店安装属于 `EXTERNALLY_VERIFIED`，未验证时不得宣称 BOSS 自动执行已交付。
 4. 模块 24 是所有删除对象 `D5_PACKAGE_ABSENT` 的唯一负责人：对模块 23 Manifest 逐行证明已删除运行时在 asar、unpacked resources、sidecar、更新 ZIP 和安装目录中均不存在；模块 23 的源码/输入图不能替代该证明。
 5. 模块 24 只构建并保存不可变 Release Candidate artifact、hash、blockmap、签名元数据、provenance、component matrix 和 machine gate report；**不得**更新正式 manifest/feed 或退出任何已安装客户端。任一不一致使 candidate `NO_GO`。
 6. 候选身份严格按第 4.12 节生成；macOS/Windows 共享同一 candidate/source tree/lockfile/policy/checklist/matrix digest，两个平台 artifact 的有序集合整体进入身份，每个平台 hash 分别登记。任一平台重新构建即使源码相同也生成新 build/provenance 和新 candidate，并要求重新门禁/验收。
@@ -2082,6 +2151,7 @@ recovery_required
 - StartupHealthRecord fixture 覆盖正常健康、renderer/sidecar 在 receipt 前崩溃、10 分钟两次失败、recovery shell 不启动写服务、有效 rollback、schema 不兼容禁止回退和 recovery_read_only 数据导出；normal writer/recovery 同时启动、导出期间 writer 尝试启动、旧 fencing holder 恢复都只有一个 DomainDataLease winner，Main 从不直接打开领域文件。
 - package 验证包含受控 extractor/content policy、attachment/Relay retention policy 和 DiagnosticBundleService；canary secret/PII/路径/正文无法进入诊断包，且无自动上传。
 - Windows/macOS 首启 fixture 在 unsupported OS/CPU、低磁盘、无写权限、损坏 policy digest 下均在领域写入前拒绝；支持环境的 sandbox/fuses/CSP/协议/DevTools 检查均来自已签名候选而非开发配置。
+- 两个平台候选都从已签名 package 运行三档 Model Permissions fixture：Ask/Approve 的 workspace sandbox digest 相同、automatic reviewer policy 可加载、Full Access 的 unrestricted filesystem/network/never-approval 组合完整；缺任一 package input 或 profile digest 不符即 NO_GO。
 - package inventory 证明 Release Acceptance Console、正式 feed/服务密钥和测试数据缺席；production profile 的备份恢复、告警、密钥轮换与容量/费用保护均有独立机器或外部证据状态。
 
 ### 交接物
@@ -2116,6 +2186,7 @@ recovery_required
 | 账号、权益与用量 | AccessPrincipal/Entitlement/InstallationRegistration 生命周期、短期 token、设备解绑、预算 reserve/settle、unknown 对账、额度/费用告警；桌面长期凭据不授予模型访问且不进入 renderer/日志/诊断 |
 | ProductTask | TaskScope、ConversationLineage、operation/revision/event/cursor、双窗口、重复提交、断线、停止、park/recovery、fork/compact/resume、损坏数据和协议深链 |
 | Worker/Core | ready、stream、approval、stop、crash、backpressure、resume；Core 原生工具/Skills/Hooks/MCP/子代理未被削弱 |
+| 执行权限 | 普通界面只显示三档和白话说明，不显示内部字段；Ask/Approve 同 sandbox 仅 reviewer 不同；Full Access 根外文件+联网且无常规审批；切换只影响下一 run；旧值迁移和独立门禁有效 |
 | 模型 | DeepSeek 文本、MiMo 证据、Fun-ASR；无 Qwen/Sonnet 隐式 fallback；window/body/compact 与 model manifest 一致 |
 | 指令/记忆 | 三类文件 conflict precedence、来源诊断、target-file nested、lineage-scoped resume/compact、Session Memory 与 TaskEvent summary 分层、AutoMem 生命周期、AutoDream/TeamMem 包内归零、本地索引 |
 | Voice | VoiceOperation/Transcript/immutable Revision、Composer/ThreadEntry/Video binding、编辑分叉、迟到结果、owner/lifecycle |
@@ -2128,7 +2199,7 @@ recovery_required
 | Migration | 全旧 schema fixture、TaskScope/lineage/StoreProfile 映射、backup policy/配额/保留/GC、可重入、崩溃恢复、冷启动、migration reader 包内可达；不迁移密钥/Cookie |
 | Cleanup | `G22_PRE_D4_VERTICAL_GOLDEN_GATE` 未删除版本通过；每个 D4 Work Unit 后重跑受影响旅程；D1—D5 逐行证据、保留 reader/许可证、无 compatibility shim 或第二运行时 |
 | Compatibility | Main/renderer/sidecar/worker/Gateway/Relay/Extension/native-host/provider/migration required edge 均按同一 component matrix 握手；N-1/N rollout 与 rollback floor 可验证 |
-| Resources | ProductResourceScheduler 的 desktop/gateway/relay scope、保守首次 profile、priority/fairness、bytes、lease/fencing、`workspace.write` 单写者、UsageBudget、cancel/drain/overload/QuiesceReceipt；worker/schedule/FFmpeg/ASR/vision/image/browser/migration/update 无第二调度真相 |
+| Resources | ProductResourceScheduler 的 desktop/gateway/relay scope、保守首次 profile、priority/fairness、bytes、lease/fencing、`filesystem.write.workspace|external` 单写者、UsageBudget、cancel/drain/overload/QuiesceReceipt；worker/schedule/FFmpeg/ASR/vision/image/browser/migration/update 无第二调度真相 |
 | Release decision | candidate identity/provenance 不变；required machine/user checklist 全 PASS；有效 USER_ACCEPTED receipt 绑定同一 artifact；无 tag/manual/feed 旁路 |
 | 隐私 | 日志、包、fixture 和错误 UI 无密钥、Cookie、正文、Base64、候选人隐私和绝对路径；各类 data-egress consent 可撤销且只放行明确数据类别/目的地 |
 | Task lifecycle & attachments | active/archive/restore/deleting/delete_failed_pre_purge/delete_failed_post_purge/deleted、TaskLifecycleParticipant 注册表/引用阻塞/崩溃续删；staged/ready/bound、7天/1小时/24小时 TTL、容量/orphan/ref graph、外部文件不删 |
@@ -2214,6 +2285,7 @@ BilliardBuddy Electron GUI
 |---|---|
 | 当前唯一 renderer | `ts/desktop/src/main.tsx` 与当前 AppShell/ProductShell |
 | 旧业务产品感、Composer、生图、视频 | `4fab121e:ts/desktop/renderer-react/` |
+| 历史权限前端证据 | `4fab121e:ts/desktop/renderer-react/src/components/chat/Composer.tsx`、同提交 `pages/SettingsPage.tsx`；`30945a22:ts/desktop/src/components/controls/PermissionModeSelector.tsx`。只提取胶囊、菜单、开关、警示和可达性模式，不恢复旧 store/API/枚举 |
 | 第 3/4 栏与底部终端布局 | `30945a22` 及 `da078a5f`、`0f28cf07`、`63623220`、`c2b1304b` |
 | 视觉与信息架构参考 | `BilliardBuddy-frontend-restoration.html`；不作为 Oracle、母版、逐像素标准或第二施工依据 |
 | ProductTask | `ts/shared/product/`、`ts/src/server/product/`、`ts/desktop/src/product/` |
@@ -2229,6 +2301,8 @@ BilliardBuddy Electron GUI
 - Seedream 模型能力：<https://www.volcengine.com/docs/6492/2172373?lang=zh>
 - Electron 安全清单：<https://www.electronjs.org/docs/latest/tutorial/security>
 - OpenAI Computer Use：<https://developers.openai.com/api/docs/guides/tools-computer-use>
+- OpenAI Codex Permission modes（2026-07-23 核对三档语义、Settings enablement 与 Composer selection 分离）：<https://learn.chatgpt.com/docs/permission-modes>
+- OpenAI Codex Auto-review（2026-07-23 核对同 sandbox、automatic reviewer、拒绝/转人工与 app-level prompt 边界）：<https://learn.chatgpt.com/docs/sandboxing/auto-review>
 - Anthropic Computer Use：<https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool>
 - Google Computer Use：<https://ai.google.dev/gemini-api/docs/computer-use>
 
