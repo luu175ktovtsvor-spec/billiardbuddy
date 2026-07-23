@@ -626,14 +626,14 @@ storage.migration / app.update
 6. 休眠先停止 dispatch 并持久 checkpoint/lease；唤醒按 generation 恢复，只有幂等且未进入未知付费阶段的 job 可自动继续。迁移和更新先进入 `draining → checkpoint/cancel → quiesced`，再申请独占 lifecycle permit；更新额外要求 Sidecar 签发 `QuiesceReceipt`，包含 server/scheduler generation、fencing、active/queued/unknown 摘要 hash、candidate、UpdateTransaction、issued/expires。Main 先关闭 renderer 新 mutation admission并验证 receipt，随后才能停 Sidecar；receipt 过期、Sidecar generation 改变或任何新活动使安装退回 waiting。截止时间内不静止则 blocked，不能直接 kill sidecar 安装。
 7. 快照统一输出 active/queued/bytes/oldest wait/owner rejects/profile revision/lease owner，以及 `ready/degraded/overloaded/draining/maintenance` 和稳定原因码：concurrency、queue、bytes、owner quota、profile missing、maintenance、upstream unavailable。UI、API、Gateway 和 Relay 使用同一产品枚举。
 8. Gateway 每个远程 claim 在 provider submit 前还必须原子预留 UsageBudget；provider/Relay terminal usage receipt 结算或释放预留，unknown 保留有界 reserve 到对账终态。客户端重放、换 installation 或伪造 usage 不能扩大预算；预算不足返回稳定 `ENTITLEMENT_REQUIRED|USAGE_LIMIT_REACHED|BUDGET_UNAVAILABLE`，不先调用上游。
-9. 模块 03 建 desktop scheduler、保守基线/benchmark、worker 与 `filesystem.write.workspace|external` claim；模块 08 冻结哪个 ProductPermissionProfile 可申请 external 子类及一次性 escalation receipt；09/10/11 消费 workspace 子类，Full Access worker 才可消费 external 子类，模块 20 的用户 PTY 不消费 Agent claim；04 建 Auth/Entitlement/Usage Gateway executor，并在模块 13 前建立 Relay account 的图片付费任务准入基础；12/13/14/15/16/17/18 迁移媒体、图片、语音、计划和浏览器消费者；14 只强化 Relay 五分钟链路、容量 profile 与部署可靠性，不再后置创建 scheduler 真相；22/24 只申请 migration/update lifecycle claim。旧私有队列在模块 23 D4 前消费者归零。
+9. 模块 02 完成后先执行 `BB-01R`，把 permission profile/automatic reviewer policy 补入模块 01 机器合同；其 accepted 前不得继续模块 03 worker 或开始模块 08。随后模块 03 建 desktop scheduler、保守基线/benchmark、worker 与 `filesystem.write.workspace|external` claim；模块 08 冻结哪个 ProductPermissionProfile 可申请 external 子类及一次性 escalation receipt；09/10/11 消费 workspace 子类，Full Access worker 才可消费 external 子类，模块 20 的用户 PTY 不消费 Agent claim；04 建 Auth/Entitlement/Usage Gateway executor，并在模块 13 前建立 Relay account 的图片付费任务准入基础；12/13/14/15/16/17/18 迁移媒体、图片、语音、计划和浏览器消费者；14 只强化 Relay 五分钟链路、容量 profile 与部署可靠性，不再后置创建 scheduler 真相；22/24 只申请 migration/update lifecycle claim。旧私有队列在模块 23 D4 前消费者归零。
 10. 验收使用 fake clock、可控 executor 和双进程 fixture，证明所有上限不越界、多资源无死锁、取消/超时/重启无泄漏或双释放、两个 scheduler 不重复 occurrence/付费任务、owner 公平、基线→benchmark→过期回退、UsageBudget 预留/结算/unknown，以及 sleep/update/migration 对运行 worker、Workspace writer、FFmpeg 和 outcome_unknown 的正确处理。不得 mock 掉 Scheduler 本身。
 
 ### 4.12 Release Candidate、Go/No-Go 与 USER_ACCEPTED
 
 发布初始且默认状态永远为 `NO_GO`。Tag、`workflow_dispatch`、聊天确认、实现者自述、环境变量或单一布尔值都不是发布授权。
 
-1. 模块 24 只能构建不可变候选，不得更新正式 feed。候选身份固定为 `candidate_id + source_commit_sha + source_tree_sha + lockfile_sha256 + build-input/package-manifest/gate-policy/release-checklist/component-matrix/attachment-retention/voice-retention/media-storage/migration-backup/content-safety/relay-retention/diagnostic-bundle/system-support/data-egress/auth-entitlement/usage-budget/production-load policy digest + sorted artifacts[{platform,arch,filename,sha256}] + build run/provenance digest`；两个平台 artifact 的有序集合共同定义一个 candidate，不能把每个平台误建成同 ID 的不同身份。`source_commit_sha/source_tree_sha` 固定为模块 24 构建候选时的已接受源码基线；候选形成后、GO 前，任一候选输入、源码树、字段或重新构建产物变化都产生新 candidate，旧 gate 和验收失效。gate report 是对该身份执行检查后的不可变结果，不参与生成 candidate ID，但其 digest 必须进入 USER_ACCEPTED receipt；gate/checklist 结果变化要求重跑全部关联检查并生成新 gate report，不能修改旧 report。
+1. 模块 24 只能构建不可变候选，不得更新正式 feed。候选身份固定为 `candidate_id + source_commit_sha + source_tree_sha + lockfile_sha256 + build-input/package-manifest/gate-policy/release-checklist/component-matrix/permission-profile/automatic-reviewer/attachment-retention/voice-retention/media-storage/migration-backup/content-safety/relay-retention/diagnostic-bundle/system-support/data-egress/auth-entitlement/usage-budget/production-load policy digest + sorted artifacts[{platform,arch,filename,sha256}] + build run/provenance digest`；两个平台 artifact 的有序集合共同定义一个 candidate，不能把每个平台误建成同 ID 的不同身份。`source_commit_sha/source_tree_sha` 固定为模块 24 构建候选时的已接受源码基线；候选形成后、GO 前，任一候选输入、源码树、字段或重新构建产物变化都产生新 candidate，旧 gate 和验收失效。gate report 是对该身份执行检查后的不可变结果，不参与生成 candidate ID，但其 digest 必须进入 USER_ACCEPTED receipt；gate/checklist 结果变化要求重跑全部关联检查并生成新 gate report，不能修改旧 report。
 2. 版本化 `release-checklist.json` 每项包含 check_id、module、required、platform、candidate input、确定命令/人工步骤、PASS 条件、证据路径和 owner（machine/user）。结果仅 `PASS|FAIL|NOT_RUN|UNVERIFIED`；任何 required 项不是 PASS、证据 hash 不符、已知阻断测试、兼容矩阵 required edge 失败或 release policy 缺失，ReleaseDecision 固定 `NO_GO`。
 3. 外部项在候选创建前由版本化 policy 分类：`REQUIRED_FOR_RELEASE` 或 `OUT_OF_SCOPE_DISABLED`。前者未真实验证即 NO_GO；后者必须证明该候选已编译/配置禁用对应入口并向用户明确，不允许候选生成后临时豁免。`NOT_VERIFIED_EXTERNALLY` 不等于 PASS。
 4. 机器门禁全 PASS 只得到 `GO_READY_FOR_USER`。模块 25 向用户展示同一 candidate 的安装包、双平台核心旅程、视觉/交互、迁移、性能、已禁用范围和风险清单；用户拒绝产生 `USER_REJECTED` 并终结该 candidate，不能靠重跑局部检查复活。
@@ -664,14 +664,14 @@ storage.migration / app.update
   01 → 02 ProductTask 身份、revision 与事件合同登记
   02 登记 → 03.A CoreOperationBridge（唯一 idempotent Core 副作用桥）
   03.A → 02.A—D ProductTask authority 实现
-  02 完成 → 03.B 内部 agent-worker
+  02 完成 → BB-01R 机器权限合同修复 → 03.B 内部 agent-worker
   03 → 04 模型、Gateway 与 Relay 图片准入基础
   01 + 03 + 04 → 05 项目指令与记忆
 
 阶段 B：恢复目标任务前端
   01 + 02 → 06 产品壳与目标视觉
   02 + 03 + 06 → 07 对话与 Composer
-  02 + 03 + 07 → 08 三档权限
+  BB-01R + 02 + 03 + 07 → 08 三档权限
   02 + 07 + 08 → 09 队列、文本引用、分叉与恢复
   02 + 06 + 07 + 08 + 09 → 10 文件、Diff 与文件引用
   07 + 09 + 10 → 11 Preview DOM 修改
@@ -748,7 +748,7 @@ storage.migration / app.update
 
 ### 已冻结 Work Unit：`BB-01A`
 
-这是模块 01 唯一 Work Unit；其 accepted commit 必须同时把模块状态写为 `complete`，不得拆出未登记的 `BB-01B` 或把运行时代码混入本提交。
+这是模块 01 的初始 Work Unit；其 accepted commit 必须同时把模块状态写为 `complete`，不得拆出未登记的 `BB-01B` 或把运行时代码混入本提交。完成后出现的机器合同缺口只能走下方已登记 `BB-01R`，不重写 `BB-01A` 历史。
 
 | 字段 | 冻结内容 |
 |---|---|
@@ -763,6 +763,19 @@ storage.migration / app.update
 | 本 Work Unit 不负责 | UI/领域 schema/数据迁移实现、旧消费者切换、D1—D5 执行、依赖安装、服务器连接或部署、打包签名和任何外部能力验证 |
 | 验收命令与证据 | `bun run check:product-contracts`（schema、交叉引用、supported fixture/reader/test 一一对应、consumer/delete owner、确定性生成）；相同输入连续生成两次 hash 一致；`bun run check:desktop`；`git diff --check`；机器输出只落允许路径 |
 | 完成条件 | 下列全部模块 01 Oracle 通过；交接物可由脚本从当前树重新生成并校验；HTML/历史参考不进入 build/package input；无运行时行为和依赖变化；accepted commit body 符合第 0.6 节并写 `Module-Status: complete`、外部验证 `NOT_APPLICABLE`、Next=`BB-02A registration` |
+
+### 已冻结 Repair Work Unit：`BB-01R`
+
+| 字段 | 冻结内容 |
+|---|---|
+| Work Unit ID | `BB-01R` |
+| 单一用户结果 | 模块 01 机器合同可精确验证 permission profile 与 automatic reviewer policy，不把从未持久化的旧权限 UI/request 值伪造成可迁移数据。 |
+| 当前证据 | `BB-01A` accepted=`3ca8b509712da3c6771a5183a68d680eae20e288`；现有 `contract-source.json/policy-schemas.json/release-checklist.schema.json` 无 permission policy；当前 `ask/allow_edits/plan_only` 只在 wire/request/UI/Core 映射中，ProductTask disk record 无权限偏好。 |
+| 顺序与依赖 | 当前模块 02 lease/dirty `BB-02C` 必须先按恢复规则完成 `BB-02C→BB-02D` 并释放 lease；随后以干净 main 单独开启模块 01 repair 窗口。`BB-01R` accepted 是模块 03 剩余 worker 施工和模块 08 的前置。 |
+| 允许修改路径 | `ts/product-contracts/**`、`ts/scripts/product-contracts/**`、`ts/tests/product-contracts/**`；`ts/package.json` 只允许修正既有 `check:product-contracts` 入口，不增依赖。 |
+| 必须交付 | `permission-profile-policy` 与 `automatic-reviewer-policy` 两个 module-08-owned policy schema/required digest；release checklist 对全部冻结 policy ID 精确 required 且拒绝未知/缺失键；生成器、source、渲染产物与 semantic fixture 一致。 |
+| 禁止事项 | 不改运行时/UI/TaskRun/ProductTaskService；不为 `ask/allow_edits/plan_only` 创建虚假 disk/localStorage fixture、reader 或 supported/provisional migration；不填模块 08 的实际 policy 值。 |
+| 验收与完成 | `cd ts && bun run check:product-contracts`、`bun run check:desktop`、生成两次 hash 一致、`git diff --check` 全 PASS；fixture 覆盖两 policy digest 缺失/未知/错 hash 均拒绝；legacy matrix 仍不承诺无持久证据的权限值迁移。accepted commit 写 `Module-Status: complete`，Next=模块 03 恢复。 |
 
 ### 用户结果
 
@@ -780,7 +793,7 @@ storage.migration / app.update
 1. 生成 current renderer、sidecar、ProductTask、media、gateway、relay 的入口与消费者清单。
 2. 固定历史参考读取命令和允许提取的文件类型；不 checkout 旧提交开发。
 3. 标记 HTML 为非构建视觉/信息架构参考资产，确认不进入 Electron `files`、Vite entry、测试运行时或发布包；其脚本、假数据和内联 CSS 不得成为生产实现来源。
-4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入；当前产品权限字段 `ask/allow_edits/plan_only` 登记为模块 08 的字段级迁移输入，但只有模块 08 补齐 immutable fixture、正向/幂等测试和 plan intent 保留证据后才从 provisional 升为 supported；media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
+4. 冻结 `legacy-support-matrix.json`：逐项记录 storage ID、层次（disk/wire/localStorage/file shape）、物理位置、current version、已验证旧版本/旧形态、明确不支持范围、reader/migration entry、immutable fixture、测试、备份/隔离策略和已知 release 关联。不同层次的版本绝不能混称：当前 ProductTask **磁盘 store** 为 v4，而公共 wire/domain schema 为 v2，wire v2 不是 disk v2。初始最低事实范围固定为：ProductTask disk v1→v4、disk v3→v4、disk v4 current 已验证；disk v2 仅 provisional，补正向 fixture 前不承诺；ProductTask wire v2 只登记当前协议，不作为磁盘迁移输入。当前 `ask/allow_edits/plan_only` 只是 wire/request/UI/Core 映射，ProductTask disk 无持久权限偏好；不得为它们伪造 legacy fixture 或迁移承诺，已存 operation audit/canonical input 也不改写。media disk v1 inline `reference_images`→private Asset 已验证；provider root v1/legacy index→provider index v2 已验证；managed settings 与 cron 只登记已测试字段级兼容；普通 settings、memory、recruiting、cron run log 和 desktop localStorage 历史版本不承诺自动迁移。后续模块不得用“受支持旧版”扩大此矩阵，新增支持必须先补 fixture、幂等迁移和本表证据。
 5. `release-checklist.json` machine/user owner、component compatibility、legacy support、permission profile/automatic reviewer policy、attachment/voice/media/migration-backup retention、content safety、Relay retention、diagnostic bundle、system support、data egress、auth-entitlement、usage-budget、production-load policy 的 schema 与版本/hash 都在模块 01 冻结机器入口；模块 01 只定义结构/生成入口，不猜后续容量或协议值，分别由所属模块填充证据。
 6. 记录所有候选删除对象的当前消费者，交给模块 23 的物理删除 Manifest；本模块不做跨域物理删除。
 
@@ -851,7 +864,7 @@ ProductTaskService 唯一写 `Workspace`、`TaskScope`、`ComposerDraft`、`Prod
 
 BB-02B production bind blocker固定由真实active Core run inspector加机器可验证的disabled participant receipts组成：本阶段queue/PTY/Preview/workspace-write均未产生相应资源且入口已disabled时返回`OUT_OF_SCOPE_DISABLED`，不是“已检查为空”；active run仍真实阻塞，任一未识别/超时 participant仍`BLOCKER_UNKNOWN|BLOCKER_UNAVAILABLE`拒绝。不得在`taskCommandPolicy/taskCommandDiscovery/taskSocket`重复或下沉授权，也不得提前重做worker、raw attachment ingest、TaskRun dispatch或媒体owner。
 
-21. `BB-02C` 第一次真实 submit/dispatch/event mutation 才把 `product-task-authority.v1.json` 原子写为 additive `authority_schema_revision=3`，新增严格的 `thread_entries/task_runs/dispatch_records/task_events/attachment_bindings` maps；revision 1/2 的 read/list/detail、legacy verify 与仅属于 BB-02A/B 的 mutation 均不得升级 schema、补写新 maps 或改变文件 bytes，未知 revision 仍固定 `UNSUPPORTED_SCHEMA`。现有 `events` 是 operation audit，新的 `task_events` 才是唯一用户可见 durable TaskEvent ledger，二者不得混用。公开 submit 继续走 Product API：`POST /api/product/tasks` 是首页首次原子 submit，`POST /api/product/tasks/:task_id/runs` 是已有任务 submit；Product WebSocket 只承载 typed receipt/event/resume/approval/stop，旧 raw `user_message` 与任何携带 `data/mimeType/name` 的 attachment 输入不得触发 submit/Core/filesystem，固定 `ATTACHMENT_INGEST_UNAVAILABLE` 且零持久副作用。TaskEvent 本 Work Unit 不做 prune，`event_sequence` cursor 在 ledger 内永久有效；retention owner 冻结 `CURSOR_EXPIRED` 与 snapshot reset 合同前不得清理。临时 `legacy-core-dispatcher` 只能在 durable claim 后消费已有 `run_id + dispatch_generation`：首次缺 Core binding 时只可复用已 accepted 的 `CoreOperationBridge.ensureCreate`，随后经 server-private `ProductTaskAgentCorePort` 进入现有 generic Core lifecycle；它不得扩展 `CoreOperationBridge` 为 worker/turn scheduler、不得创建产品 entry/run/lineage或第二事件流。claim 后 Core send 是否发生不确定时必须把同一 dispatch 标为 `recovery_required`，不得自动重发 user turn。`permission_mode=null` 是模块 08前的保守占位：只能 workspace sandbox + 用户审批，网络默认拒绝，不得自动越界或获得 Full Access。BB-02C 不实现三档或权限 UI，也不恢复 installation-default Agent execution：在模块 03 worker capability 能逐 Tool enforce 前继续固定 `WORKSPACE_REQUIRED`。
+21. `BB-02C` 第一次真实 submit/dispatch/event mutation 才把 `product-task-authority.v1.json` 原子写为 additive `authority_schema_revision=3`，新增严格的 `thread_entries/task_runs/dispatch_records/task_events/attachment_bindings` maps；revision 1/2 的 read/list/detail、legacy verify 与仅属于 BB-02A/B 的 mutation 均不得升级 schema、补写新 maps 或改变文件 bytes，未知 revision 仍固定 `UNSUPPORTED_SCHEMA`。现有 `events` 是 operation audit，新的 `task_events` 才是唯一用户可见 durable TaskEvent ledger，二者不得混用。公开 submit 继续走 Product API：`POST /api/product/tasks` 是首页首次原子 submit，只接受 `draft_id/expected_draft_revision/client_operation_id/text/attachment_ids`；`POST /api/product/tasks/:task_id/runs` 是已有任务 submit。`execution_capability=installation_default_denied`、`permission_mode=null`、`provider=null`、`model=null` 全由 ProductTaskService 派生，renderer 不得提交这些内部字段。Product WebSocket 只承载 typed receipt/event/resume/approval/stop，旧 raw `user_message` 与任何携带 `data/mimeType/name` 的 attachment 输入不得触发 submit/Core/filesystem，固定 `ATTACHMENT_INGEST_UNAVAILABLE` 且零持久副作用。TaskEvent 本 Work Unit 不做 prune，`event_sequence` cursor 在 ledger 内永久有效；retention owner 冻结 `CURSOR_EXPIRED` 与 snapshot reset 合同前不得清理。临时 `legacy-core-dispatcher` 只能在 durable claim 后消费已有 `run_id + dispatch_generation`：首次缺 Core binding 时只可复用已 accepted 的 `CoreOperationBridge.ensureCreate`，随后经 server-private `ProductTaskAgentCorePort` 进入现有 generic Core lifecycle；它不得扩展 `CoreOperationBridge` 为 worker/turn scheduler、不得创建产品 entry/run/lineage或第二事件流。claim 后 Core send 是否发生不确定时必须把同一 dispatch 标为 `recovery_required`，不得自动重发 user turn。`permission_mode=null` 是模块 08前的保守占位：只能 workspace sandbox + 用户审批，网络默认拒绝，不得自动越界或获得 Full Access。BB-02C 必须把现有首页 create 消费者切到原子 submit，并删除该路径上伪装成持久权限的旧选择器；只显示保守过渡说明，不提前实现模块 08 三档。本项也不恢复 installation-default Agent execution：在模块 03 worker capability 能逐 Tool enforce 前继续固定 `WORKSPACE_REQUIRED`。
 
 ### 明确不改
 
@@ -890,10 +903,10 @@ ProductTask schema、operation receipt、错误码和 event/cursor contract。
 |---|---|---|---|---|---|
 | `BB-02A` | 1。服务端拥有版本化 ProductTask authority overlay、CAS revision、operation receipt、稳定错误码及模块 01 已登记范围内的 D3 legacy reader；当前产品 API/桌面 client/view store 以同一 CAS/receipt 合同消费既有 metadata mutation，旧公开形状不泄露 Core 私有身份。 | `BB-03A`（CoreOperationBridge） | `ts/shared/product/domain.ts`；`ts/shared/product/taskEvents.ts`；新增 `ts/shared/product/**` 中仅 authority overlay schema/receipt/error；`ts/src/server/product/taskService.ts`；新增 `ts/src/server/product/**` 中仅 authority repository/legacy reader/outbox/reconciler；`ts/src/server/api/product.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/sideTasks.ts` 中仅 side create/close authority envelope/receipt 消费；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/stores/productTaskStore.ts`；`ts/desktop/src/product/stores/productSideTaskStore.ts` 中仅 side create/close authority envelope/receipt 与 projection 合并；`ts/desktop/src/product/api/tasks.test.ts`；`ts/desktop/src/product/api/sideTasks.test.ts`；`ts/desktop/src/product/stores/productTaskStore.test.ts`；`ts/desktop/src/product/stores/productSideTaskStore.test.ts`；`ts/desktop/src/product/components/SideTaskPanel.test.tsx` 中仅 side create/close authority envelope consumer mock 与调用断言；`ts/src/server/__tests__/product-*.test.ts`；`ts/src/server/__tests__/e2e/full-flow.test.ts` 中仅 ProductTask create HTTP fixture 的 authority envelope/receipt 断言；`ts/tests/product-contracts/**` | 第 2.1、3.1、4.1、4.10；第 821 条第 16—17 条；`legacy-support-matrix.json` 的 ProductTask v1/v3/v4 D3 reader 与 v2 provisional；独立 `product-task-authority.v1` 可写 root；API/client/store 必须传递、保存并消费可重发的客户端 `expected_revision + client_operation_id` envelope/authority receipt；authority snapshot 必须以独立 `tasks` 与 `side_tasks` collection 返回完整公开投影，side task 至少包含 `id/parent_task_id/task_id/title/status/created_at/updated_at/closed_at?`，不得把私有 branch binding 伪装成 task，也不得由 desktop 用请求字段、本地时钟或 fallback 构造 accepted side entity；receipt/event ledger 一切语义字段与 persistent map key 严格验证、任一非法均 fail-closed；CoreOperationBridge 消费者合同；`revision/event_sequence/resume_cursor/client_operation_id/run_id` 不互代。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；v1/v3/v4 fixture 的 read/list/detail 前后 legacy bytes/hash 不变；首次 legacy metadata mutation只写 authority overlay；同一 legacy revision 仅一个 CAS 前进；create/continue/side task/close 在 authority `prepared` intent 提交前不得调用 Core，bridge 返回前后任一 crash 点重启均以同一 intent 重放并只获得一个 Core binding/terminal receipt；真实 HTTP rename 在同一 accepted metadata CAS 中写入 `pending` mirror outbox，reconciler 以同 operation 调 bridge并写回 `reconciled|failed`，任何 mirror 错误可按同一 operation 查询且不使 accepted 结果与 HTTP/客户端结果分叉；side create 在 bridge 成功后把完整公开 side metadata 与私有 binding 分离后原子 finalize，side close 只从 authority side record 校验 owner并推进状态，list/receipt/operation query 均返回同一完整 `side_tasks` 投影；store 将 authority snapshot 按 revision 合并后，TaskIndex/TaskPage/SideTaskPanel 仍有完整 actions/links/view 投影且不猜造 accepted entity；损坏/无权限/写失败不覆盖原文件或初始化空库；所有 persistent map 与 receipt/event 字段拒绝危险键/非法语义；v2 不升为 supported。 |
 | `BB-02B` | 2。普通任务获得稳定 Workspace/TaskScope、ComposerDraft、TaskAttachment identity 与 ConversationLineage 合同；installation-default 不以 cwd 获得文件能力，BB-02C 前当前 cwd-enabled Agent 执行显式 `WORKSPACE_REQUIRED`。 | `BB-02A` | `BB-02A` 允许路径；`ts/src/server/product/taskReviewService.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/ws/handler.ts` 中仅 ProductTask workspace capability authorizer wiring；`ts/src/server/api/product.ts`；`ts/desktop/src/product/domain/types.ts`；`ts/desktop/src/product/api/tasks.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/currentProductTaskContext.ts`；`ts/desktop/src/product/components/ProductTaskPage.tsx` 中仅 Review/Diff/Preview/Terminal capability gating 与 bind入口；`ts/desktop/src/product/stores/productTaskWorkspaceStore.ts` 中仅 workspace capability gate；`ts/desktop/src/product/components/ProductTaskBrowserPreviewDock.tsx` 中仅无 workspace mount 拒绝；`ts/desktop/src/product/components/ProductTaskTerminalDock.tsx` 中仅无 workspace spawn 拒绝；上述路径及 `ts/src/server/__tests__/product-*.test.ts`、`ts/src/server/__tests__/websocket-handler.test.ts`、`ts/src/server/__tests__/e2e/full-flow.test.ts` 中仅 workspace bind/capability/Agent拒绝与私有字段不泄露 Oracle、对应 desktop tests | 第 2.1、3.1、4.1、4.2；本模块第 18—20 条 additive authority reader、root/entity revision 分层与 workspace capability guard；`task.bind_workspace` task/workspace 双 CAS；external file 不删；lineage 私有 resume material不公开；TaskAttachment 本项只定义identity/owner/ref/ready binding，不实现raw ingest/inspection/sweeper；attachment register/bind必须验证owner实体存在、同installation、合法状态/正TTL与受控verified metadata，owner transfer只允许`composer_draft → 同draft持久target_task`或同owner ref binding，禁止任意task重绑；draft consume的`target_task_id`必须等于draft持久目标且目标task同installation，全部附件验证后才单事务转移；模块07才拥有ingest/sweeper，BB-02C 才拥有 raw attachment拒绝与 TaskRun/dispatch，模块03才迁 worker 并恢复 installation-default 无 cwd 纯文本执行。 | `cd ts && bun run check:product-contracts`、`bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；BB-02A authority revision 1 fixture（无schema字段与显式revision 1）bytes不变且read/list/detail/owner/legacy verify/BB-02A-only mutation不写回或升级，第一次真实B entity mutation原子写revision 2；root revision只做repository fencing，task/workspace/draft/attachment/lineage entity revisions独立CAS且所有task mutation推进task revision，duplicate按kind/owner/input完整匹配并先于blocker/CAS原样返回；伪造/跨installation/过期/consumed draft拒绝；active run/queue/PTY/Preview/write lease时bind拒绝；relocate/relink/只读/断盘/identity/CAS fixture通过，旧引用不能跨新根；installation-default 的 Review/tree/file/Diff、ProductTask Preview、ProductTask PTY、cwd-enabled Agent/Skill/Bash在真实入口均`WORKSPACE_REQUIRED|OUT_OF_SCOPE_DISABLED`且不调用下游，缺capability fail-closed，authoritative public task不泄露不可用workDir，current task context不输出cwd；ProductTask PTY/Preview生产consumer graph为零；绑定且available workspace的Review能力不退化，Agent仍按BB-02C前规则拒绝，PTY/Preview只由11/20恢复；项目指令/worker/raw attachment/media/下游 lifecycle participant不提前迁移。 |
-| `BB-02C` | 3。一次提交以单原子边界持久化 accepted 结果、TaskRun、dispatch 与 event ledger；客户端用 cursor 重连且无重复。模块 03 前仅由已登记 `legacy-core-dispatcher` 消费 claim，不创建新 run。 | `BB-02B` | `BB-02A/B` 允许路径；`ts/src/server/index.ts`；`ts/src/server/ws/handler.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/product/taskEventProjection.ts`；`ts/src/server/product/taskRunProjection.ts`；`ts/desktop/src/product/api/taskSocket.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/stores/productTaskRuntimeStore.ts`；上述 tests | 第 3.1 accepted 原子边界、dispatch/claim、event/cursor；本模块第 14、15、21 条；`permission_mode=null` 只作保守占位，不实现模块 08 三档；模块 03 迁 worker/scheduler，模块 08 切最终权限。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；任一 atomic member 失败时无 ThreadEntry/TaskRun/receipt/event/dispatch；accepted 后 claim 前重启投递同一 run；重复 operation/dispatch 仅一个消息/run/claim；cursor 重连无重复；raw bytes 附件获得 `ATTACHMENT_INGEST_UNAVAILABLE` 且无持久副作用；null permission 不得自动越界或获得 Full Access。 |
+| `BB-02C` | 3。一次提交以单原子边界持久化 accepted 结果、TaskRun、dispatch 与 event ledger；客户端用 cursor 重连且无重复。模块 03 前仅由已登记 `legacy-core-dispatcher` 消费 claim，不创建新 run。 | `BB-02B` | `BB-02A/B` 允许路径；`ts/src/server/index.ts`；`ts/src/server/ws/handler.ts`；`ts/src/server/product/taskAgentCoreAdapter.ts`；`ts/src/server/product/taskEventProjection.ts`；`ts/src/server/product/taskRunProjection.ts`；`ts/desktop/src/product/api/taskSocket.ts`；`ts/desktop/src/product/api/taskProtocol.ts`；`ts/desktop/src/product/stores/productTaskRuntimeStore.ts`；`ts/desktop/src/product/components/TaskIndex.tsx` 仅首页 atomic submit 消费者、旧权限选择器移除与对应 tests；上述 tests | 第 3.1 accepted 原子边界、dispatch/claim、event/cursor；本模块第 14、15、21 条；首页只提交草稿/文本/附件 ID，内部执行字段由服务端派生；`permission_mode=null` 只作保守占位，不实现模块 08 三档；模块 03 迁 worker/scheduler，模块 08 切最终权限。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；任一 atomic member 失败时无 ThreadEntry/TaskRun/receipt/event/dispatch；accepted 后 claim 前重启投递同一 run；重复 operation/dispatch 仅一个消息/run/claim；cursor 重连无重复；首页 renderer 提交任一内部执行字段均被拒绝；旧权限选择器不再进入 create/submit；raw bytes 附件获得 `ATTACHMENT_INGEST_UNAVAILABLE` 且无持久副作用；null permission 不得自动越界或获得 Full Access。 |
 | `BB-02D` | 4。任务 archive/delete 是两阶段、可恢复且可重入的权威 lifecycle；fake participant registry 给出权威 blocker/action/cleanup receipt，不导入下游服务。 | `BB-02C` | `BB-02A/B/C` 的 shared ProductTask/service/API/transport/test 路径；新增仅 ProductTask registry、cleanup-plan、tombstone、fake participant fixture | 第 3.1 lifecycle/delete 与 TaskLifecycleParticipant；第 4.1 owner/path；未知/超时/不可达/不兼容 participant 均 blocker；09/11/15/17/18/20 自行注册真实参与者。 | `cd ts && bun run check:server`、`bun run check:desktop`、相关 Bun tests、`git diff --check` 全 PASS；active run 与 fake queue/Schedule/Recruiting/Fork/worktree 阻塞；pre-purge cancel 完整还原；post-purge 只 retry；崩溃/重复 delete/tombstone TTL 幂等；Workspace/用户源文件/外部附件/共享 Asset 不被删除。 |
 
-**模块 02 完成条件：** `BB-02A`—`BB-02D` 均有 accepted commit；模块卡全部 Oracle 与模块级 server/desktop/contract 测试通过；每个 accepted commit 的 body 记录前置 SHA、Spec/Base、Checks、Evidence、External-Verification 与风险；工作树干净后最后一个 accepted commit 标记 `Module-Status: complete`。
+**模块 02 完成条件：** `BB-02A`—`BB-02D` 均有 accepted commit；模块卡全部 Oracle 与模块级 server/desktop/contract 测试通过；每个 accepted commit 的 body 记录前置 SHA、Spec/Base、Checks、Evidence、External-Verification 与风险；工作树干净后最后一个 accepted commit 标记 `Module-Status: complete`。Next 固定为以干净 main 执行 `BB-01R`，不直接进入模块 03/08。
 
 ### Module 03 → Module 02 controlled handoff
 
@@ -901,13 +914,13 @@ ProductTask schema、operation receipt、错误码和 event/cursor contract。
 - 目标 Work Unit：已登记的 `BB-02A`；其 Base-Commit 为本 handoff Spec-Commit，前置 accepted commit 为上述 `BB-03A`。
 - 阻塞解除条件：`BB-03A` 已交付并验收 `ensureCreate/ensureBranch/ensureRename` durable CoreOperationBridge；Module 02 可消费该唯一 Core 副作用入口。
 - 边界：Module 02 不得回改 `BB-03A`，不得迁移 worker/scheduler/CLI；Module 03 保持 active，待 Module 02 后续依赖闭合后重新申请 lease。
-- 返回条件：`BB-02A`—`BB-02D` 按登记顺序完成后，Module 03 才可从新的干净 accepted HEAD 继续其余 worker Work Unit。
+- 返回条件：`BB-02A`—`BB-02D` 按登记顺序完成，且随后 `BB-01R` accepted 后，Module 03 才可从新的干净 accepted HEAD 继续其余 worker Work Unit。
 
 ---
 
 ## 模块 03：GUI 内部 agent-worker 与公共 CLI 解耦
 
-**依赖：** 02
+**依赖：** 02、`BB-01R`
 **模块主题前缀：** `refactor: introduce the internal agent worker`
 
 ### 用户结果
@@ -1217,12 +1230,12 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 
 ## 模块 08：三档权限、审批与结构化追问
 
-**依赖：** 02、03、07
+**依赖：** `BB-01R`、02、03、07
 **模块主题前缀：** `feat: align product permission flows`
 
 ### 当前事实与入口
 
-- `[FACT]` `ts/shared/product/domain.ts` 当前产品枚举仍是 `ask/allow_edits/plan_only`；`ts/src/server/product/taskService.ts` 仍映射为 `default/acceptEdits/plan`；`ts/desktop/src/product/components/TaskIndex.tsx` 仍显示“每次确认/允许自动修改文件/先制定计划”。这些是待迁移现状，不是最终产品合同。
+- `[FACT]` `ts/shared/product/domain.ts` 当前产品枚举仍是 `ask/allow_edits/plan_only`；`ts/src/server/product/taskService.ts` 仍映射为 `default/acceptEdits/plan`；`ts/desktop/src/product/components/TaskIndex.tsx` 仍显示“每次确认/允许自动修改文件/先制定计划”。这些只是当前 wire/request/UI/Core 映射；ProductTask disk record 没有持久权限偏好，renderer 也没有可信的版本化 localStorage 输入，不能伪造旧值迁移。
 - `[FACT]` 当前 Core 已有 `default/acceptEdits/plan/bypassPermissions`；`auto` 还依赖 build、模型、opt-in 和动态 gate，失败/重复拒绝语义也未与 OpenAI Auto-review 对齐，不能直接作为最终产品档。现有代码尚无 ProductPermissionProfile，也没有证明 Core mode、宿主 sandbox、network 和 reviewer 已原子绑定。
 - `[FACT]` 固定历史 `4fab121e:ts/desktop/renderer-react/src/components/chat/Composer.tsx` 已有左下角权限胶囊、三项 popover、Full Access 警示色/确认框；同提交 `SettingsPage.tsx` 已有权限显隐开关。`30945a22:ts/desktop/src/components/controls/PermissionModeSelector.tsx` 另有桌面/移动菜单、选中态和 Full Access 风险对话框。这些只提供交互证据；其中全局/会话 localStorage、`default/acceptEdits/plan/bypassPermissions` 旧值和“隐藏当前档就自动回落”不能恢复。
 - `[EXTERNAL]` 2026-07-23 已核对 OpenAI 官方文档：Settings 中 `Auto-review` 对应菜单里的 `Approve for me`；启用只使档位可选，不改变既有 chat。Ask/Approve 使用相同 sandbox 和 `on-request` approval，只有 reviewer 不同；Full Access 为 `danger-full-access + never`。官方来源见第 8 节。
@@ -1248,7 +1261,7 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 
 | 层次 | 权威来源 | 前端展示与修改规则 |
 |---|---|---|
-| 能力可用性 `compiled/configured/available + reason_code` | ProductCapabilityService | 只读；决定开关/菜单项是否可操作，并显示唯一恢复入口 |
+| 能力可用性 `compiled/configured/available + reason_code` | ProductPermissionService；模块 21 后由 ProductCapabilityService 只读汇总 | 只读；决定开关/菜单项是否可操作，并显示唯一恢复入口 |
 | 用户启用 `ask=true / approve_for_me / full_access` | ProductPermissionService | 设置 → 执行权限的开关；只决定档位能否在选择器中使用，不选择任务档位 |
 | 下次运行偏好 | ProductTask revision | Composer 胶囊/新任务表单选择；经模块 08 CAS mutation 修改，只影响下一 run |
 | 当前运行快照 | TaskRun.ProductPermissionProfile | 只读状态；运行中与下次偏好不同时显示“本轮 X · 下轮 Y”，绝不追改当前 run |
@@ -1264,7 +1277,7 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 
 ### 权威状态
 
-- ProductPermissionService 唯一写 ModelPermissionEnablement；项目文件、renderer localStorage 和 ProductCapabilityService 均不能写；
+- ProductPermissionService 唯一写 ModelPermissionEnablement，并根据模块 01 policy 与模块 03 worker 运行时证据计算权限档位 availability；项目文件、renderer localStorage 和 ProductCapabilityService 均不能反写；
 - ProductTask 保存下一次 run 的产品权限偏好与 revision；
 - ProductTaskService 是 `ProductPermissionProfile` 的唯一派生者；profile 同时冻结产品值、Core mode、sandbox、approval policy/reviewer、filesystem/network scope、策略版本和 capability availability digest，renderer 不能拼装；
 - TaskRun 保存创建时不可变的完整 `ProductPermissionProfile` snapshot；
@@ -1279,7 +1292,7 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 5. 活动 run 的权限快照不可变。用户要求立即改变时，产品先停止/收尾当前 run，再用新 revision 创建下一 run；任何可用性变化、自动降级或用户批准的单次 escalation 都写 accepted receipt 和 TaskEvent，不暗改已运行中的 profile。worker 重启/resume 必须重验 snapshot 所需 capability；已不可用时进入 `PERMISSION_PROFILE_UNAVAILABLE` 等待恢复或由用户明确停止后改档，不能在同一 run 内降级。
 6. 新增 product-safe permission mutation route，使用 task ID、expected revision、client operation ID；当前 inbound policy 对任意原始 `set_permission_mode` 的拒绝保持，不能绕过白名单。mutation 经 ProductTask 持久化并在下一 run accepted receipt 中回显；失败恢复上一权威值。
 7. approval request/response、automatic review decision、human-only 卡片、AskUserQuestion、one-shot escalation 和 Full Access 警示均使用业务化投影；用户看到请求主体、目标、原因、风险和影响范围，renderer 不伪造决定，日志/诊断只留脱敏 receipt。
-8. 模块 08 接管当前 `[FACT]` 旧产品值 `ask/allow_edits/plan_only`：`ask → ask` 并升级为新 Workspace sandbox profile；`allow_edits → ask`，复用其 `acceptEdits` 的 Workspace 内编辑语义但补齐越界/联网审批；`plan_only → ask + next_run_intent=plan`，保留计划意图但不把它继续当权限。BB-02C/03 已完成或活动的 `permission_mode=null` run 保持不可变 `legacy_deferred`；活动 run 只能按保守 envelope 恢复至终态，切换后的新 run 必须显式生成三档 profile，绝不从 null 推断 Approve for me 或 Full Access。先为模块 01 已登记的 provisional 权限 shape 补 immutable fixture、正向/幂等测试并升为 supported，之后才允许迁移；迁移必须幂等并保留 revision/receipt。
+8. 模块 08 以新 ProductTask revisioned preference 取代当前 `ask/allow_edits/plan_only` wire/request/UI；已有 ProductTask 因无持久偏好，只能在模块 08 新 schema 切换时初始化为安全 `ask`，不从 operation audit、Core mode、renderer 内存或未登记 localStorage 推断 `approve_for_me/full_access/plan intent`。旧 canonical input/receipt 保持不可变。BB-02C/03 已完成或活动的 `permission_mode=null` run 保持不可变 `legacy_deferred`；活动 run 只能按保守 envelope 恢复至终态，切换后的新 run 必须显式生成三档 profile，绝不从 null 推断 Approve for me 或 Full Access。
 9. 落地边界固定：shared 定义产品 schema；ProductPermissionService 写 enablement/review receipt，ProductTaskService 写 selection/profile；模块 03执行 sandbox/broker；`TaskIndex.tsx` 与 `ProductTaskPage.tsx` 共用权限菜单，`Settings.tsx` 只接开关。可复用历史交互，不恢复旧 store/API/Core 枚举直写。
 
 ### 验收 Oracle
@@ -1296,12 +1309,12 @@ message operation、delta sequence、stop/reconnect、attachment identity 和 UI
 - 两窗口并发切换：一个 revision 成功，一个 conflict。
 - worker 重启：ProductTask 偏好和下一 run snapshot 一致。
 - 未知产品/Core 枚举：服务端拒绝，UI 恢复旧值。
-- 旧 `ask/allow_edits/plan_only` fixture 幂等迁移到新合同；`allow_edits` 不冒充 `Approve for me`，`plan_only` 的计划意图不丢失。
+- 已有 ProductTask 缺失偏好时幂等初始化为 `ask`；旧 operation audit/canonical input 字节不变，未登记 localStorage/Core 字符串不会生成权限或 plan intent。
 - `permission_mode=null` 的历史与活动 run 不改写；活动 run 只以 `legacy_deferred` 恢复，新 run 无显式三档 profile 则拒绝。
 
 ### 交接物
 
-ProductPermissionService、ProductPermissionProfile、availability/enablement/selection API、automatic review/escalation receipt、旧值迁移和冲突 fixture。
+ProductPermissionService、ProductPermissionProfile、availability/enablement/selection API、automatic review/escalation receipt、缺失偏好安全初始化、`legacy_deferred` 保留和冲突 fixture。
 
 ---
 
@@ -1893,7 +1906,7 @@ ProductCapabilityService 是 capability snapshot 的唯一汇总者；设置 sto
 13. “存储与隐私”页投影附件、媒体、语音、诊断、Relay 与招聘数据的实际占用、保留规则、待清理/清理失败和用户可执行动作；统计来自各领域 service，设置页不扫描或直接删除数据。改变 data-egress consent 只影响未来请求，不伪造历史 purge；需要远端清除时展示可对账状态。
 14. 首次使用状态按第 4.13 节顺序投影并可继续：激活/设备注册、数据外发说明、按需系统权限、可选 Workspace 连接和设备 profile。用户可在 installation-default task 先聊天；只有触发文件、终端、浏览器、媒体或远程能力时才要求相应条件，不建立“一次同意全部权限”的总开关。
 15. AutoDream 与 TeamMem 一样不出现在正式设置、capability snapshot、诊断或 About；其 D1/D2 由模块 05 完成，源码和包内归零由模块 23/24 验证。Session Memory 与 AutoMem 必须分别显示 scope、来源、更新时间和清除入口，不能统称为一个不可解释的“记忆”开关。
-16. ProductCapabilityService 只输出三档 capability availability；ProductPermissionService 只写 enablement。菜单以 `selectable=available && enabled` 派生，设置页只显示白话原因，不能混写三个状态或暴露 reason code。
+16. ProductPermissionService 在模块 08 拥有三档 availability 与 enablement；ProductCapabilityService 在本模块只把其读取并汇总进 capability snapshot，不重新判定、不反写权限状态。菜单以 `selectable=available && enabled` 派生，设置页只显示白话原因，不能混写三个状态或暴露 reason code。
 17. Ask 开关固定开启；Approve/Full 独立开关并返回 revisioned receipt。Full 首次开启走模块 08 风险确认；关闭已被任务选中的档位只写 enablement，任务进入显式重选，不批量改 task。跨窗口同步，离线/冲突保留旧值。
 
 ### 验收 Oracle
@@ -1938,7 +1951,7 @@ capability snapshot schema、首次使用/账号/权益/存储与隐私设置 IA
 | Legacy 数据 | Adapter / fixture 负责人 | 模块 22 固定动作 |
 |---|---:|---|
 | Workspace、TaskScope、ProductTask、ConversationLineage、TaskRun、ComposerDraft、ThreadEntry、事件 cursor | 02 | 迁到当前 schema 并校验 scope/lineage/owner/ID/revision/sequence；无法证明 Workspace identity 时保持 installation-default 或 `relink_required`，不猜路径授权 |
-| Model Permissions 偏好、TaskRun permission snapshot 与 plan intent | 08 | 仅迁移支持矩阵登记的旧 `ask/allow_edits/plan_only` shape：`ask` 保留，`allow_edits → ask`，`plan_only → ask + next_run_intent=plan`；BB-02C/03 的 `permission_mode=null` 历史/active run 保留不可变 `legacy_deferred`，只有切换后新 run 重建完整 profile；不从 Core 字符串或 null 猜 sandbox/network，不提升为 Approve for me/Full Access |
+| Model Permissions 偏好与 TaskRun permission snapshot | 08 | 已有 ProductTask 无持久偏好时由模块 08 新 schema 幂等初始化为 `ask`；BB-02C/03 的 `permission_mode=null` 历史/active run 保留不可变 `legacy_deferred`，只有切换后新 run 重建完整 profile。旧 `ask/allow_edits/plan_only` request/UI/Core 值不是 legacy data；不改 operation audit，不从 Core、null 或未登记 localStorage 推导权限/plan intent |
 | QueuedMessage、文本 TaskReference、Checkpoint、ForkSource | 09 | 安全映射到 ProductTask 子实体；无法映射逐项只读归档并计入 manifest |
 | provider/model/Qwen context value | 04 | 映射到当前 model contract 或标 unsupported |
 | 项目指令、Session Memory、AutoMem、AutoDream、TeamMem legacy state | 05 | 当前 unsupported，保持原文件/只读隔离；未来只有支持矩阵登记后才按 scope 迁移，AutoDream/TeamMem 永不恢复正式运行时 |
@@ -1979,7 +1992,7 @@ capability snapshot schema、首次使用/账号/权益/存储与隐私设置 IA
 - 旧 ASR supported fixture 中每份转写只产生一个全局 Transcript/Revision；Composer/Video 通过 binding 接入，不生成第二份文本真相。
 - 新安装无 legacy data 时不创建虚假迁移或空备份。
 - TaskScope/ConversationLineage fixture 证明 installation-default 任务不被猜测绑定目录，fork/compact/resume 的父子 lineage 不串写；旧无 owner 草稿只能隔离，不能挂到当前窗口。
-- 权限迁移 fixture 证明旧 `ask/allow_edits/plan_only` 分别得到模块 08 的安全结果，重复迁移 profile digest/revision 不漂移；未知、损坏或只有 Core `bypassPermissions/auto` 字符串而无支持矩阵 shape 的记录只读隔离，绝不推导 Full Access。
+- 权限迁移 fixture 证明已有 ProductTask 的缺失偏好幂等初始化为 `ask`，`permission_mode=null` run 保持 `legacy_deferred`，重复迁移 profile digest/revision 不漂移；operation audit、Core `bypassPermissions/auto`、renderer 内存或未登记 localStorage 都不推导 Full Access/Approve/plan intent。
 - backup policy fixture 覆盖空间不足、迁移成功但未过 rollback window、目标启动不健康、用户提前清理和 GC 崩溃：唯一有效备份不被误删，删除均有 receipt；账号密钥/Cookie/绝对路径不进入 backup manifest。
 
 ### 交接物
@@ -2186,7 +2199,7 @@ recovery_required
 | 账号、权益与用量 | AccessPrincipal/Entitlement/InstallationRegistration 生命周期、短期 token、设备解绑、预算 reserve/settle、unknown 对账、额度/费用告警；桌面长期凭据不授予模型访问且不进入 renderer/日志/诊断 |
 | ProductTask | TaskScope、ConversationLineage、operation/revision/event/cursor、双窗口、重复提交、断线、停止、park/recovery、fork/compact/resume、损坏数据和协议深链 |
 | Worker/Core | ready、stream、approval、stop、crash、backpressure、resume；Core 原生工具/Skills/Hooks/MCP/子代理未被削弱 |
-| 执行权限 | 普通界面只显示三档和白话说明，不显示内部字段；Ask/Approve 同 sandbox 仅 reviewer 不同；Full Access 根外文件+联网且无常规审批；切换只影响下一 run；旧值迁移和独立门禁有效 |
+| 执行权限 | 普通界面只显示三档和白话说明，不显示内部字段；Ask/Approve 同 sandbox 仅 reviewer 不同；Full Access 根外文件+联网且无常规审批；切换只影响下一 run；缺失偏好安全初始化、`legacy_deferred` 保留和独立门禁有效 |
 | 模型 | DeepSeek 文本、MiMo 证据、Fun-ASR；无 Qwen/Sonnet 隐式 fallback；window/body/compact 与 model manifest 一致 |
 | 指令/记忆 | 三类文件 conflict precedence、来源诊断、target-file nested、lineage-scoped resume/compact、Session Memory 与 TaskEvent summary 分层、AutoMem 生命周期、AutoDream/TeamMem 包内归零、本地索引 |
 | Voice | VoiceOperation/Transcript/immutable Revision、Composer/ThreadEntry/Video binding、编辑分叉、迟到结果、owner/lifecycle |
