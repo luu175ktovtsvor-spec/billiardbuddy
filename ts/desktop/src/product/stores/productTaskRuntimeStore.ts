@@ -53,6 +53,7 @@ export type ProductTaskRuntime = {
 }
 
 export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, string> = {
+  attachment_ingest_unavailable: '附件导入当前不可用，请先完成附件导入后再提交。',
   task_failed: '任务暂未完成，请稍后重试。',
   task_unavailable: '当前任务暂时不可用。',
   input_too_large: '提交的内容过大，请精简后再试。',
@@ -75,14 +76,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
 }
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
-const MAX_ATTACHMENT_NAME_LENGTH = 160
 const MAX_TRACKED_RUN_ACTIVITIES = 256
-const SAFE_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentSummary['mimeType']>>([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-])
 
 export function canSendProductTaskText(value: string): boolean {
   const content = value.trim()
@@ -98,25 +92,6 @@ export function canSendProductTaskMessage(
 ): boolean {
   const content = value.trim()
   return content.length <= MAX_PRODUCT_TASK_TEXT_LENGTH && (Boolean(content) || attachments.length > 0)
-}
-
-function productAttachmentSummary(
-  attachment: ProductTaskAttachment,
-): ProductTaskAttachmentSummary {
-  const rawName = attachment.name?.replace(/[\u0000-\u001f\u007f]/g, '').trim() ?? ''
-  const name = rawName.slice(0, MAX_ATTACHMENT_NAME_LENGTH) || (
-    attachment.type === 'image' ? '图片附件' : '文件附件'
-  )
-  const mimeType = attachment.type === 'image' && SAFE_IMAGE_MIME_TYPES.has(
-    attachment.mimeType as NonNullable<ProductTaskAttachmentSummary['mimeType']>,
-  )
-    ? attachment.mimeType as NonNullable<ProductTaskAttachmentSummary['mimeType']>
-    : undefined
-  return {
-    type: attachment.type,
-    name,
-    ...(mimeType ? { mimeType } : {}),
-  }
 }
 
 function attachmentSignature(
@@ -408,41 +383,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
       }))
     },
 
-    sendText: (taskId, text) => get().sendMessage(taskId, text),
+    // BB-02C accepts new user text only through the durable HTTP submit
+    // receipt.  A task socket never becomes a second submit transport.
+    sendText: () => false,
 
-    sendMessage: (taskId, text, attachments = []) => {
-      const content = text.trim()
-      if (!canSendProductTaskMessage(content, attachments)) return false
-      const attachmentSummaries = attachments.map(productAttachmentSummary)
-      if (!socketUnsubscribers.has(taskId)) {
-        void get().connectTask(taskId)
-      }
-      productTaskSocket.send(taskId, {
-        type: 'user_message',
-        content,
-        ...(attachments.length > 0 ? { attachments } : {}),
-      })
-      updateTask(taskId, (runtime) => ({
-        ...runtime,
-        runState: 'working',
-        error: null,
-        activeActivity: null,
-        runActivities: [],
-        entries: content || attachmentSummaries.length > 0
-          ? [
-              ...runtime.entries,
-              {
-                id: liveEntryId(taskId, 'user'),
-                type: 'user_text',
-                text: content || (attachmentSummaries.length === 1 ? '已添加附件' : `已添加 ${attachmentSummaries.length} 个附件`),
-                createdAt: createdAt(),
-                ...(attachmentSummaries.length > 0 ? { attachments: attachmentSummaries } : {}),
-              },
-            ]
-          : runtime.entries,
-      }))
-      return true
-    },
+    sendMessage: () => false,
 
     stopTask: (taskId) => {
       productTaskSocket.send(taskId, { type: 'stop_generation' })
@@ -580,6 +525,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               }],
             }
           }
+
+          case 'resume_cursor':
+            return runtime
 
           case 'assistant_text_start':
             return { ...runtime, streamingEntryId: liveEntryId(taskId, 'assistant') }

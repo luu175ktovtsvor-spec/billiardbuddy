@@ -10,7 +10,7 @@ export type ProductTaskAttachment = {
 }
 
 export type ProductTaskClientMessage =
-  | { type: 'user_message'; content: string; attachments?: ProductTaskAttachment[] }
+  | { type: 'resume'; cursor: number }
   | { type: 'permission_response'; requestId: string; allowed: boolean }
   | { type: 'ask_user_question_response'; requestId: string; answers: string[] }
   | { type: 'computer_use_permission_response'; requestId: string; allowed: boolean }
@@ -40,6 +40,7 @@ type Connection = {
   pendingMessages: ProductTaskClientMessage[]
   hasOpened: boolean
   lifecycleEvent: ProductTaskSocketLifecycleEvent
+  resumeCursor: number
 }
 
 export class ProductTaskSocketManager {
@@ -123,6 +124,7 @@ export class ProductTaskSocketManager {
       lifecycleEvent: previous?.hasOpened
         ? { type: 'reconnecting' }
         : { type: 'connecting' },
+      resumeCursor: previous?.resumeCursor ?? 0,
     }
     this.connections.set(taskId, connection)
 
@@ -138,6 +140,7 @@ export class ProductTaskSocketManager {
       connection.reconnectAttempt = 0
       this.startPingLoop(taskId, connection)
       this.publishLifecycle(connection, { type: 'connected', reconnected })
+      ws.send(JSON.stringify({ type: 'resume', cursor: connection.resumeCursor }))
       while (connection.pendingMessages.length > 0) {
         const message = connection.pendingMessages.shift()!
         ws.send(JSON.stringify(message))
@@ -150,6 +153,11 @@ export class ProductTaskSocketManager {
         const message = JSON.parse(event.data as string) as unknown
         const productEvent = parseProductTaskEvent(message)
         if (!productEvent) return
+        if (productEvent.type === 'resume_cursor') {
+          connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.cursor)
+        } else if (productEvent.type === 'user_text' && productEvent.event_sequence !== undefined) {
+          connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.event_sequence)
+        }
         for (const handler of connection.handlers) {
           try {
             handler(productEvent)

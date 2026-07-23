@@ -106,6 +106,7 @@ const PRODUCT_TASK_COMPUTER_USE_CAPABILITIES = new Set<ProductTaskComputerUseCap
   'system_key_combos',
 ])
 const PRODUCT_TASK_SAFE_ERROR_CODES = new Set<ProductTaskSafeErrorCode>([
+  'attachment_ingest_unavailable',
   'task_failed',
   'task_unavailable',
   'input_too_large',
@@ -398,9 +399,10 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'user_text': {
       if (
-        !hasOnlyKeys(value, ['type', 'text', 'replayed', 'attachments']) ||
+        !hasOnlyKeys(value, ['type', 'text', 'replayed', 'event_sequence', 'attachments']) ||
         !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) ||
-        value.replayed !== true
+        value.replayed !== true ||
+        ('event_sequence' in value && (typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1))
       ) {
         return null
       }
@@ -412,9 +414,15 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         type: 'user_text',
         text: value.text,
         replayed: true,
+        ...(typeof value.event_sequence === 'number' ? { event_sequence: value.event_sequence } : {}),
         ...(attachments ? { attachments } : {}),
       }
     }
+
+    case 'resume_cursor':
+      return hasOnlyKeys(value, ['type', 'cursor']) && typeof value.cursor === 'number' && Number.isSafeInteger(value.cursor) && value.cursor >= 0
+        ? { type: 'resume_cursor', cursor: value.cursor }
+        : null
 
     case 'assistant_text_start':
       return hasOnlyKeys(value, ['type']) ? { type: 'assistant_text_start' } : null

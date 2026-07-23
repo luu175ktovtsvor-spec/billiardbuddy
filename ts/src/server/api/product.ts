@@ -13,7 +13,7 @@ import {
   productTaskReviewService,
   type ProductTaskReviewService,
 } from '../product/taskReviewService.js'
-import { assertOperationEnvelope } from '../../../shared/product/authority.js'
+import { assertAuthorityMapKey, assertOperationEnvelope } from '../../../shared/product/authority.js'
 import { CoreOperationBridge, SessionCoreOperationBackend } from '../product/coreOperationBridge.js'
 import { productTaskService, type ProductTaskService } from '../product/taskService.js'
 import {
@@ -43,10 +43,18 @@ const authorityBridge = new CoreOperationBridge(new SessionCoreOperationBackend(
 function authoritativeEnvelope(value: unknown): { expected_revision: number; client_operation_id: string } {
   try {
     assertOperationEnvelope(value)
-    return value
+    assertAuthorityMapKey((value as { client_operation_id: unknown }).client_operation_id)
+    return value as { expected_revision: number; client_operation_id: string }
   } catch {
     throw ApiError.badRequest('expected_revision 和 client_operation_id 必填且格式正确')
   }
+}
+
+function submitReceiptStatus(receipt: { outcome: string; error?: string }): number {
+  if (receipt.outcome === 'accepted') return 201
+  if (receipt.outcome === 'duplicate') return 200
+  if (receipt.outcome === 'conflict' || receipt.error === 'AUTHORITY_CONFLICT' || receipt.error === 'OPERATION_INPUT_CONFLICT') return 409
+  return receipt.error?.endsWith('_UNAVAILABLE') ? 503 : 422
 }
 
 export async function handleProductApi(
@@ -87,6 +95,18 @@ export async function handleProductApi(
     | 'registerAttachmentIdentity'
     | 'transitionAttachment'
     | 'bindAttachment'
+    | 'submitTaskRun'
+    | 'createAndSubmitTask'
+    | 'listTaskEvents'
+    | 'claimTaskRunDispatch'
+    | 'createNewTaskComposerDraft'
+    | 'createComposerDraft'
+    | 'getComposerDraft'
+    | 'mutateComposerDraft'
+    | 'inspectWorkspace'
+    | 'listTasksAuthoritatively'
+    | 'listSideTasksAuthoritatively'
+    | 'bindTaskWorkspace'
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
   media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
@@ -150,6 +170,14 @@ export async function handleProductApi(
 
     if (segments[2] === 'composer-drafts') {
       const draftId = segments[3]
+      if (draftId === 'new-task') {
+        if (req.method !== 'POST' || segments[4]) return methodNotAllowed(req.method)
+        const input = await readJson<Record<string, unknown>>(req)
+        if (!assertPlainExactObject(input, ['ttl_ms', 'client_operation_id']) || !Number.isSafeInteger(input.ttl_ms) || (input.ttl_ms as number) < 1 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('new task draft 参数无效')
+        try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('new task draft 参数无效') }
+        const created = await tasks.createNewTaskComposerDraft({ ttl_ms: input.ttl_ms as number, client_operation_id: input.client_operation_id })
+        return Response.json({ ...created, draft: publicDraft(created.draft) }, { status: created.outcome === 'accepted' ? 201 : 200 })
+      }
       if (!draftId) {
         if (req.method !== 'POST') return methodNotAllowed(req.method)
         const input = await readJson<{ target_task_id?: unknown; workspace_id?: unknown; ttl_ms?: unknown; client_operation_id?: unknown }>(req)
@@ -178,6 +206,7 @@ export async function handleProductApi(
       if (action === 'transition') {
         const input = await readJson<{ expected_revision?: unknown; target_state?: unknown; client_operation_id?: unknown; error?: unknown }>(req)
         if (!assertPlainExactObject(input, ['expected_revision', 'target_state', 'client_operation_id'], ['error']) || !Number.isSafeInteger(input.expected_revision) || !['inspecting', 'ready', 'failed', 'cancelled', 'discarded'].includes(input.target_state as string) || typeof input.client_operation_id !== 'string' || (input.error !== undefined && typeof input.error !== 'string')) throw ApiError.badRequest('attachment transition 参数无效')
+        if (input.target_state === 'inspecting' || input.target_state === 'ready') throw new ApiError(409, '附件验证状态当前不可用', 'OUT_OF_SCOPE_DISABLED')
         return Response.json(await tasks.transitionAttachment({ attachment_id: attachmentId, expected_revision: input.expected_revision, target_state: input.target_state as 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded', client_operation_id: input.client_operation_id, ...(typeof input.error === 'string' ? { error: input.error } : {}) }))
       }
       const input = await readJson<{ expected_revision?: unknown; owner?: unknown; client_operation_id?: unknown }>(req)
@@ -221,13 +250,35 @@ export async function handleProductApi(
     if (!taskId) {
       if (req.method === 'GET') return Response.json(publicTaskIndex(await tasks.listTasksAuthoritatively()))
       if (req.method === 'POST') {
-        const input = await readJson<CreateProductTaskInput>(req)
-        const envelope = authoritativeEnvelope(input)
-        const result = await tasks.createTaskAuthoritatively({ ...input, ...envelope }, { authorityPath: authorityPath(), bridge: authorityBridge })
-        const operation = await tasks.getAuthorityOperation(result.task.id, envelope.client_operation_id, { authorityPath: authorityPath() })
-        return Response.json({ receipt: result.receipt, authority: publicAuthority(operation.authority), task: publicTask(result.task) }, { status: 201 })
+        const input = await readJson<Record<string, unknown>>(req)
+        if (containsRawAttachment(input)) throw new ApiError(409, '附件导入当前不可用', 'ATTACHMENT_INGEST_UNAVAILABLE')
+        if (!assertPlainExactObject(input, ['draft_id', 'expected_draft_revision', 'client_operation_id', 'text', 'attachment_ids']) || typeof input.draft_id !== 'string' || !Number.isSafeInteger(input.expected_draft_revision) || (input.expected_draft_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id || typeof input.text !== 'string' || !Array.isArray(input.attachment_ids) || input.attachment_ids.some(id => typeof id !== 'string')) throw ApiError.badRequest('首页 submit 参数无效')
+        try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('首页 submit 参数无效') }
+        const receipt = await tasks.createAndSubmitTask(input as import('../../../shared/product/domain.js').CreateAndSubmitTaskInput)
+        return Response.json({ receipt }, { status: submitReceiptStatus(receipt) })
       }
       return methodNotAllowed(req.method)
+    }
+
+    if (action === 'runs' && !segments[5]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      if (containsRawAttachment(input)) throw new ApiError(409, '附件导入当前不可用', 'ATTACHMENT_INGEST_UNAVAILABLE')
+      if (!assertPlainExactObject(input, ['client_operation_id', 'expected_task_revision', 'expected_lineage_revision', 'text', 'attachment_ids'], ['draft_id', 'expected_draft_revision'])
+        || typeof input.client_operation_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0
+        || typeof input.text !== 'string' || !Array.isArray(input.attachment_ids) || input.attachment_ids.some(id => typeof id !== 'string')
+        || ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined))
+        || (input.draft_id !== undefined && typeof input.draft_id !== 'string') || (input.expected_draft_revision !== undefined && (!Number.isSafeInteger(input.expected_draft_revision) || (input.expected_draft_revision as number) < 0))) throw ApiError.badRequest('submit 参数无效')
+      try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('submit 参数无效') }
+      const receipt = await tasks.submitTaskRun(taskId, input as import('../../../shared/product/domain.js').SubmitTaskRunInput)
+      return Response.json({ receipt }, { status: submitReceiptStatus(receipt) })
+    }
+
+    if (action === 'events' && !segments[5]) {
+      if (req.method !== 'GET') return methodNotAllowed(req.method)
+      const after = url.searchParams.get('after') ?? '0'
+      if (!/^(0|[1-9][0-9]*)$/.test(after)) throw ApiError.badRequest('事件游标无效')
+      return Response.json(await tasks.listTaskEvents(taskId, Number(after)))
     }
 
     if (action === 'operations') {
@@ -248,7 +299,7 @@ export async function handleProductApi(
       }
       if (req.method === 'POST') {
         const input = await readJson<{ lineage_id?: unknown; expected_task_revision?: unknown; expected_lineage_revision?: unknown; client_operation_id?: unknown }>(req)
-        if (!exactKeys(input, ['lineage_id', 'expected_task_revision', 'expected_lineage_revision', 'client_operation_id']) || typeof input.lineage_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || !Number.isSafeInteger(input.expected_lineage_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('lineage current 参数无效')
+        if (!exactKeys(input, ['lineage_id', 'expected_task_revision', 'expected_lineage_revision', 'client_operation_id']) || typeof input.lineage_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0 || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('lineage current 参数无效')
         return Response.json({ receipt: await tasks.setConversationLineageCurrent({ task_id: taskId, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, client_operation_id: input.client_operation_id }) })
       }
       return methodNotAllowed(req.method)
@@ -428,6 +479,12 @@ function assertPlainExactObject(value: unknown, required: readonly string[], opt
   const keys = Object.keys(value)
   return required.every(key => Object.hasOwn(value, key)) && keys.every(key => required.includes(key) || optional.includes(key))
 }
+function containsRawAttachment(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsRawAttachment)
+  if (!value || typeof value !== 'object') return false
+  return Object.entries(value as Record<string, unknown>).some(([key, child]) => ['data', 'mimeType', 'name'].includes(key) || containsRawAttachment(child))
+}
+
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return assertPlainExactObject(value, keys)
 }

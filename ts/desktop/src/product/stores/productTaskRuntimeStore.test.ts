@@ -175,8 +175,8 @@ describe('product task runtime store', () => {
     ])
     expect(runtime.entries).toEqual([])
 
-    expect(store.sendText('task-run-tree', '开始下一项')).toBe(true)
-    expect(useProductTaskRuntimeStore.getState().tasks['task-run-tree']?.runActivities).toEqual([])
+    expect(store.sendText('task-run-tree', '开始下一项')).toBe(false)
+    expect(useProductTaskRuntimeStore.getState().tasks['task-run-tree']?.runActivities).toHaveLength(2)
   })
 
   it('replaces stale run state with a snapshot and accepts later activity updates', () => {
@@ -446,20 +446,15 @@ describe('product task runtime store', () => {
     expect(runtime.entries).toEqual([])
   })
 
-  it('queues real task text and never treats an empty composer as a send', () => {
+  it('does not turn the task socket into a second text-submit transport', () => {
     const store = useProductTaskRuntimeStore.getState()
 
     expect(store.sendText('task-2', '   ')).toBe(false)
     expect(socketMocks.send).not.toHaveBeenCalled()
 
-    expect(store.sendText('task-2', '  /skill ball-hall-daily-review 整理今天订单  ')).toBe(true)
-    expect(socketMocks.send).toHaveBeenCalledWith('task-2', {
-      type: 'user_message',
-      content: '/skill ball-hall-daily-review 整理今天订单',
-    })
-    expect(useProductTaskRuntimeStore.getState().tasks['task-2']?.entries).toEqual([
-      expect.objectContaining({ type: 'user_text', text: '/skill ball-hall-daily-review 整理今天订单' }),
-    ])
+    expect(store.sendText('task-2', '  /skill ball-hall-daily-review 整理今天订单  ')).toBe(false)
+    expect(socketMocks.send).not.toHaveBeenCalled()
+    expect(useProductTaskRuntimeStore.getState().tasks['task-2']).toBeUndefined()
   })
 
   it('matches the product text boundary before creating optimistic task state', () => {
@@ -670,15 +665,6 @@ describe('product task runtime store', () => {
           mimeType: 'image/png',
         }],
       },
-      expect.objectContaining({
-        type: 'user_text',
-        text: '同一说明',
-        attachments: [{
-          type: 'image',
-          name: 'later.png',
-          mimeType: 'image/png',
-        }],
-      }),
     ])
     expect(JSON.stringify(entries)).not.toContain('data:image')
   })

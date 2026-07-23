@@ -1,7 +1,6 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CreateProductTaskInput, ProductTaskRecord } from '../domain/types'
-import type { ProductTaskInitialMessage } from '../taskLaunch'
+import type { ProductTaskRecord } from '../domain/types'
 import type { TaskIndexProps } from './TaskIndex'
 
 const mocks = vi.hoisted(() => ({
@@ -9,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   taskComposerProps: null as unknown,
   events: [] as string[],
   refresh: vi.fn(),
-  createTask: vi.fn(),
+  submitNewTask: vi.fn(),
   continueTask: vi.fn(),
   openTab: vi.fn(),
   openProductTaskTab: vi.fn(),
@@ -40,7 +39,7 @@ vi.mock('../stores/productTaskStore', () => ({
     error: null,
     mutations: {},
     refresh: mocks.refresh,
-    createTask: mocks.createTask,
+    submitNewTask: mocks.submitNewTask,
     renameTask: vi.fn(),
     pinTask: vi.fn(),
     unpinTask: vi.fn(),
@@ -101,13 +100,13 @@ function taskIndexProps(): TaskIndexProps {
 function taskComposerProps(): {
   initialWorkDir?: string
   onCancel: () => void
-  onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
+  onSubmit: (input: { text: string; attachment_ids: string[] }) => Promise<void>
 } {
   expect(mocks.taskComposerProps).not.toBeNull()
   return mocks.taskComposerProps as {
     initialWorkDir?: string
     onCancel: () => void
-    onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
+    onSubmit: (input: { text: string; attachment_ids: string[] }) => Promise<void>
   }
 }
 
@@ -119,8 +118,8 @@ beforeEach(() => {
   mocks.taskRuntimes = {}
   mocks.tabs = []
   mocks.refresh.mockResolvedValue(undefined)
-  mocks.createTask.mockImplementation(async () => {
-    mocks.events.push('create')
+  mocks.submitNewTask.mockImplementation(async () => {
+    mocks.events.push('submit')
     return makeTask()
   })
   mocks.continueTask.mockImplementation(async () => {
@@ -228,45 +227,34 @@ describe('ProductShell', () => {
     expect(mocks.events).toEqual(['continue', 'open-product-task'])
   })
 
-  it('creates on the product open, connect, then initial-message path without opening a generic session', async () => {
+  it('submits atomically, then opens and connects the resulting product task without a raw message transport', async () => {
     render(<ProductShell page="new-task" />)
-    const input: CreateProductTaskInput = {
-      workDir: '/workspace/billiard',
-      title: '整理开球训练',
-    }
+    const input = { text: '请整理本周开球训练计划', attachment_ids: [] }
 
     await act(async () => {
-      await taskComposerProps().onSubmit(input, { text: '请整理本周开球训练计划' })
+      await taskComposerProps().onSubmit(input)
     })
 
+    expect(mocks.submitNewTask).toHaveBeenCalledWith(input)
     expect(mocks.openProductTaskTab).toHaveBeenCalledWith('task-1', '整理开球训练')
     expect(mocks.connectProductTask).toHaveBeenCalledWith('task-1')
-    expect(mocks.sendProductTaskMessage).toHaveBeenCalledWith('task-1', '请整理本周开球训练计划', [])
+    expect(mocks.sendProductTaskMessage).not.toHaveBeenCalled()
     expect(mocks.closeTab).toHaveBeenCalledWith('__new_product_task__')
-    expect(mocks.events).toEqual(['create', 'open-product-task', 'connect-product-task', 'send-product-message'])
+    expect(mocks.events).toEqual(['submit', 'open-product-task', 'connect-product-task'])
   })
 
-  it('forwards inline initial attachments to the product transport without putting them into task creation', async () => {
+  it('keeps attachment IDs in the atomic submit contract and never forwards raw attachment bytes', async () => {
     render(<ProductShell page="new-task" initialWorkDir="/workspace/billiard" />)
-    const input: CreateProductTaskInput = {
-      workDir: '/workspace/billiard',
-      title: '识别球台照片',
-    }
-    const attachments = [{
-      type: 'image' as const,
-      name: '球台.png',
-      data: 'data:image/png;base64,dGFibGU=',
-      mimeType: 'image/png',
-    }]
+    const input = { text: '识别球台照片', attachment_ids: ['attachment-1'] }
 
     await act(async () => {
-      await taskComposerProps().onSubmit(input, { attachments })
+      await taskComposerProps().onSubmit(input)
     })
 
-    expect(mocks.createTask).toHaveBeenCalledWith(input)
-    expect(mocks.sendProductTaskMessage).toHaveBeenCalledWith('task-1', '', attachments)
+    expect(mocks.submitNewTask).toHaveBeenCalledWith(input)
+    expect(mocks.sendProductTaskMessage).not.toHaveBeenCalled()
     expect(taskComposerProps().initialWorkDir).toBe('/workspace/billiard')
-    expect(mocks.events).toEqual(['create', 'open-product-task', 'connect-product-task', 'send-product-message'])
+    expect(mocks.events).toEqual(['submit', 'open-product-task', 'connect-product-task'])
   })
 
   it('returns to the task index and closes the dedicated tab when creation is cancelled', () => {

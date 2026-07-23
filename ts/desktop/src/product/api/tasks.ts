@@ -38,6 +38,28 @@ function reviewPath(taskId: string, resource: 'status' | 'tree' | 'file' | 'diff
 
 type OperationQueryResponse = { receipt: OperationReceipt; authority: AuthoritySnapshot }
 
+export type NewTaskDraftResponse = {
+  draft: { draft_id: string; revision: number }
+  authority_revision: number
+  outcome: 'accepted' | 'duplicate'
+}
+
+export type AtomicTaskSubmitInput = {
+  draft_id: string
+  expected_draft_revision: number
+  client_operation_id: string
+  text: string
+  attachment_ids: string[]
+}
+
+export type AtomicTaskSubmitResponse = {
+  receipt: {
+    outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
+    authority_revision: number
+    result?: { task_id: string; run_id: string; entry_id: string; dispatch_generation: number }
+  }
+}
+
 export const productTasksApi: ProductTaskApi = {
   list: () => productApi.get<ProductTaskIndexResponse>('/api/product/tasks'),
   create: (input: MutationEnvelope<CreateProductTaskInput>) =>
@@ -73,6 +95,17 @@ export const productTasksApi: ProductTaskApi = {
   attachMediaProject: (taskId, projectId) => productApi.post<{ project: ProductTaskMediaProject }>(
     `${taskPath(taskId)}/media/projects/${encodeURIComponent(projectId)}/attach`,
     {},
+  ),
+}
+
+export const productAtomicTaskSubmitApi = {
+  createDraft: (client_operation_id: string) => productApi.post<NewTaskDraftResponse>(
+    '/api/product/composer-drafts/new-task',
+    { ttl_ms: 7 * 24 * 60 * 60 * 1000, client_operation_id },
+  ),
+  submit: (input: AtomicTaskSubmitInput) => productApi.post<AtomicTaskSubmitResponse>(
+    '/api/product/tasks',
+    input,
   ),
 }
 

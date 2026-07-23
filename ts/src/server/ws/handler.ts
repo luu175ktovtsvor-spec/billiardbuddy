@@ -238,7 +238,11 @@ const productTaskAgentCoreAdapter = new ProductTaskAgentCoreAdapter({
   ),
   isDesktopClearCommand,
   createSafeError: toSafeRuntimeError,
-}, undefined, productTaskService)
+}, undefined, {
+  // `startServer()` replaces the singleton for every isolated server root.
+  // Keep this dependency live instead of capturing the import-time instance.
+  requireWorkspaceCapability: (...args) => productTaskService.requireWorkspaceCapability(...args),
+})
 
 export const handleWebSocket = {
   open(ws: ServerWebSocket<WebSocketData>) {
@@ -281,6 +285,7 @@ export const handleWebSocket = {
 
     const msg: ServerMessage = { type: 'connected', sessionId }
     sendMessage(ws, msg)
+    void replayDurableProductEvents(ws, 0)
     productTaskAgentCoreAdapter.sendRunSnapshot(ws)
     replayPendingPermissionRequests(ws, sessionId)
   },
@@ -296,6 +301,20 @@ export const handleWebSocket = {
       const parsed = JSON.parse(
         typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()
       ) as unknown
+
+      const resumeCursor = productResumeCursor(parsed)
+      if (resumeCursor !== null) {
+        void replayDurableProductEvents(ws, resumeCursor)
+        return
+      }
+
+      // BB-02C has one submit path: durable HTTP submit with attachment IDs.
+      // A websocket user_message is the retired raw transport, including a
+      // text-only payload.  It must not reach Core or any filesystem path.
+      if (isRetiredRawProductMessage(parsed)) {
+        sendProductProtocolError(ws, 'attachment_ingest_unavailable')
+        return
+      }
 
       void productTaskAgentCoreAdapter.handleIncoming(ws, parsed).catch((err) => {
         void diagnosticsService.recordEvent({
@@ -355,6 +374,47 @@ export const handleWebSocket = {
   drain(ws: ServerWebSocket<WebSocketData>) {
     // Backpressure handling - called when the socket is ready to receive more data
   },
+}
+
+function productResumeCursor(value: unknown): number | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record.type !== 'resume' || Object.keys(record).length !== 2 || !Number.isSafeInteger(record.cursor) || record.cursor < 0) return null
+  return record.cursor
+}
+
+function isRetiredRawProductMessage(value: unknown): boolean {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
+    (value as Record<string, unknown>).type === 'user_message'
+}
+
+function sendProductProtocolError(
+  ws: ServerWebSocket<WebSocketData>,
+  code: 'attachment_ingest_unavailable',
+): void {
+  ws.send(JSON.stringify({ type: 'error', code, retryable: false }))
+}
+
+async function replayDurableProductEvents(
+  ws: ServerWebSocket<WebSocketData>,
+  afterEventSequence: number,
+): Promise<void> {
+  const taskId = ws.data.productTaskId
+  if (!taskId || ws.data.channel !== 'product') return
+  try {
+    const { events, cursor } = await productTaskService.listTaskEvents(taskId, afterEventSequence)
+    for (const event of events) {
+      ws.send(JSON.stringify({
+        type: 'user_text',
+        text: event.text,
+        replayed: true,
+        event_sequence: event.event_sequence,
+      }))
+    }
+    ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))
+  } catch {
+    sendProductProtocolError(ws, 'attachment_ingest_unavailable')
+  }
 }
 
 // ============================================================================

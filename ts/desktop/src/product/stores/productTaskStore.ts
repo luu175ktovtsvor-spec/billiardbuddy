@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { ProductApiError, productApiUserFacingError } from '../api/client'
-import { productTasksApi } from '../api/tasks'
+import { productAtomicTaskSubmitApi, productTasksApi } from '../api/tasks'
 import { PRODUCT_DOMAIN_VERSION } from '../domain/types'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import type {
@@ -43,6 +43,7 @@ type ProductTaskStore = {
   clearError: () => void
   applyRuntimeTaskTitle: (taskId: string, title: string) => void
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
+  submitNewTask: (input: { text: string; attachment_ids: string[] }) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
   pinTask: (taskId: string) => Promise<ProductTaskRecord>
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
@@ -226,6 +227,42 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
       const task = await runMutation('create', input, (envelope) => productTasksApi.create(envelope as MutationEnvelope<CreateProductTaskInput>))
       await get().refresh()
       return task
+    },
+    submitNewTask: async (input) => {
+      const intentKey = 'create'
+      const text = input.text.trim()
+      if (!text) throw new Error('Task text is required')
+      const operationId = makeOperationId()
+      set((state) => ({ error: null, mutations: { ...state.mutations, [intentKey]: true } }))
+      try {
+        const draft = await productAtomicTaskSubmitApi.createDraft(`${operationId}-draft`)
+        const submitted = await productAtomicTaskSubmitApi.submit({
+          draft_id: draft.draft.draft_id,
+          expected_draft_revision: draft.draft.revision,
+          client_operation_id: operationId,
+          text,
+          attachment_ids: input.attachment_ids,
+        })
+        const taskId = submitted.receipt.result?.task_id
+        if (!taskId || !['accepted', 'duplicate'].includes(submitted.receipt.outcome)) throw new Error('Atomic task submit was not accepted')
+        const index = await productTasksApi.list()
+        const task = index.tasks.find((current) => current.id === taskId)
+        if (!task) throw new Error('Accepted task projection is unavailable')
+        taskIndexRequestSequence += 1
+        set((state) => ({
+          index,
+          isLoading: false,
+          confirmedAuthorityRevision: Math.max(state.confirmedAuthorityRevision, submitted.receipt.authority_revision),
+          mutations: { ...state.mutations, [intentKey]: false },
+        }))
+        return task
+      } catch (error) {
+        set((state) => ({
+          error: errorMessage(error, '暂时无法提交任务，请稍后重试。'),
+          mutations: { ...state.mutations, [intentKey]: false },
+        }))
+        throw error
+      }
     },
     renameTask: (taskId, title) => runMutation(productTaskMutationKey(taskId, 'rename'), { taskId, title }, (envelope) =>
       productTasksApi.update(taskId, envelope as MutationEnvelope<UpdateProductTaskInput>)),

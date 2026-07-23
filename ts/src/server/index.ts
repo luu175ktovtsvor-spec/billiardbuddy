@@ -21,7 +21,7 @@ import { ensurePersistentStorageUpgraded } from './services/persistentStorageMig
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
-import { productTaskService } from './product/taskService.js'
+import { resetProductTaskServiceForServer } from './product/taskService.js'
 import { ProductTaskMediaService } from './product/taskMediaService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkbenches.js'
@@ -104,6 +104,7 @@ export function startServer(port = PORT, host = HOST) {
   // needs only this boolean; it never receives the raw confirmation value.
   const mediaUiCapability = consumeMediaUiCapability()
   configureMediaWorkbenchDiscovery(Boolean(mediaUiCapability))
+  const productTaskService = resetProductTaskServiceForServer()
   // All media-facing routes share one process-local service so video exports from
   // task views and the media workbench use the same FFmpeg admission queue.
   const mediaService = new MediaProjectService()

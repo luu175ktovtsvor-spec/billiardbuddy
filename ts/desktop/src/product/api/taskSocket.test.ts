@@ -113,12 +113,11 @@ describe('ProductTaskSocketManager', () => {
     expect(lifecycle.at(-1)).toEqual({ type: 'connected', reconnected: true })
   })
 
-  it('queues real task commands until the product socket reconnects', async () => {
+  it('queues typed stop commands until the product socket reconnects', async () => {
     manager.connect('task-1', () => {})
     const first = FakeWebSocket.instances[0]!
     first.open()
-    manager.send('task-1', { type: 'user_message', content: '整理今天的订单' })
-    expect(first.sent).toEqual([JSON.stringify({ type: 'user_message', content: '整理今天的订单' })])
+    expect(first.sent).toEqual([JSON.stringify({ type: 'resume', cursor: 0 })])
 
     first.fail()
     manager.send('task-1', { type: 'stop_generation' })
@@ -126,24 +125,17 @@ describe('ProductTaskSocketManager', () => {
 
     const second = FakeWebSocket.instances[1]!
     second.open()
-    expect(second.sent).toEqual([JSON.stringify({ type: 'stop_generation' })])
+    expect(second.sent).toEqual([
+      JSON.stringify({ type: 'resume', cursor: 0 }),
+      JSON.stringify({ type: 'stop_generation' }),
+    ])
   })
 
-  it('serializes only product attachment and approval envelopes', () => {
+  it('serializes only cursor, approval, and stop envelopes', () => {
     manager.connect('task-1', () => {})
     const socket = FakeWebSocket.instances[0]!
     socket.open()
 
-    manager.send('task-1', {
-      type: 'user_message',
-      content: '',
-      attachments: [{
-        type: 'image',
-        name: '球台.png',
-        mimeType: 'image/png',
-        data: 'data:image/png;base64,QQ==',
-      }],
-    })
     manager.send('task-1', {
       type: 'permission_response',
       requestId: 'permission-1',
@@ -159,21 +151,14 @@ describe('ProductTaskSocketManager', () => {
       requestId: 'computer-use-1',
       allowed: false,
     })
+    manager.send('task-1', { type: 'stop_generation' })
 
     expect(socket.sent).toEqual([
-      JSON.stringify({
-        type: 'user_message',
-        content: '',
-        attachments: [{
-          type: 'image',
-          name: '球台.png',
-          mimeType: 'image/png',
-          data: 'data:image/png;base64,QQ==',
-        }],
-      }),
+      JSON.stringify({ type: 'resume', cursor: 0 }),
       JSON.stringify({ type: 'permission_response', requestId: 'permission-1', allowed: true }),
       JSON.stringify({ type: 'ask_user_question_response', requestId: 'question-1', answers: ['方案 A'] }),
       JSON.stringify({ type: 'computer_use_permission_response', requestId: 'computer-use-1', allowed: false }),
+      JSON.stringify({ type: 'stop_generation' }),
     ])
   })
 

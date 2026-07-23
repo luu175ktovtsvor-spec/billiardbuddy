@@ -1,15 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type {
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   ProductProject,
   ProductProjectDirectory,
   ProductTaskAction,
   ProductTaskIndexResponse,
-  ProductTaskPermissionMode,
   ProductTaskRecord,
 } from '../domain/types'
-import { AttachmentGallery } from '../../components/chat/AttachmentGallery'
 import { CopyButton } from '../../components/shared/CopyButton'
 import {
   productTaskCommandsApi,
@@ -22,15 +19,9 @@ import {
   type TaskComposerCommand,
 } from '../taskComposerCommands'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import {
-  filesToInlineComposerAttachments,
-  type ComposerAttachment,
-} from '../../lib/composerAttachments'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { buildProductTaskLink } from '../../../../shared/product/taskLinks'
-import type { ProductTaskInitialMessage } from '../taskLaunch'
-import { validateProductTaskAttachments } from '../taskAttachments'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import {
   PRODUCT_TASK_RUNTIME_LABEL,
@@ -59,28 +50,6 @@ const WORKTREE_STATE_LABEL: Record<string, string> = {
   planned: '工作树计划中',
   materialized: '独立工作树已启用',
 }
-
-const PRODUCT_TASK_PERMISSION_OPTIONS: Array<{
-  value: ProductTaskPermissionMode
-  label: string
-  description: string
-}> = [
-  {
-    value: 'ask',
-    label: '每次确认',
-    description: '涉及文件修改和高风险操作时会先征求你的确认。',
-  },
-  {
-    value: 'allow_edits',
-    label: '允许自动修改文件',
-    description: '可直接修改工作目录中的文件；其他高风险操作仍会请求确认。',
-  },
-  {
-    value: 'plan_only',
-    label: '先制定计划',
-    description: '先分析并给出方案，不直接修改文件。',
-  },
-]
 
 function taskActionKey(taskId: string, action: string): string {
   return `${taskId}:${action}`
@@ -278,26 +247,20 @@ export function TaskComposer({
   initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
-  onSubmit: (input: CreateProductTaskInput, initialMessage?: ProductTaskInitialMessage) => Promise<void>
+  onSubmit: (input: { text: string; attachment_ids: string[] }) => Promise<void>
 }) {
   const [projectId, setProjectId] = useState('')
   const [directoryId, setDirectoryId] = useState('')
   const [workDir, setWorkDir] = useState(() => initialWorkDir ?? '')
   const [title, setTitle] = useState('')
   const [initialText, setInitialText] = useState('')
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
-  const [attachmentError, setAttachmentError] = useState<string | null>(null)
-  const [attachmentReadRetryFiles, setAttachmentReadRetryFiles] = useState<File[] | null>(null)
   const [workDirPickerError, setWorkDirPickerError] = useState<string | null>(null)
-  const [useWorktree, setUseWorktree] = useState(false)
-  const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask')
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const composingRef = useRef(false)
   const desktopHost = getDesktopHost()
   const canChooseWorkDir = desktopHost.isDesktop && desktopHost.capabilities.dialogs
@@ -450,69 +413,11 @@ export function TaskComposer({
     }
   }
 
-  const appendAttachments = (nextAttachments: ComposerAttachment[]) => {
-    if (nextAttachments.length === 0) return
-    setAttachments((current) => [...current, ...nextAttachments])
-    setAttachmentError(null)
-    setAttachmentReadRetryFiles(null)
-  }
-
-  const openAttachmentPicker = () => {
-    fileInputRef.current?.click()
-  }
-
-  const readBrowserFiles = (files: File[]) => {
-    if (files.length === 0) return
-
-    setAttachmentError(null)
-    setAttachmentReadRetryFiles(null)
-    void filesToInlineComposerAttachments(files)
-      .then(appendAttachments)
-      .catch(() => {
-        setAttachmentError('无法读取所选附件，请重试或重新选择文件。')
-        setAttachmentReadRetryFiles(files)
-      })
-  }
-
-  const selectBrowserFiles = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files
-    if (!files) return
-
-    readBrowserFiles(Array.from(files))
-    event.target.value = ''
-  }
-
-  const removeAttachment = (id: string) => {
-    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
-    setAttachmentError(null)
-    setAttachmentReadRetryFiles(null)
-  }
-
   const submitTask = () => {
-    if (isSubmitting || !normalizedWorkDir) return
-
-    const attachmentResult = validateProductTaskAttachments(attachments)
-    if (attachmentResult.ok === false) {
-      setAttachmentError(attachmentResult.message)
-      setAttachmentReadRetryFiles(null)
-      return
-    }
-
-    const taskInput: CreateProductTaskInput = {
-      workDir: normalizedWorkDir,
-      ...(projectId && directoryId ? { projectId, directoryId } : {}),
-      ...(title.trim() ? { title: title.trim() } : {}),
-      ...(useWorktree ? { useWorktree: true } : {}),
-      permissionMode,
-    }
-    const initialAttachments = attachmentResult.attachments
-    const initialMessage: ProductTaskInitialMessage = {
-      text: resolveTaskComposerRuntimeCommand(initialText.trim(), taskComposerCommands),
-      attachments: initialAttachments,
-    }
-    void (initialMessage.text || initialAttachments.length > 0
-      ? onSubmit(taskInput, initialMessage)
-      : onSubmit(taskInput))
+    if (isSubmitting) return
+    const text = resolveTaskComposerRuntimeCommand(initialText.trim(), taskComposerCommands)
+    if (!text) return
+    void onSubmit({ text, attachment_ids: [] })
   }
 
   const handleInitialGoalKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -554,7 +459,7 @@ export function TaskComposer({
       <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         <label htmlFor="product-task-work-dir">工作目录</label>
         <div className="flex gap-2">
-          <input id="product-task-work-dir" aria-label="工作目录" required value={workDir} onChange={(event) => setRegisteredWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
+          <input id="product-task-work-dir" aria-label="工作目录" value={workDir} onChange={(event) => setRegisteredWorkDir(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
           {canChooseWorkDir ? (
             <button type="button" onClick={() => void chooseWorkDir()} className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">选择文件夹</button>
           ) : null}
@@ -569,22 +474,6 @@ export function TaskComposer({
       <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         任务标题（可选）
         <input aria-label="任务标题" value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]" />
-      </label>
-      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
-        执行权限
-        <select
-          aria-label="执行权限"
-          value={permissionMode}
-          onChange={(event) => setPermissionMode(event.target.value as ProductTaskPermissionMode)}
-          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[var(--color-text-primary)]"
-        >
-          {PRODUCT_TASK_PERMISSION_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <span className="text-xs leading-5 text-[var(--color-text-tertiary)]">
-          {PRODUCT_TASK_PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.description}
-        </span>
       </label>
       <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)] md:col-span-2">
         <label className="flex flex-col gap-1">
@@ -601,35 +490,7 @@ export function TaskComposer({
             className="resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
         </label>
-        {attachments.length > 0 ? (
-          <div className="pt-1">
-            <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
-          </div>
-        ) : null}
-        {attachmentError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-2 pt-1 text-xs text-[var(--color-error)]">
-            <span>{attachmentError}</span>
-            {attachmentReadRetryFiles ? (
-              <button type="button" onClick={() => readBrowserFiles(attachmentReadRetryFiles)} className="underline underline-offset-2">重试读取</button>
-            ) : null}
-          </div>
-        ) : null}
-        <div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={selectBrowserFiles}
-          />
-          <button
-            type="button"
-            onClick={openAttachmentPicker}
-            className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]"
-          >
-            添加初始附件
-          </button>
-        </div>
+        <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">当前阶段仅提交文本；附件会在附件导入能力完成后开放。</p>
         {query !== null ? (
           <TaskComposerSlashPicker
             workDir={normalizedWorkDir}
@@ -640,12 +501,8 @@ export function TaskComposer({
           />
         ) : null}
       </div>
-      <label className="flex items-center gap-2 self-end text-sm text-[var(--color-text-secondary)]">
-        <input type="checkbox" checked={useWorktree} onChange={(event) => setUseWorktree(event.target.checked)} />
-        在新工作树中开始
-      </label>
       <div className="flex gap-2 md:col-span-2">
-        <button type="submit" disabled={isSubmitting || !workDir.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在创建…' : '创建任务'}</button>
+        <button type="submit" disabled={isSubmitting || !initialText.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在提交…' : '提交任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
       </div>
     </form>

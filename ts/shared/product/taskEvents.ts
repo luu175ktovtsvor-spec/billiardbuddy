@@ -115,6 +115,7 @@ export type ProductTaskQuestion = {
 }
 
 export type ProductTaskSafeErrorCode =
+  | 'attachment_ingest_unavailable'
   | 'task_failed'
   | 'task_unavailable'
   | 'input_too_large'
@@ -149,6 +150,8 @@ export type ProductTaskEvent =
       type: 'user_text'
       text: string
       replayed: true
+      /** Permanent durable-ledger cursor; absent only for legacy Core replay. */
+      event_sequence?: number
       attachments?: ProductTaskAttachmentSummary[]
     }
   | { type: 'assistant_text_start' }
@@ -193,6 +196,7 @@ export type ProductTaskEvent =
       code: ProductTaskSafeErrorCode
       retryable: boolean
     }
+  | { type: 'resume_cursor'; cursor: number }
   | { type: 'title_updated'; title: string }
 
 /**
@@ -231,4 +235,16 @@ export type ProductTaskThreadEntry =
 export type ProductTaskThread = {
   taskId: string
   entries: ProductTaskThreadEntry[]
+}
+
+/** Durable BB-02C ledger event. This is distinct from authority operation audit. */
+export type TaskEvent = {
+  event_sequence: number
+  task_id: string
+  run_id: string
+  type: 'user_text'
+  entry_id: string
+  text: string
+  attachment_ids: string[]
+  created_at: string
 }

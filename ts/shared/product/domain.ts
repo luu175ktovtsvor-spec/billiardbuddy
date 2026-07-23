@@ -201,3 +201,31 @@ export type CreateProductSideTaskInput = ProductTaskMutationEnvelope & {
   sourceEntryId: string
   title?: string
 }
+
+/** Strict public submit input. Attachment bytes are never accepted here. */
+export type SubmitTaskRunInput = {
+  client_operation_id: string
+  expected_task_revision: number
+  expected_lineage_revision: number
+  text: string
+  attachment_ids: string[]
+  draft_id?: string
+  expected_draft_revision?: number
+}
+
+export type CreateAndSubmitTaskInput = {
+  draft_id: string
+  expected_draft_revision: number
+  client_operation_id: string
+  text: string
+  attachment_ids: string[]
+}
+
+export type SubmitTaskRunReceipt = {
+  client_operation_id: string
+  outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
+  authority_revision: number
+  entity_revisions: Record<string, number>
+  result?: { task_id: string; run_id: string; entry_id: string; dispatch_generation: number }
+  error?: string
+}
