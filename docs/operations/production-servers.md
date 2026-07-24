@@ -31,6 +31,7 @@
 - 美国 `relay.db` 已原位增量增加 `acknowledged_at`。迁移后聚合审计发现 2030 条 2026-07-19—20 日旧容量测试终态记录（1968 cancelled、58 succeeded、4 failed，全部 `provider=legacy`）和 58 个对应结果 blob；在服务无活跃任务时停机一致性删除并重建空库，验收后 task/blob 均为 0，临时备份已删除。`RELAY_ARK_KEY` 已配置，Seedream 模型和并发值使用当前 relay 代码的正式缺省值。
 - 快照验收时 `qfgw`、`qfrelay`、`qfgw-tunnel` 和 `nginx` 均为 active；大陆 loopback、美国隧道、美国 relay 和 `https://zzyppz.cn/gw/healthz` 全部通过。部署上传物和临时回滚包已在验收后删除。
 - 美国真实主机使用临时 SQLite/blob 和假上游完成 34 项负载验收：1000 个小任务、500 个中等改图输入的持久排队、owner 公平、取消、恢复、TTL 和 ack 全部通过。未调用收费上游；这不是 OpenAI/Seedream 真实吞吐证明。
+- 2026-07-24 13:27 CST 完成模块 15 实时复核：大陆 `qfgw` active，`GW_FUNASR_KEY` 非空且 Registry 仍只有 `fun-asr-flash-2026-06-15` 承担正式 `SpeechTranscription`；美国 `qfgw-tunnel`、`qfrelay`、`nginx` 全部 active，loopback、隧道和公网 `/gw/healthz` 均通过。relay 空闲且 task/blob 无新增测试垃圾，Seedream 仍为 configured，容量为全局 6、单 owner 1。本模块只改变桌面本地领域层和请求 operation header，远端运行闭包未变化，因此未做无意义重部署，上一条代码哈希继续有效。
 
 ## 2. 大陆服务器
 
@@ -110,6 +111,21 @@ journalctl -u qfgw-tunnel -u qfrelay -n 100 --no-pager
 TLS 由 Certbot 管理。迁移或续期后必须检查 `certbot certificates`、`systemctl status certbot.timer` 和实际 HTTPS 健康检查。
 
 ## 4. 备份
+
+### 4.1 桌面语音记录不在服务器
+
+Fun-ASR 的上游凭据和用量回执在大陆 qfgw；但产品的 `VoiceOperation`、`Transcript`、不可变 revision 与 consumer binding 保存在每台桌面自己的 sidecar 数据目录，不在两台服务器：
+
+```text
+<CLAUDE_CONFIG_DIR>/billiardbuddy/voice/
+  operations/    # 来源摘要、状态、Transcript 引用；不含音频字节
+  transcripts/   # raw、edit revisions 和 Composer/video Evidence bindings
+  locks/         # 写入互斥文件，可重建，不需要迁移
+```
+
+迁移用户数据时，在桌面 sidecar 完全退出后复制 `operations/` 和 `transcripts/`，保持目录仅当前用户可读；不要只迁移 Transcript 而遗漏 operation。音频文件从不落入该目录。`BB_VOICE_RETENTION_DAYS` 缺省为 30，可设 1—365；未绑定终态记录到期删除，存在 consumer binding 的记录不由该 GC 删除。服务器备份不能替代桌面数据备份。
+
+### 4.2 两台服务器一致性备份
 
 一致性备份必须短暂停止写入服务，不能只复制 SQLite 主文件而遗漏 WAL。建议先在服务器本机生成仅 root 可读的快照，再通过受控通道传出：
 
