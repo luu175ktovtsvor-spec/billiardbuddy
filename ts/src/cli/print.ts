@@ -95,7 +95,7 @@ import type { PermissionExecutionEnvelope } from '../../shared/product/permissio
 import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 import { runWithProductPermissionEnvelope } from 'src/utils/permissions/productPermissionRuntime.js'
 import { runWithCwdOverride } from 'src/utils/cwd.js'
-import { projectProductTaskActionApproval } from 'src/server/product/taskApprovalProjection.js'
+import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } from 'src/server/product/taskApprovalProjection.js'
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from 'src/server/services/productAutoMemory.js'
@@ -477,7 +477,7 @@ export async function createServerPrivateNativeCorePort(input: {
   let controller: AbortController | undefined
   let terminal = false
   const approvals = new Map<string, (approved: boolean) => void>()
-  const listeners = new Set<(message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void>()
+  const listeners = new Set<(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void>()
   const emit = (message: Parameters<(typeof listeners)['add']>[0] extends (message: infer Message) => void ? Message : never) => listeners.forEach(listener => listener(message))
   const finish = (state: 'completed' | 'stopped' | 'recovery_required') => { if (terminal) return; terminal = true; emit({ type: 'terminal', state, run_id: input.run_id }) }
   const emitAssistantText = (message: Message) => {
@@ -536,6 +536,7 @@ export async function createServerPrivateNativeCorePort(input: {
                   event: 'approval',
                   request_id: toolUseId,
                   action: projectProductTaskActionApproval(tool.name),
+                  review: projectAgentWorkerApprovalReview(tool, toolInput),
                 })
                 const approved = await new Promise<boolean>(resolve => approvals.set(toolUseId, resolve))
                 approvals.delete(toolUseId)

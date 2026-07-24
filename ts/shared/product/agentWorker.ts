@@ -5,6 +5,13 @@ import type { ProductTaskActionApproval } from './taskEvents.js'
 export const AGENT_WORKER_PROTOCOL_VERSION = 1 as const
 export const AGENT_WORKER_MAX_FRAME_BYTES = 64 * 1024
 
+export type AgentWorkerApprovalReviewFacts = {
+  category: 'filesystem' | 'command' | 'network' | 'extension' | 'other'
+  read_only: boolean
+  destructive: boolean
+  open_world: boolean
+}
+
 export type AgentWorkerVersionRange = { min: number; max: number }
 export type AgentWorkerStart = {
   type: 'start'
@@ -27,7 +34,7 @@ export type AgentWorkerOutbound =
   | { type: 'ready' }
   | { type: 'claim_receipt'; outcome: 'claimed' | 'duplicate' | 'recovery_required' | 'rejected'; run_id: string; code?: string }
   | { type: 'event'; event: 'started' | 'delta' | 'tool' | 'stopping'; data?: string }
-  | { type: 'event'; event: 'approval'; request_id: string; action: ProductTaskActionApproval }
+  | { type: 'event'; event: 'approval'; request_id: string; action: ProductTaskActionApproval; review: AgentWorkerApprovalReviewFacts }
   | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }
   | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'MODEL_CONFIGURATION_INVALID' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
   | { type: 'shutdown' }

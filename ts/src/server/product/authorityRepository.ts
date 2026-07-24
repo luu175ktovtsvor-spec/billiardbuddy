@@ -226,16 +226,20 @@ function validateLineage(value: unknown, key: string): void {
 
 function validateRunApproval(value: unknown): void {
   const approval = object(value)
-  exactKeys(approval, ['request_id', 'action', 'status', 'requested_at'], ['decision', 'reviewer', 'resolved_at'])
+  exactKeys(approval, ['request_id', 'action', 'status', 'requested_at'], ['review', 'decision', 'reviewer', 'resolution_reason', 'resolved_at'])
   const action = object(approval.action)
   exactKeys(action, ['what', 'scope', 'consequence'])
+  const review = approval.review === undefined ? undefined : object(approval.review)
+  if (review) exactKeys(review, ['category', 'read_only', 'destructive', 'open_world'])
   if (!requiredString(approval.request_id) || !isTimestamp(approval.requested_at)) invalid()
   if ([action.what, action.scope, action.consequence].some(text => !requiredString(text) || (text as string).length > 500)) invalid()
+  if (review && (!['filesystem', 'command', 'network', 'extension', 'other'].includes(review.category as string) || typeof review.read_only !== 'boolean' || typeof review.destructive !== 'boolean' || typeof review.open_world !== 'boolean')) invalid()
   if (approval.status === 'pending') {
-    if (approval.decision !== undefined || approval.reviewer !== undefined || approval.resolved_at !== undefined) invalid()
+    if (approval.decision !== undefined || approval.reviewer !== undefined || approval.resolution_reason !== undefined || approval.resolved_at !== undefined) invalid()
     return
   }
-  if (approval.status !== 'resolved' || !['allowed', 'denied'].includes(approval.decision as string) || !['user', 'automatic'].includes(approval.reviewer as string) || !isTimestamp(approval.resolved_at)) invalid()
+  if (approval.status !== 'resolved' || !['allowed', 'denied'].includes(approval.decision as string) || !['user', 'automatic'].includes(approval.reviewer as string) || (approval.resolution_reason !== undefined && !['user_decision', 'read_only_local', 'destructive', 'data_egress', 'write_boundary', 'unknown_capability'].includes(approval.resolution_reason as string)) || !isTimestamp(approval.resolved_at)) invalid()
+  if (approval.resolution_reason !== undefined && ((approval.reviewer === 'user') !== (approval.resolution_reason === 'user_decision'))) invalid()
 }
 
 function validate(file: AuthorityFile): AuthorityFile {
