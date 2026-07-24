@@ -138,6 +138,7 @@ describe('E2E: Full Flow', () => {
       recurring: true,
       title: 'daily-review',
       description: 'Daily code review',
+      workDir: tmpDir,
     })
     expect(status).toBe(201)
     expect(data.task.id).toBeDefined()

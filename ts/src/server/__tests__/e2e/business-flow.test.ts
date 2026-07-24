@@ -88,7 +88,7 @@ describe('Business Flow: Scheduled Tasks', () => {
       schedule: '0 9 * * 1-5',
       instruction: 'Look at git log from yesterday, summarize changes, list blockers',
       recurring: true,
-      workDir: '/Users/dev/project',
+      workDir: tmpDir,
     })
     expect(status).toBe(201)
     expect(data.task).toBeDefined()
@@ -108,6 +108,7 @@ describe('Business Flow: Scheduled Tasks', () => {
       schedule: '30 14 5 4 *',
       instruction: 'Run security audit',
       recurring: false,
+      workDir: tmpDir,
     })
     expect(status).toBe(201)
     expect(data.task.recurring).toBe(false)
