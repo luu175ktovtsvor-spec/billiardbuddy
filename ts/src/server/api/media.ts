@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
   addVideoSourceInputSchema,
+  analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
@@ -163,7 +164,9 @@ function publicTask(task: MediaTask): PublicMediaTask {
     ? 'MEDIA_IMAGE_UNAVAILABLE'
     : task.kind === 'video.probe'
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
-      : 'MEDIA_VIDEO_EXPORT_FAILED'
+      : task.kind === 'video.analyze' || task.kind === 'video.plan'
+        ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
+        : 'MEDIA_VIDEO_EXPORT_FAILED'
   const failure = _rawError ? mediaSafeError(persistedErrorCode ?? fallback) : null
   const safeResult = task.kind === 'image.generate' && persistedResult
     ? Object.fromEntries([
@@ -355,6 +358,12 @@ export function createMediaApiHandler(
           if (req.method !== 'PUT') throw methodNotAllowed(req.method)
           const input = updateVideoTimelineInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicProject(await service.updateVideoTimeline(projectId, input)) })
+        }
+        if (action === 'analyze') {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = analyzeVideoProjectInputSchema.parse(await parseJson(req))
+          return Response.json({ task: publicTask(await service.analyzeVideoProject(projectId, input)) }, { status: 202 })
         }
         if (action === 'scenes') {
           const sceneId = segments[6]

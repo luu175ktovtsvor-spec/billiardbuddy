@@ -272,6 +272,10 @@ test('paid image submission and final render require the Electron-owned UI capab
       calls.push(`render:${projectId}`)
       return task('task_video001', projectId, 'video.render')
     },
+    async analyzeVideoProject(projectId: string) {
+      calls.push(`analyze:${projectId}`)
+      return task('task_analyze01', projectId, 'video.analyze')
+    },
     async saveImageOutput(projectId: string, input: { output_id?: string; version_id?: string; output_path: string }) {
       calls.push(`save:${projectId}:${input.version_id ?? input.output_id}:${input.output_path}`)
       return { path: input.output_path }
@@ -288,6 +292,11 @@ test('paid image submission and final render require the Electron-owned UI capab
     body: JSON.stringify({ revision: 0, output_path: '/tmp/final.mp4' }),
   })
   expect(deniedRender.status).toBe(403)
+  expect((await route(handler, '/api/media/videos/projects/vid_project01/analyze', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ base_revision: 0, user_goal: '剪成活动短片' }),
+  })).status).toBe(403)
   const deniedOperation = await route(handler, '/api/media/images/projects/img_project01/operations', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -361,6 +370,11 @@ test('paid image submission and final render require the Electron-owned UI capab
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ revision: 0, output_path: '/tmp/final.mp4' }),
   })).status).toBe(202)
+  expect((await route(handler, '/api/media/videos/projects/vid_project01/analyze', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ base_revision: 0, user_goal: '剪成活动短片' }),
+  })).status).toBe(202)
   expect((await route(handler, '/api/media/images/projects/img_project01/outputs/out_result001/save', {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
@@ -376,6 +390,7 @@ test('paid image submission and final render require the Electron-owned UI capab
     'operate:img_project01',
     'update:img_project01',
     'render:vid_project01',
+    'analyze:vid_project01',
     'save:img_project01:out_result001:/tmp/final.png',
     'save:img_project01:ver_result001:/tmp/version.png',
   ])

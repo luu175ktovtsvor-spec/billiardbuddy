@@ -14,6 +14,15 @@ const DATA_EGRESS_CONSENT = {
   acknowledged: true as const,
   acknowledged_at: '2026-07-24T00:00:00.000Z',
 }
+const MANAGED_REMOTE_RECEIPT = {
+  receipt_id: 'b'.repeat(64),
+  policy_revision: 'bb-04f-managed-remote-v1' as const,
+  capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const,
+  purpose: 'managed_ai_tasks' as const,
+  billable: true as const,
+  granted_at: '2026-07-24T00:00:00.000Z',
+  revoked_at: null,
+}
 
 function pngBytes(width: number, height: number): Buffer {
   const bytes = Buffer.alloc(24)
@@ -966,6 +975,234 @@ describe('MediaProjectService video projects', () => {
     expect(ffmpeg).toContain('+faststart')
     expect(ffmpeg?.join(' ')).toContain('concat=n=1:v=1:a=1')
     expect(ffmpeg?.join(' ')).toContain('channel_layouts=stereo')
+  })
+
+  test('routes bounded frames, audio, evidence, and planning through the managed gateway', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source-video')
+    const gatewayCalls: Array<{ url: string; headers: Headers; body: string }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input)
+      const headers = new Headers(init?.headers)
+      const body = typeof init?.body === 'string' ? init.body : ''
+      gatewayCalls.push({ url, headers, body })
+      if (url.endsWith('/v1/audio/transcriptions')) return Response.json({ text: '进球以后挥手庆祝' })
+      const sourceId = body.match(/src_[a-f0-9]{32}/)?.[0]
+      if (!sourceId) return Response.json({ detail: 'missing source' }, { status: 400 })
+      const isVisualAnalysis = body.includes('image_url')
+      const content = isVisualAnalysis
+        ? {
+            evidence: [{
+              kind: 'visual',
+              source_id: sourceId,
+              in_ms: 100,
+              out_ms: 900,
+              text: '人物完成击球并庆祝',
+              confidence: 0.92,
+              warnings: [],
+            }],
+            gaps: [],
+          }
+        : (() => {
+            const evidenceId = body.match(/evidence_[a-f0-9]{32}/)?.[0]
+            return {
+              brief: {
+                content_type: '门店活动短片',
+                output_channel: '竖屏社交媒体',
+                must_preserve_text: [],
+                recommended_direction: '先结果后过程',
+                rationale: ['视觉和转写均支持这一叙事顺序'],
+                gaps: [],
+              },
+              scenes: [{
+                source_id: sourceId,
+                in_ms: 100,
+                out_ms: 900,
+                story_role: 'hook',
+                evidence_ids: [evidenceId],
+                rationale: '以庆祝动作开场',
+                needs_review: false,
+              }],
+              alternatives: [{
+                label: '过程优先',
+                tradeoff: '信息更完整，但开头冲击力较弱',
+                scenes: [{
+                  source_id: sourceId,
+                  in_ms: 100,
+                  out_ms: 900,
+                  story_role: 'context',
+                  evidence_ids: [evidenceId],
+                  rationale: '先交代动作过程',
+                  needs_review: false,
+                }],
+              }],
+            }
+          })()
+      return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
+    }
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      env: {
+        QF_GATEWAY_URL: 'https://gateway.example/gw',
+        QF_GATEWAY_TOKEN: 'test-access-token',
+        BB_INSTALLATION_ID: 'install_video_analysis_0001',
+      },
+      fetchImpl,
+      remoteConsentReceipt: async () => MANAGED_REMOTE_RECEIPT,
+      runProcess: async command => {
+        if (command.includes('-show_streams')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              format: { duration: '2' },
+              streams: [{ codec_type: 'video', width: 1080, height: 1920 }, { codec_type: 'audio' }],
+            }),
+            stderr: '',
+          }
+        }
+        if (command.includes('-frames:v')) await writeFile(command.at(-1)!, 'jpeg-frame')
+        else if (command.includes('-vn')) await writeFile(command.at(-1)!, 'mp3-audio')
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+    })
+    const created = await service.createVideoProject({ title: '真实活动素材' })
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const analyze = await service.analyzeVideoProject(project.id, {
+      base_revision: project.revision,
+      user_goal: '剪成一条突出进球瞬间的竖屏短片',
+    })
+    let analyzed = await service.getTask(analyze.id, false)
+    for (let index = 0; index < 100 && analyzed.status === 'running'; index += 1) {
+      await Bun.sleep(5)
+      analyzed = await service.getTask(analyze.id, false)
+    }
+    expect(analyzed).toMatchObject({ status: 'succeeded', result: { evidence_count: 3 } })
+    const planTaskId = String(analyzed.result?.next_task_id)
+    let planned = await service.getTask(planTaskId, false)
+    for (let index = 0; index < 100 && planned.status === 'running'; index += 1) {
+      await Bun.sleep(5)
+      planned = await service.getTask(planTaskId, false)
+    }
+    expect(planned).toMatchObject({ status: 'succeeded', result: { alternative_count: 1 } })
+    const completed = await service.getProject(project.id)
+    expect(completed.kind).toBe('video')
+    if (completed.kind !== 'video') throw new Error('wrong kind')
+    expect(completed.brief).toMatchObject({
+      user_goal: '剪成一条突出进球瞬间的竖屏短片',
+      compiler_version: 'video-brief-v1',
+    })
+    expect(completed.evidence.map(item => item.kind).sort()).toEqual(['source_role', 'transcript', 'visual'])
+    expect(completed.timeline_versions.at(-1)?.scenes[0]).toMatchObject({ story_role: 'hook', locked: false })
+    expect(completed.alternatives).toHaveLength(1)
+
+    expect(gatewayCalls).toHaveLength(3)
+    const speech = gatewayCalls.find(call => call.url.endsWith('/v1/audio/transcriptions'))!
+    const visual = gatewayCalls.find(call => call.body.includes('image_url'))!
+    const planning = gatewayCalls.find(call => call.url.endsWith('/v1/chat/completions') && !call.body.includes('image_url'))!
+    for (const call of gatewayCalls) {
+      expect(call.headers.get('X-BB-Data-Egress-Consent')).toBe(MANAGED_REMOTE_RECEIPT.receipt_id)
+      expect(call.headers.get('X-BB-Provider-Protocol')).toBe('bb-provider-gateway/1.0')
+      expect(call.headers.get('X-BB-Operation-ID')).toBeTruthy()
+    }
+    expect(speech.body).toBe('')
+    expect(visual.body).toContain(Buffer.from('jpeg-frame').toString('base64'))
+    expect(visual.body).not.toContain('mp3-audio')
+    expect(planning.body).toContain('人物完成击球并庆祝')
+    expect(planning.body).toContain('进球以后挥手庆祝')
+    expect(planning.body).not.toContain('image_url')
+    expect(await readdir(join(mediaRoot, 'analysis'))).toEqual([])
+  })
+
+  test('discards a late remote plan instead of overwriting a user timeline edit', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source-video')
+    let notifyPlanStarted!: () => void
+    let resolvePlan!: (response: Response) => void
+    const planStarted = new Promise<void>(resolve => { notifyPlanStarted = resolve })
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = typeof init?.body === 'string' ? init.body : ''
+      const sourceId = body.match(/src_[a-f0-9]{32}/)?.[0]!
+      if (body.includes('image_url')) {
+        return Response.json({ choices: [{ message: { content: JSON.stringify({
+          evidence: [{
+            kind: 'visual', source_id: sourceId, in_ms: 0, out_ms: 1000,
+            text: '可见连续击球动作', confidence: 0.9, warnings: [],
+          }],
+          gaps: [],
+        }) } }] })
+      }
+      const evidenceId = body.match(/evidence_[a-f0-9]{32}/)?.[0]!
+      notifyPlanStarted()
+      return await new Promise<Response>(resolve => {
+        resolvePlan = resolve
+      }).then(() => Response.json({ choices: [{ message: { content: JSON.stringify({
+        brief: {
+          content_type: '短片', output_channel: '竖屏', must_preserve_text: [],
+          recommended_direction: '动作优先', rationale: ['画面证据支持'], gaps: [],
+        },
+        scenes: [{
+          source_id: sourceId, in_ms: 0, out_ms: 1000, story_role: 'hook',
+          evidence_ids: [evidenceId], rationale: '动作开场', needs_review: false,
+        }],
+        alternatives: [],
+      }) } }] }))
+    }
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      env: {
+        QF_GATEWAY_URL: 'https://gateway.example/gw',
+        QF_GATEWAY_TOKEN: 'test-access-token',
+        BB_INSTALLATION_ID: 'install_video_analysis_0002',
+      },
+      fetchImpl,
+      remoteConsentReceipt: async () => MANAGED_REMOTE_RECEIPT,
+      runProcess: async command => {
+        if (command.includes('-show_streams')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ format: { duration: '2' }, streams: [{ codec_type: 'video', width: 1080, height: 1920 }] }),
+            stderr: '',
+          }
+        }
+        if (command.includes('-frames:v')) await writeFile(command.at(-1)!, 'jpeg-frame')
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+    })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const analyze = await service.analyzeVideoProject(project.id, {
+      base_revision: project.revision,
+      user_goal: '生成动作短片',
+    })
+    await planStarted
+    let analyzed = await service.getTask(analyze.id, false)
+    for (let index = 0; index < 50 && analyzed.status === 'running'; index += 1) {
+      await Bun.sleep(2)
+      analyzed = await service.getTask(analyze.id, false)
+    }
+    const planTaskId = String(analyzed.result?.next_task_id)
+    const duringPlan = await service.getProject(project.id)
+    expect(duringPlan.kind).toBe('video')
+    if (duringPlan.kind !== 'video') throw new Error('wrong kind')
+    const edited = await service.updateVideoTimeline(project.id, {
+      base_revision: duringPlan.revision,
+      base_timeline_version_id: duringPlan.current_timeline_version_id,
+      clips: [{ ...duringPlan.timeline[0]!, in_ms: 200, out_ms: 1200 }],
+    })
+    resolvePlan(new Response())
+    let planned = await service.getTask(planTaskId, false)
+    for (let index = 0; index < 50 && planned.status === 'running'; index += 1) {
+      await Bun.sleep(2)
+      planned = await service.getTask(planTaskId, false)
+    }
+    expect(planned).toMatchObject({ status: 'failed', error_code: 'MEDIA_STATE_CONFLICT' })
+    const final = await service.getProject(project.id)
+    expect(final.revision).toBe(edited.revision)
+    expect(final).not.toHaveProperty('brief')
+    expect(final.kind === 'video' ? final.timeline[0]?.in_ms : null).toBe(200)
+    expect(final.kind === 'video' ? final.current_timeline_version_id : null).toBe(edited.current_timeline_version_id)
   })
 
   test('falls back once from an automatic VideoToolbox encoder failure to portable mpeg4', async () => {
