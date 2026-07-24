@@ -76,3 +76,25 @@ export type ProductTaskReviewDiff = {
   fileRef?: WorkspaceFileRef
   diff?: string
 }
+
+export type ProductTaskReviewComment = {
+  commentId: string
+  taskId: string
+  fileRef: WorkspaceFileRef
+  side: 'old' | 'new'
+  line: number
+  body: string
+  createdAt: string
+}
+
+export type ProductTaskReviewComments = {
+  taskId: string
+  fileRef: WorkspaceFileRef
+  comments: ProductTaskReviewComment[]
+}
+
+export type ProductTaskReviewCommentMutation = {
+  outcome: 'accepted' | 'duplicate'
+  authorityRevision: number
+  comment: ProductTaskReviewComment
+}

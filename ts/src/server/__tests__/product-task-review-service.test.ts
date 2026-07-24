@@ -6,6 +6,7 @@ const coreSessionId = 'core-session-secret-17'
 const stableRevision = `rev_${'a'.repeat(32)}`
 
 function createService() {
+  const commentWrites: Array<Record<string, unknown>> = []
   const calls: Array<{
     name: string
     sessionId: string
@@ -89,20 +90,40 @@ function createService() {
       return {
         state: 'ok' as const,
         path: filePath,
-        diff: 'diff --git a/src/price.ts b/src/price.ts',
+        diff: 'diff --git a/src/price.ts b/src/price.ts\n@@ -1,2 +1,2 @@\n-old rate\n+new rate\n context',
       }
     },
   }
   const service = new ProductTaskReviewService(
-    { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async (id) => {
-      expect(id).toBe(taskId)
-      return coreSessionId
-    } },
+    {
+      requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }),
+      resolveCoreSessionId: async (id) => {
+        expect(id).toBe(taskId)
+        return coreSessionId
+      },
+      listReviewComments: async () => [],
+      createReviewComment: async (input) => {
+        commentWrites.push(input)
+        return {
+          outcome: 'accepted' as const,
+          authorityRevision: 4,
+          comment: {
+            commentId: 'comment_aaaaaaaaaaaaaaaaaaaa',
+            taskId: input.taskId,
+            fileRef: input.fileRef,
+            side: input.side,
+            line: input.line,
+            body: input.body,
+            createdAt: '2026-07-24T00:00:00.000Z',
+          },
+        }
+      },
+    },
     workspace,
     async () => '/private/workspaces/hall-operations',
   )
 
-  return { calls, service }
+  return { calls, commentWrites, service }
 }
 
 describe('ProductTaskReviewService', () => {
@@ -307,6 +328,57 @@ describe('ProductTaskReviewService', () => {
     expect(deletedRevision).toMatch(/^rev_[a-f0-9]{32}$/)
     const second = await service.getDiff(taskId, 'deleted.txt', deletedRevision)
     expect(second).toEqual(first)
+  })
+
+  it('accepts only current unified-diff line identities before persisting a comment', async () => {
+    const { commentWrites, service } = createService()
+    const diff = await service.getDiff(taskId, 'src/price.ts')
+    expect(diff.fileRef).toBeDefined()
+
+    const created = await service.createComment({
+      taskId,
+      fileRef: diff.fileRef!,
+      side: 'new',
+      line: 1,
+      body: '  请确认新价格  ',
+      clientOperationId: 'review-comment-1',
+    })
+    expect(created).toMatchObject({ outcome: 'accepted', comment: { body: '请确认新价格', side: 'new', line: 1 } })
+    expect(commentWrites).toHaveLength(1)
+
+    await expect(service.createComment({
+      taskId,
+      fileRef: diff.fileRef!,
+      side: 'old',
+      line: 1,
+      body: '旧价格也需要说明',
+      clientOperationId: 'review-comment-old',
+    })).resolves.toMatchObject({ comment: { side: 'old', line: 1 } })
+    expect(commentWrites).toHaveLength(2)
+
+    await expect(service.createComment({
+      taskId,
+      fileRef: diff.fileRef!,
+      side: 'new',
+      line: 3,
+      body: '越界',
+      clientOperationId: 'review-comment-2',
+    })).rejects.toMatchObject({ statusCode: 400 })
+    await expect(service.createComment({
+      taskId,
+      fileRef: { ...diff.fileRef!, revision: `rev_${'b'.repeat(32)}` },
+      side: 'old',
+      line: 1,
+      body: '旧版本',
+      clientOperationId: 'review-comment-3',
+    })).rejects.toMatchObject({ statusCode: 409 })
+    expect(commentWrites).toHaveLength(2)
+
+    await expect(service.getComments(taskId, 'src/price.ts', stableRevision)).resolves.toMatchObject({
+      taskId,
+      fileRef: { revision: stableRevision },
+      comments: [],
+    })
   })
 
   it('rejects a missing Core cwd before invoking the review workspace', async () => {

@@ -340,12 +340,21 @@ describe('Product tasks API', () => {
         calls.push({ name: 'getDiff', args })
         return { taskId: task.id, state: 'missing' as const, path: 'src/price.ts' }
       },
+      getComments: async (...args: unknown[]) => {
+        calls.push({ name: 'getComments', args })
+        return { taskId: task.id, fileRef: { fileId: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/price.ts', revision: `rev_${'a'.repeat(32)}` }, comments: [] }
+      },
+      createComment: async (...args: unknown[]) => {
+        calls.push({ name: 'createComment', args })
+        const input = args[0] as { taskId: string; fileRef: { fileId: string; path: string; revision: string }; side: 'old' | 'new'; line: number; body: string }
+        return { outcome: 'accepted' as const, authorityRevision: 9, comment: { commentId: 'comment_aaaaaaaaaaaaaaaaaaaa', taskId: input.taskId, fileRef: input.fileRef, side: input.side, line: input.line, body: input.body, createdAt: '2026-07-24T00:00:00.000Z' } }
+      },
     }
 
-    const callReviewRoute = async (path: string) => {
+    const callReviewRoute = async (path: string, init?: RequestInit) => {
       const url = new URL(`http://localhost${path}`)
       const response = await handleProductApi(
-        new Request(url),
+        new Request(url, init),
         url,
         url.pathname.split('/').filter(Boolean),
         service,
@@ -380,11 +389,27 @@ describe('Product tasks API', () => {
       status: 200,
       body: { taskId: task.id, state: 'missing', path: 'src/price.ts' },
     })
+    expect(await callReviewRoute(`/api/product/tasks/task-1/review/comments?path=src%2Fprice.ts&revision=${revision}`)).toMatchObject({
+      status: 200,
+      body: { taskId: task.id, comments: [] },
+    })
+    expect(await callReviewRoute('/api/product/tasks/task-1/review/comments', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ file_ref: { file_id: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/price.ts', revision }, side: 'new', line: 2, body: '请核对', client_operation_id: 'review-comment-op' }),
+    })).toMatchObject({ status: 201, body: { outcome: 'accepted', comment: { line: 2, body: '请核对' } } })
+    expect(await callReviewRoute('/api/product/tasks/task-1/review/comments', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ file_ref: { file_id: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/price.ts', revision, extra: true }, side: 'new', line: 2, body: '请核对', client_operation_id: 'review-comment-bad' }),
+    })).toMatchObject({ status: 400 })
     expect(calls).toEqual([
       { name: 'getStatus', args: ['task-1'] },
       { name: 'getTree', args: ['task-1', 'src'] },
       { name: 'getFile', args: ['task-1', 'assets/replay.webm'] },
       { name: 'getDiff', args: ['task-1', 'src/price.ts', revision] },
+      { name: 'getComments', args: ['task-1', 'src/price.ts', revision] },
+      { name: 'createComment', args: [{ taskId: 'task-1', fileRef: { fileId: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/price.ts', revision }, side: 'new', line: 2, body: '请核对', clientOperationId: 'review-comment-op' }] },
     ])
   })
 
