@@ -158,7 +158,7 @@ describe('Product tasks API', () => {
     const { service, calls } = createService()
 
     const listed = await request(service, 'GET', '/api/product/tasks')
-    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-request', text: '首页提交', attachment_ids: [] })
+    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-request', text: '首页提交', attachment_ids: [], permission_mode: 'ask_for_approval' })
 
     expect(listed.body.tasks[0]).toEqual(expect.objectContaining({ id: task.id }))
     expect(listed.body.tasks[0]).not.toHaveProperty('coreSessionId')
@@ -176,7 +176,7 @@ describe('Product tasks API', () => {
   it('routes real lifecycle actions to the product task service', async () => {
     const { service, calls } = createService()
 
-    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-1', text: '整理本周球房活动', attachment_ids: [] })
+    const created = await request(service, 'POST', '/api/product/tasks', { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'create-1', text: '整理本周球房活动', attachment_ids: [], permission_mode: 'ask_for_approval' })
     const pinned = await request(service, 'POST', '/api/product/tasks/task-1/pin', { expected_revision: 0, client_operation_id: 'pin-1' })
     const archived = await request(service, 'POST', '/api/product/tasks/task-1/archive', { expected_revision: 1, client_operation_id: 'archive-1' })
 
@@ -408,7 +408,7 @@ describe('Product tasks API', () => {
 })
 
 describe('BB-02C strict submit envelopes', () => {
-  const valid = { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'submit-1', text: 'hello', attachment_ids: [] }
+  const valid = { draft_id: 'draft-1', expected_draft_revision: 0, client_operation_id: 'submit-1', text: 'hello', attachment_ids: [], permission_mode: 'ask_for_approval' }
   for (const [name, path, body] of [
     ['homepage rejects empty operation', '/api/product/tasks', { ...valid, client_operation_id: '' }],
     ['homepage rejects extra key', '/api/product/tasks', { ...valid, extra: true }],

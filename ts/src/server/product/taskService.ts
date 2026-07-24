@@ -8,6 +8,8 @@ import { sessionAdmissionBarrier, type SessionAdmissionBarrier } from './session
 import {
   PRODUCT_DOMAIN_VERSION,
   PRODUCT_TASK_PERMISSION_MODES,
+  isProductPermissionSnapshot,
+  productPermissionSnapshot,
   type ContinueProductTaskInput,
   type CreateProductTaskInput,
   type CreateProductSideTaskInput,
@@ -20,6 +22,7 @@ import {
   type ProductTask,
   type ProductTaskIndex,
   type ProductTaskPermissionMode,
+  type ProductPermissionSnapshot,
   type ProductTaskScope,
   type ProductWorkspace,
   type ProductWorkspaceAvailability,
@@ -124,6 +127,7 @@ export type ProductTaskMetadata = {
   updatedAt: string
   worktreeState: ProductTask['worktreeState']
   visibility?: 'main' | 'side_task'
+  permission_snapshot?: ProductPermissionSnapshot
 }
 
 export type ProductSideTaskMetadata = ProductSideTask & {
@@ -474,15 +478,15 @@ function validTitle(value: string | undefined): string | undefined {
 
 const CORE_PERMISSION_MODE_BY_PRODUCT_MODE: Record<
   ProductTaskPermissionMode,
-  'default' | 'acceptEdits' | 'plan'
+  'default' | 'bypassPermissions'
 > = {
-  ask: 'default',
-  allow_edits: 'acceptEdits',
-  plan_only: 'plan',
+  ask_for_approval: 'default',
+  approve_for_me: 'default',
+  full_access: 'bypassPermissions',
 }
 
 function productTaskPermissionMode(value: unknown): ProductTaskPermissionMode {
-  if (value === undefined) return 'ask'
+  if (value === undefined) return 'ask_for_approval'
   if (
     typeof value === 'string'
     && (PRODUCT_TASK_PERMISSION_MODES as readonly string[]).includes(value)
@@ -492,6 +496,12 @@ function productTaskPermissionMode(value: unknown): ProductTaskPermissionMode {
   throw ApiError.badRequest(
     `permissionMode 必须是 ${PRODUCT_TASK_PERMISSION_MODES.join('、')} 之一`,
   )
+}
+
+function taskPermissionSnapshot(value: unknown): ProductPermissionSnapshot {
+  return isProductPermissionSnapshot(value)
+    ? { ...value }
+    : productPermissionSnapshot('ask_for_approval')
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
@@ -966,13 +976,14 @@ export class ProductTaskService {
     const title = validTitle(input.title) ?? ''
     const operationId = input.client_operation_id
     const taskId = `task_${createHash('sha256').update(operationId).digest('hex').slice(0, 16)}`
-    const canonical = JSON.stringify({ workDir: input.workDir, title, permissionMode: input.permissionMode ?? 'ask', useWorktree: input.useWorktree === true })
+    const permissionSnapshot = productPermissionSnapshot(productTaskPermissionMode(input.permissionMode))
+    const canonical = JSON.stringify({ workDir: input.workDir, title, permissionMode: permissionSnapshot.mode, useWorktree: input.useWorktree === true })
     const authority = new ProductTaskAuthorityRepository(options.authorityPath)
     try {
       const reserved = await authority.reserve({ client_operation_id: operationId, product_task_id: taskId, kind: 'create', canonical_input: canonical, expected_revision: input.expected_revision })
       const receipt = reserved.file.receipts[operationId]
       if (receipt) return { task: authorityPublicTask(reserved.file.tasks[taskId]), receipt: { outcome: 'duplicate', revision: receipt.revision } }
-      const task = { id: taskId, projectId: '', directoryId: '', workDir: input.workDir, title, lifecycle: 'active' as const, kind: 'main' as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), worktreeState: input.useWorktree ? 'planned' as const : 'not_requested' as const, actions: ['pin', 'rename', 'continue', 'archive'] as ProductTaskAction[] }
+      const task = { id: taskId, projectId: '', directoryId: '', workDir: input.workDir, title, lifecycle: 'active' as const, kind: 'main' as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), worktreeState: input.useWorktree ? 'planned' as const : 'not_requested' as const, permission_snapshot: permissionSnapshot, actions: ['pin', 'rename', 'continue', 'archive'] as ProductTaskAction[] }
       let binding: unknown
       try {
         binding = await options.bridge.ensureCreate(operationId, taskId, canonical)
@@ -1211,14 +1222,16 @@ export class ProductTaskService {
           if (!draft || draft.installation_id !== this.installationId || draft.target_task_id !== taskId || draft.revision !== input.expected_draft_revision || draft.state !== 'active' || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
         }
         const runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
+        const permissionSnapshot = taskPermissionSnapshot(task.permission_snapshot)
         task.revision = input.expected_task_revision + 1
         task.current_lineage_id = lineageId
+        task.permission_snapshot = permissionSnapshot
         lineage.head_entry_id = entryId; lineage.revision = input.expected_lineage_revision + 1; lineage.updated_at = now
         state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }
         const scope = state.task_scopes[taskId] as { kind?: unknown } | undefined
         const execution_capability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
         const workspace = scope?.kind === 'workspace' && typeof (scope as { workspace_id?: unknown }).workspace_id === 'string' ? state.workspaces[(scope as { workspace_id: string }).workspace_id] as { canonical_root?: unknown } | undefined : undefined
-        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: null, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath), dispatch_generation: 1 } }
+        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath), dispatch_generation: 1 } }
         state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
         state.event_sequence += 1
         state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
@@ -1243,20 +1256,21 @@ export class ProductTaskService {
 
   async createAndSubmitTask(input: import('../../../shared/product/domain.js').CreateAndSubmitTaskInput): Promise<import('../../../shared/product/domain.js').SubmitTaskRunReceipt> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    const canonical = JSON.stringify({ draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, text: input.text, attachment_ids: input.attachment_ids })
+    const canonical = JSON.stringify({ draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, text: input.text, attachment_ids: input.attachment_ids, permission_mode: input.permission_mode })
     try { const { file, result } = await authority.transactSubmit(state => {
       const prior = state.receipts[input.client_operation_id]
       if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); return { changed: false as const, value: { duplicate: true, receipt: prior } } }
       if (!input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+      const permissionSnapshot = productPermissionSnapshot(productTaskPermissionMode(input.permission_mode))
       const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
       if (!draft || draft.installation_id !== this.installationId || draft.target_state !== 'pending_task' || draft.state !== 'active' || draft.revision !== input.expected_draft_revision || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
       const taskId = draft.target_task_id as string; if (state.tasks[taskId]) throw new Error('AUTHORITY_CONFLICT')
       const attachments = input.attachment_ids.map(id => { const a = state.task_attachments[id] as Record<string, unknown> | undefined; if (!a || a.installation_id !== this.installationId || a.owner_kind !== 'composer_draft' || a.owner_id !== input.draft_id || a.state !== 'ready' || Date.parse(a.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED'); return [id, a] as const })
       if (attachments.reduce((total, [, attachment]) => total + (attachment.byte_size as number), 0) > 16 * 1024 * 1024) throw new Error('ATTACHMENT_REJECTED')
       const now = this.now().toISOString(), lineageId = `lineage_${randomUUID()}`, runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
-      const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
+      const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, permission_snapshot: permissionSnapshot, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
       const resumeBindingId = `resume_${randomUUID()}`; state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: resumeBindingId, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
-      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: null, provider: null, model: null, core_binding: { resume_binding_id: resumeBindingId, session_id: randomUUID(), work_dir: path.dirname(this.storagePath), dispatch_generation: 1 } }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
+      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: resumeBindingId, session_id: randomUUID(), work_dir: path.dirname(this.storagePath), dispatch_generation: 1 } }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
       for (const [id, a] of attachments) { state.task_attachments[id] = { ...a, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...a.refs as string[], taskId], revision: (a.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
       state.composer_drafts[input.draft_id] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }; const entity_revisions: Record<string, number> = { task: 1, lineage: 1, draft: (state.composer_drafts[input.draft_id] as { revision: number }).revision }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_draft_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1, authority_revision: state.revision + 1, entity_revisions } }; state.receipts[input.client_operation_id] = receipt; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_create_submit', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }; return { duplicate: false, receipt }
     }); const receipt = result.receipt; const snapshot = receipt.result as { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; authority_revision: number; entity_revisions: Record<string, number> }; const response = { client_operation_id: input.client_operation_id, outcome: result.duplicate ? 'duplicate' : 'accepted', authority_revision: snapshot.authority_revision, entity_revisions: snapshot.entity_revisions, result: { task_id: snapshot.task_id, run_id: snapshot.run_id, entry_id: snapshot.entry_id, dispatch_generation: snapshot.dispatch_generation } }; this.dispatchAcceptedRun(snapshot.run_id, snapshot.dispatch_generation); return response } catch (error) { const file = await authority.read(); return { client_operation_id: input.client_operation_id, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', authority_revision: file.revision, entity_revisions: {}, error: (error as Error).message } }
@@ -1333,7 +1347,7 @@ export class ProductTaskService {
       let lineageId = stored?.task?.current_lineage_id as string | undefined
       if (!stored?.task || !lineageId) {
         lineageId = `lineage_${randomUUID()}`
-        const task = { id: taskId, projectId: '', directoryId: '', workDir: canonicalWorkDir, title: `定时任务 ${scheduleId}`, lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', actions: ['rename', 'archive'], revision: 1, task_scope: 'workspace', current_lineage_id: lineageId }
+        const task = { id: taskId, projectId: '', directoryId: '', workDir: canonicalWorkDir, title: `定时任务 ${scheduleId}`, lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', permission_snapshot: productPermissionSnapshot('ask_for_approval'), actions: ['rename', 'archive'], revision: 1, task_scope: 'workspace', current_lineage_id: lineageId }
         state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }
         state.task_scopes[taskId] = { kind: 'workspace', workspace_id: `schedule_${scheduleId}` }
         state.workspaces[`schedule_${scheduleId}`] = { id: `schedule_${scheduleId}`, canonical_root: canonicalWorkDir, state: 'ready' }
@@ -1342,7 +1356,8 @@ export class ProductTaskService {
       const lineage = state.conversation_lineages[lineageId] as { resume_binding_id: string; revision: number }
       const runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
       state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: prompt, created_at: now }
-      state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'workspace_bound', permission_mode: null, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: canonicalWorkDir, dispatch_generation: 1 } }
+      const permissionSnapshot = taskPermissionSnapshot(stored?.task?.permission_snapshot)
+      state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'workspace_bound', permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: canonicalWorkDir, dispatch_generation: 1 } }
       state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
       state.event_sequence += 1
       state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: prompt, attachment_ids: [], created_at: now }
@@ -1429,6 +1444,7 @@ export class ProductTaskService {
     resume_binding_id: string
     initial_input: string
     initial_attachments?: string[]
+    permission_snapshot: ProductPermissionSnapshot
     auto_memory: {
       storage_dir: string
       enabled: boolean
@@ -1441,7 +1457,7 @@ export class ProductTaskService {
     }
   }> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown } | undefined
+    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; permission_snapshot?: unknown } | undefined
     const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
     let lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as Record<string, unknown> | undefined : undefined
     const entry = typeof run?.entry_id === 'string' ? state.thread_entries[run.entry_id] as { task_id?: unknown; run_id?: unknown; text?: unknown } | undefined : undefined
@@ -1473,6 +1489,7 @@ export class ProductTaskService {
       lineage_id: run.lineage_id,
       resume_binding_id: resumeBindingId,
       initial_input: entry.text,
+      permission_snapshot: taskPermissionSnapshot(run.permission_snapshot),
       ...(initialAttachments.length ? { initial_attachments: initialAttachments } : {}),
       auto_memory: { storage_dir: this.autoMemoryStorageDir(), enabled: await this.autoMemoryEnabled(), entry_id: run.entry_id },
       session_memory: { storage_dir: this.sessionMemoryStorageDir(), entry_id: run.entry_id, ancestors },
@@ -1649,6 +1666,7 @@ export class ProductTaskService {
       updatedAt: now,
       worktreeState: useWorktree ? 'planned' : 'not_requested',
       visibility: 'main',
+      permission_snapshot: productPermissionSnapshot(permissionMode),
     }
     if (title) await this.core.renameSession(created.sessionId, title)
     store.tasks[metadata.id] = metadata
@@ -2211,6 +2229,7 @@ export class ProductTaskService {
         ? 'materialized'
         : source.worktreeState,
       visibility: 'main',
+      permission_snapshot: taskPermissionSnapshot(source.permission_snapshot),
     }
     const { store } = await this.loadRegisteredStore()
     store.tasks[metadata.id] = metadata
@@ -2300,6 +2319,7 @@ export class ProductTaskService {
       updatedAt: now,
       worktreeState: source.worktreeState,
       visibility: 'side_task',
+      permission_snapshot: taskPermissionSnapshot(source.permission_snapshot),
     }
     store.sideTasks[sideTask.id] = sideTask
     await this.writeStore(store)
@@ -2689,6 +2709,7 @@ export class ProductTaskService {
       ...(metadata.pinnedAt ? { pinnedAt: metadata.pinnedAt } : {}),
       ...(metadata.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
       ...(metadata.parentTaskId ? { parentTaskId: metadata.parentTaskId } : {}),
+      permission_snapshot: taskPermissionSnapshot(metadata.permission_snapshot),
       createdAt: metadata.createdAt || session.createdAt,
       updatedAt: latestProductTimestamp(metadata.updatedAt, session.modifiedAt) || session.modifiedAt,
       worktreeState,

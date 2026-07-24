@@ -21,13 +21,70 @@ export type ProductContinuationTarget = 'current_workspace' | 'new_worktree'
  * stable and only offer modes that are appropriate for ordinary users.
  */
 export const PRODUCT_TASK_PERMISSION_MODES = [
-  'ask',
-  'allow_edits',
-  'plan_only',
+  'ask_for_approval',
+  'approve_for_me',
+  'full_access',
 ] as const
 
 export type ProductTaskPermissionMode =
   (typeof PRODUCT_TASK_PERMISSION_MODES)[number]
+
+export type ProductPermissionSnapshot = {
+  version: 1
+  mode: ProductTaskPermissionMode
+  sandbox: 'workspace-write' | 'danger-full-access'
+  approval: 'on-request' | 'never'
+  reviewer: 'user' | 'automatic' | 'none'
+}
+
+export const PRODUCT_PERMISSION_PROFILES: Record<
+  ProductTaskPermissionMode,
+  ProductPermissionSnapshot
+> = {
+  ask_for_approval: {
+    version: 1,
+    mode: 'ask_for_approval',
+    sandbox: 'workspace-write',
+    approval: 'on-request',
+    reviewer: 'user',
+  },
+  approve_for_me: {
+    version: 1,
+    mode: 'approve_for_me',
+    sandbox: 'workspace-write',
+    approval: 'on-request',
+    reviewer: 'automatic',
+  },
+  full_access: {
+    version: 1,
+    mode: 'full_access',
+    sandbox: 'danger-full-access',
+    approval: 'never',
+    reviewer: 'none',
+  },
+}
+
+export function productPermissionSnapshot(
+  mode: ProductTaskPermissionMode,
+): ProductPermissionSnapshot {
+  return { ...PRODUCT_PERMISSION_PROFILES[mode] }
+}
+
+export function isProductPermissionSnapshot(
+  value: unknown,
+): value is ProductPermissionSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const snapshot = value as Record<string, unknown>
+  if (Object.keys(snapshot).sort().join(',') !== 'approval,mode,reviewer,sandbox,version') return false
+  const profile = typeof snapshot.mode === 'string'
+    ? PRODUCT_PERMISSION_PROFILES[snapshot.mode as ProductTaskPermissionMode]
+    : undefined
+  return Boolean(profile)
+    && snapshot.version === profile!.version
+    && snapshot.sandbox === profile!.sandbox
+    && snapshot.approval === profile!.approval
+    && snapshot.reviewer === profile!.reviewer
+}
 
 export type ProductProject = {
   id: string
@@ -110,6 +167,8 @@ export type ProductTask = {
   /** Public capability projection: never contains canonical roots or cwd. */
   workspace_capability?: ProductTaskWorkspaceCapability
   current_lineage_id?: string
+  /** Default for future runs. Every accepted run stores its own immutable copy. */
+  permission_snapshot?: ProductPermissionSnapshot
   projectId: string
   directoryId: string
   workDir: string
@@ -186,7 +245,8 @@ export type CreateProductTaskInput = ProductTaskMutationEnvelope & {
   useWorktree?: boolean
   /**
    * The safe product-facing execution choice for this new task. Omitted
-   * values keep the same per-request confirmation behavior as `ask`.
+   * values keep the same per-request confirmation behavior as
+   * `ask_for_approval`.
    */
   permissionMode?: ProductTaskPermissionMode
 }
@@ -234,6 +294,7 @@ export type CreateAndSubmitTaskInput = {
   client_operation_id: string
   text: string
   attachment_ids: string[]
+  permission_mode: ProductTaskPermissionMode
 }
 
 export type SubmitTaskRunReceipt = {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import * as path from 'node:path'
-import type { ProductTask } from '../../../shared/product/domain.js'
+import { isProductPermissionSnapshot, type ProductTask } from '../../../shared/product/domain.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import type { ProductProject, ProductProjectDirectory, ProductSideTask } from '../../../shared/product/domain.js'
 import type { ProductTaskMetadata, ProductSideTaskMetadata, ProductProjectMetadata, ProductProjectDirectoryMetadata, ProductTaskStore } from './taskService.js'
@@ -80,6 +80,9 @@ export function normalizeMetadata(
     updatedAt: optionalString(record.updatedAt) ?? new Date(0).toISOString(),
     worktreeState: storedWorktreeState(record.worktreeState),
     ...(record.visibility === 'side_task' ? { visibility: 'side_task' as const } : { visibility: 'main' as const }),
+    ...(isProductPermissionSnapshot(record.permission_snapshot)
+      ? { permission_snapshot: { ...record.permission_snapshot } }
+      : {}),
   }
 }
 

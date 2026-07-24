@@ -91,6 +91,9 @@ import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
 import { getLocalISODate } from 'src/constants/common.js'
+import type { PermissionExecutionEnvelope } from '../../shared/product/permissionExecutionEnvelope.js'
+import { runWithProductPermissionEnvelope } from 'src/utils/permissions/productPermissionRuntime.js'
+import { runWithCwdOverride } from 'src/utils/cwd.js'
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from 'src/server/services/productAutoMemory.js'
@@ -442,10 +445,21 @@ export async function createServerPrivateNativeCorePort(input: {
   run_id: string
   session_id: string
   work_dir: string
+  permission_envelope: PermissionExecutionEnvelope
   auto_memory?: ProductAutoMemoryBinding & { task_id: string; entry_id: string }
   session_memory?: ProductSessionMemoryBinding & { entry_id: string }
 }): Promise<ServerPrivateNativeCorePort> {
   let state = getDefaultAppState()
+  state = {
+    ...state,
+    toolPermissionContext: {
+      ...state.toolPermissionContext,
+      mode: input.permission_envelope.approval_policy === 'never'
+        ? 'bypassPermissions'
+        : 'default',
+      isBypassPermissionsModeAvailable: input.permission_envelope.approval_policy === 'never',
+    },
+  }
   const instructionSnapshot = createProductInstructionSnapshot(input.work_dir)
   const autoMemoryRepository = input.auto_memory ? new ProductAutoMemoryRepository() : undefined
   let productAutoMemory = input.auto_memory ? await autoMemoryRepository!.load(input.auto_memory) : ''
@@ -496,42 +510,47 @@ export async function createServerPrivateNativeCorePort(input: {
         let completedResult: string | undefined
         const attachmentPrefix = attachments.map(filePath => `@"${filePath}"`).join(' ')
         const prompt = attachmentPrefix ? `${attachmentPrefix} ${text}`.trim() : text
-        for await (const message of ask({
-          commands,
-          prompt,
-          cwd: input.work_dir,
-          tools,
-          mcpClients: state.mcp.clients,
-          getAppState: () => state,
-          setAppState: update => { state = update(state) },
-          getReadFileCache: () => cache,
-          setReadFileCache: next => { cache = next },
-          contextOverride: { userContext: productUserContext(), systemContext: {} },
-          disableMemoryDiscovery: true,
-          includePartialMessages: true,
-          abortController: controller,
-          canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
-            const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)
-            if (decision.behavior !== 'ask') return decision
-            emit({ type: 'event', event: 'approval', data: toolUseId })
-            const approved = await new Promise<boolean>(resolve => approvals.set(toolUseId, resolve))
-            approvals.delete(toolUseId)
-            return approved
-              ? { behavior: 'allow', updatedInput: toolInput, decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode } }
-              : { behavior: 'deny', message: 'Product approval denied', decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode }, toolUseID: toolUseId }
-          },
-        })) {
-          if (message.type === 'stream_event') {
-            if (message.event.type === 'message_start') streamedAssistantText = false
-            if (message.event.type === 'content_block_delta' && message.event.delta.type === 'text_delta') {
-              streamedAssistantText = true
-              emit({ type: 'event', event: 'delta', data: message.event.delta.text })
+        await runWithProductPermissionEnvelope(input.permission_envelope, () => (
+          runWithCwdOverride(input.work_dir, async () => {
+            const stream = ask({
+              commands,
+              prompt,
+              cwd: input.work_dir,
+              tools,
+              mcpClients: state.mcp.clients,
+              getAppState: () => state,
+              setAppState: update => { state = update(state) },
+              getReadFileCache: () => cache,
+              setReadFileCache: next => { cache = next },
+              contextOverride: { userContext: productUserContext(), systemContext: {} },
+              disableMemoryDiscovery: true,
+              includePartialMessages: true,
+              abortController: controller,
+              canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
+                const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)
+                if (decision.behavior !== 'ask') return decision
+                emit({ type: 'event', event: 'approval', data: toolUseId })
+                const approved = await new Promise<boolean>(resolve => approvals.set(toolUseId, resolve))
+                approvals.delete(toolUseId)
+                return approved
+                  ? { behavior: 'allow', updatedInput: toolInput, decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode } }
+                  : { behavior: 'deny', message: 'Product approval denied', decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode }, toolUseID: toolUseId }
+              },
+            })
+            for await (const message of stream) {
+              if (message.type === 'stream_event') {
+                if (message.event.type === 'message_start') streamedAssistantText = false
+                if (message.event.type === 'content_block_delta' && message.event.delta.type === 'text_delta') {
+                  streamedAssistantText = true
+                  emit({ type: 'event', event: 'delta', data: message.event.delta.text })
+                }
+              }
+              else if (message.type === 'assistant' && !streamedAssistantText) emitAssistantText(message)
+              else if (message.type === 'system' && message.subtype === 'init') emit({ type: 'event', event: 'tool' })
+              else if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
             }
-          }
-          else if (message.type === 'assistant' && !streamedAssistantText) emitAssistantText(message)
-          else if (message.type === 'system' && message.subtype === 'init') emit({ type: 'event', event: 'tool' })
-          else if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
-        }
+          })
+        ))
         if (completedResult !== undefined && input.session_memory) productSessionMemory = await sessionMemoryRepository!.appendCompletedTurn(input.session_memory, { entry_id: input.session_memory.entry_id, user: text, assistant: completedResult })
         if (completedResult !== undefined && input.auto_memory) productAutoMemory = await autoMemoryRepository!.appendCompletedTurn(input.auto_memory, { task_id: input.auto_memory.task_id, entry_id: input.auto_memory.entry_id, user: text, assistant: completedResult })
         finish(controller.signal.aborted ? 'stopped' : 'completed')

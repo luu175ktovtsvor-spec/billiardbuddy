@@ -1,7 +1,8 @@
 import { AGENT_WORKER_PROTOCOL_VERSION, intersectsAgentWorkerVersions, type AgentWorkerInbound, type AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { randomBytes } from 'node:crypto'
 import type { ProductResourceScheduler } from './resourceScheduler.js'
-import { createAgentWorkerChildStartCapability, createLegacyDeferredEnvelope } from './permissionExecutionEnvelope.js'
+import { productPermissionSnapshot, type ProductPermissionSnapshot } from '../../../shared/product/domain.js'
+import { createAgentWorkerChildStartCapability, createPolicyBoundEnvelope } from './permissionExecutionEnvelope.js'
 
 export type AgentWorkerCoreIdentity = {
   task_id: string
@@ -9,6 +10,7 @@ export type AgentWorkerCoreIdentity = {
   resume_binding_id: string
   initial_input: string
   initial_attachments?: string[]
+  permission_snapshot?: ProductPermissionSnapshot
   auto_memory?: {
     storage_dir: string
     enabled: boolean
@@ -66,7 +68,9 @@ export class AgentWorkerSupervisor {
     if (this.settled.has(key)) { await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'recovery_required' }
     if (this.stopRequested.has(key)) return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal')
     let child: AgentWorkerChild | undefined; let hello = false; let ready = false; let inputSent = false
-    const envelope = createLegacyDeferredEnvelope()
+    const envelope = createPolicyBoundEnvelope(
+      identity.permission_snapshot ?? productPermissionSnapshot('ask_for_approval'),
+    )
     const bootstrap = { capability: createAgentWorkerChildStartCapability({ run_id: runId, dispatch_generation: generation, fencing_token: receipt.fencing_token, envelope_digest: envelope.digest }, this.childCapabilityKey), capability_key: this.childCapabilityKey }
     const timeout = setTimeout(() => void this.fail(runId, generation, receipt.fencing_token, 'READY_TIMEOUT'), this.readyTimeoutMs)
     this.readyTimers.set(key, timeout)

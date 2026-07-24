@@ -199,6 +199,7 @@ describe('E2E: Full Flow', () => {
       client_operation_id: productCreateOperationId,
       text: '整理本周球房活动',
       attachment_ids: [],
+      permission_mode: 'ask_for_approval',
     })
     expect(status).toBe(201)
     expect(data.receipt).toEqual(expect.objectContaining({ outcome: 'accepted' }))

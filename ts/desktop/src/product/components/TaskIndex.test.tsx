@@ -457,6 +457,7 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       text: '请列出本周的训练安排',
       attachment_ids: [],
+      permission_mode: 'ask_for_approval',
     }))
   })
 
@@ -476,6 +477,7 @@ describe('TaskIndex', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       text: '整理球台配置',
       attachment_ids: [],
+      permission_mode: 'ask_for_approval',
     }))
   })
 
@@ -529,7 +531,7 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('你想完成什么？')).toHaveValue('/复盘今天经营 ')
     fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/venue-daily-review', attachment_ids: [] }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/venue-daily-review', attachment_ids: [], permission_mode: 'ask_for_approval' }))
   })
 
   it('keeps an external Skill selectable without exposing its private description', async () => {
@@ -550,7 +552,7 @@ describe('TaskIndex', () => {
     expect(screen.getByLabelText('你想完成什么？')).toHaveValue('/custom-report ')
 
     fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/custom-report', attachment_ids: [] }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/custom-report', attachment_ids: [], permission_mode: 'ask_for_approval' }))
   })
 
   it('offers discovered agents in the initial task composer and sends their runtime command', async () => {
@@ -574,7 +576,7 @@ describe('TaskIndex', () => {
     expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent venue-analyst', attachment_ids: [] }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent venue-analyst', attachment_ids: [], permission_mode: 'ask_for_approval' }))
   })
 
   it('keeps Agent discovery usable when Skill command discovery is unavailable', async () => {
@@ -611,9 +613,15 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
   })
 
-  it('removes the retired permission selector before module 08 defines the final profiles', () => {
+  it('offers the three final permission profiles and defaults to user review', () => {
     renderComposer()
-    expect(screen.queryByLabelText('执行权限')).not.toBeInTheDocument()
+    const permission = screen.getByLabelText('执行权限')
+    expect(permission).toHaveValue('ask_for_approval')
+    expect(screen.getByRole('option', { name: 'Ask for approval' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Approve for me' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Full access' })).toBeInTheDocument()
+    fireEvent.change(permission, { target: { value: 'approve_for_me' } })
+    expect(screen.getByText(/独立 reviewer/)).toBeInTheDocument()
     expect(screen.getByText('直接描述目标；输入 / 可使用当前项目的可用命令。')).toBeInTheDocument()
   })
 })

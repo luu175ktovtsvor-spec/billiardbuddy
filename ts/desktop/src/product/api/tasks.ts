@@ -23,6 +23,7 @@ import type {
   ProductComposerDraftApi,
   ProductConversationLineageApi,
   ProductAttachmentApi,
+  ProductTaskPermissionMode,
 } from '../domain/types'
 
 function taskPath(taskId: string): string {
@@ -51,6 +52,7 @@ export type AtomicTaskSubmitInput = {
   client_operation_id: string
   text: string
   attachment_ids: string[]
+  permission_mode: ProductTaskPermissionMode
 }
 
 export type AtomicTaskSubmitResponse = {

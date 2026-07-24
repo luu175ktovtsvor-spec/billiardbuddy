@@ -60,8 +60,8 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
   private async handleCoreRequest(state: { core?: AgentWorkerCore; unsubscribe?: () => void; starting?: Promise<AgentWorkerCore> }, request: Record<string, unknown>, input: LaunchInput, relay: (message: unknown) => void): Promise<{ ok: boolean }> {
     try {
       if (request.operation === 'start' && !state.core) {
-        const value = request.value as { run_id?: unknown; dispatch_generation?: unknown; envelope_digest?: unknown; scheduler_receipt?: { fencing_token?: unknown } } | undefined
-        if (!value || value.run_id !== input.bootstrap.capability.run_id || value.dispatch_generation !== input.bootstrap.capability.dispatch_generation || value.envelope_digest !== input.bootstrap.capability.envelope_digest || value.scheduler_receipt?.fencing_token !== input.bootstrap.capability.fencing_token) return { ok: false }
+        const value = request.value as { run_id?: unknown; dispatch_generation?: unknown; envelope_digest?: unknown; permission_envelope?: { digest?: unknown }; scheduler_receipt?: { fencing_token?: unknown } } | undefined
+        if (!value || value.run_id !== input.bootstrap.capability.run_id || value.dispatch_generation !== input.bootstrap.capability.dispatch_generation || value.envelope_digest !== input.bootstrap.capability.envelope_digest || value.permission_envelope?.digest !== value.envelope_digest || value.scheduler_receipt?.fencing_token !== input.bootstrap.capability.fencing_token) return { ok: false }
         state.starting ??= this.bindings.resolveTaskRunCoreBinding(value.run_id as string, value.dispatch_generation as number).then(binding => this.cores.start(input.core, binding, value as Parameters<AgentWorkerCoreFactory['start']>[0]))
         try {
           state.core = await state.starting

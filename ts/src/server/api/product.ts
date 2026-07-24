@@ -8,6 +8,7 @@ import type {
   ProductRecentProjectList,
   UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
+import { PRODUCT_TASK_PERMISSION_MODES } from '../../../shared/product/domain.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import {
   productTaskReviewService,
@@ -266,7 +267,7 @@ export async function handleProductApi(
       if (req.method === 'POST') {
         const input = await readJson<Record<string, unknown>>(req)
         if (containsRawAttachment(input)) throw new ApiError(409, '附件导入当前不可用', 'ATTACHMENT_INGEST_UNAVAILABLE')
-        if (!assertPlainExactObject(input, ['draft_id', 'expected_draft_revision', 'client_operation_id', 'text', 'attachment_ids']) || typeof input.draft_id !== 'string' || !Number.isSafeInteger(input.expected_draft_revision) || (input.expected_draft_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id || typeof input.text !== 'string' || !Array.isArray(input.attachment_ids) || input.attachment_ids.some(id => typeof id !== 'string')) throw ApiError.badRequest('首页 submit 参数无效')
+        if (!assertPlainExactObject(input, ['draft_id', 'expected_draft_revision', 'client_operation_id', 'text', 'attachment_ids', 'permission_mode']) || typeof input.draft_id !== 'string' || !Number.isSafeInteger(input.expected_draft_revision) || (input.expected_draft_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id || typeof input.text !== 'string' || !Array.isArray(input.attachment_ids) || input.attachment_ids.some(id => typeof id !== 'string') || !(PRODUCT_TASK_PERMISSION_MODES as readonly unknown[]).includes(input.permission_mode)) throw ApiError.badRequest('首页 submit 参数无效')
         try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('首页 submit 参数无效') }
         const receipt = await tasks.createAndSubmitTask(input as import('../../../shared/product/domain.js').CreateAndSubmitTaskInput)
         return Response.json({ receipt }, { status: submitReceiptStatus(receipt) })

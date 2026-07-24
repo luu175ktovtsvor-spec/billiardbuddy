@@ -229,7 +229,7 @@ describe('ProductShell', () => {
 
   it('submits atomically, then opens and connects the resulting product task without a raw message transport', async () => {
     render(<ProductShell page="new-task" />)
-    const input = { text: '请整理本周开球训练计划', attachment_ids: [] }
+    const input = { text: '请整理本周开球训练计划', attachment_ids: [], permission_mode: 'ask_for_approval' as const }
 
     await act(async () => {
       await taskComposerProps().onSubmit(input)
@@ -245,7 +245,7 @@ describe('ProductShell', () => {
 
   it('keeps attachment IDs in the atomic submit contract and never forwards raw attachment bytes', async () => {
     render(<ProductShell page="new-task" initialWorkDir="/workspace/billiard" />)
-    const input = { text: '识别球台照片', attachment_ids: ['attachment-1'] }
+    const input = { text: '识别球台照片', attachment_ids: ['attachment-1'], permission_mode: 'ask_for_approval' as const }
 
     await act(async () => {
       await taskComposerProps().onSubmit(input)
