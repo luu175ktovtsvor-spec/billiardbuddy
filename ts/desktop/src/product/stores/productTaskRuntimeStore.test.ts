@@ -414,6 +414,36 @@ describe('product task runtime store', () => {
     expect(apiMocks.getThread).toHaveBeenCalledTimes(2)
   })
 
+  it('fences late assistant content after stop until the terminal refresh', async () => {
+    apiMocks.getThread
+      .mockResolvedValueOnce({ taskId: 'task-stop', entries: [] })
+      .mockResolvedValueOnce({
+        taskId: 'task-stop',
+        entries: [threadEntry('thread-stopped', 'assistant_text', '停止前内容')],
+      })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-stop')
+    eventHandler?.({ type: 'status', state: 'working' })
+    eventHandler?.({ type: 'assistant_text_start' })
+    eventHandler?.({ type: 'assistant_text_delta', text: '停止前内容' })
+    useProductTaskRuntimeStore.getState().stopTask('task-stop')
+    eventHandler?.({ type: 'assistant_text_delta', text: '不应出现的晚到内容' })
+
+    expect(socketMocks.send).toHaveBeenCalledWith('task-stop', { type: 'stop_generation' })
+    expect(useProductTaskRuntimeStore.getState().tasks['task-stop']?.entries.at(-1)).toEqual(
+      expect.objectContaining({ text: '停止前内容' }),
+    )
+
+    eventHandler?.({ type: 'turn_complete' })
+    await flushMicrotasks()
+    expect(useProductTaskRuntimeStore.getState().tasks['task-stop']).toMatchObject({
+      runState: 'idle',
+      stopRequested: false,
+      entries: [expect.objectContaining({ text: '停止前内容' })],
+    })
+  })
+
   it('does not apply an in-flight history response after task disconnect', async () => {
     const pendingThread = deferred<unknown>()
     apiMocks.getThread.mockReturnValue(pendingThread.promise)

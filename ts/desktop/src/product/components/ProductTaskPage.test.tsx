@@ -579,6 +579,24 @@ describe('ProductTaskPage', () => {
     expect(mocks.openSideTaskPanel).toHaveBeenCalledWith('task-1', 'side-1')
   })
 
+  it('quotes a persisted task entry into the composer without submitting it', () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      entries: [{
+        id: 'thread_0123456789abcdef0123',
+        type: 'assistant_text',
+        text: '第一行\n第二行',
+        createdAt: '2026-07-19T00:00:00.000Z',
+      }],
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '引用' }))
+
+    expect(screen.getByRole('textbox', { name: '任务输入' })).toHaveValue('> 第一行\n> 第二行\n\n')
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('uses the detached task-window callbacks instead of a shared tab when supplied', async () => {
     mocks.runtime = {
       ...mocks.runtime,
@@ -618,6 +636,7 @@ describe('ProductTaskPage', () => {
 
     expect(screen.queryByRole('button', { name: '从此处继续' })).toBeNull()
     expect(screen.queryByRole('button', { name: '创建侧边任务' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '引用' })).toBeNull()
   })
 
   it('keeps task actions available but disables native terminal opening', () => {

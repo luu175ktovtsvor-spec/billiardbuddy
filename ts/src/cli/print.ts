@@ -464,6 +464,17 @@ export async function createServerPrivateNativeCorePort(input: {
   const listeners = new Set<(message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void>()
   const emit = (message: Parameters<(typeof listeners)['add']>[0] extends (message: infer Message) => void ? Message : never) => listeners.forEach(listener => listener(message))
   const finish = (state: 'completed' | 'stopped' | 'recovery_required') => { if (terminal) return; terminal = true; emit({ type: 'terminal', state, run_id: input.run_id }) }
+  const emitAssistantText = (message: Message) => {
+    if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return
+    const text = message.message.content
+      .filter((block): block is Extract<(typeof message.message.content)[number], { type: 'text' }> => block.type === 'text')
+      .map(block => block.text)
+      .join('')
+    for (let offset = 0; offset < text.length; offset += 32_000) {
+      emit({ type: 'event', event: 'delta', data: text.slice(offset, offset + 32_000) })
+    }
+  }
+  let streamedAssistantText = false
 
   return {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
@@ -497,6 +508,7 @@ export async function createServerPrivateNativeCorePort(input: {
           setReadFileCache: next => { cache = next },
           contextOverride: { userContext: productUserContext(), systemContext: {} },
           disableMemoryDiscovery: true,
+          includePartialMessages: true,
           abortController: controller,
           canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
             const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)
@@ -509,7 +521,14 @@ export async function createServerPrivateNativeCorePort(input: {
               : { behavior: 'deny', message: 'Product approval denied', decisionReason: { type: 'mode', mode: state.toolPermissionContext.mode }, toolUseID: toolUseId }
           },
         })) {
-          if (message.type === 'assistant') emit({ type: 'event', event: 'delta' })
+          if (message.type === 'stream_event') {
+            if (message.event.type === 'message_start') streamedAssistantText = false
+            if (message.event.type === 'content_block_delta' && message.event.delta.type === 'text_delta') {
+              streamedAssistantText = true
+              emit({ type: 'event', event: 'delta', data: message.event.delta.text })
+            }
+          }
+          else if (message.type === 'assistant' && !streamedAssistantText) emitAssistantText(message)
           else if (message.type === 'system' && message.subtype === 'init') emit({ type: 'event', event: 'tool' })
           else if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
         }

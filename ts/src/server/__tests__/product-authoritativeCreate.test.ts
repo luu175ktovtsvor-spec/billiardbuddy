@@ -571,6 +571,60 @@ describe('BB-02C atomic homepage submit', () => {
 })
 
 describe('BB-02C existing task submit matrix', () => {
+  test('stop targets the newest active durable run by event order', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-07c-stop-run-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({
+      version: 4,
+      tasks: {
+        task: {
+          coreSessionId: 'core',
+          title: 'task',
+          lifecycle: 'active',
+          kind: 'main',
+          createdAt: now().toISOString(),
+          updatedAt: now().toISOString(),
+        },
+      },
+    }))
+    const stopped: Array<[string, number]> = []
+    const service = new ProductTaskService({
+      storagePath,
+      installationId: 'install',
+      now,
+      dispatcher: {
+        dispatch: async () => 'started',
+        stop: async (runId, generation) => { stopped.push([runId, generation]) },
+      },
+    })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({
+      task_id: 'task',
+      expected_task_revision: 0,
+      client_operation_id: 'lineage',
+    })
+    const first = await service.submitTaskRun('task', {
+      expected_task_revision: 1,
+      expected_lineage_revision: 0,
+      client_operation_id: 'first',
+      text: 'first',
+      attachment_ids: [],
+    })
+    const second = await service.submitTaskRun('task', {
+      expected_task_revision: 2,
+      expected_lineage_revision: 1,
+      client_operation_id: 'second',
+      text: 'second',
+      attachment_ids: [],
+    })
+
+    expect(await service.stopActiveTaskRun('task')).toBeTrue()
+    expect(stopped).toEqual([[second.result!.run_id, second.result!.dispatch_generation]])
+    expect(stopped[0]?.[0]).not.toBe(first.result!.run_id)
+  })
+
   test('persists an accepted snapshot across later revisions and rejects attachment/domain conflicts atomically', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02c-existing-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' } } }))
     let fail = false; const now = () => new Date('2026-01-01T00:00:00.000Z'); const service = new ProductTaskService({ storagePath, installationId: 'install', now, authorityRepositoryDeps: { beforeWrite: () => { if (fail) throw new Error('write failure') } } }); await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath }); await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })

@@ -56,6 +56,7 @@ export type ProductTaskRuntime = {
     retryable: boolean
   } | null
   streamingEntryId: string | null
+  stopRequested: boolean
 }
 
 export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, string> = {
@@ -79,6 +80,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   approvalResponsePending: false,
   error: null,
   streamingEntryId: null,
+  stopRequested: false,
 }
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
@@ -425,6 +427,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         return {
           ...current,
           runState: 'working',
+          stopRequested: false,
           error: null,
           ...(duplicate ? {} : {
             entries: [...current.entries, {
@@ -491,6 +494,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     sendMessage: (taskId, text, attachments) => submitMessage(taskId, text, attachments),
 
     stopTask: (taskId) => {
+      updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: true }))
       productTaskSocket.send(taskId, { type: 'stop_generation' })
     },
 
@@ -575,6 +579,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           pendingApproval: null,
           approvalResponsePending: false,
           streamingEntryId: null,
+          stopRequested: false,
         }))
         void refreshThread(taskId, 'turn_complete')
         // The task index is product-owned. Refresh it from the server only
@@ -596,6 +601,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           // new approval card.
           pendingApproval: null,
           approvalResponsePending: false,
+          ...(event.state === 'idle' ? { stopRequested: false } : {}),
         }))
         return
       }
@@ -631,15 +637,16 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return runtime
 
           case 'assistant_text_start':
-            return { ...runtime, streamingEntryId: liveEntryId(taskId, 'assistant') }
+            return runtime.stopRequested ? runtime : { ...runtime, streamingEntryId: liveEntryId(taskId, 'assistant') }
 
           case 'assistant_text_delta':
-            return appendOrReplaceStreamingText(runtime, taskId, event.text)
+            return runtime.stopRequested ? runtime : appendOrReplaceStreamingText(runtime, taskId, event.text)
 
           case 'status':
             return {
               ...runtime,
               runState: event.state,
+              ...(event.state === 'idle' ? { stopRequested: false } : {}),
               ...(event.state === 'awaiting_approval'
                 ? {}
                 : { pendingApproval: null, approvalResponsePending: false }),
@@ -681,7 +688,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               // event to return the compact task UI to an actionable state.
               ...(event.retryable
                 ? {}
-                : { runState: 'idle', activeActivity: null, pendingApproval: null }),
+                : { runState: 'idle', activeActivity: null, pendingApproval: null, stopRequested: false }),
             }
         }
       })
