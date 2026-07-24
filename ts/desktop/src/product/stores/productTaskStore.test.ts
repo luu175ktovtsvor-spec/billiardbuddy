@@ -102,4 +102,14 @@ describe('productTaskStore authority mutations', () => {
     expect(productTasksApi.delete).toHaveBeenCalledWith(archived.id, expect.objectContaining({ phase: 'retry', expected_revision: 4, client_operation_id: expect.any(String) }))
     expect(useProductTaskStore.getState().index.tasks).toEqual([])
   })
+
+  it('forks from the task entity revision instead of the unrelated authority root revision', async () => {
+    const current = makeTask({ revision: 4 })
+    const forked = makeTask({ revision: 5, workDir: '/workspace/fork', worktreeState: 'materialized' })
+    useProductTaskStore.setState({ index: makeIndex(current), confirmedAuthorityRevision: 12 })
+    vi.mocked(productTasksApi.continue).mockResolvedValue(response(forked, 14))
+    vi.mocked(productTasksApi.list).mockResolvedValue(makeIndex(forked))
+    await useProductTaskStore.getState().continueTask(current.id, { sourceEntryId: 'thread_0123456789abcdef0123', target: 'new_worktree' })
+    expect(productTasksApi.continue).toHaveBeenCalledWith(current.id, expect.objectContaining({ expected_revision: 4, target: 'new_worktree' }))
+  })
 })

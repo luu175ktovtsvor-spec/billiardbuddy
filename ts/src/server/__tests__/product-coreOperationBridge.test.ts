@@ -963,6 +963,38 @@ describe('CoreOperationBridge', () => {
     }
   })
 
+  it('materializes and replays one isolated worktree for a durable product fork', async () => {
+    const configDir = path.join(journalDirectory, 'isolated-branch-config')
+    const sessions = new SessionService(configDir)
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'core-operation-isolated-branch-'))
+    const sourceSessionId = 'dededede-dede-5ede-aede-dededededede'
+    const git = (...args: string[]) => Bun.spawnSync(['git', ...args], { cwd: workDir, stdout: 'pipe', stderr: 'pipe' })
+    try {
+      expect(git('init').exitCode).toBe(0)
+      expect(git('config', 'user.email', 'test@example.com').exitCode).toBe(0)
+      expect(git('config', 'user.name', 'Test').exitCode).toBe(0)
+      await fs.writeFile(path.join(workDir, 'README.md'), 'source\n')
+      expect(git('add', 'README.md').exitCode).toBe(0)
+      expect(git('commit', '-m', 'source').exitCode).toBe(0)
+      const projectDir = path.join(configDir, 'projects', sanitizePath(workDir))
+      await fs.mkdir(projectDir, { recursive: true })
+      await fs.writeFile(path.join(projectDir, `${sourceSessionId}.jsonl`), [
+        JSON.stringify({ type: 'session-meta', isMeta: true, workDir, timestamp: new Date().toISOString() }),
+        JSON.stringify({ type: 'user', uuid: 'efefefef-efef-5fef-afef-efefefefefef', parentUuid: null, isSidechain: false, timestamp: new Date().toISOString(), message: { role: 'user', content: 'fork me' } }),
+      ].join('\n') + '\n')
+      const instance = new CoreOperationBridge(new SessionCoreOperationBackend(sessions), { journalDirectory: path.join(journalDirectory, 'isolated-branch-journal') })
+      const canonical = JSON.stringify({ sourceSessionId, title: 'Isolated fork', target: 'new_worktree' })
+      const first = await instance.ensureBranch('isolated-fork', 'task_opaque', canonical)
+      const second = await instance.ensureBranch('isolated-fork', 'task_opaque', canonical)
+      expect(second).toEqual(first)
+      expect(first.branchWorkDir).toContain(`${path.sep}.claude${path.sep}worktrees${path.sep}`)
+      expect((await fs.stat(first.branchWorkDir!)).isDirectory()).toBeTrue()
+      expect(await fs.readFile(path.join(first.branchWorkDir!, 'README.md'), 'utf8')).toBe('source\n')
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a durable branch replay through a symlinked exact transcript target', async () => {
     const configDir = path.join(journalDirectory, 'branch-symlink-config')
     const sessions = new SessionService(configDir)

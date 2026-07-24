@@ -220,8 +220,8 @@ function validateAttachment(value: unknown, key: string): void {
 }
 
 function validateLineage(value: unknown, key: string): void {
-  const lineage = object(value); exactKeys(lineage, ['lineage_id', 'product_task_id', 'revision', 'compact_generation', 'resume_binding_id', 'state', 'created_at', 'updated_at'], ['parent_lineage_id', 'fork_checkpoint_id', 'head_entry_id'])
-  if (lineage.lineage_id !== key || !requiredString(lineage.product_task_id) || !Number.isSafeInteger(lineage.revision) || (lineage.revision as number) < 0 || !Number.isSafeInteger(lineage.compact_generation) || (lineage.compact_generation as number) < 0 || !requiredString(lineage.resume_binding_id) || !['active', 'parked', 'recovery_required'].includes(lineage.state as string) || !isTimestamp(lineage.created_at) || !isTimestamp(lineage.updated_at) || (lineage.parent_lineage_id !== undefined && !requiredString(lineage.parent_lineage_id)) || (lineage.fork_checkpoint_id !== undefined && !requiredString(lineage.fork_checkpoint_id)) || (lineage.head_entry_id !== undefined && !requiredString(lineage.head_entry_id))) invalid()
+  const lineage = object(value); exactKeys(lineage, ['lineage_id', 'product_task_id', 'revision', 'compact_generation', 'resume_binding_id', 'state', 'created_at', 'updated_at'], ['parent_lineage_id', 'fork_checkpoint_id', 'head_entry_id', 'execution_directory'])
+  if (lineage.lineage_id !== key || !requiredString(lineage.product_task_id) || !Number.isSafeInteger(lineage.revision) || (lineage.revision as number) < 0 || !Number.isSafeInteger(lineage.compact_generation) || (lineage.compact_generation as number) < 0 || !requiredString(lineage.resume_binding_id) || !['active', 'parked', 'recovery_required'].includes(lineage.state as string) || !isTimestamp(lineage.created_at) || !isTimestamp(lineage.updated_at) || (lineage.parent_lineage_id !== undefined && !requiredString(lineage.parent_lineage_id)) || (lineage.fork_checkpoint_id !== undefined && !requiredString(lineage.fork_checkpoint_id)) || (lineage.head_entry_id !== undefined && !requiredString(lineage.head_entry_id)) || (lineage.execution_directory !== undefined && (typeof lineage.execution_directory !== 'string' || !path.isAbsolute(lineage.execution_directory)))) invalid()
 }
 
 function validateRunApproval(value: unknown): void {
@@ -256,10 +256,18 @@ function validate(file: AuthorityFile): AuthorityFile {
     for (const [key, value] of Object.entries(file.conversation_lineages)) { assertAuthorityMapKey(key); validateLineage(value, key) }
     if (file.authority_schema_revision === 3) {
       for (const name of ['thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings'] as const) map(file[name])
-      for (const [key, value] of Object.entries(file.thread_entries)) { const entry = object(value); assertAuthorityMapKey(key); exactKeys(entry, ['entry_id', 'task_id', 'run_id', 'text', 'created_at']); if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at)) invalid() }
+      for (const [key, value] of Object.entries(file.thread_entries)) {
+        const entry = object(value); assertAuthorityMapKey(key)
+        exactKeys(entry, ['entry_id', 'task_id', 'run_id', 'text', 'created_at'], ['reference_entry_ids'])
+        if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at) || (entry.reference_entry_ids !== undefined && (!Array.isArray(entry.reference_entry_ids) || entry.reference_entry_ids.length > 8 || new Set(entry.reference_entry_ids).size !== entry.reference_entry_ids.length || entry.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
+      }
       for (const [key, value] of Object.entries(file.task_runs)) { const run = object(value); assertAuthorityMapKey(key); exactKeys(run, ['run_id', 'task_id', 'lineage_id', 'entry_id', 'created_at', 'execution_capability', 'permission_mode', 'provider', 'model'], ['permission_snapshot', 'core_binding']); const binding = run.core_binding === undefined ? undefined : object(run.core_binding); if (binding) exactKeys(binding, ['resume_binding_id', 'session_id', 'work_dir', 'dispatch_generation']); if (run.run_id !== key || !requiredString(run.task_id) || !requiredString(run.lineage_id) || !requiredString(run.entry_id) || !isTimestamp(run.created_at) || !['installation_default_denied', 'workspace_bound'].includes(run.execution_capability as string) || (run.permission_mode !== null && typeof run.permission_mode !== 'string') || (run.permission_snapshot !== undefined && (!isProductPermissionSnapshot(run.permission_snapshot) || run.permission_mode !== run.permission_snapshot.mode)) || (run.provider !== null && typeof run.provider !== 'string') || (run.model !== null && typeof run.model !== 'string') || (binding && (!requiredString(binding.resume_binding_id) || !requiredString(binding.session_id) || typeof binding.work_dir !== 'string' || binding.dispatch_generation !== 1))) invalid() }
       for (const [key, value] of Object.entries(file.dispatch_records)) { const dispatch = object(value); assertAuthorityMapKey(key); exactKeys(dispatch, ['run_id', 'dispatch_generation', 'state'], ['claimed_at', 'started_at', 'completed_at', 'error', 'approvals']); if (dispatch.run_id !== key || dispatch.dispatch_generation !== 1 || !['pending', 'claimed', 'started', 'recovery_required', 'terminal'].includes(dispatch.state as string) || (dispatch.claimed_at !== undefined && !isTimestamp(dispatch.claimed_at)) || (dispatch.started_at !== undefined && !isTimestamp(dispatch.started_at)) || (dispatch.completed_at !== undefined && !isTimestamp(dispatch.completed_at)) || (dispatch.error !== undefined && typeof dispatch.error !== 'string') || (dispatch.approvals !== undefined && (!Array.isArray(dispatch.approvals) || dispatch.approvals.length > 1_000))) invalid(); const approvals = (dispatch.approvals as unknown[] | undefined) ?? []; const requestIds = new Set<string>(); let pending = 0; for (const approval of approvals) { validateRunApproval(approval); const record = approval as { request_id: string; status: string }; if (requestIds.has(record.request_id)) invalid(); requestIds.add(record.request_id); if (record.status === 'pending') pending += 1 }; if (pending > 1) invalid() }
-      for (const [key, value] of Object.entries(file.task_events)) { const event = object(value); assertAuthorityMapKey(key); exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'entry_id', 'text', 'attachment_ids', 'created_at']); if (!Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || !requiredString(event.task_id) || !requiredString(event.run_id) || event.type !== 'user_text' || !requiredString(event.entry_id) || typeof event.text !== 'string' || !Array.isArray(event.attachment_ids) || event.attachment_ids.some(id => !requiredString(id)) || !isTimestamp(event.created_at)) invalid() }
+      for (const [key, value] of Object.entries(file.task_events)) {
+        const event = object(value); assertAuthorityMapKey(key)
+        exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'entry_id', 'text', 'attachment_ids', 'created_at'], ['reference_entry_ids'])
+        if (!Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || !requiredString(event.task_id) || !requiredString(event.run_id) || event.type !== 'user_text' || !requiredString(event.entry_id) || typeof event.text !== 'string' || !Array.isArray(event.attachment_ids) || event.attachment_ids.some(id => !requiredString(id)) || (event.reference_entry_ids !== undefined && (!Array.isArray(event.reference_entry_ids) || event.reference_entry_ids.length > 8 || new Set(event.reference_entry_ids).size !== event.reference_entry_ids.length || event.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id)))) || !isTimestamp(event.created_at)) invalid()
+      }
       for (const [key, value] of Object.entries(file.attachment_bindings)) { const binding = object(value); assertAuthorityMapKey(key); exactKeys(binding, ['attachment_id', 'task_id', 'run_id', 'entry_id']); if (binding.attachment_id !== key || !requiredString(binding.task_id) || !requiredString(binding.run_id) || !requiredString(binding.entry_id)) invalid() }
     }
   }
@@ -425,7 +433,7 @@ export class ProductTaskAuthorityRepository {
     operationId: string,
     receipt: ProductTaskOperationReceipt,
     binding?: unknown,
-    options: { outbox?: OutboxRecord; sideTask?: unknown } = {},
+    options: { outbox?: OutboxRecord; sideTask?: unknown; lineage?: { id: string; value: unknown } } = {},
   ): Promise<AuthorityFile> {
     return this.lock(async () => {
       const file = await this.read()
@@ -439,6 +447,7 @@ export class ProductTaskAuthorityRepository {
         else file.tasks[intent.product_task_id] = binding
       }
       if (options.sideTask !== undefined) file.side_tasks[intent.product_task_id] = options.sideTask
+      if (options.lineage) file.conversation_lineages[options.lineage.id] = options.lineage.value
       if (options.outbox) file.outbox[operationId] = options.outbox
       delete file.prepared[operationId]
       file.event_sequence += 1

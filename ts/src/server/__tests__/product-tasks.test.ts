@@ -470,6 +470,53 @@ describe('ProductTaskService', () => {
     ))).toEqual(['第一问', '第一答', '第二问', '第二答'])
   })
 
+  it('persists quoted entry identities and forks an independent lineage without changing its parent', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-09b-lineage-fork-'))
+    const storagePath = path.join(tempDir, 'product-tasks.json')
+    const authorityPath = path.join(tempDir, 'product-task-authority.v1.json')
+    const core = makeCore()
+    const service = new ProductTaskService({ storagePath, core })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+    await service.ensureAuthorityProjectionForLegacyTask(task.id, { authorityPath })
+    const root = await service.createConversationLineage({ task_id: task.id, expected_task_revision: 0, client_operation_id: 'lineage-root' })
+    const first = await service.submitTaskRun(task.id, { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: '第一问', attachment_ids: [] })
+    const firstState = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const firstSessionId = (firstState.task_runs[first.result!.run_id] as { core_binding: { session_id: string } }).core_binding.session_id
+    core.setSessionMessages(firstSessionId, [
+      sourceMessage('first-user', '第一问'),
+      { id: 'first-assistant', type: 'assistant', content: '第一答', timestamp: '2026-07-19T08:00:01.000Z' },
+    ])
+    const sourceEntryId = (await service.getTaskThread(task.id)).entries.find(entry => entry.type === 'assistant_text')!.id
+    const quoted = await service.submitTaskRun(task.id, { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'quoted', text: '引用后追问', attachment_ids: [], reference_entry_ids: [sourceEntryId] })
+    expect(quoted.outcome).toBe('accepted')
+    const quotedState = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(quotedState.thread_entries[quoted.result!.entry_id]).toMatchObject({ reference_entry_ids: [sourceEntryId] })
+    expect((await service.listTaskEvents(task.id)).events.at(-1)).toMatchObject({ reference_entry_ids: [sourceEntryId] })
+    const quotedSessionId = (quotedState.task_runs[quoted.result!.run_id] as { core_binding: { session_id: string } }).core_binding.session_id
+    core.setSessionMessages(quotedSessionId, [sourceMessage('quoted-user', '引用后追问')])
+    expect((await service.getTaskThread(task.id)).entries.find(entry => entry.type === 'user_text' && entry.text === '引用后追问')).toMatchObject({ referenceEntryIds: [sourceEntryId] })
+    const hiddenAfterForkEntryId = (await service.getTaskThread(task.id)).entries.find(entry => entry.type === 'user_text' && entry.text === '引用后追问')!.id
+
+    const parentId = root.lineage.lineage_id as string
+    const parentBefore = JSON.stringify(quotedState.conversation_lineages[parentId])
+    let frozenCoreInput = ''
+    const input = { taskId: task.id, expected_revision: 3, client_operation_id: 'fork', canonical_input: JSON.stringify({ sourceEntryId, target: 'new_worktree' }) }
+    const bridge = { ensureBranch: async (_operationId: string, _taskId: string, canonicalInput: string) => { frozenCoreInput = canonicalInput; return { coreSessionId: 'fork-core', branchWorkDir: '/workspace/fork' } } }
+    expect((await service.continueTaskAuthoritatively(input, { authorityPath, bridge })).outcome).toBe('accepted')
+    const forked = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const current = (forked.tasks[task.id] as { task: { current_lineage_id: string; workDir: string } }).task
+    const child = forked.conversation_lineages[current.current_lineage_id] as Record<string, unknown>
+    expect(child).toMatchObject({ parent_lineage_id: parentId, fork_checkpoint_id: first.result!.entry_id, execution_directory: '/workspace/fork' })
+    expect(current.workDir).toBe('/workspace/fork')
+    expect(JSON.stringify(forked.conversation_lineages[parentId])).toBe(parentBefore)
+    expect(JSON.parse(frozenCoreInput)).toMatchObject({ sourceSessionId: firstSessionId, targetMessageId: 'first-assistant', target: 'new_worktree' })
+    const bytes = await fs.readFile(authorityPath)
+    expect((await service.continueTaskAuthoritatively(input, { authorityPath, bridge })).outcome).toBe('duplicate')
+    expect(await fs.readFile(authorityPath)).toEqual(bytes)
+    expect((await service.getTaskThread(task.id)).entries.map(entry => entry.type === 'user_text' || entry.type === 'assistant_text' ? entry.text : entry.type)).toEqual(['第一问', '第一答'])
+    await expect(service.continueTaskAuthoritatively({ taskId: task.id, expected_revision: 4, client_operation_id: 'fork-hidden', canonical_input: JSON.stringify({ sourceEntryId: hiddenAfterForkEntryId, target: 'new_worktree' }) }, { authorityPath, bridge })).rejects.toMatchObject({ statusCode: 400, code: 'BAD_REQUEST' })
+  })
+
   it('maps supported product execution choices to Core permission modes', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()

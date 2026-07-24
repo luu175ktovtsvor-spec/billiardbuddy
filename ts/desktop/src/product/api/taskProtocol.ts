@@ -409,7 +409,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'user_text': {
       if (
-        !hasOnlyKeys(value, ['type', 'text', 'replayed', 'event_sequence', 'attachments']) ||
+        !hasOnlyKeys(value, ['type', 'text', 'replayed', 'event_sequence', 'attachments', 'referenceEntryIds']) ||
         !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) ||
         value.replayed !== true ||
         ('event_sequence' in value && (typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1))
@@ -420,12 +420,20 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         ? parseAttachmentSummaries(value.attachments)
         : undefined
       if ('attachments' in value && !attachments) return null
+      const referenceEntryIds = 'referenceEntryIds' in value && Array.isArray(value.referenceEntryIds)
+        && value.referenceEntryIds.length <= 8
+        && new Set(value.referenceEntryIds).size === value.referenceEntryIds.length
+        && value.referenceEntryIds.every(id => typeof id === 'string' && /^thread_[a-f0-9]{20}$/.test(id))
+        ? value.referenceEntryIds as string[]
+        : undefined
+      if ('referenceEntryIds' in value && !referenceEntryIds) return null
       return {
         type: 'user_text',
         text: value.text,
         replayed: true,
         ...(typeof value.event_sequence === 'number' ? { event_sequence: value.event_sequence } : {}),
         ...(attachments ? { attachments } : {}),
+        ...(referenceEntryIds?.length ? { referenceEntryIds } : {}),
       }
     }
 
@@ -568,7 +576,7 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
 
   if (value.type === 'user_text') {
     if (
-      !hasOnlyKeys(value, ['id', 'type', 'text', 'createdAt', 'attachments']) ||
+      !hasOnlyKeys(value, ['id', 'type', 'text', 'createdAt', 'attachments', 'referenceEntryIds']) ||
       !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH)
     ) {
       return null
@@ -577,12 +585,20 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
       ? parseAttachmentSummaries(value.attachments)
       : undefined
     if ('attachments' in value && !attachments) return null
+    const referenceEntryIds = 'referenceEntryIds' in value && Array.isArray(value.referenceEntryIds)
+      && value.referenceEntryIds.length <= 8
+      && new Set(value.referenceEntryIds).size === value.referenceEntryIds.length
+      && value.referenceEntryIds.every(id => typeof id === 'string' && /^thread_[a-f0-9]{20}$/.test(id))
+      ? value.referenceEntryIds as string[]
+      : undefined
+    if ('referenceEntryIds' in value && !referenceEntryIds) return null
     return {
       id: value.id,
       type: 'user_text',
       text: value.text,
       createdAt: value.createdAt,
       ...(attachments ? { attachments } : {}),
+      ...(referenceEntryIds?.length ? { referenceEntryIds } : {}),
     }
   }
 

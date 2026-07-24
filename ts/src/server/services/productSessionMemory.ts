@@ -14,6 +14,7 @@ export type ProductSessionMemoryAncestor = {
   lineage_id: string
   resume_binding_id: string
   inherit_through_entry_id?: string
+  work_dir?: string
 }
 
 export type ProductSessionMemoryBinding = {
@@ -113,9 +114,10 @@ export class ProductSessionMemoryRepository {
     }
     for (const ancestor of binding.ancestors) {
       if (!ancestor.inherit_through_entry_id) return []
-      const inherited = await this.read(this.recordPath({ ...binding, lineage_id: ancestor.lineage_id, resume_binding_id: ancestor.resume_binding_id }, projectDigest))
+      const ancestorProjectDigest = ancestor.work_dir ? await this.projectDigest(ancestor.work_dir) : projectDigest
+      const inherited = await this.read(this.recordPath({ ...binding, lineage_id: ancestor.lineage_id, resume_binding_id: ancestor.resume_binding_id }, ancestorProjectDigest))
       if (!inherited) continue
-      this.assertBinding(inherited, binding.task_id, ancestor.lineage_id, ancestor.resume_binding_id, projectDigest)
+      this.assertBinding(inherited, binding.task_id, ancestor.lineage_id, ancestor.resume_binding_id, ancestorProjectDigest)
       const checkpoint = inherited.turns.findIndex(turn => turn.entry_id === ancestor.inherit_through_entry_id)
       return checkpoint < 0 ? [] : inherited.turns.slice(0, checkpoint + 1)
     }

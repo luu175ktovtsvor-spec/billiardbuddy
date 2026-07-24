@@ -29,12 +29,13 @@ test('resumes only the same task lineage, private binding, and project identity'
   expect(names.join('\n')).not.toContain('resume-private')
 })
 
-test('fork inherits only through its durable checkpoint and then advances independently', async () => {
-  const { binding } = await fixture('fork')
+test('fork inherits only through its durable checkpoint across an independent execution directory', async () => {
+  const { root, binding } = await fixture('fork')
   const repository = new ProductSessionMemoryRepository()
   await repository.appendCompletedTurn(binding, { entry_id: 'entry-1', user: 'first', assistant: 'one' })
   await repository.appendCompletedTurn(binding, { entry_id: 'entry-2', user: 'second', assistant: 'two' })
-  const child = { ...binding, lineage_id: 'child', resume_binding_id: 'child-private', ancestors: [{ lineage_id: binding.lineage_id, resume_binding_id: binding.resume_binding_id, inherit_through_entry_id: 'entry-1' }] }
+  const childProject = path.join(root, 'child-worktree'); await fs.mkdir(childProject)
+  const child = { ...binding, work_dir: childProject, lineage_id: 'child', resume_binding_id: 'child-private', ancestors: [{ lineage_id: binding.lineage_id, resume_binding_id: binding.resume_binding_id, inherit_through_entry_id: 'entry-1', work_dir: binding.work_dir }] }
   const inherited = await repository.load(child)
   expect(inherited).toContain('first')
   expect(inherited).not.toContain('second')

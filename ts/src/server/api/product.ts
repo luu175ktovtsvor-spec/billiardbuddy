@@ -279,9 +279,10 @@ export async function handleProductApi(
       if (req.method !== 'POST') return methodNotAllowed(req.method)
       const input = await readJson<Record<string, unknown>>(req)
       if (containsRawAttachment(input)) throw new ApiError(409, '附件导入当前不可用', 'ATTACHMENT_INGEST_UNAVAILABLE')
-      if (!assertPlainExactObject(input, ['client_operation_id', 'expected_task_revision', 'expected_lineage_revision', 'text', 'attachment_ids'], ['draft_id', 'expected_draft_revision'])
+      if (!assertPlainExactObject(input, ['client_operation_id', 'expected_task_revision', 'expected_lineage_revision', 'text', 'attachment_ids', 'reference_entry_ids'], ['draft_id', 'expected_draft_revision'])
         || typeof input.client_operation_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0
         || typeof input.text !== 'string' || !Array.isArray(input.attachment_ids) || input.attachment_ids.some(id => typeof id !== 'string')
+        || !Array.isArray(input.reference_entry_ids) || input.reference_entry_ids.length > 8 || new Set(input.reference_entry_ids).size !== input.reference_entry_ids.length || input.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))
         || ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined))
         || (input.draft_id !== undefined && typeof input.draft_id !== 'string') || (input.expected_draft_revision !== undefined && (!Number.isSafeInteger(input.expected_draft_revision) || (input.expected_draft_revision as number) < 0))) throw ApiError.badRequest('submit 参数无效')
       try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('submit 参数无效') }

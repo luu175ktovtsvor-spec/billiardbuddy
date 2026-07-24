@@ -577,7 +577,7 @@ describe('ProductTaskPage', () => {
     await screen.findByText('可以从这里继续处理。')
     expect(mocks.continueTask).toHaveBeenCalledWith('task-1', {
       sourceEntryId: 'thread_0123456789abcdef0123',
-      target: 'current_workspace',
+      target: 'new_worktree',
     })
     expect(mocks.openProductTaskTab).toHaveBeenCalledWith(
       'task-continuation-1',
@@ -591,7 +591,7 @@ describe('ProductTaskPage', () => {
     expect(mocks.openSideTaskPanel).toHaveBeenCalledWith('task-1', 'side-1')
   })
 
-  it('quotes a persisted task entry into the composer without submitting it', () => {
+  it('keeps a quoted entry identity through the durable submit boundary', async () => {
     mocks.runtime = {
       ...mocks.runtime,
       entries: [{
@@ -606,7 +606,10 @@ describe('ProductTaskPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '引用' }))
 
     expect(screen.getByRole('textbox', { name: '任务输入' })).toHaveValue('> 第一行\n> 第二行\n\n')
+    expect(screen.getByLabelText('待发送引用')).toHaveTextContent('引用 1')
     expect(mocks.sendMessage).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(mocks.sendText).toHaveBeenCalledWith('task-1', '> 第一行\n> 第二行\n\n', ['thread_0123456789abcdef0123']))
   })
 
   it('uses the detached task-window callbacks instead of a shared tab when supplied', async () => {

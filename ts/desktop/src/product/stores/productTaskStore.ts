@@ -126,9 +126,10 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
     intentKey: string,
     input: Record<string, unknown>,
     action: (envelope: PendingMutation) => Promise<ProductTaskActionResponse>,
+    expectedRevision = get().confirmedAuthorityRevision,
   ): Promise<ProductTaskRecord> => {
     const existing = get().pending[intentKey]
-    const envelope = existing ?? createEnvelope(input, get().confirmedAuthorityRevision)
+    const envelope = existing ?? createEnvelope(input, expectedRevision)
     set((state) => ({
       error: null,
       pending: { ...state.pending, [intentKey]: envelope },
@@ -305,8 +306,10 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
       }
     },
     continueTask: async (taskId, input) => {
+      const taskRevision = get().index.tasks.find(task => task.id === taskId)?.revision
+      if (taskRevision === undefined) throw new Error('Task revision is unavailable')
       const task = await runMutation(productTaskMutationKey(taskId, 'continue'), { taskId, ...input }, (envelope) =>
-        productTasksApi.continue(taskId, envelope as MutationEnvelope<ContinueProductTaskInput>))
+        productTasksApi.continue(taskId, envelope as MutationEnvelope<ContinueProductTaskInput>), taskRevision)
       await get().refresh()
       return task
     },
