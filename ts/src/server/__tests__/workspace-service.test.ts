@@ -485,6 +485,29 @@ describe('WorkspaceService', () => {
     })
   })
 
+  it('returns opaque file revisions that change without reading full file content', async () => {
+    const workDir = await makeTempDir('workspace-service-revision-')
+    const filePath = path.join(workDir, 'note.txt')
+    await fs.writeFile(filePath, 'one')
+    const service = new WorkspaceService(async () => workDir)
+
+    const first = await service.getFileRevision('session-1', 'note.txt')
+    expect(first).toMatchObject({
+      state: 'ok',
+      path: 'note.txt',
+      revision: expect.stringMatching(/^rev_[a-f0-9]{32}$/),
+    })
+
+    await fs.writeFile(filePath, 'a longer revision')
+    const second = await service.getFileRevision('session-1', 'note.txt')
+    expect(second).toMatchObject({ state: 'ok', path: 'note.txt' })
+    expect(second.revision).not.toBe(first.revision)
+    await expect(service.getFileRevision('session-1', 'missing.txt')).resolves.toEqual({
+      state: 'missing',
+      path: 'missing.txt',
+    })
+  })
+
   it('only returns bounded video data URLs when a caller opts into a video preview cap', async () => {
     const workDir = await makeTempDir('workspace-service-video-preview-')
     const service = new WorkspaceService(async () => workDir)

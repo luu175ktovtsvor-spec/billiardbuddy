@@ -84,6 +84,7 @@ export type {
   ProductTaskReviewStatus,
   ProductTaskReviewTree,
   ProductTaskReviewTreeEntry,
+  WorkspaceFileRef,
 } from '../../../../shared/product/taskReview'
 export type {
   ProductTaskMediaAsset,
@@ -256,7 +257,7 @@ export type ProductTaskApi = {
   getReviewStatus: (taskId: string) => Promise<ProductTaskReviewStatus>
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
   getReviewFile: (taskId: string, path: string) => Promise<ProductTaskReviewFile>
-  getReviewDiff: (taskId: string, path: string) => Promise<ProductTaskReviewDiff>
+  getReviewDiff: (taskId: string, path: string, revision?: string) => Promise<ProductTaskReviewDiff>
   getMedia: (taskId: string) => Promise<ProductTaskMediaList>
   getAttachableMedia: (taskId: string) => Promise<ProductTaskMediaAttachableList>
   attachMediaProject: (taskId: string, projectId: string) => Promise<{ project: ProductTaskMediaProject }>

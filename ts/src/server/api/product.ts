@@ -486,7 +486,11 @@ async function handleTaskReviewRoute(
     case 'file':
       return Response.json(await review.getFile(taskId, requireReviewPath(url)))
     case 'diff':
-      return Response.json(await review.getDiff(taskId, requireReviewPath(url)))
+      return Response.json(await review.getDiff(
+        taskId,
+        requireReviewPath(url),
+        url.searchParams.get('revision') ?? undefined,
+      ))
     default:
       throw ApiError.notFound('未知任务审阅资源')
   }

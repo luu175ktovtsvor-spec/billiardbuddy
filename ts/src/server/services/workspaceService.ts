@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises'
 import { execFile as execFileCallback } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
 import { diffLines } from 'diff'
@@ -119,6 +120,13 @@ export type WorkspaceReadFileResult = {
 export type WorkspaceReadFileOptions = {
   maxImagePreviewBytes?: number
   maxVideoPreviewBytes?: number
+}
+
+export type WorkspaceFileRevisionResult = {
+  state: 'ok' | 'missing' | 'error'
+  path: string
+  revision?: string
+  error?: string
 }
 
 export type WorkspaceTreeEntry = {
@@ -559,6 +567,39 @@ export class WorkspaceService {
       size: stat.stat.size,
       truncated: content.length < stat.stat.size,
       readBytes: content.length,
+    }
+  }
+
+  async getFileRevision(
+    sessionId: string,
+    filePath: string,
+  ): Promise<WorkspaceFileRevisionResult> {
+    const resolvedPath = await this.resolveWorkspacePath(sessionId, filePath)
+    const stat = await this.safeStat(resolvedPath.absolutePath)
+    if (stat.kind === 'error') {
+      return {
+        state: 'error',
+        path: resolvedPath.relativePath,
+        error: stat.message,
+      }
+    }
+    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+      return { state: 'missing', path: resolvedPath.relativePath }
+    }
+
+    const fingerprint = [
+      resolvedPath.relativePath,
+      stat.stat.dev,
+      stat.stat.ino,
+      stat.stat.mode,
+      stat.stat.size,
+      stat.stat.mtimeMs,
+      stat.stat.ctimeMs,
+    ].join('\0')
+    return {
+      state: 'ok',
+      path: resolvedPath.relativePath,
+      revision: `rev_${createHash('sha256').update(fingerprint).digest('hex').slice(0, 32)}`,
     }
   }
 

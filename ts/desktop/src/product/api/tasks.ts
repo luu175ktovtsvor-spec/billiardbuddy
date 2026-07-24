@@ -32,10 +32,17 @@ function taskPath(taskId: string): string {
 
 export const PRODUCT_MEDIA_RESULT_TIMEOUT_MS = 5 * 60_000
 
-function reviewPath(taskId: string, resource: 'status' | 'tree' | 'file' | 'diff', path?: string): string {
+function reviewPath(
+  taskId: string,
+  resource: 'status' | 'tree' | 'file' | 'diff',
+  path?: string,
+  revision?: string,
+): string {
   const base = `${taskPath(taskId)}/review/${resource}`
   if (!path) return base
-  return `${base}?path=${encodeURIComponent(path)}`
+  const params = new URLSearchParams({ path })
+  if (revision) params.set('revision', revision)
+  return `${base}?${params.toString()}`
 }
 
 type OperationQueryResponse = { receipt: OperationReceipt; authority: AuthoritySnapshot }
@@ -103,7 +110,7 @@ export const productTasksApi: ProductTaskApi = {
   getReviewStatus: (taskId) => productApi.get<ProductTaskReviewStatus>(reviewPath(taskId, 'status')),
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
   getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
-  getReviewDiff: (taskId, path) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path)),
+  getReviewDiff: (taskId, path, revision) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path, revision)),
   getMedia: (taskId) => productApi.get<ProductTaskMediaList>(
     `${taskPath(taskId)}/media`,
     { timeout: PRODUCT_MEDIA_RESULT_TIMEOUT_MS },

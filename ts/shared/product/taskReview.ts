@@ -48,10 +48,17 @@ export type ProductTaskReviewTree = {
   entries: ProductTaskReviewTreeEntry[]
 }
 
+export type WorkspaceFileRef = {
+  fileId: string
+  path: string
+  revision: string
+}
+
 export type ProductTaskReviewFile = {
   taskId: string
-  state: 'ok' | 'binary' | 'too_large' | 'missing' | 'unavailable'
+  state: 'ok' | 'binary' | 'too_large' | 'missing' | 'stale' | 'unavailable'
   path: string
+  fileRef?: WorkspaceFileRef
   previewType?: 'text' | 'image' | 'video'
   content?: string
   dataUrl?: string
@@ -64,7 +71,8 @@ export type ProductTaskReviewFile = {
 
 export type ProductTaskReviewDiff = {
   taskId: string
-  state: 'ok' | 'missing' | 'not_versioned' | 'unavailable'
+  state: 'ok' | 'missing' | 'not_versioned' | 'stale' | 'unavailable'
   path: string
+  fileRef?: WorkspaceFileRef
   diff?: string
 }
