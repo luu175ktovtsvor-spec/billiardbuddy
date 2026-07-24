@@ -22,7 +22,13 @@ export type AgentWorkerCoreIdentity = {
     ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }>
   }
 }
-type DispatchStore = { readTaskRunDispatchIdentity(run: string, generation: number): Promise<AgentWorkerCoreIdentity>; claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }>; settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> }
+type DispatchStore = {
+  readTaskRunDispatchIdentity(run: string, generation: number): Promise<AgentWorkerCoreIdentity>
+  inspectTaskRunQueuePosition?(run: string, generation: number): Promise<'ready' | 'queued'>
+  claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'; task_id: string }>
+  settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void>
+  advanceTaskRunQueue?(run: string, generation: number): Promise<void>
+}
 export type AgentWorkerChild = { send(message: AgentWorkerInbound): void; stop(): Promise<void> }
 export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: AgentWorkerCoreIdentity; bootstrap: { capability: ReturnType<typeof createAgentWorkerChildStartCapability>; capability_key: Buffer }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
 export type AgentWorkerSafeMessageSink = {
@@ -33,38 +39,50 @@ export type AgentWorkerDispatchKind = 'interactive' | 'scheduled'
 /** Single Local Product Server owner of durable TaskRun → child-worker launch. */
 export class AgentWorkerSupervisor {
   private readonly active = new Map<string, { child: AgentWorkerChild; fencing: number }>()
-  private readonly starting = new Map<string, Promise<'started' | 'recovery_required'>>()
+  private readonly starting = new Map<string, Promise<'started' | 'queued' | 'recovery_required'>>()
   private readonly settled = new Set<string>()
   private readonly terminalPending = new Set<string>()
   private readonly stopRequested = new Set<string>()
   private readonly releasedSchedulerClaims = new Set<string>()
   private readonly readyTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>()
   private readonly childCapabilityKey = randomBytes(32)
   constructor(private readonly runs: DispatchStore, private readonly scheduler: ProductResourceScheduler, private readonly launcher: AgentWorkerChildLauncher, private readonly readyTimeoutMs = 5_000, private readonly messages?: AgentWorkerSafeMessageSink) {}
-  async dispatch(runId: string, generation: number, kind: AgentWorkerDispatchKind = 'interactive'): Promise<'started' | 'recovery_required'> {
+  async dispatch(runId: string, generation: number, kind: AgentWorkerDispatchKind = 'interactive'): Promise<'started' | 'queued' | 'recovery_required'> {
     const key = `${runId}:${generation}`; if (this.settled.has(key)) return 'recovery_required'; if (this.active.has(key)) return 'started'
     const inProgress = this.starting.get(key); if (inProgress) return inProgress
     const start = Promise.resolve().then(() => this.startDispatch(runId, generation, kind))
     this.starting.set(key, start)
     try { return await start } finally { if (this.starting.get(key) === start) this.starting.delete(key) }
   }
-  private async startDispatch(runId: string, generation: number, kind: AgentWorkerDispatchKind): Promise<'started' | 'recovery_required'> {
+  private async startDispatch(runId: string, generation: number, kind: AgentWorkerDispatchKind): Promise<'started' | 'queued' | 'recovery_required'> {
     const key = `${runId}:${generation}`
     if (this.stopRequested.has(key)) return this.fail(runId, generation, undefined, 'STOPPED', 'terminal')
     let identity: AgentWorkerCoreIdentity
     try { identity = await this.runs.readTaskRunDispatchIdentity(runId, generation) } catch { return 'recovery_required' }
     if (this.settled.has(key)) return 'recovery_required'
     if (this.stopRequested.has(key)) return this.fail(runId, generation, undefined, 'STOPPED', 'terminal')
+    if (await this.runs.inspectTaskRunQueuePosition?.(runId, generation) === 'queued') return 'queued'
     let receipt: Awaited<ReturnType<ProductResourceScheduler['submit']>>
     const resources = kind === 'scheduled'
       ? [{ key: 'schedule.dispatch' as const, units: 1 }, { key: 'agent.worker' as const, units: 1 }]
       : [{ key: 'agent.worker' as const, units: 1 }]
-    try { receipt = await this.scheduler.submit({ job_id: `agent-worker:${runId}:${generation}`, owner_id: `task:${identity.task_id}`, idempotency_key: `agent-worker:${runId}:${generation}`, scope: 'desktop-host', resources, bytes: { memory: 0, input: 0, temp: 0, output: 0 }, priority: kind, cancel_mode: 'cooperative', resume_policy: 'idempotent', profile_revision: this.scheduler.profileRevision(), task_run: { run_id: runId, dispatch_generation: generation } }) } catch { return 'recovery_required' }
-    if (receipt.outcome !== 'admitted' || !receipt.fencing_token) return this.fail(runId, generation, undefined, 'SCHEDULER_DENIED')
+    const claim = { job_id: `agent-worker:${runId}:${generation}`, owner_id: `task:${identity.task_id}`, idempotency_key: `agent-worker:${runId}:${generation}`, scope: 'desktop-host' as const, resources, bytes: { memory: 0, input: 0, temp: 0, output: 0 }, priority: kind, cancel_mode: 'cooperative' as const, resume_policy: 'idempotent' as const, profile_revision: this.scheduler.profileRevision(), task_run: { run_id: runId, dispatch_generation: generation } }
+    try {
+      receipt = await this.scheduler.submit(claim)
+      while ((receipt.outcome === 'queued' || receipt.outcome === 'duplicate') && !receipt.fencing_token) {
+        if (this.settled.has(key) || this.stopRequested.has(key)) { await this.scheduler.cancel(claim.job_id).catch(() => undefined); return 'recovery_required' }
+        await new Promise(resolve => setTimeout(resolve, 25))
+        receipt = await this.scheduler.submit(claim)
+      }
+    } catch { return this.fail(runId, generation, undefined, 'SCHEDULER_DENIED') }
+    if (!['admitted', 'duplicate'].includes(receipt.outcome) || !receipt.fencing_token) return this.fail(runId, generation, undefined, 'SCHEDULER_DENIED')
+    this.startSchedulerHeartbeat(runId, generation, receipt.fencing_token, receipt.lease?.expires_at)
     if (this.settled.has(key)) { await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'recovery_required' }
     if (this.stopRequested.has(key)) return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal')
-    const claim = await this.runs.claimTaskRunDispatch(runId, generation)
-    if (claim.outcome !== 'claimed') return this.fail(runId, generation, receipt.fencing_token, claim.outcome)
+    const dispatchClaim = await this.runs.claimTaskRunDispatch(runId, generation)
+    if (dispatchClaim.outcome === 'queued') { await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'queued' }
+    if (dispatchClaim.outcome !== 'claimed') return this.fail(runId, generation, receipt.fencing_token, dispatchClaim.outcome)
     if (this.settled.has(key)) { await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'recovery_required' }
     if (this.stopRequested.has(key)) return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal')
     let child: AgentWorkerChild | undefined; let hello = false; let ready = false; let inputSent = false
@@ -116,18 +134,35 @@ export class AgentWorkerSupervisor {
     active.child.send({ type: 'approval_response', request_id: requestId, approved })
     return true
   }
-  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) { active.child.send({ type: 'stop' }); await active.child.stop() } await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
+  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) { active.child.send({ type: 'stop' }); await active.child.stop() } else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
   private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required'): Promise<'recovery_required'> {
     const key = `${run}:${generation}`
     if (this.settled.has(key)) return 'recovery_required'
-    this.settled.add(key); this.terminalPending.delete(key); this.stopRequested.delete(key); this.active.delete(key); const timer = this.readyTimers.get(key); if (timer) clearTimeout(timer); this.readyTimers.delete(key)
+    this.settled.add(key); this.terminalPending.delete(key); this.stopRequested.delete(key); this.active.delete(key); const timer = this.readyTimers.get(key); if (timer) clearTimeout(timer); this.readyTimers.delete(key); const heartbeat = this.heartbeatTimers.get(key); if (heartbeat) clearInterval(heartbeat); this.heartbeatTimers.delete(key)
     try { await this.runs.settleTaskRunDispatch(run, generation, state, error === 'MODEL_CONFIGURATION_INVALID' ? '模型配置无效' : error) } catch {}
     // Durable terminal/recovery state is the fence for all later child IPC;
     // scheduler journal I/O must not delay that transition.
     await this.releaseSchedulerClaim(run, generation, fencing)
+    if (state === 'terminal') await this.runs.advanceTaskRunQueue?.(run, generation).catch(() => undefined)
     return 'recovery_required'
   }
+  private startSchedulerHeartbeat(run: string, generation: number, fencing: number, expiresAt?: string): void {
+    const key = `${run}:${generation}`
+    const remaining = expiresAt ? Date.parse(expiresAt) - Date.now() : 30_000
+    const interval = Math.max(25, Math.min(10_000, Math.floor(remaining / 3)))
+    const timer = setInterval(() => {
+      void this.scheduler.heartbeat(`agent-worker:${run}:${generation}`, fencing).then(receipt => {
+        if (receipt.outcome !== 'admitted') void this.fail(run, generation, fencing, 'SCHEDULER_LEASE_LOST')
+      }).catch(() => this.fail(run, generation, fencing, 'SCHEDULER_HEARTBEAT_FAILED'))
+    }, interval)
+    timer.unref?.()
+    this.heartbeatTimers.set(key, timer)
+  }
   private async releaseSchedulerClaim(run: string, generation: number, fencing: number | undefined): Promise<void> {
+    const heartbeatKey = `${run}:${generation}`
+    const heartbeat = this.heartbeatTimers.get(heartbeatKey)
+    if (heartbeat) clearInterval(heartbeat)
+    this.heartbeatTimers.delete(heartbeatKey)
     if (!fencing) return
     const key = `${run}:${generation}:${fencing}`
     if (this.releasedSchedulerClaims.has(key)) return

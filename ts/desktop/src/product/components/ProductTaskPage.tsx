@@ -1074,7 +1074,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                     {hasActiveRun ? (
                       <button type="button" onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">停止</button>
                     ) : null}
-                    <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : '发送'}</button>
+                    <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : hasActiveRun ? '加入队列' : '发送'}</button>
                   </div>
                 </div>
               </>

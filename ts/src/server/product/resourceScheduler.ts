@@ -111,7 +111,10 @@ export class ProductResourceScheduler {
       const profile = this.profiles.current()
       const keys = stableProductResourceKeys(claim.resources)
       const duplicate = Object.values(state.jobs).find(job => job.claim.idempotency_key === claim.idempotency_key)
-      if (duplicate) return this.receipt(duplicate, 'duplicate')
+      if (duplicate) {
+        this.dispatch(state, profile.profile)
+        return this.receipt(duplicate, 'duplicate')
+      }
       const invalid = this.validateClaim(claim, keys, profile.profile)
       if (invalid) return { job_id: claim.job_id, outcome: 'rejected', profile_revision: profile.profile.revision, resource_keys: keys, reason_code: invalid }
       if (state.status !== 'ready') return { job_id: claim.job_id, outcome: 'rejected', profile_revision: profile.profile.revision, resource_keys: keys, reason_code: state.status === 'draining' ? 'DRAINING' : 'MAINTENANCE' }

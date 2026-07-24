@@ -562,6 +562,21 @@ describe('product task runtime store', () => {
     })
   })
 
+  it('BB-09A accepts a follow-up while the current run is working', async () => {
+    const task: ProductTaskRecord = {
+      id: 'task-queue', revision: 4, current_lineage_id: 'lineage-queue', projectId: 'project', directoryId: 'directory', workDir: '/workspace', title: '排队任务', lifecycle: 'active', kind: 'main', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z', worktreeState: 'not_requested', actions: [],
+    }
+    useProductTaskStore.setState({ index: { ...EMPTY_PRODUCT_TASK_INDEX, tasks: [task], total: 1 } })
+    useProductTaskRuntimeStore.getState().handleEvent(task.id, { type: 'status', state: 'working' })
+    apiMocks.currentLineage.mockResolvedValue({ lineage: { lineage_id: 'lineage-queue', product_task_id: task.id, revision: 3 } })
+    apiMocks.submitRun.mockResolvedValue({ receipt: { outcome: 'accepted', authority_revision: 10, result: { task_id: task.id, run_id: 'run-queued', entry_id: 'entry-queued', dispatch_generation: 1 } } })
+    apiMocks.list.mockResolvedValue(useProductTaskStore.getState().index)
+
+    await expect(useProductTaskRuntimeStore.getState().sendText(task.id, '接着整理下一批订单')).resolves.toBe(true)
+    expect(apiMocks.submitRun).toHaveBeenCalledWith(task.id, expect.objectContaining({ expected_task_revision: 4, expected_lineage_revision: 3, text: '接着整理下一批订单' }))
+    expect(useProductTaskRuntimeStore.getState().tasks[task.id]).toMatchObject({ runState: 'working', entries: [expect.objectContaining({ text: '接着整理下一批订单' })] })
+  })
+
   it('matches the product text boundary before creating optimistic task state', () => {
     expect(canSendProductTaskText('普通任务内容')).toBe(true)
     expect(canSendProductTaskText('  /Agent 研究下周活动方案')).toBe(true)

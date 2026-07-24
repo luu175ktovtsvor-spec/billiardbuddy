@@ -53,6 +53,57 @@ test('concurrent dispatch calls share one startup before the first durable await
   expect(f.submits).toBe(1); expect(f.claims).toBe(1); expect(f.launches).toBe(1); expect(f.settled).toEqual([])
 })
 
+test('BB-09A waits in the durable scheduler instead of failing a resource-queued run', async () => {
+  const f = await fixture()
+  const callbacks = new Map<string, (message: any) => void>()
+  const launches: string[] = []
+  const runs = {
+    ...f.runs,
+    readTaskRunDispatchIdentity: async (runId: string) => ({ task_id: `task-${runId}`, lineage_id: `lineage-${runId}`, resume_binding_id: `resume-${runId}`, initial_input: runId }),
+  }
+  const launcher = { launch: async (input: { run_id: string; onMessage: (message: any) => void }) => {
+    launches.push(input.run_id)
+    callbacks.set(input.run_id, input.onMessage)
+    const child = { send: () => {}, stop: async () => {} }
+    setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
+    return child
+  } }
+  const supervisor = new AgentWorkerSupervisor(runs, f.scheduler, launcher)
+  expect(await supervisor.dispatch('first', 1)).toBe('started')
+  const queued = supervisor.dispatch('second', 1)
+  await Bun.sleep(40)
+  expect(launches).toEqual(['first'])
+  callbacks.get('first')?.({ type: 'terminal', state: 'completed', run_id: 'first' })
+  expect(await queued).toBe('started')
+  expect(launches).toEqual(['first', 'second'])
+})
+
+test('BB-09A heartbeats a long queue head so a waiting run cannot overtake an expired lease', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-queue-heartbeat-'))
+  const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json'), leaseMs: 30 })
+  const callbacks = new Map<string, (message: any) => void>()
+  const launches: string[] = []
+  const runs = {
+    readTaskRunDispatchIdentity: async (runId: string) => ({ task_id: `task-${runId}`, lineage_id: `lineage-${runId}`, resume_binding_id: `resume-${runId}`, initial_input: runId }),
+    claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }),
+    settleTaskRunDispatch: async () => {},
+  }
+  const launcher = { launch: async (input: { run_id: string; onMessage: (message: any) => void }) => {
+    launches.push(input.run_id); callbacks.set(input.run_id, input.onMessage)
+    setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
+    return { send: () => {}, stop: async () => {} }
+  } }
+  const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
+  expect(await supervisor.dispatch('first', 1)).toBe('started')
+  const waiting = supervisor.dispatch('second', 1)
+  await Bun.sleep(90)
+  expect(launches).toEqual(['first'])
+  expect((await scheduler.snapshot()).active).toBe(1)
+  callbacks.get('first')?.({ type: 'terminal', state: 'completed', run_id: 'first' })
+  expect(await waiting).toBe('started')
+  expect(launches).toEqual(['first', 'second'])
+})
+
 test('stop during scheduler admission releases the late fencing claim without launching Core', async () => {
   const f = await fixture()
   const submit = f.scheduler.submit.bind(f.scheduler)
