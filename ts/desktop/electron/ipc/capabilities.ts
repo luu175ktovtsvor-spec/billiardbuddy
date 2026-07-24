@@ -109,6 +109,17 @@ const mediaRenderVideo: Validator = value =>
   && value.outputPath.length > 0
   && value.outputPath.length <= 4096
 
+const mediaAnalyzeVideo: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['projectId', 'baseRevision', 'userGoal'])
+  && mediaProjectId(value.projectId)
+  && typeof value.baseRevision === 'number'
+  && Number.isInteger(value.baseRevision)
+  && value.baseRevision >= 0
+  && typeof value.userGoal === 'string'
+  && value.userGoal.trim().length > 0
+  && value.userGoal.length <= 8000
+
 const mediaSaveImageOutput: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
@@ -153,6 +164,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage]: mediaUpdateUnknownImage,
   [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
   [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
+  [ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo]: mediaAnalyzeVideo,
   [ELECTRON_IPC_CHANNELS.updateCheck]: updateCheckOptions,
   [ELECTRON_IPC_CHANNELS.updateDownload]: noPayload,
   [ELECTRON_IPC_CHANNELS.updateInstall]: noPayload,

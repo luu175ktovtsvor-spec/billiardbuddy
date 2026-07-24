@@ -117,6 +117,11 @@ describe('electron desktop host', () => {
       timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/final.mp4',
     })
+    await host.media.analyzeVideo({
+      projectId: 'vid_project01',
+      baseRevision: 4,
+      userGoal: '剪成活动短片',
+    })
 
     expect(invoke).toHaveBeenNthCalledWith(
       1,
@@ -139,6 +144,11 @@ describe('electron desktop host', () => {
       baseRevision: 4,
       timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/final.mp4',
+    })
+    expect(invoke).toHaveBeenNthCalledWith(4, ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, {
+      projectId: 'vid_project01',
+      baseRevision: 4,
+      userGoal: '剪成活动短片',
     })
     expect(JSON.stringify(invoke.mock.calls)).not.toContain('capability')
   })

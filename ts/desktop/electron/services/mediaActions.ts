@@ -3,6 +3,7 @@ import {
   MEDIA_UI_CAPABILITY_HEADER,
   mediaSafeError,
   type PublicMediaTask as MediaTask,
+  type AnalyzeVideoProjectInput,
   type RenderVideoInput,
   type UpdateImageProjectInput,
   type PublicImageWorkbenchProject as ImageWorkbenchProject,
@@ -73,6 +74,10 @@ export class ElectronMediaActions {
 
   renderVideo(projectId: string, input: RenderVideoInput): Promise<{ task: MediaTask }> {
     return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/render`, input)
+  }
+
+  analyzeVideo(projectId: string, input: AnalyzeVideoProjectInput): Promise<{ task: MediaTask }> {
+    return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/analyze`, input)
   }
 
   saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }> {

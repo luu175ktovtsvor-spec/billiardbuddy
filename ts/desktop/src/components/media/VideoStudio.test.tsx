@@ -9,6 +9,9 @@ const mediaApiMock = vi.hoisted(() => ({
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
   updateVideoTimeline: vi.fn(),
+  analyzeVideo: vi.fn(),
+  lockVideoScene: vi.fn(),
+  applyVideoAlternative: vi.fn(),
   renderVideo: vi.fn(),
   cancelTask: vi.fn(),
   deleteProject: vi.fn(),
@@ -169,5 +172,81 @@ describe('VideoStudio committing state', () => {
     expect(saved.clips).toHaveLength(3)
     expect(saved.clips[0]).toMatchObject({ in_ms: 0, out_ms: 5_000 })
     expect(saved.clips[1]).toMatchObject({ in_ms: 5_000, out_ms: 10_000 })
+  })
+
+  it('shows evidence-based plans and exposes analyze, lock, and alternative operations', async () => {
+    const planned: VideoStudioProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      output_path: undefined,
+      revision: 4,
+      sources: [{
+        id: 'src_video001', name: 'source.mp4', duration_ms: 10_000,
+        width: 1920, height: 1080, fps: 30, has_audio: false,
+        fingerprint: `sha256:${'a'.repeat(64)}`, rotation: 0,
+        video_stream_count: 1, audio_stream_count: 0, missing: false,
+      }],
+      evidence: [{
+        id: 'evidence_video01', kind: 'visual', source_id: 'src_video001',
+        source_fingerprint: `sha256:${'a'.repeat(64)}`, in_ms: 0, out_ms: 5_000,
+        text: '人物完成击球', confidence: 0.9, warnings: [], created_at: project.updated_at,
+      }],
+      evidence_revision: `sha256:${'b'.repeat(64)}`,
+      timeline: [{ id: 'scene_video001', source_id: 'src_video001', in_ms: 0, out_ms: 5_000 }],
+      timeline_versions: [{
+        id: 'timeline_video01', project_revision: 4,
+        evidence_revision: `sha256:${'b'.repeat(64)}`, created_at: project.updated_at,
+        scenes: [{
+          id: 'scene_video001', source_id: 'src_video001', in_ms: 0, out_ms: 5_000,
+          story_role: 'hook', evidence_ids: ['evidence_video01'], rationale: '动作开场',
+          needs_review: false, locked: false,
+        }],
+      }],
+      current_timeline_version_id: 'timeline_video01',
+      brief: {
+        schema_version: 1, user_goal: '突出进球瞬间', content_type: '活动短片',
+        output_channel: '竖屏社交媒体', must_preserve_text: [], recommended_direction: '先结果后过程',
+        rationale: ['画面证据支持'], gaps: [], compiler_version: 'video-brief-v1',
+      },
+      alternatives: [{
+        id: 'alternative_video01', base_timeline_version_id: 'timeline_video01',
+        label: '过程优先', tradeoff: '信息更完整但开头较慢',
+        scenes: [{
+          id: 'scene_alt0001', source_id: 'src_video001', in_ms: 0, out_ms: 5_000,
+          story_role: 'context', evidence_ids: ['evidence_video01'], rationale: '先交代过程',
+          needs_review: false, locked: false,
+        }],
+      }],
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [planned] })
+    mediaApiMock.analyzeVideo.mockResolvedValue({ task: { ...task, id: 'task_analyze01', kind: 'video.analyze', status: 'running' } })
+    mediaApiMock.lockVideoScene.mockResolvedValue({ project: planned })
+    mediaApiMock.applyVideoAlternative.mockResolvedValue({ project: { ...planned, alternatives: [] } })
+    useMediaWorkbenchStore.setState({
+      videoProjects: [planned], tasks: {}, activeVideoId: planned.id,
+      toolchain: { ffmpeg: { available: true }, ffprobe: { available: true } },
+    })
+
+    render(<VideoStudio />)
+    expect(await screen.findByText('先结果后过程')).toBeInTheDocument()
+    expect(screen.getByText(/已核验 1 条 Evidence/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '锁定场景' }))
+    await waitFor(() => expect(mediaApiMock.lockVideoScene).toHaveBeenCalledWith(
+      planned.id,
+      'scene_video001',
+      expect.objectContaining({ locked: true }),
+    ))
+    fireEvent.click(screen.getByRole('button', { name: '采用' }))
+    await waitFor(() => expect(mediaApiMock.applyVideoAlternative).toHaveBeenCalledWith(
+      planned.id,
+      'alternative_video01',
+      expect.any(Object),
+    ))
+    fireEvent.click(screen.getByRole('button', { name: '重新分析并生成方案' }))
+    await waitFor(() => expect(mediaApiMock.analyzeVideo).toHaveBeenCalledWith(
+      planned.id,
+      { base_revision: planned.revision, user_goal: '突出进球瞬间' },
+    ))
   })
 })

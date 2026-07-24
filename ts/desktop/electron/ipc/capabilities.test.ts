@@ -88,6 +88,16 @@ describe('Electron IPC capabilities', () => {
       timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/export.mp4',
     })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, {
+      projectId: 'vid_project01',
+      baseRevision: 3,
+      userGoal: '剪成突出进球瞬间的竖屏短片',
+    })).toBe(true)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, {
+      projectId: 'vid_project01',
+      baseRevision: 3,
+      userGoal: '   ',
+    })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, {
       projectId: 'img_project01',
       input: { output_id: 'out_result001', output_path: '/tmp/final.png' },

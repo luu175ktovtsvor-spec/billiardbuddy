@@ -25,6 +25,7 @@ describe('ElectronMediaActions', () => {
       confirm_unknown_retry: false,
     }, true)
     await actions.renderVideo('vid_project01', { revision: 2, output_path: '/tmp/final.mp4' })
+    await actions.analyzeVideo('vid_project01', { base_revision: 2, user_goal: '剪成活动短片' })
     await actions.saveImageOutput('img_project01', { version_id: 'ver_result001', output_path: '/tmp/final.png' })
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/submit')
@@ -50,8 +51,10 @@ describe('ElectronMediaActions', () => {
       revision: 2,
       output_path: '/tmp/final.mp4',
     })
-    expect(fetchImpl.mock.calls[3]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/versions/ver_result001/save')
-    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/analyze')
+    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({ base_revision: 2, user_goal: '剪成活动短片' })
+    expect(fetchImpl.mock.calls[4]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/versions/ver_result001/save')
+    expect(JSON.parse(String(fetchImpl.mock.calls[4]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
   })
 
   it('rejects a weak process capability', () => {
