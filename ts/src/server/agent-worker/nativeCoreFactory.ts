@@ -1,5 +1,6 @@
 import { createServerPrivateNativeCorePort } from '../../cli/print.js'
 import type { ServerPrivateCoreFactory } from './ipcLauncher.js'
+import { productTaskMcpHost } from './mcpHost.js'
 
 /**
  * The Local Product Server's only production Core factory.  It invokes the
@@ -11,6 +12,7 @@ export const serverPrivateNativeCoreFactory: ServerPrivateCoreFactory = {
     session_id: binding.session_id,
     work_dir: binding.work_dir,
     permission_envelope: input.permission_envelope,
+    mcp_host: productTaskMcpHost,
     ...(identity.auto_memory ? {
       auto_memory: {
         storage_dir: identity.auto_memory.storage_dir,
