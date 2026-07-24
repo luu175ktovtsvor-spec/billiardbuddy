@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
   addVideoSourceInputSchema,
+  applyVideoAlternativeInputSchema,
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
@@ -10,6 +11,7 @@ import {
   publicMediaProjectSchema,
   publicMediaDeletionReceiptSchema,
   publicMediaTaskSchema,
+  lockVideoSceneInputSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   selectImageVersionInputSchema,
@@ -353,6 +355,21 @@ export function createMediaApiHandler(
           if (req.method !== 'PUT') throw methodNotAllowed(req.method)
           const input = updateVideoTimelineInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicProject(await service.updateVideoTimeline(projectId, input)) })
+        }
+        if (action === 'scenes') {
+          const sceneId = segments[6]
+          if (!sceneId || segments[7] !== 'lock' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
+          const input = lockVideoSceneInputSchema.parse(await parseJson(req))
+          return Response.json({ project: publicProject(await service.lockVideoScene(projectId, sceneId, input)) })
+        }
+        if (action === 'alternatives') {
+          const alternativeId = segments[6]
+          if (!alternativeId || segments[7] !== 'apply' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
+          const input = applyVideoAlternativeInputSchema.parse({
+            ...(await parseJson(req) as Record<string, unknown>),
+            alternative_id: alternativeId,
+          })
+          return Response.json({ project: publicProject(await service.applyVideoAlternative(projectId, input)) })
         }
         if (action === 'render') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)

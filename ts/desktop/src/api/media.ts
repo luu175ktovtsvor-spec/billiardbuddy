@@ -124,7 +124,8 @@ export const mediaApi = {
   renderVideo: (projectId: string, input: RenderVideoInput) =>
     getDesktopHost().media.renderVideo({
       projectId,
-      revision: input.revision,
+      baseRevision: input.base_revision!,
+      timelineVersionId: input.timeline_version_id!,
       outputPath: input.output_path,
     }),
   getToolchain: () => api.get<MediaToolchainStatus>('/api/media/videos/toolchain'),

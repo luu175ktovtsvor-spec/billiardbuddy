@@ -319,7 +319,8 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     const finishLoading = beginLoading(set)
     try {
       const { project: saved } = await mediaApi.updateVideoTimeline(project.id, {
-        revision: project.revision,
+        base_revision: project.revision,
+        base_timeline_version_id: project.current_timeline_version_id!,
         clips: project.timeline,
       })
       nextProjectLoadVersion('video')
@@ -338,7 +339,8 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     const finishLoading = beginLoading(set)
     try {
       const { task } = await mediaApi.renderVideo(project.id, {
-        revision: project.revision,
+        base_revision: project.revision,
+        timeline_version_id: project.current_timeline_version_id!,
         output_path: outputPath,
       })
       nextTaskLoadVersion(task.id)

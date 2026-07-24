@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   addVideoSourceInputSchema,
+  applyVideoAlternativeInputSchema,
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
@@ -25,9 +26,11 @@ import {
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
   updateVideoTimelineInputSchema,
+  lockVideoSceneInputSchema,
   videoStudioProjectSchema,
   videoRenderTaskResultSchema,
   type AddVideoSourceInput,
+  type ApplyVideoAlternativeInput,
   type CommitImageVersionInput,
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
@@ -45,9 +48,13 @@ import {
   type SubmitImageProjectInput,
   type UpdateImageProjectInput,
   type UpdateVideoTimelineInput,
+  type LockVideoSceneInput,
   type VideoClip,
+  type VideoEvidence,
+  type VideoScene,
   type VideoSource,
   type VideoStudioProject,
+  type VideoTimelineVersion,
 } from '../../../shared/contracts/media.js'
 import {
   PROVIDER_GATEWAY_PROTOCOL,
@@ -241,7 +248,7 @@ class ImageSubmissionAttemptError extends MediaServiceError {
   }
 }
 
-function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'mask'): string {
+function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'mask' | 'evidence' | 'scene' | 'alternative' | 'timeline'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
@@ -253,6 +260,34 @@ const STANDALONE_MEDIA_OWNER: MediaOwner = {
 
 function foundationId(prefix: 'op' | 'ver' | 'export', ...parts: string[]): string {
   return `${prefix}_${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 32)}`
+}
+
+function videoEvidenceRevision(evidence: VideoEvidence[]): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(JSON.stringify(evidence.map(item => ({
+    id: item.id,
+    kind: item.kind,
+    source_id: item.source_id,
+    source_fingerprint: item.source_fingerprint,
+    in_ms: item.in_ms,
+    out_ms: item.out_ms,
+    text: item.text,
+  })))).digest('hex')}`
+}
+
+function scenesFromClips(clips: VideoClip[], evidence: VideoEvidence[]): VideoScene[] {
+  return clips.map((clip, index) => ({
+    id: clip.id,
+    source_id: clip.source_id,
+    in_ms: clip.in_ms,
+    out_ms: clip.out_ms,
+    story_role: index === 0 ? 'hook' as const : index === clips.length - 1 ? 'result' as const : 'action' as const,
+    evidence_ids: evidence
+      .filter(item => item.source_id === clip.source_id && item.in_ms < clip.out_ms && item.out_ms > clip.in_ms)
+      .map(item => item.id),
+    rationale: '按当前用户时间线保留真实素材范围',
+    needs_review: true,
+    locked: false,
+  }))
 }
 
 function sameOwner(left: MediaOwner, right: MediaOwner): boolean {
@@ -483,6 +518,28 @@ export class MediaProjectService {
 
   private iso(): string {
     return this.now().toISOString()
+  }
+
+  private async fileFingerprint(path: string): Promise<`sha256:${string}`> {
+    const digest = createHash('sha256')
+    for await (const chunk of Bun.file(path).stream()) digest.update(chunk)
+    return `sha256:${digest.digest('hex')}`
+  }
+
+  private timelineVersion(
+    project: VideoStudioProject,
+    scenes: VideoScene[],
+    evidenceRevision = project.evidence_revision ?? videoEvidenceRevision(project.evidence),
+    projectRevision = project.revision + 1,
+  ): VideoTimelineVersion {
+    return {
+      id: id('timeline'),
+      parent_version_id: project.current_timeline_version_id,
+      project_revision: projectRevision,
+      evidence_revision: evidenceRevision,
+      scenes,
+      created_at: this.iso(),
+    }
   }
 
   private async fetchImageGatewayJson(
@@ -738,19 +795,24 @@ export class MediaProjectService {
       }
     } else {
       for (const source of project.sources) {
+        const info = await stat(source.path).catch(() => null)
         seeds.push({
           id: source.id,
           role: 'source',
           storage: { kind: 'external', locator: source.path },
           mime_type: this.videoContentType(source.path),
+          byte_size: info?.isFile() ? info.size : undefined,
+          content_hash: source.fingerprint,
         })
       }
       if (project.state === 'complete' && project.output_path) {
         seeds.push({
-          id: foundationId('export', project.id, String(project.revision), project.output_path),
+          id: project.output_asset_id ?? foundationId('export', project.id, String(project.revision), project.output_path),
           role: 'export',
           storage: { kind: 'external', locator: project.output_path },
           mime_type: this.videoContentType(project.output_path),
+          byte_size: await stat(project.output_path).then(info => info.isFile() ? info.size : undefined).catch(() => undefined),
+          content_hash: project.output_content_hash,
         })
       }
     }
@@ -1102,6 +1164,21 @@ export class MediaProjectService {
     return await this.saveProject({ ...project, outputs }) as ImageWorkbenchProject
   }
 
+  private async migrateVideoTimeline(project: VideoStudioProject): Promise<VideoStudioProject> {
+    if (
+      project.current_timeline_version_id
+      && project.timeline_versions.some(version => version.id === project.current_timeline_version_id)
+    ) return project
+    const evidenceRevision = project.evidence_revision ?? videoEvidenceRevision(project.evidence)
+    const version = this.timelineVersion(project, scenesFromClips(project.timeline, project.evidence), evidenceRevision, project.revision)
+    return await this.saveProject({
+      ...project,
+      evidence_revision: evidenceRevision,
+      timeline_versions: [...project.timeline_versions, version],
+      current_timeline_version_id: version.id,
+    }) as VideoStudioProject
+  }
+
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)
@@ -1141,7 +1218,7 @@ export class MediaProjectService {
           project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
         }
       }
-      if (project.kind !== 'image') return project
+      if (project.kind === 'video') return await this.migrateVideoTimeline(project)
       return await this.migrateImageVersions(
         await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project)),
       )
@@ -1287,6 +1364,8 @@ export class MediaProjectService {
           ...project,
           state: 'complete',
           output_path: result.data.output_path,
+          output_asset_id: result.data.output_asset_id,
+          output_content_hash: result.data.output_content_hash,
           error: undefined,
           error_code: undefined,
           updated_at: this.iso(),
@@ -1342,6 +1421,8 @@ export class MediaProjectService {
             ...project,
             state: 'complete',
             output_path: result.data.output_path,
+            output_asset_id: result.data.output_asset_id,
+            output_content_hash: result.data.output_content_hash,
             error: undefined,
             error_code: undefined,
             updated_at: this.iso(),
@@ -1690,6 +1771,25 @@ export class MediaProjectService {
     if (extension === '.mov') return 'video/quicktime'
     if (extension === '.webm') return 'video/webm'
     return 'video/mp4'
+  }
+
+  private async validateVideoOutput(path: string): Promise<{ contentHash: `sha256:${string}`; byteSize: number }> {
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile() || info.size <= 0) throw new Error('导出文件不存在或为空')
+    const probe = await this.runProcess([
+      this.binary('ffprobe'),
+      '-v', 'error',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      path,
+    ])
+    if (probe.exitCode !== 0) throw new Error('导出文件无法通过 ffprobe 校验')
+    const metadata = JSON.parse(probe.stdout) as { streams?: Array<Record<string, unknown>>; format?: { duration?: string } }
+    const hasVideo = metadata.streams?.some(stream => stream.codec_type === 'video') ?? false
+    const duration = Number(metadata.format?.duration ?? 0)
+    if (!hasVideo || !Number.isFinite(duration) || duration <= 0) throw new Error('导出文件缺少有效视频轨或时长')
+    return { contentHash: await this.fileFingerprint(path), byteSize: info.size }
   }
 
   private async videoFileResponse(
@@ -2466,7 +2566,7 @@ export class MediaProjectService {
       timeline: [],
       output: input.output,
     })
-    return await this.saveProject(project) as VideoStudioProject
+    return await this.migrateVideoTimeline(await this.saveProject(project) as VideoStudioProject)
   }
 
   private binary(name: 'ffmpeg' | 'ffprobe'): string {
@@ -2571,6 +2671,14 @@ export class MediaProjectService {
       }
       const video = metadata.streams?.find(stream => stream.codec_type === 'video')
       if (!video) throw new Error('素材中没有视频轨道')
+      const videoStreams = metadata.streams?.filter(stream => stream.codec_type === 'video') ?? []
+      const audioStreams = metadata.streams?.filter(stream => stream.codec_type === 'audio') ?? []
+      const rotationRaw = (video.tags as Record<string, unknown> | undefined)?.rotate
+        ?? (Array.isArray(video.side_data_list)
+          ? (video.side_data_list as Array<Record<string, unknown>>).find(item => item.rotation !== undefined)?.rotation
+          : undefined)
+      const rotation = Number(rotationRaw)
+      const fingerprint = await this.fileFingerprint(input.path)
       const source: VideoSource = {
         id: id('src'),
         path: input.path,
@@ -2579,7 +2687,12 @@ export class MediaProjectService {
         width: Math.max(0, Number(video.width ?? 0)),
         height: Math.max(0, Number(video.height ?? 0)),
         fps: parseRate(video.avg_frame_rate ?? video.r_frame_rate),
-        has_audio: Boolean(metadata.streams?.some(stream => stream.codec_type === 'audio')),
+        has_audio: audioStreams.length > 0,
+        fingerprint,
+        rotation: Number.isFinite(rotation) ? ((Math.trunc(rotation) % 360) + 360) % 360 : 0,
+        video_stream_count: videoStreams.length,
+        audio_stream_count: audioStreams.length,
+        missing: false,
       }
       const clip: VideoClip = {
         id: id('clip'),
@@ -2587,11 +2700,37 @@ export class MediaProjectService {
         in_ms: 0,
         out_ms: Math.max(1, source.duration_ms),
       }
+      const sourceEvidence: VideoEvidence = {
+        id: id('evidence'),
+        kind: 'source_role',
+        source_id: source.id,
+        source_fingerprint: fingerprint,
+        in_ms: 0,
+        out_ms: source.duration_ms,
+        text: `真实视频素材：${source.name}，${source.width}×${source.height}，${source.duration_ms}ms${source.has_audio ? '，含音轨' : '，无音轨'}`,
+        confidence: 1,
+        warnings: [],
+        created_at: this.iso(),
+      }
+      const evidence = [...project.evidence, sourceEvidence]
+      const evidenceRevision = videoEvidenceRevision(evidence)
+      const currentTimeline = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+      const addedScene = scenesFromClips([clip], evidence)[0]!
+      const timelineVersion = this.timelineVersion(
+        { ...project, evidence, evidence_revision: evidenceRevision },
+        [...(currentTimeline?.scenes ?? scenesFromClips(project.timeline, project.evidence)), addedScene],
+        evidenceRevision,
+      )
       const nextProject = await this.saveProject({
         ...project,
         state: 'ready',
         sources: [...project.sources, source],
         timeline: [...project.timeline, clip],
+        evidence,
+        evidence_revision: evidenceRevision,
+        timeline_versions: [...project.timeline_versions, timelineVersion],
+        current_timeline_version_id: timelineVersion.id,
+        alternatives: [],
         revision: project.revision + 1,
         updated_at: this.iso(),
       }) as VideoStudioProject
@@ -2628,20 +2767,112 @@ export class MediaProjectService {
     const project = await this.getProject(projectId)
     if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
     if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能修改时间线', 409, 'RENDER_IN_PROGRESS')
-    if (project.revision !== input.revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
+    if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
+    const baseTimelineVersionId = input.base_timeline_version_id ?? project.current_timeline_version_id
+    if (project.current_timeline_version_id !== baseTimelineVersionId) {
+      throw new MediaServiceError('视频时间线已更新，请刷新后再编辑', 409, 'TIMELINE_VERSION_CONFLICT')
+    }
+    const currentTimeline = project.timeline_versions.find(version => version.id === baseTimelineVersionId)
+    if (!currentTimeline) throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
     const sources = new Map(project.sources.map(source => [source.id, source]))
     for (const clip of input.clips) {
       const source = sources.get(clip.source_id)
       if (!source) throw new MediaServiceError('时间线引用了不存在的素材', 400, 'SOURCE_NOT_FOUND')
       if (clip.out_ms > source.duration_ms) throw new MediaServiceError('剪辑范围超过素材时长', 400, 'CLIP_OUT_OF_RANGE')
     }
+    const nextScenes = input.clips.map((clip, index) => {
+      const current = currentTimeline.scenes.find(scene => scene.id === clip.id)
+      return current
+        ? { ...current, source_id: clip.source_id, in_ms: clip.in_ms, out_ms: clip.out_ms }
+        : scenesFromClips([clip], project.evidence).map(scene => ({
+          ...scene,
+          story_role: index === 0 ? 'hook' as const : index === input.clips.length - 1 ? 'result' as const : 'action' as const,
+        }))[0]!
+    })
+    for (const locked of currentTimeline.scenes.filter(scene => scene.locked)) {
+      const candidate = nextScenes.find(scene => scene.id === locked.id)
+      if (!candidate || candidate.source_id !== locked.source_id || candidate.in_ms !== locked.in_ms || candidate.out_ms !== locked.out_ms) {
+        throw new MediaServiceError('锁定场景不能被移动、删除或替换', 409, 'LOCKED_SCENE_CONFLICT')
+      }
+    }
+    const timelineVersion = this.timelineVersion(project, nextScenes)
     return await this.saveProject({
       ...project,
       timeline: input.clips,
+      timeline_versions: [...project.timeline_versions, timelineVersion],
+      current_timeline_version_id: timelineVersion.id,
+      alternatives: [],
       state: input.clips.length ? 'ready' : 'draft',
       revision: project.revision + 1,
       updated_at: this.iso(),
     }) as VideoStudioProject
+  }
+
+  async lockVideoScene(
+    projectId: string,
+    sceneId: string,
+    raw: LockVideoSceneInput,
+  ): Promise<VideoStudioProject> {
+    return await this.withVideoProjectMutation(projectId, async () => {
+      const input = lockVideoSceneInputSchema.parse(raw)
+      const project = await this.getProject(projectId)
+      if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
+      if (project.current_timeline_version_id !== input.timeline_version_id) throw new MediaServiceError('视频时间线已更新，请刷新后再编辑', 409, 'TIMELINE_VERSION_CONFLICT')
+      const current = project.timeline_versions.find(version => version.id === input.timeline_version_id)
+      if (!current) throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
+      if (!current.scenes.some(scene => scene.id === sceneId)) throw new MediaServiceError('场景不存在', 404, 'SCENE_NOT_FOUND')
+      const scenes = current.scenes.map(scene => scene.id === sceneId ? { ...scene, locked: input.locked } : scene)
+      const timelineVersion = this.timelineVersion(project, scenes)
+      return await this.saveProject({
+        ...project,
+        timeline_versions: [...project.timeline_versions, timelineVersion],
+        current_timeline_version_id: timelineVersion.id,
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }) as VideoStudioProject
+    })
+  }
+
+  async applyVideoAlternative(
+    projectId: string,
+    raw: ApplyVideoAlternativeInput,
+  ): Promise<VideoStudioProject> {
+    return await this.withVideoProjectMutation(projectId, async () => {
+      const input = applyVideoAlternativeInputSchema.parse(raw)
+      const project = await this.getProject(projectId)
+      if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
+      const alternative = project.alternatives.find(candidate => candidate.id === input.alternative_id)
+      if (!alternative) throw new MediaServiceError('备选方案不存在', 404, 'ALTERNATIVE_NOT_FOUND')
+      if (alternative.base_timeline_version_id !== project.current_timeline_version_id) {
+        throw new MediaServiceError('备选方案已经过期，请重新分析', 409, 'ALTERNATIVE_STALE')
+      }
+      const current = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+      if (!current) throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
+      for (const locked of current.scenes.filter(scene => scene.locked)) {
+        const candidate = alternative.scenes.find(scene => scene.id === locked.id)
+        if (!candidate || JSON.stringify(candidate) !== JSON.stringify(locked)) {
+          throw new MediaServiceError('备选方案不能覆盖锁定场景', 409, 'LOCKED_SCENE_CONFLICT')
+        }
+      }
+      const timelineVersion = this.timelineVersion(project, alternative.scenes)
+      return await this.saveProject({
+        ...project,
+        timeline: alternative.scenes.map(scene => ({
+          id: scene.id,
+          source_id: scene.source_id,
+          in_ms: scene.in_ms,
+          out_ms: scene.out_ms,
+        })),
+        timeline_versions: [...project.timeline_versions, timelineVersion],
+        current_timeline_version_id: timelineVersion.id,
+        alternatives: [],
+        revision: project.revision + 1,
+        state: alternative.scenes.length ? 'ready' : 'draft',
+        updated_at: this.iso(),
+      }) as VideoStudioProject
+    })
   }
 
   async renderVideo(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
@@ -2660,7 +2891,14 @@ export class MediaProjectService {
       if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
       throw new MediaServiceError('导出状态异常，请刷新后重试', 409, 'RENDER_STATE_CONFLICT')
     }
-    if (project.revision !== input.revision) throw new MediaServiceError('视频项目已更新，请刷新后再导出', 409, 'REVISION_CONFLICT')
+    if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再导出', 409, 'REVISION_CONFLICT')
+    const timelineVersionId = input.timeline_version_id ?? project.current_timeline_version_id
+    if (project.current_timeline_version_id !== timelineVersionId) {
+      throw new MediaServiceError('视频时间线已更新，请刷新后再导出', 409, 'TIMELINE_VERSION_CONFLICT')
+    }
+    if (!timelineVersionId || !project.timeline_versions.some(version => version.id === timelineVersionId)) {
+      throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
+    }
     if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
     if (!isAbsolute(input.output_path)) throw new MediaServiceError('导出路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
     if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
@@ -2693,7 +2931,11 @@ export class MediaProjectService {
       status: 'queued',
       progress: 0,
       stage: this.activeRenders.size > 0 ? '正在排队等待本机视频导出' : '等待导出',
-      result: { render_revision: project.revision, output_path: input.output_path },
+      result: {
+        render_revision: project.revision,
+        timeline_version_id: timelineVersionId,
+        output_path: input.output_path,
+      },
       created_at: now,
       updated_at: now,
     })
@@ -2702,6 +2944,8 @@ export class MediaProjectService {
       state: 'rendering',
       task_id: task.id,
       output_path: input.output_path,
+      output_asset_id: undefined,
+      output_content_hash: undefined,
       error: undefined,
       error_code: undefined,
       updated_at: this.iso(),
@@ -2789,17 +3033,45 @@ export class MediaProjectService {
       if (signal.aborted) throw new Error('导出已取消')
       await this.saveTask({
         ...task,
-        status: 'committing',
-        progress: 95,
-        stage: '正在完成导出',
+        status: 'running',
+        progress: 90,
+        stage: '正在校验导出',
         result: {
           ...(task.result ?? {}),
           temporary_output: temporaryOutput,
         },
         updated_at: this.iso(),
       })
+      const validated = await this.validateVideoOutput(temporaryOutput)
+      const outputAssetId = id('out')
+      await this.saveTask({
+        ...task,
+        status: 'committing',
+        progress: 95,
+        stage: '正在完成导出',
+        result: {
+          ...(task.result ?? {}),
+          temporary_output: temporaryOutput,
+          output_asset_id: outputAssetId,
+          output_content_hash: validated.contentHash,
+        },
+        updated_at: this.iso(),
+      })
       if (signal.aborted) throw new Error('导出已取消')
       await this.moveFile(temporaryOutput, outputPath)
+      const latest = await this.getProject(project.id)
+      if (latest.kind === 'video' && latest.revision === project.revision && latest.task_id === task.id) {
+        await this.saveProject({
+          ...latest,
+          state: 'complete',
+          output_path: outputPath,
+          output_asset_id: outputAssetId,
+          output_content_hash: validated.contentHash,
+          error: undefined,
+          error_code: undefined,
+          updated_at: this.iso(),
+        })
+      }
       await this.saveTask({
         ...task,
         status: 'succeeded',
@@ -2809,21 +3081,12 @@ export class MediaProjectService {
           ...(task.result ?? {}),
           output_path: outputPath,
           temporary_output: undefined,
+          output_asset_id: outputAssetId,
+          output_content_hash: validated.contentHash,
           video_encoder: encoder.name,
         },
         updated_at: this.iso(),
       })
-      const latest = await this.getProject(project.id)
-      if (latest.kind === 'video' && latest.revision === project.revision && latest.task_id === task.id) {
-        await this.saveProject({
-          ...latest,
-          state: 'complete',
-          output_path: outputPath,
-          error: undefined,
-          error_code: undefined,
-          updated_at: this.iso(),
-        })
-      }
     } catch (error) {
       const cancelled = signal.aborted
       if (!cancelled) recordMediaFailure('video_render', error)

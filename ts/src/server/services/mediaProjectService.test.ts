@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -907,8 +908,20 @@ describe('MediaProjectService video projects', () => {
     const service = new MediaProjectService({ root: mediaRoot, runProcess })
     const created = await service.createVideoProject({ title: '门店活动' })
     const { project } = await service.addVideoSource(created.id, { path: sourcePath })
-    expect(project.sources[0]).toMatchObject({ duration_ms: 4500, width: 1920, height: 1080, has_audio: true })
+    expect(project.sources[0]).toMatchObject({
+      duration_ms: 4500,
+      width: 1920,
+      height: 1080,
+      has_audio: true,
+      fingerprint: `sha256:${createHash('sha256').update('source').digest('hex')}`,
+      video_stream_count: 1,
+      audio_stream_count: 1,
+      missing: false,
+    })
     expect(project.sources[0]?.fps).toBeCloseTo(29.97, 2)
+    expect(project.evidence).toHaveLength(1)
+    expect(project.current_timeline_version_id).toBeTruthy()
+    expect(project.timeline_versions.at(-1)?.scenes).toHaveLength(1)
 
     const clipped = await service.updateVideoTimeline(project.id, {
       revision: project.revision,
@@ -921,7 +934,24 @@ describe('MediaProjectService video projects', () => {
       done = await service.getTask(task.id, false)
     }
     expect(done.status).toBe('succeeded')
+    expect(done.result).toMatchObject({
+      timeline_version_id: clipped.current_timeline_version_id,
+      output_asset_id: expect.stringMatching(/^out_/),
+      output_content_hash: `sha256:${createHash('sha256').update('rendered').digest('hex')}`,
+    })
     expect(await readFile(outputPath, 'utf8')).toBe('rendered')
+    const completedProject = await service.getProject(project.id)
+    expect(completedProject).toMatchObject({
+      output_asset_id: done.result?.output_asset_id,
+      output_content_hash: done.result?.output_content_hash,
+    })
+    expect(completedProject.assets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: done.result?.output_asset_id,
+        role: 'export',
+        content_hash: done.result?.output_content_hash,
+      }),
+    ]))
     expect(await service.availableVideoOutputMimeType(project.id)).toBe('video/mp4')
     const preview = await service.videoOutputResponse(
       project.id,
@@ -1012,6 +1042,44 @@ describe('MediaProjectService video projects', () => {
       revision: project.revision,
       clips: [{ ...project.timeline[0]!, out_ms: 2000 }],
     })).rejects.toBeInstanceOf(MediaServiceError)
+  })
+
+  test('keeps timeline versions immutable and refuses stale or locked scene edits', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      runProcess: async command => command.includes('-show_streams')
+        ? { exitCode: 0, stdout: JSON.stringify({ format: { duration: '2' }, streams: [{ codec_type: 'video', width: 1280, height: 720 }] }), stderr: '' }
+        : { exitCode: 0, stdout: '', stderr: '' },
+    })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const initialVersionId = project.current_timeline_version_id!
+    const initialVersion = project.timeline_versions.find(version => version.id === initialVersionId)!
+    const sceneId = initialVersion.scenes[0]!.id
+
+    const locked = await service.lockVideoScene(project.id, sceneId, {
+      base_revision: project.revision,
+      timeline_version_id: initialVersionId,
+      locked: true,
+    })
+    expect(locked.current_timeline_version_id).not.toBe(initialVersionId)
+    expect(locked.timeline_versions.find(version => version.id === initialVersionId)).toEqual(initialVersion)
+    expect(locked.timeline_versions.at(-1)?.scenes[0]?.locked).toBe(true)
+
+    await expect(service.updateVideoTimeline(project.id, {
+      base_revision: locked.revision,
+      base_timeline_version_id: initialVersionId,
+      clips: locked.timeline,
+    })).rejects.toMatchObject({ code: 'TIMELINE_VERSION_CONFLICT', status: 409 })
+
+    await expect(service.updateVideoTimeline(project.id, {
+      base_revision: locked.revision,
+      base_timeline_version_id: locked.current_timeline_version_id,
+      clips: [{ ...locked.timeline[0]!, in_ms: 100, out_ms: 1900 }],
+    })).rejects.toMatchObject({ code: 'LOCKED_SCENE_CONFLICT', status: 409 })
   })
 
   test('reuses an active render, supports cancellation, deletion, and interrupted-render recovery', async () => {

@@ -78,12 +78,14 @@ describe('Electron IPC capabilities', () => {
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',
-      revision: 3,
+      baseRevision: 3,
+      timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/export.mp4',
     })).toBe(true)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',
-      revision: -1,
+      baseRevision: -1,
+      timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/export.mp4',
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, {
