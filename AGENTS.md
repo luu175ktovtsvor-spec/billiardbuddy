@@ -29,8 +29,8 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 - Product documents define intent, direction, boundaries, and expected results. Unless a specific implementation is explicitly frozen, classes, interfaces, directories, names, and internal mechanisms may change.
 - Prefer the smallest implementation that delivers the same user capability with the same stability and engineering quality.
 - "Minimum code" means the fewest authoritative state sources, runtimes, execution paths, dependencies, and duplicated concepts. It does not mean omitting persistence, migration, security, recovery, or verification.
-- Reuse a stable existing capability when a small adapter is sufficient. Rewrite only when the result is simpler and more reliable without losing supported behavior or data.
-- Evaluate general protocols such as MCP by their purpose, interoperability, and real availability on the production path. They do not need to match a historical implementation.
+- Reuse mature, stable existing capabilities.
+
 
 ## Review and Verification
 
