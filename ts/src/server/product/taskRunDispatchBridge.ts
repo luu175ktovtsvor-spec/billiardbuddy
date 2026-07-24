@@ -46,7 +46,14 @@ export class ProductTaskWorkerMessageSink {
       return
     }
     if (message.event === 'approval') {
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'status', state: 'awaiting_approval' })
+      const recorded = await this.tasks.recordTaskRunApprovalRequest(
+        runId,
+        generation,
+        message.request_id,
+        message.action,
+      )
+      if (this.closed.has(key)) return
+      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event !== 'delta' || !message.data) return

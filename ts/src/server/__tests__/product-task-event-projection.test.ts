@@ -94,7 +94,16 @@ describe('product task event projection', () => {
       { type: 'status', state: 'working' },
       { type: 'assistant_text_start' },
       { type: 'assistant_text_delta', text: '这是实际的流式回复。' },
-      { type: 'approval_required', requestId: 'approval-1', kind: 'action' },
+      {
+        type: 'approval_required',
+        requestId: 'approval-1',
+        kind: 'action',
+        action: {
+          what: '运行一条受限命令',
+          scope: '当前任务工作区之外的本机资源或网络边界',
+          consequence: '命令可能修改文件、启动进程或访问外部服务。',
+        },
+      },
       {
         type: 'approval_required',
         requestId: 'approval-2',

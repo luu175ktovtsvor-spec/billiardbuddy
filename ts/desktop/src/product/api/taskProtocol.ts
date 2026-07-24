@@ -5,6 +5,7 @@ import type {
   ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
   ProductTaskMediaDraft,
+  ProductTaskActionApproval,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
   ProductTaskComputerUseApproval,
@@ -40,6 +41,7 @@ const MAX_COMPUTER_USE_APP_NAME_LENGTH = 120
 const MAX_ACTIVITY_SUMMARY_LENGTH = 80
 const MAX_ACTIVITY_PROGRESS_TOTAL = 10_000
 const MAX_RUN_ACTIVITY_COUNT = 256
+const MAX_APPROVAL_EXPLANATION_LENGTH = 500
 
 const PRODUCT_TASK_RUN_STATES = new Set<ProductTaskRunState>([
   'idle',
@@ -338,6 +340,14 @@ function parseComputerUseApproval(value: unknown): ProductTaskComputerUseApprova
   }
 }
 
+function parseActionApproval(value: unknown): ProductTaskActionApproval | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['what', 'scope', 'consequence'])) return null
+  if (!isVisibleString(value.what, MAX_APPROVAL_EXPLANATION_LENGTH) ||
+    !isVisibleString(value.scope, MAX_APPROVAL_EXPLANATION_LENGTH) ||
+    !isVisibleString(value.consequence, MAX_APPROVAL_EXPLANATION_LENGTH)) return null
+  return { what: value.what, scope: value.scope, consequence: value.consequence }
+}
+
 function parseAttachmentSummary(value: unknown): ProductTaskAttachmentSummary | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ['type', 'name', 'mimeType'])) return null
   if (!isEnumValue(value.type, PRODUCT_TASK_ATTACHMENT_TYPES)) return null
@@ -487,7 +497,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'approval_required': {
       if (
-        !hasOnlyKeys(value, ['type', 'requestId', 'kind', 'questions', 'computerUse']) ||
+        !hasOnlyKeys(value, ['type', 'requestId', 'kind', 'questions', 'computerUse', 'action']) ||
         !isVisibleString(value.requestId, MAX_REQUEST_ID_LENGTH) ||
         !isEnumValue(value.kind, PRODUCT_TASK_APPROVAL_KINDS)
       ) {
@@ -498,10 +508,11 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       const computerUse = 'computerUse' in value
         ? parseComputerUseApproval(value.computerUse)
         : undefined
-      if (('questions' in value && !questions) || ('computerUse' in value && !computerUse)) return null
+      const action = 'action' in value ? parseActionApproval(value.action) : undefined
+      if (('questions' in value && !questions) || ('computerUse' in value && !computerUse) || ('action' in value && !action)) return null
 
       if (value.kind === 'question') {
-        return questions && !computerUse
+        return questions && !computerUse && !action
           ? {
               type: 'approval_required',
               requestId: value.requestId,
@@ -512,7 +523,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
 
       if (value.kind === 'computer_use') {
-        return computerUse && !questions
+        return computerUse && !questions && !action
           ? {
               type: 'approval_required',
               requestId: value.requestId,
@@ -523,7 +534,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
 
       return !questions && !computerUse
-        ? { type: 'approval_required', requestId: value.requestId, kind: 'action' }
+        ? { type: 'approval_required', requestId: value.requestId, kind: 'action', ...(action ? { action } : {}) }
         : null
     }
 

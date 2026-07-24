@@ -276,6 +276,21 @@ describe('product task protocol run snapshots', () => {
 })
 
 describe('product task protocol Computer Use approvals', () => {
+  it('accepts only product-authored action scope and consequence fields', () => {
+    const event = {
+      type: 'approval_required' as const,
+      requestId: 'approval-1',
+      kind: 'action' as const,
+      action: {
+        what: '运行一条受限命令',
+        scope: '当前任务工作区之外的本机资源或网络边界',
+        consequence: '命令可能修改文件、启动进程或访问外部服务。',
+      },
+    }
+    expect(parseProductTaskEvent(event)).toEqual(event)
+    expect(parseProductTaskEvent({ ...event, action: { ...event.action, command: 'rm secret' } })).toBeNull()
+  })
+
   it('accepts only the narrow Computer Use approval projection', () => {
     expect(parseProductTaskEvent({
       type: 'approval_required',

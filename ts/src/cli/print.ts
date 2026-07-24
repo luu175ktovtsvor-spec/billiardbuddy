@@ -92,8 +92,10 @@ import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
 import { getLocalISODate } from 'src/constants/common.js'
 import type { PermissionExecutionEnvelope } from '../../shared/product/permissionExecutionEnvelope.js'
+import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 import { runWithProductPermissionEnvelope } from 'src/utils/permissions/productPermissionRuntime.js'
 import { runWithCwdOverride } from 'src/utils/cwd.js'
+import { projectProductTaskActionApproval } from 'src/server/product/taskApprovalProjection.js'
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from 'src/server/services/productAutoMemory.js'
@@ -438,7 +440,7 @@ export type ServerPrivateNativeCorePort = {
   approve(requestId: string, approved: boolean): Promise<void>
   stop(): Promise<void>
   shutdown(): Promise<void>
-  subscribe(listener: (message: { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string } | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }) => void): () => void
+  subscribe(listener: (message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void): () => void
 }
 
 export async function createServerPrivateNativeCorePort(input: {
@@ -529,7 +531,12 @@ export async function createServerPrivateNativeCorePort(input: {
               canUseTool: async (tool, toolInput, context, assistant, toolUseId, forced) => {
                 const decision = forced ?? await hasPermissionsToUseTool(tool, toolInput, context, assistant, toolUseId)
                 if (decision.behavior !== 'ask') return decision
-                emit({ type: 'event', event: 'approval', data: toolUseId })
+                emit({
+                  type: 'event',
+                  event: 'approval',
+                  request_id: toolUseId,
+                  action: projectProductTaskActionApproval(tool.name),
+                })
                 const approved = await new Promise<boolean>(resolve => approvals.set(toolUseId, resolve))
                 approvals.delete(toolUseId)
                 return approved

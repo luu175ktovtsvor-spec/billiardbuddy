@@ -67,6 +67,13 @@ export type ProductTaskApprovalKind =
   | 'question'
   | 'computer_use'
 
+/** Product-authored explanation of one Core boundary crossing. */
+export type ProductTaskActionApproval = {
+  what: string
+  scope: string
+  consequence: string
+}
+
 /**
  * Safe Computer Use capabilities a product task can request. These are
  * deliberately capability labels rather than desktop grant flags, so the
@@ -177,6 +184,8 @@ export type ProductTaskEvent =
       type: 'approval_required'
       requestId: string
       kind: 'action'
+      /** Optional only while replaying an older v1 runtime event. */
+      action?: ProductTaskActionApproval
     }
   | {
       type: 'approval_required'

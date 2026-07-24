@@ -51,3 +51,27 @@ test('terminal closes an event already waiting for its private task identity', a
 
   expect(events).toEqual([{ type: 'turn_complete' }])
 })
+
+test('worker sink durably records an explained approval before publishing it', async () => {
+  const order: string[] = []
+  const action = { what: '运行一条受限命令', scope: '当前任务工作区之外的本机资源或网络边界', consequence: '命令可能修改文件、启动进程或访问外部服务。' }
+  const tasks = {
+    readTaskRunDispatchIdentity: async () => ({ task_id: 'task-approval' }),
+    recordTaskRunApprovalRequest: async (_run: string, _generation: number, requestId: string) => {
+      order.push('durable')
+      return { task_id: 'task-approval', event: { type: 'approval_required' as const, requestId, kind: 'action' as const, action } }
+    },
+  } as unknown as ProductTaskService
+  const sink = new ProductTaskWorkerMessageSink(tasks)
+  const unsubscribe = productTaskWorkerRuntimeEvents.subscribe((taskId, event) => {
+    if (taskId === 'task-approval' && event.type === 'approval_required') order.push(`publish:${event.requestId}`)
+  })
+
+  await sink.record('run', 1, { type: 'event', event: 'approval', request_id: 'approval-1', action })
+  unsubscribe()
+  expect(order).toEqual(['durable', 'publish:approval-1'])
+  expect(productTaskWorkerRuntimeEvents.snapshot('task-approval').state).toBe('awaiting_approval')
+  expect(productTaskWorkerRuntimeEvents.ownsApproval('task-approval', 'approval-1')).toBeTrue()
+  productTaskWorkerRuntimeEvents.publish('task-approval', { type: 'status', state: 'working' })
+  expect(productTaskWorkerRuntimeEvents.ownsApproval('task-approval', 'approval-1')).toBeFalse()
+})

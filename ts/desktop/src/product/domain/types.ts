@@ -63,6 +63,7 @@ export type {
   ProductTaskRunSnapshot,
   ProductTaskAttachmentSummary,
   ProductTaskMediaDraft,
+  ProductTaskActionApproval,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApp,
   ProductTaskComputerUseApproval,
