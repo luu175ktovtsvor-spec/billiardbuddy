@@ -5,7 +5,11 @@
  * The gateway and transcription service remain private implementation details.
  */
 
-import { voiceTranscriptionResponseSchema } from '../../../shared/contracts/voice.js'
+import {
+  bindTranscriptInputSchema,
+  createTranscriptRevisionInputSchema,
+  voiceTranscriptionResponseSchema,
+} from '../../../shared/contracts/voice.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import {
   VoiceTranscriptionError,
@@ -14,12 +18,21 @@ import {
 } from '../services/voiceTranscription.js'
 import { remoteDataEgressConsentService } from '../services/remoteDataEgressConsent.js'
 import { PROVIDER_GATEWAY_PROTOCOL } from '../../../shared/product/dataEgress.js'
+import {
+  VoiceOperationError,
+  voiceOperationService,
+  type VoiceOperationService,
+} from '../services/voiceOperationService.js'
 
 const DEFAULT_MAX_AUDIO_BYTES = 96 * 1024 * 1024
 
 type ProductVoiceApiDependencies = Pick<VoiceTranscriptionOptions, 'env' | 'fetchImpl'> & {
   transcribe?: typeof transcribeVoiceFile
   consentReceiptId?: string | null
+  operations?: Pick<
+    VoiceOperationService,
+    'begin' | 'complete' | 'fail' | 'cancel' | 'getOperation' | 'getTranscript' | 'revise' | 'bind'
+  >
 }
 
 function maxAudioBytes(env: Record<string, string | undefined>): number {
@@ -57,12 +70,19 @@ function transcriptionUnavailableError(): ApiError {
 
 function productVoiceError(error: unknown, requestAborted: boolean): ApiError {
   if (error instanceof ApiError) return error
+  if (error instanceof VoiceOperationError) return new ApiError(error.status, error.message, error.code)
   if (requestAborted) return transcriptionCancelledError()
   if (!(error instanceof VoiceTranscriptionError)) return transcriptionUnavailableError()
   if (error.status === 400) return invalidAudioError()
   if (error.status === 413) return audioTooLargeError()
   if (error.status === 499) return transcriptionCancelledError()
   return transcriptionUnavailableError()
+}
+
+async function readJson(req: Request): Promise<unknown> {
+  return await req.json().catch(() => {
+    throw new ApiError(400, '语音操作参数无效', 'VOICE_OPERATION_INVALID')
+  })
 }
 
 export async function handleProductVoiceApi(
@@ -72,6 +92,40 @@ export async function handleProductVoiceApi(
 ): Promise<Response> {
   try {
     const action = segments[3]
+    const operations = deps.operations ?? voiceOperationService
+
+    if (action === 'operations') {
+      const operationId = segments[4]
+      if (!operationId || segments[6]) throw ApiError.notFound('当前语音操作不可用')
+      if (!segments[5] && req.method === 'GET') {
+        return Response.json({ operation: await operations.getOperation(operationId) })
+      }
+      if (segments[5] === 'cancel' && req.method === 'POST') {
+        return Response.json({ operation: await operations.cancel(operationId) })
+      }
+      throw new ApiError(405, '当前语音操作暂不支持', 'METHOD_NOT_ALLOWED')
+    }
+
+    if (action === 'transcripts') {
+      const transcriptId = segments[4]
+      const nested = segments[5]
+      if (!transcriptId || segments[6]) throw ApiError.notFound('当前转写记录不可用')
+      if (!nested && req.method === 'GET') {
+        return Response.json({ transcript: await operations.getTranscript(transcriptId) })
+      }
+      if (nested === 'revisions' && req.method === 'POST') {
+        const input = createTranscriptRevisionInputSchema.safeParse(await readJson(req))
+        if (!input.success) throw new ApiError(400, '转写编辑参数无效', 'TRANSCRIPT_REVISION_INVALID')
+        return Response.json({ transcript: await operations.revise(transcriptId, input.data) }, { status: 201 })
+      }
+      if (nested === 'bindings' && req.method === 'POST') {
+        const input = bindTranscriptInputSchema.safeParse(await readJson(req))
+        if (!input.success) throw new ApiError(400, '转写绑定参数无效', 'TRANSCRIPT_BINDING_INVALID')
+        return Response.json({ transcript: await operations.bind(transcriptId, input.data) }, { status: 201 })
+      }
+      throw new ApiError(405, '当前转写操作暂不支持', 'METHOD_NOT_ALLOWED')
+    }
+
     if (action !== 'transcribe' || segments[4]) {
       throw ApiError.notFound('当前语音操作不可用')
     }
@@ -106,15 +160,35 @@ export async function handleProductVoiceApi(
       throw new ApiError(428, '请先确认远程数据使用范围', 'REMOTE_DATA_EGRESS_REQUIRED')
     }
 
-    const result = await (deps.transcribe ?? transcribeVoiceFile)(file, {
-      env,
-      fetchImpl: deps.fetchImpl,
-      language,
-      signal: req.signal,
-      consentReceiptId,
-      providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-    })
-    return Response.json(voiceTranscriptionResponseSchema.parse(result))
+    const started = await operations.begin(file, consentReceiptId)
+    const onRequestAbort = () => { void operations.cancel(started.operation.id) }
+    req.signal.addEventListener('abort', onRequestAbort, { once: true })
+    if (req.signal.aborted) onRequestAbort()
+    try {
+      const result = await (deps.transcribe ?? transcribeVoiceFile)(file, {
+        env,
+        fetchImpl: deps.fetchImpl,
+        language,
+        signal: started.signal,
+        consentReceiptId,
+        providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+        operationId: started.operation.id,
+      })
+      const completed = await operations.complete(started.operation.id, result.text)
+      return Response.json(voiceTranscriptionResponseSchema.parse({
+        text: completed.transcript.revisions.find(revision => revision.id === completed.transcript.raw_revision_id)?.text,
+        ...completed,
+      }))
+    } catch (error) {
+      if (req.signal.aborted || started.signal.aborted) {
+        await operations.cancel(started.operation.id).catch(() => undefined)
+      } else {
+        await operations.fail(started.operation.id).catch(() => undefined)
+      }
+      throw error
+    } finally {
+      req.signal.removeEventListener('abort', onRequestAbort)
+    }
   } catch (error) {
     return errorResponse(productVoiceError(error, req.signal.aborted))
   }

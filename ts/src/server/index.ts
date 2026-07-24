@@ -25,6 +25,7 @@ import { resetProductTaskServiceForServer } from './product/taskService.js'
 import { ProductTaskMediaService } from './product/taskMediaService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkbenches.js'
+import { voiceOperationService } from './services/voiceOperationService.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -114,6 +115,12 @@ export function startServer(port = PORT, host = HOST) {
       type: 'media_gc_failed',
       severity: 'error',
       summary: 'Media retention cleanup failed',
+      details: { error },
+    }))
+    void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
+      type: 'voice_gc_failed',
+      severity: 'error',
+      summary: 'Voice transcript retention cleanup failed',
       details: { error },
     }))
   }
