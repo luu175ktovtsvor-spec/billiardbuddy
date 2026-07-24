@@ -174,7 +174,12 @@ export function isValidCron(cron: string): boolean {
 
   for (let i = 0; i < 5; i++) {
     const field = fields[i]!
-    if (/^\*\/\d+$/.test(field)) continue
+    const wildcardStep = field.match(/^\*\/(\d+)$/)
+    if (wildcardStep) {
+      const step = parseInt(wildcardStep[1]!, 10)
+      if (step < 1) return false
+      continue
+    }
     if (field === '*') continue
     if (!fieldPattern.test(field)) return false
     const nums = field.replace(/\/\d+/g, '').split(/[,\-]/).filter((s) => /^\d+$/.test(s))
@@ -182,6 +187,8 @@ export function isValidCron(cron: string): boolean {
       const n = parseInt(num)
       if (n < minValues[i]! || n > maxValues[i]!) return false
     }
+    const steps = [...field.matchAll(/\/(\d+)/g)]
+    if (steps.some((match) => parseInt(match[1]!, 10) < 1)) return false
   }
 
   return true
