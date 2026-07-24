@@ -1,6 +1,8 @@
 import type {
   CreateImageProjectInput,
   CreateVideoProjectInput,
+  ApplyVideoAlternativeInput,
+  AnalyzeVideoProjectInput,
   CommitImageVersionInput,
   ImageCanvasSize,
   ImageReferenceRole,
@@ -10,6 +12,7 @@ import type {
   PublicMediaProject,
   PublicMediaTask,
   PublicVideoStudioProject,
+  LockVideoSceneInput,
   RenderVideoInput,
   SaveImageOutputInput,
   SelectImageVersionInput,
@@ -119,6 +122,22 @@ export const mediaApi = {
   updateVideoTimeline: (projectId: string, input: UpdateVideoTimelineInput) =>
     api.put<{ project: PublicVideoStudioProject }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline`,
+      input,
+    ),
+  analyzeVideo: (projectId: string, input: AnalyzeVideoProjectInput) =>
+    getDesktopHost().media.analyzeVideo({
+      projectId,
+      baseRevision: input.base_revision,
+      userGoal: input.user_goal,
+    }),
+  lockVideoScene: (projectId: string, sceneId: string, input: LockVideoSceneInput) =>
+    api.post<{ project: PublicVideoStudioProject }>(
+      `/api/media/videos/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/lock`,
+      input,
+    ),
+  applyVideoAlternative: (projectId: string, alternativeId: string, input: ApplyVideoAlternativeInput) =>
+    api.post<{ project: PublicVideoStudioProject }>(
+      `/api/media/videos/projects/${encodeURIComponent(projectId)}/alternatives/${encodeURIComponent(alternativeId)}/apply`,
       input,
     ),
   renderVideo: (projectId: string, input: RenderVideoInput) =>

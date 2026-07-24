@@ -120,6 +120,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
         { projectId, input },
       ),
       renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
+      analyzeVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, request),
     },
     updates: {
       check: async (options) => {

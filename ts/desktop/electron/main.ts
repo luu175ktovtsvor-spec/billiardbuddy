@@ -445,6 +445,13 @@ function registerIpcHandlers() {
       output_path: input.outputPath,
     })
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, (_event, payload) => {
+    const input = payload as { projectId: string, baseRevision: number, userGoal: string }
+    return getMediaActions().analyzeVideo(input.projectId, {
+      base_revision: input.baseRevision,
+      user_goal: input.userGoal,
+    })
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
     getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.updateDownload, () => getUpdaterService().downloadUpdate(event => {

@@ -6,11 +6,14 @@ import {
   FolderOpen,
   FolderPlus,
   Loader2,
+  Lock,
   Play,
   Plus,
   Save,
   Scissors,
   Square,
+  Sparkles,
+  Unlock,
   X,
 } from 'lucide-react'
 import { mediaApi, mediaUserFacingError, type VideoStudioProject } from '../../api/media'
@@ -51,6 +54,9 @@ export function VideoStudio() {
   const createVideo = useMediaWorkbenchStore(state => state.createVideo)
   const addVideoSource = useMediaWorkbenchStore(state => state.addVideoSource)
   const saveTimeline = useMediaWorkbenchStore(state => state.saveTimeline)
+  const analyzeVideo = useMediaWorkbenchStore(state => state.analyzeVideo)
+  const lockVideoScene = useMediaWorkbenchStore(state => state.lockVideoScene)
+  const applyVideoAlternative = useMediaWorkbenchStore(state => state.applyVideoAlternative)
   const renderVideo = useMediaWorkbenchStore(state => state.renderVideo)
   const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
   const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
@@ -64,6 +70,7 @@ export function VideoStudio() {
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('mp4')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [voiceEvidence, setVoiceEvidence] = useState<VoiceConsumerEvidence[]>([])
+  const [userGoal, setUserGoal] = useState('')
 
   const active = useMemo(
     () => projects.find(project => project.id === activeId) ?? null,
@@ -71,7 +78,15 @@ export function VideoStudio() {
   )
   const selectedSource = active?.sources.find(source => source.id === selectedSourceId) ?? active?.sources[0]
   const task = active?.task_id ? tasks[active.task_id] : undefined
-  const rendering = active?.state === 'rendering' || task?.status === 'queued' || task?.status === 'running' || task?.status === 'committing'
+  const taskRunning = task?.status === 'queued' || task?.status === 'running' || task?.status === 'committing'
+  const analyzing = taskRunning && (task?.kind === 'video.analyze' || task?.kind === 'video.plan')
+  const rendering = active?.state === 'rendering' || (taskRunning && task?.kind === 'video.render')
+  const busy = analyzing || rendering
+  const timelineVersion = active?.timeline_versions.find(version => version.id === active.current_timeline_version_id)
+  const sceneById = useMemo(
+    () => new Map((timelineVersion?.scenes ?? []).map(scene => [scene.id, scene])),
+    [timelineVersion],
+  )
   const storeError = error ? mediaUserFacingError(new Error(error)) : null
   const projectError = active?.error
     ? mediaUserFacingError({ code: active.error_code })
@@ -88,6 +103,7 @@ export function VideoStudio() {
   useEffect(() => {
     setDraft(active)
     setSelectedSourceId(active?.sources[0]?.id ?? null)
+    setUserGoal(active?.brief?.user_goal ?? '')
   }, [active])
 
   useEffect(() => {
@@ -103,7 +119,7 @@ export function VideoStudio() {
   }, [active?.id])
 
   useEffect(() => {
-    if (!active?.task_id || active.state !== 'rendering') return
+    if (!active?.task_id || !taskRunning) return
     let stopped = false
     let timer: number | undefined
     const poll = async () => {
@@ -116,10 +132,10 @@ export function VideoStudio() {
       stopped = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [active?.state, active?.task_id, refreshTask])
+  }, [active?.task_id, refreshTask, taskRunning])
 
   const pickSource = async () => {
-    if (!active || rendering) return
+    if (!active || busy) return
     const picked = await getDesktopHost().dialogs.open({
       multiple: true,
       title: '选择视频素材',
@@ -130,7 +146,7 @@ export function VideoStudio() {
   }
 
   const startRender = async () => {
-    if (!active || !draft || rendering || !toolchain?.ffmpeg.available || !toolchain.ffprobe.available) return
+    if (!active || !draft || busy || !toolchain?.ffmpeg.available || !toolchain.ffprobe.available) return
     const outputPath = await getDesktopHost().dialogs.save({
       title: '导出视频',
       defaultPath: `${active.title}.${outputFormat}`,
@@ -144,8 +160,22 @@ export function VideoStudio() {
     await renderVideo(project, outputPath)
   }
 
+  const startAnalysis = async () => {
+    if (!active || !draft || busy || !userGoal.trim() || !active.sources.length) return
+    const changed = JSON.stringify(draft.timeline) !== JSON.stringify(active.timeline)
+    const project = changed ? await saveTimeline(draft) : active
+    await analyzeVideo(project, userGoal.trim())
+  }
+
+  const toggleSceneLock = async (sceneId: string, locked: boolean) => {
+    if (!active || !draft || busy) return
+    const changed = JSON.stringify(draft.timeline) !== JSON.stringify(active.timeline)
+    const project = changed ? await saveTimeline(draft) : active
+    await lockVideoScene(project, sceneId, locked)
+  }
+
   const updateClip = (clipId: string, field: 'in_ms' | 'out_ms', value: number) => {
-    if (!draft || rendering) return
+    if (!draft || busy) return
     setDraft({
       ...draft,
       timeline: draft.timeline.map(clip => {
@@ -158,7 +188,7 @@ export function VideoStudio() {
   }
 
   const moveClip = (index: number, direction: -1 | 1) => {
-    if (!draft || rendering) return
+    if (!draft || busy) return
     const target = index + direction
     if (target < 0 || target >= draft.timeline.length) return
     const timeline = [...draft.timeline]
@@ -168,12 +198,12 @@ export function VideoStudio() {
   }
 
   const removeClip = (clipId: string) => {
-    if (!draft || rendering) return
+    if (!draft || busy) return
     setDraft({ ...draft, timeline: draft.timeline.filter(clip => clip.id !== clipId) })
   }
 
   const appendClip = (sourceId: string) => {
-    if (!draft || rendering) return
+    if (!draft || busy) return
     const source = draft.sources.find(item => item.id === sourceId)
     if (!source) return
     setDraft({
@@ -191,7 +221,7 @@ export function VideoStudio() {
   }
 
   const splitClip = (clipId: string) => {
-    if (!draft || rendering) return
+    if (!draft || busy) return
     const index = draft.timeline.findIndex(clip => clip.id === clipId)
     const clip = draft.timeline[index]
     if (!clip || clip.out_ms - clip.in_ms < 2) return
@@ -300,21 +330,35 @@ export function VideoStudio() {
             <div className="flex h-[170px] items-stretch gap-1 overflow-x-auto p-3">
               {draft?.timeline.map((clip, index) => {
                 const source = draft.sources.find(item => item.id === clip.source_id)
+                const scene = sceneById.get(clip.id)
+                const locked = scene?.locked ?? false
                 return (
                   <div key={clip.id} className="w-[180px] shrink-0 border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-2">
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => setSelectedSourceId(clip.source_id)}
-                        disabled={rendering}
+                        disabled={busy}
                         className="min-w-0 flex-1 truncate text-left text-[12px] font-medium text-[var(--color-text-primary)] disabled:opacity-45"
                       >
                         {index + 1}. {source?.name ?? '素材'}
                       </button>
-                      <button type="button" onClick={() => moveClip(index, -1)} disabled={rendering || index === 0} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="前移片段"><ArrowLeft size={12} /></button>
-                      <button type="button" onClick={() => moveClip(index, 1)} disabled={rendering || index === draft.timeline.length - 1} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="后移片段"><ArrowRight size={12} /></button>
-                      <button type="button" onClick={() => splitClip(clip.id)} disabled={rendering || clip.out_ms - clip.in_ms < 2} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="拆分片段"><Scissors size={12} /></button>
-                      <button type="button" onClick={() => removeClip(clip.id)} disabled={rendering} className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--color-error)] disabled:opacity-25" aria-label="删除片段"><X size={12} /></button>
+                      {scene && (
+                        <button
+                          type="button"
+                          onClick={() => void toggleSceneLock(scene.id, !locked)}
+                          disabled={busy}
+                          className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--color-brand)] disabled:opacity-25"
+                          aria-label={locked ? '解锁场景' : '锁定场景'}
+                          title={locked ? '解锁后允许方案调整' : '锁定后分析不会覆盖'}
+                        >
+                          {locked ? <Lock size={12} /> : <Unlock size={12} />}
+                        </button>
+                      )}
+                      <button type="button" onClick={() => moveClip(index, -1)} disabled={busy || locked || index === 0} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="前移片段"><ArrowLeft size={12} /></button>
+                      <button type="button" onClick={() => moveClip(index, 1)} disabled={busy || locked || index === draft.timeline.length - 1} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="后移片段"><ArrowRight size={12} /></button>
+                      <button type="button" onClick={() => splitClip(clip.id)} disabled={busy || locked || clip.out_ms - clip.in_ms < 2} className="flex h-6 w-6 shrink-0 items-center justify-center disabled:opacity-25" aria-label="拆分片段"><Scissors size={12} /></button>
+                      <button type="button" onClick={() => removeClip(clip.id)} disabled={busy || locked} className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--color-error)] disabled:opacity-25" aria-label="删除片段"><X size={12} /></button>
                     </div>
                     <div className="mt-3 grid grid-cols-[34px_1fr] items-center gap-x-2 gap-y-2 text-[11px] text-[var(--color-text-tertiary)]">
                       <label htmlFor={`${clip.id}-in`}>入点</label>
@@ -323,7 +367,7 @@ export function VideoStudio() {
                         type="number"
                         min={0}
                         step={0.1}
-                        disabled={rendering}
+                        disabled={busy || locked}
                         value={seconds(clip.in_ms)}
                         onChange={event => updateClip(clip.id, 'in_ms', Math.round(Number(event.target.value) * 1000))}
                         className="h-7 min-w-0 border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1.5 text-[12px] text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
@@ -334,12 +378,17 @@ export function VideoStudio() {
                         type="number"
                         min={0.1}
                         step={0.1}
-                        disabled={rendering}
+                        disabled={busy || locked}
                         value={seconds(clip.out_ms)}
                         onChange={event => updateClip(clip.id, 'out_ms', Math.round(Number(event.target.value) * 1000))}
                         className="h-7 min-w-0 border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1.5 text-[12px] text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
                       />
                     </div>
+                    {scene && (
+                      <p className="mt-2 line-clamp-2 text-[10px] leading-4 text-[var(--color-text-tertiary)]" title={scene.rationale}>
+                        {scene.story_role} · {scene.evidence_ids.length} 条证据 · {scene.rationale}
+                      </p>
+                    )}
                   </div>
                 )
               })}
@@ -394,7 +443,7 @@ export function VideoStudio() {
                 <button
                   type="button"
                   onClick={() => void pickSource()}
-                  disabled={loading || rendering}
+                  disabled={loading || busy}
                   className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] border border-[var(--color-border)] text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-45"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <FolderPlus size={14} />}
@@ -421,7 +470,7 @@ export function VideoStudio() {
                     <button
                       type="button"
                       onClick={() => appendClip(source.id)}
-                      disabled={rendering}
+                      disabled={busy}
                       className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-[5px] text-[var(--color-brand)] hover:bg-[var(--color-app-main)] disabled:opacity-35"
                       aria-label={`将 ${source.name} 加入时间线`}
                       title="再加入一个片段"
@@ -431,10 +480,73 @@ export function VideoStudio() {
                   </div>
                 ))}
                 <div className="my-3 border-t border-[var(--color-border)]" />
+                <label htmlFor="video-analysis-goal" className="block text-[12px] font-medium text-[var(--color-text-secondary)]">
+                  剪辑目标
+                </label>
+                <textarea
+                  id="video-analysis-goal"
+                  value={userGoal}
+                  onChange={event => setUserGoal(event.target.value)}
+                  disabled={busy}
+                  maxLength={8000}
+                  rows={3}
+                  placeholder="例如：突出进球瞬间，剪成适合门店社交账号发布的竖屏短片"
+                  className="mt-1 w-full resize-y rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[12px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)] disabled:opacity-45"
+                />
+                <button
+                  type="button"
+                  onClick={() => void startAnalysis()}
+                  disabled={loading || busy || !active.sources.length || !userGoal.trim()}
+                  className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] border border-[var(--color-brand)] text-[13px] text-[var(--color-brand)] hover:bg-[var(--color-surface-hover)] disabled:opacity-45"
+                >
+                  {analyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  {task?.kind === 'video.analyze'
+                    ? '正在分析证据'
+                    : task?.kind === 'video.plan' && taskRunning
+                      ? '正在生成方案'
+                      : active.brief
+                        ? '重新分析并生成方案'
+                        : '分析素材并生成方案'}
+                </button>
+                {active.brief && (
+                  <div className="mt-2 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                    <p className="font-medium text-[var(--color-text-primary)]">{active.brief.recommended_direction}</p>
+                    <p className="mt-1">{active.brief.content_type} · {active.brief.output_channel}</p>
+                    {active.brief.gaps.length > 0 && <p className="mt-1 text-[var(--color-warning)]">待确认：{active.brief.gaps.join('；')}</p>}
+                  </div>
+                )}
+                {active.evidence.length > 0 && (
+                  <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">
+                    已核验 {active.evidence.length} 条 Evidence · 修订 {active.evidence_revision?.slice(7, 15) ?? '未生成'}
+                  </p>
+                )}
+                {active.alternatives.length > 0 && (
+                  <div className="mt-2 space-y-1" aria-label="剪辑备选方案">
+                    {active.alternatives.map(alternative => (
+                      <div key={alternative.id} className="rounded-[6px] border border-[var(--color-border)] p-2">
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-medium text-[var(--color-text-primary)]">{alternative.label}</p>
+                            <p className="mt-0.5 text-[10px] leading-4 text-[var(--color-text-tertiary)]">{alternative.tradeoff}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void applyVideoAlternative(active, alternative.id)}
+                            disabled={busy || JSON.stringify(draft?.timeline) !== JSON.stringify(active.timeline)}
+                            className="shrink-0 rounded-[5px] px-2 py-1 text-[11px] text-[var(--color-brand)] hover:bg-[var(--color-surface-hover)] disabled:opacity-35"
+                          >
+                            采用
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="my-3 border-t border-[var(--color-border)]" />
                 <div className="flex flex-col items-stretch gap-2">
                   <span className="text-[12px] text-[var(--color-text-secondary)]">语音 Evidence</span>
                   <VoiceInputControl
-                    disabled={rendering}
+                    disabled={busy}
                     consumer={{ kind: 'video_evidence', id: active.id }}
                     onTranscript={() => {
                       void productVoiceApi.listEvidence({ kind: 'video_evidence', id: active.id })
@@ -467,7 +579,7 @@ export function VideoStudio() {
                     id="video-output-format"
                     value={outputFormat}
                     onChange={event => setOutputFormat(event.target.value as OutputFormat)}
-                    disabled={rendering}
+                    disabled={busy}
                     className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                   >
                     <option value="mp4">MP4（推荐）</option>
@@ -477,7 +589,7 @@ export function VideoStudio() {
                 <button
                   type="button"
                   onClick={() => void startRender()}
-                  disabled={loading || rendering || !active.timeline.length || !toolchain?.ffmpeg.available || !toolchain.ffprobe.available}
+                  disabled={loading || busy || !active.timeline.length || !toolchain?.ffmpeg.available || !toolchain.ffprobe.available}
                   className="mt-4 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] bg-[var(--color-brand)] text-[13px] text-white disabled:opacity-45"
                 >
                   {active.state === 'rendering' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
@@ -491,7 +603,7 @@ export function VideoStudio() {
                     className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] border border-[var(--color-border)] text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-45"
                   >
                     <X size={14} />
-                    取消导出
+                    {analyzing ? '取消分析' : '取消导出'}
                   </button>
                 )}
                 {task && (

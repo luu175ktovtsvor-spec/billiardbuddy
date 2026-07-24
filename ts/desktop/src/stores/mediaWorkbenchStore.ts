@@ -41,6 +41,9 @@ type MediaWorkbenchStore = {
   createVideo: (input?: CreateVideoProjectInput) => Promise<VideoStudioProject>
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
+  analyzeVideo: (project: VideoStudioProject, userGoal: string) => Promise<MediaTask>
+  lockVideoScene: (project: VideoStudioProject, sceneId: string, locked: boolean) => Promise<VideoStudioProject>
+  applyVideoAlternative: (project: VideoStudioProject, alternativeId: string) => Promise<VideoStudioProject>
   renderVideo: (project: VideoStudioProject, outputPath: string) => Promise<MediaTask>
   cancelTask: (taskId: string) => Promise<MediaTask>
   deleteProject: (projectId: string, kind: 'image' | 'video') => Promise<void>
@@ -322,6 +325,66 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         base_revision: project.revision,
         base_timeline_version_id: project.current_timeline_version_id!,
         clips: project.timeline,
+      })
+      nextProjectLoadVersion('video')
+      set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
+      return saved
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  analyzeVideo: async (project, userGoal) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { task } = await mediaApi.analyzeVideo(project.id, {
+        base_revision: project.revision,
+        user_goal: userGoal,
+      })
+      nextTaskLoadVersion(task.id)
+      set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
+      await get().loadProjects('video')
+      return task
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      await get().loadProjects('video')
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  lockVideoScene: async (project, sceneId, locked) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project: saved } = await mediaApi.lockVideoScene(project.id, sceneId, {
+        base_revision: project.revision,
+        timeline_version_id: project.current_timeline_version_id!,
+        locked,
+      })
+      nextProjectLoadVersion('video')
+      set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
+      return saved
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  applyVideoAlternative: async (project, alternativeId) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project: saved } = await mediaApi.applyVideoAlternative(project.id, alternativeId, {
+        base_revision: project.revision,
+        alternative_id: alternativeId,
       })
       nextProjectLoadVersion('video')
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))

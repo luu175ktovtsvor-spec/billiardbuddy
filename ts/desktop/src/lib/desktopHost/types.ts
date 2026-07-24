@@ -158,6 +158,12 @@ export type MediaRenderRequest = {
   outputPath: string
 }
 
+export type MediaAnalyzeRequest = {
+  projectId: string
+  baseRevision: number
+  userGoal: string
+}
+
 export type DesktopHost = {
   kind: DesktopHostKind
   isDesktop: boolean
@@ -206,6 +212,7 @@ export type DesktopHost = {
     ): Promise<{ project: ImageWorkbenchProject }>
     saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
+    analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
   }
   updates: {
     check(options?: DesktopUpdateCheckOptions): Promise<DesktopUpdate | null>

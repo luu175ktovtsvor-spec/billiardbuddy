@@ -117,6 +117,9 @@ export const browserHost: DesktopHost = {
     async renderVideo() {
       unsupported('Final video export')
     },
+    async analyzeVideo() {
+      unsupported('Video analysis')
+    },
   },
   updates: {
     async check() {
