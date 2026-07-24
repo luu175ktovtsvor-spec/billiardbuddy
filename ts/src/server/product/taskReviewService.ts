@@ -9,6 +9,7 @@ import type {
   ProductTaskReviewTree,
   WorkspaceFileRef,
 } from '../../../shared/product/taskReview.js'
+import { parseProductTaskReviewDiff } from '../../../shared/product/taskReview.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { conversationService } from '../services/conversationService.js'
 import { sessionService } from '../services/sessionService.js'
@@ -385,40 +386,9 @@ function expectedFileRef(
 }
 
 function diffContainsLine(diff: string, side: 'old' | 'new', targetLine: number): boolean {
-  let oldLine = 0
-  let newLine = 0
-  let inHunk = false
-  for (const value of diff.split('\n')) {
-    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(value)
-    if (hunk) {
-      oldLine = Number.parseInt(hunk[1]!, 10)
-      newLine = Number.parseInt(hunk[2]!, 10)
-      inHunk = true
-      continue
-    }
-    if (!inHunk) continue
-    if (value.startsWith('diff --git ') || value.startsWith('@@ ')) {
-      inHunk = false
-      continue
-    }
-    if (value.startsWith('\\ No newline at end of file')) continue
-    if (value.startsWith('-')) {
-      if (side === 'old' && oldLine === targetLine) return true
-      oldLine += 1
-      continue
-    }
-    if (value.startsWith('+')) {
-      if (side === 'new' && newLine === targetLine) return true
-      newLine += 1
-      continue
-    }
-    if (value.startsWith(' ')) {
-      if ((side === 'old' ? oldLine : newLine) === targetLine) return true
-      oldLine += 1
-      newLine += 1
-    }
-  }
-  return false
+  return parseProductTaskReviewDiff(diff).some(line => (
+    side === 'old' ? line.oldLine === targetLine : line.newLine === targetLine
+  ))
 }
 
 function staleFile(
