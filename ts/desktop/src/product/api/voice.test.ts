@@ -27,14 +27,47 @@ describe('productVoiceApi', () => {
       expect((form.get('file') as File).name).toMatch(/\.webm$/)
       expect(form.get('language')).toBe('zh')
       expect(init?.signal).toBeInstanceOf(AbortSignal)
-      return Response.json({ text: '九号台开台' })
+      return Response.json({
+        text: '九号台开台',
+        operation: {
+          schema_version: 1,
+          id: 'voice_0123456789abcdef0123456789abcdef',
+          status: 'succeeded',
+          source: {
+            name: 'voice.webm', mime_type: 'audio/webm', byte_size: 5,
+            content_hash: `sha256:${'a'.repeat(64)}`,
+          },
+          transcript_id: 'transcript_0123456789abcdef0123456789abcdef',
+          raw_revision_id: 'revision_0123456789abcdef0123456789abcdef',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:01.000Z',
+          finished_at: '2026-01-01T00:00:01.000Z',
+        },
+        transcript: {
+          schema_version: 1,
+          id: 'transcript_0123456789abcdef0123456789abcdef',
+          operation_id: 'voice_0123456789abcdef0123456789abcdef',
+          raw_revision_id: 'revision_0123456789abcdef0123456789abcdef',
+          current_revision_id: 'revision_0123456789abcdef0123456789abcdef',
+          revisions: [{
+            id: 'revision_0123456789abcdef0123456789abcdef',
+            transcript_id: 'transcript_0123456789abcdef0123456789abcdef',
+            kind: 'raw',
+            text: '九号台开台',
+            created_at: '2026-01-01T00:00:01.000Z',
+          }],
+          bindings: [],
+          created_at: '2026-01-01T00:00:01.000Z',
+          updated_at: '2026-01-01T00:00:01.000Z',
+        },
+      })
     })
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(productVoiceApi.transcribe(
       new Blob(['audio'], { type: 'audio/webm' }),
       { language: 'zh', signal: controller.signal },
-    )).resolves.toBe('九号台开台')
+    )).resolves.toMatchObject({ text: '九号台开台', operation: { status: 'succeeded' } })
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:4567/api/product/voice/transcribe',
       expect.objectContaining({ method: 'POST' }),

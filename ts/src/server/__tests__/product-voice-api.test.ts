@@ -213,6 +213,16 @@ describe('product voice API', () => {
     expect(bindingResponse.status).toBe(201)
     expect((await bindingResponse.json()).transcript.bindings).toHaveLength(1)
 
+    const listResponse = await handleProductVoiceApi(
+      new Request('http://localhost/api/product/voice/bindings?consumer_kind=composer&consumer_id=task_0123456789abcdef'),
+      ['api', 'product', 'voice', 'bindings'],
+      { operations: voice },
+    )
+    expect(listResponse.status).toBe(200)
+    expect(await listResponse.json()).toMatchObject({
+      evidence: [{ revision: { text: '校正文本' }, binding: { consumer: { kind: 'composer' } } }],
+    })
+
     const pending = await voice.begin(new File(['audio'], 'pending.webm'), 'a'.repeat(64))
     const cancelled = await handleProductVoiceApi(
       new Request(`http://localhost/api/product/voice/operations/${pending.operation.id}/cancel`, { method: 'POST' }),

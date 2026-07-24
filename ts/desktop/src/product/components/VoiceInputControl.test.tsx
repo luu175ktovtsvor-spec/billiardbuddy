@@ -4,10 +4,46 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { productVoiceApi } from '../api/voice'
 import { useUIStore } from '../../stores/uiStore'
 import { VoiceInputControl, type VoiceInputState } from './VoiceInputControl'
+import type { ProductVoiceTranscriptionResponse, Transcript } from '../../../../shared/contracts/voice'
 
 vi.mock('../api/voice', () => ({
-  productVoiceApi: { transcribe: vi.fn() },
+  productVoiceApi: { transcribe: vi.fn(), revise: vi.fn(), bind: vi.fn() },
 }))
+
+function transcription(text: string): ProductVoiceTranscriptionResponse {
+  const operationId = 'voice_0123456789abcdef0123456789abcdef'
+  const transcriptId = 'transcript_0123456789abcdef0123456789abcdef'
+  const revisionId = 'revision_0123456789abcdef0123456789abcdef'
+  const at = '2026-01-01T00:00:00.000Z'
+  return {
+    text,
+    operation: {
+      schema_version: 1,
+      id: operationId,
+      status: 'succeeded',
+      source: {
+        name: 'voice.webm', mime_type: 'audio/webm', byte_size: 5,
+        content_hash: `sha256:${'a'.repeat(64)}`,
+      },
+      transcript_id: transcriptId,
+      raw_revision_id: revisionId,
+      created_at: at,
+      updated_at: at,
+      finished_at: at,
+    },
+    transcript: {
+      schema_version: 1,
+      id: transcriptId,
+      operation_id: operationId,
+      raw_revision_id: revisionId,
+      current_revision_id: revisionId,
+      revisions: [{ id: revisionId, transcript_id: transcriptId, kind: 'raw', text, created_at: at }],
+      bindings: [],
+      created_at: at,
+      updated_at: at,
+    },
+  }
+}
 
 class FakeMediaRecorder {
   static isTypeSupported = vi.fn(() => true)
@@ -54,7 +90,7 @@ beforeEach(() => {
 
 describe('VoiceInputControl', () => {
   it('records, transcribes and returns text to the product composer owner', async () => {
-    vi.mocked(productVoiceApi.transcribe).mockResolvedValue('今晚八点开始比赛')
+    vi.mocked(productVoiceApi.transcribe).mockResolvedValue(transcription('今晚八点开始比赛'))
     const onTranscript = vi.fn()
     const states: VoiceInputState[] = []
     render(
@@ -67,18 +103,20 @@ describe('VoiceInputControl', () => {
     fireEvent.click(screen.getByRole('button', { name: '语音输入' }))
     await screen.findByTestId('voice-recording')
     fireEvent.click(screen.getByRole('button', { name: '停止并转写' }))
+    await screen.findByTestId('voice-reviewing')
+    fireEvent.click(screen.getByRole('button', { name: '确认并使用转写' }))
 
     await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('今晚八点开始比赛'))
     expect(productVoiceApi.transcribe).toHaveBeenCalledWith(
       expect.any(Blob),
       expect.objectContaining({ language: 'zh', signal: expect.any(AbortSignal) }),
     )
-    expect(states).toEqual(expect.arrayContaining(['requesting', 'recording', 'transcribing', 'idle']))
+    expect(states).toEqual(expect.arrayContaining(['requesting', 'recording', 'transcribing', 'reviewing', 'saving', 'idle']))
     expect(stopTrack).toHaveBeenCalled()
   })
 
   it('stays usable when the desktop runs it inside StrictMode', async () => {
-    vi.mocked(productVoiceApi.transcribe).mockResolvedValue('二号台需要加时')
+    vi.mocked(productVoiceApi.transcribe).mockResolvedValue(transcription('二号台需要加时'))
     const onTranscript = vi.fn()
     render(
       <StrictMode>
@@ -89,6 +127,8 @@ describe('VoiceInputControl', () => {
     fireEvent.click(screen.getByRole('button', { name: '语音输入' }))
     await screen.findByTestId('voice-recording')
     fireEvent.click(screen.getByRole('button', { name: '停止并转写' }))
+    await screen.findByTestId('voice-reviewing')
+    fireEvent.click(screen.getByRole('button', { name: '确认并使用转写' }))
 
     await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('二号台需要加时'))
   })
@@ -138,7 +178,7 @@ describe('VoiceInputControl', () => {
 
   it('cancels an in-flight transcription without filling the composer or showing an error', async () => {
     let requestSignal: AbortSignal | undefined
-    vi.mocked(productVoiceApi.transcribe).mockImplementation((_blob, options) => new Promise<string>(
+    vi.mocked(productVoiceApi.transcribe).mockImplementation((_blob, options) => new Promise<ProductVoiceTranscriptionResponse>(
       (_resolve, reject) => {
         requestSignal = options?.signal
         requestSignal?.addEventListener('abort', () => {
@@ -163,8 +203,8 @@ describe('VoiceInputControl', () => {
   })
 
   it('cancels an active transcription when its product task becomes unavailable', async () => {
-    let resolveTranscription: ((text: string) => void) | undefined
-    vi.mocked(productVoiceApi.transcribe).mockImplementation(() => new Promise<string>((resolve) => {
+    let resolveTranscription: ((result: ProductVoiceTranscriptionResponse) => void) | undefined
+    vi.mocked(productVoiceApi.transcribe).mockImplementation(() => new Promise<ProductVoiceTranscriptionResponse>((resolve) => {
       resolveTranscription = resolve
     }))
     const onTranscript = vi.fn()
@@ -176,7 +216,7 @@ describe('VoiceInputControl', () => {
     await screen.findByTestId('voice-transcribing')
 
     view.rerender(<VoiceInputControl onTranscript={onTranscript} disabled />)
-    resolveTranscription?.('这段内容不应回填')
+    resolveTranscription?.(transcription('这段内容不应回填'))
 
     await screen.findByTestId('voice-input')
     await waitFor(() => expect(onTranscript).not.toHaveBeenCalled())
@@ -197,5 +237,54 @@ describe('VoiceInputControl', () => {
       message: '语音转写暂时无法完成，请稍后重试。',
     })))
     expect(useUIStore.getState().toasts.some((toast) => toast.message === rawError)).toBe(false)
+  })
+
+  it('uploads audio, preserves raw text, appends an edit and binds the chosen revision', async () => {
+    const initial = transcription('原始转写')
+    const editedRevision = {
+      id: 'revision_fedcba9876543210fedcba9876543210',
+      transcript_id: initial.transcript.id,
+      parent_revision_id: initial.transcript.raw_revision_id,
+      kind: 'edit' as const,
+      text: '校正后的转写',
+      created_at: '2026-01-01T00:00:01.000Z',
+    }
+    const edited: Transcript = {
+      ...initial.transcript,
+      current_revision_id: editedRevision.id,
+      revisions: [...initial.transcript.revisions, editedRevision],
+      updated_at: editedRevision.created_at,
+    }
+    vi.mocked(productVoiceApi.transcribe).mockResolvedValue(initial)
+    vi.mocked(productVoiceApi.revise).mockResolvedValue(edited)
+    vi.mocked(productVoiceApi.bind).mockResolvedValue(edited)
+    const onTranscript = vi.fn()
+    render(
+      <VoiceInputControl
+        consumer={{ kind: 'composer', id: 'task_0123456789abcdef' }}
+        onTranscript={onTranscript}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('选择音频文件'), {
+      target: { files: [new File(['audio'], '访谈.m4a', { type: 'audio/mp4' })] },
+    })
+    await screen.findByTestId('voice-reviewing')
+    fireEvent.change(screen.getByLabelText('校正转写文本'), { target: { value: '校正后的转写' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认并使用转写' }))
+
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('校正后的转写'))
+    expect(productVoiceApi.revise).toHaveBeenCalledWith(
+      initial.transcript.id,
+      initial.transcript.raw_revision_id,
+      '校正后的转写',
+    )
+    expect(productVoiceApi.bind).toHaveBeenCalledWith(
+      initial.transcript.id,
+      editedRevision.id,
+      { kind: 'composer', id: 'task_0123456789abcdef' },
+    )
+    expect(initial.transcript.revisions).toHaveLength(1)
+    expect(initial.transcript.revisions[0]?.text).toBe('原始转写')
   })
 })

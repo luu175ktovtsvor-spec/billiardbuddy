@@ -76,6 +76,13 @@ describe('VoiceOperationService', () => {
     expect(duplicate.bindings).toHaveLength(1)
     expect(video.bindings).toHaveLength(2)
     expect(video.bindings.map(binding => binding.consumer.kind)).toEqual(['composer', 'video_evidence'])
+    expect(await service.listBound({
+      kind: 'video_evidence',
+      id: 'video_0123456789abcdef0123456789',
+    })).toMatchObject([{
+      binding: { revision_id: rawRevisionId },
+      revision: { id: rawRevisionId, text: '比赛画面说明' },
+    }])
   })
 
   test('garbage-collects expired unbound records but retains consumer evidence', async () => {

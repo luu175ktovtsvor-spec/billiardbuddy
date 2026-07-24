@@ -17,6 +17,9 @@ import { mediaApi, mediaUserFacingError, type VideoStudioProject } from '../../a
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
 import { MediaProjectRail } from './MediaProjectRail'
+import { VoiceInputControl } from '../../product/components/VoiceInputControl'
+import { productVoiceApi } from '../../product/api/voice'
+import type { VoiceConsumerEvidence } from '../../../../shared/contracts/voice'
 
 function seconds(milliseconds: number): string {
   return (milliseconds / 1000).toFixed(2)
@@ -60,6 +63,7 @@ export function VideoStudio() {
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('portrait')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('mp4')
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [voiceEvidence, setVoiceEvidence] = useState<VoiceConsumerEvidence[]>([])
 
   const active = useMemo(
     () => projects.find(project => project.id === activeId) ?? null,
@@ -85,6 +89,18 @@ export function VideoStudio() {
     setDraft(active)
     setSelectedSourceId(active?.sources[0]?.id ?? null)
   }, [active])
+
+  useEffect(() => {
+    let current = true
+    if (!active?.id) {
+      setVoiceEvidence([])
+      return () => { current = false }
+    }
+    void productVoiceApi.listEvidence({ kind: 'video_evidence', id: active.id })
+      .then(evidence => { if (current) setVoiceEvidence(evidence) })
+      .catch(() => { if (current) setVoiceEvidence([]) })
+    return () => { current = false }
+  }, [active?.id])
 
   useEffect(() => {
     if (!active?.task_id || active.state !== 'rendering') return
@@ -414,6 +430,30 @@ export function VideoStudio() {
                     </button>
                   </div>
                 ))}
+                <div className="my-3 border-t border-[var(--color-border)]" />
+                <div className="flex flex-col items-stretch gap-2">
+                  <span className="text-[12px] text-[var(--color-text-secondary)]">语音 Evidence</span>
+                  <VoiceInputControl
+                    disabled={rendering}
+                    consumer={{ kind: 'video_evidence', id: active.id }}
+                    onTranscript={() => {
+                      void productVoiceApi.listEvidence({ kind: 'video_evidence', id: active.id })
+                        .then(setVoiceEvidence)
+                        .catch(() => undefined)
+                    }}
+                  />
+                </div>
+                {voiceEvidence.length > 0 ? (
+                  <div className="mt-2 space-y-1" aria-label="已绑定语音 Evidence">
+                    {voiceEvidence.map(item => (
+                      <p key={item.binding.id} className="rounded-[6px] bg-[var(--color-surface-container)] px-2 py-1.5 text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                        {item.revision.text}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">可录音或上传音频，校正后作为视频证据保存。</p>
+                )}
                 <div className="my-3 border-t border-[var(--color-border)]" />
                 <div className="grid grid-cols-2 gap-y-2 text-[12px]">
                   <span className="text-[var(--color-text-tertiary)]">画布</span>

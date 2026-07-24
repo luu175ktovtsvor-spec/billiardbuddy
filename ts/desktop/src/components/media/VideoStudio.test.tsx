@@ -14,6 +14,12 @@ const mediaApiMock = vi.hoisted(() => ({
   deleteProject: vi.fn(),
   sourceUrl: vi.fn(() => 'http://127.0.0.1/source.mp4'),
 }))
+const voiceApiMock = vi.hoisted(() => ({
+  listEvidence: vi.fn(),
+  transcribe: vi.fn(),
+  revise: vi.fn(),
+  bind: vi.fn(),
+}))
 
 vi.mock('../../api/media', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/media')>()),
@@ -25,6 +31,7 @@ vi.mock('../../lib/desktopHost', () => ({
     shell: { openPath: vi.fn() },
   }),
 }))
+vi.mock('../../product/api/voice', () => ({ productVoiceApi: voiceApiMock }))
 
 import type { MediaTask, VideoStudioProject } from '../../api/media'
 import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
@@ -66,6 +73,7 @@ beforeEach(() => {
     ffmpeg: { available: true },
     ffprobe: { available: true },
   })
+  voiceApiMock.listEvidence.mockResolvedValue([])
   useMediaWorkbenchStore.setState({
     imageProjects: [],
     videoProjects: [project],

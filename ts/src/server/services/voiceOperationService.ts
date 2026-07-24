@@ -11,6 +11,7 @@ import {
   type TranscriptBinding,
   type TranscriptRevision,
   type VoiceConsumer,
+  type VoiceConsumerEvidence,
   type VoiceOperation,
 } from '../../../shared/contracts/voice.js'
 import { lock } from '../../utils/lockfile.js'
@@ -346,6 +347,21 @@ export class VoiceOperationService {
       await this.writeJson(this.transcriptPath(transcriptId), next)
       return next
     })
+  }
+
+  async listBound(consumer: VoiceConsumer): Promise<VoiceConsumerEvidence[]> {
+    await this.ensureDirs()
+    const evidence: VoiceConsumerEvidence[] = []
+    for (const entry of await readdir(this.transcriptsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^transcript_[a-f0-9]{32}\.json$/.test(entry.name)) continue
+      const transcript = await this.getTranscript(entry.name.slice(0, -5))
+      for (const binding of transcript.bindings) {
+        if (binding.consumer.kind !== consumer.kind || binding.consumer.id !== consumer.id) continue
+        const revision = transcript.revisions.find(candidate => candidate.id === binding.revision_id)
+        if (revision) evidence.push({ transcript, binding, revision })
+      }
+    }
+    return evidence.sort((left, right) => right.binding.created_at.localeCompare(left.binding.created_at))
   }
 
   async purgeExpired(): Promise<{ operations: number; transcripts: number }> {
