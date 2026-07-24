@@ -26,6 +26,14 @@ test('media API creates and lists image/video projects without invoking upstream
     body: JSON.stringify({ prompt: '会员日海报' }),
   })
   expect(image.status).toBe(201)
+  const imageBody = await image.json() as { project: Record<string, unknown> }
+  expect(imageBody.project).toMatchObject({
+    candidate_count: 3,
+    brief: { user_request: '会员日海报' },
+  })
+  expect(imageBody.project).not.toHaveProperty('model')
+  expect(imageBody.project).not.toHaveProperty('prompt')
+  expect(imageBody.project).not.toHaveProperty('count')
   const video = await route(handler, '/api/media/videos/projects', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -134,7 +142,7 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   const created = await route(handler, '/api/media/images/projects', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: '参考图海报', mode: 'edit', reference_images: [reference] }),
+    body: JSON.stringify({ user_request: '参考图海报', reference_images: [reference], reference_roles: ['subject'] }),
   })
   const createdBody = await created.json() as { project: { id: string; revision: number; reference_images: string[]; reference_image_count: number } }
   expect(createdBody.project.reference_images).toEqual([])
@@ -148,14 +156,17 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       revision: createdBody.project.revision,
-      prompt: '修改后的海报',
-      model: 'gpt-image-2',
+      user_request: '修改后的海报',
       size: '1024x1536',
-      count: 2,
     }),
   })
   expect(await updated.json()).toMatchObject({
-    project: { prompt: '修改后的海报', size: '1024x1536', count: 2, reference_image_count: 1 },
+    project: {
+      brief: { user_request: '修改后的海报' },
+      size: '1024x1536',
+      candidate_count: 3,
+      reference_image_count: 1,
+    },
   })
 
   const deleted = await route(handler, `/api/media/project/${createdBody.project.id}`, { method: 'DELETE' })
@@ -274,10 +285,8 @@ test('paid image submission and final render require the Electron-owned UI capab
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       revision: 0,
-      prompt: 'updated prompt',
-      model: 'gpt-image-2',
+      user_request: 'updated prompt',
       size: '1024x1024',
-      count: 1,
       confirm_unknown_retry: true,
     }),
   })
@@ -295,10 +304,8 @@ test('paid image submission and final render require the Electron-owned UI capab
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({
       revision: 0,
-      prompt: 'updated prompt',
-      model: 'gpt-image-2',
+      user_request: 'updated prompt',
       size: '1024x1024',
-      count: 1,
       confirm_unknown_retry: true,
     }),
   })).status).toBe(200)

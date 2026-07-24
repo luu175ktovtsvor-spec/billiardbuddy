@@ -22,6 +22,10 @@ test('registry provides the four neutral capabilities from one conservative sour
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.CHAT_TEXT_BODY_MAX_BYTES === 24 * 1024 * 1024)).toBe(true)
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.VISION_BODY_MAX_BYTES === 24 * 1024 * 1024)).toBe(true)
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.IMAGE_GENERATION_BODY_MAX_BYTES === 32 * 1024 * 1024)).toBe(true)
+  expect(PROVIDER_REGISTRY
+    .filter(entry => entry.capabilities.includes('ImageGeneration'))
+    .map(entry => entry.model_id))
+    .toEqual(['gpt-image-2', 'doubao-seedream-4-5-251128'])
   expect(textReasoningRegistryEntry()).toBe(providerRegistryEntryForCapability('TextReasoning'))
   expect(visualEvidenceRegistryEntry()).toBe(providerRegistryEntryForCapability('VisualEvidence'))
 })

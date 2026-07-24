@@ -170,19 +170,6 @@ export function imageSizeSupportedByModel(
     : (SEEDREAM_IMAGE_CANVAS_SIZES as readonly string[]).includes(size)
 }
 
-function validateImageModelSize(
-  value: { model: ImageGenerationModel, size: ImageCanvasSize },
-  context: z.RefinementCtx,
-): void {
-  if (!imageSizeSupportedByModel(value.model, value.size)) {
-    context.addIssue({
-      code: 'custom',
-      path: ['size'],
-      message: 'the selected image size is not supported by this model',
-    })
-  }
-}
-
 const mediaProjectBaseSchema = z.object({
   schema_version: z.literal(1),
   id: mediaIdSchema,
@@ -207,6 +194,10 @@ const mediaProjectBaseSchema = z.object({
 
 export const imageWorkbenchOutputSchema = z.object({
   id: mediaIdSchema,
+  /** All candidates from one paid request share this stable operation id. */
+  operation_id: mediaIdSchema.optional(),
+  /** Each candidate is an independent immutable branch in the project history. */
+  version_id: mediaIdSchema.optional(),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/png'),
   data_url: z.string().startsWith('data:image/').optional(),
   asset_path: z.string().startsWith('/api/media/assets/').optional(),
@@ -214,6 +205,33 @@ export const imageWorkbenchOutputSchema = z.object({
   revised_prompt: z.string().max(8000).optional(),
 }).refine(value => Boolean(value.data_url || value.asset_path || value.url), {
   message: 'an image output needs data_url, asset_path or url',
+})
+
+export const imageReferenceRoleSchema = z.enum([
+  'unclassified',
+  'subject',
+  'style',
+  'environment',
+  'brand',
+  'logo',
+  'qrcode',
+])
+
+export const imageProjectReferenceSchema = z.object({
+  asset_id: mediaIdSchema,
+  role: imageReferenceRoleSchema,
+  label: z.string().min(1).max(120).optional(),
+})
+
+export const imageCreativeBriefSchema = z.object({
+  schema_version: z.literal(1),
+  user_request: z.string().min(1).max(8000),
+  confirmed_facts: z.array(z.string().min(1).max(500)).max(40).default([]),
+  must_preserve: z.array(z.string().min(1).max(500)).max(40).default([]),
+  may_change: z.array(z.string().min(1).max(500)).max(40).default([]),
+  missing_information: z.array(z.string().min(1).max(500)).max(20).default([]),
+  exact_text: z.array(z.string().min(1).max(500)).max(40).default([]),
+  compiler_version: z.literal('image-brief-v1'),
 })
 
 export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
@@ -224,6 +242,10 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   prompt: z.string().min(1).max(8000),
   size: imageCanvasSizeSchema.default('1024x1024'),
   count: z.number().int().min(1).max(4).default(1),
+  /** New provider-neutral projects always request one three-candidate operation. */
+  candidate_count: z.literal(3).default(3),
+  brief: imageCreativeBriefSchema.optional(),
+  references: z.array(imageProjectReferenceSchema).max(8).default([]),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   reference_image_assets: z.array(referenceImageAssetNameSchema).max(8).optional(),
   reference_image_count: z.number().int().min(0).max(8).default(0),
@@ -284,7 +306,13 @@ const persistedMediaProjectFields = {
   assets: true,
   versions: true,
 } as const
-export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omit(persistedMediaProjectFields)
+export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omit({
+  ...persistedMediaProjectFields,
+  /** Provider routing and the compiled provider prompt stay server-owned. */
+  model: true,
+  prompt: true,
+  count: true,
+})
 export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields)
 export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
   publicImageWorkbenchProjectSchema,
@@ -335,21 +363,26 @@ export const videoRenderTaskResultSchema = z.object({
 
 export const createImageProjectInputSchema = z.object({
   title: z.string().min(1).max(160).optional(),
-  prompt: z.string().min(1).max(8000),
+  user_request: z.string().min(1).max(8000).optional(),
+  /** One-release compatibility for Core callers created before the Brief contract. */
+  prompt: z.string().min(1).max(8000).optional(),
   workspace_root: z.string().min(1).max(4096).optional(),
-  mode: z.enum(['generate', 'edit']).default('generate'),
-  model: imageGenerationModelSchema.default('gpt-image-2'),
   size: imageCanvasSizeSchema.default('1024x1024'),
-  count: z.number().int().min(1).max(4).default(1),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
+  reference_roles: z.array(imageReferenceRoleSchema).max(8).default([]),
 }).superRefine((value, context) => {
-  validateImageModelSize(value, context)
-  if (value.mode === 'edit' && value.reference_images.length === 0) {
+  if (!value.user_request?.trim() && !value.prompt?.trim()) {
     context.addIssue({
       code: 'custom',
-      path: ['reference_images'],
-      message: 'edit mode requires at least one reference image',
+      path: ['user_request'],
+      message: 'user_request is required',
     })
+  }
+  if (value.reference_images.length > 0 && value.reference_roles.length !== value.reference_images.length) {
+    context.addIssue({ code: 'custom', path: ['reference_roles'], message: 'every reference image needs one explicit role' })
+  }
+  if (value.reference_roles.includes('unclassified')) {
+    context.addIssue({ code: 'custom', path: ['reference_roles'], message: 'reference image roles must be confirmed' })
   }
   const totalBytes = value.reference_images.reduce(
     (total, image) => total + approximateDataUrlBytes(image),
@@ -362,7 +395,10 @@ export const createImageProjectInputSchema = z.object({
       message: 'reference images exceed the total size limit',
     })
   }
-})
+}).transform(value => ({
+  ...value,
+  user_request: (value.user_request ?? value.prompt)!,
+}))
 
 export const createVideoProjectInputSchema = z.object({
   title: z.string().min(1).max(160).optional(),
@@ -372,12 +408,10 @@ export const createVideoProjectInputSchema = z.object({
 
 export const updateImageProjectInputSchema = z.object({
   revision: z.number().int().nonnegative(),
-  prompt: z.string().min(1).max(8000),
-  model: imageGenerationModelSchema,
+  user_request: z.string().min(1).max(8000),
   size: imageCanvasSizeSchema,
-  count: z.number().int().min(1).max(4),
   confirm_unknown_retry: z.boolean().default(false),
-}).superRefine(validateImageModelSize)
+})
 
 export const submitImageProjectInputSchema = z.object({
   confirm_unknown_retry: z.boolean().default(false),
@@ -414,6 +448,9 @@ export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
 export type MediaOwner = z.infer<typeof mediaOwnerSchema>
 export type MediaAsset = z.infer<typeof mediaAssetSchema>
 export type MediaVersion = z.infer<typeof mediaVersionSchema>
+export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
+export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
+export type ImageProjectReference = z.infer<typeof imageProjectReferenceSchema>
 export type MediaDeletionReceipt = z.infer<typeof mediaDeletionReceiptSchema>
 export type PublicMediaDeletionReceipt = z.infer<typeof publicMediaDeletionReceiptSchema>
 export type VideoSource = z.infer<typeof videoSourceSchema>

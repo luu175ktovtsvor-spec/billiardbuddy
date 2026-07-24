@@ -85,6 +85,30 @@
         "VISION_BODY_MAX_BYTES": 25165824
       },
       "capabilities": [
+        "ImageGeneration"
+      ],
+      "compact_threshold": 12000,
+      "contract_version": 1,
+      "model_id": "doubao-seedream-4-5-251128",
+      "provider": "bytedance-ark",
+      "resume_evidence": {
+        "path": "relay/app.ts",
+        "status": "verified"
+      },
+      "verification_date": "2026-07-23",
+      "verified_context_window": 16000,
+      "worker_env_source": {
+        "slot_aliases": [],
+        "variable": "RELAY_SEEDREAM_MODEL"
+      }
+    },
+    {
+      "body_caps": {
+        "CHAT_TEXT_BODY_MAX_BYTES": 25165824,
+        "IMAGE_GENERATION_BODY_MAX_BYTES": 33554432,
+        "VISION_BODY_MAX_BYTES": 25165824
+      },
+      "capabilities": [
         "SpeechTranscription"
       ],
       "compact_threshold": 12000,
@@ -107,8 +131,8 @@
   "model_contract": {
     "contract_version": 1,
     "path": "ts/product-contracts/model-contract.json",
-    "registry_sha256": "314e2003defffd6f3649ec576f4c67c79fca5ef526fdfa68efdb581c85fddf97"
+    "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3"
   },
-  "registry_sha256": "314e2003defffd6f3649ec576f4c67c79fca5ef526fdfa68efdb581c85fddf97",
+  "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
   "schema_version": 1
 }

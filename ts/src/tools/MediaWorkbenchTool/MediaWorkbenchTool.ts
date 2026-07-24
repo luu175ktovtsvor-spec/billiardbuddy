@@ -6,10 +6,9 @@ import { lazySchema } from '../../utils/lazySchema.js'
 const inputSchema = lazySchema(() => z.discriminatedUnion('action', [
   z.strictObject({
     action: z.literal('create_image_project'),
-    prompt: z.string().min(1).max(8000),
+    user_request: z.string().min(1).max(8000),
     title: z.string().min(1).max(160).optional(),
     workspace_root: z.string().min(1).max(4096).optional(),
-    model: z.enum(['gpt-image-2', 'doubao-seedream-4-5-251128']).optional(),
     size: z.enum([
       '1024x1024', '1536x1024', '1024x1536',
       '2048x1152', '3840x2160', '2160x3840',
@@ -73,7 +72,6 @@ const imageStates = new Set(['draft', 'queued', 'generating', 'ready', 'failed']
 const videoStates = new Set(['draft', 'ready', 'rendering', 'complete', 'failed'])
 const taskKinds = new Set(['image.generate', 'video.probe', 'video.render'])
 const taskStatuses = new Set(['queued', 'running', 'committing', 'succeeded', 'failed', 'cancelled'])
-const imageModels = new Set(['gpt-image-2', 'doubao-seedream-4-5-251128'])
 const imageSizes = new Set([
   '1024x1024', '1536x1024', '1024x1536',
   '2048x1152', '3840x2160', '2160x3840',
@@ -110,10 +108,9 @@ function requestFor(input: z.infer<InputSchema>): { method: string; path: string
         method: 'POST',
         path: '/api/media/images/projects',
         body: {
-          prompt: input.prompt,
+          user_request: input.user_request,
           title: input.title,
           workspace_root: input.workspace_root,
-          model: input.model,
           size: input.size,
         },
       }
@@ -241,10 +238,18 @@ function sanitizeProject(project: Record<string, unknown>): Record<string, unkno
     setString(safeProject, 'title', project.title, 160)
     setInteger(safeProject, 'revision', project.revision, 0, Number.MAX_SAFE_INTEGER)
     setString(safeProject, 'mode', safeEnum(project.mode, new Set(['generate', 'edit'])), 16)
-    setString(safeProject, 'model', safeEnum(project.model, imageModels), 64)
-    setString(safeProject, 'prompt', project.prompt, 8000)
+    const brief = asRecord(project.brief)
+    if (brief) {
+      const safeBrief: Record<string, unknown> = {}
+      setString(safeBrief, 'user_request', brief.user_request, 8000)
+      for (const key of ['confirmed_facts', 'must_preserve', 'may_change', 'missing_information', 'exact_text']) {
+        const values = brief[key]
+        if (Array.isArray(values)) safeBrief[key] = values.filter(value => typeof value === 'string').slice(0, 40)
+      }
+      safeProject.brief = safeBrief
+    }
     setString(safeProject, 'size', safeEnum(project.size, imageSizes), 16)
-    setInteger(safeProject, 'count', project.count, 1, 4)
+    setInteger(safeProject, 'candidate_count', project.candidate_count, 3, 3)
     const referenceCount = safeInteger(project.reference_image_count, 0, 8)
       ?? (Array.isArray(project.reference_images) ? Math.min(project.reference_images.length, 8) : undefined)
     if (referenceCount !== undefined) safeProject.reference_image_count = referenceCount
@@ -349,7 +354,7 @@ export const MediaWorkbenchTool = buildTool({
   async prompt() {
     return `Use this tool to prepare BilliardBuddy image and video projects without replacing the coding-agent loop.
 
-- create_image_project prepares an image-generation draft. It does not spend image-generation credits or accept reference-image bytes; reference-image edits are created manually in the workbench.
+- create_image_project compiles the user's original request into a reviewable Brief and prepares a provider-neutral three-candidate draft. It does not spend image-generation credits or accept reference-image bytes; reference-image edits are created manually in the workbench.
 - create_video_project prepares a local editing project.
 - add_video_source reads local metadata with ffprobe and adds one source to the timeline.
 - update_video_timeline applies reviewed trim ranges and ordering to the draft; inspect the current project first so source ids, durations, and revision are accurate.

@@ -8,6 +8,8 @@ import {
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
   IMAGE_DATA_EGRESS_POLICY_REVISION,
+  imageGenerationModelSchema,
+  imageSizeSupportedByModel,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
   mediaDeletionReceiptSchema,
@@ -53,6 +55,8 @@ import {
   getQfGatewayUrl,
   qfGatewayConfigured,
 } from './qfGatewayProvider.js'
+import { providerRegistryEntriesForCapability } from '../../../../gateway/providerRegistry.js'
+import { compileImageBrief } from './imageBrief.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -189,6 +193,22 @@ function relayPollAfterSeconds(value: unknown, fallbackSeconds: number): number 
   const parsed = typeof value === 'number' ? value : Number(value)
   const seconds = Number.isFinite(parsed) ? Math.trunc(parsed) : fallbackSeconds
   return Math.max(1, Math.min(3600, seconds))
+}
+
+function routedImageModel(userRequest: string, size: ImageWorkbenchProject['size'], hasSubjectReference: boolean) {
+  const candidates = providerRegistryEntriesForCapability('ImageGeneration')
+    .map(entry => imageGenerationModelSchema.safeParse(entry.model_id))
+    .flatMap(result => result.success ? [result.data] : [])
+    .filter(model => imageSizeSupportedByModel(model, size))
+  if (candidates.length === 0) {
+    throw new MediaServiceError('当前 ImageGeneration 能力不支持这个图片尺寸', 400, 'IMAGE_SIZE_UNSUPPORTED')
+  }
+  if (candidates.length === 1) return candidates[0]!
+  if (!hasSubjectReference && /中文|海报|宣传图|活动图|招聘图|朋友圈|易拉宝/u.test(userRequest)) {
+    const seedream = candidates.find(model => model === 'doubao-seedream-4-5-251128')
+    if (seedream) return seedream
+  }
+  return candidates.find(model => model === 'gpt-image-2') ?? candidates[0]!
 }
 
 export class MediaServiceError extends Error {
@@ -617,6 +637,7 @@ export class MediaProjectService {
   ): Promise<MediaProject> {
     const owner = this.canonicalOwner(project)
     const seeds: Array<Omit<MediaAsset, 'version_id' | 'created_at' | 'byte_size' | 'content_hash'> & {
+      version_id?: string
       byte_size?: number
       content_hash?: `sha256:${string}`
     }> = []
@@ -636,6 +657,7 @@ export class MediaProjectService {
           if (fileName) {
             seeds.push({
               id: output.id,
+              version_id: output.version_id,
               role: 'result',
               storage: { kind: 'managed', locator: join(project.id, fileName) },
               mime_type: output.mime_type,
@@ -644,6 +666,7 @@ export class MediaProjectService {
         } else if (output.url) {
           seeds.push({
             id: output.id,
+            version_id: output.version_id,
             role: 'result',
             storage: { kind: 'remote', locator: output.url },
             mime_type: output.mime_type,
@@ -653,6 +676,7 @@ export class MediaProjectService {
           const digest = createHash('sha256').update(bytes).digest('hex')
           seeds.push({
             id: output.id,
+            version_id: output.version_id,
             role: 'result',
             storage: { kind: 'remote', locator: `legacy-inline:sha256:${digest}` },
             mime_type: output.mime_type,
@@ -697,7 +721,7 @@ export class MediaProjectService {
       const candidate = {
         ...seed,
         ...metadata,
-        version_id: versionId,
+        version_id: seed.version_id ?? versionId,
         created_at: project.updated_at,
       } as MediaAsset
       const existing = existingAssets.get(candidate.id)
@@ -730,9 +754,21 @@ export class MediaProjectService {
         id: versionId,
         parent_version_id: versions.at(-1)?.id,
         project_revision: project.revision,
-        asset_ids: seeds.map(seed => seed.id),
+        asset_ids: seeds.filter(seed => !seed.version_id).map(seed => seed.id),
         created_at: project.updated_at,
       })
+    }
+    if (project.kind === 'image') {
+      for (const output of project.outputs) {
+        if (!output.version_id || versions.some(version => version.id === output.version_id)) continue
+        versions.push({
+          id: output.version_id,
+          parent_version_id: versionId,
+          project_revision: project.revision,
+          asset_ids: [output.id],
+          created_at: project.updated_at,
+        })
+      }
     }
     return mediaProjectSchema.parse({ ...project, owner, assets, versions })
   }
@@ -961,6 +997,23 @@ export class MediaProjectService {
     }) as ImageWorkbenchProject
   }
 
+  private async migrateImageBrief(project: ImageWorkbenchProject): Promise<ImageWorkbenchProject> {
+    const referenceIds = (project.reference_image_assets ?? []).map(fileName => fileName.slice(0, fileName.lastIndexOf('.')))
+    const currentReferences = new Map(project.references.map(reference => [reference.asset_id, reference]))
+    const references = referenceIds.map(assetId => currentReferences.get(assetId) ?? {
+      asset_id: assetId,
+      role: 'unclassified' as const,
+    })
+    if (
+      project.brief
+      && references.length === project.references.length
+      && references.every((reference, index) => reference.asset_id === project.references[index]?.asset_id)
+    ) return project
+    const userRequest = project.brief?.user_request ?? project.prompt
+    const { brief } = compileImageBrief(userRequest, references)
+    return await this.saveProject({ ...project, brief, references }) as ImageWorkbenchProject
+  }
+
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)
@@ -1000,7 +1053,8 @@ export class MediaProjectService {
           project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
         }
       }
-      return project.kind === 'image' ? await this.migrateLegacyReferenceImages(project) : project
+      if (project.kind !== 'image') return project
+      return await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project))
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
@@ -1441,21 +1495,34 @@ export class MediaProjectService {
     const now = this.iso()
     const projectId = id('img')
     const referenceAssets = await this.persistReferenceImages(projectId, input.reference_images)
+    const references = referenceAssets.map((fileName, index) => ({
+      asset_id: fileName.slice(0, fileName.lastIndexOf('.')),
+      role: input.reference_roles[index]!,
+    }))
+    const { brief, providerPrompt } = compileImageBrief(input.user_request, references)
+    const routedModel = routedImageModel(
+      input.user_request,
+      input.size,
+      references.some(reference => reference.role === 'subject'),
+    )
     const project = imageWorkbenchProjectSchema.parse({
       schema_version: 1,
       id: projectId,
       kind: 'image',
-      title: input.title ?? defaultTitle(input.prompt, '新图片'),
+      title: input.title ?? defaultTitle(input.user_request, '新图片'),
       workspace_root: input.workspace_root,
       revision: 0,
       created_at: now,
       updated_at: now,
       state: 'draft',
-      mode: input.mode,
-      model: input.model,
-      prompt: input.prompt,
+      mode: referenceAssets.length > 0 ? 'edit' : 'generate',
+      model: routedModel,
+      prompt: providerPrompt,
       size: input.size,
-      count: input.count,
+      count: 3,
+      candidate_count: 3,
+      brief,
+      references,
       reference_images: [],
       reference_image_assets: referenceAssets,
       reference_image_count: input.reference_images.length,
@@ -1686,15 +1753,23 @@ export class MediaProjectService {
         )
       }
     }
+    const { brief, providerPrompt } = compileImageBrief(input.user_request, project.references)
+    const routedModel = routedImageModel(
+      input.user_request,
+      input.size,
+      project.references.some(reference => reference.role === 'subject'),
+    )
     return await this.saveProject({
       ...project,
       state: 'draft',
       task_id: undefined,
-      prompt: input.prompt,
-      title: defaultTitle(input.prompt, project.title),
-      model: input.model,
+      prompt: providerPrompt,
+      brief,
+      title: defaultTitle(input.user_request, project.title),
+      model: routedModel,
       size: input.size,
-      count: input.count,
+      count: 3,
+      candidate_count: 3,
       revision: project.revision + 1,
       error: undefined,
       error_code: undefined,
@@ -1790,6 +1865,8 @@ export class MediaProjectService {
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
     for (const item of body.data ?? []) {
       const outputId = id('out')
+      const operationId = task.operation_id ?? foundationId('op', task.project_id, task.kind, task.id)
+      const versionId = foundationId('ver', task.project_id, operationId, outputId)
       if (item.b64_json) {
         const mimeType = item.mime_type ?? 'image/png'
         const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
@@ -1799,6 +1876,8 @@ export class MediaProjectService {
         createdAssets.push(assetPath)
         outputs.push({
           id: outputId,
+          operation_id: operationId,
+          version_id: versionId,
           mime_type: mimeType,
           asset_path: `/api/media/assets/${task.project_id}/${fileName}`,
           revised_prompt: item.revised_prompt,
@@ -1806,6 +1885,8 @@ export class MediaProjectService {
       } else if (item.url) {
         outputs.push({
           id: outputId,
+          operation_id: operationId,
+          version_id: versionId,
           mime_type: 'image/png',
           url: item.url,
           revised_prompt: item.revised_prompt,

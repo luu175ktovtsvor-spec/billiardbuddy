@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto'
 import type {
   ProductTaskActivityKind,
   ProductTaskAttachmentSummary,
-  ProductTaskMediaDraft,
   ProductTaskThread,
   ProductTaskThreadEntry,
 } from '../../../shared/product/taskEvents.js'
@@ -16,8 +15,6 @@ import {
 type RecordValue = Record<string, unknown>
 
 const MAX_THREAD_TEXT_LENGTH = 100_000
-const MAX_MEDIA_TOOL_RESULT_JSON_LENGTH = 32_000
-const MEDIA_PROJECT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{7,79}$/
 
 function isRecord(value: unknown): value is RecordValue {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -82,85 +79,6 @@ function activityEntry(
   }
 }
 
-function mediaDraftEntry(
-  message: MessageEntry,
-  suffix: string,
-  draft: ProductTaskMediaDraft,
-): ProductTaskThreadEntry {
-  return {
-    id: entryId(message, suffix),
-    type: 'media_draft',
-    draft,
-    createdAt: createdAt(message),
-  }
-}
-
-function isMediaDraftCreationInput(value: unknown): boolean {
-  if (!isRecord(value)) return false
-  return value.action === 'create_image_project' || value.action === 'create_video_project'
-}
-
-/**
- * Tool names, inputs and IDs stay inside this server-only lookup.  A task
- * thread can later expose only a narrow draft reference after a matching
- * successful MediaWorkbench creation result arrives.
- */
-function mediaDraftCreationToolUseIds(messages: readonly MessageEntry[]): ReadonlySet<string> {
-  const ids = new Set<string>()
-  for (const message of messages) {
-    if (
-      (message.type !== 'assistant' && message.type !== 'tool_use') ||
-      !Array.isArray(message.content)
-    ) {
-      continue
-    }
-    for (const block of message.content) {
-      if (
-        !isRecord(block) ||
-        block.type !== 'tool_use' ||
-        block.name !== 'MediaWorkbench' ||
-        !isMediaDraftCreationInput(block.input) ||
-        typeof block.id !== 'string' ||
-        block.id.length === 0 ||
-        block.id.length > 512
-      ) {
-        continue
-      }
-      ids.add(block.id)
-    }
-  }
-  return ids
-}
-
-function parseMediaDraftToolResult(value: unknown): ProductTaskMediaDraft | null {
-  let result = value
-  if (typeof result === 'string') {
-    if (result.length === 0 || result.length > MAX_MEDIA_TOOL_RESULT_JSON_LENGTH) return null
-    try {
-      result = JSON.parse(result)
-    } catch {
-      return null
-    }
-  }
-  if (!isRecord(result) || !isRecord(result.project)) return null
-
-  const project = result.project
-  if (
-    typeof project.id !== 'string' ||
-    !MEDIA_PROJECT_ID_PATTERN.test(project.id) ||
-    (project.kind !== 'image' && project.kind !== 'video') ||
-    project.state !== 'draft'
-  ) {
-    return null
-  }
-
-  return {
-    projectId: project.id,
-    kind: project.kind,
-    state: 'draft',
-  }
-}
-
 function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
   if (typeof message.content === 'string') {
     const text = visibleText(message.content)
@@ -209,10 +127,7 @@ function userEntries(message: MessageEntry): ProductTaskThreadEntry[] {
     : []
 }
 
-function toolResultEntries(
-  message: MessageEntry,
-  mediaDraftToolUseIds: ReadonlySet<string>,
-): ProductTaskThreadEntry[] {
+function toolResultEntries(message: MessageEntry): ProductTaskThreadEntry[] {
   if (Array.isArray(message.content)) {
     const entries: ProductTaskThreadEntry[] = []
     for (const [index, block] of message.content.entries()) {
@@ -223,14 +138,6 @@ function toolResultEntries(
         'tool',
         block.is_error === true ? 'failed' : 'completed',
       ))
-      if (
-        block.is_error !== true &&
-        typeof block.tool_use_id === 'string' &&
-        mediaDraftToolUseIds.has(block.tool_use_id)
-      ) {
-        const draft = parseMediaDraftToolResult(block.content)
-        if (draft) entries.push(mediaDraftEntry(message, `media-draft:${index}`, draft))
-      }
     }
     return entries
   }
@@ -271,7 +178,6 @@ export function projectSessionTranscriptForProductTask(
   taskId: string,
   messages: readonly MessageEntry[],
 ): ProductTaskThread {
-  const mediaDraftToolUseIds = mediaDraftCreationToolUseIds(messages)
   const entries: ProductTaskThreadEntry[] = []
   for (const message of messages) {
     if (message.type === 'user') {
@@ -283,7 +189,7 @@ export function projectSessionTranscriptForProductTask(
       continue
     }
     if (message.type === 'tool_result') {
-      entries.push(...toolResultEntries(message, mediaDraftToolUseIds))
+      entries.push(...toolResultEntries(message))
     }
   }
   return { taskId, entries }

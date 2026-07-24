@@ -43,10 +43,19 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
     updated_at: '2026-07-18T00:00:00.000Z',
     state: 'draft',
     mode: 'generate',
-    model: 'gpt-image-2',
-    prompt,
     size: '1024x1024',
-    count: 1,
+    candidate_count: 3,
+    brief: {
+      schema_version: 1,
+      user_request: prompt,
+      confirmed_facts: [],
+      must_preserve: [],
+      may_change: [],
+      missing_information: [],
+      exact_text: [],
+      compiler_version: 'image-brief-v1',
+    },
+    references: [],
     reference_images: [],
     reference_image_count: 0,
     outputs: [],
@@ -97,7 +106,7 @@ describe('mediaWorkbenchStore', () => {
     mediaApiMock.createImageProject.mockResolvedValue({ project: newer })
 
     const firstLoad = useMediaWorkbenchStore.getState().loadProjects('image')
-    await useMediaWorkbenchStore.getState().createImage({ prompt: newer.prompt })
+    await useMediaWorkbenchStore.getState().createImage({ user_request: newer.brief!.user_request })
     expect(useMediaWorkbenchStore.getState()).toMatchObject({
       imageProjects: [newer],
       activeImageId: newer.id,
@@ -135,7 +144,7 @@ describe('mediaWorkbenchStore', () => {
   it('saves an editable image draft and selects the next project after deletion', async () => {
     const first = image('img_first001')
     const second = image('img_second01', '第二张')
-    const edited = { ...first, prompt: '修改后的海报' }
+    const edited = { ...first, brief: { ...first.brief!, user_request: '修改后的海报' } }
     const saved = { ...edited, revision: 1 }
     mediaApiMock.updateImageProject.mockResolvedValue({ project: saved })
     mediaApiMock.deleteProject.mockResolvedValue(undefined)
@@ -144,10 +153,8 @@ describe('mediaWorkbenchStore', () => {
     await useMediaWorkbenchStore.getState().saveImageDraft(edited)
     expect(mediaApiMock.updateImageProject).toHaveBeenCalledWith(first.id, {
       revision: edited.revision,
-      prompt: edited.prompt,
-      model: edited.model,
+      user_request: edited.brief.user_request,
       size: edited.size,
-      count: edited.count,
       confirm_unknown_retry: false,
     })
 
