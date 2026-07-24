@@ -391,6 +391,10 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：用户从 Brief 和参考图获得三候选，继续编辑、局部重绘、放大、文字排版、回滚和导出。
 - 做法：迁移第 6.2 节编排；所有生成经 provider-neutral ImageGeneration，所有结果进入 MediaProject；移除 renderer 对 model/provider 的直接选择和提交。
 - 验收：三候选属于一个 operation；base/mask/version 校验；精确文字可控；不产生聊天媒体草稿。
+- 当前落点：`e2f4be59…` 将用户请求编译为 provider-neutral Brief，为参考图显式标注 subject/style/composition/palette 等作用，并将固定三候选绑定到同一 operation。Renderer 不再选择 provider、model 或候选数；GPT Image 与豆包 Seedream 均为正式 `ImageGeneration` 注册项，由服务端按能力路由。
+- 版本工作流：`73c9e88a…` 以显式 base version 创建编辑或局部重绘，局部重绘只接受与基础图同尺寸的 PNG 蒙版；生成、编辑、局部重绘、2×/3×/4× 本机放大和确定性文字图层全部写入不可变 Version 分支。`current_version_id` 只移动当前指针，撤销、重做和回滚不删除后续版本；导出始终按显式 Version 读取受管资产。
+- 文字与权限：Brief 的 `exact_text` 必须与独立文字图层精确相等，子串不能冒充；付费图片操作只能由 Electron Main 注入一次性 UI capability。公开工作台合同只暴露 Version 历史和当前指针，不暴露 provider、model、内部 operation、本机路径或旧 outputs；旧 outputs 仅作一版只读迁移兼容，留待模块 22/23 按支持期物理收口。
+- 验收证据：服务端全量 1343 项通过、1 项显式 live skip；桌面端 139 个测试文件共 909 项通过，类型检查和生产构建通过；Electron 30 个文件共 210 项通过并完成 Main/preload 构建。`check:product-contracts` 仍只命中施工前已登记的模块 23 `autodream-teammem` consumer 缺口。
 
 #### 模块 14：图片可靠性与容量
 
