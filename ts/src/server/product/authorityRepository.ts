@@ -48,7 +48,7 @@ export type WorkspaceRecord = {
 export type AuthorityFile = {
   version: 1
   /** v1 files predate the additive workspace capability maps. */
-  authority_schema_revision: 1 | 2 | 3
+  authority_schema_revision: 1 | 2 | 3 | 4
   revision: number
   event_sequence: number
   tasks: Record<string, unknown>
@@ -83,6 +83,7 @@ export type AuthorityFile = {
   dispatch_records: Record<string, unknown>
   task_events: Record<string, unknown>
   attachment_bindings: Record<string, unknown>
+  review_comments: Record<string, unknown>
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -119,6 +120,7 @@ function empty(): AuthorityFile {
     dispatch_records: Object.create(null),
     task_events: Object.create(null),
     attachment_bindings: Object.create(null),
+    review_comments: Object.create(null),
   }
 }
 
@@ -242,9 +244,43 @@ function validateRunApproval(value: unknown): void {
   if (approval.resolution_reason !== undefined && ((approval.reviewer === 'user') !== (approval.resolution_reason === 'user_decision'))) invalid()
 }
 
+function validateReviewComment(value: unknown, key: string): void {
+  const comment = object(value)
+  exactKeys(comment, ['comment_id', 'task_id', 'file_ref', 'side', 'line', 'body', 'created_at'])
+  const fileRef = object(comment.file_ref)
+  exactKeys(fileRef, ['file_id', 'path', 'revision'])
+  const filePath = fileRef.path
+  const expectedFileId = typeof comment.task_id === 'string' && typeof filePath === 'string'
+    ? `file_${createHash('sha256').update(`${comment.task_id}\0${filePath}`).digest('hex').slice(0, 20)}`
+    : ''
+  if (
+    comment.comment_id !== key ||
+    !/^comment_[a-f0-9]{20}$/.test(key) ||
+    !requiredString(comment.task_id) ||
+    !/^file_[a-f0-9]{20}$/.test(fileRef.file_id as string) ||
+    fileRef.file_id !== expectedFileId ||
+    typeof filePath !== 'string' ||
+    filePath.length < 1 ||
+    filePath.length > 4_096 ||
+    filePath.startsWith('/') ||
+    filePath.includes('\\') ||
+    filePath.split('/').some(segment => !segment || segment === '.' || segment === '..') ||
+    !/^rev_[a-f0-9]{32}$/.test(fileRef.revision as string) ||
+    !['old', 'new'].includes(comment.side as string) ||
+    !Number.isSafeInteger(comment.line) ||
+    (comment.line as number) < 1 ||
+    (comment.line as number) > 10_000_000 ||
+    typeof comment.body !== 'string' ||
+    !comment.body.trim() ||
+    comment.body.length > 4_000 ||
+    !isTimestamp(comment.created_at)
+  ) invalid()
+  try { assertAuthorityMapKey(comment.task_id) } catch { invalid() }
+}
+
 function validate(file: AuthorityFile): AuthorityFile {
   if (file.version !== 1 || !Number.isSafeInteger(file.revision) || file.revision < 0 || !Number.isSafeInteger(file.event_sequence) || file.event_sequence < 0) invalid()
-  if (file.authority_schema_revision !== 1 && file.authority_schema_revision !== 2 && file.authority_schema_revision !== 3) throw new Error('UNSUPPORTED_SCHEMA')
+  if (![1, 2, 3, 4].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
   const maps = ['tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'] as const
   for (const name of maps) map(file[name])
   if (file.authority_schema_revision >= 2) {
@@ -254,7 +290,7 @@ function validate(file: AuthorityFile): AuthorityFile {
     for (const [key, value] of Object.entries(file.composer_drafts)) { assertAuthorityMapKey(key); validateDraft(value, key) }
     for (const [key, value] of Object.entries(file.task_attachments)) { assertAuthorityMapKey(key); validateAttachment(value, key) }
     for (const [key, value] of Object.entries(file.conversation_lineages)) { assertAuthorityMapKey(key); validateLineage(value, key) }
-    if (file.authority_schema_revision === 3) {
+    if (file.authority_schema_revision >= 3) {
       for (const name of ['thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings'] as const) map(file[name])
       for (const [key, value] of Object.entries(file.thread_entries)) {
         const entry = object(value); assertAuthorityMapKey(key)
@@ -269,6 +305,13 @@ function validate(file: AuthorityFile): AuthorityFile {
         if (!Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || !requiredString(event.task_id) || !requiredString(event.run_id) || event.type !== 'user_text' || !requiredString(event.entry_id) || typeof event.text !== 'string' || !Array.isArray(event.attachment_ids) || event.attachment_ids.some(id => !requiredString(id)) || (event.reference_entry_ids !== undefined && (!Array.isArray(event.reference_entry_ids) || event.reference_entry_ids.length > 8 || new Set(event.reference_entry_ids).size !== event.reference_entry_ids.length || event.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id)))) || !isTimestamp(event.created_at)) invalid()
       }
       for (const [key, value] of Object.entries(file.attachment_bindings)) { const binding = object(value); assertAuthorityMapKey(key); exactKeys(binding, ['attachment_id', 'task_id', 'run_id', 'entry_id']); if (binding.attachment_id !== key || !requiredString(binding.task_id) || !requiredString(binding.run_id) || !requiredString(binding.entry_id)) invalid() }
+    }
+    if (file.authority_schema_revision >= 4) {
+      map(file.review_comments)
+      for (const [key, value] of Object.entries(file.review_comments)) {
+        validateReviewComment(value, key)
+        if (!file.tasks[(value as { task_id: string }).task_id]) invalid()
+      }
     }
   }
   for (const [key, value] of Object.entries(file.tasks)) { assertAuthorityMapKey(key); taskValue(value) }
@@ -323,12 +366,15 @@ export class ProductTaskAuthorityRepository {
       const parsed = JSON.parse(await fs.readFile(this.authorityPath, 'utf8')) as Partial<AuthorityFile>
       const root = object(parsed)
       const revision = root.authority_schema_revision
-      if (revision !== undefined && revision !== 1 && revision !== 2 && revision !== 3) throw new Error('UNSUPPORTED_SCHEMA')
-      if (revision === 3) {
+      if (revision !== undefined && ![1, 2, 3, 4].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
+      if (revision === 4) {
+        exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments'])
+      } else if (revision === 3) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings'])
+        Object.assign(root, { review_comments: Object.create(null) })
       } else if (revision === 2) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages'])
-        Object.assign(root, { thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null) })
+        Object.assign(root, { thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null), review_comments: Object.create(null) })
       } else {
         exactKeys(root, ['version', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'], ['authority_schema_revision'])
         // Capability-reader projection only: never write this shape on reads.
@@ -336,7 +382,7 @@ export class ProductTaskAuthorityRepository {
           authority_schema_revision: 1,
           workspaces: Object.create(null), task_scopes: Object.create(null), composer_drafts: Object.create(null),
           task_attachments: Object.create(null), conversation_lineages: Object.create(null),
-          thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null),
+          thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null), review_comments: Object.create(null),
         })
       }
       return validate(root as AuthorityFile)
@@ -385,6 +431,17 @@ export class ProductTaskAuthorityRepository {
       if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }
       file.revision += 1
       return { file: await this.write(file, false, true), result: raw as T }
+    })
+  }
+
+  /** BB-10B review-comment transaction: preserves prior schemas until a comment is actually written. */
+  async transactReview<T>(mutate: (file: AuthorityFile) => T | { changed: false; value: T }): Promise<{ file: AuthorityFile; result: T }> {
+    return this.lock(async () => {
+      const file = await this.read()
+      const raw = mutate(file)
+      if (raw && typeof raw === 'object' && 'changed' in raw && raw.changed === false) return { file, result: raw.value }
+      file.revision += 1
+      return { file: await this.write(file, false, false, true), result: raw as T }
     })
   }
 
@@ -514,21 +571,29 @@ export class ProductTaskAuthorityRepository {
     })
   }
 
-  private async write(file: AuthorityFile, upgradeToCapabilities = false, upgradeToSubmit = false): Promise<AuthorityFile> {
+  private async write(
+    file: AuthorityFile,
+    upgradeToCapabilities = false,
+    upgradeToSubmit = false,
+    upgradeToReview = false,
+  ): Promise<AuthorityFile> {
     // Rev1 remains byte-compatible for legacy/BB-02A-only writes. Only a real
     // BB-02B entity transaction may persist the additive capability maps.
     if (upgradeToSubmit && file.authority_schema_revision < 3) file.authority_schema_revision = 3
+    if (upgradeToReview && file.authority_schema_revision < 4) file.authority_schema_revision = 4
     if (upgradeToCapabilities && file.authority_schema_revision === 1) file.authority_schema_revision = 2
     if (file.authority_schema_revision >= 2) validate(file)
     await this.deps.beforeWrite?.()
     const output: AuthorityFile | Record<string, unknown> = file.authority_schema_revision === 1 && !upgradeToCapabilities
       ? (() => {
-          const { authority_schema_revision: _revision, workspaces: _workspaces, task_scopes: _scopes, composer_drafts: _drafts, task_attachments: _attachments, conversation_lineages: _lineages, thread_entries: _entries, task_runs: _runs, dispatch_records: _dispatches, task_events: _events, attachment_bindings: _attachmentBindings, ...legacy } = file
+          const { authority_schema_revision: _revision, workspaces: _workspaces, task_scopes: _scopes, composer_drafts: _drafts, task_attachments: _attachments, conversation_lineages: _lineages, thread_entries: _entries, task_runs: _runs, dispatch_records: _dispatches, task_events: _events, attachment_bindings: _attachmentBindings, review_comments: _reviewComments, ...legacy } = file
           return legacy
         })()
       : file.authority_schema_revision === 2 && !upgradeToSubmit
-        ? (() => { const { thread_entries: _entries, task_runs: _runs, dispatch_records: _dispatches, task_events: _events, attachment_bindings: _attachmentBindings, ...capabilities } = file; return capabilities })()
-        : file
+        ? (() => { const { thread_entries: _entries, task_runs: _runs, dispatch_records: _dispatches, task_events: _events, attachment_bindings: _attachmentBindings, review_comments: _reviewComments, ...capabilities } = file; return capabilities })()
+        : file.authority_schema_revision === 3 && !upgradeToReview
+          ? (() => { const { review_comments: _reviewComments, ...submit } = file; return submit })()
+          : file
     await fs.mkdir(path.dirname(this.authorityPath), { recursive: true })
     const temporaryPath = `${this.authorityPath}.${process.pid}.${randomUUID()}.tmp`
     const handle = await fs.open(temporaryPath, 'wx', 0o600)

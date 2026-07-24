@@ -33,7 +33,7 @@ import { handleProductDataEgressConsentApi } from './productDataEgressConsent.js
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
-  'getStatus' | 'getTree' | 'getFile' | 'getDiff'
+  'getStatus' | 'getTree' | 'getFile' | 'getDiff' | 'getComments' | 'createComment'
 >
 
 function authorityPath(): string {
@@ -476,6 +476,7 @@ async function handleTaskReviewRoute(
   taskId: string,
   resource?: string,
 ): Promise<Response> {
+  if (resource === 'comments') return handleTaskReviewCommentsRoute(review, req, url, taskId)
   if (req.method !== 'GET') return methodNotAllowed(req.method)
 
   switch (resource) {
@@ -494,6 +495,56 @@ async function handleTaskReviewRoute(
     default:
       throw ApiError.notFound('未知任务审阅资源')
   }
+}
+
+async function handleTaskReviewCommentsRoute(
+  review: ProductTaskReviewApi,
+  req: Request,
+  url: URL,
+  taskId: string,
+): Promise<Response> {
+  if (req.method === 'GET') {
+    return Response.json(await review.getComments(
+      taskId,
+      requireReviewPath(url),
+      url.searchParams.get('revision') ?? undefined,
+    ))
+  }
+  if (req.method !== 'POST') return methodNotAllowed(req.method)
+
+  const input = await readJson<Record<string, unknown>>(req)
+  if (!assertPlainExactObject(input, ['file_ref', 'side', 'line', 'body', 'client_operation_id'])) {
+    throw ApiError.badRequest('批注参数无效')
+  }
+  const fileRef = input.file_ref
+  if (
+    !fileRef ||
+    typeof fileRef !== 'object' ||
+    Array.isArray(fileRef) ||
+    !assertPlainExactObject(fileRef as Record<string, unknown>, ['file_id', 'path', 'revision']) ||
+    typeof (fileRef as Record<string, unknown>).file_id !== 'string' ||
+    typeof (fileRef as Record<string, unknown>).path !== 'string' ||
+    typeof (fileRef as Record<string, unknown>).revision !== 'string' ||
+    (input.side !== 'old' && input.side !== 'new') ||
+    !Number.isSafeInteger(input.line) ||
+    (input.line as number) < 1 ||
+    typeof input.body !== 'string' ||
+    typeof input.client_operation_id !== 'string'
+  ) throw ApiError.badRequest('批注参数无效')
+  try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('批注操作标识无效') }
+  const result = await review.createComment({
+    taskId,
+    fileRef: {
+      fileId: (fileRef as Record<string, string>).file_id,
+      path: (fileRef as Record<string, string>).path,
+      revision: (fileRef as Record<string, string>).revision,
+    },
+    side: input.side,
+    line: input.line as number,
+    body: input.body,
+    clientOperationId: input.client_operation_id,
+  })
+  return Response.json(result, { status: result.outcome === 'accepted' ? 201 : 200 })
 }
 
 function requireReviewPath(url: URL): string {

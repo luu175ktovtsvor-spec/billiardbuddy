@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import type {
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
+  ProductTaskReviewCommentMutation,
+  ProductTaskReviewComments,
   ProductTaskReviewStatus,
   ProductTaskReviewTree,
   WorkspaceFileRef,
@@ -25,7 +27,10 @@ const MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES = 16 * 1024 * 1024
 const VCS_METADATA_PATH_SEGMENTS = new Set(['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'])
 
-type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId' | 'requireWorkspaceCapability'>
+type TaskResolver = Pick<
+  ProductTaskService,
+  'resolveCoreSessionId' | 'requireWorkspaceCapability' | 'listReviewComments' | 'createReviewComment'
+>
 type CoreWorkDirResolver = (sessionId: string) => Promise<string | undefined>
 type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff' | 'getFileRevision'> & {
   readFile(
@@ -119,6 +124,63 @@ export class ProductTaskReviewService {
       return staleDiff(taskId, filePath, result.after, fileRef)
     }
     return projectDiff(taskId, result.diff, fileRef)
+  }
+
+  async getComments(
+    taskId: string,
+    requestedPath: string,
+    expectedRevision: string | undefined,
+  ): Promise<ProductTaskReviewComments> {
+    const filePath = normalizeReviewPath(requestedPath, { required: true })
+    const fileRef = expectedFileRef(taskId, filePath, expectedRevision)
+    await this.requireCurrentDiff(taskId, fileRef)
+    return {
+      taskId,
+      fileRef,
+      comments: await this.tasks.listReviewComments(taskId, fileRef),
+    }
+  }
+
+  async createComment(input: {
+    taskId: string
+    fileRef: WorkspaceFileRef
+    side: 'old' | 'new'
+    line: number
+    body: string
+    clientOperationId: string
+  }): Promise<ProductTaskReviewCommentMutation> {
+    const filePath = normalizeReviewPath(input.fileRef.path, { required: true })
+    const fileRef = expectedFileRef(input.taskId, filePath, input.fileRef.revision)
+    if (input.fileRef.fileId !== fileRef.fileId) throw ApiError.badRequest('审阅文件标识无效')
+    if ((input.side !== 'old' && input.side !== 'new') || !Number.isSafeInteger(input.line) || input.line < 1) {
+      throw ApiError.badRequest('批注行号无效')
+    }
+    const body = input.body.trim()
+    if (!body || body.length > 4_000) throw ApiError.badRequest('批注内容无效')
+    const diff = await this.requireCurrentDiff(input.taskId, fileRef)
+    if (!diffContainsLine(diff, input.side, input.line)) {
+      throw ApiError.badRequest('批注行号不在当前差异范围内')
+    }
+    return this.tasks.createReviewComment({
+      taskId: input.taskId,
+      fileRef,
+      side: input.side,
+      line: input.line,
+      body,
+      clientOperationId: input.clientOperationId,
+    })
+  }
+
+  private async requireCurrentDiff(
+    taskId: string,
+    fileRef: WorkspaceFileRef,
+  ): Promise<string> {
+    const diff = await this.getDiff(taskId, fileRef.path, fileRef.revision)
+    if (diff.state === 'stale') throw new ApiError(409, '文件版本已变化，请刷新后重试', 'AUTHORITY_CONFLICT')
+    if (diff.state !== 'ok' || typeof diff.diff !== 'string' || diff.fileRef?.revision !== fileRef.revision) {
+      throw new ApiError(409, '当前文件没有可批注的差异', 'AUTHORITY_CONFLICT')
+    }
+    return diff.diff
   }
 
   private async withTaskWorkspace<T>(
@@ -310,6 +372,53 @@ function fileId(taskId: string, filePath: string): string {
     .update(`${taskId}\0${filePath}`)
     .digest('hex')
     .slice(0, 20)}`
+}
+
+function expectedFileRef(
+  taskId: string,
+  filePath: string,
+  value: string | undefined,
+): WorkspaceFileRef {
+  const revision = normalizeExpectedRevision(value)
+  if (!revision) throw ApiError.badRequest('审阅文件 revision 必填')
+  return { fileId: fileId(taskId, filePath), path: filePath, revision }
+}
+
+function diffContainsLine(diff: string, side: 'old' | 'new', targetLine: number): boolean {
+  let oldLine = 0
+  let newLine = 0
+  let inHunk = false
+  for (const value of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(value)
+    if (hunk) {
+      oldLine = Number.parseInt(hunk[1]!, 10)
+      newLine = Number.parseInt(hunk[2]!, 10)
+      inHunk = true
+      continue
+    }
+    if (!inHunk) continue
+    if (value.startsWith('diff --git ') || value.startsWith('@@ ')) {
+      inHunk = false
+      continue
+    }
+    if (value.startsWith('\\ No newline at end of file')) continue
+    if (value.startsWith('-')) {
+      if (side === 'old' && oldLine === targetLine) return true
+      oldLine += 1
+      continue
+    }
+    if (value.startsWith('+')) {
+      if (side === 'new' && newLine === targetLine) return true
+      newLine += 1
+      continue
+    }
+    if (value.startsWith(' ')) {
+      if ((side === 'old' ? oldLine : newLine) === targetLine) return true
+      oldLine += 1
+      newLine += 1
+    }
+  }
+  return false
 }
 
 function staleFile(

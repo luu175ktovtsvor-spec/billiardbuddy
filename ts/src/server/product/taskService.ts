@@ -31,6 +31,12 @@ import {
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
+import { assertAuthorityMapKey } from '../../../shared/product/authority.js'
+import type {
+  ProductTaskReviewComment,
+  ProductTaskReviewCommentMutation,
+  WorkspaceFileRef,
+} from '../../../shared/product/taskReview.js'
 import type { AgentWorkerApprovalReviewFacts } from '../../../shared/product/agentWorker.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
@@ -630,6 +636,32 @@ function authorityPublicTask(value: unknown): ProductTaskRecord {
   const task = record.task && typeof record.task === 'object' ? record.task as ProductTaskRecord : record as ProductTaskRecord
   const { coreSessionId: _coreSessionId, binding: _binding, ...publicTask } = task as ProductTaskRecord & { coreSessionId?: unknown; binding?: unknown }
   return { ...publicTask, revision: typeof publicTask.revision === 'number' ? publicTask.revision : 0 } as ProductTaskRecord
+}
+
+type StoredReviewComment = {
+  comment_id: string
+  task_id: string
+  file_ref: { file_id: string; path: string; revision: string }
+  side: 'old' | 'new'
+  line: number
+  body: string
+  created_at: string
+}
+
+function publicReviewComment(value: StoredReviewComment): ProductTaskReviewComment {
+  return {
+    commentId: value.comment_id,
+    taskId: value.task_id,
+    fileRef: {
+      fileId: value.file_ref.file_id,
+      path: value.file_ref.path,
+      revision: value.file_ref.revision,
+    },
+    side: value.side,
+    line: value.line,
+    body: value.body,
+    createdAt: value.created_at,
+  }
 }
 
 function normalizeProductTaskStore(value: unknown): ProductTaskStore {
@@ -1829,7 +1861,7 @@ export class ProductTaskService {
         let next: ProductTaskRecord
         if (input.action === 'begin') {
           if (stored.task.lifecycle !== 'archived' || blockers.length) return reject(blockers)
-          const cleanup_plan_hash = createHash('sha256').update(JSON.stringify({ task_id: taskId, thread_entries: Object.values(state.thread_entries).filter((entry: any) => entry.task_id === taskId).map((entry: any) => entry.entry_id).sort(), task_events: Object.values(state.task_events).filter((event: any) => event.task_id === taskId).map((event: any) => event.event_sequence).sort() })).digest('hex')
+          const cleanup_plan_hash = createHash('sha256').update(JSON.stringify({ task_id: taskId, thread_entries: Object.values(state.thread_entries).filter((entry: any) => entry.task_id === taskId).map((entry: any) => entry.entry_id).sort(), task_events: Object.values(state.task_events).filter((event: any) => event.task_id === taskId).map((event: any) => event.event_sequence).sort(), review_comments: Object.values(state.review_comments).filter((comment: any) => comment.task_id === taskId).map((comment: any) => comment.comment_id).sort() })).digest('hex')
           const prepared = { phase: 'deleting' as const, fencing_token: randomUUID(), cleanup_plan_hash, started_at: now }
           const failedItems = await this.runLifecycleCleanup('prepareCleanup', taskId, input.expected_revision, prepared.fencing_token)
           next = { ...stored.task, lifecycle: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', actions: [], updatedAt: now, revision: input.expected_revision + 1, deletion: { ...prepared, phase: failedItems.length ? 'delete_failed_pre_purge' : 'deleting', ...(failedItems.length ? { failed_items: failedItems } : {}) } }
@@ -1861,6 +1893,7 @@ export class ProductTaskService {
           for (const [key, event] of Object.entries(state.task_events)) if ((event as { task_id?: string }).task_id === taskId) delete state.task_events[key]
           for (const [key, run] of Object.entries(state.task_runs)) if ((run as { task_id?: string }).task_id === taskId) { delete state.task_runs[key]; delete state.dispatch_records[key] }
           for (const [key, binding] of Object.entries(state.attachment_bindings)) if ((binding as { task_id?: string }).task_id === taskId) delete state.attachment_bindings[key]
+          for (const [key, comment] of Object.entries(state.review_comments)) if ((comment as { task_id?: string }).task_id === taskId) delete state.review_comments[key]
           for (const [key, lineage] of Object.entries(state.conversation_lineages)) if ((lineage as { product_task_id?: string }).product_task_id === taskId) delete state.conversation_lineages[key]
           delete state.task_scopes[taskId]
           for (const [key, draft] of Object.entries(state.composer_drafts)) if ((draft as { target_task_id?: string }).target_task_id === taskId) delete state.composer_drafts[key]
@@ -1952,6 +1985,123 @@ export class ProductTaskService {
    */
   async getTask(taskId: string): Promise<ProductTaskRecord> {
     return this.withStoreLock(() => this.requireTask(taskId))
+  }
+
+  async listReviewComments(
+    taskId: string,
+    fileRef: WorkspaceFileRef,
+  ): Promise<ProductTaskReviewComment[]> {
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    if (!(file.tasks[taskId] as { task?: unknown } | undefined)?.task) throw ApiError.notFound('任务不存在')
+    return Object.values(file.review_comments)
+      .map(value => publicReviewComment(value as StoredReviewComment))
+      .filter(comment => (
+        comment.taskId === taskId &&
+        comment.fileRef.fileId === fileRef.fileId &&
+        comment.fileRef.path === fileRef.path &&
+        comment.fileRef.revision === fileRef.revision
+      ))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.commentId.localeCompare(right.commentId))
+  }
+
+  async createReviewComment(input: {
+    taskId: string
+    fileRef: WorkspaceFileRef
+    side: 'old' | 'new'
+    line: number
+    body: string
+    clientOperationId: string
+  }): Promise<ProductTaskReviewCommentMutation> {
+    try {
+      assertAuthorityMapKey(input.clientOperationId)
+    } catch {
+      throw ApiError.badRequest('批注操作标识无效')
+    }
+    if (
+      input.clientOperationId.length > 256 ||
+      !/^file_[a-f0-9]{20}$/.test(input.fileRef.fileId) ||
+      !/^rev_[a-f0-9]{32}$/.test(input.fileRef.revision) ||
+      !input.fileRef.path ||
+      input.fileRef.path.length > 4_096 ||
+      input.fileRef.path.startsWith('/') ||
+      input.fileRef.path.includes('\\') ||
+      input.fileRef.path.split('/').some(segment => !segment || segment === '.' || segment === '..') ||
+      (input.side !== 'old' && input.side !== 'new') ||
+      !Number.isSafeInteger(input.line) ||
+      input.line < 1 ||
+      input.line > 10_000_000 ||
+      !input.body.trim() ||
+      input.body.length > 4_000
+    ) throw ApiError.badRequest('批注参数无效')
+
+    const canonical = JSON.stringify({
+      task_id: input.taskId,
+      file_ref: input.fileRef,
+      side: input.side,
+      line: input.line,
+      body: input.body,
+    })
+    const commentId = `comment_${createHash('sha256')
+      .update(`${input.taskId}\0${input.clientOperationId}`)
+      .digest('hex')
+      .slice(0, 20)}`
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    try {
+      const { result } = await authority.transactReview((state) => {
+        const prior = state.receipts[input.clientOperationId]
+        if (prior) {
+          if (state.events[input.clientOperationId]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
+          const existing = state.review_comments[commentId] as StoredReviewComment | undefined
+          if (!existing) throw new Error('AUTHORITY_INVALID')
+          return { changed: false as const, value: { duplicate: true, comment: existing, authorityRevision: prior.revision } }
+        }
+        const task = (state.tasks[input.taskId] as { task?: { lifecycle?: unknown } } | undefined)?.task
+        if (!task) throw new Error('TASK_NOT_FOUND')
+        if (task.lifecycle !== 'active' && task.lifecycle !== 'archived') throw new Error('TASK_NOT_REVIEWABLE')
+        if (state.review_comments[commentId]) throw new Error('AUTHORITY_INVALID')
+        const comment: StoredReviewComment = {
+          comment_id: commentId,
+          task_id: input.taskId,
+          file_ref: {
+            file_id: input.fileRef.fileId,
+            path: input.fileRef.path,
+            revision: input.fileRef.revision,
+          },
+          side: input.side,
+          line: input.line,
+          body: input.body,
+          created_at: this.now().toISOString(),
+        }
+        state.review_comments[commentId] = comment
+        state.receipts[input.clientOperationId] = {
+          client_operation_id: input.clientOperationId,
+          expected_revision: 0,
+          outcome: 'accepted',
+          revision: state.revision + 1,
+        }
+        state.event_sequence += 1
+        state.events[input.clientOperationId] = {
+          event_sequence: state.event_sequence,
+          client_operation_id: input.clientOperationId,
+          kind: 'review_comment_create',
+          revision: state.revision + 1,
+          canonical_input: canonical,
+          entity_id: commentId,
+          product_task_id: input.taskId,
+        }
+        return { duplicate: false, comment, authorityRevision: state.revision + 1 }
+      })
+      return {
+        outcome: result.duplicate ? 'duplicate' : 'accepted',
+        authorityRevision: result.authorityRevision,
+        comment: publicReviewComment(result.comment),
+      }
+    } catch (error) {
+      if ((error as Error).message === 'TASK_NOT_FOUND') throw ApiError.notFound('任务不存在')
+      if ((error as Error).message === 'TASK_NOT_REVIEWABLE') throw new ApiError(409, '任务当前不可批注', 'AUTHORITY_CONFLICT')
+      if ((error as Error).message === 'OPERATION_INPUT_CONFLICT') throw new ApiError(409, '操作标识已绑定不同批注', 'AUTHORITY_CONFLICT')
+      throw new ApiError(503, '批注暂时无法保存', 'PRODUCT_TASK_REVIEW_UNAVAILABLE')
+    }
   }
 
   /**

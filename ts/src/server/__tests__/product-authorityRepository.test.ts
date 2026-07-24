@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { createHash } from 'node:crypto'
 import { ProductTaskAuthorityRepository, readLegacyProductTasks } from '../product/authorityRepository.js'
 import { ProductTaskService } from '../product/taskService.js'
 import { lock } from '../../utils/lockfile.js'
@@ -71,6 +72,40 @@ test('projects rev1 authority maps without changing bytes, then upgrades on muta
   const written = JSON.parse(await fs.readFile(authority, 'utf8')) as Record<string, unknown>
   expect(written.authority_schema_revision).toBe(2)
   expect(written).toHaveProperty('workspaces')
+})
+
+test('upgrades to schema 4 only when a durable review comment is written', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'authority-review-comment-'))
+  const authority = path.join(dir, 'product-task-authority.v1.json')
+  const repository = new ProductTaskAuthorityRepository(authority)
+  const now = '2026-07-24T00:00:00.000Z'
+  await repository.mutateCapabilities((state) => {
+    state.tasks.task = { task: { id: 'task', projectId: '', directoryId: '', workDir: '', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', actions: [], revision: 0 }, binding: { coreSessionId: 'core' } }
+  })
+  expect(JSON.parse(await fs.readFile(authority, 'utf8')).authority_schema_revision).toBe(2)
+  await repository.transactReview(() => ({ changed: false as const, value: null }))
+  expect(JSON.parse(await fs.readFile(authority, 'utf8')).authority_schema_revision).toBe(2)
+
+  await repository.transactReview((state) => {
+    const fileId = `file_${createHash('sha256').update('task\0src/main.ts').digest('hex').slice(0, 20)}`
+    state.review_comments.comment_aaaaaaaaaaaaaaaaaaaa = {
+      comment_id: 'comment_aaaaaaaaaaaaaaaaaaaa',
+      task_id: 'task',
+      file_ref: { file_id: fileId, path: 'src/main.ts', revision: `rev_${'a'.repeat(32)}` },
+      side: 'new',
+      line: 2,
+      body: '请核对这里',
+      created_at: now,
+    }
+  })
+  const restarted = await repository.read()
+  expect(restarted.authority_schema_revision).toBe(4)
+  expect(restarted.review_comments.comment_aaaaaaaaaaaaaaaaaaaa).toMatchObject({ task_id: 'task', line: 2 })
+
+  const raw = JSON.parse(await fs.readFile(authority, 'utf8'))
+  raw.review_comments.comment_aaaaaaaaaaaaaaaaaaaa.line = 0
+  await fs.writeFile(authority, JSON.stringify(raw))
+  await expect(repository.read()).rejects.toThrow('AUTHORITY_INVALID')
 })
 
 test('rejects malformed nested persisted authority maps fail-closed', async () => {
