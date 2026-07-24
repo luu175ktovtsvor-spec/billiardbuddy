@@ -113,7 +113,8 @@ describe('electron desktop host', () => {
     }, true)
     await host.media.renderVideo({
       projectId: 'vid_project01',
-      revision: 4,
+      baseRevision: 4,
+      timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/final.mp4',
     })
 
@@ -135,7 +136,8 @@ describe('electron desktop host', () => {
     })
     expect(invoke).toHaveBeenNthCalledWith(3, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',
-      revision: 4,
+      baseRevision: 4,
+      timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/final.mp4',
     })
     expect(JSON.stringify(invoke.mock.calls)).not.toContain('capability')

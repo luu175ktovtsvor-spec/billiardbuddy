@@ -99,11 +99,12 @@ const mediaUpdateUnknownImage: Validator = value => {
 
 const mediaRenderVideo: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'revision', 'outputPath'])
+  && hasOnlyKeys(value, ['projectId', 'baseRevision', 'timelineVersionId', 'outputPath'])
   && mediaProjectId(value.projectId)
-  && typeof value.revision === 'number'
-  && Number.isInteger(value.revision)
-  && value.revision >= 0
+  && typeof value.baseRevision === 'number'
+  && Number.isInteger(value.baseRevision)
+  && value.baseRevision >= 0
+  && mediaProjectId(value.timelineVersionId)
   && typeof value.outputPath === 'string'
   && value.outputPath.length > 0
   && value.outputPath.length <= 4096

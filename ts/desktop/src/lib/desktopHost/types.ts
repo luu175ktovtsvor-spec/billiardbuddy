@@ -153,7 +153,8 @@ export type PortableDirDetection = {
 
 export type MediaRenderRequest = {
   projectId: string
-  revision: number
+  baseRevision: number
+  timelineVersionId: string
   outputPath: string
 }
 

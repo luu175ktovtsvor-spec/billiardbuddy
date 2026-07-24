@@ -311,7 +311,14 @@ export const videoSourceSchema = z.object({
   height: z.number().int().nonnegative(),
   fps: z.number().nonnegative().max(240).optional(),
   has_audio: z.boolean(),
+  fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  rotation: z.number().int().min(-360).max(360).default(0),
+  video_stream_count: z.number().int().nonnegative().default(1),
+  audio_stream_count: z.number().int().nonnegative().default(0),
+  missing: z.boolean().default(false),
 })
+
+export const publicVideoSourceSchema = videoSourceSchema.omit({ path: true })
 
 export const videoClipSchema = z.object({
   id: mediaIdSchema,
@@ -328,14 +335,80 @@ export const videoOutputSettingsSchema = z.object({
   fps: z.number().int().min(12).max(60).default(30),
 })
 
+export const videoEvidenceSchema = z.object({
+  id: mediaIdSchema,
+  kind: z.enum(['source_role', 'transcript', 'visual', 'audio', 'shot']),
+  source_id: mediaIdSchema,
+  source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  in_ms: z.number().int().nonnegative(),
+  out_ms: z.number().int().positive(),
+  text: z.string().min(1).max(8000),
+  confidence: z.number().min(0).max(1),
+  warnings: z.array(z.string().min(1).max(500)).max(20).default([]),
+  created_at: mediaIsoDateSchema,
+}).refine(value => value.out_ms > value.in_ms, {
+  message: 'evidence out_ms must be greater than in_ms',
+})
+
+export const videoBriefSchema = z.object({
+  schema_version: z.literal(1),
+  user_goal: z.string().min(1).max(8000),
+  content_type: z.string().min(1).max(160),
+  output_channel: z.string().min(1).max(160),
+  must_preserve_text: z.array(z.string().min(1).max(500)).max(40).default([]),
+  recommended_direction: z.string().min(1).max(2000),
+  rationale: z.array(z.string().min(1).max(500)).max(20),
+  gaps: z.array(z.string().min(1).max(500)).max(20).default([]),
+  compiler_version: z.literal('video-brief-v1'),
+})
+
+export const videoSceneSchema = z.object({
+  id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  in_ms: z.number().int().nonnegative(),
+  out_ms: z.number().int().positive(),
+  story_role: z.enum(['hook', 'context', 'action', 'result', 'cta', 'b_roll']),
+  evidence_ids: z.array(mediaIdSchema).max(100),
+  rationale: z.string().min(1).max(1000),
+  needs_review: z.boolean().default(false),
+  locked: z.boolean().default(false),
+}).refine(value => value.out_ms > value.in_ms, {
+  message: 'scene out_ms must be greater than in_ms',
+})
+
+export const videoAlternativeSchema = z.object({
+  id: mediaIdSchema,
+  base_timeline_version_id: mediaIdSchema,
+  label: z.string().min(1).max(160),
+  tradeoff: z.string().min(1).max(1000),
+  scenes: z.array(videoSceneSchema).min(1).max(500),
+})
+
+export const videoTimelineVersionSchema = z.object({
+  id: mediaIdSchema,
+  parent_version_id: mediaIdSchema.optional(),
+  project_revision: z.number().int().nonnegative(),
+  evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  scenes: z.array(videoSceneSchema).max(500),
+  created_at: mediaIsoDateSchema,
+})
+
 export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('video'),
   state: z.enum(['draft', 'ready', 'rendering', 'complete', 'failed']),
   sources: z.array(videoSourceSchema).max(200).default([]),
   timeline: z.array(videoClipSchema).max(500).default([]),
   output: videoOutputSettingsSchema.default({ width: 1080, height: 1920, fps: 30 }),
+  evidence: z.array(videoEvidenceSchema).max(5000).default([]),
+  evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  brief: videoBriefSchema.optional(),
+  timeline_versions: z.array(videoTimelineVersionSchema).max(1000).default([]),
+  current_timeline_version_id: mediaIdSchema.optional(),
+  alternatives: z.array(videoAlternativeSchema).max(3).default([]),
   task_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096).optional(),
+  output_asset_id: mediaIdSchema.optional(),
+  output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   error: z.string().max(2000).optional(),
   error_code: mediaSafeErrorCodeSchema.optional(),
 })
@@ -363,7 +436,9 @@ export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omi
 }).extend({
   version_history: z.array(publicImageVersionSchema).max(1000).default([]),
 })
-export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields)
+export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields).extend({
+  sources: z.array(publicVideoSourceSchema).max(200),
+})
 export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
   publicImageWorkbenchProjectSchema,
   publicVideoStudioProjectSchema,
@@ -377,7 +452,7 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.render']),
+  kind: z.enum(['image.generate', 'video.probe', 'video.analyze', 'video.plan', 'video.render']),
   status: mediaTaskStatusSchema,
   progress: z.number().min(0).max(100),
   stage: z.string().max(160),
@@ -421,7 +496,10 @@ export const imageGenerationTaskResultSchema = z.object({
 
 export const videoRenderTaskResultSchema = z.object({
   render_revision: z.number().int().nonnegative(),
+  timeline_version_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096),
+  output_asset_id: mediaIdSchema.optional(),
+  output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
   video_encoder: z.enum(['h264_videotoolbox', 'h264_mf', 'mpeg4']).optional(),
 })
@@ -532,14 +610,40 @@ export const addVideoSourceInputSchema = z.object({
 })
 
 export const updateVideoTimelineInputSchema = z.object({
-  revision: z.number().int().nonnegative(),
+  base_revision: z.number().int().nonnegative().optional(),
+  /** One-release compatibility for pre-Version callers; new UI always sends base_revision. */
+  revision: z.number().int().nonnegative().optional(),
+  base_timeline_version_id: mediaIdSchema.optional(),
   clips: z.array(videoClipSchema).max(500),
+}).refine(value => value.base_revision !== undefined || value.revision !== undefined, {
+  message: 'base_revision is required',
+}).transform(value => ({ ...value, base_revision: value.base_revision ?? value.revision! }))
+
+export const analyzeVideoProjectInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  user_goal: z.string().trim().min(1).max(8000),
+})
+
+export const lockVideoSceneInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  timeline_version_id: mediaIdSchema,
+  locked: z.boolean(),
+})
+
+export const applyVideoAlternativeInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  alternative_id: mediaIdSchema,
 })
 
 export const renderVideoInputSchema = z.object({
-  revision: z.number().int().nonnegative(),
+  base_revision: z.number().int().nonnegative().optional(),
+  /** One-release compatibility for pre-Version callers; new UI always sends base_revision. */
+  revision: z.number().int().nonnegative().optional(),
+  timeline_version_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096),
-})
+}).refine(value => value.base_revision !== undefined || value.revision !== undefined, {
+  message: 'base_revision is required',
+}).transform(value => ({ ...value, base_revision: value.base_revision ?? value.revision! }))
 
 export const saveImageOutputInputSchema = z.object({
   version_id: mediaIdSchema.optional(),
@@ -571,6 +675,11 @@ export type MediaDeletionReceipt = z.infer<typeof mediaDeletionReceiptSchema>
 export type PublicMediaDeletionReceipt = z.infer<typeof publicMediaDeletionReceiptSchema>
 export type VideoSource = z.infer<typeof videoSourceSchema>
 export type VideoClip = z.infer<typeof videoClipSchema>
+export type VideoEvidence = z.infer<typeof videoEvidenceSchema>
+export type VideoBrief = z.infer<typeof videoBriefSchema>
+export type VideoScene = z.infer<typeof videoSceneSchema>
+export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
+export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
@@ -580,6 +689,9 @@ export type CommitImageVersionInput = z.input<typeof commitImageVersionInputSche
 export type SelectImageVersionInput = z.input<typeof selectImageVersionInputSchema>
 export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
+export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSchema>
+export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
+export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>
 export type SaveImageOutputInput = z.input<typeof saveImageOutputInputSchema>
 export type ImageGenerationTaskResult = z.infer<typeof imageGenerationTaskResultSchema>

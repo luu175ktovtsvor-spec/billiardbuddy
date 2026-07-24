@@ -438,9 +438,10 @@ function registerIpcHandlers() {
     return getMediaActions().saveImageOutput(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaRenderVideo, (_event, payload) => {
-    const input = payload as { projectId: string, revision: number, outputPath: string }
+    const input = payload as { projectId: string, baseRevision: number, timelineVersionId: string, outputPath: string }
     return getMediaActions().renderVideo(input.projectId, {
-      revision: input.revision,
+      base_revision: input.baseRevision,
+      timeline_version_id: input.timelineVersionId,
       output_path: input.outputPath,
     })
   })

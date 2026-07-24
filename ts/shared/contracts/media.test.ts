@@ -6,6 +6,7 @@ import {
   productTaskOwnerIdSchema,
   publicImageWorkbenchProjectSchema,
   publicMediaTaskSchema,
+  publicVideoStudioProjectSchema,
   startImageOperationInputSchema,
 } from './media.js'
 
@@ -133,5 +134,35 @@ describe('provider-neutral image creation contract', () => {
       updated_at: '2026-07-24T05:00:00.000Z',
     })
     expect(task).not.toHaveProperty('remote_result_acknowledged_at')
+  })
+
+  test('exposes video fingerprints and versions without exposing source paths', () => {
+    const project = publicVideoStudioProjectSchema.parse({
+      schema_version: 1,
+      id: 'vid_12345678',
+      kind: 'video',
+      title: '真实素材',
+      revision: 1,
+      created_at: baseImageProject.created_at,
+      updated_at: baseImageProject.updated_at,
+      state: 'ready',
+      sources: [{
+        id: 'src_12345678',
+        path: '/private/video/source.mp4',
+        name: 'source.mp4',
+        duration_ms: 1000,
+        width: 1920,
+        height: 1080,
+        has_audio: true,
+        fingerprint: `sha256:${'a'.repeat(64)}`,
+      }],
+      timeline: [{ id: 'clip_12345678', source_id: 'src_12345678', in_ms: 0, out_ms: 1000 }],
+      output: { width: 1920, height: 1080, fps: 30 },
+      evidence: [],
+      timeline_versions: [],
+      alternatives: [],
+    })
+    expect(project.sources[0]?.fingerprint).toBe(`sha256:${'a'.repeat(64)}`)
+    expect(project.sources[0]).not.toHaveProperty('path')
   })
 })
