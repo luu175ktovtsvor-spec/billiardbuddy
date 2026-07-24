@@ -13,6 +13,7 @@ export type PreviewBounds = {
 
 export type PreviewWebContentsLike = {
   loadURL(url: string): Promise<unknown>
+  getURL(): string
   executeJavaScript(script: string): Promise<unknown>
   on(event: 'did-finish-load', handler: () => void): unknown
   close?(): void
@@ -72,6 +73,14 @@ function isHostPickerMessage(payload: unknown): payload is PreviewHostPickerMess
   return isPlainRecord(payload) &&
     payload.v === 1 &&
     (payload.type === 'enter-picker' || payload.type === 'exit-picker')
+}
+
+function isSamePreviewDocument(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href
+  } catch {
+    return false
+  }
 }
 
 export function normalizePreviewUrl(input: string): string {
@@ -199,6 +208,10 @@ export class ElectronPreviewService {
     if (!message) return
     if (message.type === 'selection') {
       if (!this.pickerArmed) return
+      if (!isSamePreviewDocument(message.payload.pageUrl as string, sender.getURL())) {
+        this.pickerArmed = false
+        return
+      }
       // Consume the authorization before awaiting capture so concurrent or
       // page-forged duplicates cannot reuse the same user gesture.
       this.pickerArmed = false

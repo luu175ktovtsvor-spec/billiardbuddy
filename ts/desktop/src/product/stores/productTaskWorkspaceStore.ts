@@ -122,17 +122,24 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
   byTaskId: {},
 
   openPanel: (taskId, panel, workspaceAvailable = true) => set((state) => {
-    // Browser/preview surfaces need a real workspace; a renderer cannot turn a
-    // stale UI state into that capability by opening a panel.
-    if (!workspaceAvailable && panel === 'review') return state
+    // Review and source preview need a real workspace; renderer state cannot
+    // manufacture that capability for an unbound task.
+    if (!workspaceAvailable && (panel === 'review' || panel === 'preview')) return state
     const current = currentState(state.byTaskId, taskId)
     let next: ProductTaskWorkspaceState
 
     switch (panel) {
       case 'browser':
-      case 'preview':
       case 'terminal':
         return state
+      case 'preview':
+        next = {
+          ...current,
+          previewOpen: true,
+          activePanel: 'browser-preview',
+          activeBrowserPreviewMode: 'preview',
+        }
+        break
       case 'review':
         next = { ...current, reviewOpen: true, activePanel: 'review' }
         break

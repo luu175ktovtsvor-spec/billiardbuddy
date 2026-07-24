@@ -14,12 +14,17 @@ beforeEach(() => {
 })
 
 describe('useProductTaskWorkspaceStore', () => {
-  it('rejects Browser and Preview opens while native transport is disabled', () => {
+  it('opens only source Preview for a workspace-bound task', () => {
     const store = useProductTaskWorkspaceStore.getState()
     store.openPanel(TASK_ID, 'browser')
-    store.openPanel(TASK_ID, 'preview')
+    store.openPanel(TASK_ID, 'preview', true)
 
-    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toBeUndefined()
+    expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
+      browserOpen: false,
+      previewOpen: true,
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'preview',
+    })
   })
 
   it('keeps Review and Media open while terminal open is disabled', () => {
@@ -36,11 +41,11 @@ describe('useProductTaskWorkspaceStore', () => {
     })
   })
 
-  it('does not create disabled native panel state for any task id', () => {
+  it('does not create disabled or workspace-less native panel state', () => {
     const store = useProductTaskWorkspaceStore.getState()
     store.openPanel(TASK_ID, 'browser', true)
     store.openPanel('task_public_other', 'terminal', true)
-    store.activatePanel(TASK_ID, 'preview')
+    store.openPanel('task_public_without_workspace', 'preview', false)
 
     expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
   })

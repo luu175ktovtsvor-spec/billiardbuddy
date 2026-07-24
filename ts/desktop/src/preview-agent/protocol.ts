@@ -1,9 +1,17 @@
+import type { ElementMetadata } from './metadata'
+
+export type PreviewSelectionPayload = {
+  pageUrl: string
+  sourceHint?: string
+  element: ElementMetadata
+  screenshot?: { kind?: 'region' }
+}
+
 export type AgentMessage =
   | { type: 'ready' }
   | { type: 'navigated'; url: string; title: string }
   | { type: 'error'; message: string }
-  | { type: 'selection'; payload: unknown }   // M5 填充结构
-  | { type: 'screenshot'; dataUrl: string; kind: 'full' | 'viewport' | 'element' } // M4
+  | { type: 'selection'; payload: PreviewSelectionPayload }
   | { type: 'picker-exited' }
 
 export type HostMessage =

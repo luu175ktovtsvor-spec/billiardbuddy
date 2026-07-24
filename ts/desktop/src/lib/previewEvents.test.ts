@@ -41,8 +41,9 @@ describe('subscribePreviewEvents', () => {
   it('honors the caller navigation boundary before mutating browser state', async () => {
     const key = 'product-task:task_abc:preview'
     const isNavigationAllowed = vi.fn((url: string) => url.startsWith('https://'))
+    const onNavigated = vi.fn()
     useBrowserPanelStore.getState().open(key, 'https://safe.example/')
-    await subscribePreviewEvents(key, { isNavigationAllowed })
+    await subscribePreviewEvents(key, { isNavigationAllowed, onNavigated })
 
     previewHandler!(JSON.stringify({ v: 1, type: 'navigated', url: 'file:///private/secret.html', title: 'Nope' }))
     expect(isNavigationAllowed).toHaveBeenCalledWith('file:///private/secret.html')
@@ -50,6 +51,8 @@ describe('subscribePreviewEvents', () => {
 
     previewHandler!(JSON.stringify({ v: 1, type: 'navigated', url: 'https://safe.example/next', title: 'Safe' }))
     expect(useBrowserPanelStore.getState().bySession[key]!.url).toBe('https://safe.example/next')
+    expect(onNavigated).toHaveBeenCalledTimes(1)
+    expect(onNavigated).toHaveBeenCalledWith('https://safe.example/next')
   })
 
   it('delivers screenshots to the caller-owned callback', async () => {
@@ -99,8 +102,14 @@ describe('subscribePreviewEvents', () => {
     const onSelection = vi.fn()
     const payload = {
       pageUrl: 'https://safe.example/',
-      element: { selector: '#t', tag: 'h1', classes: [] },
-      change: { description: '改一下' },
+      element: {
+        selector: '#t',
+        nthPath: 'html:nth-child(1)>body:nth-child(1)>h1:nth-child(1)',
+        tag: 'h1',
+        classes: [],
+        boundingBox: { x: 1, y: 2, w: 3, h: 4 },
+        computedStyles: { color: 'rgb(0, 0, 0)' },
+      },
       screenshot: { dataUrl: 'data:image/png;base64,AAAA', kind: 'element' },
     }
     useBrowserPanelStore.getState().open(key, 'https://safe.example/')
@@ -122,7 +131,17 @@ describe('subscribePreviewEvents', () => {
     previewHandler!(JSON.stringify({
       v: 1,
       type: 'selection',
-      payload: { pageUrl: 'https://safe.example/', element: { selector: '#injected', tag: 'div', classes: [] } },
+      payload: {
+        pageUrl: 'https://safe.example/',
+        element: {
+          selector: '#injected',
+          nthPath: 'html>body>div',
+          tag: 'div',
+          classes: [],
+          boundingBox: { x: 0, y: 0, w: 1, h: 1 },
+          computedStyles: {},
+        },
+      },
     }))
     expect(onSelection).not.toHaveBeenCalled()
 

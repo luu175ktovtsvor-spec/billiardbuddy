@@ -28,6 +28,10 @@ class FakeWebContents implements PreviewWebContentsLike {
     this.loadHandler?.()
   }
 
+  getURL() {
+    return this.loadedUrls.at(-1) ?? ''
+  }
+
   async executeJavaScript(script: string) {
     this.scripts.push(script)
     return 'ok'
@@ -374,6 +378,36 @@ describe('Electron preview service', () => {
     await service.open(parent, 'https://example.com/c', { x: 0, y: 0, width: 100, height: 100 })
     await service.sendMessageToRenderer(view.webContents, selection, renderer)
     expect(renderer.sent).toHaveLength(1)
+  })
+
+  it('rejects stale selection evidence that names a different preview document', async () => {
+    const view = new FakeView()
+    const renderer = new FakeWebContents()
+    const service = new ElectronPreviewService({
+      createView: () => view,
+      previewScriptPath: previewScript(),
+    })
+    await service.open({ contentView: { addChildView: vi.fn(), removeChildView: vi.fn() } }, 'https://example.com/current', {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 100,
+    })
+    const staleSelection = JSON.stringify({
+      v: 1,
+      type: 'selection',
+      payload: {
+        pageUrl: 'https://example.com/previous',
+        element: { selector: '#target' },
+      },
+    })
+
+    await service.message({ v: 1, type: 'enter-picker' })
+    await service.sendMessageToRenderer(view.webContents, staleSelection, renderer)
+    await service.sendMessageToRenderer(view.webContents, staleSelection, renderer)
+
+    expect(renderer.sent).toEqual([])
+    expect(view.webContents.capturePage).not.toHaveBeenCalled()
   })
 
   it('rolls back picker authorization when entering picker mode fails to inject', async () => {

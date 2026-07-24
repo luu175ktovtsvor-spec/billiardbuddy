@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { getApiUrl } from '../../api/client'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
+import { getDesktopHost } from '../../lib/desktopHost'
 import { useSettingsStore } from '../../stores/settingsStore'
 import {
   IMAGE_WORKBENCH_TAB_ID,
@@ -43,7 +44,12 @@ import {
 } from '../stores/productTaskWorkspaceStore'
 import { ProductTaskMediaDock } from './ProductTaskMediaDock'
 import { ProductTaskInlineMedia } from './ProductTaskInlineMedia'
-import type { ProductTaskBrowserPreviewCapture } from './ProductTaskBrowserPreviewDock'
+import {
+  buildProductTaskPreviewIntentText,
+  ProductTaskBrowserPreviewDock,
+  type ProductTaskBrowserPreviewCapture,
+  type ProductTaskPreviewSelectionIntent,
+} from './ProductTaskBrowserPreviewDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
 import {
   ProductTaskRunPanel,
@@ -469,7 +475,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const workspace = useProductTaskWorkspaceStore((state) => state.byTaskId[taskId])
   const openWorkspacePanel = useProductTaskWorkspaceStore((state) => state.openPanel)
   const closeWorkspacePanel = useProductTaskWorkspaceStore((state) => state.closePanel)
-  const activateWorkspacePanel = useProductTaskWorkspaceStore((state) => state.activatePanel)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
@@ -504,6 +509,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     [index.tasks, taskId],
   )
   const workspaceAvailable = task?.workspace_capability?.available === true
+  const previewAvailable = workspaceAvailable && getDesktopHost().capabilities.previewWebview
   const normalizedWorkDir = workspaceAvailable ? task?.workDir.trim() ?? '' : ''
   const isSlashInput = draft.startsWith('/')
   const commandQuery = slashQuery(draft)
@@ -677,6 +683,34 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     setAttachments([...attachments, attachment])
     setAttachmentMessage(null)
     setValidationMessage(null)
+  }
+
+  const submitPreviewSelection = async (
+    intent: ProductTaskPreviewSelectionIntent,
+  ): Promise<boolean> => {
+    const screenshotDataUrl = intent.selection.screenshot?.dataUrl
+    const screenshot = screenshotDataUrl
+      ? createProductTaskPreviewImageDraft(screenshotDataUrl, '预览元素证据.png')
+      : null
+    const evidenceAttachments = screenshot ? [screenshot] : []
+    const validation = validateProductTaskAttachments(evidenceAttachments)
+    if (!validation.ok) {
+      setAttachmentMessage(validation.message)
+      return false
+    }
+
+    const accepted = evidenceAttachments.length
+      ? await sendMessage(
+          taskId,
+          buildProductTaskPreviewIntentText(intent),
+          evidenceAttachments.map(({ id: _id, ...attachment }) => attachment),
+        )
+      : await sendText(taskId, buildProductTaskPreviewIntentText(intent))
+    if (!accepted) return false
+    setAttachmentMessage(null)
+    setValidationMessage(null)
+    openWorkspacePanel(taskId, 'review', true)
+    return true
   }
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -855,9 +889,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
-  void activateWorkspacePanel
-  void addBrowserPreviewCapture
-
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-task-page">
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -924,7 +955,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={() => toggleBrowserPreviewMode('preview')}
-          disabled
+          disabled={!previewAvailable}
           aria-pressed={isBrowserPreviewActive && isPreviewOpen && activeBrowserPreviewMode === 'preview'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -1129,6 +1160,23 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 className={`min-h-0 flex-1 flex-col overflow-hidden ${isMediaActive ? 'flex' : 'hidden'}`}
               >
                 <ProductTaskMediaDock taskId={task.id} onClose={closeMediaDock} />
+              </div>
+            ) : null}
+            {workspaceAvailable && isBrowserPreviewActive && (isBrowserOpen || isPreviewOpen) ? (
+              <div
+                data-testid="product-task-dock-panel-browser-preview"
+                className="flex min-h-0 flex-1 flex-col overflow-hidden"
+              >
+                <ProductTaskBrowserPreviewDock
+                  taskId={task.id}
+                  browserOpen={isBrowserOpen}
+                  previewOpen={isPreviewOpen}
+                  activeMode={activeBrowserPreviewMode}
+                  workspaceAvailable={workspaceAvailable}
+                  onClose={closeBrowserPreviewMode}
+                  onCapture={addBrowserPreviewCapture}
+                  onSubmitSelection={submitPreviewSelection}
+                />
               </div>
             ) : null}
           </aside>

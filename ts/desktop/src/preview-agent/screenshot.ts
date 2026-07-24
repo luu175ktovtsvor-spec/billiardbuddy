@@ -1,20 +1,3 @@
-import html2canvas from 'html2canvas'
-import { compressDataUrl } from '../lib/imageCompress'
-
-export type CaptureKind = 'full' | 'viewport' | 'element'
-
-export async function captureToDataUrl(kind: CaptureKind, element?: Element): Promise<string> {
-  const target = (kind === 'element' && element ? element : document.body) as HTMLElement
-  const canvas = await html2canvas(target, {
-    ...(kind === 'viewport'
-      ? { windowWidth: window.innerWidth, height: window.innerHeight }
-      : {}),
-    useCORS: true,
-    logging: false,
-  })
-  return compressDataUrl(canvas.toDataURL('image/png'))
-}
-
 function setImportant(style: CSSStyleDeclaration, property: string, value: string): void {
   style.setProperty(property, value, 'important')
 }
@@ -89,27 +72,4 @@ export function createAnnotationOverlay(el: Element, label: number | string): HT
   root.appendChild(badge)
   document.documentElement.appendChild(root)
   return root
-}
-
-/** Viewport screenshot with the picked element's region annotated (blue box + numbered badge). 图4 */
-export async function captureAnnotatedRegion(el: Element, label = 1): Promise<string> {
-  const overlay = createAnnotationOverlay(el, label)
-  try {
-    const canvas = await html2canvas(document.documentElement, {
-      useCORS: true,
-      logging: false,
-      scale: 1,
-      x: window.scrollX,
-      y: window.scrollY,
-      width: window.innerWidth,
-      height: window.innerHeight,
-      windowWidth: window.innerWidth,
-      windowHeight: window.innerHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-    })
-    return compressDataUrl(canvas.toDataURL('image/png'))
-  } finally {
-    overlay.remove()
-  }
 }
