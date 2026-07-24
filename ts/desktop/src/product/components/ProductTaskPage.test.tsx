@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   archiveTask: vi.fn(),
   restoreTask: vi.fn(),
+  recoverTaskRun: vi.fn(),
   pinTask: vi.fn(),
   unpinTask: vi.fn(),
   continueTask: vi.fn(),
@@ -68,6 +69,7 @@ vi.mock('../stores/productTaskStore', () => ({
     refresh: mocks.refresh,
     archiveTask: mocks.archiveTask,
     restoreTask: mocks.restoreTask,
+    recoverTaskRun: mocks.recoverTaskRun,
     pinTask: mocks.pinTask,
     unpinTask: mocks.unpinTask,
     continueTask: mocks.continueTask,
@@ -242,10 +244,12 @@ beforeEach(() => {
     approvalResponsePending: false,
     error: null,
     streamingEntryId: null,
+    recoveryRequired: false,
   }
   mocks.refresh.mockReset().mockResolvedValue(undefined)
   mocks.archiveTask.mockReset().mockResolvedValue(undefined)
   mocks.restoreTask.mockReset().mockResolvedValue(undefined)
+  mocks.recoverTaskRun.mockReset().mockResolvedValue(undefined)
   mocks.pinTask.mockReset().mockResolvedValue(undefined)
   mocks.unpinTask.mockReset().mockResolvedValue(undefined)
   mocks.continueTask.mockReset().mockResolvedValue({
@@ -719,6 +723,20 @@ describe('ProductTaskPage', () => {
     expect(mocks.restoreTask).toHaveBeenCalledWith('task-1')
     expect(mocks.pinTask).not.toHaveBeenCalled()
     expect(mocks.unpinTask).not.toHaveBeenCalled()
+  })
+
+  it('shows durable crash recovery after reconnect and confirms the new execution generation', async () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      runState: 'idle',
+      recoveryRequired: true,
+      error: { code: 'task_failed', retryable: false },
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('可能重复外部操作')
+    fireEvent.click(screen.getByRole('button', { name: '恢复失败任务' }))
+    await waitFor(() => expect(mocks.recoverTaskRun).toHaveBeenCalledWith('task-1'))
+    expect(mocks.refreshThread).toHaveBeenCalledWith('task-1')
   })
 
   it('keeps the available Review panel usable while terminal remains disabled', () => {

@@ -776,7 +776,35 @@ describe('BB-02C existing task submit matrix', () => {
     const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'started' } } })
     await restarted.recoverDurableTaskRunQueue()
     expect(dispatched).toEqual([])
-    expect((await new ProductTaskAuthorityRepository(authorityPath).read()).dispatch_records[first.result!.run_id]).toMatchObject({ state: 'recovery_required', error: 'SERVER_RESTARTED' })
+    const blocked = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(blocked.dispatch_records[first.result!.run_id]).toMatchObject({ state: 'recovery_required', error: 'SERVER_RESTARTED' })
+    const originalSessionId = (blocked.task_runs[first.result!.run_id] as { core_binding: { session_id: string } }).core_binding.session_id
+
+    const attempts: Array<[string, number]> = []
+    let executions = 0
+    let recovering!: ProductTaskService
+    recovering = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async (runId, generation) => {
+      attempts.push([runId, generation])
+      const claim = await recovering.claimTaskRunDispatch(runId, generation)
+      if (claim.outcome === 'claimed') executions += 1
+      return claim.outcome === 'claimed' || claim.outcome === 'duplicate' ? 'started' : 'recovery_required'
+    } } })
+    const recoveryInput = { expected_revision: 9, client_operation_id: 'recover-first' }
+    expect((await recovering.recoverTaskRun('task', recoveryInput)).receipt.outcome).toBe('accepted')
+    let recovered = await new ProductTaskAuthorityRepository(authorityPath).read()
+    for (let index = 0; recovered.dispatch_records[first.result!.run_id]?.state !== 'claimed' && index < 100; index += 1) {
+      await Bun.sleep(1)
+      recovered = await new ProductTaskAuthorityRepository(authorityPath).read()
+    }
+    expect(recovered.dispatch_records[first.result!.run_id]).toMatchObject({ state: 'claimed', dispatch_generation: 2 })
+    expect((recovered.task_runs[first.result!.run_id] as { core_binding: { session_id: string; dispatch_generation: number } }).core_binding).toMatchObject({ dispatch_generation: 2 })
+    expect((recovered.task_runs[first.result!.run_id] as { core_binding: { session_id: string } }).core_binding.session_id).not.toBe(originalSessionId)
+    const bytes = await fs.readFile(authorityPath)
+    expect((await recovering.recoverTaskRun('task', recoveryInput)).receipt.outcome).toBe('duplicate')
+    while (attempts.length < 2) await Bun.sleep(1)
+    expect(executions).toBe(1)
+    expect(attempts).toEqual([[first.result!.run_id, 2], [first.result!.run_id, 2]])
+    expect(await fs.readFile(authorityPath)).toEqual(bytes)
   })
 
   test('persists an accepted snapshot across later revisions and rejects attachment/domain conflicts atomically', async () => {

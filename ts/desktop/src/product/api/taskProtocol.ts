@@ -643,8 +643,9 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
 export function parseProductTaskThread(value: unknown, taskId: string): ProductTaskThread | null {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'entries']) ||
+    !hasOnlyKeys(value, ['taskId', 'entries', 'recoveryRequired']) ||
     value.taskId !== taskId ||
+    ('recoveryRequired' in value && typeof value.recoveryRequired !== 'boolean') ||
     !Array.isArray(value.entries) ||
     value.entries.length > MAX_THREAD_ENTRY_COUNT
   ) {
@@ -658,7 +659,7 @@ export function parseProductTaskThread(value: unknown, taskId: string): ProductT
   const ids = new Set(typedEntries.map((entry) => entry.id))
   if (ids.size !== typedEntries.length) return null
 
-  return { taskId, entries: typedEntries }
+  return { taskId, entries: typedEntries, ...(value.recoveryRequired === true ? { recoveryRequired: true } : {}) }
 }
 
 

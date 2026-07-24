@@ -414,6 +414,18 @@ describe('product task runtime store', () => {
     expect(apiMocks.getThread).toHaveBeenCalledTimes(2)
   })
 
+  it('restores a durable recovery blocker after reconnect instead of showing a stale working run', async () => {
+    apiMocks.getThread
+      .mockResolvedValueOnce({ taskId: 'task-recovery-reconnect', entries: [] })
+      .mockResolvedValueOnce({ taskId: 'task-recovery-reconnect', entries: [], recoveryRequired: true })
+    wireTaskSocket()
+    await useProductTaskRuntimeStore.getState().connectTask('task-recovery-reconnect')
+    eventHandler?.({ type: 'run_snapshot', state: 'working', activities: [] })
+    lifecycleHandler?.({ type: 'connected', reconnected: true })
+    await flushMicrotasks()
+    expect(useProductTaskRuntimeStore.getState().tasks['task-recovery-reconnect']).toEqual(expect.objectContaining({ recoveryRequired: true, runState: 'idle', stopRequested: false }))
+  })
+
   it('fences late assistant content after stop until the terminal refresh', async () => {
     apiMocks.getThread
       .mockResolvedValueOnce({ taskId: 'task-stop', entries: [] })

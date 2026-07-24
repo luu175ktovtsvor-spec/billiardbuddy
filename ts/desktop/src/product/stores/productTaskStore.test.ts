@@ -4,7 +4,7 @@ import type { AuthoritySnapshot, ProductTaskActionResponse, ProductTaskIndexResp
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from './productTaskStore'
 
 vi.mock('../api/tasks', () => ({
-  productTasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), pin: vi.fn(), unpin: vi.fn(), archive: vi.fn(), restore: vi.fn(), delete: vi.fn(), continue: vi.fn() },
+  productTasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), pin: vi.fn(), unpin: vi.fn(), archive: vi.fn(), restore: vi.fn(), recover: vi.fn(), delete: vi.fn(), continue: vi.fn() },
 }))
 
 function makeTask(overrides: Partial<ProductTaskRecord> = {}): ProductTaskRecord {
@@ -111,5 +111,19 @@ describe('productTaskStore authority mutations', () => {
     vi.mocked(productTasksApi.list).mockResolvedValue(makeIndex(forked))
     await useProductTaskStore.getState().continueTask(current.id, { sourceEntryId: 'thread_0123456789abcdef0123', target: 'new_worktree' })
     expect(productTasksApi.continue).toHaveBeenCalledWith(current.id, expect.objectContaining({ expected_revision: 4, target: 'new_worktree' }))
+  })
+
+  it('retries one failed-run recovery with the same durable operation envelope', async () => {
+    const failed = makeTask({ revision: 4 })
+    const recovered = makeTask({ revision: 5 })
+    useProductTaskStore.setState({ index: makeIndex(failed), confirmedAuthorityRevision: 12 })
+    vi.mocked(productTasksApi.recover).mockRejectedValueOnce(new Error('network timeout')).mockResolvedValueOnce(response(recovered, 13))
+    vi.mocked(productTasksApi.list).mockResolvedValue(makeIndex(recovered))
+    await expect(useProductTaskStore.getState().recoverTaskRun(failed.id)).rejects.toThrow('network timeout')
+    const pending = useProductTaskStore.getState().pending['task-1:recover']
+    expect(pending).toEqual(expect.objectContaining({ expected_revision: 4, client_operation_id: expect.any(String) }))
+    await useProductTaskStore.getState().recoverTaskRun(failed.id)
+    expect(productTasksApi.recover).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(productTasksApi.recover).mock.calls[0]?.[1]).toBe(vi.mocked(productTasksApi.recover).mock.calls[1]?.[1])
   })
 })
