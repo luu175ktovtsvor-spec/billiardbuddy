@@ -5,6 +5,7 @@ import type {
   ProductScheduledTaskRun,
   UpdateProductScheduledTaskInput,
 } from '../../../shared/product/scheduledTasks.js'
+import { realpath, stat } from 'node:fs/promises'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   CronService,
@@ -16,6 +17,7 @@ import {
   type CronScheduler,
   type TaskRun,
 } from '../services/cronScheduler.js'
+import { parseCronExpression } from '../../utils/cron.js'
 
 const PRODUCT_SCHEDULED_TASK_ID = /^[0-9a-zA-Z_-]{1,64}$/
 const MAX_TITLE_LENGTH = 160
@@ -47,14 +49,26 @@ export class ProductScheduledTaskService {
   }
 
   async createTask(input: unknown): Promise<ProductScheduledTask> {
-    const task = await this.cronService.createTask(toStoredCreateInput(input))
+    const stored = toStoredCreateInput(input)
+    stored.folderPath = await requireCanonicalWorkDir(stored.folderPath)
+    const task = await this.cronService.createTask(stored)
     return publicScheduledTask(task)
   }
 
   async updateTask(taskId: string, input: unknown): Promise<ProductScheduledTask> {
+    const normalizedTaskId = requireProductScheduledTaskId(taskId)
+    const existing = (await this.cronService.listTasks()).find((entry) => entry.id === normalizedTaskId)
+    if (!existing) throw ApiError.notFound('定时任务不存在')
+    const updates = toStoredUpdateInput(input)
+    if (updates.folderPath !== undefined) {
+      updates.folderPath = await requireCanonicalWorkDir(updates.folderPath)
+    }
+    if ((updates.enabled ?? existing.enabled ?? true) && !(updates.folderPath ?? existing.folderPath)) {
+      throw ApiError.badRequest('启用定时任务前必须选择工作目录')
+    }
     const task = await this.cronService.updateTask(
-      requireProductScheduledTaskId(taskId),
-      toStoredUpdateInput(input),
+      normalizedTaskId,
+      updates,
     )
     return publicScheduledTask(task)
   }
@@ -74,6 +88,7 @@ export class ProductScheduledTaskService {
         'PRODUCT_SCHEDULED_TASK_DISABLED',
       )
     }
+    await requireCanonicalWorkDir(task.folderPath)
 
     // The scheduler persists a real running record before starting the Core
     // process. Do not make up an optimistic client-side completion state.
@@ -104,7 +119,8 @@ function toStoredCreateInput(input: unknown): Omit<CronTask, 'id' | 'createdAt'>
     prompt: requireText(record.instruction, '任务内容', MAX_INSTRUCTION_LENGTH),
     enabled: optionalBoolean(record.enabled, '启用状态') ?? true,
     recurring: optionalBoolean(record.recurring, '重复执行') ?? true,
-    folderPath: optionalText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH),
+    folderPath: requireText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH),
+    missedRunPolicy: optionalMissedRunPolicy(record.missedRunPolicy) ?? 'run_once',
     notification: optionalNotification(record.notification),
   }
 }
@@ -119,7 +135,8 @@ function toStoredUpdateInput(input: unknown): Partial<CronTask> {
   if ('instruction' in record) updates.prompt = requireText(record.instruction, '任务内容', MAX_INSTRUCTION_LENGTH)
   if ('enabled' in record) updates.enabled = optionalBoolean(record.enabled, '启用状态')
   if ('recurring' in record) updates.recurring = optionalBoolean(record.recurring, '重复执行')
-  if ('workDir' in record) updates.folderPath = optionalNullableText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH)
+  if ('missedRunPolicy' in record) updates.missedRunPolicy = requireMissedRunPolicy(record.missedRunPolicy)
+  if ('workDir' in record) updates.folderPath = requireText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH)
   if ('notification' in record) updates.notification = optionalNullableNotification(record.notification)
 
   if (Object.keys(updates).length === 0) {
@@ -130,6 +147,7 @@ function toStoredUpdateInput(input: unknown): Partial<CronTask> {
 
 function publicScheduledTask(task: CronTask): ProductScheduledTask {
   const notification = publicNotification(task.notification)
+  const hasWorkDir = Boolean(task.folderPath?.trim())
   return {
     id: task.id,
     title: boundedText(task.name?.trim() || task.prompt.trim() || '未命名定时任务', MAX_TITLE_LENGTH),
@@ -138,8 +156,18 @@ function publicScheduledTask(task: CronTask): ProductScheduledTask {
       : {}),
     schedule: task.cron,
     instruction: boundedText(task.prompt, MAX_INSTRUCTION_LENGTH),
-    enabled: task.enabled !== false,
+    // Older generic cron records did not require a working directory. Keep
+    // them visible for repair, but never present them as runnable ProductTasks.
+    enabled: task.enabled !== false && hasWorkDir,
     recurring: task.recurring !== false,
+    missedRunPolicy: task.missedRunPolicy === 'skip' ? 'skip' : 'run_once',
+    grant: {
+      version: 1,
+      scope: 'workdir',
+      fileAccess: 'workspace_write',
+      networkAccess: 'denied',
+      destructiveActions: 'denied',
+    },
     createdAt: Number.isFinite(task.createdAt) ? task.createdAt : 0,
     ...(validTimestamp(task.lastFiredAt) ? { lastRunAt: task.lastFiredAt } : {}),
     ...(task.folderPath?.trim() ? { workDir: boundedText(task.folderPath.trim(), MAX_WORK_DIR_LENGTH) } : {}),
@@ -156,6 +184,8 @@ function publicScheduledTaskRun(run: TaskRun): ProductScheduledTaskRun {
     taskId: run.taskId,
     taskTitle: boundedText(run.taskName || '定时任务', MAX_TITLE_LENGTH),
     startedAt: run.startedAt,
+    occurrenceAt: validTimestamp(run.occurrenceAt) ? run.occurrenceAt : run.startedAt,
+    trigger: run.trigger === 'schedule' ? 'schedule' : 'manual',
     ...(validTimestamp(run.completedAt) ? { completedAt: run.completedAt } : {}),
     status,
     ...(run.output?.trim() ? { result: boundedText(run.output.trim(), MAX_RESULT_LENGTH) } : {}),
@@ -213,21 +243,30 @@ function requireSchedule(value: unknown): string {
 }
 
 function isValidSchedule(schedule: string): boolean {
-  const fields = schedule.trim().split(/\s+/)
-  if (fields.length !== 5) return false
-  const fieldPattern = /^(\*|(\d+(-\d+)?(\/\d+)?)(,(\d+(-\d+)?(\/\d+)?))*)$/
-  const maxValues = [59, 23, 31, 12, 7]
-  const minValues = [0, 0, 1, 1, 0]
+  return parseCronExpression(schedule) !== null
+}
 
-  return fields.every((field, index) => {
-    if (/^\*\/\d+$/.test(field) || field === '*') return true
-    if (!fieldPattern.test(field)) return false
-    const values = field.replace(/\/\d+/g, '').split(/[,\-]/).filter((value) => /^\d+$/.test(value))
-    return values.every((value) => {
-      const parsed = Number.parseInt(value, 10)
-      return parsed >= minValues[index]! && parsed <= maxValues[index]!
-    })
-  })
+function optionalMissedRunPolicy(value: unknown): 'run_once' | 'skip' | undefined {
+  if (value === undefined) return undefined
+  return requireMissedRunPolicy(value)
+}
+
+function requireMissedRunPolicy(value: unknown): 'run_once' | 'skip' {
+  if (value !== 'run_once' && value !== 'skip') {
+    throw ApiError.badRequest('休眠恢复策略格式有误')
+  }
+  return value
+}
+
+async function requireCanonicalWorkDir(value: unknown): Promise<string> {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw ApiError.badRequest('工作目录不能为空')
+  }
+  const canonical = await realpath(value.trim()).catch(() => undefined)
+  if (!canonical || !await stat(canonical).then((entry) => entry.isDirectory()).catch(() => false)) {
+    throw ApiError.badRequest('工作目录不存在或不可访问')
+  }
+  return canonical
 }
 
 function optionalNotification(value: unknown): TaskNotificationConfig | undefined {

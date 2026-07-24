@@ -58,7 +58,7 @@ describe('product scheduled task adapter', () => {
         description: '汇总当天关键数据',
         schedule: '0 21 * * *',
         instruction: '整理今天的营业数据并给出明日建议。',
-        workDir: '/workspace/billiard',
+        workDir: tempDir,
         notification: { enabled: true, channels: ['desktop'] },
         model: 'internal-model',
         providerId: 'private-provider',
@@ -81,6 +81,14 @@ describe('product scheduled task adapter', () => {
       instruction: '整理今天的营业数据并给出明日建议。',
       enabled: true,
       recurring: true,
+      missedRunPolicy: 'run_once',
+      grant: {
+        version: 1,
+        scope: 'workdir',
+        fileAccess: 'workspace_write',
+        networkAccess: 'denied',
+        destructiveActions: 'denied',
+      },
     })
     expect(body.task).not.toHaveProperty('model')
     expect(body.task).not.toHaveProperty('providerId')
@@ -127,6 +135,8 @@ describe('product scheduled task adapter', () => {
       taskId: 'task-1',
       taskTitle: '每日复盘',
       startedAt: '2026-07-19T00:00:00.000Z',
+      occurrenceAt: '2026-07-19T00:00:00.000Z',
+      trigger: 'manual',
       completedAt: '2026-07-19T00:00:05.000Z',
       status: 'failed',
       result: '公开的执行结果',
@@ -150,6 +160,7 @@ describe('product scheduled task adapter', () => {
       title: '手动运行',
       schedule: '0 9 * * *',
       instruction: '检查营业日报。',
+      workDir: tempDir,
     })
     const request = new Request(`http://localhost/api/product/scheduled-tasks/${task.id}/run`, { method: 'POST' })
 
@@ -165,6 +176,23 @@ describe('product scheduled task adapter', () => {
     expect(runCalls).toBe(1)
   })
 
+  it('keeps legacy tasks without a working directory visible but safely paused', async () => {
+    await new CronService().createTask({
+      name: '旧计划任务',
+      cron: '0 9 * * *',
+      prompt: '检查营业日报。',
+      enabled: true,
+      recurring: true,
+    })
+    const service = new ProductScheduledTaskService(new CronService(), schedulerWith())
+
+    await expect(service.listTasks()).resolves.toMatchObject([{
+      title: '旧计划任务',
+      enabled: false,
+      missedRunPolicy: 'run_once',
+    }])
+  })
+
   it('does not start a task that has been paused since the page was loaded', async () => {
     let runCalls = 0
     const scheduler = schedulerWith()
@@ -178,6 +206,7 @@ describe('product scheduled task adapter', () => {
       title: '暂停后运行',
       schedule: '0 9 * * *',
       instruction: '检查营业日报。',
+      workDir: tempDir,
     })
     await service.updateTask(task.id, { enabled: false })
     const request = new Request(`http://localhost/api/product/scheduled-tasks/${task.id}/run`, { method: 'POST' })

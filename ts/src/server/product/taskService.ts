@@ -1573,42 +1573,101 @@ export class ProductTaskService {
    * Server-private cron hand-off.  The schedule occurrence key is durable and
    * idempotent; cron never fabricates a session or falls back to home/cwd.
    */
-  async submitScheduledTaskRun(scheduleId: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }> {
-    if (!/^[0-9A-Za-z_-]{1,64}$/.test(scheduleId) || !prompt || !occurrence) throw new Error('SCHEDULE_IDENTITY_INVALID')
+  async submitScheduledTaskRun(scheduleId: string, title: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }> {
+    if (!/^[0-9A-Za-z_-]{1,64}$/.test(scheduleId) || !title.trim() || title.length > 160 || !prompt || !occurrence) throw new Error('SCHEDULE_IDENTITY_INVALID')
     const canonicalWorkDir = await fs.realpath(workDir).catch(() => undefined)
     if (!canonicalWorkDir || !await fs.stat(canonicalWorkDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('SCHEDULE_WORKDIR_UNAVAILABLE')
+    const inspectedWorkspace = await this.workspaceFs.inspect(canonicalWorkDir)
+    if (inspectedWorkspace.canonical_root !== canonicalWorkDir || inspectedWorkspace.availability !== 'available') throw new Error('SCHEDULE_WORKDIR_UNAVAILABLE')
     const operationId = `schedule:${scheduleId}:${occurrence}`
+    const permissionSnapshot = productPermissionSnapshot('approve_for_me')
+    const workspaceId = `schedule_${scheduleId}`
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const prior = state.receipts[operationId]
-      if (prior) return { changed: false as const, value: prior.result as { run_id: string; dispatch_generation: number } }
+      if (prior) {
+        const priorResult = prior.result as { run_id?: unknown; dispatch_generation?: unknown }
+        if (typeof priorResult.run_id !== 'string' || !Number.isSafeInteger(priorResult.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: { run_id: priorResult.run_id, dispatch_generation: priorResult.dispatch_generation as number } }
+      }
       const now = this.now().toISOString()
       const taskId = `scheduled_${createHash('sha256').update(scheduleId).digest('hex').slice(0, 24)}`
       let stored = state.tasks[taskId] as { task?: Record<string, unknown> } | undefined
       let lineageId = stored?.task?.current_lineage_id as string | undefined
       if (!stored?.task || !lineageId) {
         lineageId = `lineage_${randomUUID()}`
-        const task = { id: taskId, projectId: '', directoryId: '', workDir: canonicalWorkDir, title: `定时任务 ${scheduleId}`, lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', permission_snapshot: productPermissionSnapshot('ask_for_approval'), actions: ['rename', 'archive'], revision: 1, task_scope: 'workspace', current_lineage_id: lineageId }
+        const task = { id: taskId, projectId: '', directoryId: '', workDir: canonicalWorkDir, title: title.trim(), lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', permission_snapshot: permissionSnapshot, actions: ['rename', 'archive'], revision: 1, task_scope: 'workspace', current_lineage_id: lineageId }
         state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }
-        state.task_scopes[taskId] = { kind: 'workspace', workspace_id: `schedule_${scheduleId}` }
-        state.workspaces[`schedule_${scheduleId}`] = { id: `schedule_${scheduleId}`, canonical_root: canonicalWorkDir, state: 'ready' }
         state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 0, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, state: 'active', created_at: now, updated_at: now }
+        stored = state.tasks[taskId] as { task: Record<string, unknown> }
+      } else {
+        stored.task.workDir = canonicalWorkDir
+        stored.task.title = title.trim()
+        stored.task.permission_snapshot = permissionSnapshot
+        stored.task.updatedAt = now
+        stored.task.revision = Math.max(1, Number(stored.task.revision) || 1) + 1
+      }
+      const priorScope = state.task_scopes[taskId] as { kind?: unknown; workspace_id?: unknown; generation?: unknown } | undefined
+      const priorWorkspace = state.workspaces[workspaceId] as ProductWorkspace | undefined
+      const workspaceChanged = !priorWorkspace
+        || priorWorkspace.canonical_root !== canonicalWorkDir
+        || priorWorkspace.root_identity.platform !== inspectedWorkspace.identity.platform
+        || priorWorkspace.root_identity.volume_id !== inspectedWorkspace.identity.volume_id
+        || priorWorkspace.root_identity.file_id !== inspectedWorkspace.identity.file_id
+        || priorWorkspace.availability !== inspectedWorkspace.availability
+      if (workspaceChanged) {
+        state.workspaces[workspaceId] = {
+          workspace_id: workspaceId,
+          installation_id: this.installationId,
+          canonical_root: canonicalWorkDir,
+          root_identity: inspectedWorkspace.identity,
+          revision: priorWorkspace ? priorWorkspace.revision + 1 : 0,
+          availability: inspectedWorkspace.availability,
+          created_at: priorWorkspace?.created_at ?? now,
+          updated_at: now,
+        }
+      }
+      state.task_scopes[taskId] = {
+        kind: 'workspace',
+        workspace_id: workspaceId,
+        generation: priorScope?.kind === 'workspace' && priorScope.workspace_id === workspaceId && Number.isSafeInteger(priorScope.generation)
+          ? (priorScope.generation as number) + (workspaceChanged && priorWorkspace ? 1 : 0)
+          : 0,
       }
       const lineage = state.conversation_lineages[lineageId] as { resume_binding_id: string; revision: number }
       const runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
       state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: prompt, created_at: now }
-      const permissionSnapshot = taskPermissionSnapshot(stored?.task?.permission_snapshot)
       state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'workspace_bound', permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: canonicalWorkDir, dispatch_generation: 1 } }
       state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
       state.event_sequence += 1
       state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: prompt, attachment_ids: [], created_at: now }
       const result = { run_id: runId, dispatch_generation: 1 }
-      state.receipts[operationId] = { client_operation_id: operationId, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result }
-      state.events[operationId] = { event_sequence: state.event_sequence, client_operation_id: operationId, kind: 'schedule_submit', revision: state.revision + 1, canonical_input: JSON.stringify({ scheduleId, occurrence }), entity_id: taskId, product_task_id: taskId }
+      state.receipts[operationId] = { client_operation_id: operationId, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1 } }
+      state.events[operationId] = { event_sequence: state.event_sequence, client_operation_id: operationId, kind: 'schedule_submit', revision: state.revision + 1, canonical_input: JSON.stringify({ scheduleId, occurrence, grant: 'workdir_workspace_write_v1' }), entity_id: taskId, product_task_id: taskId }
       return result
     })
     this.dispatchScheduledTaskRun(result.run_id, result.dispatch_generation)
     return result
+  }
+
+  /** Server-private terminal projection for the schedule history/notification adapter. */
+  async inspectScheduledTaskRun(runId: string, dispatchGeneration: number): Promise<{
+    state: 'running' | 'completed' | 'failed'
+    completed_at?: string
+  }> {
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const run = file.task_runs[runId] as { task_id?: unknown } | undefined
+    const dispatch = file.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+    if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+    if (dispatch.state === 'terminal') {
+      return dispatch.error === 'TERMINAL'
+        ? { state: 'completed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
+        : { state: 'failed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
+    }
+    if (dispatch.state === 'recovery_required') {
+      return { state: 'failed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
+    }
+    return { state: 'running' }
   }
 
   /**

@@ -78,6 +78,31 @@ test('native ProductTask Core passes hosted MCP clients, tools, and commands int
   expect(queryInput?.commands).toContain(command)
 })
 
+test('native ProductTask automatic review allows workspace edits without widening the sandbox', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-native-permission-')); roots.push(root)
+  let queryInput: Record<string, unknown> | undefined
+  const query = (async function* (value: Record<string, unknown>) {
+    queryInput = value
+    yield { type: 'result', subtype: 'success', is_error: false, result: '完成' }
+  }) as never
+  const port = await createServerPrivateNativeCorePort({
+    run_id: 'permission-run',
+    session_id: 'permission-session',
+    work_dir: root,
+    permission_envelope: createPolicyBoundEnvelope(productPermissionSnapshot('approve_for_me')),
+    query,
+    load_commands: async () => [],
+    load_tools: () => [],
+  })
+
+  await port.input('在工作区内写入结果')
+  const getAppState = queryInput?.getAppState as (() => { toolPermissionContext: { mode: string; isBypassPermissionsModeAvailable: boolean } }) | undefined
+  expect(getAppState?.().toolPermissionContext).toMatchObject({
+    mode: 'acceptEdits',
+    isBypassPermissionsModeAvailable: false,
+  })
+})
+
 test('native ProductTask Core never enters the query loop after stop wins an MCP connection race', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-native-mcp-stop-')); roots.push(root)
   let releaseHost!: () => void
