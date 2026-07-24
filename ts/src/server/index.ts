@@ -109,6 +109,14 @@ export function startServer(port = PORT, host = HOST) {
   // All media-facing routes share one process-local service so video exports from
   // task views and the media workbench use the same FFmpeg admission queue.
   const mediaService = new MediaProjectService()
+  if (process.env.NODE_ENV !== 'test') {
+    void mediaService.purgeExpiredDeletions().catch(error => diagnosticsService.recordEvent({
+      type: 'media_gc_failed',
+      severity: 'error',
+      summary: 'Media retention cleanup failed',
+      details: { error },
+    }))
+  }
   const mediaApiHandler = createMediaApiHandler(
     mediaService,
     mediaUiCapability,

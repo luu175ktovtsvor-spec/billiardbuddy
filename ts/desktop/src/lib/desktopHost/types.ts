@@ -3,8 +3,8 @@ import type {
   AppModeConfig as SettingsAppModeConfig,
 } from '../../types/settings'
 import type {
-  ImageWorkbenchProject,
-  MediaTask,
+  PublicImageWorkbenchProject as ImageWorkbenchProject,
+  PublicMediaTask as MediaTask,
   SaveImageOutputInput,
   UpdateImageProjectInput,
 } from '../../../../shared/contracts/media'

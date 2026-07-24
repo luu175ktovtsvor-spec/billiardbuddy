@@ -6,6 +6,9 @@ import {
   createVideoProjectInputSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
+  publicMediaProjectSchema,
+  publicMediaDeletionReceiptSchema,
+  publicMediaTaskSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   submitImageProjectInputSchema,
@@ -14,9 +17,16 @@ import {
   MEDIA_UI_CAPABILITY_HEADER,
   type MediaProject,
   type MediaTask,
+  type PublicMediaProject,
+  type PublicMediaTask,
 } from '../../../shared/contracts/media.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
+
+const STANDALONE_MEDIA_OWNER = {
+  kind: 'standalone' as const,
+  owner_id: 'local_workbench' as const,
+}
 
 function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
@@ -80,9 +90,13 @@ export function consumeMediaUiCapability(
   return capability
 }
 
-function publicProject(project: MediaProject): MediaProject {
+function publicProject(project: MediaProject): PublicMediaProject {
   const {
     product_task_id: _productTaskId,
+    owner: _owner,
+    writer_fence: _writerFence,
+    assets: _assets,
+    versions: _versions,
     error: _rawError,
     error_code: persistedErrorCode,
     ...safeProject
@@ -92,33 +106,39 @@ function publicProject(project: MediaProject): MediaProject {
       ? 'MEDIA_IMAGE_UNAVAILABLE'
       : 'MEDIA_VIDEO_EXPORT_FAILED'))
     : null
-  const projected = {
+  const projected = publicMediaProjectSchema.parse({
     ...safeProject,
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
-  } as MediaProject
+  })
   if (projected.kind !== 'image') return projected
-  return {
+  return publicMediaProjectSchema.parse({
     ...projected,
     reference_image_count: projected.reference_images.length
       || projected.reference_image_assets?.length
       || projected.reference_image_count,
     reference_images: [],
     reference_image_assets: [],
-  }
+  })
 }
 
-function publicTask(task: MediaTask): MediaTask {
-  const { error: _rawError, error_code: persistedErrorCode, ...safeTask } = task
+function publicTask(task: MediaTask): PublicMediaTask {
+  const {
+    owner: _owner,
+    attempt: _attempt,
+    error: _rawError,
+    error_code: persistedErrorCode,
+    ...safeTask
+  } = task
   const fallback = task.kind === 'image.generate'
     ? 'MEDIA_IMAGE_UNAVAILABLE'
     : task.kind === 'video.probe'
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
       : 'MEDIA_VIDEO_EXPORT_FAILED'
   const failure = _rawError ? mediaSafeError(persistedErrorCode ?? fallback) : null
-  return {
+  return publicMediaTaskSchema.parse({
     ...safeTask,
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
-  }
+  })
 }
 
 function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['toolchainStatus']>>) {
@@ -146,7 +166,9 @@ export function createMediaApiHandler(
         if (kind !== null && kind !== 'image' && kind !== 'video') {
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
-        return Response.json({ projects: (await service.listProjects(kind ?? undefined)).map(publicProject) })
+        return Response.json({
+          projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind ?? undefined)).map(publicProject),
+        })
       }
 
       if (area === 'assets') {
@@ -154,12 +176,31 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         const fileName = segments[4]
         if (!projectId || !fileName || segments[5]) throw ApiError.badRequest('无效的媒体资产地址')
+        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         return await service.assetResponse(projectId, fileName)
+      }
+
+      if (area === 'deletions') {
+        if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
+        const deletions = await service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER)
+        return Response.json({
+          deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
+        })
       }
 
       if (area === 'project') {
         const projectId = segments[3]
         if (!projectId) throw ApiError.badRequest('缺少媒体项目 ID')
+        const action = segments[4]
+        if (action === 'restore') {
+          if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+          const receipt = publicMediaDeletionReceiptSchema.parse(
+            await service.restoreProject(projectId, STANDALONE_MEDIA_OWNER),
+          )
+          return Response.json({ deletion: receipt })
+        }
+        if (action) throw ApiError.badRequest('无效的媒体项目操作')
+        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (req.method === 'DELETE') {
           await service.deleteProject(projectId)
           return new Response(null, { status: 204 })
@@ -171,6 +212,7 @@ export function createMediaApiHandler(
       if (area === 'tasks') {
         const taskId = segments[3]
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
+        await service.assertTaskOwner(taskId, STANDALONE_MEDIA_OWNER)
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
           return Response.json({ task: publicTask(await service.cancelTask(taskId)) })
@@ -187,6 +229,7 @@ export function createMediaApiHandler(
           const input = createImageProjectInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicProject(await service.createImageProject(input)) }, { status: 201 })
         }
+        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (!action && req.method === 'PUT') {
           const input = updateImageProjectInputSchema.parse(await parseJson(req))
           if (input.confirm_unknown_retry) {
@@ -226,6 +269,7 @@ export function createMediaApiHandler(
           const input = createVideoProjectInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicProject(await service.createVideoProject(input)) }, { status: 201 })
         }
+        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (action === 'sources') {
           const sourceId = segments[6]
           const sourceAction = segments[7]
