@@ -99,6 +99,7 @@ import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } fr
 import { createProductInstructionSnapshot } from 'src/server/services/productInstructions.js'
 import { ProductSessionMemoryRepository, type ProductSessionMemoryBinding } from 'src/server/services/productSessionMemory.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from 'src/server/services/productAutoMemory.js'
+import type { ProductTaskMcpHost } from 'src/server/agent-worker/mcpHost.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -448,6 +449,10 @@ export async function createServerPrivateNativeCorePort(input: {
   session_id: string
   work_dir: string
   permission_envelope: PermissionExecutionEnvelope
+  mcp_host?: ProductTaskMcpHost
+  query?: typeof ask
+  load_commands?: typeof getCommands
+  load_tools?: typeof getTools
   auto_memory?: ProductAutoMemoryBinding & { task_id: string; entry_id: string }
   session_memory?: ProductSessionMemoryBinding & { entry_id: string }
 }): Promise<ServerPrivateNativeCorePort> {
@@ -461,6 +466,13 @@ export async function createServerPrivateNativeCorePort(input: {
         : 'default',
       isBypassPermissionsModeAvailable: input.permission_envelope.approval_policy === 'never',
     },
+  }
+  let mcpConnected = false
+  const connectMcpHost = async () => {
+    if (!input.mcp_host || mcpConnected) return
+    const mcp = await input.mcp_host.connect(input.work_dir)
+    state = { ...state, mcp: { ...state.mcp, ...mcp } }
+    mcpConnected = true
   }
   const instructionSnapshot = createProductInstructionSnapshot(input.work_dir)
   const autoMemoryRepository = input.auto_memory ? new ProductAutoMemoryRepository() : undefined
@@ -507,14 +519,16 @@ export async function createServerPrivateNativeCorePort(input: {
         return
       }
       try {
-        const commands = await getCommands(input.work_dir)
-        const tools = getTools(state.toolPermissionContext)
+        await connectMcpHost()
+        if (controller.signal.aborted || terminal) return
+        const commands = uniqBy([...await (input.load_commands ?? getCommands)(input.work_dir), ...state.mcp.commands], 'name')
+        const tools = uniqBy([...(input.load_tools ?? getTools)(state.toolPermissionContext), ...state.mcp.tools], 'name')
         let completedResult: string | undefined
         const attachmentPrefix = attachments.map(filePath => `@"${filePath}"`).join(' ')
         const prompt = attachmentPrefix ? `${attachmentPrefix} ${text}`.trim() : text
         await runWithProductPermissionEnvelope(input.permission_envelope, () => (
           runWithCwdOverride(input.work_dir, async () => {
-            const stream = ask({
+            const stream = (input.query ?? ask)({
               commands,
               prompt,
               cwd: input.work_dir,
