@@ -88,7 +88,7 @@ type PhaseSummary = {
 function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=https://gateway.example/gw \\
-  QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_TOKEN=<installation-access-token> \\
   QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/real-loadtest.ts --execute [options]
 
@@ -111,8 +111,6 @@ Options:
   --drain-timeout-ms=<n>      Wait for the sampled pool to drain (default: request timeout)
   --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
   --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
-  --use-server-app-token      Gateway-host only: read its app token solely for
-                               http://127.0.0.1:8799 (never an external URL)
 
 The runner uses controlled X-QF-Client-ID values so a 100×10 phase models ten
 windows per installation, reads every SSE body to completion, and requires a
@@ -285,14 +283,8 @@ function isHttpLoopback(url: URL): boolean {
     && octets.every(octet => /^\d+$/.test(octet) && Number(octet) <= 255)
 }
 
-function isGatewayLoopback(url: URL): boolean {
-  return isHttpLoopback(url)
-    && url.port === '8799'
-    && url.pathname === '/'
-}
-
 /**
- * An app token may be supplied to this runner, so an accidental plaintext
+ * An installation access token may be supplied to this runner, so an accidental plaintext
  * external endpoint or URL-embedded secret is not acceptable. Keep the
  * request path private as well: callers get only targetOrigin in the summary.
  */
@@ -367,40 +359,6 @@ export class SseTerminalDetector {
   }
 }
 
-/**
- * This is deliberately narrower than a generic token-file option. It is usable only
- * on the qfgw host and only after `isGatewayLoopback` rejects every external target,
- * so a production app token cannot accidentally be sent to an arbitrary URL.
- */
-async function loadLocalGatewayAppToken(): Promise<string> {
-  const raw = await Bun.file('/opt/qfgw/gw.env').text()
-  const line = raw.split(/\r?\n/).find(value => value.startsWith('GW_APP_TOKENS='))
-  if (!line) throw new Error('qfgw app-token map is unavailable')
-  let encoded = line.slice('GW_APP_TOKENS='.length).trim()
-  if (encoded.startsWith("'") && encoded.endsWith("'")) encoded = encoded.slice(1, -1)
-  else if (encoded.startsWith('"') && encoded.endsWith('"')) {
-    try {
-      const decoded = JSON.parse(encoded)
-      if (typeof decoded !== 'string') throw new Error('not a string')
-      encoded = decoded
-    } catch {
-      throw new Error('qfgw app-token map is unavailable')
-    }
-  }
-  let tokens: unknown
-  try {
-    tokens = JSON.parse(encoded)
-  } catch {
-    throw new Error('qfgw app-token map is unavailable')
-  }
-  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
-    throw new Error('qfgw app-token map is unavailable')
-  }
-  const token = Object.keys(tokens).find(value => value.length > 0)
-  if (!token) throw new Error('qfgw app-token map is unavailable')
-  return token
-}
-
 async function main(): Promise<void> {
   const args = Bun.argv.slice(2)
   if (args.includes('--help') || args.includes('-h')) usage(0)
@@ -412,13 +370,8 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const useServerAppToken = args.includes('--use-server-app-token')
-  if (useServerAppToken && !isGatewayLoopback(base)) {
-    throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
-  }
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
-    ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
-  if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
   const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
   if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
     throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')

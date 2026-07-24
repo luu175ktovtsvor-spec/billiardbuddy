@@ -638,7 +638,7 @@ function loadConfig(env: Env): GatewayConfig {
   }
   return {
     relayToken: required(env, 'GW_RELAY_TOKEN'),
-    // 美国 relay 上的 GPT 生图异步任务服务(relay/app.ts)地址;缺则异步任务端点返回 503,客户端退同步路径。
+    // 美国 relay 上的生图异步任务服务(relay/app.ts)地址；缺失时相关端点明确返回 503。
     relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
     // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
     relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
@@ -665,8 +665,8 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
     // DeepSeek V4 Flash:真 key 只在服务器。受控假上游验证覆盖 100 人 × 10 窗口的 1,000 路
-    // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、共享 app token
-    // 最多 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
+    // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、全局最多
+    // 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
     // CPU 余量与真实混合负载的渐进式验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
     // 2500；缺 key 时路由显式 503，绝不回退到未登记 provider。
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',

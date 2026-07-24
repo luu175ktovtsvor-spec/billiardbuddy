@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run as root on the US Nginx server after copying qfgw-us-https-proxy.conf to /tmp.
-# It preserves dated backups and restores them if nginx -t rejects the change.
+# It keeps rollback snapshots only for the duration of the deployment and restores
+# them if validation or reload fails.
 # A 1000-window SSE burst needs both the /gw/ location and enough Nginx event
 # connections: every proxied stream consumes one client-side and one upstream
 # connection. This script requires an effective worker_connections floor of 8192.
@@ -17,6 +18,10 @@ include_line="    include $snippet_file;"
 test -f "$site_file"
 test -f "$snippet_source"
 test -f "$main_config"
+systemctl is-active --quiet qfgw-tunnel || {
+  echo 'qfgw-tunnel must be active before exposing /gw/' >&2
+  exit 1
+}
 if ! [[ "$required_connections" =~ ^[0-9]+$ ]] || (( 10#$required_connections < 8192 )); then
   echo 'QF_US_NGINX_WORKER_CONNECTIONS must be a decimal integer of at least 8192' >&2
   exit 2
@@ -105,5 +110,7 @@ if ! systemctl reload nginx; then
   echo "qfgw HTTPS proxy/capacity settings were not applied because nginx reload failed; backups were restored." >&2
   exit 1
 fi
+
+rm -f -- ${main_config_backup:+"$main_config_backup"} ${site_backup:+"$site_backup"} ${snippet_backup:+"$snippet_backup"}
 
 echo "qfgw HTTPS proxy enabled at /gw/ with worker_connections >= $required_connections"
