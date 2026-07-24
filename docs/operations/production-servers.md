@@ -23,6 +23,13 @@
 
 公网网关只有 `https://zzyppz.cn/gw`。大陆 Nginx 不暴露 `/gw`，美国到大陆的请求不得退回公网 HTTP。
 
+### 1.1 当前部署快照
+
+- 2026-07-24 12:54 CST 以仓库 `038c3b8e…` 的运行闭包重新部署大陆 qfgw；部署脚本在重启前通过授权、MiMo 分区和生产容量预检，未覆盖 `gw.env`、`authority.json` 或 `usage.db*`。
+- 大陆 `/opt/qfgw/providerRegistry.ts` 与仓库 SHA-256 均为 `e2cc5bce75448686204c07ea16857822e597c9d793b53eb2a6107929a4fad9ad`；GPT Image `gpt-image-2` 和豆包 Seedream `doubao-seedream-4-5-251128` 都是正式 `ImageGeneration` 注册项。
+- 美国 `/opt/qfrelay/app.ts` 与仓库 SHA-256 均为 `18af9a6fdb8f01dff4d1652cdf9621955c092b196ee4da6497dcdbac4c223c35`；`RELAY_ARK_KEY` 已配置，Seedream 模型和并发值使用当前 relay 代码的正式缺省值。
+- 快照验收时 `qfgw`、`qfrelay`、`qfgw-tunnel` 和 `nginx` 均为 active；大陆 loopback、美国隧道、美国 relay 和 `https://zzyppz.cn/gw/healthz` 全部通过。部署上传物和临时回滚包已在验收后删除。
+
 ## 2. 大陆服务器
 
 ### 2.1 正式文件
