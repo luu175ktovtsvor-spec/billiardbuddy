@@ -388,6 +388,8 @@ export const mediaTaskSchema = z.object({
   outcome_unknown: z.boolean().optional(),
   data_egress_consent: imageDataEgressConsentReceiptSchema.optional(),
   provider_receipt_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  /** Relay result blob was deleted only after the local Version/Asset commit succeeded. */
+  remote_result_acknowledged_at: mediaIsoDateSchema.optional(),
   image_operation: z.object({
     kind: z.enum(['generate', 'edit', 'inpaint']),
     base_version_id: mediaIdSchema.optional(),
@@ -402,7 +404,12 @@ export const mediaTaskSchema = z.object({
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })
-export const publicMediaTaskSchema = mediaTaskSchema.omit({ owner: true, attempt: true, image_operation: true })
+export const publicMediaTaskSchema = mediaTaskSchema.omit({
+  owner: true,
+  attempt: true,
+  image_operation: true,
+  remote_result_acknowledged_at: true,
+})
 
 export const imageGenerationTaskResultSchema = z.object({
   output_count: z.number().int().nonnegative(),

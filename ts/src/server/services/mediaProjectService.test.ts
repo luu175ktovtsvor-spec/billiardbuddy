@@ -55,6 +55,7 @@ describe('MediaProjectService image projects', () => {
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     const calls: Array<{ url: string; key: string | null; consent: string | null; body?: Record<string, unknown> }> = []
     let polls = 0
+    let acknowledgements = 0
     const mediaRoot = await root()
     const service = new MediaProjectService({
       root: mediaRoot,
@@ -65,6 +66,12 @@ describe('MediaProjectService image projects', () => {
           ? JSON.parse(init.body) as Record<string, unknown>
           : undefined
         calls.push({ url: requestUrl, key: headers.get('idempotency-key'), consent: headers.get('x-bb-data-egress-consent'), body })
+        if (requestUrl.endsWith('/ack')) {
+          acknowledgements += 1
+          return acknowledgements === 1
+            ? Response.json({ error: 'temporary acknowledgement failure' }, { status: 503 })
+            : Response.json({ status: 'succeeded', result_acknowledged: true })
+        }
         if (init?.method === 'POST') return Response.json({ task_id: 'remote-1', status: 'queued' }, { status: 202 })
         polls += 1
         return Response.json(polls === 1
@@ -72,6 +79,7 @@ describe('MediaProjectService image projects', () => {
           : {
               task_id: 'remote-1',
               status: 'succeeded',
+              provider_receipt_hash: 'b'.repeat(64),
               data: [{ b64_json: Buffer.from('png-bytes').toString('base64') }],
             })
       },
@@ -101,6 +109,12 @@ describe('MediaProjectService image projects', () => {
     expect((await service.getTask(first.id)).status).toBe('running')
     const completed = await service.getTask(first.id)
     expect(completed.status).toBe('succeeded')
+    expect(completed.remote_result_acknowledged_at).toBeUndefined()
+    const acknowledged = await service.getTask(first.id)
+    expect(acknowledged.remote_result_acknowledged_at).toBeDefined()
+    expect(calls.filter(call => call.url.endsWith('/ack'))).toHaveLength(2)
+    expect(calls.filter(call => call.url.endsWith('/v1/images/tasks'))).toHaveLength(1)
+    expect(polls).toBe(2)
     expect(completed.result?.input_fidelity_status).toBeUndefined()
     const ready = await service.getProject(project.id)
     expect(ready.kind).toBe('image')

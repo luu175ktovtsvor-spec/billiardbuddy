@@ -166,6 +166,8 @@ type RelayImageTask = {
   input_fidelity_risk?: string
   data_egress_consent_hash?: string
   provider_receipt_hash?: string
+  result_acknowledged?: boolean
+  acknowledged_at?: number
 }
 
 function imageConsentReceipt(
@@ -1214,6 +1216,16 @@ export class MediaProjectService {
       return await this.refreshPersistedImageTask(task)
     }
     if (
+      refreshRemote
+      && task.kind === 'image.generate'
+      && task.status === 'succeeded'
+      && task.remote_task_id
+      && task.provider_receipt_hash
+      && !task.remote_result_acknowledged_at
+    ) {
+      return await this.acknowledgePersistedImageResult(task)
+    }
+    if (
       task.kind === 'video.render' &&
       ['queued', 'running', 'committing'].includes(task.status) &&
       !this.activeRenders.has(task.id) &&
@@ -2154,6 +2166,56 @@ export class MediaProjectService {
     }) as ImageWorkbenchProject
   }
 
+  private async acknowledgePersistedImageResult(task: MediaTask): Promise<MediaTask> {
+    if (
+      task.kind !== 'image.generate'
+      || task.status !== 'succeeded'
+      || !task.remote_task_id
+      || !task.provider_receipt_hash
+      || task.remote_result_acknowledged_at
+      || !qfGatewayConfigured()
+    ) return task
+    const result = imageGenerationTaskResultSchema.safeParse(task.result)
+    if (!result.success || result.data.outputs.length === 0) return task
+    const project = await this.getProject(task.project_id).catch(() => null)
+    if (project?.kind !== 'image') return task
+    const localAssets = await Promise.all(result.data.outputs.map(async output => {
+      const persisted = project.outputs.find(candidate => candidate.id === output.id)
+      if (!persisted?.asset_path) return false
+      const fileName = persisted.asset_path.split('/').pop() ?? ''
+      if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return false
+      return await stat(join(this.assetsDir, project.id, fileName)).then(info => info.isFile()).catch(() => false)
+    }))
+    if (localAssets.some(persisted => !persisted)) return task
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${getQfGatewayToken()}`,
+      [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+    }
+    const installationId = getInstallationId()
+    if (installationId) headers['X-QF-Client-ID'] = installationId
+    try {
+      const { response, body } = await this.fetchImageGatewayJson(
+        `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/ack`,
+        { method: 'POST', headers },
+      )
+      if (!response.ok || body.result_acknowledged !== true) {
+        recordMediaFailure('image_result_ack', { status: response.status })
+        return task
+      }
+      return await this.saveTask({
+        ...task,
+        remote_result_acknowledged_at: this.iso(),
+        updated_at: this.iso(),
+      })
+    } catch (error) {
+      // The local Version/Asset is already durable. A transient ack failure may
+      // retain the relay blob until the next task read, but must never retry generation.
+      recordMediaFailure('image_result_ack', error)
+      return task
+    }
+  }
+
   private async refreshImageTask(task: MediaTask): Promise<MediaTask> {
     if (!task.remote_task_id) return task
     if (!qfGatewayConfigured()) return task
@@ -2329,7 +2391,7 @@ export class MediaProjectService {
       error_code: undefined,
       updated_at: this.iso(),
     })
-    return next
+    return await this.acknowledgePersistedImageResult(next)
   }
 
   private async failImageTask(

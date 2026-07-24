@@ -69,6 +69,30 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
     output_count: 1,
   })
   expect(metadata.data).toBeUndefined()
+  const acknowledged = await (await fetch(new Request(`http://relay/images/tasks/${task_id}/ack`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret' },
+  }))).json()
+  expect(acknowledged).toMatchObject({
+    status: 'succeeded',
+    operation_id: task_id,
+    result_acknowledged: true,
+  })
+  const repeated = await (await fetch(new Request(`http://relay/images/tasks/${task_id}/ack`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret' },
+  }))).json()
+  expect(repeated.acknowledged_at).toBe(acknowledged.acknowledged_at)
+  const retainedReceipt = await (await fetch(new Request(`http://relay/images/tasks/${task_id}?metadata_only=1`, {
+    headers: { authorization: 'Bearer relay-secret' },
+  }))).json()
+  expect(retainedReceipt).toMatchObject({
+    status: 'succeeded',
+    result_available: false,
+    result_acknowledged: true,
+    output_count: 0,
+    provider_receipt_hash: metadata.provider_receipt_hash,
+  })
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
 })
 

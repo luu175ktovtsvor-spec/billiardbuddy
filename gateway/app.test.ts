@@ -573,10 +573,13 @@ test('long-lived chat, native Messages, and every relay image task operation dis
   const poll = await fetch(new Request('http://local/v1/images/tasks/task-1', authed({ method: 'GET' })), server)
   expect(poll.status).toBe(200)
 
+  const acknowledgement = await fetch(new Request('http://local/v1/images/tasks/task-1/ack', authed({ method: 'POST' })), server)
+  expect(acknowledgement.status).toBe(200)
+
   const cancel = await fetch(new Request('http://local/v1/images/tasks/task-1/cancel', authed({ method: 'POST' })), server)
   expect(cancel.status).toBe(200)
 
-  expect(timeoutCalls).toEqual([0, 0, 0, 0, 0])
+  expect(timeoutCalls).toEqual([0, 0, 0, 0, 0, 0])
 })
 
 test('audio transcription rejects unsupported and oversized files before execution', async () => {
@@ -966,7 +969,7 @@ test('a DeepSeek request carrying an image is bridged through MiMo before reachi
   expect(usage.rows.some(row => row.model === 'vision' && row.ok === true)).toBe(true)
 })
 
-test('image task submit/poll/cancel proxy to relay tasks base with relay token when configured', async () => {
+test('image task submit/poll/ack/cancel proxy to relay tasks base with relay token when configured', async () => {
   const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks', GW_Q_IMG: '5' })
   const submit = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST',
@@ -978,12 +981,15 @@ test('image task submit/poll/cancel proxy to relay tasks base with relay token w
   expect(poll.status).toBe(200)
   const metadataPoll = await fetch(new Request('http://local/v1/images/tasks/task-1?metadata_only=1&ignored=client-value', authed({ method: 'GET' })))
   expect(metadataPoll.status).toBe(200)
+  const acknowledgement = await fetch(new Request('http://local/v1/images/tasks/task-1/ack', authed({ method: 'POST' })))
+  expect(acknowledgement.status).toBe(200)
   const cancel = await fetch(new Request('http://local/v1/images/tasks/task-1/cancel', authed({ method: 'POST' })))
   expect(cancel.status).toBe(200)
   expect(calls.map(c => c.url)).toEqual([
     'https://relay.example/relay/imgtasks/images/tasks',
     'https://relay.example/relay/imgtasks/images/tasks/task-1',
     'https://relay.example/relay/imgtasks/images/tasks/task-1?metadata_only=1',
+    'https://relay.example/relay/imgtasks/images/tasks/task-1/ack',
     'https://relay.example/relay/imgtasks/images/tasks/task-1/cancel',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
@@ -1261,6 +1267,8 @@ test('image task endpoints return 503 when GW_RELAY_TASKS_BASE unset', async () 
   expect(submit.status).toBe(503)
   const poll = await fetch(new Request('http://local/v1/images/tasks/x', authed({ method: 'GET' })))
   expect(poll.status).toBe(503)
+  const acknowledgement = await fetch(new Request('http://local/v1/images/tasks/x/ack', authed({ method: 'POST' })))
+  expect(acknowledgement.status).toBe(503)
   const cancel = await fetch(new Request('http://local/v1/images/tasks/x/cancel', authed({ method: 'POST' })))
   expect(cancel.status).toBe(503)
   expect(calls.length).toBe(0)

@@ -5,6 +5,7 @@ import {
   imageWorkbenchProjectSchema,
   productTaskOwnerIdSchema,
   publicImageWorkbenchProjectSchema,
+  publicMediaTaskSchema,
   startImageOperationInputSchema,
 } from './media.js'
 
@@ -116,5 +117,21 @@ describe('provider-neutral image creation contract', () => {
       width: 200,
       height: 200,
     }).success).toBe(false)
+  })
+
+  test('keeps relay acknowledgement bookkeeping out of the renderer task contract', () => {
+    const task = publicMediaTaskSchema.parse({
+      schema_version: 1,
+      id: 'task_public01',
+      project_id: 'img_12345678',
+      kind: 'image.generate',
+      status: 'succeeded',
+      progress: 100,
+      stage: '生成完成',
+      remote_result_acknowledged_at: '2026-07-24T05:00:00.000Z',
+      created_at: '2026-07-24T04:59:00.000Z',
+      updated_at: '2026-07-24T05:00:00.000Z',
+    })
+    expect(task).not.toHaveProperty('remote_result_acknowledged_at')
   })
 })

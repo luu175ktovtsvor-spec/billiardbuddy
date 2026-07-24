@@ -63,6 +63,12 @@ function cancel(id: string, headers: Record<string, string> = {}) {
     headers: { authorization: 'Bearer relay-secret', ...(headers['x-relay-owner'] ? { 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' } : {}), ...headers },
   })
 }
+function acknowledge(id: string, headers: Record<string, string> = {}) {
+  return new Request(`http://relay/images/tasks/${id}/ack`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer relay-secret', ...(headers['x-relay-owner'] ? { 'x-bb-provider-protocol': 'bb-provider-gateway/1.0' } : {}), ...headers },
+  })
+}
 const tick = (ms = 5) => new Promise(r => setTimeout(r, ms))
 const GEN = { mode: 'generate', model: 'gpt-image-2', prompt: '海报' }
 
@@ -181,6 +187,11 @@ test('a task bound to an owner rejects cross-owner polling with 403, allows the 
   expect((await fetch(poll(task_id, { 'x-relay-owner': 'ownerB' }))).status).toBe(403)
   expect((await fetch(poll(task_id))).status).toBe(403) // no owner asserted → can't prove ownership
   expect((await fetch(poll(task_id, { 'x-relay-owner': 'ownerA' }))).status).toBe(200)
+  await waitFor(async () => (
+    await (await fetch(poll(task_id, { 'x-relay-owner': 'ownerA' }))).json()
+  ).status === 'succeeded', 'owned task did not finish')
+  expect((await fetch(acknowledge(task_id, { 'x-relay-owner': 'ownerB' }))).status).toBe(403)
+  expect((await fetch(acknowledge(task_id, { 'x-relay-owner': 'ownerA' }))).status).toBe(200)
 })
 
 test('a legacy task (no owner) stays pollable by anyone during the compat window', async () => {

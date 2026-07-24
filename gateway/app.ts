@@ -1743,6 +1743,33 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (
         request.method === 'POST'
         && url.pathname.startsWith('/v1/images/tasks/')
+        && url.pathname.endsWith('/ack')
+      ) {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        const user = identity.owner
+        server?.timeout(request, 0)
+        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
+        const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/ack'.length)
+        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
+        const upstream = await fetchImpl(
+          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}/ack`,
+          {
+            method: 'POST',
+            signal: request.signal,
+            headers: {
+              Authorization: `Bearer ${config.relayToken}`,
+              'X-Relay-Owner': relayOwner(user),
+              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
+            },
+          },
+        )
+        return await proxyJsonOrRaw(upstream)
+      }
+
+      if (
+        request.method === 'POST'
+        && url.pathname.startsWith('/v1/images/tasks/')
         && url.pathname.endsWith('/cancel')
       ) {
         const identity = auth(authority, request)
@@ -1759,6 +1786,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}/cancel`,
           {
             method: 'POST',
+            signal: request.signal,
             headers: {
               Authorization: `Bearer ${config.relayToken}`,
               'X-Relay-Owner': relayOwner(user),
