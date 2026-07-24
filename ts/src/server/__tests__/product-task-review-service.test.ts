@@ -3,6 +3,7 @@ import { ProductTaskReviewService } from '../product/taskReviewService.js'
 
 const taskId = 'task-1'
 const coreSessionId = 'core-session-secret-17'
+const stableRevision = `rev_${'a'.repeat(32)}`
 
 function createService() {
   const calls: Array<{
@@ -13,6 +14,9 @@ function createService() {
     maxVideoPreviewBytes?: number
   }> = []
   const workspace = {
+    async getFileRevision(_sessionId: string, filePath: string) {
+      return { state: 'ok' as const, path: filePath, revision: stableRevision }
+    },
     async getStatus(sessionId: string) {
       calls.push({ name: 'status', sessionId })
       return {
@@ -145,8 +149,9 @@ describe('ProductTaskReviewService', () => {
       state: 'ok',
       path: 'src/price.ts',
       content: 'export const hourlyRate = 48\n',
+      fileRef: { path: 'src/price.ts', revision: stableRevision },
     })
-    expect(diff).toMatchObject({ taskId, state: 'ok', path: 'src/price.ts' })
+    expect(diff).toMatchObject({ taskId, state: 'ok', path: 'src/price.ts', fileRef: { revision: stableRevision } })
 
     const publicJson = JSON.stringify({ status, tree, file, diff })
     expect(publicJson).not.toContain(coreSessionId)
@@ -161,6 +166,7 @@ describe('ProductTaskReviewService', () => {
       taskId,
       state: 'too_large',
       path: 'assets/large.png',
+      fileRef: { fileId: expect.stringMatching(/^file_[a-f0-9]{20}$/), path: 'assets/large.png', revision: stableRevision },
       mimeType: 'image/png',
       language: 'image',
       size: 8 * 1024 * 1024 + 1,
@@ -182,6 +188,7 @@ describe('ProductTaskReviewService', () => {
       taskId,
       state: 'ok',
       path: 'assets/replay.webm',
+      fileRef: { fileId: expect.stringMatching(/^file_[a-f0-9]{20}$/), path: 'assets/replay.webm', revision: stableRevision },
       previewType: 'video',
       dataUrl: 'data:video/webm;base64,AAAA',
       mimeType: 'video/webm',
@@ -231,11 +238,82 @@ describe('ProductTaskReviewService', () => {
     expect(calls).toEqual([])
   })
 
+  it('returns a controlled stale file instead of mixing two workspace revisions', async () => {
+    const revisions = [`rev_${'1'.repeat(32)}`, `rev_${'2'.repeat(32)}`]
+    const service = new ProductTaskReviewService(
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
+      {
+        getStatus: async () => ({ state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] }),
+        readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }),
+        getFileRevision: async (_sessionId, filePath) => ({ state: 'ok' as const, path: filePath, revision: revisions.shift()! }),
+        readFile: async (_sessionId, filePath) => ({ state: 'ok' as const, path: filePath, previewType: 'text' as const, content: 'mixed content', language: 'text', size: 13 }),
+        getDiff: async (_sessionId, filePath) => ({ state: 'missing' as const, path: filePath }),
+      },
+      async () => '/workspace/bound',
+    )
+
+    const result = await service.getFile(taskId, 'notes.txt')
+    expect(result).toMatchObject({
+      taskId,
+      state: 'stale',
+      path: 'notes.txt',
+      fileRef: { revision: `rev_${'2'.repeat(32)}` },
+    })
+    expect(result).not.toHaveProperty('content')
+  })
+
+  it('rejects an old expected revision before generating a new diff', async () => {
+    let diffCalls = 0
+    const currentRevision = `rev_${'2'.repeat(32)}`
+    const service = new ProductTaskReviewService(
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
+      {
+        getStatus: async () => ({ state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] }),
+        readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }),
+        getFileRevision: async (_sessionId, filePath) => ({ state: 'ok' as const, path: filePath, revision: currentRevision }),
+        readFile: async (_sessionId, filePath) => ({ state: 'missing' as const, path: filePath, language: 'text', size: 0 }),
+        getDiff: async (_sessionId, filePath) => { diffCalls += 1; return { state: 'ok' as const, path: filePath, diff: '+new' } },
+      },
+      async () => '/workspace/bound',
+    )
+
+    await expect(service.getDiff(taskId, 'notes.txt', `rev_${'1'.repeat(32)}`)).resolves.toMatchObject({
+      taskId,
+      state: 'stale',
+      fileRef: { revision: currentRevision },
+    })
+    expect(diffCalls).toBe(0)
+    await expect(service.getDiff(taskId, 'notes.txt', 'old')).rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  it('gives a deleted-file diff a stable ref derived from its bounded diff', async () => {
+    const service = new ProductTaskReviewService(
+      { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
+      {
+        getStatus: async () => ({ state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] }),
+        readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }),
+        getFileRevision: async (_sessionId, filePath) => ({ state: 'missing' as const, path: filePath }),
+        readFile: async (_sessionId, filePath) => ({ state: 'missing' as const, path: filePath, language: 'text', size: 0 }),
+        getDiff: async (_sessionId, filePath) => ({ state: 'ok' as const, path: filePath, diff: '-deleted line' }),
+      },
+      async () => '/workspace/bound',
+    )
+
+    const first = await service.getDiff(taskId, 'deleted.txt')
+    expect(first.state).toBe('ok')
+    expect(first.fileRef?.path).toBe('deleted.txt')
+    expect(first.fileRef?.fileId).toMatch(/^file_[a-f0-9]{20}$/)
+    const deletedRevision = first.fileRef?.revision
+    expect(deletedRevision).toMatch(/^rev_[a-f0-9]{32}$/)
+    const second = await service.getDiff(taskId, 'deleted.txt', deletedRevision)
+    expect(second).toEqual(first)
+  })
+
   it('rejects a missing Core cwd before invoking the review workspace', async () => {
     let calls = 0
     const service = new ProductTaskReviewService(
       { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
-      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }) },
+      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }), getFileRevision: async () => ({ state: 'missing' as const, path: '' }) },
       async () => undefined,
     )
     await expect(service.getStatus(taskId)).rejects.toMatchObject({ code: 'WORKSPACE_REQUIRED' })
@@ -246,7 +324,7 @@ describe('ProductTaskReviewService', () => {
     let calls = 0
     const service = new ProductTaskReviewService(
       { requireWorkspaceCapability: async () => ({ canonical_root: '/workspace/bound' }), resolveCoreSessionId: async () => coreSessionId },
-      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }) },
+      { getStatus: async () => { calls += 1; return { state: 'missing' as const, workDir: '/workspace/bound', repoName: null, branch: null, isGitRepo: false, changedFiles: [] } }, readTree: async () => ({ state: 'missing' as const, path: '', entries: [] }), readFile: async () => ({ state: 'missing' as const, path: '', language: 'text', size: 0 }), getDiff: async () => ({ state: 'missing' as const, path: '' }), getFileRevision: async () => ({ state: 'missing' as const, path: '' }) },
       async () => '/workspace/old',
     )
     await expect(service.getStatus(taskId)).rejects.toMatchObject({ code: 'WORKSPACE_REQUIRED' })
@@ -257,6 +335,7 @@ describe('ProductTaskReviewService', () => {
     const service = new ProductTaskReviewService(
       { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
+        getFileRevision: async (_sessionId: string, filePath: string) => ({ state: 'missing' as const, path: filePath }),
         getStatus: async () => ({
           state: 'ok' as const,
           workDir: '/private/workspaces/hall-operations',
@@ -301,6 +380,7 @@ describe('ProductTaskReviewService', () => {
     const service = new ProductTaskReviewService(
       { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
+        getFileRevision: async (_sessionId: string, filePath: string) => ({ state: 'error' as const, path: filePath, error: '/private/revision' }),
         getStatus: async () => ({
           state: 'error' as const,
           workDir: '/private/workspaces/hall-operations',
@@ -340,7 +420,7 @@ describe('ProductTaskReviewService', () => {
       taskId,
       state: 'unavailable',
       path: 'src/price.ts',
-      language: 'typescript',
+      language: 'text',
       size: 0,
     })
     expect(diff).toEqual({ taskId, state: 'unavailable', path: 'src/price.ts' })
@@ -352,6 +432,7 @@ describe('ProductTaskReviewService', () => {
     const service = new ProductTaskReviewService(
       { requireWorkspaceCapability: async () => ({ canonical_root: '/private/workspaces/hall-operations' }), resolveCoreSessionId: async () => coreSessionId },
       {
+        getFileRevision: async (_sessionId: string, filePath: string) => ({ state: 'missing' as const, path: filePath }),
         getStatus: async () => ({
           state: 'ok' as const,
           workDir: '/private/workspaces/hall-operations',

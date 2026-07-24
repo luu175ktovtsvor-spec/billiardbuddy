@@ -375,7 +375,8 @@ describe('Product tasks API', () => {
         size: 3,
       },
     })
-    expect(await callReviewRoute('/api/product/tasks/task-1/review/diff?path=src%2Fprice.ts')).toEqual({
+    const revision = `rev_${'a'.repeat(32)}`
+    expect(await callReviewRoute(`/api/product/tasks/task-1/review/diff?path=src%2Fprice.ts&revision=${revision}`)).toEqual({
       status: 200,
       body: { taskId: task.id, state: 'missing', path: 'src/price.ts' },
     })
@@ -383,7 +384,7 @@ describe('Product tasks API', () => {
       { name: 'getStatus', args: ['task-1'] },
       { name: 'getTree', args: ['task-1', 'src'] },
       { name: 'getFile', args: ['task-1', 'assets/replay.webm'] },
-      { name: 'getDiff', args: ['task-1', 'src/price.ts'] },
+      { name: 'getDiff', args: ['task-1', 'src/price.ts', revision] },
     ])
   })
 

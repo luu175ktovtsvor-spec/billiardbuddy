@@ -43,6 +43,8 @@ function fileStateLabel(file: ProductTaskReviewFile | null): string | null {
       return '这个文件过大，无法直接展示。'
     case 'missing':
       return '这个文件已不存在。'
+    case 'stale':
+      return '文件在读取期间发生了变化，请重新选择后审阅。'
     default:
       return '文件内容暂时无法读取。'
   }
@@ -52,6 +54,7 @@ function diffStateLabel(diff: ProductTaskReviewDiff | null): string | null {
   if (!diff || diff.state === 'ok') return null
   if (diff.state === 'not_versioned') return '当前目录不是 Git 仓库，无法显示差异。'
   if (diff.state === 'missing') return '这个文件已不存在。'
+  if (diff.state === 'stale') return '文件版本已变化，请重新选择后审阅。'
   return '差异内容暂时无法读取。'
 }
 
@@ -135,10 +138,13 @@ export function ProductTaskReviewDock({ taskId, onClose }: ProductTaskReviewDock
     setIsLoadingSelection(true)
     setVideoPreviewError(false)
     try {
-      const [nextFile, nextDiff] = await Promise.all([
-        productTasksApi.getReviewFile(taskId, path),
-        productTasksApi.getReviewDiff(taskId, path),
-      ])
+      const nextFile = await productTasksApi.getReviewFile(taskId, path)
+      if (selectionLoadVersionRef.current !== requestVersion) return
+      const nextDiff = await productTasksApi.getReviewDiff(
+        taskId,
+        path,
+        nextFile.fileRef?.revision,
+      )
       if (selectionLoadVersionRef.current !== requestVersion) return
       setFile(nextFile)
       setDiff(nextDiff)

@@ -1,9 +1,11 @@
 import * as path from 'node:path'
+import { createHash } from 'node:crypto'
 import type {
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
   ProductTaskReviewStatus,
   ProductTaskReviewTree,
+  WorkspaceFileRef,
 } from '../../../shared/product/taskReview.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { conversationService } from '../services/conversationService.js'
@@ -11,6 +13,7 @@ import { sessionService } from '../services/sessionService.js'
 import {
   WorkspaceService,
   type WorkspaceDiffResult,
+  type WorkspaceFileRevisionResult,
   type WorkspaceReadFileOptions,
   type WorkspaceReadFileResult,
   type WorkspaceStatusResult,
@@ -24,7 +27,7 @@ const VCS_METADATA_PATH_SEGMENTS = new Set(['.git', '.svn', '.hg', '.bzr', '.jj'
 
 type TaskResolver = Pick<ProductTaskService, 'resolveCoreSessionId' | 'requireWorkspaceCapability'>
 type CoreWorkDirResolver = (sessionId: string) => Promise<string | undefined>
-type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff'> & {
+type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff' | 'getFileRevision'> & {
   readFile(
     sessionId: string,
     filePath: string,
@@ -63,24 +66,59 @@ export class ProductTaskReviewService {
 
   async getFile(taskId: string, requestedPath: string): Promise<ProductTaskReviewFile> {
     const filePath = normalizeReviewPath(requestedPath, { required: true })
-    const file = await this.withTaskWorkspace(taskId, (sessionId) => (
-      this.workspace.readFile(sessionId, filePath, {
+    const result = await this.withTaskWorkspace(taskId, async (sessionId) => {
+      const before = await this.workspace.getFileRevision(sessionId, filePath)
+      const file = await this.workspace.readFile(sessionId, filePath, {
         maxImagePreviewBytes: MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES,
         maxVideoPreviewBytes: MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES,
       })
-    ))
-    return projectFile(taskId, file)
+      const after = await this.workspace.getFileRevision(sessionId, filePath)
+      return { before, file, after }
+    })
+    if (hasRevisionError(result.before, result.after)) {
+      return unavailableFile(taskId, result.file.path)
+    }
+    if (!sameWorkspaceRevision(result.before, result.after)) {
+      return staleFile(taskId, filePath, result.after)
+    }
+    return projectFile(taskId, result.file, createFileRef(taskId, filePath, result.after))
   }
 
-  async getDiff(taskId: string, requestedPath: string): Promise<ProductTaskReviewDiff> {
+  async getDiff(
+    taskId: string,
+    requestedPath: string,
+    expectedRevision?: string,
+  ): Promise<ProductTaskReviewDiff> {
     const filePath = normalizeReviewPath(requestedPath, { required: true })
-    const diff = await this.withTaskWorkspace(taskId, (sessionId) => (
-      this.workspace.getDiff(sessionId, filePath)
-    ))
-    if (diff.state === 'error' && diff.error?.includes('outside workspace')) {
+    const revision = normalizeExpectedRevision(expectedRevision)
+    const result = await this.withTaskWorkspace(taskId, async (sessionId) => {
+      const before = await this.workspace.getFileRevision(sessionId, filePath)
+      if (revision && before.state === 'ok' && before.revision !== revision) {
+        return { before, after: before }
+      }
+      const diff = await this.workspace.getDiff(sessionId, filePath)
+      const after = await this.workspace.getFileRevision(sessionId, filePath)
+      return { before, diff, after }
+    })
+    if (!('diff' in result)) {
+      return staleDiff(taskId, filePath, result.after)
+    }
+    if (result.diff.state === 'error' && result.diff.error?.includes('outside workspace')) {
       throw new ApiError(403, '路径不在当前任务工作区内', 'FORBIDDEN')
     }
-    return projectDiff(taskId, diff)
+    if (hasRevisionError(result.before, result.after)) {
+      return unavailableDiff(taskId, result.diff.path)
+    }
+    if (!sameWorkspaceRevision(result.before, result.after)) {
+      return staleDiff(taskId, filePath, result.after)
+    }
+
+    const fileRef = createFileRef(taskId, filePath, result.after)
+      ?? createDiffFileRef(taskId, filePath, result.diff)
+    if (revision && fileRef?.revision !== revision) {
+      return staleDiff(taskId, filePath, result.after, fileRef)
+    }
+    return projectDiff(taskId, result.diff, fileRef)
   }
 
   private async withTaskWorkspace<T>(
@@ -171,12 +209,17 @@ function projectTree(taskId: string, tree: WorkspaceTreeResult): ProductTaskRevi
   }
 }
 
-function projectFile(taskId: string, file: WorkspaceReadFileResult): ProductTaskReviewFile {
+function projectFile(
+  taskId: string,
+  file: WorkspaceReadFileResult,
+  fileRef?: WorkspaceFileRef,
+): ProductTaskReviewFile {
   if (file.state === 'error') {
     return {
       taskId,
       state: 'unavailable',
       path: file.path,
+      ...(fileRef ? { fileRef } : {}),
       language: file.language,
       size: file.size,
     }
@@ -186,6 +229,7 @@ function projectFile(taskId: string, file: WorkspaceReadFileResult): ProductTask
     taskId,
     state: file.state,
     path: file.path,
+    ...(fileRef ? { fileRef } : {}),
     ...(file.previewType ? { previewType: file.previewType } : {}),
     ...(typeof file.content === 'string' ? { content: file.content } : {}),
     ...(typeof file.dataUrl === 'string' ? { dataUrl: file.dataUrl } : {}),
@@ -197,7 +241,11 @@ function projectFile(taskId: string, file: WorkspaceReadFileResult): ProductTask
   }
 }
 
-function projectDiff(taskId: string, diff: WorkspaceDiffResult): ProductTaskReviewDiff {
+function projectDiff(
+  taskId: string,
+  diff: WorkspaceDiffResult,
+  fileRef?: WorkspaceFileRef,
+): ProductTaskReviewDiff {
   const state = diff.state === 'not_git_repo'
     ? 'not_versioned'
     : diff.state === 'error'
@@ -208,8 +256,113 @@ function projectDiff(taskId: string, diff: WorkspaceDiffResult): ProductTaskRevi
     taskId,
     state,
     path: diff.path,
+    ...(fileRef ? { fileRef } : {}),
     ...(typeof diff.diff === 'string' ? { diff: diff.diff } : {}),
   }
+}
+
+function sameWorkspaceRevision(
+  before: WorkspaceFileRevisionResult,
+  after: WorkspaceFileRevisionResult,
+): boolean {
+  return (
+    before.state === 'ok' &&
+    after.state === 'ok' &&
+    before.revision === after.revision
+  ) || (before.state === 'missing' && after.state === 'missing')
+}
+
+function hasRevisionError(
+  before: WorkspaceFileRevisionResult,
+  after: WorkspaceFileRevisionResult,
+): boolean {
+  return before.state === 'error' || after.state === 'error'
+}
+
+function createFileRef(
+  taskId: string,
+  filePath: string,
+  revision: WorkspaceFileRevisionResult,
+): WorkspaceFileRef | undefined {
+  if (revision.state !== 'ok' || !revision.revision) return undefined
+  return {
+    fileId: fileId(taskId, filePath),
+    path: filePath,
+    revision: revision.revision,
+  }
+}
+
+function createDiffFileRef(
+  taskId: string,
+  filePath: string,
+  diff: WorkspaceDiffResult,
+): WorkspaceFileRef | undefined {
+  if (diff.state !== 'ok' || typeof diff.diff !== 'string') return undefined
+  const revision = `rev_${createHash('sha256')
+    .update(`${filePath}\0${diff.diff}`)
+    .digest('hex')
+    .slice(0, 32)}`
+  return { fileId: fileId(taskId, filePath), path: filePath, revision }
+}
+
+function fileId(taskId: string, filePath: string): string {
+  return `file_${createHash('sha256')
+    .update(`${taskId}\0${filePath}`)
+    .digest('hex')
+    .slice(0, 20)}`
+}
+
+function staleFile(
+  taskId: string,
+  filePath: string,
+  revision: WorkspaceFileRevisionResult,
+): ProductTaskReviewFile {
+  const fileRef = createFileRef(taskId, filePath, revision)
+  return {
+    taskId,
+    state: 'stale',
+    path: filePath,
+    ...(fileRef ? { fileRef } : {}),
+    language: 'text',
+    size: 0,
+  }
+}
+
+function unavailableFile(taskId: string, filePath: string): ProductTaskReviewFile {
+  return {
+    taskId,
+    state: 'unavailable',
+    path: filePath,
+    language: 'text',
+    size: 0,
+  }
+}
+
+function staleDiff(
+  taskId: string,
+  filePath: string,
+  revision: WorkspaceFileRevisionResult,
+  fallbackRef?: WorkspaceFileRef,
+): ProductTaskReviewDiff {
+  const fileRef = createFileRef(taskId, filePath, revision) ?? fallbackRef
+  return {
+    taskId,
+    state: 'stale',
+    path: filePath,
+    ...(fileRef ? { fileRef } : {}),
+  }
+}
+
+function unavailableDiff(taskId: string, filePath: string): ProductTaskReviewDiff {
+  return { taskId, state: 'unavailable', path: filePath }
+}
+
+function normalizeExpectedRevision(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  if (!/^rev_[a-f0-9]{32}$/.test(value)) {
+    throw ApiError.badRequest('审阅文件 revision 无效')
+  }
+  return value
 }
 
 function normalizeReviewPath(

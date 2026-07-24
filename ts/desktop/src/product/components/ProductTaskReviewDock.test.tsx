@@ -7,6 +7,7 @@ const apiMocks = vi.hoisted(() => ({
   getReviewFile: vi.fn(),
   getReviewDiff: vi.fn(),
 }))
+const stableRevision = `rev_${'a'.repeat(32)}`
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -41,6 +42,7 @@ beforeEach(() => {
     taskId: 'task-1',
     state: 'ok',
     path: 'src/main.ts',
+    fileRef: { fileId: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/main.ts', revision: stableRevision },
     previewType: 'text',
     content: 'export const ready = true',
     language: 'typescript',
@@ -71,7 +73,7 @@ describe('ProductTaskReviewDock', () => {
 
     await screen.findByText('export const ready = true')
     expect(apiMocks.getReviewFile).toHaveBeenCalledWith('task-1', 'src/main.ts')
-    expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'src/main.ts')
+    expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'src/main.ts', stableRevision)
     expect(screen.getByText('+export const ready = true')).toBeTruthy()
   })
 
@@ -268,7 +270,7 @@ describe('ProductTaskReviewDock', () => {
     expect(video.getAttribute('controls')).not.toBeNull()
     expect(screen.getByText('视频预览仅读取当前任务工作区内不超过 16 MB 的 MP4、WebM、Ogg 或 MOV 文件。')).toBeTruthy()
     expect(apiMocks.getReviewFile).toHaveBeenCalledWith('task-1', 'assets/replay.webm')
-    expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'assets/replay.webm')
+    expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'assets/replay.webm', undefined)
 
     fireEvent.error(video)
     expect((await screen.findByRole('alert')).textContent).toBe('当前运行环境无法播放这个视频编码。')
