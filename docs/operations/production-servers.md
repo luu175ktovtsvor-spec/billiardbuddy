@@ -145,7 +145,25 @@ Fun-ASR 的上游凭据和用量回执在大陆 qfgw；但产品的 `VoiceOperat
 
 `BB_MEDIA_BIN_DIR` 可指定受审核 FFmpeg/ffprobe 目录；安装包默认使用已校验的随包工具链。`BB_MEDIA_DELETION_RETENTION_DAYS` 缺省 30，可设 1—365；`BB_MEDIA_MAX_QUEUED_RENDERS` 和 `BB_MEDIA_MAX_QUEUED_VIDEO_PROBES` 控制本机有界排队。迁移后应从真实安装包打开旧项目，验证源 fingerprint、Evidence/Timeline 历史、锁定场景、预览和一次本机导出，不能只看 JSON 文件存在。
 
-### 4.3 两台服务器一致性备份
+### 4.3 桌面计划任务与 ProductTask 运行
+
+计划任务的时间表、执行历史和真实 ProductTask 权威运行都在桌面本地，不在两台服务器：
+
+```text
+<CLAUDE_CONFIG_DIR>/
+  scheduled_tasks.json                         # schedule、工作目录、补跑策略和通知设置
+  scheduled_tasks_log.json                     # 逻辑 occurrence 与最近运行结果
+  billiardbuddy/
+    product-tasks.json                         # 产品任务索引
+    product-task-authority.v1.json             # 计划任务提交回执、TaskRun 与 dispatch 真相
+    product-agent-worker-scheduler.json        # 本机资源 claim 与 fencing 状态
+```
+
+迁移桌面数据时，先完全退出桌面应用和 sidecar，再同一批复制上述五个 JSON 及 `billiardbuddy/` 中它们依赖的其他 ProductTask 数据。`*.guard` 和 `*.lock` 只是可重建互斥状态，应在进程停止后排除；不能只复制 `scheduled_tasks.json`，否则已接受但未结算的 ProductTask 会失去权威终态。
+
+每个任务绑定的工作目录是它的固定 workspace-write grant，目录本身不随上述 JSON 备份。新机必须另行复制工作区；若路径改变，在重新启用任务前通过桌面页重新选择目录。`run_once` 最多回溯 7 天且只补最近一个逻辑时点，`skip` 不补历史时点；同一 occurrence 由持久 operation ID 去重。迁移验收应包括：任务列表、暂停状态、工作目录、补跑策略、历史记录、一次手动运行的真实 ProductTask 终态和桌面通知。
+
+### 4.4 两台服务器一致性备份
 
 一致性备份必须短暂停止写入服务，不能只复制 SQLite 主文件而遗漏 WAL。建议先在服务器本机生成仅 root 可读的快照，再通过受控通道传出：
 
