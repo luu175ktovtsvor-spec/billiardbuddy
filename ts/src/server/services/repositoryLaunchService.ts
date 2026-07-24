@@ -455,9 +455,37 @@ async function createDesktopWorktree(
 
   await ensureWorktreesDirExcluded(context.repoRoot)
   await fs.mkdir(path.dirname(worktreePath), { recursive: true })
+  const existing = await runGit(context.repoRoot, ['worktree', 'list', '--porcelain'])
+  const exactExisting = existing.code === 0 && existing.stdout.split(/\n\n+/).some(block => {
+    const lines = block.split('\n')
+    const listedPath = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
+    return listedPath !== undefined
+      && path.resolve(listedPath) === path.resolve(worktreePath)
+      && lines.includes(`branch refs/heads/${branchName}`)
+  })
+  if (exactExisting) {
+    // A crash may occur after `git worktree add` but before the durable branch
+    // plan is published. The reserved session id makes this exact path and
+    // branch deterministic, so retry completes setup instead of allocating or
+    // resetting a second checkout.
+    await performPostCreationSetup(context.repoRoot, worktreePath)
+    return {
+      workDir: worktreePath,
+      repository: {
+        requestedWorkDir: context.workDir,
+        repoRoot: context.repoRoot,
+        branch: branch.name,
+        worktree: true,
+        baseRef: branch.baseRef,
+        worktreePath,
+        worktreeBranch: branchName,
+        worktreeSlug: slug,
+      },
+    }
+  }
   const result = await runGit(
     context.repoRoot,
-    ['worktree', 'add', '-b', branchName, worktreePath, branch.baseRef],
+    ['worktree', 'add', '-B', branchName, worktreePath, branch.baseRef],
     WORKTREE_TIMEOUT_MS,
   )
   if (result.code !== 0) {

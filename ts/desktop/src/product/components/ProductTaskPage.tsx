@@ -147,24 +147,14 @@ function ProductTaskThreadEntryActions({
         </button>
       ) : null}
       {onContinueFromEntry ? (
-        <>
-          <button
-            type="button"
-            disabled={actionPending}
-            onClick={() => onContinueFromEntry(entry.id, 'current_workspace')}
-            className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          >
-            从此处继续
-          </button>
-          <button
-            type="button"
-            disabled={actionPending}
-            onClick={() => onContinueFromEntry(entry.id, 'new_worktree')}
-            className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          >
-            在新工作树继续
-          </button>
-        </>
+        <button
+          type="button"
+          disabled={actionPending}
+          onClick={() => onContinueFromEntry(entry.id, 'new_worktree')}
+          className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+        >
+          从此处继续
+        </button>
       ) : null}
       {onCreateSideTask ? (
         <button
@@ -210,6 +200,9 @@ export function ProductTaskThreadEntryView({
     return (
       <div className="ml-auto max-w-[min(42rem,88%)]">
         <article className="rounded-2xl rounded-br-md bg-[var(--color-primary)] px-4 py-3 text-sm leading-6 text-white">
+          {entry.referenceEntryIds?.length ? (
+            <p className="mb-1 text-xs text-white/75">引用了 {entry.referenceEntryIds.length} 条历史记录</p>
+          ) : null}
           <p className="whitespace-pre-wrap">{entry.text}</p>
           {entry.attachments?.length ? (
             <ul aria-label="已附加文件" className="mt-2 flex flex-wrap gap-1.5">
@@ -480,6 +473,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
   const [draft, setDraft] = useState('')
+  const [referenceEntryIds, setReferenceEntryIds] = useState<string[]>([])
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [commandDiscoveryWorkDir, setCommandDiscoveryWorkDir] = useState<string | null>(null)
@@ -616,8 +610,12 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     let accepted = false
     try {
       accepted = await (attachments.length > 0
-        ? sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment))
-        : sendText(taskId, message))
+        ? referenceEntryIds.length
+          ? sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment), referenceEntryIds)
+          : sendMessage(taskId, message, attachments.map(({ id: _id, ...attachment }) => attachment))
+        : referenceEntryIds.length
+          ? sendText(taskId, message, referenceEntryIds)
+          : sendText(taskId, message))
     } finally {
       setIsSubmitting(false)
     }
@@ -627,6 +625,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
 
     setDraft('')
+    setReferenceEntryIds([])
     setAttachments([])
     setAttachmentMessage(null)
     setValidationMessage(null)
@@ -819,6 +818,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const quoteEntry = (entry: Extract<ProductTaskThreadEntry, { type: 'user_text' | 'assistant_text' }>) => {
     const quote = entry.text.split('\n').map((line) => `> ${line}`).join('\n')
     setDraft((current) => current ? `${current}\n\n${quote}\n\n` : `${quote}\n\n`)
+    setReferenceEntryIds((current) => current.includes(entry.id) || current.length >= 8 ? current : [...current, entry.id])
     setValidationMessage(null)
   }
 
@@ -1052,6 +1052,16 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                       <span key={attachment.id} className="inline-flex max-w-full items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">
                         <span className="truncate">{attachment.name || '附件'}</span>
                         <button type="button" aria-label={`移除附件 ${attachment.name || '附件'}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))} className="rounded px-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)]">×</button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {referenceEntryIds.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2" aria-label="待发送引用">
+                    {referenceEntryIds.map((entryId, index) => (
+                      <span key={entryId} className="inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">
+                        <span>引用 {index + 1}</span>
+                        <button type="button" aria-label={`移除引用 ${index + 1}`} onClick={() => setReferenceEntryIds((current) => current.filter((id) => id !== entryId))} className="rounded px-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)]">×</button>
                       </span>
                     ))}
                   </div>

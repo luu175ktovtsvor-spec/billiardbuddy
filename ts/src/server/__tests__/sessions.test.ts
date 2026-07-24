@@ -1929,6 +1929,12 @@ describe('SessionService', () => {
       { branch: 'main', worktree: true },
       targetSessionId,
     )
+    const replayedWorkspace = await prepareSessionWorkspace(
+      workDir,
+      { branch: 'main', worktree: true },
+      targetSessionId,
+    )
+    expect(replayedWorkspace).toEqual(preparedWorkspace)
 
     try {
       const branch = await createSessionBranch({

@@ -69,6 +69,7 @@ export type ProductTaskRunSubmitInput = {
   expected_lineage_revision: number
   text: string
   attachment_ids: string[]
+  reference_entry_ids: string[]
   draft_id?: string
   expected_draft_revision?: number
 }

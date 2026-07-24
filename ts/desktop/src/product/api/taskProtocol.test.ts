@@ -8,6 +8,13 @@ const safeAttachment = {
 } as const
 
 describe('product task protocol attachment summaries', () => {
+  it('accepts only bounded opaque history references on replay and reconnect snapshots', () => {
+    const referenceEntryIds = ['thread_0123456789abcdef0123']
+    expect(parseProductTaskEvent({ type: 'user_text', text: '继续', replayed: true, referenceEntryIds })).toMatchObject({ referenceEntryIds })
+    expect(parseProductTaskThread({ taskId: 'task-reference', entries: [{ id: 'thread_user', type: 'user_text', text: '继续', referenceEntryIds, createdAt: '2026-07-19T00:00:00.000Z' }] }, 'task-reference')).toMatchObject({ entries: [{ referenceEntryIds }] })
+    expect(parseProductTaskEvent({ type: 'user_text', text: '继续', replayed: true, referenceEntryIds: ['/private/history'] })).toBeNull()
+  })
+
   it('accepts a bounded safe attachment summary on replay and persisted user text', () => {
     expect(parseProductTaskEvent({
       type: 'user_text',

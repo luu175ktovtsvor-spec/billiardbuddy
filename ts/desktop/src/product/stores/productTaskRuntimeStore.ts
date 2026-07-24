@@ -308,8 +308,8 @@ type ProductTaskRuntimeStore = {
   tasks: Record<string, ProductTaskRuntime | undefined>
   connectTask: (taskId: string) => Promise<void>
   disconnectTask: (taskId: string) => void
-  sendText: (taskId: string, text: string) => Promise<boolean>
-  sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[]) => Promise<boolean>
+  sendText: (taskId: string, text: string, referenceEntryIds?: string[]) => Promise<boolean>
+  sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[], referenceEntryIds?: string[]) => Promise<boolean>
   stopTask: (taskId: string) => void
   respondToApproval: (taskId: string, allowed: boolean) => boolean
   respondToQuestions: (taskId: string, answers: string[]) => boolean
@@ -367,6 +367,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     taskId: string,
     text: string,
     attachments: ProductTaskAttachment[] = [],
+    referenceEntryIds: string[] = [],
   ): Promise<boolean> => {
     const typedContent = text.trim()
     if (!canSendProductTaskMessage(typedContent, attachments)) return false
@@ -407,6 +408,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         expected_lineage_revision: lineage?.revision ?? 0,
         text: content,
         attachment_ids: attachmentIds,
+        reference_entry_ids: referenceEntryIds,
         ...(draft ? { draft_id: draft.draft_id, expected_draft_revision: draft.revision } : {}),
       })
       if (!response.receipt.result || !['accepted', 'duplicate'].includes(response.receipt.outcome)) {
@@ -436,6 +438,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               type: 'user_text',
               text: content,
               createdAt: createdAt(),
+              ...(referenceEntryIds.length ? { referenceEntryIds } : {}),
               ...(attachments.length ? {
                 attachments: attachments.map(attachment => ({
                   type: attachment.type,
@@ -490,9 +493,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
 
     // BB-02C accepts user text only through the durable HTTP submit receipt.
     // A task socket never becomes a second submit transport.
-    sendText: (taskId, text) => submitMessage(taskId, text),
+    sendText: (taskId, text, referenceEntryIds) => submitMessage(taskId, text, [], referenceEntryIds),
 
-    sendMessage: (taskId, text, attachments) => submitMessage(taskId, text, attachments),
+    sendMessage: (taskId, text, attachments, referenceEntryIds) => submitMessage(taskId, text, attachments, referenceEntryIds),
 
     stopTask: (taskId) => {
       updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: true }))
@@ -613,11 +616,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return { ...runtime, connectionState: 'connected' }
 
           case 'user_text': {
-            const eventSignature = `${event.text}:${attachmentSignature(event.attachments)}`
+            const eventSignature = `${event.text}:${attachmentSignature(event.attachments)}:${(event.referenceEntryIds ?? []).join(',')}`
             const alreadyOptimistic = runtime.entries.some((entry) => (
               entry.type === 'user_text' &&
               entry.id.startsWith('live_') &&
-              `${entry.text}:${attachmentSignature(entry.attachments)}` === eventSignature
+              `${entry.text}:${attachmentSignature(entry.attachments)}:${(entry.referenceEntryIds ?? []).join(',')}` === eventSignature
             ))
             if (alreadyOptimistic) return runtime
             return {
@@ -630,6 +633,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
                 text: event.text,
                 createdAt: createdAt(),
                 ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+                ...(event.referenceEntryIds?.length ? { referenceEntryIds: event.referenceEntryIds } : {}),
               }],
             }
           }

@@ -19,11 +19,13 @@ import {
   type DurableBranchPlan,
 } from '../../utils/sessionBranching.js'
 import { lock } from '../../utils/lockfile.js'
+import { cleanupPreparedSessionWorkspace, prepareSessionWorkspace } from '../services/repositoryLaunchService.js'
 
 export type CoreOperationBinding = {
   /** Core-private identity. Keep this inside server-side product services. */
   coreSessionId: string
   branchProjectDirPath?: string
+  branchWorkDir?: string
 }
 
 type TerminalFailure = {
@@ -129,20 +131,34 @@ export class SessionCoreOperationBackend implements DurableCoreOperationBackend 
       if (!launchInfo) {
         throw new CoreOperationTerminalError('CORE_SOURCE_NOT_FOUND', 'Source Core session is unavailable')
       }
-      return await buildDurableBranchPlan({
-        sourceSessionId,
-        sourceTranscriptPath: launchInfo.filePath,
-        title,
-        ...(typeof canonical.targetMessageId === 'string' ? { targetMessageId: canonical.targetMessageId } : {}),
-        sourceWorkDir: launchInfo.workDir,
-        sourceRepository: launchInfo.repository,
-        sourceWorktreeSession: launchInfo.worktreeSession,
-        targetSessionId: input.binding.coreSessionId as `${string}-${string}-${string}-${string}-${string}`,
-        durableOperation: {
-          clientOperationId: input.clientOperationId,
-          canonicalInput: input.canonicalInput,
-        },
-      })
+      const targetSessionId = input.binding.coreSessionId as `${string}-${string}-${string}-${string}-${string}`
+      const preparedWorkspace = canonical.target === 'new_worktree'
+        ? await prepareSessionWorkspace(
+            launchInfo.repository?.requestedWorkDir ?? launchInfo.workDir,
+            { branch: launchInfo.repository?.branch, worktree: true },
+            targetSessionId,
+          )
+        : undefined
+      try {
+        return await buildDurableBranchPlan({
+          sourceSessionId,
+          sourceTranscriptPath: launchInfo.filePath,
+          title,
+          ...(typeof canonical.targetMessageId === 'string' ? { targetMessageId: canonical.targetMessageId } : {}),
+          sourceWorkDir: launchInfo.workDir,
+          sourceRepository: launchInfo.repository,
+          sourceWorktreeSession: launchInfo.worktreeSession,
+          targetSessionId,
+          ...(preparedWorkspace ? { targetWorkDir: preparedWorkspace.workDir, targetRepository: preparedWorkspace.repository } : {}),
+          durableOperation: {
+            clientOperationId: input.clientOperationId,
+            canonicalInput: input.canonicalInput,
+          },
+        })
+      } catch (error) {
+        if (preparedWorkspace) await cleanupPreparedSessionWorkspace(preparedWorkspace).catch(() => false)
+        throw error
+      }
     } catch (error) {
       if (error instanceof CoreOperationTerminalError) throw error
       if (error instanceof SessionBranchingError) {
@@ -305,6 +321,9 @@ function parsePersistedBranchPlan(value: unknown): DurableBranchPlan {
   if (!path.isAbsolute(durablePlan.forkPath) || !path.isAbsolute(durablePlan.projectDirPath) || path.dirname(durablePlan.forkPath) !== durablePlan.projectDirPath || path.basename(durablePlan.forkPath) !== `${durablePlan.targetSessionId}.jsonl`) {
     throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch plan fork path is invalid')
   }
+  if (durablePlan.targetWorkDir !== undefined && (typeof durablePlan.targetWorkDir !== 'string' || !path.isAbsolute(durablePlan.targetWorkDir))) {
+    throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch work directory is invalid')
+  }
   if (createHash('sha256').update(durablePlan.body).digest('hex') !== durablePlan.sha256) {
     throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch plan is invalid')
   }
@@ -328,6 +347,7 @@ function validateBranchPlanBody(plan: DurableBranchPlan, record: Partial<Operati
       sourceSessionId?: unknown
       title?: unknown
       targetMessageId?: unknown
+      target?: unknown
     }
     if (typeof canonical.sourceSessionId !== 'string' || !canonical.sourceSessionId || typeof canonical.title !== 'string' || !canonical.title) throw new Error()
     if (canonical.targetMessageId !== undefined && (typeof canonical.targetMessageId !== 'string' || !canonical.targetMessageId)) throw new Error()
@@ -336,6 +356,7 @@ function validateBranchPlanBody(plan: DurableBranchPlan, record: Partial<Operati
       plan.sourceSessionId !== sourceSessionId ||
       plan.title !== canonical.title ||
       (canonical.targetMessageId !== undefined && plan.targetMessageId !== canonical.targetMessageId) ||
+      (canonical.target === 'new_worktree' ? plan.targetWorkDir === undefined : plan.targetWorkDir !== undefined) ||
       typeof plan.targetMessageId !== 'string' ||
       plan.sourceMessageIds.at(-1) !== plan.targetMessageId
     ) throw new Error()
@@ -377,7 +398,8 @@ function validateRecord(value: unknown): OperationRecord {
     (record.kind !== 'create' && record.kind !== 'branch' && record.kind !== 'rename') ||
     typeof record.canonicalInput !== 'string' ||
     !record.binding || typeof record.binding.coreSessionId !== 'string' ||
-    (record.binding.branchProjectDirPath !== undefined && (!path.isAbsolute(record.binding.branchProjectDirPath) || typeof record.binding.branchProjectDirPath !== 'string')) ||
+    (record.binding.branchProjectDirPath !== undefined && (typeof record.binding.branchProjectDirPath !== 'string' || !path.isAbsolute(record.binding.branchProjectDirPath))) ||
+    (record.binding.branchWorkDir !== undefined && (typeof record.binding.branchWorkDir !== 'string' || !path.isAbsolute(record.binding.branchWorkDir))) ||
     (record.state !== 'prepared' && record.state !== 'succeeded' && record.state !== 'failed')
   ) {
     throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core operation journal is invalid')
@@ -385,7 +407,7 @@ function validateRecord(value: unknown): OperationRecord {
   if (record.kind !== 'branch' && record.branchTargetPath !== undefined) throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch target path is invalid')
   if (record.branchPlan !== undefined) {
     const plan = parsePersistedBranchPlan(record.branchPlan)
-    if (record.binding.branchProjectDirPath !== plan.projectDirPath || record.branchTargetPath !== plan.forkPath || plan.targetSessionId !== record.binding.coreSessionId) throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch plan project directory is invalid')
+    if (record.binding.branchProjectDirPath !== plan.projectDirPath || record.binding.branchWorkDir !== plan.targetWorkDir || record.branchTargetPath !== plan.forkPath || plan.targetSessionId !== record.binding.coreSessionId) throw new CoreOperationBridgeError('CORE_OPERATION_JOURNAL_INVALID', 'Core branch plan project directory is invalid')
     validateBranchPlanBody(plan, record)
   }
   if (record.kind === 'branch' && record.state === 'succeeded' && !record.branchPlan) {
@@ -711,7 +733,7 @@ export class CoreOperationBridge {
     const json = JSON.stringify(plan)
     const prepared = {
       ...record,
-      binding: { ...record.binding, branchProjectDirPath: plan.projectDirPath },
+      binding: { ...record.binding, branchProjectDirPath: plan.projectDirPath, ...(plan.targetWorkDir ? { branchWorkDir: plan.targetWorkDir } : {}) },
       branchTargetPath: plan.forkPath,
       branchPlan: {
         json,

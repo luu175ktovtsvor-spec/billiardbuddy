@@ -97,6 +97,8 @@ export type DurableBranchPlan = {
   sourceMessageIds: string[]
   forkPath: string
   projectDirPath: string
+  /** Durable execution directory when this fork moved into an isolated checkout. */
+  targetWorkDir?: string
   targetMessageId?: string
   title: string
   body: string
@@ -699,6 +701,7 @@ export async function createSessionBranch(
       sourceMessageIds: branchMessageEntries.map((entry) => entry.uuid),
       forkPath,
       projectDirPath,
+      ...(targetWorkDir ? { targetWorkDir: path.resolve(targetWorkDir) } : {}),
       targetMessageId: copiedMessages.at(-1)!.uuid,
       title: effectiveTitle,
       body,

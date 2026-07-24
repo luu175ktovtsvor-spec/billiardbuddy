@@ -265,8 +265,9 @@ export type ContinueProductTaskInput = ProductTaskMutationEnvelope & {
    */
   sourceEntryId?: string
   /**
-   * Continue in the source task's workspace by default. A new worktree is
-   * materialized before the branched transcript is created.
+   * A fork always materializes an independent worktree. The legacy
+   * current_workspace value remains a type-level read compatibility shim and
+   * is rejected by the authoritative mutation route.
    */
   target?: ProductContinuationTarget
 }
@@ -284,6 +285,8 @@ export type SubmitTaskRunInput = {
   expected_lineage_revision: number
   text: string
   attachment_ids: string[]
+  /** Opaque persisted task-thread entries explicitly quoted by this turn. */
+  reference_entry_ids?: string[]
   draft_id?: string
   expected_draft_revision?: number
 }

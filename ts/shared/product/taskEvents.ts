@@ -160,6 +160,7 @@ export type ProductTaskEvent =
       /** Permanent durable-ledger cursor; absent only for legacy Core replay. */
       event_sequence?: number
       attachments?: ProductTaskAttachmentSummary[]
+      referenceEntryIds?: string[]
     }
   | { type: 'assistant_text_start' }
   | { type: 'assistant_text_delta'; text: string }
@@ -220,6 +221,7 @@ export type ProductTaskThreadEntry =
       text: string
       createdAt: string
       attachments?: ProductTaskAttachmentSummary[]
+      referenceEntryIds?: string[]
     }
   | {
       id: string
@@ -255,5 +257,6 @@ export type TaskEvent = {
   entry_id: string
   text: string
   attachment_ids: string[]
+  reference_entry_ids?: string[]
   created_at: string
 }

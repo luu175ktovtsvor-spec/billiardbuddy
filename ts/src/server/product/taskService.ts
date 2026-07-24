@@ -30,7 +30,7 @@ import {
   type SubmitTaskRunReceipt,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskThread, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
 import type { AgentWorkerApprovalReviewFacts } from '../../../shared/product/agentWorker.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
@@ -990,9 +990,19 @@ export class ProductTaskService {
     const current = await authority.read()
     const source = current.tasks[sourceTaskId] as { task?: ProductTaskRecord; binding?: { coreSessionId?: string } } | undefined
     let canonicalInput = input.canonical_input
+    let forkCheckpointId: string | undefined
     if (source?.binding?.coreSessionId) {
-      const serverInput: Record<string, unknown> = { sourceSessionId: source.binding.coreSessionId, title: typeof publicInput.title === 'string' ? publicInput.title : source.task?.title ?? 'Continue task' }
-      if (typeof publicInput.sourceEntryId === 'string') serverInput.targetMessageId = await this.resolveSourceTurnIdForProductEntry(source.binding.coreSessionId, publicInput.sourceEntryId)
+      if (kind === 'continue' && publicInput.target !== 'new_worktree') throw ApiError.badRequest('任务分叉必须使用独立工作树')
+      let sourceSessionId = source.binding.coreSessionId
+      let targetMessageId: string | undefined
+      if (typeof publicInput.sourceEntryId === 'string') {
+        const resolved = await this.resolveTaskBranchSource(sourceTaskId, publicInput.sourceEntryId, current)
+        sourceSessionId = resolved.coreSessionId
+        targetMessageId = resolved.coreTurnId
+        forkCheckpointId = resolved.checkpointEntryId
+      }
+      const serverInput: Record<string, unknown> = { sourceSessionId, title: typeof publicInput.title === 'string' ? publicInput.title : source.task?.title ?? 'Continue task', ...(kind === 'continue' ? { target: 'new_worktree' } : {}) }
+      if (targetMessageId) serverInput.targetMessageId = targetMessageId
       canonicalInput = JSON.stringify(serverInput)
     }
     let reserved
@@ -1015,12 +1025,20 @@ export class ProductTaskService {
       const now = new Date().toISOString()
       return { id: input.taskId, parentTaskId: parsed.taskId ?? '', taskId: input.taskId, title: parsed.title ?? '', status: 'open', createdAt: now, updatedAt: now }
     })() : undefined
+    const coreBinding = binding as { coreSessionId?: unknown; branchWorkDir?: unknown }
+    const parentLineageId = typeof source?.task?.current_lineage_id === 'string' ? source.task.current_lineage_id : undefined
+    const childLineageId = `lineage_${createHash('sha256').update(`fork\0${input.client_operation_id}`).digest('hex').slice(0, 32)}`
+    const now = this.now().toISOString()
+    const executionDirectory = typeof coreBinding.branchWorkDir === 'string' ? coreBinding.branchWorkDir : source?.task?.workDir
+    const childLineage = kind === 'continue' && parentLineageId && forkCheckpointId && executionDirectory
+      ? { lineage_id: childLineageId, product_task_id: input.taskId, parent_lineage_id: parentLineageId, fork_checkpoint_id: forkCheckpointId, revision: 0, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, execution_directory: executionDirectory, state: 'active', created_at: now, updated_at: now }
+      : undefined
     const finalBinding = sideTask
       ? { id: input.taskId, kind, binding }
       : source?.task
-        ? { ...source, task: { ...source.task, revision: (source.task.revision ?? 0) + 1 } }
+        ? { ...source, binding: { ...source.binding, ...(typeof coreBinding.coreSessionId === 'string' ? { coreSessionId: coreBinding.coreSessionId } : {}) }, task: { ...source.task, revision: (source.task.revision ?? 0) + 1, ...(childLineage ? { current_lineage_id: childLineageId, workDir: executionDirectory, worktreeState: 'materialized', updatedAt: now } : {}) } }
         : { id: input.taskId, kind, binding }
-    const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, ...(sideTask ? { result: sideTask } : {}) }, finalBinding, sideTask ? { sideTask } : {})
+    const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, ...(sideTask ? { result: sideTask } : {}) }, finalBinding, { ...(sideTask ? { sideTask } : {}), ...(childLineage ? { lineage: { id: childLineageId, value: childLineage } } : {}) })
     return { outcome: 'accepted', revision: final.revision }
   }
 
@@ -1246,7 +1264,8 @@ export class ProductTaskService {
 
   async submitTaskRun(taskId: string, input: SubmitTaskRunInput): Promise<SubmitTaskRunReceipt> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    const canonical = JSON.stringify({ task_id: taskId, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, text: input.text, attachment_ids: input.attachment_ids, draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision })
+    const referenceEntryIds = input.reference_entry_ids ?? []
+    const canonical = JSON.stringify({ task_id: taskId, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, text: input.text, attachment_ids: input.attachment_ids, reference_entry_ids: referenceEntryIds, draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision })
     try {
       const { file, result } = await authority.transactSubmit((state) => {
         const prior = state.receipts[input.client_operation_id]
@@ -1254,7 +1273,7 @@ export class ProductTaskService {
           if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
           return { changed: false as const, value: { duplicate: true, receipt: prior } }
         }
-        if ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined) || (input.draft_id !== undefined && (!input.draft_id || !Number.isSafeInteger(input.expected_draft_revision) || input.expected_draft_revision! < 0)) || !input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+        if ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined) || (input.draft_id !== undefined && (!input.draft_id || !Number.isSafeInteger(input.expected_draft_revision) || input.expected_draft_revision! < 0)) || !input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length || referenceEntryIds.length > 8 || new Set(referenceEntryIds).size !== referenceEntryIds.length || referenceEntryIds.some(id => !/^thread_[a-f0-9]{20}$/.test(id))) throw new Error('AUTHORITY_INVALID')
         const stored = state.tasks[taskId] as { task?: Record<string, unknown> } | undefined
         const task = stored?.task
         if (!task || (task.revision ?? 0) !== input.expected_task_revision) throw new Error('AUTHORITY_CONFLICT')
@@ -1287,14 +1306,15 @@ export class ProductTaskService {
         task.current_lineage_id = lineageId
         task.permission_snapshot = permissionSnapshot
         lineage.head_entry_id = entryId; lineage.revision = input.expected_lineage_revision + 1; lineage.updated_at = now
-        state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }
+        state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now, ...(referenceEntryIds.length ? { reference_entry_ids: referenceEntryIds } : {}) }
         const scope = state.task_scopes[taskId] as { kind?: unknown } | undefined
         const execution_capability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
         const workspace = scope?.kind === 'workspace' && typeof (scope as { workspace_id?: unknown }).workspace_id === 'string' ? state.workspaces[(scope as { workspace_id: string }).workspace_id] as { canonical_root?: unknown } | undefined : undefined
-        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath), dispatch_generation: 1 } }
+        const workDir = typeof lineage.execution_directory === 'string' ? lineage.execution_directory : typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath)
+        state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: workDir, dispatch_generation: 1 } }
         state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
         state.event_sequence += 1
-        state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, created_at: now }
+        state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, text: input.text, attachment_ids: input.attachment_ids, ...(referenceEntryIds.length ? { reference_entry_ids: referenceEntryIds } : {}), created_at: now }
         for (const [id, attachment] of attachments) { state.task_attachments[id] = { ...attachment, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...attachment.refs as string[], taskId], revision: (attachment.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
         if (draft) state.composer_drafts[input.draft_id!] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }
         const entity_revisions: Record<string, number> = { task: task.revision as number, lineage: lineage.revision as number }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; if (draft) entity_revisions.draft = (state.composer_drafts[input.draft_id!] as { revision: number }).revision
@@ -1641,7 +1661,7 @@ export class ProductTaskService {
     session_memory: {
       storage_dir: string
       entry_id: string
-      ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }>
+      ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string; work_dir?: string }>
     }
   }> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
@@ -1651,7 +1671,7 @@ export class ProductTaskService {
     const entry = typeof run?.entry_id === 'string' ? state.thread_entries[run.entry_id] as { task_id?: unknown; run_id?: unknown; text?: unknown } | undefined : undefined
     if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || typeof run.entry_id !== 'string' || !entry || entry.task_id !== run.task_id || entry.run_id !== runId || typeof entry.text !== 'string' || !entry.text || dispatch?.dispatch_generation !== dispatchGeneration || !lineage || lineage.product_task_id !== run.task_id || typeof lineage.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
     const resumeBindingId = lineage.resume_binding_id
-    const ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }> = []
+    const ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string; work_dir?: string }> = []
     const seen = new Set([run.lineage_id])
     while (typeof lineage.parent_lineage_id === 'string') {
       const parentId = lineage.parent_lineage_id
@@ -1659,7 +1679,12 @@ export class ProductTaskService {
       seen.add(parentId)
       const parent = state.conversation_lineages[parentId] as Record<string, unknown> | undefined
       if (!parent || parent.product_task_id !== run.task_id || typeof parent.resume_binding_id !== 'string') throw new Error('AUTHORITY_INVALID')
-      ancestors.push({ lineage_id: parentId, resume_binding_id: parent.resume_binding_id, ...(typeof lineage.fork_checkpoint_id === 'string' ? { inherit_through_entry_id: lineage.fork_checkpoint_id } : {}) })
+      const parentRun = Object.values(state.task_runs)
+        .map(value => value as { lineage_id?: unknown; created_at?: unknown; core_binding?: { work_dir?: unknown } })
+        .filter(candidate => candidate.lineage_id === parentId && typeof candidate.created_at === 'string' && typeof candidate.core_binding?.work_dir === 'string')
+        .sort((left, right) => Date.parse(right.created_at as string) - Date.parse(left.created_at as string))[0]
+      const parentWorkDir = typeof parent.execution_directory === 'string' ? parent.execution_directory : parentRun?.core_binding?.work_dir
+      ancestors.push({ lineage_id: parentId, resume_binding_id: parent.resume_binding_id, ...(typeof lineage.fork_checkpoint_id === 'string' ? { inherit_through_entry_id: lineage.fork_checkpoint_id } : {}), ...(typeof parentWorkDir === 'string' ? { work_dir: parentWorkDir } : {}) })
       lineage = parent
     }
     const durableEvent = Object.values(state.task_events).find((candidate) => {
@@ -2250,7 +2275,7 @@ export class ProductTaskService {
 
   async setConversationLineageCurrent(input: { task_id: string; lineage_id: string; expected_task_revision: number; expected_lineage_revision: number; client_operation_id: string }): Promise<{ authority_revision: number; task_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' }> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const before = await authority.read(); const canonical = JSON.stringify({ kind: 'lineage_set_current', task_id: input.task_id, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision }); if (before.receipts[input.client_operation_id]) { if (before.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: before.revision, task_revision: ((before.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'duplicate' } }
-    try { const { file } = await authority.mutateCapabilities((state) => { const stored = state.tasks[input.task_id] as { task?: Record<string, unknown> } | undefined; const lineage = state.conversation_lineages[input.lineage_id] as Record<string, unknown> | undefined; const revision = typeof stored?.task?.revision === 'number' ? stored.task.revision : 0; if (!stored?.task || !lineage || lineage.product_task_id !== input.task_id || revision !== input.expected_task_revision || lineage.revision !== input.expected_lineage_revision) throw new Error('AUTHORITY_CONFLICT'); stored.task.current_lineage_id = input.lineage_id; stored.task.revision = revision + 1; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'lineage_set_current', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } }).task?.revision ?? 0), outcome: 'accepted' } } catch { const file = await authority.read(); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'conflict' } }
+    try { const { file } = await authority.mutateCapabilities((state) => { const stored = state.tasks[input.task_id] as { task?: Record<string, unknown> } | undefined; const lineage = state.conversation_lineages[input.lineage_id] as Record<string, unknown> | undefined; const revision = typeof stored?.task?.revision === 'number' ? stored.task.revision : 0; if (!stored?.task || !lineage || lineage.product_task_id !== input.task_id || revision !== input.expected_task_revision || lineage.revision !== input.expected_lineage_revision) throw new Error('AUTHORITY_CONFLICT'); stored.task.current_lineage_id = input.lineage_id; if (typeof lineage.execution_directory === 'string') stored.task.workDir = lineage.execution_directory; stored.task.revision = revision + 1; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'lineage_set_current', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } }).task?.revision ?? 0), outcome: 'accepted' } } catch { const file = await authority.read(); return { authority_revision: file.revision, task_revision: ((file.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0), outcome: 'conflict' } }
   }
 
   async getConversationLineageRoot(lineageId: string): Promise<Record<string, unknown>> {
@@ -2308,17 +2333,48 @@ export class ProductTaskService {
             runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
           }
         }
-        const runs = Object.values(authority.task_runs)
-          .map(run => run as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; created_at?: unknown; core_binding?: { session_id?: unknown } })
-          .filter(run => run.task_id === taskId && run.lineage_id === task.current_lineage_id && typeof run.created_at === 'string' && typeof run.core_binding?.session_id === 'string')
+        const lineageSegments: Array<{ lineageId: string; checkpoint?: string }> = []
+        let lineage = authority.conversation_lineages[task.current_lineage_id] as Record<string, unknown> | undefined
+        const seen = new Set<string>()
+        while (lineage && typeof lineage.lineage_id === 'string') {
+          if (seen.has(lineage.lineage_id)) throw new Error('AUTHORITY_INVALID')
+          seen.add(lineage.lineage_id)
+          lineageSegments.push({ lineageId: lineage.lineage_id })
+          if (typeof lineage.parent_lineage_id !== 'string') break
+          const parent = authority.conversation_lineages[lineage.parent_lineage_id] as Record<string, unknown> | undefined
+          if (!parent || parent.product_task_id !== taskId) throw new Error('AUTHORITY_INVALID')
+          lineageSegments[lineageSegments.length - 1]!.checkpoint = typeof lineage.fork_checkpoint_id === 'string' ? lineage.fork_checkpoint_id : undefined
+          lineage = parent
+        }
+        lineageSegments.reverse()
+        const allRuns = Object.values(authority.task_runs)
+          .map(run => run as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; created_at?: unknown; core_binding?: { session_id?: unknown } })
+          .filter(run => run.task_id === taskId && typeof run.created_at === 'string' && typeof run.core_binding?.session_id === 'string')
           .sort((left, right) => (
             (runSequence.get(left.run_id as string) ?? 0) - (runSequence.get(right.run_id as string) ?? 0)
             || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
           ))
-        const entries = (await Promise.all(runs.map(async run => {
-          const messages = await getSessionMessages(run.core_binding!.session_id as string).catch(() => [])
-          return projectSessionTranscriptForProductTask(taskId, messages).entries
-        }))).flat()
+        const entries: ProductTaskThreadEntry[] = []
+        for (const [index, segment] of lineageSegments.entries()) {
+          const cutoff = index + 1 < lineageSegments.length ? lineageSegments[index + 1]!.checkpoint : undefined
+          let foundCutoff = cutoff === undefined
+          for (const run of allRuns.filter(candidate => candidate.lineage_id === segment.lineageId)) {
+            const messages = await getSessionMessages(run.core_binding!.session_id as string).catch(() => [])
+            const projected = projectSessionTranscriptForProductTask(taskId, messages).entries
+            const durableEntry = typeof run.entry_id === 'string' ? authority.thread_entries[run.entry_id] as { reference_entry_ids?: unknown } | undefined : undefined
+            const referenceEntryIds = Array.isArray(durableEntry?.reference_entry_ids) ? durableEntry.reference_entry_ids.filter((id): id is string => typeof id === 'string') : []
+            let attached = false
+            entries.push(...projected.map(entry => {
+              if (!attached && entry.type === 'user_text' && referenceEntryIds.length) {
+                attached = true
+                return { ...entry, referenceEntryIds }
+              }
+              return entry
+            }))
+            if (cutoff && run.entry_id === cutoff) { foundCutoff = true; break }
+          }
+          if (!foundCutoff) throw new Error('AUTHORITY_INVALID')
+        }
         if (entries.length > 0) return { taskId, entries }
       }
       const sessionId = (await this.requireTaskBinding(taskId)).metadata.coreSessionId
@@ -2838,6 +2894,58 @@ export class ProductTaskService {
       throw ApiError.badRequest('请选择当前任务中的一条已保存消息')
     }
     return sourceTurnId
+  }
+
+  private async resolveTaskBranchSource(
+    taskId: string,
+    sourceEntryId: string,
+    authority: AuthorityFile,
+  ): Promise<{ coreSessionId: string; coreTurnId: string; checkpointEntryId: string }> {
+    const getSessionMessages = this.core.getSessionMessages
+    if (!getSessionMessages) throw new ApiError(503, '暂时无法读取当前任务记录', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+    const task = (authority.tasks[taskId] as { task?: { current_lineage_id?: unknown } } | undefined)?.task
+    if (typeof task?.current_lineage_id === 'string') {
+      const lineageSegments: Array<{ lineageId: string; checkpoint?: string }> = []
+      let lineage = authority.conversation_lineages[task.current_lineage_id] as Record<string, unknown> | undefined
+      const seen = new Set<string>()
+      while (lineage && typeof lineage.lineage_id === 'string') {
+        if (seen.has(lineage.lineage_id)) throw new Error('AUTHORITY_INVALID')
+        seen.add(lineage.lineage_id)
+        lineageSegments.push({ lineageId: lineage.lineage_id })
+        if (typeof lineage.parent_lineage_id !== 'string') break
+        const parent = authority.conversation_lineages[lineage.parent_lineage_id] as Record<string, unknown> | undefined
+        if (!parent || parent.product_task_id !== taskId) throw new Error('AUTHORITY_INVALID')
+        lineageSegments[lineageSegments.length - 1]!.checkpoint = typeof lineage.fork_checkpoint_id === 'string' ? lineage.fork_checkpoint_id : undefined
+        lineage = parent
+      }
+      lineageSegments.reverse()
+      const runSequence = new Map<string, number>()
+      for (const event of Object.values(authority.task_events)) {
+        const value = event as { run_id?: unknown; event_sequence?: unknown }
+        if (typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
+          runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
+        }
+      }
+      const runs = Object.values(authority.task_runs)
+        .map(value => value as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; created_at?: unknown; core_binding?: { session_id?: unknown } })
+        .filter(run => run.task_id === taskId && typeof run.lineage_id === 'string' && typeof run.entry_id === 'string' && typeof run.created_at === 'string' && typeof run.core_binding?.session_id === 'string')
+        .sort((left, right) => (
+          (runSequence.get(left.run_id as string) ?? 0) - (runSequence.get(right.run_id as string) ?? 0)
+          || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
+        ))
+      for (const [index, segment] of lineageSegments.entries()) {
+        const cutoff = index + 1 < lineageSegments.length ? lineageSegments[index + 1]!.checkpoint : undefined
+        let foundCutoff = cutoff === undefined
+        for (const run of runs.filter(candidate => candidate.lineage_id === segment.lineageId)) {
+          const messages = await getSessionMessages(run.core_binding!.session_id as string).catch(() => [])
+          const coreTurnId = resolveCoreMessageIdForProductThreadEntry(messages, sourceEntryId)
+          if (coreTurnId) return { coreSessionId: run.core_binding!.session_id as string, coreTurnId, checkpointEntryId: run.entry_id as string }
+          if (cutoff && run.entry_id === cutoff) { foundCutoff = true; break }
+        }
+        if (!foundCutoff) throw new Error('AUTHORITY_INVALID')
+      }
+    }
+    throw ApiError.badRequest('请选择当前任务谱系中的一条已保存消息')
   }
 
   private async requireTaskBinding(taskId: string): Promise<{
