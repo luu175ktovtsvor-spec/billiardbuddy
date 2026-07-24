@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { ActionDialog } from '../../components/shared/ActionDialog'
 import { Button } from '../../components/shared/Button'
+import { DirectoryPicker } from '../../components/shared/DirectoryPicker'
 import { Modal } from '../../components/shared/Modal'
 import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron } from '../../lib/cronDescribe'
@@ -292,7 +293,7 @@ export function ProductScheduledTasksPage() {
       <div className="shrink-0 border-b border-[var(--color-border)] px-6 py-3">
         <div className="flex items-start gap-2 rounded-lg bg-[var(--color-surface-container)] px-3 py-2.5 text-xs text-[var(--color-text-secondary)]">
           <Clock3 size={16} className="mt-0.5 shrink-0 text-[var(--color-brand)]" />
-          <p>定时任务只会在桌面应用运行时执行。无人值守时，任何需要确认的操作都会被拒绝。</p>
+          <p>定时任务只会在桌面应用运行时执行。它只能在所选工作目录内运行；网络、破坏性操作和目录外访问都会被拒绝。</p>
         </div>
       </div>
 
@@ -333,6 +334,7 @@ export function ProductScheduledTasksPage() {
                       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
                         {lastRun ? <span>上次运行：{lastRun}</span> : <span>尚未运行</span>}
                         {task.workDir ? <span className="truncate" title={task.workDir}>工作目录：{task.workDir}</span> : null}
+                        <span>{task.missedRunPolicy === 'skip' ? '休眠错过时跳过' : '休眠恢复后最多补跑一次'}</span>
                         {task.notification?.enabled ? <span className="inline-flex items-center gap-1"><Bell size={12} />完成后提醒</span> : null}
                       </div>
                     </div>
@@ -374,7 +376,7 @@ export function ProductScheduledTasksPage() {
         open={confirmTarget?.kind === 'run'}
         onClose={() => setConfirmTarget(null)}
         title="立即运行定时任务"
-        body="任务会按保存的工作目录和无人值守权限运行。需要确认的操作不会自动放行。"
+        body="任务会在保存的工作目录和固定无人值守授权内运行。目录外、网络和破坏性操作不会自动放行。"
         actions={[
           { label: '取消', onClick: () => setConfirmTarget(null) },
           {
@@ -440,6 +442,7 @@ function ScheduledTaskRunsPanel({
                   {runLabel(run.status)}
                 </span>
                 <span className="text-[var(--color-text-tertiary)]">{formatDateTime(run.startedAt) ?? '时间未知'}</span>
+                <span className="text-[var(--color-text-tertiary)]">{run.trigger === 'manual' ? '手动触发' : `计划时点 ${formatDateTime(run.occurrenceAt) ?? '未知'}`}</span>
                 {typeof run.durationMs === 'number' ? <span className="text-[var(--color-text-tertiary)]">用时 {Math.max(1, Math.round(run.durationMs / 1_000))} 秒</span> : null}
               </div>
               {run.result ? <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-text-secondary)]">{run.result}</p> : null}
@@ -468,10 +471,11 @@ function ScheduledTaskEditor({
   const [instruction, setInstruction] = useState(task?.instruction ?? '')
   const [schedule, setSchedule] = useState(task?.schedule ?? '0 9 * * *')
   const [workDir, setWorkDir] = useState(task?.workDir ?? '')
+  const [missedRunPolicy, setMissedRunPolicy] = useState(task?.missedRunPolicy ?? 'run_once')
   const [notifyOnComplete, setNotifyOnComplete] = useState(task?.notification?.enabled ?? false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const canSubmit = title.trim().length > 0 && instruction.trim().length > 0 && isValidCron(schedule)
+  const canSubmit = title.trim().length > 0 && instruction.trim().length > 0 && workDir.trim().length > 0 && isValidCron(schedule)
 
   const submit = async () => {
     if (!canSubmit) return
@@ -481,7 +485,8 @@ function ScheduledTaskEditor({
       description: description.trim() || null,
       schedule: schedule.trim(),
       instruction: instruction.trim(),
-      workDir: workDir.trim() || null,
+      workDir: workDir.trim(),
+      missedRunPolicy,
       notification: notifyOnComplete
         ? { enabled: true, channels: ['desktop'] as Array<'desktop'> }
         : { enabled: false, channels: [] as Array<'desktop'> },
@@ -490,7 +495,6 @@ function ScheduledTaskEditor({
       await onSubmit(task ? input : {
         ...input,
         description: input.description ?? undefined,
-        workDir: input.workDir ?? undefined,
         recurring: true,
         enabled: true,
       })
@@ -514,7 +518,7 @@ function ScheduledTaskEditor({
     >
       <div className="space-y-4">
         <div className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2.5 text-xs leading-5 text-[var(--color-text-secondary)]">
-          定时任务不会跳过确认。适合固定复盘、提醒和检查，不适合需要持续人工判断的操作。
+          所选目录就是本任务的固定授权范围。任务可在目录内工作，但网络、破坏性操作和目录外访问会被自动拒绝。
         </div>
         {submitError ? <p role="alert" className="rounded-lg border border-[var(--color-error)]/30 px-3 py-2 text-sm text-[var(--color-error)]">{submitError}</p> : null}
         <Field label="任务名称" required>
@@ -539,8 +543,15 @@ function ScheduledTaskEditor({
             </p>
           </div>
         </Field>
-        <Field label="工作目录（可选）">
-          <input value={workDir} onChange={(event) => setWorkDir(event.target.value)} placeholder="留空时使用默认工作目录" className={INPUT_CLASS} />
+        <Field label="工作目录" required interactive>
+          <DirectoryPicker value={workDir} onChange={setWorkDir} />
+          {workDir ? <p className="mt-1.5 break-all font-[var(--font-mono)] text-xs text-[var(--color-text-tertiary)]">{workDir}</p> : <p className="mt-1.5 text-xs text-[var(--color-error)]">请选择任务可以访问的工作目录。</p>}
+        </Field>
+        <Field label="休眠恢复">
+          <select value={missedRunPolicy} onChange={(event) => setMissedRunPolicy(event.target.value as 'run_once' | 'skip')} className={INPUT_CLASS}>
+            <option value="run_once">恢复后补跑最近一次（最多一次）</option>
+            <option value="skip">错过的时点直接跳过</option>
+          </select>
         </Field>
         <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--color-border)] p-3">
           <input type="checkbox" checked={notifyOnComplete} onChange={(event) => setNotifyOnComplete(event.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-brand)]" />
@@ -551,11 +562,12 @@ function ScheduledTaskEditor({
   )
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
-  return (
-    <label className="block">
+function Field({ label, required, interactive, children }: { label: string; required?: boolean; interactive?: boolean; children: ReactNode }) {
+  const content = (
+    <>
       <span className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">{label}{required ? <span className="ml-1 text-[var(--color-error)]">*</span> : null}</span>
       {children}
-    </label>
+    </>
   )
+  return interactive ? <div className="block">{content}</div> : <label className="block">{content}</label>
 }

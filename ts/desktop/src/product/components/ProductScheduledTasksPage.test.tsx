@@ -29,6 +29,12 @@ vi.mock('../api/client', () => ({
   productApiUserFacingError: () => '安全提示',
 }))
 
+vi.mock('../../components/shared/DirectoryPicker', () => ({
+  DirectoryPicker: ({ onChange }: { onChange: (path: string) => void }) => (
+    <button type="button" aria-label="选择工作目录" onClick={() => onChange('/workspace/billiard')}>选择工作目录</button>
+  ),
+}))
+
 import { ProductScheduledTasksPage } from './ProductScheduledTasksPage'
 
 function makeTask(overrides: Partial<ProductScheduledTask> = {}): ProductScheduledTask {
@@ -40,6 +46,9 @@ function makeTask(overrides: Partial<ProductScheduledTask> = {}): ProductSchedul
     instruction: '整理今天的营业数据并给出明日建议。',
     enabled: true,
     recurring: true,
+    missedRunPolicy: 'run_once',
+    grant: { version: 1, scope: 'workdir', fileAccess: 'workspace_write', networkAccess: 'denied', destructiveActions: 'denied' },
+    workDir: '/workspace/billiard',
     createdAt: 1,
     notification: { enabled: true, channels: ['desktop'] },
     ...overrides,
@@ -67,6 +76,8 @@ beforeEach(() => {
       taskId: 'schedule-1',
       taskTitle: '每日营业复盘',
       startedAt: '2026-07-19T12:00:00.000Z',
+      occurrenceAt: '2026-07-19T12:00:00.000Z',
+      trigger: 'schedule',
       completedAt: '2026-07-19T12:00:03.000Z',
       status: 'completed',
       result: '今日营业复盘已整理完成。',
@@ -101,6 +112,7 @@ describe('ProductScheduledTasksPage', () => {
     await screen.findByRole('dialog', { name: '新建定时任务' })
     fireEvent.change(screen.getByLabelText(/任务名称/), { target: { value: '早班检查' } })
     fireEvent.change(screen.getByLabelText(/执行内容/), { target: { value: '检查球台、灯光和预约。' } })
+    fireEvent.click(screen.getByRole('button', { name: '选择工作目录' }))
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -109,6 +121,8 @@ describe('ProductScheduledTasksPage', () => {
       schedule: '0 9 * * *',
       recurring: true,
       enabled: true,
+      workDir: '/workspace/billiard',
+      missedRunPolicy: 'run_once',
     })))
     expect(await screen.findByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
   })
@@ -123,6 +137,7 @@ describe('ProductScheduledTasksPage', () => {
     await screen.findByRole('dialog', { name: '新建定时任务' })
     fireEvent.change(screen.getByLabelText(/任务名称/), { target: { value: '早班检查' } })
     fireEvent.change(screen.getByLabelText(/执行内容/), { target: { value: '检查球台、灯光和预约。' } })
+    fireEvent.click(screen.getByRole('button', { name: '选择工作目录' }))
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     expect(await screen.findByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
@@ -160,6 +175,8 @@ describe('ProductScheduledTasksPage', () => {
           taskId: secondTask.id,
           taskTitle: secondTask.title,
           startedAt: '2026-07-19T12:01:00.000Z',
+          occurrenceAt: '2026-07-19T12:01:00.000Z',
+          trigger: 'schedule',
           status: 'completed',
           result: '早班检查已完成。',
         }],
@@ -174,6 +191,8 @@ describe('ProductScheduledTasksPage', () => {
           taskId: firstTask.id,
           taskTitle: firstTask.title,
           startedAt: '2026-07-19T12:00:00.000Z',
+          occurrenceAt: '2026-07-19T12:00:00.000Z',
+          trigger: 'schedule',
           status: 'completed',
           result: '不应出现在早班检查中的旧结果。',
         }],
