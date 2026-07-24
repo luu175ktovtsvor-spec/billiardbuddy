@@ -31,6 +31,7 @@ import {
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskThread, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { AgentWorkerApprovalReviewFacts } from '../../../shared/product/agentWorker.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
@@ -258,10 +259,12 @@ type ProductTaskRunDispatcher = {
 type DurableTaskRunApproval = {
   request_id: string
   action: ProductTaskActionApproval
+  review?: AgentWorkerApprovalReviewFacts
   status: 'pending' | 'resolved'
   requested_at: string
   decision?: 'allowed' | 'denied'
   reviewer?: 'user' | 'automatic'
+  resolution_reason?: 'user_decision' | 'read_only_local' | 'destructive' | 'data_egress' | 'write_boundary' | 'unknown_capability'
   resolved_at?: string
 }
 
@@ -1334,24 +1337,27 @@ export class ProductTaskService {
     dispatchGeneration: number,
     requestId: string,
     action: ProductTaskActionApproval,
-  ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'action' }> }> {
+    review: AgentWorkerApprovalReviewFacts,
+  ): Promise<{ task_id: string; reviewer: 'user' | 'automatic'; event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'action' }> }> {
     if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
-      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const run = state.task_runs[runId] as { task_id?: unknown; permission_snapshot?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[] } | undefined
       if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const reviewer = taskPermissionSnapshot(run.permission_snapshot).reviewer
+      if (reviewer === 'none') throw new Error('AUTHORITY_INVALID')
       const approvals = dispatch.approvals ??= []
       const existing = approvals.find(approval => approval.request_id === requestId)
       if (existing) {
-        if (existing.status !== 'pending' || JSON.stringify(existing.action) !== JSON.stringify(action)) throw new Error('AUTHORITY_INVALID')
-        return { changed: false as const, value: { task_id: run.task_id } }
+        if (existing.status !== 'pending' || JSON.stringify(existing.action) !== JSON.stringify(action) || JSON.stringify(existing.review) !== JSON.stringify(review)) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: { task_id: run.task_id, reviewer } }
       }
       if (approvals.some(approval => approval.status === 'pending')) throw new Error('AUTHORITY_INVALID')
-      approvals.push({ request_id: requestId, action: { ...action }, status: 'pending', requested_at: this.now().toISOString() })
-      return { task_id: run.task_id }
+      approvals.push({ request_id: requestId, action: { ...action }, review: { ...review }, status: 'pending', requested_at: this.now().toISOString() })
+      return { task_id: run.task_id, reviewer }
     })
-    return { task_id: result.task_id, event: { type: 'approval_required', requestId, kind: 'action', action: { ...action } } }
+    return { task_id: result.task_id, reviewer: result.reviewer, event: { type: 'approval_required', requestId, kind: 'action', action: { ...action } } }
   }
 
   /** Reconnect projection for the only unresolved approval owned by a task. */
@@ -1375,8 +1381,10 @@ export class ProductTaskService {
     requestId: string,
     allowed: boolean,
     reviewer: 'user' | 'automatic',
+    resolutionReason: DurableTaskRunApproval['resolution_reason'] = reviewer === 'user' ? 'user_decision' : 'unknown_capability',
   ): Promise<boolean> {
     if (!/^[A-Za-z0-9._:-]{1,256}$/.test(requestId)) return false
+    if ((reviewer === 'user') !== (resolutionReason === 'user_decision')) return false
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       for (const [runId, value] of Object.entries(state.dispatch_records)) {
@@ -1391,6 +1399,7 @@ export class ProductTaskService {
         approval.status = 'resolved'
         approval.decision = allowed ? 'allowed' : 'denied'
         approval.reviewer = reviewer
+        approval.resolution_reason = resolutionReason
         approval.resolved_at = this.now().toISOString()
         return { handled: true, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number }
       }

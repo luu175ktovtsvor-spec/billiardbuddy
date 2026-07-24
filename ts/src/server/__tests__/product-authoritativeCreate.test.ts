@@ -562,7 +562,8 @@ describe('BB-02C atomic homepage submit', () => {
     const run = accepted.result!
     expect(await first.claimTaskRunDispatch(run.run_id, 1)).toMatchObject({ outcome: 'claimed' })
     const action = { what: '运行一条受限命令', scope: '当前任务工作区之外的本机资源或网络边界', consequence: '命令可能修改文件、启动进程或访问外部服务。' }
-    expect(await first.recordTaskRunApprovalRequest(run.run_id, 1, 'approval-1', action)).toMatchObject({ task_id: run.task_id, event: { type: 'approval_required', requestId: 'approval-1', action } })
+    const review = { category: 'command' as const, read_only: false, destructive: false, open_world: false }
+    expect(await first.recordTaskRunApprovalRequest(run.run_id, 1, 'approval-1', action, review)).toMatchObject({ task_id: run.task_id, reviewer: 'user', event: { type: 'approval_required', requestId: 'approval-1', action } })
     expect(await first.readPendingTaskApproval(run.task_id)).toMatchObject({ requestId: 'approval-1', action })
 
     const delivered: unknown[] = []
@@ -574,7 +575,42 @@ describe('BB-02C atomic homepage submit', () => {
     expect(await restarted.respondToTaskApproval(run.task_id, 'approval-1', false)).toBeFalse()
     expect(delivered).toHaveLength(1)
     const state = await new ProductTaskAuthorityRepository(authorityPath).read()
-    expect(state.dispatch_records[run.run_id]).toMatchObject({ approvals: [{ request_id: 'approval-1', status: 'resolved', decision: 'allowed', reviewer: 'user' }] })
+    expect(state.dispatch_records[run.run_id]).toMatchObject({ approvals: [{ request_id: 'approval-1', review, status: 'resolved', decision: 'allowed', reviewer: 'user', resolution_reason: 'user_decision' }] })
+  })
+
+  test('binds approve-for-me requests only to an automatic reviewer receipt', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-08c-auto-review-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    const delivered: unknown[] = []
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async () => 'started', approve: async (...args) => { delivered.push(args); return true } } })
+    const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1_000, client_operation_id: 'draft-auto' })
+    const accepted = await service.createAndSubmitTask({ ...input(draft.draft.draft_id as string, 'submit-auto'), permission_mode: 'approve_for_me' })
+    const run = accepted.result!
+    await service.claimTaskRunDispatch(run.run_id, 1)
+    const action = { what: '读取受保护的文件', scope: '当前任务工作区之外的文件位置', consequence: '允许后会读取本次任务所需的文件。' }
+    const review = { category: 'filesystem' as const, read_only: true, destructive: false, open_world: false }
+    expect(await service.recordTaskRunApprovalRequest(run.run_id, 1, 'approval-auto', action, review)).toMatchObject({ reviewer: 'automatic' })
+    expect(await service.respondToTaskApproval(run.task_id, 'approval-auto', true)).toBeFalse()
+    expect(await service.resolveTaskRunApproval(run.task_id, 'approval-auto', true, 'automatic', 'read_only_local')).toBeTrue()
+    expect(delivered).toEqual([[run.run_id, 1, 'approval-auto', true]])
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(state.dispatch_records[run.run_id]).toMatchObject({ approvals: [{ request_id: 'approval-auto', status: 'resolved', decision: 'allowed', reviewer: 'automatic', resolution_reason: 'read_only_local' }] })
+  })
+
+  test('full access has no routine Core reviewer surface', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-08c-full-access-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1_000, client_operation_id: 'draft-full' })
+    const accepted = await service.createAndSubmitTask({ ...input(draft.draft.draft_id as string, 'submit-full'), permission_mode: 'full_access' })
+    const run = accepted.result!
+    await service.claimTaskRunDispatch(run.run_id, 1)
+    await expect(service.recordTaskRunApprovalRequest(run.run_id, 1, 'unexpected-approval', { what: '受限操作', scope: '本机', consequence: '未知' }, { category: 'other', read_only: false, destructive: true, open_world: true })).rejects.toThrow('AUTHORITY_INVALID')
+    expect((await new ProductTaskAuthorityRepository(authorityPath).read()).dispatch_records[run.run_id]).not.toHaveProperty('approvals')
   })
 
   test('replays the durable ledger by cursor and grants exactly one dispatch claim', async () => {

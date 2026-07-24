@@ -6,6 +6,7 @@ import type { ProductTaskService } from './taskService.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { sanitizeProductTaskVisibleText } from './taskAttachmentProjection.js'
 import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
+import { reviewAutomaticApproval } from './automaticApprovalReviewer.js'
 
 const supervisors = new WeakMap<ProductTaskService, AgentWorkerSupervisor>()
 
@@ -51,9 +52,22 @@ export class ProductTaskWorkerMessageSink {
         generation,
         message.request_id,
         message.action,
+        message.review,
       )
       if (this.closed.has(key)) return
-      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      if (recorded.reviewer === 'automatic') {
+        const decision = reviewAutomaticApproval(message.review)
+        const resolved = await this.tasks.resolveTaskRunApproval(
+          taskId,
+          message.request_id,
+          decision.allowed,
+          'automatic',
+          decision.reason,
+        )
+        if (!resolved) throw new Error('AUTOMATIC_REVIEW_FAILED')
+      } else {
+        productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      }
       return
     }
     if (message.event !== 'delta' || !message.data) return
