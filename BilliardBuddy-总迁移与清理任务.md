@@ -51,6 +51,7 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 | 内部 agent-worker、Core 解耦与标准 MCP Host | 已完成并经回查删除旧 CLI 执行残留 | `901e05e4…`、`f207dbf4…`、`2289725b…` |
 | Provider registry、DeepSeek、MiMo 与网关 | 已完成并经回查收口授权、部署闭包和双机加密链路 | `ae1effa9…` |
 | DeepSeek 原生 Web Search | 当前代码已有路由与测试，必须保留 | `gateway/deepseekChat.ts`、`gateway/app.ts` 及测试 |
+| Preview 选元素改源码 | 已完成；只提交一次性只读 DOM 证据和原生截图，源码 revision/Diff 是完成依据 | `c5b5df7c…` |
 
 这些条目代表已经具备、不得丢失的产品能力，不代表现有实现被冻结。先按本文验收；符合目标的保留，存在合同缺口或结构负担的可以重构、替换或重写，但迁移后的用户功能、数据和对外合同必须连续。
 
@@ -367,6 +368,9 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：用户在预览中选中元素，Agent 修改真实源码并返回 Diff。
 - 做法：沙箱化预览，只发一次性 DOM evidence/capability；源码 revision 才是完成依据。
 - 验收：远程页面无 Node 权限；选择失效会重选；仅改运行时 DOM 不算完成。
+- 当前落点：`c5b5df7c…` 启用 ProductTask 内的源码预览面板，复用 Electron 原生 `WebContentsView` 和既有 durable TaskRun/附件摄取链。Electron Main 与 Renderer 共同单次消费选择授权，证据绑定当前页面 URL，导航或来源不一致即失效；页面数据经上限净化并标记为不可信，只用于定位。原生截图随任务输入进入 Core，提交后转到模块 10 的 Workspace revision/Diff 审阅。
+- 已删除：旧 `editBubble`/`popover` 页面内编辑链、DOM 文本/样式写入和 `html2canvas` 页面截图依赖。预览注入脚本只选取和短暂标注元素，不再存在“改了运行时 DOM 就算完成”的第二条路径。
+- 保持边界：远程页面仍为 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`；通用 BrowserCapability 和招聘浏览器属于模块 18，本模块不提前开放被禁用的通用浏览器入口。
 
 ### 阶段 C：创作与经营
 
