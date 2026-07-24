@@ -4,6 +4,7 @@ import type {
   ProductProject,
   ProductTaskAction,
   ProductTaskIndexResponse,
+  ProductTaskPermissionMode,
   ProductTaskRecord,
 } from '../domain/types'
 import { CopyButton } from '../../components/shared/CopyButton'
@@ -104,6 +105,16 @@ function insertSlashCommand(value: string, commandName: string): string {
 type TaskComposerSlashCommand = TaskComposerCommand & {
   key: string
 }
+
+const PERMISSION_OPTIONS: Array<{
+  mode: ProductTaskPermissionMode
+  label: string
+  description: string
+}> = [
+  { mode: 'ask_for_approval', label: 'Ask for approval', description: '限制在工作区内；越过边界前由你确认将做什么、作用范围和后果。' },
+  { mode: 'approve_for_me', label: 'Approve for me', description: '保持相同工作区限制；符合条件的越界请求交给独立 reviewer 判断。' },
+  { mode: 'full_access', label: 'Full access', description: '解除普通文件和网络沙箱，并跳过常规审批；产品自身的隐私、费用、删除、提交和发布闸仍保留。' },
+]
 
 export function TaskIndex({
   index,
@@ -253,9 +264,10 @@ export function TaskComposer({
   initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
-  onSubmit: (input: { text: string; attachment_ids: string[] }) => Promise<void>
+  onSubmit: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => Promise<void>
 }) {
   const [initialText, setInitialText] = useState('')
+  const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask_for_approval')
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
@@ -342,7 +354,7 @@ export function TaskComposer({
     if (isSubmitting) return
     const text = resolveTaskComposerRuntimeCommand(initialText.trim(), taskComposerCommands)
     if (!text) return
-    void onSubmit({ text, attachment_ids: [] })
+    void onSubmit({ text, attachment_ids: [], permission_mode: permissionMode })
   }
 
   const handleInitialGoalKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -387,6 +399,20 @@ export function TaskComposer({
           />
         ) : null}
       </div>
+      <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        执行权限
+        <select
+          aria-label="执行权限"
+          value={permissionMode}
+          onChange={(event) => setPermissionMode(event.target.value as ProductTaskPermissionMode)}
+          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
+        >
+          {PERMISSION_OPTIONS.map((option) => <option key={option.mode} value={option.mode}>{option.label}</option>)}
+        </select>
+        <span className="text-xs leading-5 text-[var(--color-text-tertiary)]">
+          {PERMISSION_OPTIONS.find((option) => option.mode === permissionMode)?.description}
+        </span>
+      </label>
       <div className="flex gap-2">
         <button type="submit" disabled={isSubmitting || !initialText.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在开始…' : '开始任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>

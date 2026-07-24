@@ -3,6 +3,8 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createServerPrivateNativeCorePort } from '../../cli/print.js'
+import { createPolicyBoundEnvelope } from '../product/permissionExecutionEnvelope.js'
+import { productPermissionSnapshot } from '../../../shared/product/domain.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))) })
@@ -14,7 +16,7 @@ test('native ProductTask /init is local, idempotent, and terminal without model 
 
   const run = async (run_id: string) => {
     const events: unknown[] = []
-    const port = await createServerPrivateNativeCorePort({ run_id, session_id: `session-${run_id}`, work_dir: project, auto_memory })
+    const port = await createServerPrivateNativeCorePort({ run_id, session_id: `session-${run_id}`, work_dir: project, permission_envelope: createPolicyBoundEnvelope(productPermissionSnapshot('ask_for_approval')), auto_memory })
     port.subscribe(message => events.push(message))
     await port.input('/init')
     return events

@@ -1,4 +1,5 @@
 import type { AgentWorkerStart, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
+import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration } from '../../../../gateway/providerRegistry.js'
 import type { ProductResourceReceipt } from '../../../shared/product/resourceScheduler.js'
 import { verifyAgentWorkerChildStartCapability, verifyPermissionExecutionEnvelope, type AgentWorkerChildStartCapability } from './permissionExecutionEnvelope.js'
@@ -12,7 +13,7 @@ export type AgentWorkerCore = {
   subscribe?(listener: (message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void): () => void
 }
 /** Identity is closed over by the server-private factory, never serialized to the worker protocol. */
-export type AgentWorkerCoreFactory = { start(input: { run_id: string; dispatch_generation: number; envelope_digest: string; scheduler_receipt: ProductResourceReceipt }): Promise<AgentWorkerCore> }
+export type AgentWorkerCoreFactory = { start(input: { run_id: string; dispatch_generation: number; envelope_digest: string; permission_envelope: PermissionExecutionEnvelope; scheduler_receipt: ProductResourceReceipt }): Promise<AgentWorkerCore> }
 export type AgentWorkerBootstrap = { capability: AgentWorkerChildStartCapability; capability_key: Buffer; cores: AgentWorkerCoreFactory }
 
 /** The launcher deliberately has no ProductTask mutation capability. */
@@ -34,7 +35,7 @@ export class AgentWorkerService {
     try {
       const capability = this.bootstrap.capability
       if (capability.run_id !== input.run_id || capability.dispatch_generation !== input.dispatch_generation || capability.fencing_token !== receipt.fencing_token || capability.envelope_digest !== input.envelope.digest) return { type: 'fatal', code: 'ENVELOPE_DENIED' }
-      this.core = await this.bootstrap.cores.start({ run_id: input.run_id, dispatch_generation: input.dispatch_generation, envelope_digest: input.envelope.digest, scheduler_receipt: receipt })
+      this.core = await this.bootstrap.cores.start({ run_id: input.run_id, dispatch_generation: input.dispatch_generation, envelope_digest: input.envelope.digest, permission_envelope: input.envelope, scheduler_receipt: receipt })
       this.runId = input.run_id
       return { type: 'claim_receipt', outcome: 'claimed', run_id: input.run_id }
     } catch {

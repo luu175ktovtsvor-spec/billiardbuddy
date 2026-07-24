@@ -8,7 +8,7 @@ import {
 } from '../../stores/tabStore'
 import { useProductTaskRuntimeStore } from '../stores/productTaskRuntimeStore'
 import { continueProductTask } from '../taskLaunch'
-import type { ProductTaskRecord } from '../domain/types'
+import type { ProductTaskPermissionMode, ProductTaskRecord } from '../domain/types'
 import { getProductTaskRuntimeStateFromStream } from '../taskRuntime'
 
 type ProductShellProps = {
@@ -47,7 +47,7 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
 
   const openExistingTask = (task: ProductTaskRecord) => openTaskTab(task)
 
-  const createAndOpenTask = async (input: { text: string; attachment_ids: string[] }) => {
+  const createAndOpenTask = async (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => {
     const task = await submitNewTask(input)
     openTaskTab(task)
     void useProductTaskRuntimeStore.getState().connectTask(task.id)

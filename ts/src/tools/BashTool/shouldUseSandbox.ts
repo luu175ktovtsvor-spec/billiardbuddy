@@ -2,6 +2,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
+import { productSandboxIsUnrestricted } from '../../utils/permissions/productPermissionRuntime.js'
 import {
   BINARY_HIJACK_VARS,
   bashPermissionRule,
@@ -128,6 +129,7 @@ function containsExcludedCommand(command: string): boolean {
 }
 
 export function shouldUseSandbox(input: Partial<SandboxInput>): boolean {
+  if (productSandboxIsUnrestricted()) return false
   if (!SandboxManager.isSandboxingEnabled()) {
     return false
   }

@@ -518,14 +518,37 @@ test('real bind commit keeps a same-session run start queued until clear inspect
 
 describe('BB-02C atomic homepage submit', () => {
   const now = () => new Date('2026-01-01T00:00:00.000Z')
-  const input = (draft_id: string, client_operation_id = 'submit') => ({ draft_id, expected_draft_revision: 0, client_operation_id, text: 'homepage text', attachment_ids: [] })
+  const input = (draft_id: string, client_operation_id = 'submit') => ({ draft_id, expected_draft_revision: 0, client_operation_id, text: 'homepage text', attachment_ids: [], permission_mode: 'ask_for_approval' as const })
 
   test('commits all submit maps, upgrades revision, and replays canonically without bytes changing', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02c-homepage-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
     const service = new ProductTaskService({ storagePath, installationId: 'install', now }); const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: 'draft' }); const first = await service.createAndSubmitTask(input(draft.draft.draft_id as string)); expect(first).toMatchObject({ outcome: 'accepted', entity_revisions: { task: 1, lineage: 1, draft: 1 } })
     const state = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(state.authority_schema_revision).toBe(3); for (const map of [state.tasks, state.conversation_lineages, state.thread_entries, state.task_runs, state.dispatch_records, state.task_events, state.receipts, state.events]) expect(Object.keys(map).length).toBeGreaterThan(0)
-    const bytes = await fs.readFile(authorityPath); const duplicate = await service.createAndSubmitTask({ attachment_ids: [], text: 'homepage text', client_operation_id: 'submit', expected_draft_revision: 0, draft_id: draft.draft.draft_id as string }); expect(duplicate).toMatchObject({ outcome: 'duplicate', result: first.result, entity_revisions: first.entity_revisions }); expect(await fs.readFile(authorityPath)).toEqual(bytes)
+    const bytes = await fs.readFile(authorityPath); const duplicate = await service.createAndSubmitTask({ attachment_ids: [], text: 'homepage text', client_operation_id: 'submit', expected_draft_revision: 0, draft_id: draft.draft.draft_id as string, permission_mode: 'ask_for_approval' }); expect(duplicate).toMatchObject({ outcome: 'duplicate', result: first.result, entity_revisions: first.entity_revisions }); expect(await fs.readFile(authorityPath)).toEqual(bytes)
     expect(await service.createAndSubmitTask({ ...input(draft.draft.draft_id as string), text: 'changed' })).toMatchObject({ outcome: 'rejected', error: 'OPERATION_INPUT_CONFLICT' }); expect(await fs.readFile(authorityPath)).toEqual(bytes)
+  })
+
+  test('freezes each final permission profile on both task and accepted run', async () => {
+    const profiles = [
+      ['ask_for_approval', 'workspace-write', 'on-request', 'user'],
+      ['approve_for_me', 'workspace-write', 'on-request', 'automatic'],
+      ['full_access', 'danger-full-access', 'never', 'none'],
+    ] as const
+    for (const [mode, sandbox, approval, reviewer] of profiles) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), `bb-08a-${mode}-`))
+      const storagePath = path.join(root, 'product-tasks.json')
+      const authorityPath = path.join(root, 'product-task-authority.v1.json')
+      await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+      const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+      const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: `draft-${mode}` })
+      const accepted = await service.createAndSubmitTask({ ...input(draft.draft.draft_id as string, `submit-${mode}`), permission_mode: mode })
+      const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+      const task = (state.tasks[accepted.result!.task_id] as { task: { permission_snapshot: unknown } }).task
+      const run = state.task_runs[accepted.result!.run_id] as { permission_mode: string; permission_snapshot: unknown }
+      const expected = { version: 1, mode, sandbox, approval, reviewer }
+      expect(task.permission_snapshot).toEqual(expected)
+      expect(run).toMatchObject({ permission_mode: mode, permission_snapshot: expected })
+    }
   })
 
   test('replays the durable ledger by cursor and grants exactly one dispatch claim', async () => {
@@ -702,7 +725,7 @@ describe('BB-02D recoverable task deletion', () => {
       }],
     })
     const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1_000, client_operation_id: 'draft' })
-    const submitted = await service.createAndSubmitTask({ draft_id: draft.draft.draft_id as string, expected_draft_revision: 0, client_operation_id: 'submit', text: 'delete me', attachment_ids: [] })
+    const submitted = await service.createAndSubmitTask({ draft_id: draft.draft.draft_id as string, expected_draft_revision: 0, client_operation_id: 'submit', text: 'delete me', attachment_ids: [], permission_mode: 'ask_for_approval' })
     const taskId = submitted.result!.task_id
     const repository = new ProductTaskAuthorityRepository(authorityPath)
     await repository.transactSubmit((state) => {

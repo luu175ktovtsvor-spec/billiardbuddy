@@ -479,9 +479,9 @@ describe('ProductTaskService', () => {
     })
 
     const cases = [
-      { permissionMode: undefined, corePermissionMode: 'default' },
-      { permissionMode: 'allow_edits', corePermissionMode: 'acceptEdits' },
-      { permissionMode: 'plan_only', corePermissionMode: 'plan' },
+      { permissionMode: undefined, corePermissionMode: 'default', sandbox: 'workspace-write', reviewer: 'user' },
+      { permissionMode: 'approve_for_me', corePermissionMode: 'default', sandbox: 'workspace-write', reviewer: 'automatic' },
+      { permissionMode: 'full_access', corePermissionMode: 'bypassPermissions', sandbox: 'danger-full-access', reviewer: 'none' },
     ] as const
 
     for (const [index, entry] of cases.entries()) {
@@ -495,7 +495,11 @@ describe('ProductTaskService', () => {
         useWorktree: undefined,
         permissionMode: entry.corePermissionMode,
       })
-      expect(task).not.toHaveProperty('permissionMode')
+      expect(task.permission_snapshot).toMatchObject({
+        mode: entry.permissionMode ?? 'ask_for_approval',
+        sandbox: entry.sandbox,
+        reviewer: entry.reviewer,
+      })
     }
   })
 
@@ -511,7 +515,7 @@ describe('ProductTaskService', () => {
       workDir: '/workspace/hall-operations',
       permissionMode: 'bypassPermissions',
     } as unknown as Parameters<ProductTaskService['createTask']>[0])).rejects.toThrow(
-      'permissionMode 必须是 ask、allow_edits、plan_only 之一',
+      'permissionMode 必须是 ask_for_approval、approve_for_me、full_access 之一',
     )
 
     expect(core.getLastCreateInput()).toBeNull()

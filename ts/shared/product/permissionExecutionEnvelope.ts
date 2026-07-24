@@ -2,8 +2,8 @@ export type PermissionExecutionEnvelope = {
   version: 1
   mode: 'legacy_deferred' | 'policy_bound'
   sandbox_profile: 'workspace' | 'unrestricted'
-  approval_policy: 'user_reviewer' | 'automatic_reviewer'
-  reviewer: 'user' | 'automatic'
+  approval_policy: 'user_reviewer' | 'automatic_reviewer' | 'never'
+  reviewer: 'user' | 'automatic' | 'none'
   network_scope: 'denied' | 'approved' | 'unrestricted'
   digest: string
 }

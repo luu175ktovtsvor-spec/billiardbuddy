@@ -11,6 +11,7 @@ import type {
   ProductTaskActionResponse,
   ProductTaskDeletionPhase,
   ProductTaskIndexResponse,
+  ProductTaskPermissionMode,
   ProductTaskRecord,
   UpdateProductTaskInput,
 } from '../domain/types'
@@ -44,7 +45,7 @@ type ProductTaskStore = {
   clearError: () => void
   applyRuntimeTaskTitle: (taskId: string, title: string) => void
   createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
-  submitNewTask: (input: { text: string; attachment_ids: string[] }) => Promise<ProductTaskRecord>
+  submitNewTask: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
   pinTask: (taskId: string) => Promise<ProductTaskRecord>
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
@@ -246,6 +247,7 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
           client_operation_id: operationId,
           text,
           attachment_ids: input.attachment_ids,
+          permission_mode: input.permission_mode,
         })
         const taskId = submitted.receipt.result?.task_id
         if (!taskId || !['accepted', 'duplicate'].includes(submitted.receipt.outcome)) throw new Error('Atomic task submit was not accepted')
