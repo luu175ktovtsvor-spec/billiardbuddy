@@ -32,6 +32,7 @@
 - 快照验收时 `qfgw`、`qfrelay`、`qfgw-tunnel` 和 `nginx` 均为 active；大陆 loopback、美国隧道、美国 relay 和 `https://zzyppz.cn/gw/healthz` 全部通过。部署上传物和临时回滚包已在验收后删除。
 - 美国真实主机使用临时 SQLite/blob 和假上游完成 34 项负载验收：1000 个小任务、500 个中等改图输入的持久排队、owner 公平、取消、恢复、TTL 和 ack 全部通过。未调用收费上游；这不是 OpenAI/Seedream 真实吞吐证明。
 - 2026-07-24 13:27 CST 完成模块 15 实时复核：大陆 `qfgw` active，`GW_FUNASR_KEY` 非空且 Registry 仍只有 `fun-asr-flash-2026-06-15` 承担正式 `SpeechTranscription`；美国 `qfgw-tunnel`、`qfrelay`、`nginx` 全部 active，loopback、隧道和公网 `/gw/healthz` 均通过。relay 空闲且 task/blob 无新增测试垃圾，Seedream 仍为 configured，容量为全局 6、单 owner 1。本模块只改变桌面本地领域层和请求 operation header，远端运行闭包未变化，因此未做无意义重部署，上一条代码哈希继续有效。
+- 2026-07-24 14:00 CST 完成模块 16 实时复核：大陆 `qfgw`、美国 `qfgw-tunnel`/`qfrelay`/`nginx` 均为 active，大陆 loopback、美国隧道/relay 和公网协议健康。qfgw、Registry、relay 的 SHA-256 仍分别为 `e4958875…`、`e2cc5bce…`、`7a4cef9d…`；Registry 中 Fun-ASR 和豆包 Seedream 正式项各存在一次，relay 报告 Seedream configured、全局 6/单 owner 1，正式 SQLite task 与 blob 文件均为 0。模块 16 只增加桌面 sidecar 的视频领域和 Electron Host 接线，远端闭包未变化，故不重部署或重启。
 
 ## 2. 大陆服务器
 
@@ -125,7 +126,26 @@ Fun-ASR 的上游凭据和用量回执在大陆 qfgw；但产品的 `VoiceOperat
 
 迁移用户数据时，在桌面 sidecar 完全退出后复制 `operations/` 和 `transcripts/`，保持目录仅当前用户可读；不要只迁移 Transcript 而遗漏 operation。音频文件从不落入该目录。`BB_VOICE_RETENTION_DAYS` 缺省为 30，可设 1—365；未绑定终态记录到期删除，存在 consumer binding 的记录不由该 GC 删除。服务器备份不能替代桌面数据备份。
 
-### 4.2 两台服务器一致性备份
+### 4.2 桌面媒体项目与视频素材
+
+图片和视频的权威项目、持久任务、Asset、Timeline Version、删除回执与 CAS 都在桌面 sidecar 数据目录，不在两台服务器：
+
+```text
+<CLAUDE_CONFIG_DIR>/billiardbuddy/media/
+  projects/      # MediaProject、Evidence、Brief、Scene 与不可变 Version
+  tasks/         # image/video 持久 MediaJob
+  assets/        # 项目私有托管资产
+  cas/sha256/    # 按内容寻址的托管资产
+  deletions/     # 删除与恢复回执
+  trash/         # 保留期内可恢复数据
+  locks/         # 写入互斥文件，可重建
+```
+
+视频源文件保持在用户选择的原位置，MediaProject 只保存路径、SHA-256 fingerprint、ffprobe 元数据和 missing 状态；迁移桌面时必须先退出 sidecar，完整复制 `media/`，再单独复制仍被项目引用的源文件与用户导出文件，并保持路径或由产品重新关联。不能只备份 `projects/`：否则任务恢复、托管 Asset、CAS、删除回执和历史 Version 会不完整。分析用代表帧/音轨是临时文件，成功、失败和取消后均应为空，不属于备份；导出文件由用户选择位置，不随服务器备份迁移。
+
+`BB_MEDIA_BIN_DIR` 可指定受审核 FFmpeg/ffprobe 目录；安装包默认使用已校验的随包工具链。`BB_MEDIA_DELETION_RETENTION_DAYS` 缺省 30，可设 1—365；`BB_MEDIA_MAX_QUEUED_RENDERS` 和 `BB_MEDIA_MAX_QUEUED_VIDEO_PROBES` 控制本机有界排队。迁移后应从真实安装包打开旧项目，验证源 fingerprint、Evidence/Timeline 历史、锁定场景、预览和一次本机导出，不能只看 JSON 文件存在。
+
+### 4.3 两台服务器一致性备份
 
 一致性备份必须短暂停止写入服务，不能只复制 SQLite 主文件而遗漏 WAL。建议先在服务器本机生成仅 root 可读的快照，再通过受控通道传出：
 

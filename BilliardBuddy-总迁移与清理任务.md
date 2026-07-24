@@ -422,6 +422,11 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：导入真实素材后按证据得到可编辑第一版，锁定场景、预览并在本机导出。
 - 做法：迁移第 6.3 节编排；DeepSeek 只读 Brief/Evidence，MiMo 只收代表帧，Fun-ASR 只收音轨，FFmpeg 只做本机确定性动作。
 - 验收：不存在或越界 source range 被拒绝；Evidence stale 不覆盖用户版本；锁定 Scene 保持；导出校验后才创建 Asset。
+- 媒体真相：`f7f51dd3…` 在既有 MediaProject 内补齐素材 fingerprint、ffprobe 轨道/旋转/missing 状态、带来源时间与置信度的 Evidence、不可变 Timeline Version、场景锁和最多三个候选方案，没有恢复旧 VideoEditingService 或第二套项目目录。导出锁定精确时间线，经临时 FFmpeg 输出、ffprobe 和 SHA-256 校验后才原子发布 Asset；源素材永不覆盖，公开合同不暴露本机路径。
+- 分析编排：`d6ba70fa…` 将 `video.analyze` 和 `video.plan` 纳入持久 MediaJob。每个真实素材只在本机有界提取代表帧和音轨，音轨走现有 Fun-ASR、代表帧走 MiMo，DeepSeek 只接收结构化转写/视觉证据并产出严格 Brief、Evidence、Scene 与 Alternative；临时分析文件无论成功、失败或取消都删除。所有远程步骤沿用安装授权、operation ID 和首次出境 consent，未增加 provider 选择或第二条 ASR/VLM 路由。
+- 冲突保护：分析和计划分别校验 base revision、source fingerprint、时间范围及 Evidence 交集；迟到结果遇到用户已编辑版本时失败关闭，不能覆盖当前时间线。已锁场景由本机权威版本保留，模型输出不能解锁或改写；应用候选方案会创建新 Timeline Version，不原地改历史。
+- 用户链路：`40e6c5e3…` 通过 Electron Host 窄能力发起付费分析，浏览器 Host 明确不支持。视频工作台展示 Brief、Evidence、锁定状态和候选方案，可保存、预览、取消持久任务并在分析、计划、渲染阶段重开恢复；脏时间线必须先保存，锁定片段禁止移动、拆分、删除或改入出点。
+- 验收证据：视频服务、API、分析传输和工作台定向测试通过；服务端全量 1351 项通过、1 项显式 live skip；桌面类型检查、全量 Vitest 和生产构建通过；Electron 30 个文件共 210 项及 Main/preload 构建通过。双机只读复核确认正式运行闭包哈希未变、服务和公网协议健康、relay task/blob 为 0，Fun-ASR 与豆包 Seedream 正式注册仍在；模块 16 没有远端可执行变更，因此未重部署。
 
 #### 模块 17：已安排任务
 
