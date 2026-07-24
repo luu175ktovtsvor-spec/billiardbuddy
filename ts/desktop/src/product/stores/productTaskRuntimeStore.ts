@@ -372,8 +372,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     if (!canSendProductTaskMessage(typedContent, attachments)) return false
     const content = typedContent || (attachments.length === 1 ? '请分析这个附件。' : '请分析这些附件。')
 
-    const runtime = get().tasks[taskId]
-    if ((runtime && runtime.runState !== 'idle') || submitRequests.has(taskId)) return false
+    if (submitRequests.has(taskId)) return false
     const task = useProductTaskStore.getState().index.tasks.find((candidate) => candidate.id === taskId)
     if (!task) return false
 
@@ -448,7 +447,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           }),
         }
       })
-      void useProductTaskStore.getState().refresh()
+      await useProductTaskStore.getState().refresh()
       return true
     } catch {
       void useProductTaskStore.getState().refresh()

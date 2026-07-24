@@ -64,7 +64,7 @@ import {
   normalizeModernTaskStore,
   optionalString,
 } from './legacyProductTaskReader.js'
-import { ProductTaskAuthorityRepository, readLegacyProductTasks, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
+import { ProductTaskAuthorityRepository, readLegacyProductTasks, type AuthorityFile, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
 import { ProductSessionMemoryRepository } from '../services/productSessionMemory.js'
 import { SettingsService } from '../services/settingsService.js'
@@ -175,6 +175,7 @@ const workspaceFilesystem: WorkspaceFilesystemPort = {
 export type WorkspaceBindBlockerCode = 'ACTIVE_RUN' | 'QUEUE' | 'PTY' | 'PREVIEW' | 'WORKSPACE_WRITE' | 'BLOCKER_UNKNOWN' | 'BLOCKER_UNAVAILABLE'
 export type WorkspaceBindParticipantReceipt =
   | { participant: 'active_core_run'; status: 'CLEAR' | 'BLOCKED'; code?: 'ACTIVE_RUN' }
+  | { participant: 'queue'; status: 'CLEAR' | 'BLOCKED'; code?: 'QUEUE' }
   | { participant: 'queue' | 'pty' | 'preview' | 'workspace_write'; status: 'OUT_OF_SCOPE_DISABLED'; owner_module: 'BB-02C' }
 export type WorkspaceBindBlockerPort = {
   inspect(taskId: string, taskRevision: number, workspaceId: string): Promise<{ receipts: WorkspaceBindParticipantReceipt[] }>
@@ -182,7 +183,7 @@ export type WorkspaceBindBlockerPort = {
 function defaultParticipantReceipts(active: boolean): WorkspaceBindParticipantReceipt[] {
   return [
     active ? { participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' } : { participant: 'active_core_run', status: 'CLEAR' },
-    { participant: 'queue', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' },
+    { participant: 'queue', status: 'CLEAR' },
     { participant: 'pty', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' },
     { participant: 'preview', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' },
     { participant: 'workspace_write', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' },
@@ -251,7 +252,7 @@ export type ProductTaskRunInspector = {
 }
 
 type ProductTaskRunDispatcher = {
-  dispatch(runId: string, generation: number, kind?: 'interactive' | 'scheduled'): Promise<'started' | 'recovery_required'>
+  dispatch(runId: string, generation: number, kind?: 'interactive' | 'scheduled'): Promise<'started' | 'queued' | 'recovery_required'>
   stop?(runId: string, generation: number): Promise<void>
   approve?(runId: string, generation: number, requestId: string, allowed: boolean): Promise<boolean>
 }
@@ -266,6 +267,42 @@ type DurableTaskRunApproval = {
   reviewer?: 'user' | 'automatic'
   resolution_reason?: 'user_decision' | 'read_only_local' | 'destructive' | 'data_egress' | 'write_boundary' | 'unknown_capability'
   resolved_at?: string
+}
+
+type DurableTaskRun = { run_id?: unknown; task_id?: unknown; created_at?: unknown }
+type DurableTaskRunDispatch = { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown }
+const MAX_TASK_RUN_QUEUE_DEPTH = 8
+
+function orderedTaskRunIds(state: AuthorityFile, taskId: string): string[] {
+  const sequence = new Map<string, number>()
+  for (const value of Object.values(state.task_events)) {
+    const event = value as { task_id?: unknown; run_id?: unknown; event_sequence?: unknown }
+    if (event.task_id === taskId && typeof event.run_id === 'string' && typeof event.event_sequence === 'number') sequence.set(event.run_id, event.event_sequence)
+  }
+  return Object.values(state.task_runs)
+    .map(value => value as DurableTaskRun)
+    .filter(run => run.task_id === taskId && typeof run.run_id === 'string')
+    .sort((left, right) => (sequence.get(left.run_id as string) ?? Number.MAX_SAFE_INTEGER) - (sequence.get(right.run_id as string) ?? Number.MAX_SAFE_INTEGER)
+      || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
+      || (left.run_id as string).localeCompare(right.run_id as string))
+    .map(run => run.run_id as string)
+}
+
+/** The first non-terminal run is the only one eligible to leave a task queue. */
+function nextTaskRunId(state: AuthorityFile, taskId: string): string | undefined {
+  for (const runId of orderedTaskRunIds(state, taskId)) {
+    const status = (state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state
+    if (status === 'terminal') continue
+    return status === 'pending' ? runId : undefined
+  }
+}
+
+function hasUnsettledTaskQueue(state: AuthorityFile, taskId: string): boolean {
+  return orderedTaskRunIds(state, taskId).some(runId => ['pending', 'claimed', 'started', 'recovery_required'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
+}
+
+function taskRunQueueDepth(state: AuthorityFile, taskId: string): number {
+  return orderedTaskRunIds(state, taskId).filter(runId => ['pending', 'claimed', 'started', 'recovery_required'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string)).length
 }
 
 export const agentCoreAdapter: AgentCoreAdapter = {
@@ -680,6 +717,7 @@ export class ProductTaskService {
   private readonly installationId: string
   private readonly dispatcher?: ProductTaskRunDispatcher
   private readonly autoMemoryEnabled: () => Promise<boolean>
+  private taskRunQueueRecovery?: Promise<void>
 
   constructor(options: {
     storagePath?: string
@@ -725,6 +763,12 @@ export class ProductTaskService {
         id: 'product_session_memory',
         inspectBlockers: async () => [],
         purgeCleanup: async taskId => new ProductSessionMemoryRepository().purgeTask(this.sessionMemoryStorageDir(), taskId),
+      },
+      {
+        id: 'task_run_queue',
+        inspectBlockers: async (taskId) => hasUnsettledTaskQueue(await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read(), taskId)
+          ? [{ participant: 'task_run_queue', code: 'QUEUE', action: 'resolve' }]
+          : [],
       },
     ]
     this.workspaceBindBlockers = options.workspaceBindBlockers ?? {
@@ -1214,6 +1258,7 @@ export class ProductTaskService {
         const stored = state.tasks[taskId] as { task?: Record<string, unknown> } | undefined
         const task = stored?.task
         if (!task || (task.revision ?? 0) !== input.expected_task_revision) throw new Error('AUTHORITY_CONFLICT')
+        if (taskRunQueueDepth(state, taskId) >= MAX_TASK_RUN_QUEUE_DEPTH) throw new Error('TASK_QUEUE_FULL')
         let lineageId = task.current_lineage_id as string | undefined
         if (!lineageId) {
           if (input.expected_lineage_revision !== 0) throw new Error('AUTHORITY_CONFLICT')
@@ -1305,29 +1350,13 @@ export class ProductTaskService {
 
   async stopActiveTaskRun(taskId: string): Promise<boolean> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const runSequence = new Map<string, number>()
-    for (const event of Object.values(state.task_events)) {
-      const value = event as { task_id?: unknown; run_id?: unknown; event_sequence?: unknown }
-      if (value.task_id === taskId && typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
-        runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
-      }
-    }
-    const candidate = Object.values(state.task_runs)
-      .map(run => run as { run_id?: unknown; task_id?: unknown; created_at?: unknown })
-      .filter(run => run.task_id === taskId && typeof run.run_id === 'string' && typeof run.created_at === 'string')
-      .sort((left, right) => (
-        (runSequence.get(right.run_id as string) ?? 0) - (runSequence.get(left.run_id as string) ?? 0)
-        || Date.parse(right.created_at as string) - Date.parse(left.created_at as string)
-      ))
-      .find(run => {
-        const dispatch = state.dispatch_records[run.run_id as string] as { dispatch_generation?: unknown; state?: unknown } | undefined
-        return Number.isSafeInteger(dispatch?.dispatch_generation) && ['pending', 'claimed', 'started'].includes(dispatch?.state as string)
-      })
-    if (!candidate || typeof candidate.run_id !== 'string') return false
-    const dispatch = state.dispatch_records[candidate.run_id] as { dispatch_generation: number }
+    const candidates = orderedTaskRunIds(state, taskId).filter(runId => ['pending', 'claimed', 'started'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
+    const runId = candidates.find(id => ['claimed', 'started'].includes((state.dispatch_records[id] as DurableTaskRunDispatch).state as string)) ?? candidates[0]
+    if (!runId) return false
+    const dispatch = state.dispatch_records[runId] as { dispatch_generation: number }
     const supervisor = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
     if (!supervisor.stop) return false
-    await supervisor.stop(candidate.run_id, dispatch.dispatch_generation)
+    await supervisor.stop(runId, dispatch.dispatch_generation)
     return true
   }
 
@@ -1514,7 +1543,15 @@ export class ProductTaskService {
    * The only durable execution hand-off for a BB-02C TaskRun.  Claiming is
    * idempotent and never creates entries, runs, lineages or product events.
    */
-  async claimTaskRunDispatch(runId: string, dispatchGeneration: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'recovery_required'; task_id: string }> {
+  async inspectTaskRunQueuePosition(runId: string, dispatchGeneration: number): Promise<'ready' | 'queued'> {
+    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const run = state.task_runs[runId] as DurableTaskRun | undefined
+    const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+    if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || dispatch.state !== 'pending') throw new Error('AUTHORITY_INVALID')
+    return nextTaskRunId(state, run.task_id) === runId ? 'ready' : 'queued'
+  }
+
+  async claimTaskRunDispatch(runId: string, dispatchGeneration: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'; task_id: string }> {
     if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1) {
       throw ApiError.badRequest('运行派发参数无效')
     }
@@ -1530,6 +1567,7 @@ export class ProductTaskService {
         throw new Error('AUTHORITY_INVALID')
       }
       if (dispatch.state === 'pending') {
+        if (nextTaskRunId(state, run.task_id) !== runId) return { changed: false as const, value: { outcome: 'queued' as const, task_id: run.task_id } }
         dispatch.state = 'claimed'
         dispatch.claimed_at = this.now().toISOString()
         return { outcome: 'claimed' as const, task_id: run.task_id }
@@ -1540,6 +1578,51 @@ export class ProductTaskService {
       return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
     })
     return result
+  }
+
+  /** Advance exactly one pending intent after the preceding run is durably terminal. */
+  async advanceTaskRunQueue(runId: string, dispatchGeneration: number): Promise<void> {
+    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const run = state.task_runs[runId] as DurableTaskRun | undefined
+    const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+    if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || dispatch.state !== 'terminal') return
+    const nextRunId = nextTaskRunId(state, run.task_id)
+    if (!nextRunId) return
+    const next = state.dispatch_records[nextRunId] as { dispatch_generation: number }
+    this.dispatchAcceptedRun(nextRunId, next.dispatch_generation)
+  }
+
+  /**
+   * Rehydrate only never-started queue heads. Interrupted claimed runs become
+   * recovery blockers so a restart cannot replay an unknown Core side effect.
+   */
+  recoverDurableTaskRunQueue(): Promise<void> {
+    this.taskRunQueueRecovery ??= this.performTaskRunQueueRecovery()
+    return this.taskRunQueueRecovery
+  }
+
+  private async performTaskRunQueueRecovery(): Promise<void> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result: ready } = await authority.transactSubmit((state) => {
+      let changed = false
+      const now = this.now().toISOString()
+      for (const value of Object.values(state.dispatch_records)) {
+        const dispatch = value as DurableTaskRunDispatch
+        if (dispatch.state !== 'claimed' && dispatch.state !== 'started') continue
+        dispatch.state = 'recovery_required'
+        dispatch.completed_at = now
+        dispatch.error = 'SERVER_RESTARTED'
+        changed = true
+      }
+      const taskIds = new Set(Object.values(state.task_runs).map(value => (value as DurableTaskRun).task_id).filter((value): value is string => typeof value === 'string'))
+      const pending = [...taskIds].map(taskId => nextTaskRunId(state, taskId)).filter((value): value is string => typeof value === 'string')
+      return changed ? pending : { changed: false as const, value: pending }
+    })
+    for (const runId of ready) {
+      const state = await authority.read()
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
+      if (Number.isSafeInteger(dispatch?.dispatch_generation)) this.dispatchAcceptedRun(runId, dispatch!.dispatch_generation as number)
+    }
   }
 
   /** Server-private BB-03D/BB-05B lookup; it reads the durable hand-off only. */
@@ -1998,9 +2081,25 @@ export class ProductTaskService {
         }
         const stored = state.tasks[input.task_id] as { task?: Record<string, unknown> } | undefined; const task = stored?.task; const workspace = state.workspaces[input.workspace_id] as ProductWorkspace | undefined; const taskRevision = typeof task?.revision === 'number' ? task.revision : 0
         let participants: WorkspaceBindParticipantReceipt[]; let blockerError: WorkspaceBindBlockerCode | undefined
-        try { const inspected = await this.workspaceBindBlockers.inspect(input.task_id, taskRevision, input.workspace_id) as { receipts?: WorkspaceBindParticipantReceipt[]; ok?: boolean; code?: WorkspaceBindBlockerCode }; blockerError = inspected.ok === false ? inspected.code : undefined; participants = inspected.receipts ?? (inspected.ok === false ? [{ participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' }, ...defaultParticipantReceipts(false).slice(1)] : defaultParticipantReceipts(false)) } catch { blockerError = 'BLOCKER_UNAVAILABLE'; participants = [{ participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' }, ...defaultParticipantReceipts(false).slice(1)] }
+        try {
+          const inspected = await this.workspaceBindBlockers.inspect(input.task_id, taskRevision, input.workspace_id) as { receipts?: WorkspaceBindParticipantReceipt[]; ok?: boolean; code?: WorkspaceBindBlockerCode }
+          blockerError = inspected.ok === false ? inspected.code : undefined
+          participants = inspected.receipts ?? (inspected.ok === false
+            ? inspected.code === 'QUEUE'
+              ? defaultParticipantReceipts(false).map(receipt => receipt.participant === 'queue' ? { participant: 'queue', status: 'BLOCKED', code: 'QUEUE' } : receipt)
+              : [{ participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' }, ...defaultParticipantReceipts(false).slice(1)]
+            : defaultParticipantReceipts(false))
+        } catch {
+          blockerError = 'BLOCKER_UNAVAILABLE'
+          participants = [{ participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' }, ...defaultParticipantReceipts(false).slice(1)]
+        }
+        participants = participants.map(receipt => receipt.participant === 'queue'
+          ? receipt.status === 'BLOCKED' || hasUnsettledTaskQueue(state, input.task_id)
+            ? { participant: 'queue', status: 'BLOCKED', code: 'QUEUE' }
+            : { participant: 'queue', status: 'CLEAR' }
+          : receipt)
         const blocked = participants.find(receipt => receipt.status === 'BLOCKED')
-        if (blocked) { const rejectedError = blockerError ?? 'ACTIVE_RUN' as WorkspaceBindBlockerCode; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'rejected' as const, revision: state.revision + 1, result: { participant_receipts: participants, blocker_error: rejectedError } }; state.receipts[input.client_operation_id] = receipt; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'bind_workspace', revision: state.revision + 1, canonical_input: canonicalInput, participant_receipts: participants, blocker_error: rejectedError }; return { outcome: 'rejected' as const, receipt, participant_receipts: participants, error: rejectedError } }
+        if (blocked) { const rejectedError = blockerError ?? (blocked.participant === 'queue' ? 'QUEUE' : 'ACTIVE_RUN') as WorkspaceBindBlockerCode; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'rejected' as const, revision: state.revision + 1, result: { participant_receipts: participants, blocker_error: rejectedError } }; state.receipts[input.client_operation_id] = receipt; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'bind_workspace', revision: state.revision + 1, canonical_input: canonicalInput, participant_receipts: participants, blocker_error: rejectedError }; return { outcome: 'rejected' as const, receipt, participant_receipts: participants, error: rejectedError } }
         if (!task || !workspace || workspace.availability !== 'available' || taskRevision !== input.expected_task_revision || workspace.revision !== input.expected_workspace_revision) throw new Error('AUTHORITY_CONFLICT')
         const priorScope = state.task_scopes[input.task_id] as { generation?: number } | undefined; state.task_scopes[input.task_id] = { kind: 'workspace', workspace_id: input.workspace_id, generation: (priorScope?.generation ?? 0) + 1 }; task.revision = taskRevision + 1; workspace.revision += 1
         const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { participant_receipts: participants } }; state.receipts[input.client_operation_id] = receipt; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'bind_workspace', revision: state.revision + 1, canonical_input: canonicalInput, participant_receipts: participants }; return { outcome: 'accepted' as const, receipt, participant_receipts: participants }

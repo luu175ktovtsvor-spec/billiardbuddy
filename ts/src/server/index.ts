@@ -105,6 +105,7 @@ export function startServer(port = PORT, host = HOST) {
   const mediaUiCapability = consumeMediaUiCapability()
   configureMediaWorkbenchDiscovery(Boolean(mediaUiCapability))
   const productTaskService = resetProductTaskServiceForServer()
+  let productTaskQueueRecovery: Promise<void> | undefined
   // All media-facing routes share one process-local service so video exports from
   // task views and the media workbench use the same FFmpeg admission queue.
   const mediaService = new MediaProjectService()
@@ -144,6 +145,8 @@ export function startServer(port = PORT, host = HOST) {
 
       async fetch(req, server) {
         await ensurePersistentStorageUpgraded()
+        productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue()
+        await productTaskQueueRecovery
         const url = new URL(req.url)
         const origin = req.headers.get('Origin')
         const cors = await resolveCors(origin)

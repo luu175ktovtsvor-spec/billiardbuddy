@@ -665,7 +665,7 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
-  it('keeps the stop control but hides archive during a live task run', () => {
+  it('keeps stop, offers a follow-up queue, and hides archive during a live task run', async () => {
     mocks.runtime = {
       ...mocks.runtime,
       runState: 'working',
@@ -673,8 +673,12 @@ describe('ProductTaskPage', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     expect(screen.getByRole('button', { name: '停止' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: '加入队列' })).not.toBeNull()
     expect(screen.queryByRole('button', { name: '归档' })).toBeNull()
 
+    fireEvent.change(screen.getByRole('textbox', { name: '任务输入' }), { target: { value: '接着处理下一项' } })
+    fireEvent.click(screen.getByRole('button', { name: '加入队列' }))
+    await waitFor(() => expect(mocks.sendText).toHaveBeenCalledWith('task-1', '接着处理下一项'))
     fireEvent.click(screen.getByRole('button', { name: '停止' }))
     expect(mocks.stopTask).toHaveBeenCalledWith('task-1')
   })
