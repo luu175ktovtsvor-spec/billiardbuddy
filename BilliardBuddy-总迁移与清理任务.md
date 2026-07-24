@@ -433,6 +433,9 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：用户可创建、暂停和查看计划任务与桌面通知。
 - 做法：持久 schedule、logical occurrence、missed-run policy、scoped grant 和 ProductTask run。
 - 验收：休眠恢复不回放无穷积压；同一 occurrence 只执行一次；无人值守权限不超出 grant。
+- 调度真相：`0892e5db…` 在既有 `CronService -> CronScheduler -> ProductTask -> ProductResourceScheduler` 链路上增量收口，没有新建第二套调度器。五段时间表达式共用统一解析器；`run_once` 在最多 7 天的恢复窗口内只合并补跑最近一次，`skip` 只接受当前时点。同一逻辑 occurrence 共用确定性运行 ID 和 ProductTask operation ID，跨进程重复 tick 也不会产生第二个 Core 运行。
+- 权限与结算：计划任务必须绑定真实工作目录，固定使用 workspace-write 沙箱和自动审查器；工作区内普通写入可执行，目录外访问、网络、扩展与破坏性操作不会自动放行。调度日志在持久 ProductTask 接受后仍保持 running，只在权威 dispatch 真实终态后标记 completed/failed 并触发桌面提醒；旧记录缺少工作目录时保留数据但安全暂停。
+- 用户链路：`c3d07ece…` 复用成熟的目录选择器，在创建/编辑页明示固定 grant 与休眠恢复策略，运行历史区分手动触发和计划时点。验收时服务端 1358 项通过、1 项显式 live skip；桌面 139 个文件共 911 项、生产构建、Electron 30 个文件共 210 项及 Main/preload 构建全部通过。`check:product-contracts` 仍只停在已登记的模块 23 `autodream-teammem` consumer 缺口，本模块不提前改写后续模块。本模块无远端运行闭包变更，两台服务器不重部署，豆包 Seedream 正式模型保持不变。
 
 #### 模块 18：浏览器与 BOSS 招聘
 
