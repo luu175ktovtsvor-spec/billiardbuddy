@@ -13,6 +13,8 @@ import {
 import { conversationService } from '../services/conversationService.js'
 import { sessionService } from '../services/sessionService.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
+import { productTaskService } from '../product/taskService.js'
+import { productTaskWorkerRuntimeEvents } from '../product/taskWorkerRuntimeEvents.js'
 
 function makeClientSocket(
   sessionId: string,
@@ -454,6 +456,33 @@ describe('WebSocket handler product error projection', () => {
     expect(serialized).not.toContain('private-tool-id')
   })
 
+  it('fans worker-owned product events only to the matching task socket', () => {
+    const sessionId = `worker-stream-${crypto.randomUUID()}`
+    const matching = makeClientSocket(sessionId, 'product')
+    const other = makeClientSocket(`other-${crypto.randomUUID()}`, 'product')
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'onOutput').mockImplementation(() => {})
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation(() => {})
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    handleWebSocket.open(matching)
+    handleWebSocket.open(other)
+    matching.sent.length = 0
+    other.sent.length = 0
+
+    productTaskWorkerRuntimeEvents.publish(matching.data.productTaskId!, { type: 'status', state: 'working' })
+    productTaskWorkerRuntimeEvents.publish(matching.data.productTaskId!, { type: 'assistant_text_start' })
+    productTaskWorkerRuntimeEvents.publish(matching.data.productTaskId!, { type: 'assistant_text_delta', text: '实时回答' })
+    productTaskWorkerRuntimeEvents.publish(matching.data.productTaskId!, { type: 'turn_complete' })
+
+    expect(matching.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: 'status', state: 'working' },
+      { type: 'assistant_text_start' },
+      { type: 'assistant_text_delta', text: '实时回答' },
+      { type: 'turn_complete' },
+    ])
+    expect(other.sent).toEqual([])
+  })
+
   it('hydrates a reconnected product task from the latest safe run snapshot', () => {
     const sessionId = `product-run-reconnect-${crypto.randomUUID()}`
     const first = makeClientSocket(sessionId, 'product')
@@ -890,8 +919,11 @@ describe('WebSocket handler product task inbound boundary', () => {
 
     productWs.sent.length = 0
     spyOn(conversationService, 'hasSession').mockReturnValue(false)
+    spyOn(productTaskService, 'stopActiveTaskRun').mockResolvedValue(false)
     handleWebSocket.message(productWs, JSON.stringify({ type: 'stop_generation' }))
     handleWebSocket.message(productWs, JSON.stringify({ type: 'ping' }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(productTaskService.stopActiveTaskRun).toHaveBeenCalledWith(productWs.data.productTaskId)
     expect(productWs.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: 'status', state: 'idle' },
     ])

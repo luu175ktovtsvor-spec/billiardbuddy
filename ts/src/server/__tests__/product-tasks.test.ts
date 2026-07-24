@@ -9,6 +9,7 @@ import {
   type AgentCoreSession,
 } from '../product/taskService.js'
 import { ProductTaskRunProjection } from '../product/taskRunProjection.js'
+import { ProductTaskAuthorityRepository } from '../product/authorityRepository.js'
 import type { MessageEntry } from '../services/sessionService.js'
 
 let tempDir: string | undefined
@@ -418,6 +419,55 @@ describe('ProductTaskService', () => {
     expect(listed.tasks[0]).not.toHaveProperty('coreSessionId')
     expect(JSON.parse(JSON.stringify(listed))).not.toHaveProperty('tasks.0.coreSessionId')
     expect(JSON.stringify({ task, listed })).not.toContain(coreSessionId)
+  })
+
+  it('reconstructs the current durable lineage from each private run transcript in event order', async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
+    const core = makeCore()
+    const storagePath = path.join(tempDir, 'product-tasks.json')
+    const authorityPath = path.join(tempDir, 'product-task-authority.v1.json')
+    const service = new ProductTaskService({
+      storagePath,
+      core,
+      now: () => new Date('2026-07-19T08:00:00.000Z'),
+    })
+    const task = await service.createTask({ workDir: '/workspace/hall-operations' })
+    await service.ensureAuthorityProjectionForLegacyTask(task.id, { authorityPath })
+    await service.createConversationLineage({
+      task_id: task.id,
+      expected_task_revision: 0,
+      client_operation_id: 'lineage',
+    })
+    const first = await service.submitTaskRun(task.id, {
+      expected_task_revision: 1,
+      expected_lineage_revision: 0,
+      client_operation_id: 'first',
+      text: '第一问',
+      attachment_ids: [],
+    })
+    const second = await service.submitTaskRun(task.id, {
+      expected_task_revision: 2,
+      expected_lineage_revision: 1,
+      client_operation_id: 'second',
+      text: '第二问',
+      attachment_ids: [],
+    })
+    const authority = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const sessionId = (runId: string) => (
+      authority.task_runs[runId] as { core_binding: { session_id: string } }
+    ).core_binding.session_id
+    core.setSessionMessages(sessionId(first.result!.run_id), [
+      sourceMessage('first-user', '第一问'),
+      { id: 'first-assistant', type: 'assistant', content: '第一答', timestamp: '2026-07-19T08:00:01.000Z' },
+    ])
+    core.setSessionMessages(sessionId(second.result!.run_id), [
+      sourceMessage('second-user', '第二问'),
+      { id: 'second-assistant', type: 'assistant', content: '第二答', timestamp: '2026-07-19T08:00:02.000Z' },
+    ])
+
+    expect((await service.getTaskThread(task.id)).entries.map((entry) => (
+      entry.type === 'user_text' || entry.type === 'assistant_text' ? entry.text : entry.type
+    ))).toEqual(['第一问', '第一答', '第二问', '第二答'])
   })
 
   it('maps supported product execution choices to Core permission modes', async () => {

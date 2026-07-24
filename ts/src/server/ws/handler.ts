@@ -30,6 +30,7 @@ import {
   ProductTaskAgentCoreAdapter,
 } from '../product/taskAgentCoreAdapter.js'
 import { productTaskService } from '../product/taskService.js'
+import { productTaskWorkerRuntimeEvents } from '../product/taskWorkerRuntimeEvents.js'
 import { sessionAdmissionBarrier } from '../product/sessionAdmissionBarrier.js'
 import { activeCoreRunRegistry } from '../product/activeCoreRunRegistry.js'
 import {
@@ -198,6 +199,15 @@ export type WebSocketData = {
 // Active WebSocket clients, grouped by session. Multiple desktop surfaces can
 // legitimately watch the same running session at the same time.
 const activeSessions = new Map<string, Set<ServerWebSocket<WebSocketData>>>()
+productTaskWorkerRuntimeEvents.subscribe((taskId, event) => {
+  for (const sockets of activeSessions.values()) {
+    for (const socket of sockets) {
+      if (socket.data.channel === 'product' && socket.data.productTaskId === taskId) {
+        socket.send(JSON.stringify(event))
+      }
+    }
+  }
+})
 // The CLI stream owns mutable per-session parsing state (partial tool input,
 // parent ids, and completion bookkeeping). Translate it once, then fan the
 // resulting events out to every connected renderer instead of letting each
@@ -286,7 +296,9 @@ export const handleWebSocket = {
     const msg: ServerMessage = { type: 'connected', sessionId }
     sendMessage(ws, msg)
     void replayDurableProductEvents(ws, 0)
-    productTaskAgentCoreAdapter.sendRunSnapshot(ws)
+    const workerSnapshot = productTaskWorkerRuntimeEvents.snapshot(ws.data.productTaskId!)
+    if (workerSnapshot.state === 'idle') productTaskAgentCoreAdapter.sendRunSnapshot(ws)
+    else ws.send(JSON.stringify({ type: 'run_snapshot', ...workerSnapshot }))
     replayPendingPermissionRequests(ws, sessionId)
   },
 
@@ -657,6 +669,13 @@ async function persistSessionPermissionMode(
 function handleStopGeneration(ws: ServerWebSocket<WebSocketData>) {
   const { sessionId } = ws.data
   console.log(`[WS] Stop generation requested for session: ${sessionId}`)
+
+  if (ws.data.channel === 'product' && ws.data.productTaskId) {
+    void productTaskService.stopActiveTaskRun(ws.data.productTaskId).then((stopped) => {
+      if (!stopped) sendMessage(ws, { type: 'status', state: 'idle' })
+    }).catch(() => ws.send(JSON.stringify({ type: 'error', code: 'temporarily_unavailable', retryable: true })))
+    return
+  }
 
   sessionStopRequested.add(sessionId)
   stopPreventSleepForSession(sessionId)

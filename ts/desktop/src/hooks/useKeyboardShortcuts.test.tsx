@@ -37,6 +37,7 @@ function makeRuntime(runState: ProductTaskRuntime['runState']): ProductTaskRunti
     approvalResponsePending: false,
     error: null,
     streamingEntryId: null,
+    stopRequested: false,
   }
 }
 

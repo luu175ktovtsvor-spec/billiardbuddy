@@ -50,6 +50,32 @@ test('concurrent dispatch calls share one startup before the first durable await
   expect(f.submits).toBe(1); expect(f.claims).toBe(1); expect(f.launches).toBe(1); expect(f.settled).toEqual([])
 })
 
+test('stop during scheduler admission releases the late fencing claim without launching Core', async () => {
+  const f = await fixture()
+  const submit = f.scheduler.submit.bind(f.scheduler)
+  let admitted!: () => void
+  const admission = new Promise<void>((resolve) => { admitted = resolve })
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  f.scheduler.submit = async (claim) => {
+    const receipt = await submit(claim)
+    admitted()
+    await held
+    return receipt
+  }
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher)
+  const dispatch = supervisor.dispatch('run', 1)
+  await admission
+  await supervisor.stop('run', 1)
+  release()
+
+  expect(await dispatch).toBe('recovery_required')
+  expect(f.claims).toBe(0)
+  expect(f.launches).toBe(0)
+  expect(f.settled).toEqual(['terminal:STOPPED'])
+  expect((await f.scheduler.snapshot()).active).toBe(0)
+})
+
 test('supervisor claim and child bootstrap start one private Core without a second claim', async () => {
   const f = await fixture(); let coreStarts = 0; const inputs: string[] = []
   const launcher = { launch: async (input: any) => {

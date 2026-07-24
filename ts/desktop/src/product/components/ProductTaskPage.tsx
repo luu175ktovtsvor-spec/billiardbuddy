@@ -113,6 +113,7 @@ type ProductTaskThreadEntryViewProps = {
     target: 'current_workspace' | 'new_worktree',
   ) => void
   onCreateSideTask?: (sourceEntryId: string) => void
+  onQuote?: (entry: Extract<ProductTaskThreadEntry, { type: 'user_text' | 'assistant_text' }>) => void
 }
 
 function ProductTaskThreadEntryActions({
@@ -121,18 +122,30 @@ function ProductTaskThreadEntryActions({
   actionPending = false,
   onContinueFromEntry,
   onCreateSideTask,
+  onQuote,
 }: ProductTaskThreadEntryViewProps) {
   if (
     streaming ||
     entry.type === 'activity' ||
+    entry.type === 'media_draft' ||
     !/^thread_[a-f0-9]{20}$/.test(entry.id) ||
-    (!onContinueFromEntry && !onCreateSideTask)
+    (!onContinueFromEntry && !onCreateSideTask && !onQuote)
   ) {
     return null
   }
 
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
+      {onQuote ? (
+        <button
+          type="button"
+          disabled={actionPending}
+          onClick={() => onQuote(entry)}
+          className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
+        >
+          引用
+        </button>
+      ) : null}
       {onContinueFromEntry ? (
         <>
           <button
@@ -176,6 +189,7 @@ export function ProductTaskThreadEntryView({
   onAttachMediaDraft,
   onContinueFromEntry,
   onCreateSideTask,
+  onQuote,
 }: ProductTaskThreadEntryViewProps) {
   if (entry.type === 'activity') {
     return (
@@ -219,6 +233,7 @@ export function ProductTaskThreadEntryView({
           actionPending={actionPending}
           onContinueFromEntry={onContinueFromEntry}
           onCreateSideTask={onCreateSideTask}
+          onQuote={onQuote}
         />
       </div>
     )
@@ -261,6 +276,7 @@ export function ProductTaskThreadEntryView({
         actionPending={actionPending}
         onContinueFromEntry={onContinueFromEntry}
         onCreateSideTask={onCreateSideTask}
+        onQuote={onQuote}
       />
     </div>
   )
@@ -793,6 +809,12 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
+  const quoteEntry = (entry: Extract<ProductTaskThreadEntry, { type: 'user_text' | 'assistant_text' }>) => {
+    const quote = entry.text.split('\n').map((line) => `> ${line}`).join('\n')
+    setDraft((current) => current ? `${current}\n\n${quote}\n\n` : `${quote}\n\n`)
+    setValidationMessage(null)
+  }
+
   const attachMediaDraft = async (draft: ProductTaskMediaDraft) => {
     if (mediaDraftActionProjectId) return
     setThreadActionError(null)
@@ -938,6 +960,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   onCreateSideTask={isArchived ? undefined : (sourceEntryId) => {
                     void createSideTaskFromEntry(sourceEntryId)
                   }}
+                  onQuote={isArchived ? undefined : quoteEntry}
                 />
               ))}
             </div>

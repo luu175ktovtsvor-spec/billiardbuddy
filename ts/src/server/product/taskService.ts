@@ -246,6 +246,7 @@ export type ProductTaskRunInspector = {
 
 type ProductTaskRunDispatcher = {
   dispatch(runId: string, generation: number, kind?: 'interactive' | 'scheduled'): Promise<'started' | 'recovery_required'>
+  stop?(runId: string, generation: number): Promise<void>
 }
 
 export const agentCoreAdapter: AgentCoreAdapter = {
@@ -1273,6 +1274,34 @@ export class ProductTaskService {
     })().catch(() => undefined)
   }
 
+  async stopActiveTaskRun(taskId: string): Promise<boolean> {
+    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const runSequence = new Map<string, number>()
+    for (const event of Object.values(state.task_events)) {
+      const value = event as { task_id?: unknown; run_id?: unknown; event_sequence?: unknown }
+      if (value.task_id === taskId && typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
+        runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
+      }
+    }
+    const candidate = Object.values(state.task_runs)
+      .map(run => run as { run_id?: unknown; task_id?: unknown; created_at?: unknown })
+      .filter(run => run.task_id === taskId && typeof run.run_id === 'string' && typeof run.created_at === 'string')
+      .sort((left, right) => (
+        (runSequence.get(right.run_id as string) ?? 0) - (runSequence.get(left.run_id as string) ?? 0)
+        || Date.parse(right.created_at as string) - Date.parse(left.created_at as string)
+      ))
+      .find(run => {
+        const dispatch = state.dispatch_records[run.run_id as string] as { dispatch_generation?: unknown; state?: unknown } | undefined
+        return Number.isSafeInteger(dispatch?.dispatch_generation) && ['pending', 'claimed', 'started'].includes(dispatch?.state as string)
+      })
+    if (!candidate || typeof candidate.run_id !== 'string') return false
+    const dispatch = state.dispatch_records[candidate.run_id] as { dispatch_generation: number }
+    const supervisor = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
+    if (!supervisor.stop) return false
+    await supervisor.stop(candidate.run_id, dispatch.dispatch_generation)
+    return true
+  }
+
   /** Server-private scheduler state never crosses a product API boundary. */
   workerSchedulerStatePath(): string { return path.join(path.dirname(this.storagePath), 'product-agent-worker-scheduler.json') }
 
@@ -2046,6 +2075,29 @@ export class ProductTaskService {
       const getSessionMessages = this.core.getSessionMessages
       if (!getSessionMessages) {
         throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+      }
+      const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+      const task = (authority.tasks[taskId] as { task?: { current_lineage_id?: unknown } } | undefined)?.task
+      if (typeof task?.current_lineage_id === 'string') {
+        const runSequence = new Map<string, number>()
+        for (const event of Object.values(authority.task_events)) {
+          const value = event as { task_id?: unknown; run_id?: unknown; event_sequence?: unknown }
+          if (value.task_id === taskId && typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
+            runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
+          }
+        }
+        const runs = Object.values(authority.task_runs)
+          .map(run => run as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; created_at?: unknown; core_binding?: { session_id?: unknown } })
+          .filter(run => run.task_id === taskId && run.lineage_id === task.current_lineage_id && typeof run.created_at === 'string' && typeof run.core_binding?.session_id === 'string')
+          .sort((left, right) => (
+            (runSequence.get(left.run_id as string) ?? 0) - (runSequence.get(right.run_id as string) ?? 0)
+            || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
+          ))
+        const entries = (await Promise.all(runs.map(async run => {
+          const messages = await getSessionMessages(run.core_binding!.session_id as string).catch(() => [])
+          return projectSessionTranscriptForProductTask(taskId, messages).entries
+        }))).flat()
+        if (entries.length > 0) return { taskId, entries }
       }
       const sessionId = (await this.requireTaskBinding(taskId)).metadata.coreSessionId
       const messages = await getSessionMessages(sessionId)

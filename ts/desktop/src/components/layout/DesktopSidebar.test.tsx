@@ -177,6 +177,7 @@ describe('DesktopSidebar', () => {
       approvalResponsePending: false,
       error: null,
       streamingEntryId: null,
+      stopRequested: false,
     }
     useProductTaskStore.setState({ index })
     useProductTaskRuntimeStore.setState({ tasks: { 'task-running': runtime } })
