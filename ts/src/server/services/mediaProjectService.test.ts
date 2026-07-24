@@ -68,6 +68,7 @@ describe('MediaProjectService image projects', () => {
       prompt: '蓝色台球活动海报',
       mode: 'edit',
       reference_images: [`data:image/png;base64,${Buffer.from('reference-image').toString('base64')}`],
+      reference_roles: ['subject'],
     })
     const first = await submitImage(service, project.id)
     const duplicate = await submitImage(service, project.id)
@@ -111,7 +112,7 @@ describe('MediaProjectService image projects', () => {
     expect(await readFile(savedPath, 'utf8')).toBe('png-bytes')
   })
 
-  test('submits the selected Seedream model and preserves its canvas size and output mime type', async () => {
+  test('ignores caller provider fields and routes a three-candidate operation through the registry', async () => {
     process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.QF_GATEWAY_TOKEN = 'app-token'
     let submittedBody: Record<string, unknown> | undefined
@@ -130,17 +131,17 @@ describe('MediaProjectService image projects', () => {
           : {
               task_id: 'seedream-task',
               status: 'succeeded',
-              data: [{
-                b64_json: Buffer.from('webp-bytes').toString('base64'),
+              data: Array.from({ length: 3 }, (_, index) => ({
+                b64_json: Buffer.from(`webp-bytes-${index}`).toString('base64'),
                 mime_type: 'image/webp',
-              }],
+              })),
             })
       },
     })
     const project = await service.createImageProject({
       prompt: '竖版中文活动海报',
       model: 'doubao-seedream-4-5-251128',
-      size: '1600x2848',
+      size: '2048x2048',
     })
     const task = await submitImage(service, project.id)
     await service.getTask(task.id)
@@ -148,18 +149,19 @@ describe('MediaProjectService image projects', () => {
 
     expect(submittedBody).toMatchObject({
       model: 'doubao-seedream-4-5-251128',
-      size: '1600x2848',
+      size: '2048x2048',
+      n: 3,
     })
     const ready = await service.getProject(project.id)
     if (ready.kind !== 'image') throw new Error('wrong kind')
-    expect(ready).toMatchObject({
-      model: 'doubao-seedream-4-5-251128',
-      size: '1600x2848',
-      outputs: [expect.objectContaining({
-        mime_type: 'image/webp',
-        asset_path: expect.stringMatching(/\.webp$/),
-      })],
-    })
+    expect(ready.model).toBe('doubao-seedream-4-5-251128')
+    expect(ready.size).toBe('2048x2048')
+    expect(ready.count).toBe(3)
+    expect(ready.outputs).toHaveLength(3)
+    expect(ready.outputs.every(output => output.mime_type === 'image/webp' && output.asset_path?.endsWith('.webp'))).toBe(true)
+    expect(new Set(ready.outputs.map(output => output.operation_id))).toEqual(new Set([task.operation_id]))
+    expect(new Set(ready.outputs.map(output => output.version_id)).size).toBe(3)
+    expect(ready.outputs.every(output => ready.assets.some(asset => asset.id === output.id && asset.version_id === output.version_id))).toBe(true)
   })
 
   test('rejects a project asset directory symlink that points outside the media asset root', async () => {
@@ -292,18 +294,14 @@ describe('MediaProjectService image projects', () => {
 
     await expect(service.updateImageProject(project.id, {
       revision: failed.revision,
-      prompt: '第二版海报',
-      model: 'gpt-image-2',
+      user_request: '第二版海报',
       size: '1536x1024',
-      count: 2,
     })).rejects.toMatchObject({ code: 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED' })
 
     const edited = await service.updateImageProject(project.id, {
       revision: failed.revision,
-      prompt: '第二版海报',
-      model: 'gpt-image-2',
+      user_request: '第二版海报',
       size: '1536x1024',
-      count: 2,
       confirm_unknown_retry: true,
     })
     expect(edited).toMatchObject({ state: 'draft', task_id: undefined })
@@ -480,6 +478,7 @@ describe('MediaProjectService image projects', () => {
       prompt: '参考图编辑',
       mode: 'edit',
       reference_images: [reference],
+      reference_roles: ['subject'],
     })
     const persistedPath = join(mediaRoot, 'projects', `${created.id}.json`)
     const persisted = await readFile(persistedPath, 'utf8')
@@ -514,6 +513,7 @@ describe('MediaProjectService image projects', () => {
       prompt: '带参考图的海报',
       mode: 'edit',
       reference_images: [reference],
+      reference_roles: ['subject'],
     })
     const referenceName = project.reference_image_assets?.[0]
     if (!referenceName) throw new Error('reference asset missing')
@@ -1429,6 +1429,7 @@ describe('MediaProjectService video projects', () => {
       prompt: '媒体基础合同',
       mode: 'edit',
       reference_images: [reference],
+      reference_roles: ['subject'],
     })
 
     expect(project.owner).toEqual({ kind: 'standalone', owner_id: 'local_workbench' })
@@ -1444,6 +1445,7 @@ describe('MediaProjectService video projects', () => {
       prompt: '同内容去重',
       mode: 'edit',
       reference_images: [reference],
+      reference_roles: ['subject'],
     })
     expect(duplicate.assets[0]?.content_hash).toBe(project.assets[0]?.content_hash)
     expect(await readdir(join(mediaRoot, 'cas', 'sha256'))).toHaveLength(1)
@@ -1453,10 +1455,8 @@ describe('MediaProjectService video projects', () => {
     )
     await expect(service.updateImageProject(project.id, {
       revision: project.revision,
-      prompt: '不能覆盖不可变素材',
-      model: project.model,
+      user_request: '不能覆盖不可变素材',
       size: project.size,
-      count: project.count,
     })).rejects.toMatchObject({ code: 'ASSET_IMMUTABLE', status: 409 })
     expect(project.writer_fence).toMatch(/^fence_[a-f0-9]{32}$/)
     expect(project.writer_fence).not.toBe(`fence_${'0'.repeat(32)}`)
@@ -1489,10 +1489,8 @@ describe('MediaProjectService video projects', () => {
     const writers = Array.from({ length: 12 }, () => new MediaProjectService({ root: mediaRoot }))
     const results = await Promise.allSettled(writers.map((writer, index) => writer.updateImageProject(project.id, {
       revision: project.revision,
-      prompt: `并发文案 ${index}`,
-      model: 'gpt-image-2',
+      user_request: `并发文案 ${index}`,
       size: '1024x1024',
-      count: 1,
     })))
 
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
@@ -1509,6 +1507,7 @@ describe('MediaProjectService video projects', () => {
       prompt: '可恢复删除',
       mode: 'edit',
       reference_images: [`data:image/png;base64,${referenceBytes.toString('base64')}`],
+      reference_roles: ['subject'],
     })
     const referenceName = project.reference_image_assets![0]!
 
@@ -1542,6 +1541,7 @@ describe('MediaProjectService video projects', () => {
       prompt: '过期回收',
       mode: 'edit',
       reference_images: [`data:image/png;base64,${Buffer.from('expiring-cas').toString('base64')}`],
+      reference_roles: ['subject'],
     })
     const deleted = await service.deleteProject(project.id)
     now = new Date('2026-07-25T04:00:01.000Z')

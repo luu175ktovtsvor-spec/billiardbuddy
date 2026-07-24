@@ -72,6 +72,22 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
   },
   {
+    model_id: 'doubao-seedream-4-5-251128',
+    provider: 'bytedance-ark',
+    capabilities: ['ImageGeneration'],
+    worker_env_source: { variable: 'RELAY_SEEDREAM_MODEL', slot_aliases: [] },
+    verified_context_window: 16_000,
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    compact_threshold: 12_000,
+    resume_evidence: { path: 'relay/app.ts', status: 'verified' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+  {
     model_id: 'fun-asr-flash-2026-06-15',
     provider: 'dashscope',
     capabilities: ['SpeechTranscription'],
@@ -133,6 +149,10 @@ export function providerRegistryEntryForCapability(capability: ProviderRegistryE
   const entries = PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes(capability))
   if (entries.length !== 1) throw new Error(`provider registry must contain exactly one ${capability} entry`)
   return entries[0]!
+}
+
+export function providerRegistryEntriesForCapability(capability: ProviderRegistryEntry['capabilities'][number]): ProviderRegistryEntry[] {
+  return PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes(capability))
 }
 
 export function textReasoningRegistryEntry(): ProviderRegistryEntry

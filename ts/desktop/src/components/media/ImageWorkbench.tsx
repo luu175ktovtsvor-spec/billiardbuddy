@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Download, ImagePlus, Loader2, Minus, Plus, RefreshCw, Sparkles, X } from 'lucide-react'
+import { Download, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, X } from 'lucide-react'
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   type ImageCanvasSize,
-  type ImageGenerationModel,
+  type ImageReferenceRole,
   mediaApi,
   mediaUserFacingError,
 } from '../../api/media'
@@ -22,63 +22,47 @@ function stateLabel(state: string): string {
   }[state] ?? state
 }
 
-type ReferenceImage = { name: string; dataUrl: string; size: number }
+type ReferenceImage = { name: string; dataUrl: string; size: number; role: ImageReferenceRole }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-const IMAGE_MODEL_OPTIONS: Array<{
-  value: ImageGenerationModel
-  label: string
-  description: string
-}> = [
-  {
-    value: 'gpt-image-2',
-    label: 'GPT Image',
-    description: '适合高保真创意与参考图编辑',
-  },
-  {
-    value: 'doubao-seedream-4-5-251128',
-    label: '豆包 Seedream',
-    description: '适合中文海报与更多长宽比例',
-  },
-]
-
-const IMAGE_SIZE_OPTIONS: Record<ImageGenerationModel, Array<{
+const IMAGE_SIZE_OPTIONS: Array<{
   value: ImageCanvasSize
   label: string
-}>> = {
-  'gpt-image-2': [
-    { value: '1024x1024', label: '方形 1:1 · 1024×1024' },
-    { value: '1536x1024', label: '横版 3:2 · 1536×1024' },
-    { value: '1024x1536', label: '竖版 2:3 · 1024×1536' },
-    { value: '2048x2048', label: '2K 方形 1:1 · 2048×2048' },
-    { value: '2048x1152', label: '2K 横版 16:9 · 2048×1152' },
-    { value: '3840x2160', label: '4K 横版 16:9 · 3840×2160' },
-    { value: '2160x3840', label: '4K 竖版 9:16 · 2160×3840' },
-  ],
-  'doubao-seedream-4-5-251128': [
-    { value: '2048x2048', label: '2K 方形 1:1 · 2048×2048' },
-    { value: '2304x1728', label: '2K 横版 4:3 · 2304×1728' },
-    { value: '1728x2304', label: '2K 竖版 3:4 · 1728×2304' },
-    { value: '2848x1600', label: '2K 宽屏 16:9 · 2848×1600' },
-    { value: '1600x2848', label: '2K 短视频 9:16 · 1600×2848' },
-    { value: '2496x1664', label: '2K 横版 3:2 · 2496×1664' },
-    { value: '1664x2496', label: '2K 竖版 2:3 · 1664×2496' },
-    { value: '3136x1344', label: '2K 电影宽屏 21:9 · 3136×1344' },
-    { value: '4096x4096', label: '4K 方形 1:1 · 4096×4096' },
-    { value: '4704x3520', label: '4K 横版 4:3 · 4704×3520' },
-    { value: '3520x4704', label: '4K 竖版 3:4 · 3520×4704' },
-    { value: '5504x3040', label: '4K 宽屏 16:9 · 5504×3040' },
-    { value: '3040x5504', label: '4K 短视频 9:16 · 3040×5504' },
-    { value: '4992x3328', label: '4K 横版 3:2 · 4992×3328' },
-    { value: '3328x4992', label: '4K 竖版 2:3 · 3328×4992' },
-    { value: '6240x2656', label: '4K 电影宽屏 21:9 · 6240×2656' },
-  ],
-}
+}> = [
+  { value: '1024x1024', label: '方形 1:1 · 1024×1024' },
+  { value: '1536x1024', label: '横版 3:2 · 1536×1024' },
+  { value: '1024x1536', label: '竖版 2:3 · 1024×1536' },
+  { value: '2048x2048', label: '2K 方形 1:1 · 2048×2048' },
+  { value: '2048x1152', label: '2K 横版 16:9 · 2048×1152' },
+  { value: '3840x2160', label: '4K 横版 16:9 · 3840×2160' },
+  { value: '2160x3840', label: '4K 竖版 9:16 · 2160×3840' },
+  { value: '2304x1728', label: '2K 横版 4:3 · 2304×1728' },
+  { value: '1728x2304', label: '2K 竖版 3:4 · 1728×2304' },
+  { value: '2848x1600', label: '2K 宽屏 16:9 · 2848×1600' },
+  { value: '1600x2848', label: '2K 短视频 9:16 · 1600×2848' },
+  { value: '2496x1664', label: '2K 横版 3:2 · 2496×1664' },
+  { value: '1664x2496', label: '2K 竖版 2:3 · 1664×2496' },
+  { value: '3136x1344', label: '2K 电影宽屏 21:9 · 3136×1344' },
+  { value: '4096x4096', label: '4K 方形 1:1 · 4096×4096' },
+  { value: '4704x3520', label: '4K 横版 4:3 · 4704×3520' },
+  { value: '3520x4704', label: '4K 竖版 3:4 · 3520×4704' },
+  { value: '5504x3040', label: '4K 宽屏 16:9 · 5504×3040' },
+  { value: '3040x5504', label: '4K 短视频 9:16 · 3040×5504' },
+  { value: '4992x3328', label: '4K 横版 3:2 · 4992×3328' },
+  { value: '3328x4992', label: '4K 竖版 2:3 · 3328×4992' },
+  { value: '6240x2656', label: '4K 电影宽屏 21:9 · 6240×2656' },
+]
 
-function modelLabel(model: ImageGenerationModel): string {
-  return IMAGE_MODEL_OPTIONS.find(option => option.value === model)?.label ?? model
-}
+const REFERENCE_ROLE_OPTIONS: Array<{ value: ImageReferenceRole; label: string }> = [
+  { value: 'unclassified', label: '请选择作用' },
+  { value: 'subject', label: '主体' },
+  { value: 'style', label: '风格' },
+  { value: 'environment', label: '环境' },
+  { value: 'brand', label: '品牌' },
+  { value: 'logo', label: 'Logo' },
+  { value: 'qrcode', label: '二维码' },
+]
 
 /**
  * A queued task can sit behind a paid image slot for minutes. Respect the relay's
@@ -133,10 +117,7 @@ export function ImageWorkbench() {
   const clearError = useMediaWorkbenchStore(state => state.clearError)
   const [prompt, setPrompt] = useState('')
   const [creating, setCreating] = useState(false)
-  const [mode, setMode] = useState<'generate' | 'edit'>('generate')
-  const [model, setModel] = useState<ImageGenerationModel>('gpt-image-2')
   const [size, setSize] = useState<ImageCanvasSize>('1024x1024')
-  const [count, setCount] = useState(1)
   const [references, setReferences] = useState<ReferenceImage[]>([])
   const [selectedOutput, setSelectedOutput] = useState(0)
   const [inputError, setInputError] = useState<string | null>(null)
@@ -173,10 +154,8 @@ export function ImageWorkbench() {
 
   useEffect(() => {
     if (!active || creating) return
-    setPrompt(active.prompt)
-    setModel(active.model)
+    setPrompt(active.brief?.user_request ?? '')
     setSize(active.size)
-    setCount(active.count)
   }, [active, creating])
 
   useEffect(() => {
@@ -204,10 +183,7 @@ export function ImageWorkbench() {
     clearError()
     selectImage(null)
     setPrompt('')
-    setMode('generate')
-    setModel('gpt-image-2')
     setSize('1024x1024')
-    setCount(1)
     setReferences([])
     setInputError(null)
     setCreating(true)
@@ -217,12 +193,10 @@ export function ImageWorkbench() {
     const value = prompt.trim()
     if (!value) return
     await createImage({
-      prompt: value,
-      mode,
-      model,
+      user_request: value,
       size,
-      count,
-      reference_images: mode === 'edit' ? references.map(reference => reference.dataUrl) : [],
+      reference_images: references.map(reference => reference.dataUrl),
+      reference_roles: references.map(reference => reference.role),
     })
     setCreating(false)
   }
@@ -255,6 +229,7 @@ export function ImageWorkbench() {
       name: file.name,
       size: file.size,
       dataUrl: await readImage(file),
+      role: 'unclassified' as const,
     })))
     setInputError(null)
     setReferences(current => [...current, ...loaded].slice(0, 8))
@@ -274,10 +249,8 @@ export function ImageWorkbench() {
   const hasDraftChanges = Boolean(
     active
     && (
-      prompt.trim() !== active.prompt
-      || model !== active.model
+      prompt.trim() !== active.brief?.user_request
       || size !== active.size
-      || count !== active.count
     ),
   )
 
@@ -286,17 +259,9 @@ export function ImageWorkbench() {
     if (!hasDraftChanges) return active
     return await saveImageDraft({
       ...active,
-      prompt: prompt.trim(),
-      model,
+      brief: { ...active.brief!, user_request: prompt.trim() },
       size,
-      count,
     }, confirmUnknownRetry)
-  }
-
-  const selectModel = (nextModel: ImageGenerationModel) => {
-    setModel(nextModel)
-    const supported = IMAGE_SIZE_OPTIONS[nextModel].some(option => option.value === size)
-    if (!supported) setSize(IMAGE_SIZE_OPTIONS[nextModel][0]!.value)
   }
 
   const startGeneration = async () => {
@@ -307,7 +272,7 @@ export function ImageWorkbench() {
       unknownOutcome ? (createsNewPaidTask
         ? '上一次任务的结果无法确认，可能已经产生费用。继续会创建一个新的生图任务，可能再次扣费。确认继续吗？'
         : '上一次提交的结果无法确认，可能已经产生费用。继续只会使用原来的提交编号确认状态，不会主动创建第二个任务。') : '',
-      `将把提示词${active.mode === 'edit' ? '和参考图片' : ''}发送到美国 Relay，再交给${active.model === 'gpt-image-2' ? ' OpenAI（默认滥用监测日志最多保留 30 天，账号级 ZDR 未核验）' : '火山方舟的豆包 Seedream（按主协议的必要期限处理，账号具体期限未核验）'}执行 ImageGeneration。Relay 在任务终态删除输入，结果最多保留 7 天；本次可能产生费用。进入供应商后无法撤销，确认继续吗？`,
+      `将把已确认的 Brief${active.reference_image_count > 0 ? '和参考图片' : ''}发送到美国 Relay，由当前 ImageGeneration 能力执行。Relay 在任务终态删除输入，结果最多保留 7 天；本次将生成 3 个候选并可能产生费用。进入生成服务后无法撤销，确认继续吗？`,
     ].filter(Boolean).join('\n\n')
     if (!window.confirm(warnings)) return
     const project = await saveActiveDraft(createsNewPaidTask)
@@ -423,24 +388,7 @@ export function ImageWorkbench() {
                   autoFocus
                   className="w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
                 />
-                <div className="mt-3 grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1" aria-label="图片模式">
-                  {(['generate', 'edit'] as const).map(value => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setMode(value)}
-                      className="h-7 rounded-[4px] text-[12px]"
-                      style={{
-                        color: mode === value ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                        background: mode === value ? 'var(--color-app-main)' : undefined,
-                      }}
-                    >
-                      {value === 'generate' ? '生成新图' : '参考图编辑'}
-                    </button>
-                  ))}
-                </div>
-                {mode === 'edit' && (
-                  <div className="mt-3">
+                <div className="mt-3">
                     <label className="mb-1 block text-[12px] text-[var(--color-text-secondary)]" htmlFor="image-references">参考图片</label>
                     <input
                       id="image-references"
@@ -453,7 +401,8 @@ export function ImageWorkbench() {
                     {references.length > 0 && (
                       <div className="mt-2 grid grid-cols-4 gap-1.5">
                         {references.map((reference, index) => (
-                          <div key={`${reference.name}-${index}`} className="group relative aspect-square overflow-hidden border border-[var(--color-border)]">
+                          <div key={`${reference.name}-${index}`} className="group relative border border-[var(--color-border)]">
+                            <div className="relative aspect-square overflow-hidden">
                             <img src={reference.dataUrl} alt={reference.name} className="h-full w-full object-cover" />
                             <button
                               type="button"
@@ -466,31 +415,21 @@ export function ImageWorkbench() {
                             >
                               <X size={12} />
                             </button>
+                            </div>
+                            <select
+                              aria-label={`${reference.name} 的作用`}
+                              value={reference.role}
+                              onChange={event => setReferences(current => current.map((item, itemIndex) => itemIndex === index
+                                ? { ...item, role: event.target.value as ImageReferenceRole }
+                                : item))}
+                              className="h-7 w-full border-t border-[var(--color-border)] bg-[var(--color-input-bg)] px-1 text-[10px]"
+                            >
+                              {REFERENCE_ROLE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
                           </div>
                         ))}
                       </div>
                     )}
-                  </div>
-                )}
-                <div className="mt-3">
-                  <div className="mb-1 text-[12px] text-[var(--color-text-secondary)]">生图模型</div>
-                  <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">
-                    {IMAGE_MODEL_OPTIONS.map(option => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => selectModel(option.value)}
-                        className="rounded-[4px] px-2 py-2 text-left"
-                        style={{
-                          color: model === option.value ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                          background: model === option.value ? 'var(--color-app-main)' : undefined,
-                        }}
-                      >
-                        <span className="block text-[12px] font-medium">{option.label}</span>
-                        <span className="mt-0.5 block text-[10px] leading-4 text-[var(--color-text-tertiary)]">{option.description}</span>
-                      </button>
-                    ))}
-                  </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[72px_1fr] items-center gap-x-2 gap-y-2 text-[12px]">
                   <label htmlFor="image-size" className="text-[var(--color-text-tertiary)]">画布</label>
@@ -500,21 +439,17 @@ export function ImageWorkbench() {
                     onChange={event => setSize(event.target.value as typeof size)}
                     className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                   >
-                    {IMAGE_SIZE_OPTIONS[model].map(option => (
+                    {IMAGE_SIZE_OPTIONS.map(option => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
-                  <span className="text-[var(--color-text-tertiary)]">数量</span>
-                  <div className="flex h-8 items-center justify-between rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)]">
-                    <button type="button" onClick={() => setCount(value => Math.max(1, value - 1))} className="flex h-full w-8 items-center justify-center" aria-label="减少数量"><Minus size={13} /></button>
-                    <span className="text-[12px] text-[var(--color-text-primary)]">{count}</span>
-                    <button type="button" onClick={() => setCount(value => Math.min(4, value + 1))} className="flex h-full w-8 items-center justify-center" aria-label="增加数量"><Plus size={13} /></button>
-                  </div>
+                  <span className="text-[var(--color-text-tertiary)]">候选</span>
+                  <span className="text-[var(--color-text-secondary)]">固定生成 3 张</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => void saveDraft()}
-                  disabled={loading || !prompt.trim() || (mode === 'edit' && references.length === 0)}
+                  disabled={loading || !prompt.trim() || references.some(reference => reference.role === 'unclassified')}
                   className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] bg-[var(--color-brand)] px-3 text-[13px] text-white disabled:opacity-45"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
@@ -542,25 +477,6 @@ export function ImageWorkbench() {
                       rows={8}
                       className="w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
                     />
-                    <div className="mt-3">
-                      <div className="mb-1 text-[12px] text-[var(--color-text-secondary)]">生图模型</div>
-                      <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">
-                        {IMAGE_MODEL_OPTIONS.map(option => (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => selectModel(option.value)}
-                            className="h-9 rounded-[4px] px-2 text-[12px]"
-                            style={{
-                              color: model === option.value ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                              background: model === option.value ? 'var(--color-app-main)' : undefined,
-                            }}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                     <div className="mt-3 grid grid-cols-[72px_1fr] items-center gap-x-2 gap-y-2 text-[12px]">
                       <label htmlFor="active-image-size" className="text-[var(--color-text-tertiary)]">画布</label>
                       <select
@@ -569,37 +485,38 @@ export function ImageWorkbench() {
                         onChange={event => setSize(event.target.value as typeof size)}
                         className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                       >
-                        {IMAGE_SIZE_OPTIONS[model].map(option => (
+                        {IMAGE_SIZE_OPTIONS.map(option => (
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
-                      <span className="text-[var(--color-text-tertiary)]">数量</span>
-                      <div className="flex h-8 items-center justify-between rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)]">
-                        <button type="button" onClick={() => setCount(value => Math.max(1, value - 1))} className="flex h-full w-8 items-center justify-center" aria-label="减少数量"><Minus size={13} /></button>
-                        <span className="text-[12px] text-[var(--color-text-primary)]">{count}</span>
-                        <button type="button" onClick={() => setCount(value => Math.min(4, value + 1))} className="flex h-full w-8 items-center justify-center" aria-label="增加数量"><Plus size={13} /></button>
-                      </div>
+                      <span className="text-[var(--color-text-tertiary)]">候选</span>
+                      <span className="text-[var(--color-text-secondary)]">固定生成 3 张</span>
                     </div>
                   </>
                 ) : (
                   <div className="mb-4">
                     <div className="mb-1 text-[11px] text-[var(--color-text-tertiary)]">画面需求</div>
-                    <p className="whitespace-pre-wrap text-[13px] leading-5 text-[var(--color-text-primary)]">{active.prompt}</p>
+                    <p className="whitespace-pre-wrap text-[13px] leading-5 text-[var(--color-text-primary)]">{active.brief?.user_request}</p>
+                    {active.brief && (
+                      <div className="mt-3 space-y-2 text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                        {active.brief.must_preserve.length > 0 && <p>必须保留：{active.brief.must_preserve.join('；')}</p>}
+                        {active.brief.may_change.length > 0 && <p>允许调整：{active.brief.may_change.join('；')}</p>}
+                        {active.brief.missing_information.length > 0 && <p className="text-[var(--color-warning)]">待补信息：{active.brief.missing_information.join('；')}</p>}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="mb-5 mt-4 grid grid-cols-2 gap-y-2 text-[12px]">
                   {!['draft', 'failed'].includes(active.state) && (
                     <>
-                      <span className="text-[var(--color-text-tertiary)]">模型</span>
-                      <span className="text-right text-[var(--color-text-secondary)]">{modelLabel(active.model)}</span>
                       <span className="text-[var(--color-text-tertiary)]">尺寸</span>
                       <span className="text-right text-[var(--color-text-secondary)]">{active.size}</span>
-                      <span className="text-[var(--color-text-tertiary)]">数量</span>
-                      <span className="text-right text-[var(--color-text-secondary)]">{active.count}</span>
+                      <span className="text-[var(--color-text-tertiary)]">候选</span>
+                      <span className="text-right text-[var(--color-text-secondary)]">{active.candidate_count}</span>
                     </>
                   )}
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
-                  <span className="text-right text-[var(--color-text-secondary)]">{active.mode === 'edit' ? `参考图编辑 (${active.reference_image_count})` : '生成新图'}</span>
+                  <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
                 {active.state === 'draft' && (
                   <button

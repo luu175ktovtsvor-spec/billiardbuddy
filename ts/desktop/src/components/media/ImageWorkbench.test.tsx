@@ -46,10 +46,19 @@ const project: ImageWorkbenchProject = {
   updated_at: '2026-07-18T00:01:00.000Z',
   state: 'failed',
   mode: 'generate',
-  model: 'gpt-image-2',
-  prompt: '活动海报',
   size: '1024x1024',
-  count: 1,
+  candidate_count: 3,
+  brief: {
+    schema_version: 1,
+    user_request: '活动海报',
+    confirmed_facts: [],
+    must_preserve: [],
+    may_change: ['未明确指定的视觉表现'],
+    missing_information: [],
+    exact_text: [],
+    compiler_version: 'image-brief-v1',
+  },
+  references: [],
   reference_images: [],
   reference_image_count: 0,
   task_id: 'task_unknown1',
@@ -92,16 +101,16 @@ beforeEach(() => {
 })
 
 describe('ImageWorkbench unknown paid result', () => {
-  it('shows both image models and the Seedream-specific canvas sizes', async () => {
+  it('shows provider-neutral canvas choices without model controls', async () => {
     mediaApiMock.listProjects.mockResolvedValue({ projects: [] })
     render(<ImageWorkbench />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '豆包 Seedream 适合中文海报与更多长宽比例' }))
-    const canvas = screen.getByLabelText('画布')
-    expect(canvas).toHaveValue('2048x2048')
+    const canvas = await screen.findByLabelText('画布')
+    expect(canvas).toHaveValue('1024x1024')
     expect(screen.getByRole('option', { name: '2K 短视频 9:16 · 1600×2848' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '2K 电影宽屏 21:9 · 3136×1344' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '4K 短视频 9:16 · 3040×5504' })).toBeInTheDocument()
+    expect(screen.queryByText('生图模型')).not.toBeInTheDocument()
   })
 
   it('backs queued image polls off while keeping running image polls responsive', () => {
@@ -123,7 +132,8 @@ describe('ImageWorkbench unknown paid result', () => {
     fireEvent.click(retry)
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('可能再次扣费'))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('美国 Relay'))
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('OpenAI'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('ImageGeneration'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('3 个候选'))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('最多保留 7 天'))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('可能产生费用'))
     expect(mediaApiMock.submitImageProject).not.toHaveBeenCalled()

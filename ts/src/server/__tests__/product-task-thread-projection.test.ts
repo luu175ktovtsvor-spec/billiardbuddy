@@ -6,7 +6,7 @@ import {
 } from '../product/taskThreadProjection.js'
 
 describe('product task thread projection', () => {
-  it('projects only a safe draft reference after a matching MediaWorkbench creation result', () => {
+  it('keeps MediaWorkbench activity but does not create chat media drafts', () => {
     const privateToolId = 'private-media-tool-use-id'
     const privatePrompt = 'PRIVATE_POSTER_PROMPT'
     const privatePath = '/Users/private/media-workspace'
@@ -65,12 +65,8 @@ describe('product task thread projection', () => {
     const projected = projectSessionTranscriptForProductTask('task-visible-media', source)
     const drafts = projected.entries.filter((entry) => entry.type === 'media_draft')
 
-    expect(drafts).toEqual([{
-      id: expect.stringMatching(/^thread_[a-f0-9]{20}$/),
-      type: 'media_draft',
-      draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
-      createdAt: '2026-07-20T08:00:01.000Z',
-    }])
+    expect(drafts).toEqual([])
+    expect(projected.entries.filter(entry => entry.type === 'activity')).toHaveLength(4)
 
     const serialized = JSON.stringify(projected)
     for (const secret of [

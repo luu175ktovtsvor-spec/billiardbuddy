@@ -40,33 +40,36 @@ describe('media product task ownership contract', () => {
   })
 })
 
-describe('image model canvas contract', () => {
-  test('keeps legacy projects on GPT while accepting Seedream-specific ratios', () => {
+describe('provider-neutral image creation contract', () => {
+  test('keeps legacy provider fields readable but strips them from new creation input', () => {
     expect(imageWorkbenchProjectSchema.parse(baseImageProject).model).toBe('gpt-image-2')
-    expect(createImageProjectInputSchema.parse({
-      prompt: '4K 竖版海报',
-      model: 'gpt-image-2',
-      size: '2160x3840',
-    })).toMatchObject({
-      model: 'gpt-image-2',
+    const input = createImageProjectInputSchema.parse({
+      user_request: '4K 竖版海报',
+      model: 'doubao-seedream-4-5-251128',
+      count: 1,
       size: '2160x3840',
     })
-    expect(createImageProjectInputSchema.parse({
-      prompt: '短视频竖版海报',
-      model: 'doubao-seedream-4-5-251128',
-      size: '3040x5504',
-    })).toMatchObject({
-      model: 'doubao-seedream-4-5-251128',
-      size: '3040x5504',
-    })
+    expect(input).toMatchObject({ user_request: '4K 竖版海报', size: '2160x3840' })
+    expect(input).not.toHaveProperty('model')
+    expect(input).not.toHaveProperty('count')
   })
 
-  test('rejects sending a Seedream-only canvas to GPT instead of silently switching models', () => {
-    const parsed = createImageProjectInputSchema.safeParse({
-      prompt: '易拉宝',
-      model: 'gpt-image-2',
-      size: '1216x3040',
+  test('requires one user-confirmed role for every reference image', () => {
+    const reference = `data:image/png;base64,${Buffer.from('reference').toString('base64')}`
+    expect(createImageProjectInputSchema.safeParse({
+      user_request: '参考图海报',
+      reference_images: [reference],
+    }).success).toBe(false)
+    expect(createImageProjectInputSchema.safeParse({
+      user_request: '参考图海报',
+      reference_images: [reference],
+      reference_roles: ['unclassified'],
+    }).success).toBe(false)
+    const parsed = createImageProjectInputSchema.parse({
+      user_request: '参考图海报',
+      reference_images: [reference],
+      reference_roles: ['subject'],
     })
-    expect(parsed.success).toBe(false)
+    expect(parsed.reference_roles).toEqual(['subject'])
   })
 })
