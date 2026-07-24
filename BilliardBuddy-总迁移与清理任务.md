@@ -411,6 +411,11 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：录音或音频上传可转写、编辑并绑定到 Composer 或视频 Evidence。
 - 做法：VoiceOperation → Transcript → immutable TranscriptRevision → consumer binding；按策略保留和 GC。
 - 验收：取消和迟到不串任务；编辑不覆盖 raw；无 consent/额度不发送音频；最终无第二 ASR。
+- 当前落点：`68ed4837…` 在现有 Fun-ASR 网关上补齐正式领域链。每次上传先创建稳定 `VoiceOperation`，同一 ID 作为网关 usage operation；成功后生成一个 `Transcript` 和 raw `TranscriptRevision`。用户校正只从 current revision 追加 immutable edit，raw 永不原地覆盖；取消会中止该 operation 的私有 signal，取消后的迟到结果不能创建或改写 Transcript。
+- 用户链路：`5a52ad00…` 在 ProductTask Composer 和视频工作台同时提供麦克风录制与音频文件上传。转写结果先进入可校正草稿，确认后把精确 revision 绑定到当前 Composer 或 `video_evidence` consumer；视频项目重开后按 consumer 回读已绑定 Evidence，不依赖一次 renderer 会话。
+- 数据与费用：无有效远程数据授权时，在创建操作和发送音频前失败关闭；Gateway 在调用 Fun-ASR 前完成额度 reserve，同一 operation 已结算时拒绝第二次转写。音频字节只存在于本次请求和受管网关调用期间，不写入本机持久目录；本机只保存来源摘要、raw、编辑版本和绑定。默认 30 天清理未绑定终态记录，已绑定 Evidence 保留；期限可由 `BB_VOICE_RETENTION_DAYS` 在 1—365 天内调整。
+- 唯一 ASR：产品 API、桌面正式 UI、Registry 和 Gateway 只消费 `fun-asr-flash-2026-06-15`；不提供 renderer/provider 选择或备用 ASR 回退。仓库中仍服务于通用 CLI 的历史 voice mode 不属于 ProductTask 执行链，是否删除必须等模块 23 按最终删除闸验证安装包支持功能，不能在模块 15 为满足字符串搜索而提前破坏。
+- 验收证据：服务端正式门禁通过；桌面端 139 个测试文件共 910 项通过，类型检查和生产构建通过；Electron 30 个文件共 210 项通过并完成 Main/preload 构建。双机实时检查确认 qfgw/qfgw-tunnel/qfrelay/nginx 全部 active，Fun-ASR key 与唯一 Registry 项存在，公网协议健康；Seedream 仍配置并保持 6 个全局、1 个单 owner 槽位。`check:product-contracts` 仍只命中施工前已登记的模块 23 `autodream-teammem` consumer 缺口。
 
 #### 模块 16：视频工作台
 
