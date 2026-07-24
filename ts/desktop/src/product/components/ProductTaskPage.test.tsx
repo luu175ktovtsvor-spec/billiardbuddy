@@ -59,6 +59,11 @@ const mocks = vi.hoisted(() => ({
   openSideTaskPanel: vi.fn(),
   listSkills: vi.fn(),
   listAgents: vi.fn(),
+  previewWebview: false,
+}))
+
+vi.mock('../../lib/desktopHost', () => ({
+  getDesktopHost: () => ({ capabilities: { previewWebview: mocks.previewWebview } }),
 }))
 
 vi.mock('../stores/productTaskStore', () => ({
@@ -174,14 +179,17 @@ vi.mock('./ProductTaskMediaDock', () => ({
 }))
 
 vi.mock('./ProductTaskBrowserPreviewDock', () => ({
+  buildProductTaskPreviewIntentText: (intent: { instruction: string }) => `preview-intent:${intent.instruction}`,
   ProductTaskBrowserPreviewDock: ({
     activeMode,
     onClose,
     onCapture,
+    onSubmitSelection,
   }: {
     activeMode: 'browser' | 'preview' | null
     onClose: (mode: 'browser' | 'preview') => void
     onCapture: (capture: { mode: 'browser' | 'preview'; dataUrl: string }) => void
+    onSubmitSelection: (intent: Record<string, unknown>) => Promise<boolean>
   }) => {
     const mode = activeMode ?? 'browser'
     const label = mode === 'browser' ? '浏览器' : '预览'
@@ -193,6 +201,27 @@ vi.mock('./ProductTaskBrowserPreviewDock', () => ({
           onClick={() => onCapture({ mode, dataUrl: 'data:image/png;base64,TkFUSVZF' })}
         >
           模拟原生截图
+        </button>
+        <button
+          type="button"
+          onClick={() => void onSubmitSelection({
+            selectionId: 'preview-selection-test',
+            instruction: '把标题改成今日活动',
+            selection: {
+              pageUrl: 'http://127.0.0.1:5173/',
+              element: {
+                selector: '#title',
+                nthPath: 'html>body>h1',
+                tag: 'h1',
+                classes: [],
+                boundingBox: { x: 0, y: 0, w: 100, h: 40 },
+                computedStyles: {},
+              },
+              screenshot: { dataUrl: 'data:image/png;base64,TkFUSVZF', kind: 'region' },
+            },
+          })}
+        >
+          模拟提交选取证据
         </button>
       </div>
     )
@@ -233,6 +262,7 @@ beforeEach(() => {
   }
   mocks.isLoading = false
   mocks.error = null
+  mocks.previewWebview = false
   mocks.getMedia.mockResolvedValue({ taskId: 'task-1', projects: [] })
   mocks.runtime = {
     connectionState: 'connected',
@@ -752,7 +782,7 @@ describe('ProductTaskPage', () => {
     expect(screen.getByTestId('product-task-review-dock')).toBeTruthy()
   })
 
-  it('does not open Browser or Preview through disabled header controls', () => {
+  it('does not open Browser or Preview without native preview transport', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     const browser = screen.getByRole('button', { name: '浏览器' })
@@ -763,6 +793,32 @@ describe('ProductTaskPage', () => {
     fireEvent.click(preview)
 
     expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
+    expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
+  })
+
+  it('submits one native Preview selection as durable task evidence and opens the source Diff', async () => {
+    mocks.previewWebview = true
+    render(<ProductTaskPage taskId="task-1" />)
+
+    const preview = screen.getByRole('button', { name: '预览' })
+    expect(preview).toBeEnabled()
+    fireEvent.click(preview)
+    expect(screen.getByTestId('product-task-browser-preview-dock')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟提交选取证据' }))
+
+    await waitFor(() => {
+      expect(mocks.sendMessage).toHaveBeenCalledWith(
+        'task-1',
+        'preview-intent:把标题改成今日活动',
+        [expect.objectContaining({
+          type: 'image',
+          name: '预览元素证据.png',
+          mimeType: 'image/png',
+        })],
+      )
+    })
+    expect(screen.getByTestId('product-task-review-dock')).toBeInTheDocument()
     expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
   })
 
@@ -777,7 +833,7 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
-  it('toggles only available review and media panels from header controls', () => {
+  it('toggles only currently available workspace panels from header controls', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     const review = screen.getByRole('button', { name: '审阅' })

@@ -1,8 +1,7 @@
 import { createBridge } from './bridge'
-import { captureToDataUrl, createAnnotationOverlay } from './screenshot'
+import { createAnnotationOverlay } from './screenshot'
 import { createPicker } from './picker'
 import { buildElementMetadata } from './metadata'
-import { createEditBubble } from './editBubble'
 
 ;(() => {
   ;(window as unknown as { __PREVIEW_AGENT__?: boolean }).__PREVIEW_AGENT__ = true
@@ -21,7 +20,6 @@ import { createEditBubble } from './editBubble'
 
   const bridge = createBridge({ postToHost, location: window.location, title: document.title })
   previewWindow.__PREVIEW_BRIDGE__ = bridge
-  previewWindow.__PREVIEW_AGENT_CAPTURE__ = captureToDataUrl
 
   let selectionOverlayCleanup: (() => void) | null = null
   let selectionOverlayTimer: number | null = null
@@ -35,24 +33,16 @@ import { createEditBubble } from './editBubble'
   }
   previewWindow.__PREVIEW_AGENT_CLEAR_SELECTION_OVERLAY__ = clearSelectionOverlay
 
-  bridge.on('capture', async (m) => {
-    try { bridge.send({ type: 'screenshot', dataUrl: await captureToDataUrl(m.kind), kind: m.kind }) }
-    catch (e) { bridge.reportError(String(e)) }
-  })
-
   let pickerOn = false
-  let activeBubble: { destroy: () => void } | null = null
   const picker = createPicker({ onSelect: () => {} })
 
   const teardown = () => {
-    activeBubble?.destroy()
-    activeBubble = null
     pickerOn = false
     picker.exit()
     bridge.send({ type: 'picker-exited' })
   }
 
-  const emitSelection = async (el: Element, change?: unknown) => {
+  const emitSelection = (el: Element) => {
     try {
       clearSelectionOverlay()
       const overlay = createAnnotationOverlay(el, 1)
@@ -64,7 +54,6 @@ import { createEditBubble } from './editBubble'
           pageUrl: window.location.href,
           sourceHint: document.title || undefined,
           element: buildElementMetadata(el),
-          change,
           screenshot: { kind: 'region' },
         },
       })
@@ -81,16 +70,17 @@ import { createEditBubble } from './editBubble'
   }, true)
 
   document.addEventListener('click', (e) => {
-    if (!pickerOn || activeBubble) return
+    if (!pickerOn) return
     e.preventDefault(); e.stopPropagation()
     picker.select()
     const el = picker.current()
-    pickerOn = false   // stop hovering; keep highlight on the selected element while the bubble is open
-    if (!(el instanceof HTMLElement)) { teardown(); return }
-    activeBubble = createEditBubble(el, {
-      onConfirm: (change) => { teardown(); void emitSelection(el, change) },
-      onCancel: () => { teardown() },
-    })
+    pickerOn = false
+    picker.exit()
+    if (!(el instanceof Element)) { bridge.send({ type: 'picker-exited' }); return }
+    // The host consumes the armed picker capability when this selection is
+    // forwarded. Do not emit picker-exited first, because that would revoke
+    // the same one-shot authorization before the evidence reaches the host.
+    emitSelection(el)
   }, true)
 
   const onReady = () => { bridge.reportReady(); bridge.reportNavigated() }

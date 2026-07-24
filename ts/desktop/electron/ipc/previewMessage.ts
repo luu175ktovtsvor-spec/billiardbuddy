@@ -70,6 +70,13 @@ export function parsePreviewAgentMessage(raw: string): PreviewAgentMessage | nul
       return { v: 1, type: 'screenshot', dataUrl: parsed.dataUrl, kind: parsed.kind }
     case 'selection':
       if (!isPlainRecord(parsed.payload)) return null
+      if (!isBoundedString(parsed.payload.pageUrl) || !isPlainRecord(parsed.payload.element)) return null
+      try {
+        const url = new URL(parsed.payload.pageUrl)
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+      } catch {
+        return null
+      }
       if ('screenshot' in parsed.payload) {
         const screenshot = parsed.payload.screenshot
         if (!isPlainRecord(screenshot)) return null
