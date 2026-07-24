@@ -38,6 +38,7 @@ test('transcribeRemoteFile forwards audio with server-side auth', async () => {
       },
       consentReceiptId: 'a'.repeat(64),
       providerProtocol: 'bb-provider-gateway/1.0',
+      operationId: 'voice_0123456789abcdef0123456789abcdef',
       fetchImpl: async (input, init) => {
         requestUrl = String(input)
         request = init
@@ -51,6 +52,7 @@ test('transcribeRemoteFile forwards audio with server-side auth', async () => {
   expect(new Headers(request?.headers).get('x-qf-client-id')).toBe('install-001')
   expect(new Headers(request?.headers).get('x-bb-data-egress-consent')).toBe('a'.repeat(64))
   expect(new Headers(request?.headers).get('x-bb-provider-protocol')).toBe('bb-provider-gateway/1.0')
+  expect(new Headers(request?.headers).get('x-bb-operation-id')).toBe('voice_0123456789abcdef0123456789abcdef')
   expect(request?.body).toBeInstanceOf(FormData)
   expect(result).toEqual({ text: '开台检查' })
 })

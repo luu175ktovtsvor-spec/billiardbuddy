@@ -30,6 +30,7 @@ export type RemoteTranscriptionOptions = {
   fetchImpl?: RemoteTranscriptionFetch
   consentReceiptId?: string
   providerProtocol?: string
+  operationId?: string
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -103,6 +104,7 @@ export async function transcribeRemoteFile(
     if (config.clientId) headers['X-QF-Client-ID'] = config.clientId
     if (opts.consentReceiptId) headers['X-BB-Data-Egress-Consent'] = opts.consentReceiptId
     if (opts.providerProtocol) headers['X-BB-Provider-Protocol'] = opts.providerProtocol
+    if (opts.operationId) headers['X-BB-Operation-ID'] = opts.operationId
 
     const response = await (opts.fetchImpl ?? fetch)(config.endpoint, {
       method: 'POST',

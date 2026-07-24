@@ -19,6 +19,7 @@ export type VoiceTranscriptionOptions = {
   timeoutMs?: number
   consentReceiptId?: string
   providerProtocol?: string
+  operationId?: string
 }
 
 export async function transcribeVoiceFile(
