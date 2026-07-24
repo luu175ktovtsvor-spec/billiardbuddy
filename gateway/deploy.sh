@@ -1,9 +1,8 @@
 #!/bin/bash
 # 在大陆机 39.106.214.21 上部署网关阀门(零干扰现网:只占 127.0.0.1:8799 + 一个 systemd 服务)。
 #
-# gw.env(600)除现有 Qwen/MiMo/Fun-ASR/Relay 变量外,DeepSeek V4 Flash 需要:
+# gw.env(600)保存启动授权、MiMo、DeepSeek、Fun-ASR 与 Relay 配置。DeepSeek V4 Flash 需要:
 #   GW_DEEPSEEK_KEY   (真 key,只在本机 gw.env) / GW_DEEPSEEK_BASE(默认 https://api.deepseek.com)
-#   GW_DEEPSEEK_MODEL(默认 deepseek-v4-flash) / 可选 GW_DEEPSEEK_MODELS /
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
 #   GW_DEEPSEEK_QUEUE_MAX / GW_DEEPSEEK_QUEUE_MAX_WAIT / GW_DEEPSEEK_RPM
 #   GW_IMG_IPM / GW_IMG_QUEUE_MAX / GW_RELAY_SUBMIT_TIMEOUT_MS / GW_RELAY_RESULT_TIMEOUT_MS=300000 / GW_SERVER_IDLE_TIMEOUT_SECONDS
@@ -14,13 +13,13 @@
 #     这不是 1,000 路真实上游流的性能证明。因此 GW_DEEPSEEK_CONC=1000 / GW_DEEPSEEK_USER_CONC=10 /
 #     GW_DEEPSEEK_TOKEN_CONC=1000 只是待逐级线上验证的安全上限，不是体验承诺；只留
 #     GW_DEEPSEEK_QUEUE_MAX=200、GW_DEEPSEEK_QUEUE_MAX_WAIT=15 吸收短暂抖动，不把持续超载变成
-#     分钟级隐藏等待。2500 是上游账号额度，不等于单机 Bun 网关应直接开到 2500；/healthz(带 app token)
+#     分钟级隐藏等待。2500 是上游账号额度，不等于单机 Bun 网关应直接开到 2500；/healthz
 #     会返回 active/queued/queueMax/oldestQueueMs 供观察。
 #   - 在把线上阈值调高、或将 1,000 当成长期生产承诺前，必须以真 DeepSeek 账号逐级压测，并同时观察
 #     长 SSE/长上下文下的 qfgw CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
 #     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
-#   - Qwen 仍保守使用 16 实际流。MiMo 尚无可复现的高并发真实上游验收，不能承诺
-#     100 人多窗口无等待。因此先固定 GW_MIMO_CONC=64（当前账号级物理总上限）/
+#   - MiMo 尚无可复现的高并发真实上游验收，不能承诺 100 人多窗口无等待。因此先固定
+#     GW_MIMO_CONC=64（当前账号级物理总上限）/
 #     GW_MIMO_NATIVE_CONC=48（原生 MiMo 文本/Computer Use 槽）/
 #     GW_VISION_CONC=16（DeepSeek→MiMo 图片桥接槽）的视觉优先硬预留，48 + 16 = 64。原生路径不能借用
 #     视觉的 16 槽，视觉也不会在 64 条原生请求之后排队；任一数值调整时必须同时校验三者之和等于
@@ -57,23 +56,32 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/qfgw
-for source in app.ts qwenChat.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
+for source in app.ts authority.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts providerRegistry.ts validate-auth-env.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
+chmod 700 "$APPDIR"
 install -m 644 /tmp/app.ts "$APPDIR/app.ts"
-install -m 644 /tmp/qwenChat.ts "$APPDIR/qwenChat.ts"
+mkdir -p "$APPDIR/auth"
+# authority.ts is uploaded from ts/shared/product/authEntitlement.ts so the
+# deployed gateway has no repository-relative runtime dependency.
+install -m 644 /tmp/authority.ts "$APPDIR/auth/authority.ts"
 install -m 644 /tmp/mimoChat.ts "$APPDIR/mimoChat.ts"  # 显式可路由的 MiMo 上游
 install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由的 DeepSeek V4 Flash 上游
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
 install -m 644 /tmp/usageBudget.ts "$APPDIR/usageBudget.ts"
+install -m 644 /tmp/providerRegistry.ts "$APPDIR/providerRegistry.ts"
+install -m 644 /tmp/validate-auth-env.ts "$APPDIR/validate-auth-env.ts"
+# Retired provider/search modules are not part of the deployed runtime closure.
+rm -f "$APPDIR/qwenChat.ts" "$APPDIR/webSearch.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
 install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
 # Upload these separately with the runtime files when a controlled live capacity
 # run is scheduled. They are never invoked by deployment, and keeping them in
-# /opt/qfgw lets them read the local app-token map without exporting a secret.
+# /opt/qfgw keeps controlled operators close to service health; runners still require
+# an explicit short-lived installation access token and never read bootstrap credentials.
 # A normal runtime-only deployment remains valid when no runner was uploaded.
 for runner in real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts; do
   if [ -f "/tmp/$runner" ]; then
@@ -101,7 +109,7 @@ fi
 
 # Fail before touching systemd if an operator supplied a partial or inconsistent
 # reservation. This script reads only the three non-secret capacity settings and never
-# sources gw.env, so app tokens and provider credentials cannot be executed or printed.
+# sources gw.env, so bootstrap credentials and provider credentials cannot be executed or printed.
 "$APPDIR/validate-mimo-capacity-env.sh" "$APPDIR/gw.env"
 "$APPDIR/validate-production-capacity-env.sh" "$APPDIR/gw.env"
 
@@ -118,6 +126,10 @@ else
   BUN_BIN="$HOME/.bun/bin/bun"
 fi
 [ -x "$BUN_BIN" ] || { echo "Bun 安装失败" >&2; exit 1; }
+
+# Validate the complete authorization input before replacing a healthy process.
+# The validator reads the EnvironmentFile as data and never prints credentials.
+"$BUN_BIN" "$APPDIR/validate-auth-env.ts" "$APPDIR/gw.env"
 
 echo "=== systemd 服务 ==="
 cat > /etc/systemd/system/qfgw.service <<'UNIT'

@@ -31,43 +31,43 @@ afterEach(() => {
 })
 
 describe('desktop product package config', () => {
-  it('accepts a public gateway URL and a separately staged app token', () => {
+  it('accepts a public gateway URL and separately staged activation inputs', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'https://gw.example/gw', gatewayModel: 'deepseek-v4-flash' },
-      { gatewayToken: 'revocable-app-token' },
+      { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).not.toThrow()
   })
 
-  it('blocks an installer that would have no usable product gateway token', () => {
+  it('blocks an installer that would have no activation inputs', () => {
     const desktopDir = createDesktopBuild({ gatewayUrl: 'https://gw.example/gw' })
     expect(() => validateProductPackageFiles(desktopDir)).toThrow('missing product-secrets.json')
   })
 
-  it('blocks a serialized server token map staged as one app token', () => {
+  it('blocks a serialized server credential map staged as one bootstrap credential', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'https://gw.example/gw' },
-      { gatewayToken: JSON.stringify({ 'server-token': 'owner' }) },
+      { gatewayBootstrapCredential: JSON.stringify({ 'server-token': 'owner' }), licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).toThrow(
-      'gatewayToken must be one opaque URL-safe app token',
+      'gatewayBootstrapCredential must be one opaque URL-safe credential',
     )
   })
 
-  it('blocks accidental placement of the token in the public config', () => {
+  it('blocks accidental placement of activation inputs in the public config', () => {
     const desktopDir = createDesktopBuild(
-      { gatewayUrl: 'https://gw.example/gw', gatewayToken: 'public-leak' },
-      { gatewayToken: 'revocable-app-token' },
+      { gatewayUrl: 'https://gw.example/gw', gatewayBootstrapCredential: 'public-leak' },
+      { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).toThrow(
-      'gatewayToken must not be stored in public product-config.json',
+      'credentials must not be stored in public product-config.json',
     )
   })
 
-  it('blocks a package that would send the managed app token over HTTP', () => {
+  it('blocks a package that would send installation authorization over HTTP', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'http://39.106.214.21/gw' },
-      { gatewayToken: 'revocable-app-token' },
+      { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS at the /gw endpoint')
   })
@@ -75,7 +75,7 @@ describe('desktop product package config', () => {
   it('blocks a secure URL that is not the product gateway base path', () => {
     const desktopDir = createDesktopBuild(
       { gatewayUrl: 'https://gateway.example', gatewayModel: 'deepseek-v4-flash' },
-      { gatewayToken: 'revocable-app-token' },
+      { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS at the /gw endpoint')
   })

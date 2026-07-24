@@ -10,18 +10,16 @@ import { defaultProviderModel } from '../../../../gateway/providerRegistry.js'
  *
  *  - `product-config.json` — PUBLIC config, safe to commit and ship: the stable
  *    HTTPS product gateway URL and the default upstream model. No secrets.
- *  - `product-secrets.json` — the revocable client app token. Git-ignored; it is
+ *  - `product-secrets.json` — the activation bootstrap credential and License key. Git-ignored; it is
  *    written into the build resources at release/packaging time from a build
  *    secret, never committed. It never appears in product-config.json, source,
  *    Git, the renderer, providers.json, settings.json, the CLI subprocess, or logs.
  *
  * Precedence per field: env override (dev/ops) > packaged file > undefined.
  *
- * Threat boundary: the app token is a client credential shared by every install,
- * not a per-user account. Anyone who extracts it can only make metered, rate-
- * limited, revocable proxy calls — the upstream Qwen/MiMo/Fun-ASR keys stay on the
- * gateway server (gw.env, 600). Real defense is server-side rate-limit + revocation
- * + rotation; rotation = re-issue a token, rebuild/redeploy, revoke the old one.
+ * Threat boundary: the managed bootstrap credential and License key are activation
+ * inputs, not upstream provider credentials. Provider keys stay in the gateway's
+ * mode-600 gw.env; successful activation returns a revocable installation session.
  */
 export type ProductGatewayConfig = {
   url?: string
@@ -65,7 +63,7 @@ function trimmed(value: unknown): string | undefined {
 }
 
 /**
- * Product traffic carries the managed app token and user content. Keep the
+ * Product traffic carries installation authorization and user content. Keep the
  * packaged URL on HTTPS and bind it to the product gateway base path, rather
  * than accepting an arbitrary secure website as a proxy target.
  */

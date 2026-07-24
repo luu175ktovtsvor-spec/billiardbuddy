@@ -5,7 +5,7 @@ import path from 'node:path'
 /**
  * Per-install identity for fair scheduling (BilliardBuddy 50~100-user private beta).
  *
- * Every install shares ONE app token, so the gateway can no longer treat all installs as
+ * Every managed build shares activation inputs, so the gateway can no longer treat all installs as
  * one user. On first launch we generate an unpredictable installationId and persist it in
  * the product data root (the active CLAUDE_CONFIG_DIR). It is injected ONLY into the server
  * sidecar env (BB_INSTALLATION_ID); the sidecar attaches it as `X-QF-Client-ID` on gateway

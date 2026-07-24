@@ -116,20 +116,25 @@ jobs:
           '39.106.214.21 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgaQWyo3iZcvWHsVpYf+Oncgf5RZhkpMdz7ap5Gbusc' |
             Set-Content -LiteralPath $knownHostsPath -Encoding ascii
 
-          $tokenMapJson = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_APP_TOKENS=//p' /opt/qfgw/gw.env").Trim()
+          $gatewayCredentials = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/qfgw/gw.env").Trim()
+          $licenseProvisioningJson = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/qfgw/gw.env").Trim()
           try {
-            $tokenMap = $tokenMapJson | ConvertFrom-Json
-            $gatewayToken = @($tokenMap.psobject.Properties.Name)[0]
+            $gatewayBootstrapCredential = @($gatewayCredentials -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })[0]
+            $licenseProvisioning = @($licenseProvisioningJson | ConvertFrom-Json)
+            $gatewayLicenseKey = $licenseProvisioning[0].licenseKey
           } catch {
-            throw '无法从受控网关读取 app token 映射'
+            throw '无法从受控网关读取发布授权配置'
           }
-          if ($gatewayToken -notmatch '^[A-Za-z0-9_-]{16,256}$') {
-            throw '受控网关未提供有效的 app token'
+          if ($gatewayBootstrapCredential -notmatch '^[A-Za-z0-9_-]{16,256}$') {
+            throw '受控网关未提供有效的启动凭据'
+          }
+          if ($gatewayLicenseKey -notmatch '^[A-Za-z0-9._-]{8,256}$') {
+            throw '受控网关未提供有效的发布 License'
           }
 
           $secretFile = 'ts/desktop/build/product-secrets.json'
           New-Item -ItemType Directory -Force (Split-Path $secretFile) | Out-Null
-          @{ gatewayToken = $gatewayToken } |
+          @{ gatewayBootstrapCredential = $gatewayBootstrapCredential; licenseKey = $gatewayLicenseKey } |
             ConvertTo-Json -Compress |
             Set-Content -LiteralPath $secretFile -Encoding utf8NoBOM
 

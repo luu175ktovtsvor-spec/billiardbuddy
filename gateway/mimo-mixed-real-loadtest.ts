@@ -72,7 +72,7 @@ type ObservedHealth = Record<'mimo' | 'mimo_native' | 'mimo_total' | 'vision', O
 function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=https://gateway.example/gw \\
-  QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_TOKEN=<installation-access-token> \\
   QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/mimo-mixed-real-loadtest.ts --execute [options]
 
@@ -87,7 +87,6 @@ Options:
   --drain-timeout-ms=<n>      Wait for all MiMo views to drain (default: request timeout)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Health request deadline (default: 1000)
-  --use-server-app-token      Only on http://127.0.0.1:8799; read the local app token
 
 The runner sends exactly one same-wave reservation check. It requires an idle,
 authenticated health snapshot before traffic, checks the 48 + 16 reservation,
@@ -134,10 +133,6 @@ function isHttpLoopback(url: URL): boolean {
   return octets.length === 4
     && octets[0] === '127'
     && octets.every(octet => /^\d+$/.test(octet) && Number(octet) <= 255)
-}
-
-function isGatewayLoopback(url: URL): boolean {
-  return isHttpLoopback(url) && url.port === '8799' && url.pathname === '/'
 }
 
 /** Refuse plaintext external targets and URL-embedded secrets before reading any token. */
@@ -364,33 +359,6 @@ class SseDoneDetector {
   }
 }
 
-async function loadLocalGatewayAppToken(): Promise<string> {
-  const raw = await Bun.file('/opt/qfgw/gw.env').text()
-  const line = raw.split(/\r?\n/).find(value => value.startsWith('GW_APP_TOKENS='))
-  if (!line) throw new Error('qfgw app-token map is unavailable')
-  let encoded = line.slice('GW_APP_TOKENS='.length).trim()
-  if (encoded.startsWith("'") && encoded.endsWith("'")) encoded = encoded.slice(1, -1)
-  else if (encoded.startsWith('"') && encoded.endsWith('"')) {
-    try {
-      const decoded = JSON.parse(encoded)
-      if (typeof decoded !== 'string') throw new Error('not a string')
-      encoded = decoded
-    } catch {
-      throw new Error('qfgw app-token map is unavailable')
-    }
-  }
-  let tokens: unknown
-  try {
-    tokens = JSON.parse(encoded)
-  } catch {
-    throw new Error('qfgw app-token map is unavailable')
-  }
-  if (!isRecord(tokens)) throw new Error('qfgw app-token map is unavailable')
-  const token = Object.keys(tokens).find(candidate => candidate.length > 0)
-  if (!token) throw new Error('qfgw app-token map is unavailable')
-  return token
-}
-
 function countStatuses(results: RequestResult[]): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const result of results) counts[String(result.status)] = (counts[String(result.status)] ?? 0) + 1
@@ -425,13 +393,8 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const useServerAppToken = args.includes('--use-server-app-token')
-  if (useServerAppToken && !isGatewayLoopback(base)) {
-    throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
-  }
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
-    ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
-  if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
   const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
   if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
     throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')

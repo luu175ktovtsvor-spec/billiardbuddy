@@ -14,6 +14,9 @@ BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度
 | `gateway` | 模型、视觉和 Fun-ASR 网关 |
 | `relay` | 图片生成与编辑异步中转 |
 
+两台专用生产服务器的职责、目录、部署、备份和迁移步骤见
+[服务器运行与迁移手册](./docs/operations/production-servers.md)。
+
 ## 本地开发
 
 ```bash

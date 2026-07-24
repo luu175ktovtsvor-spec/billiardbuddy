@@ -25,8 +25,12 @@ function isAllowedGatewayUrl(url) {
     && url.pathname.replace(/\/+$/, '') === '/gw'
 }
 
-function isOpaqueGatewayToken(value) {
+function isOpaqueBootstrapCredential(value) {
   return /^[A-Za-z0-9_-]{16,256}$/.test(value)
+}
+
+function isLicenseKey(value) {
+  return /^[A-Za-z0-9._-]{8,256}$/.test(value)
 }
 
 function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
@@ -34,8 +38,8 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   const publicConfig = readJsonObject(path.join(buildDir, 'product-config.json'), 'product-config.json')
   const secrets = readJsonObject(path.join(buildDir, 'product-secrets.json'), 'product-secrets.json')
 
-  if (typeof publicConfig.gatewayToken === 'string' && publicConfig.gatewayToken.trim()) {
-    throw new Error('Cannot package BilliardBuddy: gatewayToken must not be stored in public product-config.json')
+  if (['gatewayToken', 'gatewayBootstrapCredential', 'licenseKey'].some(key => typeof publicConfig[key] === 'string' && publicConfig[key].trim())) {
+    throw new Error('Cannot package BilliardBuddy: credentials must not be stored in public product-config.json')
   }
   if (typeof publicConfig.gatewayUrl !== 'string' || !publicConfig.gatewayUrl.trim()) {
     throw new Error('Cannot package BilliardBuddy: product-config.json is missing gatewayUrl')
@@ -49,11 +53,17 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   if (!isAllowedGatewayUrl(gatewayUrl)) {
     throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTPS at the /gw endpoint')
   }
-  if (typeof secrets.gatewayToken !== 'string' || !secrets.gatewayToken.trim()) {
-    throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing gatewayToken')
+  if (typeof secrets.gatewayBootstrapCredential !== 'string' || !secrets.gatewayBootstrapCredential.trim()) {
+    throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing gatewayBootstrapCredential')
   }
-  if (!isOpaqueGatewayToken(secrets.gatewayToken.trim())) {
-    throw new Error('Cannot package BilliardBuddy: gatewayToken must be one opaque URL-safe app token')
+  if (!isOpaqueBootstrapCredential(secrets.gatewayBootstrapCredential.trim())) {
+    throw new Error('Cannot package BilliardBuddy: gatewayBootstrapCredential must be one opaque URL-safe credential')
+  }
+  if (typeof secrets.licenseKey !== 'string' || !secrets.licenseKey.trim()) {
+    throw new Error('Cannot package BilliardBuddy: product-secrets.json is missing licenseKey')
+  }
+  if (!isLicenseKey(secrets.licenseKey.trim())) {
+    throw new Error('Cannot package BilliardBuddy: licenseKey is invalid')
   }
 }
 

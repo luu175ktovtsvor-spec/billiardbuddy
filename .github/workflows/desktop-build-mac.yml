@@ -103,28 +103,40 @@ jobs:
           } > "${known_hosts_path}"
           chmod 600 "${known_hosts_path}"
 
-          token_map_json="$(
+          gateway_credentials="$(
             ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
               root@39.106.214.21 \
-              "sed -n 's/^GW_APP_TOKENS=//p' /opt/qfgw/gw.env"
+              "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/qfgw/gw.env"
           )"
-          gateway_token="$(
+          license_provisioning_json="$(
+            ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              root@39.106.214.21 \
+              "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/qfgw/gw.env"
+          )"
+          gateway_bootstrap_credential="$(
             node -e '
-              const map = JSON.parse(process.argv[1]);
-              const token = Object.keys(map)[0];
-              if (!/^[A-Za-z0-9_-]{16,256}$/.test(token || "")) process.exit(1);
-              process.stdout.write(token);
-            ' "${token_map_json}"
+              const credential = process.argv[1].split(",").map(value => value.trim()).filter(Boolean)[0];
+              if (!/^[A-Za-z0-9_-]{16,256}$/.test(credential || "")) process.exit(1);
+              process.stdout.write(credential);
+            ' "${gateway_credentials}"
+          )"
+          gateway_license_key="$(
+            node -e '
+              const licenses = JSON.parse(process.argv[1]);
+              const key = Array.isArray(licenses) ? licenses[0]?.licenseKey : undefined;
+              if (!/^[A-Za-z0-9._-]{8,256}$/.test(key || "")) process.exit(1);
+              process.stdout.write(key);
+            ' "${license_provisioning_json}"
           )"
           mkdir -p ts/desktop/build
           node -e '
             const fs = require("node:fs");
             fs.writeFileSync(
               "ts/desktop/build/product-secrets.json",
-              `${JSON.stringify({ gatewayToken: process.argv[1] })}\n`,
+              `${JSON.stringify({ gatewayBootstrapCredential: process.argv[1], licenseKey: process.argv[2] })}\n`,
               { mode: 0o600 },
             );
-          ' "${gateway_token}"
+          ' "${gateway_bootstrap_credential}" "${gateway_license_key}"
 
           certificate_path="${RUNNER_TEMP}/billiardbuddy-developer-id.p12"
           keychain_path="${RUNNER_TEMP}/billiardbuddy-build.keychain-db"

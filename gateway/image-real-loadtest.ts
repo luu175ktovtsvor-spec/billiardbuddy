@@ -97,7 +97,7 @@ const TERMINAL_STATES = new Set<TerminalState>(['succeeded', 'failed', 'failed_u
 function usage(exitCode = 2): never {
   console.error(`Usage:
   QF_LOADTEST_URL=http://127.0.0.1:8799 \\
-  QF_LOADTEST_TOKEN=<app-token> \\
+  QF_LOADTEST_TOKEN=<installation-access-token> \\
   QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
   bun gateway/image-real-loadtest.ts --execute [options]
 
@@ -113,20 +113,18 @@ Options:
   --terminal-timeout-ms=<n>   Per-task terminal-status deadline (default: 600000)
   --poll-floor-ms=<n>         Minimum poll delay, capped at 60000 (default: 5000)
   --poll-request-timeout-ms=<n>  Per-status-request deadline (default: 15000)
-  --use-server-app-token      Gateway-host only: read its app token solely for
-                               http://127.0.0.1:8799 (never an external URL)
 
 The runner uses one X-QF-Client-ID per simulated installation, so --users=100
 --windows=10 models ten windows from each installation. admission mode is the right
 mode for a 1,000-task burst: it proves acceptance/queue behaviour only when every
 accepted task confirms cancellation, but does not claim that 1,000 paid images
-completed without waiting. It never logs app tokens,
+completed without waiting. It never logs access tokens,
 task IDs, request bodies, image bytes, model output, or a target URL path/query.`)
   process.exit(exitCode)
 }
 
 function assertKnownArgs(args: string[]): void {
-  const booleans = new Set(['--execute', '--confirm-billable-batch', '--use-server-app-token'])
+  const booleans = new Set(['--execute', '--confirm-billable-batch'])
   const values = [
     '--users',
     '--windows',
@@ -199,13 +197,7 @@ function isHttpLoopback(url: URL): boolean {
     && octets.every(octet => /^\d+$/.test(octet) && Number(octet) <= 255)
 }
 
-function isGatewayLoopback(url: URL): boolean {
-  return isHttpLoopback(url)
-    && url.port === '8799'
-    && url.pathname === '/'
-}
-
-/** Keep a supplied app token away from plaintext external or URL-embedded targets. */
+/** Keep a supplied access token away from plaintext external or URL-embedded targets. */
 export function parseLoadTarget(raw: string): LoadTarget {
   let base: URL
   try {
@@ -228,35 +220,6 @@ export function parseLoadTarget(raw: string): LoadTarget {
     baseUrl: `${base.origin}${path === '/' ? '' : path}`,
     targetOrigin: base.origin,
   }
-}
-
-async function loadLocalGatewayAppToken(): Promise<string> {
-  const raw = await Bun.file('/opt/qfgw/gw.env').text()
-  const line = raw.split(/\r?\n/).find(value => value.startsWith('GW_APP_TOKENS='))
-  if (!line) throw new Error('qfgw app-token map is unavailable')
-  let encoded = line.slice('GW_APP_TOKENS='.length).trim()
-  if (encoded.startsWith("'") && encoded.endsWith("'")) encoded = encoded.slice(1, -1)
-  else if (encoded.startsWith('"') && encoded.endsWith('"')) {
-    try {
-      const decoded = JSON.parse(encoded)
-      if (typeof decoded !== 'string') throw new Error('not a string')
-      encoded = decoded
-    } catch {
-      throw new Error('qfgw app-token map is unavailable')
-    }
-  }
-  let tokens: unknown
-  try {
-    tokens = JSON.parse(encoded)
-  } catch {
-    throw new Error('qfgw app-token map is unavailable')
-  }
-  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
-    throw new Error('qfgw app-token map is unavailable')
-  }
-  const token = Object.keys(tokens).find(value => value.length > 0)
-  if (!token) throw new Error('qfgw app-token map is unavailable')
-  return token
 }
 
 export function createImageLoadtestPlan(users: number, windows: number, confirmedBatch: boolean): ImageLoadtestPlan {
@@ -689,13 +652,8 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const useServerAppToken = args.includes('--use-server-app-token')
-  if (useServerAppToken && !isGatewayLoopback(base)) {
-    throw new Error('--use-server-app-token only permits http://127.0.0.1:8799')
-  }
   const token = process.env.QF_LOADTEST_TOKEN?.trim()
-    ?? (useServerAppToken ? await loadLocalGatewayAppToken() : undefined)
-  if (!token) throw new Error('QF_LOADTEST_TOKEN is required with --execute')
+  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
   const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
   if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
     throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')

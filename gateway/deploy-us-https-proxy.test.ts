@@ -21,7 +21,7 @@ function run(options: { currentConnections: number; nginxSucceeds?: boolean }) {
   Bun.spawnSync(['mkdir', '-p', bin])
   writeFileSync(site, 'server {\n    listen 443 ssl;\n}\n')
   writeFileSync(main, `events {\n    worker_connections ${options.currentConnections};\n}\nhttp {}\n`)
-  writeFileSync(source, 'location /gw/ {\n    proxy_pass http://39.106.214.21/gw/;\n}\n')
+  writeFileSync(source, 'location /gw/ {\n    proxy_pass http://127.0.0.1:8800/;\n}\n')
   executable(join(bin, 'nginx'), options.nginxSucceeds === false ? 'exit 1' : 'exit 0')
   executable(join(bin, 'systemctl'), 'printf "%s\\n" "$*" >> "$QF_TEST_SYSTEMCTL_LOG"')
   const log = join(root, 'systemctl.log')
