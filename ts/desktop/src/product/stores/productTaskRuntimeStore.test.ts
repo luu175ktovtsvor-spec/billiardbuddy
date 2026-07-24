@@ -6,6 +6,8 @@ const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
   currentLineage: vi.fn(),
   submitRun: vi.fn(),
+  createDraft: vi.fn(),
+  ingestAttachment: vi.fn(),
 }))
 const socketMocks = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -23,6 +25,12 @@ vi.mock('../api/tasks', () => ({
   },
   productTaskRunSubmitApi: {
     submit: apiMocks.submitRun,
+  },
+  productComposerDraftApi: {
+    create: apiMocks.createDraft,
+  },
+  productAttachmentIngestApi: {
+    ingest: apiMocks.ingestAttachment,
   },
 }))
 
@@ -97,6 +105,8 @@ describe('product task runtime store', () => {
     apiMocks.list.mockReset()
     apiMocks.currentLineage.mockReset()
     apiMocks.submitRun.mockReset()
+    apiMocks.createDraft.mockReset()
+    apiMocks.ingestAttachment.mockReset()
     socketMocks.connect.mockReset()
     socketMocks.disconnect.mockReset()
     socketMocks.send.mockReset()
@@ -532,6 +542,32 @@ describe('product task runtime store', () => {
       mimeType: 'image/png',
       data: 'data:image/png;base64,QQ==',
     }])).toBe(true)
+  })
+
+  it('ingests attachments under a composer draft before submitting only their ids', async () => {
+    const task: ProductTaskRecord = {
+      id: 'task-attachment-submit', revision: 1, current_lineage_id: 'lineage-attachment',
+      projectId: 'project', directoryId: 'directory', workDir: '/workspace', title: '附件任务',
+      lifecycle: 'active', kind: 'main', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z',
+      worktreeState: 'not_requested', actions: [],
+    }
+    useProductTaskStore.setState({ index: { ...EMPTY_PRODUCT_TASK_INDEX, tasks: [task], total: 1 } })
+    apiMocks.currentLineage.mockResolvedValue({ lineage: { lineage_id: 'lineage-attachment', product_task_id: task.id, revision: 4 } })
+    apiMocks.createDraft.mockResolvedValue({ draft: { draft_id: 'draft-attachment', revision: 0 } })
+    apiMocks.ingestAttachment.mockResolvedValue({ attachment: { attachment_id: 'attachment-ready', attachment_revision: 2, authority_revision: 8, outcome: 'accepted' } })
+    apiMocks.submitRun.mockResolvedValue({ receipt: { outcome: 'accepted', authority_revision: 9, result: { task_id: task.id, run_id: 'run', entry_id: 'entry', dispatch_generation: 1 } } })
+    apiMocks.list.mockResolvedValue(useProductTaskStore.getState().index)
+    const attachment = { type: 'image' as const, name: '球台.png', mimeType: 'image/png', data: 'data:image/png;base64,iVBORw0KGgo=' }
+
+    await expect(useProductTaskRuntimeStore.getState().sendMessage(task.id, '', [attachment])).resolves.toBe(true)
+
+    expect(apiMocks.ingestAttachment).toHaveBeenCalledWith('draft-attachment', expect.objectContaining({
+      type: 'image', name: '球台.png', mime_type: 'image/png', data: attachment.data,
+    }))
+    expect(apiMocks.submitRun).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      text: '请分析这个附件。', draft_id: 'draft-attachment', expected_draft_revision: 0, attachment_ids: ['attachment-ready'],
+    }))
+    expect(JSON.stringify(apiMocks.submitRun.mock.calls)).not.toContain('base64')
   })
 
   it('sends only the narrow approval and question response envelopes', () => {

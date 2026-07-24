@@ -72,7 +72,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         return { ok: true }
       }
       if (!state.core) return { ok: false }
-      if (request.operation === 'input' && typeof request.value === 'string') await state.core.input(request.value)
+      if (request.operation === 'input' && typeof request.value === 'string') await state.core.input(request.value, input.core.initial_attachments)
       else if (request.operation === 'approval' && request.value && typeof request.value === 'object') { const value = request.value as { requestId?: unknown; approved?: unknown }; if (typeof value.requestId !== 'string' || typeof value.approved !== 'boolean') return { ok: false }; await state.core.approve(value.requestId, value.approved) }
       else if (request.operation === 'stop') await state.core.stop()
       else if (request.operation === 'shutdown') { state.unsubscribe?.(); state.unsubscribe = undefined; await state.core.shutdown() }

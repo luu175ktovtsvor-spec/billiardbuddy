@@ -27,7 +27,7 @@ import {
   type SubmitTaskRunReceipt,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskThread, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskAttachmentSummary, ProductTaskThread, TaskEvent } from '../../../shared/product/taskEvents.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
@@ -64,6 +64,13 @@ import { ProductTaskAuthorityRepository, readLegacyProductTasks, type ProductTas
 import { CoreOperationTerminalError, type CoreOperationBridge } from './coreOperationBridge.js'
 import { ProductSessionMemoryRepository } from '../services/productSessionMemory.js'
 import { SettingsService } from '../services/settingsService.js'
+import {
+  productAttachmentStorageRoot,
+  productAttachmentSummary,
+  resolveProductAttachmentCopy,
+  storeProductAttachmentCopy,
+  verifyProductAttachmentInput,
+} from './taskAttachmentIngest.js'
 
 export type ProductTaskAction =
   | 'pin'
@@ -1176,7 +1183,7 @@ export class ProductTaskService {
           if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
           return { changed: false as const, value: { duplicate: true, receipt: prior } }
         }
-        if ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined) || (input.draft_id !== undefined && (!input.draft_id || !Number.isSafeInteger(input.expected_draft_revision) || input.expected_draft_revision! < 0)) || !input.text || !Array.isArray(input.attachment_ids) || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+        if ((input.draft_id === undefined) !== (input.expected_draft_revision === undefined) || (input.draft_id !== undefined && (!input.draft_id || !Number.isSafeInteger(input.expected_draft_revision) || input.expected_draft_revision! < 0)) || !input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
         const stored = state.tasks[taskId] as { task?: Record<string, unknown> } | undefined
         const task = stored?.task
         if (!task || (task.revision ?? 0) !== input.expected_task_revision) throw new Error('AUTHORITY_CONFLICT')
@@ -1196,6 +1203,7 @@ export class ProductTaskService {
           if ((attachment.owner_kind === 'product_task' && attachment.owner_id !== taskId) || (attachment.owner_kind === 'composer_draft' && attachment.owner_id !== input.draft_id)) throw new Error('ATTACHMENT_REJECTED')
           return [id, attachment] as const
         })
+        if (attachments.reduce((total, [, attachment]) => total + (attachment.byte_size as number), 0) > 16 * 1024 * 1024) throw new Error('ATTACHMENT_REJECTED')
         let draft: Record<string, unknown> | undefined
         if (input.draft_id) {
           draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
@@ -1238,11 +1246,12 @@ export class ProductTaskService {
     try { const { file, result } = await authority.transactSubmit(state => {
       const prior = state.receipts[input.client_operation_id]
       if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); return { changed: false as const, value: { duplicate: true, receipt: prior } } }
-      if (!input.text || !Array.isArray(input.attachment_ids) || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
+      if (!input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
       const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
       if (!draft || draft.installation_id !== this.installationId || draft.target_state !== 'pending_task' || draft.state !== 'active' || draft.revision !== input.expected_draft_revision || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
       const taskId = draft.target_task_id as string; if (state.tasks[taskId]) throw new Error('AUTHORITY_CONFLICT')
       const attachments = input.attachment_ids.map(id => { const a = state.task_attachments[id] as Record<string, unknown> | undefined; if (!a || a.installation_id !== this.installationId || a.owner_kind !== 'composer_draft' || a.owner_id !== input.draft_id || a.state !== 'ready' || Date.parse(a.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED'); return [id, a] as const })
+      if (attachments.reduce((total, [, attachment]) => total + (attachment.byte_size as number), 0) > 16 * 1024 * 1024) throw new Error('ATTACHMENT_REJECTED')
       const now = this.now().toISOString(), lineageId = `lineage_${randomUUID()}`, runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
       const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
       const resumeBindingId = `resume_${randomUUID()}`; state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: resumeBindingId, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
@@ -1322,18 +1331,33 @@ export class ProductTaskService {
    * intentionally not visible here: reconnect cursors are keyed only by the
    * permanent task-event sequence.
    */
-  async listTaskEvents(taskId: string, afterEventSequence = 0): Promise<{ events: TaskEvent[]; cursor: number }> {
+  async listTaskEvents(taskId: string, afterEventSequence = 0): Promise<{ events: Array<TaskEvent & { attachments?: ProductTaskAttachmentSummary[] }>; cursor: number }> {
     if (!Number.isSafeInteger(afterEventSequence) || afterEventSequence < 0) {
       throw ApiError.badRequest('事件游标无效')
     }
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const state = await authority.read()
     if (!state.tasks[taskId]) throw ApiError.notFound('任务不存在')
-    const events = Object.values(state.task_events)
+    const durableEvents = Object.values(state.task_events)
       .map((event) => event as TaskEvent)
       .filter((event) => event.task_id === taskId && event.event_sequence > afterEventSequence)
       .sort((left, right) => left.event_sequence - right.event_sequence)
-      .map((event) => ({ ...event, attachment_ids: [...event.attachment_ids] }))
+    const events = await Promise.all(durableEvents.map(async event => {
+      const attachments = await Promise.all(event.attachment_ids.map(async attachmentId => {
+        const attachment = state.task_attachments[attachmentId] as { content_hash?: unknown; byte_size?: unknown; verified_media_type?: unknown } | undefined
+        if (!attachment || typeof attachment.content_hash !== 'string' || typeof attachment.byte_size !== 'number' || typeof attachment.verified_media_type !== 'string') return null
+        try {
+          const filePath = await resolveProductAttachmentCopy(productAttachmentStorageRoot(this.storagePath), attachmentId, attachment.content_hash, attachment.byte_size)
+          return productAttachmentSummary(filePath, attachment.verified_media_type)
+        } catch {
+          return attachment.verified_media_type.startsWith('image/')
+            ? { type: 'image' as const, name: '图片附件' }
+            : { type: 'file' as const, name: '文件附件' }
+        }
+      }))
+      const safeAttachments = attachments.filter((attachment): attachment is ProductTaskAttachmentSummary => attachment !== null)
+      return { ...event, attachment_ids: [...event.attachment_ids], ...(safeAttachments.length ? { attachments: safeAttachments } : {}) }
+    }))
     return { events, cursor: state.event_sequence }
   }
 
@@ -1375,6 +1399,7 @@ export class ProductTaskService {
     lineage_id: string
     resume_binding_id: string
     initial_input: string
+    initial_attachments?: string[]
     auto_memory: {
       storage_dir: string
       enabled: boolean
@@ -1404,11 +1429,22 @@ export class ProductTaskService {
       ancestors.push({ lineage_id: parentId, resume_binding_id: parent.resume_binding_id, ...(typeof lineage.fork_checkpoint_id === 'string' ? { inherit_through_entry_id: lineage.fork_checkpoint_id } : {}) })
       lineage = parent
     }
+    const durableEvent = Object.values(state.task_events).find((candidate) => {
+      const event = candidate as { run_id?: unknown; entry_id?: unknown }
+      return event.run_id === runId && event.entry_id === run.entry_id
+    }) as TaskEvent | undefined
+    const initialAttachments = await Promise.all((durableEvent?.attachment_ids ?? []).map(async attachmentId => {
+      const attachment = state.task_attachments[attachmentId] as { content_hash?: unknown; byte_size?: unknown; state?: unknown } | undefined
+      const binding = state.attachment_bindings[attachmentId] as { task_id?: unknown; run_id?: unknown; entry_id?: unknown } | undefined
+      if (!attachment || attachment.state !== 'accepted_bound' || typeof attachment.content_hash !== 'string' || typeof attachment.byte_size !== 'number' || binding?.task_id !== run.task_id || binding.run_id !== runId || binding.entry_id !== run.entry_id) throw new Error('ATTACHMENT_COPY_INVALID')
+      return resolveProductAttachmentCopy(productAttachmentStorageRoot(this.storagePath), attachmentId, attachment.content_hash, attachment.byte_size)
+    }))
     return {
       task_id: run.task_id,
       lineage_id: run.lineage_id,
       resume_binding_id: resumeBindingId,
       initial_input: entry.text,
+      ...(initialAttachments.length ? { initial_attachments: initialAttachments } : {}),
       auto_memory: { storage_dir: this.autoMemoryStorageDir(), enabled: await this.autoMemoryEnabled(), entry_id: run.entry_id },
       session_memory: { storage_dir: this.sessionMemoryStorageDir(), entry_id: run.entry_id, ancestors },
     }
@@ -1883,6 +1919,49 @@ export class ProductTaskService {
       if (!ownerRecord) throw new ApiError(400, '附件归属无效', 'AUTHORITY_INVALID')
       const id = `attachment_${randomUUID()}`; const now = this.now().toISOString(); state.task_attachments[id] = { attachment_id: id, installation_id: this.installationId, owner_kind: owner.kind, owner_id: owner.id, ...metadata, state: 'staged', refs: [owner.id], created_at: now, last_activity: now, expires_at: new Date(this.now().getTime() + ttlMs).toISOString(), revision: 0 }; state.receipts[operationId] = { client_operation_id: operationId, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result: { entity_id: id } }; state.event_sequence += 1; state.events[operationId] = { event_sequence: state.event_sequence, client_operation_id: operationId, kind: 'attachment_create', revision: state.revision + 1, canonical_input: canonical, entity_id: id }; return { id, outcome: 'accepted' as const }
     }); return { attachment_id: result.id, authority_revision: file.revision, outcome: result.outcome }
+  }
+
+  async ingestAttachment(input: {
+    owner: { kind: 'composer_draft'; id: string }
+    type: 'file' | 'image'
+    name: string
+    mime_type: string
+    data: string
+    client_operation_id: string
+  }): Promise<{ attachment_id: string; attachment_revision: number; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
+    const verified = verifyProductAttachmentInput(input)
+    if (!verified) throw new ApiError(422, '附件内容或类型无效', 'ATTACHMENT_REJECTED')
+    const registered = await this.registerAttachmentIdentity(input.owner, {
+      source_fingerprint: verified.sourceFingerprint,
+      content_hash: verified.contentHash,
+      verified_media_type: verified.mediaType,
+      storage_kind: 'app_owned_copy',
+      byte_size: verified.bytes.length,
+    }, 7 * 24 * 60 * 60 * 1000, input.client_operation_id)
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const current = (await authority.read()).task_attachments[registered.attachment_id] as { state?: unknown; revision?: unknown } | undefined
+    if (!current || typeof current.revision !== 'number') throw new ApiError(422, '附件登记无效', 'ATTACHMENT_REJECTED')
+    if (current.state === 'ready' || current.state === 'accepted_bound') {
+      await resolveProductAttachmentCopy(productAttachmentStorageRoot(this.storagePath), registered.attachment_id, verified.contentHash, verified.bytes.length)
+      return { ...registered, attachment_revision: current.revision }
+    }
+    let revision = current.revision
+    if (current.state === 'staged') {
+      const inspecting = await this.transitionAttachment({ attachment_id: registered.attachment_id, expected_revision: revision, target_state: 'inspecting', client_operation_id: `${input.client_operation_id}:inspect` })
+      if (!['accepted', 'duplicate'].includes(inspecting.outcome)) throw new ApiError(422, '附件检查无法开始', 'ATTACHMENT_REJECTED')
+      revision = inspecting.attachment_revision
+    } else if (current.state !== 'inspecting') {
+      throw new ApiError(422, '附件状态无效', 'ATTACHMENT_REJECTED')
+    }
+    try {
+      await storeProductAttachmentCopy(productAttachmentStorageRoot(this.storagePath), registered.attachment_id, verified)
+      const ready = await this.transitionAttachment({ attachment_id: registered.attachment_id, expected_revision: revision, target_state: 'ready', client_operation_id: `${input.client_operation_id}:ready` })
+      if (!['accepted', 'duplicate'].includes(ready.outcome)) throw new Error('ATTACHMENT_READY_REJECTED')
+      return { ...registered, attachment_revision: ready.attachment_revision }
+    } catch {
+      await this.transitionAttachment({ attachment_id: registered.attachment_id, expected_revision: revision, target_state: 'failed', client_operation_id: `${input.client_operation_id}:failed`, error: 'INGEST_FAILED' }).catch(() => undefined)
+      throw new ApiError(422, '附件保存失败', 'ATTACHMENT_REJECTED')
+    }
   }
 
   async setAttachmentReadyForTest(attachmentId: string, expectedRevision: number): Promise<void> {

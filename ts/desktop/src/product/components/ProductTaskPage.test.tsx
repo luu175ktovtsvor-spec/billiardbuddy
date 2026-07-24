@@ -453,6 +453,22 @@ describe('ProductTaskPage', () => {
     }])
   })
 
+  it('keeps the text and selected attachment when safe ingest rejects the submit', async () => {
+    mocks.sendMessage.mockResolvedValue(false)
+    render(<ProductTaskPage taskId="task-1" />)
+    const input = screen.getByLabelText('任务输入') as HTMLTextAreaElement
+    const picker = document.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '核对这张图' } })
+    fireEvent.change(picker, { target: { files: [new File(['a'], '球台.png', { type: 'image/png' })] } })
+
+    await screen.findByText('球台.png')
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await screen.findByText('暂时无法发送这条内容，请检查后重试。')
+    expect(input.value).toBe('核对这张图')
+    expect(screen.getByLabelText('待发送附件').textContent).toContain('球台.png')
+  })
+
   it('keeps Browser capture unavailable while native transport is disabled', () => {
     render(<ProductTaskPage taskId="task-1" />)
 

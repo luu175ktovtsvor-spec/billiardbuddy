@@ -95,6 +95,7 @@ export async function handleProductApi(
     | 'relinkWorkspaceOperation'
     | 'mutateConversationLineage'
     | 'registerAttachmentIdentity'
+    | 'ingestAttachment'
     | 'transitionAttachment'
     | 'bindAttachment'
     | 'submitTaskRun'
@@ -194,6 +195,13 @@ export async function handleProductApi(
       if (draftId && !segments[4] && req.method === 'GET') return Response.json({ draft: await tasks.getComposerDraft(draftId) })
       if (req.method !== 'POST' || !segments[4]) return methodNotAllowed(req.method)
       const action = segments[4]
+      if (action === 'attachments' && !segments[5]) {
+        const input = await readJson<Record<string, unknown>>(req)
+        if (!assertPlainExactObject(input, ['type', 'name', 'mime_type', 'data', 'client_operation_id']) || (input.type !== 'file' && input.type !== 'image') || typeof input.name !== 'string' || typeof input.mime_type !== 'string' || typeof input.data !== 'string' || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('附件摄取参数无效')
+        try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('附件摄取参数无效') }
+        const attachment = await tasks.ingestAttachment({ owner: { kind: 'composer_draft', id: draftId }, type: input.type, name: input.name, mime_type: input.mime_type, data: input.data, client_operation_id: input.client_operation_id })
+        return Response.json({ attachment }, { status: attachment.outcome === 'accepted' ? 201 : 200 })
+      }
       if (!['update', 'consume', 'expire'].includes(action)) throw ApiError.notFound('未知草稿操作')
       const input = await readJson<{ expected_draft_revision?: unknown; client_operation_id?: unknown }>(req)
       if (!assertPlainExactObject(input, ['expected_draft_revision', 'client_operation_id']) || !Number.isSafeInteger(input.expected_draft_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('draft revision 和 operation 必填')
