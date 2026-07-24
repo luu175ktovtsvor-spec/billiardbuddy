@@ -1123,6 +1123,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                     <button type="button" onClick={chooseAttachments} disabled={attachments.length >= MAX_PRODUCT_TASK_ATTACHMENT_COUNT} className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">添加附件</button>
                     <VoiceInputControl
                       disabled={isArchived}
+                      consumer={{ kind: 'composer', id: taskId }}
                       onTranscript={(text) => {
                         setDraft((current) => current ? `${current}\n${text}` : text)
                         setValidationMessage(null)

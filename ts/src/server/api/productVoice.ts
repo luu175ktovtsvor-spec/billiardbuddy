@@ -8,7 +8,8 @@
 import {
   bindTranscriptInputSchema,
   createTranscriptRevisionInputSchema,
-  voiceTranscriptionResponseSchema,
+  productVoiceTranscriptionResponseSchema,
+  voiceConsumerSchema,
 } from '../../../shared/contracts/voice.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import {
@@ -31,7 +32,7 @@ type ProductVoiceApiDependencies = Pick<VoiceTranscriptionOptions, 'env' | 'fetc
   consentReceiptId?: string | null
   operations?: Pick<
     VoiceOperationService,
-    'begin' | 'complete' | 'fail' | 'cancel' | 'getOperation' | 'getTranscript' | 'revise' | 'bind'
+    'begin' | 'complete' | 'fail' | 'cancel' | 'getOperation' | 'getTranscript' | 'revise' | 'bind' | 'listBound'
   >
 }
 
@@ -126,6 +127,19 @@ export async function handleProductVoiceApi(
       throw new ApiError(405, '当前转写操作暂不支持', 'METHOD_NOT_ALLOWED')
     }
 
+    if (action === 'bindings') {
+      if (segments[4] || req.method !== 'GET') {
+        throw new ApiError(405, '当前转写操作暂不支持', 'METHOD_NOT_ALLOWED')
+      }
+      const url = new URL(req.url)
+      const consumer = voiceConsumerSchema.safeParse({
+        kind: url.searchParams.get('consumer_kind'),
+        id: url.searchParams.get('consumer_id'),
+      })
+      if (!consumer.success) throw new ApiError(400, '转写绑定查询参数无效', 'TRANSCRIPT_BINDING_INVALID')
+      return Response.json({ evidence: await operations.listBound(consumer.data) })
+    }
+
     if (action !== 'transcribe' || segments[4]) {
       throw ApiError.notFound('当前语音操作不可用')
     }
@@ -175,7 +189,7 @@ export async function handleProductVoiceApi(
         operationId: started.operation.id,
       })
       const completed = await operations.complete(started.operation.id, result.text)
-      return Response.json(voiceTranscriptionResponseSchema.parse({
+      return Response.json(productVoiceTranscriptionResponseSchema.parse({
         text: completed.transcript.revisions.find(revision => revision.id === completed.transcript.raw_revision_id)?.text,
         ...completed,
       }))

@@ -65,6 +65,17 @@ export const voiceTranscriptionResponseSchema = z.object({
   transcript: transcriptSchema.optional(),
 })
 
+export const productVoiceTranscriptionResponseSchema = voiceTranscriptionResponseSchema.extend({
+  operation: publicVoiceOperationSchema,
+  transcript: transcriptSchema,
+})
+
+export const voiceConsumerEvidenceSchema = z.object({
+  transcript: transcriptSchema,
+  binding: transcriptBindingSchema,
+  revision: transcriptRevisionSchema,
+})
+
 export const createTranscriptRevisionInputSchema = z.object({
   parent_revision_id: voiceIdSchema,
   text: z.string().trim().min(1).max(20_000),
@@ -80,6 +91,7 @@ export const voiceErrorResponseSchema = z.object({
 })
 
 export type VoiceTranscriptionResponse = z.infer<typeof voiceTranscriptionResponseSchema>
+export type ProductVoiceTranscriptionResponse = z.infer<typeof productVoiceTranscriptionResponseSchema>
 export type VoiceErrorResponse = z.infer<typeof voiceErrorResponseSchema>
 export type VoiceConsumer = z.infer<typeof voiceConsumerSchema>
 export type VoiceOperation = z.infer<typeof voiceOperationSchema>
@@ -87,3 +99,4 @@ export type PublicVoiceOperation = z.infer<typeof publicVoiceOperationSchema>
 export type Transcript = z.infer<typeof transcriptSchema>
 export type TranscriptRevision = z.infer<typeof transcriptRevisionSchema>
 export type TranscriptBinding = z.infer<typeof transcriptBindingSchema>
+export type VoiceConsumerEvidence = z.infer<typeof voiceConsumerEvidenceSchema>
