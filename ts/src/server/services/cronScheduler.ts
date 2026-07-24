@@ -12,6 +12,8 @@ import { existsSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
+import { lock } from '../../utils/lockfile.js'
+import { parseCronExpression, type CronFields } from '../../utils/cron.js'
 import {
   CronService,
   type CronTask,
@@ -32,13 +34,18 @@ export type TaskRun = {
   error?: string
   exitCode?: number
   durationMs?: number
+  occurrenceAt?: string
+  trigger?: 'schedule' | 'manual'
+  productRunId?: string
+  dispatchGeneration?: number
   // Old installations can still have this field in persisted run logs. It is
   // never created by the scheduler and is stripped from the product API.
   sessionId?: string
 }
 
 export type ScheduledTaskRunBridge = {
-  submitScheduledTaskRun(scheduleId: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }>
+  submitScheduledTaskRun(scheduleId: string, title: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }>
+  inspectScheduledTaskRun?(runId: string, dispatchGeneration: number): Promise<{ state: 'running' | 'completed' | 'failed'; completed_at?: string }>
 }
 
 // ─── Cron expression matching ──────────────────────────────────────────────────
@@ -103,17 +110,24 @@ function singleFieldMatches(part: string, value: number): boolean {
  * Fields: minute hour day-of-month month day-of-week
  */
 export function cronMatches(cronExpr: string, date: Date): boolean {
-  const fields = cronExpr.trim().split(/\s+/)
-  if (fields.length !== 5) return false
+  const fields = parseCronExpression(cronExpr)
+  return fields ? cronFieldsMatch(fields, date) : false
+}
 
-  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields
-  return (
-    fieldMatches(minute, date.getMinutes()) &&
-    fieldMatches(hour, date.getHours()) &&
-    fieldMatches(dayOfMonth, date.getDate()) &&
-    fieldMatches(month, date.getMonth() + 1) &&
-    fieldMatches(dayOfWeek, date.getDay())
-  )
+function cronFieldsMatch(fields: CronFields, date: Date): boolean {
+  const dayOfMonthWildcard = fields.dayOfMonth.length === 31
+  const dayOfWeekWildcard = fields.dayOfWeek.length === 7
+  const dayMatches = dayOfMonthWildcard && dayOfWeekWildcard
+    ? true
+    : dayOfMonthWildcard
+      ? fields.dayOfWeek.includes(date.getDay())
+      : dayOfWeekWildcard
+        ? fields.dayOfMonth.includes(date.getDate())
+        : fields.dayOfMonth.includes(date.getDate()) || fields.dayOfWeek.includes(date.getDay())
+  return fields.minute.includes(date.getMinutes())
+    && fields.hour.includes(date.getHours())
+    && fields.month.includes(date.getMonth() + 1)
+    && dayMatches
 }
 
 // ─── Log file I/O ──────────────────────────────────────────────────────────────
@@ -145,9 +159,9 @@ async function writeRunsFile(data: RunsFile): Promise<void> {
   const dir = path.dirname(filePath)
   await fs.mkdir(dir, { recursive: true })
 
-  const tmpFile = `${filePath}.tmp.${Date.now()}`
+  const tmpFile = `${filePath}.tmp.${process.pid}.${crypto.randomUUID()}`
   try {
-    await fs.writeFile(tmpFile, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+    await fs.writeFile(tmpFile, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
     await fs.rename(tmpFile, filePath)
   } catch (err) {
     await fs.unlink(tmpFile).catch(() => {})
@@ -155,25 +169,36 @@ async function writeRunsFile(data: RunsFile): Promise<void> {
   }
 }
 
+async function mutateRuns(operation: (data: RunsFile) => void): Promise<void> {
+  const guardPath = `${getLogFilePath()}.guard`
+  await fs.mkdir(path.dirname(guardPath), { recursive: true })
+  await fs.open(guardPath, 'a', 0o600).then((handle) => handle.close())
+  const release = await lock(guardPath, {
+    stale: 30_000,
+    retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
+  })
+  try {
+    const data = await readRunsFile()
+    operation(data)
+    trimRuns(data)
+    await writeRunsFile(data)
+  } finally {
+    await release()
+  }
+}
+
 /** Append a run to the log and trim to keep at most MAX_RUNS_PER_TASK per task. */
 async function appendRun(run: TaskRun): Promise<void> {
-  const data = await readRunsFile()
-  data.runs.push(run)
-  trimRuns(data)
-  await writeRunsFile(data)
+  await mutateRuns((data) => {
+    const index = data.runs.findIndex((entry) => entry.id === run.id)
+    if (index === -1) data.runs.push(run)
+    else data.runs[index] = run
+  })
 }
 
 /** Update an existing run in the log (matched by run.id). */
 async function updateRun(run: TaskRun): Promise<void> {
-  const data = await readRunsFile()
-  const idx = data.runs.findIndex((r) => r.id === run.id)
-  if (idx !== -1) {
-    data.runs[idx] = run
-  } else {
-    data.runs.push(run)
-  }
-  trimRuns(data)
-  await writeRunsFile(data)
+  await appendRun(run)
 }
 
 const MAX_RUNS_PER_TASK = 100
@@ -197,6 +222,39 @@ function trimRuns(data: RunsFile): void {
 // ─── Scheduler ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+const MISSED_RUN_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+
+function minuteStart(value: Date): Date {
+  const minute = new Date(value)
+  minute.setSeconds(0, 0)
+  return minute
+}
+
+function occurrenceKey(value: Date): string {
+  return minuteStart(value).toISOString()
+}
+
+function scheduledRunId(taskId: string, occurrence: string): string {
+  return `occ_${crypto.createHash('sha256').update(`${taskId}:${occurrence}`).digest('hex').slice(0, 24)}`
+}
+
+export function latestScheduledOccurrence(task: CronTask, now: Date): Date | null {
+  const fields = parseCronExpression(task.cron)
+  if (!fields) return null
+  const current = minuteStart(now)
+  if (task.missedRunPolicy === 'skip') {
+    return cronFieldsMatch(fields, current) ? current : null
+  }
+  const lastFired = task.lastFiredAt && Number.isFinite(Date.parse(task.lastFiredAt))
+    ? Date.parse(task.lastFiredAt)
+    : Number.NEGATIVE_INFINITY
+  const lowerBound = Math.max(task.createdAt, lastFired, current.getTime() - MISSED_RUN_LOOKBACK_MS)
+  for (let timestamp = current.getTime(); timestamp > lowerBound; timestamp -= 60_000) {
+    const candidate = new Date(timestamp)
+    if (cronFieldsMatch(fields, candidate)) return candidate
+  }
+  return null
+}
 
 export function resolveCronTaskTimeoutMs(
   env: { BB_TASK_TIMEOUT_MS?: string } = process.env,
@@ -217,10 +275,13 @@ export class CronScheduler {
   private lastFiredMinuteKey = new Map<string, string>()
   private cronService: CronService
   private readonly taskRuns: ScheduledTaskRunBridge
+  private readonly now: () => Date
+  private ticking = false
 
-  constructor(cronService?: CronService, taskRuns: ScheduledTaskRunBridge = productTaskService) {
+  constructor(cronService?: CronService, taskRuns: ScheduledTaskRunBridge = productTaskService, now: () => Date = () => new Date()) {
     this.cronService = cronService || new CronService()
     this.taskRuns = taskRuns
+    this.now = now
   }
 
   /** Return a string key representing the calendar minute of `date`. */
@@ -233,12 +294,10 @@ export class CronScheduler {
     if (this.intervalId) return // already running
     console.log('[CronScheduler] Starting — checking every 60 s')
     // Clean up stale "running" entries left by previously crashed processes
-    this.cleanupStaleRuns().catch((err) =>
-      console.error('[CronScheduler] Error cleaning up stale runs:', err),
-    )
+    void this.cleanupStaleRuns()
+      .catch((err) => console.error('[CronScheduler] Error cleaning up stale runs:', err))
+      .then(() => this.tick())
     this.intervalId = setInterval(() => this.tick(), 60_000)
-    // Immediate first check
-    this.tick()
   }
 
   /** Stop scheduling new occurrences and clear transient submission guards. */
@@ -256,47 +315,40 @@ export class CronScheduler {
 
   /** One tick of the scheduler — evaluate all tasks against the current time. */
   async tick(): Promise<void> {
+    if (this.ticking) return
+    this.ticking = true
     try {
+      await this.reconcileRuns()
       const tasks = await this.cronService.listTasks()
-      const now = new Date()
+      const now = this.now()
       const currentKey = CronScheduler.minuteKey(now)
-
-      for (const task of tasks) {
+      await Promise.all(tasks.map(async (task) => {
         // Skip disabled tasks
-        if (task.enabled === false) continue
+        if (task.enabled === false) return
 
         // Skip if already running (in-memory guard — same process)
-        if (this.runningTasks.has(task.id)) continue
+        if (this.runningTasks.has(task.id)) return
 
         // Skip if this process already fired the task in the current minute
-        if (this.lastFiredMinuteKey.get(task.id) === currentKey) continue
+        if (this.lastFiredMinuteKey.get(task.id) === currentKey) return
 
-        // Skip if ANY process already fired the task in the current minute
-        // (cross-process guard via file-persisted lastFiredAt)
-        if (task.lastFiredAt) {
-          const lastFiredKey = CronScheduler.minuteKey(new Date(task.lastFiredAt))
-          if (lastFiredKey === currentKey) continue
-        }
-
-        if (cronMatches(task.cron, now)) {
-          // Record the minute key BEFORE firing to prevent double-fire
-          this.lastFiredMinuteKey.set(task.id, currentKey)
-          // Fire and forget — don't await; we want all matching tasks to start
-          this.executeTask(task).catch((err) => {
-            console.error(
-              `[CronScheduler] Unhandled error executing task ${task.id}:`,
-              err,
-            )
-          })
-        }
-      }
+        const occurrence = latestScheduledOccurrence(task, now)
+        if (!occurrence) return
+        this.lastFiredMinuteKey.set(task.id, currentKey)
+        await this.executeTask(task, { trigger: 'schedule', occurrenceAt: occurrence })
+      }))
     } catch (err) {
       console.error('[CronScheduler] Error during tick:', err)
+    } finally {
+      this.ticking = false
     }
   }
 
   /** Execute one unattended task and preserve its output/error history. */
-  async executeTask(task: CronTask): Promise<TaskRun> {
+  async executeTask(
+    task: CronTask,
+    execution: { trigger: 'schedule' | 'manual'; occurrenceAt: Date } = { trigger: 'manual', occurrenceAt: this.now() },
+  ): Promise<TaskRun> {
     // Prevent concurrent executions of the same task
     const existing = this.runningTasks.get(task.id)
     if (existing) {
@@ -313,13 +365,11 @@ export class CronScheduler {
       }
     }
 
-    const runId = crypto.randomBytes(6).toString('hex')
-    const startedAt = new Date().toISOString()
-    if (!task.folderPath || !existsSync(task.folderPath) || !statSync(task.folderPath).isDirectory()) {
-      throw new Error('SCHEDULE_WORKDIR_UNAVAILABLE')
-    }
-    let workDir = task.folderPath
-    workDir = this.resolveCanonicalWorkDir(workDir)
+    const logicalOccurrence = occurrenceKey(execution.occurrenceAt)
+    const runId = execution.trigger === 'schedule'
+      ? scheduledRunId(task.id, logicalOccurrence)
+      : crypto.randomBytes(6).toString('hex')
+    const startedAt = this.now().toISOString()
 
     const run: TaskRun = {
       id: runId,
@@ -328,40 +378,45 @@ export class CronScheduler {
       startedAt,
       status: 'running',
       prompt: task.prompt,
+      occurrenceAt: logicalOccurrence,
+      trigger: execution.trigger,
     }
 
     // Claim the in-process slot before the first durable await. Cross-process
     // deduplication follows through lastFiredAt below.
     this.runningTasks.set(task.id, { startedAt: Date.parse(startedAt), runId })
     try {
-      await this.cronService.updateLastFired(task.id, startedAt)
       await appendRun(run)
+      if (!task.folderPath || !existsSync(task.folderPath) || !statSync(task.folderPath).isDirectory()) {
+        throw new Error('SCHEDULE_WORKDIR_UNAVAILABLE')
+      }
+      const workDir = this.resolveCanonicalWorkDir(task.folderPath)
 
       // The scheduled occurrence is now a durable ProductTask TaskRun. Do not
       // spawn the public CLI or synthesize an empty Core session here.
       const durable = await this.taskRuns.submitScheduledTaskRun(
         task.id,
+        task.name || task.prompt.slice(0, 60),
         task.prompt,
         workDir,
-        CronScheduler.minuteKey(new Date(startedAt)),
+        execution.trigger === 'schedule' ? logicalOccurrence : `manual:${crypto.randomUUID()}`,
       )
-      this.runningTasks.delete(task.id)
-      const completedAt = new Date().toISOString()
-      const completedRun: TaskRun = {
+      const acceptedRun: TaskRun = {
         ...run,
-        completedAt,
-        status: 'completed',
-        output: `已提交到 ProductTask 运行 ${durable.run_id}`,
-        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+        productRunId: durable.run_id,
+        dispatchGeneration: durable.dispatch_generation,
+        output: '已提交到 ProductTask，正在执行',
       }
-      await updateRun(completedRun)
+      await updateRun(acceptedRun)
+      if (execution.trigger === 'schedule') await this.cronService.updateLastFired(task.id, logicalOccurrence)
       if (!task.recurring) await this.cronService.updateTask(task.id, { enabled: false }).catch(() => {})
-      return completedRun
+      return acceptedRun
     } catch (error) {
       this.runningTasks.delete(task.id)
-      const completedAt = new Date().toISOString()
+      const completedAt = this.now().toISOString()
       const failedRun: TaskRun = { ...run, completedAt, status: 'failed', error: (error as Error).message, durationMs: Date.parse(completedAt) - Date.parse(startedAt) }
       await updateRun(failedRun)
+      if (execution.trigger === 'schedule') await this.cronService.updateLastFired(task.id, logicalOccurrence).catch(() => {})
       return failedRun
     }
   }
@@ -382,37 +437,52 @@ export class CronScheduler {
    * killed before they could update the run log.
    */
   private async cleanupStaleRuns(): Promise<void> {
+    await this.reconcileRuns(true)
+  }
+
+  private async reconcileRuns(allowLegacyTimeout = false): Promise<void> {
     const data = await readRunsFile()
-    let changed = false
-    const now = Date.now()
-    const taskTimeoutMs = resolveCronTaskTimeoutMs()
-
-    for (const run of data.runs) {
-      if (run.status !== 'running') continue
-      const startedAt = new Date(run.startedAt).getTime()
-      // If "running" for longer than the task timeout + 1-minute buffer,
-      // the owning process is certainly dead.
-      if (now - startedAt > taskTimeoutMs + 60_000) {
-        run.status = 'failed'
-        run.error = 'Process terminated before task could complete'
-        run.completedAt = new Date().toISOString()
-        run.durationMs = now - startedAt
-        changed = true
-        console.log(
-          `[CronScheduler] Cleaned up stale run ${run.id} for task ${run.taskId}`,
-        )
+    const now = this.now().getTime()
+    const timeoutMs = resolveCronTaskTimeoutMs()
+    await Promise.all(data.runs.filter((run) => run.status === 'running').map(async (run) => {
+      this.runningTasks.set(run.taskId, { startedAt: Date.parse(run.startedAt), runId: run.id })
+      let terminal: 'completed' | 'failed' | undefined
+      let completedAt: string | undefined
+      if (run.productRunId && run.dispatchGeneration && this.taskRuns.inspectScheduledTaskRun) {
+        try {
+          const state = await this.taskRuns.inspectScheduledTaskRun(run.productRunId, run.dispatchGeneration)
+          if (state.state !== 'running') {
+            terminal = state.state
+            completedAt = state.completed_at
+          }
+        } catch {
+          if (allowLegacyTimeout && now - Date.parse(run.startedAt) > timeoutMs + 60_000) terminal = 'failed'
+        }
+      } else if (allowLegacyTimeout && now - Date.parse(run.startedAt) > timeoutMs + 60_000) {
+        terminal = 'failed'
       }
-    }
-
-    if (changed) {
-      await writeRunsFile(data)
-    }
+      if (!terminal) return
+      const settledAt = completedAt && Number.isFinite(Date.parse(completedAt))
+        ? completedAt
+        : this.now().toISOString()
+      const settled: TaskRun = {
+        ...run,
+        status: terminal,
+        completedAt: settledAt,
+        durationMs: Math.max(0, Date.parse(settledAt) - Date.parse(run.startedAt)),
+        output: terminal === 'completed' ? 'ProductTask 已完成' : undefined,
+        ...(terminal === 'failed' ? { error: 'PRODUCT_TASK_NOT_COMPLETED' } : {}),
+      }
+      await updateRun(settled)
+      if (this.runningTasks.get(run.taskId)?.runId === run.id) this.runningTasks.delete(run.taskId)
+    }))
   }
 
   // ─── Query helpers ─────────────────────────────────────────────────────────
 
   /** Get execution history for a specific task. */
   async getTaskRuns(taskId: string): Promise<TaskRun[]> {
+    await this.reconcileRuns()
     const data = await readRunsFile()
     return data.runs
       .filter((r) => r.taskId === taskId)
@@ -424,6 +494,7 @@ export class CronScheduler {
 
   /** Get recent runs across all tasks. */
   async getRecentRuns(limit = 50): Promise<TaskRun[]> {
+    await this.reconcileRuns()
     const data = await readRunsFile()
     return data.runs
       .sort(

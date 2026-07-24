@@ -10,6 +10,7 @@ import {
   cronMatches,
   fieldMatches,
   CronScheduler,
+  latestScheduledOccurrence,
   type TaskRun,
 } from '../services/cronScheduler.js'
 import { CronService, type CronTask } from '../services/cronService.js'
@@ -151,6 +152,35 @@ describe('cronMatches', () => {
     expect(cronMatches('0 10 * * 0', sunday)).toBe(true)
     expect(cronMatches('0 10 * * 6', sunday)).toBe(false)
   })
+
+  it('uses standard cron OR semantics when day-of-month and weekday are both constrained', () => {
+    expect(cronMatches('0 9 1 * 1', new Date(2026, 5, 8, 9, 0))).toBe(true)
+  })
+})
+
+describe('missed-run policy', () => {
+  const baseTask: CronTask = {
+    id: 'task-policy',
+    cron: '0 9 * * *',
+    prompt: 'review',
+    createdAt: new Date('2026-07-20T00:00:00.000Z').getTime(),
+    recurring: true,
+  }
+
+  it('coalesces several missed occurrences to the latest one', () => {
+    const occurrence = latestScheduledOccurrence(
+      { ...baseTask, missedRunPolicy: 'run_once', lastFiredAt: '2026-07-21T09:00:00.000Z' },
+      new Date('2026-07-24T12:00:00.000Z'),
+    )
+    expect(occurrence?.toISOString()).toBe('2026-07-24T09:00:00.000Z')
+  })
+
+  it('does not replay a missed occurrence under skip policy', () => {
+    expect(latestScheduledOccurrence(
+      { ...baseTask, missedRunPolicy: 'skip' },
+      new Date('2026-07-24T12:00:00.000Z'),
+    )).toBeNull()
+  })
 })
 
 // ─── CronScheduler execution tests ────────────────────────────────────────
@@ -165,6 +195,7 @@ describe('CronScheduler', () => {
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
       submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+      inspectScheduledTaskRun: async () => ({ state: 'completed' }),
     })
   })
 
@@ -262,7 +293,7 @@ describe('CronScheduler', () => {
     expect(updated?.enabled).not.toBe(false)
   })
 
-  it('should update lastFiredAt after execution', async () => {
+  it('records the logical occurrence after a scheduled hand-off', async () => {
     const task = await cronService.createTask({
       cron: '* * * * *',
       prompt: 'fire test',
@@ -270,17 +301,14 @@ describe('CronScheduler', () => {
       folderPath: tmpDir,
     })
 
-    const beforeExec = new Date().toISOString()
-
-    await scheduler.executeTask(task)
+    const occurrenceAt = new Date()
+    occurrenceAt.setSeconds(0, 0)
+    await scheduler.executeTask(task, { trigger: 'schedule', occurrenceAt })
 
     const tasks = await cronService.listTasks()
     const updated = tasks.find((t) => t.id === task.id)
     expect(updated?.lastFiredAt).toBeDefined()
-    // lastFiredAt should be a valid ISO timestamp at or after beforeExec
-    expect(new Date(updated!.lastFiredAt!).getTime()).toBeGreaterThanOrEqual(
-      new Date(beforeExec).getTime() - 1000, // allow 1s tolerance
-    )
+    expect(updated?.lastFiredAt).toBe(occurrenceAt.toISOString())
   })
 
   it('should skip disabled tasks during tick', async () => {
@@ -313,6 +341,7 @@ describe('CronScheduler', () => {
     } catch {
       /* ignore */
     }
+    await scheduler.getTaskRuns(task.id)
     try {
       await scheduler.executeTask(task)
     } catch {
@@ -343,6 +372,7 @@ describe('CronScheduler', () => {
       } catch {
         /* ignore */
       }
+      await scheduler.getTaskRuns(task.id)
     }
 
     const runs = await scheduler.getRecentRuns(2)
@@ -362,6 +392,7 @@ describe('Execution log trimming', () => {
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
       submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+      inspectScheduledTaskRun: async () => ({ state: 'completed' }),
     })
   })
 

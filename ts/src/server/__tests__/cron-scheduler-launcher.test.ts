@@ -32,10 +32,10 @@ describe('cron scheduler durable ProductTask hand-off', () => {
   })
 
   it('submits one canonical schedule occurrence through the durable run bridge', async () => {
-    const submissions: Array<{ scheduleId: string; prompt: string; workDir: string; occurrence: string }> = []
+    const submissions: Array<{ scheduleId: string; title: string; prompt: string; workDir: string; occurrence: string }> = []
     const scheduler = new CronScheduler(cron, {
-      submitScheduledTaskRun: async (scheduleId, prompt, workDir, occurrence) => {
-        submissions.push({ scheduleId, prompt, workDir, occurrence })
+      submitScheduledTaskRun: async (scheduleId, title, prompt, workDir, occurrence) => {
+        submissions.push({ scheduleId, title, prompt, workDir, occurrence })
         return { run_id: 'run_durable', dispatch_generation: 1 }
       },
     })
@@ -46,15 +46,17 @@ describe('cron scheduler durable ProductTask hand-off', () => {
       folderPath: root,
     })
 
-    const result = await scheduler.executeTask(task)
+    const occurrenceAt = new Date('2026-07-24T06:05:00.000Z')
+    const result = await scheduler.executeTask(task, { trigger: 'schedule', occurrenceAt })
 
-    expect(result).toMatchObject({ status: 'completed', output: '已提交到 ProductTask 运行 run_durable' })
+    expect(result).toMatchObject({ status: 'running', output: '已提交到 ProductTask，正在执行', occurrenceAt: occurrenceAt.toISOString(), trigger: 'schedule' })
     expect(result).not.toHaveProperty('sessionId')
     expect(submissions).toEqual([{
       scheduleId: task.id,
+      title: task.prompt,
       prompt: task.prompt,
       workDir: await fs.realpath(root),
-      occurrence: expect.stringMatching(/^\d{4}-\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2}$/),
+      occurrence: occurrenceAt.toISOString(),
     }])
     expect((await cron.listTasks()).find(value => value.id === task.id)?.enabled).toBe(false)
   })
@@ -87,6 +89,27 @@ describe('cron scheduler durable ProductTask hand-off', () => {
     expect(calls).toBe(1)
 
     release()
-    expect((await first).status).toBe('completed')
+    expect((await first).status).toBe('running')
+  })
+
+  it('keeps a run active until the durable ProductTask reaches a real terminal state', async () => {
+    let state: 'running' | 'completed' = 'running'
+    const scheduler = new CronScheduler(cron, {
+      submitScheduledTaskRun: async () => ({ run_id: 'run_terminal', dispatch_generation: 1 }),
+      inspectScheduledTaskRun: async () => state === 'running'
+        ? { state }
+        : { state, completed_at: '2026-07-24T06:06:05.000Z' },
+    }, () => new Date('2026-07-24T06:06:00.000Z'))
+    const task = await cron.createTask({ cron: '* * * * *', prompt: '等待真实完成', folderPath: root })
+
+    await scheduler.executeTask(task)
+    expect((await scheduler.getTaskRuns(task.id))[0]?.status).toBe('running')
+
+    state = 'completed'
+    expect((await scheduler.getTaskRuns(task.id))[0]).toMatchObject({
+      status: 'completed',
+      completedAt: '2026-07-24T06:06:05.000Z',
+      output: 'ProductTask 已完成',
+    })
   })
 })

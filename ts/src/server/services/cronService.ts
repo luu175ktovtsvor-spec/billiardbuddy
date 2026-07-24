@@ -10,6 +10,8 @@ import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { ApiError } from '../middleware/errorHandler.js'
+import { lock } from '../../utils/lockfile.js'
+import type { ProductScheduledTaskMissedRunPolicy } from '../../../shared/product/scheduledTasks.js'
 
 export type TaskNotificationConfig = {
   enabled: boolean
@@ -41,6 +43,7 @@ export type CronTask = {
   lastFiredAt?: string // ISO timestamp of last execution
   enabled?: boolean // allow disabling without deleting (default true)
   recurring?: boolean
+  missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
   permanent?: boolean
   permissionMode?: ScheduledTaskPermissionMode
   model?: string
@@ -74,9 +77,18 @@ export class CronService {
     tasksFileLocks.set(filePath, current)
 
     await previous
+    const guardPath = `${filePath}.guard`
+    let releaseFileLock: (() => Promise<void>) | undefined
     try {
+      await fs.mkdir(path.dirname(guardPath), { recursive: true })
+      await fs.open(guardPath, 'a', 0o600).then((handle) => handle.close())
+      releaseFileLock = await lock(guardPath, {
+        stale: 30_000,
+        retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
+      })
       return await operation()
     } finally {
+      await releaseFileLock?.()
       release()
       if (tasksFileLocks.get(filePath) === current) {
         tasksFileLocks.delete(filePath)
@@ -112,6 +124,7 @@ export class CronService {
       const newTask: CronTask = {
         ...safeTask,
         permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+        missedRunPolicy: safeTask.missedRunPolicy ?? 'run_once',
         id: crypto.randomBytes(4).toString('hex'),
         createdAt: Date.now(),
       }
@@ -142,6 +155,7 @@ export class CronService {
         ...data.tasks[index],
         ...safeUpdates,
         permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+        missedRunPolicy: safeUpdates.missedRunPolicy ?? data.tasks[index].missedRunPolicy ?? 'run_once',
       }
       await this.writeTasksFile(data)
       return data.tasks[index]
@@ -199,6 +213,7 @@ export class CronService {
             // write persists the migrated value. A scheduled task never had a
             // worktree launcher, so discard that legacy no-op setting too.
             permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
+            missedRunPolicy: safeTask.missedRunPolicy === 'skip' ? 'skip' : 'run_once',
           }
         }),
       }
@@ -224,7 +239,7 @@ export class CronService {
 
       try {
         await fs.mkdir(dir, { recursive: true })
-        await fs.writeFile(tmpFile, contents, 'utf-8')
+        await fs.writeFile(tmpFile, contents, { encoding: 'utf-8', mode: 0o600 })
         await fs.rename(tmpFile, filePath)
         return
       } catch (err) {

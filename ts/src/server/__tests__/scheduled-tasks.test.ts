@@ -276,6 +276,7 @@ describe('Product Scheduled Tasks API', () => {
         title: 'Daily review',
         schedule: '0 9 * * *',
         instruction: 'Daily review',
+        workDir: tmpDir,
         recurring: true,
         model: 'provider-fast',
         providerId: 'provider-a',
@@ -312,6 +313,7 @@ describe('Product Scheduled Tasks API', () => {
         title: 'Unsafe task',
         schedule: '0 9 * * *',
         instruction: 'Unsafe task',
+        workDir: tmpDir,
         permissionMode: 'bypassPermissions',
       }),
     })
@@ -357,7 +359,7 @@ describe('Product Scheduled Tasks API', () => {
     const createReq = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Test task', schedule: '0 9 * * *', instruction: 'Test task' }),
+      body: JSON.stringify({ title: 'Test task', schedule: '0 9 * * *', instruction: 'Test task', workDir: tmpDir }),
     })
     const createResp = await handleProductScheduledTasksApi(
       createReq,

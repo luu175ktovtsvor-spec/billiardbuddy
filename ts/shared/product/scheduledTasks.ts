@@ -21,6 +21,27 @@ export type ProductScheduledTaskNotification = {
   channels: Array<'desktop'>
 }
 
+export const PRODUCT_SCHEDULED_TASK_MISSED_RUN_POLICIES = [
+  'run_once',
+  'skip',
+] as const
+
+export type ProductScheduledTaskMissedRunPolicy =
+  (typeof PRODUCT_SCHEDULED_TASK_MISSED_RUN_POLICIES)[number]
+
+/**
+ * Scheduled runs use one deliberately narrow grant. The selected workDir is
+ * the sandbox root; ordinary writes inside it are allowed, while network,
+ * destructive and out-of-scope actions are denied by the automatic reviewer.
+ */
+export type ProductScheduledTaskGrant = {
+  version: 1
+  scope: 'workdir'
+  fileAccess: 'workspace_write'
+  networkAccess: 'denied'
+  destructiveActions: 'denied'
+}
+
 export type ProductScheduledTask = {
   id: string
   title: string
@@ -29,6 +50,8 @@ export type ProductScheduledTask = {
   instruction: string
   enabled: boolean
   recurring: boolean
+  missedRunPolicy: ProductScheduledTaskMissedRunPolicy
+  grant: ProductScheduledTaskGrant
   createdAt: number
   lastRunAt?: string
   workDir?: string
@@ -42,7 +65,8 @@ export type CreateProductScheduledTaskInput = {
   instruction: string
   enabled?: boolean
   recurring?: boolean
-  workDir?: string
+  missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
+  workDir: string
   notification?: ProductScheduledTaskNotification
 }
 
@@ -53,6 +77,7 @@ export type UpdateProductScheduledTaskInput = {
   instruction?: string
   enabled?: boolean
   recurring?: boolean
+  missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
   workDir?: string | null
   notification?: ProductScheduledTaskNotification | null
 }
@@ -62,6 +87,8 @@ export type ProductScheduledTaskRun = {
   taskId: string
   taskTitle: string
   startedAt: string
+  occurrenceAt: string
+  trigger: 'schedule' | 'manual'
   completedAt?: string
   status: ProductScheduledTaskRunStatus
   result?: string

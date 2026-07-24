@@ -463,7 +463,9 @@ export async function createServerPrivateNativeCorePort(input: {
       ...state.toolPermissionContext,
       mode: input.permission_envelope.approval_policy === 'never'
         ? 'bypassPermissions'
-        : 'default',
+        : input.permission_envelope.approval_policy === 'automatic_reviewer'
+          ? 'acceptEdits'
+          : 'default',
       isBypassPermissionsModeAvailable: input.permission_envelope.approval_policy === 'never',
     },
   }
