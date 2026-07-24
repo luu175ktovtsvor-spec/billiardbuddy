@@ -52,6 +52,7 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 | Provider registry、DeepSeek、MiMo 与网关 | 已完成并经回查收口授权、部署闭包和双机加密链路 | `ae1effa9…` |
 | DeepSeek 原生 Web Search | 当前代码已有路由与测试，必须保留 | `gateway/deepseekChat.ts`、`gateway/app.ts` 及测试 |
 | Preview 选元素改源码 | 已完成；只提交一次性只读 DOM 证据和原生截图，源码 revision/Diff 是完成依据 | `c5b5df7c…` |
+| MediaProject 统一基础 | 已完成；图片与视频共享 owner、operation/job、不可变 Asset/Version、CAS、writer fence 和可恢复删除 | `ad1cb028…` |
 
 这些条目代表已经具备、不得丢失的产品能力，不代表现有实现被冻结。先按本文验收；符合目标的保留，存在合同缺口或结构负担的可以重构、替换或重写，但迁移后的用户功能、数据和对外合同必须连续。
 
@@ -63,7 +64,7 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 |---|---|
 | ProductTask 对外权限值仍是 `ask/allow_edits/plan_only` | 模块 08 迁成本文三档产品语义；旧值只由模块 22 映射，不能把 `plan_only` 改名冒充 Full Access |
 | Provider registry 只有四类 provider-neutral capability | 保持四类；原生 Web Search 是 DeepSeek `TextReasoning` 请求能力和独立协议路由，不新增第五个模型槽 |
-| 当前媒体合同仍暴露 image model，并以简化 `MediaTask`、outputs 和 timeline 为主 | 模块 12—16 迁成 provider-neutral Brief、Operation、Job、Asset、Version、Evidence 与 Timeline Version；旧字段只读迁移 |
+| MediaProject 基础已统一，但工作台仍暴露 image model，并保留旧 outputs 和简化 timeline | 模块 13—16 继续迁成 provider-neutral Brief、完整 Image Operation、Evidence 与 Timeline Version；旧字段只读迁移 |
 | ProductTask 中仍有 media draft、inline media 和旧 task-media bridge | 新媒体消费者稳定后停止写入，迁移旧数据，再由模块 23 删除执行链 |
 | 通用 Computer Use、Python helper、AutoDream、Qwen/旧 provider 文件仍存在 | 它们是过渡代码，不是目标能力；消费者归零并通过删除闸后物理删除 |
 | BrowserCapability 目前主要存在于删除/合同记录，尚非完整产品运行时 | 模块 18 建立 Chrome Extension、Native Messaging 和 ChromeSessionBridge 的正式实现 |
@@ -379,6 +380,11 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：图片和视频共享稳定 owner、operation、job、asset、version、storage 和 deletion 语义。
 - 做法：扩展当前 MediaProjectService，建立不可变 Asset、CAS、幂等 operation、writer fence、retention 和 GC。
 - 验收：并发编辑不丢写；崩溃不重复付费；跨 owner 读取失败；删除可恢复和对账。
+- 当前落点：`ad1cb028…` 在原 MediaProject JSON 权威源内增量建立 canonical owner、稳定 operation ID/现有 `MediaTask` job、不可变 Asset、Version 链和 writer fence；没有另建媒体状态源。旧项目/任务首次读取时原位补齐基础记录，现有生图 idempotency key、`outcome_unknown` 和远端任务恢复保持不变。
+- 存储与并发：托管图片按 SHA-256 写入全局内容寻址存储并去重，项目私有副本继续兼容现有读取；跨进程 `proper-lockfile` 与每次写入更新的 fence 共同阻止静默覆盖。Asset ID 已存在时，角色、存储位置、大小或内容哈希变化一律拒绝，视频外部素材和用户导出文件只登记、绝不纳入托管删除。
+- owner 边界：普通媒体 API 只枚举和操作 `local_workbench` owner；项目一旦显式归属 ProductTask，通用项目、任务和资产路由统一表现为不存在，只能经已验证的 task-scoped 投影读取。持久层 owner、围栏、CAS locator 和本机路径不进入 Renderer 公共合同。
+- 删除与恢复：删除先写 durable receipt，再让项目下线并迁移任务及托管资产；回执记录 owner、task IDs、文件数、字节数、删除时间和清理时间。`GET /api/media/deletions` 与 `POST /api/media/project/:id/restore` 提供同 owner 恢复；重复删除、删除中崩溃和恢复发布后崩溃均可重放。默认保留 30 天，可由 `BB_MEDIA_DELETION_RETENTION_DAYS` 在 1—365 天内调整；本地服务启动时清理到期回收区、孤立 CAS blob 和中断临时文件，同时永久保留对账回执。
+- 验收证据：媒体服务/API 49 项通过；服务端 1341 项通过、1 项显式 live skip；桌面 908 项、类型检查和生产构建通过。`check:product-contracts` 仍只命中施工前已登记的模块 23 `autodream-teammem` consumer 缺口，本模块未伪造引用绕过。
 
 #### 模块 13：生图工作台
 
