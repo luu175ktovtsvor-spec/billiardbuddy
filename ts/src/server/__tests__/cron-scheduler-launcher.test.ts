@@ -1,640 +1,92 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import * as fs from 'fs/promises'
-import * as os from 'os'
-import * as path from 'path'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 
-import {
-  buildCronCliArgs,
-  buildCronTaskSpawnOptions,
-  CronScheduler,
-  resolveCronTaskTimeoutMs,
-  resolveCronProjectRoot,
-} from '../services/cronScheduler.js'
+import { CronScheduler, resolveCronTaskTimeoutMs } from '../services/cronScheduler.js'
 import { CronService } from '../services/cronService.js'
-import { ProviderService } from '../services/providerService.js'
-import { resetTerminalShellEnvironmentCacheForTests } from '../../utils/terminalShellEnvironment.js'
 
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-const originalPath = process.env.PATH
-const originalClaudeCliPath = process.env.CLAUDE_CLI_PATH
-const originalClaudeAppRoot = process.env.CLAUDE_APP_ROOT
-const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL
-const originalAnthropicModel = process.env.ANTHROPIC_MODEL
-const originalClaudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
-const originalHome = process.env.HOME
-const originalShell = process.env.SHELL
-const originalZdotdir = process.env.ZDOTDIR
-const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
-const originalTaskTimeout = process.env.BB_TASK_TIMEOUT_MS
 
-let activeCronTestDir = ''
-/** Each former sidecar execution case now exercises the durable server bridge. */
-function durableCronExecution(
-  legacyName: string,
-  _retiredCliBody: () => Promise<void> | void,
-): void {
-  it(`durable bridge replaces ${legacyName}`, async () => {
-    const cronService = new CronService()
-    const calls: Array<{ scheduleId: string; workDir: string; occurrence: string }> = []
-    const scheduler = new CronScheduler(cronService, {
-      submitScheduledTaskRun: async (scheduleId, _prompt, workDir, occurrence) => {
-        calls.push({ scheduleId, workDir, occurrence })
-        return { run_id: `run_${scheduleId}`, dispatch_generation: 1 }
-      },
-    })
-    const task = await cronService.createTask({
-      cron: '* * * * *', prompt: 'durable bridge', recurring: true,
-      folderPath: activeCronTestDir,
-    })
-    const run = await scheduler.executeTask(task)
-    expect(run.status).toBe('completed')
-    expect(run.output).toContain(`run_${task.id}`)
-    expect(run).not.toHaveProperty('sessionId')
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.scheduleId).toBe(task.id)
-    expect(calls[0]?.workDir).toBe(await fs.realpath(activeCronTestDir))
-    expect(calls[0]?.occurrence).toMatch(/^\d{4}-\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2}$/)
-  })
-}
-
-async function createTmpDir(): Promise<string> {
-  const dir = path.join(
-    os.tmpdir(),
-    `claude-cron-launcher-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  )
-  await fs.mkdir(dir, { recursive: true })
-  return dir
-}
-
-async function cleanupTmpDir(dir: string): Promise<void> {
-  await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
-}
-
-async function createSourceRoot(root: string): Promise<void> {
-  await fs.mkdir(path.join(root, 'src', 'entrypoints'), { recursive: true })
-  await fs.writeFile(path.join(root, 'preload.ts'), '', 'utf-8')
-  await fs.writeFile(
-    path.join(root, 'src', 'entrypoints', 'cli.tsx'),
-    '',
-    'utf-8',
-  )
-}
-
-function restoreEnv(): void {
-  if (originalConfigDir) {
-    process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-  } else {
-    delete process.env.CLAUDE_CONFIG_DIR
-  }
-  if (originalPath) {
-    process.env.PATH = originalPath
-  } else {
-    delete process.env.PATH
-  }
-  if (originalClaudeCliPath) {
-    process.env.CLAUDE_CLI_PATH = originalClaudeCliPath
-  } else {
-    delete process.env.CLAUDE_CLI_PATH
-  }
-  if (originalClaudeAppRoot) {
-    process.env.CLAUDE_APP_ROOT = originalClaudeAppRoot
-  } else {
-    delete process.env.CLAUDE_APP_ROOT
-  }
-  if (originalAnthropicBaseUrl) {
-    process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl
-  } else {
-    delete process.env.ANTHROPIC_BASE_URL
-  }
-  if (originalAnthropicModel) {
-    process.env.ANTHROPIC_MODEL = originalAnthropicModel
-  } else {
-    delete process.env.ANTHROPIC_MODEL
-  }
-  if (originalClaudeCodeEntrypoint) {
-    process.env.CLAUDE_CODE_ENTRYPOINT = originalClaudeCodeEntrypoint
-  } else {
-    delete process.env.CLAUDE_CODE_ENTRYPOINT
-  }
-  if (originalHome) {
-    process.env.HOME = originalHome
-  } else {
-    delete process.env.HOME
-  }
-  if (originalShell) {
-    process.env.SHELL = originalShell
-  } else {
-    delete process.env.SHELL
-  }
-  if (originalZdotdir) {
-    process.env.ZDOTDIR = originalZdotdir
-  } else {
-    delete process.env.ZDOTDIR
-  }
-  if (originalDisableTerminalShellEnv) {
-    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
-  } else {
-    delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
-  }
-  if (originalTaskTimeout) {
-    process.env.BB_TASK_TIMEOUT_MS = originalTaskTimeout
-  } else {
-    delete process.env.BB_TASK_TIMEOUT_MS
-  }
-  resetTerminalShellEnvironmentCacheForTests()
-}
-
-describe('cron scheduler launcher resolution', () => {
-  let tmpDir: string
+describe('cron scheduler durable ProductTask hand-off', () => {
+  let root: string
+  let cron: CronService
 
   beforeEach(async () => {
-    tmpDir = await createTmpDir()
-    activeCronTestDir = tmpDir
-    process.env.CLAUDE_CONFIG_DIR = path.join(tmpDir, 'config')
-    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
-    resetTerminalShellEnvironmentCacheForTests()
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-cron-worker-'))
+    process.env.CLAUDE_CONFIG_DIR = path.join(root, 'config')
+    cron = new CronService()
   })
 
   afterEach(async () => {
-    restoreEnv()
-    await cleanupTmpDir(tmpDir)
+    if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+    await fs.rm(root, { recursive: true, force: true })
   })
 
-  it('uses a configurable scheduled task timeout with the default unchanged', () => {
+  it('keeps the stale-run timeout configurable without owning an execution timeout', () => {
     expect(resolveCronTaskTimeoutMs({})).toBe(10 * 60 * 1000)
     expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: '1800000' })).toBe(1_800_000)
     expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: 'not-a-number' })).toBe(10 * 60 * 1000)
     expect(resolveCronTaskTimeoutMs({ BB_TASK_TIMEOUT_MS: '0' })).toBe(10 * 60 * 1000)
   })
 
-  it('submits one durable schedule occurrence without invoking public argv', async () => {
-    const cronService = new CronService()
-    const submissions: Array<{ scheduleId: string; workDir: string; occurrence: string }> = []
-    const scheduler = new CronScheduler(cronService, {
-      submitScheduledTaskRun: async (scheduleId, _prompt, workDir, occurrence) => {
-        submissions.push({ scheduleId, workDir, occurrence })
+  it('submits one canonical schedule occurrence through the durable run bridge', async () => {
+    const submissions: Array<{ scheduleId: string; prompt: string; workDir: string; occurrence: string }> = []
+    const scheduler = new CronScheduler(cron, {
+      submitScheduledTaskRun: async (scheduleId, prompt, workDir, occurrence) => {
+        submissions.push({ scheduleId, prompt, workDir, occurrence })
         return { run_id: 'run_durable', dispatch_generation: 1 }
       },
     })
-    const task = await cronService.createTask({ cron: '* * * * *', prompt: 'durable cron', folderPath: tmpDir, recurring: true })
-    const run = await scheduler.executeTask(task)
-    expect(run.status).toBe('completed')
-    expect(run.output).toContain('run_durable')
-    expect(submissions).toHaveLength(1)
-    expect(submissions[0]?.scheduleId).toBe(task.id)
-    expect(submissions[0]?.workDir).toBe(await fs.realpath(tmpDir))
-  })
-
-  durableCronExecution('executeTask arms the subprocess timeout from BB_TASK_TIMEOUT_MS', async () => {
-    const binDir = path.join(tmpDir, 'bin')
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const appRoot = path.join(tmpDir, 'app-root')
-    await fs.mkdir(binDir, { recursive: true })
-    await fs.mkdir(appRoot, { recursive: true })
-    await fs.writeFile(
-      sidecarPath,
-      [
-        '#!/bin/sh',
-        '/bin/cat >/dev/null',
-        'printf \'%s\\n\' \'{"type":"result","result":"timeout env ok"}\'',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(sidecarPath, 0o755)
-
-    const originalSetTimeout = globalThis.setTimeout
-    const timeoutCalls: number[] = []
-    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      timeoutCalls.push(timeout ?? 0)
-      return originalSetTimeout(handler, timeout, ...args)
-    }) as typeof setTimeout
-
-    process.env.PATH = binDir
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-    process.env.CLAUDE_APP_ROOT = appRoot
-    process.env.BB_TASK_TIMEOUT_MS = '12345'
-
-    try {
-      const cronService = new CronService()
-      const scheduler = new CronScheduler(cronService)
-      const task = await cronService.createTask({
-        cron: '* * * * *',
-        prompt: 'cron timeout env test',
-        name: 'Timeout Env Task',
-        recurring: true,
-        folderPath: tmpDir,
-      })
-
-      const run = await scheduler.executeTask(task)
-
-      expect(run.status).toBe('completed')
-      expect(timeoutCalls).toContain(12_345)
-    } finally {
-      globalThis.setTimeout = originalSetTimeout
-    }
-  })
-
-  it('uses the bundled sidecar launcher when one is configured', () => {
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const appRoot = path.join(tmpDir, 'app-root')
-
-    const args = buildCronCliArgs(['--print'], {
-      cliPath: sidecarPath,
-      appRoot,
-      execPath: path.join(tmpDir, 'bun'),
-      cwd: path.join(tmpDir, 'missing-cwd'),
-      moduleDir: path.join(tmpDir, 'missing-module'),
-      env: {},
-    })
-
-    expect(args).toEqual([
-      sidecarPath,
-      'cli',
-      '--app-root',
-      appRoot,
-      '--print',
-    ])
-  })
-
-  it('disables dotenv loading when scheduled tasks use the source fallback', async () => {
-    const sourceRoot = path.join(tmpDir, 'source')
-    await createSourceRoot(sourceRoot)
-
-    expect(buildCronCliArgs(['--print'], {
-      cliPath: '',
-      execPath: path.join(tmpDir, 'bun'),
-      cwd: sourceRoot,
-      moduleDir: path.join(tmpDir, 'missing-module'),
-      env: {},
-    })).toEqual([
-      'bun',
-      '--no-env-file',
-      '--preload',
-      path.join(sourceRoot, 'preload.ts'),
-      path.join(sourceRoot, 'src', 'entrypoints', 'cli.tsx'),
-      '--print',
-    ])
-  })
-
-  it('builds hidden CLI spawn options for scheduled task subprocesses', () => {
-    const env = { CLAUDECODE: '1' }
-
-    expect(buildCronTaskSpawnOptions('/workspace/project', env)).toEqual({
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      cwd: '/workspace/project',
-      env,
-      windowsHide: true,
-    })
-  })
-
-  it('strips the product-gateway token/url/model from the scheduled-task CLI env', () => {
-    // An unattended task can still execute rules that permit a shell command.
-    // The token must never reach the scheduled-task CLI subprocess.
-    const env = {
-      CLAUDECODE: '1',
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:3456/proxy/providers/qf-gateway',
-      QF_GATEWAY_TOKEN: 'app-token-SECRET',
-      QF_GATEWAY_URL: 'https://gateway.example',
-      QF_GATEWAY_MODEL: 'qwen3-coder-plus',
-      BB_MEDIA_UI_CAPABILITY: 'media-ui-secret',
-    }
-    const opts = buildCronTaskSpawnOptions('/workspace/project', env)
-    expect(opts.env.QF_GATEWAY_TOKEN).toBeUndefined()
-    expect(opts.env.QF_GATEWAY_URL).toBeUndefined()
-    expect(opts.env.QF_GATEWAY_MODEL).toBeUndefined()
-    expect(opts.env.BB_MEDIA_UI_CAPABILITY).toBeUndefined()
-    // The local proxy base URL the CLI actually needs is preserved.
-    expect(opts.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3456/proxy/providers/qf-gateway')
-    // Caller's env object is not mutated.
-    expect(env.QF_GATEWAY_TOKEN).toBe('app-token-SECRET')
-    expect(env.BB_MEDIA_UI_CAPABILITY).toBe('media-ui-secret')
-  })
-
-  it('prefers an explicit BB_ROOT when it points at a source checkout', async () => {
-    const sourceRoot = path.join(tmpDir, 'source')
-    await createSourceRoot(sourceRoot)
-
-    expect(
-      resolveCronProjectRoot({
-        cwd: path.join(tmpDir, 'other'),
-        moduleDir: path.join(tmpDir, 'broken', 'src', 'server', 'services'),
-        env: { BB_ROOT: sourceRoot },
-      }),
-    ).toBe(sourceRoot)
-  })
-
-  it('falls back to the nearest source checkout from cwd before module dir', async () => {
-    const sourceRoot = path.join(tmpDir, 'source')
-    const nestedCwd = path.join(sourceRoot, 'nested', 'workdir')
-    await createSourceRoot(sourceRoot)
-    await fs.mkdir(nestedCwd, { recursive: true })
-
-    expect(
-      resolveCronProjectRoot({
-        cwd: nestedCwd,
-        moduleDir: path.join(tmpDir, 'wrong', 'src', 'server', 'services'),
-        env: {},
-      }),
-    ).toBe(sourceRoot)
-  })
-
-  durableCronExecution('executeTask launches the configured desktop sidecar instead of source bun', async () => {
-    const binDir = path.join(tmpDir, 'bin')
-    const appRoot = path.join(tmpDir, 'app-root')
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
-    const bunArgsPath = path.join(tmpDir, 'bun.args')
-
-    await fs.mkdir(binDir, { recursive: true })
-    await fs.mkdir(appRoot, { recursive: true })
-    await fs.writeFile(
-      path.join(binDir, 'bun'),
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > "${bunArgsPath}"`,
-        'echo "error: Module not found \\"B:\\\\src\\\\entrypoints\\\\cli.tsx\\"" >&2',
-        'exit 1',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(path.join(binDir, 'bun'), 0o755)
-    await fs.writeFile(
-      sidecarPath,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > "${sidecarArgsPath}"`,
-        '/bin/cat >/dev/null',
-        'printf \'%s\\n\' \'{"type":"result","result":"sidecar ok"}\'',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(sidecarPath, 0o755)
-
-    process.env.PATH = binDir
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-    process.env.CLAUDE_APP_ROOT = appRoot
-
-    const cronService = new CronService()
-    const scheduler = new CronScheduler(cronService)
-    const task = await cronService.createTask({
+    const task = await cron.createTask({
       cron: '* * * * *',
-      prompt: 'cron sidecar test',
-      name: 'Sidecar Task',
-      recurring: true,
-      folderPath: tmpDir,
+      prompt: '生成今日经营摘要',
+      recurring: false,
+      folderPath: root,
     })
 
-    const run = await scheduler.executeTask(task)
+    const result = await scheduler.executeTask(task)
 
-    expect(run.status).toBe('completed')
-    expect(run.output).toBe('sidecar ok')
-
-    const sidecarArgs = (await fs.readFile(sidecarArgsPath, 'utf-8'))
-      .trim()
-      .split('\n')
-    expect(sidecarArgs.slice(0, 4)).toEqual([
-      'cli',
-      '--app-root',
-      appRoot,
-      '--print',
-    ])
-    expect(sidecarArgs).not.toContain(path.join('src', 'entrypoints', 'cli.tsx'))
-
-    const bunWasCalled = await fs
-      .stat(bunArgsPath)
-      .then(() => true)
-      .catch(() => false)
-    expect(bunWasCalled).toBe(false)
+    expect(result).toMatchObject({ status: 'completed', output: '已提交到 ProductTask 运行 run_durable' })
+    expect(result).not.toHaveProperty('sessionId')
+    expect(submissions).toEqual([{
+      scheduleId: task.id,
+      prompt: task.prompt,
+      workDir: await fs.realpath(root),
+      occurrence: expect.stringMatching(/^\d{4}-\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2}$/),
+    }])
+    expect((await cron.listTasks()).find(value => value.id === task.id)?.enabled).toBe(false)
   })
 
-  durableCronExecution('executeTask passes provider-scoped model runtime to the sidecar', async () => {
-    const appRoot = path.join(tmpDir, 'app-root')
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
-    const sidecarEnvPath = path.join(tmpDir, 'sidecar.env')
-
-    await fs.mkdir(appRoot, { recursive: true })
-    await fs.writeFile(
-      sidecarPath,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > "${sidecarArgsPath}"`,
-        `env | sort > "${sidecarEnvPath}"`,
-        '/bin/cat >/dev/null',
-        'printf \'%s\\n\' \'{"type":"result","result":"provider ok"}\'',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(sidecarPath, 0o755)
-
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-    process.env.CLAUDE_APP_ROOT = appRoot
-    process.env.ANTHROPIC_BASE_URL = 'https://stale-parent.example'
-    process.env.ANTHROPIC_MODEL = 'stale-parent-model'
-    process.env.CLAUDE_CODE_ENTRYPOINT = 'stale-parent-entrypoint'
-
-    const provider = await new ProviderService().addProvider({
-      presetId: 'custom',
-      name: 'Provider A',
-      apiKey: 'provider-key',
-      baseUrl: 'https://api.provider.example',
-      apiFormat: 'openai_chat',
-      models: {
-        main: 'provider-main',
-        haiku: 'provider-fast',
-        sonnet: 'provider-main',
-        opus: '',
+  it('does not create a second run while the same schedule hand-off is unsettled', async () => {
+    let enter!: () => void
+    const entered = new Promise<void>(resolve => { enter = resolve })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const scheduler = new CronScheduler(cron, {
+      submitScheduledTaskRun: async () => {
+        calls += 1
+        enter()
+        await gate
+        return { run_id: 'run_once', dispatch_generation: 1 }
       },
     })
-    const cronService = new CronService()
-    const scheduler = new CronScheduler(cronService)
-    const task = await cronService.createTask({
+    const task = await cron.createTask({
       cron: '* * * * *',
-      prompt: 'cron provider test',
-      name: 'Provider Task',
+      prompt: '只提交一次',
       recurring: true,
-      folderPath: tmpDir,
-      model: 'provider-fast',
-      providerId: provider.id,
+      folderPath: root,
     })
 
-    const run = await scheduler.executeTask(task)
+    const first = scheduler.executeTask(task)
+    const duplicate = await scheduler.executeTask(task)
+    expect(duplicate.status).toBe('running')
+    await entered
+    expect(calls).toBe(1)
 
-    expect(run.status).toBe('completed')
-    expect(run.output).toBe('provider ok')
-
-    const sidecarArgs = (await fs.readFile(sidecarArgsPath, 'utf-8'))
-      .trim()
-      .split('\n')
-    expect(sidecarArgs).toContain('--model')
-    expect(sidecarArgs[sidecarArgs.indexOf('--model') + 1]).toBe('provider-fast')
-
-    const env = Object.fromEntries(
-      (await fs.readFile(sidecarEnvPath, 'utf-8'))
-        .trim()
-        .split('\n')
-        .map((line) => {
-          const index = line.indexOf('=')
-          return [line.slice(0, index), line.slice(index + 1)]
-        }),
-    )
-    expect(env.ANTHROPIC_BASE_URL).toBe(
-      `http://127.0.0.1:3456/proxy/providers/${provider.id}`,
-    )
-    expect(env.ANTHROPIC_API_KEY).toBe('proxy-managed')
-    expect(env.ANTHROPIC_MODEL).toBe('provider-fast')
-    expect(env.ANTHROPIC_MODEL).not.toBe('stale-parent-model')
-    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe('1')
-    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
-    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('sdk-cli')
-  })
-
-  durableCronExecution('executeTask launches scheduled tasks in unattended safe mode', async () => {
-    const appRoot = path.join(tmpDir, 'app-root')
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const sidecarArgsPath = path.join(tmpDir, 'sidecar.args')
-
-    await fs.mkdir(appRoot, { recursive: true })
-    await fs.writeFile(
-      sidecarPath,
-      [
-        '#!/bin/sh',
-        `printf '%s\\n' "$@" > "${sidecarArgsPath}"`,
-        '/bin/cat >/dev/null',
-        'printf \'%s\\n\' \'{"type":"result","result":"permissions ok"}\'',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(sidecarPath, 0o755)
-
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-    process.env.CLAUDE_APP_ROOT = appRoot
-
-    const cronService = new CronService()
-    const scheduler = new CronScheduler(cronService)
-    const task = await cronService.createTask({
-      cron: '* * * * *',
-      prompt: 'cron permission test',
-      name: 'Permission Task',
-      recurring: true,
-      folderPath: tmpDir,
-    })
-
-    const run = await scheduler.executeTask(task)
-
-    expect(run.status).toBe('completed')
-    expect(run).not.toHaveProperty('sessionId')
-    const sidecarArgs = (await fs.readFile(sidecarArgsPath, 'utf-8'))
-      .trim()
-      .split('\n')
-    expect(sidecarArgs).not.toContain('--dangerously-skip-permissions')
-    expect(sidecarArgs).not.toContain('--session-id')
-    expect(sidecarArgs).toContain('--permission-mode')
-    expect(sidecarArgs[sidecarArgs.indexOf('--permission-mode') + 1]).toBe(
-      'dontAsk',
-    )
-  })
-
-  durableCronExecution('executeTask inherits exported terminal shell variables', async () => {
-    const appRoot = path.join(tmpDir, 'app-root')
-    const sidecarPath = path.join(tmpDir, 'billiardbuddy-sidecar')
-    const sidecarEnvPath = path.join(tmpDir, 'sidecar.env')
-    const shellPath = path.join(tmpDir, 'zsh')
-    const nodeBin = path.join(tmpDir, 'node-bin')
-    const nvmDir = path.join(tmpDir, '.nvm')
-
-    await fs.mkdir(appRoot, { recursive: true })
-    await fs.mkdir(nodeBin, { recursive: true })
-    await fs.mkdir(nvmDir, { recursive: true })
-    await fs.writeFile(
-      shellPath,
-      [
-        '#!/bin/sh',
-        'command=',
-        'while [ "$#" -gt 0 ]; do',
-        '  if [ "$1" = "-c" ]; then',
-        '    shift',
-        '    command="$1"',
-        '    break',
-        '  fi',
-        '  shift',
-        'done',
-        'if [ -f "$HOME/.zshrc" ]; then',
-        '  . "$HOME/.zshrc" </dev/null >/dev/null 2>/dev/null || true',
-        'fi',
-        'exec /bin/sh -c "$command"',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(shellPath, 0o755)
-    await fs.writeFile(
-      path.join(tmpDir, '.zshrc'),
-      [
-        `export NVM_DIR="${nvmDir}"`,
-        `export PATH="${nodeBin}:$PATH"`,
-        '',
-      ].join('\n'),
-    )
-    await fs.writeFile(
-      sidecarPath,
-      [
-        '#!/bin/sh',
-        `env | sort > "${sidecarEnvPath}"`,
-        '/bin/cat >/dev/null',
-        'printf \'%s\\n\' \'{"type":"result","result":"shell env ok"}\'',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf-8',
-    )
-    await fs.chmod(sidecarPath, 0o755)
-
-    delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
-    process.env.HOME = tmpDir
-    process.env.SHELL = shellPath
-    process.env.PATH = '/usr/bin:/bin'
-    delete process.env.ZDOTDIR
-    process.env.CLAUDE_CLI_PATH = sidecarPath
-    process.env.CLAUDE_APP_ROOT = appRoot
-    resetTerminalShellEnvironmentCacheForTests()
-
-    const cronService = new CronService()
-    const scheduler = new CronScheduler(cronService)
-    const task = await cronService.createTask({
-      cron: '* * * * *',
-      prompt: 'cron shell env test',
-      name: 'Shell Env Task',
-      recurring: true,
-      folderPath: tmpDir,
-    })
-
-    const run = await scheduler.executeTask(task)
-
-    expect(run.status).toBe('completed')
-    expect(run.output).toBe('shell env ok')
-
-    const env = Object.fromEntries(
-      (await fs.readFile(sidecarEnvPath, 'utf-8'))
-        .trim()
-        .split('\n')
-        .map((line) => {
-          const index = line.indexOf('=')
-          return [line.slice(0, index), line.slice(index + 1)]
-        }),
-    )
-    expect(env.NVM_DIR).toBe(nvmDir)
-    expect(env.PATH.split(path.delimiter)[0]).toBe(nodeBin)
+    release()
+    expect((await first).status).toBe('completed')
   })
 })
