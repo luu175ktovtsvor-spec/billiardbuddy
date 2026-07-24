@@ -48,8 +48,8 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 |---|---|---|
 | 单一 GUI 基线 | 已完成 | `3ca8b509…`，修订 `29025d35…` |
 | ProductTask 权威与 durable run | 已完成 | `0f40b5d7…` |
-| 内部 agent-worker 与 Core 解耦 | 已完成 | `901e05e4…` |
-| Provider registry、DeepSeek、MiMo 与网关基础 | 已完成主体，继续收口远程授权、预算和部署 | 模块 04 已接受到 `ba715f4f…` |
+| 内部 agent-worker、Core 解耦与标准 MCP Host | 已完成并经回查删除旧 CLI 执行残留 | `901e05e4…`、`f207dbf4…`、`2289725b…` |
+| Provider registry、DeepSeek、MiMo 与网关 | 已完成并经回查收口授权、部署闭包和双机加密链路 | `ae1effa9…` |
 | DeepSeek 原生 Web Search | 当前代码已有路由与测试，必须保留 | `gateway/deepseekChat.ts`、`gateway/app.ts` 及测试 |
 
 这些条目代表已经具备、不得丢失的产品能力，不代表现有实现被冻结。先按本文验收；符合目标的保留，存在合同缺口或结构负担的可以重构、替换或重写，但迁移后的用户功能、数据和对外合同必须连续。
