@@ -21,6 +21,9 @@ test('supervisor rejects unbound input and starts exactly one child/Core binding
   expect(await supervisor.dispatch('run', 1)).toBe('recovery_required'); expect(f.launches).toBe(0); expect(f.claims).toBe(0); expect(f.sent).toEqual([]); expect(f.settled).toEqual([])
   const bound = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher); expect(await bound.dispatch('run', 1)).toBe('started'); expect(await bound.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
   expect(f.launches).toBe(1); expect(f.claims).toBe(1); expect(f.sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'start', run_id: 'run' })]))
+  expect(await bound.approve('run', 1, 'approval-1', true)).toBeTrue()
+  expect(f.sent).toEqual(expect.arrayContaining([{ type: 'approval_response', request_id: 'approval-1', approved: true }]))
+  expect(await bound.approve('other', 1, 'approval-1', true)).toBeFalse()
 
   const preclaim = await fixture(); const unavailable = { profileRevision: () => 'test', submit: async () => { throw new Error('scheduler unavailable') } } as unknown as ProductResourceScheduler
   const failedBeforeClaim = new AgentWorkerSupervisor(preclaim.runs, unavailable, preclaim.launcher)

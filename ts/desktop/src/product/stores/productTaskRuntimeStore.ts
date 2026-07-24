@@ -19,6 +19,7 @@ import type {
   ProductTaskActivityPhase,
   ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
+  ProductTaskActionApproval,
   ProductTaskApprovalKind,
   ProductTaskComputerUseApproval,
   ProductTaskEvent,
@@ -47,6 +48,7 @@ export type ProductTaskRuntime = {
   pendingApproval: {
     requestId: string
     kind: ProductTaskApprovalKind
+    action?: ProductTaskActionApproval
     questions?: ProductTaskQuestion[]
     computerUse?: ProductTaskComputerUseApproval
   } | null
@@ -672,6 +674,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               pendingApproval: {
                 requestId: event.requestId,
                 kind: event.kind,
+                ...(event.kind === 'action' && event.action ? { action: event.action } : {}),
                 ...(event.kind === 'question' ? { questions: event.questions } : {}),
                 ...(event.kind === 'computer_use' ? { computerUse: event.computerUse } : {}),
               },

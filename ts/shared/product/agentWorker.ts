@@ -1,5 +1,6 @@
 import type { PermissionExecutionEnvelope } from './permissionExecutionEnvelope.js'
 import type { ProductResourceReceipt } from './resourceScheduler.js'
+import type { ProductTaskActionApproval } from './taskEvents.js'
 
 export const AGENT_WORKER_PROTOCOL_VERSION = 1 as const
 export const AGENT_WORKER_MAX_FRAME_BYTES = 64 * 1024
@@ -25,7 +26,8 @@ export type AgentWorkerOutbound =
   | { type: 'hello'; versions: AgentWorkerVersionRange; capabilities: string[] }
   | { type: 'ready' }
   | { type: 'claim_receipt'; outcome: 'claimed' | 'duplicate' | 'recovery_required' | 'rejected'; run_id: string; code?: string }
-  | { type: 'event'; event: 'started' | 'delta' | 'tool' | 'approval' | 'stopping'; data?: string }
+  | { type: 'event'; event: 'started' | 'delta' | 'tool' | 'stopping'; data?: string }
+  | { type: 'event'; event: 'approval'; request_id: string; action: ProductTaskActionApproval }
   | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }
   | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'MODEL_CONFIGURATION_INVALID' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
   | { type: 'shutdown' }

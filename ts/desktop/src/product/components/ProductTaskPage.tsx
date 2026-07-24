@@ -307,7 +307,14 @@ export function ProductTaskApprovalCard({
   if (approval.kind === 'action') {
     return (
       <div role="status" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-[var(--color-text-secondary)]">
-        <p>任务需要你的确认后才能继续执行。</p>
+        <p className="font-medium text-[var(--color-text-primary)]">任务需要你的确认后才能继续执行。</p>
+        {approval.action ? (
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 leading-6">
+            <dt className="text-[var(--color-text-tertiary)]">将做什么</dt><dd>{approval.action.what}</dd>
+            <dt className="text-[var(--color-text-tertiary)]">作用范围</dt><dd>{approval.action.scope}</dd>
+            <dt className="text-[var(--color-text-tertiary)]">可能后果</dt><dd>{approval.action.consequence}</dd>
+          </dl>
+        ) : <p className="mt-1">这是一项越过当前任务边界的受限操作。</p>}
         <div className="mt-3 flex gap-2">
           <button type="button" disabled={responding} onClick={() => onRespondToAction(true)} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">允许本次操作</button>
           <button type="button" disabled={responding} onClick={() => onRespondToAction(false)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">拒绝</button>

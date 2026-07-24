@@ -87,7 +87,11 @@ export class AgentWorkerSupervisor {
           child?.send({ type: 'input', text: identity.initial_input })
           return
         }
-        if (message.type === 'event') { void this.messages?.record(runId, generation, message); return }
+        if (message.type === 'event') {
+          void Promise.resolve(this.messages?.record(runId, generation, message))
+            .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED'))
+          return
+        }
         if (message.type === 'terminal') {
           // Close the relay synchronously, then persist the final safe
           // projection before settling durable dispatch state.
@@ -103,6 +107,14 @@ export class AgentWorkerSupervisor {
       if (this.terminalPending.has(key) || this.stopRequested.has(key)) { await child.stop(); return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal') }
       this.active.set(key, { child, fencing: receipt.fencing_token }); return 'started'
     } catch { clearTimeout(timeout); this.readyTimers.delete(key); return this.fail(runId, generation, receipt.fencing_token, 'LAUNCH_FAILED') }
+  }
+  async approve(runId: string, generation: number, requestId: string, approved: boolean): Promise<boolean> {
+    const key = `${runId}:${generation}`
+    if (this.settled.has(key) || this.terminalPending.has(key)) return false
+    const active = this.active.get(key)
+    if (!active || !requestId) return false
+    active.child.send({ type: 'approval_response', request_id: requestId, approved })
+    return true
   }
   async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) { active.child.send({ type: 'stop' }); await active.child.stop() } await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
   private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required'): Promise<'recovery_required'> {

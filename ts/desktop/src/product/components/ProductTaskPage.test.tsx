@@ -485,10 +485,22 @@ describe('ProductTaskPage', () => {
     mocks.runtime = {
       ...mocks.runtime,
       runState: 'awaiting_approval',
-      pendingApproval: { requestId: 'permission-1', kind: 'action' },
+      pendingApproval: {
+        requestId: 'permission-1',
+        kind: 'action',
+        action: {
+          what: '运行一条受限命令',
+          scope: '当前任务工作区之外的本机资源或网络边界',
+          consequence: '命令可能修改文件、启动进程或访问外部服务。',
+        },
+      },
       approvalResponsePending: false,
     }
     render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.getByText('运行一条受限命令')).toBeInTheDocument()
+    expect(screen.getByText('当前任务工作区之外的本机资源或网络边界')).toBeInTheDocument()
+    expect(screen.getByText('命令可能修改文件、启动进程或访问外部服务。')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '允许本次操作' }))
 

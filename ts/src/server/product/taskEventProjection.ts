@@ -17,6 +17,7 @@ import type {
   ServerMessage,
 } from '../ws/events.js'
 import { projectProductTaskUserReplay } from './taskAttachmentProjection.js'
+import { projectProductTaskActionApproval } from './taskApprovalProjection.js'
 
 type RecordValue = Record<string, unknown>
 
@@ -677,6 +678,7 @@ export function projectServerMessageForProductTask(message: ServerMessage): Prod
             type: 'approval_required',
             requestId: message.requestId,
             kind: 'action',
+            action: projectProductTaskActionApproval(message.toolName),
           }]
     }
 

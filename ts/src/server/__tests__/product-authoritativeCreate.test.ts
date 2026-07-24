@@ -551,6 +551,32 @@ describe('BB-02C atomic homepage submit', () => {
     }
   })
 
+  test('persists one approval request and reviewer receipt across restart before resuming Core', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-08b-approval-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    const first = new ProductTaskService({ storagePath, installationId: 'install', now })
+    const draft = await first.createNewTaskComposerDraft({ ttl_ms: 1_000, client_operation_id: 'draft' })
+    const accepted = await first.createAndSubmitTask(input(draft.draft.draft_id as string))
+    const run = accepted.result!
+    expect(await first.claimTaskRunDispatch(run.run_id, 1)).toMatchObject({ outcome: 'claimed' })
+    const action = { what: '运行一条受限命令', scope: '当前任务工作区之外的本机资源或网络边界', consequence: '命令可能修改文件、启动进程或访问外部服务。' }
+    expect(await first.recordTaskRunApprovalRequest(run.run_id, 1, 'approval-1', action)).toMatchObject({ task_id: run.task_id, event: { type: 'approval_required', requestId: 'approval-1', action } })
+    expect(await first.readPendingTaskApproval(run.task_id)).toMatchObject({ requestId: 'approval-1', action })
+
+    const delivered: unknown[] = []
+    const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async () => 'started', approve: async (...args) => { delivered.push(args); return true } } })
+    expect(await restarted.respondToTaskApproval(run.task_id, 'approval-1', true)).toBeTrue()
+    expect(delivered).toEqual([[run.run_id, 1, 'approval-1', true]])
+    expect(await restarted.readPendingTaskApproval(run.task_id)).toBeNull()
+    expect(await restarted.respondToTaskApproval(run.task_id, 'approval-1', true)).toBeTrue()
+    expect(await restarted.respondToTaskApproval(run.task_id, 'approval-1', false)).toBeFalse()
+    expect(delivered).toHaveLength(1)
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(state.dispatch_records[run.run_id]).toMatchObject({ approvals: [{ request_id: 'approval-1', status: 'resolved', decision: 'allowed', reviewer: 'user' }] })
+  })
+
   test('replays the durable ledger by cursor and grants exactly one dispatch claim', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02c-dispatch-'))
     const storagePath = path.join(root, 'product-tasks.json')

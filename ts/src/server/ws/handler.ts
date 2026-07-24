@@ -31,6 +31,7 @@ import {
 } from '../product/taskAgentCoreAdapter.js'
 import { productTaskService } from '../product/taskService.js'
 import { productTaskWorkerRuntimeEvents } from '../product/taskWorkerRuntimeEvents.js'
+import { parseProductTaskInboundMessage } from '../product/taskInboundPolicy.js'
 import { sessionAdmissionBarrier } from '../product/sessionAdmissionBarrier.js'
 import { activeCoreRunRegistry } from '../product/activeCoreRunRegistry.js'
 import {
@@ -299,6 +300,7 @@ export const handleWebSocket = {
     const workerSnapshot = productTaskWorkerRuntimeEvents.snapshot(ws.data.productTaskId!)
     if (workerSnapshot.state === 'idle') productTaskAgentCoreAdapter.sendRunSnapshot(ws)
     else ws.send(JSON.stringify({ type: 'run_snapshot', ...workerSnapshot }))
+    void replayPendingWorkerApproval(ws)
     replayPendingPermissionRequests(ws, sessionId)
   },
 
@@ -328,7 +330,18 @@ export const handleWebSocket = {
         return
       }
 
-      void productTaskAgentCoreAdapter.handleIncoming(ws, parsed).catch((err) => {
+      const productMessage = parseProductTaskInboundMessage(parsed)
+      void (async () => {
+        if (productMessage?.type === 'permission_response' && ws.data.productTaskId && productTaskWorkerRuntimeEvents.ownsApproval(ws.data.productTaskId, productMessage.requestId)) {
+          const handled = await productTaskService.respondToTaskApproval(
+            ws.data.productTaskId,
+            productMessage.requestId,
+            productMessage.allowed,
+          )
+          if (handled) return
+        }
+        await productTaskAgentCoreAdapter.handleIncoming(ws, parsed)
+      })().catch((err) => {
         void diagnosticsService.recordEvent({
           type: 'ws_product_user_message_failed',
           severity: 'error',
@@ -427,6 +440,16 @@ async function replayDurableProductEvents(
     ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))
   } catch {
     sendProductProtocolError(ws, 'attachment_ingest_unavailable')
+  }
+}
+
+async function replayPendingWorkerApproval(ws: ServerWebSocket<WebSocketData>): Promise<void> {
+  const taskId = ws.data.productTaskId
+  if (!taskId || ws.data.channel !== 'product') return
+  const approval = await productTaskService.readPendingTaskApproval(taskId).catch(() => null)
+  if (approval) {
+    productTaskWorkerRuntimeEvents.rememberApproval(taskId, approval)
+    ws.send(JSON.stringify(approval))
   }
 }
 
