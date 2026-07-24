@@ -9,6 +9,7 @@ export const ELECTRON_IPC_CHANNELS = {
   dialogOpen: 'desktop:dialog:open',
   dialogSave: 'desktop:dialog:save',
   mediaSubmitImage: 'desktop:media:submit-image',
+  mediaStartImageOperation: 'desktop:media:start-image-operation',
   mediaUpdateUnknownImage: 'desktop:media:update-unknown-image',
   mediaSaveImageOutput: 'desktop:media:save-image-output',
   mediaRenderVideo: 'desktop:media:render-video',

@@ -14,6 +14,19 @@ const DATA_EGRESS_CONSENT = {
   acknowledged_at: '2026-07-24T00:00:00.000Z',
 }
 
+function pngBytes(width: number, height: number): Buffer {
+  const bytes = Buffer.alloc(24)
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes)
+  bytes.write('IHDR', 12, 'ascii')
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return bytes
+}
+
+function pngDataUrl(width: number, height: number): string {
+  return `data:image/png;base64,${pngBytes(width, height).toString('base64')}`
+}
+
 function submitImage(
   service: MediaProjectService,
   projectId: string,
@@ -162,6 +175,136 @@ describe('MediaProjectService image projects', () => {
     expect(new Set(ready.outputs.map(output => output.operation_id))).toEqual(new Set([task.operation_id]))
     expect(new Set(ready.outputs.map(output => output.version_id)).size).toBe(3)
     expect(ready.outputs.every(output => ready.assets.some(asset => asset.id === output.id && asset.version_id === output.version_id))).toBe(true)
+  })
+
+  test('branches edit, inpaint, exact text, upscale, rollback, and export from explicit base versions', async () => {
+    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    const submissions: Record<string, unknown>[] = []
+    let remoteIndex = 0
+    const service = new MediaProjectService({
+      root: await root(),
+      fetchImpl: async (_input, init) => {
+        if (init?.method === 'POST') {
+          submissions.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+          remoteIndex += 1
+          return Response.json({ task_id: `remote-${remoteIndex}`, status: 'queued' }, { status: 202 })
+        }
+        return Response.json({
+          task_id: `remote-${remoteIndex}`,
+          status: 'succeeded',
+          data: Array.from({ length: remoteIndex === 1 ? 3 : 1 }, () => ({
+            b64_json: pngBytes(1, 1).toString('base64'),
+            mime_type: 'image/png',
+          })),
+        })
+      },
+    })
+    const draft = await service.createImageProject({ user_request: '标题：“会员日” 的活动海报' })
+    const generatedTask = await submitImage(service, draft.id)
+    await service.getTask(generatedTask.id)
+    const generated = await service.getProject(draft.id)
+    if (generated.kind !== 'image') throw new Error('wrong kind')
+    const candidate = generated.outputs[0]!
+    expect(generated.outputs).toHaveLength(3)
+    expect(candidate.version_id).toBeDefined()
+    expect(generated.current_version_id).toBeUndefined()
+
+    const selected = await service.selectImageVersion(generated.id, {
+      revision: generated.revision,
+      version_id: candidate.version_id!,
+    })
+    await expect(service.selectImageVersion(selected.id, {
+      revision: selected.revision,
+      version_id: 'ver_missing0000000000000000000000000000',
+    })).rejects.toMatchObject({ code: 'IMAGE_VERSION_NOT_FOUND' })
+    await expect(service.startImageOperation(selected.id, {
+      revision: selected.revision,
+      base_version_id: candidate.version_id!,
+      kind: 'inpaint',
+      instruction: '只修改蒙版区域',
+      mask_data_url: pngDataUrl(2, 1),
+      data_egress_consent: DATA_EGRESS_CONSENT,
+    })).rejects.toMatchObject({ code: 'IMAGE_MASK_DIMENSIONS_MISMATCH' })
+    const operationTask = await service.startImageOperation(selected.id, {
+      revision: selected.revision,
+      base_version_id: candidate.version_id!,
+      kind: 'inpaint',
+      instruction: '只把左上角球杆改成红色，其余内容保持不变',
+      mask_data_url: pngDataUrl(1, 1),
+      data_egress_consent: DATA_EGRESS_CONSENT,
+    })
+    expect(submissions[1]).toMatchObject({
+      mode: 'edit',
+      model: 'gpt-image-2',
+      n: 1,
+      images: [pngDataUrl(1, 1)],
+      mask: pngDataUrl(1, 1),
+    })
+    await service.getTask(operationTask.id)
+    const edited = await service.getProject(selected.id)
+    if (edited.kind !== 'image') throw new Error('wrong kind')
+    const editedVersion = edited.versions.find(version => version.id === edited.current_version_id)!
+    expect(editedVersion).toMatchObject({
+      kind: 'inpaint',
+      parent_version_id: candidate.version_id,
+    })
+
+    await expect(service.commitImageVersion(edited.id, {
+      revision: edited.revision,
+      base_version_id: editedVersion.id,
+      kind: 'text_layout',
+      rendered_image: pngDataUrl(1, 1),
+      width: 1,
+      height: 1,
+      text_layers: [{ id: 'text_missing01', text: '错误文字', x: 0, y: 0 }],
+    })).rejects.toMatchObject({ code: 'IMAGE_EXACT_TEXT_MISSING' })
+    await expect(service.commitImageVersion(edited.id, {
+      revision: edited.revision,
+      base_version_id: editedVersion.id,
+      kind: 'text_layout',
+      rendered_image: pngDataUrl(1, 1),
+      width: 1,
+      height: 1,
+      text_layers: [{ id: 'text_embedded01', text: '超级会员日', x: 0, y: 0 }],
+    })).rejects.toMatchObject({ code: 'IMAGE_EXACT_TEXT_MISSING' })
+
+    const textVersionProject = await service.commitImageVersion(edited.id, {
+      revision: edited.revision,
+      base_version_id: editedVersion.id,
+      kind: 'text_layout',
+      rendered_image: pngDataUrl(1, 1),
+      width: 1,
+      height: 1,
+      text_layers: [{ id: 'text_member01', text: '会员日', x: 0, y: 0 }],
+    })
+    const textVersionId = textVersionProject.current_version_id!
+    const upscaled = await service.commitImageVersion(textVersionProject.id, {
+      revision: textVersionProject.revision,
+      base_version_id: textVersionId,
+      kind: 'upscale',
+      rendered_image: pngDataUrl(2, 2),
+      width: 2,
+      height: 2,
+      scale: 2,
+      text_layers: [],
+    })
+    expect(upscaled.versions.find(version => version.id === upscaled.current_version_id)).toMatchObject({
+      kind: 'upscale',
+      parent_version_id: textVersionId,
+      width: 2,
+      height: 2,
+    })
+
+    const rolledBack = await service.selectImageVersion(upscaled.id, {
+      revision: upscaled.revision,
+      version_id: candidate.version_id!,
+    })
+    expect(rolledBack.current_version_id).toBe(candidate.version_id)
+    expect(rolledBack.versions.some(version => version.id === upscaled.current_version_id)).toBe(true)
+    const exportPath = join(await root(), 'selected.png')
+    await service.saveImageOutput(rolledBack.id, { version_id: candidate.version_id, output_path: exportPath })
+    expect(await readFile(exportPath)).toEqual(pngBytes(1, 1))
   })
 
   test('rejects a project asset directory symlink that points outside the media asset root', async () => {
@@ -498,6 +641,40 @@ describe('MediaProjectService image projects', () => {
     expect(migrated.reference_images).toEqual([])
     expect(migrated.reference_image_assets).toHaveLength(1)
     expect(await readFile(persistedPath, 'utf8')).not.toContain(reference)
+  })
+
+  test('migrates legacy output lists into independent immutable versions without losing results', async () => {
+    const mediaRoot = await root()
+    const service = new MediaProjectService({ root: mediaRoot })
+    const created = await service.createImageProject({ user_request: '旧图片结果' })
+    const outputId = 'out_legacy001'
+    const fileName = `${outputId}.png`
+    await mkdir(join(mediaRoot, 'assets', created.id), { recursive: true })
+    await writeFile(join(mediaRoot, 'assets', created.id, fileName), pngBytes(1, 1))
+    await writeFile(join(mediaRoot, 'projects', `${created.id}.json`), `${JSON.stringify({
+      ...created,
+      state: 'ready',
+      outputs: [{
+        id: outputId,
+        mime_type: 'image/png',
+        asset_path: `/api/media/assets/${created.id}/${fileName}`,
+      }],
+    }, null, 2)}\n`)
+
+    const migrated = await new MediaProjectService({ root: mediaRoot }).getProject(created.id)
+    if (migrated.kind !== 'image') throw new Error('wrong kind')
+    expect(migrated.outputs[0]).toMatchObject({
+      id: outputId,
+      version_kind: 'generated',
+      operation_id: expect.stringMatching(/^op_/),
+      version_id: expect.stringMatching(/^ver_/),
+    })
+    expect(migrated.versions).toContainEqual(expect.objectContaining({
+      id: migrated.outputs[0]!.version_id,
+      asset_ids: [outputId],
+    }))
+    const reread = await new MediaProjectService({ root: mediaRoot }).getProject(created.id)
+    expect(reread.writer_fence).toBe(migrated.writer_fence)
   })
 
   test('rejects a reference-image symlink before it can be sent to the image service', async () => {

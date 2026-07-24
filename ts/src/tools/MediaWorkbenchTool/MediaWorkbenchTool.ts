@@ -250,6 +250,10 @@ function sanitizeProject(project: Record<string, unknown>): Record<string, unkno
     }
     setString(safeProject, 'size', safeEnum(project.size, imageSizes), 16)
     setInteger(safeProject, 'candidate_count', project.candidate_count, 3, 3)
+    setString(safeProject, 'current_version_id', project.current_version_id, 80)
+    if (Array.isArray(project.version_history)) {
+      safeProject.version_count = Math.min(project.version_history.length, 1000)
+    }
     const referenceCount = safeInteger(project.reference_image_count, 0, 8)
       ?? (Array.isArray(project.reference_images) ? Math.min(project.reference_images.length, 8) : undefined)
     if (referenceCount !== undefined) safeProject.reference_image_count = referenceCount

@@ -415,6 +415,14 @@ function registerIpcHandlers() {
     const input = payload as { projectId: string, confirmUnknownRetry: boolean, confirmedDataEgress: boolean }
     return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry, input.confirmedDataEgress)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, (_event, payload) => {
+    const request = payload as {
+      projectId: string
+      input: Parameters<ElectronMediaActions['startImageOperation']>[1]
+      confirmedDataEgress: boolean
+    }
+    return getMediaActions().startImageOperation(request.projectId, request.input, request.confirmedDataEgress)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, (_event, payload) => {
     const update = payload as {
       projectId: string

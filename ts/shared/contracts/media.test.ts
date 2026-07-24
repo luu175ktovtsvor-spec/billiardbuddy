@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  commitImageVersionInputSchema,
   createImageProjectInputSchema,
   imageWorkbenchProjectSchema,
   productTaskOwnerIdSchema,
+  publicImageWorkbenchProjectSchema,
+  startImageOperationInputSchema,
 } from './media.js'
 
 const baseImageProject = {
@@ -71,5 +74,47 @@ describe('provider-neutral image creation contract', () => {
       reference_roles: ['subject'],
     })
     expect(parsed.reference_roles).toEqual(['subject'])
+  })
+
+  test('keeps provider and legacy outputs private while exposing immutable version history', () => {
+    const publicProject = publicImageWorkbenchProjectSchema.parse({
+      ...baseImageProject,
+      model: 'gpt-image-2',
+      outputs: [{ id: 'out_private01', mime_type: 'image/png', url: 'https://example.test/private.png' }],
+      version_history: [{
+        id: 'ver_public001',
+        kind: 'generated',
+        asset_id: 'out_private01',
+        image_path: '/api/media/assets/img_12345678/out_private01.png',
+        mime_type: 'image/png',
+        created_at: baseImageProject.created_at,
+      }],
+    })
+    expect(publicProject.version_history).toHaveLength(1)
+    expect(publicProject).not.toHaveProperty('model')
+    expect(publicProject).not.toHaveProperty('prompt')
+    expect(publicProject).not.toHaveProperty('outputs')
+  })
+
+  test('requires an explicit base and matching operation-specific inputs', () => {
+    const common = {
+      revision: 2,
+      base_version_id: 'ver_base0001',
+      instruction: '只修改蒙版区域',
+    }
+    expect(startImageOperationInputSchema.safeParse({ ...common, kind: 'inpaint' }).success).toBe(false)
+    expect(startImageOperationInputSchema.safeParse({
+      ...common,
+      kind: 'inpaint',
+      mask_data_url: 'data:image/png;base64,AAAA',
+    }).success).toBe(true)
+    expect(commitImageVersionInputSchema.safeParse({
+      revision: 3,
+      base_version_id: 'ver_base0001',
+      kind: 'upscale',
+      rendered_image: 'data:image/png;base64,AAAA',
+      width: 200,
+      height: 200,
+    }).success).toBe(false)
   })
 })

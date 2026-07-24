@@ -34,6 +34,8 @@ test('media API creates and lists image/video projects without invoking upstream
   expect(imageBody.project).not.toHaveProperty('model')
   expect(imageBody.project).not.toHaveProperty('prompt')
   expect(imageBody.project).not.toHaveProperty('count')
+  expect(imageBody.project).not.toHaveProperty('outputs')
+  expect(imageBody.project).toMatchObject({ version_history: [] })
   const video = await route(handler, '/api/media/videos/projects', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -230,6 +232,20 @@ test('paid image submission and final render require the Electron-owned UI capab
       calls.push(`submit:${projectId}`)
       return task('task_image001', projectId, 'image.generate')
     },
+    async startImageOperation(projectId: string) {
+      calls.push(`operate:${projectId}`)
+      return {
+        ...task('task_image002', projectId, 'image.generate'),
+        image_operation: {
+          kind: 'edit', model: 'gpt-image-2', output_count: 1,
+          base_version_id: 'ver_base0001', instruction: '只调整背景色',
+        },
+        result: {
+          output_count: 1,
+          outputs: [{ revised_prompt: 'private provider prompt' }],
+        },
+      }
+    },
     async updateImageProject(projectId: string, input: { confirm_unknown_retry?: boolean }) {
       expect(input.confirm_unknown_retry).toBe(true)
       calls.push(`update:${projectId}`)
@@ -256,8 +272,8 @@ test('paid image submission and final render require the Electron-owned UI capab
       calls.push(`render:${projectId}`)
       return task('task_video001', projectId, 'video.render')
     },
-    async saveImageOutput(projectId: string, input: { output_id: string; output_path: string }) {
-      calls.push(`save:${projectId}:${input.output_id}:${input.output_path}`)
+    async saveImageOutput(projectId: string, input: { output_id?: string; version_id?: string; output_path: string }) {
+      calls.push(`save:${projectId}:${input.version_id ?? input.output_id}:${input.output_path}`)
       return { path: input.output_path }
     },
   } as unknown as MediaProjectService
@@ -272,12 +288,28 @@ test('paid image submission and final render require the Electron-owned UI capab
     body: JSON.stringify({ revision: 0, output_path: '/tmp/final.mp4' }),
   })
   expect(deniedRender.status).toBe(403)
+  const deniedOperation = await route(handler, '/api/media/images/projects/img_project01/operations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      revision: 1,
+      base_version_id: 'ver_base0001',
+      kind: 'edit',
+      instruction: '只调整背景色',
+    }),
+  })
+  expect(deniedOperation.status).toBe(403)
   const deniedSave = await route(handler, '/api/media/images/projects/img_project01/outputs/out_result001/save', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ output_path: '/tmp/final.png' }),
   })
   expect(deniedSave.status).toBe(403)
+  expect((await route(handler, '/api/media/images/projects/img_project01/versions/ver_result001/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ output_path: '/tmp/final.png' }),
+  })).status).toBe(403)
   expect(calls).toEqual([])
 
   const deniedUnknownUpdate = await route(handler, '/api/media/images/projects/img_project01', {
@@ -299,6 +331,21 @@ test('paid image submission and final render require the Electron-owned UI capab
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ confirm_unknown_retry: true }),
   })).status).toBe(202)
+  const operationResponse = await route(handler, '/api/media/images/projects/img_project01/operations', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      revision: 1,
+      base_version_id: 'ver_base0001',
+      kind: 'edit',
+      instruction: '只调整背景色',
+    }),
+  })
+  expect(operationResponse.status).toBe(202)
+  const operationBody = await operationResponse.json()
+  expect(operationBody).not.toHaveProperty('task.image_operation')
+  expect(operationBody).not.toHaveProperty('task.result.outputs')
+  expect(operationBody).toMatchObject({ task: { result: { output_count: 1 } } })
   expect((await route(handler, '/api/media/images/projects/img_project01', {
     method: 'PUT',
     headers: { ...headers, 'content-type': 'application/json' },
@@ -319,10 +366,17 @@ test('paid image submission and final render require the Electron-owned UI capab
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({ output_path: '/tmp/final.png' }),
   })).status).toBe(200)
+  expect((await route(handler, '/api/media/images/projects/img_project01/versions/ver_result001/save', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ output_path: '/tmp/version.png' }),
+  })).status).toBe(200)
   expect(calls).toEqual([
     'submit:img_project01',
+    'operate:img_project01',
     'update:img_project01',
     'render:vid_project01',
     'save:img_project01:out_result001:/tmp/final.png',
+    'save:img_project01:ver_result001:/tmp/version.png',
   ])
 })

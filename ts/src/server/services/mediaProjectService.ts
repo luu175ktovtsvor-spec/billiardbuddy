@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   addVideoSourceInputSchema,
+  commitImageVersionInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
   IMAGE_DATA_EGRESS_POLICY_REVISION,
@@ -19,12 +20,15 @@ import {
   productTaskOwnerIdSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
+  selectImageVersionInputSchema,
+  startImageOperationInputSchema,
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
   updateVideoTimelineInputSchema,
   videoStudioProjectSchema,
   videoRenderTaskResultSchema,
   type AddVideoSourceInput,
+  type CommitImageVersionInput,
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
   type ImageWorkbenchProject,
@@ -36,6 +40,8 @@ import {
   type MediaTask,
   type RenderVideoInput,
   type SaveImageOutputInput,
+  type SelectImageVersionInput,
+  type StartImageOperationInput,
   type SubmitImageProjectInput,
   type UpdateImageProjectInput,
   type UpdateVideoTimelineInput,
@@ -166,8 +172,9 @@ function imageConsentReceipt(
   project: ImageWorkbenchProject,
   acknowledgement: NonNullable<SubmitImageProjectInput['data_egress_consent']>,
   operationDigest: string,
+  model = project.model,
 ) {
-  const receiver = project.model === 'gpt-image-2' ? 'OpenAI' as const : 'ByteDance Ark' as const
+  const receiver = model === 'gpt-image-2' ? 'OpenAI' as const : 'ByteDance Ark' as const
   const receiptId = createHash('sha256').update([
     IMAGE_DATA_EGRESS_POLICY_REVISION,
     project.id,
@@ -232,7 +239,7 @@ class ImageSubmissionAttemptError extends MediaServiceError {
   }
 }
 
-function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out'): string {
+function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'mask'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
@@ -302,6 +309,48 @@ function referenceImageMime(fileName: string): 'image/png' | 'image/jpeg' | 'ima
 
 function dataUrlBytes(dataUrl: string): Buffer {
   return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64')
+}
+
+function imageDimensions(bytes: Buffer, mimeType: string): { width: number; height: number } | null {
+  if (mimeType === 'image/png' && bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
+  }
+  if (mimeType === 'image/jpeg' && bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) { offset += 1; continue }
+      const marker = bytes[offset + 1]!
+      if ([0xd8, 0xd9].includes(marker)) { offset += 2; continue }
+      const length = bytes.readUInt16BE(offset + 2)
+      if (length < 2 || offset + 2 + length > bytes.length) return null
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+        return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) }
+      }
+      offset += 2 + length
+    }
+  }
+  if (mimeType === 'image/webp' && bytes.length >= 30 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') {
+    const chunk = bytes.toString('ascii', 12, 16)
+    if (chunk === 'VP8X') {
+      return {
+        width: 1 + bytes.readUIntLE(24, 3),
+        height: 1 + bytes.readUIntLE(27, 3),
+      }
+    }
+    if (chunk === 'VP8L' && bytes[20] === 0x2f && bytes.length >= 25) {
+      return {
+        width: 1 + bytes[21]! + ((bytes[22]! & 0x3f) << 8),
+        height: 1 + (bytes[22]! >> 6) + (bytes[23]! << 2) + ((bytes[24]! & 0x0f) << 10),
+      }
+    }
+    if (chunk === 'VP8 ' && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+      return {
+        width: bytes.readUInt16LE(26) & 0x3fff,
+        height: bytes.readUInt16LE(28) & 0x3fff,
+      }
+    }
+  }
+  return null
 }
 
 export function buildVideoRenderCommand(
@@ -713,7 +762,14 @@ export class MediaProjectService {
         ? JSON.stringify([project.prompt, project.outputs.map(output => output.id)])
         : JSON.stringify(project.timeline),
     )
-    const existingAssets = new Map((current?.assets ?? project.assets).map(asset => [asset.id, asset]))
+    const existingAssets = new Map((current?.assets ?? []).map(asset => [asset.id, asset]))
+    for (const asset of project.assets) {
+      const existing = existingAssets.get(asset.id)
+      if (existing && JSON.stringify(existing) !== JSON.stringify(asset)) {
+        throw new MediaServiceError('媒体资产记录不可原地改写', 409, 'ASSET_IMMUTABLE')
+      }
+      if (!existing) existingAssets.set(asset.id, asset)
+    }
     for (const seed of seeds) {
       const metadata = seed.storage.kind === 'managed'
         ? await this.managedAssetMetadata(seed.storage.locator)
@@ -763,9 +819,14 @@ export class MediaProjectService {
         if (!output.version_id || versions.some(version => version.id === output.version_id)) continue
         versions.push({
           id: output.version_id,
-          parent_version_id: versionId,
+          parent_version_id: output.parent_version_id ?? versionId,
           project_revision: project.revision,
           asset_ids: [output.id],
+          kind: output.version_kind ?? 'generated',
+          operation_id: output.operation_id,
+          width: output.width,
+          height: output.height,
+          text_layers: output.text_layers,
           created_at: project.updated_at,
         })
       }
@@ -1014,6 +1075,31 @@ export class MediaProjectService {
     return await this.saveProject({ ...project, brief, references }) as ImageWorkbenchProject
   }
 
+  private async migrateImageVersions(project: ImageWorkbenchProject): Promise<ImageWorkbenchProject> {
+    if (project.outputs.length === 0) return project
+    if (project.outputs.every(output => (
+      output.operation_id
+      && output.version_id
+      && output.version_kind
+      && project.versions.some(version => version.id === output.version_id)
+    ))) return project
+    const legacyParent = project.versions.at(-1)?.id
+    const operationId = foundationId('op', project.id, project.task_id ?? 'legacy-image-results')
+    const outputs = project.outputs.map(output => {
+      const versionId = output.version_id ?? foundationId('ver', project.id, operationId, output.id)
+      const existingVersion = project.versions.find(version => version.id === versionId)
+      const parentVersionId = output.parent_version_id ?? existingVersion?.parent_version_id ?? legacyParent
+      return {
+        ...output,
+        operation_id: output.operation_id ?? operationId,
+        version_id: versionId,
+        version_kind: output.version_kind ?? 'generated' as const,
+        parent_version_id: parentVersionId === versionId ? undefined : parentVersionId,
+      }
+    })
+    return await this.saveProject({ ...project, outputs }) as ImageWorkbenchProject
+  }
+
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)
@@ -1054,7 +1140,9 @@ export class MediaProjectService {
         }
       }
       if (project.kind !== 'image') return project
-      return await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project))
+      return await this.migrateImageVersions(
+        await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project)),
+      )
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
@@ -1143,10 +1231,18 @@ export class MediaProjectService {
     if (task.kind === 'image.generate' && project.kind === 'image') {
       const result = imageGenerationTaskResultSchema.safeParse(task.result)
       if (task.status === 'succeeded' && project.state !== 'ready' && result.success && result.data.outputs.length > 0) {
+        const completedOutputs = result.data.outputs
+        const operationKind = task.image_operation?.kind ?? 'generate'
         await this.saveProject({
           ...project,
           state: 'ready',
-          outputs: result.data.outputs,
+          outputs: [
+            ...project.outputs.filter(output => !completedOutputs.some(completed => completed.id === output.id)),
+            ...completedOutputs,
+          ],
+          current_version_id: operationKind === 'generate'
+            ? project.current_version_id
+            : completedOutputs[0]?.version_id ?? project.current_version_id,
           notice: result.data.input_fidelity_risk,
           error: undefined,
           error_code: undefined,
@@ -1367,6 +1463,136 @@ export class MediaProjectService {
     })
   }
 
+  private imageVersionRecord(project: ImageWorkbenchProject, versionId: string) {
+    const version = project.versions.find(candidate => candidate.id === versionId)
+    if (!version) throw new MediaServiceError('找不到指定图片版本', 404, 'IMAGE_VERSION_NOT_FOUND')
+    const resultAssets = version.asset_ids
+      .map(assetId => project.assets.find(asset => asset.id === assetId))
+      .filter((asset): asset is MediaAsset => asset?.role === 'result')
+    if (resultAssets.length !== 1) {
+      throw new MediaServiceError('指定版本没有唯一的图片结果', 409, 'IMAGE_VERSION_INVALID')
+    }
+    return { version, asset: resultAssets[0]! }
+  }
+
+  private async imageVersionBytes(project: ImageWorkbenchProject, versionId: string) {
+    const record = this.imageVersionRecord(project, versionId)
+    const mimeType = record.asset.mime_type
+    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
+      throw new MediaServiceError('图片版本格式不可用', 409, 'IMAGE_VERSION_INVALID')
+    }
+    let sourcePath: string
+    if (record.asset.storage.kind === 'cas') {
+      const match = /^sha256\/([a-f0-9]{64})$/.exec(record.asset.storage.locator)
+      if (!match) throw new MediaServiceError('图片版本存储地址损坏', 500, 'IMAGE_VERSION_CORRUPT')
+      sourcePath = join(this.casDir, match[1]!)
+    } else if (record.asset.storage.kind === 'managed') {
+      sourcePath = join(this.assetsDir, record.asset.storage.locator)
+    } else {
+      throw new MediaServiceError('图片版本尚未保存到本机', 409, 'IMAGE_VERSION_NOT_LOCAL')
+    }
+    const bytes = await readFile(sourcePath).catch(() => null)
+    if (!bytes) throw new MediaServiceError('图片版本文件已经丢失', 404, 'IMAGE_VERSION_MISSING')
+    const dimensions = imageDimensions(bytes, mimeType)
+    if (!dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 12000 || dimensions.height > 12000) {
+      throw new MediaServiceError('图片版本尺寸无法验证', 409, 'IMAGE_DIMENSIONS_INVALID')
+    }
+    return { ...record, bytes, mimeType, dimensions, sourcePath }
+  }
+
+  async selectImageVersion(projectId: string, raw: SelectImageVersionInput): Promise<ImageWorkbenchProject> {
+    const input = selectImageVersionInputSchema.parse(raw)
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    if (project.revision !== input.revision) {
+      throw new MediaServiceError('图片项目已更新，请刷新后再选择版本', 409, 'REVISION_CONFLICT')
+    }
+    this.imageVersionRecord(project, input.version_id)
+    return await this.saveProject({
+      ...project,
+      current_version_id: input.version_id,
+      revision: project.revision + 1,
+      updated_at: this.iso(),
+    }) as ImageWorkbenchProject
+  }
+
+  async commitImageVersion(projectId: string, raw: CommitImageVersionInput): Promise<ImageWorkbenchProject> {
+    const input = commitImageVersionInputSchema.parse(raw)
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    if (project.revision !== input.revision) {
+      throw new MediaServiceError('图片项目已更新，请刷新后再提交版本', 409, 'REVISION_CONFLICT')
+    }
+    if (project.task_id) {
+      const task = await this.getTask(project.task_id, false).catch(() => null)
+      if (task && ['queued', 'running', 'committing'].includes(task.status)) {
+        throw new MediaServiceError('当前图片操作尚未完成', 409, 'IMAGE_OPERATION_ACTIVE')
+      }
+    }
+    const base = await this.imageVersionBytes(project, input.base_version_id)
+    const renderedBytes = dataUrlBytes(input.rendered_image)
+    const dimensions = imageDimensions(renderedBytes, 'image/png')
+    if (!dimensions || dimensions.width !== input.width || dimensions.height !== input.height) {
+      throw new MediaServiceError('渲染结果尺寸与声明不一致', 400, 'IMAGE_DIMENSIONS_MISMATCH')
+    }
+    if (input.kind === 'upscale') {
+      if (
+        input.width !== base.dimensions.width * input.scale!
+        || input.height !== base.dimensions.height * input.scale!
+      ) {
+        throw new MediaServiceError('放大结果必须严格匹配基础版本与倍数', 400, 'IMAGE_UPSCALE_MISMATCH')
+      }
+    } else {
+      if (input.width !== base.dimensions.width || input.height !== base.dimensions.height) {
+        throw new MediaServiceError('文字排版不能改变基础画布尺寸', 400, 'IMAGE_TEXT_CANVAS_MISMATCH')
+      }
+      if (input.text_layers.some(layer => (
+        layer.x > input.width
+        || layer.y > input.height
+        || (layer.max_width ?? input.width) > input.width
+      ))) {
+        throw new MediaServiceError('文字图层超出基础画布', 400, 'IMAGE_TEXT_LAYER_OUT_OF_BOUNDS')
+      }
+      const renderedText = new Set(input.text_layers.map(layer => layer.text))
+      const missing = (project.brief?.exact_text ?? []).filter(text => !renderedText.has(text))
+      if (missing.length > 0) {
+        throw new MediaServiceError('文字图层缺少 Brief 中要求的精确文字', 400, 'IMAGE_EXACT_TEXT_MISSING')
+      }
+    }
+    const outputId = id('out')
+    const operationId = foundationId('op', project.id, input.kind, String(project.revision), input.base_version_id)
+    const versionId = foundationId('ver', project.id, operationId, outputId)
+    const fileName = `${outputId}.png`
+    const assetPath = join(this.assetsDir, project.id, fileName)
+    await mkdir(dirname(assetPath), { recursive: true, mode: 0o700 })
+    await writeFile(assetPath, renderedBytes, { mode: 0o600 })
+    const output = {
+      id: outputId,
+      operation_id: operationId,
+      version_id: versionId,
+      version_kind: input.kind,
+      parent_version_id: input.base_version_id,
+      width: input.width,
+      height: input.height,
+      text_layers: input.kind === 'text_layout' ? input.text_layers : undefined,
+      mime_type: 'image/png' as const,
+      asset_path: `/api/media/assets/${project.id}/${fileName}`,
+    }
+    try {
+      return await this.saveProject({
+        ...project,
+        state: 'ready',
+        current_version_id: versionId,
+        outputs: [...project.outputs, output],
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }) as ImageWorkbenchProject
+    } catch (error) {
+      await rm(assetPath, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+
   async saveImageOutput(projectId: string, raw: SaveImageOutputInput): Promise<{ path: string }> {
     const input = saveImageOutputInputSchema.parse(raw)
     if (!isAbsolute(input.output_path)) {
@@ -1374,9 +1600,11 @@ export class MediaProjectService {
     }
     const project = await this.getProject(projectId)
     if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
-    const output = project.outputs.find(candidate => candidate.id === input.output_id)
-    if (!output) throw new MediaServiceError('找不到图片结果', 404, 'IMAGE_OUTPUT_NOT_FOUND')
-    const expectedExtension = output.mime_type === 'image/jpeg' ? '.jpg' : output.mime_type === 'image/webp' ? '.webp' : '.png'
+    const versionSource = input.version_id ? await this.imageVersionBytes(project, input.version_id) : null
+    const output = input.output_id ? project.outputs.find(candidate => candidate.id === input.output_id) : undefined
+    if (!versionSource && !output) throw new MediaServiceError('找不到图片结果', 404, 'IMAGE_OUTPUT_NOT_FOUND')
+    const mimeType = versionSource?.mimeType ?? output!.mime_type
+    const expectedExtension = mimeType === 'image/jpeg' ? '.jpg' : mimeType === 'image/webp' ? '.webp' : '.png'
     const requestedExtension = extname(input.output_path).toLowerCase()
     if (requestedExtension !== expectedExtension && !(expectedExtension === '.jpg' && requestedExtension === '.jpeg')) {
       throw new MediaServiceError(`图片结果需要保存为 ${expectedExtension}`, 400, 'IMAGE_OUTPUT_EXTENSION_MISMATCH')
@@ -1384,8 +1612,10 @@ export class MediaProjectService {
 
     let sourcePath: string | null = null
     let bytes: Buffer | null = null
-    if (output.asset_path) {
-      const fileName = output.asset_path.split('/').pop() ?? ''
+    if (versionSource) {
+      sourcePath = versionSource.sourcePath
+    } else if (output!.asset_path) {
+      const fileName = output!.asset_path!.split('/').pop() ?? ''
       if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
         throw new MediaServiceError('图片资产地址损坏', 500, 'IMAGE_OUTPUT_CORRUPT')
       }
@@ -1393,8 +1623,8 @@ export class MediaProjectService {
         message: '图片结果文件已经丢失',
         code: 'IMAGE_OUTPUT_MISSING',
       })).path
-    } else if (output.data_url) {
-      bytes = dataUrlBytes(output.data_url)
+    } else if (output!.data_url) {
+      bytes = dataUrlBytes(output!.data_url!)
     } else {
       throw new MediaServiceError('远程图片结果尚未保存到本机', 409, 'IMAGE_OUTPUT_NOT_LOCAL')
     }
@@ -1586,6 +1816,11 @@ export class MediaProjectService {
       stage: '正在提交',
       idempotency_key: `bb-media-${digest}`,
       data_egress_consent: consent,
+      image_operation: {
+        kind: 'generate',
+        model: project.model,
+        output_count: 3,
+      },
       created_at: now,
       updated_at: now,
     })
@@ -1604,13 +1839,154 @@ export class MediaProjectService {
     return await this.submitPersistedImageTask(submittedProject, task)
   }
 
-  private async imageSubmissionPayload(project: ImageWorkbenchProject) {
+  async startImageOperation(
+    projectId: string,
+    raw: StartImageOperationInput,
+  ): Promise<MediaTask> {
+    const input = startImageOperationInputSchema.parse(raw)
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    if (project.revision !== input.revision) {
+      throw new MediaServiceError('图片项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
+    }
+    if (!input.data_egress_consent) {
+      throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
+    }
+    if (project.task_id) {
+      const existing = await this.getTask(project.task_id, false).catch(() => null)
+      if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
+        throw new MediaServiceError('上一次任务可能已经产生费用，请明确确认后再创建新操作', 409, 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED')
+      }
+      if (existing && ['queued', 'running', 'committing'].includes(existing.status)) {
+        throw new MediaServiceError('当前图片操作尚未完成', 409, 'IMAGE_OPERATION_ACTIVE')
+      }
+    }
+    if (!qfGatewayConfigured()) {
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    }
+    const base = await this.imageVersionBytes(project, input.base_version_id)
+    const model = input.kind === 'inpaint'
+      ? 'gpt-image-2' as const
+      : routedImageModel(input.instruction, project.size, true)
+    if (!imageSizeSupportedByModel(model, project.size)) {
+      throw new MediaServiceError('当前 ImageGeneration 能力不支持这个基础版本尺寸', 400, 'IMAGE_SIZE_UNSUPPORTED')
+    }
+    const now = this.iso()
+    const operationId = foundationId('op', project.id, input.kind, String(project.revision), input.base_version_id, input.instruction)
+    const providerInstruction = [
+      `编辑要求：${input.instruction}`,
+      project.brief?.must_preserve.length ? `必须保留：${project.brief.must_preserve.join('；')}` : '',
+      '除编辑要求明确指定的区域外，不得改变基础版本中的主体、品牌、Logo、二维码或已确认事实。',
+      '不得编造价格、日期、地址、联系方式、品牌或活动规则。',
+      project.brief?.exact_text.length ? '不要重新绘制可读文字，保留供确定性文字图层使用的区域。' : '',
+    ].filter(Boolean).join('\n')
+    let maskAsset: MediaAsset | undefined
+    let maskPath: string | undefined
+    if (input.mask_data_url) {
+      const maskBytes = dataUrlBytes(input.mask_data_url)
+      const maskDimensions = imageDimensions(maskBytes, 'image/png')
+      if (!maskDimensions || maskDimensions.width !== base.dimensions.width || maskDimensions.height !== base.dimensions.height) {
+        throw new MediaServiceError('局部重绘蒙版必须与基础版本尺寸一致', 400, 'IMAGE_MASK_DIMENSIONS_MISMATCH')
+      }
+      const maskId = id('mask')
+      const fileName = `${maskId}.png`
+      maskPath = join(this.assetsDir, project.id, 'masks', fileName)
+      await mkdir(dirname(maskPath), { recursive: true, mode: 0o700 })
+      await writeFile(maskPath, maskBytes, { mode: 0o600 })
+      maskAsset = {
+        id: maskId,
+        role: 'mask',
+        version_id: input.base_version_id,
+        storage: { kind: 'managed', locator: join(project.id, 'masks', fileName) },
+        mime_type: 'image/png',
+        byte_size: maskBytes.byteLength,
+        content_hash: `sha256:${createHash('sha256').update(maskBytes).digest('hex')}`,
+        created_at: now,
+      }
+    }
+    const operation = {
+      kind: input.kind,
+      base_version_id: input.base_version_id,
+      instruction: providerInstruction,
+      mask_asset_id: maskAsset?.id,
+      model,
+      output_count: 1,
+    } as const
+    const payload = await this.imageSubmissionPayload(
+      { ...project, assets: maskAsset ? [...project.assets, maskAsset] : project.assets },
+      { image_operation: operation },
+    )
+    const digest = createHash('sha256').update(`${operationId}:${JSON.stringify(payload)}`).digest('hex')
+    const consent = imageConsentReceipt(project, input.data_egress_consent, digest, model)
+    let task = mediaTaskSchema.parse({
+      schema_version: 1,
+      id: id('task'),
+      project_id: project.id,
+      operation_id: operationId,
+      kind: 'image.generate',
+      status: 'queued',
+      progress: 0,
+      stage: input.kind === 'inpaint' ? '正在提交局部重绘' : '正在提交图片编辑',
+      idempotency_key: `bb-media-${digest}`,
+      data_egress_consent: consent,
+      image_operation: operation,
+      created_at: now,
+      updated_at: now,
+    })
+    let projectPublished = false
+    try {
+      task = await this.saveTask(task)
+      const submittedProject = await this.saveProject({
+        ...project,
+        assets: maskAsset ? [...project.assets, maskAsset] : project.assets,
+        state: 'queued',
+        task_id: task.id,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }) as ImageWorkbenchProject
+      projectPublished = true
+      return await this.submitPersistedImageTask(submittedProject, task)
+    } catch (error) {
+      if (maskPath && !projectPublished) await rm(maskPath, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async imageSubmissionPayload(project: ImageWorkbenchProject, task?: Pick<MediaTask, 'image_operation'>) {
+    const operation = task?.image_operation
+    if (operation && operation.kind !== 'generate') {
+      const base = await this.imageVersionBytes(project, operation.base_version_id!)
+      let mask: string | undefined
+      if (operation.mask_asset_id) {
+        const asset = project.assets.find(candidate => candidate.id === operation.mask_asset_id && candidate.role === 'mask')
+        if (!asset || asset.storage.kind !== 'cas' && asset.storage.kind !== 'managed') {
+          throw new MediaServiceError('局部重绘蒙版不可用', 409, 'IMAGE_MASK_INVALID')
+        }
+        const path = asset.storage.kind === 'cas'
+          ? join(this.casDir, asset.storage.locator.replace(/^sha256\//, ''))
+          : join(this.assetsDir, asset.storage.locator)
+        mask = `data:image/png;base64,${(await readFile(path)).toString('base64')}`
+      }
+      return {
+        mode: 'edit' as const,
+        model: operation.model,
+        prompt: operation.instruction,
+        n: operation.output_count,
+        size: project.size,
+        ...(operation.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
+        images: [`data:${base.mimeType};base64,${base.bytes.toString('base64')}`],
+        ...(mask ? { mask } : {}),
+      }
+    }
     const referenceImages = project.mode === 'edit' ? await this.loadReferenceImages(project) : []
     return {
       mode: project.mode,
-      model: project.model,
+      model: operation?.model ?? project.model,
       prompt: project.prompt,
-      n: project.count,
+      n: operation?.output_count ?? project.count,
       size: project.size,
       ...(project.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
       ...(project.mode === 'edit' ? { images: referenceImages } : {}),
@@ -1645,7 +2021,7 @@ export class MediaProjectService {
     if (!originalTask.data_egress_consent) {
       throw new MediaServiceError('生图任务缺少数据出境同意回执', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
     }
-    const payload = await this.imageSubmissionPayload(project)
+    const payload = await this.imageSubmissionPayload(project, originalTask)
     let task = await this.saveTask({
       ...originalTask,
       status: 'queued',
@@ -1860,6 +2236,9 @@ export class MediaProjectService {
     }
 
     const outputs: ImageWorkbenchProject['outputs'] = []
+    const operationKind = task.image_operation?.kind ?? 'generate'
+    const versionKind = operationKind === 'generate' ? 'generated' as const : operationKind
+    const parentVersionId = task.image_operation?.base_version_id ?? attachedProject.versions.at(-1)?.id
     const projectAssetDir = join(this.assetsDir, task.project_id)
     const createdAssets: string[] = []
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
@@ -1869,15 +2248,21 @@ export class MediaProjectService {
       const versionId = foundationId('ver', task.project_id, operationId, outputId)
       if (item.b64_json) {
         const mimeType = item.mime_type ?? 'image/png'
+        const bytes = Buffer.from(item.b64_json, 'base64')
+        const dimensions = imageDimensions(bytes, mimeType)
         const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
         const fileName = `${outputId}.${extension}`
         const assetPath = join(projectAssetDir, fileName)
-        await writeFile(assetPath, Buffer.from(item.b64_json, 'base64'), { mode: 0o600 })
+        await writeFile(assetPath, bytes, { mode: 0o600 })
         createdAssets.push(assetPath)
         outputs.push({
           id: outputId,
           operation_id: operationId,
           version_id: versionId,
+          version_kind: versionKind,
+          parent_version_id: parentVersionId,
+          width: dimensions?.width,
+          height: dimensions?.height,
           mime_type: mimeType,
           asset_path: `/api/media/assets/${task.project_id}/${fileName}`,
           revised_prompt: item.revised_prompt,
@@ -1887,6 +2272,8 @@ export class MediaProjectService {
           id: outputId,
           operation_id: operationId,
           version_id: versionId,
+          version_kind: versionKind,
+          parent_version_id: parentVersionId,
           mime_type: 'image/png',
           url: item.url,
           revised_prompt: item.revised_prompt,
@@ -1930,7 +2317,13 @@ export class MediaProjectService {
     await this.saveProject({
       ...project,
       state: 'ready',
-      outputs,
+      outputs: [
+        ...project.outputs.filter(output => !outputs.some(completed => completed.id === output.id)),
+        ...outputs,
+      ],
+      current_version_id: operationKind === 'generate'
+        ? project.current_version_id
+        : outputs[0]?.version_id ?? project.current_version_id,
       notice: body.input_fidelity_risk ? boundedMessage(body.input_fidelity_risk) : undefined,
       error: undefined,
       error_code: undefined,

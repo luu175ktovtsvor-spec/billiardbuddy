@@ -7,6 +7,7 @@ import {
   type UpdateImageProjectInput,
   type PublicImageWorkbenchProject as ImageWorkbenchProject,
   type SaveImageOutputInput,
+  type StartImageOperationInput,
 } from '../../../shared/contracts/media'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -42,6 +43,23 @@ export class ElectronMediaActions {
     })
   }
 
+  startImageOperation(
+    projectId: string,
+    input: Omit<StartImageOperationInput, 'data_egress_consent'>,
+    confirmedDataEgress = false,
+  ): Promise<{ task: MediaTask }> {
+    return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/operations`, {
+      ...input,
+      ...(confirmedDataEgress ? {
+        data_egress_consent: {
+          policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
+          acknowledged: true,
+          acknowledged_at: new Date().toISOString(),
+        },
+      } : {}),
+    })
+  }
+
   updateUnknownImageProject(
     projectId: string,
     input: UpdateImageProjectInput,
@@ -58,8 +76,12 @@ export class ElectronMediaActions {
   }
 
   saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }> {
+    const resultId = input.version_id ?? input.output_id
+    if (!resultId) throw new Error(mediaSafeError('MEDIA_INVALID_REQUEST').message)
     return this.post(
-      `/api/media/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(input.output_id)}/save`,
+      input.version_id
+        ? `/api/media/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/save`
+        : `/api/media/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(resultId)}/save`,
       { output_path: input.output_path },
     )
   }

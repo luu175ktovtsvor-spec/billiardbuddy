@@ -105,6 +105,9 @@ export const browserHost: DesktopHost = {
     async submitImageProject() {
       unsupported('Paid image submission')
     },
+    async startImageOperation() {
+      unsupported('Paid image editing')
+    },
     async updateUnknownImageProject() {
       unsupported('Confirming an unknown image task update')
     },

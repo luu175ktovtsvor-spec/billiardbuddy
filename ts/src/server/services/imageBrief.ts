@@ -23,7 +23,10 @@ function exactText(userRequest: string): string[] {
     if (match[1]) values.push(match[1])
   }
   for (const match of userRequest.matchAll(/(?:标题|文案|文字|写上|显示)[:：]\s*([^，。；;\n]{1,500})/gu)) {
-    if (match[1]) values.push(match[1])
+    const value = match[1]?.trim()
+    // A quoted value was already captured by the stricter pass above; do not
+    // accidentally extend it with the prose that follows the closing quote.
+    if (value && !/^[“"「『《]/u.test(value)) values.push(value)
   }
   return unique(values).slice(0, 40)
 }
