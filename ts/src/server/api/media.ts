@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
   addVideoSourceInputSchema,
+  commitImageVersionInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
   mediaSafeError,
@@ -11,6 +12,8 @@ import {
   publicMediaTaskSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
+  selectImageVersionInputSchema,
+  startImageOperationInputSchema,
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
   updateVideoTimelineInputSchema,
@@ -108,6 +111,29 @@ function publicProject(project: MediaProject): PublicMediaProject {
     : null
   const projected = publicMediaProjectSchema.parse({
     ...safeProject,
+    ...(project.kind === 'image' ? {
+      version_history: (project.versions ?? []).flatMap(version => {
+        const asset = version.asset_ids.length === 1
+          ? (project.assets ?? []).find(candidate => candidate.id === version.asset_ids[0] && candidate.role === 'result')
+          : undefined
+        const output = asset ? (project.outputs ?? []).find(candidate => candidate.id === asset.id) : undefined
+        const imagePath = output?.asset_path ?? output?.url
+        if (!asset || !imagePath || !asset.mime_type || !['image/png', 'image/jpeg', 'image/webp'].includes(asset.mime_type)) return []
+        return [{
+          id: version.id,
+          parent_version_id: version.parent_version_id,
+          kind: version.kind ?? output?.version_kind ?? 'generated',
+          operation_id: version.operation_id ?? output?.operation_id,
+          asset_id: asset.id,
+          image_path: imagePath,
+          mime_type: asset.mime_type,
+          width: version.width ?? output?.width,
+          height: version.height ?? output?.height,
+          text_layers: version.text_layers ?? output?.text_layers ?? [],
+          created_at: version.created_at,
+        }]
+      }),
+    } : {}),
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   })
   if (projected.kind !== 'image') return projected
@@ -125,6 +151,8 @@ function publicTask(task: MediaTask): PublicMediaTask {
   const {
     owner: _owner,
     attempt: _attempt,
+    image_operation: _imageOperation,
+    result: persistedResult,
     error: _rawError,
     error_code: persistedErrorCode,
     ...safeTask
@@ -135,8 +163,17 @@ function publicTask(task: MediaTask): PublicMediaTask {
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
       : 'MEDIA_VIDEO_EXPORT_FAILED'
   const failure = _rawError ? mediaSafeError(persistedErrorCode ?? fallback) : null
+  const safeResult = task.kind === 'image.generate' && persistedResult
+    ? Object.fromEntries([
+        'output_count',
+        'input_fidelity_requested',
+        'input_fidelity_status',
+        'input_fidelity_risk',
+      ].flatMap(key => persistedResult[key] === undefined ? [] : [[key, persistedResult[key]]]))
+    : persistedResult
   return publicMediaTaskSchema.parse({
     ...safeTask,
+    ...(safeResult ? { result: safeResult } : {}),
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   })
 }
@@ -236,6 +273,36 @@ export function createMediaApiHandler(
             requireMediaUiCapability(req, mediaUiCapability)
           }
           return Response.json({ project: publicProject(await service.updateImageProject(projectId, input)) })
+        }
+        if (action === 'operations') {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = startImageOperationInputSchema.parse(await parseJson(req))
+          return Response.json({ task: publicTask(await service.startImageOperation(projectId, input)) }, { status: 202 })
+        }
+        if (action === 'versions') {
+          const versionId = segments[6]
+          const versionAction = segments[7]
+          if (versionId && versionAction === 'select') {
+            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
+            const input = selectImageVersionInputSchema.parse({
+              ...(await parseJson(req) as Record<string, unknown>),
+              version_id: versionId,
+            })
+            return Response.json({ project: publicProject(await service.selectImageVersion(projectId, input)) })
+          }
+          if (versionId && versionAction === 'save') {
+            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
+            requireMediaUiCapability(req, mediaUiCapability)
+            const input = saveImageOutputInputSchema.parse({
+              ...(await parseJson(req) as Record<string, unknown>),
+              version_id: versionId,
+            })
+            return Response.json(await service.saveImageOutput(projectId, input))
+          }
+          if (req.method !== 'POST' || versionId) throw methodNotAllowed(req.method)
+          const input = commitImageVersionInputSchema.parse(await parseJson(req))
+          return Response.json({ project: publicProject(await service.commitImageVersion(projectId, input)) }, { status: 201 })
         }
         if (action === 'outputs' && segments[7] === 'save') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)

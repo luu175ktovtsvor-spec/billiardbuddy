@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Download, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, X } from 'lucide-react'
+import { Download, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react'
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   type ImageCanvasSize,
   type ImageReferenceRole,
+  type ImageTextLayer,
   mediaApi,
   mediaUserFacingError,
 } from '../../api/media'
@@ -100,6 +101,74 @@ function readImage(file: File): Promise<string> {
   })
 }
 
+function loadCanvasImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('IMAGE_LOAD_FAILED'))
+    image.src = url
+  })
+}
+
+async function renderUpscale(url: string, scale: 2 | 3 | 4) {
+  const image = await loadCanvasImage(url)
+  const width = image.naturalWidth * scale
+  const height = image.naturalHeight * scale
+  if (width > 12000 || height > 12000) throw new Error('IMAGE_TOO_LARGE')
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('CANVAS_UNAVAILABLE')
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.drawImage(image, 0, 0, width, height)
+  return { rendered_image: canvas.toDataURL('image/png'), width, height }
+}
+
+async function renderTextLayers(url: string, copy: string) {
+  const image = await loadCanvasImage(url)
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('CANVAS_UNAVAILABLE')
+  context.drawImage(image, 0, 0)
+  const lines = copy.split('\n').map(line => line.trim()).filter(Boolean)
+  const fontSize = Math.max(24, Math.min(160, Math.round(canvas.width / 14)))
+  const lineHeight = Math.round(fontSize * 1.3)
+  const startY = Math.round(canvas.height * 0.12)
+  const layers: ImageTextLayer[] = lines.map((text, index) => ({
+    id: `text_${crypto.randomUUID().replaceAll('-', '')}`,
+    text,
+    x: Math.round(canvas.width / 2),
+    y: startY + index * lineHeight,
+    max_width: Math.round(canvas.width * 0.84),
+    fill: '#ffffff',
+    font_family: 'PingFang SC',
+    font_size: fontSize,
+    font_weight: 'bold',
+    text_align: 'center',
+  }))
+  context.textBaseline = 'top'
+  for (const layer of layers) {
+    context.font = `${layer.font_weight} ${layer.font_size}px ${layer.font_family}`
+    context.textAlign = layer.text_align
+    context.fillStyle = layer.fill
+    context.strokeStyle = '#000000'
+    context.lineWidth = Math.max(2, Math.round(layer.font_size / 18))
+    context.strokeText(layer.text, layer.x, layer.y, layer.max_width)
+    context.fillText(layer.text, layer.x, layer.y, layer.max_width)
+  }
+  return {
+    rendered_image: canvas.toDataURL('image/png'),
+    width: canvas.width,
+    height: canvas.height,
+    text_layers: layers,
+  }
+}
+
 export function ImageWorkbench() {
   const projects = useMediaWorkbenchStore(state => state.imageProjects)
   const activeId = useMediaWorkbenchStore(state => state.activeImageId)
@@ -111,6 +180,9 @@ export function ImageWorkbench() {
   const createImage = useMediaWorkbenchStore(state => state.createImage)
   const saveImageDraft = useMediaWorkbenchStore(state => state.saveImageDraft)
   const submitImage = useMediaWorkbenchStore(state => state.submitImage)
+  const startImageOperation = useMediaWorkbenchStore(state => state.startImageOperation)
+  const commitImageVersion = useMediaWorkbenchStore(state => state.commitImageVersion)
+  const selectImageVersion = useMediaWorkbenchStore(state => state.selectImageVersion)
   const refreshTask = useMediaWorkbenchStore(state => state.refreshTask)
   const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
   const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
@@ -120,6 +192,11 @@ export function ImageWorkbench() {
   const [size, setSize] = useState<ImageCanvasSize>('1024x1024')
   const [references, setReferences] = useState<ReferenceImage[]>([])
   const [selectedOutput, setSelectedOutput] = useState(0)
+  const [operationKind, setOperationKind] = useState<'edit' | 'inpaint'>('edit')
+  const [operationInstruction, setOperationInstruction] = useState('')
+  const [maskDataUrl, setMaskDataUrl] = useState<string | null>(null)
+  const [upscale, setUpscale] = useState<2 | 3 | 4>(2)
+  const [textCopy, setTextCopy] = useState('')
   const [inputError, setInputError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
@@ -131,10 +208,19 @@ export function ImageWorkbench() {
   const fidelityRisk = typeof task?.result?.input_fidelity_risk === 'string'
     ? task.result.input_fidelity_risk
     : active?.notice ?? null
-  const outputUrls = active?.outputs.map(output => output.asset_path
-    ? mediaApi.assetUrl(output.asset_path)
-    : output.url ?? output.data_url ?? '') ?? []
+  const versions = active?.version_history ?? []
+  const outputUrls = versions.map(version => version.image_path.startsWith('/api/')
+    ? mediaApi.assetUrl(version.image_path)
+    : version.image_path)
   const outputUrl = outputUrls[selectedOutput] ?? outputUrls[0]
+  const selectedVersion = versions[selectedOutput] ?? versions[0]
+  const currentVersion = versions.find(version => version.id === active?.current_version_id)
+  const undoVersion = currentVersion?.parent_version_id
+    ? versions.find(version => version.id === currentVersion.parent_version_id)
+    : undefined
+  const redoVersion = currentVersion
+    ? [...versions].reverse().find(version => version.parent_version_id === currentVersion.id)
+    : undefined
   const storeError = error ? mediaUserFacingError(new Error(error)) : null
   const projectError = active?.error
     ? mediaUserFacingError({ code: active.error_code })
@@ -149,8 +235,14 @@ export function ImageWorkbench() {
   }, [loadProjects])
 
   useEffect(() => {
-    setSelectedOutput(0)
-  }, [activeId])
+    const currentIndex = active?.current_version_id
+      ? versions.findIndex(version => version.id === active.current_version_id)
+      : -1
+    setSelectedOutput(currentIndex >= 0 ? currentIndex : 0)
+    setOperationInstruction('')
+    setMaskDataUrl(null)
+    setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
+  }, [activeId, active?.current_version_id])
 
   useEffect(() => {
     if (!active || creating) return
@@ -281,10 +373,8 @@ export function ImageWorkbench() {
   }
 
   const downloadOutput = async () => {
-    if (!outputUrl || !active) return
-    const output = active.outputs[selectedOutput] ?? active.outputs[0]
-    if (!output) return
-    const mime = output.mime_type
+    if (!outputUrl || !active || !selectedVersion) return
+    const mime = selectedVersion.mime_type
     const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png'
     const safeTitle = active.title.replace(/[\\/:*?"<>|]/g, '_').trim() || '图片'
     try {
@@ -294,10 +384,66 @@ export function ImageWorkbench() {
         filters: [{ name: '图片', extensions: [extension] }],
       })
       if (!outputPath) return
-      await mediaApi.saveImageOutput(active.id, { output_id: output.id, output_path: outputPath })
+      await mediaApi.saveImageOutput(active.id, { version_id: selectedVersion.id, output_path: outputPath })
       setInputError(null)
     } catch (error) {
       setInputError(mediaUserFacingError(error, '暂时无法保存图片，请检查保存位置后重试。'))
+    }
+  }
+
+  const chooseVersion = async () => {
+    if (!active || !selectedVersion || active.current_version_id === selectedVersion.id) return
+    await selectImageVersion(active.id, active.revision, selectedVersion.id)
+  }
+
+  const runProviderOperation = async () => {
+    if (!active || !selectedVersion || !operationInstruction.trim()) return
+    if (operationKind === 'inpaint' && !maskDataUrl) {
+      setInputError('局部重绘需要上传与基础版本同尺寸的透明 PNG 蒙版')
+      return
+    }
+    if (!window.confirm('将把当前基础版本、编辑指令和可选蒙版发送到美国 Relay，由 ImageGeneration 能力执行；本次可能产生费用。确认继续吗？')) return
+    await startImageOperation(active.id, {
+      revision: active.revision,
+      base_version_id: selectedVersion.id,
+      kind: operationKind,
+      instruction: operationInstruction.trim(),
+      mask_data_url: operationKind === 'inpaint' ? maskDataUrl ?? undefined : undefined,
+      confirm_unknown_retry: task?.outcome_unknown === true,
+    }, true)
+  }
+
+  const commitUpscale = async () => {
+    if (!active || !selectedVersion || !outputUrl) return
+    try {
+      const rendered = await renderUpscale(outputUrl, upscale)
+      await commitImageVersion(active.id, {
+        revision: active.revision,
+        base_version_id: selectedVersion.id,
+        kind: 'upscale',
+        scale: upscale,
+        text_layers: [],
+        ...rendered,
+      })
+      setInputError(null)
+    } catch (error) {
+      setInputError(mediaUserFacingError(error, '无法在本机完成图片放大，请换一个版本后重试。'))
+    }
+  }
+
+  const commitText = async () => {
+    if (!active || !selectedVersion || !outputUrl || !textCopy.trim()) return
+    try {
+      const rendered = await renderTextLayers(outputUrl, textCopy)
+      await commitImageVersion(active.id, {
+        revision: active.revision,
+        base_version_id: selectedVersion.id,
+        kind: 'text_layout',
+        ...rendered,
+      })
+      setInputError(null)
+    } catch (error) {
+      setInputError(mediaUserFacingError(error, '无法在本机完成文字排版，请检查文字后重试。'))
     }
   }
 
@@ -348,12 +494,12 @@ export function ImageWorkbench() {
             <div className="mt-3 flex h-14 max-w-full shrink-0 gap-2 overflow-x-auto">
               {outputUrls.map((url, index) => (
                 <button
-                  key={`${active?.id ?? 'output'}-${index}`}
+                  key={versions[index]?.id ?? `${active?.id ?? 'output'}-${index}`}
                   type="button"
                   onClick={() => setSelectedOutput(index)}
                   className="h-14 w-14 shrink-0 overflow-hidden border bg-[var(--color-app-main)]"
                   style={{ borderColor: index === selectedOutput ? 'var(--color-brand)' : 'var(--color-border)' }}
-                  aria-label={`查看结果 ${index + 1}`}
+                  aria-label={`查看版本 ${index + 1}`}
                 >
                   <img src={url} alt="" className="h-full w-full object-cover" />
                 </button>
@@ -361,14 +507,25 @@ export function ImageWorkbench() {
             </div>
           )}
           {outputUrl && (
-            <button
-              type="button"
-              onClick={() => void downloadOutput()}
-              className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-            >
-              <Download size={14} aria-hidden="true" />
-              下载图片
-            </button>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => void chooseVersion()}
+                disabled={!selectedVersion || active?.current_version_id === selectedVersion.id || loading}
+                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 text-[12px] text-[var(--color-text-secondary)] disabled:opacity-45"
+              >
+                <Undo2 size={14} aria-hidden="true" />
+                {active?.current_version_id === selectedVersion?.id ? '当前版本' : '切换到此版本'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void downloadOutput()}
+                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+              >
+                <Download size={14} aria-hidden="true" />
+                导出当前预览
+              </button>
+            </div>
           )}
         </main>
 
@@ -518,6 +675,26 @@ export function ImageWorkbench() {
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
+                {currentVersion && (
+                  <div className="mb-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => undoVersion && void selectImageVersion(active.id, active.revision, undoVersion.id)}
+                      disabled={!undoVersion || loading}
+                      className="h-8 rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45"
+                    >
+                      撤销到父版本
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => redoVersion && void selectImageVersion(active.id, active.revision, redoVersion.id)}
+                      disabled={!redoVersion || loading}
+                      className="h-8 rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45"
+                    >
+                      重做到子版本
+                    </button>
+                  </div>
+                )}
                 {active.state === 'draft' && (
                   <button
                     type="button"
@@ -562,6 +739,81 @@ export function ImageWorkbench() {
                       ? (task.remote_task_id || hasDraftChanges ? '确认后重新生成' : '确认上次提交')
                       : '重新生成'}
                   </button>
+                )}
+                {selectedVersion && active.current_version_id !== selectedVersion.id && !['queued', 'generating'].includes(active.state) && (
+                  <p className="mt-4 text-[11px] leading-4 text-[var(--color-text-tertiary)]">先在预览区将这个候选切换为当前版本，再从它继续编辑。</p>
+                )}
+                {selectedVersion && active.current_version_id === selectedVersion.id && !['queued', 'generating'].includes(active.state) && (
+                  <div className="mt-5 border-t border-[var(--color-border)] pt-4">
+                    <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">从所选版本继续</div>
+                    <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">
+                      {(['edit', 'inpaint'] as const).map(kind => (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => { setOperationKind(kind); setMaskDataUrl(null) }}
+                          className="h-7 rounded-[4px] text-[12px]"
+                          style={{ background: operationKind === kind ? 'var(--color-app-main)' : undefined }}
+                        >
+                          {kind === 'edit' ? '继续编辑' : '局部重绘'}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      aria-label="图片编辑指令"
+                      value={operationInstruction}
+                      onChange={event => setOperationInstruction(event.target.value)}
+                      rows={3}
+                      placeholder="说明要修改什么，以及必须保持不变的内容"
+                      className="mt-2 w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[12px]"
+                    />
+                    {operationKind === 'inpaint' && (
+                      <label className="mt-2 block text-[11px] text-[var(--color-text-secondary)]">
+                        透明 PNG 蒙版（透明区域将被重绘）
+                        <input
+                          type="file"
+                          accept="image/png"
+                          onChange={event => {
+                            const file = event.target.files?.[0]
+                            if (file) void readImage(file).then(setMaskDataUrl)
+                          }}
+                          className="mt-1 block w-full text-[11px]"
+                        />
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void runProviderOperation()}
+                      disabled={loading || !operationInstruction.trim() || (operationKind === 'inpaint' && !maskDataUrl)}
+                      className="mt-2 h-8 w-full rounded-[6px] bg-[var(--color-brand)] text-[12px] text-white disabled:opacity-45"
+                    >
+                      {operationKind === 'edit' ? '生成编辑版本' : '生成局部重绘版本'}
+                    </button>
+
+                    <div className="mt-4 grid grid-cols-[1fr_72px] gap-2">
+                      <select
+                        aria-label="放大倍数"
+                        value={upscale}
+                        onChange={event => setUpscale(Number(event.target.value) as 2 | 3 | 4)}
+                        className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px]"
+                      >
+                        <option value={2}>本机高质量放大 2×</option>
+                        <option value={3}>本机高质量放大 3×</option>
+                        <option value={4}>本机高质量放大 4×</option>
+                      </select>
+                      <button type="button" onClick={() => void commitUpscale()} disabled={loading} className="h-8 rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">放大</button>
+                    </div>
+
+                    <textarea
+                      aria-label="精确文字图层"
+                      value={textCopy}
+                      onChange={event => setTextCopy(event.target.value)}
+                      rows={4}
+                      placeholder="每行生成一个确定性文字图层"
+                      className="mt-4 w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[12px]"
+                    />
+                    <button type="button" onClick={() => void commitText()} disabled={loading || !textCopy.trim()} className="mt-2 h-8 w-full rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">生成文字排版版本</button>
+                  </div>
                 )}
               </>
             )}

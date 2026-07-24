@@ -107,6 +107,10 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
         ELECTRON_IPC_CHANNELS.mediaSubmitImage,
         { projectId, confirmUnknownRetry, confirmedDataEgress },
       ),
+      startImageOperation: (projectId, input, confirmedDataEgress = false) => invoke(
+        ELECTRON_IPC_CHANNELS.mediaStartImageOperation,
+        { projectId, input, confirmedDataEgress },
+      ),
       updateUnknownImageProject: (projectId, input) => invoke(
         ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage,
         { projectId, input },

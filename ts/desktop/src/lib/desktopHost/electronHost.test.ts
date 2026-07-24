@@ -104,6 +104,13 @@ describe('electron desktop host', () => {
     })
 
     await host.media.submitImageProject('img_project01', true, true)
+    await host.media.startImageOperation('img_project01', {
+      revision: 2,
+      base_version_id: 'ver_base0001',
+      kind: 'edit',
+      instruction: '只调整背景色',
+      confirm_unknown_retry: false,
+    }, true)
     await host.media.renderVideo({
       projectId: 'vid_project01',
       revision: 4,
@@ -115,7 +122,18 @@ describe('electron desktop host', () => {
       ELECTRON_IPC_CHANNELS.mediaSubmitImage,
       { projectId: 'img_project01', confirmUnknownRetry: true, confirmedDataEgress: true },
     )
-    expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
+    expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
+      projectId: 'img_project01',
+      input: {
+        revision: 2,
+        base_version_id: 'ver_base0001',
+        kind: 'edit',
+        instruction: '只调整背景色',
+        confirm_unknown_retry: false,
+      },
+      confirmedDataEgress: true,
+    })
+    expect(invoke).toHaveBeenNthCalledWith(3, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',
       revision: 4,
       outputPath: '/tmp/final.mp4',

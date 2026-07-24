@@ -6,6 +6,9 @@ const mediaApiMock = vi.hoisted(() => ({
   createImageProject: vi.fn(),
   updateImageProject: vi.fn(),
   submitImageProject: vi.fn(),
+  startImageOperation: vi.fn(),
+  commitImageVersion: vi.fn(),
+  selectImageVersion: vi.fn(),
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
   updateVideoTimeline: vi.fn(),
@@ -58,7 +61,7 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
     references: [],
     reference_images: [],
     reference_image_count: 0,
-    outputs: [],
+    version_history: [],
   }
 }
 

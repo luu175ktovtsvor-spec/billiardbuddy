@@ -6,6 +6,7 @@ import type {
   PublicImageWorkbenchProject as ImageWorkbenchProject,
   PublicMediaTask as MediaTask,
   SaveImageOutputInput,
+  StartImageOperationInput,
   UpdateImageProjectInput,
 } from '../../../../shared/contracts/media'
 
@@ -191,6 +192,11 @@ export type DesktopHost = {
     submitImageProject(
       projectId: string,
       confirmUnknownRetry?: boolean,
+      confirmedDataEgress?: boolean,
+    ): Promise<{ task: MediaTask }>
+    startImageOperation(
+      projectId: string,
+      input: Omit<StartImageOperationInput, 'data_egress_consent'>,
       confirmedDataEgress?: boolean,
     ): Promise<{ task: MediaTask }>
     updateUnknownImageProject(

@@ -43,7 +43,7 @@ export const mediaOwnerSchema = z.discriminatedUnion('kind', [
 ])
 export const mediaAssetSchema = z.object({
   id: mediaIdSchema,
-  role: z.enum(['reference', 'source', 'result', 'export']),
+  role: z.enum(['reference', 'mask', 'source', 'result', 'export']),
   version_id: mediaIdSchema,
   storage: z.object({
     kind: z.enum(['cas', 'managed', 'external', 'remote']),
@@ -54,11 +54,36 @@ export const mediaAssetSchema = z.object({
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   created_at: mediaIsoDateSchema,
 })
+export const imageVersionKindSchema = z.enum([
+  'generated',
+  'edit',
+  'inpaint',
+  'upscale',
+  'text_layout',
+])
+export const imageTextLayerSchema = z.object({
+  id: mediaIdSchema,
+  text: z.string().min(1).max(2000),
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+  max_width: z.number().finite().positive().max(12000).optional(),
+  fill: z.string().regex(/^#[a-fA-F0-9]{6}$/).default('#ffffff'),
+  font_family: z.string().min(1).max(120).default('PingFang SC'),
+  font_size: z.number().finite().min(12).max(512).default(64),
+  font_weight: z.enum(['normal', 'bold']).default('bold'),
+  text_align: z.enum(['left', 'center', 'right']).default('left'),
+})
 export const mediaVersionSchema = z.object({
   id: mediaIdSchema,
   parent_version_id: mediaIdSchema.optional(),
   project_revision: z.number().int().nonnegative(),
   asset_ids: z.array(mediaIdSchema).max(1000),
+  /** Image-only metadata; generic media versions remain valid without it. */
+  kind: imageVersionKindSchema.optional(),
+  operation_id: mediaIdSchema.optional(),
+  width: z.number().int().positive().max(12000).optional(),
+  height: z.number().int().positive().max(12000).optional(),
+  text_layers: z.array(imageTextLayerSchema).max(80).optional(),
   created_at: mediaIsoDateSchema,
 })
 export const mediaDeletionReceiptSchema = z.object({
@@ -198,6 +223,11 @@ export const imageWorkbenchOutputSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   /** Each candidate is an independent immutable branch in the project history. */
   version_id: mediaIdSchema.optional(),
+  version_kind: imageVersionKindSchema.optional(),
+  parent_version_id: mediaIdSchema.optional(),
+  width: z.number().int().positive().max(12000).optional(),
+  height: z.number().int().positive().max(12000).optional(),
+  text_layers: z.array(imageTextLayerSchema).max(80).optional(),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/png'),
   data_url: z.string().startsWith('data:image/').optional(),
   asset_path: z.string().startsWith('/api/media/assets/').optional(),
@@ -205,6 +235,20 @@ export const imageWorkbenchOutputSchema = z.object({
   revised_prompt: z.string().max(8000).optional(),
 }).refine(value => Boolean(value.data_url || value.asset_path || value.url), {
   message: 'an image output needs data_url, asset_path or url',
+})
+
+export const publicImageVersionSchema = z.object({
+  id: mediaIdSchema,
+  parent_version_id: mediaIdSchema.optional(),
+  kind: imageVersionKindSchema,
+  operation_id: mediaIdSchema.optional(),
+  asset_id: mediaIdSchema,
+  image_path: z.string().min(1).max(4096),
+  mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  width: z.number().int().positive().max(12000).optional(),
+  height: z.number().int().positive().max(12000).optional(),
+  text_layers: z.array(imageTextLayerSchema).max(80).default([]),
+  created_at: mediaIsoDateSchema,
 })
 
 export const imageReferenceRoleSchema = z.enum([
@@ -244,6 +288,8 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   count: z.number().int().min(1).max(4).default(1),
   /** New provider-neutral projects always request one three-candidate operation. */
   candidate_count: z.literal(3).default(3),
+  /** Selecting or rolling back changes only this pointer; Version history is immutable. */
+  current_version_id: mediaIdSchema.optional(),
   brief: imageCreativeBriefSchema.optional(),
   references: z.array(imageProjectReferenceSchema).max(8).default([]),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
@@ -312,6 +358,10 @@ export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omi
   model: true,
   prompt: true,
   count: true,
+  /** Legacy result projection remains persisted for migration but is not a UI authority. */
+  outputs: true,
+}).extend({
+  version_history: z.array(publicImageVersionSchema).max(1000).default([]),
 })
 export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields)
 export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
@@ -338,13 +388,21 @@ export const mediaTaskSchema = z.object({
   outcome_unknown: z.boolean().optional(),
   data_egress_consent: imageDataEgressConsentReceiptSchema.optional(),
   provider_receipt_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  image_operation: z.object({
+    kind: z.enum(['generate', 'edit', 'inpaint']),
+    base_version_id: mediaIdSchema.optional(),
+    instruction: z.string().min(1).max(4000).optional(),
+    mask_asset_id: mediaIdSchema.optional(),
+    model: imageGenerationModelSchema,
+    output_count: z.number().int().min(1).max(3),
+  }).optional(),
   result: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(2000).optional(),
   error_code: mediaSafeErrorCodeSchema.optional(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })
-export const publicMediaTaskSchema = mediaTaskSchema.omit({ owner: true, attempt: true })
+export const publicMediaTaskSchema = mediaTaskSchema.omit({ owner: true, attempt: true, image_operation: true })
 
 export const imageGenerationTaskResultSchema = z.object({
   output_count: z.number().int().nonnegative(),
@@ -418,6 +476,50 @@ export const submitImageProjectInputSchema = z.object({
   data_egress_consent: imageDataEgressAcknowledgementSchema.optional(),
 })
 
+const imagePngDataUrlSchema = z.string()
+  .max(Math.ceil(32 * 1024 * 1024 * 4 / 3) + 128)
+  .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
+
+export const startImageOperationInputSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  base_version_id: mediaIdSchema,
+  kind: z.enum(['edit', 'inpaint']),
+  instruction: z.string().min(1).max(4000),
+  mask_data_url: imagePngDataUrlSchema.optional(),
+  confirm_unknown_retry: z.boolean().default(false),
+  data_egress_consent: imageDataEgressAcknowledgementSchema.optional(),
+}).superRefine((value, context) => {
+  if (value.kind === 'inpaint' && !value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'inpaint requires a PNG mask' })
+  }
+  if (value.kind === 'edit' && value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'edit does not accept a mask' })
+  }
+})
+
+export const commitImageVersionInputSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  base_version_id: mediaIdSchema,
+  kind: z.enum(['upscale', 'text_layout']),
+  rendered_image: imagePngDataUrlSchema,
+  width: z.number().int().positive().max(12000),
+  height: z.number().int().positive().max(12000),
+  scale: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
+  text_layers: z.array(imageTextLayerSchema).max(80).default([]),
+}).superRefine((value, context) => {
+  if (value.kind === 'upscale' && !value.scale) {
+    context.addIssue({ code: 'custom', path: ['scale'], message: 'upscale requires a scale' })
+  }
+  if (value.kind === 'text_layout' && value.scale) {
+    context.addIssue({ code: 'custom', path: ['scale'], message: 'text layout does not accept a scale' })
+  }
+})
+
+export const selectImageVersionInputSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  version_id: mediaIdSchema,
+})
+
 export const addVideoSourceInputSchema = z.object({
   path: z.string().min(1).max(4096),
 })
@@ -433,8 +535,12 @@ export const renderVideoInputSchema = z.object({
 })
 
 export const saveImageOutputInputSchema = z.object({
-  output_id: mediaIdSchema,
+  version_id: mediaIdSchema.optional(),
+  /** One-release compatibility for callers that still address legacy outputs. */
+  output_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096),
+}).refine(value => Boolean(value.version_id || value.output_id), {
+  message: 'version_id is required',
 })
 
 export type MediaProject = z.infer<typeof mediaProjectSchema>
@@ -448,6 +554,9 @@ export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
 export type MediaOwner = z.infer<typeof mediaOwnerSchema>
 export type MediaAsset = z.infer<typeof mediaAssetSchema>
 export type MediaVersion = z.infer<typeof mediaVersionSchema>
+export type PublicImageVersion = z.infer<typeof publicImageVersionSchema>
+export type ImageVersionKind = z.infer<typeof imageVersionKindSchema>
+export type ImageTextLayer = z.infer<typeof imageTextLayerSchema>
 export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
 export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
 export type ImageProjectReference = z.infer<typeof imageProjectReferenceSchema>
@@ -459,6 +568,9 @@ export type CreateImageProjectInput = z.input<typeof createImageProjectInputSche
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
 export type SubmitImageProjectInput = z.input<typeof submitImageProjectInputSchema>
+export type StartImageOperationInput = z.input<typeof startImageOperationInputSchema>
+export type CommitImageVersionInput = z.input<typeof commitImageVersionInputSchema>
+export type SelectImageVersionInput = z.input<typeof selectImageVersionInputSchema>
 export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>

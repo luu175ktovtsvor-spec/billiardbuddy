@@ -3,9 +3,11 @@ import {
   mediaApi,
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
+  type CommitImageVersionInput,
   type ImageWorkbenchProject,
   type MediaTask,
   type MediaToolchainStatus,
+  type StartImageOperationInput,
   type VideoStudioProject,
   mediaUserFacingError,
 } from '../api/media'
@@ -29,6 +31,13 @@ type MediaWorkbenchStore = {
     confirmUnknownRetry?: boolean,
   ) => Promise<ImageWorkbenchProject>
   submitImage: (projectId: string, confirmUnknownRetry?: boolean, confirmedDataEgress?: boolean) => Promise<MediaTask>
+  startImageOperation: (
+    projectId: string,
+    input: Omit<StartImageOperationInput, 'data_egress_consent'>,
+    confirmedDataEgress?: boolean,
+  ) => Promise<MediaTask>
+  commitImageVersion: (projectId: string, input: CommitImageVersionInput) => Promise<ImageWorkbenchProject>
+  selectImageVersion: (projectId: string, revision: number, versionId: string) => Promise<ImageWorkbenchProject>
   createVideo: (input?: CreateVideoProjectInput) => Promise<VideoStudioProject>
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
@@ -192,6 +201,56 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     } catch (error) {
       const safeError = rendererSafeError(error)
       await get().loadProjects('image')
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  startImageOperation: async (projectId, input, confirmedDataEgress = false) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { task } = await mediaApi.startImageOperation(projectId, input, confirmedDataEgress)
+      nextTaskLoadVersion(task.id)
+      set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
+      await get().loadProjects('image')
+      return task
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      await get().loadProjects('image')
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  commitImageVersion: async (projectId, input) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project } = await mediaApi.commitImageVersion(projectId, input)
+      nextProjectLoadVersion('image')
+      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
+      return project
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  selectImageVersion: async (projectId, revision, versionId) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project } = await mediaApi.selectImageVersion(projectId, { revision, version_id: versionId })
+      nextProjectLoadVersion('image')
+      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
+      return project
+    } catch (error) {
+      const safeError = rendererSafeError(error)
       set({ error: safeError.message })
       throw safeError
     } finally {

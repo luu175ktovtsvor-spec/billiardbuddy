@@ -1,8 +1,10 @@
 import type {
   CreateImageProjectInput,
   CreateVideoProjectInput,
+  CommitImageVersionInput,
   ImageCanvasSize,
   ImageReferenceRole,
+  ImageTextLayer,
   PublicImageWorkbenchProject,
   PublicMediaDeletionReceipt,
   PublicMediaProject,
@@ -10,6 +12,8 @@ import type {
   PublicVideoStudioProject,
   RenderVideoInput,
   SaveImageOutputInput,
+  SelectImageVersionInput,
+  StartImageOperationInput,
   UpdateImageProjectInput,
   UpdateVideoTimelineInput,
 } from '../../../shared/contracts/media'
@@ -79,6 +83,22 @@ export const mediaApi = {
     api.post<{ project: PublicImageWorkbenchProject }>('/api/media/images/projects', input),
   submitImageProject: (projectId: string, confirmUnknownRetry = false, confirmedDataEgress = false) =>
     getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry, confirmedDataEgress),
+  startImageOperation: (
+    projectId: string,
+    input: Omit<StartImageOperationInput, 'data_egress_consent'>,
+    confirmedDataEgress = false,
+  ) => getDesktopHost().media.startImageOperation(projectId, input, confirmedDataEgress),
+  commitImageVersion: (projectId: string, input: CommitImageVersionInput) =>
+    api.post<{ project: PublicImageWorkbenchProject }>(
+      `/api/media/images/projects/${encodeURIComponent(projectId)}/versions`,
+      input,
+      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
+    ),
+  selectImageVersion: (projectId: string, input: SelectImageVersionInput) =>
+    api.post<{ project: PublicImageWorkbenchProject }>(
+      `/api/media/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/select`,
+      { revision: input.revision },
+    ),
   saveImageOutput: (projectId: string, input: SaveImageOutputInput) =>
     getDesktopHost().media.saveImageOutput(projectId, input),
   updateImageProject: (projectId: string, input: UpdateImageProjectInput) =>
@@ -119,9 +139,13 @@ export type {
   CreateVideoProjectInput,
   ImageCanvasSize,
   ImageReferenceRole,
+  ImageTextLayer,
+  CommitImageVersionInput,
   PublicImageWorkbenchProject as ImageWorkbenchProject,
   PublicMediaProject as MediaProject,
   PublicMediaDeletionReceipt as MediaDeletionReceipt,
   PublicMediaTask as MediaTask,
   PublicVideoStudioProject as VideoStudioProject,
+  SelectImageVersionInput,
+  StartImageOperationInput,
 }

@@ -47,6 +47,29 @@ describe('Electron IPC capabilities', () => {
       confirmUnknownRetry: false,
       confirmedDataEgress: true,
     })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
+      projectId: 'img_project01',
+      input: {
+        revision: 3,
+        base_version_id: 'ver_base0001',
+        kind: 'inpaint',
+        instruction: '只修改蒙版区域',
+        mask_data_url: 'data:image/png;base64,AAAA',
+        confirm_unknown_retry: false,
+      },
+      confirmedDataEgress: true,
+    })).toBe(true)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
+      projectId: 'img_project01',
+      input: {
+        revision: 3,
+        base_version_id: '../escape',
+        kind: 'inpaint',
+        instruction: '只修改蒙版区域',
+        confirm_unknown_retry: false,
+      },
+      confirmedDataEgress: true,
+    })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: 'img_project01',
       confirmUnknownRetry: false,
@@ -71,5 +94,9 @@ describe('Electron IPC capabilities', () => {
       projectId: 'img_project01',
       input: { output_id: '../escape', output_path: '/tmp/final.png' },
     })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, {
+      projectId: 'img_project01',
+      input: { version_id: 'ver_result001', output_path: '/tmp/final.png' },
+    })).toBe(true)
   })
 })

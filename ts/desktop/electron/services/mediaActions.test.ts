@@ -17,8 +17,15 @@ describe('ElectronMediaActions', () => {
     })
 
     await actions.submitImageProject('img_project01', true, true)
+    await actions.startImageOperation('img_project01', {
+      revision: 3,
+      base_version_id: 'ver_base0001',
+      kind: 'edit',
+      instruction: '只调整背景色',
+      confirm_unknown_retry: false,
+    }, true)
     await actions.renderVideo('vid_project01', { revision: 2, output_path: '/tmp/final.mp4' })
-    await actions.saveImageOutput('img_project01', { output_id: 'out_result001', output_path: '/tmp/final.png' })
+    await actions.saveImageOutput('img_project01', { version_id: 'ver_result001', output_path: '/tmp/final.png' })
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/submit')
     const submitBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))
@@ -30,13 +37,21 @@ describe('ElectronMediaActions', () => {
       },
     })
     expect(Number.isNaN(Date.parse(submitBody.data_egress_consent.acknowledged_at))).toBe(false)
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/render')
-    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual({
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/operations')
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toMatchObject({
+      revision: 3,
+      base_version_id: 'ver_base0001',
+      kind: 'edit',
+      instruction: '只调整背景色',
+      data_egress_consent: { acknowledged: true },
+    })
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/render')
+    expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toEqual({
       revision: 2,
       output_path: '/tmp/final.mp4',
     })
-    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/outputs/out_result001/save')
-    expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/versions/ver_result001/save')
+    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
   })
 
   it('rejects a weak process capability', () => {

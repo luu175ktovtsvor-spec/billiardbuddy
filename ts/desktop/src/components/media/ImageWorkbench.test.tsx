@@ -9,6 +9,9 @@ const mediaApiMock = vi.hoisted(() => ({
   createImageProject: vi.fn(),
   updateImageProject: vi.fn(),
   submitImageProject: vi.fn(),
+  startImageOperation: vi.fn(),
+  commitImageVersion: vi.fn(),
+  selectImageVersion: vi.fn(),
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
   updateVideoTimeline: vi.fn(),
@@ -62,7 +65,7 @@ const project: ImageWorkbenchProject = {
   reference_images: [],
   reference_image_count: 0,
   task_id: 'task_unknown1',
-  outputs: [],
+  version_history: [],
   error: '上一次任务可能已经产生费用',
 }
 
@@ -149,21 +152,70 @@ describe('ImageWorkbench unknown paid result', () => {
       ...project,
       state: 'ready',
       task_id: undefined,
-      outputs: [{
-        id: 'out_result001',
+      current_version_id: 'ver_result001',
+      version_history: [{
+        id: 'ver_result001',
+        kind: 'generated',
+        asset_id: 'out_result001',
+        image_path: `/api/media/assets/${project.id}/out_result001.png`,
         mime_type: 'image/png',
-        asset_path: `/api/media/assets/${project.id}/out_result001.png`,
+        text_layers: [],
+        created_at: '2026-07-18T00:02:00.000Z',
       }],
       error: undefined,
     }
     mediaApiMock.listProjects.mockResolvedValue({ projects: [ready] })
     render(<ImageWorkbench />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '下载图片' }))
+    fireEvent.click(await screen.findByRole('button', { name: '导出当前预览' }))
     await waitFor(() => {
       expect(mediaApiMock.saveImageOutput).toHaveBeenCalledWith(ready.id, {
-        output_id: 'out_result001',
+        version_id: 'ver_result001',
         output_path: '/tmp/saved.png',
+      })
+    })
+  })
+
+  it('uses persisted versions for selection, rollback, editing, upscale, and exact text controls', async () => {
+    const firstVersion = {
+      id: 'ver_result001',
+      kind: 'generated' as const,
+      asset_id: 'out_result001',
+      image_path: `/api/media/assets/${project.id}/out_result001.png`,
+      mime_type: 'image/png' as const,
+      text_layers: [],
+      created_at: '2026-07-18T00:02:00.000Z',
+    }
+    const secondVersion = {
+      ...firstVersion,
+      id: 'ver_result002',
+      asset_id: 'out_result002',
+      image_path: `/api/media/assets/${project.id}/out_result002.png`,
+    }
+    const ready: ImageWorkbenchProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      current_version_id: firstVersion.id,
+      version_history: [firstVersion, secondVersion],
+      error: undefined,
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [ready] })
+    mediaApiMock.selectImageVersion.mockResolvedValue({
+      project: { ...ready, revision: ready.revision + 1, current_version_id: secondVersion.id },
+    })
+    render(<ImageWorkbench />)
+
+    expect(await screen.findByRole('button', { name: '继续编辑' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '局部重绘' })).toBeInTheDocument()
+    expect(screen.getByLabelText('放大倍数')).toBeInTheDocument()
+    expect(screen.getByLabelText('精确文字图层')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看版本 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '切换到此版本' }))
+    await waitFor(() => {
+      expect(mediaApiMock.selectImageVersion).toHaveBeenCalledWith(ready.id, {
+        revision: ready.revision,
+        version_id: secondVersion.id,
       })
     })
   })

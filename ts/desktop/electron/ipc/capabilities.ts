@@ -111,11 +111,30 @@ const mediaRenderVideo: Validator = value =>
 const mediaSaveImageOutput: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, ['output_id', 'output_path'])
-    && mediaProjectId(value.input.output_id)
+  return hasOnlyKeys(value.input, ['output_id', 'version_id', 'output_path'])
+    && (mediaProjectId(value.input.output_id) || mediaProjectId(value.input.version_id))
     && typeof value.input.output_path === 'string'
     && value.input.output_path.length > 0
     && value.input.output_path.length <= 4096
+}
+
+const mediaStartImageOperation: Validator = value => {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input', 'confirmedDataEgress'])) return false
+  if (!mediaProjectId(value.projectId) || typeof value.confirmedDataEgress !== 'boolean' || !isRecord(value.input)) return false
+  return hasOnlyKeys(value.input, [
+    'revision', 'base_version_id', 'kind', 'instruction', 'mask_data_url', 'confirm_unknown_retry',
+  ])
+    && typeof value.input.revision === 'number'
+    && Number.isInteger(value.input.revision)
+    && value.input.revision >= 0
+    && mediaProjectId(value.input.base_version_id)
+    && (value.input.kind === 'edit' || value.input.kind === 'inpaint')
+    && typeof value.input.instruction === 'string'
+    && value.input.instruction.length > 0
+    && value.input.instruction.length <= 4000
+    && (value.input.mask_data_url === undefined
+      || typeof value.input.mask_data_url === 'string' && value.input.mask_data_url.length <= 45_000_000)
+    && typeof value.input.confirm_unknown_retry === 'boolean'
 }
 
 export const ELECTRON_IPC_VALIDATORS = {
@@ -129,6 +148,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.dialogOpen]: optionalRecord,
   [ELECTRON_IPC_CHANNELS.dialogSave]: optionalRecord,
   [ELECTRON_IPC_CHANNELS.mediaSubmitImage]: mediaSubmitImage,
+  [ELECTRON_IPC_CHANNELS.mediaStartImageOperation]: mediaStartImageOperation,
   [ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage]: mediaUpdateUnknownImage,
   [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
   [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
