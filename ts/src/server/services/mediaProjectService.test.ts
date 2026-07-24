@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { MediaProject, VideoStudioProject } from '../../../shared/contracts/media.js'
@@ -1419,5 +1419,165 @@ describe('MediaProjectService video projects', () => {
     expect(await creator.getProject(project.id)).toMatchObject({
       product_task_id: attached[0]!.value.product_task_id,
     })
+  })
+
+  test('materializes owner, operation, immutable assets, versions, and writer fences', async () => {
+    const mediaRoot = await root()
+    const reference = `data:image/png;base64,${Buffer.from('foundation-reference').toString('base64')}`
+    const service = new MediaProjectService({ root: mediaRoot })
+    const project = await service.createImageProject({
+      prompt: '媒体基础合同',
+      mode: 'edit',
+      reference_images: [reference],
+    })
+
+    expect(project.owner).toEqual({ kind: 'standalone', owner_id: 'local_workbench' })
+    expect(project.assets).toHaveLength(1)
+    expect(project.assets[0]).toMatchObject({
+      role: 'reference',
+      storage: { kind: 'cas' },
+    })
+    expect(project.assets[0]?.content_hash).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(project.versions).toHaveLength(1)
+    expect(project.versions[0]).toMatchObject({ project_revision: 0 })
+    const duplicate = await service.createImageProject({
+      prompt: '同内容去重',
+      mode: 'edit',
+      reference_images: [reference],
+    })
+    expect(duplicate.assets[0]?.content_hash).toBe(project.assets[0]?.content_hash)
+    expect(await readdir(join(mediaRoot, 'cas', 'sha256'))).toHaveLength(1)
+    await writeFile(
+      join(mediaRoot, 'assets', project.id, 'references', project.reference_image_assets![0]!),
+      'tampered-reference',
+    )
+    await expect(service.updateImageProject(project.id, {
+      revision: project.revision,
+      prompt: '不能覆盖不可变素材',
+      model: project.model,
+      size: project.size,
+      count: project.count,
+    })).rejects.toMatchObject({ code: 'ASSET_IMMUTABLE', status: 409 })
+    expect(project.writer_fence).toMatch(/^fence_[a-f0-9]{32}$/)
+    expect(project.writer_fence).not.toBe(`fence_${'0'.repeat(32)}`)
+
+    const video = await service.createVideoProject({})
+    const sourcePath = join(mediaRoot, 'foundation.mp4')
+    await writeFile(sourcePath, 'source')
+    const imported = await new MediaProjectService({
+      root: mediaRoot,
+      runProcess: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'video' }] }),
+        stderr: '',
+      }),
+    }).addVideoSource(video.id, { path: sourcePath })
+    expect(imported.task).toMatchObject({
+      owner: { kind: 'standalone', owner_id: 'local_workbench' },
+      attempt: 1,
+    })
+    expect(imported.task.operation_id).toMatch(/^op_[a-f0-9]{32}$/)
+    expect(imported.project.assets).toContainEqual(expect.objectContaining({
+      role: 'source', storage: { kind: 'external', locator: sourcePath },
+    }))
+  })
+
+  test('uses compare-and-swap fencing so concurrent draft writes never silently overwrite', async () => {
+    const mediaRoot = await root()
+    const creator = new MediaProjectService({ root: mediaRoot })
+    const project = await creator.createImageProject({ prompt: '初始文案' })
+    const writers = Array.from({ length: 12 }, () => new MediaProjectService({ root: mediaRoot }))
+    const results = await Promise.allSettled(writers.map((writer, index) => writer.updateImageProject(project.id, {
+      revision: project.revision,
+      prompt: `并发文案 ${index}`,
+      model: 'gpt-image-2',
+      size: '1024x1024',
+      count: 1,
+    })))
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(11)
+    expect((await creator.getProject(project.id)).revision).toBe(1)
+  })
+
+  test('moves a deletion into an accounted recovery window and restores every managed byte', async () => {
+    const mediaRoot = await root()
+    const now = new Date('2026-07-24T04:00:00.000Z')
+    const service = new MediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 30 })
+    const referenceBytes = Buffer.from('recoverable-reference')
+    const project = await service.createImageProject({
+      prompt: '可恢复删除',
+      mode: 'edit',
+      reference_images: [`data:image/png;base64,${referenceBytes.toString('base64')}`],
+    })
+    const referenceName = project.reference_image_assets![0]!
+
+    const deleted = await service.deleteProject(project.id)
+    expect(deleted).toMatchObject({
+      status: 'deleted',
+      managed_asset_count: 1,
+      managed_asset_bytes: referenceBytes.byteLength,
+      owner: { kind: 'standalone', owner_id: 'local_workbench' },
+    })
+    expect(deleted.purge_after).toBe('2026-08-23T04:00:00.000Z')
+    await expect(service.getProject(project.id)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
+    await expect(service.restoreProject(project.id, {
+      kind: 'product_task',
+      owner_id: 'task_0123456789abcdef',
+    })).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
+
+    expect(await service.restoreProject(project.id, {
+      kind: 'standalone', owner_id: 'local_workbench',
+    })).toMatchObject({ status: 'restored' })
+    expect(await service.getProject(project.id)).toMatchObject({ id: project.id })
+    expect(await readFile(join(mediaRoot, 'assets', project.id, 'references', referenceName), 'utf8'))
+      .toBe(referenceBytes.toString())
+  })
+
+  test('garbage collection purges expired trash but retains the accounting receipt', async () => {
+    const mediaRoot = await root()
+    let now = new Date('2026-07-24T04:00:00.000Z')
+    const service = new MediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 1 })
+    const project = await service.createImageProject({
+      prompt: '过期回收',
+      mode: 'edit',
+      reference_images: [`data:image/png;base64,${Buffer.from('expiring-cas').toString('base64')}`],
+    })
+    const deleted = await service.deleteProject(project.id)
+    now = new Date('2026-07-25T04:00:01.000Z')
+
+    expect(await service.purgeExpiredDeletions()).toEqual([
+      expect.objectContaining({ deletion_id: deleted.deletion_id, status: 'purged' }),
+    ])
+    expect(await stat(join(mediaRoot, 'trash', deleted.trash_key)).catch(() => null)).toBeNull()
+    expect(await readdir(join(mediaRoot, 'cas', 'sha256'))).toHaveLength(0)
+    const persisted = JSON.parse(await readFile(join(mediaRoot, 'deletions', `${deleted.deletion_id}.json`), 'utf8'))
+    expect(persisted).toMatchObject({ status: 'purged', managed_asset_count: 1 })
+    await expect(service.restoreProject(project.id, {
+      kind: 'standalone', owner_id: 'local_workbench',
+    })).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
+  })
+
+  test('deduplicates concurrent deletion and resumes a restore after project publication', async () => {
+    const mediaRoot = await root()
+    const creator = new MediaProjectService({ root: mediaRoot })
+    const project = await creator.createImageProject({ prompt: '并发删除恢复' })
+    const [first, second] = await Promise.all([
+      new MediaProjectService({ root: mediaRoot }).deleteProject(project.id),
+      new MediaProjectService({ root: mediaRoot }).deleteProject(project.id),
+    ])
+    expect(second.deletion_id).toBe(first.deletion_id)
+
+    const trash = join(mediaRoot, 'trash', first.trash_key)
+    await rename(join(trash, 'project.json'), join(mediaRoot, 'projects', `${project.id}.json`))
+    await writeFile(
+      join(mediaRoot, 'deletions', `${first.deletion_id}.json`),
+      `${JSON.stringify({ ...first, status: 'restoring' }, null, 2)}\n`,
+    )
+
+    expect(await creator.restoreProject(project.id, {
+      kind: 'standalone', owner_id: 'local_workbench',
+    })).toMatchObject({ status: 'restored' })
+    expect(await creator.getProject(project.id)).toMatchObject({ id: project.id })
   })
 })

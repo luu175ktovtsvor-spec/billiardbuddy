@@ -3,14 +3,15 @@ import type {
   CreateVideoProjectInput,
   ImageCanvasSize,
   ImageGenerationModel,
-  ImageWorkbenchProject,
-  MediaProject,
-  MediaTask,
+  PublicImageWorkbenchProject,
+  PublicMediaDeletionReceipt,
+  PublicMediaProject,
+  PublicMediaTask,
+  PublicVideoStudioProject,
   RenderVideoInput,
   SaveImageOutputInput,
   UpdateImageProjectInput,
   UpdateVideoTimelineInput,
-  VideoStudioProject,
 } from '../../../shared/contracts/media'
 import { isMediaSafeErrorMessage, mediaSafeError } from '../../../shared/contracts/media'
 export {
@@ -56,20 +57,26 @@ export function mediaUserFacingError(
 
 export const mediaApi = {
   listProjects: (kind?: 'image' | 'video') =>
-    api.get<{ projects: MediaProject[] }>(`/api/media/projects${kind ? `?kind=${kind}` : ''}`),
+    api.get<{ projects: PublicMediaProject[] }>(`/api/media/projects${kind ? `?kind=${kind}` : ''}`),
   getProject: (projectId: string) =>
-    api.get<{ project: MediaProject }>(`/api/media/project/${encodeURIComponent(projectId)}`),
+    api.get<{ project: PublicMediaProject }>(`/api/media/project/${encodeURIComponent(projectId)}`),
   deleteProject: (projectId: string) =>
     api.delete<void>(`/api/media/project/${encodeURIComponent(projectId)}`),
+  listDeletions: () =>
+    api.get<{ deletions: PublicMediaDeletionReceipt[] }>('/api/media/deletions'),
+  restoreProject: (projectId: string) =>
+    api.post<{ deletion: PublicMediaDeletionReceipt }>(
+      `/api/media/project/${encodeURIComponent(projectId)}/restore`,
+    ),
   getTask: (taskId: string) =>
-    api.get<{ task: MediaTask }>(
+    api.get<{ task: PublicMediaTask }>(
       `/api/media/tasks/${encodeURIComponent(taskId)}`,
       { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
     ),
   cancelTask: (taskId: string) =>
-    api.post<{ task: MediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
+    api.post<{ task: PublicMediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
   createImageProject: (input: CreateImageProjectInput) =>
-    api.post<{ project: ImageWorkbenchProject }>('/api/media/images/projects', input),
+    api.post<{ project: PublicImageWorkbenchProject }>('/api/media/images/projects', input),
   submitImageProject: (projectId: string, confirmUnknownRetry = false, confirmedDataEgress = false) =>
     getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry, confirmedDataEgress),
   saveImageOutput: (projectId: string, input: SaveImageOutputInput) =>
@@ -77,20 +84,20 @@ export const mediaApi = {
   updateImageProject: (projectId: string, input: UpdateImageProjectInput) =>
     input.confirm_unknown_retry
       ? getDesktopHost().media.updateUnknownImageProject(projectId, input)
-      : api.put<{ project: ImageWorkbenchProject }>(
+      : api.put<{ project: PublicImageWorkbenchProject }>(
         `/api/media/images/projects/${encodeURIComponent(projectId)}`,
         input,
       ),
   createVideoProject: (input: CreateVideoProjectInput) =>
-    api.post<{ project: VideoStudioProject }>('/api/media/videos/projects', input),
+    api.post<{ project: PublicVideoStudioProject }>('/api/media/videos/projects', input),
   addVideoSource: (projectId: string, path: string) =>
-    api.post<{ project: VideoStudioProject; task: MediaTask }>(
+    api.post<{ project: PublicVideoStudioProject; task: PublicMediaTask }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/sources`,
       { path },
       { timeout: 180_000 },
     ),
   updateVideoTimeline: (projectId: string, input: UpdateVideoTimelineInput) =>
-    api.put<{ project: VideoStudioProject }>(
+    api.put<{ project: PublicVideoStudioProject }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline`,
       input,
     ),
@@ -112,8 +119,9 @@ export type {
   CreateVideoProjectInput,
   ImageCanvasSize,
   ImageGenerationModel,
-  ImageWorkbenchProject,
-  MediaProject,
-  MediaTask,
-  VideoStudioProject,
+  PublicImageWorkbenchProject as ImageWorkbenchProject,
+  PublicMediaProject as MediaProject,
+  PublicMediaDeletionReceipt as MediaDeletionReceipt,
+  PublicMediaTask as MediaTask,
+  PublicVideoStudioProject as VideoStudioProject,
 }

@@ -35,6 +35,8 @@ test('media API creates and lists image/video projects without invoking upstream
   const listed = await route(handler, '/api/media/projects')
   const body = await listed.json() as { projects: Array<{ kind: string }> }
   expect(body.projects.map(project => project.kind).sort()).toEqual(['image', 'video'])
+  expect(JSON.stringify(body)).not.toContain('writer_fence')
+  expect(JSON.stringify(body)).not.toContain('local_workbench')
 })
 
 test('media API keeps a product task owner private to task-scoped product routes', async () => {
@@ -45,10 +47,13 @@ test('media API keeps a product task owner private to task-scoped product routes
   await service.attachProjectToProductTask(project.id, 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
 
   const response = await route(handler, `/api/media/project/${project.id}`)
-  const body = await response.json() as { project: Record<string, unknown> }
+  const body = await response.json() as { error?: string }
+  const listed = await route(handler, '/api/media/projects')
+  const listedBody = await listed.json() as { projects: Array<{ id: string }> }
 
-  expect(response.status).toBe(200)
-  expect(body.project).not.toHaveProperty('product_task_id')
+  expect(response.status).toBe(404)
+  expect(body.error).toBe('MEDIA_RESOURCE_UNAVAILABLE')
+  expect(listedBody.projects).not.toContainEqual(expect.objectContaining({ id: project.id }))
   expect(JSON.stringify(body)).not.toContain('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
 })
 
@@ -108,7 +113,7 @@ test('media API projects persisted and thrown implementation errors into safe me
   expect(JSON.stringify(taskBody)).not.toContain(rawDetail)
 
   const failingHandler = createMediaApiHandler({
-    async getProject() {
+    async assertProjectOwner() {
       throw new MediaServiceError(rawDetail, 503, 'GATEWAY_NOT_CONFIGURED')
     },
   } as unknown as MediaProjectService)
@@ -156,6 +161,14 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   const deleted = await route(handler, `/api/media/project/${createdBody.project.id}`, { method: 'DELETE' })
   expect(deleted.status).toBe(204)
   expect((await route(handler, `/api/media/project/${createdBody.project.id}`)).status).toBe(404)
+  const deletionList = await route(handler, '/api/media/deletions')
+  expect(await deletionList.json()).toMatchObject({
+    deletions: [expect.objectContaining({ project_id: createdBody.project.id, status: 'deleted' })],
+  })
+  const restored = await route(handler, `/api/media/project/${createdBody.project.id}/restore`, { method: 'POST' })
+  expect(restored.status).toBe(200)
+  expect(await restored.json()).toMatchObject({ deletion: { status: 'restored' } })
+  expect((await route(handler, `/api/media/project/${createdBody.project.id}`)).status).toBe(200)
 })
 
 test('media API reports toolchain availability without disclosing executable paths', async () => {
@@ -185,24 +198,52 @@ test('paid image submission and final render require the Electron-owned UI capab
   const capturedCapability = consumeMediaUiCapability(sidecarEnv)
   expect(sidecarEnv.BB_MEDIA_UI_CAPABILITY).toBeUndefined()
   const calls: string[] = []
+  const now = '2026-07-24T00:00:00.000Z'
+  const task = (id: string, projectId: string, kind: 'image.generate' | 'video.render') => ({
+    schema_version: 1 as const,
+    id,
+    project_id: projectId,
+    operation_id: `op_${'1'.repeat(32)}`,
+    attempt: 1,
+    kind,
+    status: 'queued' as const,
+    progress: 0,
+    stage: '等待处理',
+    created_at: now,
+    updated_at: now,
+  })
   const service = {
+    async assertProjectOwner() {},
     async submitImageProject(projectId: string, input: { confirm_unknown_retry?: boolean }) {
       expect(input.confirm_unknown_retry).toBe(true)
       calls.push(`submit:${projectId}`)
-      return { id: 'task_image001' }
+      return task('task_image001', projectId, 'image.generate')
     },
     async updateImageProject(projectId: string, input: { confirm_unknown_retry?: boolean }) {
       expect(input.confirm_unknown_retry).toBe(true)
       calls.push(`update:${projectId}`)
       return {
+        schema_version: 1,
+        id: projectId,
         kind: 'image',
+        title: '图片项目',
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+        state: 'draft',
+        mode: 'generate',
+        model: 'gpt-image-2',
+        prompt: 'updated prompt',
+        size: '1024x1024',
+        count: 1,
         reference_images: [],
         reference_image_count: 0,
+        outputs: [],
       }
     },
     async renderVideo(projectId: string) {
       calls.push(`render:${projectId}`)
-      return { id: 'task_video001' }
+      return task('task_video001', projectId, 'video.render')
     },
     async saveImageOutput(projectId: string, input: { output_id: string; output_path: string }) {
       calls.push(`save:${projectId}:${input.output_id}:${input.output_path}`)

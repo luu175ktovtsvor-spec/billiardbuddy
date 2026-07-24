@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, link, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
@@ -10,6 +10,7 @@ import {
   IMAGE_DATA_EGRESS_POLICY_REVISION,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
+  mediaDeletionReceiptSchema,
   mediaSafeError,
   mediaProjectSchema,
   mediaTaskSchema,
@@ -25,6 +26,9 @@ import {
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
   type ImageWorkbenchProject,
+  type MediaAsset,
+  type MediaDeletionReceipt,
+  type MediaOwner,
   type MediaProject,
   type MediaSafeErrorCode,
   type MediaTask,
@@ -42,6 +46,7 @@ import {
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
 } from '../../../shared/product/dataEgress.js'
 import { diagnosticsService } from './diagnosticsService.js'
+import { lock } from '../../utils/lockfile.js'
 import {
   getInstallationId,
   getQfGatewayToken,
@@ -130,6 +135,8 @@ export type MediaProjectServiceOptions = {
   env?: Record<string, string | undefined>
   /** Injectable only for deterministic encoder-selection tests. */
   platform?: NodeJS.Platform
+  /** Injectable retention window for deterministic deletion/GC tests. */
+  deletionRetentionDays?: number
 }
 
 type RelayImageTask = {
@@ -207,6 +214,20 @@ class ImageSubmissionAttemptError extends MediaServiceError {
 
 function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
+}
+
+const LEGACY_MEDIA_WRITER_FENCE = `fence_${'0'.repeat(32)}`
+const STANDALONE_MEDIA_OWNER: MediaOwner = {
+  kind: 'standalone',
+  owner_id: 'local_workbench',
+}
+
+function foundationId(prefix: 'op' | 'ver' | 'export', ...parts: string[]): string {
+  return `${prefix}_${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 32)}`
+}
+
+function sameOwner(left: MediaOwner, right: MediaOwner): boolean {
+  return left.kind === right.kind && left.owner_id === right.owner_id
 }
 
 function defaultTitle(prompt: string, fallback: string): string {
@@ -340,6 +361,10 @@ export class MediaProjectService {
   private readonly projectsDir: string
   private readonly tasksDir: string
   private readonly assetsDir: string
+  private readonly locksDir: string
+  private readonly deletionsDir: string
+  private readonly trashDir: string
+  private readonly casDir: string
   private readonly fetchImpl: FetchLike
   private readonly imageResultTimeoutMs: number
   private readonly runProcess: MediaProcessRunner
@@ -347,6 +372,7 @@ export class MediaProjectService {
   private readonly now: () => Date
   private readonly env: Record<string, string | undefined>
   private readonly platform: NodeJS.Platform
+  private readonly deletionRetentionDays: number
   private readonly activeRenders = new Map<string, ActiveVideoRender>()
   private readonly queuedVideoRenders: QueuedVideoRender[] = []
   private readonly maxQueuedVideoRenders: number
@@ -366,6 +392,10 @@ export class MediaProjectService {
     this.projectsDir = join(this.root, 'projects')
     this.tasksDir = join(this.root, 'tasks')
     this.assetsDir = join(this.root, 'assets')
+    this.locksDir = join(this.root, 'locks')
+    this.deletionsDir = join(this.root, 'deletions')
+    this.trashDir = join(this.root, 'trash')
+    this.casDir = join(this.root, 'cas', 'sha256')
     this.fetchImpl = options.fetchImpl ?? fetch
     this.imageResultTimeoutMs = Math.max(1, options.imageResultTimeoutMs ?? 5 * 60_000)
     this.runProcess = options.runProcess ?? defaultRunProcess
@@ -373,6 +403,9 @@ export class MediaProjectService {
     this.now = options.now ?? (() => new Date())
     this.env = options.env ?? process.env
     this.platform = options.platform ?? process.platform
+    this.deletionRetentionDays = Math.max(1, Math.min(365, Math.trunc(
+      options.deletionRetentionDays ?? Number(this.env.BB_MEDIA_DELETION_RETENTION_DAYS ?? 30),
+    ) || 30))
     this.maxQueuedVideoRenders = maxQueuedVideoRenders(this.env)
     this.maxQueuedVideoProbes = maxQueuedVideoProbes(this.env)
   }
@@ -412,6 +445,10 @@ export class MediaProjectService {
       mkdir(this.projectsDir, { recursive: true, mode: 0o700 }),
       mkdir(this.tasksDir, { recursive: true, mode: 0o700 }),
       mkdir(this.assetsDir, { recursive: true, mode: 0o700 }),
+      mkdir(this.locksDir, { recursive: true, mode: 0o700 }),
+      mkdir(this.deletionsDir, { recursive: true, mode: 0o700 }),
+      mkdir(this.trashDir, { recursive: true, mode: 0o700 }),
+      mkdir(this.casDir, { recursive: true, mode: 0o700 }),
     ])
   }
 
@@ -434,6 +471,50 @@ export class MediaProjectService {
       throw new MediaServiceError('无效的媒体任务 ID', 400, 'INVALID_TASK_ID')
     }
     return join(this.tasksDir, `${taskId}.json`)
+  }
+
+  private deletionPath(deletionId: string): string {
+    if (!/^[a-z0-9][a-z0-9_-]{7,79}$/.test(deletionId)) {
+      throw new MediaServiceError('无效的媒体删除回执 ID', 400, 'INVALID_DELETION_ID')
+    }
+    return join(this.deletionsDir, `${deletionId}.json`)
+  }
+
+  private trashPath(trashKey: string): string {
+    if (!/^[a-z0-9][a-z0-9_-]{7,79}$/.test(trashKey)) {
+      throw new MediaServiceError('无效的媒体回收目录 ID', 400, 'INVALID_TRASH_KEY')
+    }
+    return join(this.trashDir, trashKey)
+  }
+
+  private async withProjectWriteLock<T>(projectId: string, action: () => Promise<T>): Promise<T> {
+    await this.ensureDirs()
+    const guard = join(this.locksDir, `${projectId}.guard`)
+    await writeFile(guard, '', { flag: 'a', mode: 0o600 })
+    const release = await lock(guard, {
+      stale: 30_000,
+      retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
+    })
+    try {
+      return await action()
+    } finally {
+      await release()
+    }
+  }
+
+  private async withCasWriteLock<T>(action: () => Promise<T>): Promise<T> {
+    await this.ensureDirs()
+    const guard = join(this.locksDir, 'cas.guard')
+    await writeFile(guard, '', { flag: 'a', mode: 0o600 })
+    const release = await lock(guard, {
+      stale: 30_000,
+      retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
+    })
+    try {
+      return await action()
+    } finally {
+      await release()
+    }
   }
 
   private pathForComparison(path: string): string {
@@ -495,14 +576,228 @@ export class MediaProjectService {
     return { path: canonicalAssetPath, size: info.size }
   }
 
+  private canonicalOwner(project: MediaProject): MediaOwner {
+    return project.product_task_id
+      ? { kind: 'product_task', owner_id: project.product_task_id }
+      : project.owner
+  }
+
+  private async managedAssetMetadata(
+    locator: string,
+  ): Promise<Pick<MediaAsset, 'byte_size' | 'content_hash' | 'storage'>> {
+    const path = join(this.assetsDir, locator)
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) return { storage: { kind: 'managed', locator } }
+    const bytes = await readFile(path)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const blob = join(this.casDir, digest)
+    const temporary = join(this.casDir, `.tmp-${randomUUID()}`)
+    await writeFile(temporary, bytes, { mode: 0o600 })
+    try {
+      await link(temporary, blob)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const existingDigest = createHash('sha256').update(await readFile(blob)).digest('hex')
+      if (existingDigest !== digest) {
+        throw new MediaServiceError('媒体内容寻址存储校验失败', 500, 'MEDIA_CAS_CORRUPT')
+      }
+    } finally {
+      await rm(temporary, { force: true })
+    }
+    return {
+      storage: { kind: 'cas', locator: `sha256/${digest}` },
+      byte_size: info.size,
+      content_hash: `sha256:${digest}`,
+    }
+  }
+
+  private async materializeProjectFoundation(
+    project: MediaProject,
+    current?: MediaProject,
+  ): Promise<MediaProject> {
+    const owner = this.canonicalOwner(project)
+    const seeds: Array<Omit<MediaAsset, 'version_id' | 'created_at' | 'byte_size' | 'content_hash'> & {
+      byte_size?: number
+      content_hash?: `sha256:${string}`
+    }> = []
+
+    if (project.kind === 'image') {
+      for (const fileName of project.reference_image_assets ?? []) {
+        seeds.push({
+          id: fileName.slice(0, fileName.lastIndexOf('.')),
+          role: 'reference',
+          storage: { kind: 'managed', locator: join(project.id, 'references', fileName) },
+          mime_type: referenceImageMime(fileName),
+        })
+      }
+      for (const output of project.outputs) {
+        if (output.asset_path) {
+          const fileName = output.asset_path.split('/').pop()
+          if (fileName) {
+            seeds.push({
+              id: output.id,
+              role: 'result',
+              storage: { kind: 'managed', locator: join(project.id, fileName) },
+              mime_type: output.mime_type,
+            })
+          }
+        } else if (output.url) {
+          seeds.push({
+            id: output.id,
+            role: 'result',
+            storage: { kind: 'remote', locator: output.url },
+            mime_type: output.mime_type,
+          })
+      } else if (output.data_url) {
+          const bytes = dataUrlBytes(output.data_url)
+          const digest = createHash('sha256').update(bytes).digest('hex')
+          seeds.push({
+            id: output.id,
+            role: 'result',
+            storage: { kind: 'remote', locator: `legacy-inline:sha256:${digest}` },
+            mime_type: output.mime_type,
+            byte_size: bytes.byteLength,
+            content_hash: `sha256:${digest}`,
+          })
+        }
+      }
+    } else {
+      for (const source of project.sources) {
+        seeds.push({
+          id: source.id,
+          role: 'source',
+          storage: { kind: 'external', locator: source.path },
+          mime_type: this.videoContentType(source.path),
+        })
+      }
+      if (project.state === 'complete' && project.output_path) {
+        seeds.push({
+          id: foundationId('export', project.id, String(project.revision), project.output_path),
+          role: 'export',
+          storage: { kind: 'external', locator: project.output_path },
+          mime_type: this.videoContentType(project.output_path),
+        })
+      }
+    }
+
+    const versionId = foundationId(
+      'ver',
+      project.id,
+      String(project.revision),
+      JSON.stringify(seeds.map(seed => [seed.id, seed.role, seed.storage.kind, seed.storage.locator])),
+      project.kind === 'image'
+        ? JSON.stringify([project.prompt, project.outputs.map(output => output.id)])
+        : JSON.stringify(project.timeline),
+    )
+    const existingAssets = new Map((current?.assets ?? project.assets).map(asset => [asset.id, asset]))
+    for (const seed of seeds) {
+      const metadata = seed.storage.kind === 'managed'
+        ? await this.managedAssetMetadata(seed.storage.locator)
+        : { byte_size: seed.byte_size, content_hash: seed.content_hash }
+      const candidate = {
+        ...seed,
+        ...metadata,
+        version_id: versionId,
+        created_at: project.updated_at,
+      } as MediaAsset
+      const existing = existingAssets.get(candidate.id)
+      if (existing) {
+        const immutableExisting = JSON.stringify({
+          role: existing.role,
+          storage: existing.storage,
+          mime_type: existing.mime_type,
+          byte_size: existing.byte_size,
+          content_hash: existing.content_hash,
+        })
+        const immutableCandidate = JSON.stringify({
+          role: candidate.role,
+          storage: candidate.storage,
+          mime_type: candidate.mime_type,
+          byte_size: candidate.byte_size,
+          content_hash: candidate.content_hash,
+        })
+        if (immutableExisting !== immutableCandidate) {
+          throw new MediaServiceError('媒体资产记录不可原地改写', 409, 'ASSET_IMMUTABLE')
+        }
+      } else {
+        existingAssets.set(candidate.id, candidate)
+      }
+    }
+    const assets = [...existingAssets.values()]
+    const versions = [...(current?.versions ?? project.versions)]
+    if (!versions.some(version => version.id === versionId)) {
+      versions.push({
+        id: versionId,
+        parent_version_id: versions.at(-1)?.id,
+        project_revision: project.revision,
+        asset_ids: seeds.map(seed => seed.id),
+        created_at: project.updated_at,
+      })
+    }
+    return mediaProjectSchema.parse({ ...project, owner, assets, versions })
+  }
+
   private async saveProject(project: MediaProject): Promise<MediaProject> {
-    const parsed = mediaProjectSchema.parse(project)
-    await this.writeJson(this.projectPath(parsed.id), parsed)
-    return parsed
+    const input = mediaProjectSchema.parse(project)
+    return await this.withProjectWriteLock(input.id, async () => {
+      const current = await readFile(this.projectPath(input.id), 'utf8')
+        .then(value => mediaProjectSchema.parse(JSON.parse(value)))
+        .catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+          throw error
+        })
+      if (current && input.writer_fence !== current.writer_fence) {
+        throw new MediaServiceError('媒体项目已被另一写入者更新，请刷新后重试', 409, 'WRITER_FENCE_CONFLICT')
+      }
+      if (!current && input.writer_fence !== LEGACY_MEDIA_WRITER_FENCE) {
+        throw new MediaServiceError('媒体项目创建凭据无效', 409, 'WRITER_FENCE_CONFLICT')
+      }
+      const persist = async () => {
+        const founded = await this.materializeProjectFoundation(input, current)
+        const next = mediaProjectSchema.parse({
+          ...founded,
+          writer_fence: `fence_${randomUUID().replaceAll('-', '')}`,
+        })
+        await this.writeJson(this.projectPath(next.id), next)
+        return next
+      }
+      const needsCas = input.kind === 'image' && (
+        (input.reference_image_assets?.length ?? 0) > 0
+        || input.outputs.some(output => Boolean(output.asset_path || output.data_url))
+        || input.assets.some(asset => asset.storage.kind === 'cas')
+      )
+      if (!needsCas) return await persist()
+      return await this.withCasWriteLock(async () => {
+        try {
+          return await persist()
+        } catch (error) {
+          await this.garbageCollectCasUnlocked().catch(cleanupError => {
+            recordMediaFailure('cas_rollback_gc', cleanupError)
+          })
+          throw error
+        }
+      })
+    })
   }
 
   private async saveTask(task: MediaTask): Promise<MediaTask> {
-    const parsed = mediaTaskSchema.parse(task)
+    const input = mediaTaskSchema.parse(task)
+    let owner = input.owner
+    if (!owner) {
+      owner = await readFile(this.projectPath(input.project_id), 'utf8')
+        .then(value => this.canonicalOwner(mediaProjectSchema.parse(JSON.parse(value))))
+        .catch(() => STANDALONE_MEDIA_OWNER)
+    }
+    const parsed = mediaTaskSchema.parse({
+      ...input,
+      owner,
+      operation_id: input.operation_id ?? foundationId(
+        'op',
+        input.project_id,
+        input.kind,
+        input.idempotency_key ?? input.id,
+      ),
+    })
     await this.writeJson(this.taskPath(parsed.id), parsed)
     return parsed
   }
@@ -666,7 +961,7 @@ export class MediaProjectService {
     }) as ImageWorkbenchProject
   }
 
-  async listProjects(kind?: 'image' | 'video'): Promise<MediaProject[]> {
+  async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)
     const projects = await Promise.all(names.filter(name => name.endsWith('.json')).map(async name => {
@@ -677,7 +972,9 @@ export class MediaProjectService {
       }
     }))
     const validProjects = projects
-      .filter((project): project is MediaProject => Boolean(project) && (!kind || project!.kind === kind))
+      .filter((project): project is MediaProject => Boolean(project)
+        && (!kind || project!.kind === kind)
+        && (!owner || sameOwner(project!.owner, owner)))
     await Promise.all(validProjects.map(project => project.task_id
       ? this.getTask(project.task_id, false).catch(() => null)
       : null))
@@ -689,7 +986,20 @@ export class MediaProjectService {
 
   async getProject(projectId: string): Promise<MediaProject> {
     try {
-      const project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
+      let project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
+      const owner = this.canonicalOwner(project)
+      if (
+        project.writer_fence === LEGACY_MEDIA_WRITER_FENCE
+        || !sameOwner(project.owner, owner)
+        || project.versions.length === 0
+      ) {
+        try {
+          project = await this.saveProject({ ...project, owner })
+        } catch (error) {
+          if (!(error instanceof MediaServiceError) || error.code !== 'WRITER_FENCE_CONFLICT') throw error
+          project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
+        }
+      }
       return project.kind === 'image' ? await this.migrateLegacyReferenceImages(project) : project
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
@@ -701,10 +1011,43 @@ export class MediaProjectService {
     }
   }
 
+  async assertProjectOwner(projectId: string, owner: MediaOwner): Promise<MediaProject> {
+    const project = await this.getProject(projectId)
+    if (!sameOwner(project.owner, owner)) {
+      // Deliberately indistinguishable from an unknown id across owner boundaries.
+      throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
+    }
+    return project
+  }
+
+  async listProjectsForOwner(owner: MediaOwner, kind?: 'image' | 'video'): Promise<MediaProject[]> {
+    return await this.listProjects(kind, owner)
+  }
+
+  async assertTaskOwner(taskId: string, owner: MediaOwner): Promise<MediaTask> {
+    let task: MediaTask
+    try {
+      task = mediaTaskSchema.parse(JSON.parse(await readFile(this.taskPath(taskId), 'utf8')))
+    } catch {
+      throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
+    }
+    if (!task.owner) {
+      const projectOwner = await readFile(this.projectPath(task.project_id), 'utf8')
+        .then(value => this.canonicalOwner(mediaProjectSchema.parse(JSON.parse(value))))
+        .catch(() => null)
+      if (projectOwner && sameOwner(projectOwner, owner)) task = await this.saveTask({ ...task, owner: projectOwner })
+    }
+    if (!task.owner || !sameOwner(task.owner, owner)) {
+      throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
+    }
+    return task
+  }
+
   async getTask(taskId: string, refreshRemote = true): Promise<MediaTask> {
     let task: MediaTask
     try {
       task = mediaTaskSchema.parse(JSON.parse(await readFile(this.taskPath(taskId), 'utf8')))
+      if (!task.operation_id || !task.owner) task = await this.saveTask(task)
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
@@ -2061,27 +2404,227 @@ export class MediaProjectService {
     return await this.markImageTaskCancelled(task)
   }
 
-  async deleteProject(projectId: string): Promise<void> {
-    const project = await this.getProject(projectId)
-    if (project.task_id) {
-      const task = await this.getTask(project.task_id, false).catch(() => null)
-      if (task && ['queued', 'running', 'committing'].includes(task.status)) {
-        throw new MediaServiceError('请先等待当前任务完成或取消导出', 409, 'TASK_IN_PROGRESS')
+  private async moveIfPresent(source: string, destination: string): Promise<void> {
+    if (await stat(destination).then(() => true).catch(() => false)) return
+    if (!(await stat(source).then(() => true).catch(() => false))) return
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+    await rename(source, destination)
+  }
+
+  private async managedStorageUsage(path: string): Promise<{ count: number; bytes: number }> {
+    const entries = await readdir(path, { withFileTypes: true }).catch(() => [])
+    let count = 0
+    let bytes = 0
+    for (const entry of entries) {
+      const candidate = join(path, entry.name)
+      if (entry.isDirectory()) {
+        const nested = await this.managedStorageUsage(candidate)
+        count += nested.count
+        bytes += nested.bytes
+      } else if (entry.isFile()) {
+        const info = await stat(candidate)
+        count += 1
+        bytes += info.size
       }
     }
-    const taskNames = await readdir(this.tasksDir).catch(() => [])
-    await Promise.all(taskNames.filter(name => name.endsWith('.json')).map(async name => {
-      const taskPath = join(this.tasksDir, name)
+    return { count, bytes }
+  }
+
+  private async readDeletionReceipts(): Promise<MediaDeletionReceipt[]> {
+    await this.ensureDirs()
+    const names = await readdir(this.deletionsDir)
+    const receipts = await Promise.all(names.filter(name => name.endsWith('.json')).map(async name => {
       try {
-        const task = mediaTaskSchema.parse(JSON.parse(await readFile(taskPath, 'utf8')))
-        if (task.project_id === projectId) await rm(taskPath, { force: true })
-      } catch {
-        // A corrupt unrelated task must not block deleting this project.
+        return mediaDeletionReceiptSchema.parse(JSON.parse(await readFile(join(this.deletionsDir, name), 'utf8')))
+      } catch (error) {
+        recordMediaFailure('read_deletion_receipt', error)
+        return null
       }
     }))
-    await Promise.all([
-      rm(this.projectPath(projectId), { force: true }),
-      rm(join(this.assetsDir, projectId), { recursive: true, force: true }),
-    ])
+    return receipts.filter((receipt): receipt is MediaDeletionReceipt => receipt !== null)
+  }
+
+  private async latestDeletion(
+    projectId: string,
+    statuses: MediaDeletionReceipt['status'][],
+  ): Promise<MediaDeletionReceipt | null> {
+    return (await this.readDeletionReceipts())
+      .filter(receipt => receipt.project_id === projectId && statuses.includes(receipt.status))
+      .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))[0] ?? null
+  }
+
+  private async resumeDeletion(receipt: MediaDeletionReceipt): Promise<MediaDeletionReceipt> {
+    const trash = this.trashPath(receipt.trash_key)
+    await mkdir(join(trash, 'tasks'), { recursive: true, mode: 0o700 })
+    // The project disappears first. A crash can leave a pending receipt, but
+    // never an apparently-live project whose managed assets were already moved.
+    await this.moveIfPresent(this.projectPath(receipt.project_id), join(trash, 'project.json'))
+    for (const taskId of receipt.task_ids) {
+      await this.moveIfPresent(this.taskPath(taskId), join(trash, 'tasks', `${taskId}.json`))
+    }
+    await this.moveIfPresent(join(this.assetsDir, receipt.project_id), join(trash, 'assets'))
+    const deleted = mediaDeletionReceiptSchema.parse({ ...receipt, status: 'deleted' })
+    await this.writeJson(this.deletionPath(deleted.deletion_id), deleted)
+    return deleted
+  }
+
+  async listDeletionsForOwner(owner: MediaOwner): Promise<MediaDeletionReceipt[]> {
+    return (await this.readDeletionReceipts())
+      .filter(receipt => sameOwner(receipt.owner, owner) && receipt.status !== 'purged')
+      .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
+  }
+
+  async deleteProject(projectId: string): Promise<MediaDeletionReceipt> {
+    await this.ensureDirs()
+    try {
+      await this.getProject(projectId)
+    } catch (error) {
+      if (!(error instanceof MediaServiceError) || error.code !== 'PROJECT_NOT_FOUND') throw error
+      const pending = await this.latestDeletion(projectId, ['pending', 'deleted'])
+      if (!pending) throw error
+      return await this.withProjectWriteLock(projectId, () => this.resumeDeletion(pending))
+    }
+
+    return await this.withProjectWriteLock(projectId, async () => {
+      const current = await readFile(this.projectPath(projectId), 'utf8')
+        .then(value => mediaProjectSchema.parse(JSON.parse(value)))
+        .catch(async error => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          const pending = await this.latestDeletion(projectId, ['pending', 'deleted'])
+          if (pending) return await this.resumeDeletion(pending)
+          throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
+        })
+      if ('deletion_id' in current) return current
+      if (current.task_id) {
+        const task = await readFile(this.taskPath(current.task_id), 'utf8')
+          .then(value => mediaTaskSchema.parse(JSON.parse(value)))
+          .catch(() => null)
+        if (task && ['queued', 'running', 'committing'].includes(task.status)) {
+          throw new MediaServiceError('请先等待当前任务完成或取消导出', 409, 'TASK_IN_PROGRESS')
+        }
+      }
+      const taskNames = await readdir(this.tasksDir)
+      const taskIds: string[] = []
+      for (const name of taskNames.filter(name => name.endsWith('.json'))) {
+        try {
+          const task = mediaTaskSchema.parse(JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')))
+          if (task.project_id === projectId) taskIds.push(task.id)
+        } catch {
+          // A corrupt unrelated task must not block an accounted project deletion.
+        }
+      }
+      const usage = await this.managedStorageUsage(join(this.assetsDir, projectId))
+      const deletedAt = this.iso()
+      const purgeAfter = new Date(this.now().getTime() + this.deletionRetentionDays * 86_400_000).toISOString()
+      const deletionId = `del_${randomUUID().replaceAll('-', '')}`
+      const receipt = mediaDeletionReceiptSchema.parse({
+        deletion_id: deletionId,
+        project_id: projectId,
+        owner: current.owner,
+        status: 'pending',
+        deleted_at: deletedAt,
+        purge_after: purgeAfter,
+        task_ids: taskIds,
+        managed_asset_count: usage.count,
+        managed_asset_bytes: usage.bytes,
+        trash_key: deletionId,
+      })
+      await this.writeJson(this.deletionPath(receipt.deletion_id), receipt)
+      return await this.resumeDeletion(receipt)
+    })
+  }
+
+  async restoreProject(projectId: string, owner: MediaOwner): Promise<MediaDeletionReceipt> {
+    const receipt = await this.latestDeletion(projectId, ['pending', 'deleted', 'restoring'])
+    if (!receipt || !sameOwner(receipt.owner, owner)) {
+      throw new MediaServiceError('找不到可恢复的媒体项目', 404, 'PROJECT_NOT_FOUND')
+    }
+    return await this.withProjectWriteLock(projectId, async () => {
+      const deleted = receipt.status === 'pending' ? await this.resumeDeletion(receipt) : receipt
+      const trash = this.trashPath(deleted.trash_key)
+      const activeProjectExists = await stat(this.projectPath(projectId)).then(() => true).catch(() => false)
+      const trashedProjectExists = await stat(join(trash, 'project.json')).then(() => true).catch(() => false)
+      if (activeProjectExists && trashedProjectExists) {
+        throw new MediaServiceError('媒体项目 ID 已被占用，不能恢复', 409, 'PROJECT_RESTORE_CONFLICT')
+      }
+      const restoring = mediaDeletionReceiptSchema.parse({ ...deleted, status: 'restoring' })
+      await this.writeJson(this.deletionPath(restoring.deletion_id), restoring)
+      await this.moveIfPresent(join(trash, 'assets'), join(this.assetsDir, projectId))
+      for (const taskId of restoring.task_ids) {
+        await this.moveIfPresent(join(trash, 'tasks', `${taskId}.json`), this.taskPath(taskId))
+      }
+      // Publish the project last so readers never observe a partially restored owner.
+      await this.moveIfPresent(join(trash, 'project.json'), this.projectPath(projectId))
+      if (!(await stat(this.projectPath(projectId)).then(() => true).catch(() => false))) {
+        throw new MediaServiceError('媒体项目恢复不完整，可安全重试', 503, 'PROJECT_RESTORE_INCOMPLETE')
+      }
+      const restored = mediaDeletionReceiptSchema.parse({
+        ...restoring,
+        status: 'restored',
+        restored_at: this.iso(),
+      })
+      await this.writeJson(this.deletionPath(restored.deletion_id), restored)
+      return restored
+    })
+  }
+
+  private async collectProjectCasReferences(path: string, references: Set<string>): Promise<void> {
+    const raw = await readFile(path, 'utf8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    })
+    if (raw === null) return
+    const project = mediaProjectSchema.parse(JSON.parse(raw))
+    for (const asset of project.assets) {
+      if (asset.storage.kind === 'cas' && /^sha256\/[a-f0-9]{64}$/.test(asset.storage.locator)) {
+        references.add(asset.storage.locator.slice('sha256/'.length))
+      }
+    }
+  }
+
+  private async garbageCollectCasUnlocked(): Promise<void> {
+    const references = new Set<string>()
+    const projectNames = await readdir(this.projectsDir)
+    for (const name of projectNames.filter(name => name.endsWith('.json'))) {
+      await this.collectProjectCasReferences(join(this.projectsDir, name), references)
+    }
+    const trashEntries = await readdir(this.trashDir, { withFileTypes: true })
+    for (const entry of trashEntries) {
+      if (entry.isDirectory()) {
+        await this.collectProjectCasReferences(join(this.trashDir, entry.name, 'project.json'), references)
+      }
+    }
+    const blobs = await readdir(this.casDir, { withFileTypes: true })
+    for (const blob of blobs) {
+      if (blob.isFile() && blob.name.startsWith('.tmp-')) {
+        await rm(join(this.casDir, blob.name), { force: true })
+        continue
+      }
+      if (blob.isFile() && /^[a-f0-9]{64}$/.test(blob.name) && !references.has(blob.name)) {
+        await rm(join(this.casDir, blob.name), { force: true })
+      }
+    }
+  }
+
+  async purgeExpiredDeletions(): Promise<MediaDeletionReceipt[]> {
+    const now = this.now().getTime()
+    const purged: MediaDeletionReceipt[] = []
+    for (const candidate of await this.readDeletionReceipts()) {
+      if (!['pending', 'deleted'].includes(candidate.status) || Date.parse(candidate.purge_after) > now) continue
+      const receipt = await this.withProjectWriteLock(candidate.project_id, async () => {
+        const deleted = candidate.status === 'pending' ? await this.resumeDeletion(candidate) : candidate
+        await rm(this.trashPath(deleted.trash_key), { recursive: true, force: true })
+        const next = mediaDeletionReceiptSchema.parse({
+          ...deleted,
+          status: 'purged',
+          purged_at: this.iso(),
+        })
+        await this.writeJson(this.deletionPath(next.deletion_id), next)
+        return next
+      })
+      purged.push(receipt)
+    }
+    await this.withCasWriteLock(() => this.garbageCollectCasUnlocked())
+    return purged
   }
 }

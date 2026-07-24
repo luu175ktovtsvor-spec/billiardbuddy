@@ -2,10 +2,10 @@ import {
   IMAGE_DATA_EGRESS_POLICY_REVISION,
   MEDIA_UI_CAPABILITY_HEADER,
   mediaSafeError,
-  type MediaTask,
+  type PublicMediaTask as MediaTask,
   type RenderVideoInput,
   type UpdateImageProjectInput,
-  type ImageWorkbenchProject,
+  type PublicImageWorkbenchProject as ImageWorkbenchProject,
   type SaveImageOutputInput,
 } from '../../../shared/contracts/media'
 

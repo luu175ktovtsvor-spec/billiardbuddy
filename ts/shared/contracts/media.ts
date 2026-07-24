@@ -30,6 +30,55 @@ export const mediaIsoDateSchema = z.string().datetime()
 export const productTaskOwnerIdSchema = z.string().regex(
   /^task_(?:[a-f0-9]{16}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/,
 )
+export const STANDALONE_MEDIA_OWNER_ID = 'local_workbench'
+export const mediaOwnerSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('standalone'),
+    owner_id: z.literal(STANDALONE_MEDIA_OWNER_ID),
+  }),
+  z.object({
+    kind: z.literal('product_task'),
+    owner_id: productTaskOwnerIdSchema,
+  }),
+])
+export const mediaAssetSchema = z.object({
+  id: mediaIdSchema,
+  role: z.enum(['reference', 'source', 'result', 'export']),
+  version_id: mediaIdSchema,
+  storage: z.object({
+    kind: z.enum(['cas', 'managed', 'external', 'remote']),
+    locator: z.string().min(1).max(4096),
+  }),
+  mime_type: z.string().min(1).max(160).optional(),
+  byte_size: z.number().int().nonnegative().optional(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  created_at: mediaIsoDateSchema,
+})
+export const mediaVersionSchema = z.object({
+  id: mediaIdSchema,
+  parent_version_id: mediaIdSchema.optional(),
+  project_revision: z.number().int().nonnegative(),
+  asset_ids: z.array(mediaIdSchema).max(1000),
+  created_at: mediaIsoDateSchema,
+})
+export const mediaDeletionReceiptSchema = z.object({
+  deletion_id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  owner: mediaOwnerSchema,
+  status: z.enum(['pending', 'deleted', 'restoring', 'restored', 'purged']),
+  deleted_at: mediaIsoDateSchema,
+  purge_after: mediaIsoDateSchema,
+  restored_at: mediaIsoDateSchema.optional(),
+  purged_at: mediaIsoDateSchema.optional(),
+  task_ids: z.array(mediaIdSchema).max(1000),
+  managed_asset_count: z.number().int().nonnegative(),
+  managed_asset_bytes: z.number().int().nonnegative(),
+  trash_key: mediaIdSchema,
+})
+export const publicMediaDeletionReceiptSchema = mediaDeletionReceiptSchema.omit({
+  owner: true,
+  trash_key: true,
+})
 export const mediaTaskStatusSchema = z.enum([
   'queued',
   'running',
@@ -141,6 +190,16 @@ const mediaProjectBaseSchema = z.object({
   workspace_root: z.string().min(1).max(4096).optional(),
   /** Optional so standalone and legacy media projects remain valid. */
   product_task_id: productTaskOwnerIdSchema.optional(),
+  /** Canonical owner. product_task_id remains a read-compatible projection. */
+  owner: mediaOwnerSchema.default({
+    kind: 'standalone',
+    owner_id: STANDALONE_MEDIA_OWNER_ID,
+  }),
+  /** Compare-and-swap token changed after every durable project write. */
+  writer_fence: z.string().regex(/^fence_[a-f0-9]{32}$/).default(`fence_${'0'.repeat(32)}`),
+  /** Immutable records discovered from legacy outputs/sources during migration. */
+  assets: z.array(mediaAssetSchema).max(1000).default([]),
+  versions: z.array(mediaVersionSchema).max(1000).default([]),
   revision: z.number().int().nonnegative(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
@@ -218,10 +277,28 @@ export const mediaProjectSchema = z.discriminatedUnion('kind', [
   videoStudioProjectSchema,
 ])
 
+const persistedMediaProjectFields = {
+  product_task_id: true,
+  owner: true,
+  writer_fence: true,
+  assets: true,
+  versions: true,
+} as const
+export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omit(persistedMediaProjectFields)
+export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields)
+export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
+  publicImageWorkbenchProjectSchema,
+  publicVideoStudioProjectSchema,
+])
+
 export const mediaTaskSchema = z.object({
   schema_version: z.literal(1),
   id: mediaIdSchema,
   project_id: mediaIdSchema,
+  /** One logical operation can be recovered while this id remains the job id. */
+  operation_id: mediaIdSchema.optional(),
+  owner: mediaOwnerSchema.optional(),
+  attempt: z.number().int().positive().default(1),
   kind: z.enum(['image.generate', 'video.probe', 'video.render']),
   status: mediaTaskStatusSchema,
   progress: z.number().min(0).max(100),
@@ -239,6 +316,7 @@ export const mediaTaskSchema = z.object({
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })
+export const publicMediaTaskSchema = mediaTaskSchema.omit({ owner: true, attempt: true })
 
 export const imageGenerationTaskResultSchema = z.object({
   output_count: z.number().int().nonnegative(),
@@ -329,6 +407,15 @@ export type MediaProject = z.infer<typeof mediaProjectSchema>
 export type ImageWorkbenchProject = z.infer<typeof imageWorkbenchProjectSchema>
 export type VideoStudioProject = z.infer<typeof videoStudioProjectSchema>
 export type MediaTask = z.infer<typeof mediaTaskSchema>
+export type PublicMediaProject = z.infer<typeof publicMediaProjectSchema>
+export type PublicImageWorkbenchProject = z.infer<typeof publicImageWorkbenchProjectSchema>
+export type PublicVideoStudioProject = z.infer<typeof publicVideoStudioProjectSchema>
+export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
+export type MediaOwner = z.infer<typeof mediaOwnerSchema>
+export type MediaAsset = z.infer<typeof mediaAssetSchema>
+export type MediaVersion = z.infer<typeof mediaVersionSchema>
+export type MediaDeletionReceipt = z.infer<typeof mediaDeletionReceiptSchema>
+export type PublicMediaDeletionReceipt = z.infer<typeof publicMediaDeletionReceiptSchema>
 export type VideoSource = z.infer<typeof videoSourceSchema>
 export type VideoClip = z.infer<typeof videoClipSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
