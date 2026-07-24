@@ -13,6 +13,8 @@ import type {
   ProductTaskMediaAttachableList,
   ProductTaskMediaList,
   ProductTaskMediaProject,
+  ProductTaskReviewCommentMutation,
+  ProductTaskReviewComments,
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
   ProductTaskReviewStatus,
@@ -34,7 +36,7 @@ export const PRODUCT_MEDIA_RESULT_TIMEOUT_MS = 5 * 60_000
 
 function reviewPath(
   taskId: string,
-  resource: 'status' | 'tree' | 'file' | 'diff',
+  resource: 'status' | 'tree' | 'file' | 'diff' | 'comments',
   path?: string,
   revision?: string,
 ): string {
@@ -111,6 +113,13 @@ export const productTasksApi: ProductTaskApi = {
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
   getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
   getReviewDiff: (taskId, path, revision) => productApi.get<ProductTaskReviewDiff>(reviewPath(taskId, 'diff', path, revision)),
+  getReviewComments: (taskId, fileRef) => productApi.get<ProductTaskReviewComments>(
+    reviewPath(taskId, 'comments', fileRef.path, fileRef.revision),
+  ),
+  createReviewComment: (taskId, input) => productApi.post<ProductTaskReviewCommentMutation>(
+    reviewPath(taskId, 'comments'),
+    input,
+  ),
   getMedia: (taskId) => productApi.get<ProductTaskMediaList>(
     `${taskPath(taskId)}/media`,
     { timeout: PRODUCT_MEDIA_RESULT_TIMEOUT_MS },

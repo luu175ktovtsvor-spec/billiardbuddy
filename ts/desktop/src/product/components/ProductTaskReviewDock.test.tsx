@@ -6,8 +6,11 @@ const apiMocks = vi.hoisted(() => ({
   getReviewTree: vi.fn(),
   getReviewFile: vi.fn(),
   getReviewDiff: vi.fn(),
+  getReviewComments: vi.fn(),
+  createReviewComment: vi.fn(),
 }))
 const stableRevision = `rev_${'a'.repeat(32)}`
+const stableFileRef = { fileId: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/main.ts', revision: stableRevision }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -22,6 +25,7 @@ vi.mock('../api/tasks', () => ({
 }))
 
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
+import { ProductApiError } from '../api/client'
 
 beforeEach(() => {
   apiMocks.getReviewStatus.mockReset().mockResolvedValue({
@@ -42,7 +46,7 @@ beforeEach(() => {
     taskId: 'task-1',
     state: 'ok',
     path: 'src/main.ts',
-    fileRef: { fileId: 'file_aaaaaaaaaaaaaaaaaaaa', path: 'src/main.ts', revision: stableRevision },
+    fileRef: stableFileRef,
     previewType: 'text',
     content: 'export const ready = true',
     language: 'typescript',
@@ -52,8 +56,15 @@ beforeEach(() => {
     taskId: 'task-1',
     state: 'ok',
     path: 'src/main.ts',
-    diff: '+export const ready = true',
+    fileRef: stableFileRef,
+    diff: '@@ -1,1 +1,1 @@\n-export const ready = false\n+export const ready = true',
   })
+  apiMocks.getReviewComments.mockReset().mockResolvedValue({
+    taskId: 'task-1',
+    fileRef: stableFileRef,
+    comments: [],
+  })
+  apiMocks.createReviewComment.mockReset()
 })
 
 afterEach(() => {
@@ -74,7 +85,99 @@ describe('ProductTaskReviewDock', () => {
     await screen.findByText('export const ready = true')
     expect(apiMocks.getReviewFile).toHaveBeenCalledWith('task-1', 'src/main.ts')
     expect(apiMocks.getReviewDiff).toHaveBeenCalledWith('task-1', 'src/main.ts', stableRevision)
+    expect(apiMocks.getReviewComments).toHaveBeenCalledWith('task-1', stableFileRef)
     expect(screen.getByText('+export const ready = true')).toBeTruthy()
+  })
+
+  it('renders revision-scoped line comments and saves a new-side comment', async () => {
+    apiMocks.getReviewComments.mockResolvedValue({
+      taskId: 'task-1',
+      fileRef: stableFileRef,
+      comments: [{
+        commentId: 'comment_existing',
+        taskId: 'task-1',
+        fileRef: stableFileRef,
+        side: 'old',
+        line: 1,
+        body: '旧实现需要删除',
+        createdAt: '2026-07-24T00:00:00.000Z',
+      }],
+    })
+    apiMocks.createReviewComment.mockImplementation(async (_taskId: string, input: {
+      body: string
+      client_operation_id: string
+    }) => ({
+      outcome: 'accepted',
+      authorityRevision: 8,
+      comment: {
+        commentId: 'comment_new',
+        taskId: 'task-1',
+        fileRef: stableFileRef,
+        side: 'new',
+        line: 1,
+        body: input.body,
+        createdAt: '2026-07-24T00:01:00.000Z',
+      },
+    }))
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByText('src/main.ts'))
+
+    expect(await screen.findByText('旧实现需要删除')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '在新文件第 1 行添加批注' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '在新文件第 1 行添加批注' }), { target: { value: '这里需要补测试' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存批注' }))
+
+    expect(await screen.findByText('这里需要补测试')).toBeTruthy()
+    expect(apiMocks.createReviewComment).toHaveBeenCalledWith('task-1', {
+      file_ref: { file_id: stableFileRef.fileId, path: stableFileRef.path, revision: stableFileRef.revision },
+      side: 'new',
+      line: 1,
+      body: '这里需要补测试',
+      client_operation_id: expect.any(String),
+    })
+  })
+
+  it('retries an uncertain comment save with the same operation id', async () => {
+    apiMocks.createReviewComment
+      .mockRejectedValueOnce(new Error('request timeout'))
+      .mockImplementationOnce(async (_taskId: string, input: { body: string }) => ({
+        outcome: 'duplicate',
+        authorityRevision: 8,
+        comment: {
+          commentId: 'comment_retry',
+          taskId: 'task-1',
+          fileRef: stableFileRef,
+          side: 'new',
+          line: 1,
+          body: input.body,
+          createdAt: '2026-07-24T00:01:00.000Z',
+        },
+      }))
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByText('src/main.ts'))
+    await screen.findByRole('button', { name: '在新文件第 1 行添加批注' })
+    fireEvent.click(screen.getByRole('button', { name: '在新文件第 1 行添加批注' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '在新文件第 1 行添加批注' }), { target: { value: '幂等重试' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存批注' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: '重试保存' }))
+    expect(await screen.findByText('幂等重试')).toBeTruthy()
+    const firstInput = apiMocks.createReviewComment.mock.calls[0]![1]
+    const retryInput = apiMocks.createReviewComment.mock.calls[1]![1]
+    expect(retryInput.client_operation_id).toBe(firstInput.client_operation_id)
+    expect(retryInput).toEqual(firstInput)
+  })
+
+  it('shows a stale revision state when comments cannot attach to the loaded diff', async () => {
+    apiMocks.getReviewComments.mockRejectedValueOnce(new ProductApiError(409, { error: 'AUTHORITY_CONFLICT' }))
+
+    render(<ProductTaskReviewDock taskId="task-1" onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByText('src/main.ts'))
+
+    expect(await screen.findByText('文件版本已变化，请重新读取后审阅批注。')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重新读取' })).toBeTruthy()
   })
 
   it('navigates the real task tree with relative paths only', async () => {

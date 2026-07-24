@@ -98,3 +98,57 @@ export type ProductTaskReviewCommentMutation = {
   authorityRevision: number
   comment: ProductTaskReviewComment
 }
+
+export type ProductTaskReviewDiffLine = {
+  kind: 'metadata' | 'hunk' | 'context' | 'addition' | 'deletion'
+  text: string
+  oldLine?: number
+  newLine?: number
+}
+
+/** Parse the bounded unified diff once for both validation and presentation. */
+export function parseProductTaskReviewDiff(diff: string): ProductTaskReviewDiffLine[] {
+  const lines: ProductTaskReviewDiffLine[] = []
+  let oldLine = 0
+  let newLine = 0
+  let inHunk = false
+
+  for (const text of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text)
+    if (hunk) {
+      oldLine = Number.parseInt(hunk[1]!, 10)
+      newLine = Number.parseInt(hunk[2]!, 10)
+      inHunk = true
+      lines.push({ kind: 'hunk', text })
+      continue
+    }
+    if (!inHunk || text.startsWith('diff --git ') || text.startsWith('@@ ')) {
+      inHunk = false
+      lines.push({ kind: 'metadata', text })
+      continue
+    }
+    if (text.startsWith('\\ No newline at end of file')) {
+      lines.push({ kind: 'metadata', text })
+      continue
+    }
+    if (text.startsWith('-')) {
+      lines.push({ kind: 'deletion', text, oldLine })
+      oldLine += 1
+      continue
+    }
+    if (text.startsWith('+')) {
+      lines.push({ kind: 'addition', text, newLine })
+      newLine += 1
+      continue
+    }
+    if (text.startsWith(' ')) {
+      lines.push({ kind: 'context', text, oldLine, newLine })
+      oldLine += 1
+      newLine += 1
+      continue
+    }
+    lines.push({ kind: 'metadata', text })
+  }
+
+  return lines
+}

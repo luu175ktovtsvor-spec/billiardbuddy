@@ -71,6 +71,32 @@ describe('productTasksApi authoritative mutations', () => {
     ])
   })
 
+  it('uses revision-scoped review comment routes and preserves the mutation envelope', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ comments: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const fileRef = {
+      fileId: 'file_aaaaaaaaaaaaaaaaaaaa',
+      path: 'src/main.ts',
+      revision: `rev_${'b'.repeat(32)}`,
+    }
+    const input = {
+      file_ref: { file_id: fileRef.fileId, path: fileRef.path, revision: fileRef.revision },
+      side: 'new' as const,
+      line: 7,
+      body: '补充边界测试',
+      client_operation_id: 'review-comment-operation-1',
+    }
+
+    await productTasksApi.getReviewComments('task 1', fileRef)
+    await productTasksApi.createReviewComment('task 1', input)
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      `http://127.0.0.1:49237/api/product/tasks/task%201/review/comments?path=src%2Fmain.ts&revision=${fileRef.revision}`,
+      'http://127.0.0.1:49237/api/product/tasks/task%201/review/comments',
+    ])
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input))
+  })
+
   it('keeps task-scoped final image materialization open for five minutes', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn().mockImplementation((_input, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })))

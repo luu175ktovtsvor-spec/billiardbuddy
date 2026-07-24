@@ -14,10 +14,13 @@ import type {
 } from '../../../../shared/product/authority'
 import type { ProductTaskThread } from '../../../../shared/product/taskEvents'
 import type {
+  ProductTaskReviewCommentMutation,
+  ProductTaskReviewComments,
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
   ProductTaskReviewStatus,
   ProductTaskReviewTree,
+  WorkspaceFileRef,
 } from '../../../../shared/product/taskReview'
 import type {
   ProductTaskMediaAttachableList,
@@ -33,6 +36,7 @@ import type {
 
 export { PRODUCT_DOMAIN_VERSION } from '../../../../shared/product/domain'
 export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvents'
+export { parseProductTaskReviewDiff } from '../../../../shared/product/taskReview'
 export type {
   ContinueProductTaskInput,
   CreateProductTaskInput,
@@ -79,6 +83,10 @@ export type {
 export type {
   ProductTaskReviewChangedFile,
   ProductTaskReviewChangedFileStatus,
+  ProductTaskReviewComment,
+  ProductTaskReviewCommentMutation,
+  ProductTaskReviewComments,
+  ProductTaskReviewDiffLine,
   ProductTaskReviewDiff,
   ProductTaskReviewFile,
   ProductTaskReviewStatus,
@@ -258,6 +266,14 @@ export type ProductTaskApi = {
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
   getReviewFile: (taskId: string, path: string) => Promise<ProductTaskReviewFile>
   getReviewDiff: (taskId: string, path: string, revision?: string) => Promise<ProductTaskReviewDiff>
+  getReviewComments: (taskId: string, fileRef: WorkspaceFileRef) => Promise<ProductTaskReviewComments>
+  createReviewComment: (taskId: string, input: {
+    file_ref: { file_id: string; path: string; revision: string }
+    side: 'old' | 'new'
+    line: number
+    body: string
+    client_operation_id: string
+  }) => Promise<ProductTaskReviewCommentMutation>
   getMedia: (taskId: string) => Promise<ProductTaskMediaList>
   getAttachableMedia: (taskId: string) => Promise<ProductTaskMediaAttachableList>
   attachMediaProject: (taskId: string, projectId: string) => Promise<{ project: ProductTaskMediaProject }>
