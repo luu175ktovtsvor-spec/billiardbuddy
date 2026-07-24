@@ -448,6 +448,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const refreshTasks = useProductTaskStore((state) => state.refresh)
   const archiveTask = useProductTaskStore((state) => state.archiveTask)
   const restoreTask = useProductTaskStore((state) => state.restoreTask)
+  const recoverTaskRun = useProductTaskStore((state) => state.recoverTaskRun)
   const pinTask = useProductTaskStore((state) => state.pinTask)
   const unpinTask = useProductTaskStore((state) => state.unpinTask)
   const continueTask = useProductTaskStore((state) => state.continueTask)
@@ -721,6 +722,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const isTaskMutationPending = mutations[`${taskId}:archive`] || mutations[`${taskId}:restore`]
   const isPinMutationPending = mutations[`${taskId}:${pinAction}`]
   const isContinuationPending = mutations[`${taskId}:continue`] === true
+  const isRecoveryPending = mutations[`${taskId}:recover`] === true
   const isSideTaskCreationPending = sideTaskMutations[
     productSideTaskMutationKey(taskId, 'new', 'create')
   ] === true
@@ -820,6 +822,16 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     setDraft((current) => current ? `${current}\n\n${quote}\n\n` : `${quote}\n\n`)
     setReferenceEntryIds((current) => current.includes(entry.id) || current.length >= 8 ? current : [...current, entry.id])
     setValidationMessage(null)
+  }
+
+  const recoverFailedRun = async () => {
+    try {
+      setThreadActionError(null)
+      await recoverTaskRun(taskId)
+      await refreshThread(taskId)
+    } catch {
+      setThreadActionError('暂时无法恢复这次运行，请刷新后重试。')
+    }
   }
 
   const attachMediaDraft = async (draft: ProductTaskMediaDraft) => {
@@ -992,7 +1004,14 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
               />
             ) : null}
 
-            {runtime?.error ? (
+            {runtime?.recoveryRequired ? (
+              <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+                <p>上次运行在结果未确认时中断。恢复会用新的执行代次重新运行这条消息，可能重复外部操作，请确认后继续。</p>
+                <button type="button" disabled={isRecoveryPending} onClick={() => { void recoverFailedRun() }} className="mt-3 rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+                  {isRecoveryPending ? '正在恢复…' : '恢复失败任务'}
+                </button>
+              </div>
+            ) : runtime?.error ? (
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-[var(--color-error)]/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-error)]">
                 {PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code]}
               </div>

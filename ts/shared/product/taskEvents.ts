@@ -246,6 +246,8 @@ export type ProductTaskThreadEntry =
 export type ProductTaskThread = {
   taskId: string
   entries: ProductTaskThreadEntry[]
+  /** A user-confirmed retry is required before the blocked queue can advance. */
+  recoveryRequired?: boolean
 }
 
 /** Durable BB-02C ledger event. This is distinct from authority operation audit. */

@@ -515,6 +515,8 @@ describe('ProductTaskService', () => {
     expect(await fs.readFile(authorityPath)).toEqual(bytes)
     expect((await service.getTaskThread(task.id)).entries.map(entry => entry.type === 'user_text' || entry.type === 'assistant_text' ? entry.text : entry.type)).toEqual(['第一问', '第一答'])
     await expect(service.continueTaskAuthoritatively({ taskId: task.id, expected_revision: 4, client_operation_id: 'fork-hidden', canonical_input: JSON.stringify({ sourceEntryId: hiddenAfterForkEntryId, target: 'new_worktree' }) }, { authorityPath, bridge })).rejects.toMatchObject({ statusCode: 400, code: 'BAD_REQUEST' })
+    await service.settleTaskRunDispatch(first.result!.run_id, 1, 'recovery_required', 'TEST_FAILURE')
+    expect(await service.getTaskThread(task.id)).toMatchObject({ recoveryRequired: true })
   })
 
   it('maps supported product execution choices to Core permission modes', async () => {

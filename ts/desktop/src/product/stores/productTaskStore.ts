@@ -51,6 +51,7 @@ type ProductTaskStore = {
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
   archiveTask: (taskId: string) => Promise<ProductTaskRecord>
   restoreTask: (taskId: string) => Promise<ProductTaskRecord>
+  recoverTaskRun: (taskId: string) => Promise<ProductTaskRecord>
   mutateTaskDeletion: (taskId: string, phase: ProductTaskDeletionPhase) => Promise<ProductTaskRecord>
   continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
@@ -277,6 +278,13 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
     unpinTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'unpin'), { taskId }, (envelope) => productTasksApi.unpin(taskId, envelope)),
     archiveTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'archive'), { taskId }, (envelope) => productTasksApi.archive(taskId, envelope)),
     restoreTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'restore'), { taskId }, (envelope) => productTasksApi.restore(taskId, envelope)),
+    recoverTaskRun: async (taskId) => {
+      const taskRevision = get().index.tasks.find(task => task.id === taskId)?.revision
+      if (taskRevision === undefined) throw new Error('Task revision is unavailable')
+      const task = await runMutation(productTaskMutationKey(taskId, 'recover'), { taskId }, (envelope) => productTasksApi.recover(taskId, envelope), taskRevision)
+      await get().refresh()
+      return task
+    },
     mutateTaskDeletion: async (taskId, phase) => {
       const current = get().index.tasks.find((task) => task.id === taskId)
       if (!current) throw new Error('任务不存在或已删除')

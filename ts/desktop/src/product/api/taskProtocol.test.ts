@@ -15,6 +15,11 @@ describe('product task protocol attachment summaries', () => {
     expect(parseProductTaskEvent({ type: 'user_text', text: '继续', replayed: true, referenceEntryIds: ['/private/history'] })).toBeNull()
   })
 
+  it('accepts only a boolean durable recovery marker on reconnect snapshots', () => {
+    expect(parseProductTaskThread({ taskId: 'task-recovery', entries: [], recoveryRequired: true }, 'task-recovery')).toEqual({ taskId: 'task-recovery', entries: [], recoveryRequired: true })
+    expect(parseProductTaskThread({ taskId: 'task-recovery', entries: [], recoveryRequired: { runId: 'private' } }, 'task-recovery')).toBeNull()
+  })
+
   it('accepts a bounded safe attachment summary on replay and persisted user text', () => {
     expect(parseProductTaskEvent({
       type: 'user_text',

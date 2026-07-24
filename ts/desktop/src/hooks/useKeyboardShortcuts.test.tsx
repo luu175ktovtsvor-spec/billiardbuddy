@@ -38,6 +38,7 @@ function makeRuntime(runState: ProductTaskRuntime['runState']): ProductTaskRunti
     error: null,
     streamingEntryId: null,
     stopRequested: false,
+    recoveryRequired: false,
   }
 }
 

@@ -297,6 +297,14 @@ function nextTaskRunId(state: AuthorityFile, taskId: string): string | undefined
   }
 }
 
+function recoveryRequiredTaskRunId(state: AuthorityFile, taskId: string): string | undefined {
+  for (const runId of orderedTaskRunIds(state, taskId)) {
+    const status = (state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state
+    if (status === 'terminal') continue
+    return status === 'recovery_required' ? runId : undefined
+  }
+}
+
 function hasUnsettledTaskQueue(state: AuthorityFile, taskId: string): boolean {
   return orderedTaskRunIds(state, taskId).some(runId => ['pending', 'claimed', 'started', 'recovery_required'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
 }
@@ -1334,6 +1342,53 @@ export class ProductTaskService {
     }
   }
 
+  async recoverTaskRun(taskId: string, input: { expected_revision: number; client_operation_id: string }): Promise<{
+    task: ProductTaskRecord
+    receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number }
+    snapshot: { revision: number; event_sequence: number; tasks: ProductTaskRecord[]; side_tasks: ProductSideTask[] }
+  }> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const canonical = JSON.stringify({ task_id: taskId, expected_revision: input.expected_revision })
+    try {
+      const { file, result } = await authority.transactSubmit((state) => {
+        const prior = state.receipts[input.client_operation_id]
+        const stored = state.tasks[taskId] as { task?: ProductTaskRecord } | undefined
+        if (!stored?.task) throw new Error('AUTHORITY_INVALID')
+        if (prior) {
+          if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT')
+          return { changed: false as const, value: { duplicate: true, receipt: prior } }
+        }
+        if (stored.task.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT')
+        const runId = recoveryRequiredTaskRunId(state, taskId)
+        const run = runId ? state.task_runs[runId] as { entry_id?: unknown; core_binding?: Record<string, unknown> } | undefined : undefined
+        const dispatch = runId ? state.dispatch_records[runId] as DurableTaskRunDispatch | undefined : undefined
+        if (!runId || typeof run?.entry_id !== 'string' || !run.core_binding || !Number.isSafeInteger(dispatch?.dispatch_generation)) throw new Error('RECOVERY_NOT_REQUIRED')
+        const generation = (dispatch!.dispatch_generation as number) + 1
+        run.core_binding = { ...run.core_binding, session_id: randomUUID(), dispatch_generation: generation }
+        state.dispatch_records[runId] = { run_id: runId, dispatch_generation: generation, state: 'pending' }
+        const now = this.now().toISOString()
+        stored.task.revision = input.expected_revision + 1
+        stored.task.updatedAt = now
+        const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: run.entry_id, dispatch_generation: generation } }
+        state.receipts[input.client_operation_id] = receipt
+        state.event_sequence += 1
+        state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_run_recover', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
+        return { duplicate: false, receipt }
+      })
+      const receipt = result.receipt
+      const recovered = receipt.result as { run_id: string; dispatch_generation: number }
+      this.dispatchAcceptedRun(recovered.run_id, recovered.dispatch_generation)
+      const snapshot = this.authoritySnapshot(file)
+      return { task: snapshot.tasks.find(task => task.id === taskId)!, receipt: { outcome: result.duplicate ? 'duplicate' : 'accepted', revision: receipt.revision }, snapshot }
+    } catch (error) {
+      const file = await authority.read()
+      const snapshot = this.authoritySnapshot(file)
+      const task = snapshot.tasks.find(task => task.id === taskId)
+      if (!task) throw ApiError.notFound('任务不存在')
+      return { task, receipt: { outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', revision: file.revision }, snapshot }
+    }
+  }
+
   async createAndSubmitTask(input: import('../../../shared/product/domain.js').CreateAndSubmitTaskInput): Promise<import('../../../shared/product/domain.js').SubmitTaskRunReceipt> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const canonical = JSON.stringify({ draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, text: input.text, attachment_ids: input.attachment_ids, permission_mode: input.permission_mode })
@@ -1731,12 +1786,15 @@ export class ProductTaskService {
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
   async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    await authority.transactSubmit((file) => {
+    const { result: taskId } = await authority.transactSubmit((file) => {
+      const run = file.task_runs[runId] as { task_id?: unknown } | undefined
       const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown } | undefined
-      if (!dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
       if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') return { changed: false as const, value: undefined }
       dispatch.state = state; dispatch.completed_at = this.now().toISOString(); if (error) dispatch.error = error
+      return run.task_id
     })
+    if (state === 'recovery_required' && taskId) productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', code: 'task_failed', retryable: false })
   }
 
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
@@ -2375,11 +2433,11 @@ export class ProductTaskService {
           }
           if (!foundCutoff) throw new Error('AUTHORITY_INVALID')
         }
-        if (entries.length > 0) return { taskId, entries }
+        if (entries.length > 0) return { taskId, entries, ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
       }
       const sessionId = (await this.requireTaskBinding(taskId)).metadata.coreSessionId
       const messages = await getSessionMessages(sessionId)
-      return projectSessionTranscriptForProductTask(taskId, messages)
+      return { ...projectSessionTranscriptForProductTask(taskId, messages), ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
     })
   }
 

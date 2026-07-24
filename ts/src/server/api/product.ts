@@ -100,6 +100,7 @@ export async function handleProductApi(
     | 'transitionAttachment'
     | 'bindAttachment'
     | 'submitTaskRun'
+    | 'recoverTaskRun'
     | 'createAndSubmitTask'
     | 'listTaskEvents'
     | 'claimTaskRunDispatch'
@@ -444,6 +445,14 @@ export async function handleProductApi(
         const result = await tasks.continueTaskAuthoritatively({ taskId, ...envelope, canonical_input: JSON.stringify(body) }, { authorityPath: authorityPath(), bridge: authorityBridge })
         const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
         return Response.json({ receipt: { outcome: result.outcome, revision: result.revision }, authority: publicAuthority(operation.authority) }, { status: 201 })
+      }
+      case 'recover': {
+        if (!assertPlainExactObject(input, ['expected_revision', 'client_operation_id'])) throw ApiError.badRequest('recover 参数无效')
+        const result = await tasks.recoverTaskRun(taskId, envelope)
+        return Response.json(
+          { receipt: result.receipt, authority: publicAuthority(result.snapshot), task: publicTask(result.task) },
+          { status: result.receipt.outcome === 'accepted' ? 201 : result.receipt.outcome === 'duplicate' ? 200 : 409 },
+        )
       }
       default:
         throw ApiError.notFound(`未知任务操作：${action}`)

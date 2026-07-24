@@ -246,6 +246,7 @@ export type ProductTaskApi = {
   unpin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   archive: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   restore: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  recover: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   delete: (taskId: string, input: { phase: ProductTaskDeletionPhase; expected_revision: number; client_operation_id: string }) => Promise<ProductTaskDeletionResponse>
   continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) => Promise<ProductTaskActionResponse>
   createSideTask: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) => Promise<ProductTaskActionResponse>

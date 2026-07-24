@@ -59,6 +59,7 @@ export type ProductTaskRuntime = {
   } | null
   streamingEntryId: string | null
   stopRequested: boolean
+  recoveryRequired: boolean
 }
 
 export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, string> = {
@@ -83,6 +84,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   error: null,
   streamingEntryId: null,
   stopRequested: false,
+  recoveryRequired: false,
 }
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
@@ -356,6 +358,12 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         ...runtime,
         historyStatus: 'ready',
         entries: mergeThreadSnapshot(thread, runtime, liveEntryIdsAtRequestStart),
+        recoveryRequired: thread.recoveryRequired === true,
+        ...(thread.recoveryRequired === true
+          ? { runState: 'idle', activeActivity: null, pendingApproval: null, stopRequested: false }
+          : runtime.recoveryRequired
+            ? { error: null }
+            : {}),
       }))
     } catch {
       if (historyRequestVersions.get(taskId) !== requestVersion) return
@@ -431,6 +439,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           ...current,
           runState: 'working',
           stopRequested: false,
+          recoveryRequired: false,
           error: null,
           ...(duplicate ? {} : {
             entries: [...current.entries, {
@@ -688,6 +697,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return {
               ...runtime,
               error: { code: event.code, retryable: event.retryable },
+              ...(!event.retryable && (event.code === 'task_failed' || event.code === 'task_unavailable') ? { recoveryRequired: true } : {}),
               streamingEntryId: null,
               approvalResponsePending: false,
               // A terminal product error has no corresponding Core completion

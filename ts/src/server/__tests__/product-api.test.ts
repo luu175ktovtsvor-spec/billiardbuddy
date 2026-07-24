@@ -71,6 +71,7 @@ function createService() {
       createTaskAuthoritatively: record('createTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 } }),
       createAndSubmitTask: record('createAndSubmitTask', { client_operation_id: 'create-request', outcome: 'accepted', authority_revision: 1, entity_revisions: {}, result: { task_id: task.id, run_id: 'run-1', entry_id: 'entry-1', dispatch_generation: 1 } }),
       mutateTaskAuthoritatively: record('mutateTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] } }),
+      recoverTaskRun: record('recoverTaskRun', { task, receipt: { outcome: 'accepted', revision: 2 }, snapshot: { revision: 2, event_sequence: 2, tasks: [task], side_tasks: [] } }),
       mutateTaskDeletion: record('mutateTaskDeletion', { task, outcome: 'accepted', blockers: [] }),
       continueTaskAuthoritatively: record('continueTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
       createSideTaskAuthoritatively: record('createSideTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
@@ -200,6 +201,14 @@ describe('Product tasks API', () => {
     const response = await request(service, 'POST', '/api/product/tasks/task-1/delete', { phase: 'begin', expected_revision: 3, client_operation_id: 'delete-1' })
     expect(response).toEqual({ status: 200, body: { task: expect.objectContaining({ id: task.id }), receipt: { outcome: 'accepted' }, blockers: [] } })
     expect(calls).toEqual([{ name: 'mutateTaskDeletion', args: ['task-1', { action: 'begin', expected_revision: 3, client_operation_id: 'delete-1' }] }])
+  })
+
+  it('routes an exact durable failed-run recovery envelope', async () => {
+    const { service, calls } = createService()
+    const response = await request(service, 'POST', '/api/product/tasks/task-1/recover', { expected_revision: 4, client_operation_id: 'recover-1' })
+    expect(response).toEqual({ status: 201, body: { task: expect.objectContaining({ id: task.id }), receipt: { outcome: 'accepted', revision: 2 }, authority: expect.objectContaining({ revision: 2, tasks: expect.any(Array) }) } })
+    expect(calls).toEqual([{ name: 'recoverTaskRun', args: ['task-1', { expected_revision: 4, client_operation_id: 'recover-1' }] }])
+    expect((await request(service, 'POST', '/api/product/tasks/task-1/recover', { expected_revision: 4, client_operation_id: 'recover-2', run_id: 'private' })).status).toBe(400)
   })
 
   it('routes product-thread anchored continuations to the product task service', async () => {
