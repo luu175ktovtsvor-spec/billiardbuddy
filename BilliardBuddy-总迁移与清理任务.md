@@ -401,6 +401,10 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：五分钟级图片任务可等待、恢复、取消和对账，不重复扣费。
 - 做法：Gateway/Relay 使用统一 scheduler、分 provider 容量、持久队列、receipt、retention、ack 和 `outcome_unknown`。
 - 验收：至少 300 秒媒体 deadline；断网后查询原 operation；真实 preflight/负载证据支持发布声明。
+- 当前落点：`cf416514…` 沿用唯一 qfgw → qfrelay 持久队列，不另建媒体 scheduler。GPT Image 和豆包 Seedream 分别使用 provider 级全局/单 owner 信号量；队列元数据进 SQLite，大输入与结果进受限 blob 目录，排队与运行任务不被 TTL 误删。
+- 恢复与费用：提交前持久化 owner、operation、输入指纹、幂等键和出境回执；丢失提交响应时只以原幂等键找回原 task ID。重启后 queued 从持久输入恢复，running 进入 `failed_unknown`、禁止自动重提；只有远程确认尚未进入上游的 queued 任务可取消。上游请求和完整结果读取均以 300 秒为最低截止。
+- 确认与保留：Provider 接受的每次成功响应都累积不透明 receipt hash。桌面服务只在图片字节、Asset、Version 和项目状态全部持久化后向 relay 发送幂等 `ack`；reply 后立即删除远程结果 blob，但任务元数据、出境回执和 provider receipt 仍保留到 TTL。ack 失败只在后续任务读取时重试确认，不重新查询结果或提交生成。
+- 验收证据：服务端 1343 项通过、1 项显式 live skip；gateway/relay 37 个文件共 290 项通过；桌面端 909 项、Electron 210 项及两套构建通过。大陆与美国正式环境预检通过，美国真实主机上的假上游负载 34 项通过：1000 个小任务保持 6 个付费槽，500 个中等改图输入在临时 SQLite/blob 中完成有界排队和排空。该证据只支持队列、磁盘和调度发布声明；未调用收费上游，不宣称 OpenAI/Seedream 真实完成吞吐。同次审计已清理美国正式库中 2030 条旧容量测试终态记录和 58 个结果 blob，清理后任务与 blob 均为 0。
 
 #### 模块 15：Fun-ASR 语音
 
