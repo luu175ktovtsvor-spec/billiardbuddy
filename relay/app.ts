@@ -21,6 +21,8 @@
 //   GET  /images/tasks/:id  headers: Authorization + X-Relay-Owner?
 //                        → 200 {status:'queued'|'running'|'succeeded'|'failed'|'failed_unknown', data?, error?, created}
 //                        → 403 owner 不匹配 / 404 未知或过期
+//   POST /images/tasks/:id/ack  headers: Authorization + X-Relay-Owner?
+//                        → 本机已持久化成功结果后幂等确认，relay 立即删除结果 blob，保留 receipt 元数据
 //
 // 鉴权:Bearer <RELAY_TOKEN>(= 网关注入的 GW_RELAY_TOKEN)。真 OpenAI/ARK key 只在本服务环境变量,绝不下发。
 
@@ -317,6 +319,7 @@ type TaskRow = {
   consent_receipt_hash: string | null
   provider: string | null
   provider_receipt_hash: string | null
+  acknowledged_at: number | null
   created: number
   updated: number
 }
@@ -332,7 +335,7 @@ class TaskStore {
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
       'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, ' +
       'input_fingerprint TEXT, consent_receipt_hash TEXT, provider TEXT, provider_receipt_hash TEXT, ' +
-      'created INTEGER NOT NULL, updated INTEGER NOT NULL)'
+      'acknowledged_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
     // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
     const columns = this.db.query('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
@@ -341,6 +344,9 @@ class TaskStore {
     }
     for (const column of ['input_fingerprint', 'consent_receipt_hash', 'provider', 'provider_receipt_hash']) {
       if (!columns.some(existing => existing.name === column)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`)
+    }
+    if (!columns.some(existing => existing.name === 'acknowledged_at')) {
+      this.db.exec('ALTER TABLE tasks ADD COLUMN acknowledged_at INTEGER')
     }
     // (owner, key) 唯一 —— 幂等去重;key 为 NULL 的行不参与(旧请求无幂等键,不去重)。
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(owner, idempotency_key) WHERE idempotency_key IS NOT NULL')
@@ -382,6 +388,16 @@ class TaskStore {
       ? createHash('sha256').update(`${current}\0${receiptHash}`).digest('hex')
       : receiptHash
     this.db.query('UPDATE tasks SET provider_receipt_hash=?, updated=? WHERE id=?').run(aggregate, this.now(), id)
+  }
+
+  acknowledgeResult(id: string): number {
+    const current = this.get(id)
+    if (!current) throw new Error('task missing during acknowledgement')
+    if (current.acknowledged_at !== null) return current.acknowledged_at
+    const acknowledgedAt = this.now()
+    this.db.query('UPDATE tasks SET acknowledged_at=?, updated=? WHERE id=?')
+      .run(acknowledgedAt, acknowledgedAt, id)
+    return acknowledgedAt
   }
 
   markRunning(id: string): void {
@@ -892,6 +908,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       provider: rec.provider ?? undefined,
       data_egress_consent_hash: rec.consent_receipt_hash ?? undefined,
       provider_receipt_hash: rec.provider_receipt_hash ?? undefined,
+      result_acknowledged: rec.acknowledged_at !== null,
+      acknowledged_at: rec.acknowledged_at ?? undefined,
       ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
       ...(fidelity ? {
         input_fidelity_requested: fidelity.requested,
@@ -1036,6 +1054,31 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         requireGatewayProtocol(req, requester)
         if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
         return pollResponse(rec, url.searchParams.get('metadata_only') === '1')
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/ack')) {
+        auth(req)
+        sweep()
+        const id = url.pathname.slice('/images/tasks/'.length, -'/ack'.length)
+        if (!id || id.includes('/')) throw new HttpError(400, 'relay: 无效任务 ID')
+        const rec = store.get(id)
+        if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
+        const requester = readOwner(req)
+        requireGatewayProtocol(req, requester)
+        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
+        if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 只能确认已成功的图片结果')
+        if (rec.acknowledged_at === null && blobs.byteLength(id, 'out') === null) {
+          throw new HttpError(409, 'relay: 结果不完整，不能确认')
+        }
+        const acknowledgedAt = store.acknowledgeResult(id)
+        // Metadata and provider receipt remain pollable until TTL. Repeating ack
+        // always deletes a leftover blob, including a crash between DB commit and unlink.
+        blobs.delKind(id, 'out')
+        return Response.json({
+          status: 'succeeded',
+          operation_id: id,
+          result_acknowledged: true,
+          acknowledged_at: acknowledgedAt,
+        })
       }
       if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/cancel')) {
         auth(req)
