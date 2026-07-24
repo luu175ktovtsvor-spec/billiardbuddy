@@ -128,6 +128,23 @@ export const productTaskRunSubmitApi = {
   ),
 }
 
+export const productAttachmentIngestApi = {
+  ingest: (draftId: string, input: {
+    type: 'file' | 'image'
+    name: string
+    mime_type: string
+    data: string
+    client_operation_id: string
+  }) => productApi.post<{
+    attachment: {
+      attachment_id: string
+      attachment_revision: number
+      authority_revision: number
+      outcome: 'accepted' | 'duplicate'
+    }
+  }>(`/api/product/composer-drafts/${encodeURIComponent(draftId)}/attachments`, input),
+}
+
 
 function workspacePath(workspaceId?: string): string {
   return workspaceId

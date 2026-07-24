@@ -431,7 +431,7 @@ function trackReceivedMessageUuid(uuid: UUID): boolean {
  * session IDs and tool arguments stay inside this module.
  */
 export type ServerPrivateNativeCorePort = {
-  input(text: string): Promise<void>
+  input(text: string, attachments?: readonly string[]): Promise<void>
   approve(requestId: string, approved: boolean): Promise<void>
   stop(): Promise<void>
   shutdown(): Promise<void>
@@ -467,8 +467,8 @@ export async function createServerPrivateNativeCorePort(input: {
 
   return {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-    async input(text) {
-      if (!text || terminal || controller) return
+    async input(text, attachments = []) {
+      if ((!text && attachments.length === 0) || terminal || controller) return
       controller = createAbortController()
       emit({ type: 'event', event: 'started' })
       if (text.trim() === '/init' && input.auto_memory) {
@@ -483,9 +483,11 @@ export async function createServerPrivateNativeCorePort(input: {
         const commands = await getCommands(input.work_dir)
         const tools = getTools(state.toolPermissionContext)
         let completedResult: string | undefined
+        const attachmentPrefix = attachments.map(filePath => `@"${filePath}"`).join(' ')
+        const prompt = attachmentPrefix ? `${attachmentPrefix} ${text}`.trim() : text
         for await (const message of ask({
           commands,
-          prompt: text,
+          prompt,
           cwd: input.work_dir,
           tools,
           mcpClients: state.mcp.clients,

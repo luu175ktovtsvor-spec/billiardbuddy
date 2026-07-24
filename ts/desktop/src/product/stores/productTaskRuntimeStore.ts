@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import {
+  productAttachmentIngestApi,
+  productComposerDraftApi,
   productConversationLineageApi,
   productTaskRunSubmitApi,
   productTasksApi,
@@ -362,8 +364,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     text: string,
     attachments: ProductTaskAttachment[] = [],
   ): Promise<boolean> => {
-    const content = text.trim()
-    if (!canSendProductTaskMessage(content, attachments) || attachments.length > 0) return false
+    const typedContent = text.trim()
+    if (!canSendProductTaskMessage(typedContent, attachments)) return false
+    const content = typedContent || (attachments.length === 1 ? '请分析这个附件。' : '请分析这些附件。')
 
     const runtime = get().tasks[taskId]
     if ((runtime && runtime.runState !== 'idle') || submitRequests.has(taskId)) return false
@@ -374,12 +377,34 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     submitRequests.add(taskId)
     try {
       const { lineage } = await productConversationLineageApi.current(taskId)
+      let draft: { draft_id: string; revision: number } | undefined
+      let attachmentIds: string[] = []
+      if (attachments.length > 0) {
+        const created = await productComposerDraftApi.create({
+          target_task_id: taskId,
+          ttl_ms: 7 * 24 * 60 * 60 * 1000,
+          client_operation_id: `${operationId}:draft`,
+        })
+        draft = created.draft
+        attachmentIds = []
+        for (const [index, attachment] of attachments.entries()) {
+          const ingested = await productAttachmentIngestApi.ingest(draft.draft_id, {
+            type: attachment.type,
+            name: attachment.name ?? (attachment.type === 'image' ? '图片附件' : '文件附件'),
+            mime_type: attachment.mimeType,
+            data: attachment.data,
+            client_operation_id: `${operationId}:attachment:${index}`,
+          })
+          attachmentIds.push(ingested.attachment.attachment_id)
+        }
+      }
       const response = await productTaskRunSubmitApi.submit(taskId, {
         client_operation_id: operationId,
         expected_task_revision: task.revision ?? 0,
         expected_lineage_revision: lineage?.revision ?? 0,
         text: content,
-        attachment_ids: [],
+        attachment_ids: attachmentIds,
+        ...(draft ? { draft_id: draft.draft_id, expected_draft_revision: draft.revision } : {}),
       })
       if (!response.receipt.result || !['accepted', 'duplicate'].includes(response.receipt.outcome)) {
         void useProductTaskStore.getState().refresh()
@@ -391,7 +416,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           entry.type === 'user_text'
           && entry.id.startsWith('live_')
           && entry.text === content
-          && !entry.attachments?.length
+          && attachmentSignature(entry.attachments) === attachmentSignature(attachments.map(attachment => ({
+            type: attachment.type,
+            name: attachment.name ?? (attachment.type === 'image' ? '图片附件' : '文件附件'),
+            ...(attachment.type === 'image' ? { mimeType: attachment.mimeType as ProductTaskAttachmentSummary['mimeType'] } : {}),
+          })))
         ))
         return {
           ...current,
@@ -403,6 +432,13 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               type: 'user_text',
               text: content,
               createdAt: createdAt(),
+              ...(attachments.length ? {
+                attachments: attachments.map(attachment => ({
+                  type: attachment.type,
+                  name: attachment.name ?? (attachment.type === 'image' ? '图片附件' : '文件附件'),
+                  ...(attachment.type === 'image' ? { mimeType: attachment.mimeType as ProductTaskAttachmentSummary['mimeType'] } : {}),
+                })),
+              } : {}),
             }],
           }),
         }

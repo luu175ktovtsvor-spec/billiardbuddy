@@ -78,6 +78,7 @@ function createService() {
       renameTaskAuthoritatively: record('renameTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] }, mirror: { state: 'pending' } }),
       reconcileRenameAuthoritatively: record('reconcileRenameAuthoritatively', { state: 'reconciled' }),
       getAuthorityOperation: record('getAuthorityOperation', { receipt: { outcome: 'accepted', revision: 1 }, authority: { revision: 1, event_sequence: 1, tasks: [task] } }),
+      ingestAttachment: record('ingestAttachment', { attachment_id: 'attachment-1', attachment_revision: 2, authority_revision: 3, outcome: 'accepted' }),
     },
   }
 }
@@ -106,6 +107,33 @@ async function request(
 }
 
 describe('Product tasks API', () => {
+  it('ingests attachment bytes only under a server-owned composer draft', async () => {
+    const { service, calls } = createService()
+    const data = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`
+
+    const response = await request(service, 'POST', '/api/product/composer-drafts/draft-1/attachments', {
+      type: 'image',
+      name: '球台.png',
+      mime_type: 'image/png',
+      data,
+      client_operation_id: 'attachment-ingest-1',
+    })
+
+    expect(response).toEqual({
+      status: 201,
+      body: { attachment: { attachment_id: 'attachment-1', attachment_revision: 2, authority_revision: 3, outcome: 'accepted' } },
+    })
+    expect(calls).toEqual([{ name: 'ingestAttachment', args: [{
+      owner: { kind: 'composer_draft', id: 'draft-1' },
+      type: 'image',
+      name: '球台.png',
+      mime_type: 'image/png',
+      data,
+      client_operation_id: 'attachment-ingest-1',
+    }] }])
+    expect(JSON.stringify(response.body)).not.toContain('base64')
+  })
+
   it('serves recent projects from the product task service without Core bindings', async () => {
     const { service, calls } = createService()
 

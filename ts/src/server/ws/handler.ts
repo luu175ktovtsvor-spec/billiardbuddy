@@ -409,6 +409,7 @@ async function replayDurableProductEvents(
         text: event.text,
         replayed: true,
         event_sequence: event.event_sequence,
+        ...(event.attachments?.length ? { attachments: event.attachments } : {}),
       }))
     }
     ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))

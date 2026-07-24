@@ -5,7 +5,7 @@ import { verifyAgentWorkerChildStartCapability, verifyPermissionExecutionEnvelop
 
 /** Server-private Core activity port; the launcher alone may relay it. */
 export type AgentWorkerCore = {
-  input(text: string): Promise<void>
+  input(text: string, attachments?: readonly string[]): Promise<void>
   approve(requestId: string, approved: boolean): Promise<void>
   stop(): Promise<void>
   shutdown(): Promise<void>
