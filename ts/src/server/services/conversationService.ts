@@ -68,8 +68,8 @@ export function cliExitSeverity(code: number | null): 'info' | 'error' {
 // (injected by the desktop host). The CLI subprocess reaches the gateway through the
 // local provider proxy (ANTHROPIC_BASE_URL), so it must never inherit these. Stripping
 // them at this spawn chokepoint guarantees the token stays out of the CLI env
-// regardless of how the child env was assembled upstream. The same strip runs at the
-// cron/scheduled-task spawn chokepoint (cronScheduler.buildCronTaskSpawnOptions).
+// regardless of how the child env was assembled upstream. Durable ProductTask workers
+// use the same host-only secret boundary in their dedicated IPC launcher.
 export function buildConversationCliSpawnOptions(
   cwd: string,
   env: NodeJS.ProcessEnv,

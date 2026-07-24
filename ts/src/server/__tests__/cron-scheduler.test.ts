@@ -18,8 +18,6 @@ import { CronService, type CronTask } from '../services/cronService.js'
 
 let tmpDir: string
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-const originalClaudeCliPath = process.env.CLAUDE_CLI_PATH
-const originalDisableTerminalShellEnv = process.env.BB_DISABLE_TERMINAL_SHELL_ENV
 
 async function createTmpDir(): Promise<string> {
   const dir = path.join(
@@ -36,19 +34,6 @@ async function cleanupTmpDir(dir: string): Promise<void> {
   } catch {
     // ignore
   }
-}
-
-async function createFakeCronCli(dir: string): Promise<string> {
-  const cliPath = path.join(dir, 'fake-cron-cli.ts')
-  await fs.writeFile(
-    cliPath,
-    [
-      "console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'fake cron output' }] } }))",
-      "console.log(JSON.stringify({ type: 'result', result: 'fake cron result' }))",
-    ].join('\n') + '\n',
-    'utf-8',
-  )
-  return cliPath
 }
 
 // ─── fieldMatches tests ────────────────────────────────────────────────────
@@ -177,8 +162,6 @@ describe('CronScheduler', () => {
   beforeEach(async () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
-    process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
-    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
       submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
@@ -191,16 +174,6 @@ describe('CronScheduler', () => {
       process.env.CLAUDE_CONFIG_DIR = originalConfigDir
     } else {
       delete process.env.CLAUDE_CONFIG_DIR
-    }
-    if (originalClaudeCliPath) {
-      process.env.CLAUDE_CLI_PATH = originalClaudeCliPath
-    } else {
-      delete process.env.CLAUDE_CLI_PATH
-    }
-    if (originalDisableTerminalShellEnv) {
-      process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
-    } else {
-      delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -231,8 +204,6 @@ describe('CronScheduler', () => {
   })
 
   it('should persist a task run to the log file', async () => {
-    // Create a task that runs "echo hello" — we'll invoke executeTask directly
-    // with a mock-like approach: create a task then check the log file
     const task = await cronService.createTask({
       cron: '* * * * *',
       prompt: 'echo test',
@@ -241,15 +212,7 @@ describe('CronScheduler', () => {
       folderPath: tmpDir,
     })
 
-    // We can't easily mock Bun.spawn in bun:test, so we'll check the log
-    // file was created by reading it after execution attempt.
-    // The CLI subprocess will likely fail (not a real CLI available in tests),
-    // but the run should still be logged with 'failed' status.
-    try {
-      await scheduler.executeTask(task)
-    } catch {
-      // Expected — CLI binary may not be available in test environment
-    }
+    await scheduler.executeTask(task)
 
     const logPath = path.join(tmpDir, 'scheduled_tasks_log.json')
     const logExists = await fs
@@ -275,11 +238,7 @@ describe('CronScheduler', () => {
       folderPath: tmpDir,
     })
 
-    try {
-      await scheduler.executeTask(task)
-    } catch {
-      // CLI may not be available
-    }
+    await scheduler.executeTask(task)
 
     // After execution, the task should be disabled
     const tasks = await cronService.listTasks()
@@ -292,13 +251,10 @@ describe('CronScheduler', () => {
       cron: '* * * * *',
       prompt: 'recurring task',
       recurring: true,
+      folderPath: tmpDir,
     })
 
-    try {
-      await scheduler.executeTask(task)
-    } catch {
-      // CLI may not be available
-    }
+    await scheduler.executeTask(task)
 
     const tasks = await cronService.listTasks()
     const updated = tasks.find((t) => t.id === task.id)
@@ -316,11 +272,7 @@ describe('CronScheduler', () => {
 
     const beforeExec = new Date().toISOString()
 
-    try {
-      await scheduler.executeTask(task)
-    } catch {
-      // CLI may not be available
-    }
+    await scheduler.executeTask(task)
 
     const tasks = await cronService.listTasks()
     const updated = tasks.find((t) => t.id === task.id)
@@ -407,8 +359,6 @@ describe('Execution log trimming', () => {
   beforeEach(async () => {
     tmpDir = await createTmpDir()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
-    process.env.CLAUDE_CLI_PATH = await createFakeCronCli(tmpDir)
-    process.env.BB_DISABLE_TERMINAL_SHELL_ENV = '1'
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
       submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
@@ -421,16 +371,6 @@ describe('Execution log trimming', () => {
       process.env.CLAUDE_CONFIG_DIR = originalConfigDir
     } else {
       delete process.env.CLAUDE_CONFIG_DIR
-    }
-    if (originalClaudeCliPath) {
-      process.env.CLAUDE_CLI_PATH = originalClaudeCliPath
-    } else {
-      delete process.env.CLAUDE_CLI_PATH
-    }
-    if (originalDisableTerminalShellEnv) {
-      process.env.BB_DISABLE_TERMINAL_SHELL_ENV = originalDisableTerminalShellEnv
-    } else {
-      delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
     }
     await cleanupTmpDir(tmpDir)
   })
