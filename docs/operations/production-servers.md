@@ -25,10 +25,12 @@
 
 ### 1.1 当前部署快照
 
-- 2026-07-24 12:54 CST 以仓库 `038c3b8e…` 的运行闭包重新部署大陆 qfgw；部署脚本在重启前通过授权、MiMo 分区和生产容量预检，未覆盖 `gw.env`、`authority.json` 或 `usage.db*`。
+- 2026-07-24 13:11 CST 以仓库 `cf416514…` 的运行闭包重新部署大陆 qfgw 和美国 qfrelay；两个部署脚本在重启前通过正式环境预检，未覆盖 `gw.env`、`authority.json`、`usage.db*`、`relay.env`、`relay.db*` 或 blob 数据。
+- 大陆 `/opt/qfgw/app.ts` 与仓库 SHA-256 均为 `e495887520fb09a8d271815f80f8f4384153523c46d768cc75db572f7f4a9f3f`；美国 `/opt/qfrelay/app.ts` 与仓库 SHA-256 均为 `7a4cef9de932f7d0dd91c4c2dc4567979ee9da2bd77ff8f8e5e220be125295bb`。
 - 大陆 `/opt/qfgw/providerRegistry.ts` 与仓库 SHA-256 均为 `e2cc5bce75448686204c07ea16857822e597c9d793b53eb2a6107929a4fad9ad`；GPT Image `gpt-image-2` 和豆包 Seedream `doubao-seedream-4-5-251128` 都是正式 `ImageGeneration` 注册项。
-- 美国 `/opt/qfrelay/app.ts` 与仓库 SHA-256 均为 `18af9a6fdb8f01dff4d1652cdf9621955c092b196ee4da6497dcdbac4c223c35`；`RELAY_ARK_KEY` 已配置，Seedream 模型和并发值使用当前 relay 代码的正式缺省值。
+- 美国 `relay.db` 已原位增量增加 `acknowledged_at`。迁移后聚合审计发现 2030 条 2026-07-19—20 日旧容量测试终态记录（1968 cancelled、58 succeeded、4 failed，全部 `provider=legacy`）和 58 个对应结果 blob；在服务无活跃任务时停机一致性删除并重建空库，验收后 task/blob 均为 0，临时备份已删除。`RELAY_ARK_KEY` 已配置，Seedream 模型和并发值使用当前 relay 代码的正式缺省值。
 - 快照验收时 `qfgw`、`qfrelay`、`qfgw-tunnel` 和 `nginx` 均为 active；大陆 loopback、美国隧道、美国 relay 和 `https://zzyppz.cn/gw/healthz` 全部通过。部署上传物和临时回滚包已在验收后删除。
+- 美国真实主机使用临时 SQLite/blob 和假上游完成 34 项负载验收：1000 个小任务、500 个中等改图输入的持久排队、owner 公平、取消、恢复、TTL 和 ack 全部通过。未调用收费上游；这不是 OpenAI/Seedream 真实吞吐证明。
 
 ## 2. 大陆服务器
 
