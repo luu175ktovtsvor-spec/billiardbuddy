@@ -30,6 +30,8 @@ describe('billiards operations skills', () => {
       'customer-follow-up',
       'venue-inspection-followup',
       'staff-performance-coaching',
+      'venue-staff-scheduling',
+      'venue-content-production',
     ])
     expect(descriptors.map(skill => skill.displayName)).toEqual([
       '复盘今天经营',
@@ -37,6 +39,8 @@ describe('billiards operations skills', () => {
       '跟进和维护客户',
       '巡店和整改',
       '带教和辅导员工',
+      '安排门店排班',
+      '制作门店内容',
     ])
     expect(descriptors.every(skill => skill.userInvocable)).toBe(true)
     expect(descriptors.every(skill => skill.allowedTools.includes('Read'))).toBe(true)
@@ -45,6 +49,7 @@ describe('billiards operations skills', () => {
   it('keeps detailed knowledge in progressive reference files', () => {
     expect(Object.keys(BILLIARDS_KNOWLEDGE_FILES)).toEqual([
       'references/README.md',
+      'references/source-register.md',
       'references/operations.md',
       'references/store-playbooks.md',
       'references/planning-benchmarks.md',
@@ -54,6 +59,9 @@ describe('billiards operations skills', () => {
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/README.md']).toContain(
       '提纯原则',
+    )
+    expect(BILLIARDS_KNOWLEDGE_FILES['references/source-register.md']).toContain(
+      '当前核验日期：2026-07-26',
     )
     expect(BILLIARDS_KNOWLEDGE_FILES['references/operations.md']).toContain(
       '明确客户与目标 → 设计真实产品 → 组织触达 → 保证交付',
@@ -76,9 +84,19 @@ describe('billiards operations skills', () => {
     const descriptors = getBundledSkillDescriptors()
     for (const skill of descriptors) {
       expect(skill.content).toContain('由 Agent 在内部选择模型、工具、Skill、文件格式和技术实现')
-      expect(skill.content).toContain('清楚标注知识资料、行业示例和本次推断')
+      expect(skill.content).toContain('每项经营事实标明门店、来源和观察时间')
       expect(skill.content).toContain('references/README.md')
+      expect(skill.content).toContain('一次任务只处理用户明确指定的一家门店')
+      expect(skill.content).toContain('只有真实工具返回成功回执后')
     }
+  })
+
+  it('routes saved and media results through real product tools', () => {
+    registerBilliardsOperationsSkills()
+    const descriptors = getBundledSkillDescriptors()
+    expect(descriptors.find(skill => skill.name === 'venue-staff-scheduling')?.allowedTools).toContain('Write')
+    expect(descriptors.find(skill => skill.name === 'venue-content-production')?.allowedTools).toContain('MediaWorkbench')
+    expect(descriptors.find(skill => skill.name === 'venue-campaign-planning')?.allowedTools).toContain('MediaWorkbench')
   })
 
   it('does not claim that campaign artwork exists before its workbench can run', () => {

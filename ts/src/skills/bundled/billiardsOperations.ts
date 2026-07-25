@@ -7,16 +7,19 @@ type BilliardsOperationsSkill = {
   description: string
   whenToUse: string
   prompt: string
+  allowedTools: string[]
 }
 
 const COMMON_INSTRUCTIONS = `## 共同工作方式
 
 - 直接理解用户说的经营目标，由 Agent 在内部选择模型、工具、Skill、文件格式和技术实现。
 - 先使用用户已经给出的信息并产出有用内容。缺失事实会明显改变结论或对外承诺时，把相关问题合并成一轮简短普通话。
-- 用“已知事实 / 待确认 / 建议 / 下一步”区分信息，清楚标注知识资料、行业示例和本次推断。
-- 需要球房经营方法时，先按需读取本 Skill 目录下的 references/README.md，再读取与当前任务直接相关的参考文件。
+- 用“已知事实 / 待确认 / 建议 / 下一步”区分信息。每项经营事实标明门店、来源和观察时间；知识方法标明为“BilliardBuddy 内置经营方法”及核验日期；推断单独写出不确定性。
+- 需要球房经营方法时，先按需读取本 Skill 目录下的 references/README.md 和 references/source-register.md，再读取与当前任务直接相关的参考文件。
+- 一次任务只处理用户明确指定的一家门店。不要搜索、合并或写入其他门店资料；需要跨店比较时，先让用户明确每家门店的数据来源和允许比较的字段，并保持分店结果分开。
 - 价格、日期、地址、人数、排班、薪酬、优惠、负责人、期限和对外承诺以用户或已核实资料为准。
-- 默认先交付可检查的草稿。涉及对外发布、联系、付款或修改真实业务状态时，集中展示最终对象和内容，由用户确认本批执行范围。`
+- 缺少观察时间的事实视为未核验；价格、排班、库存、平台规则和活动容量在执行前必须重新核验，不能用旧记录直接承诺。
+- 默认先交付可检查的草稿。只有真实工具返回成功回执后，才能说文件已保存、图片已生成或状态已改变；没有回执时明确说“草稿/建议/待执行”。涉及对外发布、联系、付款或修改真实业务状态时，集中展示最终对象和内容，由用户确认本批执行范围。`
 
 export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = [
   {
@@ -24,6 +27,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '复盘今天经营',
     description: '把球房营业数据和当天情况整理成看得懂、能继续跟进的经营复盘。',
     whenToUse: '用户要写店长日报、看营业数据、解释变化、找问题、复盘当天情况或安排下一营业日动作时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 复盘今天经营
 
 把用户已有的经营数据和当天事实整理成一份能继续跟进的日报或复盘。
@@ -39,6 +43,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '策划门店活动',
     description: '围绕拉新、复购、空闲时段、比赛或节日目标做一套能落地的球房活动。',
     whenToUse: '用户要做球房活动、比赛、组局、拉新、复购、充值、节日营销、宣传文案或活动复盘时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'MediaWorkbench'],
     prompt: `# 策划门店活动
 
 围绕一次明确的经营目标设计完整活动，不先套促销模板。
@@ -54,6 +59,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '跟进和维护客户',
     description: '根据真实到店和沟通记录准备一对一邀约、回访、复购和跟进安排。',
     whenToUse: '用户要整理客户情况、写邀约或回访话术、维护老客、安排跟进队列、组局邀请或复盘客户转化时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 跟进和维护客户
 
 把零散客户事实整理成有对象、有目的、有下一步的跟进安排。
@@ -69,6 +75,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '巡店和整改',
     description: '把巡店记录、照片和现场问题整理成负责人、期限、验收证据与复查安排。',
     whenToUse: '用户要巡店、检查安全卫生或设备、整理现场照片、分派问题、催办整改、复查或生成闭环报告时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 巡店和整改
 
 把现场观察变成可以核验关闭的问题，不生成一张通用检查表就结束。
@@ -84,6 +91,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '带教和辅导员工',
     description: '依据真实岗位和表现记录准备一对一沟通、训练、复查与公平的团队激励。',
     whenToUse: '用户要带教店长、教练、助教、前厅或服务人员，分析表现、准备沟通、安排训练、设目标或设计团队激励时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 带教和辅导员工
 
 把真实工作表现转成具体反馈、练习和复查。
@@ -94,6 +102,38 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
 4. 评价依据岗位职责、可观察行为、数据来源和双方已确认的工作目标。涉及薪酬、处分或解聘时，把事实和建议交给负责人按本店真实制度决定。
 5. 用户明确要设计激励时，先确认参与对象、周期、指标来源、可控性、预算和异常处理，再组合服务、协作、销售与改进等指标。`,
   },
+  {
+    name: 'venue-staff-scheduling',
+    displayName: '安排门店排班',
+    description: '根据真实营业时段、岗位、人员可用性和劳动约束形成可核对的门店排班。',
+    whenToUse: '用户要安排或调整店长、前厅、教练、助教、服务、收银、保洁等人员班次，检查缺岗冲突或准备排班表时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
+    prompt: `# 安排门店排班
+
+用一家门店的真实约束生成可检查排班，不从示例人数或班次反推本店事实。
+
+1. 核对门店、排班周期、营业时段、岗位覆盖要求、人员可用时间、休息与交接规则，以及用户明确提供的当地或公司制度。
+2. 同一人员的重叠班次、不可用时段、连续工作、休息间隔和关键岗位缺口必须显式检查；未知约束列为待确认，不能静默假设可排。
+3. 先给冲突和缺口，再给排班方案。每个班次写日期、时间、岗位、人员和必要交接；临时替班与正式排班分开。
+4. 需要写入文件时只更新用户指定的当前门店排班源，保留原始版本或变更说明。工具未返回成功前只称为排班草稿。
+5. 排班涉及薪酬、工时合规或员工承诺时，只使用当前已核验制度；资料无日期或已过期时提示负责人复核。`,
+  },
+  {
+    name: 'venue-content-production',
+    displayName: '制作门店内容',
+    description: '把已确认的门店事实整理成可发布文案、图片 Brief 或真实媒体工作台产物。',
+    whenToUse: '用户要制作球房朋友圈、短视频文案、活动海报、赛事预告、门店介绍、招聘内容或日常内容计划时使用。',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'MediaWorkbench'],
+    prompt: `# 制作门店内容
+
+把当前门店可兑现的事实转成适合渠道的内容，不把行业示例当作门店卖点。
+
+1. 核对门店、渠道、受众、发布时间、目标和可公开的价格、地址、时间、规则、名额与素材授权；缺少时效或授权的内容不进入成品。
+2. 先形成信息骨架和精确文字，再按渠道调整标题、正文、行动指引和必要免责声明。不同渠道分别交付，不用同一段文字机械复制。
+3. 需要图片时调用真实 MediaWorkbench 创建项目；只有工具回执给出项目或版本后才说“已创建/已生成”，否则只交付图片 Brief。
+4. 需要保存文案时使用当前任务工作区中的用户指定文件，保留来源和核验时间；写入工具失败时保留为聊天草稿。
+5. 发布、投放、群发和平台状态变更不属于本 Skill 的自动完成范围，除非当前任务另有正式产品工具、用户确认且能读回结果。`,
+  },
 ] as const
 
 export function registerBilliardsOperationsSkills(): void {
@@ -103,7 +143,7 @@ export function registerBilliardsOperationsSkills(): void {
       name: skill.name,
       description: skill.description,
       whenToUse: skill.whenToUse,
-      allowedTools: ['Read', 'Grep', 'Glob'],
+      allowedTools: skill.allowedTools,
       userInvocable: true,
       files: BILLIARDS_KNOWLEDGE_FILES,
       desktopDiscovery: {
