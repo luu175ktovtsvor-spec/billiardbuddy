@@ -11,6 +11,9 @@ const stringPayload: Validator = value => typeof value === 'string'
 const booleanPayload: Validator = value => typeof value === 'boolean'
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: string[]) =>
   Object.keys(value).every(key => allowedKeys.includes(key))
+const productTaskId = (value: unknown): value is string =>
+  typeof value === 'string'
+  && /^[0-9a-zA-Z_-]{1,64}$/.test(value)
 
 const commandInvoke: Validator = value =>
   isRecord(value)
@@ -20,28 +23,43 @@ const commandInvoke: Validator = value =>
 
 const terminalWrite: Validator = value =>
   isRecord(value)
-  && typeof value.sessionId === 'number'
+  && hasOnlyKeys(value, ['taskId', 'sessionId', 'data'])
+  && productTaskId(value.taskId)
+  && Number.isSafeInteger(value.sessionId)
+  && Number(value.sessionId) > 0
   && typeof value.data === 'string'
+  && value.data.length <= 65_536
 
 const terminalSpawn: Validator = value =>
   value === undefined
   || (
     isRecord(value)
+    && productTaskId(value.taskId)
     && (value.cols === undefined || typeof value.cols === 'number')
     && (value.rows === undefined || typeof value.rows === 'number')
+    && (value.cols === undefined || Number.isFinite(value.cols))
+    && (value.rows === undefined || Number.isFinite(value.rows))
     && (value.cwd === undefined || typeof value.cwd === 'string')
-    && (value.shell === undefined || typeof value.shell === 'string')
+    && hasOnlyKeys(value, ['taskId', 'cols', 'rows', 'cwd'])
   )
 
 const terminalResize: Validator = value =>
   isRecord(value)
-  && typeof value.sessionId === 'number'
+  && hasOnlyKeys(value, ['taskId', 'sessionId', 'cols', 'rows'])
+  && productTaskId(value.taskId)
+  && Number.isSafeInteger(value.sessionId)
+  && Number(value.sessionId) > 0
   && typeof value.cols === 'number'
+  && Number.isFinite(value.cols)
   && typeof value.rows === 'number'
+  && Number.isFinite(value.rows)
 
 const terminalSessionId: Validator = value =>
   isRecord(value)
-  && typeof value.sessionId === 'number'
+  && hasOnlyKeys(value, ['taskId', 'sessionId'])
+  && productTaskId(value.taskId)
+  && Number.isSafeInteger(value.sessionId)
+  && Number(value.sessionId) > 0
 
 const boundsPayload: Validator = value =>
   isRecord(value)
@@ -56,10 +74,6 @@ const urlWithOptionalBounds: Validator = value =>
   && (value.bounds === undefined || boundsPayload(value.bounds))
 
 const zoomPayload: Validator = value => typeof value === 'number' && Number.isFinite(value)
-
-const productTaskId: Validator = value =>
-  typeof value === 'string'
-  && /^[0-9a-zA-Z_-]{1,64}$/.test(value)
 
 const browserResolveAction: Validator = value =>
   isRecord(value)

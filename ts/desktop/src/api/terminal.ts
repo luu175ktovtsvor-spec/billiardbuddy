@@ -30,20 +30,20 @@ function getTerminalHost() {
 export const terminalApi = {
   isAvailable: () => getDesktopHost().capabilities.terminal,
 
-  spawn(input: { cols: number; rows: number; cwd?: string }) {
+  spawn(input: { taskId: string; cols: number; rows: number; cwd?: string }) {
     return getTerminalHost().spawn(input)
   },
 
-  write(sessionId: number, data: string) {
-    return getTerminalHost().write(sessionId, data)
+  write(taskId: string, sessionId: number, data: string) {
+    return getTerminalHost().write(taskId, sessionId, data)
   },
 
-  resize(sessionId: number, cols: number, rows: number) {
-    return getTerminalHost().resize(sessionId, cols, rows)
+  resize(taskId: string, sessionId: number, cols: number, rows: number) {
+    return getTerminalHost().resize(taskId, sessionId, cols, rows)
   },
 
-  kill(sessionId: number) {
-    return getTerminalHost().kill(sessionId)
+  kill(taskId: string, sessionId: number) {
+    return getTerminalHost().kill(taskId, sessionId)
   },
 
   async onOutput(handler: (payload: TerminalOutputPayload) => void): Promise<Unlisten> {

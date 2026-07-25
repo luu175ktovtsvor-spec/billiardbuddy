@@ -84,6 +84,29 @@ describe('electron desktop host', () => {
     )
   })
 
+  it('keeps every terminal control bound to the same product task id', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    const host = createElectronHost({ invoke, subscribe: vi.fn() })
+
+    await host.terminal.spawn({ taskId: 'task-1', cwd: '/workspace/task-1', cols: 80, rows: 24 })
+    await host.terminal.write('task-1', 7, 'pwd\r')
+    await host.terminal.resize('task-1', 7, 100, 30)
+    await host.terminal.kill('task-1', 7)
+
+    expect(invoke).toHaveBeenNthCalledWith(1, ELECTRON_IPC_CHANNELS.terminalSpawn, {
+      taskId: 'task-1', cwd: '/workspace/task-1', cols: 80, rows: 24,
+    })
+    expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.terminalWrite, {
+      taskId: 'task-1', sessionId: 7, data: 'pwd\r',
+    })
+    expect(invoke).toHaveBeenNthCalledWith(3, ELECTRON_IPC_CHANNELS.terminalResize, {
+      taskId: 'task-1', sessionId: 7, cols: 100, rows: 30,
+    })
+    expect(invoke).toHaveBeenNthCalledWith(4, ELECTRON_IPC_CHANNELS.terminalKill, {
+      taskId: 'task-1', sessionId: 7,
+    })
+  })
+
   it('routes preview zoom through the preview IPC channel', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     const host = createElectronHost({

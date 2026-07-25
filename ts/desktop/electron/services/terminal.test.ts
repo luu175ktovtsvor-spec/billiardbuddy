@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn as spawnChild } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,12 +14,16 @@ import {
   parseEnvBlock,
   prepareNodePtyRuntime,
   resolveDesktopTerminalShell,
+  spawnTerminalWatchdog,
+  terminalWatchdogPlan,
+  terminalEnvironment,
   terminalConfigPath,
   type TerminalPtyFactory,
   type TerminalPtyProcess,
 } from './terminal'
 
 class FakePty implements TerminalPtyProcess {
+  pid?: number
   writes: string[] = []
   resizes: Array<{ cols: number, rows: number }> = []
   killed = false
@@ -56,6 +61,7 @@ class FakePty implements TerminalPtyProcess {
 
 const tempDirs: string[] = []
 const itOnDarwin = process.platform === 'darwin' ? it : it.skip
+const itLivePty = process.platform !== 'win32' && process.env.BB_LIVE_PTY_TEST === '1' ? it : it.skip
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'billiardbuddy-terminal-'))
@@ -139,6 +145,40 @@ describe('Electron terminal service', () => {
     })
   })
 
+  it('does not expose product-managed credentials to the user terminal', () => {
+    expect(terminalEnvironment('/missing/shell', 'linux', {
+      PATH: '/usr/bin',
+      QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap-secret',
+      QF_GATEWAY_TOKEN: 'access-secret',
+      BB_BROWSER_UI_CAPABILITY: 'browser-secret',
+    })).toMatchObject({ PATH: '/usr/bin' })
+    expect(terminalEnvironment('/missing/shell', 'linux', {
+      QF_GATEWAY_TOKEN: 'access-secret',
+    })).not.toHaveProperty('QF_GATEWAY_TOKEN')
+  })
+
+  it('builds crash watchdogs without forwarding the desktop environment', () => {
+    const windows = terminalWatchdogPlan(7001, 9001, 'win32', {
+      SystemRoot: 'C:\\Windows',
+      QF_GATEWAY_TOKEN: 'must-not-leak',
+    })
+    expect(windows.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(windows.args.join(' ')).toContain('Wait-Process -Id 7001')
+    expect(windows.args.join(' ')).toContain('/PID 9001 /T /F')
+    expect(windows.env).toEqual({
+      SystemRoot: 'C:\\Windows',
+      WINDIR: 'C:\\Windows',
+      PATH: 'C:\\Windows\\System32',
+    })
+    expect(JSON.stringify(windows)).not.toContain('must-not-leak')
+
+    const unix = terminalWatchdogPlan(7001, 9001, 'darwin', { QF_GATEWAY_TOKEN: 'must-not-leak' })
+    expect(unix.command).toBe('/bin/sh')
+    expect(unix.args).toContain('7001')
+    expect(unix.args).toContain('9001')
+    expect(unix.env).toEqual({ PATH: '/usr/bin:/bin' })
+  })
+
   it('copies packaged node-pty to a writable runtime cache and restores helper executable bits', () => {
     const source = tempDir()
     const cache = path.join(tempDir(), 'node-pty-cache')
@@ -202,8 +242,8 @@ describe('Electron terminal service', () => {
     })
 
     const session = await service.spawn(
-      { cols: 10, rows: 4, cwd: dir },
-      { send: (channel, payload) => sent.push({ channel, payload }) },
+      { taskId: 'task-1', cols: 10, rows: 4, cwd: dir },
+      { id: 41, send: (channel, payload) => sent.push({ channel, payload }) },
     )
 
     expect(session).toEqual({ session_id: 1, shell: '/bin/test-shell', cwd: dir })
@@ -218,8 +258,8 @@ describe('Electron terminal service', () => {
       }),
     }))
 
-    service.write(1, 'echo hello\r')
-    service.resize(1, 12, 6)
+    service.write(41, 'task-1', 1, 'echo hello\r')
+    service.resize(41, 'task-1', 1, 12, 6)
     fakePty.emitData('hello\r\n')
     fakePty.emitExit({ exitCode: 0 })
 
@@ -235,7 +275,7 @@ describe('Electron terminal service', () => {
         payload: { session_id: 1, code: 0, signal: null },
       },
     ])
-    expect(() => service.write(1, 'after exit')).toThrow('terminal session is not running')
+    expect(() => service.write(41, 'task-1', 1, 'after exit')).toThrow('terminal session is not running')
   })
 
   it('kills a running PTY session without failing when the session is already gone', async () => {
@@ -247,10 +287,125 @@ describe('Electron terminal service', () => {
       ptyFactory: { spawn: vi.fn(() => fakePty) },
     })
 
-    await service.spawn({ cols: 80, rows: 24, cwd: dir }, { send: vi.fn() })
-    service.kill(1)
-    service.kill(1)
+    await service.spawn({ taskId: 'task-1', cols: 80, rows: 24, cwd: dir }, { id: 41, send: vi.fn() })
+    expect(() => service.write(41, 'task-2', 1, 'pwd\r')).toThrow('terminal session is not owned by this task')
+    expect(() => service.resize(42, 'task-1', 1, 80, 24)).toThrow('terminal session is not owned by this task')
+    service.kill(41, 'task-1', 1)
+    service.kill(41, 'task-1', 1)
 
     expect(fakePty.killed).toBe(true)
   })
+
+  it('kills only sessions owned by a renderer when that renderer is gone', async () => {
+    const dir = tempDir()
+    const first = new FakePty()
+    const second = new FakePty()
+    const service = new ElectronTerminalService({
+      env: { HOME: dir, SHELL: '/bin/test-shell' },
+      platform: 'linux',
+      ptyFactory: { spawn: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second) },
+    })
+
+    await service.spawn({ taskId: 'task-1', cwd: dir }, { id: 41, send: vi.fn() })
+    await service.spawn({ taskId: 'task-2', cwd: dir }, { id: 42, send: vi.fn() })
+    service.killOwner(41)
+
+    expect(first.killed).toBe(true)
+    expect(second.killed).toBe(false)
+    expect(() => service.write(42, 'task-2', 2, 'pwd\r')).not.toThrow()
+  })
+
+  it('stops the native crash watchdog when a PTY exits normally', async () => {
+    const dir = tempDir()
+    const fakePty = new FakePty()
+    fakePty.pid = 9001
+    const watchdog = { kill: vi.fn(), unref: vi.fn() }
+    const watchdogFactory = vi.fn(() => watchdog)
+    const service = new ElectronTerminalService({
+      env: { HOME: dir, SHELL: '/bin/test-shell' },
+      platform: 'linux',
+      ptyFactory: { spawn: vi.fn(() => fakePty) },
+      ownerProcessId: 7001,
+      watchdogFactory,
+    })
+
+    await service.spawn({ taskId: 'task-1', cwd: dir }, { id: 41, send: vi.fn() })
+    expect(watchdogFactory).toHaveBeenCalledWith(7001, 9001)
+    fakePty.emitExit({ exitCode: 0 })
+    expect(watchdog.kill).toHaveBeenCalledOnce()
+  })
+
+  itLivePty('runs a real interactive node-pty in the owning workspace', async () => {
+    const dir = tempDir()
+    const output: string[] = []
+    let finish: (() => void) | undefined
+    let finishOutput: (() => void) | undefined
+    const exited = new Promise<void>(resolve => { finish = resolve })
+    const observedWorkspace = new Promise<void>(resolve => { finishOutput = resolve })
+    const service = new ElectronTerminalService({
+      env: { ...process.env, HOME: dir, SHELL: '/bin/zsh' },
+      platform: process.platform,
+      ptyFactory: await import('node-pty'),
+    })
+
+    const session = await service.spawn(
+      { taskId: 'task-real', cols: 80, rows: 24, cwd: dir },
+      {
+        id: 77,
+        send: (channel, payload) => {
+          if (channel === ELECTRON_EVENT_CHANNELS.terminalOutput) {
+            output.push((payload as { data: string }).data)
+            if (output.join('').includes(dir)) finishOutput?.()
+          }
+          if (channel === ELECTRON_EVENT_CHANNELS.terminalExit) finish?.()
+        },
+      },
+    )
+    service.write(77, 'task-real', session.session_id, 'printf "BB_PTY_REAL\\n"; pwd\r')
+    await observedWorkspace
+    service.write(77, 'task-real', session.session_id, 'exit\r')
+    await exited
+
+    const transcript = output.join('').replaceAll('\r', '')
+    expect(transcript).toContain('BB_PTY_REAL')
+    expect(transcript).toContain(dir)
+  }, 10_000)
+
+  itLivePty('hangs up the foreground PTY process when its native owner crashes', async () => {
+    const nodePtyEntry = createRequire(import.meta.url).resolve('node-pty')
+    const owner = spawnChild(process.execPath, ['-e', [
+      `const pty = require(${JSON.stringify(nodePtyEntry)})`,
+      "const child = pty.spawn('/bin/zsh', ['-c', 'sleep 300'], { name: 'xterm-256color', cols: 80, rows: 24, cwd: process.cwd(), env: process.env })",
+      'process.stdout.write(String(child.pid) + "\\n")',
+      'setInterval(() => {}, 1000)',
+    ].join(';')], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const foregroundPid = await new Promise<number>((resolve, reject) => {
+      let stdout = ''
+      owner.stdout.setEncoding('utf8')
+      owner.stdout.on('data', chunk => {
+        stdout += chunk
+        const line = stdout.split('\n')[0]?.trim()
+        if (line && /^\d+$/.test(line)) resolve(Number(line))
+      })
+      owner.once('error', reject)
+      owner.stderr.once('data', chunk => reject(new Error(String(chunk))))
+    })
+    const watchdog = spawnTerminalWatchdog(owner.pid!, foregroundPid)
+
+    owner.kill('SIGKILL')
+    await new Promise<void>(resolve => owner.once('exit', () => resolve()))
+
+    let foregroundRunning = true
+    for (let attempt = 0; attempt < 50 && foregroundRunning; attempt += 1) {
+      try {
+        process.kill(foregroundPid, 0)
+        await new Promise(resolve => setTimeout(resolve, 20))
+      } catch {
+        foregroundRunning = false
+      }
+    }
+    if (foregroundRunning) process.kill(foregroundPid, 'SIGKILL')
+    watchdog?.kill()
+    expect(foregroundRunning).toBe(false)
+  }, 10_000)
 })

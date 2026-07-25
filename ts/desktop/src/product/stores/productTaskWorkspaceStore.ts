@@ -130,8 +130,10 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
 
     switch (panel) {
       case 'browser':
-      case 'terminal':
         return state
+      case 'terminal':
+        next = { ...current, terminalOpen: true }
+        break
       case 'preview':
         next = {
           ...current,
@@ -223,6 +225,7 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
         }
         break
       case 'terminal':
+        if (!current.terminalOpen) return state
         break
     }
 

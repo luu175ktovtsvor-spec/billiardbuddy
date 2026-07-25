@@ -27,7 +27,7 @@ describe('useProductTaskWorkspaceStore', () => {
     })
   })
 
-  it('keeps Review and Media open while terminal open is disabled', () => {
+  it('keeps Review and Media open while the independent task terminal opens', () => {
     const store = useProductTaskWorkspaceStore.getState()
     store.openPanel(TASK_ID, 'review', true)
     store.openPanel(TASK_ID, 'media')
@@ -36,15 +36,14 @@ describe('useProductTaskWorkspaceStore', () => {
     expect(useProductTaskWorkspaceStore.getState().byTaskId[TASK_ID]).toMatchObject({
       reviewOpen: true,
       mediaOpen: true,
-      terminalOpen: false,
+      terminalOpen: true,
       activePanel: 'media',
     })
   })
 
-  it('does not create disabled or workspace-less native panel state', () => {
+  it('does not create disabled browser or workspace-less preview state', () => {
     const store = useProductTaskWorkspaceStore.getState()
     store.openPanel(TASK_ID, 'browser', true)
-    store.openPanel('task_public_other', 'terminal', true)
     store.openPanel('task_public_without_workspace', 'preview', false)
 
     expect(useProductTaskWorkspaceStore.getState().byTaskId).toEqual({})
