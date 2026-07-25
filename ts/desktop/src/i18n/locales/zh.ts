@@ -82,9 +82,11 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Settings ──────────────────────────────────────
   'settings.title': '设置',
   'settings.tab.general': '通用',
+  'settings.tab.capabilities': '能力状态',
+  'settings.tab.privacy': '隐私',
   'settings.tab.terminal': '终端',
   'settings.tab.skills': '技能',
-  'settings.tab.mcp': '外部连接',
+  'settings.tab.mcp': 'MCP 服务',
   'settings.tab.plugins': '插件',
 
   // Settings > Terminal
@@ -143,8 +145,8 @@ export const zh: Record<TranslationKey, string> = {
   'errorBoundary.description': '问题已记录，以便恢复。',
 
   // Settings > MCP
-  'settings.mcp.title': '外部连接',
-  'settings.mcp.description': '仅当任务确实需要外部能力时才会使用连接；技术配置不会在普通界面展示。',
+  'settings.mcp.title': 'MCP 服务',
+  'settings.mcp.description': '把 Agent 连接到本机或远程的工具与上下文；所有服务仍受当前任务权限约束。',
   'settings.mcp.addServer': '添加连接',
   'settings.mcp.empty': '还没有外部连接',
   'settings.mcp.emptyHint': '仅在任务确实需要时再添加连接。',
@@ -245,6 +247,11 @@ export const zh: Record<TranslationKey, string> = {
   'settings.skills.browserEyebrow': '已准备工作流',
   'settings.skills.browserDescription': '在任务中说明业务目标，系统会自动选择并在后台应用合适的支持能力。',
   'settings.skills.ready': '可在当前对话中使用',
+  'settings.skills.currentProject': '正在显示当前项目可用的工作流。',
+  'settings.skills.defaultContext': '正在显示默认任务环境可用的工作流。',
+  'settings.skills.loading': '正在读取可用工作流…',
+  'settings.skills.loadFailed': '暂时无法读取可用工作流。',
+  'settings.skills.empty': '当前环境没有可用工作流。',
 
   // Settings > Plugins
   'settings.plugins.title': '已安装插件',

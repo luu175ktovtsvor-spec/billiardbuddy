@@ -28,6 +28,7 @@ import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkben
 import { voiceOperationService } from './services/voiceOperationService.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
+import { ProductCapabilitySnapshotService } from './services/productCapabilitySnapshot.js'
 import { ProductResourceScheduler } from './product/resourceScheduler.js'
 import * as path from 'node:path'
 
@@ -139,8 +140,20 @@ export function startServer(port = PORT, host = HOST) {
     mediaUiCapability,
   )
   const productMedia = new ProductTaskMediaService(productTaskService, mediaService)
+  const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
+    mediaToolchainStatus: () => mediaService.toolchainStatus(),
+  })
   const productApiHandler = (req: Request, url: URL, segments: string[]) => (
-    handleProductApi(req, url, segments, productTaskService, undefined, productMedia)
+    handleProductApi(
+      req,
+      url,
+      segments,
+      productTaskService,
+      undefined,
+      productMedia,
+      undefined,
+      productCapabilitySnapshots,
+    )
   )
   enableConfigs()
   // Don't hijack the global console / process handlers under `bun test`:

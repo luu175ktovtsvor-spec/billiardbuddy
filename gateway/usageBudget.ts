@@ -15,6 +15,14 @@ export type UsageBudgetPolicy = ProviderUsageBudgetPolicy
 export type UsageState = 'reserved' | 'settled' | 'released' | 'outcome_unknown'
 export type UsageReceipt = ProviderUsageReceipt
 export type UsageReservation = { duplicate: boolean; receipt: UsageReceipt }
+export type UsageBudgetSummary = {
+  period: string
+  resets_at: string
+  capabilities: Record<MeteredCapability, {
+    remaining_percent: number
+    exhausted: boolean
+  }>
+}
 export type UsageReserveInput = {
   operation_id: string
   principal_id: string
@@ -52,6 +60,7 @@ export class UsageBudgetError extends Error {
 
 export interface UsageBudgetService {
   policyRevision(): string
+  summary(principalId: string, installationId: string): UsageBudgetSummary
   reserve(input: UsageReserveInput): UsageReservation
   settle(operationId: string, fencingToken: number, actual: UsageAmount, upstreamReceiptHash?: string): UsageReceipt
   release(operationId: string, fencingToken: number): UsageReceipt
@@ -106,6 +115,20 @@ function exceeds(value: UsageAmount, limit: UsageLimit): boolean {
   return value.requests > limit.requests
     || value.input_bytes > limit.input_bytes
     || value.output_units > limit.output_units
+}
+
+function reached(value: UsageAmount, limit: UsageLimit): boolean {
+  return value.requests >= limit.requests
+    || value.input_bytes >= limit.input_bytes
+    || value.output_units >= limit.output_units
+}
+
+function remainingPercent(value: UsageAmount, limit: UsageLimit): number {
+  const ratios = (['requests', 'input_bytes', 'output_units'] as const).map((key) => {
+    if (limit[key] === 0) return 0
+    return ((limit[key] - value[key]) / limit[key]) * 100
+  })
+  return Math.max(0, Math.min(100, Math.floor(Math.min(...ratios))))
 }
 
 function sameBinding(existing: StoredUsage, input: UsageReserveInput): boolean {
@@ -170,9 +193,42 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       actual_output_units INTEGER NOT NULL DEFAULT 0,
       upstream_receipt_hash TEXT
     )`)
+    this.db.exec('CREATE INDEX IF NOT EXISTS usage_budget_period_principal ON usage_budget_reservations(period, principal_id)')
   }
 
   policyRevision(): string { return this.policy.revision }
+
+  summary(principalId: string, installationId: string): UsageBudgetSummary {
+    if (!principalId || !installationId) throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
+    const period = periodAt(this.now())
+    const rows = (this.db.query(
+      'SELECT * FROM usage_budget_reservations WHERE period=? AND principal_id=? AND state<>\'released\'',
+    ).all(period, principalId) as SqlRow[]).map(fromSql)
+    const capabilities = Object.fromEntries(
+      (['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const).map((capability) => {
+        const principal = { requests: 0, input_bytes: 0, output_units: 0 }
+        const installation = { requests: 0, input_bytes: 0, output_units: 0 }
+        for (const row of rows) {
+          if (row.capability !== capability) continue
+          const counted = row.state === 'settled' ? row.actual : row.reserved
+          if (row.principal_id === principalId) Object.assign(principal, add(principal, counted))
+          if (row.principal_id === principalId && row.installation_id === installationId) {
+            Object.assign(installation, add(installation, counted))
+          }
+        }
+        const limits = this.policy.capabilities[capability]
+        return [capability, {
+          remaining_percent: Math.min(
+            remainingPercent(principal, limits.principal),
+            remainingPercent(installation, limits.installation),
+          ),
+          exhausted: reached(principal, limits.principal) || reached(installation, limits.installation),
+        }]
+      }),
+    ) as UsageBudgetSummary['capabilities']
+    const resetsAt = new Date(Date.parse(`${period}T00:00:00.000Z`) + 24 * 60 * 60 * 1000).toISOString()
+    return { period, resets_at: resetsAt, capabilities }
+  }
 
   reserve(input: UsageReserveInput): UsageReservation {
     validateReserveInput(input)

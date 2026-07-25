@@ -82,9 +82,11 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Settings ──────────────────────────────────────
   'settings.title': '設定',
   'settings.tab.general': '通用',
+  'settings.tab.capabilities': '能力狀態',
+  'settings.tab.privacy': '隱私',
   'settings.tab.terminal': '終端',
   'settings.tab.skills': '技能',
-  'settings.tab.mcp': '外部連線',
+  'settings.tab.mcp': 'MCP 服務',
   'settings.tab.plugins': '外掛',
 
   // Settings > Terminal
@@ -143,8 +145,8 @@ export const zh: Record<TranslationKey, string> = {
   'errorBoundary.description': '問題已記錄，以便恢復。',
 
   // Settings > MCP
-  'settings.mcp.title': '外部連線',
-  'settings.mcp.description': '只有任務確實需要外部能力時才會使用連線；技術設定不會在一般介面顯示。',
+  'settings.mcp.title': 'MCP 服務',
+  'settings.mcp.description': '把 Agent 連接到本機或遠端的工具與上下文；所有服務仍受目前任務權限約束。',
   'settings.mcp.addServer': '新增連線',
   'settings.mcp.empty': '尚未有外部連線',
   'settings.mcp.emptyHint': '僅在任務確實需要時再新增連線。',
@@ -245,6 +247,11 @@ export const zh: Record<TranslationKey, string> = {
   'settings.skills.browserEyebrow': '已準備工作流程',
   'settings.skills.browserDescription': '在任務中說明業務目標，系統會自動選擇並在背景套用合適的支援能力。',
   'settings.skills.ready': '可在目前對話中使用',
+  'settings.skills.currentProject': '正在顯示目前專案可用的工作流程。',
+  'settings.skills.defaultContext': '正在顯示預設任務環境可用的工作流程。',
+  'settings.skills.loading': '正在讀取可用工作流程…',
+  'settings.skills.loadFailed': '暫時無法讀取可用工作流程。',
+  'settings.skills.empty': '目前環境沒有可用工作流程。',
 
   // Settings > Plugins
   'settings.plugins.title': '已安裝外掛',

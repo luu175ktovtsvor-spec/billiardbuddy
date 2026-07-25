@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import {
   ArrowLeft,
-  ChevronDown,
   Cpu,
+  Gauge,
   Info,
   Plug,
   Puzzle,
   RotateCw,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Terminal,
 } from 'lucide-react'
@@ -17,7 +18,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import type { ThemeMode, NetworkProxyMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
+import type { ThemeMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
 import type { Locale } from '../i18n'
 import { SkillList } from '../components/skills/SkillList'
 import { usePluginStore } from '../stores/pluginStore'
@@ -42,10 +43,8 @@ import {
   type DesktopNotificationPermission,
 } from '../lib/desktopNotifications'
 import { RemoteDataEgressSettings } from '../product/components/RemoteDataEgressConsent'
+import { ProductCapabilitySettings } from '../product/components/ProductCapabilitySettings'
 
-const NETWORK_TIMEOUT_MIN_SECONDS = 30
-const NETWORK_TIMEOUT_MAX_SECONDS = 1800
-const NETWORK_TIMEOUT_STEP_SECONDS = 30
 const SETTINGS_CHECKBOX_INPUT_CLASS = 'settings-checkbox-input peer'
 
 type SettingsNavItem = {
@@ -55,21 +54,28 @@ type SettingsNavItem = {
 
 const PERSONAL_SETTINGS: SettingsNavItem[] = [
   { tab: 'general', icon: <Settings2 size={16} /> },
+  { tab: 'privacy', icon: <ShieldCheck size={16} /> },
 ]
 
 const CAPABILITY_SETTINGS: SettingsNavItem[] = [
-  { tab: 'plugins', icon: <Puzzle size={16} /> },
-  { tab: 'computerUse', icon: <Cpu size={16} /> },
+  { tab: 'capabilities', icon: <Gauge size={16} /> },
   { tab: 'skills', icon: <Sparkles size={16} /> },
 ]
 
-const ADVANCED_SETTINGS: SettingsNavItem[] = [
-  { tab: 'terminal', icon: <Terminal size={16} /> },
+const EXTENSION_SETTINGS: SettingsNavItem[] = [
+  { tab: 'plugins', icon: <Puzzle size={16} /> },
   { tab: 'mcp', icon: <Plug size={16} /> },
+]
+
+const ENVIRONMENT_SETTINGS: SettingsNavItem[] = [
+  { tab: 'terminal', icon: <Terminal size={16} /> },
+  { tab: 'computerUse', icon: <Cpu size={16} /> },
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   general: 'settings.tab.general',
+  capabilities: 'settings.tab.capabilities',
+  privacy: 'settings.tab.privacy',
   terminal: 'settings.tab.terminal',
   mcp: 'settings.tab.mcp',
   skills: 'settings.tab.skills',
@@ -80,20 +86,22 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
 
 const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   general: '常规',
+  capabilities: '能力状态',
+  privacy: '隐私',
   terminal: '终端',
-  mcp: '外部连接',
-  skills: '工作方法',
+  mcp: 'MCP 服务',
+  skills: 'Skills',
   plugins: '插件',
   computerUse: '招聘浏览器',
   about: '关于',
 }
 
-const SETTINGS_SHELL_COPY: Record<Locale, { back: string; personal: string; capabilities: string; advanced: string }> = {
-  en: { back: 'Back to app', personal: 'Personal', capabilities: 'Features', advanced: 'Advanced' },
-  zh: { back: '返回应用', personal: '个人', capabilities: '功能', advanced: '高级' },
-  'zh-TW': { back: '返回應用', personal: '個人', capabilities: '功能', advanced: '進階' },
-  jp: { back: 'アプリに戻る', personal: '個人', capabilities: '機能', advanced: '詳細' },
-  kr: { back: '앱으로 돌아가기', personal: '개인', capabilities: '기능', advanced: '고급' },
+const SETTINGS_SHELL_COPY: Record<Locale, { back: string; personal: string; agent: string; extensions: string; environment: string }> = {
+  en: { back: 'Back to app', personal: 'Personal', agent: 'Agent', extensions: 'Extensions', environment: 'Task environment' },
+  zh: { back: '返回应用', personal: '个人', agent: 'Agent', extensions: '扩展', environment: '任务环境' },
+  'zh-TW': { back: '返回應用', personal: '個人', agent: 'Agent', extensions: '擴充', environment: '任務環境' },
+  jp: { back: 'アプリに戻る', personal: '個人', agent: 'Agent', extensions: '拡張機能', environment: 'タスク環境' },
+  kr: { back: '앱으로 돌아가기', personal: '개인', agent: 'Agent', extensions: '확장', environment: '작업 환경' },
 }
 
 function settingsLabel(
@@ -197,7 +205,6 @@ export function Settings() {
   const activeTab = useUIStore((s) => s.activeSettingsTab)
   const setActiveTab = useUIStore((s) => s.setActiveSettingsTab)
   const pendingSettingsTab = useUIStore((s) => s.pendingSettingsTab)
-  const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_SETTINGS.some((item) => item.tab === activeTab))
   const shellCopy = SETTINGS_SHELL_COPY[locale]
 
   useEffect(() => {
@@ -205,10 +212,6 @@ export function Settings() {
     setActiveTab(pendingSettingsTab)
     useUIStore.getState().setPendingSettingsTab(null)
   }, [pendingSettingsTab, setActiveTab])
-
-  useEffect(() => {
-    if (ADVANCED_SETTINGS.some((item) => item.tab === activeTab)) setAdvancedOpen(true)
-  }, [activeTab])
 
   const returnToApp = () => {
     const tabs = useTabStore.getState()
@@ -222,6 +225,8 @@ export function Settings() {
 
   const content = (() => {
     if (activeTab === 'general') return <GeneralSettings />
+    if (activeTab === 'capabilities') return <ProductCapabilitySettings />
+    if (activeTab === 'privacy') return <RemoteDataEgressSettings />
     if (activeTab === 'terminal') return <ProductTerminalPreferences />
     if (activeTab === 'mcp') return <McpSettings />
     if (activeTab === 'skills') return <SkillSettings />
@@ -247,32 +252,9 @@ export function Settings() {
         </button>
 
         <SettingsNavGroup label={shellCopy.personal} items={PERSONAL_SETTINGS} activeTab={activeTab} onSelect={setActiveTab} locale={locale} t={t} />
-        <SettingsNavGroup label={shellCopy.capabilities} items={CAPABILITY_SETTINGS} activeTab={activeTab} onSelect={setActiveTab} locale={locale} t={t} />
-
-        <div className="pt-4">
-          <button
-            type="button"
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((open) => !open)}
-            className="flex w-full items-center gap-1 px-2 pb-1 text-left text-[12px] font-medium text-[var(--color-text-tertiary)]"
-          >
-            <span className="flex-1">{shellCopy.advanced}</span>
-            <ChevronDown size={13} className={`transition-transform ${advancedOpen ? '' : '-rotate-90'}`} />
-          </button>
-          {advancedOpen && (
-            <div className="space-y-0.5">
-              {ADVANCED_SETTINGS.map((item) => (
-                <SettingsNavRow
-                  key={item.tab}
-                  item={item}
-                  label={settingsLabel(item.tab, locale, t)}
-                  active={activeTab === item.tab}
-                  onClick={() => setActiveTab(item.tab)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        <SettingsNavGroup label={shellCopy.agent} items={CAPABILITY_SETTINGS} activeTab={activeTab} onSelect={setActiveTab} locale={locale} t={t} />
+        <SettingsNavGroup label={shellCopy.extensions} items={EXTENSION_SETTINGS} activeTab={activeTab} onSelect={setActiveTab} locale={locale} t={t} />
+        <SettingsNavGroup label={shellCopy.environment} items={ENVIRONMENT_SETTINGS} activeTab={activeTab} onSelect={setActiveTab} locale={locale} t={t} />
 
         <div className="mt-auto border-t border-[var(--color-border)]/60 pt-2">
           <SettingsNavRow
@@ -321,14 +303,10 @@ export function GeneralSettings() {
     outputStyleError,
     fetchOutputStyles,
     setOutputStyle,
-    skipWebFetchPreflight,
-    setSkipWebFetchPreflight,
     desktopNotificationsEnabled,
     setDesktopNotificationsEnabled,
     webSearch,
     setWebSearch,
-    network,
-    setNetwork,
     responseLanguage,
     setResponseLanguage,
     appMode,
@@ -340,10 +318,6 @@ export function GeneralSettings() {
   } = useSettingsStore()
   const { workDir: outputStyleWorkDir } = useCurrentProductTaskContext()
   const t = useTranslation()
-  const [networkDraft, setNetworkDraft] = useState(network)
-  const [networkTimeoutInput, setNetworkTimeoutInput] = useState(String(Math.round(network.aiRequestTimeoutMs / 1000)))
-  const [networkSaveError, setNetworkSaveError] = useState<string | null>(null)
-  const [isSavingNetwork, setIsSavingNetwork] = useState(false)
   const [notificationPermission, setNotificationPermission] = useState<DesktopNotificationPermission>('default')
   const [notificationActionRunning, setNotificationActionRunning] = useState(false)
   const [modeSwitchConfirmOpen, setModeSwitchConfirmOpen] = useState(false)
@@ -366,12 +340,6 @@ export function GeneralSettings() {
   useEffect(() => {
     void fetchOutputStyles(outputStyleWorkDir)
   }, [fetchOutputStyles, outputStyleWorkDir])
-
-  useEffect(() => {
-    setNetworkDraft(network)
-    setNetworkTimeoutInput(String(Math.round(network.aiRequestTimeoutMs / 1000)))
-    setNetworkSaveError(null)
-  }, [network])
 
   useEffect(() => {
     if (!isUiZoomDragging) {
@@ -454,24 +422,6 @@ export function GeneralSettings() {
     { value: 'system', label: t('settings.general.appearance.system') },
   ]
 
-  const NETWORK_PROXY_MODES: Array<{ value: NetworkProxyMode; label: string; description: string }> = [
-    {
-      value: 'direct',
-      label: t('settings.general.networkProxyModeDirect'),
-      description: t('settings.general.networkProxyModeDirectDescription'),
-    },
-    {
-      value: 'system',
-      label: t('settings.general.networkProxyModeSystem'),
-      description: t('settings.general.networkProxyModeSystemDescription'),
-    },
-    {
-      value: 'manual',
-      label: t('settings.general.networkProxyModeManual'),
-      description: t('settings.general.networkProxyModeManualDescription'),
-    },
-  ]
-
   const CHAT_SEND_BEHAVIORS: Array<{ value: ChatSendBehavior; label: string; description: string }> = [
     {
       value: 'enter',
@@ -531,79 +481,6 @@ export function GeneralSettings() {
       }
     } finally {
       setNotificationActionRunning(false)
-    }
-  }
-
-  const networkProxyUrl = networkDraft.proxy.url.trim()
-  const networkProxyError =
-    networkDraft.proxy.mode === 'manual' && !networkProxyUrl
-      ? t('settings.general.networkProxyUrlRequired')
-      : networkDraft.proxy.mode === 'manual' && !isValidHttpProxyUrl(networkProxyUrl)
-        ? t('settings.general.networkProxyUrlInvalid')
-        : null
-  const timeoutSeconds = Math.round(networkDraft.aiRequestTimeoutMs / 1000)
-  const parsedNetworkTimeoutSeconds = (() => {
-    const trimmed = networkTimeoutInput.trim()
-    if (!/^\d+$/.test(trimmed)) return null
-    const seconds = Number(trimmed)
-    if (!Number.isFinite(seconds) || seconds < NETWORK_TIMEOUT_MIN_SECONDS || seconds > NETWORK_TIMEOUT_MAX_SECONDS) return null
-    return seconds
-  })()
-  const networkTimeoutError =
-    networkTimeoutInput.trim().length === 0
-      ? t('settings.general.networkTimeoutRequired')
-      : parsedNetworkTimeoutSeconds === null
-        ? t('settings.general.networkTimeoutRange', {
-            min: String(NETWORK_TIMEOUT_MIN_SECONDS),
-            max: String(NETWORK_TIMEOUT_MAX_SECONDS),
-          })
-        : null
-  const networkDirty =
-    networkDraft.aiRequestTimeoutMs !== network.aiRequestTimeoutMs ||
-    networkDraft.proxy.mode !== network.proxy.mode ||
-    networkDraft.proxy.url.trim() !== network.proxy.url.trim()
-
-  const setNetworkTimeoutSeconds = (seconds: number) => {
-    const nextSeconds = Math.min(Math.max(Math.round(seconds), NETWORK_TIMEOUT_MIN_SECONDS), NETWORK_TIMEOUT_MAX_SECONDS)
-    setNetworkTimeoutInput(String(nextSeconds))
-    setNetworkDraft((current) => ({
-      ...current,
-      aiRequestTimeoutMs: nextSeconds * 1000,
-    }))
-    setNetworkSaveError(null)
-  }
-
-  const saveNetworkSettings = async () => {
-    if (networkProxyError) {
-      setNetworkSaveError(networkProxyError)
-      return
-    }
-    if (networkTimeoutError || parsedNetworkTimeoutSeconds === null) {
-      setNetworkSaveError(networkTimeoutError ?? t('settings.general.networkTimeoutRange', {
-        min: String(NETWORK_TIMEOUT_MIN_SECONDS),
-        max: String(NETWORK_TIMEOUT_MAX_SECONDS),
-      }))
-      return
-    }
-
-    setIsSavingNetwork(true)
-    setNetworkSaveError(null)
-    try {
-      await setNetwork({
-        aiRequestTimeoutMs: parsedNetworkTimeoutSeconds * 1000,
-        proxy: {
-          mode: networkDraft.proxy.mode,
-          url: networkDraft.proxy.mode === 'manual' ? networkProxyUrl : '',
-        },
-      })
-      addToast({
-        type: 'success',
-        message: t('settings.general.networkSaved'),
-      })
-    } catch {
-      setNetworkSaveError(t('settings.general.networkSaveError'))
-    } finally {
-      setIsSavingNetwork(false)
     }
   }
 
@@ -939,7 +816,31 @@ export function GeneralSettings() {
         </label>
       </div>
 
-      <RemoteDataEgressSettings />
+      <div className="mb-8">
+        <h2 className="mb-1 text-base font-semibold text-[var(--color-text-primary)]">
+          {locale === 'zh' ? '任务权限' : 'Task permissions'}
+        </h2>
+        <p className="mb-3 text-sm text-[var(--color-text-tertiary)]">
+          {locale === 'zh'
+            ? '权限按任务保存，不使用全局技术开关。新任务默认“询问批准”，你可以在创建时改为自动审批或完全访问。'
+            : 'Permissions are saved per task, without a global technical override. New tasks default to Ask for approval; you can choose Automatic approval or Full access when creating one.'}
+        </p>
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">
+          <div>
+            <div className="text-sm font-medium text-[var(--color-text-primary)]">{locale === 'zh' ? '默认：询问批准' : 'Default: Ask for approval'}</div>
+            <div className="mt-1 text-xs text-[var(--color-text-tertiary)]">{locale === 'zh' ? '越过工作区或执行高风险操作前由你确认。' : 'You confirm before work crosses the workspace or takes a high-risk action.'}</div>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="shrink-0"
+            onClick={() => useTabStore.getState().openTab(PRODUCT_TASKS_TAB_ID, locale === 'zh' ? '任务中心' : 'Tasks', 'product-tasks')}
+          >
+            {locale === 'zh' ? '新建任务' : 'New task'}
+          </Button>
+        </div>
+      </div>
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">
         <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
@@ -1008,7 +909,7 @@ export function GeneralSettings() {
 
       <details className="mt-8 border-t border-[var(--color-border)]/70 pt-5">
         <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-          {locale === 'zh' ? '网络、搜索与存储' : 'Network, search and storage'}
+          {locale === 'zh' ? '通知、联网与存储' : 'Notifications, online access and storage'}
         </summary>
         <div className="pl-1">
       <div className="mt-8">
@@ -1084,179 +985,6 @@ export function GeneralSettings() {
       </div>
 
       {uiZoomSection}
-
-      <div className="mt-8">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.networkTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.networkDescription')}</p>
-        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
-          <div className="grid grid-cols-2 gap-2">
-            {NETWORK_PROXY_MODES.map((mode) => (
-              <button
-                key={mode.value}
-                type="button"
-                onClick={() => {
-                  setNetworkDraft((current) => ({
-                    ...current,
-                    proxy: { ...current.proxy, mode: mode.value },
-                  }))
-                  setNetworkSaveError(null)
-                }}
-                aria-pressed={networkDraft.proxy.mode === mode.value}
-                className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                  networkDraft.proxy.mode === mode.value
-                    ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
-                    : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-                }`}
-              >
-                <div className="text-xs font-semibold">{mode.label}</div>
-                <div className="mt-1 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
-                  {mode.description}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {networkDraft.proxy.mode === 'manual' && (
-            <div className="mt-4">
-              <Input
-                id="network-proxy-url"
-                label={t('settings.general.networkProxyUrl')}
-                value={networkDraft.proxy.url}
-                placeholder="http://127.0.0.1:7890"
-                autoComplete="off"
-                onChange={(event) => {
-                  setNetworkDraft((current) => ({
-                    ...current,
-                    proxy: { ...current.proxy, url: event.target.value },
-                  }))
-                  setNetworkSaveError(null)
-                }}
-              />
-              <p className={`mt-1 text-[11px] leading-4 ${networkProxyError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}>
-                {networkProxyError ?? t('settings.general.networkProxyUrlHint')}
-              </p>
-            </div>
-          )}
-
-          <div className="mt-4">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <label htmlFor="network-timeout-seconds" className="text-sm font-medium text-[var(--color-text-primary)]">
-                {t('settings.general.networkTimeout')}
-              </label>
-              <span className="rounded-md bg-[var(--color-surface)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)]">
-                {t('settings.general.networkTimeoutValue', { seconds: String(timeoutSeconds) })}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="h-10 w-10 px-0"
-                aria-label={t('settings.general.networkTimeoutDecrease')}
-                onClick={() => setNetworkTimeoutSeconds((parsedNetworkTimeoutSeconds ?? timeoutSeconds) - NETWORK_TIMEOUT_STEP_SECONDS)}
-              >
-                -30
-              </Button>
-              <div className="relative min-w-0 flex-1">
-                <input
-                  id="network-timeout-seconds"
-                  type="number"
-                  min={NETWORK_TIMEOUT_MIN_SECONDS}
-                  max={NETWORK_TIMEOUT_MAX_SECONDS}
-                  step={1}
-                  inputMode="numeric"
-                  value={networkTimeoutInput}
-                  aria-invalid={networkTimeoutError ? true : undefined}
-                  aria-describedby="network-timeout-help"
-                  onChange={(event) => {
-                    const nextValue = event.currentTarget.value
-                    if (!/^\d*$/.test(nextValue)) return
-                    setNetworkTimeoutInput(nextValue)
-                    const seconds = Number(nextValue)
-                    if (nextValue.length > 0 && seconds >= NETWORK_TIMEOUT_MIN_SECONDS && seconds <= NETWORK_TIMEOUT_MAX_SECONDS) {
-                      setNetworkDraft((current) => ({
-                        ...current,
-                        aiRequestTimeoutMs: seconds * 1000,
-                      }))
-                    }
-                    setNetworkSaveError(null)
-                  }}
-                  className={`h-10 w-full rounded-[var(--radius-md)] border bg-[var(--color-surface)] px-3 pr-12 text-sm text-[var(--color-text-primary)] outline-none transition-colors duration-150 placeholder:text-[var(--color-text-tertiary)] ${
-                    networkTimeoutError
-                      ? 'border-[var(--color-error)] focus:shadow-[var(--shadow-error-ring)]'
-                      : 'border-[var(--color-border)] focus:border-[var(--color-border-focus)] focus:shadow-[var(--shadow-focus-ring)]'
-                  }`}
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--color-text-tertiary)]">
-                  {t('settings.general.networkTimeoutUnit')}
-                </span>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="h-10 w-10 px-0"
-                aria-label={t('settings.general.networkTimeoutIncrease')}
-                onClick={() => setNetworkTimeoutSeconds((parsedNetworkTimeoutSeconds ?? timeoutSeconds) + NETWORK_TIMEOUT_STEP_SECONDS)}
-              >
-                +30
-              </Button>
-            </div>
-            <p
-              id="network-timeout-help"
-              className={`mt-2 text-xs leading-5 ${networkTimeoutError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}
-            >
-              {networkTimeoutError ?? t('settings.general.networkTimeoutHint')}
-            </p>
-          </div>
-
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <p className="min-w-0 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
-              {t('settings.general.networkScopeHint')}
-            </p>
-            <Button
-              size="sm"
-              variant="secondary"
-              className="min-w-[72px] px-4 whitespace-nowrap"
-              disabled={!networkDirty || !!networkProxyError || !!networkTimeoutError || isSavingNetwork}
-              loading={isSavingNetwork}
-              onClick={() => void saveNetworkSettings()}
-            >
-              {t('settings.general.networkSave')}
-            </Button>
-          </div>
-
-          {networkSaveError && (
-            <p className="mt-2 text-[11px] leading-4 text-[var(--color-error)]">
-              {networkSaveError}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-8">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.webFetchPreflightTitle')}</h2>
-        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.webFetchPreflightDescription')}</p>
-        <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
-          <input
-            type="checkbox"
-            aria-label={t('settings.general.webFetchPreflightEnabled')}
-            checked={skipWebFetchPreflight}
-            onChange={(e) => void setSkipWebFetchPreflight(e.target.checked)}
-            className={SETTINGS_CHECKBOX_INPUT_CLASS}
-          />
-          <SettingsCheckboxMark checked={skipWebFetchPreflight} />
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">
-              {t('settings.general.webFetchPreflightEnabled')}
-            </div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
-              {t('settings.general.webFetchPreflightHint')}
-            </div>
-          </div>
-        </label>
-      </div>
 
       <div className="mt-8">
         <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.webSearchTitle')}</h2>
@@ -1486,17 +1214,17 @@ function SettingsCheckboxMark({ checked, disabled = false }: { checked: boolean;
   )
 }
 
-// ─── Skill Settings ──────────────────────────────────────
+// ─── Agent extension settings ────────────────────────────
 
 function SkillSettings() {
   const t = useTranslation()
 
   return (
     <div className="w-full min-w-0">
-      <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">
+      <h2 className="mb-1 text-base font-semibold text-[var(--color-text-primary)]">
         {t('settings.skills.title')}
       </h2>
-      <p className="text-sm text-[var(--color-text-tertiary)] mb-4">
+      <p className="mb-4 text-sm text-[var(--color-text-tertiary)]">
         {t('settings.skills.description')}
       </p>
       <SkillList />
@@ -1505,7 +1233,7 @@ function SkillSettings() {
 }
 
 function PluginSettings() {
-  const selectedPlugin = usePluginStore((s) => s.selectedPlugin)
+  const selectedPlugin = usePluginStore((state) => state.selectedPlugin)
   const t = useTranslation()
 
   if (selectedPlugin) {
@@ -1518,10 +1246,10 @@ function PluginSettings() {
 
   return (
     <div className="w-full min-w-0">
-      <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">
+      <h2 className="mb-1 text-base font-semibold text-[var(--color-text-primary)]">
         {t('settings.plugins.title')}
       </h2>
-      <p className="text-sm text-[var(--color-text-tertiary)] mb-4">
+      <p className="mb-4 text-sm text-[var(--color-text-tertiary)]">
         {t('settings.plugins.description')}
       </p>
       <PluginList />
@@ -1530,15 +1258,6 @@ function PluginSettings() {
 }
 
 // ─── About Settings ──────────────────────────────────────
-
-function isValidHttpProxyUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
 
 function AboutSettings() {
   const t = useTranslation()

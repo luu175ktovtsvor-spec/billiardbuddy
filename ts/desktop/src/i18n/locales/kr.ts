@@ -82,9 +82,11 @@ export const kr: Record<TranslationKey, string> = {
   // ─── Settings ──────────────────────────────────────
   'settings.title': '설정',
   'settings.tab.general': '일반',
+  'settings.tab.capabilities': '기능 상태',
+  'settings.tab.privacy': '개인정보',
   'settings.tab.terminal': '터미널',
   'settings.tab.skills': '스킬',
-  'settings.tab.mcp': '외부 연결',
+  'settings.tab.mcp': 'MCP 서버',
   'settings.tab.plugins': '플러그인',
 
   // Settings > Terminal
@@ -143,8 +145,8 @@ export const kr: Record<TranslationKey, string> = {
   'errorBoundary.description': '문제가 복구를 위해 기록되었습니다.',
 
   // Settings > MCP
-  'settings.mcp.title': '외부 연결',
-  'settings.mcp.description': '외부 기능이 실제로 필요한 작업에서만 연결을 사용합니다. 기술적인 연결 설정은 일반 화면에 표시하지 않습니다.',
+  'settings.mcp.title': 'MCP 서버',
+  'settings.mcp.description': 'Agent를 로컬 또는 원격 도구와 컨텍스트에 연결합니다. 모든 서버는 현재 작업 권한을 따릅니다.',
   'settings.mcp.addServer': '연결 추가',
   'settings.mcp.empty': '아직 외부 연결이 없습니다',
   'settings.mcp.emptyHint': '작업에 실제로 필요할 때만 연결을 추가하세요.',
@@ -245,6 +247,11 @@ export const kr: Record<TranslationKey, string> = {
   'settings.skills.browserEyebrow': '준비된 워크플로',
   'settings.skills.browserDescription': '작업에서 업무 목표를 설명하면 알맞은 지원이 자동으로 선택되어 비공개로 적용됩니다.',
   'settings.skills.ready': '이 대화에서 사용 가능',
+  'settings.skills.currentProject': '현재 프로젝트에서 사용할 수 있는 워크플로를 표시합니다.',
+  'settings.skills.defaultContext': '기본 작업 환경에서 사용할 수 있는 워크플로를 표시합니다.',
+  'settings.skills.loading': '사용 가능한 워크플로를 불러오는 중…',
+  'settings.skills.loadFailed': '현재 사용 가능한 워크플로를 불러올 수 없습니다.',
+  'settings.skills.empty': '이 환경에서 사용할 수 있는 워크플로가 없습니다.',
 
   // Settings > Plugins
   'settings.plugins.title': '설치된 플러그인',

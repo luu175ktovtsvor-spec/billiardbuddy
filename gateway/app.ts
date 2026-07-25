@@ -1349,6 +1349,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     try {
       if (request.method === 'GET' && url.pathname === '/healthz') {
         if (!hasInstallationAccess(authority, request)) return jsonResponse({ ok: true, component_manifest: COMPONENT_MANIFEST })
+        const identity = auth(authority, request)
         const mimo = mimoReservations.snapshot()
         const nativeMimo = mimoReservations.laneSnapshot('native')
         const reservedVision = mimoReservations.laneSnapshot('vision')
@@ -1402,6 +1403,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             policy_revision: usageBudget.policyRevision(),
             metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
           },
+          usage_summary: usageBudget.summary(identity.principalId, identity.installationId),
           capacity: {
             // `mimo` remains the backwards-compatible account aggregate seen by existing
             // runners. `mimo_native` exposes the retained scheduler reservation separately.
@@ -1427,6 +1429,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             transcription: transcribe !== null,
             chat_deepseek: deepseekChat !== null,
             vision_bridge: visionBridge !== null,
+            image_tasks: Boolean(config.relayTasksBase && config.relayToken),
           },
         })
       }
