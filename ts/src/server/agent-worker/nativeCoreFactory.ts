@@ -9,6 +9,7 @@ import { productTaskMcpHost } from './mcpHost.js'
 export const serverPrivateNativeCoreFactory: ServerPrivateCoreFactory = {
   start: async (identity, binding, input) => createServerPrivateNativeCorePort({
     run_id: input.run_id,
+    task_id: identity.task_id,
     session_id: binding.session_id,
     work_dir: binding.work_dir,
     permission_envelope: input.permission_envelope,

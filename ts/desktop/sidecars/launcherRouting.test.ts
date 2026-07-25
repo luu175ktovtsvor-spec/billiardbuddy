@@ -15,6 +15,20 @@ describe('resolveSidecarInvocation', () => {
       defaultAppRoot: null,
     })
   })
+
+  it('recognizes Chrome native-host launches by their extension origin', () => {
+    expect(resolveSidecarInvocation([
+      'chrome-extension://bloolcbpfgdgmimikocneolpiickndlk/',
+      '--parent-window=0',
+    ], null)).toEqual({
+      mode: 'browser-host',
+      restArgs: [
+        'chrome-extension://bloolcbpfgdgmimikocneolpiickndlk/',
+        '--parent-window=0',
+      ],
+      defaultAppRoot: null,
+    })
+  })
 })
 
 describe('parseLauncherArgs', () => {

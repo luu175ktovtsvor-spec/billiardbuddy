@@ -25,21 +25,26 @@ if (!invocation.mode) {
 const mode = invocation.mode
 const restArgs = invocation.restArgs
 
-const { appRoot, args } = parseLauncherArgs(restArgs, invocation.defaultAppRoot)
-
-process.env.CLAUDE_APP_ROOT = appRoot
-process.env.CALLER_DIR ||= process.cwd()
-process.argv = [process.argv[0]!, process.argv[1]!, ...args]
-
-await import('../../preload.ts')
-
-if (mode === 'server') {
-  console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
-  const { startServer } = await import('../../src/server/index.ts')
-  startServer()
-} else if (mode === 'cli') {
-  await import('../../src/entrypoints/cli.tsx')
+if (mode === 'browser-host') {
+  const { runBrowserNativeHost } = await import('./browser-native-host')
+  runBrowserNativeHost({ argv: restArgs })
 } else {
-  console.error(`billiardbuddy-sidecar: unknown mode "${mode}" (expected "server" or "cli")`)
-  process.exit(2)
+  const { appRoot, args } = parseLauncherArgs(restArgs, invocation.defaultAppRoot)
+
+  process.env.CLAUDE_APP_ROOT = appRoot
+  process.env.CALLER_DIR ||= process.cwd()
+  process.argv = [process.argv[0]!, process.argv[1]!, ...args]
+
+  await import('../../preload.ts')
+
+  if (mode === 'server') {
+    console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
+    const { startServer } = await import('../../src/server/index.ts')
+    startServer()
+  } else if (mode === 'cli') {
+    await import('../../src/entrypoints/cli.tsx')
+  } else {
+    console.error(`billiardbuddy-sidecar: unknown mode "${mode}" (expected "server", "cli" or "browser-host")`)
+    process.exit(2)
+  }
 }

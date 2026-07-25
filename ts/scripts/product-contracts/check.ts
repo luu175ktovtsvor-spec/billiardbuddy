@@ -390,7 +390,9 @@ export function validate(source: Source, artifacts = render(source)): void {
   const desktopPackage = parseJson(resolve(root, 'ts/desktop/package.json')) as any
   const declaredBuild = source.baseline.desktop_build as Record<string, any>
   requireCondition(JSON.stringify(desktopPackage.build.files) === JSON.stringify(declaredBuild.package_inputs), 'desktop package inputs drift from electron-builder files')
-  const actualExtraResources = (desktopPackage.build.extraResources as Array<any>).flatMap((item) => (item.filter as string[]).map((name) => `${item.from}/${name}`))
+  const extraResources = desktopPackage.build.extraResources as Array<any>
+  requireCondition(Array.isArray(extraResources) && extraResources.every(item => typeof item?.from === 'string' && Array.isArray(item.filter) && item.filter.every((name: unknown) => typeof name === 'string')), 'desktop extraResources must use explicit audited filters')
+  const actualExtraResources = extraResources.flatMap((item) => (item.filter as string[]).map((name) => `${item.from}/${name}`))
   requireCondition(JSON.stringify(actualExtraResources) === JSON.stringify(declaredBuild.extra_resources), 'desktop extraResources drift from electron-builder inputs')
   const sidecarBuildScript = readFileSync(resolve(root, 'ts/desktop/scripts/build-sidecars.ts'), 'utf8')
   requireCondition(sidecarBuildScript.includes(String(declaredBuild.sidecar_build_entry).replace('ts/desktop/', '')), 'sidecar build entry is not compiled by build-sidecars')

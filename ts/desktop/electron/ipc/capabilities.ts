@@ -61,6 +61,16 @@ const productTaskId: Validator = value =>
   typeof value === 'string'
   && /^[0-9a-zA-Z_-]{1,64}$/.test(value)
 
+const browserResolveAction: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['taskId', 'actionId', 'expectedRevision', 'approved'])
+  && productTaskId(value.taskId)
+  && typeof value.actionId === 'string'
+  && /^[0-9a-zA-Z_-]{8,128}$/.test(value.actionId)
+  && Number.isSafeInteger(value.expectedRevision)
+  && Number(value.expectedRevision) >= 0
+  && typeof value.approved === 'boolean'
+
 const updateCheckOptions: Validator = value => {
   if (value === undefined) return true
   if (!isRecord(value) || !hasOnlyKeys(value, ['proxy'])) return false
@@ -165,6 +175,10 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
   [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
   [ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo]: mediaAnalyzeVideo,
+  [ELECTRON_IPC_CHANNELS.browserStatus]: noPayload,
+  [ELECTRON_IPC_CHANNELS.browserInstall]: noPayload,
+  [ELECTRON_IPC_CHANNELS.browserListActions]: productTaskId,
+  [ELECTRON_IPC_CHANNELS.browserResolveAction]: browserResolveAction,
   [ELECTRON_IPC_CHANNELS.updateCheck]: updateCheckOptions,
   [ELECTRON_IPC_CHANNELS.updateDownload]: noPayload,
   [ELECTRON_IPC_CHANNELS.updateInstall]: noPayload,

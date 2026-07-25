@@ -325,7 +325,7 @@ export const en = {
   'settings.about.updatesDesc': 'Check GitHub Releases, download the installer, and relaunch after install.',
 
   // Settings > Computer Use
-  'settings.tab.computerUse': 'Computer Use',
+  'settings.tab.computerUse': 'Recruiting browser',
   'settings.computerUse.title': 'Computer Use',
   'settings.computerUse.description': 'Allow the Agent to take screenshots, click, type, and control your computer. Requires Python 3. On macOS, accessibility permissions are also needed.',
   'settings.computerUse.enabledToggle': 'Enabled',

@@ -9,6 +9,7 @@ import type {
   StartImageOperationInput,
   UpdateImageProjectInput,
 } from '../../../../shared/contracts/media'
+import type { PublicRecruitingAction, RecruitingBrowserSetupStatus } from '../../../../shared/product/browserCapability'
 
 export type DesktopHostKind = 'browser' | 'electron'
 
@@ -19,6 +20,7 @@ export type DesktopHostCapability =
   | 'mediaActions'
   | 'notifications'
   | 'previewWebview'
+  | 'recruitingBrowser'
   | 'shell'
   | 'terminal'
   | 'taskWindows'
@@ -213,6 +215,12 @@ export type DesktopHost = {
     saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
     analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
+  }
+  recruitingBrowser: {
+    status(): Promise<RecruitingBrowserSetupStatus>
+    install(): Promise<RecruitingBrowserSetupStatus>
+    listActions(taskId: string): Promise<PublicRecruitingAction[]>
+    resolveAction(taskId: string, actionId: string, expectedRevision: number, approved: boolean): Promise<PublicRecruitingAction>
   }
   updates: {
     check(options?: DesktopUpdateCheckOptions): Promise<DesktopUpdate | null>

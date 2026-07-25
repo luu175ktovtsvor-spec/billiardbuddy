@@ -327,7 +327,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.about.updatesDesc': 'GitHub Releases를 확인하고 설치 관리자를 다운로드한 후 설치 후 다시 시작합니다.',
 
   // Settings > Computer Use
-  'settings.tab.computerUse': '컴퓨터 사용',
+  'settings.tab.computerUse': '채용 브라우저',
   'settings.computerUse.title': '컴퓨터 사용',
   'settings.computerUse.description': 'Agent가 스크린샷을 찍고 클릭, 입력하며 컴퓨터를 제어할 수 있도록 허용합니다. Python 3가 필요합니다. macOS에서는 접근성 권한도 필요합니다.',
   'settings.computerUse.enabledToggle': '사용',

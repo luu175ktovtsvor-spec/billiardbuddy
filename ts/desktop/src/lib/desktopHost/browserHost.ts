@@ -13,6 +13,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   mediaActions: false,
   notifications: false,
   previewWebview: false,
+  recruitingBrowser: false,
   shell: false,
   terminal: false,
   taskWindows: false,
@@ -119,6 +120,20 @@ export const browserHost: DesktopHost = {
     },
     async analyzeVideo() {
       unsupported('Video analysis')
+    },
+  },
+  recruitingBrowser: {
+    async status() {
+      unsupported('Recruiting browser integration')
+    },
+    async install() {
+      unsupported('Recruiting browser integration')
+    },
+    async listActions() {
+      unsupported('Recruiting browser integration')
+    },
+    async resolveAction() {
+      unsupported('Recruiting browser integration')
     },
   },
   updates: {

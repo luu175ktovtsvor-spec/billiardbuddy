@@ -327,7 +327,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.about.updatesDesc': 'GitHub Releases を確認し、インストーラーをダウンロードして、インストール後に再起動します。',
 
   // Settings > Computer Use
-  'settings.tab.computerUse': 'コンピューター操作',
+  'settings.tab.computerUse': '採用ブラウザ',
   'settings.computerUse.title': 'コンピューター操作',
   'settings.computerUse.description': 'Agent がスクリーンショットを撮影し、クリック、入力を行い、コンピューターを操作できるようにします。Python 3 が必要です。macOS ではアクセシビリティ権限も必要です。',
   'settings.computerUse.enabledToggle': '有効',

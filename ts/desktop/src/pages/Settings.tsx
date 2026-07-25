@@ -23,7 +23,7 @@ import { SkillList } from '../components/skills/SkillList'
 import { usePluginStore } from '../stores/pluginStore'
 import { PluginList } from '../components/plugins/PluginList'
 import { PluginDetail } from '../components/plugins/PluginDetail'
-import { ComputerUseSettings } from './ComputerUseSettings'
+import { RecruitingBrowserSettings } from './RecruitingBrowserSettings'
 import { McpSettings } from './McpSettings'
 import { ProductTerminalPreferences } from '../product/components/ProductTerminalPreferences'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
@@ -84,7 +84,7 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   mcp: '外部连接',
   skills: '工作方法',
   plugins: '插件',
-  computerUse: '电脑操作',
+  computerUse: '招聘浏览器',
   about: '关于',
 }
 
@@ -226,7 +226,7 @@ export function Settings() {
     if (activeTab === 'mcp') return <McpSettings />
     if (activeTab === 'skills') return <SkillSettings />
     if (activeTab === 'plugins') return <PluginSettings />
-    if (activeTab === 'computerUse') return <ComputerUseSettings />
+    if (activeTab === 'computerUse') return <RecruitingBrowserSettings />
     return <AboutSettings />
   })()
 

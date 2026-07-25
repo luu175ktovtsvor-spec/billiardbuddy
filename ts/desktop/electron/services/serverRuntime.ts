@@ -35,6 +35,8 @@ type ServerRuntimeOptions = {
   resolveInstallationAccessToken?: () => Promise<string>
   /** Electron-owned capability for paid/final media actions. Never inherited by Agent CLI processes. */
   mediaUiCapability?: string
+  /** Electron-owned capability for confirming recruiting side effects. */
+  browserUiCapability?: string
 }
 
 export class ElectronServerRuntime {
@@ -44,6 +46,7 @@ export class ElectronServerRuntime {
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private readonly resolveInstallationAccessToken?: () => Promise<string>
   private readonly mediaUiCapability?: string
+  private readonly browserUiCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private startupError: string | null = null
@@ -59,6 +62,7 @@ export class ElectronServerRuntime {
     this.resolveGatewayConfig = options.resolveGatewayConfig
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
+    this.browserUiCapability = options.browserUiCapability
   }
 
   /** Build a sidecar base env after removing inherited credential material. */
@@ -71,7 +75,10 @@ export class ElectronServerRuntime {
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
       : withGateway
-    if (withMediaCapability.BB_MEDIA_BIN_DIR) return withMediaCapability
+    const withBrowserCapability = this.browserUiCapability
+      ? { ...withMediaCapability, BB_BROWSER_UI_CAPABILITY: this.browserUiCapability }
+      : withMediaCapability
+    if (withBrowserCapability.BB_MEDIA_BIN_DIR) return withBrowserCapability
 
     const mediaBinDir = path.join(this.desktopRoot, 'src-tauri', 'binaries')
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''
@@ -79,8 +86,8 @@ export class ElectronServerRuntime {
       existsSync(path.join(mediaBinDir, `${name}${executableSuffix}`))
     ))
     return hasMediaToolchain
-      ? { ...withMediaCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
-      : withMediaCapability
+      ? { ...withBrowserCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
+      : withBrowserCapability
   }
 
   async startServer(): Promise<string> {
