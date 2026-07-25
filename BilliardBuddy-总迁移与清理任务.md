@@ -464,6 +464,10 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：用户在任务内使用真实交互终端。
 - 做法：Electron Main/sidecar 通过 `node-pty` 管理 owner、cwd、env、resize、exit 和恢复边界。
 - 验收：不是 Agent 命令回放；跨任务不可接管 PTY；关闭与崩溃后进程状态真实。
+- 当前落点：`51c3a2e5…` 恢复 ProductTask 内的 xterm 终端，Renderer 只经窄 Electron IPC 请求 Main 创建真实 `node-pty`。会话只绑定公开 ProductTask ID、发起 Renderer owner 和该任务的权威工作目录，不接收 Core session 或 Agent Bash 事件；写入、缩放和终止都必须同时命中同一 owner、task 和 session，独立任务窗口还会由 Main 校验窗口所属任务。
+- 环境与输入边界：终端继承本机用户 shell 环境和 UTF-8 locale，但在启动前删除产品网关 bootstrap、License、刷新证明、安装会话、短期 access bearer 和 Renderer 私有 capability；IPC 拒绝任意 shell 覆盖、额外字段、非有限尺寸、无效 session 和超大单次输入。用户终端仍是本机用户直接交互面，不改变 Agent 的 sandbox、审批或工具执行路径。
+- 关闭与崩溃真相：正常 shell exit 以 node-pty 的真实 code/signal 更新 UI，退出后不伪造恢复；关面板只杀当前任务会话，Renderer 崩溃或窗口关闭只杀该 owner 的会话，应用退出清理全部会话。每个 PTY 另有不继承产品凭据的 parent-death watchdog：macOS/Linux 在 Main 消失后终止 PTY 进程组，Windows 隐藏 PowerShell 在 Main 消失后对该 PTY 执行 `taskkill /T /F`；正常退出会先撤销 watchdog。Main 重启后旧 session 不会被声明为仍在运行，用户只能显式重开新终端。
+- 验收证据：桌面端全量 143 个文件共 932 项，930 项通过、2 项显式 live skip，类型检查和生产构建通过；Electron 31 个文件 217 项通过、2 项显式 live skip并完成 Main/preload 构建。另以 `BB_LIVE_PTY_TEST=1` 运行 17 项终端测试，真实 zsh 完成输入、输出、工作目录和 exit，并对持有 PTY 的独立 owner 注入 `SIGKILL`，确认 watchdog 后前台进程消失。Windows 的真实 ConPTY/PowerShell watchdog 仍须在模块 24 的 Windows x64 安装机旅程执行，不能用当前 macOS 证据替代。`check:product-contracts` 仍只命中模块 23 已登记的 `autodream-teammem` consumer 缺口。
 
 #### 模块 21：设置与能力快照
 
