@@ -4,8 +4,8 @@
 
 ## 文档职责
 
-- `BilliardBuddy.md`：BilliardBuddy 原生的项目指令文件，给用户放进自己的项目工作区，效果等同 Claude Code 的 `CLAUDE.md`。Harness 从根目录到当前目录收集它，冻结为本次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
-- `AGENTS.md`：Codex 标准项目指令文件；BilliardBuddy 也会加载它。BilliardBuddy 同时兼容 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md` 和 `CLAUDE.local.md`，因此已有 Codex 或 Claude Code 项目无需迁移。具体加载顺序和冲突规则以 README 的“项目指令兼容”为准。
+- `AGENTS.md` 与 `BilliardBuddy.md`：BilliardBuddy 给用户项目提供的同一类项目指令入口，不是两套产品能力。用户可任选一个；两者同时存在时由 Harness 合并为一个任务快照，`BilliardBuddy.md` 仅覆盖同目录中的冲突规则。该快照从根目录到当前目录收集后交给 DeepSeek；模型不直接读取本机磁盘。
+- BilliardBuddy 同时兼容 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md` 和 `CLAUDE.local.md`，因此已有 Codex 或 Claude Code 项目无需迁移。具体加载顺序和冲突规则以 README 的“项目指令兼容”为准。
 - 本文：BilliardBuddy 产品本身的重构合同，定义产品定位、架构边界、研究方法、实施顺序和完成标准；它不是要注入每个用户项目的 Agent 提示词。
 - `README.md`：项目介绍、运行入口和用户如何配置项目指令。
 

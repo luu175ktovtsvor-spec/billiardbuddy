@@ -10,11 +10,10 @@ BilliardBuddy 的 Agent Harness 会在启动任务时，把项目工作区中的
 
 | 文件 | 作用 | 兼容性 |
 |---|---|---|
-| `BilliardBuddy.md` | BilliardBuddy 原生项目指令，语义等同 `CLAUDE.md` | 推荐 BilliardBuddy 用户使用 |
-| `AGENTS.md` | Codex 标准项目指令 | BilliardBuddy 完整加载，无需迁移 |
+| `AGENTS.md` 或 `BilliardBuddy.md` | BilliardBuddy 的同一类项目指令入口 | 两者均可单独使用；已有 `AGENTS.md` 无需迁移，`BilliardBuddy.md` 是本产品的同义文件名 |
 | `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`、`CLAUDE.local.md` | Claude Code 兼容指令 | BilliardBuddy 完整加载 |
 
-指令从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`、`AGENTS.md`、`BilliardBuddy.md`、`CLAUDE.local.md`，后加载的规则在冲突时优先。已有使用 `AGENTS.md` 或 Claude 指令的项目可直接使用 BilliardBuddy；只有需要写 BilliardBuddy 专属规则时才添加 `BilliardBuddy.md`。
+指令从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`、`AGENTS.md`、`BilliardBuddy.md`、`CLAUDE.local.md`，后加载的规则在冲突时优先。`AGENTS.md` 与 `BilliardBuddy.md` 属于同一项目指令层：用户可任选其一；若两者同时存在，BilliardBuddy 合并它们，`BilliardBuddy.md` 只覆盖冲突部分。
 
 ## 代码结构
 
