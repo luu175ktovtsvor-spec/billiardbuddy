@@ -24,11 +24,13 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 2. Agent 能力是产品核心，保留原有 Core 的循环、Tools、Skills、Hooks、MCP、子任务、resume 与 compact；GUI 通过内部 `agent-worker` 使用它，不通过公共 CLI 绕行。
 3. 普通任务以 `ProductTask` 为唯一真相；图片和视频以 `MediaProject` 为唯一真相。
 4. 文本、视觉、图片生成和语音各有清晰能力边界；不可用时显式失败，不偷偷切换供应商。
-5. 用户看见的是任务、作品、权限、额度和恢复状态，不是模型、密钥、MCP 或内部运行时配置。
+5. 用户看见的是任务、作品、权限、额度、恢复状态和可管理的 Agent 扩展；Skills、Plugins 与 MCP 是成熟 Agent 产品的通用能力名称，保留它们不等于展示底层技术；provider、model、密钥、协议、并发和内部运行时配置不是普通用户界面。
 6. 旧版本可安全升级；迁移完成后，重复运行时、旧路由、旧页面和无消费者代码从源码与安装包中彻底删除。
 7. 完成以真实安装包中的用户旅程为准，不以页面截图、类型检查或字符串搜索代替。
 
 现有代码没有天然的保留义务：符合目标且足够简单的直接复用，部分有用的迁移或重构，重复、失效、无消费者或妨碍目标的直接删除；如果继续修补比重写更复杂，可以用最小的新实现重做。判断标准是最终功能和验收是否成立，而不是复用了多少旧代码。这里的“最小代码”是状态源最少、运行时最少、依赖最少，而不是省略数据迁移、持久化、安全、恢复和验收。
+
+界面平衡以 Codex App 这类成熟 Agent GUI 为参考：不用技术炫技来证明能力，也不因为“不要太技术”就隐去 Agent 本身的通用概念。中央会话、`/` 能力入口、任务队列、右侧工作区和设置都应先呈现用户目标、当前状态和下一个可执行动作；只有在管理扩展时才使用 Skills、Plugins、MCP 等稳定名称，其余技术细节收进诊断和内部运行层。
 
 ---
 
@@ -150,7 +152,7 @@ Local Product Server
 - 通用桌面 Computer Use、坐标点击、屏幕录制、Python 辅助脚本和相应设置页；
 - TeamMem、AutoDream 的产品页面、后台任务和同步链；
 - 图片/视频聊天草稿、中转卡和旧 media bridge；
-- 面向普通用户的 provider、model、API Key、MCP、Plugin、Python 运行时管理页面；
+- 面向普通用户的 provider、model、API Key、Python 运行时和重复的旧扩展管理页面；正式设置只保留一套受任务权限约束的 Skills、Plugins 与 MCP 管理面；
 - 无消费者的测试、fixture、配置、依赖、类型、路由和资源文件。
 
 删除的目的不是减少文件数，而是消灭第二套真相、第二条执行路径和无法验收的维护面。
@@ -473,7 +475,12 @@ ingest → analyze evidence → compile brief → plan scenes
 
 - 结果：设置只展示用户能理解和能行动的项目、权限、通知、额度、存储、更新和隐私状态。
 - 做法：服务端汇总 `configured/available/running/degraded` capability snapshot；高级技术信息只进诊断包。
-- 验收：不提供 provider/model/key/MCP/Python 管理面；不可用原因与修复入口准确。
+- 界面原则：学习 Codex App 的 Agent 产品语言，默认讲“能做什么、现在是否可用、需要用户做什么”；Skills、Plugins、MCP 作为通用 Agent 概念直接保留，但不继续向用户展开它们背后的供应商、模型、凭据、协议和调度实现。
+- 验收：不提供 provider/model/key/Python 或内部运行时管理面；Skills、Plugins 与 MCP 作为 Agent 扩展保留在唯一设置面并受当前任务权限约束；不可用原因与修复入口准确。
+- 当前落点：`cdd4dd9f…` 建立只读的 `ProductCapabilitySnapshot` 合同和 `/api/product/capabilities` 路由。服务端从已认证 Gateway 健康/用量、远程数据出境同意、安装包 FFmpeg/ffprobe、已安排任务真实运行和 `ChromeSessionBridge` 实时状态汇总任务助手、图片理解/创作、语音、视频、定时任务和招聘浏览器；任一依赖读取失败都以用户可理解的原因失败关闭，不输出供应商、模型、密钥、URL、队列或并发值。
+- 设置产品面：左侧导航收口为个人、Agent、扩展和任务环境四组；能力页每 15 秒刷新状态、当日剩余比例与重置时间，隐私、更新、招聘浏览器、重启和重试均到真实处理入口。Skills 通过当前 ProductTask 工作目录的权威发现链展示，Plugins 和 MCP 沿用唯一管理面；常规设置不再展示 provider 网络、代理、WebFetch 预检和其他内部运行时开关。
+- 额度与生产链路：Gateway 只在有效安装身份下返回当日文本、视觉和语音额度，同时按 principal 与 installation 两级上限取更严格剩余值；匿名和无效 bearer 仍只看到最小组件清单。2026-07-26 已在一致性备份后把当前 qfgw 运行闭包部署到大陆生产机；仓库与现网 `app.ts`/`usageBudget.ts` SHA-256 一致，`usage.db` 完整性和新的按日/用户摘要索引通过，qfgw 与公网 HTTPS 健康。
+- 验收证据：服务端全量 164 个文件共 1370 项，1369 项通过、1 项显式 live skip；Gateway 全量 30 个文件 243 项全过；桌面全量 146 个文件 932 项通过、2 项显式 live skip，类型检查和生产构建通过。`check:product-contracts` 仍只停在模块 23 已登记的 `autodream-teammem -> backgroundHousekeeping.ts` 精确 consumer 缺口。当前证据不代替模块 24 的双平台安装/升级，也不代替模块 25 从真实安装包打开设置并执行每个修复入口的用户旅程。
 
 #### 模块 22：版本化迁移
 
