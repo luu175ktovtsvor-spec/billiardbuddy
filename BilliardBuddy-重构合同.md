@@ -1,16 +1,15 @@
-# BilliardBuddy 产品重构与清理施工合同
+# BilliardBuddy 产品重构合同
 
-> 文档日期：2026-07-24
->
-> 施工前比较基线：`2a6e79846a49f45a24080a9b50e93a7c66c12e61`（开始本轮重构前最后一次推送到远端的状态）
->
-> 当前施工基础：本地 `main`；不得回退或重置到比较基线
->
-> 目标：Windows x64 与 macOS arm64 的单一 Electron 桌面产品
+> 目标：Windows x64 与 macOS arm64 的单一 Electron 桌面产品。
 
-`README.md` 只负责项目介绍、目录入口和基础运行方式，不承担重构裁决。本文是本轮开发的唯一施工合同，重点定义要提供的功能、希望达到的用户结果、必须守住的系统边界和完成标准；它不规定使用什么开发工具、如何拆窗口、如何分工或如何管理临时分支。
+## 文档职责
 
-本文各模块中的“结果”和“验收”是必须兑现的合同，“做法”只是主要方向。除明确写出的硬边界、唯一真相源和外部兼容合同外，施工者可以根据当前代码选择更简单可靠的实现，不必照搬旧类、旧接口、旧目录或旧流程。
+- `BilliardBuddy.md`：BilliardBuddy 原生的项目指令文件，给用户放进自己的项目工作区，效果等同 Claude Code 的 `CLAUDE.md`。Harness 从根目录到当前目录收集它，冻结为本次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
+- `AGENTS.md`：Codex 标准项目指令文件；BilliardBuddy 也会加载它。BilliardBuddy 同时兼容 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md` 和 `CLAUDE.local.md`，因此已有 Codex 或 Claude Code 项目无需迁移。具体加载顺序和冲突规则以 README 的“项目指令兼容”为准。
+- 本文：BilliardBuddy 产品本身的重构合同，定义产品定位、架构边界、研究方法、实施顺序和完成标准；它不是要注入每个用户项目的 Agent 提示词。
+- `README.md`：项目介绍、运行入口和用户如何配置项目指令。
+
+本文是本轮开发的唯一产品裁决依据。它规定要提供的用户结果、必须守住的系统边界、可验证的研究方法和完成标准；不冻结旧类、旧接口、旧目录或旧流程。现有代码只有在符合本文合同且有验证证据时才保留，其他实现可以以更小、更可靠的方式迁移、重构或删除。
 
 ---
 
@@ -103,6 +102,28 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 | 聊天 Harness | Codex `Turn` loop 与 App Server 的 `Thread → Turn → Item` 事件协议；Pi 的 `agentLoop`；cc-haha 的 Query loop；Claude Code 公开仓库及 Claude Agent SDK 的公开 Session/Tool 合同。完整 Claude Code 与 Codex App 前端私有实现一律不臆测。 | 连续模型—工具循环、流式事件、steer、compact、resume、权限和审批必须是可恢复的 Harness 合同；GUI 只消费事件投影。 | `query`/agent-worker、ProductTask/TaskRun、Tool/MCP/Skill 发现、`visionBridge`、桌面 Thread/Composer/`/`/右侧检查器及其测试。 |
 | 生图工作台 | InvokeAI 已读 `session_queue`、工作流调用和前端 queue 状态事件源码；Firefly Boards 的画布/参考图/候选交互资料。 | 图像创作是项目、版本、持久 Job 与候选资产的工作流，不是聊天子循环；前端状态来自权威 Job/Event，不靠轮询猜测。 | `MediaProject`/`MediaOperation`/`MediaJob`、ImageWorkbench、图片 provider adapter、版本/Asset 合同、取消与迟到回执测试。 |
 | 视频工作台 | OpenShot 已读项目数据更新、时间线状态机与独立预览线程源码；OpenCut 的源码仅作为仍在重构中的布局/分层观察，不能当成熟执行内核；再以 Runway、Premiere、Descript 的公开产品资料核对素材、检索、时间线与审阅体验。 | 视频编辑需要独立项目真相、有限状态机、非阻塞预览与可重放导出；VLM 只提供证据/建议，不能持有时间线或代替渲染。 | `videoAnalysis`、VideoStudio、素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job、预览/导出/恢复及其真实素材测试。 |
+
+#### 3.0.1 源码阅读、混淆推理与落地方法
+
+“读源码”不是搜索几个关键词，也不是把别人的目录结构搬过来。每项结论必须先写成一条证据链：**外部产物/源码 → 可观察状态与转换 → 用户行为 → BilliardBuddy 的权威状态与调用链 → 可测试的改动**。没有这条链，就不能开始重构。
+
+| 证据等级 | 可以据此决定什么 | 不能据此声称什么 |
+|---|---|---|
+| 直接证据 | 已读的固定 commit 源码、官方协议、未改写的 bundle、实际事件名/参数/宿主调用 | 未读部分的内部算法或私有服务 |
+| 交叉推理 | 两个以上独立产物一致，例如页面组件、中文文案、动作注册和 host bridge 都指向同一状态转换 | 逐像素设计稿、隐藏 feature flag 的最终产品语义 |
+| 假设 | 仅用于提出待验证问题和实验 | 实施依据、产品承诺或完成声明 |
+
+`codex-frontend-reference/` 的读取顺序固定为：先读 `README.md` 的提取版本、完整性与 source-map 缺失说明；再从不可改写的 `raw/webview/` 确认 chunk/import/字符串；随后在 `reverse-readable/` 追踪组件边界、动作、事件、中文文案和参数；最后用 `host-bridge/build/` 验证前端如何调用 Electron 宿主。变量名即使混淆，也必须通过“入口 → 状态 → 动作 → UI 反馈 → host/API”还原行为；至少两条独立证据一致才可列为交叉推理。该目录是安装包的编译产物，不是 OpenAI 原始前端源码；没有 source map 或私有服务源码时，必须保留未知项，不能补写猜测。
+
+| 对象 | 必读源码/产物 | 推理结果如何映射到本项目 |
+|---|---|---|
+| Codex | 公共 `Turn` loop、App Server 协议；本地 `codex-frontend-reference` 的 thread shell、Composer、queued message、side panel、artifact preview、projects/worktrees、settings chunks | 先抽取 Thread/Turn/Item、队列、审阅、右侧工作面等用户结果；再映射到 `ProductTask`、`TaskRun`、Item/Event、桌面侧栏/Composer/右栏。不得复制 bundle 或声称拥有私有源码。 |
+| Claude Code | 先盘点公开仓库实际内容；核心执行器未公开时只读公开 SDK/Session/Tool/MCP/Hook 合同与可运行集成 | 把“未公开”作为边界，学习可验证的 Session、结构化 tool result、权限和恢复合同；绝不从 CLI 外观倒推私有 Harness。 |
+| Pi | `packages/agent/src/agent-loop.ts` 以及 Harness、Session、Hook、Skill、steer/follow-up/compact 相邻实现 | 抽取内循环、外循环和事件边界，映射到现有 Query/Core、agent-worker、TaskRun 和持久事件；不复制语言、目录或 Pi 产品功能。 |
+| 生图工作台 | InvokeAI 的 session queue、workflow invocation、前端 queue event、Canvas/Workflow 源码；Firefly 仅作为公开交互资料 | 抽取“项目/画布/候选/版本/持久 Job/状态事件”合同，映射到 `MediaProject`、`MediaOperation`、`MediaJob`、`Asset/Version` 和 ImageWorkbench；MiMo 只负责可校验的理解/计划。 |
+| 视频工作台 | OpenShot 的 ProjectDataStore、时间线状态机、preview worker；OpenCut 仅限其已实现部分；Runway/Premiere/Descript 仅作产品体验资料 | 抽取“项目真相、有限状态交互、异步预览、时间线版本、确定性导出”，映射到素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job 和 VideoStudio；不把 VLM 文本当成已渲染视频。 |
+
+每一次落地必须交付一张“参考—改动”表：参考文件/commit、直接证据或推理等级、要解决的用户问题、BilliardBuddy 当前代码路径、唯一状态源、最小改动、失败/恢复行为、测试与真实旅程。该表未完成时，只能继续调研，不能修改生产执行链。
 
 论文和技术报告用于验证模型能力边界、抽帧/时序理解的假设和评测条件，不能直接替代产品架构。当前 MiMo-VL 技术报告支持将 VLM 用于视觉理解与多模态推理；视频时序研究也支持“采样策略必须受任务约束”这一原则。因此，在真实素材和上游 API 合同验证前，聊天与工作台都保持本机有限抽帧、音轨分离、可追溯来源与 schema 校验，不假定可安全直传任意整段视频。
 
@@ -296,6 +317,8 @@ Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事
 | Relay 服务器 | 图片生成 provider 的持久提交、异步状态、结果 blob、幂等查询与 ack | 运行 Agent Harness、FFmpeg、视频项目、聊天路由 |
 
 网关至少分成五个明确能力和容量泳道：`TextReasoning`（DeepSeek 聊天）、`VisualEvidence`（聊天看图 bridge）、`MediaReasoning`（MiMo V2.5 工作台）、`SpeechTranscription`（Fun-ASR）和 `ImageGeneration`（转 Relay）。其中前两者虽共用 MiMo 账号，也必须分端点、并发池、operation ID、超时和用量：聊天看图不能被长视频规划挤占，工作台也不能借聊天端点绕过自己的状态合同。部署调整按这个边界进行；先完成本地契约与假上游回归，再做两台服务器的配置、迁移、健康检查和真实素材小流量验证。
+
+本轮已获得对两台服务器、Gateway、Relay、环境配置、容量泳道和部署闭包的调整授权：只要为实现本文合同所必需，可自主实施服务器侧变更，无需把“是否能改服务器”当作额外阻塞条件。该授权不取消工程约束：变更前备份可恢复状态，先以本地契约和假上游验证，再最小化部署；部署后记录版本/配置摘要，执行健康检查和相关真实小流量旅程。不得借此扩大用户数据、公开接口、凭据读取范围或删除不可恢复数据。
 
 ---
 

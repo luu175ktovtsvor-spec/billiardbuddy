@@ -6,6 +6,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Working Principles
 
+- `BilliardBuddy-重构合同.md` 是产品重构的唯一裁决；`BilliardBuddy.md` 是产品用户的原生项目指令文件，`AGENTS.md` 保持 Codex 兼容，二者由产品 Harness 一并加载。
 - Think from first principles. Start from the user's real intent, the expected product result, current code facts, and verification results.
 - If the goal or boundary is unclear, clarify it with the user before implementation.
 - Treat the user's current task and designated construction document as the source of truth for product direction. Treat live code and tests as the source of truth for the current implementation.
@@ -14,6 +15,11 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 - Preserve unrelated work already present in the worktree.
 - Complete the task in the current agent by default. Do not start subagents, parallel agents, workers, or further delegation unless the user explicitly authorizes it.
 - Do not add co-author attribution to commits. Do not identify Agent, Codex, or AI as the author in commit messages, pull request descriptions, or explanatory text.
+
+## Architecture Refactors
+
+- 改动聊天 Harness、图片/视频工作台、模型请求、网关或前端前，先执行重构合同第 3.0 节的“参考—改动”证据链；本地 Codex 前端 bundle 只能按其 README 和证据等级推理，不能冒充原始或私有源码。
+- 本轮允许按重构合同调整 Gateway、Relay 和两台服务器；仍须备份、先本地验证、最小化部署、健康检查并记录版本与配置摘要。
 
 ## General Coding Rules
 
