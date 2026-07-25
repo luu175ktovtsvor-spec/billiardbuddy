@@ -34,16 +34,17 @@ describe('boss recruiting skill', () => {
       userInvocable: true,
     }))
     expect(descriptors[0]!.content).toContain('岗位名称与真实工作保持一致')
-    expect(descriptors[0]!.content).toContain('按批次确认并读回结果')
+    expect(descriptors[0]!.content).toContain('准备动作、人工确认并读回结果')
+    expect(descriptors[0]!.allowedTools).toContain('RecruitingBrowser')
   })
 
-  it('does not promise a BOSS connection before a real execution channel exists', () => {
+  it('prefers the formal BOSS tool without promising an unavailable channel', () => {
     registerBossRecruitingSkill()
 
     const content = getBundledSkillDescriptors()[0]!.content
-    expect(content).toContain('让 Agent 自己选择执行方式')
-    expect(content).toContain('Skill 不绑定具体工具')
-    expect(content).toContain('它本身不提供 BOSS 直聘或其他招聘平台的连接和页面适配')
+    expect(content).toContain('使用当前正式执行通道')
+    expect(content).toContain('BOSS 页面优先使用 ProductTask 正式提供的 RecruitingBrowser')
+    expect(content).toContain('不能确认或执行')
     expect(content).toContain('不要把它说成已发布、已联系或已改变状态')
   })
 
@@ -99,7 +100,7 @@ describe('boss recruiting skill', () => {
       expect(firstBlock.text).toStartWith(`Base directory for this skill: ${skillDir}`)
       expect(firstBlock.text).toContain('不把准备工作说成已完成的招聘动作')
       expect(await readFile(join(skillDir, 'references', 'execution-pattern.md'), 'utf-8')).toContain(
-        '也不提供 BOSS 直聘或其他招聘平台的专用连接和页面适配',
+        '它只读取脱敏岗位证据和准备待确认动作',
       )
     } finally {
       await rm(skillDir, { recursive: true, force: true })
