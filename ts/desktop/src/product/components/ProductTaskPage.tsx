@@ -51,6 +51,7 @@ import {
   type ProductTaskPreviewSelectionIntent,
 } from './ProductTaskBrowserPreviewDock'
 import { ProductTaskReviewDock } from './ProductTaskReviewDock'
+import { ProductTaskTerminalDock } from './ProductTaskTerminalDock'
 import {
   ProductTaskRunPanel,
   productTaskActivityDisplayLabel,
@@ -510,7 +511,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     [index.tasks, taskId],
   )
   const workspaceAvailable = task?.workspace_capability?.available === true
-  const previewAvailable = workspaceAvailable && getDesktopHost().capabilities.previewWebview
+  const desktopCapabilities = getDesktopHost().capabilities
+  const previewAvailable = workspaceAvailable && desktopCapabilities.previewWebview
+  const terminalAvailable = workspaceAvailable && desktopCapabilities.terminal
   const normalizedWorkDir = workspaceAvailable ? task?.workDir.trim() ?? '' : ''
   const isSlashInput = draft.startsWith('/')
   const commandQuery = slashQuery(draft)
@@ -965,7 +968,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         <button
           type="button"
           onClick={toggleTerminalDock}
-          disabled
+          disabled={!terminalAvailable}
           aria-pressed={isTerminalOpen}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -1186,6 +1189,22 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           </aside>
         ) : null}
       </div>
+      {terminalAvailable && isTerminalOpen ? (
+        <section
+          data-testid="product-task-terminal-dock"
+          data-active="true"
+          className="flex h-[min(24rem,42vh)] min-h-48 shrink-0 flex-col overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-surface)]"
+        >
+          <ProductTaskTerminalDock
+            taskId={task.id}
+            workDir={normalizedWorkDir}
+            workspaceAvailable={workspaceAvailable}
+            active
+            onClose={closeTerminalDock}
+            testId={`product-task-terminal-${task.id}`}
+          />
+        </section>
+      ) : null}
     </main>
   )
 }

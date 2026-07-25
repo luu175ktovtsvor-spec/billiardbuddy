@@ -60,10 +60,11 @@ const mocks = vi.hoisted(() => ({
   listSkills: vi.fn(),
   listAgents: vi.fn(),
   previewWebview: false,
+  terminal: false,
 }))
 
 vi.mock('../../lib/desktopHost', () => ({
-  getDesktopHost: () => ({ capabilities: { previewWebview: mocks.previewWebview } }),
+  getDesktopHost: () => ({ capabilities: { previewWebview: mocks.previewWebview, terminal: mocks.terminal } }),
 }))
 
 vi.mock('../stores/productTaskStore', () => ({
@@ -263,6 +264,7 @@ beforeEach(() => {
   mocks.isLoading = false
   mocks.error = null
   mocks.previewWebview = false
+  mocks.terminal = false
   mocks.getMedia.mockResolvedValue({ taskId: 'task-1', projects: [] })
   mocks.runtime = {
     connectionState: 'connected',
@@ -769,15 +771,19 @@ describe('ProductTaskPage', () => {
     expect(mocks.refreshThread).toHaveBeenCalledWith('task-1')
   })
 
-  it('keeps the available Review panel usable while terminal remains disabled', () => {
+  it('opens and closes a workspace-bound native terminal independently from Review', () => {
+    mocks.terminal = true
     render(<ProductTaskPage taskId="task-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: '审阅' }))
     expect(screen.getByTestId('product-task-review-dock').textContent).toContain('review:task-1')
 
     const terminal = screen.getByRole('button', { name: '终端' })
-    expect(terminal).toBeDisabled()
+    expect(terminal).toBeEnabled()
     fireEvent.click(terminal)
+    expect(screen.getByTestId('product-task-terminal-dock')).toHaveTextContent('/workspace/billiard')
+    expect(screen.getByTestId('product-task-review-dock')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
     expect(screen.getByTestId('product-task-review-dock')).toBeTruthy()
   })

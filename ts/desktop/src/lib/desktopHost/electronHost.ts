@@ -162,9 +162,9 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     },
     terminal: {
       spawn: options => invoke(ELECTRON_IPC_CHANNELS.terminalSpawn, options),
-      write: (sessionId, data) => invoke(ELECTRON_IPC_CHANNELS.terminalWrite, { sessionId, data }),
-      resize: (sessionId, cols, rows) => invoke(ELECTRON_IPC_CHANNELS.terminalResize, { sessionId, cols, rows }),
-      kill: sessionId => invoke(ELECTRON_IPC_CHANNELS.terminalKill, { sessionId }),
+      write: (taskId, sessionId, data) => invoke(ELECTRON_IPC_CHANNELS.terminalWrite, { taskId, sessionId, data }),
+      resize: (taskId, sessionId, cols, rows) => invoke(ELECTRON_IPC_CHANNELS.terminalResize, { taskId, sessionId, cols, rows }),
+      kill: (taskId, sessionId) => invoke(ELECTRON_IPC_CHANNELS.terminalKill, { taskId, sessionId }),
       onOutput: handler => subscribe(ELECTRON_EVENT_CHANNELS.terminalOutput, handler),
       onExit: handler => subscribe(ELECTRON_EVENT_CHANNELS.terminalExit, handler),
       getBashPath: () => invoke(ELECTRON_IPC_CHANNELS.terminalGetBashPath),

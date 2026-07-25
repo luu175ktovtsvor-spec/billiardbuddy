@@ -133,8 +133,13 @@ async function loadRendererEntry(
 }
 
 function registerTrustedProductWindow(window: BrowserWindow, entry: string) {
+  const terminalOwnerId = window.webContents.id
   trustedProductWindowEntries.set(window, entry)
+  window.webContents.once('render-process-gone', () => {
+    terminalService?.killOwner(terminalOwnerId)
+  })
   window.once('closed', () => {
+    terminalService?.killOwner(terminalOwnerId)
     trustedProductWindowEntries.delete(window)
   })
 }
@@ -355,6 +360,15 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
   return window
 }
 
+function assertTerminalTaskAccess(event: Electron.IpcMainInvokeEvent, taskId: string): void {
+  const window = currentWindow(event)
+  for (const [ownedTaskId, taskWindow] of productTaskWindows) {
+    if (taskWindow === window && ownedTaskId !== taskId) {
+      throw new Error('terminal task does not match the owning task window')
+    }
+  }
+}
+
 function isTrustedMainWindowIpcSender(event: Electron.IpcMainInvokeEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
   const entry = window ? trustedProductWindowEntries.get(window) : undefined
@@ -515,19 +529,25 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
   registerHandler(ELECTRON_IPC_CHANNELS.windowOpenProductTask, (_event, payload) =>
     openProductTaskWindow(String(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) =>
-    getTerminalService().spawn((payload ?? {}) as TerminalSpawnInput, event.sender))
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (_event, payload) => {
-    const { sessionId, data } = payload as { sessionId: number, data: string }
-    return getTerminalService().write(sessionId, data)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) => {
+    const input = payload as TerminalSpawnInput
+    assertTerminalTaskAccess(event, input.taskId)
+    return getTerminalService().spawn(input, event.sender)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, (_event, payload) => {
-    const { sessionId, cols, rows } = payload as { sessionId: number, cols: number, rows: number }
-    return getTerminalService().resize(sessionId, cols, rows)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (event, payload) => {
+    const { taskId, sessionId, data } = payload as { taskId: string, sessionId: number, data: string }
+    assertTerminalTaskAccess(event, taskId)
+    return getTerminalService().write(event.sender.id, taskId, sessionId, data)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, (_event, payload) => {
-    const { sessionId } = payload as { sessionId: number }
-    return getTerminalService().kill(sessionId)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, (event, payload) => {
+    const { taskId, sessionId, cols, rows } = payload as { taskId: string, sessionId: number, cols: number, rows: number }
+    assertTerminalTaskAccess(event, taskId)
+    return getTerminalService().resize(event.sender.id, taskId, sessionId, cols, rows)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, (event, payload) => {
+    const { taskId, sessionId } = payload as { taskId: string, sessionId: number }
+    assertTerminalTaskAccess(event, taskId)
+    return getTerminalService().kill(event.sender.id, taskId, sessionId)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, () => getTerminalService().getBashPath())
   registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, (_event, payload) => getTerminalService().setBashPath(payload as string | null))

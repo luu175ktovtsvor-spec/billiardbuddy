@@ -85,7 +85,7 @@ export function attachTerminalRuntime(runtime: TerminalRuntime, host: HTMLElemen
   runtime.fit?.fit()
 }
 
-export function destroyTerminalRuntime(id: string) {
+export function destroyTerminalRuntime(id: string, taskId: string) {
   const runtime = runtimes.get(id)
   if (!runtime) return
   runtimes.delete(id)
@@ -93,7 +93,7 @@ export function destroyTerminalRuntime(id: string) {
   const sessionId = runtime.nativeSessionId
   runtime.nativeSessionId = null
   if (sessionId) {
-    void terminalApi.kill(sessionId).catch(() => {})
+    void terminalApi.kill(taskId, sessionId).catch(() => {})
   }
 
   runtime.dataDisposable?.dispose()

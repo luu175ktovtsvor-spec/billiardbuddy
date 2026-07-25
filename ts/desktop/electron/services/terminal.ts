@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -14,10 +14,10 @@ const NODE_PTY_MANIFEST_FILE = '.bb-node-pty-manifest.json'
 const MACOS_DOWNLOAD_XATTRS = ['com.apple.quarantine', 'com.apple.provenance']
 
 export type TerminalSpawnInput = {
+  taskId: string
   cols?: number
   rows?: number
   cwd?: string
-  shell?: string
 }
 
 export type TerminalSpawnResult = {
@@ -64,6 +64,7 @@ export type TerminalAppLike = {
 }
 
 export type TerminalWebContentsLike = {
+  id: number
   send(channel: string, payload: unknown): void
 }
 
@@ -77,6 +78,8 @@ export type ElectronTerminalServiceOptions = {
   fileExists?: (filePath: string) => boolean
   isFile?: (filePath: string) => boolean
   cwd?: () => string
+  ownerProcessId?: number
+  watchdogFactory?: (ownerProcessId: number, terminalProcessId: number) => TerminalWatchdog | null
 }
 
 type TerminalConfig = {
@@ -94,9 +97,99 @@ type DesktopTerminalConfig = {
 
 type TerminalSession = {
   pty: TerminalPtyProcess
+  ownerId: number
+  taskId: string
+  watchdog: TerminalWatchdog | null
 }
 
+export type TerminalWatchdog = {
+  kill(): unknown
+  unref(): void
+}
+
+export type TerminalWatchdogPlan = {
+  command: string
+  args: string[]
+  env: Record<string, string>
+  windowsHide?: boolean
+}
+
+const TERMINAL_PRIVATE_ENV_KEYS = [
+  'QF_GATEWAY_BOOTSTRAP_CREDENTIAL',
+  'QF_LICENSE_KEY',
+  'QF_GATEWAY_REFRESH_TOKEN',
+  'QF_GATEWAY_SESSION',
+  'QF_GATEWAY_SESSION_PROOF',
+  'QF_GATEWAY_TOKEN',
+  'BB_INSTALLATION_ID',
+  'BB_MEDIA_UI_CAPABILITY',
+  'BB_BROWSER_UI_CAPABILITY',
+  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
+  'CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR',
+] as const
+
 const preparedNodePtyDirs = new Set<string>()
+
+export function terminalWatchdogPlan(
+  ownerProcessId: number,
+  terminalProcessId: number,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): TerminalWatchdogPlan {
+  if (platform === 'win32') {
+    const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows'
+    const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    const system32 = path.win32.join(systemRoot, 'System32')
+    return {
+      command: powershell,
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        `Wait-Process -Id ${ownerProcessId} -ErrorAction SilentlyContinue; & "$env:SystemRoot\\System32\\taskkill.exe" /PID ${terminalProcessId} /T /F | Out-Null`,
+      ],
+      env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: system32 },
+      windowsHide: true,
+    }
+  }
+
+  const script = [
+    'while kill -0 "$1" 2>/dev/null; do sleep 1; done',
+    'kill -TERM "-$2" 2>/dev/null || kill -TERM "$2" 2>/dev/null || true',
+    'sleep 1',
+    'kill -KILL "-$2" 2>/dev/null || kill -KILL "$2" 2>/dev/null || true',
+  ].join('; ')
+  return {
+    command: '/bin/sh',
+    args: [
+      '-c',
+      script,
+      'billiardbuddy-terminal-watchdog',
+      String(ownerProcessId),
+      String(terminalProcessId),
+    ],
+    env: { PATH: '/usr/bin:/bin' },
+  }
+}
+
+export function spawnTerminalWatchdog(
+  ownerProcessId: number,
+  terminalProcessId: number,
+  platform: NodeJS.Platform = process.platform,
+): TerminalWatchdog | null {
+  const plan = terminalWatchdogPlan(ownerProcessId, terminalProcessId, platform)
+  const watchdog = spawnChild(plan.command, plan.args, {
+    detached: true,
+    stdio: 'ignore',
+    env: plan.env,
+    windowsHide: plan.windowsHide,
+  })
+  watchdog.unref()
+  return watchdog
+}
 
 export function terminalConfigPath(app: TerminalAppLike | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
   const portableDir = env.CLAUDE_CONFIG_DIR?.trim()
@@ -225,6 +318,7 @@ export function terminalEnvironment(
     if (typeof value === 'string') merged[key] = value
   }
   Object.assign(merged, loginShellEnvironment(shell, platform))
+  for (const key of TERMINAL_PRIVATE_ENV_KEYS) delete merged[key]
   return ensureUtf8Locale(merged, platform)
 }
 
@@ -481,6 +575,8 @@ export class ElectronTerminalService {
   private readonly fileExists: (filePath: string) => boolean
   private readonly isFile: (filePath: string) => boolean
   private readonly cwd: () => string
+  private readonly ownerProcessId: number
+  private readonly watchdogFactory: (ownerProcessId: number, terminalProcessId: number) => TerminalWatchdog | null
   private nextSessionId = 1
   private readonly sessions = new Map<number, TerminalSession>()
 
@@ -500,6 +596,9 @@ export class ElectronTerminalService {
       }
     })
     this.cwd = options.cwd ?? process.cwd
+    this.ownerProcessId = options.ownerProcessId ?? process.pid
+    this.watchdogFactory = options.watchdogFactory
+      ?? ((ownerProcessId, terminalProcessId) => spawnTerminalWatchdog(ownerProcessId, terminalProcessId, this.platform))
   }
 
   getBashPath(): string | null {
@@ -542,7 +641,10 @@ export class ElectronTerminalService {
       },
     })
 
-    this.sessions.set(sessionId, { pty })
+    const watchdog = typeof pty.pid === 'number' && pty.pid > 0
+      ? this.watchdogFactory(this.ownerProcessId, pty.pid)
+      : null
+    this.sessions.set(sessionId, { pty, ownerId: webContents.id, taskId: input.taskId, watchdog })
 
     pty.onData(data => {
       webContents.send(ELECTRON_EVENT_CHANNELS.terminalOutput, {
@@ -552,7 +654,11 @@ export class ElectronTerminalService {
     })
 
     pty.onExit(({ exitCode, signal }) => {
-      this.sessions.delete(sessionId)
+      const session = this.sessions.get(sessionId)
+      if (session?.pty === pty) {
+        this.sessions.delete(sessionId)
+        session.watchdog?.kill()
+      }
       webContents.send(ELECTRON_EVENT_CHANNELS.terminalExit, {
         session_id: sessionId,
         code: exitCode,
@@ -567,33 +673,51 @@ export class ElectronTerminalService {
     }
   }
 
-  write(sessionId: number, data: string): void {
-    this.getSession(sessionId).pty.write(data)
+  write(ownerId: number, taskId: string, sessionId: number, data: string): void {
+    this.getOwnedSession(ownerId, taskId, sessionId).pty.write(data)
   }
 
-  resize(sessionId: number, cols: number, rows: number): void {
-    this.getSession(sessionId).pty.resize(
+  resize(ownerId: number, taskId: string, sessionId: number, cols: number, rows: number): void {
+    this.getOwnedSession(ownerId, taskId, sessionId).pty.resize(
       Math.max(MIN_TERMINAL_COLS, Math.floor(cols)),
       Math.max(MIN_TERMINAL_ROWS, Math.floor(rows)),
     )
   }
 
-  kill(sessionId: number): void {
+  kill(ownerId: number, taskId: string, sessionId: number): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
+    if (session.ownerId !== ownerId || session.taskId !== taskId) {
+      throw new Error('terminal session is not owned by this task')
+    }
     this.sessions.delete(sessionId)
+    session.watchdog?.kill()
     session.pty.kill()
   }
 
-  killAll(): void {
-    for (const sessionId of Array.from(this.sessions.keys())) {
-      this.kill(sessionId)
+  killOwner(ownerId: number): void {
+    for (const [sessionId, session] of this.sessions) {
+      if (session.ownerId !== ownerId) continue
+      this.sessions.delete(sessionId)
+      session.watchdog?.kill()
+      session.pty.kill()
     }
   }
 
-  private getSession(sessionId: number): TerminalSession {
+  killAll(): void {
+    for (const [sessionId, session] of this.sessions) {
+      this.sessions.delete(sessionId)
+      session.watchdog?.kill()
+      session.pty.kill()
+    }
+  }
+
+  private getOwnedSession(ownerId: number, taskId: string, sessionId: number): TerminalSession {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('terminal session is not running')
+    if (session.ownerId !== ownerId || session.taskId !== taskId) {
+      throw new Error('terminal session is not owned by this task')
+    }
     return session
   }
 }

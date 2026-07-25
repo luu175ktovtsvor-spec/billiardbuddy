@@ -92,8 +92,8 @@ export type DesktopUpdateCheckOptions = {
 }
 
 export type TerminalSpawnOptions = {
+  taskId: string
   cwd?: string
-  shell?: string
   cols: number
   rows: number
 }
@@ -249,9 +249,9 @@ export type DesktopHost = {
   }
   terminal: {
     spawn(options: TerminalSpawnOptions): Promise<TerminalSession>
-    write(sessionId: number, data: string): Promise<void>
-    resize(sessionId: number, cols: number, rows: number): Promise<void>
-    kill(sessionId: number): Promise<void>
+    write(taskId: string, sessionId: number, data: string): Promise<void>
+    resize(taskId: string, sessionId: number, cols: number, rows: number): Promise<void>
+    kill(taskId: string, sessionId: number): Promise<void>
     onOutput(handler: (event: TerminalOutputEvent) => void): Promise<DesktopHostUnlisten>
     onExit(handler: (event: TerminalExitEvent) => void): Promise<DesktopHostUnlisten>
     getBashPath(): Promise<string | null>
