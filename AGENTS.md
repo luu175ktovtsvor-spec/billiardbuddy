@@ -6,7 +6,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Working Principles
 
-- `BilliardBuddy-重构合同.md` 是产品重构的唯一裁决；`BilliardBuddy.md` 是产品用户的原生项目指令文件，`AGENTS.md` 保持 Codex 兼容，二者由产品 Harness 一并加载。
+- `BilliardBuddy-重构合同.md` 是产品重构的唯一裁决；`AGENTS.md` 与 `BilliardBuddy.md` 是 BilliardBuddy 面向用户项目的同一类指令入口，由产品 Harness 合并加载；`AGENTS.md` 同时保持 Codex 兼容。
 - Think from first principles. Start from the user's real intent, the expected product result, current code facts, and verification results.
 - If the goal or boundary is unclear, clarify it with the user before implementation.
 - Treat the user's current task and designated construction document as the source of truth for product direction. Treat live code and tests as the source of truth for the current implementation.
