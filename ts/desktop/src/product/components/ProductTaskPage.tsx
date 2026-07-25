@@ -58,6 +58,7 @@ import {
 } from './ProductTaskRunPanel'
 import { SideTaskPanel } from './SideTaskPanel'
 import { VoiceInputControl } from './VoiceInputControl'
+import { RecruitingActionApproval } from './RecruitingActionApproval'
 import {
   MAX_PRODUCT_TASK_ATTACHMENT_BYTES,
   MAX_PRODUCT_TASK_ATTACHMENT_COUNT,
@@ -1034,6 +1035,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 onRespondToComputerUse={(allowed) => { respondToComputerUseApproval(taskId, allowed) }}
               />
             ) : null}
+
+            <RecruitingActionApproval taskId={taskId} />
 
             {runtime?.recoveryRequired ? (
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">

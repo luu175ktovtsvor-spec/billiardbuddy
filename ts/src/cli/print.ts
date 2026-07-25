@@ -446,6 +446,7 @@ export type ServerPrivateNativeCorePort = {
 
 export async function createServerPrivateNativeCorePort(input: {
   run_id: string
+  task_id?: string
   session_id: string
   work_dir: string
   permission_envelope: PermissionExecutionEnvelope
@@ -472,7 +473,7 @@ export async function createServerPrivateNativeCorePort(input: {
   let mcpConnected = false
   const connectMcpHost = async () => {
     if (!input.mcp_host || mcpConnected) return
-    const mcp = await input.mcp_host.connect(input.work_dir)
+    const mcp = await input.mcp_host.connect(input.work_dir, input.task_id ? { taskId: input.task_id } : undefined)
     state = { ...state, mcp: { ...state.mcp, ...mcp } }
     mcpConnected = true
   }

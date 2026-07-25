@@ -26,6 +26,10 @@ import { ProductTaskMediaService } from './product/taskMediaService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkbenches.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
+import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
+import { ProductResourceScheduler } from './product/resourceScheduler.js'
+import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -106,6 +110,12 @@ export function startServer(port = PORT, host = HOST) {
   const mediaUiCapability = consumeMediaUiCapability()
   configureMediaWorkbenchDiscovery(Boolean(mediaUiCapability))
   const productTaskService = resetProductTaskServiceForServer()
+  const browserRoot = path.join(getClaudeConfigHomeDir(), 'billiardbuddy', 'browser')
+  const chromeSessionBridge = configureChromeSessionBridge({
+    statePath: path.join(browserRoot, 'actions.json'),
+    descriptorPath: path.join(browserRoot, 'native-bridge.json'),
+    scheduler: new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() }),
+  })
   let productTaskQueueRecovery: Promise<void> | undefined
   // All media-facing routes share one process-local service so video exports from
   // task views and the media workbench use the same FFmpeg admission queue.
@@ -343,6 +353,7 @@ export function startServer(port = PORT, host = HOST) {
     })
     serverPort = server.port
     ProviderService.setServerPort(serverPort)
+    void chromeSessionBridge.activate(`http://${localConnectHost}:${serverPort}`).catch(() => undefined)
   } catch (error) {
     const message = error instanceof Error && error.message
       ? error.message
@@ -379,6 +390,12 @@ export async function stopServerRuntimeForShutdown(
 ): Promise<void> {
   teamWatcher.stop()
   cronScheduler.stop()
+  try {
+    await getChromeSessionBridge().deactivate()
+  } catch {
+    // Tests and failed early startups may shut down before the browser bridge
+    // is configured. There is no descriptor or live session to clean up then.
+  }
 
   const active = conversationService.getActiveSessions()
   if (active.length > 0) {

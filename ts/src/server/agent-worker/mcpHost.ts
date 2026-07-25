@@ -10,6 +10,8 @@ import type {
   ServerResource,
 } from '../../services/mcp/types.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
+import { createBrowserRecruitingTool } from '../../tools/BrowserRecruitingTool/BrowserRecruitingTool.js'
+import { getChromeSessionBridge } from '../services/chromeSessionBridge.js'
 
 export type ProductTaskMcpRuntime = {
   clients: MCPServerConnection[]
@@ -19,7 +21,7 @@ export type ProductTaskMcpRuntime = {
 }
 
 export type ProductTaskMcpHost = {
-  connect(workDir: string): Promise<ProductTaskMcpRuntime>
+  connect(workDir: string, context?: { taskId: string }): Promise<ProductTaskMcpRuntime>
 }
 
 type ProductTaskMcpHostDependencies = {
@@ -44,7 +46,7 @@ export class StandardProductTaskMcpHost implements ProductTaskMcpHost {
     connect: getMcpToolsCommandsAndResources,
   }) {}
 
-  connect(workDir: string): Promise<ProductTaskMcpRuntime> {
+  connect(workDir: string, context?: { taskId: string }): Promise<ProductTaskMcpRuntime> {
     return runWithCwdOverride(workDir, async () => {
       const { servers } = await this.dependencies.loadConfigs()
       const clients: MCPServerConnection[] = []
@@ -58,6 +60,10 @@ export class StandardProductTaskMcpHost implements ProductTaskMcpHost {
         commands.push(...result.commands)
         if (result.resources) resources[result.client.name] = result.resources
       }, servers)
+
+      if (context?.taskId) {
+        tools.push(createBrowserRecruitingTool(context.taskId, getChromeSessionBridge()))
+      }
 
       return {
         clients: uniqueByName(clients),

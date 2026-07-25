@@ -34,6 +34,9 @@
         "package.json"
       ],
       "extra_resources": [
+        "browser-extension/manifest.json",
+        "browser-extension/service-worker.js",
+        "browser-extension/content-script.js",
         "build/product-config.json",
         "build/product-secrets.json"
       ],

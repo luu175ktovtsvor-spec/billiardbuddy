@@ -50,6 +50,7 @@ import {
 import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
+import { ElectronBrowserCapability } from './services/browserCapability'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import {
@@ -70,6 +71,7 @@ import {
 app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
+const browserUiCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
@@ -78,6 +80,7 @@ let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
+let browserCapability: ElectronBrowserCapability | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -268,8 +271,22 @@ function getServerRuntime() {
     // license, refresh proof and installation identity remain in Main.
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     mediaUiCapability,
+    browserUiCapability,
   })
   return serverRuntime
+}
+
+function getBrowserCapability() {
+  browserCapability ??= new ElectronBrowserCapability({
+    desktopRoot: unpackedRoot(),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    userDataPath: app.getPath('userData'),
+    configDir: process.env.CLAUDE_CONFIG_DIR || app.getPath('userData'),
+    getServerUrl: () => getServerRuntime().getServerUrl(),
+    uiCapability: browserUiCapability,
+  })
+  return browserCapability
 }
 
 function getMediaActions() {
@@ -451,6 +468,13 @@ function registerIpcHandlers() {
       base_revision: input.baseRevision,
       user_goal: input.userGoal,
     })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.browserStatus, () => getBrowserCapability().status())
+  registerHandler(ELECTRON_IPC_CHANNELS.browserInstall, () => getBrowserCapability().install())
+  registerHandler(ELECTRON_IPC_CHANNELS.browserListActions, (_event, payload) => getBrowserCapability().listActions(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.browserResolveAction, (_event, payload) => {
+    const input = payload as { taskId: string; actionId: string; expectedRevision: number; approved: boolean }
+    return getBrowserCapability().resolveAction(input.taskId, input.actionId, input.expectedRevision, input.approved)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
     getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))

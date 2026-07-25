@@ -14,6 +14,7 @@ describe('desktop host contract', () => {
       mediaActions: false,
       notifications: false,
       previewWebview: false,
+      recruitingBrowser: false,
       shell: false,
       taskWindows: false,
       terminal: false,

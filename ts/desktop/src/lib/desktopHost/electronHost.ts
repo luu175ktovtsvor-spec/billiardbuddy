@@ -68,6 +68,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       mediaActions: true,
       notifications: true,
       previewWebview: true,
+      recruitingBrowser: true,
       shell: true,
       terminal: true,
       taskWindows: true,
@@ -121,6 +122,15 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       ),
       renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
       analyzeVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, request),
+    },
+    recruitingBrowser: {
+      status: () => invoke(ELECTRON_IPC_CHANNELS.browserStatus),
+      install: () => invoke(ELECTRON_IPC_CHANNELS.browserInstall),
+      listActions: taskId => invoke(ELECTRON_IPC_CHANNELS.browserListActions, taskId),
+      resolveAction: (taskId, actionId, expectedRevision, approved) => invoke(
+        ELECTRON_IPC_CHANNELS.browserResolveAction,
+        { taskId, actionId, expectedRevision, approved },
+      ),
     },
     updates: {
       check: async (options) => {

@@ -327,7 +327,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.about.updatesDesc': '檢查 GitHub Releases，下載安裝包，並在安裝後自動重啟。',
 
   // Settings > Computer Use
-  'settings.tab.computerUse': '電腦操作',
+  'settings.tab.computerUse': '招募瀏覽器',
   'settings.computerUse.title': '電腦操作',
   'settings.computerUse.description': '允許助手截圖、點選、輸入並操作你的電腦。需要 Python 3，macOS 上還需要輔助功能許可權。',
   'settings.computerUse.enabledToggle': '啟用',
