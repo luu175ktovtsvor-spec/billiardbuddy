@@ -192,25 +192,26 @@ describe('Settings > General tab', () => {
     })
   })
 
-  it('shows WebFetch preflight toggle enabled by default', () => {
+  it('does not expose technical network or WebFetch controls', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    const toggle = screen.getByLabelText('Skip WebFetch domain preflight')
-    expect(toggle).toBeChecked()
+    expect(screen.queryByRole('heading', { name: 'Network' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Skip WebFetch domain preflight')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Proxy URL')).not.toBeInTheDocument()
   })
 
   it('keeps the selected settings tab when returning to Settings', () => {
     const { unmount } = render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
-    expect(screen.getByLabelText('Skip WebFetch domain preflight')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument()
 
     unmount()
     render(<Settings />)
 
-    expect(screen.getByLabelText('Skip WebFetch domain preflight')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument()
   })
 
   it('offers the light, dark, and follow-system appearance themes', () => {
@@ -245,12 +246,12 @@ describe('Settings > General tab', () => {
 
     const notificationsHeading = screen.getByRole('heading', { name: 'System Notifications' })
     const uiZoomHeading = screen.getByRole('heading', { name: 'UI Zoom' })
-    const networkHeading = screen.getByRole('heading', { name: 'Network' })
-    const webFetchHeading = screen.getByRole('heading', { name: 'WebFetch Preflight' })
+    const webSearchHeading = screen.getByRole('heading', { name: 'Online Research' })
+    const storageHeading = screen.getByRole('heading', { name: 'Data Storage Location' })
 
     expect((notificationsHeading.compareDocumentPosition(uiZoomHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect((uiZoomHeading.compareDocumentPosition(networkHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect((networkHeading.compareDocumentPosition(webFetchHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect((uiZoomHeading.compareDocumentPosition(webSearchHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
+    expect((webSearchHeading.compareDocumentPosition(storageHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
   })
 
   it('lets users choose Ctrl or Command Enter as the chat send shortcut', async () => {
@@ -278,87 +279,6 @@ describe('Settings > General tab', () => {
       expect(useSettingsStore.getState().setPreventSleepWhileRunning).toHaveBeenCalledWith(true)
     })
     expect(toggle).toBeChecked()
-  })
-
-  it('saves provider network timeout and manual proxy from General settings', async () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    expect(screen.getByRole('button', { name: /Direct connection/i })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: /System proxy/i })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /Manual proxy/i }))
-    const proxyInput = screen.getByLabelText('Proxy URL')
-    const saveButton = screen.getAllByRole('button', { name: 'Save' })[0]!
-
-    expect(screen.getByText('Enter a proxy URL.')).toBeInTheDocument()
-    expect(saveButton).toBeDisabled()
-
-    fireEvent.change(proxyInput, { target: { value: 'socks5://127.0.0.1:7890' } })
-    expect(screen.getByText('Enter an HTTP or HTTPS proxy URL.')).toBeInTheDocument()
-    expect(saveButton).toBeDisabled()
-
-    fireEvent.change(proxyInput, { target: { value: '  http://user:p%40ss@127.0.0.1:7890  ' } })
-    expect(screen.getByText('HTTP and HTTPS proxy URLs are supported. For authenticated proxies, use http://user:password@127.0.0.1:7890; the URL is saved with network settings.')).toBeInTheDocument()
-    const timeoutInput = screen.getByLabelText('AI request timeout')
-    expect(timeoutInput).toHaveAttribute('type', 'number')
-    expect(screen.queryByRole('slider', { name: 'AI request timeout' })).not.toBeInTheDocument()
-
-    fireEvent.change(timeoutInput, { target: { value: '180' } })
-
-    await act(async () => {
-      fireEvent.click(saveButton)
-    })
-
-    expect(useSettingsStore.getState().setNetwork).toHaveBeenCalledWith({
-      aiRequestTimeoutMs: 180_000,
-      proxy: {
-        mode: 'manual',
-        url: 'http://user:p%40ss@127.0.0.1:7890',
-      },
-    })
-    expect(useUIStore.getState().toasts[useUIStore.getState().toasts.length - 1]).toMatchObject({
-      type: 'success',
-      message: 'Network settings saved.',
-    })
-  })
-
-  it('does not show raw network save failures in General settings', async () => {
-    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
-    useSettingsStore.setState({
-      setNetwork: vi.fn().mockRejectedValue(new Error(rawError)),
-    })
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.change(screen.getByLabelText('AI request timeout'), { target: { value: '180' } })
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0]!)
-    })
-
-    expect(await screen.findByText('Could not save network settings. Check your connection and try again.')).toBeInTheDocument()
-    expect(screen.queryByText(rawError)).not.toBeInTheDocument()
-  })
-
-  it('validates typed provider network timeout and supports precise step controls', () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    const timeoutInput = screen.getByLabelText('AI request timeout')
-    const saveButton = screen.getAllByRole('button', { name: 'Save' })[0]!
-
-    fireEvent.change(timeoutInput, { target: { value: '2000' } })
-    expect(screen.getByText('Enter a whole number from 30 to 1800 seconds.')).toBeInTheDocument()
-    expect(saveButton).toBeDisabled()
-
-    fireEvent.change(timeoutInput, { target: { value: '90' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Increase by 30 seconds' }))
-    expect(timeoutInput).toHaveValue(120)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Decrease by 30 seconds' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Decrease by 30 seconds' }))
-    expect(timeoutInput).toHaveValue(60)
-    expect(saveButton).not.toBeDisabled()
   })
 
   it('keeps data storage at the bottom of General settings', () => {
@@ -597,21 +517,10 @@ describe('Settings > General tab', () => {
 
   it('does not expose retired runtime inspection navigation items', () => {
     render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
     expect(screen.queryByText('Token usage')).not.toBeInTheDocument()
     expect(screen.queryByText('Diagnostics')).not.toBeInTheDocument()
-  })
-
-  it('lets the user disable WebFetch preflight skipping', () => {
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-
-    const toggle = screen.getByLabelText('Skip WebFetch domain preflight')
-    fireEvent.click(toggle)
-
-    expect(useSettingsStore.getState().setSkipWebFetchPreflight).toHaveBeenCalledWith(false)
+    expect(screen.queryByText('Advanced')).not.toBeInTheDocument()
   })
 
   it('exposes the product deep-thinking switch without exposing provider internals', () => {
@@ -689,7 +598,7 @@ describe('Settings > General tab', () => {
     for (const label of [
       'Enable project long-term memory',
       'Enable system notifications',
-      'Skip WebFetch domain preflight',
+      'Enable online research',
     ]) {
       const toggle = screen.getByLabelText(label)
       const row = toggle.closest('label') as HTMLElement | null
@@ -805,14 +714,14 @@ describe('Settings > General tab', () => {
     expect(document.querySelector('input[type="password"]')).toBeNull()
   })
 
-  it('keeps extension tabs available alongside the terminal tab', () => {
+  it('keeps agent extension and task environment management in Settings', () => {
     render(<Settings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
 
-    expect(screen.queryByText('Install')).not.toBeInTheDocument()
-    expect(screen.getByText('Terminal')).toBeInTheDocument()
-    expect(screen.getByText('External connections')).toBeInTheDocument()
-    expect(screen.getByText('Plugins')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Terminal' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'MCP servers' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Plugins' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Recruiting browser' })).toBeInTheDocument()
     expect(screen.queryByText('Agents')).not.toBeInTheDocument()
   })
 

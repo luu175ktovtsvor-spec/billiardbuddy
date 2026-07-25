@@ -49,6 +49,35 @@ test('usage budget binds duplicate operations and finalizes exactly once', () =>
   expect(() => service.release('operation-1', first.receipt.fencing_token + 1)).toThrow('STALE_FENCING')
 })
 
+test('usage summary is scoped to the verified principal and installation and includes the UTC reset', () => {
+  const service = new SqliteUsageBudgetService(':memory:', policy(), () => Date.UTC(2026, 6, 24, 12))
+  const first = service.reserve(input('operation-1'))
+  service.settle('operation-1', first.receipt.fencing_token, first.receipt.reserved)
+
+  expect(service.summary('principal-a', 'install-a')).toEqual({
+    period: '2026-07-24',
+    resets_at: '2026-07-25T00:00:00.000Z',
+    capabilities: {
+      TextReasoning: { remaining_percent: 50, exhausted: false },
+      VisualEvidence: { remaining_percent: 100, exhausted: false },
+      SpeechTranscription: { remaining_percent: 100, exhausted: false },
+    },
+  })
+  expect(service.summary('principal-a', 'install-b').capabilities.TextReasoning.remaining_percent).toBe(50)
+  expect(service.summary('principal-b', 'install-b').capabilities.TextReasoning.remaining_percent).toBe(100)
+})
+
+test('a zero policy limit is exhausted instead of reporting full availability', () => {
+  const zero = policy()
+  zero.capabilities.TextReasoning.principal = { requests: 0, input_bytes: 0, output_units: 0 }
+  const service = new SqliteUsageBudgetService(':memory:', zero, () => Date.UTC(2026, 6, 24, 12))
+
+  expect(service.summary('principal-a', 'install-a').capabilities.TextReasoning).toEqual({
+    remaining_percent: 0,
+    exhausted: true,
+  })
+})
+
 test('principal budget cannot be bypassed by changing installation', () => {
   const service = new SqliteUsageBudgetService(':memory:', policy())
   const first = service.reserve(input('operation-1', 'install-a'))

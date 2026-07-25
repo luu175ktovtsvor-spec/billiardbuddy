@@ -128,6 +128,14 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
     policy_revision: 'bb-04d-gateway-v1',
     metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
   })
+  expect(body.usage_summary).toMatchObject({
+    capabilities: {
+      TextReasoning: { remaining_percent: 100, exhausted: false },
+      VisualEvidence: { remaining_percent: 100, exhausted: false },
+      SpeechTranscription: { remaining_percent: 100, exhausted: false },
+    },
+  })
+  expect(body.usage_summary.resets_at).toMatch(/T00:00:00\.000Z$/)
   expect(body.features.transcription).toBe(false)
   expect(body.features.vision_bridge).toBe(true)
   expect(body.capacity.mimo).toMatchObject({

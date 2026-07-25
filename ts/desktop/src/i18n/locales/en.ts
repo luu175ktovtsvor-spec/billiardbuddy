@@ -80,9 +80,11 @@ export const en = {
   // ─── Settings ──────────────────────────────────────
   'settings.title': 'Settings',
   'settings.tab.general': 'General',
+  'settings.tab.capabilities': 'Capability status',
+  'settings.tab.privacy': 'Privacy',
   'settings.tab.terminal': 'Terminal',
   'settings.tab.skills': 'Skills',
-  'settings.tab.mcp': 'External connections',
+  'settings.tab.mcp': 'MCP servers',
   'settings.tab.plugins': 'Plugins',
 
   // Settings > Terminal
@@ -141,8 +143,8 @@ export const en = {
   'errorBoundary.description': 'The issue was recorded to support recovery.',
 
   // Settings > MCP
-  'settings.mcp.title': 'External connections',
-  'settings.mcp.description': 'Connections are used only when a task needs an approved external capability. Technical connection details stay private.',
+  'settings.mcp.title': 'MCP servers',
+  'settings.mcp.description': 'Connect the Agent to local or remote tools and context. Servers remain subject to the current task permissions.',
   'settings.mcp.addServer': 'Add connection',
   'settings.mcp.empty': 'No external connections yet',
   'settings.mcp.emptyHint': 'Add a connection only when a task genuinely needs one.',
@@ -243,6 +245,11 @@ export const en = {
   'settings.skills.browserEyebrow': 'Ready workflows',
   'settings.skills.browserDescription': 'Describe the business goal in the task. The appropriate support is selected and applied automatically.',
   'settings.skills.ready': 'Available in this conversation',
+  'settings.skills.currentProject': 'Showing workflows available to the current project.',
+  'settings.skills.defaultContext': 'Showing workflows available in the default task context.',
+  'settings.skills.loading': 'Loading available workflows…',
+  'settings.skills.loadFailed': 'Available workflows could not be loaded right now.',
+  'settings.skills.empty': 'No workflows are available in this context.',
 
   // Settings > Plugins
   'settings.plugins.title': 'Installed Plugins',

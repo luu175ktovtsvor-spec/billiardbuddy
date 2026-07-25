@@ -82,9 +82,11 @@ export const jp: Record<TranslationKey, string> = {
   // ─── Settings ──────────────────────────────────────
   'settings.title': '設定',
   'settings.tab.general': '一般',
+  'settings.tab.capabilities': '機能の状態',
+  'settings.tab.privacy': 'プライバシー',
   'settings.tab.terminal': 'ターミナル',
   'settings.tab.skills': 'スキル',
-  'settings.tab.mcp': '外部接続',
+  'settings.tab.mcp': 'MCP サーバー',
   'settings.tab.plugins': 'プラグイン',
 
   // Settings > Terminal
@@ -143,8 +145,8 @@ export const jp: Record<TranslationKey, string> = {
   'errorBoundary.description': '問題は復旧のために記録されました。',
 
   // Settings > MCP
-  'settings.mcp.title': '外部接続',
-  'settings.mcp.description': '外部機能が必要なタスクでのみ接続を使用します。技術的な接続設定は通常の画面には表示しません。',
+  'settings.mcp.title': 'MCP サーバー',
+  'settings.mcp.description': 'Agent をローカルまたはリモートのツールやコンテキストに接続します。すべてのサーバーは現在のタスク権限に従います。',
   'settings.mcp.addServer': '接続を追加',
   'settings.mcp.empty': '外部接続はまだありません',
   'settings.mcp.emptyHint': 'タスクで本当に必要な場合にのみ接続を追加してください。',
@@ -245,6 +247,11 @@ export const jp: Record<TranslationKey, string> = {
   'settings.skills.browserEyebrow': '準備済みのワークフロー',
   'settings.skills.browserDescription': 'タスクで業務目標を説明すると、適切な支援が自動で選択され、非公開で適用されます。',
   'settings.skills.ready': 'この会話で利用可能',
+  'settings.skills.currentProject': '現在のプロジェクトで利用できるワークフローを表示しています。',
+  'settings.skills.defaultContext': '既定のタスク環境で利用できるワークフローを表示しています。',
+  'settings.skills.loading': '利用可能なワークフローを読み込んでいます…',
+  'settings.skills.loadFailed': '現在、利用可能なワークフローを読み込めません。',
+  'settings.skills.empty': 'この環境で利用できるワークフローはありません。',
 
   // Settings > Plugins
   'settings.plugins.title': 'インストール済みプラグイン',

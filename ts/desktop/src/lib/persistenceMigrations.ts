@@ -22,6 +22,8 @@ const LOCALE_STORAGE_KEY = 'billiardbuddy-locale'
 const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
 const SETTINGS_TABS = [
   'general',
+  'capabilities',
+  'privacy',
   'terminal',
   'mcp',
   'skills',

@@ -30,6 +30,7 @@ import { handleProductSettingsApi } from './productSettings.js'
 import { handleProductTaskCommandsApi } from './productTaskCommands.js'
 import { handleProductVoiceApi } from './productVoice.js'
 import { handleProductDataEgressConsentApi } from './productDataEgressConsent.js'
+import { ProductCapabilitySnapshotService } from '../services/productCapabilitySnapshot.js'
 
 type ProductTaskReviewApi = Pick<
   ProductTaskReviewService,
@@ -116,6 +117,7 @@ export async function handleProductApi(
   review: ProductTaskReviewApi = productTaskReviewService,
   media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
   scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
+  capabilitySnapshots: Pick<ProductCapabilitySnapshotService, 'snapshot'> = new ProductCapabilitySnapshotService(),
 ): Promise<Response> {
   try {
     if (segments[2] === 'data-egress-consent') {
@@ -136,6 +138,12 @@ export async function handleProductApi(
 
     if (segments[2] === 'scheduled-tasks') {
       return await handleProductScheduledTasksApi(req, url, segments, scheduledTasks)
+    }
+
+    if (segments[2] === 'capabilities') {
+      if (segments[3]) throw ApiError.notFound('未知产品能力资源')
+      if (req.method !== 'GET') return methodNotAllowed(req.method)
+      return Response.json(await capabilitySnapshots.snapshot())
     }
 
     if (segments[2] === 'projects') {

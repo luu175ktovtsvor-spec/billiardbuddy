@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { handleProductApi } from '../api/product.js'
 import type { ProductTaskMediaApi } from '../product/taskMediaService.js'
+import type { ProductCapabilitySnapshotService } from '../services/productCapabilitySnapshot.js'
 
 const task = {
   id: 'task-1',
@@ -90,6 +91,7 @@ async function request(
   path: string,
   body?: unknown,
   media?: ProductTaskMediaApi,
+  capabilitySnapshots?: Pick<ProductCapabilitySnapshotService, 'snapshot'>,
 ) {
   const url = new URL(`http://localhost${path}`)
   const response = await handleProductApi(
@@ -103,11 +105,29 @@ async function request(
     service,
     undefined,
     media,
+    undefined,
+    capabilitySnapshots,
   )
   return { status: response.status, body: await response.json() }
 }
 
 describe('Product tasks API', () => {
+  it('returns the server-owned capability snapshot without accepting a mutation surface', async () => {
+    const { service } = createService()
+    const capabilitySnapshots = {
+      snapshot: async () => ({
+        schema_version: 1 as const,
+        observed_at: '2026-07-26T10:00:00.000Z',
+        capabilities: [{ id: 'assistant' as const, state: 'available' as const }],
+      }),
+    }
+    expect(await request(service, 'GET', '/api/product/capabilities', undefined, undefined, capabilitySnapshots)).toEqual({
+      status: 200,
+      body: await capabilitySnapshots.snapshot(),
+    })
+    expect((await request(service, 'PATCH', '/api/product/capabilities', {}, undefined, capabilitySnapshots)).status).toBe(405)
+  })
+
   it('ingests attachment bytes only under a server-owned composer draft', async () => {
     const { service, calls } = createService()
     const data = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`
