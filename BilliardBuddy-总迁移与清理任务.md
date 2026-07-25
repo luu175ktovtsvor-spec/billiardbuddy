@@ -442,6 +442,10 @@ ingest → analyze evidence → compile brief → plan scenes
 - 结果：Agent 可辅助筛选和准备沟通，但真实发送、邀约、拒绝等副作用由人确认。
 - 做法：Chrome Extension + Native Messaging + ChromeSessionBridge；结构化读取页面、最小字段、脱敏和审计。
 - 验收：无 Cookie 提取、无坐标控制、无通用桌面 Computer Use；保护属性不参与排序；发送前必须人工确认。
+- 当前落点：`5947b3e7…` 建立固定 ID 的 Manifest V3 Chrome Extension、用户级 Native Messaging host、复用同一编译 sidecar 的 `browser-host` 模式和唯一 `ChromeSessionBridge`。扩展只有 `activeTab`、`nativeMessaging`、`storage` 与 BOSS 域权限；用户点击扩展图标后才连接当前页面，不读取 Cookie、不截图、不使用调试器或坐标控制，也不开放通用桌面 Computer Use。
+- 数据与权限：页面只向 Agent 投影 `candidate_ref`、岗位摘要、经验摘要和技能；姓名只在服务端作为人工确认对象显示，保护属性字段和命中保护词的文本在进入 Agent 前拒绝或清空。Agent 的 task-scoped 工具只能读取页面、准备操作和查询状态，不能确认或执行；真实确认只由受 sender 校验的 Electron Renderer 经 Main 私有 capability 完成，Full access 和自动审批均不能替代。
+- 副作用与恢复：准备、确认、调度、命令和结果共享一个 durable operation，绑定 task、页面 revision、候选人、幂等键与 `ProductResourceScheduler` fencing token。命令只交付一次；页面变化失败关闭。点击后只有观察到页面确认才记成功，结果丢失在 60 秒后进入 `outcome_unknown` 且禁止自动重试，同一 command 的迟到精确结果仍可完成对账。
+- 验收证据：服务端全量 1365 项通过、1 项显式 live skip；桌面端 143 个文件共 920 项、类型检查和生产构建通过；Electron 31 个文件共 212 项通过并完成 Main/preload 构建。真实编译的 macOS arm64 sidecar 已用 Chrome framing 输入验证 `browser-host` 分支，安装输入合同只登记扩展三个运行文件。目录安装包仍被既有媒体工具链门禁阻断，因为当前环境没有 `BB_MEDIA_TOOLCHAIN_SOURCE_DIR`；真实 BOSS 页面人工确认旅程也尚未执行。这两项分别留给模块 24 和模块 25，不能据当前测试宣称安装或外部页面验收完成。`check:product-contracts` 仍只命中模块 23 已登记的 `autodream-teammem` consumer 缺口。
 
 #### 模块 19：台球经营 Skills
 
@@ -550,6 +554,7 @@ ingest → analyze evidence → compile brief → plan scenes
 - DeepSeek 模型与 API 更新：<https://api-docs.deepseek.com/updates/>
 - Anthropic server-side Web Search 协议：<https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
 - Electron 安全清单：<https://www.electronjs.org/docs/latest/tutorial/security>
+- Chrome Native Messaging 协议：<https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging>
 
 供应商宣传、静态模型表、代码注释和本地配置不能单独证明账号配额、保留期限、真实吞吐、签名、公证或生产部署已经生效。
 
