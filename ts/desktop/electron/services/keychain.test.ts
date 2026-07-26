@@ -61,4 +61,20 @@ describe('SecureSessionStore', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('removes the temporary credential file when encryption fails', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bb-secure-session-'))
+    const file = path.join(dir, 'session')
+    const safeStorage: SafeStorageLike = {
+      isEncryptionAvailable: () => true,
+      encryptString: () => { throw new Error('encryption failed') },
+      decryptString: value => value.toString(),
+    }
+    try {
+      expect(() => new SecureSessionStore(file, safeStorage).save('refresh')).toThrow('encryption failed')
+      expect(readdirSync(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -38,14 +38,14 @@ export class SecureSessionStore {
     if (!this.safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
     const dir = dirname(this.file); mkdirSync(dir, { recursive: true, mode: 0o700 })
     const tmp = `${this.file}.${randomBytes(6).toString('hex')}.tmp`
-    const handle = openSync(tmp, 'wx', 0o600)
     try {
-      writeFileSync(handle, this.safeStorage.encryptString(value).toString('base64'))
-      fsyncSync(handle)
-    } finally {
-      closeSync(handle)
-    }
-    try {
+      const handle = openSync(tmp, 'wx', 0o600)
+      try {
+        writeFileSync(handle, this.safeStorage.encryptString(value).toString('base64'))
+        fsyncSync(handle)
+      } finally {
+        closeSync(handle)
+      }
       renameSync(tmp, this.file)
     } finally {
       if (existsSync(tmp)) unlinkSync(tmp)
