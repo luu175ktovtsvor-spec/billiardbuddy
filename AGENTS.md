@@ -6,7 +6,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Working Principles
 
-- `BilliardBuddy-重构合同.md` 是产品重构的唯一裁决。本仓库根目录的 `AGENTS.md` 只约束本仓库的开发；BilliardBuddy 面向用户项目的指令语义与加载规则以重构合同为准。
+- `BilliardBuddy-重构合同.md` 记录产品愿景、模块关系和完成结果。本仓库根目录的 `AGENTS.md` 只约束本仓库开发；BilliardBuddy 面向用户项目的指令语义与加载结果以产品合同为目标。
 - Think from first principles. Start from the user's real intent, the expected product result, current code facts, and verification results.
 - If the goal or boundary is unclear, clarify it with the user before implementation.
 - Treat the user's current task and designated construction document as the source of truth for product direction. Treat live code and tests as the source of truth for the current implementation.
@@ -18,7 +18,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Architecture Refactors
 
-- 改动聊天 Harness、图片/视频工作台、模型请求、网关或前端前，先执行重构合同第 3.0 节的“参考—改动”证据链；`codex-frontend-reference/` 是 Codex 前端的指定本地源码参考，必须阅读 `raw`、`reverse-readable` 与 `host-bridge`。可用部分可直接移植或改造进 BilliardBuddy renderer，但不能把原 bundle 整体当成运行时依赖，且必须接回本项目的真实状态与 IPC。
+- 改动聊天 Harness、图片/视频工作台、模型请求、网关或前端时，从当前真实不足和用户结果出发，自主决定参考、复用、改造、重写或删除。外部源码与本地参考用于提高判断质量，不是实施审批、固定流程或架构门禁；移植内容要成为 BilliardBuddy 自己的正式路径，不把参考 bundle 当作产品运行时。
 - 本轮允许按重构合同整体替换 Gateway、Relay、服务、配置和两台服务器；当前无人使用，不把备份、回滚、最小化部署或先行本地验证当作改造前置条件。实施前只须盘点服务器上的真实文件、进程、端口、路由和凭据引用；实施完成后以实际部署状态更新服务器运行文档。
 
 ## General Coding Rules
