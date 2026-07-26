@@ -329,6 +329,9 @@ describe('VideoStudio committing state', () => {
     render(<VideoStudio />)
     expect(await screen.findByText('先结果后过程')).toBeInTheDocument()
     expect(screen.getByText(/已核验 1 条 Evidence/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText(/画面理解 · 0.00–5.00s · 90%/))
+    expect(screen.getByText('人物完成击球')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /来源：source\.mp4 · 指纹 aaaaaaaa/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '锁定场景' }))
     await waitFor(() => expect(mediaApiMock.lockVideoScene).toHaveBeenCalledWith(
       planned.id,

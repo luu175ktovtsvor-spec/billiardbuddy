@@ -37,6 +37,15 @@ const OUTPUT_PRESETS = {
 
 type OutputPreset = keyof typeof OUTPUT_PRESETS
 type OutputFormat = 'mp4' | 'mov'
+type EvidenceKind = VideoStudioProject['evidence'][number]['kind']
+
+const EVIDENCE_KIND_LABELS: Record<EvidenceKind, string> = {
+  source_role: '素材事实',
+  transcript: '语音转写',
+  visual: '画面理解',
+  audio: '音频理解',
+  shot: '镜头识别',
+}
 
 function newClipId(): string {
   return `clip_${crypto.randomUUID().replaceAll('-', '')}`
@@ -82,6 +91,9 @@ export function VideoStudio() {
   const [voiceEvidence, setVoiceEvidence] = useState<VoiceConsumerEvidence[]>([])
   const [userGoal, setUserGoal] = useState('')
   const [previewSurface, setPreviewSurface] = useState<'source' | 'program'>('source')
+  const [evidenceKind, setEvidenceKind] = useState<'all' | EvidenceKind>('all')
+  const [evidenceSourceId, setEvidenceSourceId] = useState('all')
+  const [evidenceVisibleCount, setEvidenceVisibleCount] = useState(20)
   const [timelineState, dispatchTimeline] = useReducer(videoTimelineReducer, [], createVideoTimelineState)
   const programVideoRef = useRef<HTMLVideoElement>(null)
   const canonicalProjectRef = useRef<VideoStudioProject | null>(null)
@@ -110,6 +122,10 @@ export function VideoStudio() {
     () => new Map((timelineVersion?.scenes ?? []).map(scene => [scene.id, scene])),
     [timelineVersion],
   )
+  const filteredEvidence = useMemo(() => (active?.evidence ?? []).filter(item => (
+    (evidenceKind === 'all' || item.kind === evidenceKind)
+    && (evidenceSourceId === 'all' || item.source_id === evidenceSourceId)
+  )), [active?.evidence, evidenceKind, evidenceSourceId])
   const storeError = error ? mediaUserFacingError(new Error(error)) : null
   const projectError = active?.error
     ? mediaUserFacingError({ code: active.error_code })
@@ -136,6 +152,9 @@ export function VideoStudio() {
       setDraft(null)
       setSelectedSourceId(null)
       setUserGoal('')
+      setEvidenceKind('all')
+      setEvidenceSourceId('all')
+      setEvidenceVisibleCount(20)
       return
     }
 
@@ -146,6 +165,9 @@ export function VideoStudio() {
       setDraft(active)
       setSelectedSourceId(active.sources[0]?.id ?? null)
       setUserGoal(active.brief?.user_goal ?? '')
+      setEvidenceKind('all')
+      setEvidenceSourceId('all')
+      setEvidenceVisibleCount(20)
       return
     }
 
@@ -711,9 +733,68 @@ export function VideoStudio() {
                   </div>
                 )}
                 {active.evidence.length > 0 && (
-                  <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">
-                    已核验 {active.evidence.length} 条 Evidence · 修订 {active.evidence_revision?.slice(7, 15) ?? '未生成'}
-                  </p>
+                  <details className="mt-2 rounded-[6px] border border-[var(--color-border)] p-2" open>
+                    <summary className="cursor-pointer text-[11px] font-medium text-[var(--color-text-secondary)]">
+                      已核验 {active.evidence.length} 条 Evidence · 修订 {active.evidence_revision?.slice(7, 15) ?? '未生成'}
+                    </summary>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5">
+                      <select
+                        aria-label="证据类型"
+                        value={evidenceKind}
+                        onChange={event => { setEvidenceKind(event.target.value as 'all' | EvidenceKind); setEvidenceVisibleCount(20) }}
+                        className="h-7 min-w-0 rounded-[5px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1.5 text-[10px] text-[var(--color-text-primary)]"
+                      >
+                        <option value="all">全部类型</option>
+                        {(Object.entries(EVIDENCE_KIND_LABELS) as Array<[EvidenceKind, string]>).map(([kind, label]) => (
+                          <option key={kind} value={kind}>{label}</option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="证据素材"
+                        value={evidenceSourceId}
+                        onChange={event => { setEvidenceSourceId(event.target.value); setEvidenceVisibleCount(20) }}
+                        className="h-7 min-w-0 rounded-[5px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1.5 text-[10px] text-[var(--color-text-primary)]"
+                      >
+                        <option value="all">全部素材</option>
+                        {active.sources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="mt-2 space-y-1.5" aria-label="视频证据明细">
+                      {filteredEvidence.slice(0, evidenceVisibleCount).map(item => {
+                        const source = active.sources.find(candidate => candidate.id === item.source_id)
+                        return (
+                          <details key={item.id} className="rounded-[5px] bg-[var(--color-surface-container)] px-2 py-1.5">
+                            <summary className="cursor-pointer text-[10px] text-[var(--color-text-secondary)]">
+                              {EVIDENCE_KIND_LABELS[item.kind]} · {seconds(item.in_ms)}–{seconds(item.out_ms)}s · {Math.round(item.confidence * 100)}%
+                            </summary>
+                            <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-4 text-[var(--color-text-primary)]">{item.text}</p>
+                            <button
+                              type="button"
+                              onClick={() => { setSelectedSourceId(item.source_id); setPreviewSurface('source') }}
+                              className="mt-1 text-left text-[10px] text-[var(--color-brand)] hover:underline"
+                            >
+                              来源：{source?.name ?? item.source_id} · 指纹 {item.source_fingerprint.slice(7, 15)}
+                            </button>
+                            {item.warnings.length > 0 && (
+                              <p className="mt-1 text-[10px] leading-4 text-[var(--color-warning)]">警告：{item.warnings.join('；')}</p>
+                            )}
+                          </details>
+                        )
+                      })}
+                      {filteredEvidence.length === 0 && (
+                        <p className="py-2 text-center text-[10px] text-[var(--color-text-tertiary)]">没有符合筛选条件的证据</p>
+                      )}
+                    </div>
+                    {filteredEvidence.length > evidenceVisibleCount && (
+                      <button
+                        type="button"
+                        onClick={() => setEvidenceVisibleCount(count => count + 20)}
+                        className="mt-2 h-7 w-full rounded-[5px] border border-[var(--color-border)] text-[10px] text-[var(--color-text-secondary)]"
+                      >
+                        再显示 {Math.min(20, filteredEvidence.length - evidenceVisibleCount)} 条
+                      </button>
+                    )}
+                  </details>
                 )}
                 {active.alternatives.length > 0 && (
                   <div className="mt-2 space-y-1" aria-label="剪辑备选方案">
