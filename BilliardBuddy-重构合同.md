@@ -284,6 +284,8 @@ Schedule 定义（cron、时区、missed-run policy、权限快照）
 
 Codex 的关键不在炫技，而在于同一个产品壳始终围绕“项目、线程、当前运行、审阅和下一步”组织信息。BilliardBuddy 学习这种秩序，并让三个板块共享：左侧一级导航和项目切换、统一的顶部上下文、同一套字号/留白/色彩/图标/状态胶囊、统一任务队列与错误反馈、右侧详情/预览抽屉、键盘导航和一致的空状态。
 
+**品牌边界固定如下：**产品名称始终是 **BilliardBuddy**；保留现有蓝色笑脸作为唯一主图标，源资产为 `ts/desktop/public/app-icon.svg` / `app-icon.png`，各平台安装图标只能由这套资产生成；保留现有品牌蓝的主色关系（`--bb-blue-*` 与笑脸渐变）。学习 Codex 的布局、密度、状态和交互，只学习产品秩序，不能替换 BilliardBuddy 的名称、蓝色笑脸、蓝色调性或品牌资产。所有启动页、侧栏、设置/关于页、任务栏/Dock 与安装包图标必须一致；未从同一源资产生成的图标、其他产品名称或其他品牌色不得进入正式 GUI。
+
 #### 3.4.1 左—中—右不是三份聊天，而是三种职责
 
 Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事件、Diff/review、工作树与恢复分开；公开 TUI 源码也把 review、patch preview、side thread 与 status feed 当成独立 UI 状态。本项目当前可解析的 Codex 前端参考代码与构建材料统一位于 `codex-frontend-reference/`（包括 `raw/`、`reverse-readable/` 和 host bridge）；它是本地研究基线，不等同于 OpenAI 公开发布的完整 Codex 桌面 App 前端源码，也不能作为“私有实现已被完整读到”的证据。完整桌面 App 前端仍属未公开范围，因此不能伪称逐像素复刻；但可验证的产品结构足以给出本项目的正确映射：
