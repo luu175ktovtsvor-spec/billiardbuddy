@@ -988,6 +988,7 @@ export class MediaProjectService {
           width: output.width,
           height: output.height,
           text_layers: output.text_layers,
+          image_layers: output.image_layers,
           created_at: project.updated_at,
         })
       }
@@ -1971,6 +1972,38 @@ export class MediaProjectService {
     return await this.assetResponse(projectId, fileName, request, 'references')
   }
 
+  async imageLayerAssetResponse(projectId: string, assetId: string, request?: Request): Promise<Response> {
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    const usedByVersion = project.versions.some(version => (
+      version.image_layers?.some(layer => layer.source_asset_id === assetId)
+    ))
+    if (!usedByVersion) throw new MediaServiceError('找不到图片图层素材', 404, 'ASSET_NOT_FOUND')
+    const asset = project.assets.find(candidate => candidate.id === assetId && candidate.role === 'reference')
+    if (!asset || !['managed', 'cas'].includes(asset.storage.kind)) {
+      throw new MediaServiceError('找不到图片图层素材', 404, 'ASSET_NOT_FOUND')
+    }
+    if (asset.storage.kind === 'managed') {
+      const prefix = `${project.id}/references/`
+      if (!asset.storage.locator.startsWith(prefix)) {
+        throw new MediaServiceError('图片图层素材地址无效', 404, 'ASSET_NOT_FOUND')
+      }
+      const fileName = asset.storage.locator.slice(prefix.length)
+      return await this.assetResponse(projectId, fileName, request, 'references')
+    }
+    const digest = /^sha256\/([a-f0-9]{64})$/.exec(asset.storage.locator)?.[1]
+    const path = digest ? join(this.casDir, digest) : ''
+    const info = path ? await stat(path).catch(() => null) : null
+    if (!info?.isFile()) throw new MediaServiceError('找不到图片图层素材', 404, 'ASSET_NOT_FOUND')
+    return new Response(Bun.file(path), {
+      headers: {
+        'Content-Type': asset.mime_type ?? 'application/octet-stream',
+        'Content-Length': String(info.size),
+        'Cache-Control': 'private, max-age=31536000, immutable',
+      },
+    })
+  }
+
   /**
    * Resolve an image result only when its persisted route is exactly this
    * project's owned local asset. Callers receive the safe route, never a
@@ -2091,7 +2124,7 @@ export class MediaProjectService {
       ) {
         throw new MediaServiceError('放大结果必须严格匹配基础版本与倍数', 400, 'IMAGE_UPSCALE_MISMATCH')
       }
-    } else {
+    } else if (input.kind === 'text_layout') {
       if (input.width !== base.dimensions.width || input.height !== base.dimensions.height) {
         throw new MediaServiceError('文字排版不能改变基础画布尺寸', 400, 'IMAGE_TEXT_CANVAS_MISMATCH')
       }
@@ -2106,6 +2139,42 @@ export class MediaProjectService {
       const missing = (project.brief?.exact_text ?? []).filter(text => !renderedText.has(text))
       if (missing.length > 0) {
         throw new MediaServiceError('文字图层缺少 Brief 中要求的精确文字', 400, 'IMAGE_EXACT_TEXT_MISSING')
+      }
+    } else {
+      if (input.width !== base.dimensions.width || input.height !== base.dimensions.height) {
+        throw new MediaServiceError('图片组合不能改变基础画布尺寸', 400, 'IMAGE_COMPOSITE_CANVAS_MISMATCH')
+      }
+      if (input.image_layers.some(layer => (
+        layer.x + layer.width > input.width
+        || layer.y + layer.height > input.height
+      ))) {
+        throw new MediaServiceError('图片图层超出基础画布', 400, 'IMAGE_LAYER_OUT_OF_BOUNDS')
+      }
+      const sourceAssets = new Map(project.assets
+        .filter(asset => asset.role === 'reference')
+        .map(asset => [asset.id, asset]))
+      for (const layer of input.image_layers) {
+        const source = sourceAssets.get(layer.source_asset_id)
+        if (!source || !['managed', 'cas'].includes(source.storage.kind)) {
+          throw new MediaServiceError('图片图层引用的素材不存在', 400, 'IMAGE_LAYER_SOURCE_MISSING')
+        }
+        if (source.storage.kind === 'managed') {
+          const prefix = `${project.id}/references/`
+          if (!source.storage.locator.startsWith(prefix)) {
+            throw new MediaServiceError('图片图层引用的素材不属于当前项目', 400, 'IMAGE_LAYER_SOURCE_INVALID')
+          }
+          const fileName = source.storage.locator.slice(prefix.length)
+          await this.resolveOwnedAsset(project.id, fileName, {
+            message: '图片图层引用的素材文件已经丢失',
+            code: 'IMAGE_LAYER_SOURCE_MISSING',
+          }, 'references')
+        } else {
+          const digest = /^sha256\/([a-f0-9]{64})$/.exec(source.storage.locator)?.[1]
+          const info = digest ? await stat(join(this.casDir, digest)).catch(() => null) : null
+          if (!info?.isFile()) {
+            throw new MediaServiceError('图片图层引用的素材文件已经丢失', 400, 'IMAGE_LAYER_SOURCE_MISSING')
+          }
+        }
       }
     }
     const outputId = id('out')
@@ -2124,6 +2193,7 @@ export class MediaProjectService {
       width: input.width,
       height: input.height,
       text_layers: input.kind === 'text_layout' ? input.text_layers : undefined,
+      image_layers: input.kind === 'composite' ? input.image_layers : undefined,
       mime_type: 'image/png' as const,
       asset_path: `/api/media/assets/${project.id}/${fileName}`,
     }

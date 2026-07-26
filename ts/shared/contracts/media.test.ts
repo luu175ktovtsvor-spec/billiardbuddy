@@ -100,13 +100,37 @@ describe('provider-neutral image creation contract', () => {
         asset_id: 'out_private01',
         image_path: '/api/media/assets/img_12345678/out_private01.png',
         mime_type: 'image/png',
+        image_layers: [{
+          id: 'layer_public01',
+          source_asset_id: 'ref_public001',
+          x: 10,
+          y: 10,
+          width: 100,
+          height: 100,
+          opacity: 0.8,
+          image_path: '/api/media/images/projects/img_12345678/layer-assets/ref_public001/content',
+          mime_type: 'image/png',
+        }],
         created_at: baseImageProject.created_at,
       }],
     })
     expect(publicProject.version_history).toHaveLength(1)
+    expect(publicProject.version_history[0]!.image_layers[0]).toMatchObject({
+      source_asset_id: 'ref_public001',
+      opacity: 0.8,
+    })
     expect(publicProject).not.toHaveProperty('model')
     expect(publicProject).not.toHaveProperty('prompt')
     expect(publicProject).not.toHaveProperty('outputs')
+  })
+
+  test('does not stop an image project at the old sixteen-output legacy limit', () => {
+    const outputs = Array.from({ length: 17 }, (_, index) => ({
+      id: `out_version${String(index).padStart(3, '0')}`,
+      mime_type: 'image/png' as const,
+      url: `https://example.test/version-${index}.png`,
+    }))
+    expect(imageWorkbenchProjectSchema.safeParse({ ...baseImageProject, outputs }).success).toBe(true)
   })
 
   test('requires an explicit base and matching operation-specific inputs', () => {
@@ -129,6 +153,32 @@ describe('provider-neutral image creation contract', () => {
       width: 200,
       height: 200,
     }).success).toBe(false)
+    expect(commitImageVersionInputSchema.safeParse({
+      revision: 3,
+      base_version_id: 'ver_base0001',
+      kind: 'composite',
+      rendered_image: 'data:image/png;base64,AAAA',
+      width: 200,
+      height: 200,
+      image_layers: [],
+    }).success).toBe(false)
+    expect(commitImageVersionInputSchema.safeParse({
+      revision: 3,
+      base_version_id: 'ver_base0001',
+      kind: 'composite',
+      rendered_image: 'data:image/png;base64,AAAA',
+      width: 200,
+      height: 200,
+      image_layers: [{
+        id: 'layer_subject01',
+        source_asset_id: 'ref_subject01',
+        x: 10,
+        y: 10,
+        width: 80,
+        height: 80,
+        opacity: 0.75,
+      }],
+    }).success).toBe(true)
   })
 
   test('exposes the job sequence while keeping provider polling and acknowledgement bookkeeping private', () => {

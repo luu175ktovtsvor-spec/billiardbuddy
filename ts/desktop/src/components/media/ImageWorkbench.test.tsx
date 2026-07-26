@@ -224,6 +224,7 @@ describe('ImageWorkbench unknown paid result', () => {
       width: 1024,
       height: 1024,
       text_layers: [],
+      image_layers: [],
       created_at: '2026-07-18T00:02:00.000Z',
     }
     mediaApiMock.listProjects.mockResolvedValue({ projects: [{
@@ -263,6 +264,7 @@ describe('ImageWorkbench unknown paid result', () => {
         image_path: `/api/media/assets/${project.id}/out_result001.png`,
         mime_type: 'image/png',
         text_layers: [],
+        image_layers: [],
         created_at: '2026-07-18T00:02:00.000Z',
       }],
       error: undefined,
@@ -300,6 +302,7 @@ describe('ImageWorkbench unknown paid result', () => {
         font_weight: 'bold' as const,
         text_align: 'center' as const,
       }],
+      image_layers: [],
       quality_assessment: {
         score: 92,
         summary: '主体和构图清晰',
@@ -345,6 +348,10 @@ describe('ImageWorkbench unknown paid result', () => {
     expect(await screen.findByRole('button', { name: '继续编辑' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '局部重绘' })).toBeInTheDocument()
     expect(screen.getByLabelText('放大倍数')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '本机插值放大 2×' })).toBeInTheDocument()
+    expect(screen.queryByText('本机高质量放大 2×')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '加入画布' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存图片组合版本' })).toBeDisabled()
     expect(screen.getByLabelText('精确文字图层')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '局部重绘' }))
     expect(screen.getByLabelText('局部重绘蒙版画布')).toBeInTheDocument()

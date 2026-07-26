@@ -401,7 +401,7 @@ describe('MediaProjectService image projects', () => {
     expect(ready.outputs.every(output => ready.assets.some(asset => asset.id === output.id && asset.version_id === output.version_id))).toBe(true)
   })
 
-  test('branches edit, inpaint, exact text, upscale, rollback, and export from explicit base versions', async () => {
+  test('branches edit, inpaint, exact text, composition, upscale, rollback, and export from explicit base versions', async () => {
     process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.BB_GATEWAY_TOKEN = 'app-token'
     const submissions: Record<string, unknown>[] = []
@@ -424,7 +424,11 @@ describe('MediaProjectService image projects', () => {
         })
       },
     })
-    const draft = await service.createImageProject({ user_request: '标题：“会员日” 的活动海报' })
+    const draft = await service.createImageProject({
+      user_request: '标题：“会员日” 的活动海报',
+      reference_images: [pngDataUrl(1, 1)],
+      reference_roles: ['logo'],
+    })
     const generatedTask = await submitImage(service, draft.id)
     await service.getTask(generatedTask.id)
     const generated = await service.getProject(draft.id)
@@ -524,8 +528,33 @@ describe('MediaProjectService image projects', () => {
     })
     expect(rolledBack.current_version_id).toBe(candidate.version_id)
     expect(rolledBack.versions.some(version => version.id === upscaled.current_version_id)).toBe(true)
+    const referenceId = rolledBack.references[0]!.asset_id
+    const composite = await service.commitImageVersion(rolledBack.id, {
+      revision: rolledBack.revision,
+      base_version_id: candidate.version_id!,
+      kind: 'composite',
+      rendered_image: pngDataUrl(1, 1),
+      width: 1,
+      height: 1,
+      image_layers: [{
+        id: 'layer_logo0001',
+        source_asset_id: referenceId,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        opacity: 0.8,
+      }],
+    })
+    expect(composite.versions.find(version => version.id === composite.current_version_id)).toMatchObject({
+      kind: 'composite',
+      parent_version_id: candidate.version_id,
+      image_layers: [{ source_asset_id: referenceId, opacity: 0.8 }],
+    })
+    expect(Buffer.from(await (await service.imageLayerAssetResponse(composite.id, referenceId)).arrayBuffer()))
+      .toEqual(pngBytes(1, 1))
     const exportPath = join(await root(), 'selected.png')
-    await service.saveImageOutput(rolledBack.id, { version_id: candidate.version_id, output_path: exportPath })
+    await service.saveImageOutput(composite.id, { version_id: candidate.version_id, output_path: exportPath })
     expect(await readFile(exportPath)).toEqual(pngBytes(1, 1))
   })
 

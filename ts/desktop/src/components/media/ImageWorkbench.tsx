@@ -5,6 +5,7 @@ import {
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   type ImageBriefOverrides,
   type ImageCanvasSize,
+  type ImageLayer,
   type ImageProjectReference,
   type ImageReferenceRole,
   type ImageTextLayer,
@@ -27,6 +28,11 @@ function stateLabel(state: string): string {
 
 type ReferenceImage = { name: string; dataUrl: string; size: number; role: ImageReferenceRole }
 type TextLayoutSetting = { x: number; y: number; fontSize: number; fill: string }
+type CanvasImageLayer = ImageLayer & {
+  image_path: string
+  mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
+}
+const EMPTY_IMAGE_LAYERS: CanvasImageLayer[] = []
 type EditableBriefField = keyof ImageBriefOverrides
 
 const EDITABLE_BRIEF_FIELDS: Array<{ field: EditableBriefField; label: string; help: string }> = [
@@ -51,6 +57,19 @@ function sameReferences(left: ImageProjectReference[], right: ImageProjectRefere
     label: reference.label,
   })
   return JSON.stringify(left.map(project)) === JSON.stringify(right.map(project))
+}
+
+function sameImageLayers(left: CanvasImageLayer[], right: CanvasImageLayer[]): boolean {
+  const comparable = (layer: CanvasImageLayer) => ({
+    id: layer.id,
+    source_asset_id: layer.source_asset_id,
+    x: Math.round(layer.x),
+    y: Math.round(layer.y),
+    width: Math.round(layer.width),
+    height: Math.round(layer.height),
+    opacity: layer.opacity,
+  })
+  return JSON.stringify(left.map(comparable)) === JSON.stringify(right.map(comparable))
 }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -168,10 +187,31 @@ async function renderTextLayers(url: string, sourceLayers: ImageTextLayer[]) {
   }
 }
 
+async function renderImageLayers(url: string, layers: CanvasImageLayer[]) {
+  const [base, ...sources] = await Promise.all([
+    loadCanvasImage(url),
+    ...layers.map(layer => loadCanvasImage(mediaApi.assetUrl(layer.image_path))),
+  ])
+  const canvas = document.createElement('canvas')
+  canvas.width = base.naturalWidth
+  canvas.height = base.naturalHeight
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('CANVAS_UNAVAILABLE')
+  context.drawImage(base, 0, 0)
+  layers.forEach((layer, index) => {
+    context.save()
+    context.globalAlpha = layer.opacity
+    context.drawImage(sources[index]!, layer.x, layer.y, layer.width, layer.height)
+    context.restore()
+  })
+  return { rendered_image: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
+}
+
 function ImageCanvasSurface({
   url,
   title,
   textLayers,
+  imageLayers = EMPTY_IMAGE_LAYERS,
   selectedLayerId,
   onSelectLayer,
   zoom,
@@ -180,10 +220,12 @@ function ImageCanvasSurface({
   maskBrushSize = 128,
   maskDataUrl = null,
   onMaskChange,
+  onMoveImageLayer,
 }: {
   url: string
   title: string
   textLayers: ImageTextLayer[]
+  imageLayers?: CanvasImageLayer[]
   selectedLayerId: string | null
   onSelectLayer: (id: string | null) => void
   zoom: number
@@ -192,16 +234,21 @@ function ImageCanvasSurface({
   maskBrushSize?: number
   maskDataUrl?: string | null
   onMaskChange?: (dataUrl: string) => void
+  onMoveImageLayer?: (id: string, x: number, y: number) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const maskCanvasRef = useRef<HTMLCanvasElement>(null)
   const maskBufferRef = useRef<HTMLCanvasElement | null>(null)
   const maskPointerRef = useRef<{ id: number; x: number; y: number } | null>(null)
+  const imageLayerPointerRef = useRef<{ pointerId: number; layerId: string; offsetX: number; offsetY: number } | null>(null)
   const [dimensions, setDimensions] = useState({ width: 1, height: 1 })
 
   useEffect(() => {
     let active = true
-    void loadCanvasImage(url).then(image => {
+    void Promise.all([
+      loadCanvasImage(url),
+      ...imageLayers.map(layer => loadCanvasImage(mediaApi.assetUrl(layer.image_path))),
+    ]).then(([image, ...layerImages]) => {
       if (!active || !canvasRef.current) return
       const canvas = canvasRef.current
       canvas.width = image.naturalWidth
@@ -210,10 +257,16 @@ function ImageCanvasSurface({
       if (!context) return
       context.clearRect(0, 0, canvas.width, canvas.height)
       context.drawImage(image, 0, 0)
+      imageLayers.forEach((layer, index) => {
+        context.save()
+        context.globalAlpha = layer.opacity
+        context.drawImage(layerImages[index]!, layer.x, layer.y, layer.width, layer.height)
+        context.restore()
+      })
       setDimensions({ width: image.naturalWidth, height: image.naturalHeight })
     })
     return () => { active = false }
-  }, [url])
+  }, [imageLayers, url])
 
   useEffect(() => {
     if (!maskEditing) return
@@ -315,6 +368,52 @@ function ImageCanvasSurface({
     if (mask) onMaskChange?.(mask.toDataURL('image/png'))
   }
 
+  const canvasPoint = (event: ReactPointerEvent<HTMLElement>) => {
+    const canvas = canvasRef.current
+    if (!canvas) return null
+    const bounds = canvas.getBoundingClientRect()
+    if (!bounds.width || !bounds.height) return null
+    return {
+      x: (event.clientX - bounds.left) * canvas.width / bounds.width,
+      y: (event.clientY - bounds.top) * canvas.height / bounds.height,
+    }
+  }
+
+  const beginImageLayerDrag = (event: ReactPointerEvent<HTMLButtonElement>, layer: CanvasImageLayer) => {
+    const point = canvasPoint(event)
+    if (!point || !onMoveImageLayer) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    imageLayerPointerRef.current = {
+      pointerId: event.pointerId,
+      layerId: layer.id,
+      offsetX: point.x - layer.x,
+      offsetY: point.y - layer.y,
+    }
+    onSelectLayer(layer.id)
+  }
+
+  const moveImageLayer = (event: ReactPointerEvent<HTMLButtonElement>, layer: CanvasImageLayer) => {
+    const drag = imageLayerPointerRef.current
+    if (!drag || drag.pointerId !== event.pointerId || drag.layerId !== layer.id) return
+    const point = canvasPoint(event)
+    if (!point) return
+    event.preventDefault()
+    onMoveImageLayer?.(
+      layer.id,
+      Math.max(0, Math.min(dimensions.width - layer.width, point.x - drag.offsetX)),
+      Math.max(0, Math.min(dimensions.height - layer.height, point.y - drag.offsetY)),
+    )
+  }
+
+  const finishImageLayerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = imageLayerPointerRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    imageLayerPointerRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
   return (
     <div
       className="relative origin-center shadow-[var(--shadow-popover)]"
@@ -338,6 +437,27 @@ function ImageCanvasSurface({
           onPointerCancel={finishMaskStroke}
         />
       )}
+      {imageLayers.map(layer => (
+        <button
+          key={layer.id}
+          type="button"
+          aria-label={`选择图片图层 ${layer.id}`}
+          onClick={event => { event.stopPropagation(); onSelectLayer(layer.id) }}
+          onPointerDown={event => beginImageLayerDrag(event, layer)}
+          onPointerMove={event => moveImageLayer(event, layer)}
+          onPointerUp={finishImageLayerDrag}
+          onPointerCancel={finishImageLayerDrag}
+          className="absolute touch-none border-2 bg-transparent"
+          style={{
+            left: `${layer.x / dimensions.width * 100}%`,
+            top: `${layer.y / dimensions.height * 100}%`,
+            width: `${layer.width / dimensions.width * 100}%`,
+            height: `${layer.height / dimensions.height * 100}%`,
+            borderColor: selectedLayerId === layer.id ? 'var(--color-brand)' : 'transparent',
+            pointerEvents: maskEditing ? 'none' : undefined,
+          }}
+        />
+      ))}
       {textLayers.map(layer => {
         const width = Math.min(100, ((layer.max_width ?? dimensions.width) / dimensions.width) * 100)
         const left = layer.text_align === 'center'
@@ -358,6 +478,7 @@ function ImageCanvasSurface({
               width: `${width}%`,
               height: `${Math.max(2, (layer.font_size * 1.3 / dimensions.height) * 100)}%`,
               borderColor: selectedLayerId === layer.id ? 'var(--color-brand)' : 'transparent',
+              pointerEvents: maskEditing ? 'none' : undefined,
             }}
           >
             {showTextContent && (
@@ -416,6 +537,7 @@ export function ImageWorkbench() {
   const [briefOverrides, setBriefOverrides] = useState<ImageBriefOverrides>({})
   const [referenceDraft, setReferenceDraft] = useState<ImageProjectReference[]>([])
   const [pendingReferences, setPendingReferences] = useState<ReferenceImage[]>([])
+  const [draftImageLayers, setDraftImageLayers] = useState<CanvasImageLayer[]>([])
   const promptRef = useRef(prompt)
   const sizeRef = useRef(size)
   const draftOwnerIdRef = useRef<string | null>(null)
@@ -454,6 +576,22 @@ export function ImageWorkbench() {
     ? versions.findIndex(version => version.id === currentVersion.id)
     : -1
   const currentVersionUrl = currentVersionIndex >= 0 ? outputUrls[currentVersionIndex] : undefined
+  const compositionBaseVersion = selectedVersion?.kind === 'composite' && selectedVersion.parent_version_id
+    ? versions.find(version => version.id === selectedVersion.parent_version_id) ?? selectedVersion
+    : selectedVersion
+  const compositionBaseIndex = compositionBaseVersion
+    ? versions.findIndex(version => version.id === compositionBaseVersion.id)
+    : -1
+  const compositionBaseUrl = compositionBaseIndex >= 0 ? outputUrls[compositionBaseIndex] : outputUrl
+  const visibleImageLayers = selectedVersion?.id === currentVersion?.id
+    ? draftImageLayers
+    : selectedVersion?.image_layers ?? []
+  const selectedImageLayer = draftImageLayers.find(layer => layer.id === selectedLayerId)
+  const savedCurrentImageLayers = currentVersion?.image_layers ?? []
+  const compositionDirty = Boolean(
+    selectedVersion?.id === currentVersion?.id
+    && !sameImageLayers(draftImageLayers, savedCurrentImageLayers),
+  )
   const draftCanvasWidth = selectedVersion?.width ?? previewWidth ?? 1024
   const draftCanvasHeight = selectedVersion?.height ?? previewHeight ?? 1024
   const draftTextLayers = useMemo<ImageTextLayer[]>(() => textCopy
@@ -516,6 +654,7 @@ export function ImageWorkbench() {
     setBriefOverrides(active?.brief_overrides ?? {})
     setReferenceDraft(active?.references ?? [])
     setPendingReferences([])
+    setDraftImageLayers(currentVersion?.image_layers ?? [])
   }, [activeId, active?.current_version_id])
 
   useEffect(() => { promptRef.current = prompt }, [prompt])
@@ -764,6 +903,77 @@ export function ImageWorkbench() {
     }
   }
 
+  const addReferenceToCanvas = async (reference: ImageProjectReference) => {
+    if (!selectedVersion || selectedVersion.id !== currentVersion?.id) return
+    try {
+      const image = await loadCanvasImage(mediaApi.assetUrl(reference.image_path))
+      const maxWidth = draftCanvasWidth * 0.42
+      const maxHeight = draftCanvasHeight * 0.42
+      const scale = Math.min(maxWidth / image.naturalWidth, maxHeight / image.naturalHeight, 1)
+      const width = Math.max(1, Math.round(image.naturalWidth * scale))
+      const height = Math.max(1, Math.round(image.naturalHeight * scale))
+      setDraftImageLayers(current => [...current, {
+        id: `layer_${crypto.randomUUID().replaceAll('-', '')}`,
+        source_asset_id: reference.asset_id,
+        x: Math.max(0, Math.round((draftCanvasWidth - width) / 2)),
+        y: Math.max(0, Math.round((draftCanvasHeight - height) / 2)),
+        width,
+        height,
+        opacity: 1,
+        image_path: reference.image_path,
+        mime_type: reference.mime_type,
+      }].slice(-20))
+      setInputError(null)
+    } catch (error) {
+      setInputError(mediaUserFacingError(error, '无法读取这张参考素材，请重新导入后再试。'))
+    }
+  }
+
+  const updateImageLayer = (layerId: string, patch: Partial<CanvasImageLayer>) => {
+    setDraftImageLayers(current => current.map(layer => layer.id === layerId ? { ...layer, ...patch } : layer))
+  }
+
+  const moveImageLayer = (layerId: string, x: number, y: number) => {
+    updateImageLayer(layerId, { x: Math.round(x), y: Math.round(y) })
+  }
+
+  const moveImageLayerOrder = (layerId: string, direction: -1 | 1) => {
+    setDraftImageLayers(current => {
+      const index = current.findIndex(layer => layer.id === layerId)
+      const nextIndex = index + direction
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current
+      const next = [...current]
+      const [layer] = next.splice(index, 1)
+      next.splice(nextIndex, 0, layer!)
+      return next
+    })
+  }
+
+  const commitComposition = async () => {
+    if (
+      !active
+      || !selectedVersion
+      || selectedVersion.id !== currentVersion?.id
+      || !compositionBaseVersion
+      || !compositionBaseUrl
+      || draftImageLayers.length === 0
+    ) return
+    try {
+      const rendered = await renderImageLayers(compositionBaseUrl, draftImageLayers)
+      await commitImageVersion(active.id, {
+        revision: active.revision,
+        base_version_id: compositionBaseVersion.id,
+        kind: 'composite',
+        text_layers: [],
+        image_layers: draftImageLayers.map(({ image_path: _imagePath, mime_type: _mimeType, ...layer }) => layer),
+        ...rendered,
+      })
+      setInputError(null)
+    } catch (error) {
+      setInputError(mediaUserFacingError(error, '无法保存图片组合，请检查图层后重试。'))
+    }
+  }
+
   const updateTextLayoutSetting = (index: number, patch: Partial<TextLayoutSetting>) => {
     setTextLayoutSettings(current => ({
       ...current,
@@ -851,9 +1061,10 @@ export function ImageWorkbench() {
                 <div className="flex min-w-0 flex-col items-center gap-2">
                   {compareMode && <span className="text-[11px] text-[var(--color-text-tertiary)]">所选候选</span>}
                   <ImageCanvasSurface
-                    url={outputUrl}
+                    url={compositionBaseUrl ?? outputUrl}
                     title={active?.title ?? '生成结果'}
                     textLayers={visibleCanvasLayers}
+                    imageLayers={visibleImageLayers}
                     selectedLayerId={selectedLayerId}
                     onSelectLayer={setSelectedLayerId}
                     zoom={compareMode ? Math.min(zoom, 1) : zoom}
@@ -862,6 +1073,7 @@ export function ImageWorkbench() {
                     maskBrushSize={maskBrushSize}
                     maskDataUrl={maskDataUrl}
                     onMaskChange={setMaskDataUrl}
+                    onMoveImageLayer={selectedVersion.id === currentVersion?.id ? moveImageLayer : undefined}
                   />
                 </div>
               </>
@@ -1046,6 +1258,37 @@ export function ImageWorkbench() {
                         <span className="truncate">文字 · {layer.text}</span><span>{layer.font_size}px</span>
                       </button>
                     ))}
+                    {visibleImageLayers.map((layer, index) => (
+                      <button
+                        key={layer.id}
+                        type="button"
+                        onClick={() => setSelectedLayerId(layer.id)}
+                        className="flex h-8 w-full items-center justify-between rounded-[5px] px-2 text-left text-[11px] hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: selectedLayerId === layer.id ? 'var(--color-brand)' : 'var(--color-text-secondary)' }}
+                      >
+                        <span className="truncate">图片 · {index + 1}</span><span>{Math.round(layer.opacity * 100)}%</span>
+                      </button>
+                    ))}
+                    {selectedImageLayer && selectedVersion.id === currentVersion?.id && (
+                      <div className="mt-2 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[10px]">
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <label>横向位置<input aria-label="图片图层横向位置" type="number" min={0} max={draftCanvasWidth - selectedImageLayer.width} value={Math.round(selectedImageLayer.x)} onChange={event => updateImageLayer(selectedImageLayer.id, { x: Math.max(0, Math.min(draftCanvasWidth - selectedImageLayer.width, Number(event.target.value))) })} className="mt-0.5 h-7 w-full rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" /></label>
+                          <label>纵向位置<input aria-label="图片图层纵向位置" type="number" min={0} max={draftCanvasHeight - selectedImageLayer.height} value={Math.round(selectedImageLayer.y)} onChange={event => updateImageLayer(selectedImageLayer.id, { y: Math.max(0, Math.min(draftCanvasHeight - selectedImageLayer.height, Number(event.target.value))) })} className="mt-0.5 h-7 w-full rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" /></label>
+                          <label>宽度<input aria-label="图片图层宽度" type="number" min={1} max={draftCanvasWidth - selectedImageLayer.x} value={Math.round(selectedImageLayer.width)} onChange={event => updateImageLayer(selectedImageLayer.id, { width: Math.max(1, Math.min(draftCanvasWidth - selectedImageLayer.x, Number(event.target.value))) })} className="mt-0.5 h-7 w-full rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" /></label>
+                          <label>高度<input aria-label="图片图层高度" type="number" min={1} max={draftCanvasHeight - selectedImageLayer.y} value={Math.round(selectedImageLayer.height)} onChange={event => updateImageLayer(selectedImageLayer.id, { height: Math.max(1, Math.min(draftCanvasHeight - selectedImageLayer.y, Number(event.target.value))) })} className="mt-0.5 h-7 w-full rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" /></label>
+                        </div>
+                        <label className="mt-2 grid grid-cols-[38px_1fr_32px] items-center gap-1">
+                          <span>透明度</span>
+                          <input aria-label="图片图层透明度" type="range" min={5} max={100} value={Math.round(selectedImageLayer.opacity * 100)} onChange={event => updateImageLayer(selectedImageLayer.id, { opacity: Number(event.target.value) / 100 })} />
+                          <span className="text-right">{Math.round(selectedImageLayer.opacity * 100)}%</span>
+                        </label>
+                        <div className="mt-2 grid grid-cols-3 gap-1">
+                          <button type="button" onClick={() => moveImageLayerOrder(selectedImageLayer.id, -1)} className="h-7 rounded border border-[var(--color-border)]">下移</button>
+                          <button type="button" onClick={() => moveImageLayerOrder(selectedImageLayer.id, 1)} className="h-7 rounded border border-[var(--color-border)]">上移</button>
+                          <button type="button" onClick={() => { setDraftImageLayers(current => current.filter(layer => layer.id !== selectedImageLayer.id)); setSelectedLayerId(null) }} className="h-7 rounded border border-[var(--color-border)] text-[var(--color-error)]">移除</button>
+                        </div>
+                      </div>
+                    )}
                     {selectedVersion.quality_assessment ? (
                       <div className="mt-2 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[11px] leading-4 text-[var(--color-text-secondary)]">
                         <div className="mb-1 font-medium text-[var(--color-text-primary)]">视觉质检 {selectedVersion.quality_assessment.score}/100</div>
@@ -1192,9 +1435,19 @@ export function ImageWorkbench() {
                               ><X size={12} /></button>
                             </div>
                           ) : (
-                            <figcaption className="truncate px-1.5 py-1 text-[10px] text-[var(--color-text-secondary)]">
-                              {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
-                            </figcaption>
+                            <div className="border-t border-[var(--color-border)]">
+                              <figcaption className="truncate px-1.5 py-1 text-[10px] text-[var(--color-text-secondary)]">
+                                {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
+                              </figcaption>
+                              {selectedVersion?.id === currentVersion?.id && !['queued', 'generating'].includes(active.state) && (
+                                <button
+                                  type="button"
+                                  onClick={() => void addReferenceToCanvas(reference)}
+                                  disabled={draftImageLayers.length >= 20}
+                                  className="h-6 w-full border-t border-[var(--color-border)] text-[9px] text-[var(--color-brand)] disabled:opacity-40"
+                                >加入画布</button>
+                              )}
+                            </div>
                           )}
                         </figure>
                       ))}
@@ -1357,6 +1610,17 @@ export function ImageWorkbench() {
                       {operationKind === 'edit' ? '生成编辑版本' : '生成局部重绘版本'}
                     </button>
 
+                    <div className="mt-4 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[11px] text-[var(--color-text-secondary)]">
+                      <div className="font-medium text-[var(--color-text-primary)]">图片图层组合</div>
+                      <p className="mt-1">从参考素材点击“加入画布”，可直接拖动图层，并在“图层与质检”中调整尺寸、透明度和顺序。</p>
+                      <button
+                        type="button"
+                        onClick={() => void commitComposition()}
+                        disabled={loading || draftImageLayers.length === 0 || !compositionDirty}
+                        className="mt-2 h-8 w-full rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45"
+                      >保存图片组合版本</button>
+                    </div>
+
                     <div className="mt-4 grid grid-cols-[1fr_72px] gap-2">
                       <select
                         aria-label="放大倍数"
@@ -1364,9 +1628,9 @@ export function ImageWorkbench() {
                         onChange={event => setUpscale(Number(event.target.value) as 2 | 3 | 4)}
                         className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px]"
                       >
-                        <option value={2}>本机高质量放大 2×</option>
-                        <option value={3}>本机高质量放大 3×</option>
-                        <option value={4}>本机高质量放大 4×</option>
+                        <option value={2}>本机插值放大 2×</option>
+                        <option value={3}>本机插值放大 3×</option>
+                        <option value={4}>本机插值放大 4×</option>
                       </select>
                       <button type="button" onClick={() => void commitUpscale()} disabled={loading} className="h-8 rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">放大</button>
                     </div>

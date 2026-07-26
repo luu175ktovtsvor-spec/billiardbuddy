@@ -151,6 +151,24 @@ function publicProject(project: MediaProject): PublicMediaProject {
           width: version.width ?? output?.width,
           height: version.height ?? output?.height,
           text_layers: version.text_layers ?? output?.text_layers ?? [],
+          image_layers: (version.image_layers ?? output?.image_layers ?? []).flatMap(layer => {
+            const source = (project.assets ?? []).find(candidate => (
+              candidate.id === layer.source_asset_id
+              && candidate.role === 'reference'
+              && (candidate.storage.kind === 'managed' || candidate.storage.kind === 'cas')
+            ))
+            if (!source) return []
+            if (source.storage.kind === 'managed') {
+              const prefix = `${project.id}/references/`
+              if (!source.storage.locator.startsWith(prefix)) return []
+            }
+            if (!source.mime_type || !['image/png', 'image/jpeg', 'image/webp'].includes(source.mime_type)) return []
+            return [{
+              ...layer,
+              image_path: `/api/media/images/projects/${project.id}/layer-assets/${source.id}/content`,
+              mime_type: source.mime_type,
+            }]
+          }),
           quality_assessment: output?.quality_assessment,
           created_at: version.created_at,
         }]
@@ -325,6 +343,14 @@ export function createMediaApiHandler(
           }
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
           return await service.imageReferenceResponse(projectId, referenceId, req)
+        }
+        if (action === 'layer-assets') {
+          const assetId = segments[6]
+          if (!assetId || segments[7] !== 'content' || segments[8]) {
+            throw ApiError.badRequest('无效的图片图层素材地址')
+          }
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return await service.imageLayerAssetResponse(projectId, assetId, req)
         }
         if (!action && req.method === 'PUT') {
           const input = updateImageProjectInputSchema.parse(await parseJson(req))
