@@ -46,7 +46,17 @@ export const imageVersionKindSchema = z.enum([
   'inpaint',
   'upscale',
   'text_layout',
+  'composite',
 ])
+export const imageLayerSchema = z.object({
+  id: mediaIdSchema,
+  source_asset_id: mediaIdSchema,
+  x: z.number().finite().nonnegative().max(12000),
+  y: z.number().finite().nonnegative().max(12000),
+  width: z.number().finite().positive().max(12000),
+  height: z.number().finite().positive().max(12000),
+  opacity: z.number().finite().min(0.05).max(1).default(1),
+})
 export const imageTextLayerSchema = z.object({
   id: mediaIdSchema,
   text: z.string().min(1).max(2000),
@@ -70,6 +80,7 @@ export const mediaVersionSchema = z.object({
   width: z.number().int().positive().max(12000).optional(),
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).optional(),
+  image_layers: z.array(imageLayerSchema).max(20).optional(),
   created_at: mediaIsoDateSchema,
 })
 export const mediaDeletionReceiptSchema = z.object({
@@ -201,6 +212,7 @@ export const imageWorkbenchOutputSchema = z.object({
   width: z.number().int().positive().max(12000).optional(),
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).optional(),
+  image_layers: z.array(imageLayerSchema).max(20).optional(),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/png'),
   data_url: z.string().startsWith('data:image/').optional(),
   asset_path: z.string().startsWith('/api/media/assets/').optional(),
@@ -222,6 +234,10 @@ export const publicImageVersionSchema = z.object({
   width: z.number().int().positive().max(12000).optional(),
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).default([]),
+  image_layers: z.array(imageLayerSchema.extend({
+    image_path: z.string().startsWith('/api/media/images/projects/'),
+    mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  })).max(20).default([]),
   quality_assessment: imageQualityAssessmentResultSchema.optional(),
   created_at: mediaIsoDateSchema,
 })
@@ -285,7 +301,7 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   reference_image_assets: z.array(referenceImageAssetNameSchema).max(8).optional(),
   reference_image_count: z.number().int().min(0).max(8).default(0),
   task_id: mediaIdSchema.optional(),
-  outputs: z.array(imageWorkbenchOutputSchema).max(16).default([]),
+  outputs: z.array(imageWorkbenchOutputSchema).max(1000).default([]),
   notice: z.string().max(2000).optional(),
   error: z.string().max(2000).optional(),
   error_code: mediaSafeErrorCodeSchema.optional(),
@@ -644,18 +660,25 @@ export const startImageOperationInputSchema = z.object({
 export const commitImageVersionInputSchema = z.object({
   revision: z.number().int().nonnegative(),
   base_version_id: mediaIdSchema,
-  kind: z.enum(['upscale', 'text_layout']),
+  kind: z.enum(['upscale', 'text_layout', 'composite']),
   rendered_image: imagePngDataUrlSchema,
   width: z.number().int().positive().max(12000),
   height: z.number().int().positive().max(12000),
   scale: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).default([]),
+  image_layers: z.array(imageLayerSchema).max(20).default([]),
 }).superRefine((value, context) => {
   if (value.kind === 'upscale' && !value.scale) {
     context.addIssue({ code: 'custom', path: ['scale'], message: 'upscale requires a scale' })
   }
-  if (value.kind === 'text_layout' && value.scale) {
-    context.addIssue({ code: 'custom', path: ['scale'], message: 'text layout does not accept a scale' })
+  if (value.kind !== 'upscale' && value.scale) {
+    context.addIssue({ code: 'custom', path: ['scale'], message: `${value.kind} does not accept a scale` })
+  }
+  if (value.kind === 'composite' && value.image_layers.length === 0) {
+    context.addIssue({ code: 'custom', path: ['image_layers'], message: 'composite requires at least one image layer' })
+  }
+  if (value.kind !== 'composite' && value.image_layers.length > 0) {
+    context.addIssue({ code: 'custom', path: ['image_layers'], message: `${value.kind} does not accept image layers` })
   }
 })
 
@@ -737,6 +760,7 @@ export type MediaVersion = z.infer<typeof mediaVersionSchema>
 export type PublicImageVersion = z.infer<typeof publicImageVersionSchema>
 export type ImageVersionKind = z.infer<typeof imageVersionKindSchema>
 export type ImageTextLayer = z.infer<typeof imageTextLayerSchema>
+export type ImageLayer = z.infer<typeof imageLayerSchema>
 export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
 export type ImageBriefOverrides = z.infer<typeof imageBriefOverridesSchema>
 export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
