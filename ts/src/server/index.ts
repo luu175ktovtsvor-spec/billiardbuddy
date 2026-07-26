@@ -30,6 +30,9 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
 import { ProductCapabilitySnapshotService } from './services/productCapabilitySnapshot.js'
 import { ProductResourceScheduler } from './product/resourceScheduler.js'
+import { ProductStorageMigrationCoordinator } from './services/productStorageMigrations.js'
+import { CronService } from './services/cronService.js'
+import { migrateSupportedScheduledTaskRuns } from './services/cronScheduler.js'
 import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
@@ -122,12 +125,6 @@ export function startServer(port = PORT, host = HOST) {
   // task views and the media workbench use the same FFmpeg admission queue.
   const mediaService = new MediaProjectService()
   if (process.env.NODE_ENV !== 'test') {
-    void mediaService.purgeExpiredDeletions().catch(error => diagnosticsService.recordEvent({
-      type: 'media_gc_failed',
-      severity: 'error',
-      summary: 'Media retention cleanup failed',
-      details: { error },
-    }))
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
       type: 'voice_gc_failed',
       severity: 'error',
@@ -143,6 +140,27 @@ export function startServer(port = PORT, host = HOST) {
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => mediaService.toolchainStatus(),
   })
+  const configDir = getClaudeConfigHomeDir()
+  const productStorageUpgrade = new ProductStorageMigrationCoordinator(
+    configDir,
+    {
+      migrateManagedSettings: () => ensurePersistentStorageUpgraded(configDir),
+      migrateProductTasks: () => productTaskService.migrateSupportedStorage(),
+      migrateMedia: () => mediaService.migrateSupportedStorage(),
+      migrateScheduledTasks: () => new CronService(configDir).migrateSupportedStorage(),
+      migrateScheduledTaskRuns: () => migrateSupportedScheduledTaskRuns(configDir),
+    },
+  ).ensureUpgraded()
+  if (process.env.NODE_ENV !== 'test') {
+    void productStorageUpgrade
+      .then(() => mediaService.purgeExpiredDeletions(), () => undefined)
+      .catch(error => diagnosticsService.recordEvent({
+        type: 'media_gc_failed',
+        severity: 'error',
+        summary: 'Media retention cleanup failed',
+        details: { error },
+      }))
+  }
   const productApiHandler = (req: Request, url: URL, segments: string[]) => (
     handleProductApi(
       req,
@@ -182,7 +200,7 @@ export function startServer(port = PORT, host = HOST) {
       idleTimeout: 60,
 
       async fetch(req, server) {
-        await ensurePersistentStorageUpgraded()
+        await productStorageUpgrade
         productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue()
         await productTaskQueueRecovery
         const url = new URL(req.url)
@@ -368,8 +386,9 @@ export function startServer(port = PORT, host = HOST) {
     ProviderService.setServerPort(serverPort)
     void chromeSessionBridge.activate(`http://${localConnectHost}:${serverPort}`).catch(() => undefined)
   } catch (error) {
-    const message = error instanceof Error && error.message
-      ? error.message
+    const originalMessage = error instanceof Error ? error.message.trim() : ''
+    const message = originalMessage && originalMessage !== 'Error'
+      ? originalMessage
       : `Failed to start server. Is port ${port} in use?`
     throw new Error(message, { cause: error })
   }
@@ -382,13 +401,20 @@ export function startServer(port = PORT, host = HOST) {
   // before reading the active provider, so the first session never races a
   // pre-registration null activeId. Kept AFTER setServerPort so the proxy base URL
   // synced into settings carries the finalized port.
-  void ensureQfGatewayRegistration(new ProviderService())
+  void productStorageUpgrade
+    .then(() => ensureQfGatewayRegistration(new ProviderService()))
+    .catch(error => diagnosticsService.recordEvent({
+      type: 'storage_migration_failed',
+      severity: 'error',
+      summary: 'Product storage migration failed',
+      details: { error },
+    }))
 
   // Start watching ~/.claude/teams/ for real-time WebSocket push
   teamWatcher.start()
 
-  // Start the cron scheduler to execute scheduled tasks
-  cronScheduler.start()
+  // Never execute an unattended task against a partially migrated store.
+  void productStorageUpgrade.then(() => cronScheduler.start()).catch(() => undefined)
 
   console.log(`[Server] BilliardBuddy Agent service running at http://${localHost}:${serverPort}`)
   return server

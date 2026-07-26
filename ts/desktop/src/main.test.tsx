@@ -65,6 +65,21 @@ describe('desktop bootstrap', () => {
     expect(consoleError).toHaveBeenCalledWith('[desktop] Failed to bootstrap app', expect.any(Error))
   })
 
+  it('fails startup visibly when persisted state cannot be migrated safely', async () => {
+    const { bootstrapDesktopApp } = await import('./main')
+    const root = document.createElement('div')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.runDesktopPersistenceMigrations.mockImplementationOnce(() => {
+      throw new Error('future desktop schema')
+    })
+
+    await bootstrapDesktopApp(root)
+
+    expect(root.textContent).toBe('future desktop schema')
+    expect(window.__BB_BOOTSTRAPPED__).not.toBe(true)
+    expect(consoleError).toHaveBeenCalledWith('[desktop] Failed to bootstrap app', expect.any(Error))
+  })
+
   it('delegates bootstrap failures to the HTML startup watchdog when available', async () => {
     const { bootstrapDesktopApp } = await import('./main')
     const root = document.createElement('div')

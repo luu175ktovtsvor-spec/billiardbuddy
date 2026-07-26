@@ -6,11 +6,19 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 7
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 8
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
+export const DESKTOP_PERSISTENCE_BACKUP_KEY = 'billiardbuddy.persistence.backup.v8'
 
 type DesktopMigrationReport = {
   migratedKeys: string[]
+  backupKey?: typeof DESKTOP_PERSISTENCE_BACKUP_KEY
+}
+
+type DesktopPersistenceBackup = {
+  targetSchemaVersion: typeof CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION
+  sourceSchemaVersion: number
+  values: Record<string, string | null>
 }
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
@@ -20,6 +28,19 @@ const RETIRED_SESSION_RUNTIME_STORAGE_KEY = 'billiardbuddy-session-runtime'
 const THEME_STORAGE_KEY = 'billiardbuddy-theme'
 const LOCALE_STORAGE_KEY = 'billiardbuddy-locale'
 const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
+const MIGRATED_STORAGE_KEYS = [
+  TAB_STORAGE_KEY,
+  RETIRED_SESSION_RUNTIME_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+  LOCALE_STORAGE_KEY,
+  ACTIVE_SETTINGS_TAB_STORAGE_KEY,
+  APP_ZOOM_STORAGE_KEY,
+  LEGACY_UI_ZOOM_STORAGE_KEY,
+] as const
+const BACKED_UP_STORAGE_KEYS = [
+  ...MIGRATED_STORAGE_KEYS,
+  DESKTOP_PERSISTENCE_VERSION_KEY,
+] as const
 const SETTINGS_TABS = [
   'general',
   'capabilities',
@@ -44,6 +65,63 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function writeJson(storage: StorageLike, key: string, value: unknown): void {
   storage.setItem(key, JSON.stringify(value))
+}
+
+function readSchemaVersion(storage: StorageLike): number {
+  const raw = storage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)
+  if (raw === null) return 0
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid desktop persistence schema version: ${raw}`)
+  }
+  const version = Number(raw)
+  if (!Number.isSafeInteger(version)) {
+    throw new Error(`Invalid desktop persistence schema version: ${raw}`)
+  }
+  if (version > CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION) {
+    throw new Error(
+      `Desktop persistence schema ${version} is newer than supported schema ${CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION}`,
+    )
+  }
+  return version
+}
+
+function captureBackup(storage: StorageLike, sourceSchemaVersion: number): DesktopPersistenceBackup {
+  return {
+    targetSchemaVersion: CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION,
+    sourceSchemaVersion,
+    values: Object.fromEntries(BACKED_UP_STORAGE_KEYS.map((key) => [key, storage.getItem(key)])),
+  }
+}
+
+function parseBackup(raw: string): DesktopPersistenceBackup {
+  const parsed: unknown = JSON.parse(raw)
+  if (
+    !isRecord(parsed)
+    || parsed.targetSchemaVersion !== CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION
+    || typeof parsed.sourceSchemaVersion !== 'number'
+    || !Number.isSafeInteger(parsed.sourceSchemaVersion)
+    || parsed.sourceSchemaVersion < 0
+    || parsed.sourceSchemaVersion >= CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION
+    || !isRecord(parsed.values)
+  ) {
+    throw new Error('Invalid desktop persistence migration backup')
+  }
+  for (const key of BACKED_UP_STORAGE_KEYS) {
+    const value = parsed.values[key]
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(`Invalid desktop persistence migration backup value: ${key}`)
+    }
+  }
+  return parsed as DesktopPersistenceBackup
+}
+
+function restoreBackup(storage: StorageLike, backup: DesktopPersistenceBackup): void {
+  for (const key of BACKED_UP_STORAGE_KEYS) {
+    const value = backup.values[key]
+    if (value === null) storage.removeItem(key)
+    else if (typeof value === 'string') storage.setItem(key, value)
+    else throw new Error(`Invalid desktop persistence migration backup value: ${key}`)
+  }
 }
 
 function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void {
@@ -131,7 +209,7 @@ function migrateRetiredSettingsTab(storage: StorageLike, report: DesktopMigratio
 
 function normalizeAppZoomKey(storage: StorageLike, report: DesktopMigrationReport): void {
   const value = storage.getItem(APP_ZOOM_STORAGE_KEY)
-  if (!isValidStoredAppZoomLevel(value)) {
+  if (value !== null && !isValidStoredAppZoomLevel(value)) {
     storage.removeItem(APP_ZOOM_STORAGE_KEY)
     report.migratedKeys.push(APP_ZOOM_STORAGE_KEY)
   }
@@ -148,18 +226,6 @@ function normalizeAppZoomKey(storage: StorageLike, report: DesktopMigrationRepor
   }
 }
 
-function runMigrationStep(
-  report: DesktopMigrationReport,
-  fallbackKey: string,
-  step: () => void,
-): void {
-  try {
-    step()
-  } catch {
-    report.migratedKeys.push(fallbackKey)
-  }
-}
-
 function getDefaultStorage(): StorageLike | null {
   try {
     return globalThis.localStorage ?? null
@@ -172,21 +238,40 @@ export function runDesktopPersistenceMigrations(storage: StorageLike | null = ge
   const report: DesktopMigrationReport = { migratedKeys: [] }
   if (!storage) return report
 
-  runMigrationStep(report, TAB_STORAGE_KEY, () => migrateTabs(storage, report))
-  runMigrationStep(report, RETIRED_SESSION_RUNTIME_STORAGE_KEY, () => removeRetiredSessionRuntime(storage, report))
-  runMigrationStep(report, THEME_STORAGE_KEY, () => normalizeEnumKey(storage, THEME_STORAGE_KEY, [...THEME_MODES], report))
-  runMigrationStep(report, LOCALE_STORAGE_KEY, () => normalizeEnumKey(
-    storage,
-    LOCALE_STORAGE_KEY,
-    [...DESKTOP_LOCALES],
-    report,
-  ))
-  runMigrationStep(report, ACTIVE_SETTINGS_TAB_STORAGE_KEY, () => migrateRetiredSettingsTab(storage, report))
-  runMigrationStep(report, APP_ZOOM_STORAGE_KEY, () => normalizeAppZoomKey(storage, report))
+  let sourceSchemaVersion = readSchemaVersion(storage)
+  if (sourceSchemaVersion === CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION) return report
+
+  const existingBackupRaw = storage.getItem(DESKTOP_PERSISTENCE_BACKUP_KEY)
+  let backup: DesktopPersistenceBackup
+  if (existingBackupRaw !== null) {
+    backup = parseBackup(existingBackupRaw)
+    restoreBackup(storage, backup)
+    sourceSchemaVersion = readSchemaVersion(storage)
+    if (sourceSchemaVersion !== backup.sourceSchemaVersion) {
+      throw new Error('Desktop persistence migration backup did not restore its source schema')
+    }
+  } else {
+    backup = captureBackup(storage, sourceSchemaVersion)
+    storage.setItem(DESKTOP_PERSISTENCE_BACKUP_KEY, JSON.stringify(backup))
+  }
+  report.backupKey = DESKTOP_PERSISTENCE_BACKUP_KEY
+
   try {
+    migrateTabs(storage, report)
+    removeRetiredSessionRuntime(storage, report)
+    normalizeEnumKey(storage, THEME_STORAGE_KEY, [...THEME_MODES], report)
+    normalizeEnumKey(storage, LOCALE_STORAGE_KEY, [...DESKTOP_LOCALES], report)
+    migrateRetiredSettingsTab(storage, report)
+    normalizeAppZoomKey(storage, report)
     storage.setItem(DESKTOP_PERSISTENCE_VERSION_KEY, String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
-  } catch {
     report.migratedKeys.push(DESKTOP_PERSISTENCE_VERSION_KEY)
+  } catch (error) {
+    try {
+      restoreBackup(storage, backup)
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], 'Desktop persistence migration and rollback failed')
+    }
+    throw error
   }
 
   return report

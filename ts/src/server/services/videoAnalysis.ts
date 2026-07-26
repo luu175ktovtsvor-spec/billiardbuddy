@@ -14,11 +14,11 @@ import {
 } from '../../../shared/product/dataEgress.js'
 import {
   getInstallationId,
-  getQfGatewayModel,
   getQfGatewayToken,
   getQfGatewayUrl,
   qfGatewayConfigured,
 } from './qfGatewayProvider.js'
+import { visualEvidenceRegistryEntry } from '../../../../gateway/providerRegistry.js'
 
 const MAX_GATEWAY_RESPONSE_CHARS = 512 * 1024
 
@@ -138,12 +138,12 @@ async function gatewayJson(
   if (installationId) headers['X-QF-Client-ID'] = installationId
   let response: Response
   try {
-    response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
+    response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/media/reasoning`, {
       method: 'POST',
       headers,
       signal: options.signal,
       body: JSON.stringify({
-        model: getQfGatewayModel(),
+        model: visualEvidenceRegistryEntry().model_id,
         stream: false,
         temperature: 0,
         max_tokens: 6000,

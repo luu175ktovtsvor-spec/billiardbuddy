@@ -14,6 +14,34 @@ export class MimoRequestError extends Error {
   }
 }
 
+const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
+
+/**
+ * Prepare the dedicated media-workbench request. The caller cannot select a
+ * different MiMo model or smuggle an invalid tools shape through the gateway.
+ */
+export function prepareMimoChatBody(
+  rawBody: string,
+  allowedModels: ReadonlySet<string>,
+  defaultModel: string,
+): { body: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawBody)
+  } catch {
+    throw new MimoRequestError(400, '媒体理解请求不是合法 JSON')
+  }
+  if (!isRecord(parsed)) throw new MimoRequestError(400, '媒体理解请求必须是 JSON 对象')
+  if (parsed.tools !== undefined && !Array.isArray(parsed.tools)) {
+    throw new MimoRequestError(400, '媒体理解请求 tools 必须是数组')
+  }
+
+  const requested = typeof parsed.model === 'string' ? parsed.model : ''
+  const model = allowedModels.has(requested) ? requested : defaultModel
+  if (!MODEL_PATTERN.test(model)) throw new MimoRequestError(503, '媒体理解模型未配置')
+  return model === requested ? { body: rawBody } : { body: JSON.stringify({ ...parsed, model }) }
+}
+
 export async function fetchMimoWithRetry(
   doRequest: (attempt: number) => Promise<Response>,
   opts: MimoRetryOptions,
@@ -51,6 +79,10 @@ function isRetryableStatus(status: number): boolean {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function jitteredBackoff(attempt: number, opts: MimoRetryOptions, random: () => number): number {

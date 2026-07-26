@@ -29,8 +29,7 @@ type LegacyRootProvider = {
   notes?: string
 }
 
-let migrationPromise: Promise<MigrationReport> | null = null
-let migrationConfigDir: string | null = null
+const migrationPromises = new Map<string, Promise<MigrationReport>>()
 
 function getConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
@@ -394,16 +393,15 @@ async function runPersistentStorageMigrations(configDir: string): Promise<Migrat
   return report
 }
 
-export function ensurePersistentStorageUpgraded(): Promise<MigrationReport> {
-  const configDir = getConfigDir()
-  if (!migrationPromise || migrationConfigDir !== configDir) {
-    migrationConfigDir = configDir
+export function ensurePersistentStorageUpgraded(configDir = getConfigDir()): Promise<MigrationReport> {
+  let migrationPromise = migrationPromises.get(configDir)
+  if (!migrationPromise) {
     migrationPromise = runPersistentStorageMigrations(configDir)
+    migrationPromises.set(configDir, migrationPromise)
   }
   return migrationPromise
 }
 
 export function resetPersistentStorageMigrationsForTests(): void {
-  migrationPromise = null
-  migrationConfigDir = null
+  migrationPromises.clear()
 }

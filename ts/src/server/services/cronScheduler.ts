@@ -132,30 +132,38 @@ function cronFieldsMatch(fields: CronFields, date: Date): boolean {
 
 // ─── Log file I/O ──────────────────────────────────────────────────────────────
 
-type RunsFile = { runs: TaskRun[] }
+export const CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION = 1
 
-function getLogFilePath(): string {
-  const configDir =
-    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+type RunsFile = {
+  schemaVersion: typeof CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION
+  runs: TaskRun[]
+}
+
+function getLogFilePath(
+  configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+): string {
   return path.join(configDir, 'scheduled_tasks_log.json')
 }
 
-async function readRunsFile(): Promise<RunsFile> {
+async function readRunsFile(configDir?: string): Promise<RunsFile> {
   try {
-    const raw = await fs.readFile(getLogFilePath(), 'utf-8')
-    const parsed = JSON.parse(raw) as RunsFile
-    if (!Array.isArray(parsed.runs)) return { runs: [] }
-    return parsed
+    const raw = await fs.readFile(getLogFilePath(configDir), 'utf-8')
+    const parsed = JSON.parse(raw) as Partial<RunsFile>
+    if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION) {
+      throw new Error('UNSUPPORTED_SCHEDULED_TASK_RUNS_SCHEMA')
+    }
+    if (!Array.isArray(parsed.runs)) throw new Error('INVALID_SCHEDULED_TASK_RUNS_SCHEMA')
+    return { schemaVersion: CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION, runs: parsed.runs }
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { runs: [] }
+      return { schemaVersion: CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION, runs: [] }
     }
     throw err
   }
 }
 
-async function writeRunsFile(data: RunsFile): Promise<void> {
-  const filePath = getLogFilePath()
+async function writeRunsFile(data: RunsFile, configDir?: string): Promise<void> {
+  const filePath = getLogFilePath(configDir)
   const dir = path.dirname(filePath)
   await fs.mkdir(dir, { recursive: true })
 
@@ -169,8 +177,8 @@ async function writeRunsFile(data: RunsFile): Promise<void> {
   }
 }
 
-async function mutateRuns(operation: (data: RunsFile) => void): Promise<void> {
-  const guardPath = `${getLogFilePath()}.guard`
+async function withRunsLock<T>(operation: () => Promise<T>, configDir?: string): Promise<T> {
+  const guardPath = `${getLogFilePath(configDir)}.guard`
   await fs.mkdir(path.dirname(guardPath), { recursive: true })
   await fs.open(guardPath, 'a', 0o600).then((handle) => handle.close())
   const release = await lock(guardPath, {
@@ -178,13 +186,32 @@ async function mutateRuns(operation: (data: RunsFile) => void): Promise<void> {
     retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
   })
   try {
+    return await operation()
+  } finally {
+    await release()
+  }
+}
+
+async function mutateRuns(operation: (data: RunsFile) => void): Promise<void> {
+  await withRunsLock(async () => {
     const data = await readRunsFile()
     operation(data)
     trimRuns(data)
     await writeRunsFile(data)
-  } finally {
-    await release()
-  }
+  })
+}
+
+export async function migrateSupportedScheduledTaskRuns(configDir?: string): Promise<void> {
+  await withRunsLock(async () => {
+    const before = await fs.readFile(getLogFilePath(configDir), 'utf-8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (before === null) return
+    const data = await readRunsFile(configDir)
+    const after = JSON.stringify(data, null, 2) + '\n'
+    if (before !== after) await writeRunsFile(data, configDir)
+  }, configDir)
 }
 
 /** Append a run to the log and trim to keep at most MAX_RUNS_PER_TASK per task. */

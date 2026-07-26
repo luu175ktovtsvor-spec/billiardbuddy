@@ -32,6 +32,8 @@ export async function bootstrapDesktopApp(
   loadModules: () => Promise<DesktopBootstrapModules> = loadDesktopBootstrapModules,
 ) {
   try {
+    runDesktopPersistenceMigrations()
+    await initializeAppZoom()
     const [{ App }, { ErrorBoundary }, { installClientDiagnosticsCapture }, { initializeTheme }] = await loadModules()
     initializeTheme()
     installClientDiagnosticsCapture()
@@ -59,8 +61,5 @@ export async function bootstrapDesktopApp(
     }
   }
 }
-
-runDesktopPersistenceMigrations()
-void initializeAppZoom()
 
 void bootstrapDesktopApp()
