@@ -48,6 +48,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 ## Workflow Requirements
 
 - Prefer `rg` and `rg --files` for searching text and files.
+- 任务中启动的临时进程、测试服务、终端辅助进程和打包进程，用完后必须主动停止并再次检查，避免持续占用 CPU、内存或导致设备发热；只有产品运行或后续验证明确仍需要的进程才可保留。
 - Write commit messages in clear, plain Chinese that state the concrete change. Do not use vague, generic, or AI-style descriptions.
 - When creating a pull request, use a Conventional Commit type prefix and write the specific title in Chinese, for example `fix: 修复会话恢复状态丢失`.
 - If a pull request template exists, fill it in completely. Do not leave placeholders or use a generic summary.
